@@ -15,10 +15,11 @@
  *    └─────────────────────┴──────────────────────────┘
  * ```
  *
- * Everything load-bearing is inherited from the keyboard hook and the reasons
+ * Everything load-bearing is shared with the keyboard hook through
+ * {@link createPttSession} — the ownership machinery itself — and the reasons
  * are recorded there rather than repeated here: capture opens on the DOWN (not
  * at the threshold) so the opening word is in the recording; ONE session serves
- * the whole gesture and `ownerRef` decides its fate when the gesture RESOLVES;
+ * the whole gesture and its owner decides its fate when the gesture RESOLVES;
  * `voice.recording` — not the transport, not `startPending` — is what decides
  * whether a teardown may commit.
  *
@@ -41,11 +42,15 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import {
   loadPttConfig,
-  MAX_HOLD_MS,
   PTT_CHANGED_EVENT,
   type PttConfig,
 } from '../lib/pushToTalk'
-import { type VoiceControls } from './usePushToTalk'
+import {
+  createPttSession,
+  type PttPhase,
+  type PttSession,
+  type VoiceControls,
+} from '../lib/pttSession'
 
 /**
  * Upward travel, in CSS px, that arms the discard.
@@ -58,7 +63,7 @@ import { type VoiceControls } from './usePushToTalk'
  */
 export const CANCEL_THRESHOLD_PX = 56
 
-type Phase = 'idle' | 'arming' | 'holding'
+type Phase = PttPhase
 
 export interface UseTouchPushToTalkOpts {
   /**
@@ -99,11 +104,11 @@ export interface TouchPushToTalkState {
   /**
    * True while a live gesture owns the capture session: set at the pointerdown
    * that opens capture, relinquished when the gesture resolves — release,
-   * cancel, failed start, abandon. Exported from `ownerRef` itself so the
-   * consumer never has to infer ownership from a mounted DOM node or from a
-   * recording flag: both proxies also match captures opened elsewhere (the mic
-   * button, the keyboard binding on a device that has both inputs), which is the
-   * defect class this export closes (#5753).
+   * cancel, failed start, abandon. Exported from the session core's owner
+   * itself so the consumer never has to infer ownership from a mounted DOM
+   * node or from a recording flag: both proxies also match captures opened
+   * elsewhere (the mic button, the keyboard binding on a device that has both
+   * inputs), which is the defect class this export closes (#5753).
    *
    * Deliberately NOT true through the post-release drain — a commit relinquishes
    * ownership at the release, and `bar === 'settling'` is the name for what
@@ -147,30 +152,16 @@ export function useTouchPushToTalk(
   }, [])
 
   const armTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const capTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   /**
-   * Whether this gesture owns the capture session.
-   *
-   * A press owns its session from `pointerdown` to `pointerup`, so ownership and
-   * the gesture's own phase never disagree for long — but `ownerRef` is still the
-   * authority rather than `phase`, because a startup can be in flight while the
-   * phase has already moved on, and `setOwner(null)` is what invalidates it.
-   *
-   * Every write goes through `setOwner`. That is deliberate rather than tidy:
-   * state cleared on some exit paths and not others is the exact defect class
-   * this hook has already been fixed for twice.
-   */
-  const ownerRef = useRef<'gesture' | null>(null)
-  /**
-   * Render-visible mirror of `ownerRef`, exported as `owns`. Written ONLY by
-   * `setOwner`, so the ref keeps its sole-writer property and stays the
-   * synchronous authority the handlers read; this is the same fact at render
-   * time. A ref alone cannot be exported — reading it during render is
-   * unobservable, so a consumer's predicate would not recompute when ownership
-   * changes. Mirrored the same way `phase` is, and for the same reason.
+   * Render-visible mirror of the session core's owner, exported as `owns`.
+   * Written ONLY through the core's `onOwnerChange` seam, so the core keeps
+   * its sole-writer property and stays the synchronous authority the handlers
+   * read; this is the same fact at render time. The core's owner alone cannot
+   * be exported — reading it during render is unobservable, so a consumer's
+   * predicate would not recompute when ownership changes. Mirrored the same
+   * way `phase` is, and for the same reason.
    */
   const [owns, setOwns] = useState(false)
-  const startPendingRef = useRef(false)
   /**
    * This gesture committed and its capture has not finished draining yet.
    *
@@ -196,8 +187,6 @@ export function useTouchPushToTalk(
     setTapCue(true)
     cueTimerRef.current = setTimeout(() => { cueTimerRef.current = null; setTapCue(false) }, TAP_CUE_MS)
   }, [])
-  const startSeqRef = useRef(0)
-  const genRef = useRef(0)
   /** Y where the press began, in client coords — the origin the drag measures from. */
   const originYRef = useRef(0)
   /** The pointer this gesture owns. A second finger must not steer it. */
@@ -209,6 +198,46 @@ export function useTouchPushToTalk(
   cfgRef.current = cfg
   const disabledRef = useRef(disabled)
   disabledRef.current = disabled
+
+  /**
+   * Late-bound seams the session core calls back into. `disarm` and `toIdle`
+   * are defined below in terms of the core, so they cannot be closed over at
+   * construction time; the core reads whatever this ref holds at call time,
+   * and every render re-points it at the current callbacks.
+   */
+  const coreSeamsRef = useRef({ resetToIdle: () => {}, disarm: (_commit: boolean) => {} })
+
+  /**
+   * The shared session-ownership core. Constructed once — it holds the owner,
+   * the pending-startup flag, the startup sequence, the gesture generation and
+   * the hard-cap timer, all of which must survive re-renders the same way a
+   * ref does.
+   *
+   * The touch parameterization — the full argument for each policy lives on
+   * {@link PttSessionDeps}, the single place it is kept current:
+   *   - No `isLatched`: nothing here survives its own gesture. A tap does NOT
+   *     latch a running session — `VoiceControls` reports neither a refused
+   *     start nor a session end, so a latch invariant here has nothing sound
+   *     to stand on; tap-to-latch returns when the controls can report those
+   *     two facts.
+   *   - `disownPendingOnRelinquish` is ON: a replacement session on touch can
+   *     come from the mic button, a surface this hook never sees, so an
+   *     abandoned startup must be invalidated by sequence.
+   *   - `onOwnerChange` mirrors ownership into the render-visible `owns`.
+   */
+  const sessionRef = useRef<PttSession<'gesture'> | null>(null)
+  if (!sessionRef.current) {
+    sessionRef.current = createPttSession<'gesture'>({
+      voice: () => voiceRef.current,
+      phase: () => phaseRef.current,
+      setPhase,
+      resetToIdle: () => { coreSeamsRef.current.resetToIdle() },
+      disarm: (commit) => { coreSeamsRef.current.disarm(commit) },
+      disownPendingOnRelinquish: true,
+      onOwnerChange: (owner) => setOwns(owner !== null),
+    })
+  }
+  const session = sessionRef.current
 
   useEffect(() => {
     const onChange = () => setCfg(loadPttConfig())
@@ -222,8 +251,29 @@ export function useTouchPushToTalk(
 
   const clearTimers = useCallback(() => {
     if (armTimerRef.current) { clearTimeout(armTimerRef.current); armTimerRef.current = null }
-    if (capTimerRef.current) { clearTimeout(capTimerRef.current); capTimerRef.current = null }
-  }, [])
+    session.clearCapTimer()
+  }, [session])
+
+  /**
+   * Return the machine to idle, clearing EVERY piece of per-gesture state.
+   *
+   * A helper rather than four hand-written resets, because that is exactly what
+   * the misses looked like: a failed startup once cleared the phase and the
+   * cancel flag but left `pointerIdRef` set, and since `onPointerDown` refuses
+   * a press while that ref is non-null, ONE rejected streaming `start()` killed
+   * the hold target outright until the composer remounted. Ownership is
+   * deliberately NOT reset here: a startup can still be in flight when the
+   * phase resets, and only the call site knows whether that startup should be
+   * disowned, so it stays where the intent is visible.
+   */
+  const toIdle = useCallback(() => {
+    clearTimers()
+    session.bumpGeneration()
+    setPhase('idle')
+    setArmedCancel(false)
+    pointerIdRef.current = null
+  }, [clearTimers, session, setPhase, setArmedCancel])
+  coreSeamsRef.current.resetToIdle = toIdle
 
   /**
    * Leave any armed/holding state, committing (`stop`) or discarding as told.
@@ -234,59 +284,11 @@ export function useTouchPushToTalk(
    * live afterwards with nobody watching it — so only `cancel()` can end that
    * window. See `usePushToTalk.disarm` for the full argument.
    */
-  /**
-   * Return the machine to idle, clearing EVERY piece of per-gesture state.
-   *
-   * A helper rather than four hand-written resets, because that is exactly what
-   * the misses looked like: `failStart` cleared the phase and the cancel flag but
-   * left `pointerIdRef` set, and since `onPointerDown` refuses a press while that
-   * ref is non-null, ONE rejected streaming `start()` killed the hold target
-   * outright until the composer remounted. Ownership is deliberately NOT reset
-   * here: a startup can still be in flight when the phase resets, and only the
-   * call site knows whether that startup should be disowned, so it stays where
-   * the intent is visible.
-   */
-  const toIdle = useCallback(() => {
-    clearTimers()
-    genRef.current++
-    setPhase('idle')
-    setArmedCancel(false)
-    pointerIdRef.current = null
-  }, [clearTimers, setPhase, setArmedCancel])
-
-  /** The ONLY writer of `ownerRef`.
-   *
-   *  Relinquishing ownership (`null`) also DISOWNS any startup still in flight.
-   *  Without that, `settleStart`'s sequence guard stayed valid across a teardown:
-   *  a gesture abandoned during mic acquisition left `startSeqRef` unchanged, so
-   *  when its startup finally resolved — after the user had switched to the
-   *  keyboard and begun an ordinary dictation — `settleStart` found the sequence
-   *  still matching and ownership cleared, and called `stop()` on the REPLACEMENT
-   *  session, truncating speech it had nothing to do with.
-   *
-   *  The sibling keyboard hook leaves the sequence alone deliberately, so that a
-   *  startup which ignores teardown and goes live anyway still gets stopped. That
-   *  reasoning does not transfer here: a replacement session on touch can come
-   *  from the mic button (ChatPage's own `startVoice`), which this hook never sees
-   *  and whose sequence it therefore cannot distinguish from its own. The orphan
-   *  case is already covered without this: every teardown calls `cancel()` or
-   *  `stop()` on the transport synchronously, and `useVoiceInput.cancel()` bumps
-   *  its OWN generation so the abandoned `start()` returns early and never claims
-   *  anything. */
-  const setOwner = useCallback((owner: 'gesture' | null) => {
-    ownerRef.current = owner
-    setOwns(owner !== null)
-    if (owner === null) {
-      startSeqRef.current++
-      startPendingRef.current = false
-    }
-  }, [])
-
   const disarm = useCallback((commit: boolean) => {
     const was = phaseRef.current
     toIdle()
     if (was === 'idle') return
-    setOwner(null)
+    session.setOwner(null)
     // `arming` never commits: the press never became a hold, so there is at most
     // a locally-buffered fragment and `cancel()` drops it unsent.
     if (commit && was === 'holding' && voiceRef.current.recording) {
@@ -302,47 +304,8 @@ export function useTouchPushToTalk(
       setDraining(true)
       voiceRef.current.stop()
     } else voiceRef.current.cancel()
-  }, [toIdle, setOwner])
-
-  const settleStart = useCallback((seq: number) => {
-    if (startSeqRef.current !== seq) return
-    startPendingRef.current = false
-    if (ownerRef.current === 'gesture' && phaseRef.current !== 'idle') return
-    setOwner(null)
-    voiceRef.current.stop()
-  }, [setOwner])
-
-  const failStart = useCallback((seq: number) => {
-    if (startSeqRef.current !== seq) return
-    startPendingRef.current = false
-    const owner = ownerRef.current
-    setOwner(null)
-    toIdle()
-    if (owner !== null) voiceRef.current.cancel()
-  }, [toIdle, setOwner])
-
-  const launch = useCallback((owner: 'gesture') => {
-    setOwner(owner)
-    startPendingRef.current = true
-    const seq = ++startSeqRef.current
-    const started = voiceRef.current.start()
-    if (started && typeof (started as Promise<void>).then === 'function') {
-      void (started as Promise<void>).then(
-        () => { settleStart(seq) },
-        () => { failStart(seq) },
-      )
-    } else {
-      startPendingRef.current = false
-    }
-  }, [settleStart, failStart, setOwner])
-
-  const beginHold = useCallback(() => {
-    const gen = ++genRef.current
-    setPhase('holding')
-    capTimerRef.current = setTimeout(() => {
-      if (genRef.current === gen && phaseRef.current === 'holding') disarm(true)
-    }, MAX_HOLD_MS)
-  }, [disarm, setPhase])
+  }, [toIdle, session])
+  coreSeamsRef.current.disarm = disarm
 
   /**
    * Give up whatever this gesture owns because its TARGET is going away — hold
@@ -383,9 +346,9 @@ export function useTouchPushToTalk(
       // went live anyway, against a user who believed they had just stopped it.
       // Testing `recording` alone let a press inside the acquisition window fall
       // through, which is why the pending term is here.
-      if (voiceRef.current.recording || (startPendingRef.current && ownerRef.current !== null)) {
+      if (voiceRef.current.recording || (session.startPending() && session.owner() !== null)) {
         toIdle()
-        setOwner(null)
+        session.setOwner(null)
         if (voiceRef.current.recording) voiceRef.current.stop()
         else voiceRef.current.cancel()
         return
@@ -406,10 +369,10 @@ export function useTouchPushToTalk(
       }
       setArmedCancel(false)
       setPhase('arming')
-      launch('gesture')
-      const gen = genRef.current
+      session.launch('gesture')
+      const gen = session.generation()
       armTimerRef.current = setTimeout(() => {
-        if (genRef.current === gen && phaseRef.current === 'arming') beginHold()
+        if (session.generation() === gen && phaseRef.current === 'arming') session.beginHold()
       }, cfgRef.current.holdMs)
     }
 
@@ -439,13 +402,8 @@ export function useTouchPushToTalk(
        * opening word is never clipped, but a press that never became a hold is
        * not a recording the user asked for, and the fragment goes unsent.
        *
-       * A tap does NOT latch a running session. A latch survives its own gesture,
-       * which means the hook would have to keep an invariant over a session whose
-       * end it does not control -- and `VoiceControls` reports neither a refused
-       * start nor a session end, so every version of that invariant was built on
-       * a flag meaning something else. Four separate defects came out of it, all
-       * of them a bar claiming "Tap to stop" over a microphone that was not open.
-       * Tap-to-latch returns when the controls can report those two facts.
+       * A tap does NOT latch a running session — see the session construction
+       * comment above for why tap-to-latch is deliberately absent here.
        *
        * The discard is ACKNOWLEDGED rather than silent: capture opened on the
        * press, so a fragment really was dropped, and the most likely first gesture
@@ -492,7 +450,7 @@ export function useTouchPushToTalk(
     // Rebinds whenever the target appears, changes, or unmounts — which is the
     // whole reason this takes an element rather than a ref. Everything else is
     // read through refs, so a parent re-render does not re-bind.
-  }, [target, launch, disarm, beginHold, toIdle, abandon, setPhase, setArmedCancel, setOwner, showTapCue, clearTapCue])
+  }, [target, session, disarm, toIdle, abandon, setPhase, setArmedCancel, showTapCue, clearTapCue])
 
   /*
    * Close the drain the moment capture actually ends.
