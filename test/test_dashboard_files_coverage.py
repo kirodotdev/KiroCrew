@@ -449,7 +449,7 @@ class TestFileRaw:
     async def test_sensitive_path_is_403(self, tmp_path, mock_sel):
         f = tmp_path / "s.png"
         f.write_bytes(b"\x89PNG\r\n\x1a\n")
-        with patch("kiro_crew.security.is_sensitive_path", return_value=True):
+        with patch("kiro_crew.dashboard.handlers.files.is_sensitive_path", return_value=True):
             async with TestClient(TestServer(self._client_app())) as client:
                 resp = await client.get(f"/api/file-raw?path={f}")
                 assert resp.status == 403
