@@ -133,6 +133,35 @@ describe('ThinkingBlock live preview', () => {
     expect(screen.getByRole('button').textContent).not.toContain('Thinking')
   })
 
+  it('carries the streaming shimmer on the label + a pulsing icon while live, and drops both once settled', () => {
+    // The folded turn collapses every reasoning burst into ONE row (TurnBlock),
+    // so that single row is the only place a running turn can signal "still
+    // thinking". While live the label wears `.streaming-glow` — the same accent
+    // shimmer-sweep the streaming assistant answer uses — and the Sparkles icon
+    // pulses; both must clear the moment the burst settles so a finished block
+    // is visually quiet.
+    vi.useFakeTimers()
+    const { rerender, container } = render(<ThinkingBlock content="first" />)
+    rerender(<ThinkingBlock content="first second" />)
+    const glow = container.querySelector('.streaming-glow')
+    expect(glow).not.toBeNull()
+    expect(glow?.textContent).toContain('Thinking')
+    expect(container.querySelector('svg.animate-pulse')).not.toBeNull()
+
+    act(() => { vi.advanceTimersByTime(1500) })
+
+    expect(container.querySelector('.streaming-glow')).toBeNull()
+    expect(container.querySelector('svg.animate-pulse')).toBeNull()
+  })
+
+  it('a settled block that merely mounts carries no streaming shimmer', () => {
+    // History restore / virtualizer recycle must not paint the shimmer on an
+    // already-finished block.
+    const { container } = render(<ThinkingBlock content="settled reasoning" />)
+    expect(container.querySelector('.streaming-glow')).toBeNull()
+    expect(container.querySelector('svg.animate-pulse')).toBeNull()
+  })
+
   it('shares the tool row layout spec (unified header + rail geometry)', () => {
     // The thinking block and the tool call row are siblings in a turn; their
     // header and expanded-rail geometry must stay on one spec. Both components

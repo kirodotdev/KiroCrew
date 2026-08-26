@@ -17,7 +17,8 @@ were added
 2026-08-18 and verified against `e6b06685e`; the other rows have
 not been re-audited since 2026-08-03. The durable-run-coordinator row was added
 2026-08-22 and the orchestrator-chat-sessions row was re-audited at
-`c4f253891`.
+`c4f253891`; the `rfc-token-efficient-monitors` row was added 2026-08-22 and
+verified against `6d3e30bbbd`.
 
 | Document | Status | What is actually on main |
 |---|---|---|
@@ -38,6 +39,7 @@ not been re-audited since 2026-08-03. The durable-run-coordinator row was added
 | [rfc-app-sandbox-isolation.md](rfc-app-sandbox-isolation.md) | `draft` | Nothing. Apps still run in-process with full privileges (see `src/kiro_crew/docs/app-platform-trust-model.md`); no isolation code exists |
 | [rfc-issue-radar-dispatch.md](rfc-issue-radar-dispatch.md) | `draft` | Nothing. Issue Radar has Investigate and Review; no verb produces work, and issues carry no link to the change that resolves them |
 | [rfc-perpetual-agent.md](rfc-perpetual-agent.md) | `draft` | Nothing. Verified at `9ac3716a`: no schedule kind self-reschedules, and `binding_key_for` has no `cron:` branch |
+| [rfc-token-efficient-monitors.md](rfc-token-efficient-monitors.md) | `draft` | Nothing. Probe-first replacement for token-heavy babysit loops; implementation begins in a stacked series after this RFC |
 | [rfc-tailnet-dashboard-access.md](rfc-tailnet-dashboard-access.md) | `partial` | Phase 1 landed ([#1761](https://github.com/kirodotdev/KiroCrew/pull/1761), `f8afcff7`) — reports the pin's real scope, does not fix it. Phases 2–4 unstarted; the pin repair is tracked as [#1762](https://github.com/kirodotdev/KiroCrew/issues/1762) |
 | [rfc-pluggable-model-providers.md](rfc-pluggable-model-providers.md) | `draft` | Nothing, by design. `agent.provider` is still fixed to `acp` and `AGENTS.md` lists "Other providers" under *Never re-add*. This document **recommends** supporting provider choice and asks the maintainers to amend that rule; it proposes no design, and an exploratory implementation is shelved pending the answer ([#1693](https://github.com/kirodotdev/KiroCrew/issues/1693)) |
 | [rfc-s3-backup.md](rfc-s3-backup.md) | `draft` | Nothing. Verified at `f4d3327a7`: `VALID_COMPONENTS` carries no session component and no code path writes crew state to a remote store |

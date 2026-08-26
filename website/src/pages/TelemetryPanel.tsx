@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import React, { useState } from 'react'
 
 import { useQuery } from '@tanstack/react-query'
-import { Activity, ChevronDown, ChevronUp, Coins, Gauge, Rocket } from 'lucide-react'
+import { Activity, ChevronDown, ChevronRight, ChevronUp, Coins, Gauge, Rocket } from 'lucide-react'
 import { Trans } from 'react-i18next'
 import { Link } from 'react-router-dom'
 
@@ -11,7 +11,7 @@ import SegmentedControl from '../components/SegmentedControl'
 import { SettingRef } from '../components/settingRef/SettingRef'
 import { Btn, Card, CardTitle, EmptyState } from '../components/ui'
 import { useSortableTable } from '../hooks/useSortableTable'
-import { compareText, fmtBytes, fmtDateNumeric, fmtNumber, fmtPercent, fmtUnit } from '../i18n/format'
+import { compareText, fmtBytes, fmtDateNumeric, fmtNumber, fmtPercent, fmtTimeNumeric, fmtUnit } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 // ── GET /api/telemetry/startup shape (dashboard/handlers/telemetry.py) ──
 type Stat = {
@@ -334,6 +334,7 @@ function DataTable<R>({
   tableId,
   defaultSort,
   emptyTitle,
+  renderExpanded,
 }: {
   rows: R[]
   cols: Col<R>[]
@@ -342,6 +343,11 @@ function DataTable<R>({
   tableId: string
   defaultSort: string
   emptyTitle: string
+  /** Optional per-row drill-down. When set, every row grows a leading chevron
+   *  that toggles a full-width detail row beneath it. One row open at a time:
+   *  the drill-down is a comparison against the row above it, not a second
+   *  table to scroll. */
+  renderExpanded?: (r: R) => React.ReactNode
 }) {
   // A text column opens A→Z; a measurement opens largest-first, which is the
   // question being asked of it ("what cost the most", "what was slowest").
@@ -371,6 +377,10 @@ function DataTable<R>({
   // can never disagree with the order on screen — previously that case left the
   // table sorted by its first column with no header marked at all.
   const activeKey = (cols.find(c => c.key === sort.key) ?? cols[0])?.key
+
+  // The one open drill-down, by row key. Keyed state (not per-row booleans) so
+  // a re-sort keeps the same ROW open rather than the same position.
+  const [openKey, setOpenKey] = useState<string | null>(null)
 
   // Not memoised, for the same reason `initialDirs` is not: `cols` is rebuilt
   // by the parent on every render, so a dependency array naming it could never
@@ -402,6 +412,9 @@ function DataTable<R>({
           <table className="w-full border-collapse table-striped">
             <thead>
               <tr className="bg-bg-elevated border-b border-border">
+                {renderExpanded ? (
+                  <th className="w-7" aria-sort="none" aria-label={i18nT('pages.telemetryPanel.detail_col')} />
+                ) : null}
                 {cols.map(c => (
                   <HeadCell
                     key={c.key}
@@ -416,19 +429,53 @@ function DataTable<R>({
               </tr>
             </thead>
             <tbody>
-              {shown.map(r => (
-                <tr key={rowKey(r)} className="border-b border-border/60 last:border-b-0">
-                  {cols.map(c => (
-                    <td
-                      key={c.key}
-                      className={`${c.left ? TXT_CELL : NUM_CELL} ${c.hide ?? ''}`}
-                      style={c.color?.(r) ? { color: c.color(r) } : undefined}
-                    >
-                      {c.render(r)}
-                    </td>
-                  ))}
-                </tr>
-              ))}
+              {shown.map(r => {
+                const k = rowKey(r)
+                const open = renderExpanded != null && openKey === k
+                return (
+                  <React.Fragment key={k}>
+                    <tr className="border-b border-border/60 last:border-b-0">
+                      {renderExpanded ? (
+                        <td className="w-7 px-1">
+                          <Btn
+                            type="button"
+                            className="p-0.5 border-none text-muted hover:text-text rounded"
+                            aria-expanded={open}
+                            aria-label={i18nT(
+                              open
+                                ? 'pages.telemetryPanel.hide_turn_detail'
+                                : 'pages.telemetryPanel.show_turn_detail',
+                            )}
+                            onClick={() => setOpenKey(open ? null : k)}
+                          >
+                            {open ? (
+                              <ChevronDown className="lucide-inline" size={14} />
+                            ) : (
+                              <ChevronRight className="lucide-inline" size={14} />
+                            )}
+                          </Btn>
+                        </td>
+                      ) : null}
+                      {cols.map(c => (
+                        <td
+                          key={c.key}
+                          className={`${c.left ? TXT_CELL : NUM_CELL} ${c.hide ?? ''}`}
+                          style={c.color?.(r) ? { color: c.color(r) } : undefined}
+                        >
+                          {c.render(r)}
+                        </td>
+                      ))}
+                    </tr>
+                    {open ? (
+                      <tr className="border-b border-border/60 last:border-b-0">
+                        <td colSpan={cols.length + 1} className="px-2 py-2 bg-[var(--bg-accent)]">
+                          {renderExpanded(r)}
+                        </td>
+                      </tr>
+                    ) : null}
+                  </React.Fragment>
+                )
+              })}
             </tbody>
           </table>
         </div>
@@ -596,6 +643,103 @@ function DailyTrend({ rows }: { rows: { date: string; count: number; cold_p50_ms
 // ── Spend ──────────────────────────────────────────────────────
 
 type SpendGroup = 'session' | 'category' | 'model'
+
+/** One row of GET /api/usage/turns — the same shard rows the totals above
+ *  aggregate, returned individually. Every numeric field is optional: the
+ *  reader drops what it cannot vouch for rather than inventing zeros. */
+type TurnUsageRow = {
+  ts: string
+  model: string
+  credits?: number
+  cost?: number
+  duration_ms?: number
+  context_used?: number
+  context_window?: number
+}
+
+const DRILL_TH = 'text-left font-normal text-[10px] text-muted uppercase tracking-wide px-2 py-1'
+const DRILL_TD = 'px-2 py-[3px] font-mono text-[11px] tabular-nums'
+// Same narrow-viewport convention as the parent table's columns: lower-priority
+// columns yield before the table overflows. Credits is the column the surface
+// exists for and never hides; the model column truncates instead of pushing.
+const DRILL_HIDE_TIME = 'max-[720px]:hidden'
+const DRILL_HIDE_DURATION = 'max-[720px]:hidden'
+const DRILL_HIDE_CONTEXT = 'max-[480px]:hidden'
+
+/**
+ * The per-turn rows behind one session's spend total. The aggregate answers
+ * "which session cost the most"; this answers "which TURNS did it" — a model
+ * switch mid-session or one runaway turn is invisible in an average.
+ */
+function SessionTurnsDrilldown({ slot }: { slot: string }) {
+  const q = useQuery<{ turns: TurnUsageRow[] }>({
+    queryKey: ['usage-turns', slot],
+    queryFn: () => api.usageTurns(slot),
+  })
+  if (q.isLoading) {
+    return <div className="text-[11px] text-muted px-2 py-1">{i18nT('pages.telemetryPanel.turns_loading')}</div>
+  }
+  if (q.isError) {
+    // A failed fetch must not read as "no rows": asserting the data does not
+    // exist when the request failed sends the reader away with a wrong fact
+    // and no reason to retry.
+    return (
+      <div className="flex items-center gap-2 px-2 py-1">
+        <span className="text-[11px] text-muted">{i18nT('pages.telemetryPanel.turns_error')}</span>
+        <Btn className="px-1.5 py-0.5 text-[11px]" onClick={() => void q.refetch()}>
+          {i18nT('pages.telemetryPanel.turns_retry')}
+        </Btn>
+      </div>
+    )
+  }
+  const turns = q.data?.turns ?? []
+  if (turns.length === 0) {
+    return <div className="text-[11px] text-muted px-2 py-1">{i18nT('pages.telemetryPanel.turns_empty')}</div>
+  }
+  return (
+    <table className="w-full border-collapse">
+      <thead>
+        <tr className="border-b border-border/60">
+          <th className={DRILL_TH}>{i18nT('pages.telemetryPanel.turn_col')}</th>
+          <th className={`${DRILL_TH} ${DRILL_HIDE_TIME}`}>{i18nT('pages.telemetryPanel.time_col')}</th>
+          <th className={DRILL_TH}>{i18nT('pages.telemetryPanel.model_col')}</th>
+          <th className={`${DRILL_TH} text-right`}>{i18nT('pages.telemetryPanel.credits_col')}</th>
+          <th className={`${DRILL_TH} text-right ${DRILL_HIDE_DURATION}`}>{i18nT('pages.telemetryPanel.duration_col')}</th>
+          <th className={`${DRILL_TH} text-right ${DRILL_HIDE_CONTEXT}`}>{i18nT('pages.telemetryPanel.context_col')}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {turns.map((t, i) => (
+          <tr key={`${t.ts}-${i}`} className="border-b border-border/40 last:border-b-0">
+            <td className={`${DRILL_TD} text-muted`}>{fmtNumber(i + 1)}</td>
+            <td className={`${DRILL_TD} ${DRILL_HIDE_TIME}`}>
+              {fmtDateNumeric(t.ts)} {fmtTimeNumeric(t.ts)}
+            </td>
+            {/* Model ids are data, not copy — rendered verbatim like the model
+                column one table up, truncated so a long id cannot widen the
+                narrow layout the hidden columns just paid for. */}
+            <td className={`${DRILL_TD} text-muted`}>
+              <span className="block max-w-[160px] truncate" title={t.model}>
+                {t.model || '—'}
+              </span>
+            </td>
+            <td className={`${DRILL_TD} text-right`}>
+              {t.credits !== undefined ? fmtNumber(t.credits, { maximumFractionDigits: 2 }) : '—'}
+            </td>
+            <td className={`${DRILL_TD} text-right text-muted ${DRILL_HIDE_DURATION}`}>
+              {t.duration_ms !== undefined
+                ? fmtUnit(t.duration_ms / 1000, 'second', { maximumFractionDigits: 1 })
+                : '—'}
+            </td>
+            <td className={`${DRILL_TD} text-right text-muted ${DRILL_HIDE_CONTEXT}`}>
+              {t.context_used && t.context_window ? fmtPercent(t.context_used / t.context_window) : '—'}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
+}
 
 /**
  * Session / category / model are the same credits regrouped, so they are a
@@ -804,6 +948,7 @@ function SpendTab({ c }: { c: Cost }) {
           rowKey={v => v.slot}
           defaultSort="credits"
           emptyTitle={i18nT('pages.telemetryPanel.no_spend_recorded')}
+          renderExpanded={v => <SessionTurnsDrilldown slot={v.slot} />}
         />
       ) : (
         <DataTable<CostRow>

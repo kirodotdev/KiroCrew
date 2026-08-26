@@ -25,6 +25,7 @@ from typing import Any, cast
 from aiohttp import web
 
 from kiro_crew import platform_compat
+from kiro_crew.dashboard.boot_id import current_boot_id
 from kiro_crew.dashboard.origin import (
     is_https_request,
     is_loopback,
@@ -857,6 +858,21 @@ def validate_token(token: str, *, use_session_exp: bool = False) -> tuple[bool, 
         return False, "", "revocation state unavailable"
     if int(data.get("gen", 0)) < current_gen:
         return False, "", "session revoked"
+    # Boot binding: a token minted with a ``boot`` claim is scoped to the
+    # gateway PROCESS that issued it, so a restart ends it. This is what makes
+    # an opt-in "the phone stays signed in until the gateway restarts" session
+    # honest — the alternative, a long wall-clock TTL, keeps working after a
+    # restart and after the operator has stopped thinking about that device.
+    #
+    # CLAIM-GATED on purpose: a token without the claim is not checked at all,
+    # so this cannot log out an existing session or change any default. The
+    # check is also deliberately unconditional in the other direction — it
+    # applies to the LINK path and the COOKIE path alike, because a boot-bound
+    # link that survived a restart in someone's history must not be redeemable
+    # either.
+    token_boot = str(data.get("boot", ""))
+    if token_boot and token_boot != current_boot_id():
+        return False, "", "session ended at gateway restart"
     # Nonce is a single-use guard for the one-time LINK click only. For an
     # established session cookie (use_session_exp=True), a valid HMAC signature
     # plus an unexpired session_exp is sufficient — requiring the in-memory
@@ -1352,12 +1368,14 @@ def _api_pattern_matches(pattern: str, path: str) -> bool:
 # (``useDashboardHealthProbe``), which runs on a dashboard-user token and never
 # reaches this list. An app that genuinely wants it declares it in
 # ``permissions.api`` — the shipped ``design_critique`` manifest does.
-_APP_TOKEN_IMPLICIT_ALLOW: frozenset[str] = frozenset({
-    # Connecting grants no events by itself: the socket records the caller's
-    # manifest declarations and every frame is filtered per socket, payload AND
-    # envelope, in ws_event_scope.py / DashboardState._serialize_for_client.
-    "/api/ws",
-})
+_APP_TOKEN_IMPLICIT_ALLOW: frozenset[str] = frozenset(
+    {
+        # Connecting grants no events by itself: the socket records the caller's
+        # manifest declarations and every frame is filtered per socket, payload AND
+        # envelope, in ws_event_scope.py / DashboardState._serialize_for_client.
+        "/api/ws",
+    }
+)
 
 
 def app_token_path_allowed(app_name: str, path: str) -> bool:
@@ -2069,9 +2087,7 @@ def token_auth_middleware(
         # qualifies as "local" for the internal branch even though it has no
         # loopback peer IP (request.remote is empty for AF_UNIX transports).
         _unix_sock = _unix_request_socket(request) if _matches_internal else None
-        if _matches_internal and (
-            _unix_sock is not None or is_loopback(request.remote or "")
-        ):
+        if _matches_internal and (_unix_sock is not None or is_loopback(request.remote or "")):
             # Kernel-attested peer verification (AF_UNIX only): deny a caller
             # whose /proc ancestry resolves to a DIFFERENT session than the
             # one its X-Session-Key header declares. Runs before either auth
@@ -2423,6 +2439,7 @@ def token_auth_middleware(
         if not from_cookie:
             _link_nonce = ""
             _embed_parent_port = ""
+            _no_refresh = False
             try:
                 payload_bytes = _b64url_decode(token.split(".")[0])
                 data = json.loads(payload_bytes)
@@ -2437,6 +2454,15 @@ def token_auth_middleware(
                 _epp = data.get("embed_parent_port")
                 if isinstance(_epp, str) and _epp:
                     _embed_parent_port = _epp
+                # A link minted for a device this dashboard does not control (the
+                # tailnet phone-access QR) says so with this claim, and the
+                # promise it encodes is an EXPIRY: that session ends when its
+                # short session_exp does. Honoured by NOT issuing a refresh
+                # cookie below, rather than by a check in the refresh handler —
+                # a credential that was never minted cannot be replayed, whereas
+                # a guarded one relies on every future refresh entry point
+                # remembering the guard.
+                _no_refresh = str(data.get("no_refresh", "")) == "1"
             except Exception:
                 session_exp = 0.0
             # Expose the frame-ancestors parent-port claim to the response-header
@@ -2461,14 +2487,28 @@ def token_auth_middleware(
             # nonce (see RevokedNonceStore / api_auth_logout).
             _remaining = int(session_exp - time.time()) if session_exp else MAX_SESSION_TTL_SECS
             if _remaining > 0:
+                # Claims that must SURVIVE the exchange are copied explicitly.
+                # The session token is a fresh mint, so anything not named here
+                # is dropped — and silently dropping ``boot`` would be the worst
+                # possible failure: the link would be boot-bound, the cookie it
+                # became would not, and the phone session would quietly outlive
+                # the restart it was supposed to end at. The claim is carried,
+                # never re-derived from current_boot_id(), so a link minted by a
+                # PREVIOUS process cannot launder itself into a live session —
+                # validate_token has already rejected it by this point, and
+                # re-deriving would hide that.
+                _carried: dict[str, str] = {}
+                if _embed_parent_port:
+                    _carried["embed_parent_port"] = _embed_parent_port
+                _token_boot = str(data.get("boot", ""))
+                if _token_boot:
+                    _carried["boot"] = _token_boot
                 session_token = generate_token(
                     user_id,
                     ttl_seconds=_remaining,
                     app=app_name,
                     register_nonce=False,
-                    extra=(
-                        {"embed_parent_port": _embed_parent_port} if _embed_parent_port else None
-                    ),
+                    extra=_carried or None,
                 )
             # Kill the link token AS A COOKIE. Exchange alone is not enough: the
             # link token still carries the 20h ``session_exp``, so a captured
@@ -2596,42 +2636,89 @@ def token_auth_middleware(
             # here (rather than calling handlers.auth_refresh) to keep the
             # import top-level and the cycle direction one-way:
             # token_auth → refresh_tokens, never the reverse.
-            try:
-                refresh_token, chain_id, _jti, refresh_exp = generate_refresh_token(user_id)
-                refresh_remaining = int(refresh_exp - time.time())
-                if refresh_remaining > 0:
-                    resp.set_cookie(
-                        refresh_cookie_name(_cookie_port_from_host(request, port)),
-                        refresh_token,
-                        httponly=True,
-                        samesite="Lax",
-                        secure=is_https_request(request),
-                        path=REFRESH_COOKIE_PATH,
-                        max_age=min(refresh_remaining, MAX_REFRESH_TTL_SECS),
-                    )
-                    # Audit the initial-mint event so forensics can trace any
-                    # subsequent chain revocation back to the user it was issued to.
-                    try:
-                        _sel_fn().log_api_access(
-                            caller=user_id,
-                            operation="refresh_token_initial_mint",
-                            outcome="ok",
-                            source="refresh_tokens",
-                            resources=chain_id,
-                        )
-                    except Exception as exc:  # pragma: no cover
-                        # SEL must never block auth flows, but log the failure
-                        # so it's observable.
-                        logger.debug("token_auth: SEL audit failed: %s", exc)
-            except Exception as _refresh_err:
-                # Refresh cookie is best-effort. If something goes wrong
-                # here, the access cookie still works as before — the
-                # user just won't get the refresh upgrade until next mint.
-                logger.warning(
-                    "token_auth: failed to attach refresh cookie (%s); "
-                    "access cookie still set, user can re-mint as before",
-                    _refresh_err,
+            #
+            # SKIPPED ENTIRELY for a no-refresh session. Such a link was minted
+            # for a device this dashboard does not control (the tailnet
+            # phone-access QR), and its short ``session_exp`` is the whole reason
+            # handing that device a credential is acceptable. A refresh chain
+            # would defeat it: ``api_auth_refresh`` re-mints at
+            # MAX_SESSION_TTL_SECS without carrying the original ceiling forward,
+            # so one rotation silently promotes a ~1h session to the 20h cap.
+            # Enforced by never minting the chain rather than by a check inside
+            # the refresh handler — a credential that does not exist cannot be
+            # replayed, while a guarded one relies on every future refresh entry
+            # point remembering the guard.
+            if _no_refresh:
+                # Not minting one is only HALF the guarantee. The browser may
+                # ALREADY hold a refresh cookie for this port from an earlier
+                # full session (a prior `?token=` link, a Slack `!dashboard`
+                # link), and `api_auth_refresh` authenticates on the refresh
+                # cookie ALONE — it never checks that the access token beside it
+                # belongs to the same session. Left in place, that residual
+                # credential rotates into a 20-hour session and the QR's short
+                # window is bypassed by a path that never touched this branch.
+                #
+                # Every way a refresh credential can reach this session, and
+                # where each is closed:
+                #   1. minted here during the exchange   -> not minted (below)
+                #   2. already in the browser            -> expired here
+                #   3. rotated by api_auth_refresh       -> unreachable once 1+2
+                #      are closed, since rotation needs an existing chain
+                #
+                # Only THIS port's cookie is cleared. A `mc_refresh_<other>`
+                # belongs to a different gateway instance, cannot refresh this
+                # session, and is not ours to revoke.
+                resp.set_cookie(
+                    refresh_cookie_name(_cookie_port_from_host(request, port)),
+                    "",
+                    max_age=0,
+                    path=REFRESH_COOKIE_PATH,
                 )
+            else:
+                try:
+                    # The refresh chain inherits the boot binding. Without this
+                    # the chain is the escape hatch: the access cookie would die
+                    # at restart while a 30-day refresh credential beside it
+                    # re-minted a fresh session on the next visit, and "ends at
+                    # restart" would be false by one rotation.
+                    refresh_token, chain_id, _jti, refresh_exp = generate_refresh_token(
+                        user_id, boot=str(data.get("boot", ""))
+                    )
+                    refresh_remaining = int(refresh_exp - time.time())
+                    if refresh_remaining > 0:
+                        resp.set_cookie(
+                            refresh_cookie_name(_cookie_port_from_host(request, port)),
+                            refresh_token,
+                            httponly=True,
+                            samesite="Lax",
+                            secure=is_https_request(request),
+                            path=REFRESH_COOKIE_PATH,
+                            max_age=min(refresh_remaining, MAX_REFRESH_TTL_SECS),
+                        )
+                        # Audit the initial-mint event so forensics can trace any
+                        # subsequent chain revocation back to the user it was
+                        # issued to.
+                        try:
+                            _sel_fn().log_api_access(
+                                caller=user_id,
+                                operation="refresh_token_initial_mint",
+                                outcome="ok",
+                                source="refresh_tokens",
+                                resources=chain_id,
+                            )
+                        except Exception as exc:  # pragma: no cover
+                            # SEL must never block auth flows, but log the failure
+                            # so it's observable.
+                            logger.debug("token_auth: SEL audit failed: %s", exc)
+                except Exception as _refresh_err:
+                    # Refresh cookie is best-effort. If something goes wrong
+                    # here, the access cookie still works as before — the
+                    # user just won't get the refresh upgrade until next mint.
+                    logger.warning(
+                        "token_auth: failed to attach refresh cookie (%s); "
+                        "access cookie still set, user can re-mint as before",
+                        _refresh_err,
+                    )
 
         _log_auth(request, _audit_uid(user_id), "ok", "")
         return resp  # type: ignore[return-value]

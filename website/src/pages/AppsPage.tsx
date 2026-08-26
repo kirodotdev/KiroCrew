@@ -761,7 +761,7 @@ export default function AppsPage() {
     announceAppsChanged()
     if (failed.length) setError(i18nT('pages.appsPage.failed_to_update', { names: failed.join(', ') }))
     else {
-      setSuccessMsg(`Updated ${targets.length} app${targets.length === 1 ? '' : 's'}.`)
+      setSuccessMsg(i18nT('pages.appsPage.updated_app', { count: targets.length }))
       setTimeout(() => setSuccessMsg(''), 4000)
     }
   }

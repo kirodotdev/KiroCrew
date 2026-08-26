@@ -115,6 +115,17 @@ class InstalledApp:
         ""  # noqa: N815  — target standalone app: "registry:{name}" or "standalone:{name}"
     )
     dev: bool = False  # dev mode: no-store UI serving + file-watch live reload
+    # Whether this record has already received a default-on PROMOTION (see
+    # ``_DEFAULT_ON_BACKFILL``).  Lives on the record rather than in a marker file
+    # so it is written by the SAME atomic write that flips ``enabled``: two
+    # separate writes have no correct ordering, since whichever goes first leaves
+    # a window the other owns (a lost flag re-applies the promotion forever and
+    # reverses the user's own disable; a flag that outlives a failed flip skips
+    # the app forever and never delivers it).  A record created under the promoted
+    # default is born ``True``: a first registration with ``defaultEnabled`` is
+    # the promotion being received, so nothing is owed.  Meaningless-but-inert
+    # (``False``) for every app that is not a promotion target.
+    defaultOnBackfilled: bool = False  # noqa: N815
     # Structured install provenance, recorded for registry installs (see
     # ``set_app_provenance``).  ``source`` alone is a bare ``registry:<name>``
     # marker that re-resolves by name, so a same-named entry from a different
@@ -158,6 +169,7 @@ class InstalledApp:
             schemaVersion=int(data.get("schemaVersion", 1)),
             migratedTo=str(data.get("migratedTo", "")),
             dev=bool(data.get("dev", False)),
+            defaultOnBackfilled=bool(data.get("defaultOnBackfilled", False)),
             sourceUrl=str(data.get("sourceUrl", "")),
             sourceRegistry=str(data.get("sourceRegistry", "")),
             sourceCommit=str(data.get("sourceCommit", "")),
@@ -427,10 +439,12 @@ def app_lifecycle_lock(name: str) -> LoopBoundLock:
 # ---------------------------------------------------------------------------
 
 
-def install_app(source: str | Path) -> AppResult:
+def install_app(
+    source: str | Path, *, expected_name: str | None = None
+) -> AppResult:
     """Install an app from a local directory path.
 
-    1. Validate manifest
+    1. Validate manifest and any caller-pinned app identity
     2. Copy to ``~/.kiro/crew/apps/{name}/``
     3. Write ``installed.json``
 
@@ -461,6 +475,24 @@ def install_app(source: str | Path) -> AppResult:
 
     manifest = AppManifest.from_json_file(source / APP_MANIFEST_FILENAME)
     name = manifest.name
+    if expected_name is not None and name != expected_name:
+        detail = (
+            f"app identity changed during install: expected {expected_name!r}, "
+            f"found {name!r}"
+        )
+        sel().log_api_access(
+            caller="app_install",
+            operation="install",
+            outcome="failed",
+            resources=f"source={source!s}",
+            error=detail,
+        )
+        return AppResult(
+            ok=False,
+            name=name,
+            error=detail,
+            error_code="app_identity_changed",
+        )
     dest = app_dir(name)
 
     # Guard against path traversal in manifest name
@@ -1634,6 +1666,134 @@ _DEFAULT_ON_BUILTINS: frozenset[str] = frozenset(
     }
 )
 
+# Promotions still owed to installs that PREDATE them — a different question from
+# the set above, and the distinction is load-bearing.
+#
+# ``_DEFAULT_ON_BUILTINS`` answers "what does a FRESH install enable". This set
+# answers "which promotion has not yet reached installs that registered the app
+# while it was still default-off". Reading the first set for the second question
+# reverses deliberate opt-outs: ``projects`` (Task Runner) has shipped
+# ``defaultEnabled: true`` since it was aligned with the other builtins, long
+# before this allowlist existed, so it has been enabled and visible in the
+# sidebar on every existing install. A record showing ``enabled: false`` for it
+# is therefore a user who FOUND it and turned it off — the opposite of the
+# population a backfill exists to serve.
+#
+# So a name belongs here only when both hold: a fresh install enables it (it is
+# in the set above), and existing installs were never in a position to choose.
+# ``command-bar`` qualifies because it was default-OFF at first registration for
+# those installs AND, replacing the quick-search surface rather than adding a
+# sidebar entry, it appears on no store or launcher surface they could have found
+# it on. An app already default-on when they installed it never qualifies.
+#
+# Entries are permanent, not cleaned up after a release: the marker is per
+# install, so a user restoring an old data home still gets the promotion once.
+_DEFAULT_ON_BACKFILL: frozenset[str] = frozenset({"command-bar"})
+
+
+def backfill_default_on_builtins() -> list[str]:
+    """Deliver a default-on PROMOTION to installs that predate it. One-shot per app.
+
+    ``register_builtin_apps()`` applies ``defaultEnabled`` only on FIRST
+    registration and preserves user state on every later start, so adding a name
+    to ``_DEFAULT_ON_BUILTINS`` reaches NEW installs only. An install that
+    registered the app while it was still default-off keeps ``enabled: false``
+    through every subsequent restart, update and version bump — the record lives
+    in the user's data home, which a code update does not touch.
+
+    That is survivable for a builtin that adds a sidebar entry, because the App
+    Store can still offer it. It is not survivable for one that replaces a host
+    surface: it has no page, so it is absent from the launcher's own app list,
+    and it is absent from Discover unless the published catalog carries a row for
+    it, which leaves a disabled row in Library as the only trace. Those users
+    cannot enable what they have no way to learn exists.
+
+    Reads ``_DEFAULT_ON_BACKFILL``, NOT ``_DEFAULT_ON_BUILTINS`` — see that set's
+    comment for why conflating the two silently reverses deliberate opt-outs.
+
+    ONE-SHOT, and the record of that is ``InstalledApp.defaultOnBackfilled``,
+    written in the SAME atomic record write that flips ``enabled``. One document
+    deliberately: a separate marker file has no correct ordering, because
+    whichever of the two writes goes first leaves a window the other one owns.
+    Marker-last loses the record of an enable that happened, so every later start
+    re-applies the promotion and reverses the user's own disable forever;
+    marker-first can outlive a flip that failed, so the app is skipped forever and
+    the promotion is never delivered. Both are real; neither is reachable when the
+    flag and the state it guards land or fail together.
+
+    Surviving a user's disable is the point: disabling the app is the ONLY thing
+    that gives a replaced host surface back. Per app rather than per install, so a
+    promotion added in a later release is still delivered.
+
+    Returns the names actually flipped, so the caller can log them.
+    """
+    flipped: list[str] = []
+    for name in sorted(_DEFAULT_ON_BACKFILL):
+        existing = _read_installed(name)
+        if existing is None:
+            # Not registered on this install (an older wheel does not ship the
+            # app). A record created LATER is born already flagged, because a
+            # first registration under the promoted default IS the promotion
+            # being received — see register_builtin_apps().
+            continue
+        if not _builtin_owns_install(existing):
+            # A USER installed an app under this name. Same boundary
+            # register_builtin_apps() keeps: never touch their entry.
+            continue
+        if existing.defaultOnBackfilled:
+            continue
+        turning_on = not existing.enabled
+        if turning_on:
+            denied = _app_activation_denied(name)
+            if denied:
+                # Mirror the gate register_builtin_apps() applies to a default-on
+                # builtin: a deny-by-default host policy is not bypassed by
+                # arriving through the backfill. Deliberately NOT flagged — if the
+                # policy later permits the app, the promotion is still owed.
+                logger.info("Default-on backfill skipped %s: %s", name, denied)
+                continue
+            existing.enabled = True
+        existing.defaultOnBackfilled = True
+        existing.updatedAt = _now_iso()
+        # atomic_write, so a failure here persists NEITHER the flag nor the enable
+        # and the promotion is simply retried on the next start. The failure
+        # propagates out of this function (the caller logs it and continues
+        # startup), so no partially-delivered state and no half-truthful return
+        # value is observable. `flipped` is appended after the write to keep that
+        # reading obvious, not because anything could observe the other order.
+        _write_installed(name, existing)
+        if turning_on:
+            flipped.append(name)
+            _audit_default_on_backfill(name)
+    return flipped
+
+
+def _audit_default_on_backfill(name: str) -> None:
+    """Record that *name* was activated with no user request behind it.
+
+    The dashboard and CLI enable paths are reachable only by someone asking; this
+    one runs at startup, and activation is the chokepoint where an app starts
+    contributing agents, skills, crons and routes. An operator reconstructing
+    "when did this app become active, and who asked for it" would otherwise find
+    nothing at all. Same shape as the trust-grant withdrawal above: emitted AFTER
+    the write so it attests something that actually happened, and never allowed to
+    fail the operation — losing the audit line is bad, refusing to deliver a
+    promotion because the audit sink is unavailable is worse.
+    """
+    try:
+        from kiro_crew.sel import sel
+
+        sel().log_api_access(
+            caller="gateway",
+            operation="app_default_on_backfill",
+            outcome="allowed",
+            source="startup",
+            resources=f"{name}=enabled_by_promotion_backfill",
+        )
+    except Exception:  # noqa: BLE001 - the activation already happened
+        logger.warning("could not audit the default-on backfill for %r", name, exc_info=True)
+
+
 # EMPTY, and that is a finished migration rather than an oversight. Every builtin now
 # ships as a file-based manifest under ``builtins/<dir>/app.json`` and is picked up by
 # ``discover_builtin_apps()``. ``agent-worlds`` and ``channels`` were the last two
@@ -2191,6 +2351,20 @@ def register_builtin_apps() -> int:
                 resources="gateway",
                 lifecycle="locked",
                 migratedTo=_effective_migrated_to(app_data),
+                # A first registration under the promoted default IS the promotion
+                # being received, so nothing is owed and the backfill must never
+                # touch this record. Without this the sequence "install, disable
+                # the app in that same session, restart" would re-enable it: the
+                # backfill would find a disabled record it had never flagged and
+                # read the user's own choice as a promotion still owed.
+                #
+                # Gated on the POST-governance ``default_enabled``, matching the
+                # rule the backfill itself applies: a governance-denied app
+                # registers DISABLED, so it did NOT receive the promotion and is
+                # still owed one. Flagging it here would strand it -- relaxing the
+                # policy later could never deliver the launcher, because the
+                # record would claim it already had.
+                defaultOnBackfilled=default_enabled and name in _DEFAULT_ON_BACKFILL,
             )
             _write_installed(name, meta)
 

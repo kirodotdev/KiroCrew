@@ -30,6 +30,7 @@ import { type PasteBlock, findTokenRanges, recollapsePastes } from '../utils/pas
 import type { ChatMessage } from '../types'
 import { fmtMessageTime, fmtMessageTimeFull } from '../pages/chat/messageTime'
 import { turnHadPolicyBlock } from './turnPolicyBlock'
+import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 
 /** Everything a renderer may read. Passed per row so entries stay pure functions. */
 export interface MessageRenderContext {
@@ -115,6 +116,7 @@ function formatTs(ts?: string): string | undefined {
 
 /** Prop-driven tool row. The store-connected variant is a host entry. */
 export const ToolCallPill = memo(function ToolCallPill({ message, running, onFileOpen, autoDenied }: { message: ChatMessage; running: boolean; onFileOpen?: (path: string) => void; autoDenied?: boolean }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [expanded, setExpanded] = React.useState(false)
   const isDone = message.role === 'tool_result'
   const isRejected = message.meta?.resolved === 'rejected'

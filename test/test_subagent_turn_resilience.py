@@ -181,12 +181,110 @@ async def test_transient_budget_exhausted_propagates():
         return _gen()
 
     mgr = _manager(_mock_sessions(stream_factory))
-    with patch("kiro_crew.subagent.transient_retry_delay", return_value=0.0):
+    with (
+        patch("kiro_crew.subagent.transient_retry_delay", return_value=0.0),
+        # fallback_model="" (disabled): this test pins the PRE-FEATURE budget
+        # behavior — the default is now "auto", which would walk the chain.
+        patch("kiro_crew.subagent.configured_fallback_chain", return_value=()),
+    ):
         info = await _spawn_and_wait(mgr)
 
     assert info.done is True
     assert "500" in info.error
     assert len(calls) == 1 + TRANSIENT_RETRIES  # initial + retries
+
+
+@pytest.mark.asyncio
+async def test_throttle_fallback_chain_swaps_model_and_annotates():
+    """Zero-activity budget exhaustion walks agent.fallback_model: the
+    substitute set_model moves the session onto the candidate, the original
+    prompt is replayed, and the delivered result carries the visible
+    fallback warning (never silent)."""
+    calls: list[str] = []
+
+    def stream_factory(msg: str, *a, **kw):
+        calls.append(msg)
+
+        async def _gen():
+            if len(calls) <= 1 + TRANSIENT_RETRIES:
+                raise _TransientError("backend throttle")
+            yield _text_event("fb result")
+            yield _complete_event()
+
+        return _gen()
+
+    sessions = _mock_sessions(stream_factory)
+    provider = sessions._provider
+    provider.available_models = MagicMock(return_value=[{"modelId": "fb-1"}])
+    provider.served_model = "primary-model"
+    provider._model = "primary-model"
+
+    # Successful set_model syncs the model attrs (real-provider behavior);
+    # the walk witness reads this to confirm the swap landed.
+    async def _move(model_id):
+        provider._model = model_id
+        provider.served_model = model_id
+
+    provider.set_model = AsyncMock(side_effect=_move)
+
+    mgr = _manager(sessions)
+    with (
+        patch("kiro_crew.subagent.transient_retry_delay", return_value=0.0),
+        patch("kiro_crew.subagent.configured_fallback_chain", return_value=("fb-1",)),
+    ):
+        info = await _spawn_and_wait(mgr)
+
+    assert info.error == ""
+    provider.set_model.assert_awaited_once_with("fb-1")
+    # Zero activity by construction — the ORIGINAL prompt is replayed.
+    assert calls == ["built_message"] * (2 + TRANSIENT_RETRIES)
+    # Visibility: the delivered result is prefixed with the fallback warning.
+    assert "fb result" in info.result
+    assert "throttled" in info.result and "fb-1" in info.result
+
+
+@pytest.mark.asyncio
+async def test_throttle_fallback_chain_exhausted_propagates():
+    """Every candidate also fails: the error surfaces after the bounded
+    per-candidate attempts, exactly like today's exhaustion."""
+    from kiro_crew.llm_helpers import FALLBACK_CANDIDATE_ATTEMPTS
+
+    calls: list[str] = []
+
+    def stream_factory(msg: str, *a, **kw):
+        calls.append(msg)
+
+        async def _gen():
+            raise _TransientError("backend throttle 500")
+            yield  # noqa: unreachable — async generator marker
+
+        return _gen()
+
+    sessions = _mock_sessions(stream_factory)
+    provider = sessions._provider
+    provider.available_models = MagicMock(return_value=[{"modelId": "fb-1"}])
+    provider.served_model = "primary-model"
+    provider._model = "primary-model"
+
+    # Successful set_model syncs the model attrs (real-provider behavior);
+    # the walk witness reads this to confirm the swap landed.
+    async def _move(model_id):
+        provider._model = model_id
+        provider.served_model = model_id
+
+    provider.set_model = AsyncMock(side_effect=_move)
+
+    mgr = _manager(sessions)
+    with (
+        patch("kiro_crew.subagent.transient_retry_delay", return_value=0.0),
+        patch("kiro_crew.subagent.configured_fallback_chain", return_value=("fb-1",)),
+    ):
+        info = await _spawn_and_wait(mgr)
+
+    assert info.done is True
+    assert "500" in info.error
+    assert len(calls) == 1 + TRANSIENT_RETRIES + FALLBACK_CANDIDATE_ATTEMPTS
+    provider.set_model.assert_awaited_once_with("fb-1")
 
 
 @pytest.mark.asyncio
@@ -419,9 +517,7 @@ async def test_shutdown_cancel_does_not_auto_continue():
 @pytest.mark.asyncio
 async def test_orphan_injection_delegates_to_callback():
     notify = AsyncMock(return_value=True)
-    mgr = SubagentManager(
-        sessions=MagicMock(), ctx_builder=None, on_orphan_notify=notify
-    )
+    mgr = SubagentManager(sessions=MagicMock(), ctx_builder=None, on_orphan_notify=notify)
     with patch("kiro_crew.subagent.sel"):
         ok = await mgr._try_inject_orphan_notification("dashboard:main", "msg")
     assert ok is True
@@ -550,9 +646,7 @@ async def test_cancel_recovery_failure_emits_done_and_delivers():
     started = asyncio.Event()
     on_done = AsyncMock()
     sessions = _mock_sessions(_hanging_stream_factory(started))
-    mgr = SubagentManager(
-        sessions=sessions, ctx_builder=_mock_ctx_builder(), on_done=on_done
-    )
+    mgr = SubagentManager(sessions=sessions, ctx_builder=_mock_ctx_builder(), on_done=on_done)
     mgr._should_use_session_sharing = MagicMock(return_value=False)
     events: list[tuple[str, dict]] = []
 
@@ -601,9 +695,7 @@ async def test_cancel_all_reaches_pending_recovery_and_finalizes():
     started = asyncio.Event()
     on_done = AsyncMock()
     sessions = _mock_sessions(_hanging_stream_factory(started))
-    mgr = SubagentManager(
-        sessions=sessions, ctx_builder=_mock_ctx_builder(), on_done=on_done
-    )
+    mgr = SubagentManager(sessions=sessions, ctx_builder=_mock_ctx_builder(), on_done=on_done)
     mgr._should_use_session_sharing = MagicMock(return_value=False)
     mgr._fire_event = AsyncMock()
 
@@ -736,9 +828,7 @@ def test_no_raw_cancel_outside_chokepoint():
         # which cancel_all pre-empts by cancelling watchers first).
         "followup_watcher.cancel()",
     )
-    chokepoint_src = inspect.getsource(
-        subagent_mod.SubagentManager._cancel_task_intentionally
-    )
+    chokepoint_src = inspect.getsource(subagent_mod.SubagentManager._cancel_task_intentionally)
     assert "task.cancel()" in chokepoint_src
     for lineno, line in raw_sites:
         assert any(s in line for s in allowed_substrings), (
@@ -747,15 +837,15 @@ def test_no_raw_cancel_outside_chokepoint():
         )
     # The generic 'task.cancel()' form must appear ONLY inside the chokepoint.
     generic = [
-        (n, l) for n, l in raw_sites
+        (n, l)
+        for n, l in raw_sites
         if "task.cancel()" in l
         and "_reaper_task" not in l
         and "recovery_task" not in l
         and "report_task" not in l
     ]
     assert len(generic) == 1, (
-        f"expected exactly one raw task.cancel() (the chokepoint body), "
-        f"found: {generic}"
+        f"expected exactly one raw task.cancel() (the chokepoint body), " f"found: {generic}"
     )
 
 

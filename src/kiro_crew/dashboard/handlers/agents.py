@@ -74,6 +74,7 @@ from kiro_crew.sandbox import (
     cgroup_scope_argv,
     configured_sandbox_mode,
     create_subprocess_limited,
+    scrub_agent_subprocess_env,
     wrap_argv,
 )
 from kiro_crew.validation import _AGENT_NAME_RE
@@ -1005,10 +1006,9 @@ def _wrap_list_models_argv(argv: list[str]) -> tuple[list[str], str | None]:
     ``is_kiro_cli=True`` is explicit because ``_spawns_kiro_cli``'s basename test
     only matches a literal ``kiro-cli``: a Windows ``kiro-cli.exe``, a wrapper
     shim, or a ``KIROCREW_KIRO_BIN`` pointing at a nonstandard launch path all
-    read as "not kiro-cli". On macOS with ``agent.sandbox="off"`` that
-    misclassification skips the delegation branch — and with it the credential-env
-    scrub — so the child would inherit the sensitive environment. Both ACP spawn
-    paths pass this flag for the same reason.
+    read as "not kiro-cli". The positive classification is also the security gate
+    for default Windows delegation to Kiro's internal sandbox; basename inference
+    cannot grant it. Both ACP spawn paths pass this flag for the same reason.
     """
     return wrap_argv(argv, mode=configured_sandbox_mode(), is_kiro_cli=True)
 
@@ -1051,12 +1051,10 @@ async def api_models(request: web.Request) -> web.Response:
         # wrap_argv's "auto" parameter default, so this endpoint can never ask
         # for stricter isolation than the chat spawn of the same binary. It
         # matters wherever the operator set agent.sandbox="off" (deferring
-        # isolation to kiro-cli's own internal sandbox) on a host with no backend
-        # — any Windows host, macOS >= 26: chat runs, while the default-mode wrap
-        # here fail-closed and answered 503 on every 8s poll. The frontend reads
-        # that as "degraded" and serves its auto-only fallback list, so the picker
-        # showed exactly one entry. Same fix, same reason as the `_bg` session in
-        # session.py.
+        # isolation to kiro-cli's own internal sandbox): the one-shot and chat
+        # path must have one posture. The explicit Kiro classification above also
+        # makes the shipped "auto" tier work on Windows via Kiro's built-in
+        # sandbox instead of answering 503 on every 8s poll.
         #
         # OFF the loop: `configured_sandbox_mode()` stats (and on a cache miss
         # re-reads + revalidates) config.json, and `wrap_argv` -> `detect_backend`
@@ -1074,6 +1072,7 @@ async def api_models(request: web.Request) -> web.Response:
             env = {**os.environ}
             env["PATH"] = augmented_path(env.get("PATH", ""))
             _resolve_ssh_auth_sock(env)
+            env = scrub_agent_subprocess_env(env)
             proc = await create_subprocess_limited(
                 *argv,
                 stdout=subprocess.PIPE,

@@ -31,6 +31,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
@@ -540,9 +541,14 @@ class TitleHintDegradationTest(unittest.TestCase):
         self.assertEqual(items[0].get("title", ""), "")
 
 
+@pytest.mark.timeout(300)
 class TestStalledLaneSurvivesLedgerVolume(unittest.TestCase):
     """A lane parked in one phase keeps its entry timestamp no matter how many
     newer lines the repo's shared ledger accumulates.
+
+    Each case deliberately performs more than 5,000 real, disk-backed
+    transactions.  Windows filesystem and antivirus overhead can legitimately
+    exceed the suite's 120-second default without indicating a deadlock.
 
     The fold reads the ledger newest-first under a cap, so the cap drops the
     OLDEST lines. When it was spent on every write rather than the phase-bearing

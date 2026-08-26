@@ -20,6 +20,7 @@ from kiro_crew.dashboard.handlers.cron import (
     api_cron_folders_update,
 )
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.validation import MAX_SHORT_STRING
 
 
 @pytest.fixture(autouse=True)
@@ -160,6 +161,33 @@ class TestCronFoldersUpdate:
         assert resp.status == 404
 
     @pytest.mark.asyncio
+    async def test_rename_rejects_oversized_folder_id(self, tmp_path):
+        """An over-long URL path folder_id is rejected with 400 before any
+        lock/thread/state work — parity with the body-param guard on the job
+        routes."""
+        state = _make_state(tmp_path)
+        state.rename_cron_folder = MagicMock(return_value=None)
+        request = _request(
+            state,
+            body={"name": "X"},
+            match_info={"folder_id": "a" * (MAX_SHORT_STRING + 1)},
+        )
+        resp = await api_cron_folders_update(request)
+        assert resp.status == 400
+        assert json.loads(resp.body)["code"] == "invalid_folder_id"
+        state.rename_cron_folder.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_rename_rejects_empty_folder_id(self, tmp_path):
+        state = _make_state(tmp_path)
+        state.rename_cron_folder = MagicMock(return_value=None)
+        request = _request(state, body={"name": "X"}, match_info={"folder_id": ""})
+        resp = await api_cron_folders_update(request)
+        assert resp.status == 400
+        assert json.loads(resp.body)["code"] == "invalid_folder_id"
+        state.rename_cron_folder.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_rename_save_failure_returns_500_and_rolls_back(self, tmp_path):
         """When persistence fails on rename, returns 500."""
         state = _make_state(tmp_path)
@@ -192,6 +220,28 @@ class TestCronFoldersDelete:
         request = _request(state, match_info={"folder_id": "nope"})
         resp = await api_cron_folders_delete(request)
         assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_delete_rejects_oversized_folder_id(self, tmp_path):
+        """An over-long URL path folder_id is rejected with 400 before any
+        lock/thread/state work — parity with the body-param guard."""
+        state = _make_state(tmp_path)
+        state.delete_cron_folder = MagicMock(return_value=False)
+        request = _request(state, match_info={"folder_id": "a" * (MAX_SHORT_STRING + 1)})
+        resp = await api_cron_folders_delete(request)
+        assert resp.status == 400
+        assert json.loads(resp.body)["code"] == "invalid_folder_id"
+        state.delete_cron_folder.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_delete_rejects_empty_folder_id(self, tmp_path):
+        state = _make_state(tmp_path)
+        state.delete_cron_folder = MagicMock(return_value=False)
+        request = _request(state, match_info={"folder_id": ""})
+        resp = await api_cron_folders_delete(request)
+        assert resp.status == 400
+        assert json.loads(resp.body)["code"] == "invalid_folder_id"
+        state.delete_cron_folder.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_delete_clears_folder_id_via_state_method(self, tmp_path):
@@ -379,10 +429,12 @@ class TestCronFoldersPersistence:
             fresh.load_cron_folders()
             assert fresh._cron_folders == [], f"shape {bad!r} should be ignored"
 
-    def test_load_drops_malformed_entries(self, tmp_path, monkeypatch):
+    def test_load_keeps_malformed_entries_inactive(self, tmp_path, monkeypatch):
         """Non-dict entries and entries with a missing/invalid id, name, or
-        order are dropped; valid entries survive. A non-string ``name`` would
-        render as a React child and crash the Schedule page."""
+        order are excluded from the ACTIVE folder list (a non-string ``name``
+        would render as a React child and crash the Schedule page) but are
+        preserved verbatim in ``_unparsed_cron_folder_entries`` so a later save
+        does not erase them."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path, raising=False)
         (tmp_path / "cron_folders.json").write_text(
             json.dumps(
@@ -405,8 +457,68 @@ class TestCronFoldersPersistence:
         )
         fresh = DashboardState.__new__(DashboardState)
         fresh._cron_folders = []
+        fresh._unparsed_cron_folder_entries = []
         fresh.load_cron_folders()
+        # Only well-formed entries are active.
         assert [f["id"] for f in fresh._cron_folders] == ["good1", "good2"]
+        # Every malformed entry is preserved verbatim (10 of the 12 above).
+        assert len(fresh._unparsed_cron_folder_entries) == 10
+        assert "not-a-dict" in fresh._unparsed_cron_folder_entries
+
+    def test_malformed_entry_survives_a_subsequent_save(self, tmp_path, monkeypatch):
+        """Regression: a hand-edited file with a typo'd entry must NOT lose that
+        entry when an unrelated folder operation triggers a save. Previously the
+        malformed entry was dropped in-memory and the next save erased its bytes.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path, raising=False)
+        path = tmp_path / "cron_folders.json"
+        # User hand-edits the file and typos "order" as "oder" on one folder.
+        path.write_text(
+            json.dumps(
+                [
+                    {"id": "aaa", "name": "Backups", "order": 0},
+                    {"id": "bbb", "name": "Reports", "oder": 1},  # malformed
+                    {"id": "ccc", "name": "Alerts", "order": 2},
+                ]
+            ),
+            encoding="utf-8",
+        )
+        state = DashboardState.__new__(DashboardState)
+        state._cron_folders = []
+        state._unparsed_cron_folder_entries = []
+        state.load_cron_folders()
+        assert [f["id"] for f in state._cron_folders] == ["aaa", "ccc"]
+
+        # An unrelated folder operation persists — the malformed entry must ride along.
+        state.create_cron_folder("NewFolder", "ddd")
+
+        on_disk = json.loads(path.read_text(encoding="utf-8"))
+        ids_and_raw = [f.get("id") if isinstance(f, dict) else f for f in on_disk]
+        # The typo'd "Reports" folder is still on disk, not erased.
+        assert "bbb" in ids_and_raw
+        malformed = next(f for f in on_disk if isinstance(f, dict) and f.get("id") == "bbb")
+        assert malformed == {"id": "bbb", "name": "Reports", "oder": 1}
+        # And the valid + newly created folders are all present.
+        assert {"aaa", "ccc", "ddd"}.issubset(
+            {f["id"] for f in on_disk if isinstance(f, dict) and "order" in f}
+        )
+
+    def test_no_unparsed_entries_leaves_payload_clean(self, tmp_path, monkeypatch):
+        """When nothing was malformed, the persisted file is exactly the active
+        folder list — no empty/sentinel padding leaks in."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path, raising=False)
+        path = tmp_path / "cron_folders.json"
+        path.write_text(
+            json.dumps([{"id": "aaa", "name": "Backups", "order": 0}]), encoding="utf-8"
+        )
+        state = DashboardState.__new__(DashboardState)
+        state._cron_folders = []
+        state._unparsed_cron_folder_entries = []
+        state.load_cron_folders()
+        assert state._unparsed_cron_folder_entries == []
+        state.create_cron_folder("NewFolder", "ddd")
+        on_disk = json.loads(path.read_text(encoding="utf-8"))
+        assert [f["id"] for f in on_disk] == ["aaa", "ddd"]
 
     def test_save_raises_on_write_failure(self, tmp_path, monkeypatch):
         """save_cron_folders propagates I/O errors (not swallowed)."""
@@ -423,6 +535,48 @@ class TestCronFoldersPersistence:
         monkeypatch.setattr(DashboardState, "_atomic_write_json_strict", _boom, raising=True)
         with pytest.raises(OSError):
             state.save_cron_folders()
+
+    def test_create_does_not_mutate_live_list_before_save_succeeds(self, tmp_path, monkeypatch):
+        """Ghost-folder regression that distinguishes persist-first from the old
+        append-then-save-then-pop: capture the LIVE ``_cron_folders`` at the
+        moment the persist runs. The old code had already appended the new
+        folder to the live list by then (a concurrent GET would see the ghost);
+        the fix persists a candidate and leaves the live list untouched until
+        the save returns, so the live list must NOT contain the folder at
+        persist time. Reverting the fix makes this assertion fail.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path, raising=False)
+        state = DashboardState.__new__(DashboardState)
+        state._cron_folders = [{"id": "existing", "name": "Keep", "order": 0}]
+        live_at_persist: list[bool] = []
+
+        def _observe(path, data):
+            # Read the LIVE attribute (not the data being written): the fix must
+            # not have committed the new folder to _cron_folders yet.
+            live_at_persist.append(any(f["id"] == "newid" for f in state._cron_folders))
+
+        monkeypatch.setattr(state, "_persist_cron_folders", lambda folders: _observe(None, folders))
+        state.create_cron_folder("New", "newid")
+        # At persist time the live list still held only the pre-existing folder.
+        assert live_at_persist == [False]
+        # After a successful create the folder is committed to the live list.
+        assert [f["id"] for f in state._cron_folders] == ["existing", "newid"]
+
+    def test_create_leaves_live_list_unchanged_on_save_failure(self, tmp_path, monkeypatch):
+        """A failed create must leave ``_cron_folders`` exactly as it was — the
+        new folder is never exposed."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path, raising=False)
+        state = DashboardState.__new__(DashboardState)
+        state._cron_folders = [{"id": "existing", "name": "Keep", "order": 0}]
+        before = list(state._cron_folders)
+
+        def _boom(self, path, data):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(DashboardState, "_atomic_write_json_strict", _boom, raising=True)
+        with pytest.raises(OSError):
+            state.create_cron_folder("New", "newid")
+        assert state._cron_folders == before
 
     def test_startup_wiring_calls_load_cron_folders(self):
         # The two gateway startup paths call load_folders(); each must also

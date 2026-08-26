@@ -18,11 +18,13 @@ by a pod that went away without a ``down``.
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import sys
 from pathlib import Path
 
 from kiro_crew.pod.config import PodConfig, environment_vars
+from kiro_crew.service.common import systemd_quote
 
 _UNIT_TEMPLATE = """\
 [Unit]
@@ -62,9 +64,8 @@ WantedBy=default.target
 """
 
 
-def _kirocrew_bin() -> str:
-    """Absolute path (or module invocation) to the kirocrew entry-point the unit
-    should boot.
+def _kirocrew_argv() -> tuple[str, ...]:
+    """Argv prefix that re-enters the kirocrew entry point the unit should boot.
 
     Resolution order:
       1. ``KIROCREW_POD_BIN`` — explicit override (used when installing a unit that
@@ -74,11 +75,11 @@ def _kirocrew_bin() -> str:
     """
     override = os.environ.get("KIROCREW_POD_BIN")
     if override:
-        return override
+        return (override,)
     found = shutil.which("kirocrew")
     if found:
-        return found
-    return f"{sys.executable} -m kiro_crew"
+        return (found,)
+    return (sys.executable, "-m", "kiro_crew")
 
 
 def _environment_block(cfg: PodConfig) -> str:
@@ -88,12 +89,15 @@ def _environment_block(cfg: PodConfig) -> str:
     launchd backend pins the identical plane; this function only serialises it in
     systemd's syntax. Returns "" when everything is at defaults.
     """
-    return "".join(f"Environment={key}={val}\n" for key, val in environment_vars(cfg).items())
+    return "".join(
+        f"Environment={systemd_quote(f'{key}={val}')}\n"
+        for key, val in environment_vars(cfg).items()
+    )
 
 
 def render_unit(cfg: PodConfig) -> str:
     return _UNIT_TEMPLATE.format(
-        kirocrew_bin=_kirocrew_bin(),
+        kirocrew_bin=" ".join(systemd_quote(arg) for arg in _kirocrew_argv()),
         unit_prefix=cfg.unit_prefix,
         environment=_environment_block(cfg),
     )
@@ -129,7 +133,15 @@ def unit_exec_ok(cfg: PodConfig) -> bool:
         return False
     for line in text.splitlines():
         if line.startswith("ExecStart="):
-            exe = line[len("ExecStart="):].split()[0]
+            try:
+                argv = shlex.split(line[len("ExecStart="):], posix=True)
+            except ValueError:
+                return False
+            if not argv:
+                return False
+            # ``systemd_quote`` doubles percent signs to suppress specifier
+            # expansion; recover the literal executable path before probing it.
+            exe = argv[0].replace("%%", "%")
             return os.access(exe, os.X_OK) if os.path.isabs(exe) else True
     return False
 

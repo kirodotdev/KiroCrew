@@ -1,15 +1,10 @@
 """Tailnet dashboard-access status — one read-only endpoint for the status card.
 
 Reports what the RUNNING SERVER TRUSTS, never a fresh probe. The distinction is
-the whole design of this module, so it is stated once here and relied on below:
-``tailnet.resolve_tailnet_host`` runs exactly once, during
-``start_dashboard`` / ``start_api_server``, and its result is what actually went
-into ``build_allowed_origins``. Re-probing the daemon at request time could report
-a name the live origin set does **not** contain (the common case: tailscaled came
-up after the gateway), and rendering that as "active" would be the
-"checked-but-never-ran → looks fine" defect this repo already has a lesson about.
-So the endpoint reads the startup value stashed on the app, and ``resolved_at``
-makes its staleness legible.
+the whole design of this module: the MagicDNS name is resolved once during
+gateway startup and that exact value builds the fixed Origin/Host boundary.
+Re-probing later could report a name the running gateway does not accept, so the
+endpoint reads the startup snapshot and makes its staleness explicit.
 """
 
 from __future__ import annotations
@@ -38,7 +33,7 @@ def _derive_state(*, pinned: bool, enabled: bool, host: str) -> str:
     1. ``pinned``  — an administrator's ceiling forbids the derivation.
     2. ``off``     — not pinned, and the operator has not enabled it.
     3. ``unresolved`` — enabled, but nothing was trusted at startup.
-    4. ``active``  — enabled, and a name is in the live origin set.
+    4. ``active``  — enabled, and a name is in the startup origin set.
     """
     if pinned:
         return "pinned"
@@ -58,8 +53,8 @@ async def api_tailnet_status(request: web.Request) -> web.Response:
     (flippable) from "off because an administrator pinned it", where the PATCH
     route itself returns 403 — the one case the user cannot lift.
 
-    ``host`` / ``origin`` / ``resolved_at`` come from the STARTUP resolution
-    stashed on the app (see the module docstring), not from a live daemon call.
+    ``host`` / ``origin`` / ``resolved_at`` come from startup resolution, not
+    from a fresh daemon call.
 
     Read-only, and never 500s: an unreadable config is exactly when the operator
     wants this card. Failure degrades toward "off"/"unresolved" so the UI never

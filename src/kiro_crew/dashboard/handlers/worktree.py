@@ -633,7 +633,10 @@ def _create_worktree_sync(root: str, branch: str) -> tuple[dict, int]:
         return ({"error": f"Directory already exists: {dest}"}, 409)
     except OSError as exc:
         _cleanup_partial(root, dest, branch, claimed=True, created=False, base_sha=base_sha)
-        return ({"error": f"Cannot create {dest}: {exc.strerror or exc}"}, 500)
+        # The OSError detail and destination path stay server-side; the client
+        # body (rendered verbatim in the UI) gets a generic message + code.
+        logger.warning("worktree create failed: %s", exc)
+        return ({"error": "cannot create worktree directory", "code": "worktree_mkdir_failed"}, 500)
 
     try:
         proc = _run_git(["worktree", "add", dest, branch], root)

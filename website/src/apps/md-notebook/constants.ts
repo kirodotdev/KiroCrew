@@ -53,6 +53,7 @@ export const LS = {
   view: 'mdnb-view',
   autoCommit: 'mdnb-auto-commit',
   syncShortcut: 'mdnb-sync-shortcut',
+  fullWidth: 'mdnb-full-width',
 } as const
 
 /**
@@ -210,7 +211,14 @@ export const LIST_INDENT = '\t'
 /** Offset that lands a nesting rail on the parent's checkbox or bullet centre. */
 export const RAIL_X = 7
 
-/** The reading column: 800px wide with 20px sides. */
+/**
+ * The reading column: 800px wide with 20px sides.
+ *
+ * The default, not a rule. A capped measure is what keeps prose readable on a
+ * wide display, so it stays on unless the user turns it off — but a note holding
+ * wide tables, long code blocks or side-by-side content is unreadable inside it,
+ * which is why `LS.fullWidth` can lift the cap per device.
+ */
 export const COLUMN_MAX_WIDTH = 800
 export const COLUMN_PAD_X = 20
 
@@ -277,3 +285,13 @@ export const DOC_H1_PX = DOC_BODY_PX * DOC_HEADING_EM[0]
  */
 export const DOC_CODE_EM = 0.9
 export const DOC_CODE_PX = DOC_BODY_PX * DOC_CODE_EM
+
+/** Breathing room between the note title and the floating header controls. */
+export const HEADER_CONTROLS_GAP = 12
+/**
+ * Narrowest the title is allowed to get before it stops sharing a row with the
+ * header controls and drops below them instead. The title wraps on any
+ * character, so a pane that cannot seat both would otherwise render the
+ * filename as a column of single letters.
+ */
+export const TITLE_MIN_WIDTH = 120

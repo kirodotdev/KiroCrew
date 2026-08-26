@@ -11,7 +11,11 @@
        `h-dvh` with `overflow-hidden` and inner `min-h-0` scrollers) simply gets shorter
        and the focused input stays on screen. `dvh` alone cannot do this: it tracks
        collapsible browser UI, not the keyboard. -->
-  <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content" />
+  <!-- viewport-fit=cover is required for env(safe-area-inset-*) to report
+       non-zero values on notched iPhones (Safari and the standalone PWA).
+       Screen-edge surfaces then inset themselves with the tailwindcss-safe-area
+       utilities; src/test/safeArea.guard.test.ts enforces that. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content, viewport-fit=cover" />
   <link rel="icon" href="/logo.png" type="image/png" />
   <link rel="manifest" href="/manifest.json" />
   <meta name="theme-color" content="#0d0f12" />

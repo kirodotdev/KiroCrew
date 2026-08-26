@@ -26,6 +26,7 @@
  */
 import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
+import { handleBootRoute, makeFixedApi } from './lib/boot-api.mjs'
 
 const BASE = process.argv[2] || 'http://127.0.0.1:7824'
 const OUT = process.argv[3] || '../temp-screenshots/list-view-tag-filter'
@@ -52,6 +53,11 @@ const json = (route, body) => route.fulfill({
   status: 200, contentType: 'application/json', body: JSON.stringify(body),
 })
 
+/** Shared boot answers, with the session count this scene's sidebar should show. */
+const bootApi = makeFixedApi('/tmp/demo').set('/api/status', {
+  sessions: SLOTS.length, crons: 0, lessons: 0, uptime: 120, version: 'dev',
+})
+
 /** @param withTags false reproduces the base branch: no tag vocabulary, so the
  *  filter menu has no Tags section to render. */
 async function preparePage(context, { withTags }) {
@@ -63,23 +69,15 @@ async function preparePage(context, { withTags }) {
     if (path === '/api/chat/slots') return json(route, SLOTS)
     if (path === '/api/chat/folders') return json(route, [])
     if (path === '/api/chat/tag-columns') return json(route, [])
-    // Without this the app renders its "Install Kiro CLI" prerequisite gate
-    // instead of the chat UI, and the sidebar never mounts at all.
-    if (path === '/api/kiro-prerequisite') return json(route, {
-      platform: 'linux', installed: true, authenticated: true, ready: true,
-      initial_setup_complete: true, can_auto_install: false, can_login: false,
-      repair_required: false, docs_url: '', setup_allowed: false,
-      operation: { kind: '', status: 'idle', message: '', detail: '', url: '', error: '' },
-    })
-    if (path === '/api/status') return json(route, { sessions: SLOTS.length, crons: 0, lessons: 0, uptime: 120, version: 'dev' })
-    if (path === '/api/auth/me') return json(route, { user: 'owner', app: '' })
-    if (path === '/api/dashboard/branding') return json(route, { bot_name: 'Kiro', avatar: '' })
-    if (path === '/api/theme/boot') return json(route, { mode: 'light', theme: '' })
-    if (path === '/api/notifications') return json(route, { notifications: [], unread: 0 })
-    if (path.startsWith('/api/instances')) return json(route, { instances: [], active: '' })
     if (path.startsWith('/api/apps')) return json(route, { apps: [], installed: [] })
-    const objectish = /(config|tips|voice|autonudge|branding|status|usage-summary|prerequisite)/.test(path)
-    return json(route, objectish ? {} : [])
+    // Everything else — including the prerequisite gate, without which the app
+    // renders "Install Kiro CLI" instead of the chat UI and the sidebar never
+    // mounts — comes from the shared boot arm.
+    return handleBootRoute(route, path, {
+      project: '/tmp/demo',
+      theme: 'light',
+      fixedApi: bootApi,
+    })
   })
   page.on('pageerror', err => console.log('PAGEERROR:', String(err).slice(0, 240)))
   await page.addInitScript(() => {

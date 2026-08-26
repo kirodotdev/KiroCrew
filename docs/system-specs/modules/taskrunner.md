@@ -280,6 +280,9 @@ Loaded on `__init__` — survives gateway restarts.
 - Persisted on: task completion, task delete
 - Each run stores: task_id, spec_path, status, timestamps, error, tokens, replans, step_details (result truncated to 2K)
 - Delete via `DELETE /api/taskrunner/{task_id}` removes from memory and disk
+- A plan's default work directory is provisional until the plan is accepted. A
+  failed attempt removes that taskrunner-owned directory; an explicit caller
+  workspace is never removed.
 
 ## Access Paths
 
@@ -346,7 +349,6 @@ Loaded on `__init__` — survives gateway restarts.
 | `MAX_TOTAL_TASKS` | 50 | Hard cap on total tasks (including replans) |
 | `_MAX_PARALLEL_TASKS` (in `taskrunner.py`) | 3 | Ctor fallback only, used when `compute_max_subagents` raises; the live cap is `self._max_parallel_steps` |
 | `_MAX_CONCURRENT_TASKS` (in `taskrunner.py`) | 3 | Max simultaneous task runs |
-| `CONTEXT_COMPACT_PCT` | 80.0 | Compact threshold |
 | `TEST_TIMEOUT` | 5400 | 90 min for test command |
 | `STALL_TIMEOUT` | 3600 | 60 min with no activity → warn |
 | `STALL_CANCEL_TIMEOUT` | 7200 | 2h with no activity → reset session |

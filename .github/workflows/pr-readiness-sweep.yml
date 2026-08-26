@@ -42,6 +42,28 @@ name: PR Readiness Self-Heal Sweep
 #      That is self-terminating -- republishing makes readiness the newest
 #      timestamp again -- so a genuinely failing PR is nudged at most once per new
 #      piece of check evidence, never once per sweep.
+#
+#   3. NO readiness status at all -- the UNPUBLISHED case. `pr-readiness.yml`
+#      deliberately does not retry its status POST (a retry can overwrite a
+#      concurrent run's newer verdict) and instead instructs a human to "re-run
+#      this workflow". When that POST fails, the SHA carries no readiness status,
+#      so there is no `pending` to age out and the only automatic re-runner --
+#      this sweep -- used to skip the PR on the assumption that its own run was
+#      still coming. The one case the publisher delegates to a re-run was thus
+#      the one case nothing re-ran. Proven on PR #2783: both readiness runs for
+#      f014465e failed on `gh: HTTP 503` from the status POST on 2026-08-17, and
+#      eight days later the PR was still MERGEABLE with no readiness verdict of
+#      any kind on its head SHA.
+#
+#   4. `success` (or `error`) with FAILING check evidence that landed after it was
+#      published. Mode 2's mechanism is direction-blind: a job re-run that flips
+#      a lane RED after a green verdict emits no `workflow_run: completed`
+#      either, leaving the required aggregate green over a now-red revision --
+#      which PERMITS a merge, where a stale red merely blocks one. The evidence
+#      test is narrowed to failure-class conclusions here, because housekeeping
+#      check-runs (`Strip stale workflow-change override`, `Fork workflow-change
+#      guard`) legitimately complete long after a verdict and would otherwise
+#      re-fire every green PR on every sweep.
 on:
   schedule:
     # Every 15 minutes. A normal fan-out publishes terminal state via events
@@ -85,18 +107,35 @@ jobs:
           # set in a single sweep, so a genuine backlog drains in one pass; it
           # exists only to bound a single sweep against a pathological run.
           MAX_DISPATCH: "200"
+          # Ceiling for the open-PR listing. See the truncation guard below: this
+          # must stay comfortably above the real open-PR count, because `gh pr
+          # list` drops the OLDEST entries silently once it is reached.
+          PR_LIST_LIMIT: "900"
         run: |
           set -euo pipefail
 
           now_epoch="$(date -u +%s)"
           stale_seconds=$(( STALE_MINUTES * 60 ))
 
-          # Open PRs with their current head SHA. A single cheap list call.
-          prs="$(gh pr list --repo "$REPO" --state open --limit 300 \
-            --json number,headRefOid)"
+          # Open PRs with their current head SHA and last-activity time. A
+          # single cheap list call.
+          #
+          # `gh pr list` returns NEWEST-first and truncates at --limit SILENTLY,
+          # so a ceiling below the real open-PR count drops the OLDEST PRs --
+          # exactly the ones most likely to be frozen, and the ones this sweep
+          # exists to rescue. The limit is therefore sized well clear of the
+          # current set (250 open at the time of writing) and a hit is reported
+          # as a loud action item rather than being absorbed as a measurement.
+          prs="$(gh pr list --repo "$REPO" --state open --limit "$PR_LIST_LIMIT" \
+            --json number,headRefOid,updatedAt)"
 
           total="$(jq 'length' <<<"$prs")"
           echo "Scanning $total open pull request(s) for stale PR Readiness."
+          if [ "$total" -ge "$PR_LIST_LIMIT" ]; then
+            echo "::warning::Open-PR list hit its ceiling of $PR_LIST_LIMIT;" \
+              "the oldest open PRs were dropped and cannot be rescued." \
+              "Raise PR_LIST_LIMIT in pr-readiness-sweep.yml."
+          fi
 
           # First pass: COLLECT every stale PR; do NOT dispatch inline. Inline
           # dispatch in `gh pr list` order plus a cap starves whichever stale PRs
@@ -109,24 +148,67 @@ jobs:
             [ -n "$row" ] || continue
             number="$(jq -r '.number' <<<"$row")"
             sha="$(jq -r '.headRefOid' <<<"$row")"
+            pr_updated_at="$(jq -r '.updatedAt // empty' <<<"$row")"
             [ -n "$sha" ] && [ "$sha" != "null" ] || continue
 
             # Most-recent "PR Readiness" commit status for this head SHA. The
             # statuses API returns newest first, so `first` is authoritative.
-            status_json="$(gh api "repos/$REPO/commits/$sha/statuses" --paginate 2>/dev/null \
-              | jq -c --arg ctx "$STATUS_CONTEXT" \
-                  '[.[] | select(.context == $ctx)] | first // empty' \
-              || echo "")"
+            #
+            # The read is captured BEFORE the jq filter so a transport failure is
+            # distinguishable from a genuinely absent status: both produce empty
+            # jq output, and the unpublished arm below dispatches on the latter.
+            # Conflating them would turn a statuses-API 503 into a spurious
+            # re-fire of an arbitrary old PR. `--slurp` collapses the paginated
+            # pages into one array, so the filter sees a single document.
+            if ! statuses_json="$(gh api "repos/$REPO/commits/$sha/statuses" \
+                --paginate --slurp 2>/dev/null)"; then
+              echo "PR #$number: statuses lookup failed; skipping this sweep."
+              continue
+            fi
+            status_json="$(jq -c --arg ctx "$STATUS_CONTEXT" \
+              '[.[][] | select(.context == $ctx)] | first // empty' \
+              <<<"$statuses_json")"
 
-            # No readiness status yet -> the PR's own run is coming; not stuck.
-            [ -n "$status_json" ] || continue
-
-            state="$(jq -r '.state' <<<"$status_json")"
-            updated_at="$(jq -r '.updated_at' <<<"$status_json")"
+            # NO readiness status on this SHA. Skipping here on the assumption
+            # that "the PR's own run is coming" is only true for a few minutes
+            # after a push. Past that window it means no run ever published one
+            # -- most often because `pr-readiness.yml`'s status POST failed and
+            # is deliberately not retried, which leaves the required aggregate
+            # absent with no `pending` to age out and no event pending. That is
+            # the freeze mode nothing else can clear, so it is rescued on the
+            # PR's own last-activity age (a push bumps `updatedAt`, so the
+            # window restarts on every new revision).
+            #
+            # Self-limiting by construction: one dispatch per sweep per PR, and
+            # the moment any verdict lands this branch stops applying. Bounded by
+            # MAX_DISPATCH like every other path.
+            #
+            # Carried as a sentinel STATE rather than an early `printf` so this
+            # case reuses the one staleness comparison and the one stale-file
+            # record writer below, instead of restating either. GitHub's commit
+            # status states are error/failure/pending/success, so the sentinel
+            # cannot collide with a real one.
+            if [ -z "$status_json" ]; then
+              state="__unpublished__"
+              updated_at="$pr_updated_at"
+            else
+              state="$(jq -r '.state' <<<"$status_json")"
+              updated_at="$(jq -r '.updated_at' <<<"$status_json")"
+            fi
             updated_epoch="$(date -u -d "$updated_at" +%s 2>/dev/null || echo 0)"
             age=$(( now_epoch - updated_epoch ))
 
             case "$state" in
+              __unpublished__)
+                # Age is measured from the PR's own last activity, because a push
+                # bumps `updatedAt` -- so the grace window restarts on every new
+                # revision, and a brand-new PR whose run is genuinely still
+                # queueing is left alone.
+                if [ "$updated_epoch" -eq 0 ] || [ "$age" -lt "$stale_seconds" ]; then
+                  continue
+                fi
+                reason="no readiness status published; PR last active ${age}s ago (> ${stale_seconds}s)"
+                ;;
               pending)
                 if [ "$updated_epoch" -eq 0 ] || [ "$age" -lt "$stale_seconds" ]; then
                   # Either unparseable, or still within the plausible-running window.
@@ -159,8 +241,16 @@ jobs:
                 # failing is nudged at most once per new piece of check evidence,
                 # not once per sweep.
                 [ "$updated_epoch" -ne 0 ] || continue
-                newest_check="$(gh api "repos/$REPO/commits/$sha/check-runs" --paginate 2>/dev/null \
-                  | jq -r '[.check_runs[]? | select(.status == "completed") | .completed_at]
+                # `--slurp` is REQUIRED, not tidiness: without it `--paginate`
+                # concatenates one JSON document per page and jq evaluates each
+                # separately, so `max` emits one timestamp PER PAGE. `date -d`
+                # then rejects the multi-line string, the epoch reads 0, and the
+                # PR is skipped -- silently exempting every PR with more than 100
+                # check-runs, which on this repo is any PR whose lanes have been
+                # re-run. Slurped, the filter sees one array and emits one value.
+                newest_check="$(gh api "repos/$REPO/commits/$sha/check-runs" \
+                  --paginate --slurp 2>/dev/null \
+                  | jq -r '[.[].check_runs[]? | select(.status == "completed") | .completed_at]
                            | map(select(. != null)) | max // empty' \
                   || echo "")"
                 [ -n "$newest_check" ] || continue
@@ -173,9 +263,48 @@ jobs:
                 fi
                 reason="failure published at $updated_at but a check completed later at $newest_check"
                 ;;
+              success|error)
+                # Mode 2's mechanism does not care which way the re-run went. A
+                # job re-run that turns a lane RED after a green verdict emits no
+                # `workflow_run: completed` either, so the required aggregate
+                # stays green over a now-red revision -- and a stale green
+                # PERMITS a merge, where a stale red only blocks one. The unsafe
+                # direction is therefore the one that was never rescued.
+                #
+                # The evidence test is narrowed to FAILURE-CLASS conclusions
+                # rather than "any check completed later". Housekeeping check-runs
+                # (`Strip stale workflow-change override`, `Fork workflow-change
+                # guard`) routinely complete days after a verdict on a long-lived
+                # PR, so the unnarrowed test would re-fire most green PRs on every
+                # sweep while proving nothing. A later `success` needs no rescue:
+                # it cannot turn a green verdict red.
+                #
+                # Self-terminating exactly like mode 2 -- republishing makes the
+                # verdict the newest timestamp, so the same red evidence is not
+                # counted twice. `error` shares this arm because it is the same
+                # dropped-event problem: "the next real event will correct it"
+                # holds only when a next event exists.
+                [ "$updated_epoch" -ne 0 ] || continue
+                newest_fail="$(gh api "repos/$REPO/commits/$sha/check-runs" \
+                  --paginate --slurp 2>/dev/null \
+                  | jq -r '[.[].check_runs[]?
+                             | select(.status == "completed")
+                             | select(.conclusion as $c
+                                 | ["failure","timed_out","cancelled","action_required",
+                                    "stale","startup_failure"] | index($c))
+                             | .completed_at]
+                           | map(select(. != null)) | max // empty' \
+                  || echo "")"
+                [ -n "$newest_fail" ] || continue
+                newest_fail_epoch="$(date -u -d "$newest_fail" +%s 2>/dev/null || echo 0)"
+                [ "$newest_fail_epoch" -ne 0 ] || continue
+                if [ "$newest_fail_epoch" -le $(( updated_epoch + 5 )) ]; then
+                  continue
+                fi
+                reason="$state published at $updated_at but a check FAILED later at $newest_fail"
+                ;;
               *)
-                # `success` needs no rescue, and `error` is a publisher fault the
-                # next real event will correct.
+                # Any state this sweep does not model is left to a real event.
                 continue
                 ;;
             esac

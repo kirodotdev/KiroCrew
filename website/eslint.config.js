@@ -72,6 +72,27 @@ export default [
     },
   },
   {
+    // `ui/native-select.tsx` is the ONE sanctioned native `<select>` in the
+    // dashboard, and the exemption is deliberately the single file rather than a
+    // directory: the rule's job is still to stop native selects being scattered,
+    // and this file is the chokepoint that makes that enforceable — SimpleSelect
+    // routes to it on coarse pointers, so no other module ever needs one.
+    //
+    // The rule's reason is theming, and that reason does not reach a phone. The
+    // Radix popup's list is a `position:fixed` overflow scroller inside
+    // react-remove-scroll's lock, and iOS Safari does not reliably hand a finger
+    // drag to that shape: Settings → Voice → Language shows 7 of its ~41 BCP-47
+    // codes and the rest cannot be reached at all. A themed list nobody can
+    // scroll is worse than an OS-drawn list that works, so on touch the platform
+    // draws it. Pointer devices are untouched and still get the themed popup.
+    //
+    // See website/docs/page-layout.md §Forms, which records the same exception.
+    files: ['src/components/ui/native-select.tsx'],
+    rules: {
+      'no-restricted-syntax': 'off',
+    },
+  },
+  {
     // Test doubles are exempt: a `vi.mock` that swaps a portalled Radix dropdown
     // for a plain <select> is the ESTABLISHED way to make one driveable in jsdom
     // (Radix commits discrete events through flushSync, which throws inside

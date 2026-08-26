@@ -27,5 +27,14 @@
   "heroImage": "/app-assets/auto-research/hero-light.svg",
   "heroImageDark": "/app-assets/auto-research/hero-dark.svg",
   "heroImageDetail": "/app-assets/auto-research/hero-detail-light.svg",
-  "heroImageDetailDark": "/app-assets/auto-research/hero-detail-dark.svg"
+  "heroImageDetailDark": "/app-assets/auto-research/hero-detail-dark.svg",
+  "useCases": [
+    "Run a multi-cycle investigation that expands a broad question, streams evidence, and produces a reusable report."
+  ],
+  "configuration": [
+    "Create a campaign, choose Agent or Dynamic Workflow mode, expand the question, then set cycles, interval, workers, and attended or unattended operation."
+  ],
+  "screenshots": [
+    "/app-assets/auto-research/screenshot-main.png"
+  ]
 }

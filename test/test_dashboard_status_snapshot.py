@@ -71,9 +71,20 @@ class TestStatusSnapshot:
         """Any field added to status_snapshot is automatically in SSE/WS/API."""
         snap = state.status_snapshot()
         # These keys must exist — if one is missing, a caller will lose it
-        required = {"uptime", "start_time", "sessions", "messages",
-                    "cron_jobs", "lessons", "subagents", "update_available",
-                    "no_crons", "slack_connected", "branch", "commit"}
+        required = {
+            "uptime",
+            "start_time",
+            "sessions",
+            "messages",
+            "cron_jobs",
+            "lessons",
+            "subagents",
+            "update_available",
+            "no_crons",
+            "slack_connected",
+            "branch",
+            "commit",
+        }
         assert required.issubset(snap.keys())
 
     def test_includes_build_branch_and_commit(self, state: DashboardState) -> None:
@@ -157,10 +168,13 @@ class TestAllStatusSnapshotCallersPassTheUpdateFields:
             "update_can_apply",
             "update_check_status",
             "update_command",
+            "update_latest_version",
             "update_channel",
             "update_managed_by",
             "update_commits_ahead",
             "update_commits_behind",
+            "update_last_checked_at",
+            "update_check_interval_secs",
         }
 
     def test_the_shared_reader_never_flattens_a_missing_verdict(self) -> None:
@@ -176,10 +190,46 @@ class TestAllStatusSnapshotCallersPassTheUpdateFields:
             updates._update_info.clear()
             updates._update_info.update(original)
 
+    def test_latest_version_rides_the_hot_path_as_a_plain_string(self) -> None:
+        """The popup keys its per-version snooze/skip on this field, so an
+        absent value must read as "" (no candidate), never as None or a stale
+        non-string the cache happened to hold."""
+        from kiro_crew.dashboard.handlers import updates
+
+        original = dict(updates._update_info)
+        try:
+            updates._update_info.clear()
+            assert status_fields_of(updates)["update_latest_version"] == ""
+            updates._update_info.update({"latest_version": "0.5.0"})
+            assert status_fields_of(updates)["update_latest_version"] == "0.5.0"
+        finally:
+            updates._update_info.clear()
+            updates._update_info.update(original)
+
+    def test_snapshot_accepts_every_shared_reader_field(self) -> None:
+        """Every emitter calls ``status_snapshot(**status_update_fields())``,
+        so a key the reader gains that the snapshot's keyword-only signature
+        lacks is not a missing feature — it is a TypeError that takes down
+        /api/status, the WS status frame, and the SSE stream at once."""
+        import inspect
+
+        from kiro_crew.dashboard.handlers.updates import status_update_fields
+        from kiro_crew.dashboard.state import DashboardState
+
+        params = inspect.signature(DashboardState.status_snapshot).parameters
+        missing = set(status_update_fields()) - set(params)
+        assert not missing, (
+            f"status_update_fields() emits {sorted(missing)} but "
+            "DashboardState.status_snapshot() does not accept them — every "
+            "status emitter spreads the reader into the snapshot, so this "
+            "crashes all three transports"
+        )
+
     def test_ws_uses_the_shared_reader(self) -> None:
         import inspect
 
         from kiro_crew.dashboard import ws
+
         source = inspect.getsource(ws)
         assert "status_update_fields()" in source, (
             "ws.py calls status_snapshot() without the shared update fields — "
@@ -190,6 +240,7 @@ class TestAllStatusSnapshotCallersPassTheUpdateFields:
         import inspect
 
         from kiro_crew.dashboard import handlers_system
+
         source = inspect.getsource(handlers_system)
         assert "status_update_fields()" in source
 

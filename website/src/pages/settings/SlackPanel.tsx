@@ -90,17 +90,21 @@ export function TagListEditor({ label, description, values, placeholder, onChang
     setErr('')
   }
   return (
-    <div className="flex flex-col gap-1.5 py-1.5">
+    <div data-setting-label={label} className="flex flex-col gap-1.5 py-1.5">
       <span className="text-[13px] font-semibold text-text">{label}</span>
       {description && <div className="text-[12px] text-muted">{description}</div>}
       {values.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
           {values.map(v => (
-            <span key={v} className="inline-flex items-center gap-1 rounded-md border border-border bg-bg-elevated px-2 py-1 text-[12px] font-mono text-text">
-              {v}
+            <span key={v} className="inline-flex max-w-full items-center gap-1 rounded-md border border-border bg-bg-elevated px-2 py-1 text-[12px] font-mono text-text">
+              {/* break-all, not truncate: these ids are opaque and a user checking
+                  one against their console needs every character. A Webex space id
+                  is a single unbreakable base64 token, so without this it runs off
+                  the card at narrow widths. */}
+              <span className="min-w-0 break-all">{v}</span>
               {!readOnly && (
                 <button type="button" onClick={() => onChange(values.filter(x => x !== v))}
-                  className="text-muted hover:text-danger transition-colors" aria-label={i18nT('pages.settings.slackPanel.remove', { name: v })}>
+                  className="shrink-0 text-muted hover:text-danger transition-colors" aria-label={i18nT('pages.settings.slackPanel.remove', { name: v })}>
                   <X size={12} />
                 </button>
               )}
@@ -111,10 +115,13 @@ export function TagListEditor({ label, description, values, placeholder, onChang
       {values.length === 0 && readOnly && <div className="text-[12px] text-muted">{i18nT('pages.settings.slackPanel.none')}</div>}
       {!readOnly && (
         <div className="flex items-center gap-2">
-          <Input value={draft} placeholder={placeholder} className="flex-none font-mono"
+          {/* min-w-0 + flex-1: a `flex-none` input keeps its intrinsic width, which
+              pushes the Add button off the card at 320px. Letting the input shrink
+              keeps both on one row at every width the repo supports. */}
+          <Input value={draft} placeholder={placeholder} className="min-w-0 flex-1 font-mono"
             onChange={e => { setDraft(e.target.value); setErr('') }}
             {...ime.bindEnter({ onEnter: add })} />
-          <Btn onClick={add} disabled={!draft.trim()}><Plus size={13} /> {i18nT('pages.settings.slackPanel.add')}</Btn>
+          <Btn onClick={add} disabled={!draft.trim()} className="shrink-0"><Plus size={13} /> {i18nT('pages.settings.slackPanel.add')}</Btn>
         </div>
       )}
       {/* Client-side validation only ("X is not a valid ID") — there is nothing

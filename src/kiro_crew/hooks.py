@@ -19,7 +19,7 @@ import tempfile
 import threading
 import time
 import uuid
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -1597,12 +1597,12 @@ def _context_matches(matcher: str, mode: str, context: str) -> bool:
     - ``contains``: pipe-delimited substrings, case-insensitive OR.
     """
     if mode == "regex":
-        # Prepend (?i) for case-insensitive matching (the subprocess runs raw re.search).
-        # Only skip the prepend when the pattern already starts with an inline-flag
-        # group (e.g. (?i), (?im), (?aiLmsux)).  Non-flag groups like (?:, (?=, (?<,
-        # (?P must still get the (?i) prefix.
-        _has_inline_flags = re.match(r"^\(\?[aiLmsux]+[):]", matcher) is not None
-        pattern = matcher if _has_inline_flags else f"(?i){matcher}"
+        # Prepend (?i) for the default case-insensitive behavior unless the
+        # pattern already starts with a GLOBAL flag directive such as (?i).
+        # Scoped groups only govern their own body: (?-i:foo)bar intentionally
+        # still inherit the matcher default. Suppressing the prefix for every
+        # scoped group accidentally made the suffix case-sensitive too.
+        pattern = matcher if _has_global_inline_flags(matcher) else f"(?i){matcher}"
         result = _bounded_pattern_search(pattern, context)
         if result is None:
             # Timeout, oversized, or invalid pattern — fail closed (no match)
@@ -2686,14 +2686,31 @@ _AUDIT_ONLY_READ_IDS: dict[str, str] = {
     # reader holds a short cache -- for the same reason as the mint entry below.
     "kiro_prerequisite.identity_fingerprint": ".local/share/kiro-cli/data.sqlite3",
     # Class 2. kiro-cli's MCP OAuth artifact cache under ``~/.aws/sso/cache``.
-    # ``kiro_crew.connections.mint.grant_present`` STATS the paired
+    # ``kiro_crew.mcp_grant.grant_present`` STATS the paired
     # ``<sha256(mcp_url)>.token.json`` / ``.registration.json`` artifacts to learn
-    # whether kiro-cli already holds a grant for ONE provider -- the mint's only
-    # consent-completion signal. The files are never opened, so no token material
-    # can enter the process, and the name is a hex digest of a registry-declared
-    # provider URL, so no other path in that directory is expressible. Audited on
-    # the observation a caller acts on, not per poll; see
-    # ``mint._grant_observed`` for why that boundary is not fail-closed.
+    # whether kiro-cli already holds a grant for ONE endpoint. The files are never
+    # opened, so no token material can enter the process.
+    #
+    # TWO callers, and the second is the wider one: the mint's consent-completion
+    # signal (curated registry providers only), and ``mcp_discovery``'s remote
+    # probe, which asks for ANY url the user configured whenever a probe meets an
+    # OAuth challenge. So the reasoning cannot rest on the url being
+    # registry-declared. What keeps it sound for arbitrary input is the key: the
+    # name is a sha256 over the url's normalized origin and path, so no caller can
+    # express a path outside this directory, name a file it did not derive, or
+    # smuggle a credential from the url into the filename. The digest is also why
+    # the widened caller set adds no read surface -- both callers can only ever
+    # probe for the pair belonging to the url they already hold.
+    #
+    # Audited on the observation a caller acts on, not per poll, and the two
+    # callers differ on which observations those are. The mint polls for a grant
+    # to APPEAR, so only its TRUE is acted on and recorded. The probe reads once
+    # and renders either answer -- an absent pair is what produces "Sign-in
+    # required" -- so it opts into recording the negative too, as ``missing``.
+    # See ``mcp_grant.grant_observed`` for why that boundary is not fail-closed,
+    # and note that neither caller logs the url itself (the probe logs the server
+    # name, the mint warning logs the key) because a user-supplied endpoint can
+    # carry a credential in its userinfo or query string.
     "connections_mint.oauth_grant_presence": ".aws/sso/cache/<sha256(mcp_url)>.token.json",
     # Class 2, same artifacts and same posture as the mint entry above: the
     # status module (``kiro_crew.connections.status``) STATS the identical
@@ -2734,6 +2751,105 @@ def emit_internal_read_audit(read_id: str, outcome: str) -> bool:
 
 
 # ── Script Hooks ──
+
+# Inclusive bounds for a script hook's subprocess timeout, in seconds. Mirrors
+# the API schema (``validation.HOOK_CREATE_SCHEMA`` min_val=1/max_val=300); kept
+# here so the same bound is enforced at EVERY persistence boundary — create,
+# update, and deserialization — not only when a value arrives over the dashboard
+# API. A 0 (or negative) timeout makes ``asyncio.wait_for`` fire immediately, and
+# an unbounded one lets a hook wedge a turn for as long as it likes; both are
+# outcomes a hand-edited or older ``hooks.json`` could otherwise reintroduce.
+HOOK_TIMEOUT_MIN = 1
+HOOK_TIMEOUT_MAX = 300
+HOOK_TIMEOUT_DEFAULT = 30
+
+# Events on which a standalone skills-only hook (no command) actually fires: only
+# UserPromptSubmit / AgentSpawn synthesize the "Load skills:" directive in
+# ``ScriptHookStore.fire()``. On any other event the directive has no consumer,
+# so pairing skills with one is a config that saves but never fires.
+_SKILLS_ONLY_EVENTS = (HOOK_EVENT_USER_PROMPT_SUBMIT, HOOK_EVENT_AGENT_SPAWN)
+
+# A global Python inline-flag directive at the very start of a pattern. Only this
+# form replaces the matcher-wide case-insensitive default. Scoped forms such as
+# ``(?i:...)`` and ``(?-i:...)`` govern their group only, so the caller still
+# prepends ``(?i)`` for the rest of the expression.
+_GLOBAL_INLINE_FLAGS_RE = re.compile(r"^\(\?[aiLmsux]+\)")
+
+
+def _has_global_inline_flags(pattern: str) -> bool:
+    """True when *pattern* starts with a global Python flag directive."""
+    return _GLOBAL_INLINE_FLAGS_RE.match(pattern) is not None
+
+
+def _normalize_hook_timeout(value: object) -> int:
+    """Coerce a persisted/edited timeout to an int within the allowed bounds.
+
+    ``hooks.json`` is hand-editable and older files predate the 1–300 bound, so a
+    missing / non-int / out-of-range value must degrade to a SAFE in-range value
+    rather than propagate: ``None`` or junk → the default; a numeric value is
+    clamped into ``[HOOK_TIMEOUT_MIN, HOOK_TIMEOUT_MAX]``. Used by ``from_dict``
+    (fail-soft on load); the raising ``validate_hook_fields`` is what rejects a
+    bad value at the create/update API boundary. A bool is rejected (``bool`` is
+    an ``int`` subclass but ``True`` as a timeout is meaningless).
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return HOOK_TIMEOUT_DEFAULT
+    try:
+        ivalue = int(value)
+    except (ValueError, OverflowError):
+        return HOOK_TIMEOUT_DEFAULT
+    return max(HOOK_TIMEOUT_MIN, min(HOOK_TIMEOUT_MAX, ivalue))
+
+
+def validate_hook_fields(
+    *, event: str, timeout: object, command: str, skills: list, matcher: str, matcher_mode: str
+) -> None:
+    """Enforce the script-hook invariants at a WRITE boundary, raising on any breach.
+
+    The single source of truth for what makes a hook well-formed, shared by
+    ``ScriptHookStore.create`` and ``ScriptHookStore.update`` so a hook persisted
+    by EITHER path is held to the same contract — closing the gap where the
+    command+skills invariant, event membership, and timeout bounds were checked
+    only in ``update``. Deserialization (``ScriptHook.from_dict``) does NOT call
+    this: a malformed persisted hook must load fail-soft (normalized), never abort
+    the whole store, so it uses the ``_normalize_hook_*`` helpers instead.
+
+    Raises ``ValueError`` (which the dashboard handler maps to HTTP 400) when:
+
+    * ``event`` is not one of ``HOOK_EVENTS``;
+    * ``timeout`` is not an int in ``[1, 300]``;
+    * neither ``command`` nor ``skills`` is present (an empty hook);
+    * ``skills`` is combined with a ``command`` (the skills would never fire);
+    * ``skills`` is paired with an event other than UserPromptSubmit/AgentSpawn
+      (the "Load skills:" directive has no consumer there);
+    * ``matcher_mode`` is ``regex`` with a syntactically invalid ``matcher``.
+    """
+    if event not in HOOK_EVENTS:
+        raise ValueError(f"invalid event: {event}")
+    if isinstance(timeout, bool) or not isinstance(timeout, int) or not (
+        HOOK_TIMEOUT_MIN <= timeout <= HOOK_TIMEOUT_MAX
+    ):
+        raise ValueError(
+            f"timeout must be an integer between {HOOK_TIMEOUT_MIN} and {HOOK_TIMEOUT_MAX}"
+        )
+    if not command and not skills:
+        raise ValueError("either command or skills must be provided")
+    if skills:
+        if command:
+            raise ValueError(
+                "skills cannot be combined with a command — the skills would "
+                "never fire; use a skills-only hook or drop the skills"
+            )
+        if event not in _SKILLS_ONLY_EVENTS:
+            raise ValueError(
+                f"skills hooks cannot fire on {event} events — "
+                "choose UserPromptSubmit or AgentSpawn"
+            )
+    if matcher_mode == "regex" and matcher:
+        try:
+            re.compile(matcher)
+        except re.error as exc:
+            raise ValueError(f"invalid regex: {exc}") from None
 
 
 @dataclass
@@ -2780,6 +2896,16 @@ class ScriptHook:
             if isinstance(raw_last_error, str) and raw_last_error
             else ""
         )
+        # Normalize the timeout on load. hooks.json is hand-editable and older
+        # files predate the 1–300 bound, so a missing / non-int / out-of-range
+        # value is clamped to a safe in-range value here rather than persisted
+        # verbatim to later fire a 0-second (immediate) or unbounded timeout.
+        # Deserialization is fail-soft on purpose (a malformed hook must load,
+        # not abort the whole store); the raising `validate_hook_fields` is what
+        # rejects a bad value at the create/update boundary. `event` is left as
+        # written so an unknown event is visibly inert rather than silently
+        # remapped, matching how `matcher_mode` junk falls through to glob.
+        timeout = _normalize_hook_timeout(data.get("timeout", HOOK_TIMEOUT_DEFAULT))
         return cls(
             id=data.get("id", str(uuid.uuid4())[:8]),
             name=data.get("name", ""),
@@ -2788,13 +2914,126 @@ class ScriptHook:
             matcher_mode=data.get("matcher_mode", "glob"),
             command=data.get("command", ""),
             skills=[str(s) for s in skills if isinstance(s, str)],
-            timeout=data.get("timeout", 30),
+            timeout=timeout,
             enabled=data.get("enabled", True),
             last_run=data.get("last_run", 0.0),
             last_status=data.get("last_status", ""),
             last_error=last_error,
             run_count=data.get("run_count", 0),
         )
+
+
+# ── Script hook output caps ──
+#
+# ``run_script_hook`` used to ``await proc.communicate(...)``, which buffers
+# BOTH pipes in memory until EOF: a buggy or hostile hook could emit unbounded
+# stdout/stderr and OOM (or stall) the gateway for every session before the
+# 500-char presentation limit was ever applied (#5442). We now drain each
+# stream incrementally and keep only the first ``_HOOK_STREAM_CAP_BYTES`` bytes,
+# while continuing to read (and discard) the rest so the child can never block
+# on a full pipe. The cap is generously above the 500-char field we surface, so
+# the retained prefix is always enough to decode and truncate for display, yet
+# small enough that a runaway hook cannot exhaust memory.
+_HOOK_STREAM_CAP_BYTES = 64 * 1024
+# Marker appended to a decoded stream when its raw bytes exceeded the cap, so
+# truncation is visible rather than silent.
+_HOOK_TRUNCATION_MARKER = "\n…[output truncated]"
+
+
+async def _read_capped_stream(
+    reader: "asyncio.StreamReader | None", cap: int
+) -> tuple[bytes, bool]:
+    """Drain *reader* fully, retaining at most *cap* bytes.
+
+    Returns ``(retained_bytes, truncated)``. Bytes beyond *cap* are read and
+    discarded so the child never blocks on a full OS pipe buffer (the deadlock
+    ``communicate`` avoided by buffering everything — we avoid it by consuming
+    everything, but only *keeping* a bounded prefix). Chunked reads keep peak
+    memory at roughly ``cap`` regardless of how much the child writes.
+    """
+    if reader is None:
+        return b"", False
+    retained = bytearray()
+    truncated = False
+    while True:
+        # A fixed read size bounds a single chunk; the loop bounds the total.
+        chunk = await reader.read(65536)
+        if not chunk:
+            break
+        if len(retained) < cap:
+            room = cap - len(retained)
+            retained.extend(chunk[:room])
+            if len(chunk) > room:
+                truncated = True
+        else:
+            # Already at cap — keep draining so the pipe drains, drop the bytes.
+            truncated = True
+    return bytes(retained), truncated
+
+
+def _decode_capped(raw: bytes, truncated: bool) -> str:
+    """Decode capped raw bytes, appending the truncation marker when clipped.
+
+    ``errors="replace"`` handles a multibyte sequence severed at the cap
+    boundary: the trailing partial code point becomes U+FFFD rather than raising
+    or silently dropping, so a UTF-8 stream clipped mid-character still decodes
+    to a stable, safe string.
+    """
+    text = raw.decode(errors="replace")
+    if truncated:
+        text += _HOOK_TRUNCATION_MARKER
+    return text
+
+
+async def _communicate_capped(
+    proc: "asyncio.subprocess.Process", stdin_data: bytes, cap: int
+) -> tuple[bytes, bool, bytes, bool]:
+    """Write *stdin_data*, then drain stdout and stderr concurrently under a cap.
+
+    Concurrent draining (vs. sequential) is required for the same reason
+    ``communicate`` reads both pipes at once: a child that fills stderr while we
+    are still reading stdout would deadlock if we did not consume stderr in
+    parallel. Returns ``(stdout, stdout_truncated, stderr, stderr_truncated)``.
+    """
+
+    async def _feed_stdin() -> None:
+        stdin = proc.stdin
+        if stdin is None:
+            return
+        try:
+            stdin.write(stdin_data)
+            await stdin.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            # The hook may exit without reading stdin; that is not our error.
+            pass
+        finally:
+            try:
+                stdin.close()
+            except Exception:
+                pass
+
+    stdin_task = asyncio.ensure_future(_feed_stdin())
+    stdout_task = asyncio.ensure_future(_read_capped_stream(proc.stdout, cap))
+    stderr_task = asyncio.ensure_future(_read_capped_stream(proc.stderr, cap))
+    try:
+        (stdout_b, stdout_trunc), (stderr_b, stderr_trunc) = await asyncio.gather(
+            stdout_task, stderr_task
+        )
+        await stdin_task
+        await proc.wait()
+    except BaseException:
+        # On timeout (CancelledError from wait_for) or any failure, cancel and
+        # OBSERVE every helper before returning control to the reap path. Merely
+        # calling cancel() leaves the StreamReader with an active waiter, so a
+        # cleanup read can raise "read() called while another coroutine is
+        # already waiting" and leak the process.
+        for task in (stdin_task, stdout_task, stderr_task):
+            task.cancel()
+        await asyncio.gather(
+            stdin_task, stdout_task, stderr_task, return_exceptions=True
+        )
+        raise
+    return stdout_b, stdout_trunc, stderr_b, stderr_trunc
 
 
 @dataclass
@@ -2979,8 +3218,14 @@ async def run_script_hook(
                 creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
             )
         try:
-            stdout_b, stderr_b = await asyncio.wait_for(
-                proc.communicate(input=stdin_data), timeout=hook.timeout
+            (
+                stdout_b,
+                stdout_trunc,
+                stderr_b,
+                stderr_trunc,
+            ) = await asyncio.wait_for(
+                _communicate_capped(proc, stdin_data, _HOOK_STREAM_CAP_BYTES),
+                timeout=hook.timeout,
             )
         finally:
             if cleanup_path:
@@ -2990,11 +3235,14 @@ async def run_script_hook(
                     pass
         elapsed = int((time.monotonic() - start) * 1000)
         exit_code = proc.returncode or 0
-        stderr_text = stderr_b.decode(errors="replace").strip()
-        # Redact the FULL stderr through the canonical companion-aware shim
-        # before truncating, so a credential straddling the 500-char boundary
-        # cannot leak as an unredacted fragment. The field surfaces on the
-        # dashboard and must not expose secrets (#4708).
+        stdout_text = _decode_capped(stdout_b, stdout_trunc).strip()
+        stderr_text = _decode_capped(stderr_b, stderr_trunc).strip()
+        # Redact the FULL (capped) stderr through the canonical companion-aware
+        # shim before truncating, so a credential straddling the 500-char
+        # boundary cannot leak as an unredacted fragment. The field surfaces on
+        # the dashboard and must not expose secrets (#4708). Memory is already
+        # bounded upstream by the byte cap (#5442), so redaction never sees an
+        # unbounded string.
         stderr_safe = redact_via_context(stderr_text)[:500] if stderr_text else ""
         hook.last_run = time.time()
         if exit_code == 2:
@@ -3011,7 +3259,7 @@ async def run_script_hook(
             hook_id=hook.id,
             hook_name=hook.name,
             event=hook.event,
-            stdout=stdout_b.decode(errors="replace").strip(),
+            stdout=stdout_text,
             stderr=stderr_text,
             exit_code=exit_code,
             duration_ms=elapsed,
@@ -3026,7 +3274,16 @@ async def run_script_hook(
                 # timeout path already runs on the event loop, so we never want
                 # to stall it further while taskkill.exe walks the tree
                 await platform_compat.kill_process_tree_async(proc.pid, platform_compat.SIGKILL)
-                await proc.communicate()
+                # Reap the killed tree WITHOUT re-buffering: a hook that timed
+                # out having already flooded its pipes must not be able to OOM
+                # us during cleanup (#5442). Drain both pipes concurrently under
+                # the same cap and discard; sequential reads can deadlock when
+                # residual data fills the other pipe.
+                await asyncio.gather(
+                    _read_capped_stream(proc.stdout, _HOOK_STREAM_CAP_BYTES),
+                    _read_capped_stream(proc.stderr, _HOOK_STREAM_CAP_BYTES),
+                )
+                await proc.wait()
         except Exception:
             pass
         elapsed = int((time.monotonic() - start) * 1000)
@@ -3070,6 +3327,10 @@ class ScriptHookStore:
         self._dir = config_dir or _cfg_dir()
         self._path = self._dir / _HOOKS_FILE
         self._hooks: dict[str, ScriptHook] = {}
+        # Entries that cannot be deserialized must remain inert, but they still
+        # belong to the user. Preserve their raw JSON values across later status
+        # and CRUD writes so fail-soft loading does not become silent data loss.
+        self._unparsed_hook_entries: list[object] = []
         # Mutations used to be implicitly serialised by running on the single
         # event-loop thread. They are now offloaded with asyncio.to_thread (the
         # persistence takes a file lock and fsyncs, which must not block the
@@ -3085,16 +3346,52 @@ class ScriptHookStore:
             return
         try:
             data = json.loads(self._path.read_text(encoding="utf-8"))
-            for h in data.get("hooks", []):
-                hook = ScriptHook.from_dict(h)
-                self._hooks[hook.id] = hook
         except (json.JSONDecodeError, OSError) as exc:
             logger.warning("Failed to load hooks: %s", exc)
+            return
+        # Deserialize each hook independently: a single malformed entry (a
+        # non-dict, or a dict `from_dict` cannot coerce) must not take down the
+        # whole store and drop every OTHER hook the user has. `from_dict` is
+        # already fail-soft (it normalizes junk fields), so a raise here would be
+        # unexpected — but a foreign / hand-corrupted entry is possible, so keep
+        # it inert and preserve its raw value for future rewrites.
+        #
+        # A malformed root or `hooks` collection cannot be represented by the
+        # list-shaped store. Keep it inert so gateway startup remains available;
+        # `_write_hooks_file` validates the locked, current bytes and refuses any
+        # mutation rather than overwriting data the store cannot preserve.
+        if not isinstance(data, dict):
+            logger.warning("Failed to load hooks: root is not an object")
+            return
+        hooks_data = data.get("hooks", [])
+        if not isinstance(hooks_data, list):
+            logger.warning("Failed to load hooks: hooks collection is not a list")
+            return
+
+        for h in hooks_data:
+            try:
+                if not isinstance(h, dict):
+                    raise TypeError("hook entry is not an object")
+                if h.get("event", HOOK_EVENT_USER_PROMPT_SUBMIT) not in HOOK_EVENTS:
+                    raise ValueError("hook entry has an invalid event")
+                hook = ScriptHook.from_dict(h)
+                # Keep insertion inside the per-entry guard: a hand-edited ID
+                # can be an unhashable list/dict even when from_dict succeeds.
+                self._hooks[hook.id] = hook
+            except Exception:
+                logger.warning("Skipping unparseable hook entry", exc_info=True)
+                self._unparsed_hook_entries.append(h)
+                continue
 
     def _save(self) -> None:
-        self._write_hooks_file([h.to_dict() for h in self._hooks.values()])
+        self._write_hooks_file(
+            [
+                *(h.to_dict() for h in self._hooks.values()),
+                *self._unparsed_hook_entries,
+            ]
+        )
 
-    def _write_hooks_file(self, hooks_data: list[dict]) -> None:
+    def _write_hooks_file(self, hooks_data: Sequence[object]) -> None:
         """Write the ``hooks`` list while PRESERVING every other top-level key.
 
         ``hooks.json`` is shared: this store owns the ``hooks`` key, but the
@@ -3125,8 +3422,18 @@ class ScriptHookStore:
             if self._path.exists():
                 try:
                     loaded = json.loads(self._path.read_text(encoding="utf-8"))
-                    if isinstance(loaded, dict):
-                        data = {k: v for k, v in loaded.items() if k != "hooks"}
+                    if not isinstance(loaded, dict):
+                        raise webhooks.WebhookStoreUnreadable(
+                            f"{self._path.name} root is not an object; refusing to overwrite it"
+                        )
+                    if "hooks" in loaded and not isinstance(loaded["hooks"], list):
+                        raise webhooks.WebhookStoreUnreadable(
+                            f"{self._path.name} hooks collection is not a list; "
+                            "refusing to overwrite it"
+                        )
+                    data = {k: v for k, v in loaded.items() if k != "hooks"}
+                except webhooks.WebhookStoreUnreadable:
+                    raise
                 except (json.JSONDecodeError, OSError) as exc:
                     logger.warning(
                         "hooks.json unreadable, refusing to overwrite it: %s", exc
@@ -3171,6 +3478,23 @@ class ScriptHookStore:
         hook = ScriptHook.from_dict(data)
         if not hook.id:
             hook.id = str(uuid.uuid4())[:8]
+        # Enforce the SAME invariants `update` does, via the shared validator:
+        # a direct/internal caller of `create` used to bypass the command+skills
+        # invariant, event membership, and timeout bounds (only `update` checked
+        # them), so it could persist a hook the update path would reject and that
+        # later silently fails to fire. `from_dict` clamps the timeout on the way
+        # in, but validate against the ORIGINAL `data` so a caller that passed an
+        # out-of-range timeout is told rather than having it silently clamped —
+        # matching the API schema's reject-don't-clamp behavior. Raises
+        # ValueError (mapped to HTTP 400 by the dashboard handler).
+        validate_hook_fields(
+            event=hook.event,
+            timeout=data.get("timeout", hook.timeout),
+            command=hook.command,
+            skills=hook.skills,
+            matcher=hook.matcher,
+            matcher_mode=hook.matcher_mode,
+        )
         with self._mutex, self._atomic_mutation():
             self._hooks[hook.id] = hook
             self._save()
@@ -3181,44 +3505,28 @@ class ScriptHookStore:
             hook = self._hooks.get(hook_id)
             if not hook:
                 return None
-            if "event" in data and data["event"] not in HOOK_EVENTS:
-                raise ValueError(f"invalid event: {data['event']}")
-            if "timeout" in data:
-                t = data["timeout"]
-                if not isinstance(t, int) or not (1 <= t <= 300):
-                    raise ValueError("timeout must be an integer between 1 and 300")
             for k in ("name", "event", "matcher", "matcher_mode", "command", "timeout", "enabled"):
                 if k in data:
                     setattr(hook, k, data[k])
             if "skills" in data:
                 skills_raw = data["skills"]
                 hook.skills = [str(s) for s in skills_raw if isinstance(s, str)] if isinstance(skills_raw, list) else []
-            # Post-merge validation on the merged hook: skills injection only
-            # fires for a standalone skills hook (no command) on
-            # UserPromptSubmit/AgentSpawn (see fire()). Reject any other pairing
-            # so a partial update can't leave a config that saves but never fires.
-            if hook.skills:
-                if hook.command:
-                    raise ValueError(
-                        "skills cannot be combined with a command — the skills "
-                        "would never fire; use a skills-only hook or drop the skills"
-                    )
-                if hook.event in (
-                    HOOK_EVENT_PRE_TOOL_USE, HOOK_EVENT_POST_TOOL_USE, HOOK_EVENT_STOP,
-                ):
-                    raise ValueError(
-                        f"skills hooks cannot fire on {hook.event} events — "
-                        "choose UserPromptSubmit or AgentSpawn"
-                    )
-            # Post-merge validation: reject invalid regex on the merged state
-            # (a partial update sending only matcher without matcher_mode would
-            # bypass the schema-level regex check which sees the request, not
-            # the merged hook).
-            if hook.matcher_mode == "regex" and hook.matcher:
-                try:
-                    re.compile(hook.matcher)
-                except re.error as exc:
-                    raise ValueError(f"invalid regex: {exc}") from None
+            # Validate the MERGED hook through the shared validator — the same
+            # one `create` uses — so both write paths enforce one contract:
+            # event membership, timeout bounds, the command+skills invariant and
+            # its event pairing, and regex syntax. Validating post-merge (not the
+            # request dict) is what catches a partial update that would otherwise
+            # bypass a schema check keyed on the request — e.g. a matcher sent
+            # without its matcher_mode, or skills added to a hook already on a
+            # tool event. Raises ValueError (mapped to HTTP 400 by the handler).
+            validate_hook_fields(
+                event=hook.event,
+                timeout=hook.timeout,
+                command=hook.command,
+                skills=hook.skills,
+                matcher=hook.matcher,
+                matcher_mode=hook.matcher_mode,
+            )
             self._save()
         return hook
 
@@ -3410,7 +3718,7 @@ class ScriptHookStore:
     def _save_snapshot(self, hooks_data: list[dict]) -> None:
         """Thread-safe save using pre-captured hook snapshot."""
         with self._mutex:
-            self._write_hooks_file(hooks_data)
+            self._write_hooks_file([*hooks_data, *self._unparsed_hook_entries])
 
 
 # -- Global script hook store accessor --

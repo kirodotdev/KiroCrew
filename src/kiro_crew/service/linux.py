@@ -34,6 +34,7 @@ from kiro_crew.service.common import (
     kirocrew_bin,
     service_environment,
 )
+from kiro_crew.service.common import systemd_quote as _sd_quote
 
 log = logging.getLogger(__name__)
 
@@ -65,46 +66,6 @@ _ENV_FILE_TEMPLATE = """\
 # default 5476, or when 5476 is already taken):
 #KIROCREW_PORT=5477
 """
-
-
-def _sd_quote(value: str) -> str:
-    """Double-quote a value for a systemd unit token.
-
-    systemd splits unquoted ``ExecStart`` / ``Environment=`` tokens on
-    whitespace, so any path or locale containing a space (a spaced
-    ``KIROCREW_SERVICE_BIN`` / ``KIROCREW_KIRO_BIN`` override, ``PATH`` entries
-    with spaces, etc.) must be wrapped in double quotes. Inside a double-quoted
-    token systemd honours C-style escapes, so ``\\`` and ``"`` are
-    backslash-escaped.
-
-    ``%`` is escaped to ``%%`` *first* (before quoting): systemd performs
-    specifier expansion on ``ExecStart`` / ``Environment=`` values regardless of
-    quoting — an unescaped ``%h`` / ``%i`` in a path (e.g. a directory literally
-    named ``100%``) would be replaced with the home dir / instance name and the
-    exec would target the wrong path. See systemd.unit(5) "Specifiers",
-    systemd.service(5) "Command lines", and systemd.exec(5) ``Environment=``.
-
-    A control character — most dangerously a newline — is rejected outright
-    (``ValueError``) rather than escaped. A double-quoted systemd token does not
-    span physical lines, so a newline in an operator override
-    (``KIROCREW_SERVICE_BIN`` / ``KIROCREW_KIRO_BIN``) would terminate the value
-    and let the remainder be parsed as fresh unit directives — e.g. injecting
-    ``User=root`` + a replacement ``ExecStart`` into the root-owned unit that
-    ``sudo … service install`` writes (a privilege-escalation vector). No
-    legitimate executable path or locale contains a C0/DEL control character, so
-    refusing them is strictly safer than trying to escape them.
-    """
-    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
-        raise ValueError(
-            "refusing to render a systemd unit value containing a control "
-            "character (possible unit-file injection): " + repr(value)
-        )
-    escaped = (
-        value.replace("%", "%%")
-        .replace("\\", "\\\\")
-        .replace('"', '\\"')
-    )
-    return f'"{escaped}"'
 
 
 def _current_user() -> str:

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
 import { api } from '../api/client'
-import { fmtNumber, fmtPercent } from '../i18n/format'
+import { fmtNumber, fmtPercent, fmtUnit } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 
 /**
@@ -18,6 +18,10 @@ export interface ContextTurn {
   context_used: number
   context_window: number
   model: string
+  /** Real billing from the same shard row — absent on rows written before the
+   *  recorder carried it, so render as unknown rather than zero. */
+  credits?: number
+  duration_ms?: number
 }
 
 export interface ContextTrace {
@@ -247,19 +251,24 @@ function TurnRow({
   turn,
   maxTotal,
   colorOf,
+  showCredits,
 }: {
   n: number
   turn: ContextTurn
   maxTotal: number
   colorOf: (label: string) => { fill: string; fg: string }
+  /** Rendered only when SOME turn in the trace carries billing, so an all-dash
+   *  column never appears on pre-recorder history. */
+  showCredits: boolean
 }) {
   const isStart = turn.phase === 'session_start'
   const total = turn.total_chars
   const width = barWidthPct(total, maxTotal)
   const segs = turnSegments(turn.blocks, total, colorOf)
+  const grid = showCredits ? 'grid-cols-[3.5rem_1fr_5rem_4rem]' : 'grid-cols-[3.5rem_1fr_5rem]'
 
   return (
-    <div className="grid grid-cols-[3.5rem_1fr_5rem] gap-2.5 items-center px-3.5 py-[3px] hover:bg-[var(--bg-hover)] rounded">
+    <div className={`grid ${grid} gap-2.5 items-center px-3.5 py-[3px] hover:bg-[var(--bg-hover)] rounded`}>
       <div className="font-mono text-[11px] text-muted text-right whitespace-nowrap">
         <b className="text-text font-medium">{n}</b>
         {isStart ? <> {i18nT('pages.contextBreakdown.row_start')}</> : null}
@@ -268,6 +277,27 @@ function TurnRow({
         <Bar segs={segs} widthPct={width} />
       </div>
       <div className="font-mono text-[11px] text-text text-right tabular-nums">{fmtN(total)}</div>
+      {showCredits ? <CreditsCell turn={turn} /> : null}
+    </div>
+  )
+}
+
+/** One turn's credits, with the duration in the tooltip when the row has it. */
+function CreditsCell({ turn }: { turn: ContextTurn }) {
+  if (turn.credits === undefined) {
+    return <div className="font-mono text-[11px] text-muted text-right tabular-nums">—</div>
+  }
+  const credits = fmtNumber(turn.credits, { maximumFractionDigits: 2 })
+  const title =
+    turn.duration_ms === undefined
+      ? i18nT('pages.contextBreakdown.turn_credits_title', { credits })
+      : i18nT('pages.contextBreakdown.turn_credits_duration_title', {
+          credits,
+          duration: fmtUnit(turn.duration_ms / 1000, 'second', { maximumFractionDigits: 1 }),
+        })
+  return (
+    <div className="font-mono text-[11px] text-text text-right tabular-nums" title={title}>
+      {credits}
     </div>
   )
 }
@@ -329,6 +359,10 @@ function ContextBreakdownCard({ trace }: { trace: ContextTrace }) {
   const starts = numbered.filter(t => t.turn.phase === 'session_start')
   const perTurn = numbered.filter(t => t.turn.phase !== 'session_start')
   const maxTotal = Math.max(1, ...trace.turns.map(t => t.total_chars))
+  // Billing rides the same rows; the column appears only when at least one
+  // turn actually carries it, so pre-recorder history stays three columns.
+  const hasCredits = trace.turns.some(t => t.credits !== undefined)
+  const totalCredits = trace.turns.reduce((sum, t) => sum + (t.credits ?? 0), 0)
 
   // Whole-window summary: aggregate blocks + the estimated non-KiroCrew remainder.
   const groupedTotals = groupBlocks(trace.totals)
@@ -423,14 +457,19 @@ function ContextBreakdownCard({ trace }: { trace: ContextTrace }) {
         />
       </div>
 
-      <div className="grid grid-cols-[3.5rem_1fr_5rem] gap-2.5 px-3.5 pt-2.5 pb-1 font-mono text-[10px] text-muted-strong tracking-wide">
+      <div
+        className={`grid ${hasCredits ? 'grid-cols-[3.5rem_1fr_5rem_4rem]' : 'grid-cols-[3.5rem_1fr_5rem]'} gap-2.5 px-3.5 pt-2.5 pb-1 font-mono text-[10px] text-muted-strong tracking-wide`}
+      >
         <span>{i18nT('pages.contextBreakdown.axis_turn')}</span>
         <span>{i18nT('pages.contextBreakdown.axis_bar')}</span>
         <span className="text-right">{i18nT('pages.contextBreakdown.axis_chars')}</span>
+        {hasCredits ? (
+          <span className="text-right uppercase">{i18nT('pages.contextBreakdown.col_credits')}</span>
+        ) : null}
       </div>
 
       {starts.map(({ turn, n }) => (
-        <TurnRow key={n} n={n} turn={turn} maxTotal={maxTotal} colorOf={colorOf} />
+        <TurnRow key={n} n={n} turn={turn} maxTotal={maxTotal} colorOf={colorOf} showCredits={hasCredits} />
       ))}
 
       {perTurn.length > 0 ? (
@@ -443,14 +482,16 @@ function ContextBreakdownCard({ trace }: { trace: ContextTrace }) {
       ) : null}
 
       {perTurn.map(({ turn, n }) => (
-        <TurnRow key={n} n={n} turn={turn} maxTotal={maxTotal} colorOf={colorOf} />
+        <TurnRow key={n} n={n} turn={turn} maxTotal={maxTotal} colorOf={colorOf} showCredits={hasCredits} />
       ))}
 
       <div className="px-3.5 pt-3 pb-1 border-t border-border mt-1.5">
         <div className="font-mono text-[10px] text-muted-strong uppercase tracking-wide pb-1">
           {i18nT('pages.contextBreakdown.group_whole_window')}
         </div>
-        <div className="grid grid-cols-[3.5rem_1fr_5rem] gap-2.5 items-center py-[3px]">
+        <div
+          className={`grid ${hasCredits ? 'grid-cols-[3.5rem_1fr_5rem_4rem]' : 'grid-cols-[3.5rem_1fr_5rem]'} gap-2.5 items-center py-[3px]`}
+        >
           <div className="font-mono text-[11px] text-muted text-right">
             <b className="text-text font-medium">{i18nT('pages.contextBreakdown.row_all')}</b>
           </div>
@@ -458,6 +499,14 @@ function ContextBreakdownCard({ trace }: { trace: ContextTrace }) {
             <Bar segs={windowSegs} widthPct={100} />
           </div>
           <div className="font-mono text-[11px] text-text text-right tabular-nums">{fmtN(totalWindow)}</div>
+          {hasCredits ? (
+            <div
+              className="font-mono text-[11px] text-text text-right tabular-nums"
+              title={i18nT('pages.contextBreakdown.total_credits_title')}
+            >
+              {fmtNumber(totalCredits, { maximumFractionDigits: 1 })}
+            </div>
+          ) : null}
         </div>
       </div>
 

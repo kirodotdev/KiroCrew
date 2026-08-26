@@ -54,8 +54,6 @@ from kiro_crew.acp.kas_agents import (
 from kiro_crew.acp.kas_assets import (
     KasAssetsMissing,
     build_kas_argv,
-    build_kas_cli_argv,
-    kas_override_active,
     resolve_kas_entry,
 )
 from kiro_crew.acp.kas_auth import (
@@ -110,7 +108,7 @@ from kiro_crew.sandbox import (
     RLIMIT_PROFILE_SESSION_HOST,
     cgroup_scope_argv,
     create_subprocess_limited,
-    scrub_agent_denied_env,
+    scrub_agent_subprocess_env,
     wrap_argv,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -931,19 +929,10 @@ class AcpRuntime:
         only kiro-cli needs its agent file materialized first.
         """
         if self._acp_backend == ACP_BACKEND_KAS:
-            if kas_override_active():
-                # Escape hatch (airgap/debug): launch the operator's pinned
-                # local build directly. No --agent: KAS takes custom agents
-                # over the wire in session/new (_meta.kiro.customAgents).
-                node, script = await asyncio.to_thread(resolve_kas_entry)
-                return build_kas_argv(node, script)
-            # Default: front KAS with kiro-cli's own ACP surface. kiro-cli
-            # extracts the bundle on demand and supervises the Node process;
-            # the auth callback is still forwarded to this client (kas_auth).
-            kas_kiro_bin = await _resolve_kiro_bin_for_spawn()
-            if not kas_kiro_bin:
-                raise AcpRuntimeError(f"{KIRO_CLI_BIN} not found in PATH")
-            return build_kas_cli_argv(kas_kiro_bin)
+            node, script = await asyncio.to_thread(resolve_kas_entry)
+            # No --agent: KAS takes custom agents over the wire in session/new
+            # (_meta.kiro.customAgents), not from a CLI flag.
+            return build_kas_argv(node, script)
 
         kiro_bin = await _resolve_kiro_bin_for_spawn()
         if not kiro_bin:
@@ -991,9 +980,10 @@ class AcpRuntime:
         # needs no bind-mount and works with sandbox mode "off". strip_python_env
         # IS applied to keep the host PYTHONPATH/PYTHONHOME out of kiro-cli's
         # foreign MCP subprocesses (which bundle their own interpreter + deps).
-        # is_kiro_cli drives a macOS-only delegation: when kiro's internal
-        # sandbox is enabled, wrap_argv skips its own seatbelt because the two
-        # cannot nest (kernel EPERM). Granted by membership in
+        # is_kiro_cli drives the reviewed Kiro internal-sandbox delegation: on
+        # macOS wrap_argv skips its seatbelt because the two cannot nest; on
+        # Windows the official Kiro backend delegates by default because Crew
+        # has no native OS sandbox there. Granted by membership in
         # ACP_BACKENDS_INTERNAL_SANDBOX (harness-parity H7), never as "not KAS":
         # this test fails OPEN, so a harness that inherited a negative test would
         # have Crew's seatbelt skipped in favour of an internal sandbox that never
@@ -1003,13 +993,7 @@ class AcpRuntime:
             argv,
             mode=self._sandbox_mode,
             strip_python_env=True,
-            # Positive grants only (harness-parity H7): membership grants the
-            # kiro backend directly; every other backend defers to wrap_argv's
-            # own argv-basename detection (None), which is a positive Kiro test
-            # that follows the spawned BINARY — the cli-fronted KAS shape
-            # launches kiro-cli itself (internal sandbox, cannot nest inside
-            # Crew's seatbelt), while the direct Node shape keeps the seatbelt.
-            is_kiro_cli=(True if self._acp_backend in ACP_BACKENDS_INTERNAL_SANDBOX else None),
+            is_kiro_cli=self._acp_backend in ACP_BACKENDS_INTERNAL_SANDBOX,
         )
         # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server /
         # tool descendants with pids.max (fork bomb) + memory.max (RSS balloon).
@@ -1024,15 +1008,6 @@ class AcpRuntime:
         env = {**os.environ}
         if self._extra_env:
             env.update(self._extra_env)
-
-        # Parent-level scrub of gateway-owned channel credentials. The default
-        # auto/standard sandbox launcher strips _AGENT_DENIED_ENV_KEYS only for
-        # cc/strict, and this path copies a raw os.environ + wrap_argv (not
-        # sandboxed_spawn_argv), so without this the Slack/WeCom/Telegram tokens
-        # seeded into os.environ by load_credentials() would be inherited by the
-        # agent subprocess on the default tier. Leaves the AWS/SSH env the
-        # standard sandbox intentionally exposes untouched.
-        env = scrub_agent_denied_env(env)
 
         env["PATH"] = augmented_path(env.get("PATH", ""))
 
@@ -1060,6 +1035,12 @@ class AcpRuntime:
                 strip_kiro_cli_api_key(env)
 
         await self._to_thread_guarding_sandbox(_resolve_env_off_loop)
+        # Parent-side equivalent of the launcher scrub. This is required on
+        # Windows where the positively classified Kiro backend delegates to the
+        # CLI's internal sandbox without a POSIX `env -u` wrapper. Do it after
+        # credential-pointer/API-key resolution so no resolver can reintroduce a
+        # denied variable; KIRO_API_KEY itself is intentionally not denied.
+        env = scrub_agent_subprocess_env(env)
         # Positive-identity marker for the orphan sweep: kiro-cli and every MCP
         # server it spawns inherit this, so escaped launcher trees (``npx
         # @playwright/mcp`` -> node) are identifiable as ours.

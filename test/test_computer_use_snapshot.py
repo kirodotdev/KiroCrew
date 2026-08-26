@@ -410,6 +410,115 @@ class TestScreenshotSpoolNamesAreUnique:
         assert result.image_jpeg == b""
 
 
+class TestSpoolFailureLeavesNoOrphanFrame:
+    """A post-allocation spool failure must not orphan the ``mkstemp`` frame.
+
+    ``mkstemp`` allocates the name AND creates the file, so every raiser after
+    it — the write, the permission tighten, the ring trim — used to leave a
+    zero-owner frame behind in the spool when the blanket fail-soft handler
+    discarded the path without unlinking. The degraded return value alone
+    passes on the unfixed code; the no-new-file assertion is the point.
+    """
+
+    def _service(self, tmp_path, monkeypatch):
+        from kiro_crew.computer_use import service as service_mod
+
+        monkeypatch.setattr(service_mod.tempfile, "gettempdir", lambda: str(tmp_path))
+        return service_mod
+
+    def _snap(self, service_mod, payload: bytes):
+        from kiro_crew.computer_use.types import AppRef, Snapshot
+
+        return Snapshot(
+            app=AppRef(name="A", pid=1, bundle_id="com.acme.a", window_id=7),
+            elements=(),
+            captured_at=time.monotonic(),
+            image_jpeg=payload,
+            image_width=10,
+            image_height=10,
+        )
+
+    def _spool_files(self, service_mod, tmp_path):
+        import os
+
+        shot_dir = os.path.join(str(tmp_path), service_mod.SCREENSHOT_DIR_NAME)
+        if not os.path.isdir(shot_dir):
+            return []
+        return os.listdir(shot_dir)
+
+    def _assert_degraded_and_clean(self, service_mod, tmp_path, result):
+        assert result.image_path == ""
+        assert result.image_jpeg == b""
+        assert result.image_width == 0 and result.image_height == 0
+        # THE assertion: the allocated frame was unlinked, not orphaned.
+        assert self._spool_files(service_mod, tmp_path) == []
+
+    def test_a_failing_write_leaves_no_file_behind(self, tmp_path, monkeypatch):
+        import os
+
+        service_mod = self._service(tmp_path, monkeypatch)
+        real_fdopen = os.fdopen
+
+        class _BoomHandle:
+            def __init__(self, inner):
+                self._inner = inner
+
+            def __enter__(self):
+                self._inner.__enter__()
+                return self
+
+            def __exit__(self, *exc):
+                return self._inner.__exit__(*exc)
+
+            def write(self, _data):
+                raise OSError("no space left on device")
+
+        monkeypatch.setattr(
+            service_mod.os, "fdopen", lambda fd, mode: _BoomHandle(real_fdopen(fd, mode))
+        )
+        svc = service_mod.ComputerUseService()
+        result = svc._persist_image(self._snap(service_mod, b"AAAA"))
+        self._assert_degraded_and_clean(service_mod, tmp_path, result)
+
+    def test_a_failing_permission_tighten_leaves_no_file_behind(self, tmp_path, monkeypatch):
+        service_mod = self._service(tmp_path, monkeypatch)
+
+        def boom(_path):
+            raise OSError("chmod refused")
+
+        monkeypatch.setattr(service_mod.platform_compat, "restrict_to_owner", boom)
+        svc = service_mod.ComputerUseService()
+        result = svc._persist_image(self._snap(service_mod, b"AAAA"))
+        self._assert_degraded_and_clean(service_mod, tmp_path, result)
+
+    def test_a_failing_ring_trim_leaves_no_file_behind(self, tmp_path, monkeypatch):
+        service_mod = self._service(tmp_path, monkeypatch)
+
+        def boom(_shot_dir):
+            raise RuntimeError("trim exploded")
+
+        monkeypatch.setattr(service_mod, "_trim_ring", boom)
+        svc = service_mod.ComputerUseService()
+        result = svc._persist_image(self._snap(service_mod, b"AAAA"))
+        self._assert_degraded_and_clean(service_mod, tmp_path, result)
+
+    def test_the_happy_path_still_spools_an_owner_only_frame(self, tmp_path, monkeypatch):
+        """The cleanup must never fire on success: the frame survives, 0o600."""
+        import os
+        import stat
+
+        service_mod = self._service(tmp_path, monkeypatch)
+        svc = service_mod.ComputerUseService()
+        result = svc._persist_image(self._snap(service_mod, b"AAAA"))
+        assert result.image_path
+        assert os.path.isfile(result.image_path)
+        with open(result.image_path, "rb") as handle:
+            assert handle.read() == b"AAAA"
+        if os.name == "posix":
+            assert stat.S_IMODE(os.stat(result.image_path).st_mode) == 0o600
+        assert self._spool_files(service_mod, tmp_path) == [os.path.basename(result.image_path)]
+
+
 class TestSnapshotIndex:
     # Every entry is namespaced by session, so the tests name one explicitly
     # rather than relying on a default the API deliberately does not provide.

@@ -278,6 +278,104 @@ def test_persist_returns_empty_when_the_write_fails(spool: Path, monkeypatch: py
     assert capture_macos.persist_jpeg(_JPEG) == ""
 
 
+def test_a_failed_write_removes_the_partial_frame(spool: Path, monkeypatch: pytest.MonkeyPatch):
+    """A write failure must not strand the just-allocated frame in the spool.
+
+    ``mkstemp`` succeeds and the SUBSEQUENT write raises: the caller is handed
+    ``""`` and can never learn the path, so a leftover here is an invisible,
+    partially-written file of the operator's screen pixels that nothing owns —
+    it sits in the spool until the ring trim happens to reach it. The path is
+    this invocation's own allocation, so removing exactly it is safe.
+    """
+    allocated: list[str] = []
+    allocated_fds: list[int] = []
+    real_mkstemp = capture_macos.tempfile.mkstemp
+
+    def _recording_mkstemp(*args, **kwargs):
+        fd, path = real_mkstemp(*args, **kwargs)
+        allocated_fds.append(fd)
+        allocated.append(path)
+        return fd, path
+
+    closed_by_os_close: list[int] = []
+    real_close = capture_macos.os.close
+
+    def _recording_close(fd):
+        closed_by_os_close.append(fd)
+        real_close(fd)
+
+    real_fdopen = capture_macos.os.fdopen
+
+    def _failing_fdopen(fd, *args, **kwargs):
+        handle = real_fdopen(fd, *args, **kwargs)
+
+        class _FailingHandle:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                # Close like the real ``with`` would, so the unlink under test
+                # runs against a closed file — the same state Windows requires.
+                handle.close()
+                return False
+
+            def write(self, data):
+                raise OSError("disk full")
+
+        return _FailingHandle()
+
+    monkeypatch.setattr(capture_macos.tempfile, "mkstemp", _recording_mkstemp)
+    monkeypatch.setattr(capture_macos.os, "fdopen", _failing_fdopen)
+    monkeypatch.setattr(capture_macos.os, "close", _recording_close)
+    assert capture_macos.persist_jpeg(_JPEG) == ""
+    assert allocated, "the seam never allocated a file, so the test exercised nothing"
+    assert not Path(allocated[0]).exists()
+    assert _spooled(spool) == []
+    # ``fdopen`` ADOPTED the descriptor, so the ``with`` owns closing it. An
+    # explicit ``os.close`` on the raw number here would be a double-close that
+    # can hit an unrelated descriptor another thread was just handed.
+    assert not (set(allocated_fds) & set(closed_by_os_close))
+
+
+def test_a_failed_fdopen_closes_the_fd_and_removes_the_frame(
+    spool: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """``fdopen`` raising BEFORE adopting the fd must not leak it or the file.
+
+    Nothing else will ever close that descriptor, and Windows refuses to unlink
+    a file with an open handle — so this branch (and only this branch) closes
+    the raw fd before the unlink.
+    """
+    allocated: list[str] = []
+    allocated_fds: list[int] = []
+    real_mkstemp = capture_macos.tempfile.mkstemp
+
+    def _recording_mkstemp(*args, **kwargs):
+        fd, path = real_mkstemp(*args, **kwargs)
+        allocated_fds.append(fd)
+        allocated.append(path)
+        return fd, path
+
+    closed_by_os_close: list[int] = []
+    real_close = capture_macos.os.close
+
+    def _recording_close(fd):
+        closed_by_os_close.append(fd)
+        real_close(fd)
+
+    def _boom_fdopen(fd, *args, **kwargs):
+        raise OSError("out of file descriptors")
+
+    monkeypatch.setattr(capture_macos.tempfile, "mkstemp", _recording_mkstemp)
+    monkeypatch.setattr(capture_macos.os, "fdopen", _boom_fdopen)
+    monkeypatch.setattr(capture_macos.os, "close", _recording_close)
+    assert capture_macos.persist_jpeg(_JPEG) == ""
+    assert allocated, "the seam never allocated a file, so the test exercised nothing"
+    assert not Path(allocated[0]).exists()
+    assert _spooled(spool) == []
+    assert closed_by_os_close.count(allocated_fds[0]) == 1
+
+
 def test_frame_names_never_collide_even_within_one_millisecond(
     spool: Path, monkeypatch: pytest.MonkeyPatch
 ):

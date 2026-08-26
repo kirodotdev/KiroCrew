@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from chat_test_helpers import _make_state
@@ -113,8 +113,43 @@ async def test_queue_dispatch_preserves_recovery_provenance(
         slot,
         _CONN_RECOVER_MSG,
         _synthetic_payload=expected_recovery,
+        _directive_user_origin=False,
     )
     assert slot.messages[-1]["role"] == expected_role
+
+
+@pytest.mark.asyncio
+async def test_queue_dispatch_preserves_consumption_callback(tmp_path, monkeypatch) -> None:
+    """A retry entry keeps the callback that settles its durable producer."""
+    from kiro_crew.dashboard import chat_runner
+
+    state = _make_state(tmp_path)
+    state.subagents = None
+    slot = state.get_or_create_slot("recovery-consumption")
+    on_consumed = Mock()
+    on_irreversibly_consumed = Mock()
+    slot.queue_insert(
+        0,
+        "Retry this exact prompt",
+        kind=SYNTHETIC_RECOVERY_KIND,
+        on_consumed=on_consumed,
+        on_irreversibly_consumed=on_irreversibly_consumed,
+    )
+    mock_run = AsyncMock()
+    monkeypatch.setattr(chat_runner, "_run_chat", mock_run)
+
+    assert await chat_runner._start_next_queued_turn(state, slot) is True
+    assert slot.task is not None
+    await slot.task
+
+    mock_run.assert_awaited_once()
+    args = mock_run.await_args
+    assert args.args == (state, slot, "Retry this exact prompt")
+    assert args.kwargs["_synthetic_payload"] is True
+    args.kwargs["_on_consumed"](True)
+    await args.kwargs["_on_irreversibly_consumed"]()
+    on_consumed.assert_called_once_with(True)
+    on_irreversibly_consumed.assert_called_once_with()
 
 
 @pytest.mark.asyncio
@@ -184,6 +219,7 @@ async def test_dispatch_classifies_the_payload_not_the_recovery(
         slot,
         "Build and deploy the service",
         _synthetic_payload=expected_synthetic,
+        _directive_user_origin=False,
     )
     # Provenance is unchanged by the split: either payload still renders as an
     # inject row, which is what stops the duplicate user bubble.

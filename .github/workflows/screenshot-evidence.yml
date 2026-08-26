@@ -100,8 +100,12 @@ jobs:
           # temp-screenshots path, or a GitHub user-attachment URL. Real
           # evidence satisfies the gate outright, so it is checked before any
           # waiver: a body carrying both a screenshot and the marker passes on
-          # the screenshot.
-          if printf '%s' "$body" | grep -qiE '!\[[^]]*\]\([^)]+\)|<img[[:space:]]|<video[[:space:]]|temp-screenshots/|user-attachments/'; then
+          # the screenshot. Every body check reads from a here-string, never a
+          # `printf | grep` pipe: grep -q exits on the first match, the writer
+          # can die of SIGPIPE (141), and pipefail then makes that the
+          # pipeline's status, so a body that DID match would be misread as
+          # carrying no evidence.
+          if grep -qiE '!\[[^]]*\]\([^)]+\)|<img[[:space:]]|<video[[:space:]]|temp-screenshots/|user-attachments/' <<< "$body"; then
             echo "Visual evidence found in the PR description."
             exit 0
           fi
@@ -115,11 +119,11 @@ jobs:
           # body text is never read as a pattern; in both matches below the
           # untrusted body only ever reaches grep as stdin data, never as a
           # pattern or part of a command.
-          if printf '%s' "$body" | grep -qF -- '<!-- no-visual-delta -->'; then
+          if grep -qF -- '<!-- no-visual-delta -->' <<< "$body"; then
             # The justification needs visible content after the colon: literal
             # asterisks are skipped so a bare bold "**Why no screenshot:**"
             # does not count, while a reason opening with emphasis does.
-            if printf '%s' "$body" | grep -qiE 'why no screenshots?:(\*\*)?[[:space:]]*\**[^*[:space:]]'; then
+            if grep -qiE 'why no screenshots?:(\*\*)?[[:space:]]*\**[^*[:space:]]' <<< "$body"; then
               echo "::warning::'<!-- no-visual-delta -->' marker present in the PR body -- visual-evidence requirement waived. The author's justification is in the PR description."
               exit 0
             fi

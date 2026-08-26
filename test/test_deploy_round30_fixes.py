@@ -12,6 +12,8 @@ from pathlib import Path
 
 import yaml
 
+from conftest import requires_symlinks
+
 REPO = Path(__file__).resolve().parents[1]
 TEMPLATES = REPO / "src" / "kiro_crew" / "deploy" / "skills" / "artifact-deploy" / "templates"
 HANDLERS = REPO / "src" / "kiro_crew" / "deploy" / "handlers.py"
@@ -33,6 +35,7 @@ class TestF1NolinkRead:
         f.write_text("hello")
         assert safe_read_file_bytes_nolink(str(f)) == b"hello"
 
+    @requires_symlinks
     def test_helper_rejects_symlink(self, tmp_path):
         from kiro_crew.hooks import safe_read_file_bytes_nolink
         target = tmp_path / "real.txt"

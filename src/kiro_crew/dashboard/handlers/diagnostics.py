@@ -66,10 +66,13 @@ async def api_diagnostics_collect(request: web.Request) -> web.Response:
             include_logs=include_logs,
             output_dir=_diagnostics_dir(),
         )
-    except Exception as exc:  # pragma: no cover - defensive
+    except Exception:  # pragma: no cover - defensive
         logger.exception("diagnostics collection failed")
+        # The dashboard renders ``error`` verbatim into a localized UI, so raw
+        # exception text (which can carry paths or internal detail) must not
+        # reach the client. The detail stays in the server log above.
         return web.json_response(
-            {"error": f"collection failed: {exc}", "code": "collection_failed"},
+            {"error": "collection failed", "code": "collection_failed"},
             status=500,
         )
 

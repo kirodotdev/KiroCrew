@@ -276,6 +276,8 @@ def test_guard_self_test_passes(tmp_path) -> None:
         [sys.executable, GUARD, "--test"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=120,
         cwd=str(tmp_path),
         env=env,
@@ -290,6 +292,8 @@ def test_guard_tree_is_clean(tmp_path) -> None:
         [sys.executable, GUARD],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=120,
         cwd=str(tmp_path),
     )

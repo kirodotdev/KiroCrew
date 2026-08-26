@@ -2472,18 +2472,20 @@ upstream of this app:
   looking card.
 - `CollapsibleToolGroup` rendered its approval buttons only when **collapsed** —
   but a group with a live pending approval auto-expands, so the one turn waiting on
-  the user was the one turn they could not answer. Pinned by
+  the user was the one turn they could not answer. Fixed in #5487: the approval
+  row (preview + buttons) now renders in both disclosure states. Pinned by
   `website/src/test/collapsibleToolGroupApproval.test.tsx`.
 - A **failed** approval rendered as "Approved". `submitDecision` optimistically flips the
   card and relies on the promise `onApprove` returns to reject so its catch can roll that
   back — but `ChatEmbed.handleApprove` called `approveMutation.mutate()`, which returns
   `void` and swallows the rejection. So on a failed POST the card claimed success, the
   buttons vanished, and the agent stayed parked on a decision that never reached it: silent
-  every time, with no way to retry. `mutateAsync` is now RETURNED, and the whole chain
-  forwards it (`ChatMessageList`'s intermediate arrow included, or the rejection dies in the
-  middle). The `onApprove` prop type widened to `void | Promise<unknown>` to say so. Two
-  tests: a rejecting handler must leave the card answerable, a resolving one must not roll
-  back — the first fails against the old fire-and-forget shape. Found in review.
+  every time, with no way to retry. **This rollback wiring is NOT in the tree**: `ChatEmbed`
+  still calls `approveMutation.mutate(...)` and `ChatMessageListProps.onApprove` is typed
+  `=> void`, so the rejection dies at the type boundary and the rollback cannot fire on the
+  one mount that renders the row. The fix (return `mutateAsync`, widen the prop type to
+  `void | Promise<unknown>`, pin with a rejecting-handler test) is tracked separately —
+  see #5524.
 
 Layout: the embed scrolls via `h-full` + an inner `flex-1 overflow-y-auto`, so an
 ancestor MUST bound its height (`IncidentChat` owns a fixed-height flex column with

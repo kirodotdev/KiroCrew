@@ -209,6 +209,18 @@ release that changed it. `superseded_default_drift(base_data)` returns the entri
 whose stored value equals the old default, comparing type as well as value so a
 stored `0` is not read as `False`.
 
+Registered so far: `mcp_gateway.forward_declared_env` (False -> True, #4566) and
+`session.autocompact_pct` (90.0 -> 70.0, #4388).
+
+Both sides of an entry are **history**, so both are literals: a later change to
+the same key APPENDS a new entry rather than editing an existing one, which keeps
+the older row a true record of the change it describes. What must stay current is
+the END of each key's chain --
+`test_every_registered_key_ends_at_the_live_default` asserts the newest entry per
+key names the default the loader actually applies, so moving a default without
+appending a row fails rather than leaving the report telling operators to adopt a
+value that no longer exists.
+
 Two surfaces render it, and neither writes:
 
 - The load path warns once per key per process, evaluated on the **stored base

@@ -220,6 +220,28 @@ export function useImeGuard() {
   }
 
   /**
+   * Synthetic-event twin of `ImeLatch.claimKey`, for choose-class keys that
+   * are NOT Enter (a boundary Tab that would cycle focus, an Escape that
+   * would dismiss): it claims through this instance's latch, so the decline
+   * owns both halves exactly as the native contract specifies — always
+   * `stopPropagation`, `preventDefault` only in the post-composition window
+   * where the browser would otherwise act. The latch consumes the NATIVE
+   * event; the SYNTHETIC propagation flag is stopped here too, because React
+   * walks its own flag when dispatching to component ancestors and the
+   * native call does not set it — leaving that to the caller would re-open
+   * the split-the-halves drift this file's ratchet exists to prevent. Enter
+   * branches keep using `claimEnter`, whose ACCEPTED path also consumes the
+   * key (a submitted Enter must never insert a newline); `claimKey` leaves an
+   * accepted key's default to the caller, which is what a Tab site needs —
+   * it consumes only the wrap it owns.
+   */
+  const claimKey = (e: KeyboardEvent) => {
+    if (latch.claimKey(e.nativeEvent)) return true
+    e.stopPropagation()
+    return false
+  }
+
+  /**
    * Spread onto any input or textarea that needs IME-safe composition tracking.
    *
    * The blur reset is not optional and not the caller's to remember. A composition
@@ -270,5 +292,5 @@ export function useImeGuard() {
     },
   })
 
-  return { onCompositionStart, onCompositionEnd, isComposing, claimEnter, reset, bindComposition, bindEnter }
+  return { onCompositionStart, onCompositionEnd, isComposing, claimEnter, claimKey, reset, bindComposition, bindEnter }
 }

@@ -59,5 +59,14 @@
   "heroImage": "/app-assets/design-critique/hero-light.svg",
   "heroImageDark": "/app-assets/design-critique/hero-dark.svg",
   "heroImageDetail": "/app-assets/design-critique/hero-detail-light.svg",
-  "heroImageDetailDark": "/app-assets/design-critique/hero-detail-dark.svg"
+  "heroImageDetailDark": "/app-assets/design-critique/hero-detail-dark.svg",
+  "useCases": [
+    "Critique one screen or a complete product flow with severity-ranked, heuristic-backed findings tied to visible regions."
+  ],
+  "configuration": [
+    "Drop in screenshots for zero-setup review, or provide a Figma file, repository, local folder, or already-running URL; private GitHub sources may require gh auth login."
+  ],
+  "screenshots": [
+    "/app-assets/design-critique/screenshot-main.png"
+  ]
 }

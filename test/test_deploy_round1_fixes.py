@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew.deploy import handlers, pending
 
 # ─── F1: staging root in config_dir, symlink-preemptable defense ───────────
@@ -24,6 +25,7 @@ def test_staging_root_uses_config_dir(tmp_path: Path, monkeypatch):
     assert (root.stat().st_mode & 0o777) == 0o700
 
 
+@requires_symlinks
 def test_staging_root_rejects_symlink(tmp_path: Path, monkeypatch):
     """F1: _staging_root() raises RuntimeError when path is a symlink."""
     fake_config = tmp_path / "cfg"
@@ -80,6 +82,7 @@ def test_stage_tree_runs_in_thread(tmp_path: Path, monkeypatch):
 # ─── F3: copytree symlinks=True + reject symlinks in snapshot ──────────────
 
 
+@requires_symlinks
 def test_symlink_in_source_blocks_deploy(tmp_path: Path, monkeypatch):
     """F3: A symlink present in source at copy time is preserved (symlinks=True)
     and then detected+rejected in the staged snapshot check."""

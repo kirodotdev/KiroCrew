@@ -554,8 +554,9 @@ function SwitcherMenu({
             behind a separator so it never reads as one more crew to switch to.
             `onSelect`'s preventDefault keeps the menu open — the user sees the
             checkmark flip and can keep adjusting pins in the same session, the
-            same discipline the per-crew pin toggle uses. Hidden in an embedded
-            pane, where the preference has no host-model relay yet. */}
+            same discipline the per-crew pin toggle uses. In an embedded pane the
+            toggle relays up to the parent (mc-set-stable-order), so it is shown
+            there too. */}
         {showStableOrderToggle ? (
           <>
             <DropdownMenuSeparator />
@@ -886,24 +887,36 @@ function Switcher({
   onTogglePin?: (id: string) => void
   /** Override for the stable-order preference. Defaults to this realm's own
    *  localStorage-backed store; callers that own the preference elsewhere pass
-   *  it explicitly. */
-  stableOrder?: boolean
+   *  it explicitly. An embedded pane passes the value the host relayed, or
+   *  `null` when the host sent no opinion at all (an older parent predating the
+   *  relay, which has no `mc-set-stable-order` handler). `null` orders by the
+   *  pre-relay default and suppresses the toggle -- see `showStableOrderToggle`
+   *  below -- rather than exposing a control that could never take effect. */
+  stableOrder?: boolean | null
   /** Paired toggler for `stableOrder`. */
   onToggleStableOrder?: () => void
   /** True inside a remote pane's embedded switcher. The stable-order preference
-   *  has no host-model relay yet, so a pane toggling it would write only its own
-   *  cross-origin localStorage and drift from the parent header and sibling panes.
-   *  Until that relay exists, an embedded switcher forces the default ordering and
-   *  hides the toggle, rather than exposing a control that silently half-works. */
+   *  is parent-owned and relayed through `mc-host-model` (`stableOrder`), and an
+   *  embedded toggle posts `mc-set-stable-order` back up, so the pane applies and
+   *  offers the same preference as the local bar. The flag only feeds the older-
+   *  host safety net in the resolution above; it no longer hides the toggle. */
   embedded?: boolean
 }) {
   const [storePinned, storeTogglePin] = useCrewPins()
   const pinned = pinnedProp ?? storePinned
   const togglePin = onTogglePinProp ?? storeTogglePin
   const [storeStableOrder, storeToggleStableOrder] = useCrewSwitcherStableOrder()
-  // Embedded panes ignore their own origin's store (it is not the authoritative
-  // preference and would apply inconsistently); everywhere else it is the default.
-  const stableOrder = embedded ? false : (stableOrderProp ?? storeStableOrder)
+  // The stable-order preference is parent-owned. An embedded pane receives it as
+  // a prop relayed through `mc-host-model` (and toggles it back up via
+  // `mc-set-stable-order`), so it no longer reads its own cross-origin store; a
+  // top-level bar falls back to this realm's localStorage-backed store.
+  //
+  // `null` from an embedded pane means the host predates the relay, so it has no
+  // handler for the toggle's message. Offering the control there would let the
+  // user click a checkbox that can never change state, so the pane both orders
+  // by the pre-relay default and hides the toggle in that one case.
+  const relayUnsupported = embedded && (stableOrderProp ?? null) === null
+  const stableOrder = (stableOrderProp ?? (embedded ? false : storeStableOrder)) === true
   const toggleStableOrder = onToggleStableOrderProp ?? storeToggleStableOrder
   const [clippedPinned, setClippedPinned] = useState<Set<string>>(() => new Set())
   const active = entries.find(e => (e.id ?? null) === activeId) ?? entries[0]
@@ -954,7 +967,7 @@ function Switcher({
         clippedPinned={clippedPinned}
         stableOrder={stableOrder}
         onToggleStableOrder={toggleStableOrder}
-        showStableOrderToggle={!embedded}
+        showStableOrderToggle={!relayUnsupported}
       />
     </div>
   )
@@ -979,6 +992,16 @@ function EmbeddedInstanceTabBar({ variant }: { variant: 'strip' | 'inline' }) {
     // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
     window.parent?.postMessage({ type: 'mc-set-crew-pin', v: 1, id }, '*')
   }, [])
+  // The stable-order preference also lives on the parent (one shared value across
+  // every pane). This pane cannot write the parent's store from its own iframe
+  // realm, so it relays the flipped value up and lets the parent re-broadcast the
+  // model back down. `null` = this host predates the relay, which the Switcher
+  // reads as "order by the default and do not offer the toggle at all".
+  const hostStableOrder = host?.stableOrder ?? null
+  const onToggleStableOrder = useCallback(() => {
+    // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
+    window.parent?.postMessage({ type: 'mc-set-stable-order', v: 1, on: !hostStableOrder }, '*')
+  }, [hostStableOrder])
   const entries = useMemo<SwitcherEntry[]>(() => {
     if (!host) return []
     return [
@@ -1015,6 +1038,8 @@ function EmbeddedInstanceTabBar({ variant }: { variant: 'strip' | 'inline' }) {
         onSelect={onSelect}
         pinned={pinnedFromHost}
         onTogglePin={onTogglePin}
+        stableOrder={hostStableOrder}
+        onToggleStableOrder={onToggleStableOrder}
         embedded
       />
     </div>

@@ -584,4 +584,46 @@ describe('mochi panelBridge live events', () => {
     )
     expect(posted).toBeTruthy()
   })
+
+  it('setModel reports a successful switch', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true }) })
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(bridge.setModel('some-model')).resolves.toEqual({ ok: true })
+    const posted = fetchMock.mock.calls.find((c) => String(c[0]).endsWith('/model'))
+    expect(posted).toBeTruthy()
+  })
+
+  it('setModel propagates the turn_in_flight refusal code, not a bare false', async () => {
+    // The gateway's real mid-turn refusal shape (chat_handlers.py): without
+    // the code, a mochi-initiated switch during a turn silently reported a
+    // generic failure and the settings panel could say nothing useful.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 409,
+      json: async () => ({ error: 'a turn is in flight', code: 'turn_in_flight' }),
+    }))
+    await expect(bridge.setModel('some-model'))
+      .resolves.toEqual({ ok: false, code: 'turn_in_flight' })
+  })
+
+  it('setModel keeps a code-less or non-JSON refusal a generic failure', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => { throw new Error('not json') },
+    }))
+    await expect(bridge.setModel('some-model')).resolves.toEqual({ ok: false })
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      json: async () => ({ error: 'bad model' }),
+    }))
+    await expect(bridge.setModel('some-model')).resolves.toEqual({ ok: false })
+  })
+
+  it('setModel reports a network error as failure, not a throw', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')))
+    await expect(bridge.setModel('some-model')).resolves.toEqual({ ok: false })
+  })
 })

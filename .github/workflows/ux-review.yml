@@ -67,7 +67,14 @@ jobs:
         run: |
           set -euo pipefail
           changed="$(git diff --name-only "$BASE_SHA"...HEAD)"
-          if printf '%s\n' "$changed" | grep -qE '^(website/|temp-screenshots/|\.github/screenshots/)'; then
+          # Here-string, NOT `printf … | grep -q`: under `pipefail` a matching
+          # `grep -q` exits as soon as it has its answer, closing the pipe while
+          # `printf` is still writing. `printf` then dies on SIGPIPE and the
+          # pipeline reports 141 for input that DID match, so a UI change is
+          # silently classified as not-UI-relevant and this review skips green.
+          # A here-string takes the writer out of the pipeline entirely, so no
+          # exit status can be manufactured by pipe timing.
+          if grep -qE '^(website/|temp-screenshots/|\.github/screenshots/)' <<< "$changed"; then
             echo "ui=true" >> "$GITHUB_OUTPUT"
             echo "UI-relevant changes detected; running UX review."
           else
@@ -120,7 +127,7 @@ jobs:
         # (merge is gated by human review). The always()-run steps below still
         # post a leak-safe comment and log the outcome regardless.
         if: github.actor != 'dependabot[bot]' && steps.scope.outputs.ui == 'true' && steps.human_override.outputs.active != 'true'
-        uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1
+        uses: anthropics/claude-code-action@459ad358ae43fea66bfefd0a1f8d840b4b9791fb # v1
         with:
           # Inference via Amazon Bedrock. Model id form (bare, regional `us.`
           # inference profile, no `[1m]` tag) is load-bearing — see the
@@ -541,6 +548,19 @@ jobs:
           # Machine-parse the verdict header the prompt requires (case-insensitive).
           verdict="$(printf '%s\n' "$summary" | grep -iE '^UX-Verdict:' | head -n1 | sed -E 's/^[^:]*:[[:space:]]*//' | tr -d '\r' | tr '[:lower:]' '[:upper:]')"
           [ -z "$verdict" ] && verdict="UNKNOWN"
+          # Require the CURRENT-HEAD proof marker before honouring that verdict.
+          # The prompt emits `[UX-REVIEWED] <sha>`, but parsing the
+          # `UX-Verdict:` header alone made the marker decorative: a reply
+          # carrying a stale or rewritten marker still scored as a verdict for
+          # THIS revision, so a UX verdict earned on older code could be
+          # presented as current. Absent or mismatched -> fall through to the
+          # existing non-blocking "could not complete" path rather than
+          # inventing a verdict. Here-string, not `printf | grep`, so a long
+          # summary cannot manufacture a SIGPIPE status under `pipefail`.
+          if ! grep -qF "[UX-REVIEWED] $HEAD" <<< "$summary"; then
+            echo "verdict header present but no [UX-REVIEWED] $HEAD marker; treating as UNKNOWN"
+            verdict="UNKNOWN"
+          fi
           echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
           case "$verdict" in
             PASS) badge="✅ PASS" ;;

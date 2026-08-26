@@ -820,10 +820,10 @@ describe('Papyrus co-author refresh', () => {
     await screen.findByText('Co-author changed this file')
     api.readFile.mockResolvedValue({ path: MAIN, content: `${BODY}\n% the agent version` })
 
-    await user.click(screen.getByRole('button', { name: /Discard my edits and reload/ }))
+    await user.click(screen.getByRole('button', { name: /Discard my changes and reload/ }))
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).getByText(new RegExp(MAIN))).toBeInTheDocument()
-    await user.click(within(dialog).getByRole('button', { name: 'Discard edits' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Discard changes' }))
 
     await waitFor(() =>
       expect(screen.getByLabelText('editor')).toHaveValue(`${BODY}\n% the agent version`))
@@ -845,7 +845,7 @@ describe('Papyrus co-author refresh', () => {
     await screen.findByText('Co-author changed this file')
     api.readFile.mockClear()
 
-    await user.click(screen.getByRole('button', { name: /Discard my edits and reload/ }))
+    await user.click(screen.getByRole('button', { name: /Discard my changes and reload/ }))
     const dialog = await screen.findByRole('dialog')
     await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
 
@@ -868,8 +868,8 @@ describe('Papyrus co-author refresh', () => {
     await screen.findByText('Co-author changed this file')
     api.readFile.mockRejectedValue(new Error('still unreachable'))
 
-    await user.click(screen.getByRole('button', { name: /Discard my edits and reload/ }))
-    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Discard edits' }))
+    await user.click(screen.getByRole('button', { name: /Discard my changes and reload/ }))
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Discard changes' }))
 
     await waitFor(() => expect(api.readFile).toHaveBeenCalled())
     expect(screen.getByText('Co-author changed this file')).toBeInTheDocument()

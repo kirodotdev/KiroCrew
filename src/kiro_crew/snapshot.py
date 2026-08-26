@@ -33,6 +33,11 @@ VALID_COMPONENTS = ("memory", "crons", "config", "skills", "workspace", "notific
 # Files that must always have 0o600 permissions in snapshots and on restore.
 SECURITY_SENSITIVE_FILES: frozenset = frozenset({"sel_hmac.key", "telemetry_salt"})
 
+# Must match ``handlers_system._get_telemetry_salt`` (``secrets.token_bytes(32)``).
+# ``_copy_locked`` loads telemetry_salt into memory, so a planted giant in an
+# untrusted snapshot would OOM restore after earlier merge steps.
+_TELEMETRY_SALT_BYTES = 32
+
 # Files that must NEVER ride a snapshot: sel_hmac.key is regenerated on restore
 # so audit-log HMACs stay bound to the host that wrote them.
 #
@@ -1099,6 +1104,68 @@ def _backup_and_copy(
         os.close(src_fd)
 
 
+def _copy_locked(src: Path, dst: Path) -> bool:
+    """Copy *src* onto a missing *dst*, owner-only before the name is published.
+
+    Merge restore only copies when *dst* is absent. Publish with ``os.link``
+    (the create-only shape ``_get_telemetry_salt`` uses) so a dest that
+    appears in the window — ``--force`` restore racing a live gateway
+    creating ``telemetry_salt`` — raises ``FileExistsError`` and the live
+    file is left alone. ``os.replace`` / ``atomic_write`` would clobber it.
+    The temp is locked down before any payload is written. Failures to
+    publish (unsupported hard links, a restrict error, a size mismatch)
+    skip this file without raising, because merge restore has already
+    applied earlier components and ``_get_telemetry_salt`` regenerates a
+    missing salt. Return True only when this call published *dst*.
+    """
+    if dst.exists():
+        return False
+    if src.name == "telemetry_salt" or dst.name == "telemetry_salt":
+        size = src.stat().st_size
+        if size != _TELEMETRY_SALT_BYTES:
+            return False
+    payload = src.read_bytes()
+    if dst.exists():
+        return False
+    fd, tmp = tempfile.mkstemp(prefix=f".{dst.name}.", suffix=".tmp", dir=str(dst.parent))
+    tmp_path = Path(tmp)
+    try:
+        platform_compat.restrict_to_owner(str(tmp_path))
+        view = memoryview(payload)
+        while view:
+            written = os.write(fd, view)
+            if written == 0:
+                raise OSError(f"short write restoring {src.name}")
+            view = view[written:]
+        # Drop the fd from finally before close: a close-time writeback
+        # error must not be retried on an already-released descriptor,
+        # because a second OSError in finally would replace the skip and
+        # abort merge after earlier components were applied.
+        pending = fd
+        fd = -1
+        os.close(pending)
+        os.link(str(tmp_path), str(dst))
+        return True
+    except OSError:
+        # FileExistsError: live dest won. EXDEV / EPERM / no-hardlink /
+        # restrict / short write / close: dest stays missing and
+        # `_get_telemetry_salt` regenerates. Raising here aborts merge
+        # after earlier components were already applied.
+        return False
+    finally:
+        if fd >= 0:
+            pending = fd
+            fd = -1
+            try:
+                os.close(pending)
+            except OSError:
+                pass
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def _lock_down_restored(path: Path, component: str) -> None:
     """Apply the owner-only lockdown a restored security file needs.
 
@@ -1122,8 +1189,10 @@ def _lock_down_restored(path: Path, component: str) -> None:
 def _backup_tree_or_refuse(src: Path, dst: Path, *, allow_unpinned: bool = False) -> None:
     """Back a live tree up, and refuse the replace if the backup is not complete.
 
-    Replace mode's next step is ``rmtree`` on the live tree, so a file the backup pass
-    SKIPPED is a file the restore is about to delete with no copy anywhere. The staging
+    Replace mode later runs ``rmtree`` on the live tree, so a file the backup pass
+    SKIPPED is a file the restore is about to delete with no copy anywhere -- and the
+    call site is deliberately hoisted ahead of every live mutation, so a refusal
+    arrives while nothing has been swapped yet (#2844). The staging
     walk legitimately skips a hardlink alias, a symlink and a non-regular file -- which
     is right when producing an archive and catastrophic here, because the skip is
     followed by a delete rather than by an omission.
@@ -1151,6 +1220,25 @@ def _do_replace(
     backup.mkdir(exist_ok=True)
     print("🔄 Replace mode — backing up current state...")
 
+    # The ENTIRE rollback set is completed before the first live mutation. A tree
+    # backup can refuse (its fatal skip reporter raises on an entry it cannot
+    # copy, e.g. a hardlink alias or a symlink), and refusing is only safe
+    # while nothing has been swapped yet: the previous ordering ran the core-file
+    # swap loop first, so a tree-backup refusal aborted with the new databases
+    # live and the old trees live -- mixed state, with a rollback set missing the
+    # very trees the abort was protecting. Same
+    # complete-validation-before-first-mutation ordering the unsafe-root check
+    # already follows, applied to the rollback copy (issue #2844, failure mode 3).
+    if _want(components, "workspace"):
+        for dirname in ("workspace", "plan_memory"):
+            d = mc / dirname
+            if d.is_dir():
+                _backup_tree_or_refuse(d, backup / dirname, allow_unpinned=allow_unpinned)
+    if _want(components, "skills"):
+        sk = mc / "skills"
+        if sk.is_dir():
+            _backup_tree_or_refuse(sk, backup / "skills", allow_unpinned=allow_unpinned)
+
     for comp in ("memory", "crons", "config", "notifications", "security"):
         if _want(components, comp):
             _backup_and_copy(mc, backup, snap, comp, allow_unpinned=allow_unpinned)
@@ -1159,8 +1247,6 @@ def _do_replace(
     if _want(components, "workspace"):
         for dirname in ("workspace", "plan_memory"):
             d = mc / dirname
-            if d.is_dir():
-                _backup_tree_or_refuse(d, backup / dirname, allow_unpinned=allow_unpinned)
             sd = snap / dirname
             if sd.is_dir():
                 if d.is_dir():
@@ -1183,8 +1269,6 @@ def _do_replace(
 
     if _want(components, "skills"):
         sk = mc / "skills"
-        if sk.is_dir():
-            _backup_tree_or_refuse(sk, backup / "skills", allow_unpinned=allow_unpinned)
         snap_sk = snap / "skills"
         if snap_sk.is_dir():
             if sk.is_dir():
@@ -1261,19 +1345,8 @@ def _do_merge(
         for f in CORE_FILES["security"]:
             s, d = snap / f, mc / f
             if s.is_file() and not d.is_file():
-                shutil.copy2(str(s), str(d))
-                # restrict_to_owner (fail-loud), NOT chmod_safe — security
-                # files include sel_hmac.key; mirror the create path. Windows
-                # applies an owner-only DACL via icacls. Unlink the freshly
-                # copied file on
-                # failure so an icacls error doesn't leave a restored secret
-                # under the destination-inherited DACL.
-                try:
-                    platform_compat.restrict_to_owner(str(d))
-                except OSError:
-                    d.unlink(missing_ok=True)
-                    raise
-                print(f"  {f}: restored (was missing)")
+                if _copy_locked(s, d):
+                    print(f"  {f}: restored (was missing)")
         print("  ✅ security")
 
     if _want(components, "workspace"):

@@ -389,7 +389,15 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
         # cancel would surface as an HTTP 500 instead of the graceful
         # compaction-timeout result.
         task = asyncio.create_task(
-            asyncio.wait_for(_run_chat(state, slot, prompt), timeout=chat_turn_timeout_secs())
+            asyncio.wait_for(
+                _run_chat(
+                    state,
+                    slot,
+                    prompt,
+                    _directive_user_origin=is_dashboard_caller,
+                ),
+                timeout=chat_turn_timeout_secs(),
+            )
         )
         slot.task = task
         state._background_tasks.add(task)

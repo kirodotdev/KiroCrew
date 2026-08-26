@@ -1134,6 +1134,31 @@ class TestReadSurfaces:
         mgr._agents["queued"] = _info("queued", queued=True)
         assert mgr.task_memory_rows() == []
 
+    def test_task_memory_rows_redact_before_truncate(self) -> None:
+        """#5582: a credential straddling the 80-char cut must not leak a fragment.
+
+        The old spelling ``_redact(a.task[:80])`` sliced first, so a key cut at
+        the boundary lost its tail and no longer matched the credential regex —
+        the raw prefix escaped into the session-memory surface.
+        The fabricated AKIA-shaped literal is inlined rather than bound to a
+        ``secret``-named variable, which would trip CodeQL's name-based
+        sensitive-source heuristic on this real call path.
+        """
+        # cut lands 8 chars into the fabricated 20-char key
+        task = "x" * 72 + "AKIAIOSFODNN7EXAMPLE" + " trailing"
+        mgr = _manager()
+        mgr._agents["a"] = _info("a", task=task, parent_session_key="dash:1")
+        row = {r["id"]: r for r in mgr.task_memory_rows()}["a"]
+        assert "AKIA" not in row["task"]
+        assert len(row["task"]) <= 80
+
+    def test_task_memory_rows_plain_task_truncation_unchanged(self) -> None:
+        """Ordinary path is result-preserving: no secret ⇒ the same 80-char slice."""
+        mgr = _manager()
+        mgr._agents["a"] = _info("a", task="t" * 100, parent_session_key="dash:1")
+        row = {r["id"]: r for r in mgr.task_memory_rows()}["a"]
+        assert row["task"] == "t" * 80
+
     def test_get_running_all_and_count(self) -> None:
         mgr = _manager()
         live = _info("live")
@@ -1262,6 +1287,134 @@ class TestNotifyInjectionFailed:
             side_effect=RuntimeError("no dashboard"),
         ):
             mgr.notify_injection_failed(_info(parent_session_key="dash:1"))
+
+
+# ── Injection-failure notice: outcome-aware copy ──────────────────────────
+
+
+class TestInjectionNoticeOutcome:
+    """The pure helper maps a terminal record to a truthful outcome line."""
+
+    def test_completed_keeps_the_finished_copy(self) -> None:
+        info = _info(done=True, result="ok")
+        assert sa._injection_notice_outcome(info) == (
+            "The agent finished but result delivery timed out."
+        )
+
+    def test_failed_run_does_not_claim_finished(self) -> None:
+        info = _info(done=True, error="Timed out after 30 minutes", _exec_started=123.0)
+        line = sa._injection_notice_outcome(info)
+        assert line == "The agent failed before a result could be delivered."
+
+    def test_stopped_mid_run_reads_as_stopped(self) -> None:
+        info = _info(
+            done=True, user_stopped=True, _exec_started=123.0, tool_count=3, result="partial"
+        )
+        assert sa._injection_notice_outcome(info) == "The run was stopped before it completed."
+
+    def test_stopped_in_startup_window_is_not_before_start(self) -> None:
+        # Execution began (_exec_started set) but no turn, tool call, or output
+        # landed yet — the run DID start, so the before-start copy would lie.
+        info = _info(done=True, user_stopped=True, _exec_started=123.0)
+        assert sa._injection_notice_outcome(info) == "The run was stopped before it completed."
+
+    def test_stopped_before_execution_says_it_never_ran(self) -> None:
+        # A stop landing on a registered run before _run_inner ever executed:
+        # no _exec_started marker and no output of any kind.
+        info = _info(done=True, user_stopped=True)
+        assert sa._injection_notice_outcome(info) == (
+            "The run was stopped before it started, so there is no result to deliver."
+        )
+
+    def test_rejections_read_as_failed_before_start(self) -> None:
+        # Every spawn-rejection site constructs its record without
+        # _exec_started, so the never-ran refinement covers them all — the
+        # sentinel-worded ones AND the unknown-agent refusal, whose exact
+        # wording is consumed by _is_unknown_agent_refusal and cannot change.
+        for err in (
+            "spawn rejected",
+            "spawn refused: only 1.0 GB memory available (need 4 GB)",
+            "agent 'ghost' not found; available: scout, probe",
+        ):
+            info = _info(done=True, error=err)
+            assert sa._injection_notice_outcome(info) == (
+                "The run failed before it started, so there is no result to deliver."
+            ), err
+
+    def test_error_with_output_keeps_the_recovery_hint_honest(self) -> None:
+        # Defensive: a record carrying output must never be described as
+        # having no result to deliver — the generic failed copy stays truthful.
+        info = _info(done=True, error="spawn rejected", result_path="/tmp/r.txt")
+        assert sa._injection_notice_outcome(info) == (
+            "The agent failed before a result could be delivered."
+        )
+
+
+class TestNotifyInjectionFailedOutcomeCopy:
+    """End-to-end: the queued failure message carries the outcome-aware line.
+
+    Four regression paths: stop before execution, approval rejection, queued
+    rejection, and the ordinary post-run delivery timeout (whose copy is
+    unchanged).
+    """
+
+    async def _notice_for(self, info: SubagentInfo) -> str:
+        seen: list[dict] = []
+
+        async def _on_event(_etype: str, _info: SubagentInfo, extra: dict) -> None:
+            seen.append(extra)
+
+        mgr = _manager(on_event=_on_event)
+        with patch("kiro_crew.dashboard.chat_utils.dashboard_slot_key", return_value="slot-1"):
+            mgr.notify_injection_failed(info)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert seen, "expected a subagent_injection_failed event"
+        return str(seen[0]["failure_msg"])
+
+    @pytest.mark.asyncio
+    async def test_stop_before_execution_does_not_claim_the_agent_finished(self) -> None:
+        # A user stop landing on a registered run before execution began marks
+        # the record user_stopped with no _exec_started and no output: it never
+        # ran. (A cancel on a spawn still WAITING in the stagger queue is
+        # unqueued without a record and never reaches this notice at all.)
+        info = _info(parent_session_key="dash:1", done=True, user_stopped=True)
+        msg = await self._notice_for(info)
+        assert "The run was stopped before it started" in msg
+        assert "finished" not in msg
+
+    @pytest.mark.asyncio
+    async def test_approval_rejection_reads_as_never_started(self) -> None:
+        info = _info(parent_session_key="dash:1", done=True, error="spawn rejected")
+        msg = await self._notice_for(info)
+        assert "The run failed before it started" in msg
+        assert "finished" not in msg
+
+    @pytest.mark.asyncio
+    async def test_queued_rejection_reads_as_never_started_without_mechanism_detail(self) -> None:
+        info = _info(
+            parent_session_key="dash:1",
+            done=True,
+            error="spawn refused: only 1.0 GB memory available (need 4 GB)",
+        )
+        msg = await self._notice_for(info)
+        assert "The run failed before it started" in msg
+        # Mechanism details stay out of the user-facing notice.
+        assert "GB" not in msg
+        assert "finished" not in msg
+
+    @pytest.mark.asyncio
+    async def test_post_run_delivery_timeout_keeps_existing_copy_and_hint(
+        self, tmp_path: Path
+    ) -> None:
+        result = tmp_path / "result.txt"
+        result.write_text("hello", newline="\n")
+        info = _info(
+            parent_session_key="dash:1", done=True, result="hello", result_path=str(result)
+        )
+        msg = await self._notice_for(info)
+        assert "The agent finished but result delivery timed out." in msg
+        assert "Result saved at" in msg
 
 
 # ── Manager: continuable conversations ────────────────────────────────────

@@ -12,8 +12,9 @@ It already exists in Kiro Crew as three cooperating pieces:
 2. **Render (frontend):** `components/ApprovalCard.tsx` + `components/ToolInputPreview.tsx`
    render a pending call as a card, currently as a raw `<pre>` args dump.
 3. **Resume (frontend → backend):** `components/ChatInput.tsx` submits the decision via
-   `api.approveChatSlot(slot, action, extra)`; the paused turn resumes with the tool
-   either executed or rejected.
+   the id-scoped `api.resolveApproval(request_id, action)` for plain approve/reject
+   (`api.approveChatSlot(slot, …)` is reserved for trust grants); the paused turn resumes
+   with the tool either executed or rejected.
 
 This design does NOT add a second policy. It (a) enriches the **render** step with a typed
 preview and a batch affordance, (b) documents the **resume** step against the AI-SDK
@@ -47,9 +48,9 @@ Agent turn
    ▼
 ┌──────────────────────────────────────────────┐
 │ onApprove(decision, pattern?) → ChatInput.tsx   │
-│   api.approveChatSlot(slot, action, extra)      │  (EXISTING transport)
+│   api.resolveApproval(request_id, action)       │  (EXISTING id-scoped path)
 └──────────────────────────────────────────────┘
-   │  resume the SAME interrupted invocation (slot + tool-call id)
+   │  resume the SAME interrupted invocation (by request_id)
    ▼
 Tool executes (approved) or is skipped (rejected); agent turn continues
 ```
@@ -61,7 +62,7 @@ Tool executes (approved) or is skipped (rejected); agent turn continues
 | `src/kiro_crew/hooks.py` (`on_tool_call`) | **Unchanged.** Sole policy authority; the layer reads its verdict. |
 | `website/src/components/ApprovalCard.tsx` | Hosts `ToolPreviewFrame` + the batch affordance. |
 | `website/src/components/ToolInputPreview.tsx` | The fallback preview and the "show raw input" surface. |
-| `website/src/components/ChatInput.tsx` (`approveChatSlot`) | **Unchanged** resume transport the layer reuses. |
+| `website/src/components/ChatInput.tsx` (`resolveApproval`) | **Unchanged** resume path the layer reuses (id-scoped by `request_id`; `approveChatSlot` is trust-grants only). |
 | `website/src/hooks/useWebSocket.ts` | Delivers the pending-decision + resume events (existing). |
 | `website/src/kit/tool-views/` (App Builder Kit spec — **prerequisite, not built by this spec**) | Supplies `ToolPreviewFrame` / schema-matched typed previews. This spec **consumes** it and is sequenced after it (see "Dependency and sequencing" below, and Req 8). |
 | `website/src/types/index.ts` (`tool_input: string`) | The opaque input string a preview parses; no new wire field. |
@@ -98,19 +99,20 @@ rich preview (Req 2.2) is the single capability gated on this dependency (Req 8.
 ### Pending-decision model (frontend, mirrors AI-SDK `UIToolInvocation`)
 
 ```ts
-// state model only — NOT a transport claim
-type ToolInvocationState<TIn, TOut> =
-  | { state: 'input-streaming';  input: Partial<TIn> }   // args still arriving
-  | { state: 'input-available';  input: TIn }            // ← the approvable moment
-  | { state: 'output-available'; input: TIn; output: TOut }
-  | { state: 'output-error';     input: TIn; error: string }
+// state model only — NOT a transport claim; input-streaming is omitted
+// (unreachable on this transport: the pending event arrives input-complete)
+type ToolInvocationState =
+  | { state: 'input-available';  input: unknown }               // ← the approvable moment
+  | { state: 'output-available'; input: unknown; output: unknown }
+  | { state: 'output-error';     input: unknown; error: string }
 
 interface PendingDecision {
   slot: string
-  toolCallId: string           // pins the resume to the SAME invocation (Req 3.4)
-  title: string                // display title/purpose from the PreToolUse event
-  rawInput: string             // verbatim tool_input — the "show raw input" source (Req 2.4)
-  invocation: ToolInvocationState<unknown, unknown>  // at 'input-available'
+  approval: PendingApproval    // the verbatim wire event (types/index.ts): carries
+                               // request_id (the resume id), tool, tool_input, tool_kind
+  toolCallId?: string          // optional; display/correlation only — resume uses
+                               // approval.request_id, not this
+  invocation: ToolInvocationState  // at 'input-available'
 }
 ```
 
@@ -125,37 +127,45 @@ body to `ToolPreviewFrame` (from `kit/tool-views`):
 
 - **Schema match** → typed rich preview (e.g. a diff, a table, a chart of the args).
 - **No match** → the existing `ToolInputPreview` `<pre>` (Req 2.3, non-regression).
-- **Always** → a collapsed "show raw input" control revealing the verbatim `rawInput`
+- **Always** → a collapsed "show raw input" control revealing the verbatim
+  `approval.tool_input`
   (Req 2.4). The rich preview is lossy by design; the raw string is the ground truth the
   operator can inspect before approving.
 
 Controls (approve / reject / optional pattern field) are keyboard operable with ARIA
 roles (Req 2.5).
 
-### Resume: `onApprove` → `approveChatSlot`
+### Resume: `onApprove` → `resolveApproval`
 
 The decision is passed straight to the existing callback:
 
 ```ts
 onApprove(decision: 'approve' | 'reject', pattern?: string)
-// → api.approveChatSlot(slot, decision, pattern)   (ChatInput.tsx, unchanged)
+// plain approve/reject → api.resolveApproval(approval.request_id, decision)  (ChatInput.tsx)
+// (trust grants only → approveChatSlot; unattended sources downgrade to resolveApproval)
 ```
 
-`toolCallId` + `slot` pin the resume to the interrupted invocation (Req 3.4). The optional
-`pattern` (e.g. an "always allow this shape" rule) is forwarded verbatim as `extra`
-(Req 3.5); it is a hint to the *next* `on_tool_call` evaluation, never a frontend policy.
+`approval.request_id` pins the resume to the interrupted invocation (Req 3.4). The optional
+`pattern` (e.g. an "always allow this shape" rule) is forwarded verbatim on the path that
+accepts it (Req 3.5); it is a hint to the *next* `on_tool_call` evaluation, never a frontend
+policy. The layer introduces no new approval API path (Req 3.3).
 
 ### Batch approval
 
 Batch is a **UI affordance over the per-call resume**, not a new transport (Req 4.2).
 When N calls are pending in a slot, `ApprovalCard` renders a multi-select; submitting a
-batch iterates `approveChatSlot` per included call. **Exclusion is backend-driven, not
-predicted (Req 4.3–4.4, Req 6.1):** the frontend does not compute or forecast a gate
-verdict — it submits each selected call's resume, and if the `on_tool_call` gate rejects
-one at resume time, that call comes back rejected and the UI marks it excluded *after the
-fact*. Because Req 1.2 already keeps a `TOOL_DENY` call from ever becoming a pending
-decision, everything in a batch was `TOOL_ALLOW` when surfaced; an exclusion reflects a
-verdict that changed between surfacing and resume (e.g. governance state shifted), reported
+batch iterates the slot-scoped `approveChatSlot(slot, mappedAction, { request_id })` per
+included call — NOT the bare id-scoped `resolveApproval`. `state.resolve_approval` matches a
+bare `request_id` across all slots with no session-identity check, so a connection-scoped id
+that collides in two slots could otherwise resolve the wrong slot's call; pinning the batch
+resume to the addressed slot removes that hazard (single approve/reject keeps `resolveApproval`
+— one owned id, no collision). **Exclusion is
+backend-driven, not predicted (Req 4.3–4.4, Req 6.1):** the frontend does not compute or
+forecast a gate verdict — it submits each selected call's resume, and if the `on_tool_call`
+gate rejects one at resume time, that call comes back rejected and the UI marks it excluded
+*after the fact*. Because Req 1.2 already keeps a `TOOL_DENY` call from ever becoming a
+pending decision, everything in a batch was `TOOL_ALLOW` when surfaced; an exclusion reflects
+a verdict that changed between surfacing and resume (e.g. governance state shifted), reported
 by the backend. The frontend never re-implements the gate — that would be exactly the
 parallel policy Req 6.1 forbids.
 
@@ -167,12 +177,12 @@ The portable shape is three steps; the table names what an adopter substitutes.
 |---|---|---|---|
 | Intercept | evaluate the call before it executes | `HookManager.on_tool_call` | a tool with no `execute`, or `prepareStep`/`onStepFinish` interruption |
 | Render | build a card from the invocation state | `ApprovalCard` + `ToolPreviewFrame` | render from `UIToolInvocation` at `input-available` |
-| Resume | apply the decision to the same invocation | `approveChatSlot(slot, action, extra)` | `addToolResult({ toolCallId, output })` + continued stream |
+| Resume | apply the decision to the same invocation | `resolveApproval(request_id, action)` | `addToolResult({ toolCallId, output })` + continued stream |
 
 **Explicit boundary (Req 5.3):** the *enforcement* (`on_tool_call`) and the *transport*
-(`approveChatSlot`) are Kiro-Crew-specific — an adopter swaps in their own. The *portable*
+(`resolveApproval` / `approveChatSlot`) are Kiro-Crew-specific — an adopter swaps in their own. The *portable*
 part is: intercept before execute, render a card from the invocation state, resume the
-same `toolCallId` on decision. **The AI-SDK `UIToolInvocation` union is reused as a state
+same invocation on decision. **The AI-SDK `UIToolInvocation` union is reused as a state
 model, not a transport claim (Req 5.4)** — Kiro Crew's chat transport is markdown +
 `<mcwidget>` opaque strings (`useBlockAssembler.ts`, `types/index.ts`), not a typed
 `tool-<name>` part stream, exactly as documented for the App Builder Kit tool-view encoding.
@@ -181,7 +191,7 @@ model, not a transport claim (Req 5.4)** — Kiro Crew's chat transport is markd
 
 The layer adds **no new backend wire field.** A `PendingDecision` is assembled on the
 frontend from the existing PreToolUse event (title, `tool_input` string) already delivered
-over `useWebSocket.ts`. The typed preview parses `rawInput` against a `kit/tool-views`
+over `useWebSocket.ts`. The typed preview parses `approval.tool_input` against a `kit/tool-views`
 schema; a parse failure downgrades to `<pre>` (no throw).
 
 ## Error Handling
@@ -199,9 +209,9 @@ schema; a parse failure downgrades to `<pre>` (no throw).
 ## Testing Strategy
 
 - **Unit (vitest):** `ApprovalCard` renders each `PendingDecision` state; schema-match vs
-  `<pre>` fallback; "show raw input" reveals verbatim `rawInput`; keyboard/ARIA on controls.
-- **Resume:** approve and reject each route through a mocked `onApprove`/`approveChatSlot`
-  with the correct `slot`/`toolCallId`/`pattern`; a stale `toolCallId` is a no-op.
+  `<pre>` fallback; "show raw input" reveals verbatim `approval.tool_input`; keyboard/ARIA on controls.
+- **Resume:** approve and reject each route through a mocked `onApprove`/`resolveApproval`
+  with the correct `request_id`/`pattern`; a stale `request_id` is a no-op.
 - **Batch:** multi-select resolves per-call; a denied call is excluded, not approved.
 - **Enforcement non-bypass:** a `TOOL_DENY` verdict never yields an approvable card and
   no operator affordance executes it (Req 6.1–6.2).

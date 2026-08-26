@@ -769,7 +769,10 @@ def run_script_sandboxed(
         except (json.JSONDecodeError, IndexError):
             return {
                 "status": "error",
-                "error": f"Bad output: {redact(stdout[:200])}",
+                # Redact the complete stdout BEFORE truncating: slicing first
+                # could cut a credential at the boundary, leaving its unredacted
+                # head in the diagnostic.
+                "error": f"Bad output: {redact(stdout)[:200]}",
             }
     except subprocess.TimeoutExpired:
         return {"status": "error", "error": f"Script timed out after {timeout}s"}
@@ -959,7 +962,13 @@ def run_command_sandboxed(command: str, timeout: int = 300, job_id: str | None =
         if proc.returncode != 0:
             output = f"⚠️ Exit code {proc.returncode}\n\n{output}"
             if stderr_out:
-                output += f"\n\nstderr:\n{stderr_out[:1000]}"
+                # A command that dies hard leaves its diagnosis last: report the
+                # stderr tail, not the head, so a chatty startup warning can't
+                # displace the terminal error. Redact the complete stderr BEFORE
+                # truncating: slicing first could cut off a credential's
+                # detectable prefix (e.g. the scheme of a token-bearing URL),
+                # letting the raw secret tail through redaction.
+                output += f"\n\nstderr:\n{redact(stderr_out.rstrip())[-1000:]}"
         return {
             "status": "ok" if proc.returncode == 0 else "error",
             "output": output,

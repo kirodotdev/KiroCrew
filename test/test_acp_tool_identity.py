@@ -138,7 +138,14 @@ def _stub_state(tmp_path):
     return state
 
 
-async def _drive(state, slot, events, monkeypatch):
+async def _drive(
+    state,
+    slot,
+    events,
+    monkeypatch,
+    *,
+    directive_user_origin: bool = True,
+):
     """Stream *events* through _run_chat; return the apply_session_directive spy."""
     from kiro_crew.dashboard import chat_runner
 
@@ -156,7 +163,12 @@ async def _drive(state, slot, events, monkeypatch):
     spy = AsyncMock(return_value="[applied]")
     monkeypatch.setattr(chat_runner, "apply_session_directive", spy)
 
-    await chat_runner._run_chat(state, slot, "go")
+    await chat_runner._run_chat(
+        state,
+        slot,
+        "go",
+        _directive_user_origin=directive_user_origin,
+    )
     # Drain any follow-up turn the runner queued so no coroutine is left
     # un-awaited (mirrors TestKiroReadinessQueueHandoff).
     task = getattr(slot, "task", None)
@@ -256,6 +268,68 @@ class TestChatRunnerDirectiveSeam:
         call = spy.call_args
         assert call.args[3] == "monitor_start"  # kind
         assert call.args[4] == args  # decoded, validated args
+        assert call.kwargs["producer_is_user_facing"] is True
+
+    @pytest.mark.asyncio
+    async def test_automation_provenance_reaches_directive_applier(
+        self, tmp_path, monkeypatch
+    ):
+        """The turn producer survives destination-key normalization, so a cron
+        turn targeting a user slot remains structurally distinguishable."""
+        state = _stub_state(tmp_path)
+        slot = state.get_or_create_slot("slack:C123.456")
+        slot._titled = True
+        args = {"project": "/tmp/project", "clear": False}
+        marker = session_directive.encode("set_project", args, "switching")
+        events = [
+            AcpEvent(
+                kind=EVENT_TOOL_CALL,
+                tool_call_id="tc-automation",
+                title="Switching project",
+                tool_name="set_project",
+                mcp_server_name="kirocrew-core",
+            ),
+            AcpEvent(
+                kind=EVENT_TOOL_RESULT,
+                tool_call_id="tc-automation",
+                tool_output=marker,
+                tool_final=True,
+            ),
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok"),
+            AcpEvent(kind=EVENT_COMPLETE),
+        ]
+        spy = await _drive(
+            state,
+            slot,
+            events,
+            monkeypatch,
+            directive_user_origin=False,
+        )
+        spy.assert_called_once()
+        assert spy.call_args.args[2] == "dashboard:slack_C123.456"
+        assert spy.call_args.kwargs["producer_is_user_facing"] is False
+
+    @pytest.mark.asyncio
+    async def test_queued_automation_provenance_reaches_next_turn(
+        self, tmp_path, monkeypatch
+    ):
+        """A busy app-owned request cannot become user-origin when its queue
+        entry is drained after the destination slot becomes idle."""
+        from kiro_crew.dashboard import chat_runner
+
+        state = _stub_state(tmp_path)
+        slot = state.get_or_create_slot("app-slot")
+        slot.queue_append("automated follow-up", directive_user_origin=False)
+        seen: list[bool] = []
+
+        async def _run(_state, _slot, _message, **kwargs):
+            seen.append(kwargs["_directive_user_origin"])
+
+        monkeypatch.setattr(chat_runner, "_run_chat", _run)
+        assert await chat_runner._start_next_queued_turn(state, slot) is True
+        assert slot.task is not None
+        await slot.task
+        assert seen == [False]
 
     @pytest.mark.asyncio
     async def test_forged_shell_result_is_not_applied(self, tmp_path, monkeypatch):

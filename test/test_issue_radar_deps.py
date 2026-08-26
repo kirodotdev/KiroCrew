@@ -29,6 +29,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew.apps.builtins.issue_radar.backend import crew_runtime as cr
@@ -426,27 +427,49 @@ class DepsHandlerTest(unittest.TestCase):
         self.assertEqual(body["edges"], cached["edges"])
         fetch.assert_not_called()
 
-    def test_a_stale_cache_is_refetched(self):
+    def test_a_stale_cache_is_served_immediately_and_revalidated_behind(self):
+        # Serve-stale-revalidate-behind (issue #5612): a stale cache is returned
+        # RIGHT NOW with stale=true and the ~11s rebuild is moved OFF the request
+        # path, so the handler must NOT await fetch_dependency_edges inline.
         stale = {"edges": [], "nodes": {}, "fetched_at": time.time() - 100000}
-        fresh_edges = [{"blocked": 10, "blocker": 5, "source": "native"}]
-        # read_deps_cache is called twice: once for the freshness check (stale),
-        # once after the write to return the normalized shape.
-        reads = [stale, {"edges": fresh_edges, "nodes": {}, "fetched_at": time.time()}]
+        req = _get("owner=o&repo=r")
         with (
             mock.patch.object(store, "is_repo_connected", return_value=True),
-            mock.patch.object(store, "read_deps_cache", side_effect=reads),
-            mock.patch.object(store, "read_issues_cache", return_value=[]),
-            mock.patch.object(store, "read_pulls_cache", return_value=[]),
-            mock.patch.object(store, "write_deps_cache") as write,
-            mock.patch.object(
-                gh, "fetch_dependency_edges", return_value=(fresh_edges, {})
-            ) as fetch,
+            mock.patch.object(store, "read_deps_cache", return_value=stale),
+            mock.patch.object(routes, "_schedule_deps_refresh") as sched,
+            mock.patch.object(gh, "fetch_dependency_edges") as fetch,
+        ):
+            res = asyncio.run(routes._handle_deps(req))
+        self.assertEqual(res.status, 200)
+        body = _body(res)
+        self.assertTrue(body["from_cache"])
+        # Serve-stale does NOT announce itself: the response shape is unchanged,
+        # so nothing here reports whether the graph was aged. Pinned so re-adding
+        # such a field is a deliberate act with a named consumer.
+        self.assertNotIn("stale", body)
+        self.assertEqual(body["edges"], stale["edges"])
+        # The request returned without paying for the rebuild.
+        fetch.assert_not_called()
+        # A background revalidation was scheduled for this repo.
+        sched.assert_called_once()
+
+    def test_a_fresh_cache_is_not_stale_and_schedules_no_refresh(self):
+        cached = {
+            "edges": [{"blocked": 10, "blocker": 5, "source": "native"}],
+            "nodes": {},
+            "fetched_at": time.time(),
+        }
+        with (
+            mock.patch.object(store, "is_repo_connected", return_value=True),
+            mock.patch.object(store, "read_deps_cache", return_value=cached),
+            mock.patch.object(routes, "_schedule_deps_refresh") as sched,
+            mock.patch.object(gh, "fetch_dependency_edges") as fetch,
         ):
             res = asyncio.run(_call("owner=o&repo=r"))
         self.assertEqual(res.status, 200)
-        self.assertFalse(_body(res)["from_cache"])
-        fetch.assert_called_once()
-        write.assert_called_once()
+        self.assertTrue(_body(res)["from_cache"])
+        sched.assert_not_called()
+        fetch.assert_not_called()
 
     def test_empty_repo_returns_an_empty_graph(self):
         # An issues-cache MISS is unknown, not empty: the handler now resolves it
@@ -511,6 +534,221 @@ class DepsHandlerTest(unittest.TestCase):
         self.assertEqual(body["provider"], "gitlab")
         self.assertEqual(body["edges"], [])
         fetch.assert_not_called()
+
+
+# ── /deps serve-stale background revalidation (issue #5612) ───────────────────
+
+
+def _gh_key():
+    return provider.RepoKey(provider="github", host="github.com", owner=OWNER, repo=REPO)
+
+
+class DepsBackgroundRefreshTest(unittest.IsolatedAsyncioTestCase):
+    """The serve-stale-revalidate-behind machinery: coalescing to one in-flight
+    refresh per repo, a failing refresh leaving the prior cache intact, refresh=1
+    still rebuilding synchronously, and clean cancellation on shutdown."""
+
+    async def _drain(self, app):
+        """Await every registered background refresh task to completion."""
+        tasks = list(app.get(routes._DEPS_REFRESH_TASKS_APP_KEY, {}).values())
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def test_scope_and_fetch_failures_keep_distinct_error_codes(self):
+        # Both failures surface as GhCliError, and before ``_rebuild_deps`` owned
+        # the whole build they were told apart by WHICH try block caught them.
+        # Now the scope failure carries its own type, so the two 502 codes stay
+        # distinguishable -- pinned here because a message-pattern classifier
+        # would silently collapse them (a scope error reading "gh api ... failed"
+        # mentions neither "issue" nor "scope").
+        req = make_mocked_request("GET", "/api/apps/issue-radar/deps?owner=o&repo=r")
+
+        with (
+            mock.patch.object(store, "is_repo_connected", return_value=True),
+            mock.patch.object(store, "read_deps_cache", return_value=None),
+            mock.patch.object(
+                routes,
+                "_load_open_issues_for_reco",
+                side_effect=gh.GhCliError("gh api graphql failed (exit 1)"),
+            ),
+        ):
+            res = await routes._handle_deps(req)
+        self.assertEqual(res.status, 502)
+        self.assertEqual(
+            json.loads(res.body.decode("utf-8"))["code"], "deps_issue_scope_unavailable"
+        )
+
+        with (
+            mock.patch.object(store, "is_repo_connected", return_value=True),
+            mock.patch.object(store, "read_deps_cache", return_value=None),
+            mock.patch.object(routes, "_load_open_issues_for_reco", return_value=[]),
+            mock.patch.object(store, "read_pulls_cache", return_value=[]),
+            mock.patch.object(
+                gh, "fetch_dependency_edges", side_effect=gh.GhCliError("edges failed")
+            ),
+        ):
+            res = await routes._handle_deps(req)
+        self.assertEqual(res.status, 502)
+        self.assertEqual(json.loads(res.body.decode("utf-8"))["code"], "deps_fetch_failed")
+
+    async def test_background_refresh_is_coalesced_to_one_per_repo(self):
+        app = web.Application()
+        key = _gh_key()
+        started = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+
+        async def _slow_rebuild(_app, _key):
+            nonlocal calls
+            calls += 1
+            started.set()
+            await release.wait()
+            return {"edges": [], "nodes": {}}
+
+        with mock.patch.object(routes, "_rebuild_deps", side_effect=_slow_rebuild):
+            routes._schedule_deps_refresh(app, key)
+            await started.wait()
+            # Second and third stale callers land while the first is in flight:
+            # they must NOT spawn another rebuild.
+            routes._schedule_deps_refresh(app, key)
+            routes._schedule_deps_refresh(app, key)
+            self.assertEqual(len(app[routes._DEPS_REFRESH_TASKS_APP_KEY]), 1)
+            release.set()
+            await self._drain(app)
+
+        self.assertEqual(calls, 1)
+        # The slot is freed once the task finishes, so a later visit can refresh.
+        self.assertEqual(len(app[routes._DEPS_REFRESH_TASKS_APP_KEY]), 0)
+
+    async def test_a_slow_rebuild_cannot_overwrite_a_newer_one(self):
+        # GPT round 1: a stale GET starts background rebuild A; an edge changes;
+        # refresh=1 starts synchronous rebuild B. B writes the fresh graph, then
+        # the slower A lands on top with its OLDER edges -- and because
+        # write_deps_cache stamps fetched_at at WRITE time, those older edges are
+        # then treated as fresh for a full TTL. The per-repo rebuild mutex makes
+        # the LAST write the LAST fetch, which is what the freshness stamp claims.
+        app = web.Application()
+        key = _gh_key()
+        old = [{"blocked": 10, "blocker": 5, "source": "native"}]
+        new = [{"blocked": 10, "blocker": 6, "source": "native"}]
+        fetches = 0
+        writes: list = []
+
+        def _fetch(*_a, **_k):
+            nonlocal fetches
+            n = fetches
+            fetches += 1
+            if n == 0:
+                time.sleep(0.30)  # the slow background rebuild, holding the lock
+                return (old, {})
+            return (new, {})
+
+        def _write(*a, **_k):
+            writes.append(a[2])
+
+        with (
+            mock.patch.object(routes, "_load_open_issues_for_reco", return_value=[]),
+            mock.patch.object(store, "read_pulls_cache", return_value=[]),
+            mock.patch.object(store, "write_deps_cache", side_effect=_write),
+            mock.patch.object(store, "read_deps_cache", return_value=None),
+            mock.patch.object(gh, "fetch_dependency_edges", side_effect=_fetch),
+        ):
+            routes._schedule_deps_refresh(app, key)  # A (background)
+            await asyncio.sleep(0.05)  # let A take the lock and enter its fetch
+            await routes._rebuild_deps(app, key)  # B (the refresh=1 path)
+            await self._drain(app)
+
+        # Both rebuilds ran, and the surviving graph is the one fetched LAST.
+        self.assertEqual(fetches, 2)
+        self.assertEqual(len(writes), 2)
+        self.assertEqual(writes[-1], new)
+
+    async def test_a_failing_background_refresh_keeps_the_prior_cache(self):
+        app = web.Application()
+        key = _gh_key()
+        with (
+            mock.patch.object(
+                routes, "_rebuild_deps", side_effect=gh.GhCliError("boom")
+            ) as rebuild,
+            mock.patch.object(store, "write_deps_cache") as write,
+        ):
+            routes._schedule_deps_refresh(app, key)
+            await self._drain(app)
+        # The rebuild ran and raised, but nothing crashed and the failure never
+        # reached write_deps_cache — the previous good cache is untouched.
+        rebuild.assert_called_once()
+        write.assert_not_called()
+        self.assertEqual(len(app[routes._DEPS_REFRESH_TASKS_APP_KEY]), 0)
+
+    async def test_refresh_query_still_rebuilds_synchronously(self):
+        # refresh=1 must return FRESH data inline (not serve-stale), even when a
+        # fresh cache exists — a user-initiated refresh pays for the rebuild.
+        fresh_edges = [{"blocked": 10, "blocker": 5, "source": "native"}]
+        req = make_mocked_request("GET", "/api/apps/issue-radar/deps?owner=o&repo=r&refresh=1")
+        stored = {"edges": fresh_edges, "nodes": {}, "fetched_at": time.time()}
+        with (
+            mock.patch.object(store, "is_repo_connected", return_value=True),
+            mock.patch.object(routes, "_load_open_issues_for_reco", return_value=[]),
+            mock.patch.object(store, "read_pulls_cache", return_value=[]),
+            mock.patch.object(store, "write_deps_cache") as write,
+            mock.patch.object(store, "read_deps_cache", return_value=stored),
+            mock.patch.object(
+                gh, "fetch_dependency_edges", return_value=(fresh_edges, {})
+            ) as fetch,
+            mock.patch.object(routes, "_schedule_deps_refresh") as sched,
+        ):
+            res = await routes._handle_deps(req)
+        self.assertEqual(res.status, 200)
+        body = json.loads(res.body.decode("utf-8"))
+        self.assertFalse(body["from_cache"])
+        self.assertEqual(body["edges"], fresh_edges)
+        fetch.assert_called_once()
+        write.assert_called_once()
+        # A forced sync rebuild does not also queue a background one.
+        sched.assert_not_called()
+
+    async def test_an_absent_cache_still_blocks_on_a_synchronous_build(self):
+        req = make_mocked_request("GET", "/api/apps/issue-radar/deps?owner=o&repo=r")
+        stored = {"edges": [], "nodes": {}, "fetched_at": time.time()}
+        with (
+            mock.patch.object(store, "is_repo_connected", return_value=True),
+            mock.patch.object(store, "read_deps_cache", side_effect=[None, stored]),
+            mock.patch.object(routes, "_load_open_issues_for_reco", return_value=[]),
+            mock.patch.object(store, "read_pulls_cache", return_value=[]),
+            mock.patch.object(store, "write_deps_cache") as write,
+            mock.patch.object(gh, "fetch_dependency_edges", return_value=([], {})) as fetch,
+            mock.patch.object(routes, "_schedule_deps_refresh") as sched,
+        ):
+            res = await routes._handle_deps(req)
+        self.assertEqual(res.status, 200)
+        body = json.loads(res.body.decode("utf-8"))
+        self.assertFalse(body["from_cache"])
+        # A never-synced repo builds inline (blocks) and does not serve-stale.
+        fetch.assert_called_once()
+        write.assert_called_once()
+        sched.assert_not_called()
+
+    async def test_shutdown_cancels_outstanding_refreshes(self):
+        app = web.Application()
+        key = _gh_key()
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def _hang(_app, _key):
+            started.set()
+            try:
+                await asyncio.Event().wait()  # never completes on its own
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        with mock.patch.object(routes, "_rebuild_deps", side_effect=_hang):
+            routes._schedule_deps_refresh(app, key)
+            await started.wait()
+            self.assertEqual(len(app[routes._DEPS_REFRESH_TASKS_APP_KEY]), 1)
+            await routes._stop_deps_refreshes(app)
+        self.assertTrue(cancelled.is_set())
+        self.assertEqual(len(app[routes._DEPS_REFRESH_TASKS_APP_KEY]), 0)
 
 
 # ── SIG_DEP_UNBLOCKED (detect + count + fingerprint stability) ────────────────

@@ -13,6 +13,14 @@
  * invisible to cron_list in chat), and the two states must read differently on
  * one screen, not merely across two screenshots.
  *
+ * #4879 extends the surface: the row tooltip labels the key ("Owning session:
+ * <key>") instead of dumping it bare, and the detail dialog carries a helper
+ * sentence under the Owning session field. The harness SELF-CHECKS both — it
+ * throws when the title attribute or the helper copy is missing — and renders
+ * the tooltip evidence by reading the live `title` attribute into a visible
+ * overlay (a native OS tooltip never paints in a headless screenshot; the
+ * overlay's text comes from the DOM, never from this script).
+ *
  * Usage: node scripts/capture-schedule-cron-owner.mjs [outDir] [prefix]
  */
 import { chromium } from 'playwright'
@@ -64,6 +72,43 @@ async function frameOwnerBlock(page) {
   })
 }
 
+const HELP_COPY = 'A job without an owning session is invisible to cron_list in chat and is managed from this page or the CLI.'
+
+/** Read a job row's Name-cell title attribute, or throw naming the row. */
+async function nameCellTitle(page, jobName) {
+  const cell = page.getByText(jobName).first().locator('xpath=ancestor::td[1]')
+  const title = await cell.getAttribute('title')
+  if (!title) throw new Error(`no title attribute on the ${jobName} name cell`)
+  return { cell, title }
+}
+
+/**
+ * Paint the cell's LIVE title attribute into a visible overlay beside it, so
+ * the labeled-tooltip form is screenshot-able. Headless Chromium never paints
+ * the native OS tooltip; the overlay's text is read from the DOM at call time
+ * and prefixed with a literal `title=` marker so the frame is legible as
+ * attribute evidence rather than product chrome. Returns after asserting the
+ * overlay's rect sits inside the table's rect — an overlay that slid out of
+ * the cropped frame would otherwise pass silently.
+ */
+async function overlayTitle(page, cell) {
+  await cell.hover()
+  const visible = await cell.evaluate(el => {
+    const tip = document.createElement('div')
+    tip.id = 'capture-title-overlay'
+    tip.textContent = `title=${JSON.stringify(el.getAttribute('title'))}`
+    tip.style.cssText = 'position:fixed;z-index:9999;background:var(--bg-elevated,#222);color:var(--text,#eee);border:1px solid var(--border,#555);border-radius:4px;padding:4px 8px;font:12px monospace;box-shadow:0 2px 8px rgba(0,0,0,.4)'
+    const r = el.getBoundingClientRect()
+    tip.style.left = `${r.left + 12}px`
+    tip.style.top = `${r.bottom + 4}px`
+    document.body.appendChild(tip)
+    const t = tip.getBoundingClientRect()
+    const table = el.closest('table').getBoundingClientRect()
+    return t.left >= table.left && t.right <= table.right && t.top >= table.top && t.bottom <= table.bottom
+  })
+  if (!visible) throw new Error('title overlay fell outside the table crop — frame would omit the evidence')
+}
+
 async function main() {
   const { srv, base } = await serveDist()
   const browser = await chromium.launch()
@@ -99,26 +144,48 @@ async function main() {
   await page.screenshot({ path: `${OUT}/${PREFIX}-table.png` })
   await page.locator('table').first().screenshot({ path: `${OUT}/${PREFIX}-table-crop.png` })
 
+  // #4879 self-check: the hover title labels the key instead of dumping it,
+  // and the ownerless row keeps its explicit copy. Throw = no stale frame.
+  const owned = await nameCellTitle(page, 'Nightly report')
+  if (owned.title !== 'Nightly report · Owning session: web-4f2a9c81d7e3') {
+    throw new Error(`owned-row title not in labeled form: ${owned.title}`)
+  }
+  const ownerless = await nameCellTitle(page, 'Feed poller')
+  if (ownerless.title !== 'Feed poller · No owning session') {
+    throw new Error(`ownerless-row title regressed: ${ownerless.title}`)
+  }
+  // Tooltip evidence frame: the labeled form, painted from the live attribute.
+  await overlayTitle(page, owned.cell)
+  await page.locator('table').first().screenshot({ path: `${OUT}/${PREFIX}-tooltip-labeled.png` })
+  await page.evaluate(() => document.getElementById('capture-title-overlay')?.remove())
+
   // Detail dialog for the OWNED job: full un-truncated key. The owner block
   // sits below the form fold, so scroll it into view before framing.
   await page.getByRole('row').filter({ hasText: 'Nightly report' }).getByText('Nightly report').click()
   await page.locator('[role="dialog"]').first().waitFor({ timeout: 10000 })
+  // #4879 self-check: the helper sentence is the OWNERLESS state's explainer
+  // and must NOT render under a live key.
+  if (await page.locator('[role="dialog"]').first().getByText(HELP_COPY).count()) {
+    throw new Error('helper sentence leaked into the OWNED dialog')
+  }
   await frameOwnerBlock(page)
   await page.waitForTimeout(500)
   await page.locator('[role="dialog"]').first().screenshot({ path: `${OUT}/${PREFIX}-detail-owned.png` })
   await page.keyboard.press('Escape')
   await page.waitForTimeout(400)
 
-  // Detail dialog for the OWNERLESS job: the explicit empty-state copy.
+  // Detail dialog for the OWNERLESS job: the explicit empty-state copy plus
+  // the #4879 helper sentence (consequence + remedy).
   await page.getByRole('row').filter({ hasText: 'Feed poller' }).getByText('Feed poller').click()
   await page.locator('[role="dialog"]').first().waitFor({ timeout: 10000 })
+  await page.locator('[role="dialog"]').first().getByText(HELP_COPY).waitFor({ timeout: 10000 })
   await frameOwnerBlock(page)
   await page.waitForTimeout(500)
   await page.locator('[role="dialog"]').first().screenshot({ path: `${OUT}/${PREFIX}-detail-ownerless.png` })
 
   await browser.close()
   srv.close()
-  console.log(`wrote 4 frames to ${OUT}/ with prefix ${PREFIX}`)
+  console.log(`wrote 5 frames to ${OUT}/ with prefix ${PREFIX}`)
 }
 
 main().catch(err => { console.error(err); process.exit(1) })

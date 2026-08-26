@@ -19,11 +19,22 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 | `session_stop` | `POST /api/session-control/stop` | Stop another session's in-flight turn |
 | `session_read_message` | `GET /api/session-control/read` | Read another session's transcript tail + liveness |
 
-**Nothing here writes into another session's conversation.** Reading returns a
-transcript tail, stopping cancels a turn the way the Stop button does, and
-creating opens an empty session the person types the first message into. Every
-verb is authorized at the moment it acts, so there is no delivery that can be
-delayed past its own authorization.
+**One verb here writes into another session's conversation: `session_send`.**
+Reading returns a transcript tail, stopping cancels a turn the way the Stop button
+does, creating opens an empty session, and sending delivers a message that the
+target runs as its next turn. Delivery is the sharpest verb and is bounded
+accordingly: the body is redacted through `sanitize_outbound` before it is
+persisted, it is prefixed with a `[sent by session <caller> via session_send]`
+envelope so the target's transcript can never render it as something the person
+typed, and channel agents are blocked from it outright.
+
+**Delivery has two authorization moments, and only the first is enforced today.**
+An idle target runs the prompt immediately, under the authorization that admitted
+it. A busy target QUEUES it, and the generic drain re-runs no check — so a target
+that gains a channel mirror between enqueue and drain broadcasts the delivered
+text. That window is accepted, not overlooked: it is not specific to this module
+(a human-typed message into a busy session drains through the same ungated path),
+so it is fixed once at the drain rather than per caller. Tracked as issue #5911.
 
 `session_create` earns its place on its own, not as the front half of a delivery
 design: an agent that has just worked out that a job needs its own session can
@@ -187,12 +198,12 @@ infer a grant from silence.
 
 ## What is deliberately not here
 
-- **No message delivery.** No verb writes into another session's conversation.
-  Delivering a message to a peer has two authorization moments — acceptance and
-  the drain that can be minutes later — and the target's agent, workspace and
-  channel binding can all change in between. That is a different design from the
-  three verbs here, which are each authorized at the moment they act, so it is
-  scoped to its own change rather than carried along.
+- **No delivery to a target outside the addressable set.** `session_send` writes
+  into another session's conversation, but only one the same `authorize_target`
+  guard admits: a channel-linked, channel-mirrored, crew-mode, incognito,
+  app-scoped, unattended or cross-workspace target is refused, so the verb cannot
+  reach a conversation other people are party to. The residual is the queued arm's
+  second authorization moment, recorded above and tracked as #5911.
 - **No cross-workspace or cross-machine reach.** The boundary is one gateway's
   live sessions in one workspace.
 - **No waking closed sessions.** See above.

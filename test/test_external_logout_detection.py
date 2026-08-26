@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -475,26 +476,90 @@ class TestStorePathSelection:
             tmp_path / "Library" / "Application Support" / "kiro-cli" / "data.sqlite3"
         )
 
-    def test_windows_reads_roaming_not_local(self, tmp_path: Path) -> None:
-        """The identity lives under Roaming; Local holds no credential.
+    def test_windows_defaults_to_local_when_no_store_exists(self, tmp_path: Path) -> None:
+        """Current kiro-cli writes under AppData/Local; that is the anchor.
 
-        Reading Local on Windows would make every fingerprint "absent", so a
-        logout would look identical to a signed-in state and no child would ever
-        be retired there.
+        Anchoring at the legacy Roaming location would make every fingerprint
+        "absent" on a current host, so a logout would look identical to a
+        signed-in state and no child would ever be retired there.
         """
 
         path = kp.kiro_identity_store_path("win32", tmp_path, {})
-        assert path == tmp_path / "AppData" / "Roaming" / "kiro-cli" / "data.sqlite3"
         # Anchor on the tail BELOW the home we passed, never on global parts: on
         # Windows CI tmp_path itself lives under AppData\Local\Temp, so a bare
-        # `"Local" not in path.parts` asserts something about the fixture's prefix
-        # rather than about which directory this function chose.
+        # `"Roaming" not in path.parts` asserts something about the fixture's
+        # prefix rather than about which directory this function chose.
         assert path.relative_to(tmp_path).parts == (
             "AppData",
-            "Roaming",
+            "Local",
             "kiro-cli",
             "data.sqlite3",
         )
+
+    def test_windows_current_layout_resolves_local(self, tmp_path: Path) -> None:
+        local = tmp_path / "AppData" / "Local" / "kiro-cli" / "data.sqlite3"
+        local.parent.mkdir(parents=True)
+        local.touch()
+        assert kp.kiro_identity_store_path("win32", tmp_path, {}) == local
+
+    def test_windows_legacy_roaming_only_host_falls_back(self, tmp_path: Path) -> None:
+        """Older kiro-cli layouts kept the store under Roaming; keep reading them."""
+
+        roaming = tmp_path / "AppData" / "Roaming" / "kiro-cli" / "data.sqlite3"
+        roaming.parent.mkdir(parents=True)
+        roaming.touch()
+        assert kp.kiro_identity_store_path("win32", tmp_path, {}) == roaming
+
+    def test_windows_both_present_reads_the_most_recently_written(self, tmp_path: Path) -> None:
+        """With both layouts present, the live store is the one being written.
+
+        An upgraded host carries a stale Roaming leftover next to its live
+        Local store; a downgraded host writes Roaming next to a stale Local
+        leftover. Preferring either fixed side would read the leftover on the
+        other shape -- a confident fingerprint of an account nobody is signed
+        into -- so recency decides. Both paths are inside the agent-write
+        fence, so the timestamp is as trustworthy as the rows themselves.
+        """
+
+        local = tmp_path / "AppData" / "Local" / "kiro-cli" / "data.sqlite3"
+        roaming = tmp_path / "AppData" / "Roaming" / "kiro-cli" / "data.sqlite3"
+        for db in (local, roaming):
+            db.parent.mkdir(parents=True)
+            db.touch()
+
+        os.utime(local, (1_000_000, 1_000_000))
+        os.utime(roaming, (2_000_000, 2_000_000))
+        assert kp.kiro_identity_store_path("win32", tmp_path, {}) == roaming
+
+        os.utime(local, (3_000_000, 3_000_000))
+        assert kp.kiro_identity_store_path("win32", tmp_path, {}) == local
+
+        # Equal timestamps prefer Local, the current layout.
+        os.utime(roaming, (3_000_000, 3_000_000))
+        assert kp.kiro_identity_store_path("win32", tmp_path, {}) == local
+
+    def test_windows_recency_counts_the_wal_sidecar(self, tmp_path: Path) -> None:
+        """A commit in WAL mode advances the -wal file, not the main file.
+
+        An actively-written store can have a frozen main-file mtime until the
+        next checkpoint, so recency compares the newest of (db, db-wal) per
+        side -- otherwise the live side loses the tie-break to a stale main
+        file that merely got touched later.
+        """
+
+        local = tmp_path / "AppData" / "Local" / "kiro-cli" / "data.sqlite3"
+        roaming = tmp_path / "AppData" / "Roaming" / "kiro-cli" / "data.sqlite3"
+        for db in (local, roaming):
+            db.parent.mkdir(parents=True)
+            db.touch()
+        wal = roaming.with_name(roaming.name + "-wal")
+        wal.touch()
+
+        # Roaming main file is old, but its WAL carries the newest write.
+        os.utime(roaming, (1_000_000, 1_000_000))
+        os.utime(local, (2_000_000, 2_000_000))
+        os.utime(wal, (3_000_000, 3_000_000))
+        assert kp.kiro_identity_store_path("win32", tmp_path, {}) == roaming
 
     def test_windows_path_ignores_a_redirected_appdata(self, tmp_path: Path) -> None:
         """Fixed anchor, not %APPDATA%.
@@ -602,11 +667,48 @@ class TestStoreRelocation:
             "win32", tmp_path, {"APPDATA": str(tmp_path / "AppData" / "Roaming")}
         )
 
-    def test_localappdata_is_not_a_relocation_signal(self, tmp_path: Path) -> None:
-        """The identity lives under Roaming; LOCALAPPDATA does not move it."""
+    def test_either_appdata_redirect_relocates_regardless_of_stores(self, tmp_path: Path) -> None:
+        """A fixed-anchor DB under redirection cannot be attributed to a live writer.
 
-        assert not kp.identity_store_is_relocated(
+        The CLI resolves its data dir from LOCALAPPDATA (current layout) or
+        APPDATA (legacy layout), and which generation is writing cannot be
+        observed. Once either variable is redirected, a database at a fixed
+        anchor may be a leftover of either layout, and reading a leftover
+        yields a confident fingerprint of an account nobody is signed into --
+        so the guard refuses to guess, whatever stores exist. Absent is the
+        module's safe side, and this matches the pre-change posture for
+        Group-Policy Roaming redirection (the anchor then lived under
+        Roaming), so redirected enterprise hosts lose nothing they had.
+        """
+
+        local = tmp_path / "AppData" / "Local" / "kiro-cli" / "data.sqlite3"
+        local.parent.mkdir(parents=True)
+        local.touch()
+        # Even with a healthy Local store, either redirect relocates.
+        assert kp.identity_store_is_relocated(
+            "win32", tmp_path, {"APPDATA": str(tmp_path / "elsewhere")}
+        )
+        assert kp.identity_store_is_relocated(
             "win32", tmp_path, {"LOCALAPPDATA": str(tmp_path / "elsewhere")}
+        )
+        # Both variables at their defaults is never a relocation.
+        assert not kp.identity_store_is_relocated(
+            "win32",
+            tmp_path,
+            {
+                "APPDATA": str(tmp_path / "AppData" / "Roaming"),
+                "LOCALAPPDATA": str(tmp_path / "AppData" / "Local"),
+            },
+        )
+
+    def test_localappdata_relocation_is_detected(self, tmp_path: Path) -> None:
+        """LOCALAPPDATA moves the local app-data home where the identity now lives."""
+
+        assert kp.identity_store_is_relocated(
+            "win32", tmp_path, {"LOCALAPPDATA": str(tmp_path / "elsewhere")}
+        )
+        assert not kp.identity_store_is_relocated(
+            "win32", tmp_path, {"LOCALAPPDATA": str(tmp_path / "AppData" / "Local")}
         )
 
     @pytest.mark.asyncio

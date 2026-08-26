@@ -58,7 +58,7 @@ conversion path.
 
 ## The table
 
-Thirteen checks over eight scripts. The split is by the only question an author
+Fourteen checks over eight scripts. The split is by the only question an author
 has: **is this mine to fix?** A `diff`-scoped finding is on a line this branch
 wrote or in a file it touched. A `repo`-scoped finding is a whole-repo measurement
 the branch may simply have inherited.
@@ -70,7 +70,8 @@ the branch may simply have inherited.
 | `[source-strings]` | diff | zero tolerance | badly shaped copy among only the English keys your branch adds |
 | `[changed-values]` | diff | zero tolerance | catalog QA over every value the branch added or changed, all languages |
 | `[key-refs]` | repo | hard zero | a `t('key')` naming a key that does not exist |
-| `[plurals]` | repo | hard zero | a plural suffix concatenated outside the translation call |
+| `[plurals]` | repo | hard zero | an i18nT-adjacent plural suffix concatenated outside the translation call |
+| `[plurals-hardcoded]` | repo | ceiling — fails on growth | the same plural glue with NO `i18nT` in it, fully hardcoded |
 | `[pseudolocale]` | repo | hard zero | `en-XA.json` stale relative to its generator |
 | `[dnt]` | repo | hard zero | a do-not-translate term respelt in a shipped catalog |
 | `[manifest-sync]` | repo | hard zero | a built-in `app.json` string and its `en.json` value stopped matching |
@@ -79,7 +80,7 @@ the branch may simply have inherited.
 | `[untranslated]` | repo | report only | per-file ceilings over the frozen untranslated debt |
 | `[allcaps]` | repo | report only | untranslated strings inside ALL-CAPS module constants |
 
-### Only two kinds of check can fail the step
+### Only three kinds of check can fail the step
 
 1. **A diff-scoped one.** A finding on a line you wrote is yours and there is no
    number to raise.
@@ -89,6 +90,24 @@ the branch may simply have inherited.
    references in files the PR never opens. It also needs no base ref, so it cannot
    skip itself. The user-visible symptom it prevents is a raw dotted key rendered
    into the UI, because a missing key is returned as its own fallback.
+3. **A whole-repo CEILING that fails only on growth.** `[plurals-hardcoded]` is the
+   one check of this kind, and it exists because the class it counts cannot be a
+   hard zero (the frozen sites need manual conversion, so a hard zero would have
+   failed on arrival and been disabled) and was invisible to the gate entirely —
+   the hard-zero tier keys on an adjacent `i18nT` call, so a fully hardcoded
+   literal reported zero to it and the class regrew silently. The ceiling is
+   pinned at `HARDCODED_CEILING` in `website/scripts/i18n-plural-codemod.mjs` and
+   ratchets DOWN as sites are converted. What keeps it out of the stored-total
+   trap below: it is pinned at the frozen debt's worst point, so main crosses it
+   only when a PR adds a site — unlike the `[untranslated]`/`[allcaps]` totals,
+   which move whenever any counted file changes. Lowering the constant after a
+   conversion is suggested on every run but optional, for the same recorded
+   reason as `[extractable]`'s `--baseline`: forcing every improving branch to
+   edit one shared line makes it a merge conflict between all of them. The cost
+   of that choice is bounded and accepted — a site re-added inside unclaimed
+   slack rides free until the constant is tightened. A failure prints every site
+   with `file:line`, so a red always names lines an author can check against
+   their own diff.
 
 Everything else is **report only**. A stored whole-repo total is written by
 whichever branch measured it last, so another branch can push it past its number
@@ -278,6 +297,13 @@ per-file dynamic-site diff, the same shape as `[vs-base]`.
 
 Runs in `frontend-test`, outside the `i18n:check` runner above, because it is a
 plain vitest assertion over the catalog files rather than a diff-scoped gate.
+
+The same job also runs `src/i18n/destructiveConfirm.test.ts`, which is the
+convention detector for quoted operands on destructive confirms (#4821): every
+`confirm` key that interpolates a placeholder must be on the quoted-operand pin,
+an explicit key exemption, or interpolate only names in
+`EXEMPT_CONFIRM_PLACEHOLDER_NAMES`. A brand-new confirm with a bare `{{name}}`
+fails that test even if nobody remembers to extend the pin.
 
 It fails on any key defined **twice inside one object** in any
 `src/i18n/locales/*.json`. Every catalog on disk is covered, so adding a language

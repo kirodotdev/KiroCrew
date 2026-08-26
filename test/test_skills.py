@@ -1890,3 +1890,150 @@ class TestSearchSkills:
         loader = SkillsLoader(skills_path=skills_dir, install_builtins=False)
         loader.search_skills("alpha")
         assert loader._usage.score("s1")[0] == 0.0  # searching is not using
+
+
+class TestDisabledAppSkillsAreNotTriggered:
+    """Disabling an app must actually stop its bundled skills loading (#4023).
+
+    The skill tree an app bundles under ``skills/<app>/`` was never gated on the
+    app's enabled state, so a disabled app's skills stayed in the matching index
+    and kept firing into every turn's context on generic trigger words -- burning
+    tokens and polluting the prompt for an app the user explicitly opted out of,
+    with no visible reason.
+    """
+
+    @staticmethod
+    def _write_app_skill(skills: Path, app: str, name: str, triggers: str) -> None:
+        d = skills / app / name
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: d\ntriggers: {triggers}\n---\n\nbody\n"
+        )
+
+    @staticmethod
+    def _apps(monkeypatch, **enabled: bool) -> None:
+        """Stub the app registry: name -> enabled."""
+        import kiro_crew.apps.manager as mgr
+
+        monkeypatch.setattr(
+            mgr, "list_apps",
+            lambda: [{"name": n, "enabled": e} for n, e in enabled.items()],
+        )
+
+    def test_a_disabled_apps_skill_does_not_trigger(self, tmp_path, monkeypatch):
+        skills = tmp_path / "skills"
+        self._write_app_skill(skills, "deploy_web", "artifact-deploy", "deploy")
+        self._apps(monkeypatch, deploy_web=False)
+        loader = SkillsLoader(
+            skills_path=skills, install_builtins=False,
+            config=KiroCrewConfig(skills=SkillsConfig(max_triggered=3)),
+        )
+
+        assert loader.get_triggered_skills("please deploy this") == []
+
+    def test_an_enabled_apps_skill_still_triggers(self, tmp_path, monkeypatch):
+        skills = tmp_path / "skills"
+        self._write_app_skill(skills, "deploy_web", "artifact-deploy", "deploy")
+        self._apps(monkeypatch, deploy_web=True)
+        loader = SkillsLoader(
+            skills_path=skills, install_builtins=False,
+            config=KiroCrewConfig(skills=SkillsConfig(max_triggered=3)),
+        )
+
+        assert loader.get_triggered_skills("please deploy this") == ["deploy_web/artifact-deploy"]
+
+    def test_only_the_disabled_apps_skill_is_withheld(self, tmp_path, monkeypatch):
+        """One disabled app must not silence a sibling app's skill."""
+        skills = tmp_path / "skills"
+        self._write_app_skill(skills, "deploy_web", "artifact-deploy", "deploy")
+        self._write_app_skill(skills, "ops_mc", "ops-mission-control", "deploy")
+        self._apps(monkeypatch, deploy_web=False, ops_mc=True)
+        loader = SkillsLoader(
+            skills_path=skills, install_builtins=False,
+            config=KiroCrewConfig(skills=SkillsConfig(max_triggered=3)),
+        )
+
+        assert loader.get_triggered_skills("please deploy this") == ["ops_mc/ops-mission-control"]
+
+    def test_a_plain_user_skill_is_never_gated(self, tmp_path, monkeypatch):
+        """A skill owned by no app has no enablement to consult."""
+        skills = tmp_path / "skills"
+        d = skills / "my-notes"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text("---\nname: my-notes\ndescription: d\ntriggers: deploy\n---\n\nb\n")
+        self._apps(monkeypatch, deploy_web=False)
+        loader = SkillsLoader(
+            skills_path=skills, install_builtins=False,
+            config=KiroCrewConfig(skills=SkillsConfig(max_triggered=3)),
+        )
+
+        assert loader.get_triggered_skills("please deploy this") == ["my-notes"]
+
+    def test_an_unreadable_app_registry_hides_nothing(self, tmp_path, monkeypatch):
+        """Fail OPEN here, deliberately: a transient read error must not silently
+        strip an enabled app's skills out of context."""
+        import kiro_crew.apps.manager as mgr
+
+        skills = tmp_path / "skills"
+        self._write_app_skill(skills, "deploy_web", "artifact-deploy", "deploy")
+
+        def _boom():
+            raise OSError("installed.json unreadable")
+
+        monkeypatch.setattr(mgr, "list_apps", _boom)
+        loader = SkillsLoader(
+            skills_path=skills, install_builtins=False,
+            config=KiroCrewConfig(skills=SkillsConfig(max_triggered=3)),
+        )
+
+        assert loader.get_triggered_skills("please deploy this") == ["deploy_web/artifact-deploy"]
+
+    @staticmethod
+    def _link_shipped_builtin_skill(skills: Path) -> str:
+        """Flat-link a REAL shipped builtin's skill into *skills*, as bridges does.
+
+        Uses ``auto-improvement``'s ``ai-discover``: the flat name sorts before
+        the app name, so the flat registration is the one ``_iter_skill_files``'s
+        ``seen_real`` dedup keeps -- and its realpath resolves into the PACKAGE
+        tree (``apps/builtins/auto_improvement/skills/ai-discover``), not the
+        data-home apps root. Returns the app's manifest name.
+        """
+        import kiro_crew.skills as skills_mod
+
+        target = (
+            Path(skills_mod.__file__).parent
+            / "apps" / "builtins" / "auto_improvement" / "skills" / "ai-discover"
+        )
+        skills.mkdir(parents=True, exist_ok=True)
+        try:
+            (skills / "ai-discover").symlink_to(target, target_is_directory=True)
+        except OSError:
+            pytest.skip("symlinks unavailable on this platform")
+        return "auto-improvement"
+
+    def test_a_disabled_builtins_package_tree_skill_is_gated(self, tmp_path, monkeypatch):
+        """The headline case (#4023): a shipped builtin registers its skills
+        straight out of the package tree, and the flat link -- whose name says
+        nothing -- can be the registration the walk keeps. Ownership must resolve
+        through the builtin's manifest, not only the data-home apps root."""
+        skills = tmp_path / "skills"
+        app = self._link_shipped_builtin_skill(skills)
+        self._apps(monkeypatch, **{app: False})
+        loader = SkillsLoader(
+            skills_path=skills, install_builtins=False,
+            config=KiroCrewConfig(skills=SkillsConfig(max_triggered=3)),
+        )
+
+        assert loader.get_triggered_skills("find hotspots for me") == []
+
+    def test_an_enabled_builtins_package_tree_skill_still_triggers(self, tmp_path, monkeypatch):
+        """The gate's other direction: enabling the builtin restores matching."""
+        skills = tmp_path / "skills"
+        app = self._link_shipped_builtin_skill(skills)
+        self._apps(monkeypatch, **{app: True})
+        loader = SkillsLoader(
+            skills_path=skills, install_builtins=False,
+            config=KiroCrewConfig(skills=SkillsConfig(max_triggered=3)),
+        )
+
+        assert loader.get_triggered_skills("find hotspots for me") == ["ai-discover"]

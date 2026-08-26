@@ -652,6 +652,68 @@ class TestOneTurnPerSessionKey:
         assert "still running" in (runs[0]["detail"] or "")
 
     @pytest.mark.asyncio
+    async def test_concurrent_same_key_is_claimed_before_capacity_await(
+        self, wired, monkeypatch
+    ):
+        """A yielding capacity acquire cannot admit two turns for one key."""
+
+        class YieldingSemaphore:
+            def __init__(self):
+                self.entered = asyncio.Event()
+                self.allow = asyncio.Event()
+                self.acquire_calls = 0
+                self.release_calls = 0
+
+            def locked(self):
+                return False
+
+            async def acquire(self):
+                self.acquire_calls += 1
+                self.entered.set()
+                await self.allow.wait()
+                return True
+
+            def release(self):
+                self.release_calls += 1
+
+        semaphore = YieldingSemaphore()
+        monkeypatch.setattr(H, "_hook_semaphore", semaphore)
+        run = AsyncMock(return_value=None)
+        monkeypatch.setattr(H, "_run_hook_agent", run)
+
+        raw, secret, _entry = webhooks.token_store().create("Review Bot")
+        session_key = f"{H._HOOK_SESSION_PREFIX}simultaneous"
+
+        def request(message):
+            return _req(
+                "POST",
+                "/api/hooks/agent",
+                {"message": message, "sessionKey": session_key},
+                headers={"Authorization": f"Bearer {raw}"},
+                sign_with=secret,
+            )
+
+        first = asyncio.create_task(H.api_hooks_agent(request("first")))
+        await asyncio.wait_for(semaphore.entered.wait(), timeout=1)
+
+        # The first request is paused inside acquire(). The claim must already
+        # be visible, so the second request finishes with session_busy instead
+        # of joining it at the capacity await.
+        second = await asyncio.wait_for(H.api_hooks_agent(request("second")), timeout=1)
+        assert second.status == 409
+        assert (await _payload(second))["code"] == "session_busy"
+        assert semaphore.acquire_calls == 1
+
+        semaphore.allow.set()
+        accepted = await asyncio.wait_for(first, timeout=1)
+        assert accepted.status == 200
+        await asyncio.sleep(0)
+        run.assert_awaited_once()
+
+        H._hook_inflight_sessions.discard(session_key)
+        semaphore.release()
+
+    @pytest.mark.asyncio
     async def test_the_key_is_released_when_the_turn_finishes(self, wired, monkeypatch):
         """A completed turn must not leave its key claimed forever."""
         monkeypatch.setattr(

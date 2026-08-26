@@ -167,6 +167,17 @@ describe('spliceDirTokens', () => {
     expect(out.value).toBe('@docs/ ')
   })
 
+  it('does NOT canonicalize separators: a POSIX name containing a backslash stays distinct', () => {
+    // spliceDirTokens sees only bare relative tokens with no platform
+    // context to confirm a `\\` is a Windows separator vs a literal POSIX
+    // filename character. Canonicalizing here would conflate `src/a\\b/`
+    // (a directory literally named `a\\b`) with the DIFFERENT nested
+    // directory `src/a/b/`, silently dropping the second selection.
+    const out = spliceDirTokens('see @src/a\\b/ now', null, ['src/a/b'])
+    expect(out.value).toBe('see @src/a\\b/ now @src/a/b/ ')
+    expect(out.changed).toBe(true)
+  })
+
   it('inserts several folders as separate tokens', () => {
     const out = spliceDirTokens('', null, ['a', 'b'])
     expect(parseDirTokens(out.value).map(t => t.rel)).toEqual(['a/', 'b/'])

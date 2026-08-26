@@ -1244,7 +1244,12 @@ class TestGatewayEnableErrors:
             _request({"enabled": True}, state=state)
         )
         assert resp.status == 500
-        assert "broker died" in _payload(resp)["error"]
+        # The raw exception text stays server-side (in the SEL log below); the
+        # verbatim-rendered client body gets a generic message + machine code.
+        body = _payload(resp)
+        assert "broker died" not in body["error"]
+        assert body["error"] == "apply failed"
+        assert body["code"] == "mcp_apply_failed"
         outcomes = [c.kwargs.get("outcome") for c in sel.log_api_access.call_args_list]
         assert "error" in outcomes
 
@@ -2051,7 +2056,11 @@ class TestGatewaySetStub:
             _request({"name": "ok-mcp", "stub": True}, state=state)
         )
         assert resp.status == 500
-        assert "relink" in _payload(resp)["error"]
+        # Raw exception text stays server-side; client body is generic + coded.
+        body = _payload(resp)
+        assert "relink" not in body["error"]
+        assert body["error"] == "apply failed"
+        assert body["code"] == "mcp_apply_failed"
         # The config write happens BEFORE apply, so it survives the failure.
         saved = json.loads(config_path().read_text(encoding="utf-8"))
         assert saved["mcp_gateway"]["stub_servers"] == ["ok-mcp"]

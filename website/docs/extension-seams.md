@@ -9,10 +9,10 @@ The backend has the sibling mechanism, Composed Platform Providers: see
 [`docs/system-specs/modules/platform-context.md`](../../docs/system-specs/modules/platform-context.md).
 The two are independent. Nothing here reads `CONTRACT_VERSION`.
 
-## The ten registry seams
+## The eleven registry seams
 
 Each entry is one registrar the edition may call, paired with the reader the core
-already calls. `src/extensions.ts` names exactly these ten in its header, and
+already calls. `src/extensions.ts` names exactly these eleven in its header, and
 `src/test/extensionSeams.test.tsx` exercises each one.
 
 | Seam | Module | Registrar to reader |
@@ -25,6 +25,7 @@ already calls. `src/extensions.ts` names exactly these ten in its header, and
 | Readout-capsule segments | `apps/capsuleSegments.tsx` | `registerCapsuleSegment()` to `getCapsuleSegments()` |
 | Overview status cards | `pages/overviewStatCards.tsx` | `registerOverviewStatCards()` to `getOverviewStatCards()` |
 | Overview lower panel (single owner) | `pages/overviewPanel.tsx` | `registerOverviewPanel()` to `getOverviewPanel()` |
+| Overview built-in suppression (subtractive) | `pages/overviewBuiltins.ts` | `suppressOverviewBuiltin()` to `isOverviewBuiltinSuppressed()` |
 | Panel-navigation chords | `hooks/useKeyboardShortcuts.ts` | `registerPanelShortcut()`, read by the shortcut handler and `DEFAULT_SHORTCUTS` |
 | Non-app route prefixes | `components/MigrationCheck.tsx` | `registerNonAppPrefix()`, read by `MigrationCheck` |
 
@@ -33,8 +34,14 @@ registry; see "API methods" below.
 
 Other `register*()` functions in `src/` (built-in surfaces, command-palette
 providers, tool pills, terminal sockets, highlight.js languages) are core-internal
-wiring, not edition seams. Only the ten above are called from the composition
+wiring, not edition seams. Only the eleven above are called from the composition
 root.
+
+Ten of the eleven are **additive** — the edition contributes a surface. The
+eleventh is **subtractive**: `suppressOverviewBuiltin()` removes a built-in
+Overview surface for a distribution whose environment makes it permanently
+inapplicable, which no additive seam can express. It is named `suppress*` rather
+than `register*` precisely so a call site cannot be misread as a contribution.
 
 ## Composition root
 
@@ -257,8 +264,8 @@ unaffected because the applied value persists in `localStorage`.
 
 ## Collision policy
 
-`apps/seamCollision.ts` is the one policy every registrar routes rejections
-through. A registration whose key collides with a core entry (or an
+`apps/seamCollision.ts` is the one policy every **additive** registrar routes
+rejections through. A registration whose key collides with a core entry (or an
 already-registered one) is resolved core-wins, and `reportSeamCollision`:
 
 - **fails loud in dev and test** (it throws under `import.meta.env.DEV`, which is
@@ -266,6 +273,13 @@ already-registered one) is resolved core-wins, and `reportSeamCollision`:
   build/test time rather than by an end user;
 - **degrades safe in production** (warn and ignore), so a shipped app never
   white-screens over a duplicate.
+
+The subtractive seam is deliberately **exempt**. `suppressOverviewBuiltin()` is a
+set, and a repeat is not a conflict: two owners cannot share one render slot, but
+two parties that both want a surface gone agree. So re-entrant registration (HMR,
+a module imported twice) is silently idempotent rather than a
+`reportSeamCollision` — which is why it is the one seam whose second call is not
+an error.
 
 ## Per-seam validation
 
@@ -374,6 +388,24 @@ cannot see each other. Reach for `registerOverviewStatCards` instead when the
 contribution really is one more tile in the status grid; use this slot when the
 content does not fit a 150px tile. The component receives no props and is wrapped
 in an `ErrorBoundary`, so a throwing panel disables only itself.
+
+**Overview built-in suppression.** `suppressOverviewBuiltin(id)` takes an id from
+a **typed union**, not a free string. That is the validation: a misspelled
+free-form id would suppress nothing and say nothing, and that symptom is
+indistinguishable from the seam not working at all, so the union turns it into a
+compile error at the call site. Keep the union minimal and add a member only
+alongside a real consumer — an id with no caller is API surface that has never
+been exercised. The seam is **one-way** (there is no `unsuppress`) and, like every
+registry here, is read at render and not reactive, so suppression must be
+registered during composition.
+
+It is **not a security control**. Suppression removes a piece of guidance from one
+page and relaxes nothing: whatever policy made the surface inapplicable is still
+enforced server-side (for `tailnet-mobile` the status endpoint still derives its
+step and the QR mint still refuses a pinned install with `governance_pinned`), so
+hiding a card cannot grant access the backend would otherwise deny. At the render
+site the gate sits outside both the `ErrorBoundary` and the spacing wrapper, so a
+suppressed build emits no element at all rather than an empty, still-spaced one.
 
 **Non-app route prefixes.** `registerNonAppPrefix(prefix)` tells `MigrationCheck`
 that a route can never host a migratable app, so the migration banner does not

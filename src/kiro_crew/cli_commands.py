@@ -602,9 +602,15 @@ def _run_app_mcp_server(app_name: str) -> None:
     module_name = f"kiro_crew.apps.builtins.{app_name.replace('-', '_')}.mcp_server"
     try:
         mod = importlib.import_module(module_name)
-    except ImportError as exc:
-        print(f"App {app_name!r} has no MCP server ({module_name}): {exc}", file=sys.stderr)
-        sys.exit(1)
+    except ModuleNotFoundError as exc:
+        # Only the TARGET module (or one of its parent packages) missing means
+        # "this app has no MCP server". A missing dependency imported INSIDE
+        # mcp_server.py — or any other ImportError — is a real defect and must
+        # keep its traceback rather than exit with a misleading diagnosis.
+        if exc.name and (exc.name == module_name or module_name.startswith(exc.name + ".")):
+            print(f"App {app_name!r} has no MCP server ({module_name}): {exc}", file=sys.stderr)
+            sys.exit(1)
+        raise
     runner = getattr(mod, "run_mcp_server", None)
     if runner is None:
         print(f"{module_name} defines no run_mcp_server()", file=sys.stderr)
@@ -1097,24 +1103,7 @@ def _cron(args: argparse.Namespace) -> None:
             print(f"Job not found: {args.job_id}")
 
     elif action == "remove":
-        removed = svc.remove_job(args.job_id)
-        # SEL audit: single delete records the affected job and outcome, same
-        # shape as cron.add/cron.update above. Exception-contained: the first
-        # sel() of a process constructs the log and can raise, and the job is
-        # already removed — a completed delete must not exit as a crash
-        # because the audit trail is unavailable.
-        try:
-            sel().log_api_access(
-                caller="cli",
-                operation="cron.remove",
-                outcome="allowed" if removed else "not_found",
-                source="cli",
-                resources=(
-                    f"job_id={args.job_id}" if removed else f"job_id={args.job_id} reason=not_found"
-                ),
-            )
-        except Exception as e:
-            print(f"Warning: audit log write failed: {e}", file=sys.stderr)
+        removed = svc.remove_job(args.job_id, actor="cli", source="cli")
         if removed:
             print(f"Removed job: {args.job_id}")
         else:
@@ -1705,6 +1694,33 @@ async def _run_eval(args: argparse.Namespace) -> None:
     print(f"\nResults saved to:\n  {report_path}\n  {json_path}")
 
 
+# Appended to every `learn add` output that wrote something. This command builds
+# its store with no embed_fn (loading the embedding model would add its startup
+# cost to every CLI invocation), so an insert lands with a NULL vector and an
+# enrichment CLEARS the stored one (the upsert keeps a vector only when the value
+# is unchanged). Either way the row is repaired by the gateway's boot-time
+# re-embed sweep, not by this process — an unqualified success message would
+# overstate what happened, and a user searching semantically before the next
+# gateway start would not find the lesson they were just told was saved.
+# "once its embedding backend is ready" is the sweep's own guarantee, not
+# hedging: _wait_then_backfill defers the sweep to a later boot when the
+# embedding model has not landed, so "on its next start" would over-promise.
+_LEARN_EMBED_NOTE = (
+    "  Stored and keyword-searchable now; the embedding vector is filled by the\n"
+    "  gateway's re-embed sweep after it next starts, once its embedding backend\n"
+    "  is ready."
+)
+
+# INSERTED only. An enrichment resolves against the ONE existing row it rewrites
+# (write_lesson pass 1 sets ``matched`` and pass 2's generic scan runs over
+# ``[] if matched else lesson_rows``), so the substring/topic-overlap claim is
+# true only for an insert — printing it on ENRICHED would report checks that
+# never ran, the same defect this change fixes.
+_LEARN_DEDUP_NOTE = (
+    "  (Semantic dedup did not run at write time; substring/topic-overlap dedup\n" "  still did.)"
+)
+
+
 def _learn(args: argparse.Namespace) -> None:
     """Save, list, or remove learned corrections."""
 
@@ -1746,11 +1762,16 @@ def _learn(args: argparse.Namespace) -> None:
             # the same defect this PR fixes on the reporting side. `learn list` is
             # where stored values belong.
             if result.outcome is LessonWriteOutcome.INSERTED:
-                print(f"Saved: {rule}{neg} [{category}]")
+                print(f"Saved: {rule}{neg} [{category}]\n{_LEARN_EMBED_NOTE}\n{_LEARN_DEDUP_NOTE}")
             elif result.outcome is LessonWriteOutcome.ENRICHED:
+                # No _LEARN_DEDUP_NOTE here: an enrichment matched its existing row in
+                # pass 1, which SKIPS the generic dedup scan. Instead say what the
+                # rewrite cost — the upsert cleared the vector the row already had.
                 print(
                     f"Updated the stored lesson with this clause: {rule}{neg}\n"
-                    "  The stored category is kept; `learn list` shows it."
+                    "  The stored category is kept; `learn list` shows it.\n"
+                    "  This rewrite cleared the row's existing embedding vector.\n"
+                    + _LEARN_EMBED_NOTE
                 )
             elif result.outcome is LessonWriteOutcome.UNCHANGED:
                 # Nothing was written, and the store keeps the stored category and

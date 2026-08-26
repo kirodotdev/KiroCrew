@@ -11,6 +11,10 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.dashboard.chat import _extract_bash_command
 from kiro_crew.dashboard.state import (
+    _GLOB_SENSITIVE_WORDS,
+    _INDIRECT_LIST_FLAGS_BY_PREFIX,
+    _OPTION_ACCEPT_LISTS,
+    _SORT_READONLY_LONG,
     DashboardState,
     _ChatSlot,
     is_read_only_bash,
@@ -673,6 +677,91 @@ class TestIsReadOnlyBash:
         # One operand after the terminator is the input, and reads.
         assert is_read_only_bash("cat f | uniq -- input") is True
 
+    def test_a_construct_bash_deletes_cannot_forge_a_flag(self):
+        """`shlex` keeps the words bash REMOVES, so a fake flag reached the tables.
+
+        Every operand rule here reads `shlex.split`'s token list as if it were the
+        program's argv. A comment and a herestring break that by deleting words
+        rather than rewriting them, and `shlex` models neither:
+
+            git branch injected # --list    shlex keeps '#', '--list'
+                                            bash runs `git branch injected`
+
+        The `--list` this module reads never reaches git. It turns list mode on,
+        the bare `injected` is reclassified from "creates a ref" to "a pattern",
+        and the segment auto-approves — while bash creates the ref. Measured
+        against real git: `git branch injected # --list`, `git tag forged # --list`
+        and `git branch injected <<< --list` each created the ref.
+
+        Refused as a class rather than repaired, since repairing it means deciding
+        what bash would have deleted — reimplementing word removal on top of
+        quoting rules `shlex` already models differently.
+        """
+        assert is_read_only_bash("git branch injected # --list") is False
+        assert is_read_only_bash("git tag forged # --list") is False
+        assert is_read_only_bash("git branch injected <<< --list") is False
+        assert is_read_only_bash("git branch injected < --list") is False
+        # A comment elides to end of LINE, past the `&&` the segment split
+        # believes in, so the whole raw command has to be scanned.
+        assert is_read_only_bash("git status && git branch injected # --list") is False
+        assert is_read_only_bash("# git status") is False
+
+    def test_refusing_on_the_first_hit_leaves_no_state_to_get_wrong(self):
+        """Why the construct is REFUSED and not reproduced.
+
+        An earlier revision of this fix reproduced the comment instead — stripped
+        it and classified the remainder — so that an ordinary trailing comment
+        would keep auto-approving. That reopened the very bypass this exists to
+        close: stripping means the scan CONTINUES past the `#`, and bash treats a
+        comment body as literal text while the scanner does not. A lone `'` in
+        comment text then leaked quote state across the newline, the next line's
+        forged `# --list` was never removed, and the ref-creating command
+        auto-approved again.
+
+        Refusing on the FIRST hit has no "afterwards" to get wrong, which is what
+        makes these inputs safe rather than a promise to handle them.
+        """
+        # The regression that killed the reproduce-the-comment approach.
+        assert is_read_only_bash("echo x # don't\ngit branch evil # --list") is False
+        # A second line is never reached, so it can never be smuggled past.
+        assert is_read_only_bash("echo hi # note\ngit branch x") is False
+        # Wider than bash is the SAFE direction: bash does not end a word on
+        # U+00A0 and does not read this `#` as a comment, so refusing it is a
+        # false refusal — never a false approval.
+        assert is_read_only_bash("git branch injected\u00a0# --list") is False
+        # ANSI-C `$'…'` quoting is likewise unmodelled, and likewise only ever
+        # costs a prompt.
+        assert is_read_only_bash("$'x\\' # y' ; git branch injected") is False
+
+    def test_an_elided_construct_is_detected_quote_aware(self):
+        """Both constructs are shell syntax only when unquoted, so quoting is honoured.
+
+        Scanning for a bare `#` or `<` would have cost the ordinary reads that
+        carry one as DATA, which is most of the ones that carry one at all.
+        """
+        # `#` inside quotes, and `#` mid-word, are not comments to bash.
+        assert is_read_only_bash("grep '#include' file") is True
+        assert is_read_only_bash("git log --grep '#123'") is True
+        assert is_read_only_bash("git log --grep=#123") is True
+        assert is_read_only_bash("echo a#b") is True
+        assert is_read_only_bash("grep \\# file") is True
+        # The plain reads are untouched.
+        assert is_read_only_bash("git status") is True
+        assert is_read_only_bash("git branch --list 'feat/*'") is True
+        assert is_read_only_bash("cat f | sort -u") is True
+
+    def test_elision_refusal_is_scoped_to_verbs_it_can_flip(self):
+        """Deleted words do not cost approval where they cannot change the verdict."""
+        for cmd in (
+            "git status # note",
+            "ls -la # list files",
+            "grep -rn foo src # find it",
+            "wc -l < file",
+            "grep pattern < file",
+        ):
+            assert is_read_only_bash(cmd) is True, cmd
+            assert unsafe_bash_reason(cmd) == "", cmd
+
     def test_a_positional_or_special_parameter_hides_the_real_argument(self):
         """`$@` and `$1` are expansions whose NAME is not an identifier.
 
@@ -708,7 +797,6 @@ class TestIsReadOnlyBash:
         assert is_read_only_bash("ls $PWD") is True
         assert is_read_only_bash("head -20 $LOG") is True
         assert is_read_only_bash("grep -rn TODO $DIR") is True
-        assert is_read_only_bash("wc -l ${F}") is True
         assert is_read_only_bash("cat file.{js,ts}") is True
         assert is_read_only_bash("readlink -f $X") is True
         # A table decides the argument: the expansion is still refused.
@@ -717,6 +805,14 @@ class TestIsReadOnlyBash:
         assert is_read_only_bash("uniq $ARGS") is False
         assert is_read_only_bash("tree ${FLAG}") is False
         assert is_read_only_bash("file ${FLAG} -m /tmp/magic.src") is False
+        # `wc -l ${F}` MOVED here from the group above, by the rule this test
+        # states rather than as an exception to it: `wc` now has a table
+        # (`_INDIRECT_LIST_FLAGS_BY_PREFIX`), so an expansion CAN reach a word this
+        # module decides on. Measured — with `F=--files0-from=list0` and a
+        # NUL-separated list naming `/etc/hostname`, `wc -l ${F}` printed
+        # `1 /etc/hostname`, a path that appears nowhere in the command.
+        assert is_read_only_bash("wc -l ${F}") is False
+        assert is_read_only_bash("du ${F}") is False
 
     def test_git_tag_annotation_listing_is_not_a_ref_creation(self):
         """`git tag -n` prints annotation lines — a listing with no `branch` twin.
@@ -796,7 +892,12 @@ class TestIsReadOnlyBash:
         assert is_read_only_bash("date -u") is True
         assert is_read_only_bash("date -Iseconds") is True
         assert is_read_only_bash("date +%Y-%m-%d") is True
+        # `-d` IS on the accept-list. An earlier revision left it off on the belief
+        # that BSD/macOS `date -d` sets the kernel daylight-saving value; that came
+        # from documentation and the implementations say otherwise. See
+        # `_DATE_READONLY_SHORT` for the per-project `getopt(3)` strings.
         assert is_read_only_bash("date -d yesterday") is True
+        assert is_read_only_bash("date --date=yesterday") is True
         assert is_read_only_bash("date --date=yesterday") is True
         assert is_read_only_bash("date -r /tmp/f") is True
         assert is_read_only_bash("hostname") is True
@@ -876,11 +977,19 @@ class TestIsReadOnlyBash:
         assert is_read_only_bash("date --reference /tmp/f") is True
         assert is_read_only_bash("date --file /tmp/dates") is True
         assert is_read_only_bash("date --date=yesterday") is True
+        # `-d` IS on the accept-list. An earlier revision left it off on the belief
+        # that BSD/macOS `date -d` sets the kernel daylight-saving value; that came
+        # from documentation and the implementations say otherwise. See
+        # `_DATE_READONLY_SHORT` for the per-project `getopt(3)` strings.
         assert is_read_only_bash("date -d yesterday") is True
+        assert is_read_only_bash("date --date=yesterday") is True
         assert is_read_only_bash("date -r /tmp/f") is True
         assert is_read_only_bash("date -Iseconds") is True
-        # A value-taking flag does not license a SECOND operand.
+        # A value-taking flag does not license a SECOND operand. `-d` consumes
+        # `yesterday`, which leaves `08221200` as a bare operand, and a bare operand
+        # sets the clock.
         assert is_read_only_bash("date -d yesterday 08221200") is False
+        assert is_read_only_bash("date --date=yesterday 08221200") is False
         assert is_read_only_bash("date --date yesterday 08221200") is False
 
     def test_an_option_looking_glob_is_refused_on_the_metacharacter_alone(self):
@@ -969,7 +1078,12 @@ class TestIsReadOnlyBash:
         assert is_read_only_bash("date -Iseconds") is True
         assert is_read_only_bash("date -u") is True
         assert is_read_only_bash("date -R") is True
+        # `-d` IS on the accept-list. An earlier revision left it off on the belief
+        # that BSD/macOS `date -d` sets the kernel daylight-saving value; that came
+        # from documentation and the implementations say otherwise. See
+        # `_DATE_READONLY_SHORT` for the per-project `getopt(3)` strings.
         assert is_read_only_bash("date -d yesterday") is True
+        assert is_read_only_bash("date --date=yesterday") is True
         assert is_read_only_bash("date -r /tmp/f") is True
         assert is_read_only_bash("hostname -s") is True
         assert is_read_only_bash("hostname -f") is True
@@ -1136,7 +1250,11 @@ class TestIsReadOnlyBash:
         assert is_read_only_bash("hostname --fi=/tmp/name") is False
         assert is_read_only_bash("hostname --file=/tmp/name") is False
         # An abbreviation of a READ option is not a setter.
-        assert is_read_only_bash("date --dat=yesterday") is True
+        # An accept-list cannot honour long-option ABBREVIATIONS: an abbreviation of
+        # a read flag is indistinguishable in kind from one of a write flag, so exact
+        # match is the only rule that stays closed. The full spelling still reads.
+        assert is_read_only_bash("date --dat=yesterday") is False
+        assert is_read_only_bash("date --date=yesterday") is True
         assert is_read_only_bash("date --utc") is True
         assert is_read_only_bash("hostname --fqdn") is True
 
@@ -1255,6 +1373,274 @@ class TestIsReadOnlyBash:
     def test_empty_and_whitespace(self):
         assert is_read_only_bash("") is False
         assert is_read_only_bash("   ") is False
+
+    def test_an_unrecognised_option_prompts_instead_of_passing(self):
+        """The property a write-flag denylist cannot have: closed by construction.
+
+        A denylist admits every spelling nobody thought of. An accept-list refuses
+        them, so the failure mode moves from silent auto-approval to a prompt. These
+        are invented flags, deliberately not real ones -- the point is that the rule
+        does not depend on anyone having enumerated them.
+        """
+        for cmd in (
+            "date --not-a-real-flag",
+            "date -Z",
+            "hostname --invented",
+            "file --no-such-option x",
+            "cat f | sort --hypothetical",
+            "cat f | sort -Q",
+        ):
+            assert is_read_only_bash(cmd) is False, cmd
+        # The enumerated reads still pass, which is what makes the above a real gate
+        # rather than a blanket refusal.
+        for cmd in (
+            "date",
+            "date -u",
+            "date -Iseconds",
+            "date +%Y",
+            "date -r /tmp/f",
+            "hostname",
+            "hostname -f",
+            "file /etc/hosts",
+            "file -b /etc/hosts",
+            "cat f | sort",
+            "cat f | sort -u",
+            "cat f | sort -k1",
+        ):
+            assert is_read_only_bash(cmd) is True, cmd
+
+    def test_the_accept_list_closes_holes_the_denylist_left(self):
+        """Three shapes that pass a per-tool write-flag table and fail this one.
+
+        `file -f LIST` and `file -p` are not writes in the sense a write-flag table
+        looks for, which is why enumerating writers missed them:
+
+        * `-f/--files-from` is an INDIRECTION. The hook layer applies
+          `is_sensitive_path` to the command TEXT, so it sees `LIST` and nothing else
+          while `file` opens every path named inside it.
+        * `-p/--preserve-date` restores the access time, and restoring requires a
+          `utimes()` call whose `ctime` bump is NOT restorable. Measured on coreutils
+          8.22 with `ctime` as the observable, because `/tmp` mounts `noatime` and
+          atime therefore cannot tell "did nothing" from "put it back".
+        """
+        for cmd in (
+            "file -f LIST",
+            "file --files-from LIST",
+            "file -p /etc/hosts",
+            "file --preserve-date /etc/hosts",
+            "file -pb /etc/hosts",
+        ):
+            assert is_read_only_bash(cmd) is False, cmd
+
+        # `-z`/`--uncompress` is a third class, and it is stated because it is a
+        # behaviour change: on the write-flag table `file -z` auto-approved. From
+        # `file`'s own `src/compress.c` the decompressor is SPAWNED --
+        # `posix_spawnp(&pid, compr[method].argv[0], ...)` -- with `compr[]` holding
+        # `gzip`/`bzip2`/`lzip`/`xz`/`lrzip`/`zstd` and `method` chosen from the
+        # examined file's magic bytes. So it runs a program named by the content being
+        # inspected, the same hand-off as `git diff --ext-diff`.
+        assert is_read_only_bash("file -z /tmp/a.gz") is False
+        assert is_read_only_bash("file --uncompress /tmp/a.gz") is False
+        # Plain identification is untouched, so this subtracts one flag, not the tool.
+        assert is_read_only_bash("file /tmp/x") is True
+        assert is_read_only_bash("file -b /tmp/x") is True
+
+    def test_date_d_reads_on_every_implementation_that_has_it(self):
+        """`-d` is on the accept-list, and this pins WHY so it is not removed again.
+
+        An earlier revision of this change left `-d` off, on the belief that BSD/macOS
+        `date -d` sets the kernel's daylight-saving value. That belief was
+        documentation-sourced and the implementations contradict it. Read from each
+        project's own `getopt(3)` string:
+
+        * GNU coreutils: `-d STRING` parses and PRINTS (verified by execution, 8.22).
+        * FreeBSD `bin/date`: `"f:I::jnRr:uv:z:"` -- no `d`, so an invalid option.
+        * Apple `shell_cmds/date`: same string, same absence.
+        * OpenBSD `bin/date`: `"af:jr:uz:"` -- no `d`.
+        * NetBSD `bin/date`: `"ad:f:jnRr:Uuz:"` has `-d`, and its branch sets `rflag`
+          and `parsedate()`s the operand, i.e. the GNU meaning. `setthetime()` is
+          reached only from a bare operand, never from `-d`.
+
+        So `-d` either reads or errors, never writes. The historical `-d dst` that set
+        the kernel flag is gone from every current BSD.
+
+        There was also an internal tell that should have caught it without the source
+        dive, and it is asserted here: `--date=` was already admitted, and `-d` is the
+        same option under a shorter spelling wherever it exists.
+        """
+        assert is_read_only_bash("date -d yesterday") is True
+        assert is_read_only_bash("date -d now") is True
+        assert is_read_only_bash("date --date=yesterday") is True
+        # The tell: the long and short spellings of one option must agree.
+        assert is_read_only_bash("date -d yesterday") == is_read_only_bash("date --date=yesterday")
+        # The real setters are unaffected by admitting `-d`.
+        assert is_read_only_bash("date -s 12:00") is False
+        assert is_read_only_bash("date --set=12:00") is False
+        assert is_read_only_bash("date 08221200") is False
+        # `-d` consumes its value, so a following word is still a bare operand.
+        assert is_read_only_bash("date -d yesterday 08221200") is False
+        # And admitting a READ-ONLY value-taking letter must not put it in the
+        # glob-sensitive derivation for `date`, while `-s` stays.
+        spec = _OPTION_ACCEPT_LISTS["date"]
+        assert spec.value_short - spec.readonly_short == frozenset("s")
+        # `-f` stays in the VALUE-flag set so `-f LIST` and `-fLIST` are both read as
+        # flag-plus-value and refused, rather than `LIST` being taken for an operand.
+        assert is_read_only_bash("file -fLIST") is False
+
+    def test_a_glob_still_cannot_reach_an_accept_listed_tools_flags(self):
+        """The derived glob defence has to survive the move to a positive list.
+
+        `_GLOB_SENSITIVE_WORDS` is derived from the write/exec tables, so moving a
+        tool off them dropped it out of the derivation -- measured, `cat f | sort ?uo
+        victim` went from refused to auto-approved. The registry supplies the same
+        words without a denylist: a letter that takes a value and is NOT read-only is
+        one this list refuses by construction, which for `sort` yields `-o` and `-T`.
+        """
+        for cmd in (
+            "cat f | sort ?o victim",
+            "cat f | sort ?uo victim",
+            "cat f | sort ?T /tmp",
+            "cat f | sort --out*",
+            "cat f | sort -u? victim",
+        ):
+            assert is_read_only_bash(cmd) is False, cmd
+        # A glob in OPERAND position is untouched: it has no leading dash, so it
+        # cannot resolve into an option this list decides on.
+        assert is_read_only_bash("git diff *.py") is True
+        assert is_read_only_bash("ls *.py") is True
+
+    def test_a_word_bash_deletes_cannot_forge_a_read_mode(self):
+        """`shlex` keeps words bash DELETES, so the token list overstates argv.
+
+        The walk that decides `git branch`/`git tag` reads the whole argument list to
+        pick list mode, so a word that never reaches git can still put the segment in
+        list mode -- and then a bare operand is a pattern instead of a ref to create.
+
+        All four forms were measured on a scratch repo. The `<` form needs a file
+        named `--list` to exist, which a checkout can supply; with it present bash
+        exits 0 and the branch appears.
+        """
+        for cmd in (
+            "git branch injected # --list",
+            "git tag forged # --list",
+            "git branch injected < --list",
+            "git branch injected <<< --list",
+            "git branch injected <--list",
+            "uniq in # out",
+            "date < f",
+            "hostname < f",
+        ):
+            assert is_read_only_bash(cmd) is False, cmd
+
+        # SCOPED TO THE VERBS A PHANTOM WORD CAN FLIP, and this is the load-bearing
+        # half of the rule. A phantom word only ADDS to the token list, so for a verb
+        # decided by its FLAGS the worst case is an extra prompt. Refusing bare `<`
+        # globally instead cost these five, and no phantom word could have made any of
+        # them unsafe.
+        for cmd in (
+            "wc -l < f",
+            "grep TODO < f",
+            "cat < f",
+            "wc -l <f",
+            "head -20 < log.txt",
+        ):
+            assert is_read_only_bash(cmd) is True, cmd
+
+        # Stripping the redirect and its target instead of refusing looks equivalent
+        # and is not, which is why this refuses. `shlex` has already discarded the
+        # quoting, so the line below reaches it as `[git, branch, <new]`; dropping
+        # `<new` would leave a bare `git branch` that reads as a listing while bash
+        # creates the ref.
+        assert is_read_only_bash("git branch '<new'") is False
+
+        # Two costs, stated. The `#` anchor keeps the common spellings free: measured,
+        # `echo a#b` prints `a#b`, so a `#` that does not start a word is not a comment
+        # to bash either.
+        assert is_read_only_bash("echo a#b") is True
+        assert is_read_only_bash("git log --grep='#123'") is True
+        # But the check runs on the RAW segment, before `shlex`, and a quoted `#` after
+        # a space is indistinguishable there from the real comment forms above. That
+        # costs the quoted spelling, for the elision-sensitive verbs only. `git log` is
+        # decided by its flags, so it keeps the read.
+        assert is_read_only_bash("git log --grep 'fix #123'") is True
+        assert is_read_only_bash("git tag -l 'fix #123'") is False
+
+    def test_a_pager_startup_command_cannot_reach_a_shell(self):
+        """A pager's `+` argument is its own command language, which has a shell escape.
+
+        Measured under a real pty: `git log | less '+!touch FILE'` created the file.
+        It did NOT fire when stdout was a pipe -- with no tty less degrades to `cat`
+        and never runs the startup command -- so this is conditional on the executor
+        supplying a tty. The gate hands the string to an agent runtime rather than
+        running it, so it cannot know, and refuses on the spelling.
+
+        `more` is covered because on the BSDs it is not a separate program. FreeBSD's
+        `usr.bin/less/Makefile` installs it as a link to `less`, and Apple's
+        `less/main.c` sets `less_is_more` when `progname` is `more` -- which changes
+        defaults, not the `+` startup-command path. util-linux `more` has no
+        `+command` and did not fire; the name does not tell the classifier which
+        implementation answers.
+
+        The whole `+` prefix is refused rather than the dangerous letters (`!`, `|`,
+        `v`, `s`), because that enumeration is the denylist this change argues
+        against -- it is the pager's command language and it grows without asking.
+        """
+        for cmd in (
+            "git log | less '+!touch /tmp/pwned'",
+            "git log | more '+!touch /tmp/pwned'",
+            "git log | less '+|cat'",
+            "git log | less +v",
+            # The shell has not produced the real spelling yet, so a glob that could
+            # resolve against a file named `+!cmd` is refused too.
+            "git log | less '+*'",
+            "git log | less '*'",
+        ):
+            assert is_read_only_bash(cmd) is False, cmd
+        # A pager with no startup command is untouched, which is what makes this a
+        # subtraction of one spelling rather than of the pager.
+        assert is_read_only_bash("git log | less") is True
+        assert is_read_only_bash("git log | more") is True
+        assert is_read_only_bash("cat f | less -N") is True
+
+    def test_a_flag_that_names_paths_indirectly_is_refused(self):
+        """`--files0-from` is an indirection, not a write, so no write table held it.
+
+        The hook layer applies `is_sensitive_path` to the command text, so it sees the
+        list file and nothing else while the program opens every path inside.
+        Measured on coreutils with a NUL-separated list naming `/etc/hostname`: `wc
+        --files0-from=list0` and `du --files0-from=list0` both read it, and the path
+        appears nowhere in argv.
+        """
+        for cmd in (
+            "wc --files0-from=/tmp/list0",
+            "wc --files0-from /tmp/list0",
+            "du --files0-from=/tmp/list0",
+            "cat f | sort --files0-from=/tmp/list0",
+        ):
+            assert is_read_only_bash(cmd) is False, cmd
+        # A glob must not be able to synthesize the flag either. This is DERIVED
+        # from the table rather than restated, so the two cannot drift: measured,
+        # with a file named `--files0-from=list0` present, `wc --file*` read
+        # `/etc/hostname`.
+        assert is_read_only_bash("wc --file*") is False
+        assert is_read_only_bash("du --file*") is False
+        # The flag is spelled in full on purpose. A shorter `--file` entry would be
+        # reached by the abbreviation walk and cost these two ordinary reads.
+        assert is_read_only_bash("grep --file=/tmp/patterns f") is True
+        assert is_read_only_bash("wc -l f") is True
+        assert is_read_only_bash("du -sh .") is True
+
+        # `sort` HAS the flag and is deliberately absent from the table, because the
+        # accept-list already refuses anything it does not list. These pin the two
+        # legs that absence rests on, so re-adding the entry is never necessary and
+        # removing either leg goes red instead of silently opening the class.
+        assert "sort" not in _INDIRECT_LIST_FLAGS_BY_PREFIX
+        assert "--files0-from" not in _SORT_READONLY_LONG
+        assert is_read_only_bash("cat f | sort --files0-from=/tmp/list0") is False
+        # The glob defence derives the word from the `wc`/`du` entries, not from the
+        # key it appears under, so `sort`'s absence does not reach it.
+        assert "--files0-from" in _GLOB_SENSITIVE_WORDS
+        assert is_read_only_bash("cat f | sort --file*") is False
 
 
 # ── unsafe_bash_reason — explains WHY a command is rejected ──

@@ -76,6 +76,21 @@ def test_advertised_properties_are_all_accepted_by_the_schema():
     )
 
 
+def test_no_field_is_declared_twice():
+    """A duplicate FieldSpec is not an alternative — it is a silently dead one.
+
+    ``validate_tool_args`` ITERATES ``schema.fields``, so two specs for one name
+    mean the value must satisfy BOTH and ``cleaned`` keeps whichever ran last. A
+    merge that brings the same field in from two sides therefore looks additive and
+    silently disables the earlier pattern, which is how ``channel_type`` came to be
+    declared twice with disagreeing widths. Checked over every field so the next
+    one cannot repeat it.
+    """
+    names = [spec.name for spec in SEND_MESSAGE_SCHEMA.fields]
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    assert not duplicates, f"declared more than once in SEND_MESSAGE_SCHEMA: {duplicates}"
+
+
 def test_channel_type_is_advertised_and_validates():
     """channel_type is the non-Slack routing field, and a real transport name
     survives the schema gate that mcp_core._validate_args applies."""

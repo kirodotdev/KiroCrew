@@ -55,5 +55,14 @@
   "heroImage": "/app-assets/issue-radar/hero-light.svg",
   "heroImageDark": "/app-assets/issue-radar/hero-dark.svg",
   "heroImageDetail": "/app-assets/issue-radar/hero-detail-light.svg",
-  "heroImageDetailDark": "/app-assets/issue-radar/hero-detail-dark.svg"
+  "heroImageDetailDark": "/app-assets/issue-radar/hero-detail-dark.svg",
+  "useCases": [
+    "Triage issues and pull requests across connected providers while retaining summaries, suggested labels, and investigation history."
+  ],
+  "configuration": [
+    "Connect a repository and authenticate its provider CLI on the gateway host: gh for GitHub, glab for GitLab, or az with the Azure DevOps extension on macOS, Linux, or WSL."
+  ],
+  "screenshots": [
+    "/app-assets/issue-radar/screenshot-main.png"
+  ]
 }

@@ -594,3 +594,44 @@ class TestEndpoint:
         snap = build_governance_policy_snapshot()
         assert snap["unavailable"] is True
         assert snap["fallback_profiles"] == []
+        assert snap["unknown_profile_scopes"] == {}
+
+    def test_unknown_profile_scopes_names_tolerated_capability_keys(self, profiles_dir):
+        """A profile that LOADED with an unregistered capability key is reported.
+
+        It is absent from ``fallback_profiles`` (it parsed fine), so this is the only
+        field that surfaces the tolerated key to the operator.
+        """
+        _write(
+            profiles_dir,
+            "host",
+            {
+                "name": "host",
+                "bind": {"type": "surface", "id": "host"},
+                "tools": {"mode": "allow", "allow": ["read"]},
+                "capabilities": {
+                    "external_access": {"enabled": True},
+                    "capability_install": {"enabled": True},
+                },
+            },
+        )
+        _install_ceiling(None)
+        snap = build_governance_policy_snapshot()
+        assert snap["fallback_profiles"] == []
+        assert snap["unknown_profile_scopes"] == {
+            "host": ["capabilities.capability_install", "capabilities.external_access"]
+        }
+
+    def test_unknown_profile_scopes_empty_for_a_clean_profile(self, profiles_dir):
+        _write(
+            profiles_dir,
+            "host",
+            {
+                "name": "host",
+                "bind": {"type": "surface", "id": "host"},
+                "capabilities": {"spawn": {"enabled": False}},
+            },
+        )
+        _install_ceiling(None)
+        snap = build_governance_policy_snapshot()
+        assert snap["unknown_profile_scopes"] == {}

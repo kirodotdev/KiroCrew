@@ -36,6 +36,9 @@ from kiro_crew.hooks import HOOK_REPLY, TOOL_AUTO_APPROVE, TOOL_DENY
 from kiro_crew.messaging.driver import DirectiveConsumer, TurnDriver
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.link import (
+    DM_SCOPE_UNIFIED,
+    ChannelLink,
+    bind_origin_mirror,
     channel_namespace_of,
     is_channel_session_key,
 )
@@ -88,8 +91,8 @@ class ChannelTurn:
 
     approval_mode: str
     decider: Optional[Any] = None
-    """``None`` for channels with no interactive buttons (deny-by-default for
-    INTERACTIVE mode; ``auto``/``trust`` still work)."""
+    """``None`` for channels with no interactive approval affordance
+    (deny-by-default for INTERACTIVE mode; ``auto``/``trust`` still work)."""
 
     auto_approve_session: Optional[Callable[[], bool]] = None
     """``() -> bool`` honoring a per-session Trust / operator YOLO grant.
@@ -98,7 +101,12 @@ class ChannelTurn:
     INTERACTIVE ladder denies by default and there is no decider to say otherwise,
     so every tool call fails and the agent can only talk. Supplying this lets such
     a channel grant trust out of band (a ``/yolo``-style command) while the deny
-    default stays intact for every session that has not opted in.
+    default stays intact for every session that has not opted in — and an operator
+    who turned YOLO on no longer finds it silently inert on that channel.
+
+    The grant is read PER REQUEST rather than captured at turn start, so taking or
+    revoking it mid-turn takes effect on the next tool. The PreToolUse
+    ``tool_gate`` still runs first, so a hard deny can never be overridden by it.
 
     ``None`` keeps the previous behavior exactly, so channels that do not set it
     are unaffected."""
@@ -126,6 +134,21 @@ class ChannelTurn:
     interactive ladder is consulted. Defaults False, so every existing adopter is
     byte-identical."""
 
+    bind_provider: Optional[Callable[[Any], None]] = None
+    """``(provider) -> None``, called once the session's provider exists.
+
+    The hook for anything a renderer can only be told AFTER the session is
+    resolved — a channel that uploads local files needs the provider's own cwd as
+    the extraction root, and that is unknowable until ``get_or_create`` returns.
+    A channel reading it BEFORE the turn gets ``None`` on the first message of
+    every session generation, so the feature is silently off for exactly the turn
+    that introduces it and mysteriously on afterwards.
+
+    Guarded like the origin bind: whatever it authorizes is an enhancement to the
+    turn, so a failure here degrades that one feature rather than dropping an
+    answer the user is waiting for.
+    """
+
     persist: Optional[Callable[[str, str, bool], None]] = None
     """``(user_text, reply_text, is_new) -> None``, called off the event loop."""
 
@@ -138,6 +161,40 @@ class ChannelTurn:
     directive_consumer: Optional[DirectiveConsumer] = None
     """Session-directive consumer for this turn (``build_directive_consumer``).
     ``None`` leaves directive-tool results inert — the pre-consumer behavior."""
+
+    model: Optional[str] = None
+    """Model id for a NEW session, or ``None`` to let config decide.
+
+    Reaches a session only at CREATION: ``get_or_create`` returns a reused
+    session from its fast path before it consults this, so a channel-side model
+    pick applies to the next fresh conversation rather than retroactively to the
+    running one. A channel that offers a model command has to say so in its reply
+    or the user reads the switch as broken.
+
+    Never a hardcoded id — the value comes from what the session's backend
+    advertised, which is the set THIS account may actually use.
+    """
+
+    origin_conversation: Optional[ChannelLink] = None
+    """A :class:`~kiro_crew.messaging.link.ChannelLink` naming THIS conversation.
+
+    Supplying it makes the conversation both the session's origin (so unattended
+    output about the session — the auto-compact notice — has somewhere to go) and
+    its own outbound mirror (so a turn the user later takes from the dashboard
+    comes back here instead of leaving the chat looking dead).
+
+    ``None`` means the channel opts out, and its conversations stay unmirrored.
+    Both writes are steady-state READS after the first turn, so this costs a map
+    lookup per turn rather than a rewrite; see
+    :func:`kiro_crew.messaging.link.bind_origin_mirror` for why the bind must be
+    re-asserted on every turn rather than only on a new session, and for the
+    binding it deliberately declines to overwrite.
+
+    It MUST be the same value the channel's own unlink command hands
+    ``release_conversation_location``, which matches an occupied location by
+    VALUE — a second spelling of "this conversation" would let the release miss
+    the binding this wrote. Channels define it once and reuse it for both.
+    """
 
     audit_caller: str = ""
     """SEL audit caller label; defaults to ``<channel_type>:unknown``."""
@@ -462,12 +519,88 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
         # Typing indicator first (before the potentially slow cold start);
         # on_turn_start is idempotent so the driver's later call no-ops.
         await renderer.on_turn_start()
+        # ``model`` is passed ONLY when the channel set one, so an adopter that
+        # does not offer a model command calls this with exactly the arguments it
+        # always did. Widening the call for everyone would make the new field's
+        # cost fall on channels that gain nothing from it.
+        extra: dict[str, Any] = {"model": turn.model} if turn.model else {}
         provider, is_new, resumed = await sessions.get_or_create(
-            session_key, agent=turn.agent, channel_id=turn.conversation_id
+            session_key, agent=turn.agent, channel_id=turn.conversation_id, **extra
         )
         _acquired = True
         if is_new:
             await sessions.set_channel(session_key, turn.conversation_id)
+        # Bind this conversation as the session's origin AND its own mirror, so
+        # unattended notices and dashboard-side turns both reach the user here.
+        # After get_or_create, because a cold-start failure leaves no session to
+        # bind to; on EVERY turn, because the binding is what a restart, an
+        # unlink elsewhere, or a rival claim can take away, and only a
+        # self-healing bind cannot leave a live conversation silently unmirrored.
+        #
+        # Deliberately NOT gated on ``resumed``. Discord skips its bind for a
+        # resumed session, but its flag is a mirror-binding LOOKUP ("this turn is
+        # answering a dashboard-owned session"), whereas ``resumed`` here means
+        # "restored via ACP session/load" — a cold-start recovery of this very
+        # conversation, which is exactly the case a self-healing bind exists for.
+        # Skipping on it would leave every post-restart session unmirrored.
+        #
+        # Guarded as a pair. An unbound conversation is a degraded turn — the
+        # user still gets their answer here, they just lose the dashboard mirror
+        # — whereas a raise on this line drops a turn they are waiting on.
+        # ``bind_origin_mirror`` promises not to raise, but that promise covers
+        # the ownership conflict it names, not a session accessor failing, and
+        # this is the widest call site in the codebase: every channel on the
+        # shared pipeline routes through it.
+        if turn.origin_conversation is not None:
+            # Captured non-None for the closure: the ``is not None`` narrowing does
+            # not reach into the nested function (it could be called after the
+            # attribute changed), and a local binding is what makes it a
+            # ``ChannelLink`` there.
+            location = turn.origin_conversation
+            try:
+                # Offloaded, like ``turn.persist`` above: a FRESH bind (and an
+                # in-channel /link, /unlink, or legacy opt-out migration) has
+                # ``bind_origin_mirror`` write through ``SessionMap``, which
+                # rewrites the whole map synchronously -- blocking I/O that must
+                # not run on the shared gateway loop. The steady state returns
+                # early (a read) and costs the thread hop nothing.
+                def _bind_origin() -> None:
+                    # Both calls skip a ``unified:`` key, and for one reason:
+                    # ``dm_scope="unified"`` collapses every allowed user's DM into
+                    # a single bucket, so "the conversation this session is read in"
+                    # has no single answer. Recording one would point the session's
+                    # origin at whichever human spoke LAST, and a later notice (a
+                    # cron result, a subagent completion) would be delivered into
+                    # that person's chat regardless of whose turn produced it.
+                    # ``bind_origin_mirror`` already declines for exactly this
+                    # (link.py), so the sibling write must not be the hole that
+                    # reopens it.
+                    if channel_namespace_of(session_key) == DM_SCOPE_UNIFIED:
+                        return
+                    sessions.set_origin_link(session_key, location)
+                    bind_origin_mirror(sessions, key=session_key, location=location)
+
+                await asyncio.to_thread(_bind_origin)
+            except Exception:
+                logger.warning(
+                    "%s: origin/mirror bind failed session=%s",
+                    turn.channel_type,
+                    session_key,
+                    exc_info=True,
+                )
+        # Hand the live provider to whatever the channel could not resolve before
+        # the session existed. Before the driver runs, so the first turn of a
+        # generation behaves like every later one.
+        if turn.bind_provider is not None:
+            try:
+                turn.bind_provider(provider)
+            except Exception:
+                logger.warning(
+                    "%s: bind_provider failed session=%s",
+                    turn.channel_type,
+                    session_key,
+                    exc_info=True,
+                )
         # Publish this turn's session identity so managed MCP tools resolve
         # X-Session-Key; one shared writer lives in messaging.identity.
         await publish_turn_identity(sessions, session_key)

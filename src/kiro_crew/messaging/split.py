@@ -54,9 +54,11 @@ path is what made this ladder bypassable at budgets a fence's scaffolding
 consumes whole, and an exhaustive small-space oracle in the tests pins the
 property rather than the instances.
 
-Deliberately out of scope (callers needing these wrap this function): pipe
+Byte-capped platforms wrap the character splitter with
+:func:`split_markdown_bytes`, which measures the produced chunks and shrinks the
+character budget until they fit. Still out of scope for callers to wrap: pipe
 table conversion, rendered-length budgeting for channels that inflate the
-source, and byte or UTF-16 length limits.
+source, and UTF-16 length limits.
 """
 
 from __future__ import annotations
@@ -67,6 +69,8 @@ from dataclasses import dataclass
 
 __all__ = [
     "split_markdown_safe",
+    "split_markdown_bytes",
+    "chunk_utf8_bytes",
     "iter_fence_spans",
     "iter_fence_lines",
     "open_fence_at_end",
@@ -84,6 +88,18 @@ FENCE_OUTSIDE = "outside"
 FENCE_OPEN = "open"
 FENCE_BODY = "body"
 FENCE_CLOSE = "close"
+
+# How many times :func:`split_markdown_bytes` may shrink its character budget
+# before falling back to byte slicing. Each round strictly reduces the budget,
+# so this only bounds the work: the ratio step converges in two or three rounds
+# even for all-4-byte input, and the extra headroom absorbs a document whose
+# heavy characters are unevenly distributed.
+_BYTE_SHRINK_ROUNDS = 6
+
+# Below this the character budget is too small for the fence ladder to make
+# meaningful cuts, so shrinking further just degrades every chunk. The byte
+# slicer takes over instead.
+_MIN_BYTE_SHRINK_LIMIT = 16
 
 
 def truncate_utf8(text: str, max_bytes: int) -> str:
@@ -328,6 +344,102 @@ def split_markdown_safe(text: str, limit: int, *, reserve: int = 0) -> list[str]
         # No synthetic closer: the final chunk keeps an unclosed fence open so a
         # streaming caller can keep appending to it.
         out.append(tail)
+    return out
+
+
+def chunk_utf8_bytes(text: str, max_bytes: int) -> list[str]:
+    """Split *text* into chunks of at most *max_bytes* UTF-8 bytes.
+
+    Lossless and code-point-safe: the concatenation of the result always equals
+    the input, and no chunk ends mid-sequence. Slicing the ENCODED bytes and
+    re-decoding with ``errors="ignore"`` finds the largest whole-code-point
+    prefix; the loop then resumes from exactly the characters consumed.
+
+    This is the byte-limit primitive, with no markdown awareness at all — it
+    will happily cut through a fence. Callers wanting fence-safe chunks under a
+    byte cap use :func:`split_markdown_bytes`, which only falls back here for a
+    fragment that admits no clean cut. A non-positive *max_bytes* disables
+    chunking, matching ``chunk_text``.
+    """
+    if not text:
+        return []
+    if max_bytes <= 0:
+        return [text]
+    chunks: list[str] = []
+    remaining = text
+    while remaining:
+        encoded = remaining.encode("utf-8")
+        if len(encoded) <= max_bytes:
+            chunks.append(remaining)
+            break
+        piece = encoded[:max_bytes].decode("utf-8", errors="ignore")
+        if not piece:
+            # max_bytes is smaller than this single code point. Emitting it
+            # whole overshoots the budget by a couple of bytes; dropping it
+            # would lose content and looping would never terminate.
+            piece = remaining[0]
+        chunks.append(piece)
+        remaining = remaining[len(piece) :]
+    return chunks
+
+
+def split_markdown_bytes(text: str, max_bytes: int, *, reserve: int = 0) -> list[str]:
+    """Fence-safe split under a UTF-8 BYTE budget rather than a character one.
+
+    :func:`split_markdown_safe` counts characters, which is the right measure
+    for most platforms and the wrong one for a platform whose limit is bytes
+    (Webex caps a message at 7439 bytes): a chunk of CJK text can sit well under
+    a character budget and still be rejected, and a send path that truncates the
+    overflow loses the tail silently.
+
+    Measure, don't predict. A budget of ``max_bytes`` characters cannot overflow
+    for ASCII, so the first attempt is the common case and costs one pass. When
+    a chunk does measure over, the character budget is shrunk by the observed
+    overflow ratio and the split is retried — reading the real encoded length
+    beats reasoning about worst-case bytes per character, which would divide the
+    budget by four and fragment every ASCII answer into quarters.
+
+    A chunk that still does not fit after the ladder is byte-sliced through
+    :func:`chunk_utf8_bytes`, and only that chunk: a fence spanning a cut is a
+    rendering defect, but a lost tail is data loss, so the byte cap wins when
+    the two conflict. This is reachable for input the character splitter itself
+    documents as over-budget — a single line longer than the whole budget, or a
+    budget too small to hold a line's fence scaffolding.
+
+    ``reserve`` holds back bytes for something the caller appends to every
+    chunk, matching :func:`split_markdown_safe`. Empty text yields ``[]``; text
+    that already fits, a non-positive *max_bytes*, and a *reserve* consuming the
+    whole budget all yield ``[text]`` unchanged.
+    """
+    if not text:
+        return []
+    budget = max_bytes - reserve
+    if max_bytes <= 0 or budget <= 0:
+        return [text]
+    if len(text.encode("utf-8")) <= budget:
+        return [text]
+
+    limit = budget
+    chunks = split_markdown_safe(text, limit)
+    for _ in range(_BYTE_SHRINK_ROUNDS):
+        widest = max(len(c.encode("utf-8")) for c in chunks)
+        if widest <= budget:
+            return chunks
+        if limit <= _MIN_BYTE_SHRINK_LIMIT:
+            break
+        # Scale the character budget by how far the worst chunk overshot, and
+        # always make progress: integer rounding on a near-miss could otherwise
+        # reproduce the same limit and spin out the rounds for nothing.
+        scaled = limit * budget // widest
+        limit = max(_MIN_BYTE_SHRINK_LIMIT, min(scaled, limit - 1))
+        chunks = split_markdown_safe(text, limit)
+
+    out: list[str] = []
+    for chunk in chunks:
+        if len(chunk.encode("utf-8")) <= budget:
+            out.append(chunk)
+        else:
+            out.extend(chunk_utf8_bytes(chunk, budget))
     return out
 
 

@@ -42,6 +42,7 @@ from kiro_crew.config import KiroCrewConfig
 from kiro_crew.messaging.link import UNBIND_REASON_UNSPECIFIED, ChannelLink
 from kiro_crew.session import (
     BACKGROUND_KEY,
+    FirstTurnState,
     SessionManager,
     _Session,
 )
@@ -553,7 +554,9 @@ class TestBackgroundProviderDispatch:
 
         async def _start():
             # A racing coroutine registered the key while we were starting.
-            mgr._sessions[BACKGROUND_KEY] = _Session(provider=winner, is_new=False)
+            mgr._sessions[BACKGROUND_KEY] = _Session(
+                provider=winner, first_turn=FirstTurnState.NOTHING_ARMED
+            )
 
         loser.start = _start
         mgr = SessionManager(cfg, provider_factory=lambda *a, **k: loser)
@@ -931,7 +934,9 @@ class TestOpenTaskSession:
 
         async def create_session(**kwargs):
             # A racing step registered the key while our RPC was in flight.
-            mgr._sessions[key] = _Session(provider=winner_provider, is_new=False)
+            mgr._sessions[key] = _Session(
+                provider=winner_provider, first_turn=FirstTurnState.NOTHING_ARMED
+            )
             return SimpleNamespace(session_id="sid-dup")
 
         runtime = SimpleNamespace(create_session=create_session)

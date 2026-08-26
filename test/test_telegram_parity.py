@@ -611,6 +611,30 @@ class TestReactionAllowList:
 # ---------------------------------------------------------------------------
 
 
+async def _drain_offset_writes(client: Any) -> None:
+    """Await the cursor writes ``_maybe_persist_offset`` fired.
+
+    That call is fire-and-forget: it creates a TRACKED task which hands the file
+    operation to a thread, so how long it takes belongs to the thread pool, not to
+    any duration a test can name. Waiting a fixed number of milliseconds for it is
+    the same bug in test form, and it surfaced on the Windows CI shards -- coarse
+    ~15.6ms timer granularity with four pytest shards competing on one runner -- as
+    the assertion's ``read_text`` landing BEFORE the write, i.e. FileNotFoundError
+    on the cursor file rather than a wrong value.
+
+    Draining the tracked set is exact and finishes the moment the write does. The
+    loop re-checks rather than gathering once because a task can be created from the
+    done-callback of the one being awaited; the ceiling is a backstop so a future
+    regression fails loudly instead of hanging the suite, never a timing assertion.
+    """
+
+    async def _drain() -> None:
+        while client._handler_tasks:
+            await asyncio.gather(*tuple(client._handler_tasks))
+
+    await asyncio.wait_for(_drain(), timeout=30)
+
+
 class TestOffsetDurability:
     """The persisted cursor is a LOW-water mark, not what the poll observed.
 
@@ -655,8 +679,7 @@ class TestOffsetDurability:
         client._offset = 10
         client._in_flight = {7, 9}
         client._resolve_updates((7,))
-        await asyncio.sleep(0)  # the write goes to a thread
-        await asyncio.sleep(0.05)
+        await _drain_offset_writes(client)
         assert (
             json.loads(path.read_text(encoding="utf-8"))["offset"] == 9
         ), "update 9 is still running, so a restart must resume AT it"
@@ -3280,7 +3303,10 @@ class TestCursorWriteOrdering:
             asyncio.to_thread(lambda: None),
             *[asyncio.create_task(_resolve_soon(client, uid)) for uid in (9, 7, 8)],
         )
-        await asyncio.sleep(0.1)
+        # The sleep inside `_resolve_soon` is what makes the writes overlap, which is
+        # this test's whole point; the WAIT for them to land is a completion signal,
+        # so it is drained rather than slept for.
+        await _drain_offset_writes(client)
         assert json.loads(path.read_text(encoding="utf-8"))["offset"] == 10
 
     @pytest.mark.asyncio

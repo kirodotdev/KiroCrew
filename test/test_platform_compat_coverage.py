@@ -266,11 +266,15 @@ class _StubbornStream:
 
 
 class TestEnsureUtf8Console:
-    def test_noop_off_windows(self, monkeypatch):
+    def test_off_windows_only_publishes_environment(self, monkeypatch):
         monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setenv("PYTHONUTF8", "0")
+        monkeypatch.setenv("PYTHONIOENCODING", "ascii")
         before = sys.stdout
         pc.ensure_utf8_console()
         assert sys.stdout is before
+        assert os.environ["PYTHONUTF8"] == "1"
+        assert os.environ["PYTHONIOENCODING"] == "utf-8:backslashreplace"
 
     def test_reconfigure_in_place_is_preferred(self, monkeypatch):
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
@@ -2143,6 +2147,77 @@ class TestProcPeakRss:
             kernel32=types.SimpleNamespace(GetCurrentProcess=_const(1)),
         )
         assert pc.proc_peak_rss_bytes() == 0
+
+
+class TestCountOpenFds:
+    """``count_open_fds`` is the ONE shared open-fd probe.
+
+    Both the ``kirocrew.process.open_fds`` gauge and gatewayd's
+    zombie-diagnostic ``fd_count`` delegate here, so these tests pin the probe
+    once: the POSIX steady-state correction, the None contract, and the
+    Windows handle-count route the gauge previously lacked.
+    """
+
+    def test_posix_count_is_positive_and_excludes_the_probe_fd(self):
+        count = pc.count_open_fds()
+        if count is None:
+            pytest.skip("no fd probe on this platform")
+        # stdin/stdout/stderr at minimum; the enumeration fd itself excluded.
+        assert count >= 3
+
+    def test_posix_correction_never_goes_negative(self, monkeypatch, tmp_path):
+        empty = tmp_path / "fd"
+        empty.mkdir()
+        monkeypatch.setattr(pc, "_FD_DIRS", (str(empty),))
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        assert pc.count_open_fds() == 0
+
+    def test_second_fd_dir_is_the_fallback(self, monkeypatch, tmp_path):
+        fallback = tmp_path / "fd"
+        fallback.mkdir()
+        for name in ("0", "1", "2", "3"):
+            (fallback / name).write_text("")
+        monkeypatch.setattr(pc, "_FD_DIRS", (str(tmp_path / "missing"), str(fallback)))
+        # Four entries, minus the enumeration fd the listing itself opens.
+        assert pc.count_open_fds() == 3
+
+    def test_none_when_no_probe_works_on_posix(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(pc, "_FD_DIRS", (str(tmp_path / "missing"),))
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        assert pc.count_open_fds() is None
+
+    def test_windows_reads_the_kernel_handle_count_raw(self, monkeypatch, tmp_path):
+        def _get_handle_count(_process: Any, out: Any) -> int:
+            out._obj.value = 42
+            return 1
+
+        _fake_windows(
+            monkeypatch,
+            kernel32=types.SimpleNamespace(
+                GetCurrentProcess=_const(1),
+                GetProcessHandleCount=_Fn(_get_handle_count),
+            ),
+        )
+        monkeypatch.setattr(pc, "_FD_DIRS", (str(tmp_path / "missing"),))
+        # Raw: the handle query opens no extra handle, so no -1 correction.
+        assert pc.count_open_fds() == 42
+
+    def test_windows_api_failure_is_none(self, monkeypatch, tmp_path):
+        _fake_windows(
+            monkeypatch,
+            kernel32=types.SimpleNamespace(
+                GetCurrentProcess=_const(1),
+                GetProcessHandleCount=_const(0),
+            ),
+        )
+        monkeypatch.setattr(pc, "_FD_DIRS", (str(tmp_path / "missing"),))
+        assert pc.count_open_fds() is None
+
+    def test_windows_loader_failure_is_none(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.delattr(pc.ctypes, "WinDLL", raising=False)
+        monkeypatch.setattr(pc, "_FD_DIRS", (str(tmp_path / "missing"),))
+        assert pc.count_open_fds() is None
 
 
 class TestProcRssForPid:

@@ -132,7 +132,7 @@ class TestAtomicWrites:
         def _boom(*_a, **_k):
             raise OSError("replace failed")
 
-        monkeypatch.setattr(profiles_mod.os, "replace", _boom)
+        monkeypatch.setattr(profiles_mod, "replace_with_retry", _boom)
         with pytest.raises(OSError, match="replace failed"):
             with profiles_mod.locked_registry() as reg:
                 reg["default"] = "doomed"
@@ -147,7 +147,7 @@ class TestAtomicWrites:
         def _unlink_boom(*_a, **_k):
             raise OSError("unlink failed")
 
-        monkeypatch.setattr(profiles_mod.os, "replace", _replace_boom)
+        monkeypatch.setattr(profiles_mod, "replace_with_retry", _replace_boom)
         monkeypatch.setattr(profiles_mod.os, "unlink", _unlink_boom)
         with pytest.raises(OSError, match="replace failed"):
             with profiles_mod.locked_registry() as reg:
@@ -159,7 +159,7 @@ class TestAtomicWrites:
         def _boom(*_a, **_k):
             raise OSError("replace failed")
 
-        monkeypatch.setattr(profiles_mod.os, "replace", _boom)
+        monkeypatch.setattr(profiles_mod, "replace_with_retry", _boom)
         with pytest.raises(OSError, match="replace failed"):
             profiles_mod.save_registry({"version": 2, "profiles": [], "default": ""})
         assert list(tmp_path.glob("*.json.tmp")) == []
@@ -173,7 +173,7 @@ class TestAtomicWrites:
         def _unlink_boom(*_a, **_k):
             raise OSError("unlink failed")
 
-        monkeypatch.setattr(profiles_mod.os, "replace", _replace_boom)
+        monkeypatch.setattr(profiles_mod, "replace_with_retry", _replace_boom)
         monkeypatch.setattr(profiles_mod.os, "unlink", _unlink_boom)
         with pytest.raises(OSError, match="replace failed"):
             profiles_mod.save_registry({"version": 2, "profiles": [], "default": ""})

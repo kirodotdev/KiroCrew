@@ -71,6 +71,11 @@ _VOICE_ENCODINGS = {
 #: is, so a PNG declared here as JPEG still reaches the model correctly typed.
 _IMAGE_FALLBACK_MIME = "image/jpeg"
 
+# Windows' registry-backed ``mimetypes`` table reports CSV as
+# ``application/vnd.ms-excel``.  Normalize the channel envelope so attachment
+# classification is deterministic across hosts and CSV reaches the text path.
+_PORTABLE_FILE_MIMES = {".csv": "text/csv"}
+
 
 def _int_or_zero(value: Any) -> int:
     """*value* as a non-negative int, else 0 (iLink ships sizes as int OR str)."""
@@ -112,7 +117,9 @@ def _describe(item: dict[str, Any]) -> tuple[str, str, int]:
     if item_type == ITEM_FILE:
         raw_name = sub.get("file_name")
         name = raw_name if isinstance(raw_name, str) and raw_name.strip() else "file.bin"
-        mime = mimetypes.guess_type(name)[0] or ""
+        mime = _PORTABLE_FILE_MIMES.get(Path(name).suffix.lower()) or (
+            mimetypes.guess_type(name)[0] or ""
+        )
         return name, mime, _int_or_zero(sub.get("len"))
 
     if item_type == ITEM_VIDEO:

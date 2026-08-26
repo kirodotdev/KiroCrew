@@ -217,6 +217,60 @@ function scanUnguardedEnterBlurCommits(lines: string[]): number[] {
   return hits
 }
 
+/**
+ * A Tab branch that moves focus but consults NO composition signal at all.
+ *
+ * The absent-guard twin of the Enter→blur rule above, for the OTHER
+ * choose-class key: IMEs use Tab to cycle the candidate list, and on WebKit
+ * the keydown that commits a candidate arrives after `compositionend` with
+ * `isComposing` already false — so a hand-rolled dialog focus trap that wraps
+ * the boundary Tab yanks focus and aborts the composition. Every rule above
+ * is keyed on a composition signal the offender must already have NAMED, so
+ * a trap that consults none of them matches none of them, and the shape
+ * spreads by copy exactly like the Enter ones did: six dialogs carried it
+ * before the shared latch existed, and a seventh grew in a page nobody wrote
+ * an IME test for.
+ *
+ * `.focus(` within the branch's forward window is the scoping anchor, and it
+ * is a deliberate one: in this tree a Tab branch that calls `.focus()` (with
+ * or without options — `preventScroll` is this tree's own convention) exists
+ * only to re-aim the key somewhere the user did not send it (a trap's wrap,
+ * a picker's close-and-return). The guard is `claimKey(` BETWEEN the branch
+ * and the first focus move after it — the claim has to run before the move
+ * it declines, so a claim past the move (or a sibling branch's claim beyond
+ * it) does not clear this one. A Tab branch that acts through STATE
+ * (accepting a suggestion, indenting a list item) has no focus call to
+ * anchor on and is out of this rule's scope by design: fail open rather
+ * than mis-flag, consistent with the rest of this file. A `.focus(` further
+ * than the window is likewise not this structure.
+ */
+const TAB_BRANCH = /key === 'Tab'|key !== 'Tab'/
+const FOCUS_MOVE = /\.focus\(/
+const TAB_CLAIM = /\bclaimKey\(/
+const TRAP_WINDOW = 25
+
+function scanUnguardedTabFocusTraps(lines: string[]): number[] {
+  const code = lines.map(l => {
+    const t = l.trim()
+    return t.startsWith('//') || t.startsWith('*') || t.startsWith('/*') ? '' : l
+  })
+  const hits: number[] = []
+  code.forEach((line, i) => {
+    if (!TAB_BRANCH.test(line)) return
+    // The focus move has to be on this branch's window, not merely later in
+    // the file — a Tab branch with no focus call is a different structure.
+    const focusAt = code
+      .slice(i, i + TRAP_WINDOW + 1)
+      .findIndex(l => FOCUS_MOVE.test(l))
+    if (focusAt === -1) return
+    // The claim guards THIS branch only when it runs between the key check
+    // and the move: one guarded branch must not clear an unguarded sibling.
+    const span = code.slice(i, i + focusAt + 1)
+    if (!span.some(l => TAB_CLAIM.test(l))) hits.push(i + 1)
+  })
+  return hits
+}
+
 describe('IME Enter claim ratchet', () => {
   it('routes every Enter-submit branch through the guard', () => {
     const offenders: string[] = []
@@ -283,6 +337,28 @@ describe('IME Enter claim ratchet', () => {
     // An entry here commits a text field on an Enter it never checked. Add the
     // early return (`if (ime.isComposing(e)) return`) before the blur, and the
     // `bindComposition` spread that tracks the latch it reads.
+    expect(offenders).toEqual([])
+  })
+
+  it('never moves focus on a Tab the branch did not claim', () => {
+    // The boundary-Tab twin of the rule above: `DevFleetPage` carried exactly
+    // this — a hand-rolled focus trap on a document-capture listener, copied
+    // from the same pre-latch shape six dialogs shared — and no rule in this
+    // file could see it, because every one of them requires the site to have
+    // named a composition signal it consulted no part of. Both of that trap's
+    // ring boundaries are buttons today, so the defect was unreachable; this
+    // rule is what pins that a layout change (or the next copy of the shape)
+    // cannot make it reachable silently.
+    const offenders: string[] = []
+    for (const rel of sourceFiles()) {
+      if (rel === 'hooks/useImeGuard.ts') continue
+      const lines = readFileSync(join(SRC, rel), 'utf8').split('\n')
+      for (const n of scanUnguardedTabFocusTraps(lines)) offenders.push(`${rel}:${n}`)
+    }
+    // An entry here re-aims a Tab it never checked. Route the branch through
+    // the shared latch: `useDocumentImeLatch(...).claimKey(e)` for native
+    // document/window listeners, `useImeGuard().claimKey(e)` for synthetic
+    // handlers — the claim runs BEFORE the preventDefault() and focus move.
     expect(offenders).toEqual([])
   })
 
@@ -544,5 +620,124 @@ describe('ratchet rule fixtures', () => {
         // ime.isComposing is handled upstream, honestly
         if (e.key === 'Enter') e.currentTarget.blur()
       }}`))).toHaveLength(1)
+  })
+
+  it('flags a boundary-Tab trap that does not claim the key', () => {
+    // The pre-latch shape all six converted dialogs shared, and the one
+    // DevFleetPage carried after them: two boundary branches, each
+    // preventDefault() + a focus wrap, no claim anywhere. Both branches flag —
+    // each is independently a place the defect re-enters.
+    expect(scanUnguardedTabFocusTraps(jsx(`
+      const onKey = (e: KeyboardEvent) => {
+        if (e.key === 'Tab' && e.shiftKey && document.activeElement === cancelRef.current) {
+          e.preventDefault()
+          confirmRef.current?.focus()
+        } else if (e.key === 'Tab' && !e.shiftKey && document.activeElement === confirmRef.current) {
+          e.preventDefault()
+          cancelRef.current?.focus()
+        }
+      }`))).toHaveLength(2)
+    // The sanctioned shape: claimKey before the preventDefault and focus move.
+    expect(scanUnguardedTabFocusTraps(jsx(`
+      const onKey = (e: KeyboardEvent) => {
+        if (e.key === 'Tab' && e.shiftKey && document.activeElement === cancelRef.current) {
+          if (!imeLatch.claimKey(e)) return
+          e.preventDefault()
+          confirmRef.current?.focus()
+        } else if (e.key === 'Tab' && !e.shiftKey && document.activeElement === confirmRef.current) {
+          if (!imeLatch.claimKey(e)) return
+          e.preventDefault()
+          cancelRef.current?.focus()
+        }
+      }`))).toHaveLength(0)
+    // The enumerating trap (the converted dialogs' shape): the wrap decision
+    // sits several code lines below the key check, still inside the window.
+    expect(scanUnguardedTabFocusTraps(jsx(`
+      const onKeyDown = (event: KeyboardEvent) => {
+        if (event.key !== 'Tab') return
+        const focusable = getFocusable(dialogRef.current)
+        if (focusable.length === 0) return
+        const first = focusable[0]
+        const last = focusable[focusable.length - 1]
+        const wrapsBackward = event.shiftKey && document.activeElement === first
+        const wrapsForward = !event.shiftKey && document.activeElement === last
+        if (!wrapsBackward && !wrapsForward) return
+        event.preventDefault()
+        ;(wrapsBackward ? last : first).focus()
+      }`))).toHaveLength(1)
+    expect(scanUnguardedTabFocusTraps(jsx(`
+      const onKeyDown = (event: KeyboardEvent) => {
+        if (event.key !== 'Tab') return
+        const focusable = getFocusable(dialogRef.current)
+        if (focusable.length === 0) return
+        const first = focusable[0]
+        const last = focusable[focusable.length - 1]
+        const wrapsBackward = event.shiftKey && document.activeElement === first
+        const wrapsForward = !event.shiftKey && document.activeElement === last
+        if (!wrapsBackward && !wrapsForward) return
+        if (!imeLatch.claimKey(event)) return
+        event.preventDefault()
+        ;(wrapsBackward ? last : first).focus()
+      }`))).toHaveLength(0)
+    // ONE guarded branch must not clear an unguarded sibling: the claim has
+    // to sit between each branch and the move it guards, so the sibling's
+    // claim (which sits past this branch's own focus call) does not count.
+    expect(scanUnguardedTabFocusTraps(jsx(`
+      const onKey = (e: KeyboardEvent) => {
+        if (e.key === 'Tab' && e.shiftKey && document.activeElement === cancelRef.current) {
+          if (!imeLatch.claimKey(e)) return
+          e.preventDefault()
+          confirmRef.current?.focus()
+        } else if (e.key === 'Tab' && !e.shiftKey && document.activeElement === confirmRef.current) {
+          e.preventDefault()
+          cancelRef.current?.focus()
+        }
+      }`))).toHaveLength(1)
+    // A focus call carrying options is this tree's own convention
+    // (preventScroll keeps the page behind a dialog from twitching) and
+    // anchors the rule the same as a bare one.
+    expect(scanUnguardedTabFocusTraps(jsx(`
+      const onKey = (e: KeyboardEvent) => {
+        if (e.key !== 'Tab') return
+        e.preventDefault()
+        items[0].focus({ preventScroll: true })
+      }`))).toHaveLength(1)
+    // The one-line close-and-return spelling (a picker's Tab-to-dismiss): the
+    // focus call sits ON the branch line, and the same-line window catches it.
+    expect(scanUnguardedTabFocusTraps(jsx(`
+      onKeyDown={e => {
+        if (e.key === 'Escape' || e.key === 'Tab') { e.preventDefault(); onOpenChange(false); btnRef?.current?.focus() }
+      }}`))).toHaveLength(1)
+    // Its guarded form claims through the synthetic delegate.
+    expect(scanUnguardedTabFocusTraps(jsx(`
+      onKeyDown={e => {
+        if (e.key === 'Escape' || e.key === 'Tab') {
+          if (!ime.claimKey(e)) return
+          e.preventDefault(); onOpenChange(false); btnRef?.current?.focus()
+        }
+      }}`))).toHaveLength(0)
+    // Scoped to a FOCUS MOVE: a Tab branch that acts through state (accepting
+    // a suggestion, indenting a list item) has no focus call to anchor on and
+    // is out of scope by design — fail open rather than mis-flag.
+    expect(scanUnguardedTabFocusTraps(jsx(`
+      onKeyDown={e => {
+        if (e.key === 'Tab' && open && suggestions.length > 0) { e.preventDefault(); setDraft(suggestions[0].path) }
+      }}`))).toHaveLength(0)
+    // A focus call beyond the window is a different structure, not this trap.
+    const farFocus = [
+      "if (e.key !== 'Tab') return",
+      ...Array.from({ length: 30 }, () => 'noop()'),
+      'inputRef.current?.focus()',
+    ]
+    expect(scanUnguardedTabFocusTraps(farFocus)).toHaveLength(0)
+    // A claim mentioned only in a comment does not launder the site.
+    expect(scanUnguardedTabFocusTraps(jsx(`
+      const onKey = (e: KeyboardEvent) => {
+        // claimKey( is deliberately skipped here, honestly
+        if (e.key === 'Tab' && e.shiftKey && document.activeElement === cancelRef.current) {
+          e.preventDefault()
+          confirmRef.current?.focus()
+        }
+      }`))).toHaveLength(1)
   })
 })

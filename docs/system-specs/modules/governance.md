@@ -456,7 +456,9 @@ below), which is substituted instead. `extends` is monotonic narrowing
 **Configurable fallback (policy-only).** By default the substitute for an unusable
 profile is the most-restrictive deny-all. A policy MAY declare a top-level
 `fallback` object — parsed as a narrow-only profile (same scope validation; an
-unknown scope in it fails closed at boot) — which the loader substitutes at all
+unknown scope in it fails closed at boot, on both sides of the key-open asymmetry
+described below, because it is part of the policy document rather than a profile
+file) — which the loader substitutes at all
 three unusable-file sites instead of deny-all. Intersected with the ceiling like
 any profile, it can only narrow it: it lets an operator keep the basic operational
 planes available (subagent/cron/heartbeat/taskrunner) while still denying the
@@ -466,6 +468,52 @@ profile may NOT declare `fallback` (policy-only, rejected at parse). The chosen
 fallback is resolved against the composed ceiling, and the profile-store freshness
 key folds in whether a fallback is declared, so a store first-touched before the
 ceiling composed reloads once it does rather than baking deny-all permanently.
+
+**Unknown `capabilities.*` child in a PROFILE — tolerated ONLY when `enabled: true`.**
+An unknown governed key normally fails closed. The one exception is a child of a
+*key-open* namespace (`capabilities`) inside a **profile file**, and it is
+deliberately **asymmetric**:
+
+- **A payload of exactly `{"enabled": true}` (that one key, boolean identity) →
+  tolerated.** `parse_profile` skips it, logs a warning naming the profile and the
+  key, and records it on `Profile.unknown_scopes`. Known siblings in the same block
+  still parse and still enforce.
+- **Anything else → fails closed** exactly as before the tolerance existed
+  (`enabled: false`, `enabled` absent, a non-dict value, a non-boolean `enabled`,
+  or **any extra key beyond `enabled`** — capability payloads carry inner
+  narrowing rulesets like `spawn.agents`, so `{"enabled": true, "agents": {...}}`
+  is an enable-plus-narrowing whose narrowing must not be dropped), so the loader
+  substitutes the bind-preserving deny-all fallback.
+
+The tolerated side exists because cross-edition data-home sharing is supported: an
+edition that `register_scope`s extra capability rows seeds them into `host.json`
+with `enabled: true`, and a build without those rows used to reject the whole
+profile and degrade the surface to deny-all (every governance row reading "deny
+all"). It is safe because a profile is narrow-only and the intersection is applied
+by `resolve` (rule-2 intersect of ceiling ∘ profile) — declining to narrow an
+unregistered scope cannot change any decision in any build.
+
+The fail-closed side exists because an unknown **narrowing** is indistinguishable
+from a typo'd narrowing of a core capability: `{"spwan": {"enabled": false}}` reads
+exactly like a failed attempt to disable `spawn`. Tolerating it would silently grant
+what the operator tried to deny, so the loud deny-all fallback is the correct
+outcome — it surfaces the typo.
+
+**Accepted design consequence.** One residual class is knowingly not caught: a
+typo'd capability name that carries `enabled: true` (for example
+`{"spwan": {"enabled": true}}`) is tolerated rather than surfaced as an error. This
+is inert by the argument above — the declaration could not have changed a decision
+whether it was honored or skipped — so the cost is a missed diagnostic, not a
+permission change. `Profile.unknown_scopes`, surfaced in the Security page's
+governance payload as `unknown_profile_scopes`, is what makes that class visible.
+
+Three things are deliberately unchanged: a **policy** naming an unknown key still
+raises regardless of `enabled` (tamper-evidence, Rule 8); the policy's top-level
+`fallback` object — parsed as a profile body but not through `parse_profile` — still
+fails closed at boot; and an unknown **top-level** governed family in a profile
+still fails closed. The tolerance assumes `SCOPE_CATALOG` is **append-only** (a
+scope is added or retired, never renamed in place), else a renamed row declared
+`enabled: true` would be silently tolerated instead of surfacing as a migration.
 
 **Present-but-unrecoverable profile — governed fleet fails closed, standalone is
 lenient.** The reload reads each file's bytes SEPARATELY from parsing and handles

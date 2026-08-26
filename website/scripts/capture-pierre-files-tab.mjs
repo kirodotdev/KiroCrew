@@ -644,10 +644,10 @@ async function main() {
     probe('rendered markdown h1', p12.locator('h1')),
     probe('rendered table cell text=PierrePatch', p12.getByText('PierrePatch', { exact: false })),
     probe('prose heading text=The file-tab layout', p12.getByText('The file-tab layout')),
-    probe('View Source toggle (so we are in PREVIEW)', p12.getByRole('button', { name: 'View Source' })),
+    probe('Edit toggle (so we are in PREVIEW)', p12.getByRole('button', { name: 'Edit' })),
   ], [await assertTreeRows('12-file-preview-aligned', ['AGENTS.md', 'website'])])
 
-  await page.locator('button:has-text("View Source")').first().click()
+  await page.locator('button:has-text("Edit")').first().click()
   await page.waitForTimeout(1800)
   const gSource = { ...await geometry(), firstLineTop: await firstLineTop(page.getByText('# Pierre migration', { exact: false })) }
   console.log('DIAG geometry-source', JSON.stringify(gSource))
@@ -656,7 +656,7 @@ async function main() {
     // SOURCE mode; preview renders it as an <h1> with the marker consumed.
     probe('literal source line text="# Pierre migration"', page.getByText('# Pierre migration', { exact: false })),
     probe('literal source text="## Surfaces"', page.getByText('## Surfaces', { exact: false })),
-    probe('View Preview toggle (so we are in SOURCE)', panel().getByRole('button', { name: 'View Preview' })),
+    probe('Preview toggle (so we are in SOURCE)', panel().getByRole('button', { name: 'Preview' })),
   ], [await assertTreeRows('13-file-source-aligned', ['AGENTS.md', 'website'])])
   const delta = k => (gPreview[k] == null || gSource[k] == null ? null : gPreview[k] - gSource[k])
   console.log('DIAG alignment-delta preview-minus-source', JSON.stringify({
@@ -700,7 +700,7 @@ async function main() {
   await page.getByText('The file-tab layout').first().waitFor({ state: 'visible', timeout: 20000 })
   await waitTreeText(ALL_ONLY_ROW)
   await page.waitForTimeout(1500)
-  await page.locator('button:has-text("View Source")').first().click()
+  await page.locator('button:has-text("Edit")').first().click()
   await page.getByText('# Pierre migration', { exact: false }).first().waitFor({ state: 'visible', timeout: 20000 })
   await page.waitForTimeout(1200)
   // Put the caret at the end of the file's first line and type.

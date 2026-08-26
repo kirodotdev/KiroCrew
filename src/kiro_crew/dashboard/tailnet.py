@@ -304,6 +304,154 @@ def tailnet_origin() -> str | None:
     return f"https://{name}" if name else None
 
 
+#: ``BackendState`` values that mean the daemon is running but this machine is
+#: not signed in to a tailnet. Upstream's own enum (``ipn.State``); only the
+#: not-signed-in half is listed because that is the one an operator fixes by
+#: signing in, and treating an unknown future value as "signed in" would send
+#: them to the wrong remedy.
+_BACKEND_STATES_NEEDING_LOGIN = frozenset({"NeedsLogin", "NoState", "NeedsMachineAuth"})
+
+
+@dataclass(frozen=True)
+class DaemonProbe:
+    """Why this machine does or does not have a usable tailnet name.
+
+    Exists because :func:`self_dns_name` deliberately collapses every failure to
+    ``None`` — right for its caller (which only wants "a name or nothing") and
+    useless for an onboarding UI, which has to tell the operator WHICH thing to
+    go fix. The three negatives have three different remedies and must not be
+    rendered as one "Tailscale not working":
+
+    * ``installed=False`` — install Tailscale.
+    * ``reachable=False`` — the daemon is not answering; start it.
+    * ``logged_in=False`` — signed out; sign in.
+    * all true but ``name=""`` — signed in, but MagicDNS is off for the tailnet.
+    * ``https_enabled=False`` — the tailnet has not granted certificate
+      provisioning for this machine's MagicDNS name yet.
+
+    ``peer_count`` / ``peers_online`` describe the OTHER devices on this tailnet,
+    and they answer a question no amount of local state can: whether there is a
+    phone to reach this dashboard FROM. Publishing succeeds and the QR renders
+    perfectly on a tailnet of one, and then the scan fails in the browser with an
+    unexplained "cannot connect" — the single most likely way a new operator gets
+    stuck, because nothing on this machine is wrong.
+
+    Keeps this module's "nothing here raises" invariant: every failure lands in
+    a field, never in an exception.
+    """
+
+    name: str
+    installed: bool
+    reachable: bool
+    logged_in: bool
+    detail: str
+    peer_count: int = 0
+    peers_online: int = 0
+    #: ``None`` means this older/unexpected status document did not expose the
+    #: field. It must not be treated as ``False``: older clients may still be
+    #: able to publish, and the authoritative ``tailscale serve`` write will
+    #: report any unmet requirement. ``False`` is reserved for an explicit
+    #: ``CertDomains`` list that does not contain this host.
+    https_enabled: bool | None = None
+
+
+def _count_peers(status: dict) -> tuple[int, int]:
+    """``(peers, online)`` for the tailnet's OTHER devices. Never raises.
+
+    Counted from the status document already parsed by the caller rather than by
+    a second daemon call. A malformed or absent ``Peer`` map counts as zero, which
+    is the same reading as a tailnet of one — both mean "we cannot show that a
+    second device exists", and the advisory that follows is phrased as an absence
+    of evidence rather than as a certainty.
+    """
+    raw = status.get("Peer")
+    if not isinstance(raw, dict):
+        return 0, 0
+    peers = [p for p in raw.values() if isinstance(p, dict)]
+    online = sum(1 for p in peers if p.get("Online") is True)
+    return len(peers), online
+
+
+def probe_daemon() -> DaemonProbe:
+    """Diagnose the local daemon for the onboarding card. Never raises.
+
+    A LIVE read, unlike the startup value ``GET /api/tailnet/status`` reports.
+    The two are deliberately different questions — "what can this machine do
+    next" versus "what does the running server already trust" — and conflating
+    them is how a resolvable name gets rendered as an origin that is actually in
+    the allowlist.
+    """
+    if _cli_path() is None:
+        return DaemonProbe(
+            name="",
+            installed=False,
+            reachable=False,
+            logged_in=False,
+            detail="Tailscale is not installed in a standard location.",
+        )
+    status, _transient = _run_json_detail(["status", "--json"])
+    if not isinstance(status, dict):
+        return DaemonProbe(
+            name="",
+            installed=True,
+            reachable=False,
+            logged_in=False,
+            detail="Tailscale is installed, but its daemon did not answer.",
+        )
+    backend_state = status.get("BackendState")
+    logged_in = not (
+        isinstance(backend_state, str) and backend_state in _BACKEND_STATES_NEEDING_LOGIN
+    )
+    if not logged_in:
+        return DaemonProbe(
+            name="",
+            installed=True,
+            reachable=True,
+            logged_in=False,
+            detail="Tailscale is running but this machine is not signed in.",
+        )
+    peer_count, peers_online = _count_peers(status)
+    name = self_dns_name() or ""
+    if not name:
+        return DaemonProbe(
+            name="",
+            installed=True,
+            reachable=True,
+            logged_in=True,
+            detail=(
+                "Signed in, but no MagicDNS name is available for this machine — "
+                "MagicDNS may be disabled for this tailnet."
+            ),
+            peer_count=peer_count,
+            peers_online=peers_online,
+        )
+    # Tailscale's public ``ipnstate.Status`` contract defines CertDomains as the
+    # DNS names for which the control plane will help provision TLS certificates.
+    # An explicit empty/mismatching list is therefore a reliable first-use HTTPS
+    # prerequisite; an absent or malformed field stays unknown so an older CLI is
+    # allowed to reach the authoritative Serve attempt instead of being blocked
+    # forever by a field it never emitted.
+    raw_cert_domains = status.get("CertDomains")
+    https_enabled: bool | None = None
+    if isinstance(raw_cert_domains, list):
+        cert_domains = {
+            value.strip().rstrip(".").lower()
+            for value in raw_cert_domains
+            if isinstance(value, str) and value.strip()
+        }
+        https_enabled = name in cert_domains
+    return DaemonProbe(
+        name=name,
+        installed=True,
+        reachable=True,
+        logged_in=True,
+        detail="",
+        peer_count=peer_count,
+        peers_online=peers_online,
+        https_enabled=https_enabled,
+    )
+
+
 def is_governance_pinned_off(*, audit_tool: str = "") -> bool:
     """Return whether an enterprise ceiling pins ``capabilities.tailnet_origin`` off.
 

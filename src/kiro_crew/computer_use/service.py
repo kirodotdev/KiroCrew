@@ -384,14 +384,27 @@ class ComputerUseService:
                 handle_fd, path = tempfile.mkstemp(
                     prefix=prefix, suffix=SCREENSHOT_FILE_SUFFIX, dir=shot_dir
                 )
-                with os.fdopen(handle_fd, "wb") as handle:
-                    handle.write(snap.image_jpeg)
-                # Owner-only, fail-loud on POSIX and a real DACL on Windows. The
-                # frame can contain anything that was on screen, so a
-                # world-readable temp file would be a disclosure even though the
-                # directory is 0o700.
-                platform_compat.restrict_to_owner(path)
-                _trim_ring(shot_dir)
+                try:
+                    with os.fdopen(handle_fd, "wb") as handle:
+                        handle.write(snap.image_jpeg)
+                    # Owner-only, fail-loud on POSIX and a real DACL on Windows. The
+                    # frame can contain anything that was on screen, so a
+                    # world-readable temp file would be a disclosure even though the
+                    # directory is 0o700.
+                    platform_compat.restrict_to_owner(path)
+                    _trim_ring(shot_dir)
+                except Exception:
+                    # ``mkstemp`` already created the file, so a failure ANYWHERE
+                    # after it — the write, the permission tighten, the ring trim —
+                    # would orphan a frame in the spool with no reference and no
+                    # owner. Unlink it before degrading; best-effort only, because
+                    # this method is fail-soft by design and a cleanup error must
+                    # not turn a cosmetic spool failure into a call failure.
+                    try:
+                        os.unlink(path)
+                    except Exception:
+                        pass
+                    raise
             return replace(snap, image_path=path)
         except Exception:
             logger.debug("computer-use screenshot spool failed", exc_info=True)

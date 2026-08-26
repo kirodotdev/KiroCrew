@@ -373,7 +373,7 @@ def test_the_list_scoping_decision_lands_on_the_audit_trail() -> None:
         svc2 = CronService(base_dir=mcp_cron.config_dir())
         for job in svc2.list_jobs(include_disabled=True):
             if job.session_key != "dashboard:alice":
-                svc2.remove_job(job.id)
+                svc2.remove_job(job.id, actor="test", source="test")
         _call_tool_inner("cron_list", {})
         assert [e for e in events if e.get("tool_name") == "cron_list"] == [], events
     finally:

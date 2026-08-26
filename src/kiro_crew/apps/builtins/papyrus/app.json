@@ -61,5 +61,14 @@
   "heroImage": "/app-assets/papyrus/hero-light.svg",
   "heroImageDark": "/app-assets/papyrus/hero-dark.svg",
   "heroImageDetail": "/app-assets/papyrus/hero-detail-light.svg",
-  "heroImageDetailDark": "/app-assets/papyrus/hero-detail-dark.svg"
+  "heroImageDetailDark": "/app-assets/papyrus/hero-detail-dark.svg",
+  "useCases": [
+    "Write a LaTeX paper beside its compiled PDF, jump from build errors to source, and collaborate with a paper-scoped agent."
+  ],
+  "configuration": [
+    "Install managed Tectonic from the app or put tectonic or pdflatex on PATH, then create a paper or clone a repository with non-interactive Git credentials already configured."
+  ],
+  "screenshots": [
+    "/app-assets/papyrus/screenshot-main.png"
+  ]
 }

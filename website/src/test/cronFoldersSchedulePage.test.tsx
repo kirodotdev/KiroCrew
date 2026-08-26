@@ -157,7 +157,7 @@ describe('SchedulePage cron folders', () => {
     fireEvent.click(screen.getByText('Delete folder'))
 
     // Confirm row should appear
-    await waitFor(() => expect(screen.getByText(/Delete "My Folder"\? Jobs will be ungrouped\./)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText(/Delete “My Folder”\? Jobs will be ungrouped\./)).toBeInTheDocument())
   })
 
   it('hides empty folders when filter is active (omitEmpty)', async () => {
@@ -450,7 +450,7 @@ describe('SchedulePage cron folders', () => {
     fireEvent.click(screen.getByText('Delete folder'))
 
     // Confirm row should appear (not immediately deleted)
-    await waitFor(() => expect(screen.getByText(/Delete "DeleteMe"\? Jobs will be ungrouped\./)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText(/Delete “DeleteMe”\? Jobs will be ungrouped\./)).toBeInTheDocument())
     expect(vi.mocked(api).deleteCronFolder).not.toHaveBeenCalled()
 
     // Confirm the delete
@@ -479,7 +479,7 @@ describe('SchedulePage cron folders', () => {
     fireEvent.click(screen.getByText('Delete folder'))
 
     // Confirm
-    await waitFor(() => expect(screen.getByText(/Delete "ErrFolder"\? Jobs will be ungrouped\./)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText(/Delete “ErrFolder”\? Jobs will be ungrouped\./)).toBeInTheDocument())
     const confirmDeleteBtn = screen.getAllByRole('button').find(b => b.textContent === 'Delete "ErrFolder"' && b.className.includes('danger'))
     fireEvent.click(confirmDeleteBtn!)
 

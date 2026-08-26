@@ -60,6 +60,24 @@ export function isLegacySlackSlotKey(slotKey?: string): boolean {
 }
 
 /**
+ * Whether a slot's `surface` (falling back to `mode`) is one `ChatPage`
+ * actually renders — the unified chat view shows the default surface plus
+ * `orchestrator` and `crew` slots together; everything else (e.g.
+ * `dashboard`) belongs to a different page entirely.
+ *
+ * Single source of truth for that set: `ChatPage.tsx`'s `filteredSlots` and
+ * `ChatSidebar.tsx`'s resume-from-history handler both need the identical
+ * answer to "can the chat page show this slot", and having two independent
+ * copies is exactly how #3624 happened — the sidebar offered every history
+ * row unconditionally, the page silently couldn't display some of them, and
+ * nothing that resumed one told the user it had bounced.
+ */
+export function isChatPageSurface(surfaceOrMode?: string): boolean {
+  const sk = surfaceOrMode ?? ''
+  return sk === '' || sk === 'orchestrator' || sk === 'crew'
+}
+
+/**
  * Return the channel namespace a slot originated from, or `''` for an ordinary
  * dashboard session.
  *

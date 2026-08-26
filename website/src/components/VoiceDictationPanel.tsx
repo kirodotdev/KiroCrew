@@ -52,6 +52,15 @@ interface Props {
    *  batch STT there is no transcript until the mic is stopped, so the hint must
    *  point at the mic instead of promising Enter can send. */
   streaming?: boolean
+  /**
+   * True when a hold gesture is driving this session, which makes the keyboard
+   * hint actively wrong: there is no Esc key on a phone, and the mic button is a
+   * mode switch there rather than the control that finishes a recording. The hold
+   * bar and the slide-up cue carry the affordance instead, so the row is dropped
+   * rather than reworded — a second copy of "release to send" on screen at the
+   * same time as the button saying it is noise.
+   */
+  gestureDriven?: boolean
 }
 
 /**
@@ -61,7 +70,7 @@ interface Props {
  * backend is solid, the in-flight partial hypothesis is muted. Both come from
  * the composer's own value, so what is shown here is exactly what will be sent.
  */
-export default function VoiceDictationPanel({ sampleRef, value, partial, deviceLabel, deviceId, onSelectDevice, deviceSwitchIsLive, streaming }: Props) {
+export default function VoiceDictationPanel({ sampleRef, value, partial, deviceLabel, deviceId, onSelectDevice, deviceSwitchIsLive, streaming, gestureDriven }: Props) {
   // Split committed vs partial without coupling to STT internals: the partial
   // is appended to the composer value, so it is the suffix — but only trust
   // that when it actually matches (the user may have typed since).
@@ -101,11 +110,13 @@ export default function VoiceDictationPanel({ sampleRef, value, partial, deviceL
               />
             </span>
           )}
-          <span className="ml-auto text-muted font-normal font-mono text-[11px]">
-            {streaming
-              ? i18nT('components.voiceDictationPanel.esc_to_cancel_enter_to_send')
-              : i18nT('components.voiceDictationPanel.esc_to_cancel_click_mic_to_finish')}
-          </span>
+          {!gestureDriven && (
+            <span className="ml-auto text-muted font-normal font-mono text-[11px]">
+              {streaming
+                ? i18nT('components.voiceDictationPanel.esc_to_cancel_enter_to_send')
+                : i18nT('components.voiceDictationPanel.esc_to_cancel_click_mic_to_finish')}
+            </span>
+          )}
         </div>
         {/* Text sits over a live shader, so it carries its own shadow floor
             rather than relying on the background staying dark. */}

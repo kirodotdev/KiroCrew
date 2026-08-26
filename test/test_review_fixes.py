@@ -160,6 +160,11 @@ class TestEnvPermissions:
 
         tmp = Path(str(tmp_path))
         env_file = tmp / ".env"
+        # ``load_credentials`` merges the process ENVIRONMENT over the .env file, so
+        # a token another test left in os.environ wins the assertion below and this
+        # test fails only under parallel scheduling. Cleared here rather than
+        # accommodated, the same precaution the Slack config-getter tests take.
+        monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
         # A recognised key: an unknown key would land permanently in the
         # module-global warned-keys set, a residue no fixture resets.
         env_file.write_text("SLACK_BOT_TOKEN=xoxb-test\n")

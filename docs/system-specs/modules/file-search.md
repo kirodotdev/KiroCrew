@@ -21,6 +21,7 @@ directory listing or recursive content is inlined.
 | `project` | no | Absolute project path to scope the search to. |
 | `workspace` | no | Workspace name to scope the search to, when `project` is absent. |
 | `kinds` | no | `all` (default), `files`, or `dirs`. Unrecognized values fall back to `all`. |
+| `limit` | no | Result cap. Default `15`, clamped server-side to `_SEARCH_LIMIT_CEILING` (60). Non-integer values fall back to the default; values below 1 clamp to 1. The clamp is a security boundary: the walk collects `limit * 10` candidates per kind, so an unbounded value would amplify server-side filesystem work. |
 
 Response:
 
@@ -35,7 +36,9 @@ Response:
 ```
 
 - `kind` is `"file"` or `"dir"`. Directory entries always report `size: 0`.
-- At most 15 results are returned.
+- At most `limit` results are returned (default 15, hard ceiling 60). The
+  folder panel's expand control pages through tiers 15 → 30 → 60; callers that
+  pass no `limit` (the `@`-mention picker) keep the original 15.
 - Ranking is by fuzzy score, then **files before directories** on an equal
   score, then shorter name, then recency. The file bias keeps directory entries
   from crowding out the file a user is most likely searching for.

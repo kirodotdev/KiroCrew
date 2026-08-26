@@ -131,7 +131,7 @@ from kiro_crew.sandbox import (
     apply_windows_resource_ceiling,
     cgroup_scope_argv,
     create_subprocess_limited,
-    scrub_agent_denied_env,
+    scrub_agent_subprocess_env,
     wrap_argv,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -2740,9 +2740,9 @@ class AcpClient:
         # foreign MCP subprocesses (which bundle their own interpreter + deps).
         # is_kiro_cli is membership in ACP_BACKENDS_INTERNAL_SANDBOX
         # (harness-parity H7), not "not claude": the flag makes wrap_argv SKIP
-        # Crew's seatbelt on macOS in favour of the harness's own internal
-        # sandbox, so a harness without one must never be granted it by the
-        # absence of another harness.
+        # Crew's seatbelt on macOS and grants Windows's Kiro-only delegation in
+        # favour of the harness's own internal sandbox, so a harness without one
+        # must never be granted it by the absence of another harness.
         argv, self._sandbox_cleanup = wrap_argv(
             argv,
             mode=self._sandbox_mode,
@@ -2764,14 +2764,6 @@ class AcpClient:
         env = {**os.environ}
         if self._extra_env:
             env.update(self._extra_env)
-        # Parent-level scrub of gateway-owned channel credentials. The default
-        # auto/standard sandbox launcher strips _AGENT_DENIED_ENV_KEYS only for
-        # cc/strict, and this path copies a raw os.environ + wrap_argv (not
-        # sandboxed_spawn_argv), so without this the Slack/WeCom/Telegram tokens
-        # seeded into os.environ by load_credentials() would be inherited by the
-        # agent subprocess on the default tier. Leaves the AWS/SSH env the
-        # standard sandbox intentionally exposes untouched.
-        env = scrub_agent_denied_env(env)
         env["PATH"] = augmented_path(env.get("PATH", ""))
         if self._is_claude and not env.get("CLAUDE_CODE_EXECUTABLE"):
             # Dormant seam (see _spawn docstring): the adapter's SDK needs a
@@ -2812,6 +2804,12 @@ class AcpClient:
         env = await self._to_thread_guarding_sandbox(
             functools.partial(_resolve_spawn_env, kiro_api_key=self._is_kiro), env
         )
+        # Match the OS launchers' sensitive + Python env scrub in the parent.
+        # Windows Kiro delegation has no POSIX `env -u` wrapper, so this is the
+        # enforcement point there. Keep it after _resolve_spawn_env so SSH repair
+        # cannot reintroduce a denied pointer; KIRO_API_KEY remains available only
+        # to the positively identified Kiro backend.
+        env = scrub_agent_subprocess_env(env)
         # Positive-identity marker for the orphan sweep: kiro-cli and every MCP
         # server it spawns inherit this, so escaped launcher trees (``npx
         # @playwright/mcp`` -> node) are identifiable as ours.

@@ -35,6 +35,7 @@ OSS-CLEAN: depends only on ``opentelemetry`` + the stdlib.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -58,6 +59,7 @@ from opentelemetry.sdk.metrics.export import (
 )
 
 from kiro_crew import platform_compat
+from kiro_crew.metrics.schema import RESOURCE_ATTR_PROCESS_START_TIME
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +77,46 @@ _BYTES_PER_MB = 1024 * 1024
 _SHARD_NAME_RE = re.compile(
     r"metrics-(?P<day>\d{4}-\d{2}-\d{2})-(?P<pid>[1-9]\d*)" r"(?:-(?P<rotation>[1-9]\d*))?\.jsonl"
 )
+
+
+def _stamp_process_identity(line: str) -> str:
+    """Stamp the writing process's start-time identity at resource level.
+
+    One field per exported record: ``RESOURCE_ATTR_PROCESS_START_TIME`` is set
+    on each ``resource_metrics`` entry's resource attributes (in practice one
+    per line — one provider per exporter). The dashboard aggregator keys
+    cumulative-counter streams by (shard PID, this token, attrs), which makes a
+    PID-reuse process boundary deterministic instead of inferable only from a
+    value drop. Resource level deliberately — a per-metric attribute would
+    multiply every instrument's series cardinality (see ``schema.py``).
+
+    Stamped AFTER serialization, into the JSONL line only, never onto the SDK
+    ``Resource``: the provider's one ``Resource`` also feeds the opt-in OTLP
+    reader, so a resource attribute would egress this host-local token to
+    ``telemetry.otlp_endpoint``. The per-cycle re-serialize is the price of
+    keeping the token on-host.
+
+    Fail soft, twice over: when the platform read is unavailable the line is
+    returned untouched, so legacy consumers see exactly the shape they already
+    parse and the aggregator applies its value heuristic; and a line whose
+    payload cannot be parsed and mutated as the exporter's own JSON shape is
+    returned untouched rather than raised on — stamping is auxiliary, and it
+    must never cost the metric payload that was just serialized.
+    """
+    identity = platform_compat.own_process_start_time()
+    if identity is None:
+        return line
+    stamped = False
+    try:
+        payload = json.loads(line)
+        for rm in payload.get("resource_metrics") or []:
+            resource = rm.get("resource")
+            if isinstance(resource, dict):
+                resource.setdefault("attributes", {})[RESOURCE_ATTR_PROCESS_START_TIME] = identity
+                stamped = True
+    except (ValueError, AttributeError, TypeError):
+        return line
+    return json.dumps(payload) if stamped else line
 
 
 class _Shard(NamedTuple):
@@ -227,7 +269,7 @@ class JsonlMetricExporter(MetricExporter):
     ) -> MetricExportResult:
         """Serialize *metrics_data* to a single JSON line and append it."""
         try:
-            line = metrics_data.to_json(indent=None)
+            line = _stamp_process_identity(metrics_data.to_json(indent=None))
             encoded = (line + "\n").encode("utf-8")
             self._dir.mkdir(parents=True, exist_ok=True)
             # ~/.kiro/crew convention: telemetry stays private (dir 0o700, file

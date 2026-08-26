@@ -254,7 +254,14 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
             ),
         )
 
-        task = asyncio.create_task(_run_chat(state, slot, redacted_content))
+        task = asyncio.create_task(
+            _run_chat(
+                state,
+                slot,
+                redacted_content,
+                _directive_user_origin=not bool(request_app),
+            )
+        )
         slot.task = task
         state._background_tasks.add(task)
         task.add_done_callback(state._background_tasks.discard)

@@ -22,6 +22,7 @@ import { sanitizeLlmOutput } from '../../utils/sanitize'
 import type { ChatMessage } from '../../types'
 
 import { i18nT } from '../../i18n/t'
+import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 /** The `workflow_run` tool result reads "Started workflow run `wf_NNNNNN`…"
  *  (see the workflow_run handler in mcp_core.py). Matching that phrase both
  *  identifies the call as a launch and captures its run id — and works for
@@ -68,6 +69,7 @@ const WorkflowRunCard = memo(function WorkflowRunCard({
    *  ever draws the active one. */
   slot?: string
 }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const dispatch = useAppDispatch()
   const activeSlot = useAppSelector(s => s.chat.activeSlot)
   const run = useAppSelector(s => s.chat.workflowRuns?.[runId])

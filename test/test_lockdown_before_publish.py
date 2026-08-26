@@ -129,6 +129,12 @@ def save(tmp, final, secret):
     shutil.move(tmp, final)
     os.chmod(final, 0o600)
 """,
+    "os.link into place, then restrict the published path": """
+def save(tmp, final, secret):
+    tmp.write_bytes(secret)
+    os.link(tmp, final)
+    platform_compat.restrict_to_owner(final)
+""",
     "fchmod_safe on the descriptor AFTER content": """
 def save(final, secret):
     fd = os.open(final, os.O_WRONLY | os.O_CREAT, 0o600)

@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew.testing.channel_fixtures import (
     Provenance,
     ShapeMismatch,
@@ -326,6 +327,7 @@ class TestSymlinkContainment:
     every component looks innocent, so the canonical path is checked too.
     """
 
+    @requires_symlinks
     def test_a_dangling_symlink_at_the_leaf_is_refused(self, tmp_path) -> None:
         """exists() is False for a BROKEN link, but open() still follows it.
 
@@ -344,6 +346,7 @@ class TestSymlinkContainment:
             )
         assert not outside.exists(), "must not write through a dangling symlink"
 
+    @requires_symlinks
     def test_a_dangling_symlink_is_refused_on_read_too(self, tmp_path) -> None:
         root = tmp_path / "fixtures"
         (root / "weixin").mkdir(parents=True)
@@ -367,6 +370,7 @@ class TestSymlinkContainment:
         assert path.is_file()
         assert load_fixture("weixin", "ok", root=fresh).payload == {"a": 1}
 
+    @requires_symlinks
     def test_a_symlinked_channel_directory_is_refused_on_read(self, tmp_path) -> None:
         root = tmp_path / "fixtures"
         root.mkdir()
@@ -378,6 +382,7 @@ class TestSymlinkContainment:
         with pytest.raises(ValueError, match="escapes the root"):
             load_fixture("weixin", "x", root=root)
 
+    @requires_symlinks
     def test_a_symlinked_channel_directory_is_refused_before_write(self, tmp_path) -> None:
         root = tmp_path / "fixtures"
         root.mkdir()
@@ -488,6 +493,7 @@ class TestSymlinkContainment:
         assert target.read_text(encoding="utf-8") == '{"new": true}'
         assert [p.name for p in tmp_path.iterdir()] == ["x.json"]
 
+    @requires_symlinks
     def test_a_symlinked_leaf_is_reported_not_silently_replaced(self, tmp_path) -> None:
         """os.replace would swap the LINK for a file -- no escape, but silent.
 

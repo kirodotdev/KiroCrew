@@ -33,6 +33,13 @@ ENFORCED = {
     # size. CHARACTER count — byte-capped platforms must declare a byte-safe
     # char value (see webex).
     "max_message_chars",
+    # The same limit in UTF-8 BYTES, preferred over the char count by
+    # messaging.renderer.chunk_for_transport, which both cross-surface mirror
+    # legs (dashboard/chat_runner.py, slack/gateway.py's subagent reply ladder)
+    # now call. 0 means "not byte-capped" and keeps the char path. Enforced by
+    # construction: a byte-capped transport that declares it gets fence-aware
+    # byte splitting, and one that does not keeps the 4x-pessimistic char floor.
+    "max_message_bytes",
     # Gates mirror-link creation (HTTP 400) and the outbound mirror leg.
     "supports_proactive_send",
     # Gates whether a dashboard connect marks the binding as an inbound resume
@@ -71,6 +78,18 @@ ENFORCED = {
     # by AST and in both directions, in
     # test_channel_transport_outbound_authz.py::TestTheMessageIdConventionIsDeclared.
     "returns_message_id",
+    # Whether the platform parses a broadcast-mention grammar in a message body.
+    # messaging.renderer.display_safe_for reads it at the channel-neutral proactive
+    # sinks (dashboard/handlers/messaging.py) and applies the ZWSP defang only
+    # where one exists -- Webex declares False because its allow-list IS email
+    # addresses and the defang makes every address uncopyable.
+    "mention_grammars",
+    # Gates whether a renderer attaches an Adaptive Card at all
+    # (webex/renderer.py::_options_card and ::on_prompt_choice). A channel
+    # declaring False keeps the numbered-text and typed-reply forms, which work
+    # everywhere -- so the flag decides whether a widget appears, not whether the
+    # user can answer.
+    "rich_blocks",
 }
 
 #: Declared honestly, read by nothing yet. The capability-gated interface
@@ -81,7 +100,6 @@ ASPIRATIONAL = {
     "edit",
     "reactions",
     "files_inbound",
-    "rich_blocks",
     "threads",
 }
 
@@ -151,7 +169,8 @@ class TestCorrectedDeclarations:
     def test_webex_char_declaration_is_safe_under_its_byte_cap(self) -> None:
         # Webex caps messages in UTF-8 BYTES (WEBEX_MAX_TEXT) and its client
         # tail-truncates overflow. The declared CHAR count must be safe at
-        # 4 bytes/char, or the mirror leg silently loses data on CJK text.
+        # 4 bytes/char, or a caller that can only count chars loses data on CJK
+        # text. It stays declared alongside the byte cap as that caller's floor.
         from kiro_crew.webex.client import WEBEX_MAX_TEXT
         from kiro_crew.webex.transport import WEBEX_CAPABILITIES
 
@@ -199,6 +218,48 @@ class TestCorrectedDeclarations:
         from kiro_crew.wecom.transport import WECOM_CAPABILITIES
 
         assert WECOM_CAPABILITIES.max_message_chars * 4 <= WECOM_MAX_REPLY_BYTES
+
+    def test_a_byte_capped_transport_declares_the_real_budget_too(self) -> None:
+        # The char floor alone is 4x pessimistic, which fragmented an ASCII reply
+        # into quarters on the mirror leg. The byte value is the real capacity and
+        # is what chunk_for_transport uses.
+        from kiro_crew.webex.client import WEBEX_MAX_TEXT
+        from kiro_crew.webex.transport import WEBEX_CAPABILITIES
+
+        assert WEBEX_CAPABILITIES.max_message_bytes == WEBEX_MAX_TEXT
+
+    def test_only_byte_capped_transports_declare_a_byte_budget(self) -> None:
+        """0 is the honest default, and it keeps every other channel on chars.
+
+        A transport declaring a byte cap it does not have would route its replies
+        through the byte splitter and chunk them against the wrong unit.
+        """
+        from kiro_crew.discord.transport import DISCORD_CAPABILITIES
+        from kiro_crew.slack.transport import SLACK_CAPABILITIES
+        from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES
+
+        assert TransportCapabilities().max_message_bytes == 0
+        for caps in (SLACK_CAPABILITIES, DISCORD_CAPABILITIES, TELEGRAM_CAPABILITIES):
+            assert caps.max_message_bytes == 0
+
+    def test_webex_declares_the_capabilities_it_now_performs(self) -> None:
+        """Files, cards and threading all ship, so all three are declared.
+
+        Each of these was False while the code could not do it. Flipping one
+        without the code, or shipping the code without flipping it, is the
+        drift this ledger exists to catch — so pin them against their consumers.
+        """
+        from kiro_crew.webex.cards import MAX_CARD_ACTIONS
+        from kiro_crew.webex.transport import WEBEX_CAPABILITIES
+
+        assert WEBEX_CAPABILITIES.files_inbound is True  # webex/attachments.py
+        assert WEBEX_CAPABILITIES.files_outbound is True  # client.send_file
+        assert WEBEX_CAPABILITIES.rich_blocks is True  # webex/cards.py
+        assert WEBEX_CAPABILITIES.threads is True  # send_message(parent_id=...)
+        assert WEBEX_CAPABILITIES.max_buttons == MAX_CARD_ACTIONS
+        # Still absent, and deliberately: the Webex Messaging API has neither.
+        assert WEBEX_CAPABILITIES.reactions is False
+        assert WEBEX_CAPABILITIES.streaming is False
 
     def test_the_file_directions_are_declared_separately(self) -> None:
         # One boolean was undecidable: the two directions land per channel and in

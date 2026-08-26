@@ -411,13 +411,15 @@ class TestLoadBearerToken:
 
 
 class TestWindowsCliStore:
-    """kiro-cli on Windows keeps the same auth store under ``%APPDATA%\\kiro-cli``
-    (``~/AppData/Roaming/kiro-cli`` by default).
+    """kiro-cli on Windows keeps the same auth store under
+    ``%LOCALAPPDATA%\\kiro-cli`` (``~/AppData/Local/kiro-cli`` by default);
+    older layouts used ``%APPDATA%\\kiro-cli`` (``~/AppData/Roaming/kiro-cli``).
 
-    Absent from ``_CLI_SQLITE_DBS``, a Windows host's only candidate was the
-    JSON SSO cache (``from_cli_store=False``), which can never satisfy the
-    provenance path -- so whenever the ARN anchor also failed, every candidate
-    was rejected and the credit pill silently disappeared.
+    With only the Roaming location in ``_CLI_SQLITE_DBS``, a current Windows
+    host's store was never discovered: no candidate carried
+    ``from_cli_store=True``, the source-anchored provenance path could never be
+    satisfied, and whenever the ARN anchor also failed the usage API returned
+    unavailable and the credit pill silently disappeared.
     """
 
     @pytest.fixture(autouse=True)
@@ -428,13 +430,17 @@ class TestWindowsCliStore:
         api._PROFILE_ARN_CACHE.clear()
         api._PROFILE_NAME_CACHE.clear()
 
-    def test_windows_store_is_a_default_candidate(self):
-        # The FIXED default Roaming location, not %APPDATA%-resolved: the
-        # sensitive-path fence that makes membership a trust claim is
-        # home-anchored at exactly this path, so an APPDATA-resolved location
-        # either equals it or falls outside the fence and must not be trusted.
-        expected = Path.home() / "AppData" / "Roaming" / "kiro-cli" / "data.sqlite3"
-        assert expected in api._CLI_SQLITE_DBS
+    def test_windows_stores_are_default_candidates(self):
+        # The FIXED default locations, not %LOCALAPPDATA%/%APPDATA%-resolved:
+        # the sensitive-path fence that makes membership a trust claim is
+        # home-anchored at exactly these paths, so an env-resolved location
+        # either equals an entry or falls outside the fence and must not be
+        # trusted. Local is where current kiro-cli writes; Roaming stays for
+        # older layouts.
+        local = Path.home() / "AppData" / "Local" / "kiro-cli" / "data.sqlite3"
+        roaming = Path.home() / "AppData" / "Roaming" / "kiro-cli" / "data.sqlite3"
+        assert local in api._CLI_SQLITE_DBS
+        assert roaming in api._CLI_SQLITE_DBS
 
     def test_windows_store_token_is_trusted_without_arn(self, tmp_path):
         # End-to-end: a token read out of a Windows-layout store carries
@@ -457,7 +463,7 @@ class TestWindowsCliStore:
         usage_body = {"usageBreakdownList": [
             {"resourceType": "CREDIT", "currentUsage": 7.0, "usageLimit": 100.0}]}
 
-        def fake_post(token, target, payload):
+        def fake_post(token, target, payload, **_kwargs):
             if target == api._TARGET_LIST_PROFILES:
                 return _resp(200, {"profiles": []})
             return _resp(200, usage_body)
@@ -473,6 +479,72 @@ class TestWindowsCliStore:
             out = api.fetch_usage_limits(expected_arn=None)
         assert out is not None
         assert out["credits_used"] == 7.0
+
+    def test_local_appdata_store_token_is_trusted_without_arn(self, tmp_path):
+        # Same end-to-end path for the CURRENT Windows layout
+        # (%LOCALAPPDATA%\kiro-cli): a token read out of a Local-layout store
+        # carries from_cli_store=True, so the provenance path accepts it when
+        # whoami reports no profile ARN -- the exact case #5783 reports, where
+        # the store exists only under AppData/Local and the pill vanished.
+        db = tmp_path / "AppData" / "Local" / "kiro-cli" / "data.sqlite3"
+        db.parent.mkdir(parents=True)
+        con = sqlite3.connect(str(db))
+        con.execute("CREATE TABLE auth_kv (key TEXT PRIMARY KEY, value TEXT)")
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        con.execute(
+            "INSERT INTO auth_kv VALUES (?, ?)",
+            ("kirocli:odic:token",
+             json.dumps({"access_token": "local-tok", "expires_at": future})),
+        )
+        con.commit()
+        con.close()
+
+        usage_body = {"usageBreakdownList": [
+            {"resourceType": "CREDIT", "currentUsage": 3.0, "usageLimit": 100.0}]}
+
+        def fake_post(token, target, payload, **_kwargs):
+            if target == api._TARGET_LIST_PROFILES:
+                return _resp(200, {"profiles": []})
+            return _resp(200, usage_body)
+
+        with patch("kiro_crew.hooks.safe_read_file_internal", return_value=None), \
+             patch("kiro_crew.hooks.emit_internal_read_audit", return_value=True), \
+             patch.object(api, "_CLI_SQLITE_DBS", (db,)), \
+             patch.object(api, "_OTHER_SQLITE_DBS", ()), \
+             patch.object(api, "_post", side_effect=fake_post):
+            cands = api._candidate_tokens()
+            assert [c.token for c in cands] == ["local-tok"]
+            assert cands[0].from_cli_store is True
+            out = api.fetch_usage_limits(expected_arn=None)
+        assert out is not None
+        assert out["credits_used"] == 3.0
+
+
+class TestRtsEndpoint:
+    """Regional RTS host is a hardcoded table keyed by the whoami ARN."""
+
+    def test_us_east_1_arn_keeps_codewhisperer_host(self):
+        arn = "arn:aws:codewhisperer:us-east-1:123:profile/A"
+        assert api._region_from_arn(arn) == "us-east-1"
+        assert api._rts_endpoint(arn) == "https://codewhisperer.us-east-1.amazonaws.com"
+
+    def test_eu_central_1_arn_uses_q_host(self):
+        # eu-central-1 is a different hostname, not codewhisperer.eu-central-1.
+        arn = "arn:aws:codewhisperer:eu-central-1:123:profile/A"
+        assert api._region_from_arn(arn) == "eu-central-1"
+        assert api._rts_endpoint(arn) == "https://q.eu-central-1.amazonaws.com"
+
+    def test_unknown_or_missing_arn_falls_back_to_us_east_1(self):
+        assert api._rts_endpoint(None) == api._RTS_ENDPOINT
+        assert api._rts_endpoint("") == api._RTS_ENDPOINT
+        assert api._rts_endpoint("not-an-arn") == api._RTS_ENDPOINT
+        assert api._rts_endpoint("arn:aws:codewhisperer:ap-south-1:1:profile/X") == (
+            api._RTS_ENDPOINT
+        )
+
+    def test_default_constant_is_the_us_east_1_literal(self):
+        assert api._RTS_ENDPOINT == api._RTS_ENDPOINTS["us-east-1"]
+        assert api._RTS_ENDPOINT == "https://codewhisperer.us-east-1.amazonaws.com"
 
 
 class TestPostSecurityControls:
@@ -507,6 +579,30 @@ class TestPostSecurityControls:
         assert req.get_header("X-amz-target") == api._TARGET_GET_USAGE
         assert req.get_header("User-agent")
         assert captured["timeout"] == api._TIMEOUT_SECS
+
+    def test_post_uses_explicit_regional_endpoint(self):
+        captured = {}
+
+        class _FakeResp:
+            status = 200
+
+            def read(self, n=None):
+                return b"{}"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def fake_open(self, req, timeout=None):
+            captured["req"] = req
+            return _FakeResp()
+
+        eu = api._RTS_ENDPOINTS["eu-central-1"]
+        with patch("urllib.request.OpenerDirector.open", fake_open):
+            api._post("tok", api._TARGET_LIST_PROFILES, {}, endpoint=eu)
+        assert captured["req"].get_full_url() == eu
 
     def test_opener_verifies_tls_and_disables_redirects(self):
         opener = api._build_opener()
@@ -574,7 +670,7 @@ class TestFetchUsageLimits:
             {"resourceType": "CREDIT", "currentUsage": 5.0, "usageLimit": 100.0}]}
         arn = "arn:aws:codewhisperer:...:profile/X"
 
-        def fake_post(token, target, payload):
+        def fake_post(token, target, payload, **_kwargs):
             if target == api._TARGET_LIST_PROFILES:
                 return _resp(200, {"profiles": [
                     {"arn": arn,
@@ -586,13 +682,36 @@ class TestFetchUsageLimits:
             out = api.fetch_usage_limits(expected_arn=arn)
         assert out["account"] == "Acme Corp"
 
+    def test_eu_arn_posts_both_calls_to_q_eu_central_1(self):
+        # ListAvailableProfiles is region-scoped: hitting us-east-1 for an
+        # eu-central-1 IdC profile returns no ARN and the pill hides. Both
+        # RTS calls must use the EU host from the whoami ARN.
+        usage_body = {"usageBreakdownList": [
+            {"resourceType": "CREDIT", "currentUsage": 5.0, "usageLimit": 100.0}]}
+        arn = "arn:aws:codewhisperer:eu-central-1:123:profile/A"
+        seen: list[str | None] = []
+
+        def fake_post(token, target, payload, **kwargs):
+            seen.append(kwargs.get("endpoint"))
+            if target == api._TARGET_LIST_PROFILES:
+                return _resp(200, {"profiles": [{"arn": arn}]})
+            return _resp(200, usage_body)
+
+        with patch.object(api, "_candidate_tokens", return_value=[_cand("tok")]), \
+             patch.object(api, "_post", side_effect=fake_post):
+            out = api.fetch_usage_limits(expected_arn=arn)
+        assert out is not None
+        eu = api._RTS_ENDPOINTS["eu-central-1"]
+        assert seen == [eu, eu]
+        assert eu == "https://q.eu-central-1.amazonaws.com"
+
     def test_no_account_when_profile_has_no_name(self):
         # An org profile with an ARN but no profileName must not set ``account``
         # (individual Builder ID accounts likewise have no profile at all).
         usage_body = {"usageBreakdownList": [
             {"resourceType": "CREDIT", "currentUsage": 5.0, "usageLimit": 100.0}]}
 
-        def fake_post(token, target, payload):
+        def fake_post(token, target, payload, **_kwargs):
             if target == api._TARGET_LIST_PROFILES:
                 return _resp(200, {"profiles": [{"arn": "arn:x"}]})
             return _resp(200, usage_body)
@@ -608,7 +727,7 @@ class TestFetchUsageLimits:
             {"resourceType": "CREDIT", "currentUsage": 5.0, "usageLimit": 100.0}]}
         arn = "arn:aws:codewhisperer:us-east-1:1:profile/A"
 
-        def fake_post(token, target, payload):
+        def fake_post(token, target, payload, **_kwargs):
             if target == api._TARGET_LIST_PROFILES:
                 return _resp(200, {"profiles": [{"arn": arn}]})
             return _resp(403, {}) if token == "stale" else _resp(200, usage_body)
@@ -735,7 +854,7 @@ class TestExpectedArnAnchor:
     ARN_B = "arn:aws:codewhisperer:us-east-1:2:profile/B"
 
     def _fake_post(self, arn_for: dict[str, str], usage_for: dict[str, dict]):
-        def fake_post(token, target, payload):
+        def fake_post(token, target, payload, **_kwargs):
             if target == api._TARGET_LIST_PROFILES:
                 arn = arn_for.get(token)
                 profiles = [{"arn": arn}] if arn else []
@@ -773,7 +892,7 @@ class TestExpectedArnAnchor:
 
         inner = self._fake_post(arns, usage)
 
-        def recording_post(token, target, payload):
+        def recording_post(token, target, payload, **_kwargs):
             seen.append((token, target))
             return inner(token, target, payload)
 
@@ -801,7 +920,7 @@ class TestExpectedArnAnchor:
         usage = {"tok": {"usageBreakdownList": [
             {"resourceType": "CREDIT", "currentUsage": 1.0, "usageLimit": 10.0}]}}
 
-        def fake_post(token, target, payload):
+        def fake_post(token, target, payload, **_kwargs):
             if target == api._TARGET_LIST_PROFILES:
                 return _resp(500, {})
             return _resp(200, usage[token])
@@ -865,7 +984,7 @@ class TestExpectedArnAnchor:
         sent: list[dict] = []
         inner = self._fake_post({"cli": arn}, usage)
 
-        def recording_post(token, target, payload):
+        def recording_post(token, target, payload, **_kwargs):
             if target == api._TARGET_GET_USAGE:
                 sent.append(payload)
             return inner(token, target, payload)
@@ -894,7 +1013,7 @@ class TestExpectedArnAnchor:
         seen: list[tuple[str, str]] = []
         inner = self._fake_post({}, usage)
 
-        def recording_post(token, target, payload):
+        def recording_post(token, target, payload, **_kwargs):
             seen.append((token, target))
             return inner(token, target, payload)
 
@@ -1092,7 +1211,8 @@ class TestTokenStoreSensitivePath:
 
         from kiro_crew.security import is_sensitive_path
         home = Path.home()
-        for base in (".local/share", "Library/Application Support", "AppData/Roaming"):
+        for base in (".local/share", "Library/Application Support",
+                     "AppData/Local", "AppData/Roaming"):
             for app in ("kiro-cli", "amazon-q"):
                 # The DB and its WAL/SHM/journal sidecars must all be sensitive.
                 assert is_sensitive_path(str(home / base / app / "data.sqlite3"))

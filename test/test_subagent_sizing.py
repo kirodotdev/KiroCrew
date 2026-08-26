@@ -603,7 +603,11 @@ class TestSampleLiveCosts:
 
         # Control wall-clock: poll1 t=10, poll2 t=11 (dt=1s).
         times = iter([10.0, 11.0])
-        monkeypatch.setattr(sub.time, "monotonic", lambda: next(times))
+        # ``sub.time`` is the process-wide stdlib module, so asyncio and pytest
+        # also observe this patch during teardown. Keep returning the final
+        # timestamp after the two production calls instead of leaking a
+        # StopIteration into unrelated event-loop cleanup.
+        monkeypatch.setattr(sub.time, "monotonic", lambda: next(times, 11.0))
         # jiffies: 1000 then 1100 → 100 jiffies / (100 tck * 1s) = 1.0 core.
         jiff = iter([1000, 1100])
         monkeypatch.setattr(sub, "_subtree_cpu_jiffies", lambda pid: next(jiff))

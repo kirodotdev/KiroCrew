@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path'
 import i18next from 'i18next'
 import {
   APP_MANIFEST_KEY, appDisplayName, appDescription, appPageLabel, appHighlights,
+  appUseCases, appConfiguration,
 } from '../components/appstore/appManifest'
 import en from '../i18n/locales/en.json'
 import zh from '../i18n/locales/zh-CN.json'
@@ -89,7 +90,7 @@ describe('resolvers', () => {
 
   it('translates a known built-in', () => {
     const name = Object.keys(APP_MANIFEST_KEY)[0]
-    expect(appDisplayName({ name, displayName: 'IGNORED' }))
+    expect(appDisplayName({ name, displayName: 'IGNORED', origin: 'builtin' }))
       .toBe(lookup(en, APP_MANIFEST_KEY[name].displayName))
   })
 
@@ -98,6 +99,16 @@ describe('resolvers', () => {
     expect(appDisplayName(app)).toBe('Vendor App')
     expect(appDescription(app)).toBe('Their copy.')
     expect(appHighlights({ name: app.name, highlights: ['a', 'b'] })).toEqual(['a', 'b'])
+    expect(appUseCases({ name: app.name, useCases: ['their use'] })).toEqual(['their use'])
+    expect(appConfiguration({ name: app.name, configuration: ['their setup'] }))
+      .toEqual(['their setup'])
+  })
+
+  it('drops malformed third-party guidance instead of returning a non-array to the renderer', () => {
+    expect(appUseCases({ name: 'vendor-app', useCases: 'not an array' })).toEqual([])
+    expect(appConfiguration({ name: 'vendor-app', configuration: { step: 'invalid' } })).toEqual([])
+    expect(appUseCases({ name: 'vendor-app', useCases: ['valid', 7] })).toEqual([])
+    expect(appConfiguration({ name: 'vendor-app', configuration: ['valid', null] })).toEqual([])
   })
 
   it('falls back to the id when a third-party app has no displayName', () => {
@@ -115,10 +126,10 @@ describe('resolvers', () => {
 
   it('refuses to lend first-party copy to a registry row that reuses a built-in id', () => {
     // An id is not provenance. `_registry` is attached server-side by
-    // `_load_external_registries` and cannot be forged by index content, whereas
-    // `origin` is copied verbatim from that content — so this must key off `_registry`,
-    // exactly as `isVerified()` in ../components/appstore/types.ts does. Without the
-    // guard, an external registry publishing an entry named `projects` would be
+    // `_load_external_registries` and cannot be forged by index content. `origin`
+    // independently covers installed detail records, which carry no registry tag;
+    // neither signal can replace the other. Without both guards, an external registry
+    // publishing an entry named `projects` would be
     // rendered with the built-in's localised name and description, next to an Install
     // button that runs setup code with gateway privileges.
     const name = Object.keys(APP_MANIFEST_KEY)[0]
@@ -135,7 +146,7 @@ describe('resolvers', () => {
     expect(appHighlights(impostor)).toEqual(['impostor bullet'])
     // A genuine built-in is merged client-side from the installed list and carries no
     // `_registry`, so it still resolves.
-    expect(appDisplayName({ name, displayName: 'IGNORED' }))
+    expect(appDisplayName({ name, displayName: 'IGNORED', origin: 'builtin' }))
       .toBe(lookup(en, APP_MANIFEST_KEY[name].displayName))
   })
 
@@ -145,21 +156,50 @@ describe('resolvers', () => {
     const tooMany = Array.from({ length: real + 1 }, (_, i) => `extra ${i}`)
     // Complete but untranslated beats translated but truncated: a dropped bullet is
     // invisible, whereas English on app-detail is reported by the en-XA render gate.
-    expect(appHighlights({ name, highlights: tooMany })).toEqual(tooMany)
-    expect(appHighlights({ name, highlights: [] })).toEqual([])
+    expect(appHighlights({ name, highlights: tooMany, origin: 'builtin' })).toEqual(tooMany)
+    expect(appHighlights({ name, highlights: [], origin: 'builtin' })).toEqual([])
   })
 
   it('resolves translated bullets when the lengths match', () => {
     const name = Object.keys(APP_MANIFEST_KEY)[0]
     const keys = APP_MANIFEST_KEY[name].highlights
     const same = keys.map((_, i) => `manifest ${i}`)
-    expect(appHighlights({ name, highlights: same }))
+    expect(appHighlights({ name, highlights: same, origin: 'builtin' }))
       .toEqual(keys.map(k => lookup(en, k)))
+  })
+
+  it('resolves built-in use cases and configuration through sibling manifest keys', () => {
+    const name = Object.keys(APP_MANIFEST_KEY)[0]
+    const namespace = APP_MANIFEST_KEY[name].description.replace(/\.description$/, '')
+    expect(appUseCases({ name, origin: 'builtin', useCases: ['manifest use'] }))
+      .toEqual([lookup(en, `${namespace}.use_case_1`)])
+    expect(appConfiguration({ name, origin: 'builtin', configuration: ['manifest setup'] }))
+      .toEqual([lookup(en, `${namespace}.configuration_1`)])
+  })
+
+  it('does not lend built-in guidance to an installed third-party name collision', () => {
+    const name = Object.keys(APP_MANIFEST_KEY)[0]
+    const impostor = {
+      name,
+      origin: 'registry',
+      displayName: 'Third-party name',
+      description: 'Third-party description',
+      highlights: ['third-party feature'],
+      useCases: ['third-party use'],
+      configuration: ['third-party setup'],
+    }
+    // Installed app detail records omit `_registry`; provenance must therefore
+    // be required independently of the server-attached registry tag.
+    expect(appDisplayName(impostor)).toBe('Third-party name')
+    expect(appDescription(impostor)).toBe('Third-party description')
+    expect(appHighlights(impostor)).toEqual(['third-party feature'])
+    expect(appUseCases(impostor)).toEqual(['third-party use'])
+    expect(appConfiguration(impostor)).toEqual(['third-party setup'])
   })
 
   it('prefers the page label key, then the passed label, then the id', () => {
     const name = Object.keys(APP_MANIFEST_KEY)[0]
-    expect(appPageLabel(name, 'Raw Label', 'Raw Display'))
+    expect(appPageLabel(name, 'Raw Label', 'Raw Display', 'builtin'))
       .toBe(lookup(en, APP_MANIFEST_KEY[name].pageLabel))
     expect(appPageLabel('vendor-app', 'Raw Label', 'Raw Display')).toBe('Raw Label')
     expect(appPageLabel('vendor-app', '', 'Raw Display')).toBe('Raw Display')

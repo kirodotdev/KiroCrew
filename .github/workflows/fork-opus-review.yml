@@ -157,16 +157,31 @@ jobs:
 
       # Post the required check-run as EARLY as possible, keyed to head_sha, so
       # branch protection always sees a result (fail-closed even if a later step dies).
+      #
+      # `external_id` carries the PR number, which is what makes the finalize
+      # sweep safe: a check-run of this name on this head can belong to ANOTHER
+      # pull request (two PRs may share a commit), and completing that one would
+      # publish a verdict computed from a different diff. The sweep matches on
+      # this id, so it can only ever finish a run this pull request created.
+      #
+      # `details_url` carries this run's URL: a workflow_run-triggered run is
+      # keyed to the DEFAULT branch context, so this stamp is the only link
+      # from the PR head back to the lane run — the human-override handler
+      # reads it to re-run the lane, and a human clicking the check lands on
+      # the run logs instead of a bare check-run page.
       - name: Open check-run (in progress)
         id: check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           HEAD: ${{ steps.pr.outputs.head_sha }}
+          PR: ${{ steps.pr.outputs.pr }}
         run: |
           set -uo pipefail
           id="$(gh api --method POST "repos/$REPO/check-runs" \
             -f name="Opus 4.8 Review" -f head_sha="$HEAD" -f status="in_progress" \
+            -f external_id="opus-pr-$PR" \
+            -f details_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID" \
             --jq '.id')"
           echo "id=$id" >> "$GITHUB_OUTPUT"
 
@@ -272,7 +287,7 @@ jobs:
       # the same step in claude-review.yml -- keep the two lanes in sync.
       - name: Opus 4.8 discovery
         id: discover
-        uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1
+        uses: anthropics/claude-code-action@459ad358ae43fea66bfefd0a1f8d840b4b9791fb # v1
         with:
           use_bedrock: "true"
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -350,7 +365,7 @@ jobs:
       # unchanged.
       - name: Opus 4.8 validation
         id: review
-        uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1
+        uses: anthropics/claude-code-action@459ad358ae43fea66bfefd0a1f8d840b4b9791fb # v1
         with:
           use_bedrock: "true"
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -448,6 +463,7 @@ jobs:
           REPO: ${{ github.repository }}
           HEAD: ${{ steps.pr.outputs.head_sha || github.event.workflow_run.head_sha }}
           CHECK_ID: ${{ steps.check.outputs.id }}
+          PR: ${{ steps.pr.outputs.pr }}
         run: |
           set -uo pipefail
           conclusion="failure"; title="review incomplete"
@@ -458,15 +474,66 @@ jobs:
               conclusion="success"; title="no blocking findings"
             fi
           fi
+          summary="Fork AI review for $HEAD. See the PR comment for details."
+          # complete <check-run id> <conclusion> <title> — one retry, because a
+          # single transient 5xx here is what strands the run: the check-run stays
+          # `in_progress` forever, and pr-readiness counts ANY non-completed run of
+          # this name as pending — including after a successful re-run — so the PR
+          # sits at `readiness: checking` with no event able to clear it.
+          complete() {
+            for attempt in 1 2; do
+              if gh api --method PATCH "repos/$REPO/check-runs/$1" \
+                -f status="completed" -f conclusion="$2" \
+                -f "output[title]=Opus 4.8 Review — $3" \
+                -f "output[summary]=$summary" >/dev/null 2>&1; then
+                return 0
+              fi
+              sleep 5
+            done
+            echo "::warning::could not complete check-run $1 for $HEAD"
+            return 1
+          }
           if [ -n "${CHECK_ID:-}" ]; then
-            gh api --method PATCH "repos/$REPO/check-runs/$CHECK_ID" \
-              -f status="completed" -f conclusion="$conclusion" \
-              -f "output[title]=Opus 4.8 Review — $title" \
-              -f "output[summary]=Fork AI review for $HEAD. See the PR comment for details." >/dev/null || true
+            complete "$CHECK_ID" "$conclusion" "$title" || true
           elif [ -n "${HEAD:-}" ]; then
+            # external_id makes this fallback check-run discoverable by the
+            # override handler's fork rerun lookup, same as the opening POST.
+            # PR can be empty in exactly this branch (HEAD has a workflow_run
+            # fallback, PR does not), and a malformed "opus-pr-" id would
+            # match nothing -- stamp it only when the PR is known.
+            ext_args=()
+            if [ -n "${PR:-}" ]; then
+              ext_args=(-f external_id="opus-pr-$PR")
+            fi
             gh api --method POST "repos/$REPO/check-runs" \
               -f name="Opus 4.8 Review" -f head_sha="$HEAD" \
-              -f status="completed" -f conclusion="failure" \
+              -f status="completed" -f conclusion="failure" "${ext_args[@]}" \
+              -f details_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID" \
               -f "output[title]=Opus 4.8 Review — could not run" \
               -f "output[summary]=The fork Opus review job failed before producing a verdict; re-run it." >/dev/null || true
+          fi
+          # Sweep any still-incomplete run of this name that THIS pull request
+          # created (ours, if the PATCH above lost both attempts, or one stranded
+          # by a previous run). Scoped by `external_id`: a check-run of this name
+          # on this head can belong to another PR that shares the commit, and
+          # completing that one would publish a verdict computed from a different
+          # diff -- the wedge is closed without ever touching a sibling's review.
+          # Completed with THIS run's computed verdict: the current run is the
+          # authoritative review of this exact head, and pr-readiness collapses
+          # check-runs with fail-precedence, so stamping a hardcoded failure on
+          # the stranded run would permanently outvote a genuine green re-run.
+          # Fail-closed posture is preserved: with no verdict, $conclusion is
+          # already failure/"review incomplete".
+          if [ -n "${HEAD:-}" ] && [ -n "${PR:-}" ]; then
+            enc="$(jq -rn '"Opus 4.8 Review" | @uri')"
+            stranded="$(gh api --method GET \
+              "repos/$REPO/commits/$HEAD/check-runs?check_name=$enc&per_page=100" \
+              --jq ".check_runs[]
+                    | select(.status != \"completed\")
+                    | select(.external_id == \"opus-pr-$PR\")
+                    | .id" 2>/dev/null || true)"
+            for id in $stranded; do
+              echo "completing stranded check-run $id for $HEAD (PR #$PR)"
+              complete "$id" "$conclusion" "$title" || true
+            done
           fi

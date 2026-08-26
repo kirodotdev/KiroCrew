@@ -53,5 +53,14 @@
   ],
   "iconUrl": "/app-assets/crew-companion/icon.svg",
   "heroImage": "/app-assets/crew-companion/hero-light.svg",
-  "heroImageDark": "/app-assets/crew-companion/hero-dark.svg"
+  "heroImageDark": "/app-assets/crew-companion/hero-dark.svg",
+  "useCases": [
+    "Use a desktop companion for break nudges, plain-language reminders, breathing resets, and session notifications."
+  ],
+  "configuration": [
+    "Use Kiro Crew Desktop, enable the app, then set the break interval and completion notifications on its page; avatar choices live in the companion Gallery."
+  ],
+  "screenshots": [
+    "/app-assets/crew-companion/screenshot-main.png"
+  ]
 }

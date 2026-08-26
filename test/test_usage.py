@@ -52,7 +52,11 @@ class TestParseSessions:
         ):
             result = _parse_sessions()
             assert "error" in result
-            assert "boom" in result["error"]
+            # The OSError carries a filesystem path; it stays server-side. The
+            # returned `error` is a generic message with a machine-readable code.
+            assert "boom" not in result["error"]
+            assert result["error"] == "cannot read sessions directory"
+            assert result["code"] == "sessions_dir_unreadable"
 
     def test_skips_non_jsonl(self, tmp_path):
         d = tmp_path / "cli"

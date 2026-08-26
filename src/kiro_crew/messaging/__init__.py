@@ -7,6 +7,11 @@ both depend on ``kiro_crew.messaging``, never the reverse.
 
 from __future__ import annotations
 
+from kiro_crew.messaging.approval import (
+    APPROVAL_TIMEOUT_S,
+    PendingApprovals,
+    SessionApprovalDecider,
+)
 from kiro_crew.messaging.driver import (
     APPROVAL_AUTO,
     APPROVAL_INTERACTIVE,
@@ -66,6 +71,10 @@ __all__ = [
     "APPROVAL_TRUST",
     "APPROVAL_TRUST_READS",
     "APPROVAL_INTERACTIVE",
+    # Layer 2 approvals
+    "PendingApprovals",
+    "SessionApprovalDecider",
+    "APPROVAL_TIMEOUT_S",
     # Layer 3
     "ChannelLink",
     "session_key",

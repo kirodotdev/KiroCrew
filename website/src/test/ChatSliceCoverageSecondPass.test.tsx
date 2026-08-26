@@ -925,7 +925,12 @@ describe('chatSlice thunks', () => {
         { role: 'user', content: 'old question', cls: '' },
         { role: 'chunk', content: 'dropped', cls: '' },
       ],
-      has_more: true, total: 250, next_before: 50, mode: 'dashboard', surface: 'dashboard', memory_mode: 'full',
+      has_more: true, total: 250, next_before: 50,
+      // An ordinary chat-page surface: this case exercises the NORMAL resume
+      // path (transcript filtering, paging, sidebar filing). A non-chat
+      // surface no longer switches/consumes at all -- that branch has its own
+      // reducer tests (#3624).
+      mode: 'orchestrator', surface: 'orchestrator', memory_mode: 'full',
     })
     const store = makeStore()
     store.dispatch(setActiveSlot('origin'))

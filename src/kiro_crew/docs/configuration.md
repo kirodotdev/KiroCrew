@@ -134,6 +134,7 @@ Set via `kirocrew config set agent.acp_backend kas`.
     "url": "",
     "restore_sessions": false,
     "restore_window_minutes": 30,
+    "qr_session_until_restart": true,
     "merge_queued_messages": false,
     "mcp_probe_timeout_secs": 15
   },
@@ -218,6 +219,7 @@ Set via `kirocrew config set agent.acp_backend kas`.
 | `dashboard.url` | Dashboard URL for remote access | `""` (localhost only) |
 | `dashboard.restore_sessions` | Restore sessions on restart | `false` |
 | `dashboard.restore_window_minutes` | Minutes after restart within which sessions can be restored | `30` |
+| `dashboard.qr_session_until_restart` | Keep a phone signed in for as long as the gateway process runs. Ordinary idling no longer signs it out; a gateway restart does, and so does going 30 days untouched (the refresh credential's lifetime, renewed on each visit). Turn off for a timed session that expires on a clock whether or not the gateway is still running. | `true` |
 | `dashboard.merge_queued_messages` | Concatenate follow-up messages while the agent is busy | `false` |
 | `dashboard.mcp_probe_timeout_secs` | Seconds to wait for an MCP server handshake during a probe (5-120) | `15` |
 

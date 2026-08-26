@@ -12,6 +12,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
 
@@ -61,6 +62,41 @@ class TestApiChatSteer:
         events = [c.args[0] for c in state.broadcast_ws.call_args_list]
         assert "steer_push" in events
         assert "queue_push" not in events  # steered, not queued
+
+    @pytest.mark.asyncio
+    async def test_app_authenticated_steer_falls_back_to_fail_closed_queue(
+        self, tmp_path, monkeypatch, _patch_sel
+    ):
+        """An app cannot inject into a live human-origin turn and inherit its
+        authority; its text waits as an automation-origin successor turn."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = _running_slot(state)
+        slot._app = "app-A"
+        client_mock = MagicMock()
+        client_mock.supports_steer = True
+        client_mock.steer = AsyncMock(return_value=True)
+        slot._acp_client = client_mock
+
+        @web.middleware
+        async def _inject_app(request, handler):
+            request["app"] = "app-A"
+            return await handler(request)
+
+        app = _make_app(state)
+        app.middlewares.insert(0, _inject_app)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat", json={"slot": "test", "message": "go left", "steer": True}
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data.get("queued") is True
+            assert data.get("steered") is not True
+
+        client_mock.steer.assert_not_awaited()
+        assert slot._queue[-1].get("_directive_user_origin") is not True
 
     @pytest.mark.asyncio
     async def test_steer_unavailable_falls_back_to_queue(self, tmp_path, monkeypatch, _patch_sel):

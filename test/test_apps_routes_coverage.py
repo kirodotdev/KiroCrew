@@ -30,6 +30,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
 import kiro_crew.apps.routes as routes_mod
+from conftest import requires_symlinks
 from kiro_crew.apps.manager import (
     APP_MANIFEST_FILENAME,
     AppResult,
@@ -381,19 +382,50 @@ class TestInstallValidation:
         assert not (home / "apps" / APP).exists()
 
     @pytest.mark.asyncio
-    async def test_unreadable_manifest_falls_back_to_path_lock(
+    async def test_unreadable_manifest_refuses_without_ownership_identity(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # A corrupt app.json must not 500 in the pre-flight version check —
-        # it falls through to install_app, which rejects it as a bad manifest.
         _setup_env(tmp_path, monkeypatch)
         src = tmp_path / "source" / APP
         src.mkdir(parents=True)
         (src / APP_MANIFEST_FILENAME).write_text("{ corrupt", encoding="utf-8")
+
+        def _must_not_install(*args: Any, **kwargs: Any) -> AppResult:
+            raise AssertionError("install must not proceed without a stable app identity")
+
+        monkeypatch.setattr(routes_mod, "install_app", _must_not_install)
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post("/api/apps/install", json={"source": str(src)})
+            assert resp.status == 409
+            body = await resp.json()
+        assert body["code"] == "app_identity_unavailable"
+        assert body["retryable"] is True
+
+    @pytest.mark.asyncio
+    async def test_manifest_name_change_refuses_before_copy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        home = _setup_env(tmp_path, monkeypatch)
+        src = _make_app_source(tmp_path)
+        real_install = routes_mod.install_app
+
+        def _change_identity_then_install(
+            source: str, *, expected_name: str | None = None
+        ) -> AppResult:
+            manifest_path = Path(source) / APP_MANIFEST_FILENAME
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["name"] = "other-app"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            return real_install(source, expected_name=expected_name)
+
+        monkeypatch.setattr(routes_mod, "install_app", _change_identity_then_install)
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.post("/api/apps/install", json={"source": str(src)})
             assert resp.status == 400
-            assert (await resp.json())["ok"] is False
+            body = await resp.json()
+        assert body["code"] == "app_identity_changed"
+        assert not (home / "apps" / APP).exists()
+        assert not (home / "apps" / "other-app").exists()
 
     @pytest.mark.asyncio
     async def test_install_failure_is_reported_as_400(
@@ -405,6 +437,38 @@ class TestInstallValidation:
                 "/api/apps/install", json={"source": str(tmp_path / "nope")}
             )
             assert resp.status == 400
+            assert (await resp.json())["code"] == "source_not_directory"
+
+    @pytest.mark.asyncio
+    async def test_live_detached_startup_hook_refuses_fresh_reinstall(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _setup_env(tmp_path, monkeypatch)
+        source = _make_app_source(tmp_path)
+        calls: list[tuple[str, bool]] = []
+
+        async def _stop_retained(app_name: str, *, bounded: bool) -> bool:
+            calls.append((app_name, bounded))
+            return False
+
+        monkeypatch.setattr(
+            routes_mod, "stop_retained_startup_hooks", _stop_retained
+        )
+
+        def _must_not_install(*args: Any, **kwargs: Any) -> AppResult:
+            raise AssertionError("install must not replace files while old code runs")
+
+        monkeypatch.setattr(routes_mod, "install_app", _must_not_install)
+
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post(
+                "/api/apps/install", json={"source": str(source)}
+            )
+            assert resp.status == 409
+            body = await resp.json()
+        assert body["code"] == "startup_hook_still_running"
+        assert body["retryable"] is True
+        assert calls == [(APP, True)]
 
 
 # ---------------------------------------------------------------------------
@@ -533,12 +597,50 @@ class TestUpdateApp:
             assert "source path required" in (await resp.json())["error"]
 
     @pytest.mark.asyncio
-    async def test_registry_update_failure_keeps_resources(
+    async def test_live_detached_startup_hook_refuses_update(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path)
+        calls: list[tuple[str, bool]] = []
+
+        async def _stop_retained(
+            app_name: str, *, bounded: bool
+        ) -> bool:
+            calls.append((app_name, bounded))
+            return False
+
+        monkeypatch.setattr(
+            routes_mod, "stop_retained_startup_hooks", _stop_retained
+        )
+
+        def _must_not_update(*args: Any, **kwargs: Any) -> AppResult:
+            raise AssertionError("update must not replace files while old code runs")
+
+        monkeypatch.setattr(routes_mod, "update_app", _must_not_update)
+
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post(f"/api/apps/{APP}/update", json={})
+            assert resp.status == 409
+            body = await resp.json()
+        assert body["code"] == "startup_hook_still_running"
+        assert body["retryable"] is True
+        assert calls == [(APP, True)]
+
+    @pytest.mark.asyncio
+    async def test_registry_update_delegates_admission_and_keeps_resources(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _setup_env(tmp_path, monkeypatch)
         _install(tmp_path)
         deregistered: list[str] = []
+
+        async def _must_not_preflight(*args: Any, **kwargs: Any) -> bool:
+            raise AssertionError("registry admission belongs to install_from_registry")
+
+        monkeypatch.setattr(
+            routes_mod, "stop_retained_startup_hooks", _must_not_preflight
+        )
 
         async def _failed_install(name: str, **kwargs: Any) -> dict[str, Any]:
             return {"ok": False, "name": name, "error": "clone failed"}
@@ -751,6 +853,37 @@ class TestUninstallRefusals:
             resp = await client.post("/api/apps/locked-app/uninstall")
             assert resp.status == 400
             assert "lifecycle=locked" in (await resp.json())["error"]
+
+    @pytest.mark.asyncio
+    async def test_live_detached_startup_hook_refuses_uninstall(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path)
+        calls: list[tuple[str, bool]] = []
+
+        async def _stop_retained(
+            app_name: str, *, bounded: bool
+        ) -> bool:
+            calls.append((app_name, bounded))
+            return False
+
+        monkeypatch.setattr(
+            routes_mod, "stop_retained_startup_hooks", _stop_retained
+        )
+
+        def _must_not_uninstall(*args: Any, **kwargs: Any) -> AppResult:
+            raise AssertionError("uninstall must not delete files while old code runs")
+
+        monkeypatch.setattr(routes_mod, "uninstall_app", _must_not_uninstall)
+
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post(f"/api/apps/{APP}/uninstall", json={})
+            assert resp.status == 409
+            body = await resp.json()
+        assert body["code"] == "startup_hook_still_running"
+        assert body["retryable"] is True
+        assert calls == [(APP, True)]
 
     @pytest.mark.asyncio
     async def test_removable_dependencies_are_cleaned_and_reported(
@@ -970,6 +1103,42 @@ class TestEnableBranches:
 
 class TestDisableBranches:
     @pytest.mark.asyncio
+    async def test_live_detached_startup_hook_refuses_disable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path)
+        enable_app(APP)
+        calls: list[tuple[str, bool]] = []
+
+        async def _stop_retained(app_name: str, *, bounded: bool) -> bool:
+            calls.append((app_name, bounded))
+            return False
+
+        monkeypatch.setattr(
+            routes_mod, "stop_retained_startup_hooks", _stop_retained
+        )
+
+        async def _must_not_teardown(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("disable must not wait on retained startup work")
+
+        def _must_not_disable(*args: Any, **kwargs: Any) -> AppResult:
+            raise AssertionError("disable metadata must remain unchanged on refusal")
+
+        monkeypatch.setattr(routes_mod, "teardown_app_runtime", _must_not_teardown)
+        monkeypatch.setattr(routes_mod, "disable_app", _must_not_disable)
+
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post(f"/api/apps/{APP}/disable")
+            assert resp.status == 409
+            body = await resp.json()
+            app_resp = await client.get(f"/api/apps/{APP}")
+            assert (await app_resp.json())["enabled"] is True
+        assert body["code"] == "startup_hook_still_running"
+        assert body["retryable"] is True
+        assert calls == [(APP, True)]
+
+    @pytest.mark.asyncio
     async def test_not_installed_is_404(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1058,6 +1227,7 @@ class TestDisableBranches:
         enable_app(APP)
 
         async def _hooks(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            assert kwargs["bounded_startup_cleanup"] is False
             return {"cron_cleanup": "2 job(s) left enabled", "other": 1}
 
         # Patched on the SHARED teardown, not on `routes`: this PR routes the
@@ -1503,6 +1673,7 @@ class TestAppUiFile:
             resp = await client.get(f"/apps/{APP}/ui/missing.mjs")
             assert resp.status == 404
 
+    @requires_symlinks
     @pytest.mark.asyncio
     async def test_symlink_escaping_ui_root_is_rejected(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -2055,6 +2226,7 @@ class TestBlobProxy:
             assert resp.status == 502
         assert seen["ref"] == "release"
 
+    @requires_symlinks
     @pytest.mark.asyncio
     async def test_symlinked_cache_dir_escaping_root_is_rejected(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

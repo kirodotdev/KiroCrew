@@ -242,6 +242,17 @@ class TestBaselineRatchet:
         )
         assert survivors == {"src/a.py": 2}
 
+    def test_cli_server_stays_clean(self) -> None:
+        """cli_server.py once held an unpinned text-mode call the baseline
+        under-counted, so any PR touching the file failed the gate even when
+        the PR added nothing (#5580). Both calls are pinned now and the
+        baseline entry is pruned; this pins the file at zero so it can never
+        silently re-enter the list."""
+        rel = "src/kiro_crew/cli_server.py"
+        violations = gate._violations_in_source((ROOT / rel).read_text(encoding="utf-8"))
+        assert violations == []
+        assert rel not in gate._read_baseline(BASELINE)
+
     def test_write_read_roundtrip(self, tmp_path: Path) -> None:
         path = tmp_path / "baseline.txt"
         entries = {"src/b.py": 2, "src/a.py": 7}

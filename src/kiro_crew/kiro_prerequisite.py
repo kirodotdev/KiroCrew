@@ -790,6 +790,64 @@ def _atomic_write_secret_bytes(path: Path, content: bytes) -> None:
     atomic_write(path, content, fsync=True, restrict_to_owner=True)
 
 
+def _store_write_time(db: Path) -> float:
+    """Newest write across a store's main file and its WAL sidecar.
+
+    The store runs in SQLite WAL mode: a commit lands in the ``-wal`` sidecar
+    and the main file's mtime does not advance until a checkpoint, so the main
+    file alone under-reports recency on exactly the side being written. The
+    ``-shm`` index file is not consulted -- it is mapped shared memory, not a
+    write record. Raises ``OSError`` if the main file vanished; a missing
+    sidecar is normal (checkpointed or non-WAL store).
+    """
+
+    newest = db.stat().st_mtime
+    wal = db.with_name(db.name + "-wal")
+    try:
+        newest = max(newest, wal.stat().st_mtime)
+    except OSError:
+        pass
+    return newest
+
+
+def _win32_identity_store_path(home: Path) -> Path:
+    """Pick between the Local anchor and the legacy Roaming store on Windows.
+
+    Current kiro-cli writes ``AppData/Local/kiro-cli``; older layouts used
+    ``AppData/Roaming/kiro-cli``. When only one store exists it is the store.
+    When BOTH exist, the most recently written one wins: an upgraded host
+    carries a stale Roaming leftover next to its live Local store (upgrades do
+    not clean up the old directory), while a downgraded host writes Roaming
+    next to a stale Local leftover -- and preferring either fixed side reads
+    the leftover on the other shape, yielding a confident fingerprint of an
+    account nobody is signed into. Reporting both-present as absent instead
+    would silently disable identity tracking on every upgraded host, the
+    common shape. The mtime signal is as trustworthy as the stores
+    themselves: both paths sit inside the ``_SENSITIVE_HOME_DIRS`` fence, so
+    anything that could move their timestamps could already author the rows
+    outright -- no new forgeable surface. Equal timestamps prefer Local, the
+    current layout.
+    """
+
+    local = home / "AppData" / "Local" / "kiro-cli" / _AUTH_SQLITE_DB
+    roaming = home / "AppData" / "Roaming" / "kiro-cli" / _AUTH_SQLITE_DB
+    if not roaming.exists():
+        return local
+    if not local.exists():
+        return roaming
+    try:
+        # Recency is per STORE, not per file: in WAL mode a commit advances
+        # the -wal sidecar while the main file's mtime stays frozen until a
+        # checkpoint, so each side reports the newest of the pair.
+        if _store_write_time(roaming) > _store_write_time(local):
+            return roaming
+    except OSError:
+        # A store vanished between the existence probe and the stat; the
+        # Local anchor is the current layout and the safe default.
+        pass
+    return local
+
+
 def kiro_identity_store_path(
     platform_name: str,
     home: Path,
@@ -801,8 +859,9 @@ def kiro_identity_store_path(
     different product's credential, so it cannot answer "which account is this
     CLI signed in as".
 
-    Every platform resolves to a FIXED, home-anchored location, matching the
-    trusted live-store list in ``dashboard/handlers/kiro_usage_api.py``. No
+    Every platform resolves among FIXED, home-anchored locations, drawn from the
+    same set as the trusted live-store list in
+    ``dashboard/handlers/kiro_usage_api.py`` (``_CLI_SQLITE_DBS``). No
     environment variable is consulted -- not ``XDG_DATA_HOME`` on Linux, not
     ``APPDATA`` or ``LOCALAPPDATA`` on Windows -- because the fence that makes
     this store unwritable by agent file tools (``_SENSITIVE_HOME_DIRS``) is
@@ -811,6 +870,16 @@ def kiro_identity_store_path(
     this function reads: it could then forge an identity that keeps matching and
     the children signed in as the previous account would never be retired. A
     fixed anchor cannot be pointed at something the agent may write.
+
+    On Windows current kiro-cli writes its store under the local app-data
+    directory (``AppData/Local/kiro-cli``); older layouts used the roaming one
+    (``AppData/Roaming/kiro-cli``). When only one store exists it is chosen;
+    when both exist the most recently written one wins, so a leftover from
+    the other layout never masks the live store's account (see
+    :func:`_win32_identity_store_path`). Both anchors sit inside the
+    ``_SENSITIVE_HOME_DIRS`` fence, so neither choice widens what an agent
+    can forge. This branch stats the filesystem, so callers on the event loop
+    should resolve the path inside the same worker thread as the read itself.
 
     The cost is that a host which relocates its data home is read as having no
     identity, so the change is reported as "absent" -- which errs toward retiring
@@ -822,7 +891,7 @@ def kiro_identity_store_path(
     if platform_name == "darwin":
         return home / "Library" / "Application Support" / "kiro-cli" / _AUTH_SQLITE_DB
     if platform_name == "win32":
-        return home / "AppData" / "Roaming" / "kiro-cli" / _AUTH_SQLITE_DB
+        return _win32_identity_store_path(home)
     return home / ".local" / "share" / "kiro-cli" / _AUTH_SQLITE_DB
 
 
@@ -846,16 +915,32 @@ def identity_store_is_relocated(
     absent: no read, no false confidence, and the absent path already means "never
     reconciled, re-sweep every turn".
 
-    Only variables that actually move the store count. ``LOCALAPPDATA`` is not
-    consulted: the identity lives under Roaming. A variable set to exactly the
-    default location is not a relocation.
+    Both variables count, unconditionally. The live store's directory is
+    resolved by the CLI from ``LOCALAPPDATA`` (current layout) or ``APPDATA``
+    (legacy layout), and which generation is writing cannot be observed --
+    so once EITHER variable is redirected, a database at a fixed anchor
+    cannot be attributed to a live writer: it may be the live store of the
+    other generation, or a leftover of either, and reading a leftover yields
+    a confident fingerprint of an account nobody is signed into. Refusing to
+    guess errs toward absent, the module's safe side. The cost is that a
+    host with Group-Policy folder redirection (which targets Roaming)
+    reports absent even when a current-layout Local store is healthy -- the
+    same answer such hosts got when the anchor lived under Roaming, so the
+    posture is status quo there, and the once-per-service log in
+    :meth:`KiroPrerequisiteService.current_identity_fingerprint` makes it
+    diagnosable. A variable set to exactly the default location is not a
+    relocation.
     """
 
     if platform_name == "win32":
-        configured = environ.get("APPDATA", "").strip()
-        if not configured:
-            return False
-        return Path(configured) != home / "AppData" / "Roaming"
+        for variable, default in (
+            ("LOCALAPPDATA", home / "AppData" / "Local"),
+            ("APPDATA", home / "AppData" / "Roaming"),
+        ):
+            configured = environ.get(variable, "").strip()
+            if configured and Path(configured) != default:
+                return True
+        return False
     if platform_name == "darwin":
         # No standard variable relocates ~/Library/Application Support.
         return False
@@ -1420,10 +1505,34 @@ async def _prepare_sandboxed_spawn(
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:
-        cleanup_path: str | None = None
-        with contextlib.suppress(Exception):
-            _, _, cleanup_path = await task
-        await _unlink_off_loop(cleanup_path)
+        # A repeat cancellation landing on a bare recovery ``await`` is a
+        # ``BaseException``: it would escape a ``suppress(Exception)`` guard
+        # before the unlink runs, leaking the materialized launcher (#5841).
+        # The settle-then-unlink therefore runs as its own task, shielded
+        # from cancellations aimed at this caller; each absorbed repeat is
+        # ``uncancel()``-ed so an enclosing ``asyncio.timeout`` still reports
+        # ``TimeoutError``, and the ORIGINAL cancellation is re-raised once
+        # the launcher is gone.
+        async def _settle_then_unlink() -> None:
+            cleanup_path: str | None = None
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                _, _, cleanup_path = await task
+            await _unlink_off_loop(cleanup_path)
+
+        current = asyncio.current_task()
+        recovery = asyncio.create_task(_settle_then_unlink())
+        while not recovery.done():
+            try:
+                await asyncio.shield(recovery)
+            except asyncio.CancelledError:
+                uncancel = getattr(current, "uncancel", None)  # 3.11+
+                if uncancel is not None:
+                    uncancel()
+            except Exception:
+                logger.warning(
+                    "sandbox launcher cleanup failed after cancellation",
+                    exc_info=True,
+                )
         raise
 
 
@@ -1913,6 +2022,10 @@ class KiroPrerequisiteService:
         # Real-time cache bounding the store reads and their SEL audit events.
         self._identity_cache = _AUTH_FINGERPRINT_ABSENT
         self._identity_cache_at = 0.0
+        # Whether the relocation refusal has been logged. The relocated arm runs
+        # on every identity poll, so the diagnostic logs once per service rather
+        # than flooding; see current_identity_fingerprint.
+        self._relocation_logged = False
 
     @property
     def initial_setup_complete(self) -> bool:
@@ -2258,18 +2371,35 @@ class KiroPrerequisiteService:
             and now - self._identity_cache_at < _AUTH_FINGERPRINT_CACHE_SECS
         ):
             return self._identity_cache
-        if identity_store_is_relocated(self._platform, self._home, self._environ):
-            # Do not read the default path: with the CLI pointed elsewhere, a
-            # leftover database there would fingerprint an account nobody is signed
-            # into, and a logout in the real store would change nothing we can see.
-            # Absent is never reconciled, so this re-sweeps every turn instead of
-            # trusting a stale file.
-            self._identity_cache = _AUTH_FINGERPRINT_ABSENT
-            self._identity_cache_at = now
-            return _AUTH_FINGERPRINT_ABSENT
-        path = kiro_identity_store_path(self._platform, self._home, self._environ)
+
+        def _read() -> str:
+            # Both the relocation guard and the win32 path resolver stat the
+            # filesystem, so the whole resolve-and-read runs in this worker
+            # thread and stats stay off the event loop.
+            if identity_store_is_relocated(self._platform, self._home, self._environ):
+                # Do not read the default path: with the CLI pointed elsewhere, a
+                # leftover database there would fingerprint an account nobody is
+                # signed into, and a logout in the real store would change nothing
+                # we can see. Absent is never reconciled, so this re-sweeps every
+                # turn instead of trusting a stale file.
+                if not self._relocation_logged:
+                    # Once per service: this arm runs on every poll, and without
+                    # the log an absent-because-relocated host is indistinguishable
+                    # from a signed-out user -- the silence that made the identity
+                    # probe's failures undiagnosable without reading source.
+                    self._relocation_logged = True
+                    logger.info(
+                        "Kiro identity store is env-relocated on %s; reporting the "
+                        "identity as absent instead of reading the fixed anchor",
+                        self._platform,
+                    )
+                return _AUTH_FINGERPRINT_ABSENT
+            return identity_fingerprint(
+                kiro_identity_store_path(self._platform, self._home, self._environ)
+            )
+
         try:
-            fingerprint = await asyncio.to_thread(identity_fingerprint, path)
+            fingerprint = await asyncio.to_thread(_read)
         except Exception:
             # An unreadable store reports "no identity", matching
             # identity_fingerprint's own contract, rather than "unchanged" --

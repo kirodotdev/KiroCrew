@@ -246,7 +246,7 @@ class TestSubprocessRegistry:
         assert "cancelme" not in _RUNNING_PROCS
         assert "cancelme" not in _CANCELLED_PROC_JOBS  # flag consumed
 
-    def test_run_command_without_job_id_not_registered(self) -> None:
+    def test_run_command_without_job_id_not_registered(self, posix_test_shell) -> None:
         # Patch the sandbox wrap to identity for the same reason as the mid-run
         # test above: GH Actions blocks the namespace sandbox (unshare NEWNS),
         # so the real launcher aborts with status "error". What's under test is
@@ -259,7 +259,7 @@ class TestSubprocessRegistry:
         ), patch(
             # Bypass the runtime shell probe (which itself spawns a child) — the
             # test is about the registry, not shell fingerprinting.
-            "kiro_crew.cron_script._resolve_command_shell", return_value="sh"
+            "kiro_crew.cron_script._resolve_command_shell", return_value=posix_test_shell
         ):
             result = run_command_sandboxed("echo hi", timeout=10)
         assert result["status"] == "ok"

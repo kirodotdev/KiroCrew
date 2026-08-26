@@ -86,6 +86,15 @@ def schemas() -> list[dict[str, Any]]:
                 "that channel's name to post into the conversation you are already "
                 "talking in. That is the only way a message reaches the user there, "
                 "and the Slack-only options above are rejected alongside it."
+                "\n\nTo reach a NON-Slack channel (Webex, Telegram, Discord, …) at"
+                " a specific destination, pass channel_type plus target_id, where"
+                " target_id is one of the opaque ids that channel exposes as a"
+                " configured destination. The channel's own allow-list is"
+                " re-checked when the message is sent, so an id that is no longer"
+                " configured is refused. This pair addresses the destination"
+                " directly, so combining it with session or any Slack option"
+                " (channel, user, blocks, thread_ts, reply_broadcast, unfurl_*) is"
+                " REFUSED, not silently ignored."
             ),
             "inputSchema": {
                 "type": "object",
@@ -125,7 +134,21 @@ def schemas() -> list[dict[str, Any]]:
                             "to reach the user THERE rather than only in the "
                             'dashboard bell. Not for Slack — use session="slack". '
                             "Cannot be combined with 'channel', 'user' or "
-                            "'thread_ts', which are Slack-only routing fields."
+                            "'thread_ts', which are Slack-only routing fields. "
+                            "Pass target_id alongside it to name an EXPLICIT "
+                            "destination on that transport instead of this "
+                            "session's own conversation."
+                        ),
+                    },
+                    "target_id": {
+                        "type": "string",
+                        "description": (
+                            "Opaque configured-destination id on channel_type "
+                            "(e.g. 'user:someone@example.com'), as that channel "
+                            "advertises it. Requires channel_type. Omit it to reach "
+                            "the conversation this session already belongs to. The "
+                            "channel's own allow-list is re-checked at send time, so "
+                            "an id that is no longer configured is refused."
                         ),
                     },
                     "unfurl_links": {
@@ -346,6 +369,11 @@ def send_message(name: str, args: dict[str, Any]) -> str:
         payload["channel_type"] = channel_type
     if args.get("blocks"):
         payload["blocks"] = args["blocks"]
+    # Only meaningful beside ``channel_type`` (validated above): it narrows that
+    # transport from "this session's conversation" to one explicit configured
+    # destination on it. The gateway rejects it without one.
+    if args.get("target_id"):
+        payload["target_id"] = args["target_id"]
     if args.get("channel"):
         payload["channel"] = args["channel"]
     if args.get("user"):
@@ -380,6 +408,7 @@ def send_message(name: str, args: dict[str, Any]) -> str:
                 "Error: cannot verify caller identity for a channel_type send "
                 "(no gateway-injected session key or HMAC-verified pid). "
                 "Refusing to post into a conversation that cannot be attributed."
+                + mcp_core.strict_identity_diagnosis()
             )
     # ``gov_session`` is the identity every gate below is keyed on. It is the
     # STRICT key whenever one was required, so the identity that is checked is
@@ -397,7 +426,17 @@ def send_message(name: str, args: dict[str, Any]) -> str:
     if _chan_deny:
         return _chan_deny
     is_cron = caller_session.startswith("cron:")
-    if is_cron:
+    # Forward the identity the gateway will re-vet under. The STRICT key whenever
+    # one was established above -- never the lenient one, which walks process
+    # ancestors and would hand a sub-agent its PARENT's channel permissions at the
+    # egress chokepoint. Every channel egress has a ``channel_type`` and therefore a
+    # strict key, so this covers both channel legs; a cron keeps forwarding its own
+    # key for the Slack/dashboard routing it drives. Without either, nothing is
+    # forwarded and the gateway falls back to the host sentinel, which is correct
+    # only because no channel send can reach that state.
+    if verified_session:
+        payload["caller_session"] = verified_session
+    elif is_cron:
         payload["caller_session"] = caller_session
     # Governance: outbound messaging is a capability gate (exfil surface).
     # A policy/profile may disable proactive messaging for a surface/app.
@@ -429,6 +468,9 @@ def send_message(name: str, args: dict[str, Any]) -> str:
     # Defence in depth, not the authority: the gateway re-vets the same
     # ``channels`` scope fail-closed at the egress chokepoint, which is where a
     # denial is decided (this one degrades open on an evaluation error).
+    # ``channel_type`` covers BOTH channel legs -- this session's own conversation
+    # and, with ``target_id``, an explicit destination on the same transport -- so
+    # one branch vets the transport the message actually leaves over either way.
     if channel_type:
         egress_transport = channel_type
     elif session in _CHANNEL_SESSIONS:
@@ -453,6 +495,15 @@ def send_message(name: str, args: dict[str, Any]) -> str:
             # would be recorded as a completed call.
             return f"Error: {resp.get('error') or resp}"
         return f"Failed: {resp}"
+    # The channel-addressed leg posts ONLY to the named target and publishes no
+    # dashboard notification, and its target may be a room rather than a DM, so it
+    # cannot borrow the DM-leg's "DM + notification" string below (that leg always
+    # notifies first and only ever targets the owner's DM). Report what actually
+    # happened, keyed off the pair this call sent.
+    if payload.get("channel_type"):
+        parts = resp.get("parts", 1)
+        suffix = "" if parts == 1 else f" ({parts} parts)"
+        return f"Message sent to {payload['channel_type']} target {payload.get('target_id', '')}{suffix}."
     # Prefer the gateway's explicit delivery channel when present
     # (delivered_to ∈ {"slack", "session", "notification"} or a channel TYPE, which
     # is what both channel legs report); fall back to the legacy slack/session
@@ -501,6 +552,7 @@ def send_notification(name: str, args: dict[str, Any]) -> str:
             "Error: cannot verify caller identity for send_notification "
             "(no gateway-injected session key or HMAC-verified pid). "
             "Refusing to publish without a trusted governance identity."
+            + mcp_core.strict_identity_diagnosis()
         )
     # Channel-agent containment: same boundary
     # as send_message — an auto-approved call emits no permission event,

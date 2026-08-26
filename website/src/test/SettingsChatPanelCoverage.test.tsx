@@ -458,6 +458,32 @@ describe('ChatPanel — Context', () => {
     )
   })
 
+  it('offers the shipped default as an option, labelled and bound', async () => {
+    // The control renders a value from config against a fixed option list, so a
+    // default with no matching option yields a select bound to nothing. Asserts
+    // the full list rather than membership so the '(default)' marker cannot sit
+    // on two options at once, or drift onto one that is no longer the default.
+    wrap()
+    const opts = await openSelect('Auto-Compact Threshold')
+    expect(opts.map(o => o.textContent)).toEqual([
+      '20% (aggressive)',
+      '40%',
+      '60%',
+      '70% (default)',
+      '80%',
+      '90%',
+    ])
+  })
+
+  it('shows a stored 90 without calling it the default', async () => {
+    // An install predating the default change keeps 90; this is not migrated,
+    // so the control must display it and must not mark it as the default.
+    wrap()
+    const trigger = await screen.findByRole('combobox', { name: 'Auto-Compact Threshold' })
+    await waitFor(() => expect(trigger).toHaveTextContent('90%'))
+    expect(trigger).not.toHaveTextContent('default')
+  })
+
   it('surfaces a failed auto-compact write', async () => {
     rejectOnce(patchConfigMock)
     wrap()

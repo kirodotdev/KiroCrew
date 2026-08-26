@@ -213,12 +213,16 @@ class TestFetchUsageBg:
         assert sessions_mod._usage_cache.get("plan") == "KIRO POWER"
 
     @pytest.mark.asyncio
-    async def test_text_fallback_launches_resolved_binary_in_place(self):
+    async def test_text_fallback_launches_resolved_binary_in_place(self, monkeypatch):
         # The resolved binary is exec'd at its own path, with no inherited
         # snapshot descriptor — a copy/memfd would strand a multi-call CLI's
         # sibling subcommand executable.
         resolved = "/Applications/Kiro CLI.app/Contents/MacOS/kiro-cli"
         spawn = AsyncMock(return_value=_mock_proc(SAMPLE_USAGE.encode()))
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "FAKE-secret")
+        monkeypatch.setenv("PYTHONHOME", "/gateway/pythonhome")
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "0000:FAKE")
+        monkeypatch.setenv("KIROCREW_UNRELATED_KEEPME", "keep-this-value")
         with (
             patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value=resolved),
             patch("asyncio.create_subprocess_exec", spawn),
@@ -233,6 +237,11 @@ class TestFetchUsageBg:
         assert resolved in argv, argv
         assert not any("kiro-cli-snapshots" in str(a) for a in argv), argv
         assert "pass_fds" not in spawn.await_args.kwargs
+        env = spawn.await_args.kwargs["env"]
+        assert "AWS_SECRET_ACCESS_KEY" not in env
+        assert "PYTHONHOME" not in env
+        assert "TELEGRAM_BOT_TOKEN" not in env
+        assert env["KIROCREW_UNRELATED_KEEPME"] == "keep-this-value"
 
     @pytest.mark.asyncio
     async def test_unparseable_usage_caches_unavailable(self):
@@ -650,6 +659,84 @@ class TestFetchUsageBgApi:
         assert sessions_mod._usage_cache["credits_plan"] == 10.0
 
 
+class TestApiKeyAuthFailFast:
+    """API-key accounts short-circuit the usage refresh entirely (#5728).
+
+    ``kiro-cli whoami`` reports ``accountType=ApiKey`` for API-key auth. Such
+    accounts hold no SSO/OIDC bearer token, so ``fetch_usage_limits`` would burn
+    its full timeout walking credential stores that cannot contain one — and
+    with the text scrape disabled (the production default) no EXPLANATORY
+    terminal state ever reached the frontend: the credits panel spun through
+    the timeout and then hid itself with no explanation, every refresh. The
+    fix publishes a reasoned unavailable marker straight after the identity
+    read, BEFORE any credential search or billed scrape.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset(self, monkeypatch):
+        _reset_usage_globals()
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.sessions.wrap_argv",
+            lambda argv, **k: (list(argv), None),
+        )
+        yield
+        _reset_usage_globals()
+
+    @pytest.mark.asyncio
+    async def test_api_key_auth_short_circuits_before_usage_api(self):
+        with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"), \
+             patch.object(sessions_mod, "_fetch_whoami",
+                          AsyncMock(return_value={"email": "a@b.com",
+                                                  "account_type": "ApiKey"})), \
+             patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits") as fetch:
+            await sessions_mod._fetch_usage_bg()
+        fetch.assert_not_called()
+        assert sessions_mod._usage_cache == {"available": False, "reason": "api_key_auth"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("reported", ["apikey", "APIKEY", " ApiKey ", "API_KEY", "Api-Key"])
+    async def test_account_type_comparison_tolerates_respelling(self, reported):
+        # The enum spelling is upstream's to change; a drift must degrade to the
+        # old slow path at worst, and these spellings must all still fail fast.
+        with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"), \
+             patch.object(sessions_mod, "_fetch_whoami",
+                          AsyncMock(return_value={"account_type": reported})), \
+             patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits") as fetch:
+            await sessions_mod._fetch_usage_bg()
+        fetch.assert_not_called()
+        assert sessions_mod._usage_cache == {"available": False, "reason": "api_key_auth"}
+
+    @pytest.mark.asyncio
+    async def test_api_key_auth_never_spawns_the_billed_scrape(self, monkeypatch):
+        # Even with the billed text scrape opted in, an API-key account must not
+        # reach it: the harm being prevented, asserted directly.
+        _enable_text_scrape(monkeypatch)
+        spawn = AsyncMock()
+        with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"), \
+             patch.object(sessions_mod, "_fetch_whoami",
+                          AsyncMock(return_value={"account_type": "ApiKey"})), \
+             patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits") as fetch, \
+             patch("asyncio.create_subprocess_exec", spawn):
+            await sessions_mod._fetch_usage_bg()
+        fetch.assert_not_called()
+        spawn.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_sso_account_types_still_reach_the_usage_api(self):
+        # Negative control pinning the branch's condition: a non-ApiKey account
+        # takes the normal API path. Removing the fail-fast branch flips the
+        # short-circuit tests red; widening its match flips this one red.
+        api_dict = {"credits_used": 1.0, "credits_plan": 10.0, "source": "api"}
+        with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"), \
+             patch.object(sessions_mod, "_fetch_whoami",
+                          AsyncMock(return_value={"account_type": "IamIdentityCenter"})), \
+             patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits",
+                          return_value=api_dict) as fetch:
+            await sessions_mod._fetch_usage_bg()
+        fetch.assert_called_once()
+        assert sessions_mod._usage_cache["credits_plan"] == 10.0
+
+
 class TestFetchWhoami:
     """``_fetch_whoami`` parses the signed-in identity from kiro-cli whoami.
 
@@ -695,6 +782,34 @@ class TestFetchWhoami:
     def test_values_are_length_bounded(self):
         out = self._run(b'{"email":"' + b"x" * 400 + b'@b.com"}')
         assert len(out["email"]) <= 254
+
+    def test_spawn_uses_full_agent_environment_scrub(self, monkeypatch):
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "FAKE-secret")
+        monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/fake-agent.sock")
+        monkeypatch.setenv("PYTHONPYCACHEPREFIX", "/gateway/pycache")
+        monkeypatch.setenv("WECOM_SECRET", "FAKE-wecom-secret")
+        monkeypatch.setenv("KIROCREW_UNRELATED_KEEPME", "keep-this-value")
+        proc = MagicMock()
+        proc.communicate = AsyncMock(return_value=(b'{"email":"me@corp.com"}', b""))
+        proc.returncode = 0
+        spawn = AsyncMock(return_value=proc)
+        with (
+            patch.object(sessions_mod, "wrap_argv", return_value=(["/usr/bin/kiro-cli"], None)),
+            patch.object(sessions_mod, "cgroup_scope_argv", side_effect=lambda a: a),
+            patch("asyncio.create_subprocess_exec", spawn),
+        ):
+            out = asyncio.run(sessions_mod._fetch_whoami("kiro-cli"))
+
+        assert out["email"] == "me@corp.com"
+        env = spawn.await_args.kwargs["env"]
+        for key in (
+            "AWS_SECRET_ACCESS_KEY",
+            "SSH_AUTH_SOCK",
+            "PYTHONPYCACHEPREFIX",
+            "WECOM_SECRET",
+        ):
+            assert key not in env
+        assert env["KIROCREW_UNRELATED_KEEPME"] == "keep-this-value"
 
 
 class TestIdentityAccountCoupling:

@@ -7,6 +7,7 @@ import { copySessionLink } from '../../utils/shareUrl'
 import { HOVER_NONE_ACTIONS_ROW_CLS } from '../../utils/touchActions'
 import Clickable from '../../components/Clickable'
 import type { ChatPin } from '../../api/pins'
+import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 
 interface PinnedMessagesPanelProps {
   pins: ChatPin[]
@@ -46,6 +47,7 @@ function relativeTime(iso: string, now: number): string {
 const PinnedMessagesPanel = memo(function PinnedMessagesPanel({
   pins, loading, slotKey, slotTitle, mode, onJumpToMessage, onUnpin,
 }: PinnedMessagesPanelProps) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [now, setNow] = useState(() => Date.now())
 
   useEffect(() => {

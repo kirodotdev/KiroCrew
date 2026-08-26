@@ -1,5 +1,4 @@
-import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -18,15 +17,42 @@ import CommandBarOverlay from './CommandBarOverlay'
 
 const dispatch = vi.fn()
 const navigate = vi.fn()
+const newSessionWithToken = vi.fn()
+const enterInsertOrNewSession = vi.fn()
 
-vi.mock('../../store', () => ({ useAppDispatch: () => dispatch }))
-vi.mock('../../store/chatSlice', () => ({ createSlot: (arg: unknown) => ({ type: 'createSlot', arg }) }))
+/** Live store the overlay reads for the attention section. Mutated per test. */
+const storeState: {
+  dashboard: { slots: Record<string, unknown>[]; unreadSlots: string[] }
+  chat: { slotStatusDetail: Record<string, unknown>; activeSlot: string | null }
+} = {
+  dashboard: { slots: [], unreadSlots: [] },
+  chat: { slotStatusDetail: {}, activeSlot: null },
+}
+
+vi.mock('../../store', () => ({
+  useAppDispatch: () => dispatch,
+  useAppSelector: (fn: (s: unknown) => unknown) => fn(storeState),
+}))
+vi.mock('../../store/chatSlice', () => ({
+  createSlot: (arg: unknown) => ({ type: 'createSlot', arg }),
+  setPendingInput: (text: string) => ({ type: 'setPendingInput', text }),
+  switchSlot: (key: string) => ({ type: 'switchSlot', key }),
+}))
 vi.mock('../../components/commandPalette/paletteActions', () => ({
-  usePaletteActions: () => ({ navigate }),
+  usePaletteActions: () => ({ navigate, enterInsertOrNewSession, newSessionWithToken }),
 }))
 const sessionSearch = vi.fn(async () => [] as unknown[])
 vi.mock('../../components/commandPalette/providers/sessionsProvider', () => ({
   useSessionsProvider: () => ({ search: sessionSearch }),
+}))
+const recentsSearch = vi.fn(async () => [] as unknown[])
+// `sessionStatus` is kept REAL: it is the pure classifier that decides which slots
+// owe the user something, and a stubbed one would let the attention section pass
+// its tests while disagreeing with every other surface about what "needs input"
+// means.
+vi.mock('../../components/commandPalette/providers/recentsProvider', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../components/commandPalette/providers/recentsProvider')>()),
+  useRecentsProvider: () => ({ search: recentsSearch }),
 }))
 vi.mock('../../hooks/useVisualViewport', () => ({ useVisualViewport: () => ({ height: 800 }) }))
 vi.mock('../../hooks/useDialogFocusTrap', () => ({ useDialogFocusTrap: () => {} }))
@@ -48,6 +74,26 @@ function mount(onClose = vi.fn()) {
   return onClose
 }
 
+/** Mount with control over the `open` prop, for the dismiss-mid-flight cases. */
+function mountControllable(onClose = vi.fn()) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const view = render(
+    <QueryClientProvider client={client}>
+      <CommandBarOverlay open onClose={onClose} />
+    </QueryClientProvider>,
+  )
+  return {
+    onClose,
+    unmount: view.unmount,
+    rerender: (open: boolean) =>
+      view.rerender(
+        <QueryClientProvider client={client}>
+          <CommandBarOverlay open={open} onClose={onClose} />
+        </QueryClientProvider>,
+      ),
+  }
+}
+
 const rowByText = (text: string) =>
   screen.getByText(text).closest('[role="option"]') as HTMLElement
 
@@ -64,6 +110,12 @@ describe('CommandBarOverlay rows', () => {
     navigate.mockReset()
     sessionSearch.mockReset()
     sessionSearch.mockResolvedValue([])
+    recentsSearch.mockReset()
+    recentsSearch.mockResolvedValue([])
+    enterInsertOrNewSession.mockReset()
+    newSessionWithToken.mockReset()
+    storeState.dashboard = { slots: [], unreadSlots: [] }
+    storeState.chat = { slotStatusDetail: {}, activeSlot: null }
     localStorage.clear()
   })
 
@@ -315,11 +367,16 @@ describe('CommandBarOverlay rows', () => {
     // an `as Promise<AppNavRecord[]>` assertion, which would have hidden exactly the
     // divergence this guards; it type-checks without one, so it no longer has one.
     const srcRoot = path.join(__dirname, '..', '..')
-    const files = execFileSync(
-      'grep',
-      ['-rln', "queryKey: \\['apps'\\]", '--include=*.ts', '--include=*.tsx', srcRoot],
-      { encoding: 'utf-8' },
-    ).trim().split('\n')
+    const files: string[] = []
+    const pending = [srcRoot]
+    while (pending.length) {
+      const dir = pending.pop()!
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const file = path.join(dir, entry.name)
+        if (entry.isDirectory()) pending.push(file)
+        else if (/\.tsx?$/.test(entry.name) && readFileSync(file, 'utf-8').includes("queryKey: ['apps']")) files.push(file)
+      }
+    }
     expect(files.length).toBeGreaterThanOrEqual(3)
     for (const f of files) {
       const body = readFileSync(f, 'utf-8')
@@ -335,13 +392,18 @@ describe('CommandBarOverlay rows', () => {
   it('carries a focus cue on the field only when no row can hold one', () => {
     // `aria-activedescendant` is the cue while rows exist, and it is omitted when
     // there are none -- so the field must paint in exactly that state and stay
-    // unpainted otherwise, or the surface is either permanently boxed or, on the
-    // empty sessions view, shows a keyboard user no focus at all.
+    // unpainted otherwise, or the surface is either permanently boxed or, on an empty
+    // view, shows a keyboard user no focus at all.
+    //
+    // What it paints is a NEUTRAL hairline. An accent ring around the one element
+    // that is always focused was the loudest thing on a surface whose visual weight
+    // is supposed to sit on the selected row.
     const src = readFileSync(
       path.join(__dirname, 'CommandBarOverlay.tsx'),
       'utf-8',
     )
-    expect(src).toContain("rowCount === 0 ? ' focus-visible:ring-1 focus-visible:ring-accent/40' : ''")
+    expect(src).toContain("rowCount === 0 ? ' focus-visible:ring-1 focus-visible:ring-border-strong' : ''")
+    expect(src).not.toContain('focus-visible:ring-accent/40\' : \'\'')
     // Unconditional forms are what produced the permanent box.
     expect(src).not.toMatch(/placeholder:text-muted focus-visible:ring/)
     expect(src).not.toMatch(/placeholder:text-muted focus-visible:bg/)
@@ -365,17 +427,335 @@ describe('CommandBarOverlay rows', () => {
     expect(src).toContain('shrink-0 w-[13px] flex justify-end')
   })
 
-  it('reports a failed session search instead of claiming no matches', async () => {
+  it('reports a failed session search as a row, not a paragraph with a button', async () => {
     // A rejected search leaves `data` undefined, which by row count alone looks
     // identical to an empty result -- so the empty copy would tell the user their
     // session does not exist. That is the one state that lies.
+    //
+    // The retry is a ROW because the keyboard path that reaches this state has
+    // selection inside the listbox: as a bare <button> in the empty-state paragraph
+    // it could only be reached by Tabbing out of the list, and Enter -- the key the
+    // user already has their finger on -- did nothing.
     sessionSearch.mockRejectedValue(new Error('gateway down'))
     mount()
     fireEvent.mouseDown(rowByText('Search Sessions'))
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'quarterly' } })
-    expect(await screen.findByText('Search failed')).toBeTruthy()
+    const failure = await screen.findByText('Search failed')
+    const row = failure.closest('[role="option"]') as HTMLElement
+    expect(row).toBeTruthy()
     expect(screen.queryByText('No sessions match')).toBeNull()
-    // And the failure is recoverable in place.
-    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
+    // And Enter on it is what re-runs the search.
+    const before = sessionSearch.mock.calls.length
+    fireEvent.mouseDown(row)
+    await waitFor(() => expect(sessionSearch.mock.calls.length).toBeGreaterThan(before))
+  })
+
+  it('opens the sessions view on its recents listing, not on an empty screen', async () => {
+    // Entering a view used to land on a centred "keep typing" sentence: no rows, so no
+    // selection, so nothing Enter could do -- and that rowless state is the only
+    // reason the input needs a focus box at all.
+    recentsSearch.mockResolvedValue([
+      {
+        id: 'recents:cur:slot-1',
+        providerId: 'recents',
+        title: 'Quarterly planning',
+        icon: null,
+        score: 0,
+        indices: [],
+        groupLabel: 'Current',
+        timestamp: '09:46',
+        onActivate: vi.fn(),
+      },
+    ])
+    mount()
+    fireEvent.mouseDown(rowByText('Search Sessions'))
+    expect(await screen.findByText('Quarterly planning')).toBeTruthy()
+    // The listing is not a search: the sessions engine was never asked.
+    expect(sessionSearch).not.toHaveBeenCalled()
+    // A row exists, so the cue rides the active option rather than the field.
+    expect(screen.getByRole('combobox').getAttribute('aria-activedescendant')).toBe(
+      'command-bar-row-0',
+    )
+    // Where it lives and when it was last touched are what tell two similarly-titled
+    // conversations apart.
+    expect(rowByText('Quarterly planning').textContent).toContain('09:46')
+  })
+
+  it('offers the listing when a search matches nothing, instead of bottoming out', async () => {
+    sessionSearch.mockResolvedValue([])
+    mount()
+    const input = screen.getByRole('combobox')
+    fireEvent.mouseDown(rowByText('Search Sessions'))
+    fireEvent.change(input, { target: { value: 'zzzznomatch' } })
+    // One row carrying both halves: the search found nothing, and the listing is one
+    // Enter away.
+    const row = await screen.findByText(/show recent instead/)
+    fireEvent.mouseDown(row.closest('[role="option"]') as HTMLElement)
+    await waitFor(() => expect((input as HTMLInputElement).value).toBe(''))
+  })
+
+  it('names what Enter will do for the selected row', () => {
+    // The row carried its TYPE ("Command", "View") while the verb -- run it, open it,
+    // step into it -- was left to be inferred from having pressed Enter before.
+    mount()
+    const input = screen.getByRole('combobox')
+    const footer = () =>
+      (document.querySelector('[role="dialog"]') as HTMLElement).textContent ?? ''
+    const selectRow = (title: string) => {
+      const target = screen.getAllByRole('option').findIndex(o => o.textContent?.includes(title))
+      expect(target).toBeGreaterThanOrEqual(0)
+      fireEvent.mouseEnter(screen.getAllByRole('option')[target])
+    }
+    selectRow('New Session')
+    expect(footer()).toContain('Run')
+    // A `view` row does not act and close, and the verb has to say so.
+    selectRow('Search Sessions')
+    expect(footer()).toContain('Open View')
+    expect(input.getAttribute('aria-activedescendant')).toBeTruthy()
+  })
+
+  it('shows the hidden alias that matched so no listed row is unexplained', () => {
+    // `blank` is a New Session keyword: it appears in neither the title nor the
+    // subtitle, so before this the row rendered with no highlight anywhere and the
+    // list answered "these matched" with a row that visibly did not. Typing `theme`
+    // produced a screenful of exactly that.
+    mount()
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'blank' } })
+    const row = screen.getAllByRole('option').find(o => o.textContent?.includes('New Session'))
+    expect(row).toBeTruthy()
+    expect(row?.textContent).toContain('blank')
+  })
+
+  it('gives each command its own glyph instead of one shared group outline', () => {
+    // Filed by group alone every row in a group renders the same outline, so the icon
+    // column carries no more information than the group header above it.
+    mount()
+    const glyph = (title: string) => {
+      const svg = rowByText(title).querySelector('svg')
+      return Array.from(svg?.classList ?? []).find(c => c.startsWith('lucide-') && c !== 'lucide-inline')
+    }
+    const glyphs = [glyph('New Session'), glyph('Toggle Theme'), glyph('Search Sessions')]
+    for (const g of glyphs) expect(g).toBeTruthy()
+    expect(new Set(glyphs).size).toBe(3)
+    // App rows resolve through the SAME chain the rail and the palette use; a second
+    // copy of it is how one surface silently falls through to the generic outline.
+    const src = readFileSync(path.join(__dirname, 'CommandBarOverlay.tsx'), 'utf-8')
+    expect(src).toContain('icon: appIcon(target)')
+  })
+
+  it('keeps the recents provider inert until the sessions view is entered', () => {
+    // Same leak class as the sessions provider: a listing engine that fetches on
+    // construction would put a request behind merely opening the root, which is the
+    // one thing this surface promises not to do.
+    const src = readFileSync(path.join(__dirname, 'CommandBarOverlay.tsx'), 'utf-8')
+    expect(src).toContain('enabled: listingArmed')
+    expect(src).toMatch(/const listingArmed = scope === 'sessions' && !searchArmed/)
+  })
+
+  it('leads the root with the sessions that owe the user something', () => {
+    // The launcher's own object: a session holding an approval is the most
+    // time-sensitive thing this product has, and it had no presence here at all --
+    // it lived one screen in, behind a row the user had to know to enter.
+    storeState.dashboard.slots = [
+      { key: 'slot-a', title: 'Deploy the pricing service', pending_approval: true, messages: 4 },
+      { key: 'slot-b', title: 'Draft the launch email', needs_input: true, messages: 2 },
+    ]
+    mount()
+    const rows = screen.getAllByRole('option')
+    // FIRST, ahead of the commands: ordering is the claim, so it is asserted by
+    // position rather than by mere presence.
+    expect(rows[0].textContent).toContain('Deploy the pricing service')
+    expect(rows[0].textContent).toContain('Approve')
+    expect(rows[1].textContent).toContain('Answer')
+    expect(screen.getByText('Needs You')).toBeTruthy()
+    // The column carries live state INSTEAD of a static kind word.
+    expect(rows[0].textContent).not.toContain('Command')
+    // Activating one switches to it, the same way every other surface opens a session.
+    fireEvent.mouseDown(rows[0])
+    expect(dispatch).toHaveBeenCalledWith({ type: 'switchSlot', key: 'slot-a' })
+  })
+
+  it('shows no attention section when nothing is waiting on the user', () => {
+    // A section that is always present is a section the user learns to skip; the whole
+    // value of this one is that its presence means something. A RUNNING session is not
+    // waiting on anyone, so it must not be lifted here either.
+    storeState.dashboard.slots = [
+      { key: 'slot-c', title: 'Refactor the parser', running: true, messages: 9 },
+      { key: 'slot-d', title: 'Idle thread', messages: 3 },
+    ]
+    mount()
+    expect(screen.queryByText('Needs You')).toBeNull()
+    expect(screen.queryByText('Refactor the parser')).toBeNull()
+    // The commands are back at the top where they were.
+    expect(screen.getAllByRole('option')[0].textContent).toMatch(/New Session|Search Sessions|Toggle Theme/)
+  })
+
+  it('always gives the typed text a way to reach an agent', async () => {
+    // Every other surface in this product ends in saying something to one, so this is
+    // the general case rather than a corner-of-the-screen fallback for failed search.
+    mount()
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'why did the deploy stall' } })
+    const row = screen.getByText(/Ask the agent/).closest('[role="option"]') as HTMLElement
+    expect(row).toBeTruthy()
+    // It states what it will send, rather than advertising a feature.
+    expect(row.textContent).toContain('why did the deploy stall')
+    dispatch.mockReturnValue({ unwrap: () => Promise.resolve({ key: 'slot-new' }) })
+    fireEvent.mouseDown(row)
+    // A NEW session, never the active chat's composer: ChatPage consumes
+    // `pendingInput` by REPLACING the slot's draft and persisting it, so inserting
+    // here would silently destroy a half-written message the user had not sent.
+    // Created WITHOUT activating, so nothing has focus until the claim is checked.
+    await waitFor(() => expect(dispatch).toHaveBeenCalledWith({ type: 'createSlot', arg: { activate: false } }))
+    await waitFor(() => expect(dispatch).toHaveBeenCalledWith({ type: 'switchSlot', key: 'slot-new' }))
+    await waitFor(() => expect(dispatch).toHaveBeenCalledWith({ type: 'setPendingInput', text: 'why did the deploy stall' }))
+    expect(enterInsertOrNewSession).not.toHaveBeenCalled()
+  })
+
+  it('keeps the question recoverable when the session cannot be created', async () => {
+    // The row carries a whole sentence the user composed. Fired and forgotten, a
+    // gateway that refuses the create left the bar closing on nothing with the
+    // question gone -- so it closes only once the session exists.
+    rejectingDispatch()
+    const onClose = mount()
+    const input = screen.getByRole('combobox')
+    fireEvent.change(input, { target: { value: 'why did the deploy stall' } })
+    fireEvent.mouseDown(screen.getByText(/Ask the agent/).closest('[role="option"]') as HTMLElement)
+    await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy())
+    expect(onClose).not.toHaveBeenCalled()
+    // And the text is still there to retry with.
+    expect((input as HTMLInputElement).value).toBe('why did the deploy stall')
+  })
+
+  it('lets the accessories yield their space to the row title', () => {
+    // The title is what identifies a row; the status detail is a bonus. Held rigid,
+    // a long tool name collapsed the title on a 320px viewport, inverting that. Only
+    // the pill and the dot stay unshrinkable -- they are the signal and a few pixels
+    // wide -- and the detail drops outright below the `sm` breakpoint.
+    const src = readFileSync(path.join(__dirname, 'CommandBarOverlay.tsx'), 'utf-8')
+    const accessory = src.slice(src.indexOf('function statusAccessory'))
+    const body = accessory.slice(0, accessory.indexOf('\n}\n'))
+    expect(body).not.toMatch(/shrink-0 flex items-center/)
+    expect(body).toContain('hidden sm:inline')
+    // The dot and the pill keep theirs.
+    expect(body).toMatch(/shrink-0 w-1\.5 h-1\.5/)
+    expect(body).toMatch(/shrink-0 px-1\.5 rounded/)
+    // The textual accessories on the other row kinds shrink for the same reason.
+    expect(src).not.toMatch(/shrink-0 max-w-\[140px\]/)
+    expect(src).not.toMatch(/shrink-0 max-w-\[180px\]/)
+  })
+
+  it('renders a session row live state in place of its folder and clock', async () => {
+    // The old palette rendered this and the rewrite dropped it: the provider computes
+    // an approval pill, a pulsing "Thinking…" and the running tool's name, and the row
+    // was showing a folder and a timestamp instead.
+    recentsSearch.mockResolvedValue([
+      {
+        id: 'recents:cur:slot-e',
+        providerId: 'recents',
+        title: 'Refactor the parser',
+        icon: null,
+        score: 0,
+        indices: [],
+        groupLabel: 'Current',
+        folder: 'Backend',
+        timestamp: '09:46',
+        statusStyle: 'dot',
+        statusColorVar: '--accent',
+        statusPulse: true,
+        statusLabel: 'Thinking…',
+        statusDetail: 'Reading files',
+        onActivate: vi.fn(),
+      },
+    ])
+    mount()
+    fireEvent.mouseDown(rowByText('Search Sessions'))
+    const row = (await screen.findByText('Refactor the parser')).closest('[role="option"]') as HTMLElement
+    expect(row.textContent).toContain('Thinking…')
+    expect(row.textContent).toContain('Reading files')
+    // Live state outranks the static metadata for the same column.
+    expect(row.textContent).not.toContain('09:46')
+  })
+
+  it('writes nothing when the bar is dismissed while the ask is still creating', async () => {
+    // Dismiss during a slow create and this activation no longer owns the dashboard:
+    // seeding then would replace and persist the draft of whatever session the user
+    // moved on to. The extra empty session is the cheaper outcome, and it is the same
+    // trade ChatPage makes with its own ownsLifecycle() guard.
+    let release: (v: unknown) => void = () => {}
+    dispatch.mockReturnValue({ unwrap: () => new Promise(r => (release = r)) })
+    const { rerender, onClose } = mountControllable()
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'why did the deploy stall' } })
+    fireEvent.mouseDown(screen.getByText(/Ask the agent/).closest('[role="option"]') as HTMLElement)
+    await waitFor(() => expect(screen.getByLabelText('Working…')).toBeTruthy())
+    // The user walks away before the gateway answers.
+    rerender(false)
+    release({ key: 'slot-9' })
+    await waitFor(() => expect(dispatch).toHaveBeenCalledWith({ type: 'createSlot', arg: { activate: false } }))
+    // No activation, no seed, no navigation -- the abandoned create is allowed to leak
+    // a slot, but it must not touch shared state.
+    expect(dispatch).not.toHaveBeenCalledWith({ type: 'switchSlot', key: 'slot-9' })
+    expect(dispatch).not.toHaveBeenCalledWith({ type: 'setPendingInput', text: 'why did the deploy stall' })
+    expect(navigate).not.toHaveBeenCalled()
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('writes nothing when the overlay UNMOUNTS while the ask is still creating', async () => {
+    // Distinct from the prop edge above: an unmount never sets `open` false, the
+    // effect keyed on that prop never runs again, and the in-flight callback still
+    // holds the ref OBJECT -- so without a teardown revocation it compares equal and
+    // passes its own guard. This is the hole a review found after the prop edge was
+    // already covered.
+    let release: (v: unknown) => void = () => {}
+    dispatch.mockReturnValue({ unwrap: () => new Promise(r => (release = r)) })
+    const { unmount } = mountControllable()
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'why did the deploy stall' } })
+    fireEvent.mouseDown(screen.getByText(/Ask the agent/).closest('[role="option"]') as HTMLElement)
+    await waitFor(() => expect(screen.getByLabelText('Working…')).toBeTruthy())
+    unmount()
+    release({ key: 'slot-9' })
+    await waitFor(() => expect(dispatch).toHaveBeenCalledWith({ type: 'createSlot', arg: { activate: false } }))
+    expect(dispatch).not.toHaveBeenCalledWith({ type: 'switchSlot', key: 'slot-9' })
+    expect(dispatch).not.toHaveBeenCalledWith({ type: 'setPendingInput', text: 'why did the deploy stall' })
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('refuses a second ask while the first is still switching sessions', async () => {
+    // The guard used to be released before the switch await, so a second Enter during
+    // a slow slot fetch started a second create -- two blank sessions from one intent.
+    let releaseSwitch: (v: unknown) => void = () => {}
+    let call = 0
+    dispatch.mockImplementation((action: { type?: string }) => {
+      call += 1
+      if (action?.type === 'switchSlot') return { unwrap: () => new Promise(r => (releaseSwitch = r)) }
+      return { unwrap: () => Promise.resolve({ key: 'slot-new' }) }
+    })
+    mount()
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'why did the deploy stall' } })
+    const askRow = () => screen.getByText(/Ask the agent/).closest('[role="option"]') as HTMLElement
+    fireEvent.mouseDown(askRow())
+    await waitFor(() => expect(dispatch).toHaveBeenCalledWith({ type: 'switchSlot', key: 'slot-new' }))
+    const afterFirst = call
+    // Still switching: the row refuses.
+    fireEvent.mouseDown(askRow())
+    fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Enter' })
+    expect(call).toBe(afterFirst)
+    releaseSwitch(undefined)
+    await waitFor(() =>
+      expect(dispatch).toHaveBeenCalledWith({ type: 'setPendingInput', text: 'why did the deploy stall' }),
+    )
+    // Exactly one create for one intent.
+    expect(dispatch.mock.calls.filter(c => c[0]?.type === 'createSlot').length).toBe(1)
+  })
+
+  it('sizes the panel and its rows for the content they actually carry', () => {
+    // At `max-w-xl` (576px) a settings row truncated its title AND its tab subtitle on
+    // a 1440 screen, which is the one thing that column exists to prevent. The
+    // entrance is the shell's standard scale-in because a launcher that hard-cuts into
+    // place reads as a repaint rather than as a surface arriving.
+    const src = readFileSync(path.join(__dirname, 'CommandBarOverlay.tsx'), 'utf-8')
+    expect(src).toContain('max-w-[680px]')
+    expect(src).not.toContain('max-w-xl')
+    expect(src).toContain('animate-scale-in')
+    expect(src).toMatch(/px-3 py-2 cursor-pointer text-\[13px\]/)
   })
 })

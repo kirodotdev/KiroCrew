@@ -58,15 +58,15 @@ vi.mock('../apps/spec-builder/components/DocView', () => ({
 }))
 
 vi.mock('../apps/spec-builder/components/SpecStatePanel', () => ({
-  default: ({ sendMessage }: { sendMessage: (msg: string) => Promise<unknown> }) => (
-    <button type="button" data-testid="state-send" onClick={() => { void sendMessage('Decision: one') }}>
+  default: ({ answerDecision }: { answerDecision: (id: string, option: string, msg: string) => Promise<unknown> }) => (
+    <button type="button" data-testid="state-send" onClick={() => { void answerDecision('transport', 'one', 'Decision: one') }}>
       answer
     </button>
   ),
 }))
 
 import SpecDetail from '../apps/spec-builder/components/SpecDetail'
-import { LS } from '../apps/spec-builder/api'
+import { LS, SPEC_DETAIL_FAST_POLL_MS, SPEC_DETAIL_IDLE_POLL_MS } from '../apps/spec-builder/api'
 
 interface Call { url: string; method: string; body: string }
 
@@ -548,13 +548,19 @@ describe('SpecDetail phase actions', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /Pause/ })).not.toBeDisabled())
   })
 
-  it('routes a state-panel answer through the shared message mutation', async () => {
+  it('sends a state-panel answer with its decision id so the backend can lock it', async () => {
     installFetch(BASE)
     renderDetail()
 
     fireEvent.click(await screen.findByTestId('state-send'))
     await waitFor(() => expect(calls.filter((c) => c.url.includes('/message'))).toHaveLength(1))
     expect(JSON.parse(calls[0].body).text).toBe('Decision: one')
+    // Without this the write is an ordinary message and the backend has nothing to
+    // record, so the decision stays re-answerable.
+    expect(JSON.parse(calls[0].body).decision_id).toBe('transport')
+    // The bare option travels separately from the composed prompt: it is what the
+    // backend records and what the card renders back as the answer.
+    expect(JSON.parse(calls[0].body).decision_option).toBe('one')
   })
 
   it('routes a chat message through the shared message mutation', async () => {
@@ -688,5 +694,49 @@ describe('SpecDetail error surfacing', () => {
     // No detail: the chat stays withheld and the phase pill falls back.
     expect(screen.queryByTestId('chat-column')).not.toBeInTheDocument()
     expect(screen.getByText('…')).toBeInTheDocument()
+  })
+})
+
+describe('SpecDetail tasks-panel poll (#5361)', () => {
+  const withTasks = {
+    ...BASE,
+    files: { 'requirements.md': '# r', 'tasks.md': '- [ ] one' },
+    docs: { 'tasks.md': { hash: 'b'.repeat(64) } },
+    tasks: [{ index: 0, text: 'one', done: false, hash: 'c'.repeat(64) }],
+  }
+
+  it('refetches as soon as the Tasks tab opens, then keeps the fast cadence while idle', async () => {
+    let gets = 0
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(() => {
+      gets += 1
+      return Promise.resolve(okRes(JSON.stringify(withTasks)))
+    }))
+    renderDetail()
+    await screen.findByTestId('chat-column')
+    const afterMount = gets
+
+    await selectTab('Tasks')
+    await waitFor(() => expect(gets).toBeGreaterThan(afterMount))
+    const afterOpen = gets
+
+    await vi.advanceTimersByTimeAsync(SPEC_DETAIL_FAST_POLL_MS)
+    expect(gets).toBeGreaterThan(afterOpen)
+  })
+
+  it('stays on the idle cadence on Requirements when nothing is running', async () => {
+    let gets = 0
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(() => {
+      gets += 1
+      return Promise.resolve(okRes(JSON.stringify(BASE)))
+    }))
+    renderDetail()
+    await screen.findByTestId('chat-column')
+    const afterMount = gets
+
+    await vi.advanceTimersByTimeAsync(SPEC_DETAIL_FAST_POLL_MS)
+    expect(gets).toBe(afterMount)
+
+    await vi.advanceTimersByTimeAsync(SPEC_DETAIL_IDLE_POLL_MS - SPEC_DETAIL_FAST_POLL_MS)
+    expect(gets).toBeGreaterThan(afterMount)
   })
 })

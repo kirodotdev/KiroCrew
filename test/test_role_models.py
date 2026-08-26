@@ -12,12 +12,49 @@ from kiro_crew.config.loader import (
     DEFAULT_MODEL,
     AgentConfig,
     KiroCrewConfig,
+    coerce_fallback_model,
     coerce_role_efforts,
     coerce_role_models,
 )
 
 
 # ── coercion ────────────────────────────────────────────────────────────────
+class TestCoerceFallbackModel:
+    """agent.fallback_model normalization (single throttle-fallback value)."""
+
+    def test_absent_or_junk_collapses_to_auto(self) -> None:
+        # DEFAULT PIN: absent/junk means "auto" — the backend's
+        # availability-aware routing is the team-decided default.
+        assert coerce_fallback_model(None) == "auto"
+        assert coerce_fallback_model(["claude-opus-5"]) == "auto"
+        assert coerce_fallback_model({"a": 1}) == "auto"
+
+    def test_explicit_empty_disables(self) -> None:
+        # ROLLBACK PIN: "" is the explicit opt-out — pre-feature behavior.
+        assert coerce_fallback_model("") == ""
+        assert coerce_fallback_model("   ") == ""
+
+    def test_auto_is_case_insensitive(self) -> None:
+        assert coerce_fallback_model("auto") == "auto"
+        assert coerce_fallback_model("AUTO") == "auto"
+        assert coerce_fallback_model("  Auto  ") == "auto"
+
+    def test_normalizes_registry_keys_to_acp_ids(self) -> None:
+        # A canonical registry key lands as the kiro-cli id the wire needs.
+        assert coerce_fallback_model("opus-4.8-1m") == "claude-opus-4.8"
+
+    def test_unregistered_ids_pass_through(self) -> None:
+        assert coerce_fallback_model("totally-unknown-model") == "totally-unknown-model"
+
+    def test_agent_config_coerces_on_construction(self) -> None:
+        cfg = AgentConfig(fallback_model="opus-4.8-1m")
+        assert cfg.fallback_model == "claude-opus-4.8"
+
+    def test_agent_config_default_is_auto(self) -> None:
+        # DEFAULT PIN: the code default is "auto"; "" is the opt-out.
+        assert AgentConfig().fallback_model == "auto"
+
+
 class TestCoerceRoleModels:
     def test_keeps_only_known_roles_with_real_pins(self) -> None:
         out = coerce_role_models(
@@ -138,7 +175,9 @@ class TestBackgroundWiring:
         monkeypatch.setattr(
             "kiro_crew.config.loader.KiroCrewConfig.load",
             classmethod(
-                lambda cls: KiroCrewConfig(agent=AgentConfig(role_models={"background": "haiku-4.5"}))
+                lambda cls: KiroCrewConfig(
+                    agent=AgentConfig(role_models={"background": "haiku-4.5"})
+                )
             ),
         )
         assert agent._background_agent_model() == "haiku-4.5"
@@ -150,9 +189,7 @@ class TestBackgroundWiring:
         def _boom(cls):
             raise RuntimeError("config unreadable")
 
-        monkeypatch.setattr(
-            "kiro_crew.config.loader.KiroCrewConfig.load", classmethod(_boom)
-        )
+        monkeypatch.setattr("kiro_crew.config.loader.KiroCrewConfig.load", classmethod(_boom))
         assert agent._background_agent_model() == "auto"
         assert agent._background_cc_model() == agent._BACKGROUND_CC_MODEL
 
@@ -220,9 +257,7 @@ class TestValidateRoleModel:
             "kiro_crew.dashboard.chat_handlers._model_rejected_reason",
             lambda m, provider=None: None,
         )
-        monkeypatch.setattr(
-            core, "_active_advertised_ids", lambda req: ["sonnet-4.6-1m"]
-        )
+        monkeypatch.setattr(core, "_active_advertised_ids", lambda req: ["sonnet-4.6-1m"])
         reason = core._validate_role_model("opus-4.8-1m", self._req())
         assert reason is not None and "not available" in reason
 
@@ -233,9 +268,7 @@ class TestValidateRoleModel:
             "kiro_crew.dashboard.chat_handlers._model_rejected_reason",
             lambda m, provider=None: None,
         )
-        monkeypatch.setattr(
-            core, "_active_advertised_ids", lambda req: ["sonnet-4.6-1m"]
-        )
+        monkeypatch.setattr(core, "_active_advertised_ids", lambda req: ["sonnet-4.6-1m"])
         assert core._validate_role_model("sonnet-4.6-1m", self._req()) is None
 
 

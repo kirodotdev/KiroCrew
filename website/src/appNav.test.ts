@@ -145,3 +145,37 @@ describe('appNavTargets', () => {
     expect(appNavTargets([])).toEqual([])
   })
 })
+
+describe('appNavTarget icon resolution', () => {
+  /**
+   * Both consumers of this target — the left rail and the palette — render for
+   * EVERY enabled installed app on every dashboard load, so an unresolved
+   * manifest icon leaks the viewer to whatever host the app named without them
+   * opening anything.
+   */
+  it("passes a built-in's absolute icon through unchanged", () => {
+    const t = appNavTarget(app({
+      manifest: { iconUrl: '/app-assets/demo/icon.svg', ui: { pages: [{ route: '/demo' }] } },
+    }))
+    expect(t?.iconUrl).toBe('/app-assets/demo/icon.svg')
+  })
+
+  it('proxies a repo-relative manifest icon against the recorded install URL', () => {
+    const t = appNavTarget(app({
+      sourceUrl: 'https://example.invalid/octocat/demo',
+      manifest: { iconUrl: 'assets/icon.webp', ui: { pages: [{ route: '/demo' }] } },
+    }))
+    expect(t?.iconUrl)
+      .toBe('/api/apps/blob?repo=https%3A%2F%2Fexample.invalid%2Foctocat%2Fdemo&path=assets%2Ficon.webp')
+  })
+
+  it('renders no icon for a manifest naming an external host', () => {
+    for (const bad of ['https://evil.example/i.png', '//evil.example/i.png', '/\t/evil.example/i.png']) {
+      const t = appNavTarget(app({
+        manifest: { iconUrl: bad, iconUrlDark: bad, ui: { pages: [{ route: '/demo' }] } },
+      }))
+      expect(t?.iconUrl).toBe('')
+      expect(t?.iconUrlDark).toBe('')
+    }
+  })
+})

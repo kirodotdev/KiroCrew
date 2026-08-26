@@ -248,6 +248,7 @@ def test_corrupt_config_does_not_clobber_an_existing_credential(tmp_path, monkey
 # bytes. The first release passed it straight to <img src>, so the panel showed
 # a broken image with alt text. The handler must render a real PNG data URI.
 
+
 def test_render_qr_data_uri_is_a_loadable_png():
     import base64 as _b64
 
@@ -281,3 +282,99 @@ def test_render_qr_round_trips_the_scan_url():
     img = Image.open(_io.BytesIO(_b64.b64decode(uri.split(",", 1)[1])))
     assert img.format == "PNG"
     assert img.size[0] == img.size[1] and img.size[0] >= 100  # plausible QR grid
+
+
+# -- _delete_env_key: it rewrites the user's credential file, so what it PRESERVES
+#    matters as much as what it removes. Untested before; the QR-encoder body that
+#    used to cover this file moved to kiro_crew.qr, which made the gap visible.
+
+
+def test_delete_env_key_removes_only_the_named_key(tmp_path, monkeypatch):
+    ep = tmp_path / ".env"
+    ep.write_text("WEIXIN_TOKEN=secret\nSLACK_TOKEN=keep-me\n", encoding="utf-8")
+    monkeypatch.setattr(qr, "env_path", lambda: ep)
+    qr._delete_env_key("WEIXIN_TOKEN")
+    body = ep.read_text(encoding="utf-8")
+    assert "WEIXIN_TOKEN" not in body
+    assert "SLACK_TOKEN=keep-me" in body
+
+
+def test_delete_env_key_preserves_comments_and_blank_lines(tmp_path, monkeypatch):
+    """A credential file is hand-edited; losing a user's comments is data loss."""
+    ep = tmp_path / ".env"
+    ep.write_text(
+        "# my notes\n\nWEIXIN_TOKEN=secret\n# trailing note\nOTHER=1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(qr, "env_path", lambda: ep)
+    qr._delete_env_key("WEIXIN_TOKEN")
+    lines = ep.read_text(encoding="utf-8").splitlines()
+    assert "# my notes" in lines
+    assert "# trailing note" in lines
+    assert "" in lines
+    assert "OTHER=1" in lines
+    assert not [ln for ln in lines if ln.startswith("WEIXIN_TOKEN")]
+
+
+def test_delete_env_key_does_not_match_a_key_that_merely_starts_the_same(tmp_path, monkeypatch):
+    """Prefix-matching here would silently delete a DIFFERENT credential."""
+    ep = tmp_path / ".env"
+    ep.write_text("WEIXIN_TOKEN_OLD=other\nWEIXIN_TOKEN=secret\n", encoding="utf-8")
+    monkeypatch.setattr(qr, "env_path", lambda: ep)
+    qr._delete_env_key("WEIXIN_TOKEN")
+    body = ep.read_text(encoding="utf-8")
+    assert "WEIXIN_TOKEN_OLD=other" in body
+    assert "WEIXIN_TOKEN=secret" not in body
+
+
+def test_delete_env_key_on_a_missing_file_is_a_noop(tmp_path, monkeypatch):
+    ep = tmp_path / "nonexistent" / ".env"
+    monkeypatch.setattr(qr, "env_path", lambda: ep)
+    qr._delete_env_key("WEIXIN_TOKEN")  # must not raise
+    assert not ep.exists()
+
+
+# -- _prune_sessions: a QR login session holds an open client, so failing to prune
+#    leaks both memory and a connection for every abandoned scan.
+
+
+def test_prune_sessions_drops_only_expired_entries(monkeypatch):
+    monkeypatch.setattr(qr, "_SESSIONS", {}, raising=False)
+    now = 1_000_000.0
+    monkeypatch.setattr(qr.time, "time", lambda: now)
+    qr._SESSIONS["fresh"] = {"created_at": now - 1, "client": None}
+    qr._SESSIONS["stale"] = {"created_at": now - qr._SESSION_TTL_SECONDS - 1, "client": None}
+    qr._prune_sessions()
+    assert set(qr._SESSIONS) == {"fresh"}
+
+
+def test_prune_sessions_expires_exactly_at_the_ttl_boundary(monkeypatch):
+    """`>=` is the boundary: a session exactly at the TTL is expired, not kept."""
+    monkeypatch.setattr(qr, "_SESSIONS", {}, raising=False)
+    now = 1_000_000.0
+    monkeypatch.setattr(qr.time, "time", lambda: now)
+    qr._SESSIONS["boundary"] = {"created_at": now - qr._SESSION_TTL_SECONDS, "client": None}
+    qr._prune_sessions()
+    assert qr._SESSIONS == {}
+
+
+def test_prune_sessions_survives_a_client_whose_close_cannot_be_scheduled(monkeypatch):
+    """No running loop here, so create_task raises — pruning must still complete.
+
+    The entry has to go regardless: leaving it because its client could not be
+    closed would keep the leak the prune exists to stop.
+    """
+    monkeypatch.setattr(qr, "_SESSIONS", {}, raising=False)
+    now = 1_000_000.0
+    monkeypatch.setattr(qr.time, "time", lambda: now)
+
+    class _Client:
+        def close(self):  # returns a coroutine-ish object; never awaited here
+            return None
+
+    qr._SESSIONS["stale"] = {
+        "created_at": now - qr._SESSION_TTL_SECONDS - 1,
+        "client": _Client(),
+    }
+    qr._prune_sessions()
+    assert qr._SESSIONS == {}

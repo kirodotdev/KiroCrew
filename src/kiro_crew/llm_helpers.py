@@ -11,13 +11,16 @@ import json
 import logging
 import random
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.acp.client import AcpError, AcpPromptBusy
+from kiro_crew.acp.client import AcpError, AcpPromptBusy, advertised_model_ids
 from kiro_crew.acp.types import EVENT_STEER_CONSUMED, TurnUsage
+from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.hooks import fire_tool_hooks, get_global_hook_store
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
@@ -191,6 +194,382 @@ def first_advertised_fallback(advertised: Any, rejected: str | None) -> str | No
             continue
         return m
     return None
+
+
+# ── Throttle-exhaustion fallback chain (agent.fallback_model) ──
+#
+# When the active model's same-model transient budget (_TRANSIENT_RETRIES)
+# exhausts on a throttle/capacity error, an ordered chain of fallback models is
+# tried instead of surfacing the error. This lives entirely on the Kiro Crew
+# side (kiro-cli
+# has no fallback mechanism) and is NEVER silent: every swap is logged at
+# warning, published on the provider (TURN_FALLBACK_ATTR) so the delivering
+# surface can prepend a visible notice, and — on the interactive path —
+# announced in chat (see dashboard/chat_runner). An empty chain (the default)
+# disables the feature: behavior is byte-for-byte the pre-feature error surface.
+
+# Attempts per fallback candidate: initial + ONE ~2s retry — deliberately NOT a
+# fresh _TRANSIENT_RETRIES budget. Throttle-exhaustion events are often
+# cell-scoped and model-agnostic (a frontend admission-tier outage takes out
+# ALL models in the cell), so deep per-candidate retries mostly re-confirm a
+# correlated outage slowly. One retry covers the uncorrelated single-shot 5xx
+# on a healthy candidate while keeping the worst case bounded (~35s of backoff
+# across a 4-candidate chain).
+FALLBACK_CANDIDATE_ATTEMPTS = 2
+
+# Provider attribute carrying the active fallback as ``(primary, candidate)``.
+# Doubles as (a) the sticky-restore marker — the next stream_and_collect call
+# on the same provider probes one ``set_model(primary)`` restore — and (b) the
+# visibility source for unattended surfaces (cron/heartbeat read it after the
+# turn and prepend a warning line to the delivered result). Cleared on a
+# successful restore, never on turn completion: the swap is sticky for the
+# remainder of the session by design.
+TURN_FALLBACK_ATTR = "_kc_active_fallback"
+
+
+def provider_fallback_active(provider: Any) -> bool:
+    """True while *provider* carries an active fallback marker.
+
+    THE shared usage-attribution guard: while a fallback serves the session,
+    an explicit model pin (``job.model`` / ``info.model`` / ``slot.model``)
+    must NOT be recorded as the turn's model — the durable usage row would
+    bill the fallback's spend to a model that never executed. Callers blank
+    the explicit value when this is true (mirroring the ``_seq_downgraded``
+    precedent), deferring to ``model_source`` — which reads the model that
+    actually ran.
+    """
+    marker = getattr(provider, TURN_FALLBACK_ATTR, None)
+    return isinstance(marker, (tuple, list)) and len(marker) >= 2
+
+
+def next_fallback_candidate(
+    chain: Sequence[str],
+    active_model: str,
+    advertised: Sequence[str] | None,
+) -> str | None:
+    """First usable fallback candidate from *chain*, or ``None``.
+
+    Skips empties, the currently-active model (a chain entry equal to what is
+    already failing cannot help), and — when an advertised list is known — any
+    id the backend did not advertise (unentitled/unknown). ``"auto"`` is a
+    legitimate candidate (the backend's availability-aware routing) and is
+    filtered by the same advertised check: a partition that does not serve
+    ``"auto"`` skips it rather than sending a no-op swap. An EMPTY advertised
+    list fails OPEN (candidates accepted): entitlement unknown is not
+    entitlement denied, matching ``model_is_unusable``'s stance, and the
+    substitute ``set_model`` path re-validates against the live list anyway.
+    """
+    adv = {a.strip().lower() for a in (advertised or []) if isinstance(a, str) and a.strip()}
+    act = (active_model or "").strip().lower()
+    for cand in chain:
+        if not isinstance(cand, str):
+            continue
+        low = cand.strip().lower()
+        if not low or low == act:
+            continue
+        if adv and low not in adv:
+            logger.debug("model fallback: skipping %r (not advertised)", cand)
+            continue
+        return cand
+    return None
+
+
+@dataclass
+class FallbackState:
+    """Walk state for one logical turn's fallback-chain traversal.
+
+    ``pos`` is the next chain index to consider (monotonic — a candidate is
+    never revisited), ``active`` the candidate currently being attempted,
+    ``attempts`` how many attempts the active candidate has consumed (capped at
+    :data:`FALLBACK_CANDIDATE_ATTEMPTS`), ``primary`` the model that was active
+    when the chain walk started, and ``walked`` every candidate actually tried
+    (for the chain-exhausted error story).
+    """
+
+    chain: tuple[str, ...]
+    pos: int = 0
+    active: str | None = None
+    attempts: int = 0
+    primary: str = ""
+    walked: list[str] = dataclass_field(default_factory=list)
+
+    def next_candidate(self, active_model: str, advertised: Sequence[str] | None) -> str | None:
+        """Advance to and return the next usable candidate, or ``None``."""
+        remaining = self.chain[self.pos :]
+        cand = next_fallback_candidate(remaining, active_model, advertised)
+        if cand is None:
+            self.pos = len(self.chain)
+            return None
+        self.pos += remaining.index(cand) + 1
+        return cand
+
+
+async def advance_fallback_candidate(
+    provider: Any,
+    fb_state: "FallbackState",
+    *,
+    surface: str,
+    log_suffix: str = "",
+) -> str | None:
+    """One chain-walk step — THE shared advance used by every fallback surface.
+
+    ``stream_and_collect`` (Case 2.75), the sub-agent transient ladder, and the
+    dashboard's ``_fallback_swap_for_turn`` all advance the chain through this
+    single body so throttle classification, marker semantics, and skip rules
+    cannot diverge across surfaces. It: seeds ``fb_state.primary`` from a
+    surviving sticky marker first (a session already on a fallback whose true
+    primary only the marker remembers) and the active model second; walks the
+    chain skipping the primary, unadvertised ids, and the currently-active
+    (failing) candidate; applies the first candidate whose substitute
+    ``set_model`` lands; publishes the sticky marker
+    (:data:`TURN_FALLBACK_ATTR`); and emits the greppable swap warning.
+    Returns the applied candidate, or ``None`` when the chain is exhausted or
+    the provider exposes no ``set_model`` seam — the caller then surfaces the
+    original error exactly as before this feature existed.
+    """
+    advertised = provider_advertised_ids(provider)
+    # An empty read means the session is auto-routed (``provider_active_model``
+    # deliberately filters the ``"auto"`` sentinel) or genuinely unknown; either
+    # way ``"auto"`` is the honest primary. Seeding it (a) makes the restore
+    # probe re-enter auto routing instead of hitting the dashboard's
+    # stale-clear arm with an empty primary (which would let the backfill pin
+    # the fallback permanently), (b) suppresses the auto->auto no-op swap via
+    # the active-skip below, and (c) keeps the notice card naming a real
+    # primary instead of a placeholder.
+    active = provider_active_model(provider) or (fb_state.active or "") or "auto"
+    if not fb_state.primary:
+        _marker = getattr(provider, TURN_FALLBACK_ATTR, None)
+        _marker_primary = ""
+        if isinstance(_marker, (tuple, list)) and _marker and isinstance(_marker[0], str):
+            _marker_primary = _marker[0].strip()
+        fb_state.primary = _marker_primary or active
+    set_model_fn = resolve_substitute_set_model(provider)
+    if set_model_fn is None:
+        return None
+    while True:
+        cand = fb_state.next_candidate(fb_state.primary or active, advertised)
+        if cand is None:
+            return None
+        if cand.strip().lower() == (active or "").strip().lower():
+            # With a marker-seeded primary, the chain can still name the
+            # CURRENTLY-failing fallback the session sits on — retrying it is
+            # what this walk exists to escape.
+            continue
+        _raw_before = provider_raw_model(provider)
+        try:
+            await set_model_fn(cand)
+        except Exception:
+            logger.debug(
+                "model fallback: set_model(%r) failed; skipping candidate",
+                cand,
+                exc_info=True,
+            )
+            continue
+        # Witness the swap before publishing: a non-raising set_model can be a
+        # silent no-op (resolve_usable_model collapses an unservable target to
+        # "" and returns without switching). Publishing an unwitnessed swap
+        # would announce a model that never took over and retry the same
+        # failing model. Only enforceable when the model attribute is readable
+        # (a provider exposing no model string cannot be witnessed — fail open,
+        # matching the pre-existing trust in set_model for such providers).
+        _raw_after = provider_raw_model(provider)
+        if (
+            _raw_before
+            and _raw_after == _raw_before
+            and _raw_after.strip().lower() != cand.strip().lower()
+        ):
+            logger.debug(
+                "model fallback: set_model(%r) was a silent no-op (model still %r); "
+                "skipping candidate",
+                cand,
+                _raw_after,
+            )
+            continue
+        fb_state.active = cand
+        fb_state.attempts = 1
+        fb_state.walked.append(cand)
+        try:
+            setattr(provider, TURN_FALLBACK_ATTR, (fb_state.primary, cand))
+        except Exception:
+            logger.debug("publishing fallback marker failed", exc_info=True)
+        logger.warning(
+            "model fallback: %s -> %s (reason=throttle-exhaustion, surface=%s%s)",
+            fb_state.primary or "?",
+            cand,
+            surface,
+            log_suffix,
+        )
+        return cand
+
+
+def resolve_substitute_set_model(provider: Any) -> Callable[[str], Awaitable[None]] | None:
+    """The provider's substitute-path ``set_model`` coroutine, or ``None``.
+
+    Prefers ``provider.set_model``; falls back to the wrapped client
+    (``provider.client`` / ``provider._client``) for wrappers like
+    ``AcpProvider`` that do not re-export it. Callers pre-filter candidates
+    against the advertised list, so the explicit-pick guard inside
+    ``AcpClient.set_model`` / ``AcpSessionProvider.set_model`` does not fire
+    for a served candidate.
+    """
+    fn = getattr(provider, "set_model", None)
+    if callable(fn):
+        return fn
+    for attr in ("client", "_client"):
+        try:
+            inner = getattr(provider, attr, None)
+        except Exception:  # pragma: no cover - exotic property getters
+            inner = None
+        fn = getattr(inner, "set_model", None) if inner is not None else None
+        if callable(fn):
+            return fn
+    return None
+
+
+def provider_advertised_ids(provider: Any) -> list[str]:
+    """Advertised model ids from the provider, ``[]`` when unknown."""
+    getter = getattr(provider, "available_models", None)
+    if not callable(getter):
+        return []
+    try:
+        return advertised_model_ids(getter())
+    except Exception:
+        return []
+
+
+def provider_active_model(provider: Any) -> str:
+    """The model currently serving the provider's session, ``""`` if unknown."""
+    for attr in ("served_model", "_model"):
+        try:
+            val = getattr(provider, attr, "")
+        except Exception:  # pragma: no cover - exotic property getters
+            val = ""
+        if isinstance(val, str) and val.strip() and val.strip().lower() != "auto":
+            return val.strip()
+    return ""
+
+
+def provider_raw_model(provider: Any) -> str:
+    """The provider's raw model attribute, ``"auto"`` INCLUDED, ``""`` if unknown.
+
+    The witness reader for fallback state transitions: unlike
+    :func:`provider_active_model` (which filters the ``"auto"`` sentinel for
+    walk semantics), this reports the attribute verbatim so a caller can
+    observe whether a non-raising ``set_model`` actually moved the session.
+    ``resolve_usable_model`` collapses an unservable target to ``""`` and
+    ``set_model`` then returns WITHOUT switching — treating "didn't raise" as
+    "switched" is what let a no-op restore clear sticky state while still on
+    the fallback (and the backfill then pinned it permanently).
+    """
+    for attr in ("served_model", "_model"):
+        try:
+            val = getattr(provider, attr, "")
+        except Exception:  # pragma: no cover - exotic property getters
+            val = ""
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return ""
+
+
+async def probe_fallback_restore(provider: Any, *, surface: str = "unattended") -> None:
+    """One ``set_model(primary)`` restore probe at the start of a turn.
+
+    No-op unless :data:`TURN_FALLBACK_ATTR` marks an active fallback. The
+    restore only fires while the session is still on the fallback this feature
+    set (a user/session-level model change in between clears the marker without
+    touching the model — never override an explicit later pick). Success clears
+    the marker and logs (recovery is the quiet default: no chat notice);
+    failure keeps the fallback for this turn. Never raises.
+    """
+    state = getattr(provider, TURN_FALLBACK_ATTR, None)
+    if not state:
+        return
+    try:
+        primary, candidate = state
+    except Exception:
+        return
+    current = provider_active_model(provider)
+    if current and candidate and current.strip().lower() != str(candidate).strip().lower():
+        # The session moved off our fallback by other means (explicit pick,
+        # session reset). The marker is stale — drop it, restore nothing.
+        try:
+            setattr(provider, TURN_FALLBACK_ATTR, None)
+        except Exception:
+            pass
+        return
+    if not primary:
+        try:
+            setattr(provider, TURN_FALLBACK_ATTR, None)
+        except Exception:
+            pass
+        return
+    set_model_fn = resolve_substitute_set_model(provider)
+    if set_model_fn is None:
+        return
+    try:
+        await set_model_fn(primary)
+    except Exception as exc:
+        logger.info(
+            "model fallback: primary %s still unavailable (%s); staying on %s " "(surface=%s)",
+            primary,
+            exc,
+            candidate,
+            surface,
+        )
+        return
+    # Witness the restore before clearing: a non-raising set_model(primary)
+    # can be a silent no-op (e.g. an "auto" primary on a partition that
+    # stopped advertising it resolves to "" and returns without switching).
+    # Clearing the marker while still on the fallback would let the next
+    # backfill pin the temporary fallback permanently. Keep the marker and
+    # retry at the next turn start instead.
+    _raw = provider_raw_model(provider)
+    if _raw and candidate and _raw.strip().lower() == str(candidate).strip().lower():
+        logger.info(
+            "model fallback: restore to %s was a silent no-op (still on %s); "
+            "keeping fallback (surface=%s)",
+            primary,
+            candidate,
+            surface,
+        )
+        return
+    try:
+        setattr(provider, TURN_FALLBACK_ATTR, None)
+    except Exception:
+        pass
+    logger.warning(
+        "model fallback: restored %s -> %s (reason=primary-recovered, surface=%s)",
+        candidate,
+        primary,
+        surface,
+    )
+
+
+def configured_fallback_chain() -> tuple[str, ...]:
+    """The throttle-fallback chain derived from ``agent.fallback_model``, or ``()``.
+
+    The config is a SINGLE value; the walk order is derived here (the one
+    derivation every surface shares): ``""`` disables the feature everywhere
+    (``()`` — callers pass it straight to ``fallback_models=`` and Case 2.75
+    stays inert); ``"auto"`` (the default) yields ``("auto",)`` — defer to the
+    backend's availability-aware routing; a concrete id yields
+    ``(id, "auto")`` — the pinned fallback first, ``"auto"`` as the final
+    fallthrough (the backend routes to whatever is actually available).
+
+    ``KiroCrewConfig.load()`` is fingerprint-cached (mtime/size/mode of both
+    config files), so the steady-state cost is two stats — the same read the
+    interactive turn path already performs inline on the event loop every
+    turn.
+    """
+    try:
+        fm = KiroCrewConfig.load().agent.fallback_model
+    except Exception:
+        return ()
+    if not fm:
+        return ()
+    if fm == "auto":
+        return ("auto",)
+    return (fm, "auto")
 
 
 class PromptBusyExhaustedError(Exception):
@@ -780,6 +1159,7 @@ async def stream_and_collect(
     agent: str = "",
     app: str = "",
     model_fallback: bool = False,
+    fallback_models: Sequence[str] = (),
 ) -> str:
     """Stream a message through an LLM provider and collect the full response.
 
@@ -833,6 +1213,14 @@ async def stream_and_collect(
             was silently not enforced for tools this helper approved. Callers
             using ``REJECT_ALL`` or ``AUTO_APPROVE`` are unaffected — the first
             runs no tools, the second never consults the gate.
+        fallback_models: Ordered chain of model ids tried when the same-model
+            transient budget exhausts on a throttle/capacity error (Case 2.75).
+            Empty (the default) disables the chain — behavior is byte-for-byte
+            today's fail-loudly. Requires ``retry_transient=True`` (a caller
+            that owns the outer transient loop also owns any fallback policy).
+            Every swap is logged at warning and published on the provider via
+            :data:`TURN_FALLBACK_ATTR`; the swap is sticky for the session and
+            a later call on the same provider probes one primary restore.
 
     Returns:
         The complete response text.
@@ -840,6 +1228,25 @@ async def stream_and_collect(
     transient_attempts = 0
     _model_fallback_attempted = False
     attempt = 0
+    _fb_chain = tuple(
+        m.strip() for m in (fallback_models or ()) if isinstance(m, str) and m.strip()
+    )
+    _fb_state = FallbackState(_fb_chain) if _fb_chain else None
+    # Cross-attempt tool-activity flag for the fallback chain ONLY. Case 2's
+    # same-model retry keys off ``result_text`` alone (pre-existing behavior,
+    # pinned byte-for-byte by the empty-chain regression tests), but the chain
+    # replays the ORIGINAL prompt up to FALLBACK_CANDIDATE_ATTEMPTS × len(chain)
+    # more times — a tool that completed an external mutation before any text
+    # streamed would be re-run on every one of them. Same activity predicate as
+    # the sub-agent ladder and the dashboard's ``_turn_emitted``: any fired
+    # tool call blocks the replay, text or no text.
+    _fb_tool_activity = False
+    # Sticky-restore probe (§restore policy): if an earlier turn on this
+    # provider fell back, try ONCE to move back to the primary before this
+    # turn streams. Quiet on success (log only); a still-throttled primary
+    # keeps the fallback for this turn.
+    if getattr(provider, TURN_FALLBACK_ATTR, None) is not None:
+        await probe_fallback_restore(provider, surface="stream_and_collect")
     # Accumulates across attempts, so it lives OUTSIDE the retry loop: a turn that
     # was billed and then retried must report the sum, not the last attempt.
     turn_billed = TurnUsage()
@@ -904,6 +1311,10 @@ async def stream_and_collect(
                         continue
                 elif event.kind == EVENT_TOOL_CALL:
                     tool_call_count += 1
+                    # Sticky across attempts (never reset in the retry loop):
+                    # once ANY attempt fired a tool, the fallback chain must
+                    # not replay the original prompt — see _fb_tool_activity.
+                    _fb_tool_activity = True
                     if on_tool_gate:
                         executed_calls.append((event.tool_call_id or "", event.title or ""))
                     if max_turns is not None and tool_call_count > max_turns:
@@ -1013,6 +1424,81 @@ async def stream_and_collect(
                 await asyncio.sleep(delay)
                 retrying = True
                 continue
+
+            # ── Case 2.75: throttle-exhaustion fallback chain ──
+            # The same-model budget (Case 2) is spent and the error is still
+            # transient (throttle/capacity — a throttle carries no rejection
+            # metadata, so Case 2.5 can never fire for it). Walk the configured
+            # chain: substitute set_model, then re-prompt. Two attempts per
+            # candidate (initial + one ~2s retry — see FALLBACK_CANDIDATE_
+            # ATTEMPTS), advance on transient failure, propagate non-transient
+            # immediately (the classifier gate above already ensures that).
+            # Empty chain ⇒ this block is inert and Case 3 surfaces the error
+            # exactly as before this feature existed.
+            #
+            # ``not _fb_tool_activity`` is load-bearing over and above
+            # ``not result_text``: a tool call can complete an EXTERNAL
+            # MUTATION before any text streams, and unlike Case 2's bounded
+            # same-model retry (pre-existing semantics, deliberately
+            # untouched), the chain replays the original prompt on every
+            # candidate — re-running that mutation each time. Any fired tool
+            # across ANY attempt disables the chain for this call; the error
+            # then surfaces exactly as it did before this feature.
+            if (
+                retry_transient
+                and not result_text
+                and not _fb_tool_activity
+                and _fb_state is not None
+                and acp_error_is_transient(exc)
+                and transient_attempts >= _TRANSIENT_RETRIES
+            ):
+                if (
+                    _fb_state.active is not None
+                    and _fb_state.attempts < FALLBACK_CANDIDATE_ATTEMPTS
+                ):
+                    # Final attempt on the current candidate.
+                    _fb_state.attempts += 1
+                    delay = transient_retry_delay(1)
+                    logger.warning(
+                        "model fallback: candidate %s still failing (attempt %d/%d), "
+                        "retrying in %.1fs: %s",
+                        _fb_state.active,
+                        _fb_state.attempts,
+                        FALLBACK_CANDIDATE_ATTEMPTS,
+                        delay,
+                        exc,
+                    )
+                    await asyncio.sleep(delay)
+                    retrying = True
+                    continue
+                # Advance to the next usable candidate via the shared walk
+                # step (marker-seeded primary, skip-active, substitute
+                # set_model, sticky-marker publish, greppable warning).
+                _cand = await advance_fallback_candidate(
+                    provider, _fb_state, surface="stream_and_collect"
+                )
+                if _cand is not None:
+                    await asyncio.sleep(transient_retry_delay(1))
+                    retrying = True
+                    continue
+                if _fb_state.walked:
+                    # Chain exhausted: surface the ORIGINAL error class with the
+                    # chain's story attached for the delivering surface, and
+                    # keep the incident greppable.
+                    _story = (
+                        f"{_fb_state.primary or 'the selected model'} throttled; "
+                        f"fallbacks {', '.join(_fb_state.walked)} also unavailable"
+                    )
+                    logger.warning(
+                        "model fallback: chain exhausted (%s); surfacing original error: %s",
+                        _story,
+                        exc,
+                    )
+                    try:
+                        exc._kc_fallback_story = _story  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
+                # Fall through to Case 2.5 / Case 3.
 
             # ── Case 2.5: model rejected (e.g. "auto" on GovCloud) — retry once
             # with the first advertised model. ──

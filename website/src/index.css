@@ -57,9 +57,9 @@
                  U+FE30-FE4F, U+FF00-FFEF;
 }
 /* Japanese and Simplified Chinese share Han code points but not always glyph
-   forms. A separate alias lets html:lang(ja) select Japanese faces without
-   changing the SC default used by zh-CN. Kana joins the Han ranges so Japanese
-   punctuation and syllabaries come from the same face. */
+   forms. A separate alias lets :lang(ja) select Japanese faces without
+   changing the SC aliases used by :lang(zh-CN). Kana joins the Han ranges so
+   Japanese punctuation and syllabaries come from the same face. */
 @font-face {
   font-family: 'KC Japanese Fallback';
   font-style: normal; font-weight: 400;
@@ -89,7 +89,7 @@
 }
 /* Korean needs its own alias for a different reason than Japanese does: Hangul
    (U+AC00-D7AF and the Jamo blocks) is absent from the SC and JP faces' coverage
-   in practice, so leaving zh-CN's alias in front for html:lang(ko) puts an alias
+   in practice, so leaving a Simplified alias in front for :lang(ko) puts an alias
    that cannot draw Hangul ahead of one that can, and the browser resolves each
    syllable from the OS cascade instead. The Han ranges are claimed too — Korean
    copy is Hangul-only, but a quoted 한자 in user content should draw the Korean
@@ -120,9 +120,9 @@
                  U+AC00-D7AF, U+D7B0-D7FF, U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF;
 }
 /* Monospace Han, for code and CLI surfaces. Rarely installed on a stock machine;
-   when absent 'KC Han Fallback' follows it in --script-fallbacks-mono, so Han in a
-   code block draws from a proportional face — the same pairing the browser's own
-   fallback produces today, and better than a missing glyph. */
+   when absent 'KC Han Fallback' follows it in the :lang(zh-CN) mono token, so Han in
+   a code block draws from a proportional face — the same pairing the browser's
+   own fallback produces today, and better than a missing glyph. */
 @font-face {
   font-family: 'KC Han Mono Fallback';
   font-style: normal; font-weight: 400;
@@ -263,11 +263,14 @@
   /* Single source of truth for the script fallbacks. Every declaration of
      --font-body / --mono — here, in the theme blocks below, and the ones built in
      hooks/useTheme.tsx and hooks/useZoom.ts — references these by name instead of
-     repeating the list. Locale-specific overrides below swap regional Han faces
-     without changing any consumer stack. They lead each stack; unicode-range is
-     what makes leading safe. */
-  --script-fallbacks:'KC Han Fallback','KC Devanagari Fallback','KC Bengali Fallback';
-  --script-fallbacks-mono:'KC Han Mono Fallback','KC Han Fallback','KC Devanagari Fallback','KC Bengali Fallback';
+     repeating the list. Regional Han aliases are NOT in the untagged default:
+     a leading Simplified Chinese face would force Japanese (and other untagged
+     CJK) through the wrong glyph forms. html:lang(zh-CN/ja/ko) below swap
+     isolated regional faces for that UI language. A bare :lang(zh) is avoided
+     — it also matches zh-TW/zh-HK. They lead each stack; unicode-range is what
+     makes leading safe. */
+  --script-fallbacks:'KC Devanagari Fallback','KC Bengali Fallback';
+  --script-fallbacks-mono:'KC Devanagari Fallback','KC Bengali Fallback';
   /* An installed theme pack fills --theme-font-sans / --theme-font-mono with its
      own faces (see hooks/themeCss.ts). Reading them here means code surfaces
      follow a pack's monospace face without the user having to switch the whole UI
@@ -277,6 +280,13 @@
   --font-body:var(--theme-font-sans, var(--script-fallbacks),'Space Grotesk',-apple-system,BlinkMacSystemFont,sans-serif);
   --mono:var(--theme-font-mono, var(--script-fallbacks-mono),'JetBrains Mono',ui-monospace,SFMono-Regular,monospace);
   --radius-sm:6px;--radius-md:8px;--radius-lg:12px;--radius-xl:16px;
+}
+html:lang(zh-CN) {
+  /* Isolated Simplified aliases for Chinese UI. Not :lang(zh): that also
+     matches zh-TW / zh-HK / zh-Hant. Document-level only — :root/--font-body
+     and useZoom already resolve var(--script-fallbacks) on <html>. */
+  --script-fallbacks:'KC Han Fallback','KC Devanagari Fallback','KC Bengali Fallback';
+  --script-fallbacks-mono:'KC Han Mono Fallback','KC Han Fallback','KC Devanagari Fallback','KC Bengali Fallback';
 }
 html:lang(ja) {
   /* Never retain the SC aliases here. If no named Japanese face is installed,
@@ -1426,11 +1436,13 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 @keyframes csb-a{0%,30%{opacity:1;transform:translateY(0) scale(1)}38%{opacity:0;transform:translateY(-3px) scale(.6)}45%,82%{opacity:0;transform:translateY(3px) scale(.6)}90%,100%{opacity:1;transform:translateY(0) scale(1)}}
 @keyframes csb-b{0%,30%{opacity:0;transform:translateY(3px) scale(.6)}38%{opacity:0;transform:translateY(3px) scale(.6)}45%{opacity:1;transform:translateY(-2px) scale(1)}55%{opacity:1;transform:translateY(0) scale(1)}82%{opacity:1;transform:translateY(0) scale(1)}90%{opacity:0;transform:translateY(-3px) scale(.6)}100%{opacity:0;transform:translateY(3px) scale(.6)}}
 
-/* ── Kiro themes: the ghost-pose loader icons ──
-   The icons come from the themeBranding `loaderIcons` seam (see ChatFooter); they
-   are brand ASSETS rendered as <img> (the use-lucide-icons brand-mark exception
-   requires that), so they are themed from here rather than by editing the art.
-   This is the pattern a new theme follows: register the artwork, then style it. */
+/* ── The ghost-pose loader icons ──
+   These are the DEFAULT loader artwork for every theme (see ChatFooter's
+   DEFAULT_ICONS); a theme replaces them through the themeBranding `loaderIcons`
+   seam. They are brand ASSETS rendered as <img> (the use-lucide-icons brand-mark
+   exception requires that), so they are themed from here rather than by editing
+   the art. This is the pattern a new theme follows: register the artwork, then
+   style it. */
 .csb4 .lyr>.kp{width:100%;height:100%;object-fit:contain}
 /* The outline is a REAL vector stroke baked into each pose asset (black, scaled
    per-viewBox so all 8 render at the same 1px), not a CSS effect. Chained

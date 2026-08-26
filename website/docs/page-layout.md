@@ -460,6 +460,18 @@ Inline within a `Card`, built from the shared primitives:
 
   These render a `<button>`, not a `<select>`, so an external
   `<label htmlFor>` does **not** name them — pass `aria-label`.
+
+  **The one exception is touch, and it is not yours to make.** `SimpleSelect`
+  routes to `NativeSelect` (`components/ui/native-select.tsx`) on a coarse
+  pointer, so the OS draws the list there. The reason above is theming, and
+  theming does not reach a phone: the Radix popup's list is a `position:fixed`
+  overflow scroller inside react-remove-scroll's lock, and iOS Safari does not
+  reliably hand a finger drag to that shape — Settings → Voice → Language showed
+  7 of its ~41 codes with the rest unreachable. A themed list nobody can scroll
+  is worse than an OS-drawn list that works. Because the choice lives inside
+  `SimpleSelect`, no call site makes it: keep reaching for the components above
+  and the touch case is already handled. `NativeSelect` is the single file
+  exempted from the `no-restricted-syntax` rule; do not add a second.
 - `Toggle` for a boolean switch. It carries `role="switch"`, `aria-checked` and
   `aria-disabled` itself, so do not re-add them.
 
@@ -491,7 +503,8 @@ are Tailwind utilities defined in `tailwind.config.js`, and both use
 - Use a raw `<input>` / `<button>`. Use `Input`, `Btn`, `SendBtn`,
   `SearchInput`, `Checkbox`.
 - Use a native `<select>`. There is no styled wrapper for one any more — see
-  §Forms for which dropdown component to reach for. Enforced by
+  §Forms for which dropdown component to reach for, and for the one touch-only
+  exception `SimpleSelect` already makes for you. Enforced by
   `no-restricted-syntax` in `eslint.config.js`.
 - Use raw status text. Use `Badge` or `SourceBadge`.
 - Use `text-xs`. Use `text-[13px]`.

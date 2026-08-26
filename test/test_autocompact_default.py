@@ -134,6 +134,28 @@ def test_the_warning_fires_strictly_before_compaction() -> None:
     )
 
 
+def test_the_warning_stays_a_minority_of_the_usable_range() -> None:
+    """The warn band must not swallow most of the range it warns about.
+
+    The reachability guard above is satisfied by any positive margin, including
+    one wide enough to fire on nearly every turn — and a warning that is always
+    on carries no information, which is the failure mode an early-warning line
+    actually dies of. On the shipped default the warn band is the top
+    ``CONTEXT_WARN_MARGIN_PCT`` of ``DEFAULT_AUTOCOMPACT_PCT`` usable points.
+
+    A quarter is the ceiling because that is where the band stops being an
+    approach signal: a 20-point margin on this default covers 29% of the range
+    and opens the warning at half the context window, so it fires on ordinary
+    mid-session turns rather than on the approach to compaction.
+    """
+    band_fraction = CONTEXT_WARN_MARGIN_PCT / DEFAULT_AUTOCOMPACT_PCT
+    assert band_fraction < 1 / 4, (
+        f"the warning covers {band_fraction:.0%} of the usable range "
+        f"({CONTEXT_WARN_MARGIN_PCT} of {DEFAULT_AUTOCOMPACT_PCT} points) — "
+        f"an always-on warning is not an early warning"
+    )
+
+
 def test_no_consumer_hardcodes_its_own_warn_threshold() -> None:
     """Every warn arm must derive from the shared margin, not a literal.
 

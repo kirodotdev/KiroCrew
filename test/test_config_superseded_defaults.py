@@ -36,6 +36,10 @@ FDE_ENTRY = next(
     e for e in SD.SUPERSEDED_DEFAULTS if e.dotted_key == "mcp_gateway.forward_declared_env"
 )
 
+AUTOCOMPACT_ENTRY = next(
+    e for e in SD.SUPERSEDED_DEFAULTS if e.dotted_key == "session.autocompact_pct"
+)
+
 
 @pytest.fixture(autouse=True)
 def _forget_process_warnings():
@@ -247,3 +251,56 @@ def test_doctor_flags_an_unreadable_config(tmp_path, monkeypatch, capsys):
     SD.render_doctor_section(issues)
     assert "could not read" in capsys.readouterr().out
     assert issues == ["stored defaults unreadable"]
+
+
+def test_every_registered_key_ends_at_the_live_default():
+    """The NEWEST entry per key must name the default the loader actually applies.
+
+    Both sides of an entry are history -- a later change appends a new entry
+    rather than editing an old one, so the 90->70 row stays true even once the
+    default moves again. What must not drift is the END of each key's chain: if
+    it names a value the loader no longer applies, the report tells operators to
+    adopt a default that does not exist. Registry order is the append order, so
+    the last entry for a key is its newest.
+    """
+    from dataclasses import fields as dc_fields
+
+    newest: dict[str, SupersededDefault] = {}
+    for entry in SD.SUPERSEDED_DEFAULTS:
+        newest[entry.dotted_key] = entry
+
+    for dotted, entry in newest.items():
+        section, field = dotted.split(".")
+        live = getattr(getattr(KiroCrewConfig(), section), field)
+        assert live == entry.new_default, (
+            f"{dotted}: registry says the current default is "
+            f"{entry.new_default!r} but the loader applies {live!r} -- append a "
+            f"new entry for the later change instead of leaving this one stale"
+        )
+        assert any(
+            f.name == field for f in dc_fields(getattr(KiroCrewConfig(), section))
+        ), f"{dotted}: no such field on the {section} config"
+
+
+def test_an_install_still_storing_the_old_ceiling_is_reported():
+    """The case #4388 declared and did not migrate: a stored 90.0 keeps
+    compacting at the window ceiling, and this is what finally says so."""
+    drifted = superseded_default_drift({"session": {"autocompact_pct": 90.0}})
+    assert AUTOCOMPACT_ENTRY in drifted
+
+
+def test_an_install_on_the_new_default_is_not_reported():
+    assert superseded_default_drift({"session": {"autocompact_pct": 70.0}}) == []
+
+
+def test_a_deliberately_chosen_value_is_not_reported():
+    """Only the exact superseded default is drift. An operator who picked 85 is
+    not holding a stale default and must not be nagged about one."""
+    assert superseded_default_drift({"session": {"autocompact_pct": 85.0}}) == []
+
+
+def test_the_autocompact_summary_names_both_values_and_the_release():
+    text = drift_summary(AUTOCOMPACT_ENTRY)
+    assert "session.autocompact_pct" in text
+    assert "90.0" in text and "70.0" in text
+    assert "#4388" in text

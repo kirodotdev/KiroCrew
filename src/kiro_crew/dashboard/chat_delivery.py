@@ -314,13 +314,18 @@ def queue_for_next_turn(
     state: "DashboardState",
     slot: "_ChatSlot",
     message: str,
+    *,
+    directive_user_origin: bool = False,
 ) -> str:
     """Append *message* to the slot's queue and announce it; return the queue id.
 
     The running turn's teardown drains the queue, so this is how a message
     reaches a busy slot when steering is unavailable or not asked for.
     """
-    qid = slot.queue_append(message)
+    qid = slot.queue_append(
+        message,
+        directive_user_origin=directive_user_origin,
+    )
     state.broadcast_ws(
         "queue_push",
         {

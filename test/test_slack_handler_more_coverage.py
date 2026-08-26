@@ -1215,7 +1215,8 @@ class _Slot:
     def append(self, role, text, cls):
         self.appended.append((role, text))
 
-    def queue_append(self, text):
+    def queue_append(self, text, *, directive_user_origin):
+        assert directive_user_origin is True
         self.queued.append(text)
 
 
@@ -1243,7 +1244,8 @@ class TestLinkedThreadRouting:
 
         ran: list[str] = []
 
-        async def _fake_run_chat(state, slot, text):
+        async def _fake_run_chat(state, slot, text, *, _directive_user_origin):
+            assert _directive_user_origin is True
             ran.append(text)
 
         monkeypatch.setattr(chat_mod, "_run_chat", _fake_run_chat)

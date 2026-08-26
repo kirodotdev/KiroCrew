@@ -303,28 +303,11 @@ async def api_cron_delete(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     job_id = request.match_info["job_id"]
     try:
-        ok = await state.crons.remove_job_async(job_id)
+        ok = await state.crons.remove_job_async(
+            job_id, actor="dashboard", source="api_cron_delete"
+        )
     except CronStoreBusy:
         return web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
-    # SEL audit: a destructive single delete must record who/what/when + the
-    # affected job and outcome, mirroring cron.batch_delete below. Written
-    # immediately after the store mutation settles — before history cleanup —
-    # so a history-store failure cannot lose the record of a completed delete.
-    # Best-effort (batched append that swallows write failures), and the call
-    # itself is exception-contained: the first sel() of a process CONSTRUCTS
-    # the log (trust-dir creation, HMAC key validation) and can raise, and by
-    # this point the job is already deleted — a completed delete must never be
-    # reported as a failure because the audit trail is unavailable.
-    try:
-        _sel().log_api_access(
-            caller="dashboard",
-            operation="cron.remove",
-            outcome="ok" if ok else "not_found",
-            source="api_cron_delete",
-            resources=f"job_id={job_id}",
-        )
-    except Exception:
-        logger.warning("SEL audit for cron delete failed (job %s)", job_id, exc_info=True)
     if ok:
         await state.crons.get_history().delete_job_history(job_id)
         state.push_refresh("crons")
@@ -374,7 +357,9 @@ async def api_cron_batch_delete(request: web.Request) -> web.Response:
         # back on the loop (asyncio.create_task needs it): moving it off-loop
         # would raise AFTER the on-disk delete and leave the scheduler timer
         # cancelled.
-        deleted, failed = await state.crons.remove_jobs(unique_ids)
+        deleted, failed = await state.crons.remove_jobs(
+            unique_ids, actor="dashboard", source="api_cron_batch_delete"
+        )
     except Exception:
         # The batch itself raised (unexpected) — report everything as failed.
         logger.warning("Batch delete failed", exc_info=True)
@@ -392,16 +377,6 @@ async def api_cron_batch_delete(request: web.Request) -> web.Response:
                 "History cleanup failed for cron %s (job already removed)",
                 job_id, exc_info=True,
             )
-    # SEL audit: a destructive batch action must record who/what/when + the
-    # affected resources and outcome. Cron IDs are non-sensitive (no
-    # creds/PII), so logging them is compliant.
-    _sel().log_api_access(
-        caller="dashboard",
-        operation="cron.batch_delete",
-        outcome="ok" if deleted else "failed",
-        source="api_cron_batch_delete",
-        resources=f"requested={unique_ids} deleted={deleted} failed={failed}",
-    )
     if deleted:
         state.push_refresh("crons")
     # ok reflects whether anything was actually deleted — consistent with the
@@ -1401,6 +1376,10 @@ async def api_cron_folders_update(request: web.Request) -> web.Response:
     """PATCH /api/cron-folders/{folder_id} — rename a cron folder."""
     state: DashboardState = request.app["state"]
     folder_id = request.match_info["folder_id"]
+    if not folder_id or len(folder_id) > MAX_SHORT_STRING:
+        return web.json_response(
+            {"error": "invalid folder_id format", "code": "invalid_folder_id"}, status=400
+        )
     try:
         body = await request.json()
     except Exception:
@@ -1435,6 +1414,10 @@ async def api_cron_folders_delete(request: web.Request) -> web.Response:
     """DELETE /api/cron-folders/{folder_id} — delete folder and clear assignments."""
     state: DashboardState = request.app["state"]
     folder_id = request.match_info["folder_id"]
+    if not folder_id or len(folder_id) > MAX_SHORT_STRING:
+        return web.json_response(
+            {"error": "invalid folder_id format", "code": "invalid_folder_id"}, status=400
+        )
     async with _get_cron_folders_lock():
         try:
             found = await asyncio.to_thread(state.delete_cron_folder, folder_id)

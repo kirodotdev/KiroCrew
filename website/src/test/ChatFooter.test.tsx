@@ -103,7 +103,7 @@ describe('ChatFooter', () => {
     expect(a).not.toEqual(b)                 // the two visible groups differ
   })
 
-  it('uses the bundled ghost poses on a Kiro theme', () => {
+  it('uses the ghost poses on a Kiro theme', () => {
     document.documentElement.setAttribute('data-theme', 'kiro-dark')
     const { container } = render(<ChatFooter {...base} running={true} lastRole="user" />)
     // Brand art is an ASSET rendered as <img> (use-lucide-icons brand-mark rule),
@@ -120,11 +120,16 @@ describe('ChatFooter', () => {
     expect(container.querySelectorAll('.csb4 svg').length).toBe(0)
   })
 
-  it('uses the default icons on a theme with no registered artwork', () => {
+  // The mascot is a product brand asset, not Kiro-theme decoration: a theme that
+  // registers no artwork of its own gets the poses too. A bare mode as data-theme
+  // is the base theme ('emerald'), which registers none.
+  it('uses the ghost poses on a theme with no registered artwork', () => {
     document.documentElement.setAttribute('data-theme', 'dark')
     const { container } = render(<ChatFooter {...base} running={true} lastRole="user" />)
-    expect(container.querySelector('.csb4 svg')).toBeInTheDocument()   // lucide
-    expect(container.querySelector('img.kp')).toBeNull()
+    const img = container.querySelector('.csb4 img.kp')
+    expect(img).toBeInTheDocument()
+    expect(GHOST_POSE_URLS).toContain(img!.getAttribute('src'))
+    expect(container.querySelector('.csb4 svg')).toBeNull()
   })
 })
 
@@ -142,9 +147,11 @@ describe('loader — theme seam', () => {
     expect(got.kind === 'icons' && got.icons.length).toBeGreaterThanOrEqual(4)
   })
 
-  it('serves the bundled artwork for a core theme', () => {
+  it('serves the mascot poses as the default pool', () => {
     const got = resolveLoader('kiro')
     expect(got.kind === 'icons' && got.icons).toBe(GHOST_POSE_ICONS)
+    // Not Kiro-specific: an unregistered theme resolves to the same pool.
+    expect(resolveLoaderIcons('emerald')).toBe(GHOST_POSE_ICONS)
   })
 
   it('lets a newly registered theme supply its own icons', () => {
@@ -319,8 +326,8 @@ describe('theme slug recovery', () => {
   it('treats a bare mode as the base theme', () => {
     document.documentElement.setAttribute('data-theme', 'dark')
     const { container } = render(<ChatFooter {...base} running={true} lastRole="user" />)
-    // Base theme registers no artwork -> default icons, not a crash or blank.
-    expect(container.querySelector('.csb4 svg')).toBeInTheDocument()
+    // Base theme registers no artwork -> default pool, not a crash or blank.
+    expect(container.querySelector('.csb4 img.kp')).toBeInTheDocument()
   })
 })
 

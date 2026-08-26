@@ -71,10 +71,6 @@ if TYPE_CHECKING:  # annotation-only; never imported at runtime
 
 logger = logging.getLogger(__name__)
 
-# Linux exposes one entry per open fd; the read is two syscalls.
-# /dev/fd exists on macOS/BSD too, so the fd gauge is not Linux-only.
-_FD_DIRS = ("/proc/self/fd", "/dev/fd")
-
 GAUGE_THREADS_PYTHON = "kirocrew.process.threads.python"
 GAUGE_THREADS_OS = "kirocrew.process.threads.os"
 GAUGE_OPEN_FDS = "kirocrew.process.open_fds"
@@ -120,17 +116,15 @@ def read_os_threads() -> int | None:
 
 
 def read_open_fds() -> int | None:
-    """Count of open file descriptors, or None when no fd directory exists.
+    """Count of open file descriptors, or None when the platform has no probe.
 
-    Enumerating the directory opens one fd itself (the directory handle), so
-    the count is decremented by one to reflect steady state.
+    Thin delegate to :func:`platform_compat.count_open_fds`, the one shared
+    per-platform probe (also behind gatewayd's zombie-diagnostic ``fd_count``
+    field). POSIX counts fd-directory entries minus the enumeration fd itself;
+    Windows reports the kernel handle count — platform-dependent semantics,
+    but coverage this gauge previously lacked.
     """
-    for fd_dir in _FD_DIRS:
-        try:
-            return max(0, len(os.listdir(fd_dir)) - 1)
-        except OSError:
-            continue
-    return None
+    return platform_compat.count_open_fds()
 
 
 def _gc_stats() -> list[dict[str, int]]:

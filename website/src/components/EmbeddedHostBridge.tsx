@@ -65,6 +65,12 @@ function parseHostModel(data: unknown): HostModel | null {
     pinnedCrews: Array.isArray(d.pinnedCrews)
       ? d.pinnedCrews.filter((id): id is string => typeof id === 'string')
       : [],
+    // Tri-state, mirroring `focusMode` above: a non-boolean (typically absent)
+    // means the host predates this relay, so it has no `mc-set-stable-order`
+    // handler either. `null` records "no opinion" so the bar can order by the
+    // pre-relay default AND withhold a toggle that host could never honor;
+    // coercing to `false` would make the two cases indistinguishable.
+    stableOrder: typeof d.stableOrder === 'boolean' ? d.stableOrder : null,
   }
 }
 

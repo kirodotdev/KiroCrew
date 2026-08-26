@@ -315,6 +315,49 @@ describe('normalizeInstalledApp', () => {
     expect(() => out.manifest.crons.map(c => c.name).join(', ')).not.toThrow()
   })
 
+  it('coerces every art field, so a wrong TYPE cannot reach a render site', () => {
+    // `app.json` is JSON from disk: a field's type is no more guaranteed than its
+    // presence. Coercing here is what keeps `"iconPath": {}` from reaching a bare
+    // `startsWith` and `"screenshotsDark": {}` a bare `.map` — each of which threw
+    // on the surface that read it rather than degrading to no art.
+    const out = normalizeInstalledApp({
+      name: 'wrong-types',
+      manifest: {
+        iconUrl: {}, iconUrlDark: 1, iconPath: [], iconPathDark: true,
+        heroImage: {}, heroImageDark: 0, heroImageDetail: [], heroImageDetailDark: null,
+        repo: {}, screenshots: { 0: 'a.png' }, screenshotsDark: {},
+      },
+    } as unknown as InstalledApp)
+    const m = out.manifest
+    for (const v of [m.iconUrl, m.iconUrlDark, m.iconPath, m.iconPathDark,
+      m.heroImage, m.heroImageDark, m.heroImageDetail, m.heroImageDetailDark, m.repo]) {
+      expect(v).toBe('')
+    }
+    expect(m.screenshots).toEqual([])
+    expect(m.screenshotsDark).toEqual([])
+    // The reads the store surfaces make, without a gate.
+    expect(() => (m.iconPath as string).startsWith('/')).not.toThrow()
+    expect(() => (m.screenshotsDark as string[]).map(s => s)).not.toThrow()
+  })
+
+  it('keeps a published art field as written', () => {
+    // The coercion must not erase a legitimate value — a built-in's absolute icon
+    // and an external app's repo-relative paths both survive untouched.
+    const out = normalizeInstalledApp({
+      name: 'real-art',
+      manifest: {
+        iconUrl: '/app-assets/real/icon.svg', iconPath: 'assets/icon.webp',
+        heroImageDetail: 'assets/hero-detail.webp', repo: 'octocat/real',
+        screenshotsDark: ['assets/dark-1.webp'],
+      },
+    } as unknown as InstalledApp)
+    expect(out.manifest.iconUrl).toBe('/app-assets/real/icon.svg')
+    expect(out.manifest.iconPath).toBe('assets/icon.webp')
+    expect(out.manifest.heroImageDetail).toBe('assets/hero-detail.webp')
+    expect(out.manifest.repo).toBe('octocat/real')
+    expect(out.manifest.screenshotsDark).toEqual(['assets/dark-1.webp'])
+  })
+
   it('keeps published list contents and every non-list manifest field', () => {
     const out = normalizeInstalledApp({
       name: 'real',

@@ -34,6 +34,15 @@ export const SETTINGS_KEYWORDS: Record<string, string[]> = {
 
   // Notifications
   'notifications.play-sound-on-new-notifications': ['alert', 'audio', 'mute', 'silent'],
+  'notifications.sources': ['mute', 'priority', 'channel', 'per-app', 'silence'],
+  'notifications.volume': ['loudness', 'sound level', 'quieter', 'louder'],
+
+  // About (manual entries — settingsManual.ts)
+  // The gateway row's rendered label is a ternary: self-updatable installs show
+  // "Auto-update on restart" while the entry is indexed under the notify
+  // wording — these keywords keep the row findable under BOTH phrasings.
+  'about.update-notifications': ['auto-update', 'auto update on restart', 'automatic updates', 'update check'],
+  'about.update-channel': ['stable', 'insider', 'nightly', 'release channel', 'beta'],
 
   // Browser
 

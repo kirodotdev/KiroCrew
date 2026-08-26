@@ -393,6 +393,68 @@ class TestApprovalModes:
         ), perm_activity
 
     @pytest.mark.asyncio
+    async def test_hook_deny_never_registers_approval_future(self, tmp_path):
+        """Non-bypass guard for the Tool-Approval Layer (Req 6.1-6.3).
+
+        The single-authority boundary rests on the runner's BRANCH ORDER: a
+        TOOL_DENY hits ``reject_tool`` + SEL audit and returns BEFORE the
+        interactive path that stores ``slot._approval_futures[request_id]`` and
+        renders an approvable card. If that order regressed so a denied call
+        reached the approval-future registration, the frontend could surface —
+        and a human/batch could resume — a call the gate denied.
+
+        Checking ``request_id not in slot._approval_futures`` AFTER the turn is
+        not enough: the runner's ``finally`` (``chat_runner.py`` ~7396) pops
+        every future at end-of-turn, so the interactive path also leaves it
+        absent — the residue is identical for allow and deny. So this test
+        instead OBSERVES THE REGISTRATION ITSELF by recording every key ever
+        assigned to ``_approval_futures`` during the turn. On a deny that key
+        must never appear; if the branch order regressed to register it, the
+        recorded-keys assertion fails fast and by name (not via a 120s parked-
+        future timeout).
+        """
+        request_id = "req-deny-guard"
+        cb = _context_builder(ToolHookResult.deny("blocked by policy"))
+        state, client = _make_state(tmp_path, context_builder=cb)
+        slot = _make_slot()
+
+        # Record every request id the runner ever REGISTERS as an approval
+        # future — observed at assignment time, so a deny that (wrongly) reached
+        # the interactive registration is caught even though the end-of-turn
+        # finally would later pop it.
+        registered_ids: list[str] = []
+
+        class _RecordingFutures(dict):  # type: ignore[type-arg]
+            def __setitem__(self, key, value):  # type: ignore[no-untyped-def]
+                registered_ids.append(key)
+                super().__setitem__(key, value)
+
+        slot._approval_futures = _RecordingFutures()  # type: ignore[assignment]
+
+        deny_event = LLMEvent(
+            kind=EVENT_PERMISSION_REQUEST,
+            title="fs_write",
+            tool_kind="edit",
+            request_id=request_id,
+        )
+        _set_stream(client, [deny_event, _complete_event()])
+
+        with _patch_stats():
+            await _run_chat(state, slot, "hello")
+
+        # The bypass this guards: a denied call must NEVER be registered as a
+        # pending approval. If the runner registered a future for it, an
+        # operator (or a batch resume) could execute what the gate denied.
+        assert request_id not in registered_ids, (
+            "TOOL_DENY registered an approval future — a denied call became "
+            "approvable, defeating the single-authority boundary (Req 6.1). "
+            f"registered ids: {registered_ids!r}"
+        )
+        # And the deny took the terminal reject path, not the interactive one.
+        client.reject_tool.assert_called_once()
+        client.approve_tool.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_hook_auto_approve_skips_prompt(self, tmp_path):
         """Hook auto-approve must approve without interactive prompt."""
         cb = _context_builder(ToolHookResult.auto_approve())

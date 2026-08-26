@@ -114,6 +114,26 @@ describe('SchedulePage job owner line', () => {
     expect(name.className).toContain('truncate')
   })
 
+  it('labels the owner key in the row tooltip instead of dumping the bare key', async () => {
+    // The hover title is the only full-width reading of a truncated owner
+    // line, and an unlabeled `name · key` dump gives a reader no way to know
+    // WHAT the second token is. The owned state carries the explicit
+    // "Owning session:" label; the ownerless state keeps the explicit copy.
+    const { api } = await import('../api/client')
+    vi.mocked(api).crons.mockResolvedValue({
+      jobs: [
+        mkJob({ id: 'owned-1', name: 'Owned job', session_key: 'web-abc123' }),
+        mkJob({ id: 'ownerless-1', name: 'Ownerless job', session_key: null }),
+      ],
+    })
+
+    renderWithProviders(<SchedulePage />)
+    const owned = await screen.findByText('Owned job')
+    expect(owned.closest('td')?.getAttribute('title')).toBe('Owned job · Owning session: web-abc123')
+    const ownerless = screen.getByText('Ownerless job')
+    expect(ownerless.closest('td')?.getAttribute('title')).toBe('Ownerless job · No owning session')
+  })
+
   it('matches the owner key in the jobs filter', async () => {
     const { api } = await import('../api/client')
     vi.mocked(api).crons.mockResolvedValue({
@@ -149,6 +169,11 @@ describe('SchedulePage job owner line', () => {
     // The dialog copy of the key (the row line truncates; this one is full).
     const copies = screen.getAllByText(longKey)
     expect(copies.length).toBeGreaterThanOrEqual(2)
+    // The helper sentence is the OWNERLESS state's explainer; under a live
+    // key it would read as a warning about the job in front of the reader.
+    expect(screen.queryByText(
+      'A job without an owning session is invisible to cron_list in chat and is managed from this page or the CLI.',
+    )).not.toBeInTheDocument()
   })
 
   it('shows the ownerless copy in the detail dialog', async () => {
@@ -164,5 +189,18 @@ describe('SchedulePage job owner line', () => {
     await waitFor(() => expect(screen.getByText('Owning session')).toBeInTheDocument())
     // Row line + dialog value both show the empty-state copy.
     expect(screen.getAllByText('No owning session').length).toBeGreaterThanOrEqual(2)
+    // The empty state is exactly where the helper sentence earns its place:
+    // it names the consequence (invisible to cron_list) and the remedy
+    // (manage from this page or the CLI) — and the value node references it
+    // so assistive tech hears it as a hint on the value, not a second label.
+    const help = screen.getByText(
+      'A job without an owning session is invisible to cron_list in chat and is managed from this page or the CLI.',
+    )
+    expect(help).toBeInTheDocument()
+    expect(help.id).toBe('owning-session-help')
+    const dialogEmpty = screen.getAllByText('No owning session').find(
+      el => el.getAttribute('aria-describedby') === 'owning-session-help',
+    )
+    expect(dialogEmpty).toBeTruthy()
   })
 })

@@ -50,7 +50,7 @@ export default function ArtifactPopoutFrame() {
       </div>
       <Btn
         onClick={returnSelfToMain}
-        className="fixed bottom-3 right-3 z-[60] opacity-60 hover:opacity-100 bg-bg-elevated"
+        className="fixed bottom-safe-offset-3 right-safe-offset-3 z-[60] opacity-60 hover:opacity-100 bg-bg-elevated"
         aria-label={i18nT('pages.artifactPopoutFrame.return_to_main_window_and_close_this_popout')}
         title={i18nT('pages.artifactPopoutFrame.return_to_main_window_and_close_this_popout')}
       >

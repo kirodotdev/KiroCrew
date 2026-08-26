@@ -65,8 +65,12 @@ def _make_orchestrator() -> Any:
 
 def _transport(*, proactive: bool = True, max_chars: int = 4000) -> MagicMock:
     tr = MagicMock()
+    # ``max_message_bytes=0`` mirrors the real ``TransportCapabilities`` default:
+    # the proactive egress legs chunk via ``chunk_for_transport``, which reads it
+    # to pick the byte-aware splitter for a byte-capped channel (Webex) and the
+    # char path otherwise. A fake omitting it would ``AttributeError`` on that read.
     tr.capabilities = SimpleNamespace(
-        supports_proactive_send=proactive, max_message_chars=max_chars
+        supports_proactive_send=proactive, max_message_chars=max_chars, max_message_bytes=0
     )
     tr.send_message = AsyncMock()
     tr.resolve_configured_target = AsyncMock(return_value=(DISCORD_CONVERSATION, ""))

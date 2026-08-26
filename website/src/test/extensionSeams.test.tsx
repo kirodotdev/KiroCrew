@@ -35,6 +35,10 @@ import { registerTheme, getRegisteredThemes } from '../hooks/useTheme'
 import { registerCapsuleSegment, getCapsuleSegments } from '../apps/capsuleSegments'
 import { registerOverviewStatCards, getOverviewStatCards } from '../pages/overviewStatCards'
 import { registerOverviewPanel, getOverviewPanel } from '../pages/overviewPanel'
+import {
+  suppressOverviewBuiltin,
+  isOverviewBuiltinSuppressed,
+} from '../pages/overviewBuiltins'
 import { apiTransport } from '../api/apiTransport'
 // Importing the client installs the blessed transport (installApiTransport runs
 // at client module load), so `apiTransport` is populated for the test below.
@@ -333,6 +337,27 @@ describe('overviewPanel — lower-region single-owner slot', () => {
       registerOverviewPanel({ id: 'testpanel:b', component: () => null }),
     ).toThrow(/already owns the overview panel slot/)
     expect(getOverviewPanel()?.id).toBe('testpanel:a')
+  })
+})
+
+describe('overviewBuiltins — built-in suppression seam', () => {
+  it('suppresses nothing in the stock build', () => {
+    expect(isOverviewBuiltinSuppressed('tailnet-mobile')).toBe(false)
+  })
+
+  it('suppresses a built-in surface once asked', () => {
+    suppressOverviewBuiltin('tailnet-mobile')
+    expect(isOverviewBuiltinSuppressed('tailnet-mobile')).toBe(true)
+  })
+
+  it('is idempotent — a repeat is agreement, not a collision', () => {
+    // Deliberately unlike `overviewPanel` above, which throws on a second claim
+    // because two owners cannot share one slot. Two parties that both want a
+    // surface GONE do not conflict, so a repeat must not fail-loud the way a
+    // duplicate contribution does — HMR and a twice-imported module both hit
+    // this path.
+    expect(() => suppressOverviewBuiltin('tailnet-mobile')).not.toThrow()
+    expect(isOverviewBuiltinSuppressed('tailnet-mobile')).toBe(true)
   })
 })
 

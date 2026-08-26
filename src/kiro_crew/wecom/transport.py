@@ -393,8 +393,10 @@ class WeComTransport(MessagingTransport):
         not help: the sender is allow-listed, the audience is not.
 
         So group traffic is refused until per-group sessions and a group
-        allow-list exist. Same posture, and the same reasoning, as Webex's
-        direct-rooms-only gate and iMessage's group fail-closed.
+        allow-list exist -- the same reasoning as iMessage's group fail-closed.
+        Those two are exactly what Webex has (a ``space:{room_id}`` session plus
+        ``webex.allowed_room_ids``), which is why it can admit a space and this
+        cannot.
         """
         if inbound.chattype == CHAT_TYPE_SINGLE:
             return True

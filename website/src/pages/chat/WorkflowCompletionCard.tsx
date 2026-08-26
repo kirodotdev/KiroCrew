@@ -24,6 +24,7 @@ import type { ChatMessage } from '../../types'
 
 import { i18nT } from '../../i18n/t'
 import { useRowDisclosure } from './rowDisclosure'
+import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 const WF_COMPLETION_PREFIX = '[Workflow completion event]'
 // Name is backtick-delimited; allow any char except a backtick (including
 // newlines) so an unusual name doesn't make the header fail to parse. If it
@@ -76,6 +77,7 @@ const WorkflowCompletionCard = memo(function WorkflowCompletionCard({
   onFolderOpen?: (path: string) => void
   disclosureKey?: string
 }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const dispatch = useAppDispatch()
   const [expanded, setExpanded] = useRowDisclosure(disclosureKey, false)
   // Names the expanded body's scroll region after the headline. useId keeps it

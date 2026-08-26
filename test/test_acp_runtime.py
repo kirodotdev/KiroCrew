@@ -5272,12 +5272,11 @@ def test_periodic_sweep_skips_protected_runtime_pid():
 
 
 @pytest.mark.asyncio
-async def test_runtime_spawn_scrubs_channel_creds_on_default_auto(monkeypatch):
-    """AcpRuntime.spawn strips gateway channel creds on the default auto tier.
+async def test_runtime_spawn_scrubs_sensitive_env_on_default_auto(monkeypatch):
+    """AcpRuntime.spawn applies the full ACP child scrub on the default tier.
 
-    Mirrors the AcpClient guard: the runtime copies a raw os.environ + wrap_argv
-    (not sandboxed_spawn_argv), and the default tier launcher does not strip
-    _AGENT_DENIED_ENV_KEYS, so scrub_agent_denied_env must remove them.
+    This parent-side enforcement is what protects raw Windows Kiro delegation;
+    POSIX launchers apply the same sensitive/Python scrub inline.
     """
     import kiro_crew.acp.runtime as runtime_mod
 
@@ -5286,6 +5285,10 @@ async def test_runtime_spawn_scrubs_channel_creds_on_default_auto(monkeypatch):
     monkeypatch.setenv("WECOM_SECRET", "FAKE-wecom-secret")
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-FAKE")
     monkeypatch.setenv("KIROCREW_OWNER_ID", "U_FAKE_OWNER")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "FAKE-secret")
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/fake-agent.sock")
+    monkeypatch.setenv("PYTHONPATH", "/gateway/pythonpath")
+    monkeypatch.setenv("PYTHONPYCACHEPREFIX", "/gateway/pycache")
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "FAKE-akid")
     monkeypatch.setenv("KIROCREW_UNRELATED_KEEPME", "keep-this-value")
 
@@ -5328,8 +5331,12 @@ async def test_runtime_spawn_scrubs_channel_creds_on_default_auto(monkeypatch):
         "WECOM_SECRET",
         "SLACK_BOT_TOKEN",
         "KIROCREW_OWNER_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "SSH_AUTH_SOCK",
+        "PYTHONPATH",
+        "PYTHONPYCACHEPREFIX",
     ):
-        assert key not in env, f"{key} leaked into default-auto runtime child env"
+        assert key not in env, f"{key} leaked into runtime child env"
     assert env.get("KIROCREW_UNRELATED_KEEPME") == "keep-this-value"
     assert env.get("AWS_ACCESS_KEY_ID") == "FAKE-akid"
 

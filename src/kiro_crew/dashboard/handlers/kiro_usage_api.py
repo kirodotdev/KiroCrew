@@ -63,7 +63,8 @@ The HTTP call uses the Python standard library (``urllib``) rather than a
 third-party client, so this module adds no new dependency to the public repo.
 
 Security controls (fixed as acceptance criteria):
-  1. Endpoint is hardcoded to AWS prod — never config-derived.
+  1. Endpoint is a hardcoded AWS prod host from a region table keyed by the
+     whoami profile ARN — never config-derived.
   2. TLS verification is always on (default ``ssl`` context: cert chain +
      hostname).
   3. Redirects are disabled (see ``_NoRedirect``) so the token can never be
@@ -94,9 +95,16 @@ from kiro_crew import hooks
 
 logger = logging.getLogger(__name__)
 
-# RTS / CodeWhisperer runtime endpoint (prod, IAD) — hardcoded, never derived
-# from config or the token file (control 1).
-_RTS_ENDPOINT = "https://codewhisperer.us-east-1.amazonaws.com"
+# Commercial RTS hosts (control 1): literals in this file, never config-derived.
+# eu-central-1 is a different hostname, not a regional spelling of the
+# us-east-1 one — ``codewhisperer.eu-central-1.amazonaws.com`` does not resolve.
+# A missing ARN or a region outside this table falls back to us-east-1.
+_RTS_ENDPOINTS = {
+    "us-east-1": "https://codewhisperer.us-east-1.amazonaws.com",
+    "eu-central-1": "https://q.eu-central-1.amazonaws.com",
+}
+_DEFAULT_RTS_REGION = "us-east-1"
+_RTS_ENDPOINT = _RTS_ENDPOINTS[_DEFAULT_RTS_REGION]
 _SVC = "com.amazon.aws.codewhisperer.runtime.AmazonCodeWhispererService"
 _TARGET_GET_USAGE = f"{_SVC}.GetUsageLimits"
 _TARGET_LIST_PROFILES = f"{_SVC}.ListAvailableProfiles"
@@ -140,18 +148,26 @@ _JSON_TOKEN_READ_IDS = (
 # running OS is inert, and a platform-independent module constant is what lets
 # tests patch the tuple without becoming host-dependent.
 #
-# The Windows entry is the fixed default Roaming location, NOT resolved from
-# ``%APPDATA%``. Membership here is a trust claim (``from_cli_store=True``)
-# that rests on agent file tools being unable to write the store, and that
-# fence (``_SENSITIVE_HOME_DIRS``) is home-anchored at exactly this path — so
-# an APPDATA-resolved location either equals this entry or falls outside the
-# fence and must not be trusted. A redirected Roaming profile therefore keeps
-# the text-scrape fallback rather than gaining a forgeable trusted path; the
-# same posture as the Linux entry, which does not follow ``XDG_DATA_HOME``
-# redirection either.
+# The Windows entries are the fixed default locations, NOT resolved from
+# ``%LOCALAPPDATA%`` / ``%APPDATA%``. Membership here is a trust claim
+# (``from_cli_store=True``) that rests on agent file tools being unable to
+# write the store, and that fence (``_SENSITIVE_HOME_DIRS``) is home-anchored
+# at exactly these paths -- so an env-resolved location either equals an entry
+# or falls outside the fence and must not be trusted. A redirected profile
+# therefore keeps the text-scrape fallback rather than gaining a forgeable
+# trusted path; the same posture as the Linux entry, which does not follow
+# ``XDG_DATA_HOME`` redirection either.
+#
+# ``AppData/Local`` is where current kiro-cli actually writes on Windows (its
+# data dir resolves to the local, non-roaming app-data directory -- the same
+# resolver family that yields ``~/.local/share`` on Linux and
+# ``~/Library/Application Support`` on macOS, both matching the entries
+# above). ``AppData/Roaming`` is retained for layouts that used the roaming
+# location; a path that does not exist on the running host is inert.
 _CLI_SQLITE_DBS = (
     Path.home() / ".local" / "share" / "kiro-cli" / "data.sqlite3",
     Path.home() / "Library" / "Application Support" / "kiro-cli" / "data.sqlite3",
+    Path.home() / "AppData" / "Local" / "kiro-cli" / "data.sqlite3",
     Path.home() / "AppData" / "Roaming" / "kiro-cli" / "data.sqlite3",
 )
 
@@ -486,17 +502,39 @@ def _load_bearer_token() -> str | None:
     return candidates[0].token if candidates else None
 
 
-def _post(token: str, target: str, payload: dict) -> _Resp:
+def _region_from_arn(arn: str | None) -> str:
+    """Return the CodeWhisperer region in ``arn``, or the commercial default.
+
+    Profile ARNs are ``arn:aws:codewhisperer:<region>:<account>:profile/<name>``.
+    A missing or malformed ARN, or a region not in :data:`_RTS_ENDPOINTS`,
+    falls back to us-east-1 so the request still goes to a known AWS prod host.
+    """
+    if not isinstance(arn, str) or not arn:
+        return _DEFAULT_RTS_REGION
+    parts = arn.split(":")
+    if len(parts) < 6 or parts[2] != "codewhisperer":
+        return _DEFAULT_RTS_REGION
+    region = parts[3]
+    return region if region in _RTS_ENDPOINTS else _DEFAULT_RTS_REGION
+
+
+def _rts_endpoint(arn: str | None = None) -> str:
+    """Hardcoded RTS host for ``arn``'s region (control 1)."""
+    return _RTS_ENDPOINTS[_region_from_arn(arn)]
+
+
+def _post(token: str, target: str, payload: dict, *, endpoint: str | None = None) -> _Resp:
     """POST an AWS-JSON request to the hardcoded RTS endpoint over urllib.
 
     TLS verification (control 2) and no-redirect (control 3) come from
     :func:`_build_opener`. A non-2xx HTTP *response* is returned as a ``_Resp``
     (requests parity — the caller branches on ``status_code``); only a
-    transport-level failure raises :class:`_RequestError`.
+    transport-level failure raises :class:`_RequestError`. ``endpoint`` selects
+    the regional host; omitted, it is the us-east-1 default.
     """
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
-        _RTS_ENDPOINT,
+        endpoint or _RTS_ENDPOINT,
         data=body,
         method="POST",
         headers={
@@ -538,7 +576,7 @@ def _read_capped(fp: object) -> str:
     return data.decode("utf-8", "replace")
 
 
-def _list_profile_arn(token: str) -> str | None:
+def _list_profile_arn(token: str, *, endpoint: str | None = None) -> str | None:
     """Return the account's profile ARN, or None for non-enterprise accounts.
 
     Enterprise/IdC accounts (KIRO POWER etc.) must pass ``profileArn`` to
@@ -557,7 +595,7 @@ def _list_profile_arn(token: str) -> str | None:
     if key in _PROFILE_ARN_CACHE:
         return _PROFILE_ARN_CACHE[key]
     try:
-        r = _post(token, _TARGET_LIST_PROFILES, {})
+        r = _post(token, _TARGET_LIST_PROFILES, {}, endpoint=endpoint)
     except _RequestError:
         return None
     if r.status_code != 200:
@@ -814,6 +852,10 @@ def fetch_usage_limits(expected_arn: str | None) -> dict | None:
     if not candidates:
         logger.debug("Kiro usage API: no live bearer token available")
         return None
+    # Resolve once from the whoami ARN so ListAvailableProfiles and
+    # GetUsageLimits hit the same regional host. Unknown/absent region stays
+    # on the us-east-1 default (control 1: the URL is still a file literal).
+    endpoint = _rts_endpoint(expected_arn)
     reason = "unknown"
     deadline = time.monotonic() + _TOTAL_DEADLINE_SECS
     for candidate in candidates:
@@ -835,7 +877,7 @@ def fetch_usage_limits(expected_arn: str | None) -> dict | None:
                     "kiro-cli's own auth store"
                 )
                 continue
-            arn = _list_profile_arn(token)
+            arn = _list_profile_arn(token, endpoint=endpoint)
             if expected_arn and (not arn or arn != expected_arn):
                 # ARN-anchored mode: not provably the signed-in account. Skip
                 # WITHOUT calling GetUsageLimits. A null ``arn`` is rejected rather
@@ -856,7 +898,7 @@ def fetch_usage_limits(expected_arn: str | None) -> dict | None:
             if arn:
                 payload["profileArn"] = arn
             try:
-                r = _post(token, _TARGET_GET_USAGE, payload)
+                r = _post(token, _TARGET_GET_USAGE, payload, endpoint=endpoint)
             except _RequestError as e:
                 reason = f"request failed: {type(e).__name__}"
                 logger.debug("Kiro usage API %s", reason)

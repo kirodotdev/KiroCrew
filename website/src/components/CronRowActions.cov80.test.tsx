@@ -141,6 +141,22 @@ describe('CronRowActions', () => {
     await waitFor(() => expect(spies.onMove).toHaveBeenCalledWith(''))
   })
 
+  it('picking the folder the job is already in is a no-op (no API round-trip)', async () => {
+    const spies = setup({ folder_id: 'f1' })
+    await openMoveSubmenu()
+    fireEvent.click(screen.getByText('zzq-alpha'))
+    await waitFor(() => expect(screen.queryByText('zzq-alpha')).toBeNull())
+    expect(spies.onMove).not.toHaveBeenCalled()
+  })
+
+  it('picking Ungrouped while the job is already ungrouped is a no-op', async () => {
+    const spies = setup()
+    await openMoveSubmenu()
+    fireEvent.click(screen.getByText('Ungrouped'))
+    await waitFor(() => expect(screen.queryByText('Ungrouped')).toBeNull())
+    expect(spies.onMove).not.toHaveBeenCalled()
+  })
+
   it('New folder in the submenu moves the job into what it created', async () => {
     const onNewFolder = vi.fn().mockResolvedValue('f-new')
     const spies = setup({}, { onNewFolder })

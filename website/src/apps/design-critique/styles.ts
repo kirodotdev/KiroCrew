@@ -158,8 +158,8 @@ export const S: Record<string, CSSProperties> = {
   lbOverlay: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,.86)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px', cursor: 'zoom-out' },
   lbInner: { position: 'relative', display: 'inline-block', maxWidth: '96vw', maxHeight: '92vh', cursor: 'default' },
   lbImg: { display: 'block', maxWidth: '96vw', maxHeight: '92vh', objectFit: 'contain', borderRadius: '8px' },
-  lbClose: { position: 'fixed', top: '18px', right: '18px', width: '36px', height: '36px', borderRadius: '999px', border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10000 },
+  lbClose: { position: 'fixed', top: 'calc(env(safe-area-inset-top, 0px) + 18px)', right: 'calc(env(safe-area-inset-right, 0px) + 18px)', width: '36px', height: '36px', borderRadius: '999px', border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10000 },
   // one transient toast (local)
-  toastWrap: { position: 'fixed', bottom: '18px', right: '18px', zIndex: 10001, display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'flex-end' },
+  toastWrap: { position: 'fixed', bottom: 'calc(env(safe-area-inset-bottom, 0px) + 18px)', right: 'calc(env(safe-area-inset-right, 0px) + 18px)', zIndex: 10001, display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'flex-end' },
   toast: { padding: '9px 13px', borderRadius: '9px', fontSize: '12.5px', fontWeight: 600, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--text)', boxShadow: '0 8px 24px rgba(0,0,0,.4)', maxWidth: '320px' },
 }

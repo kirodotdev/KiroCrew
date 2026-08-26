@@ -11,15 +11,13 @@ import logging
 import os
 import re
 import shutil
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
 from typing import Any
 
-from kiro_crew import aws_consent, platform_compat
+from kiro_crew import aws_consent, dep_sync, platform_compat
 from kiro_crew.sandbox import _PYTHON_ENV_PREFIXES
-from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 # Transcribe-path deps are an OPTIONAL 'aws' extra (amazon-transcribe + boto3).
 # The module MUST stay importable when they're absent (default install, partial
@@ -123,15 +121,16 @@ def _python3_bin_dir() -> str:
         py = platform_compat.find_python_interpreter()
         if not py:
             return ""
-        out = subprocess.check_output(
-            [py, "-c", "import sysconfig; print(sysconfig.get_path('scripts'))"],
-            timeout=5,
-            # The child re-encodes its stdout with the console code page when piped
-            # on Windows unless pinned; the decode side alone cannot fix that.
-            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
-            **UTF8_TEXT,
-        ).strip()
-        return out
+        # Through dep_sync._probe_interpreter (-I -X utf8, neutral cwd): the
+        # probe imports sysconfig by name, so a decoy module on the caller's
+        # PYTHONPATH or CWD would otherwise shadow the stdlib and answer with
+        # whatever path it likes — steering the Whisper script search there.
+        proc = dep_sync._probe_interpreter(
+            Path(py), "import sysconfig; print(sysconfig.get_path('scripts'))", timeout=5
+        )
+        if proc.returncode != 0:
+            return ""
+        return proc.stdout.strip()
     except Exception:
         return ""
 
@@ -308,9 +307,10 @@ def _find_parakeet_mlx() -> str | None:
     # installed via `pipx` (see `_build_stt_install_script`), which always
     # puts its shim on PATH or in one of `_PARAKEET_MLX_SEARCH_PATHS` below —
     # so the probe would never find anything here, while still paying its
-    # cost: it shells out to a system Python synchronously (`subprocess.
-    # check_output`, 5s timeout) on the event loop this function runs on
-    # (dashboard GET/PUT /api/config/stt), which can stall the gateway.
+    # cost: it shells out to a system Python synchronously
+    # (`dep_sync._probe_interpreter`, 5s timeout) on the event loop this
+    # function runs on (dashboard GET/PUT /api/config/stt), which can stall
+    # the gateway.
     for p in _PARAKEET_MLX_SEARCH_PATHS:
         if os.path.isfile(p) and os.access(p, os.X_OK):
             return p
@@ -533,6 +533,7 @@ async def _transcribe_aws(audio_path: str, stt_config) -> str | None:  # type: i
             logger.error("ffmpeg required to remux webm to ogg for Transcribe")
             return None
         tmp_ogg = await asyncio.to_thread(_make_temp_ogg)
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 ffmpeg_bin,
@@ -549,7 +550,7 @@ async def _transcribe_aws(audio_path: str, stt_config) -> str | None:  # type: i
                 await asyncio.wait_for(proc.communicate(), timeout=10)
             except asyncio.TimeoutError:
                 proc.kill()
-                await proc.wait()
+                await proc.communicate()
                 raise
             if proc.returncode != 0:
                 raise RuntimeError(f"ffmpeg exited with {proc.returncode}")
@@ -558,6 +559,42 @@ async def _transcribe_aws(audio_path: str, stt_config) -> str | None:  # type: i
             if tmp_ogg:
                 await asyncio.to_thread(_unlink_if_exists, tmp_ogg)
             return None
+        except BaseException:
+            # ``CancelledError`` derives from ``BaseException``, so the
+            # ``Exception`` guard above never sees it: a cancellation landing
+            # mid-``communicate`` used to leave the ffmpeg child running and the
+            # owned temp on disk (#5780). Mirror ``_to_native_audio``'s cleanup
+            # (#5777): stop AND reap the child BEFORE the unlink — Windows keeps
+            # the output file locked until the child fully exits, and on POSIX a
+            # live child can race the removal. Every step is best-effort, and
+            # the unlink stays synchronous (one-file unlink, matching #5777): a
+            # repeat cancellation could eat an off-loop hop before it runs. The
+            # exception in flight is the one that must surface.
+            if proc is not None:
+                try:
+                    proc.kill()
+                except (OSError, ProcessLookupError):
+                    logger.debug(
+                        "ffmpeg kill during cancellation cleanup failed",
+                        exc_info=True,
+                    )
+                else:
+                    try:
+                        await proc.communicate()
+                    except BaseException:
+                        # A repeat cancellation can land on this await; swallow
+                        # it so the unlink below still runs and the ORIGINAL
+                        # exception is the one that propagates.
+                        pass
+            if tmp_ogg:
+                try:
+                    _unlink_if_exists(tmp_ogg)
+                except OSError:
+                    # A not-yet-exited child can still hold the file (Windows
+                    # lock); letting that escape would REPLACE the in-flight
+                    # cancellation with a PermissionError.
+                    pass
+            raise
         actual_path = tmp_ogg
 
     transcript_parts: list[str] = []
@@ -609,13 +646,31 @@ async def _transcribe_aws(audio_path: str, stt_config) -> str | None:  # type: i
         logger.exception("AWS Transcribe streaming STT failed")
         return None
     finally:
-        if stream is not None:
-            try:
-                await stream.input_stream.end_stream()
-            except Exception:
-                pass
-        if tmp_ogg:
-            await asyncio.to_thread(_unlink_if_exists, tmp_ogg)
+        # Nested ``finally`` so the unlink is unconditional: the ``end_stream``
+        # await can itself raise on a REPEAT cancellation (``CancelledError`` is
+        # a ``BaseException``, so its ``Exception`` guard misses it), and that
+        # escape used to skip the temp removal below (#5780).
+        try:
+            if stream is not None:
+                try:
+                    await stream.input_stream.end_stream()
+                except Exception:
+                    pass
+        finally:
+            if tmp_ogg:
+                try:
+                    await asyncio.to_thread(_unlink_if_exists, tmp_ogg)
+                except BaseException:
+                    # A repeat cancellation can land on this await before the
+                    # off-loop hop runs; unlink synchronously (one file,
+                    # matching #5777) and let the cancellation propagate. The
+                    # OSError guard keeps a locked/contended file from
+                    # REPLACING the exception already in flight.
+                    try:
+                        _unlink_if_exists(tmp_ogg)
+                    except OSError:
+                        pass
+                    raise
 
 
 def _collect_whisper_output(
@@ -750,7 +805,6 @@ async def _run_whisper_cli(
     two CLIs use hyphenated vs underscored option names).
     """
     out_dir = await asyncio.to_thread(tempfile.mkdtemp)
-    proc = None
     try:
         clean_env = _thread_capped_env()
         proc = await asyncio.create_subprocess_exec(
@@ -760,7 +814,47 @@ async def _run_whisper_cli(
             stderr=asyncio.subprocess.PIPE,
             env=clean_env,
         )
-        _stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_secs)
+        try:
+            _stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_secs)
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            else:
+                # Reap via communicate(), not wait(): it drains the PIPEs, so a
+                # child that died with a full pipe buffer cannot deadlock the
+                # reap. Deliberately ``except Exception`` (narrower than the
+                # cancellation arm's ``BaseException`` swallow below): a
+                # cancellation arriving during THIS reap should win over the
+                # ``return None``, and the ``finally`` still removes the
+                # directory either way.
+                try:
+                    await proc.communicate()
+                except Exception:
+                    logger.debug("%s wait after kill failed", label, exc_info=True)
+            logger.error("%s transcription timed out after %ds", label, timeout_secs)
+            return None
+        except BaseException:
+            # A cancellation mid-``communicate`` is a ``BaseException``, which
+            # the ``except asyncio.TimeoutError`` arm above never sees — the
+            # whisper child kept running as an orphan (#5821). Kill AND reap it
+            # before re-raising: Windows keeps the output files locked until
+            # the child fully exits, and on POSIX a live child can race the
+            # directory removal in the ``finally`` below.
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            else:
+                try:
+                    await proc.communicate()
+                except BaseException:
+                    # A repeat cancellation can land on the reap await; swallow
+                    # it so the directory removal still runs and the ORIGINAL
+                    # exception is the one that propagates.
+                    pass
+            raise
         return await asyncio.to_thread(
             _collect_whisper_output,
             proc.returncode,
@@ -768,17 +862,18 @@ async def _run_whisper_cli(
             out_dir,
             label,
         )
-    except asyncio.TimeoutError:
-        if proc is not None:
-            try:
-                proc.kill()
-            except OSError:
-                pass
-            await proc.wait()
-        logger.error("%s transcription timed out after %ds", label, timeout_secs)
-        return None
     finally:
-        await asyncio.to_thread(shutil.rmtree, out_dir, ignore_errors=True)
+        # The removal stays OFF the event loop, and scheduling it as its own
+        # task BEFORE awaiting is what closes the #5821 leak: a repeat
+        # cancellation (or KeyboardInterrupt) landing on this await abandons
+        # only the wait — the already-scheduled task still runs the removal to
+        # completion in its worker thread. ``shield`` keeps that cancellation
+        # from propagating INTO the removal task, while the exception itself
+        # still reaches the awaiter.
+        rm = asyncio.ensure_future(
+            asyncio.to_thread(shutil.rmtree, out_dir, ignore_errors=True)
+        )
+        await asyncio.shield(rm)
 
 
 # Defense in depth: ``mlx_model`` is read from config.json. The dashboard PUT

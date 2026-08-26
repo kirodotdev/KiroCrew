@@ -11,7 +11,6 @@ MAX_RETRIES = 3
 MAX_RECOVERIES = 2  # process crash recovery budget per task
 MAX_REPLAN = 2  # plan revision attempts after task exhausts retries
 MAX_TOTAL_TASKS = 50  # hard cap on total tasks (including replans)
-CONTEXT_COMPACT_PCT = 80.0
 SESSION_PREFIX = "taskrunner"
 TEST_TIMEOUT = 5400  # 90 min for test command
 PROGRESS_FILE = "TASK_PROGRESS.md"

@@ -46,7 +46,10 @@ from kiro_crew.apps.backend import (
     unstopped_backend_port,
 )
 from kiro_crew.apps.bridges import deregister_app
-from kiro_crew.apps.hooks_integration import on_app_disable
+from kiro_crew.apps.hooks_integration import (
+    on_app_disable,
+    stop_app_startup_hooks,
+)
 from kiro_crew.apps.lifecycle_scripts import run_lifecycle_script
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.security import redact
@@ -85,10 +88,11 @@ async def teardown_app_runtime(
 ) -> TeardownResult:
     """Stop *name*'s running code.
 
-    Never raises for a failing step: a teardown that aborts halfway leaves the app
-    in a worse state than one that pushes through and reports. Each failure is
-    logged, collected into ``failures``, and the next step still runs — stopping the
-    backend matters even when a shutdown hook threw.
+    Never raises for a failing step: once teardown starts, aborting halfway leaves
+    the app in a worse state than pushing through and reporting. The sole preflight
+    is retained startup ownership: if it cannot be proven clear, this function
+    returns a retryable failure before stopping workers, running app shutdown code,
+    or mutating routes, crons, backend state, and registrations.
 
     ``record`` is the app's installed metadata (``manager.get_app``) and is passed
     straight to the app's own shutdown hooks. Hooks and the backend stop run for
@@ -113,6 +117,23 @@ async def teardown_app_runtime(
     warnings: list[str] = []
     failures: list[str] = []
     loop = asyncio.get_running_loop()
+
+    # A retained startup hook can recreate every resource this function removes.
+    # Trust withdrawal therefore checks ownership under the caller's lifecycle lock
+    # and refuses BEFORE any teardown mutation. Ordinary disable keeps its existing
+    # unbounded wait contract. The proven result is passed into on_app_disable so
+    # ownership cannot be checked a second time after teardown has begun.
+    startup_stopped = await stop_app_startup_hooks(
+        name, bounded=withdrawing_trust
+    )
+    if not startup_stopped:
+        return TeardownResult(
+            warnings=[],
+            failures=[
+                "startup cleanup incomplete: detached startup hook is still running; "
+                "teardown made no runtime changes"
+            ],
+        )
 
     # Stand the app's in-process workers down FIRST, before anything here can block.
     #
@@ -244,15 +265,21 @@ async def teardown_app_runtime(
 
     try:
         hooks_result = await on_app_disable(
-            name, record, run_app_hooks=app_may_be_running
+            name,
+            record,
+            run_app_hooks=app_may_be_running,
+            bounded_startup_cleanup=withdrawing_trust,
+            startup_stopped=True,
         )
         # Two outcome fields, deliberately classified DIFFERENTLY, because they say
         # different things about the postcondition this teardown exists to reach:
         #
-        # ``cron_cleanup`` failing means the app's scheduled jobs MAY STILL FIRE —
-        # third-party code can still execute — so the postcondition is not met and
-        # this is a FAILURE. The caller leaves the grant in place and the client
-        # retries. The "failed:" marker is the contract in hooks_integration.py.
+        # ``cron_cleanup`` failing means scheduled jobs MAY STILL FIRE, while
+        # ``startup_cleanup`` failing means a detached startup hook IS STILL
+        # RUNNING. Both are residual third-party execution, so the postcondition
+        # is not met and this is a FAILURE. The caller leaves the grant in place
+        # and the client retries. The "failed:" marker is the contract in
+        # hooks_integration.py.
         #
         # ``hooks_shutdown`` failing means the app's OWN ``on_shutdown`` hook did not
         # succeed, so anything it was buffering may be lost. That is data loss, not
@@ -266,9 +293,10 @@ async def teardown_app_runtime(
         # on and the operator had no way to learn state was dropped.
         if hooks_result:
             for key, value in hooks_result.items():
-                if key == "cron_cleanup" and isinstance(value, str) and value:
+                if key in {"cron_cleanup", "startup_cleanup"} and isinstance(value, str):
                     if value.startswith("failed:"):
-                        _fail(f"cron cleanup incomplete: {value}")
+                        label = "cron cleanup" if key == "cron_cleanup" else "startup cleanup"
+                        _fail(f"{label} incomplete: {value}")
                     else:
                         _warn(value)
                 elif key == "hooks_shutdown" and value == "failed":

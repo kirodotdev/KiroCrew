@@ -370,7 +370,9 @@ def requires_python(repo: Path) -> str | None:
     return cfg.get("options", "python_requires").strip() or None
 
 
-def _probe_interpreter(target_py: Path, code: str) -> subprocess.CompletedProcess[str]:
+def _probe_interpreter(
+    target_py: Path, code: str, timeout: float | None = None
+) -> subprocess.CompletedProcess[str]:
     """Run *code* under *target_py*, isolated from the caller's CWD and env.
 
     Every probe here asks a question about the VENV -- where it resolves this
@@ -390,17 +392,31 @@ def _probe_interpreter(target_py: Path, code: str) -> subprocess.CompletedProces
     decode below) where a ``PYTHONIOENCODING`` entry would be ignored,
     keeping a non-ASCII checkout path from mangling -- or crashing -- the
     answer on a non-UTF-8 locale. ``cwd`` is pinned to the interpreter's own
-    directory as well: it keeps the child's working directory valid even when
-    the caller's has been deleted, and a venv's script directory holds
-    executables, never an importable package.
+    directory as well: under ``-I`` the working directory is never on
+    ``sys.path``, whatever it contains, so the pin exists to keep the child's
+    working directory valid even when the caller's has been deleted. The
+    interpreter path is absolutized first (without resolving symlinks, which
+    would erase a venv's identity), because a relative path -- which
+    ``shutil.which`` can return for a relative ``PATH`` entry -- would
+    otherwise be re-resolved against the changed cwd and spawn nothing.
+
+    ``code`` MUST be a fixed literal owned by the caller: this helper is the
+    spawn-audit allowlist's designated isolated-probe entry point, and its
+    "fixed argv" justification stops holding the moment caller-derived text
+    reaches the child. ``timeout`` is forwarded to :func:`subprocess.run`
+    for callers on an interactive path (the doctor, the STT toolchain scan)
+    that must not hang on a wedged interpreter; ``None`` keeps the sync
+    path's unbounded wait.
     """
+    target = Path(os.path.abspath(target_py))
     return subprocess.run(
-        [str(target_py), "-I", "-X", "utf8", "-c", code],
+        [str(target), "-I", "-X", "utf8", "-c", code],
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
-        cwd=Path(target_py).parent,
+        cwd=target.parent,
+        timeout=timeout,
     )
 
 

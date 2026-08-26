@@ -994,7 +994,12 @@ class TestApiThemeDetailGet:
         _write_json(themes_dir / "lcars" / "theme.json", {"name": "LCARS"})
         resp = await th.api_theme_detail(_detail("GET", "lcars"))
         assert resp.status == 500
-        assert _body(resp)["error"].startswith("invalid installed theme:")
+        # The client body carries a generic message + machine code; the raw
+        # validation detail (which can name the on-disk theme dir) stays in the
+        # server log, not the verbatim-rendered `error` field.
+        body = _body(resp)
+        assert body["error"] == "invalid installed theme"
+        assert body["code"] == "invalid_installed_theme"
 
     @pytest.mark.asyncio
     async def test_manifest_read_failure_falls_back_to_an_empty_manifest(

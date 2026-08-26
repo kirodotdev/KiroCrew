@@ -6,6 +6,7 @@ per-block totals; ``telemetry.api_context_trace`` is the thin HTTP wrapper. Thes
 drive the REAL reader over synthetic rows, mirroring test_context_occupancy's
 temp-shard + cache-reset fixture, rather than restating its arithmetic.
 """
+
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -65,39 +66,51 @@ class TestContextTrace:
         t_late = (now - timedelta(hours=1)).isoformat()
         yesterday = (datetime.now().astimezone() - timedelta(days=1)).strftime("%Y-%m-%d")
         # Deliberately unsorted within a shard AND split across two shards.
-        _write(_isolated_shards, [
-            _row("chat-1", {"memory": 100}, ts=t_late),
-            _row("chat-1", {"memory": 50}, ts=t_mid),
-        ])
+        _write(
+            _isolated_shards,
+            [
+                _row("chat-1", {"memory": 100}, ts=t_late),
+                _row("chat-1", {"memory": 50}, ts=t_mid),
+            ],
+        )
         _write(_isolated_shards, [_row("chat-1", {"memory": 10}, ts=t_early)], day=yesterday)
         out = usage_mod.context_trace("chat-1", 14)
         assert [t["ts"] for t in out["turns"]] == [t_early, t_mid, t_late]
 
     def test_rows_without_ctx_blocks_are_skipped_not_zero_filled(self, _isolated_shards):
-        _write(_isolated_shards, [
-            _row("chat-1", {"memory": 100}),
-            _row("chat-1", None),            # pre-feature row: no ctx_blocks key
-            _row("chat-1", {}),              # present but empty
-            _row("chat-1", {"memory": 0}),   # present but all non-positive
-        ])
+        _write(
+            _isolated_shards,
+            [
+                _row("chat-1", {"memory": 100}),
+                _row("chat-1", None),  # pre-feature row: no ctx_blocks key
+                _row("chat-1", {}),  # present but empty
+                _row("chat-1", {"memory": 0}),  # present but all non-positive
+            ],
+        )
         out = usage_mod.context_trace("chat-1", 14)
         assert len(out["turns"]) == 1
         assert out["turns"][0]["blocks"] == {"memory": 100}
 
     def test_other_slots_are_excluded(self, _isolated_shards):
-        _write(_isolated_shards, [
-            _row("chat-1", {"memory": 100}),
-            _row("chat-2", {"memory": 999}),
-        ])
+        _write(
+            _isolated_shards,
+            [
+                _row("chat-1", {"memory": 100}),
+                _row("chat-2", {"memory": 999}),
+            ],
+        )
         out = usage_mod.context_trace("chat-1", 14)
         assert len(out["turns"]) == 1
         assert out["totals"] == {"memory": 100}
 
     def test_totals_accumulate_across_turns(self, _isolated_shards):
-        _write(_isolated_shards, [
-            _row("chat-1", {"memory": 100, "lessons": 50}),
-            _row("chat-1", {"memory": 30, "skill_index": 20}),
-        ])
+        _write(
+            _isolated_shards,
+            [
+                _row("chat-1", {"memory": 100, "lessons": 50}),
+                _row("chat-1", {"memory": 30, "skill_index": 20}),
+            ],
+        )
         out = usage_mod.context_trace("chat-1", 14)
         assert out["totals"] == {"memory": 130, "lessons": 50, "skill_index": 20}
         assert out["injected_chars"] == 200
@@ -124,10 +137,13 @@ class TestContextTrace:
 
     def test_estimated_other_uses_peak_reading_and_char_estimate(self, _isolated_shards):
         # peak is the MAX context_used across turns; estimate = peak*4 - injected.
-        _write(_isolated_shards, [
-            _row("chat-1", {"memory": 100}, used=200),
-            _row("chat-1", {"memory": 100}, used=900),
-        ])
+        _write(
+            _isolated_shards,
+            [
+                _row("chat-1", {"memory": 100}, used=200),
+                _row("chat-1", {"memory": 100}, used=900),
+            ],
+        )
         out = usage_mod.context_trace("chat-1", 14)
         assert out["peak_context_used"] == 900
         assert out["injected_chars"] == 200
@@ -160,9 +176,12 @@ class TestApiContextTrace:
 
     @pytest.mark.asyncio
     async def test_returns_trace_payload_for_slot(self, _isolated_shards):
-        _write(_isolated_shards, [
-            _row("chat-1", {"memory": 100, "your_message": 10}, used=1000),
-        ])
+        _write(
+            _isolated_shards,
+            [
+                _row("chat-1", {"memory": 100, "your_message": 10}, used=1000),
+            ],
+        )
         async with TestClient(TestServer(self._app())) as client:
             resp = await client.get("/api/telemetry/context-trace", params={"slot": "chat-1"})
             assert resp.status == 200
@@ -173,3 +192,89 @@ class TestApiContextTrace:
             assert body["user_chars"] == 10
             # Remainder estimate flows through the handler: peak*4 - injected.
             assert body["estimated_other_chars"] == int(1000 * 4.0) - 110
+
+
+class TestContextTraceBilling:
+    """Billing rides the same shard row: credits/duration_ms join each turn."""
+
+    def test_turn_carries_credits_and_duration(self, _isolated_shards):
+        _write(
+            _isolated_shards,
+            [_row("chat-1", {"memory": 10}, credits=3.5, duration_ms=42_000)],
+        )
+        turns = usage_mod.context_trace("chat-1")["turns"]
+        assert turns[0]["credits"] == 3.5
+        assert turns[0]["duration_ms"] == 42_000
+
+    def test_missing_billing_is_omitted_not_zeroed(self, _isolated_shards):
+        _write(_isolated_shards, [_row("chat-1", {"memory": 10})])
+        turns = usage_mod.context_trace("chat-1")["turns"]
+        assert "credits" not in turns[0]
+        assert "duration_ms" not in turns[0]
+
+    def test_unusable_billing_values_are_dropped(self, _isolated_shards):
+        # bool is an int subclass but not a count; NaN predates the persist-side
+        # guard and json.loads accepts it as a bare token. Neither may surface.
+        _write(
+            _isolated_shards,
+            [_row("chat-1", {"memory": 10}, credits=True, duration_ms=float("nan"))],
+        )
+        turns = usage_mod.context_trace("chat-1")["turns"]
+        assert "credits" not in turns[0]
+        assert "duration_ms" not in turns[0]
+
+
+class TestApiContextTraceAppDenial:
+    """The trace is dashboard-only: an app caller is refused, not filtered.
+
+    Unlike ``/api/usage/turns`` this reader has no row-ownership model, and its
+    rows carry billing — so the endpoint denies app identities outright with
+    the standard indistinguishable 404, and SEL-audits the refusal.
+    """
+
+    @staticmethod
+    def _app(request_app: str = "") -> web.Application:
+        app = web.Application()
+
+        @web.middleware
+        async def stamp(request, handler):
+            request["app"] = request_app
+            return await handler(request)
+
+        app.middlewares.append(stamp)
+        app.router.add_get("/api/telemetry/context-trace", api_context_trace)
+        return app
+
+    @pytest.fixture(autouse=True)
+    def _quiet_sel(self, monkeypatch):
+        import kiro_crew.sel as sel_mod
+
+        calls: list[dict] = []
+
+        class _Sel:
+            def log_api_access(self, **kw):
+                calls.append(kw)
+
+        monkeypatch.setattr(sel_mod, "sel", lambda: _Sel())
+        self.sel_calls = calls
+
+    @pytest.mark.asyncio
+    async def test_an_app_caller_is_refused_with_the_standard_404(self, _isolated_shards):
+        _write(_isolated_shards, [_row("chat-1", {"memory": 100}, credits=2.0)])
+        async with TestClient(TestServer(self._app("acme-app"))) as client:
+            resp = await client.get("/api/telemetry/context-trace?slot=chat-1")
+            assert resp.status == 404
+            body = await resp.json()
+            assert body["code"] == "not_found"
+        assert any(
+            c.get("outcome") == "denied" and c.get("caller") == "acme-app" for c in self.sel_calls
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_dashboard_caller_still_reads_the_trace(self, _isolated_shards):
+        _write(_isolated_shards, [_row("chat-1", {"memory": 100}, credits=2.0)])
+        async with TestClient(TestServer(self._app(""))) as client:
+            resp = await client.get("/api/telemetry/context-trace?slot=chat-1")
+            assert resp.status == 200
+            body = await resp.json()
+            assert body["turns"][0]["credits"] == 2.0

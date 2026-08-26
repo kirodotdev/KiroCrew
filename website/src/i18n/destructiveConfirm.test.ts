@@ -153,52 +153,166 @@ describe('destructive confirmations are translated', () => {
 
 /**
  * Confirm keys whose interpolated operand MUST be quoted in every authored
- * catalog, in that locale's own convention (#4653, #4657/#4677, #4676).
+ * catalog, in that locale's own convention (#4653, #4657/#4677, #4676, #4821).
  *
  * A destructive confirm that interpolates a user-supplied name bare lets an
  * ordinary-word name blend into the sentence: a pet named "Everything"
  * produced "Reset Everything?", indistinguishable from a sentence about
  * resetting everything.
  *
- * This list is an enumerated regression pin, not a convention detector: it
- * keeps the keys the #4653/#4657/#4676 wave quoted from regressing in any
- * locale, but a brand-new confirm key does not join it automatically — a
- * pattern-based sweep that forces new keys onto this list (or an explicit
- * exemption list) is tracked separately. When adding a destructive confirm
- * key that interpolates a user-supplied name, add it here.
- *
- * Intentionally NOT listed (recorded as an exemption in #4657):
- *   - pages.agentsPage.delete_the_template_named_confirm
- *   - pages.kiroCrewAgentsPage.delete_crew_named_confirm
- * Both name the object kind next to the operand ("the template {{name}}",
- * "crew {{name}}"), so the operand cannot read as prose. Do not add them
- * without revisiting that decision.
+ * The pattern sweep below is the convention detector: every `confirm` key
+ * whose English value interpolates a placeholder must land here, or in
+ * `CONFIRM_OPERAND_KEY_EXEMPTIONS`, or have only placeholder-name-exempt
+ * interpolations. This list is then the per-locale glyph pin. When adding a
+ * destructive confirm that interpolates a user-supplied name, add it here.
  */
 export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'apps.codeReviewSage.components.learningRail.confirm_delete', // quoted since #4653
+  'apps.crewCompanion.gallery.deleteConfirm', // ASCII quotes → locale pair #4821
+  'apps.meetings.list.deleteConfirm', // already quoted; pin + fr/it glyph fix #4821
+  'apps.mochi.gallery.delete_confirm', // ASCII quotes → locale pair #4821
   'apps.mochi.reset.title', // quoted by #4677
   'apps.mochi.reset.desc', // #4676
   'apps.papyrus.page.delete_paper_confirm', // #4676
   'apps.papyrus.workspace.co_author_conflict_discard_confirm', // #4676
   'apps.papyrus.workspace.delete_file_confirm', // quoted by #4677
+  'autoImprovement.commitConfirm', // bare {{branch}} #4821
+  'pages.artifactDeployPage.destroy_confirm',
+  'pages.artifactDeployPage.recall_confirm',
+  'pages.artifactDeployPage.remove_profile_confirm',
+  'pages.artifactsPage.remove_artifact_confirm',
+  'pages.chatSidebar.delete_folder_confirm',
+  'pages.overview.skillsTab.delete_confirm',
+  'pages.overview.skillsTab.dismiss_confirm',
+  'pages.overview.steeringTab.delete_confirm',
+  'pages.schedulePage.cronFolders.confirm_delete_folder',
+  'pages.settings.remoteCrewPanel.confirm_delete_of', // was fully bare #4821
+  'pages.settings.securityPanel.trustedApps.revoke_confirm_title',
+  'pages.settings.securityPanel.trustedApps.revoke_confirm_body',
 ]
+
+/**
+ * Placeholder names that cannot read as prose, so they do not need quoting.
+ * Numerals, closed-set schedule fragments, version ids, and system error
+ * text cannot parse as the rest of the sentence. A key whose EVERY
+ * interpolation is in this set is exempt from both the quoted-operand pin
+ * and the key list.
+ */
+export const EXEMPT_CONFIRM_PLACEHOLDER_NAMES = new Set([
+  'count',
+  'lines',
+  'verb',
+  'number',
+  'version',
+  'newVersion',
+  'time',
+  'unit',
+  'when',
+  'error',
+  'resources',
+  'bucket',
+  'distribution',
+])
+
+/**
+ * Keys matching `/confirm/i` that interpolate a user-facing placeholder but
+ * are intentionally left unquoted, with the reason a later author needs.
+ * Kind-word exemptions (#4657): the object kind sits next to the operand
+ * ("the template {{name}}", "crew {{name}}"), so the name cannot parse as
+ * the rest of the sentence. Do not add a new key here just because quoting
+ * it would be more catalog work — quote it, or change the English to a
+ * kind-word form and record that decision.
+ */
+export const CONFIRM_OPERAND_KEY_EXEMPTIONS: Record<string, string> = {
+  'pages.agentsPage.delete_the_template_named_confirm':
+    'kind word "template" sits next to the operand (#4657)',
+  'pages.kiroCrewAgentsPage.delete_crew_named_confirm':
+    'kind word "crew" sits next to the operand (#4657)',
+}
+
+function placeholdersIn(value: string): string[] {
+  return [...value.matchAll(/\{\{(\w+)\}\}/g)].map(match => match[1])
+}
 
 describe('destructive-confirm operands are quoted', () => {
   const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
   for (const { code } of AUTHORED) {
-    it(`${code} wraps the operand of every listed confirm in its quote pair`, () => {
+    it(`${code} wraps every non-exempt operand of every listed confirm`, () => {
       // The pair table lives in scripts/lib/qa-checks.mjs so the plain-Node
       // gates and this test can never disagree about a locale's glyphs.
+      // One quoted placeholder is not enough: a pinned key that mixes
+      // `{{name}}` with a second user-supplied operand would otherwise ship
+      // the second one bare.
       const [open, close] = (OPERAND_QUOTE_PAIRS as Record<string, [string, string]>)[code]
         ?? DEFAULT_QUOTE_PAIR
-      const quoted = new RegExp(`${escapeRe(open)}\\{\\{\\w+\\}\\}${escapeRe(close)}`)
-      const offenders = QUOTED_OPERAND_CONFIRM_KEYS
-        .filter(k => FLAT[code][k] === undefined || !quoted.test(FLAT[code][k]))
+      const offenders: string[] = []
+      for (const key of QUOTED_OPERAND_CONFIRM_KEYS) {
+        const value = FLAT[code][key]
+        if (value === undefined) {
+          offenders.push(key)
+          continue
+        }
+        const bare = placeholdersIn(value).filter(name => {
+          if (EXEMPT_CONFIRM_PLACEHOLDER_NAMES.has(name)) return false
+          const quoted = new RegExp(
+            `${escapeRe(open)}\\{\\{${escapeRe(name)}\\}\\}${escapeRe(close)}`,
+          )
+          return !quoted.test(value)
+        })
+        if (bare.length > 0) offenders.push(`${key} (${bare.join(', ')})`)
+      }
       expect(offenders,
         `${code} interpolates a destructive-confirm operand bare (expected `
         + `${open}{{…}}${close}): ${offenders.join(', ')}`)
         .toEqual([])
     })
   }
+})
+
+describe('confirm-key interpolations are quoted or explicitly exempt (#4821)', () => {
+  const english = FLAT[DEFAULT_LANGUAGE]
+  const confirmKeys = Object.entries(english)
+    .filter(([key, value]) => /confirm/i.test(key) && /\{\{\w+\}\}/.test(value))
+
+  it('every listed pin and exemption still exists in English', () => {
+    const missingQuoted = QUOTED_OPERAND_CONFIRM_KEYS.filter(k => english[k] === undefined)
+    const missingExempt = Object.keys(CONFIRM_OPERAND_KEY_EXEMPTIONS)
+      .filter(k => english[k] === undefined)
+    expect(missingQuoted, `quoted-operand pin names a missing key: ${missingQuoted.join(', ')}`)
+      .toEqual([])
+    expect(missingExempt, `exemption list names a missing key: ${missingExempt.join(', ')}`)
+      .toEqual([])
+  })
+
+  it('a key is never both pinned and exempt', () => {
+    const overlap = QUOTED_OPERAND_CONFIRM_KEYS
+      .filter(k => k in CONFIRM_OPERAND_KEY_EXEMPTIONS)
+    expect(overlap, `quoted and exempt at once: ${overlap.join(', ')}`).toEqual([])
+  })
+
+  it('every confirm key that interpolates is pinned, name-exempt, or key-exempt', () => {
+    // Taxonomy (both axes, because each covers a class the other cannot):
+    //   - placeholder NAME `count`/`lines`/`verb` → cannot parse as prose
+    //   - key exemption → kind-word forms whose operand is `{{name}}` but
+    //     already disambiguated (#4657)
+    //   - quoted-operand pin → user-supplied names that must be glyph-quoted
+    // A new confirm key with `{{name}}` and no kind word fails this test
+    // until it is quoted in every catalog and added to the pin. That is the
+    // failure #4653/#4657/#4676 kept hitting by hand.
+    const uncovered = confirmKeys.filter(([key, value]) => {
+      const names = placeholdersIn(value)
+      if (names.length > 0 && names.every(n => EXEMPT_CONFIRM_PLACEHOLDER_NAMES.has(n))) {
+        return false
+      }
+      if (key in CONFIRM_OPERAND_KEY_EXEMPTIONS) return false
+      if (QUOTED_OPERAND_CONFIRM_KEYS.includes(key)) return false
+      return true
+    }).map(([key]) => key)
+    expect(uncovered,
+      `confirm key interpolates a user-facing operand with no quote pin and no `
+      + `exemption (add it to QUOTED_OPERAND_CONFIRM_KEYS and quote every catalog, `
+      + `or record a reason in CONFIRM_OPERAND_KEY_EXEMPTIONS): ${uncovered.join(', ')}`)
+      .toEqual([])
+  })
 })

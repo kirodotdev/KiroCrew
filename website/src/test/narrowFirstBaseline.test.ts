@@ -194,7 +194,7 @@ describe('narrow-first layout baseline', () => {
 
   it('leaves the top bar left cluster without a redundant mobile inset', async () => {
     // `.tb-left`'s icon buttons carry their own 8px inside the header's inset, so a
-    // mobile-only `px-2` on the cluster stacked to push the hamburger out past the
+    // mobile-only `px-2` on the cluster stacks to push the nav button out past the
     // page's own left edge, which is what made it read as indented on every page.
     // The RIGHT cluster keeps its own padding/negative-margin pair, which exists to
     // stop the notification badge's 4px overhang being clipped.
@@ -203,13 +203,13 @@ describe('narrow-first layout baseline', () => {
     expect(cluster, 'App.tsx should render the tb-left cluster').toBeTruthy()
     expect(
       cluster![0],
-      'a mobile-only inset here stacks on the header and pushes the hamburger out',
+      'a mobile-only inset here stacks on the header and pushes the nav button out',
     ).not.toMatch(/isMobile[^\n]*px-/)
   })
 
   it('keeps the chat transcript on the same gutter as a page', async () => {
     // The doc's claim is that one vertical line runs through the whole app: the
-    // hamburger glyph, a page title, a page row, a card's left edge and the agent's
+    // nav glyph, a page title, a page row, a card's left edge and the agent's
     // own text. Chat is the surface the rest was lined up WITH, so its gutter and
     // `PageHeader`'s are one number -- asserted across the two files rather than as
     // two literals, because a drift here is invisible to every other check: both
@@ -279,54 +279,51 @@ describe('narrow-first layout baseline', () => {
   })
 
   it('lands the top bar glyphs on the page gutter, derived not hand-typed', async () => {
-    // The hamburger, the page title and every card's left edge read as one vertical
-    // line. That line is arithmetic across three files, and what has to land on it is
-    // the glyph's INK, not the button's box: `Menu` is the one icon here whose artwork
-    // does not fill its viewBox, so a box sitting correctly on the gutter still draws
-    // 2.5px right of it. Asserted as a SUM rather than as literals, because every part
-    // of this failure is silent -- moving any one number just makes the chrome look
-    // indented, which no overflow or scroll assertion can see.
-    //
-    // The icon's own inset is re-derived from lucide's shipped path data rather than
-    // hand-typed, so upgrading lucide to a `Menu` drawn on different coordinates fails
-    // here instead of quietly making the correction wrong.
+    // The narrow-layout nav button, the page title and every card's left edge read as
+    // one vertical line. That line is arithmetic across three files, and what has to
+    // land on it is the mark's INK, not just the button's box. Asserted as a SUM rather
+    // than as literals, because every part of this failure is silent -- moving any one
+    // number just makes the chrome look indented, which no overflow or scroll assertion
+    // can see.
     const app = await readFile(join(SRC, 'App.tsx'), 'utf8')
     const header = app.match(/topbar topbar-glass relative pl-(\d+(?:\.\d+)?) /)
     expect(header, 'App.tsx should give the topbar an explicit left inset').toBeTruthy()
-    const btn = app.match(/className="p-(\d+(?:\.\d+)?) rounded-md bg-transparent[^\n]*aria-label=\{i18nT\('app\.open_menu'\)\}/)
+    const btn = app.match(/className="group p-(\d+(?:\.\d+)?) rounded-md bg-transparent[^\n]*aria-label=\{i18nT\('app\.open_menu'\)\}/)
       ?? app.match(/p-(\d+(?:\.\d+)?) rounded-md bg-transparent border-none cursor-pointer text-muted hover:text-text shrink-0/)
-    expect(btn, 'the hamburger should carry its own padding').toBeTruthy()
+    expect(btn, 'the nav button should carry its own padding').toBeTruthy()
 
-    const glyph = app.match(/<Menu size=\{(\d+)\} className="-translate-x-\[(\d+(?:\.\d+)?)px\]" \/>/)
+    // The mark is the product logo, a SQUARE raster served from /logo.png, laid out
+    // with `object-contain`. `contain` only ever letterboxes a box whose ratio differs
+    // from the art's, so a square box is what makes the ink fill it and start at the
+    // box's own left edge -- i.e. what makes the sum below the whole story. A `w-5 h-6`
+    // slip would centre the art inside the taller box and inset the ink silently, so
+    // the two edges are pinned EQUAL rather than pinned to a literal.
+    const mark = app.match(/<img src=\{avatar\}[^\n]*className="w-(\d+(?:\.\d+)?) h-(\d+(?:\.\d+)?) rounded-md/)
+    expect(mark, 'the nav button should render the branding avatar as the mark').toBeTruthy()
     expect(
-      glyph,
-      'the hamburger glyph should declare its size and its optical correction together',
-    ).toBeTruthy()
-    const [, sizePx, correction] = glyph!
-
-    const menuIcon = await readFile(
-      join(SRC, '..', 'node_modules', 'lucide-react', 'dist', 'esm', 'icons', 'menu.js'),
-      'utf8',
-    )
-    const startXs = [...menuIcon.matchAll(/d: "M(\d+(?:\.\d+)?)/g)].map((m) => Number(m[1]))
-    expect(startXs.length, "lucide's menu icon should expose its path data").toBeGreaterThan(0)
-    // lucide's default stroke is 2 units with a round cap, so the ink reaches half a
-    // stroke beyond the geometry; the viewBox is 24 units wide at any rendered size.
-    const inkInsetPx = (Math.min(...startXs) - 1) * (Number(sizePx) / 24)
+      mark![1],
+      `the mark's box is w-${mark![1]} h-${mark![2]}: a non-square box letterboxes the `
+        + `square logo and insets its ink from the gutter`,
+    ).toBe(mark![2])
 
     const ui = await readFile(join(SRC, 'components', 'ui.tsx'), 'utf8')
     const gutter = ui.match(/px-(\d+(?:\.\d+)?) md:px-\d+(?:\.\d+)? pt-2 pb-3/)
     expect(gutter, 'PageHeader should carry a narrow-first gutter').toBeTruthy()
 
     const px = (rem: string) => Number(rem) * 4
-    const boxLeft = px(header![1]) + px(btn![1])
-    const inkLeft = boxLeft - Number(correction) + inkInsetPx
+    const inkLeft = px(header![1]) + px(btn![1])
     expect(
       inkLeft,
-      `topbar pl-${header![1]} + hamburger p-${btn![1]} puts the button box at ${boxLeft}px; `
-        + `less the ${correction}px correction plus Menu's own ${inkInsetPx}px of empty box, `
-        + `the GLYPH lands at ${inkLeft}px, but the page gutter is px-${gutter![1]} `
-        + `(${px(gutter![1])}px) -- the chrome would read as indented from the title`,
+      `topbar pl-${header![1]} + nav button p-${btn![1]} puts the mark's ink at `
+        + `${inkLeft}px, but the page gutter is px-${gutter![1]} (${px(gutter![1])}px) `
+        + `-- the chrome would read as indented from the title`,
     ).toBe(px(gutter![1]))
+    // The tap target is the mark's box plus that padding on both sides. Pinned as a
+    // FLOOR, not an equality: growing the mark for legibility is fine, shrinking the
+    // target below the 36px the rest of the chrome's icon buttons hold is not.
+    expect(
+      px(mark![1]) + 2 * px(btn![1]),
+      'the nav button should keep at least a 36px tap target',
+    ).toBeGreaterThanOrEqual(36)
   })
 })

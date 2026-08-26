@@ -626,8 +626,11 @@ def git_build_info() -> tuple[str, str]:
     )
 
 
-def augmented_path(base_path: str = "") -> str:
+def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
     """Return *base_path* prepended with well-known MCP binary directories.
+
+    ``home`` pins user-relative candidates for callers already resolving a
+    specific account instead of whichever account owns the current process.
 
     When KiroCrew runs under systemd or another non-login shell the
     inherited ``$PATH`` rarely includes directories like
@@ -655,8 +658,8 @@ def augmented_path(base_path: str = "") -> str:
     contributed directory. That contribution lives on :func:`mcp_search_path` —
     see the section comment near ``_registered_path_dirs``.
     """
-    home = os.path.expanduser("~")
-    mise_data = mise_data_dir(home)
+    resolved_home = home or os.path.expanduser("~")
+    mise_data = mise_data_dir(resolved_home)
     # Filter each formatted entry through the same absolute-only validation as
     # the other PATH sources (_validated_bin_dir): a relative MISE_DATA_DIR
     # would otherwise put a relative "{mise_data}/shims" entry on every spawned
@@ -665,9 +668,9 @@ def augmented_path(base_path: str = "") -> str:
     extra = [
         e
         for d in _EXTRA_PATH_DIRS
-        if (e := _validated_bin_dir(d.format(home=home, mise_data=mise_data)))
+        if (e := _validated_bin_dir(d.format(home=resolved_home, mise_data=mise_data)))
     ]
-    extra += node_all_bin_dirs()
+    extra += _node_all_bin_dirs(resolved_home, mise_data)
     parts = extra + ([base_path] if base_path else [])
     parts.append(str(Path(sys.executable).parent))
     return os.pathsep.join(parts)

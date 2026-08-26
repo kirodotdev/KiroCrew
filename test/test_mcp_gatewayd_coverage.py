@@ -1216,6 +1216,102 @@ class TestRespawnBackendForStub:
         pool.unreserve.assert_called_once_with(key)
         await _drain_task(got_task)
 
+    @pytest.mark.asyncio
+    async def test_replay_skipped_when_owner_rekeyed_mid_respawn(self, monkeypatch):
+        """A ``claim`` frame can retarget this connection's identity during
+        the respawn's acquire/prime awaits. The captured URIs belong to the
+        OLD principal — replaying them would resubscribe the old owner's
+        resources onto the rekeyed stub, the exact leak
+        ``evict_stub_subscriptions`` exists to prevent. The replay gate must
+        recheck the live owner and skip when it changed."""
+        key = _pool_key(server="respawn-rekey-mcp")
+        pool = BackendPool(max_backends=2)
+        pool.unreserve = MagicMock()  # type: ignore[method-assign]
+        old = _fake_backend()
+        old.detach_stub = AsyncMock(return_value=0)  # type: ignore[method-assign]
+        old.resource_subscription_uris = MagicMock(  # type: ignore[method-assign]
+            return_value=["file:///old-owner.txt"]
+        )
+        fresh = _fake_backend(key, pid=7171)
+        fresh.attach_stub = AsyncMock(  # type: ignore[method-assign]
+            return_value=asyncio.Queue()
+        )
+        fresh.replay_resource_subscriptions = AsyncMock()  # type: ignore[method-assign]
+        monkeypatch.setattr(gw, "_acquire_backend", AsyncMock(return_value=(fresh, True)))
+
+        old_caller = CallerContext(session_key="dashboard:old")
+        conn = gw._StubConn("stub-r6", [], "pool", old_caller)
+        # The claim lands while prime_initialize is awaited: the connection
+        # identity names a NEW principal before the replay gate runs.
+        fresh.prime_initialize = AsyncMock(  # type: ignore[method-assign]
+            side_effect=lambda *_a, **_k: setattr(
+                conn, "caller", CallerContext(session_key="dashboard:new")
+            )
+        )
+
+        out = await gw._respawn_backend_for_stub(
+            pool,
+            key,
+            lambda k: None,
+            "stub-r6",
+            cast(Any, _FakeWriter()),
+            {"id": 0, "method": "initialize"},
+            old,
+            None,
+            None,
+            caller=old_caller,
+            conn=conn,
+        )
+
+        assert out is not None  # the respawn itself still succeeds
+        fresh.replay_resource_subscriptions.assert_not_awaited()
+        _backend, _inbox, task = out
+        await _drain_task(task)
+
+    @pytest.mark.asyncio
+    async def test_replay_proceeds_when_owner_unchanged(self, monkeypatch):
+        """Control for the rekey gate: an unchanged owner still gets its
+        subscriptions replayed onto the fresh backend."""
+        key = _pool_key(server="respawn-stable-mcp")
+        pool = BackendPool(max_backends=2)
+        pool.unreserve = MagicMock()  # type: ignore[method-assign]
+        old = _fake_backend()
+        old.detach_stub = AsyncMock(return_value=0)  # type: ignore[method-assign]
+        old.resource_subscription_uris = MagicMock(  # type: ignore[method-assign]
+            return_value=["file:///same-owner.txt"]
+        )
+        fresh = _fake_backend(key, pid=7272)
+        fresh.prime_initialize = AsyncMock()  # type: ignore[method-assign]
+        fresh.attach_stub = AsyncMock(  # type: ignore[method-assign]
+            return_value=asyncio.Queue()
+        )
+        fresh.replay_resource_subscriptions = AsyncMock()  # type: ignore[method-assign]
+        monkeypatch.setattr(gw, "_acquire_backend", AsyncMock(return_value=(fresh, True)))
+
+        same_caller = CallerContext(session_key="dashboard:same")
+        conn = gw._StubConn("stub-r7", [], "pool", same_caller)
+
+        out = await gw._respawn_backend_for_stub(
+            pool,
+            key,
+            lambda k: None,
+            "stub-r7",
+            cast(Any, _FakeWriter()),
+            {"id": 0, "method": "initialize"},
+            old,
+            None,
+            None,
+            caller=same_caller,
+            conn=conn,
+        )
+
+        assert out is not None
+        fresh.replay_resource_subscriptions.assert_awaited_once_with(
+            "stub-r7", ["file:///same-owner.txt"], caller=same_caller
+        )
+        _backend, _inbox, task = out
+        await _drain_task(task)
+
 
 # --- zombie diagnostic ------------------------------------------------------
 

@@ -2,7 +2,11 @@
 
 from aiohttp import web
 
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import (
+    redact_and_truncate,
+    redact_credentials,
+    redact_exfiltration_urls,
+)
 
 _VISIBLE_SOURCES = {"text", "spec", "file", "chat", "dashboard", "mcp"}
 
@@ -21,12 +25,22 @@ def _redact(text: str) -> str:
     return text
 
 
+def _redact_and_truncate(text: str, max_chars: int) -> str:
+    """Redact over the FULL text, then truncate (never ``_redact(x[:n])``).
+
+    Truncating first can cut a credential in half at the boundary, leaving a
+    fragment the redaction regexes no longer match. Delegates to the canonical
+    helper so redaction always precedes the slice.
+    """
+    return redact_and_truncate(text, max_chars)
+
+
 def _run_to_project(run) -> dict:
     desc = getattr(run, "description", None) or run.spec_content or run.original_input or ""
     return {
         "id": run.task_id,
         "name": _redact(run.name or run.task_id),
-        "description": _redact(desc[:4000]),
+        "description": _redact_and_truncate(desc, 4000),
         "status": run.status,
         "created_at": run.started_at or 0,
         "updated_at": getattr(run, "updated_at", run.started_at) or 0,

@@ -12,6 +12,28 @@
 // the launch log. The maxWaitMs timeout stays purely as the backstop for a
 // gateway that is alive but slow to bind its port.
 
+const DEFAULT_GATEWAY_WAIT_MS = 30_000;
+// Importing a freshly installed bundled Python tree can exceed the ordinary
+// connection deadline on Windows. Keep the splash responsive through that cold
+// start without weakening the fail-fast child-exit path above.
+const WINDOWS_LOCAL_GATEWAY_WAIT_MS = 120_000;
+
+/**
+ * Pick the readiness deadline for the connection being opened.
+ *
+ * Only the primary local gateway gets the extended Windows cold-start budget.
+ * Connection tabs still fail on the ordinary deadline, and every spawned child
+ * exit still wins immediately through `getFailure`.
+ *
+ * @param {{platform?: string, watchSpawn?: boolean}} [o]
+ * @returns {number}
+ */
+function gatewayWaitTimeoutMs({ platform = process.platform, watchSpawn = false } = {}) {
+  return platform === "win32" && watchSpawn
+    ? WINDOWS_LOCAL_GATEWAY_WAIT_MS
+    : DEFAULT_GATEWAY_WAIT_MS;
+}
+
 /**
  * Poll `checkBackend` until the gateway answers, the spawned child reports a
  * terminal failure, the window closes, or we hit maxWaitMs.
@@ -39,7 +61,7 @@ function waitForGateway({
   onStatus = () => {},
   now = Date.now,
   setTimeoutFn = setTimeout,
-  maxWaitMs = 30_000,
+  maxWaitMs = DEFAULT_GATEWAY_WAIT_MS,
   pollIntervalMs = 500,
 }) {
   const start = now();
@@ -142,4 +164,12 @@ function isPortInUse(text) {
   return /address already in use|already in use|EADDRINUSE/i.test(String(text));
 }
 
-module.exports = { waitForGateway, describeGatewayFailure, tailLines, isPortInUse };
+module.exports = {
+  DEFAULT_GATEWAY_WAIT_MS,
+  WINDOWS_LOCAL_GATEWAY_WAIT_MS,
+  gatewayWaitTimeoutMs,
+  waitForGateway,
+  describeGatewayFailure,
+  tailLines,
+  isPortInUse,
+};

@@ -355,6 +355,19 @@ async def ingest_attachments(
                 dest = await _fetch(
                     download, att.url, safe_suffix(att.suffix_hint or att.name.rsplit(".", 1)[-1])
                 )
+            except ValueError as exc:
+                # A ValueError is the downloader's OWN refusal, and its message is
+                # the reason -- "quarantined as malware", "still being scanned,
+                # re-send shortly", "could not be scanned". Flattening those to
+                # "download failed" tells a user whose file was refused for cause to
+                # keep retrying, and hides a malware verdict from the one person who
+                # can act on it. Only the reason is surfaced; the downloader is
+                # responsible for keeping URLs and tokens out of it.
+                reason = str(exc).strip() or "download failed"
+                logger.warning("%s: refused attachment %s: %s", source, att.name, reason)
+                out.rejections.append(f"[Attachment {att.name} — {reason}]")
+                _audit(source, f"{source}.attachment_download", "error", att.name, reason)
+                continue
             except Exception:
                 logger.exception("%s: failed to download attachment %s", source, att.name)
                 out.rejections.append(f"[Attachment {att.name} — download failed]")

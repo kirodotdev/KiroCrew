@@ -25,6 +25,7 @@ from kiro_crew.voice_reply import (
     _validate_rate,
     is_available,
     split_sentences,
+    stitch_mp3s,
     strip_markdown,
     synthesize_speech,
     text_to_ssml,
@@ -213,6 +214,20 @@ def _mock_subprocess(
     proc.kill = MagicMock()
     proc.wait = AsyncMock()
     return proc
+
+
+def _capture_mkstemp(monkeypatch) -> list[str]:
+    """Record every path the module allocates via ``tempfile.mkstemp``."""
+    allocated: list[str] = []
+    real_mkstemp = tempfile.mkstemp
+
+    def recording_mkstemp(*args, **kwargs):
+        fd, path = real_mkstemp(*args, **kwargs)
+        allocated.append(path)
+        return fd, path
+
+    monkeypatch.setattr("kiro_crew.voice_reply.tempfile.mkstemp", recording_mkstemp)
+    return allocated
 
 
 def _make_executable(path: str) -> None:
@@ -602,7 +617,10 @@ class TestSynthesizePiper:
             assert await _synthesize_piper("hello", piper_model=str(model)) is None
 
         proc.kill.assert_called_once()
-        proc.wait.assert_awaited()
+        # The reap goes through communicate(), not wait(): wait_for already
+        # cancelled the pipe readers, so wait() on a full-PIPE child hangs.
+        proc.communicate.assert_awaited()
+        proc.wait.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_timeout_survives_process_lookup_error(self, tmp_path) -> None:
@@ -629,6 +647,71 @@ class TestSynthesizePiper:
             "asyncio.create_subprocess_exec", return_value=proc,
         ), patch("asyncio.wait_for", side_effect=hang_wait_for):
             assert await _synthesize_piper("hello", piper_model=str(model)) is None
+
+    @pytest.mark.asyncio
+    async def test_cancellation_kills_child_and_removes_owned_temp(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # CancelledError is a BaseException: it bypasses ``except Exception``,
+        # so only the finally-based invariant discards the owned temp file —
+        # and the cancellation must still propagate to the caller.
+        bin_path = tmp_path / "piper"
+        _make_executable(str(bin_path))
+        model = tmp_path / "voice.onnx"
+        model.write_bytes(b"m")
+
+        allocated = _capture_mkstemp(monkeypatch)
+        proc = _mock_subprocess(returncode=0)
+        proc.communicate = AsyncMock(side_effect=asyncio.CancelledError)
+
+        async def fake_exec(*cmd, **kwargs):
+            return proc
+
+        with patch(
+            "kiro_crew.voice_reply._resolve_piper_binary", return_value=str(bin_path),
+        ), patch(
+            "kiro_crew.voice_reply.wrap_argv", side_effect=lambda c, mode: (c, None),
+        ), patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            with pytest.raises(asyncio.CancelledError):
+                await _synthesize_piper("hello", piper_model=str(model))
+
+        # wait_for cancels communicate() but does not terminate the child;
+        # the child must be killed and reaped, and the owned temp discarded.
+        # The reap goes through communicate(), not wait(): wait_for already
+        # cancelled the pipe readers, so wait() on a full-PIPE child hangs.
+        proc.kill.assert_called_once()
+        assert proc.communicate.await_count >= 2
+        proc.wait.assert_not_awaited()
+        assert len(allocated) == 1
+        assert not os.path.exists(allocated[0])
+
+    @pytest.mark.asyncio
+    async def test_prespawn_cancellation_removes_owned_temp(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # A cancellation delivered BEFORE the child exists (here: from the
+        # subprocess spawn itself) bypasses the kill/reap branch entirely —
+        # only the ``finally`` invariant discards the owned temp file.
+        bin_path = tmp_path / "piper"
+        _make_executable(str(bin_path))
+        model = tmp_path / "voice.onnx"
+        model.write_bytes(b"m")
+
+        allocated = _capture_mkstemp(monkeypatch)
+
+        async def cancelled_exec(*cmd, **kwargs):
+            raise asyncio.CancelledError
+
+        with patch(
+            "kiro_crew.voice_reply._resolve_piper_binary", return_value=str(bin_path),
+        ), patch(
+            "kiro_crew.voice_reply.wrap_argv", side_effect=lambda c, mode: (c, None),
+        ), patch("asyncio.create_subprocess_exec", side_effect=cancelled_exec):
+            with pytest.raises(asyncio.CancelledError):
+                await _synthesize_piper("hello", piper_model=str(model))
+
+        assert len(allocated) == 1
+        assert not os.path.exists(allocated[0])
 
     @pytest.mark.asyncio
     async def test_exec_exception_returns_none(self, tmp_path) -> None:
@@ -907,7 +990,10 @@ class TestSynthesizePolly:
             assert await _synthesize_polly("<speak>hi</speak>") is None
 
         proc.kill.assert_called_once()
-        proc.wait.assert_awaited()
+        # The reap goes through communicate(), not wait(): wait_for already
+        # cancelled the pipe readers, so wait() on a full-PIPE child hangs.
+        proc.communicate.assert_awaited()
+        proc.wait.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_timeout_survives_process_lookup_error(self, tmp_path) -> None:
@@ -927,6 +1013,53 @@ class TestSynthesizePolly:
             "asyncio.create_subprocess_exec", return_value=proc,
         ), patch("asyncio.wait_for", side_effect=hang_wait_for):
             assert await _synthesize_polly("<speak>hi</speak>") is None
+
+    @pytest.mark.asyncio
+    async def test_cancellation_kills_child_and_removes_owned_temp(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # CancelledError is a BaseException: it bypasses ``except Exception``,
+        # so only the finally-based invariant discards the owned temp file —
+        # and the cancellation must still propagate to the caller.
+        allocated = _capture_mkstemp(monkeypatch)
+        proc = _mock_subprocess(returncode=0)
+        proc.communicate = AsyncMock(side_effect=asyncio.CancelledError)
+
+        async def fake_exec(*cmd, **kwargs):
+            return proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            with pytest.raises(asyncio.CancelledError):
+                await _synthesize_polly("<speak>hi</speak>")
+
+        # wait_for cancels communicate() but does not terminate the child;
+        # the child must be killed and reaped, and the owned temp discarded.
+        # The reap goes through communicate(), not wait(): wait_for already
+        # cancelled the pipe readers, so wait() on a full-PIPE child hangs.
+        proc.kill.assert_called_once()
+        assert proc.communicate.await_count >= 2
+        proc.wait.assert_not_awaited()
+        assert len(allocated) == 1
+        assert not os.path.exists(allocated[0])
+
+    @pytest.mark.asyncio
+    async def test_prespawn_cancellation_removes_owned_temp(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # A cancellation delivered BEFORE the child exists (here: from the
+        # subprocess spawn itself) bypasses the kill/reap branch entirely —
+        # only the ``finally`` invariant discards the owned temp file.
+        allocated = _capture_mkstemp(monkeypatch)
+
+        async def cancelled_exec(*cmd, **kwargs):
+            raise asyncio.CancelledError
+
+        with patch("asyncio.create_subprocess_exec", side_effect=cancelled_exec):
+            with pytest.raises(asyncio.CancelledError):
+                await _synthesize_polly("<speak>hi</speak>")
+
+        assert len(allocated) == 1
+        assert not os.path.exists(allocated[0])
 
     @pytest.mark.asyncio
     async def test_sandbox_cleanup_unlinked(self, tmp_path) -> None:
@@ -1323,3 +1456,467 @@ class TestTextTypeAutoDetection:
         result = text_to_ssml("Hello world", engine="standard")
         assert result.startswith("<speak")
         assert "</speak>" in result
+
+
+# ── stitch_mp3s() failure-path cleanup ──────────────────────────────────
+
+
+class TestStitchMp3s:
+    """Failure exits must not leak the internally allocated (mkstemp) output.
+
+    When the caller supplies no ``output``, ``stitch_mp3s`` allocates one via
+    ``mkstemp``. On any unsuccessful exit it returns ``None``, so no caller
+    ever receives that path — the file must be removed before returning. A
+    caller-supplied ``output`` is never owned by the function and must stay
+    untouched on failure.
+    """
+
+    @staticmethod
+    def _two_inputs(tmp_path) -> list[str]:
+        """Two fake MP3 inputs — one path short-circuits before ffmpeg runs."""
+        paths = []
+        for name in ("a.mp3", "b.mp3"):
+            p = tmp_path / name
+            p.write_bytes(b"fake-mp3")
+            paths.append(str(p))
+        return paths
+
+    @pytest.mark.asyncio
+    async def test_spawn_failure_removes_owned_temp(self, tmp_path, monkeypatch) -> None:
+        allocated = _capture_mkstemp(monkeypatch)
+
+        async def fake_exec(*cmd, **kwargs):
+            raise FileNotFoundError("ffmpeg not on PATH")
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            result = await stitch_mp3s(self._two_inputs(tmp_path))
+
+        assert result is None
+        assert len(allocated) == 1
+        assert not os.path.exists(allocated[0])
+
+    @pytest.mark.asyncio
+    async def test_nonzero_exit_removes_owned_temp(self, tmp_path, monkeypatch) -> None:
+        allocated = _capture_mkstemp(monkeypatch)
+        proc = _mock_subprocess(returncode=1, stderr=b"concat error")
+
+        async def fake_exec(*cmd, **kwargs):
+            return proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            result = await stitch_mp3s(self._two_inputs(tmp_path))
+
+        assert result is None
+        assert len(allocated) == 1
+        assert not os.path.exists(allocated[0])
+
+    @pytest.mark.asyncio
+    async def test_timeout_kills_child_and_removes_owned_temp(self, tmp_path, monkeypatch) -> None:
+        allocated = _capture_mkstemp(monkeypatch)
+        proc = _mock_subprocess(returncode=0)
+        proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
+
+        async def fake_exec(*cmd, **kwargs):
+            return proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            result = await stitch_mp3s(self._two_inputs(tmp_path))
+
+        assert result is None
+        # wait_for cancels communicate() but does not terminate the child;
+        # the child must be killed and reaped via communicate() (which drains
+        # the pipes) BEFORE the unlink, or Windows refuses to remove the
+        # still-open output file. Using wait() instead of communicate() can
+        # hang when the child is blocked writing to a full stderr PIPE (#5834).
+        proc.kill.assert_called_once()
+        proc.communicate.assert_awaited()
+        assert len(allocated) == 1
+        assert not os.path.exists(allocated[0])
+
+    @pytest.mark.asyncio
+    async def test_cancellation_kills_child_and_removes_owned_temp(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # CancelledError is a BaseException: it bypasses ``except Exception``,
+        # so only a finally-based invariant discards the owned output here.
+        allocated = _capture_mkstemp(monkeypatch)
+        proc = _mock_subprocess(returncode=0)
+        proc.communicate = AsyncMock(side_effect=asyncio.CancelledError)
+
+        async def fake_exec(*cmd, **kwargs):
+            return proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            with pytest.raises(asyncio.CancelledError):
+                await stitch_mp3s(self._two_inputs(tmp_path))
+
+        proc.kill.assert_called_once()
+        proc.communicate.assert_awaited()
+        assert len(allocated) == 1
+        assert not os.path.exists(allocated[0])
+
+    @pytest.mark.asyncio
+    async def test_empty_output_removes_owned_temp(self, tmp_path, monkeypatch) -> None:
+        # The mkstemp allocation always exists on disk, so "ffmpeg produced no
+        # output" manifests as a zero-byte file, never an absent one.
+        allocated = _capture_mkstemp(monkeypatch)
+        proc = _mock_subprocess(returncode=0)
+
+        async def fake_exec(*cmd, **kwargs):
+            return proc  # exits 0 but writes nothing to the output path
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            result = await stitch_mp3s(self._two_inputs(tmp_path))
+
+        assert result is None
+        assert len(allocated) == 1
+        assert not os.path.exists(allocated[0])
+
+    @pytest.mark.asyncio
+    async def test_failure_leaves_caller_supplied_output_untouched(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        allocated = _capture_mkstemp(monkeypatch)
+        caller_output = tmp_path / "caller.mp3"
+        caller_output.write_bytes(b"pre-existing caller data")
+        proc = _mock_subprocess(returncode=1)
+
+        async def fake_exec(*cmd, **kwargs):
+            return proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            result = await stitch_mp3s(self._two_inputs(tmp_path), output=str(caller_output))
+
+        assert result is None
+        assert allocated == []  # caller supplied the path; nothing was allocated
+        assert caller_output.exists()
+        assert caller_output.read_bytes() == b"pre-existing caller data"
+
+    @pytest.mark.asyncio
+    async def test_success_returns_owned_output_intact(self, tmp_path, monkeypatch) -> None:
+        allocated = _capture_mkstemp(monkeypatch)
+        proc = _mock_subprocess(returncode=0)
+
+        async def fake_exec(*cmd, **kwargs):
+            with open(cmd[-1], "wb") as f:  # output path is the last argv entry
+                f.write(b"stitched-mp3-data")
+            return proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            result = await stitch_mp3s(self._two_inputs(tmp_path))
+
+        try:
+            assert len(allocated) == 1
+            assert result == allocated[0]
+            assert os.path.exists(result)
+            assert os.path.getsize(result) > 0
+        finally:
+            # Not on the happy path: a failing assert above must not leave
+            # the mkstemp file behind as test residue.
+            if allocated and os.path.exists(allocated[0]):
+                os.unlink(allocated[0])
+
+    @pytest.mark.asyncio
+    async def test_timeout_reaps_child_via_communicate_not_wait(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """After a timeout kills the ffmpeg child, the cleanup must call
+        ``communicate()`` -- not ``wait()`` -- so that PIPE buffers are
+        drained. A child blocked writing to a full stderr PIPE would hang
+        the event loop if only ``wait()`` were used (#5834)."""
+        allocated = _capture_mkstemp(monkeypatch)
+        proc = _mock_subprocess(returncode=0)
+        proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
+
+        async def fake_exec(*cmd, **kwargs):
+            return proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            result = await stitch_mp3s(self._two_inputs(tmp_path))
+
+        assert result is None
+        proc.kill.assert_called_once()
+        # The critical pin: reap via communicate(), not wait(). The stitch
+        # call itself awaits communicate once; the reap must award a SECOND
+        # await, and wait() must never be touched.
+        assert proc.communicate.await_count == 2
+        proc.wait.assert_not_awaited()
+        assert len(allocated) == 1
+        assert not os.path.exists(allocated[0])
+
+
+# ---------------------------------------------------------------------------
+# _synthesize_piper / _synthesize_polly temp ownership under cancellation (#5821)
+# ---------------------------------------------------------------------------
+
+
+class _CancelOnceProc:
+    """Process double: first ``communicate`` raises ``CancelledError``, the
+    second (the reap) records itself and returns."""
+
+    def __init__(self, events: list[str]):
+        self._events = events
+        self._calls = 0
+
+    async def communicate(self, _input: bytes | None = None):
+        self._calls += 1
+        if self._calls == 1:
+            raise asyncio.CancelledError()
+        self._events.append("reaped")
+        return b"", b""
+
+    def kill(self):
+        self._events.append("killed")
+
+
+class _CancelAlwaysProc:
+    """Process double: EVERY ``communicate`` raises ``CancelledError`` — the
+    second raise is the repeat cancellation landing on the reap await."""
+
+    def __init__(self, events: list[str]):
+        self._events = events
+
+    async def communicate(self, _input: bytes | None = None):
+        raise asyncio.CancelledError()
+
+    def kill(self):
+        self._events.append("killed")
+
+
+def _pin_mkstemp(monkeypatch, owned) -> None:
+    """Pin ``tempfile.mkstemp`` to a known file so the tests can watch it."""
+
+    def fake_mkstemp(suffix: str = ""):
+        return os.open(str(owned), os.O_WRONLY | os.O_CREAT), str(owned)
+
+    monkeypatch.setattr("kiro_crew.voice_reply.tempfile.mkstemp", fake_mkstemp)
+
+
+def _track_unlink(monkeypatch, owned, events: list[str]) -> None:
+    real_unlink = os.unlink
+
+    def tracked(path, *args, **kwargs):
+        if str(path) == str(owned):
+            events.append("unlinked")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr("kiro_crew.voice_reply.os.unlink", tracked)
+
+
+class TestSynthesizePiperCancelOwnership:
+    """``_synthesize_piper`` owns the ``.wav`` until every exit removes it.
+
+    A cancellation mid-``communicate`` (``CancelledError`` is a
+    ``BaseException``, so the ``except Exception`` guard missed it) must kill
+    AND reap the piper child before the unlink — Windows keeps the output file
+    locked until the child fully exits — then remove the ``.wav`` and
+    re-raise. Reference pattern:
+    ``test_apple_speech.py::TestTranscodeTempOwnership`` (#5777).
+    """
+
+    @staticmethod
+    def _piper_env(tmp_path, monkeypatch):
+        bin_path = tmp_path / "piper"
+        _make_executable(str(bin_path))
+        model = tmp_path / "voice.onnx"
+        model.write_bytes(b"m")
+        owned = tmp_path / "owned.wav"
+        _pin_mkstemp(monkeypatch, owned)
+        monkeypatch.setattr(
+            "kiro_crew.voice_reply._resolve_piper_binary", lambda cfg: str(bin_path)
+        )
+        monkeypatch.setattr(
+            "kiro_crew.voice_reply.wrap_argv", lambda c, mode: (list(c), None)
+        )
+        return model, owned
+
+    @pytest.mark.asyncio
+    async def test_cancellation_reaps_piper_before_removing_the_wav(
+        self, tmp_path, monkeypatch
+    ):
+        model, owned = self._piper_env(tmp_path, monkeypatch)
+        events: list[str] = []
+        _track_unlink(monkeypatch, owned, events)
+
+        with patch(
+            "asyncio.create_subprocess_exec", return_value=_CancelOnceProc(events)
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await _synthesize_piper("hello", piper_model=str(model))
+        assert events == ["killed", "reaped", "unlinked"]
+        assert not owned.exists()
+
+    @pytest.mark.asyncio
+    async def test_repeat_cancellation_on_the_reap_still_unlinks(
+        self, tmp_path, monkeypatch
+    ):
+        """A REPEAT cancellation landing on the reap await is swallowed so the
+        unlink still runs and the ORIGINAL cancellation propagates."""
+        model, owned = self._piper_env(tmp_path, monkeypatch)
+        events: list[str] = []
+        _track_unlink(monkeypatch, owned, events)
+
+        with patch(
+            "asyncio.create_subprocess_exec", return_value=_CancelAlwaysProc(events)
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await _synthesize_piper("hello", piper_model=str(model))
+        assert events == ["killed", "unlinked"]
+        assert not owned.exists()
+
+    @pytest.mark.asyncio
+    async def test_locked_wav_does_not_replace_the_cancellation(
+        self, tmp_path, monkeypatch
+    ):
+        """Worst case on Windows: the child still holds the ``.wav`` so the
+        unlink raises ``PermissionError``. That must not REPLACE the in-flight
+        cancellation — the ``OSError`` guard swallows it and the original
+        propagates."""
+        model, owned = self._piper_env(tmp_path, monkeypatch)
+        events: list[str] = []
+
+        def locked_unlink(path, *args, **kwargs):
+            if str(path) == str(owned):
+                events.append("unlink_attempted")
+                raise PermissionError("file is locked by the child")
+            return os.remove(path)
+
+        monkeypatch.setattr("kiro_crew.voice_reply.os.unlink", locked_unlink)
+        with patch(
+            "asyncio.create_subprocess_exec", return_value=_CancelOnceProc(events)
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await _synthesize_piper("hello", piper_model=str(model))
+        assert events == ["killed", "reaped", "unlink_attempted"]
+        # The locked unlink never removed the file — the guarantee under test
+        # is exception identity, not removal.
+        assert owned.exists()
+
+    @pytest.mark.asyncio
+    async def test_cancellation_during_spawn_still_removes_the_wav(
+        self, tmp_path, monkeypatch
+    ):
+        """A cancellation landing on the spawn itself means no child exists —
+        the ``.wav`` must still be removed and the cancellation propagate."""
+        model, owned = self._piper_env(tmp_path, monkeypatch)
+
+        with patch(
+            "asyncio.create_subprocess_exec", side_effect=asyncio.CancelledError()
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await _synthesize_piper("hello", piper_model=str(model))
+        assert not owned.exists()
+
+    @pytest.mark.asyncio
+    async def test_cancellation_still_unlinks_the_sandbox_cleanup_path(
+        self, tmp_path, monkeypatch
+    ):
+        """The outer ``finally`` owns the wrap_argv cleanup path; a cancelled
+        synthesis must not leak the launcher script either."""
+        model, owned = self._piper_env(tmp_path, monkeypatch)
+        launcher = tmp_path / "launcher.sh"
+        launcher.write_text("#!/bin/sh\n")
+        monkeypatch.setattr(
+            "kiro_crew.voice_reply.wrap_argv",
+            lambda c, mode: (list(c), str(launcher)),
+        )
+        events: list[str] = []
+
+        with patch(
+            "asyncio.create_subprocess_exec", return_value=_CancelOnceProc(events)
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await _synthesize_piper("hello", piper_model=str(model))
+        assert not owned.exists()
+        assert not launcher.exists()
+
+
+class TestSynthesizePollyCancelOwnership:
+    """``_synthesize_polly`` owns the ``.mp3`` until every exit removes it.
+
+    Same cancellation contract as the piper path above: kill AND reap the AWS
+    CLI child before the unlink, remove the ``.mp3``, re-raise the original
+    cancellation (#5821).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _sandbox_and_consent(self, monkeypatch, _polly_consented):
+        monkeypatch.setattr(
+            "kiro_crew.voice_reply.wrap_argv", lambda argv, **k: (list(argv), None)
+        )
+        _patch_aws_on_path(monkeypatch)
+
+    @staticmethod
+    def _owned_mp3(tmp_path, monkeypatch):
+        owned = tmp_path / "owned.mp3"
+        _pin_mkstemp(monkeypatch, owned)
+        return owned
+
+    @pytest.mark.asyncio
+    async def test_cancellation_reaps_the_cli_before_removing_the_mp3(
+        self, tmp_path, monkeypatch
+    ):
+        owned = self._owned_mp3(tmp_path, monkeypatch)
+        events: list[str] = []
+        _track_unlink(monkeypatch, owned, events)
+
+        with patch(
+            "asyncio.create_subprocess_exec", return_value=_CancelOnceProc(events)
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await _synthesize_polly("<speak>hi</speak>")
+        assert events == ["killed", "reaped", "unlinked"]
+        assert not owned.exists()
+
+    @pytest.mark.asyncio
+    async def test_repeat_cancellation_on_the_reap_still_unlinks(
+        self, tmp_path, monkeypatch
+    ):
+        owned = self._owned_mp3(tmp_path, monkeypatch)
+        events: list[str] = []
+        _track_unlink(monkeypatch, owned, events)
+
+        with patch(
+            "asyncio.create_subprocess_exec", return_value=_CancelAlwaysProc(events)
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await _synthesize_polly("<speak>hi</speak>")
+        assert events == ["killed", "unlinked"]
+        assert not owned.exists()
+
+    @pytest.mark.asyncio
+    async def test_locked_mp3_does_not_replace_the_cancellation(
+        self, tmp_path, monkeypatch
+    ):
+        owned = self._owned_mp3(tmp_path, monkeypatch)
+        events: list[str] = []
+
+        def locked_unlink(path, *args, **kwargs):
+            if str(path) == str(owned):
+                events.append("unlink_attempted")
+                raise PermissionError("file is locked by the child")
+            return os.remove(path)
+
+        monkeypatch.setattr("kiro_crew.voice_reply.os.unlink", locked_unlink)
+        with patch(
+            "asyncio.create_subprocess_exec", return_value=_CancelOnceProc(events)
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await _synthesize_polly("<speak>hi</speak>")
+        assert events == ["killed", "reaped", "unlink_attempted"]
+        # The locked unlink never removed the file — the guarantee under test
+        # is exception identity, not removal.
+        assert owned.exists()
+
+    @pytest.mark.asyncio
+    async def test_cancellation_during_spawn_still_removes_the_mp3(
+        self, tmp_path, monkeypatch
+    ):
+        owned = self._owned_mp3(tmp_path, monkeypatch)
+
+        with patch(
+            "asyncio.create_subprocess_exec", side_effect=asyncio.CancelledError()
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await _synthesize_polly("<speak>hi</speak>")
+        assert not owned.exists()

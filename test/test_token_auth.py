@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 
+from kiro_crew.dashboard.refresh_tokens import REFRESH_COOKIE_PREFIX, refresh_cookie_name
 from kiro_crew.dashboard.token_auth import (
     MAX_CONCURRENT_NONCES,
     MAX_SESSION_TTL_SECS,
@@ -2033,14 +2034,17 @@ def test_revoked_store_locks_the_file_down_to_its_owner(tmp_path, monkeypatch) -
     assert locked, (
         "the revoked-nonce store was persisted without restrict_to_owner; a raw "
         "chmod is a no-op on Windows and leaves the denylist readable by other "
-        "local accounts")
+        "local accounts"
+    )
     locked_path, size_at_lockdown = locked[0]
     assert size_at_lockdown == 0, (
         "the denylist was written before the lockdown applied; on Windows "
         "restrict_to_owner shells out to icacls, so the nonces would sit under "
-        "the parent-inherited DACL for the length of that call")
-    assert locked_path.startswith(str(state_path)), (
-        f"locked down {locked_path}, which is not the store's own temp file")
+        "the parent-inherited DACL for the length of that call"
+    )
+    assert locked_path.startswith(
+        str(state_path)
+    ), f"locked down {locked_path}, which is not the store's own temp file"
 
     # The store still works, and on POSIX the resulting mode is observable.
     assert store.is_revoked("nonce-locked") is True
@@ -2412,9 +2416,7 @@ async def test_index_serves_guidance_when_bundle_missing(tmp_path, monkeypatch) 
 
 
 @pytest.mark.asyncio
-async def test_index_caches_html_and_rerereads_only_on_rebuild(
-    tmp_path, monkeypatch
-) -> None:
+async def test_index_caches_html_and_rerereads_only_on_rebuild(tmp_path, monkeypatch) -> None:
     """The shell is cached keyed by index.html's mtime: repeated requests with
     an UNCHANGED file read disk once; a rebuild (mtime change) is picked up on
     the next request WITHOUT a restart.
@@ -2458,12 +2460,12 @@ async def test_index_caches_html_and_rerereads_only_on_rebuild(
     os.utime(fake_index, ns=(stale + 1_000_000_000, stale + 1_000_000_000))
 
     resp3 = await core.index(_make_request(path="/", remote="127.0.0.1"))
-    assert resp3.text == "<html>spa-shell-v2</html>", (
-        "a rebuilt bundle (changed mtime) must be re-read, not served stale"
-    )
-    assert call_count == 2, (
-        f"expected a re-read after the mtime changed; read_text calls={call_count}"
-    )
+    assert (
+        resp3.text == "<html>spa-shell-v2</html>"
+    ), "a rebuilt bundle (changed mtime) must be re-read, not served stale"
+    assert (
+        call_count == 2
+    ), f"expected a re-read after the mtime changed; read_text calls={call_count}"
 
 
 @pytest.mark.asyncio
@@ -2486,9 +2488,7 @@ async def test_index_missing_bundle_not_cached_recovers_when_dist_appears(
     # First request: bundle absent → fallback, cache stays None.
     resp_missing = await core.index(req)
     assert core.DASHBOARD_HTML_NOT_FOUND_MARKER in resp_missing.text
-    assert core._INDEX_HTML_CACHE is None, (
-        "FileNotFoundError path must NOT populate the cache"
-    )
+    assert core._INDEX_HTML_CACHE is None, "FileNotFoundError path must NOT populate the cache"
 
     # Bundle appears (e.g. dev build completed).
     fake_index.write_text("<html>now-built</html>", encoding="utf-8")
@@ -3212,3 +3212,75 @@ def test_app_token_path_allowed_implicit_ws():
     assert app_token_path_allowed("some-app", "/api/spawn") is False
     # An empty app name must never be granted, even for implicit paths.
     assert app_token_path_allowed("", "/api/ws") is False
+
+
+# -- no_refresh: a link minted for a device we do not control gets no refresh chain --
+
+
+@pytest.mark.asyncio
+async def test_query_param_auth_normally_attaches_a_refresh_cookie() -> None:
+    """Baseline for the test below: without the claim, a refresh cookie IS set.
+
+    Without this the no_refresh assertion could pass simply because the exchange
+    never attaches a refresh cookie in this harness at all.
+    """
+    mw = token_auth_middleware()
+    token = generate_token("refreshable", ttl_seconds=300)
+    resp = await mw(_make_request(query={"token": token}, remote="10.0.0.2"), _ok_handler)
+    assert resp.status == 200
+    assert any(n.startswith(REFRESH_COOKIE_PREFIX) for n in resp.cookies)
+
+
+@pytest.mark.asyncio
+async def test_no_refresh_link_gets_an_access_cookie_but_no_refresh_chain() -> None:
+    """The tailnet QR's short session must not be promotable to the 20h ceiling.
+
+    ``api_auth_refresh`` re-mints at MAX_SESSION_TTL_SECS without carrying the
+    original ceiling forward, so a refresh chain would silently extend a ~1h
+    scanned session. The guarantee is enforced by never minting the chain: this
+    asserts the ABSENCE of the credential, not a guard around it.
+    """
+    mw = token_auth_middleware()
+    token = generate_token("qruser", ttl_seconds=300, extra={"no_refresh": "1"})
+    resp = await mw(_make_request(query={"token": token}, remote="10.0.0.3"), _ok_handler)
+    assert resp.status == 200
+    # The session itself still works — the phone can use the dashboard.
+    assert resp.cookies.get("mc_token_5476") is not None
+    # But there is no LIVE refresh credential to rotate. The name may appear as
+    # an EXPIRY (max-age=0) — the exchange also clears a residual cookie the
+    # browser already had — so the property is "nothing rotatable", not "no
+    # Set-Cookie header": asserting the latter would fail the moment the
+    # clearing behaviour was added, which is exactly what happened.
+    live = [
+        n
+        for n in resp.cookies
+        if n.startswith(REFRESH_COOKIE_PREFIX) and int(resp.cookies[n]["max-age"] or 0) > 0
+    ]
+    assert not live
+
+
+@pytest.mark.asyncio
+async def test_no_refresh_link_expires_a_refresh_cookie_the_browser_already_had() -> None:
+    """Not minting one is half the guarantee; a residual one must be cleared.
+
+    `api_auth_refresh` authenticates on the refresh cookie ALONE — it never checks
+    that the access token beside it belongs to the same session. So a browser that
+    already held a refresh cookie from an earlier full session (a prior `?token=`
+    link, a `!dashboard` link) could rotate it into a 20-hour session immediately
+    after scanning a QR, bypassing the short window entirely.
+    """
+    mw = token_auth_middleware()
+    token = generate_token("qruser2", ttl_seconds=300, extra={"no_refresh": "1"})
+    stale = refresh_cookie_name("5476")
+    resp = await mw(
+        _make_request(
+            query={"token": token},
+            cookies={stale: "a-refresh-token-from-an-earlier-session"},
+            remote="10.0.0.4",
+        ),
+        _ok_handler,
+    )
+    assert resp.status == 200
+    # Present in the response, but as an EXPIRY (max-age=0) — not left alone.
+    assert stale in resp.cookies
+    assert int(resp.cookies[stale]["max-age"]) == 0

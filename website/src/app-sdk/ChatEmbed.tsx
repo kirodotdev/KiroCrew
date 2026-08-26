@@ -7,11 +7,13 @@
  * State management: polling via useQuery refetchInterval.
  * Poll faster during streaming (1s), slower when idle (5s).
  */
-import { useState, useRef, useCallback, useEffect, type ReactNode } from 'react'
-import { useImeGuard } from '../hooks/useImeGuard'
+import { useRef, useCallback, useEffect, useMemo, type ReactNode } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { ArrowUp, Loader2 } from 'lucide-react'
 import ChatMessageList from './ChatMessageList'
+import FollowUpBar from '../components/FollowUpBar'
+import { deriveFollowUpOptions } from './protocol'
+import { useComposerDraft } from './useComposerDraft'
 import { useAppApi } from './index'
 import type { ChatMessage } from '../types'
 
@@ -66,8 +68,6 @@ interface ChatSlotData {
 
 function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSend, aboveComposer }: ChatEmbedProps) {
   const api = useAppApi()
-  const ime = useImeGuard()
-  const [input, setInput] = useState('')
   const endRef = useRef<HTMLDivElement>(null)
   const scrollerRef = useRef<HTMLDivElement>(null)
   const lastHashRef = useRef('')
@@ -87,6 +87,21 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
   const messages = slotData?.messages ?? []
   const running = slotData?.running ?? false
   const title = slotData?.title ?? ''
+
+  /** Derived from the same helper the main chat and side panel use, so "options only
+   *  after the answer settles" and "a later user message clears them" behave identically
+   *  here too — an agent's follow-up choices should never be silently dropped just
+   *  because the surface embedding them is thinner. */
+  const { followUpOptions } = useMemo(
+    () => deriveFollowUpOptions(messages, running),
+    [messages, running]
+  )
+
+  /** The composer's draft behaviour, owned by the chat SDK rather than by this file —
+   *  see useComposerDraft's own docs. Picking a follow-up option edits the draft
+   *  (matching every other surface) instead of sending immediately. */
+  const { draft, setDraft, picked, toggleOption, composition, submitOnEnter } =
+    useComposerDraft({ followUpOptions })
 
   // Track whether the user is parked at the bottom (startAtBottom mode only).
   useEffect(() => {
@@ -128,12 +143,20 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
     onSettled: () => { void refetch() },
   })
 
-  const send = useCallback(() => {
-    const msg = input.trim()
-    if (!msg) return
-    setInput('')
+  /** `override` carries the text a follow-up chip's send arrow supplies (double-click
+   *  or the send segment); without it the draft is the source of truth. Every call
+   *  site wraps this in an arrow, so a click event can never arrive here as the
+   *  override — mirrors SideChat's send(). Guarded on `sendMutation.isPending` so a
+   *  chip's send arrow (unlike the composer's own Send button) can't fire a second
+   *  turn before the first settles. Only a composer submit owns the composer's
+   *  text — an override send carries its own text, so clearing the draft here would
+   *  throw away a draft the user has not sent yet. */
+  const send = useCallback((override?: string) => {
+    const msg = (override ?? draft).trim()
+    if (!msg || sendMutation.isPending) return
+    if (override == null) setDraft('')
     sendMutation.mutate(msg)
-  }, [input, sendMutation])
+  }, [draft, setDraft, sendMutation])
 
   // Resolve a pending tool approval from inside the embed.
   //
@@ -194,26 +217,33 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
 
       {aboveComposer && <div className="shrink-0">{aboveComposer}</div>}
 
+      {followUpOptions.length > 0 && (
+        <div className={`shrink-0 px-3 ${frameless ? '' : 'bg-bg-subtle'}`}>
+          <FollowUpBar
+            options={followUpOptions}
+            picked={picked}
+            onSelect={toggleOption}
+            onSend={text => send(text)}
+          />
+        </div>
+      )}
+
       <div className={`flex items-center gap-2 px-3 py-2 shrink-0 ${frameless ? '' : 'border-t border-border bg-bg-subtle'}`}>
         <input
           type="text"
+          {...composition}
           aria-label={i18nT('appSdk.chatEmbed.chat_message')}
           className="flex-1 min-w-0 px-3 py-2 text-sm bg-bg-elevated border border-border rounded-md text-text outline-none focus-visible:border-accent transition-colors"
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          {...ime.bindComposition()}
-          onKeyDown={e => {
-            if (e.key !== 'Enter' || e.shiftKey) return
-            // The emptiness test stays outside the guard.
-            if (input.trim() && ime.claimEnter(e)) send()
-          }}
+          value={draft}
+          onChange={e => setDraft(e.target.value)}
+          onKeyDown={e => submitOnEnter(e, () => send())}
           placeholder={running ? i18nT('appSdk.chatEmbed.agent_is_working') : (placeholder || i18nT('appSdk.chatEmbed.message'))}
           disabled={sendMutation.isPending}
         />
         <button
           className="p-2 rounded-md bg-accent text-accent-fg disabled:opacity-40 disabled:cursor-not-allowed hover:opacity-80 transition-opacity"
-          onClick={send}
-          disabled={sendMutation.isPending || !input.trim()}
+          onClick={() => send()}
+          disabled={sendMutation.isPending || !draft.trim()}
           title={i18nT('appSdk.chatEmbed.send')}
           aria-label={i18nT('appSdk.chatEmbed.send_message')}
         >

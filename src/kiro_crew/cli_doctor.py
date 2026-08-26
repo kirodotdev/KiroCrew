@@ -18,7 +18,7 @@ import urllib.request
 from pathlib import Path
 
 from kiro_crew import __version__ as _mc_version
-from kiro_crew import agent_state, diagnostics, platform_compat, sandbox
+from kiro_crew import agent_state, dep_sync, diagnostics, platform_compat, sandbox
 from kiro_crew._bootstrap import _source_checkout_root
 from kiro_crew.acp import kas_assets, kas_auth
 from kiro_crew.acp.client import KIRO_CLI_BIN
@@ -919,6 +919,64 @@ def _doctor_trust_root() -> None:
     print("               restart the gateway if another process relocated it.")
 
 
+#: MCP servers that host strict-identity tools — the reflexive verbs
+#: (``monitor_start``, ``session_ledger_*``, ``set_project``, ``ask_question``)
+#: and the authorization-subject ones (session control, ``chat_folder_*``).
+#: Mirrors ``mcp_core._STRICT_IDENTITY_SERVERS``; ``kirocrew-dashboard`` is
+#: opt-in per agent, so it is reported only when an agent actually references it.
+_STRICT_IDENTITY_SERVERS = ("kirocrew-core", "kirocrew-dashboard")
+
+
+def _doctor_strict_identity(cfg: KiroCrewConfig) -> None:
+    """Report whether strict-identity tools have a working identity channel.
+
+    On the kiro backend a session's process is an ``AcpRuntime``, which is
+    session-UNBOUND by design (one process multiplexes N sessions, so it cannot
+    carry one session's key in its environment — ``acp/runtime.py`` injects
+    none). The gateway's per-call caller injection is therefore the ONLY
+    identity channel for that backend, and it exists only for servers listed in
+    ``mcp_gateway.stub_servers``. An unrouted server means every strict tool on
+    it is refused — silently, once per call, with no hint that the cause is
+    topology rather than the calling session.
+
+    Reports only, and deliberately appends NO entry to doctor's ``issues``:
+    ``mcp_gateway.stub_servers`` is empty by default because routing starts a
+    broker plus a stub per server, so a hard issue here would make
+    ``kirocrew doctor`` exit 1 on every stock install — the same failure the
+    speech-to-text section is written to avoid. Parity with
+    :func:`_doctor_trust_root`, which also only prints.
+
+    Skipped where the env sources exist by construction: on Linux the sandbox
+    launcher exports ``KIROCREW_HOST_PID``, so routing is not what decides
+    whether strict identity resolves.
+    """
+    if _plat.system() not in ("Darwin", "Windows"):
+        return
+    try:
+        routed = set(cfg.mcp_gateway.stub_servers)
+    except Exception:
+        routed = set()
+    unrouted = [s for s in _STRICT_IDENTITY_SERVERS if s not in routed]
+    if not unrouted:
+        print("  strict identity: ✅ routed — the gateway injects a per-call caller")
+        return
+    names = ", ".join(unrouted)
+    print(f"  strict identity: ⏹ no identity channel for {names}")
+    _print_wrapped(
+        "Tools that must know which session is calling (monitor_start, "
+        "session_ledger_*, set_project, ask_question, session control, "
+        "chat_folder_*) are refused while a server is unrouted: on the kiro "
+        "backend the session's AcpRuntime carries no session key in its "
+        "environment by design, so the gateway's per-call caller injection is "
+        "the only channel, and it covers routed servers only. Route them from "
+        "MCP Management (or add them to mcp_gateway.stub_servers and restart) "
+        "if you use those tools. Leaving them unrouted is a valid choice — "
+        "routing starts a broker and one stub process per server — so this is "
+        "a note, not a problem to fix; the tools' own refusal now names the "
+        "same cause."
+    )
+
+
 _INDENT = "               "
 
 
@@ -1124,33 +1182,6 @@ def _linger_enabled(user: str) -> bool | None:
     return None
 
 
-# Git for Windows never lives in the system directories the trusted resolver
-# pins Windows lookups to — it installs under Program Files. Fixed literal
-# roots, not ``%ProgramFiles%``: doctor runs with operator privileges, and
-# reading the environment would let a poisoned variable redirect the lookup to
-# an agent-writable directory — the exact hole the pin exists to close.
-_WINDOWS_GIT_DIRS = (
-    r"C:\Program Files\Git\cmd",
-    r"C:\Program Files (x86)\Git\cmd",
-)
-
-
-def _windows_git_bin() -> str | None:
-    """``git.exe`` from the fixed Git for Windows install roots, else ``None``.
-
-    Without this, every supported Windows source install reports "could not
-    check" — :func:`platform_compat.trusted_system_bin` only probes the system
-    directories, where git never is. A non-default-drive install still misses
-    and degrades to "could not check", which is honest: this fallback widens
-    the pin only to paths an unprivileged attacker cannot write.
-    """
-    for directory in _WINDOWS_GIT_DIRS:
-        candidate = os.path.join(directory, "git.exe")
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-            return candidate
-    return None
-
-
 def _git_line(repo: Path, *args: str) -> str | None:
     """First stdout line of ``git -C repo *args``, ``None`` on any failure.
 
@@ -1159,16 +1190,13 @@ def _git_line(repo: Path, *args: str) -> str | None:
     install has no ``.git``, a fresh clone may lack ``origin/HEAD`` — so every
     error collapses to ``None`` and the caller renders "could not check".
 
-    ``git`` is resolved through :func:`platform_compat.trusted_system_bin`
-    rather than a bare ``PATH`` lookup: doctor runs with operator privileges,
-    and an agent-writable directory leading ``PATH`` could plant a ``git``
-    shim. On Windows a resolver miss falls back to the fixed Git for Windows
-    install roots (:func:`_windows_git_bin`); any remaining miss collapses to
+    ``git`` is resolved through :func:`platform_compat.trusted_git_bin` rather
+    than a bare ``PATH`` lookup: doctor runs with operator privileges, and an
+    agent-writable directory leading ``PATH`` could plant a ``git`` shim. That
+    helper carries the Windows install-root fallback; a miss collapses to
     ``None`` like every other failure here — no spawn at all.
     """
-    git = platform_compat.trusted_system_bin("git")
-    if git is None and platform_compat.IS_WINDOWS:
-        git = _windows_git_bin()
+    git = platform_compat.trusted_git_bin()
     if git is None:
         return None
     try:
@@ -1658,47 +1686,23 @@ def _doctor_kas(issues: list[str]) -> None:
 
 
 def _report_kas_backend(issues: list[str]) -> None:
-    """Print the KAS diagnostic block for whichever spawn path is selected.
+    """Print the KAS diagnostic block (assets + bundle version + token probe).
 
     Split from :func:`_doctor_kas` so the backend-selection check there stays a
     positive ``== ACP_BACKEND_KAS`` rather than an early-return on inequality.
-    Default path: KAS is fronted by ``kiro-cli acp --agent-engine v3``, so
-    readiness is kiro-cli being present and its ``acp`` subcommand knowing the
-    engine flag. Override path (either ``KIROCREW_KAS_*`` env set): the legacy
-    direct spawn, so readiness is the extracted assets. The token probe runs on
-    both — the ``_kiro/auth/getAccessToken`` callback is forwarded to Crew on
-    both paths. It prints only the expiry, never the token bytes.
     """
     print("\nKAS backend")
-    if kas_assets.kas_override_active():
-        node = kas_assets.find_kas_node()
-        script = kas_assets.find_kas_server_script()
-        print("  spawn:       direct (KIROCREW_KAS_* override active)")
-        print(f"  node:        {'✅ ' + str(node) if node else '❌ not found'}")
-        if script:
-            print(f"  bundle:      ✅ {_kas_version_label(script)}")
-        else:
-            print("  bundle:      ❌ KAS server script not found")
-        if not (node and script):
-            print("               Fix: point KIROCREW_KAS_NODE / KIROCREW_KAS_SCRIPT at a")
-            print("               local KAS build, or unset both to use kiro-cli's own")
-            print("               ACP surface instead.")
-            issues.append("KAS backend selected but assets missing")
+    node = kas_assets.find_kas_node()
+    script = kas_assets.find_kas_server_script()
+    print(f"  node:        {'✅ ' + str(node) if node else '❌ not found'}")
+    if script:
+        print(f"  bundle:      ✅ {_kas_version_label(script)}")
     else:
-        kiro_bin = shutil.which(KIRO_CLI_BIN)
-        print("  spawn:       kiro-cli acp --agent-engine v3")
-        print(f"  kiro-cli:    {'✅ ' + kiro_bin if kiro_bin else '❌ not found in PATH'}")
-        if kiro_bin:
-            engine_ok = _kas_engine_flag_supported(kiro_bin)
-            if engine_ok:
-                print(f"  engine flag: ✅ {kas_assets.KAS_ENGINE_FLAG} supported")
-            else:
-                print(f"  engine flag: ❌ this kiro-cli lacks {kas_assets.KAS_ENGINE_FLAG}")
-                print("               Fix: update kiro-cli (`kiro-cli update`).")
-                issues.append("KAS backend selected but kiro-cli lacks the engine flag")
-        else:
-            print("               Fix: install kiro-cli and sign in with `kiro-cli login`.")
-            issues.append("KAS backend selected but kiro-cli not found")
+        print("  bundle:      ❌ KAS server script not found")
+    if not (node and script):
+        print("               Fix: install kiro-cli and run it once so it unpacks its")
+        print("               KAS bundle (or set KIROCREW_KAS_NODE / KIROCREW_KAS_SCRIPT).")
+        issues.append("KAS backend selected but assets missing")
 
     # Token status — a bounded live probe through kiro-cli. Advisory: an
     # unobtainable token is usually a transient login state, not a broken
@@ -1713,26 +1717,6 @@ def _report_kas_backend(issues: list[str]) -> None:
     else:
         expires = resp.get("expiresAt")
         print(f"  token:       ✅ obtained via kiro-cli (expires {expires})")
-
-
-def _kas_engine_flag_supported(kiro_bin: str) -> bool:
-    """Bounded probe: does this kiro-cli's ``acp`` subcommand take the engine flag?
-
-    Reads ``acp --help`` rather than comparing versions, so the check keeps
-    working across version schemes and never encodes a floor that goes stale.
-    Any spawn/timeout failure reports unsupported — this is a diagnostic, and a
-    kiro-cli whose ``--help`` cannot run will not serve sessions either.
-    """
-    try:
-        proc = subprocess.run(
-            [kiro_bin, kas_assets.KAS_CLI_SUBCMD, "--help"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return kas_assets.KAS_ENGINE_FLAG in (proc.stdout or "") + (proc.stderr or "")
 
 
 def _doctor_agents_janitor(issues: list[str], sweep_backups: bool) -> None:
@@ -2027,6 +2011,26 @@ def _doctor_whatsapp(cfg: KiroCrewConfig, issues: list[str]) -> None:
     print(f"  dm policy:   {wa.dm_policy}")
 
 
+def _venv_deps_ok(venv_py: Path) -> bool:
+    """True when *venv_py* ITSELF can import the gateway's core dependencies.
+
+    Routed through :func:`dep_sync._probe_interpreter` (``-I -X utf8`` plus a
+    neutral ``cwd``) because the question is about the venv, not the process
+    asking: an unisolated ``python -c`` puts the doctor's CWD at
+    ``sys.path[0]`` and inherits ``PYTHONPATH``, so a decoy package on either
+    route makes the check answer for the caller -- reporting the modules
+    available in a venv that cannot actually serve them, a false-healthy from
+    the diagnostic whose job is to catch exactly that install.
+    """
+    try:
+        proc = dep_sync._probe_interpreter(
+            venv_py, "import websockets, slack_sdk, aiohttp", timeout=5
+        )
+    except Exception:
+        return False
+    return proc.returncode == 0
+
+
 def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False) -> None:
     """Verify KiroCrew setup — check dependencies, config, credentials, connectivity.
 
@@ -2300,6 +2304,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     _doctor_data_home()
     _doctor_path_launcher()
     _doctor_trust_root()
+    _doctor_strict_identity(cfg)
 
     # ── Agents dir janitor (orphaned atomic-write temps + stale backups) ──
     _doctor_agents_janitor(issues, cfg.agent.sweep_agents_backups)
@@ -2362,14 +2367,9 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
             print(f"  python:      ❌ venv python broken: {exc}")
             issues.append("venv python")
         else:
-            try:
-                subprocess.run(
-                    [str(venv_py), "-c", "import websockets, slack_sdk, aiohttp"],
-                    capture_output=True,
-                    timeout=5,
-                ).check_returncode()
+            if _venv_deps_ok(venv_py):
                 print("  deps:        ✅ websockets, slack_sdk, aiohttp available")
-            except Exception:
+            else:
                 print("  deps:        ❌ missing modules (websockets/slack_sdk/aiohttp)")
                 issues.append("python deps")
     else:

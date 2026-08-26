@@ -10,7 +10,7 @@
  * `data`; these tests pin both branches so they cannot collapse back together.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen } from '@testing-library/react'
+import { screen, waitFor } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import { i18nT } from '../i18n/t'
 import type { RootState } from '../store'
@@ -118,5 +118,35 @@ describe('top-bar credit segment — failed vs loading', () => {
 
     const failed = await screen.findByLabelText(i18nT('app.kiro_credit_usage_unavailable'))
     expect(failed.textContent).toContain('—')
+  })
+
+  it('treats an api_key_auth unavailable payload as terminal, not still loading', async () => {
+    // The backend fail-fasts API-key accounts with a reasoned marker (#5728).
+    // That payload must stop the spinner and say WHY — before the fix the
+    // panel spun forever because no terminal state ever arrived.
+    sessionsUsageMock.mockResolvedValue({ usage: { available: false, reason: 'api_key_auth' } })
+    renderWithProviders(<App />, { route: '/chat', preloadedState: connectedState })
+
+    const pill = await screen.findByLabelText(i18nT('app.kiro_credit_usage_api_key'))
+    expect(pill.textContent).toContain('—')
+    expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_checking_2'))).toBeNull()
+    expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_unavailable'))).toBeNull()
+  })
+
+  it('still hides the pill on a reasonless unavailable payload', async () => {
+    // Negative control: the non-Kiro-provider marker keeps its existing
+    // hide-the-pill behavior; only the api_key_auth reason gets the new state.
+    sessionsUsageMock.mockResolvedValue({ usage: { available: false } })
+    renderWithProviders(<App />, { route: '/chat', preloadedState: connectedState })
+
+    // Wait for the query to settle via an unrelated capsule anchor, then
+    // assert every usage-segment variant is absent.
+    await screen.findByTestId('chat-page')
+    await waitFor(() => {
+      expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_checking_2'))).toBeNull()
+    })
+    expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_api_key'))).toBeNull()
+    expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_unavailable'))).toBeNull()
+    expect(screen.queryByLabelText(i18nT('components.kiroAccountModal.kiro_credit_usage'))).toBeNull()
   })
 })

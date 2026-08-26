@@ -234,7 +234,7 @@ def cross_surface_targets(surface: str) -> list[str]:
     reads a frontend module, so a plain skip would be unsafe. Reusing that script
     keeps this gate at parity with CI instead of inventing a second answer.
     """
-    proc = _run(["python3", "scripts/ci-surface-tests.py", "--surface", surface])
+    proc = _run([sys.executable, "scripts/ci-surface-tests.py", "--surface", surface])
     if proc.returncode != 0:
         raise SelectionUntrustworthy(
             f"cross-surface selector failed (rc={proc.returncode}): {proc.stderr.strip()[:200]}"
@@ -281,7 +281,7 @@ def validated_targets(targets: list[str], root: Path) -> list[str]:
 
 
 def backend_argv(targets: list[str] | None) -> list[str]:
-    argv = ["python", "-m", "pytest", "-q"]
+    argv = [sys.executable, "-m", "pytest", "-q"]
     if targets:
         # `--` ends option parsing so nothing after it can be read as a flag.
         # Coverage is off: a subset's coverage is not comparable to the repo
@@ -529,7 +529,10 @@ def _self_test() -> int:
     # by BASENAME because it is resolved to an absolute path -- `subprocess.run`
     # with shell=False cannot execute a bare `npm` on native Windows, where what
     # exists on PATH is `npm.cmd`.
-    check("backend full argv", backend_argv(None) == ["python", "-m", "pytest", "-q"])
+    check(
+        "backend full argv",
+        backend_argv(None) == [sys.executable, "-m", "pytest", "-q"],
+    )
     try:
         fe_full = frontend_argv(None)
         check("frontend full argv launcher is npm", Path(fe_full[0]).stem == "npm")

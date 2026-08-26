@@ -391,6 +391,12 @@ from kiro_crew.dashboard.handlers.steering import (  # noqa: E402, F401
 from kiro_crew.dashboard.handlers.tailnet import (  # noqa: E402, F401
     api_tailnet_status,
 )
+from kiro_crew.dashboard.handlers.tailnet_mobile import (  # noqa: E402, F401
+    api_tailnet_mobile_publish,
+    api_tailnet_mobile_qr,
+    api_tailnet_mobile_status,
+    api_tailnet_mobile_unpublish,
+)
 
 # ── Task Runner (extracted to handlers/taskrunner.py) ──
 from kiro_crew.dashboard.handlers.taskrunner import (  # noqa: E402, F401
@@ -421,6 +427,7 @@ from kiro_crew.dashboard.handlers.telemetry import (  # noqa: E402, F401
     api_collection_status,
     api_context_trace,
     api_telemetry_startup,
+    api_usage_turns,
 )
 from kiro_crew.dashboard.handlers.terminal import (  # noqa: E402, F401
     api_terminal_complete,

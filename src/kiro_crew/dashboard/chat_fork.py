@@ -14,14 +14,17 @@ from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
     slot_history_key,
 )
-from kiro_crew.dashboard.state import DashboardState, request_slot_origin
+from kiro_crew.dashboard.state import (
+    MAX_LIVE_SLOTS,
+    DashboardState,
+    request_slot_origin,
+)
 from kiro_crew.history import carry_provenance
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
 
-_MAX_SLOTS_FOR_FORK = 500
 _FORK_TITLE_MARKER = "↳ "
 
 # Attempts to land a transcript read and the unpersisted tail on ONE consistent
@@ -59,7 +62,7 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
     # under construction too (``live_slot_count``): the import path retracts a
     # slot from ``_slots`` while it is built, and those are allocated memory this
     # cap would otherwise ignore.
-    if state.live_slot_count() >= _MAX_SLOTS_FOR_FORK:
+    if state.live_slot_count() >= MAX_LIVE_SLOTS:
         sel().log_api_access(
             caller=request_app or "dashboard", operation="chat.slot_fork",
             outcome="denied", source="rate_limit",
@@ -67,7 +70,7 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
             error="slot cap reached",
         )
         return web.json_response(
-            {"error": f"slot cap reached ({_MAX_SLOTS_FOR_FORK})"}, status=429,
+            {"error": f"slot cap reached ({MAX_LIVE_SLOTS})"}, status=429,
         )
 
     # App ownership check (App Kit §5.2)

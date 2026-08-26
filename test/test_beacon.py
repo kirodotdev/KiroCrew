@@ -20,6 +20,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew import beacon, platform_compat
 from kiro_crew.apps import install_receipt
 
@@ -614,6 +615,7 @@ class TestThrottle:
         assert beacon.send("https://example.invalid", "1.2.3", enabled=True, acked=True) is False
         assert len(calls) == 1, "at most one request per day"
 
+    @requires_symlinks
     def test_stamp_does_not_follow_a_symlink(self, _isolated_home, monkeypatch):
         """A symlink planted at the stamp path must not have its target clobbered.
 

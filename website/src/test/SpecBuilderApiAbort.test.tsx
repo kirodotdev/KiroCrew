@@ -57,6 +57,44 @@ describe('spec-builder api cancellation', () => {
     expect(lastInit(spy).signal).toBeUndefined()
   })
 
+  it('moves pending decision recovery onto a POST after the detail read', async () => {
+    const detail = {
+      name: 'login',
+      spec_dir: '/work/.kiro/specs/login',
+      slot_key: 'spec-builder-login-deadbeef',
+      decision_recovery_pending: true,
+      running: false,
+    }
+    const spy = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify(detail),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ ok: true }),
+      })
+    vi.stubGlobal('fetch', spy as unknown as typeof fetch)
+
+    const recovered = await specApi.get('login')
+
+    expect(spy).toHaveBeenCalledTimes(2)
+    expect(spy.mock.calls[0][0]).toBe('/api/apps/spec-builder/specs/login')
+    expect(spy.mock.calls[0][1].method).toBeUndefined()
+    expect(spy.mock.calls[1][0]).toBe(
+      '/api/apps/spec-builder/specs/login/recover-decision',
+    )
+    expect(spy.mock.calls[1][1].method).toBe('POST')
+    expect(JSON.parse(spy.mock.calls[1][1].body as string)).toEqual({
+      spec_dir: detail.spec_dir,
+      slot_key: detail.slot_key,
+    })
+    expect(recovered.running).toBe(true)
+  })
+
   it('does not make writes cancellable', async () => {
     const spy = stubFetch()
 

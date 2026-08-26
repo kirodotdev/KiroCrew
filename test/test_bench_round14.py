@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew.eval.bench.run import compare_reports
 from kiro_crew.eval.bench.safepath import UnsafePathError, write_text_atomic_nofollow
 
@@ -126,6 +127,7 @@ def test_failed_first_write_leaves_no_empty_artifact(
     assert list(tmp_path.iterdir()) == []
 
 
+@requires_symlinks
 def test_atomic_write_still_refuses_a_symlink_at_the_name(tmp_path: Path) -> None:
     """Atomicity must not cost the symlink refusal.
 

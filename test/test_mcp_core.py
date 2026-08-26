@@ -90,7 +90,14 @@ class TestSendMessageCronSession:
         monkeypatch.setattr("kiro_crew.mcp_core._vet_channel_governance", lambda _sk, _t: None)
 
     def test_default_notification_only(self):
-        """Non-cron bare send_message(text=...) → no session in payload, notification only."""
+        """Non-cron bare send_message(text=...) → no session in payload, notification only.
+
+        Nothing is forwarded because nothing needs to be: a bare send reaches the
+        in-process dashboard notification, not a channel. The verified identity is
+        forwarded only for a ``channel_type`` send, where it becomes the governance
+        subject at the egress chokepoint, and for a cron, whose key drives the
+        Slack-DM routing default.
+        """
         with patch("kiro_crew.mcp_core._post") as mock_post, patch.dict(
             "os.environ", {"KIROCREW_SESSION_KEY": "dashboard:chat-1"}
         ):

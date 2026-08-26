@@ -73,7 +73,9 @@
         "highlight_3": "Pop out into a separate window for a second monitor; scene choice stays in sync",
         "highlight_4": "Remembers your chosen scene between visits",
         "highlight_5": "Purely a visualization — it never changes what your agents do",
-        "page_label": "Worlds"
+        "page_label": "Worlds",
+        "use_case_1": "Keep an at-a-glance, second-screen view of live agents, crons, and subagents while a crew is working.",
+        "configuration_1": "Enable the app, open Agent Worlds, choose a scene, and optionally pop it out; no credentials or external service are required."
       }
     },
     "autoImprovement": {
@@ -94,7 +96,9 @@
         "highlight_4": "Drafts GitHub pull requests — draft-only, never published or merged for you",
         "highlight_5": "Works on a push-disabled clone, so nothing escapes the sandbox unreviewed",
         "highlight_6": "One resumable chat session per pull request, finding, and run",
-        "page_label": "Auto-Improve"
+        "page_label": "Auto-Improve",
+        "use_case_1": "Prove measurable performance gains or reproducible bug fixes before turning survivors into reviewable GitHub changes.",
+        "configuration_1": "The gateway host needs git and an authenticated gh CLI; connect a GitHub repository, choose its base branch, and calibrate a ruler before performance runs."
       },
       "setupPanel": {
         "https_github_com_owner_repo": "https://github.com/owner/repo"
@@ -125,7 +129,9 @@
         "highlight_5": "Add follow-up questions mid-campaign without starting over",
         "highlight_6": "Start, pause, and resume any campaign from the dashboard",
         "highlight_7": "Export the finished report to your knowledge library or a shareable artifact",
-        "page_label": "Research Lab"
+        "page_label": "Research Lab",
+        "use_case_1": "Run a multi-cycle investigation that expands a broad question, streams evidence, and produces a reusable report.",
+        "configuration_1": "Create a campaign, choose Agent or Dynamic Workflow mode, expand the question, then set cycles, interval, workers, and attended or unattended operation."
       },
       "researchLabPage": {
         "120s": "120s",
@@ -240,7 +246,9 @@
       "manifest": {
         "description": "A full-page view of Kiro Crew's own auto-triage pipeline: one horizontal lane per crew work item across the phase enum, so an operator sees at a glance which phase each item is in, where items are piling up, and which have stalled. Reads the crew ledger through Issue Radar's crew-fabric seam — the lane drawing answers 'where is this item', a queue summary answers 'how is the queue doing'.",
         "display_name": "Kiro Crew Auto Triage Pipeline",
-        "page_label": "Auto Triage Pipeline"
+        "page_label": "Auto Triage Pipeline",
+        "use_case_1": "See where Issue Radar crew work is accumulating, reopening, or waiting across the full delivery pipeline.",
+        "configuration_1": "Connect a repository in Issue Radar and let its crew ledger collect phase events, then enable this app and choose that repository from the picker."
       },
       "pipeline": {
         "subtitle": "One lane per crew work item, across every phase — see which phase each item is in and where items are piling up.",
@@ -331,7 +339,9 @@
         "highlight_3": "You stay the final approver for any operation that mutates state",
         "highlight_4": "Agents persist in the channel until dismissed or timed out",
         "highlight_5": "Hidden from the App Store grid; enable with `kirocrew app enable channels`",
-        "page_label": "Channels"
+        "page_label": "Channels",
+        "use_case_1": "Run incident response, research, or code review with several named agent roles in one auditable shared transcript.",
+        "configuration_1": "Enable the hidden app with kirocrew app enable channels, create a channel from a preset or Custom, assign agents and listen modes, then use @mentions to hand off work."
       }
     },
     "codeReviewSage": {
@@ -733,7 +743,9 @@
         "highlight_3": "Reviews are read in the app — nothing is posted to your pull request unless you ask",
         "highlight_4": "Learns per-repository from shipped fixes, review comments, and design discussions",
         "highlight_5": "Reviews GitHub pull requests; needs an authenticated `gh` CLI on the gateway host",
-        "page_label": "Code Review Sage"
+        "page_label": "Code Review Sage",
+        "use_case_1": "Review one or many GitHub pull requests by risk, inspect focused findings, and stage only the comments worth publishing.",
+        "configuration_1": "Install and authenticate the gh CLI on the gateway host, add a repository, then choose the review model, reasoning effort, and concurrency in Settings."
       },
       "views": {
         "learningView": {
@@ -783,7 +795,9 @@
     "commandBar": {
       "manifest": {
         "display_name": "Command Bar",
-        "description": "Replaces the quick-search (Cmd+K / Ctrl+K) surface with a launcher: type a command, not a query. The first page carries app commands, destinations and system settings and issues no request, so typing costs nothing. Sessions become a row you enter; searching knowledge, artifacts, skills and prompts is not available while this is enabled — disable it to get that back."
+        "description": "Replaces the quick-search (Cmd+K / Ctrl+K) surface with a launcher: type a command, not a query. The first page carries app commands, destinations and system settings and issues no request, so typing costs nothing. Sessions become a row you enter; searching knowledge, artifacts, skills and prompts is not available while this is enabled — disable it to get that back.",
+        "use_case_1": "Jump to apps, settings, sessions that need attention, or a new agent request without leaving the keyboard.",
+        "configuration_1": "It is enabled by default: press Cmd+K or Ctrl+K anywhere, type a command, and use the Sessions scope for recent or matching conversations."
       }
     },
     "crewCompanion": {
@@ -795,7 +809,9 @@
         "highlight_3": "A short breathing exercise to reset when you need it",
         "highlight_4": "Tells you when a session finishes, fails, or needs your OK",
         "highlight_5": "Floats on your desktop with a swappable avatar",
-        "page_label": "Crew Companion"
+        "page_label": "Crew Companion",
+        "use_case_1": "Use a desktop companion for break nudges, plain-language reminders, breathing resets, and session notifications.",
+        "configuration_1": "Use Kiro Crew Desktop, enable the app, then set the break interval and completion notifications on its page; avatar choices live in the companion Gallery."
       }
     },
     "designCritique": {
@@ -874,7 +890,9 @@
         "highlight_6": "Tells you what it could not see instead of critiquing a blank or blocked screen",
         "highlight_7": "Hands off the work it reviews: it never installs that project's dependencies, runs its scripts, starts its dev server, or edits its files",
         "highlight_8": "To take pictures it uses a headless browser, downloaded once into a cache in your home directory on first use and never into the project",
-        "page_label": "Design Critique"
+        "page_label": "Design Critique",
+        "use_case_1": "Critique one screen or a complete product flow with severity-ranked, heuristic-backed findings tied to visible regions.",
+        "configuration_1": "Drop in screenshots for zero-setup review, or provide a Figma file, repository, local folder, or already-running URL; private GitHub sources may require gh auth login."
       },
       "scopingPicker": {
         "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
@@ -907,7 +925,9 @@
       "manifest": {
         "display_name": "Design Tweak",
         "description": "Visually select elements in your live app preview and turn them into scoped, source-mapped edit requests for the agent — like Figma comments, but for code.",
-        "page_label": "Design Tweak"
+        "page_label": "Design Tweak",
+        "use_case_1": "Annotate live UI elements in context and send a source-mapped batch of visual changes to a coding agent.",
+        "configuration_1": "Load a local web project, start its detected dev server or enter an existing URL, switch to Edit mode, right-click elements, then send the batch."
       }
     },
     "devFleet": {
@@ -921,7 +941,9 @@
         "highlight_5": "Stream pod logs and mint pod access tokens from the UI",
         "highlight_6": "Built for people developing Kiro Crew itself — not needed for everyday use",
         "highlight_7": "Pods run on Linux (systemd --user) and macOS (launchd) — but the macOS pod has no enforced memory/CPU ceiling; Make Live is still Linux-only; the fleet view, PR status, sync, rebase and prune work on any platform",
-        "page_label": "Dev Fleet"
+        "page_label": "Dev Fleet",
+        "use_case_1": "Operate Kiro Crew feature worktrees and isolated preview pods while keeping the live gateway untouched.",
+        "configuration_1": "Point the app at a Kiro Crew checkout; PR actions need authenticated gh, while pods need systemd --user on Linux or launchd on macOS and must be provisioned first."
       }
     },
     "fileExplorer": {
@@ -953,7 +975,9 @@
         "highlight_4": "Directory tree shows each file's git status inline",
         "highlight_5": "Search across a directory with line-level matches and surrounding preview",
         "highlight_6": "Reachable paths are limited to your home directory, /tmp, and /opt — symlinks out are refused",
-        "page_label": "Files"
+        "page_label": "Files",
+        "use_case_1": "Read, search, preview, download, or discuss files on the gateway host without granting the page write access.",
+        "configuration_1": "Enable the app and open an allowed directory from the path bar; no account is required, and git or ripgrep only add optional status and search enhancements."
       },
       "pathBar": {
         "click_to_edit_path": "Click to edit path",
@@ -1339,7 +1363,9 @@
         "highlight_7": "Surfaces repositories you have recently contributed to, so connecting one is a click",
         "highlight_8": "Caches issues, labels, and members locally, refreshed on demand",
         "highlight_9": "Works with GitHub, GitLab, and Azure DevOps; needs an authenticated CLI for the provider you connect (`gh`, `glab`, or `az`) on the gateway host — no single provider's CLI is required to install",
-        "page_label": "Issue Radar"
+        "page_label": "Issue Radar",
+        "use_case_1": "Triage issues and pull requests across connected providers while retaining summaries, suggested labels, and investigation history.",
+        "configuration_1": "Connect a repository and authenticate its provider CLI on the gateway host: gh for GitHub, glab for GitLab, or az with the Azure DevOps extension on macOS, Linux, or WSL."
       },
       "views": {
         "comingSoon": {
@@ -1474,6 +1500,7 @@
           "no_frontier": "No open items with dependencies on record.",
           "waiting_heading": "WAITING ({{n}})",
           "more_waiting": "… +{{n}} more",
+          "fewer_waiting": "Show fewer",
           "why_all_satisfied": "All blockers satisfied: {{refs}}",
           "why_waiting": "Waiting on {{refs}}",
           "why_satisfied": "Already satisfied: {{refs}}",
@@ -1588,7 +1615,9 @@
         "highlight_6": "One-step sync commits, pulls and pushes; a merge conflict lists the conflicted notes and overwrites nothing",
         "highlight_7": "A save is refused if the file changed on disk since you opened it, so edits made elsewhere are never clobbered",
         "highlight_8": "Optionally index a vault into the Knowledge library so agents can search your notes",
-        "page_label": "Notes"
+        "page_label": "Notes",
+        "use_case_1": "Edit a portable Markdown vault with wikilinks, backlinks, search, Git history, and optional Knowledge indexing.",
+        "configuration_1": "Clone a Git repository or attach an existing local folder, then optionally enable Knowledge and scheduled sync; private GitHub clones need a PAT or authenticated gh."
       },
       "panel": {
         "connectVault": "Connect a vault",
@@ -1749,7 +1778,9 @@
         "highlight_3": "Correct recurring speech-to-text mistakes once with a domain dictionary and every later meeting gets them right",
         "highlight_4": "Review extracted action items before anything is filed — archive the noise, file the rest",
         "highlight_5": "Pluggable task and calendar providers: ships a local task ledger and an iCalendar (.ics) reader, and an organization can register its own",
-        "page_label": "Meetings"
+        "page_label": "Meetings",
+        "use_case_1": "Capture a live meeting while parallel agents build the transcript, structured notes, diagram, and action-item review.",
+        "configuration_1": "Allow browser microphone access for live capture; optionally configure an iCalendar path or URL, the local task ledger, agent roles, and speech-correction terms in Settings."
       },
       "meeting": {
         "agentsPaused": "The agents stopped after repeated failures.",
@@ -2039,7 +2070,7 @@
         "create_new": "Create SVG/Lottie Pack",
         "custom": "Custom",
         "delete": "Delete",
-        "delete_confirm": "Delete appearance pack \"{{name}}\"? This cannot be undone.",
+        "delete_confirm": "Delete appearance pack “{{name}}”? This cannot be undone.",
         "edit": "Edit",
         "empty": "No appearance packs",
         "export": "Export",
@@ -2084,7 +2115,9 @@
         "highlight_4": "Remembers your relationship — streaks, busiest days, milestones celebrated exactly once",
         "highlight_5": "Quiet by design: notifications merge, silent mode holds them, meetings are respected",
         "highlight_6": "The autonomous core is fully in-process — no second app, no extra runtime",
-        "page_label": "Mochi"
+        "page_label": "Mochi",
+        "use_case_1": "Keep a quiet desktop pet that chats, tracks reminders and public-page changes, and adapts around connected calendar events.",
+        "configuration_1": "Use Kiro Crew Desktop, enable Mochi, choose its appearance and behavior, then add watch targets in chat or on the dashboard; schedule-aware planning requires a connected calendar MCP tool."
       },
       "menu": {
         "clear_screen": "Clear screen",
@@ -2537,7 +2570,9 @@
         "highlight_4": "Connects AWS CloudWatch, PagerDuty, Datadog, GitHub Issues, or any system that can POST signed JSON — including Alertmanager-shaped bodies, fanned out one incident per alert",
         "highlight_5": "Read-only by default — write actions are opt-in per signal pattern, and every one is audited",
         "highlight_6": "Rotation-aware: the on-shift automation tier arms and disarms itself",
-        "page_label": "Mission Control"
+        "page_label": "Mission Control",
+        "use_case_1": "Watch operational signals, investigate incidents, reuse proven fixes, and hand over a complete local audit trail.",
+        "configuration_1": "Add providers in Settings using environment credentials or provider tokens, keep Observe for read-only use, and explicitly opt into allowed Propose or Act actions; Slack output reuses an existing Kiro Crew connection."
       },
       "opsMissionControlPage": {
         "act": "Act",
@@ -2897,7 +2932,9 @@
         "highlight_5": "AI co-author chat scoped to the paper — it reads and edits the LaTeX you are looking at",
         "highlight_6": "Clone a paper from any git remote, then commit, pull, and push from the toolbar",
         "highlight_7": "Never runs the compiler with shell escape, so a hostile .tex file cannot execute commands",
-        "page_label": "Papyrus"
+        "page_label": "Papyrus",
+        "use_case_1": "Write a LaTeX paper beside its compiled PDF, jump from build errors to source, and collaborate with a paper-scoped agent.",
+        "configuration_1": "Install managed Tectonic from the app or put tectonic or pdflatex on PATH, then create a paper or clone a repository with non-interactive Git credentials already configured."
       },
       "page": {
         "actions": "Actions",
@@ -2943,8 +2980,8 @@
       "workspace": {
         "co_author": "Co-author",
         "co_author_conflict": "Co-author changed this file",
-        "co_author_conflict_discard": "Discard my edits and reload",
-        "co_author_conflict_discard_confirm": "Discard your unsaved edits to “{{file}}” and load the co-author’s version? This cannot be undone.",
+        "co_author_conflict_discard": "Discard my changes and reload",
+        "co_author_conflict_discard_confirm": "Discards your unsaved changes to “{{file}}” and loads the co-author’s version. This cannot be undone.",
         "commit_and_push": "Commit & Push",
         "commit_message_prompt": "Describe this commit. It stages every change in the paper.",
         "compile": "Compile",
@@ -2979,7 +3016,9 @@
         "highlight_3": "Researches only the stores you name, and flags that prices come from public pages, not your signed-in account",
         "highlight_4": "It has no way to reach a cart or a checkout",
         "highlight_5": "Organize your saved preferences into groups in the Preferences tab",
-        "page_label": "Personal Shopper"
+        "page_label": "Personal Shopper",
+        "use_case_1": "Research products from named public stores while keeping the decision, cart, account, and checkout under your control.",
+        "configuration_1": "No store credentials are needed; save optional Preferences and Sites for your own reference, then paste the relevant constraints and store names into the advisor conversation."
       },
       "historyTab": {
         "liked": "Liked",
@@ -3106,7 +3145,9 @@
         "highlight_4": "Import your own HTML style or existing .pptx template and the agent follows its colours, fonts and layouts",
         "highlight_5": "Open the finished file or reveal its folder without leaving the dashboard",
         "highlight_6": "Wraps the public spec-driven-presentation-maker engine, fetched at a sha256-pinned version; nothing to install by hand",
-        "page_label": "PPTX Maker"
+        "page_label": "PPTX Maker",
+        "use_case_1": "Turn an idea, URL, or source text into a real presentation with live slide previews and reusable visual styles.",
+        "configuration_1": "Install the pinned engine on first use, optionally install LibreOffice for broader previews, choose an output directory, and import any HTML styles or PPTX templates you want reused."
       },
       "pptxMakerPage": {
         "deck_output_directory": "Deck output directory",
@@ -3166,7 +3207,9 @@
         "highlight_3": "Runs execute unattended, with step-by-step progress on the run's own page",
         "highlight_4": "Pause, resume, retry, or stop a run at any point",
         "highlight_5": "Keeps a history of past runs and their outcomes",
-        "page_label": "Task Runner"
+        "page_label": "Task Runner",
+        "use_case_1": "Plan and run a dependency-aware multi-agent job from plain language, an existing specification, or deterministic YAML.",
+        "configuration_1": "Open Task Runner, choose Compose, From Spec, or From YAML, select an agent and optional absolute workspace, then review with Plan or start immediately with Run."
       }
     },
     "specBuilder": {
@@ -3356,7 +3399,9 @@
       "manifest": {
         "description": "Spec-driven development inside Kiro Crew: turn a feature idea into Requirements → Design → Tasks with an embedded agent, review the markdown in-app, then hand the approved plan off to an autonomous execution session.",
         "display_name": "Spec Builder",
-        "page_label": "Spec Builder"
+        "page_label": "Spec Builder",
+        "use_case_1": "Turn a feature, bug, or quick task into reviewable repository-aware requirements, design, and implementation steps.",
+        "configuration_1": "Choose a project folder and Feature, Bug, or Quick mode, optionally create a fresh worktree, then review and approve each generated stage before starting the build."
       },
       "specBuilderPage": {
         "dismiss_error": "Dismiss error",
@@ -3373,7 +3418,9 @@
         "highlight_3": "Scripts are limited to a sandboxed workflow API rather than arbitrary Python",
         "highlight_4": "Usually authored for you from a plain-English goal, then editable by hand",
         "highlight_5": "Ships with runnable examples to start from",
-        "page_label": "Workflows"
+        "page_label": "Workflows",
+        "use_case_1": "Validate and inspect restricted workflow scripts or monitor core multi-agent workflow runs phase by phase.",
+        "configuration_1": "Enable the hidden app with kirocrew app enable workflows; validate DSL Python in Author, or use chat or MCP workflow tools when you need real agent orchestration and monitor it in Runs."
       },
       "workflowRunTree": {
         "agent_one": "{{count}} agent",
@@ -4652,6 +4699,23 @@
       "no_matches_for": "No matches for",
       "no_noun_match": "No {{noun}} match"
     },
+    "updateFoundModal": {
+      "copied": "Copied",
+      "copy_command": "Copy command",
+      "could_not_save_choice": "Couldn't save your choice — it may ask again after a reload.",
+      "dismiss": "Dismiss",
+      "download": "Download",
+      "nothing_downloads_until_you_choose_to": "Nothing downloads until you choose to.",
+      "remind_me_tomorrow": "Remind me tomorrow",
+      "skip_this_version": "Skip this version",
+      "update_available": "Update available",
+      "update_failed": "Update failed. Try again from Settings → About.",
+      "update_now": "Update now",
+      "updating": "Updating…",
+      "updating_and_restarting": "Updating and restarting…",
+      "version_is_available": "{{productName}} <0>{{version}}</0> is available.",
+      "you_can_update_anytime_from_settings_about": "Update anytime from Settings → About."
+    },
     "updateModal": {
       "dismiss": "Dismiss",
       "dismiss_update_dialog": "Dismiss update dialog",
@@ -4659,6 +4723,13 @@
       "kirocrew": "{{productName}}",
       "later": "Later",
       "the_app_will_stop_the_local_gateway_install_the": "The app will stop the local gateway, install the update, and relaunch.",
+      "update_ready": "Update ready"
+    },
+    "updatePill": {
+      "downloading": "Downloading…",
+      "downloading_percent": "Downloading {{percent}}%",
+      "open_update_settings": "Open update settings",
+      "update_available": "Update available",
       "update_ready": "Update ready"
     },
     "voiceDictationPanel": {
@@ -4837,6 +4908,50 @@
       "billing_notice": "This is a paid AWS service. Until you confirm, no request is sent.",
       "confirm_button": "Confirm and enable",
       "withdraw": "Withdraw confirmation"
+    },
+    "tailnetMobile": {
+      "card_title": "Phone access",
+      "badge_on": "Active",
+      "badge_attention": "Needs attention",
+      "badge_setup": "Setup needed",
+      "pinned_title": "Blocked by policy",
+      "pinned_body": "Your administrator's security policy pins tailnet access off, so this dashboard cannot be published to a private network. Ask your administrator if you need it.",
+      "install_title": "Install Tailscale to use this on your phone",
+      "install_body": "Tailscale puts this computer and your phone on the same private network, so the dashboard stays reachable without exposing anything to the public internet. Install it, sign in on your phone with the same account, then come back.",
+      "start_daemon_title": "Start Tailscale",
+      "start_daemon_body": "Tailscale is installed but its background service is not answering. Open the Tailscale app, make sure it reports Running, then re-check.",
+      "sign_in_title": "Sign in to Tailscale",
+      "sign_in_body": "Tailscale is running, but this computer is not signed in to a network yet. Sign in with the account your phone uses, then re-check.",
+      "enable_magicdns_title": "Turn on MagicDNS",
+      "enable_magicdns_body": "This computer is signed in, but its network has no MagicDNS name for it, so there is no address to point a phone at. Enable MagicDNS in the Tailscale admin console, then re-check.",
+      "enable_https_title": "Enable HTTPS certificates in Tailscale",
+      "enable_https_body": "Tailscale requires one-time tailnet administrator consent before Serve can provision certificates. Enable HTTPS in the Tailscale admin console, then re-check.",
+      "trust_off_title": "Allow access by this computer's network name",
+      "trust_off_body": "The dashboard refuses requests from addresses it does not recognise. Allow its own private-network name so a phone can reach it. This opens no port to the internet and does not change how you sign in.",
+      "restart_gateway_title": "Restart Kiro Crew to finish",
+      "restart_gateway_body": "A network name is available now, but this server resolved none when it started, so the name is not trusted yet. Restart Kiro Crew once and the last step will be ready.",
+      "occupied_title": "Something else is already served here",
+      "occupied_body": "Tailscale is already serving something at this address, and publishing would replace it. Nothing was changed. Publish it yourself if you are sure it is safe to overwrite.",
+      "publish_title": "Put the dashboard on your private network",
+      "publish_body": "Everything is ready. This publishes the dashboard to your own Tailscale network only — never to the public internet — so your phone can open it.",
+      "ready_title": "Ready on your phone",
+      "ready_body": "Open this address on a phone signed in to the same Tailscale network. Show a QR code to skip typing it.",
+      "copy": "Copy",
+      "copy_link": "Copy link",
+      "download": "Download Tailscale",
+      "show_qr": "Show QR code",
+      "hide_qr": "Hide",
+      "stop": "Turn off",
+      "recheck": "Re-check",
+      "qr_alt": "QR code linking to this dashboard",
+      "qr_warning": "Scan within {{minutes}} min. This code contains a sign-in link — anyone who gets it can open your dashboard for {{hours}}h, so do not share it or post a screenshot.",
+      "keep_awake_note": "This computer will not sleep while phone access is on, so the dashboard stays reachable. Its screen can still turn off.",
+      "open_dns_admin": "Open Tailscale DNS settings",
+      "open_https_admin": "Open Tailscale HTTPS settings",
+      "install_teaser": "Use this on your phone",
+      "install_teaser_hint": "needs Tailscale",
+      "no_peers": "No other device has joined this Tailscale network yet, so nothing can open this address. Install Tailscale on your phone and sign in with the same account.",
+      "peers_offline": "Your other devices have joined this network but none is online right now, so the address will not load until one connects."
     }
   },
   "hooks": {
@@ -5582,6 +5697,8 @@
         "s": "s",
         "stop": "Stop",
         "stop_this_subagent": "Stop this subagent",
+        "tool_one": "{{count}} tool",
+        "tool_other": "{{count}} tools",
         "waiting_to_start_queued_behind_the_concurrency_l": "Waiting to start — queued behind the concurrency limit"
       },
       "subagentRunCard": {
@@ -5813,6 +5930,7 @@
       "switch_all_to_model": "Switch all to model…",
       "tags": "Tags",
       "temporary_no_memory_reads_or_writes": "Temporary — no memory reads or writes",
+      "this_session_cannot_be_opened_from_the_chat_side": "\"{{title}}\" can't be opened from the chat sidebar — it's a {{surface}} session.",
       "untagged": "+ untagged",
       "will_be_moved_to_older_sessions": "will be moved to older sessions.",
       "within": "Within",
@@ -5840,6 +5958,7 @@
       "block_your_message": "Your message",
       "caption": "Bar length uses a square-root scale, so a small turn stays wide enough to read its composition.",
       "card_meta": "{{turns}} turns · {{chars}} chars sent by {{productName}}",
+      "col_credits": "Credits",
       "empty": "No context breakdown recorded for this session yet.",
       "estimate_label": "Not measured · estimate {{pct}}",
       "group_per_turn": "per turn",
@@ -5855,7 +5974,10 @@
       "strip_your_messages": "Your messages",
       "strip_your_messages_sub": "{{chars}} chars of {{total}}",
       "tag_estimate": "estimate",
-      "title": "Context Breakdown"
+      "title": "Context Breakdown",
+      "total_credits_title": "Credits across the traced turns",
+      "turn_credits_duration_title": "{{credits}} credits · {{duration}} this turn",
+      "turn_credits_title": "{{credits}} credits this turn"
     },
     "devFleetPage": {
       "actions": "Actions",
@@ -6772,6 +6894,8 @@
     },
     "schedulePage": {
       "actions": "Actions",
+      "owning_session_help": "A job without an owning session is invisible to cron_list in chat and is managed from this page or the CLI.",
+      "owning_session_tooltip": "Owning session: {{key}}",
       "view_calendar": "Calendar",
       "view_executions": "Executions",
       "view_list": "List",
@@ -6990,6 +7114,8 @@
         "check_for_updates": "Check for updates",
         "checking_for_updates": "Checking for updates...",
         "checks_for_updates_automatically_you_can_also_ch": "checks for updates automatically. You can also check now.",
+        "checks_for_updates_with_timing": "{{name}} checks for updates automatically. {{timing}} You can also check now.",
+        "last_checked_ago_next_check_in": "Last checked {{ago}}, next automatic check {{next}}.",
         "close": "Close",
         "couldn_t_check_for_updates": "Couldn't check for updates",
         "couldn_t_check_for_updates_2": "Couldn't check for updates.",
@@ -7663,7 +7789,7 @@
         "delete": "Delete…",
         "deleting": "Deleting…",
         "delete_crew": "Delete {{name}}",
-        "confirm_delete_of": "Confirm deleting {{name}}",
+        "confirm_delete_of": "Confirm deleting “{{name}}”",
         "delete_warning": "Delete terminates the EC2 instance and ends its charges. This cannot be undone.",
         "before_you_start": "Before you start — your AWS setup",
         "checking": "Checking…",
@@ -7773,6 +7899,7 @@
       "cold_label": "cold",
       "cold_start_p50": "Cold start (p50)",
       "cold_start_p90": "Cold start (p90)",
+      "context_col": "Context",
       "context_window": "Context window",
       "cost_new": "no prior spend",
       "counters": "Counters",
@@ -7783,11 +7910,14 @@
       "daily_p50_trend": "Daily p50 — cold above, warm below",
       "daily_trend_point": "{{date}} · cold {{cold}} · warm {{warm}} · {{count}} starts",
       "days": "days.",
+      "detail_col": "Detail",
       "distribution_col": "Distribution",
+      "duration_col": "Duration",
       "fault_rate": "Fault rate",
       "group_by": "Group by",
       "growth_col": "Growth",
       "growth_per_turn": "+{{rate}}%/turn",
+      "hide_turn_detail": "Hide per-turn detail",
       "instruments": "Instruments",
       "loading_telemetry": "Loading telemetry…",
       "local_only_no_egress": "· local-only, no egress",
@@ -7827,6 +7957,7 @@
       "sessions_col": "Sessions",
       "shard_s_source": "shard(s) · source",
       "share_col": "Share",
+      "show_turn_detail": "Show per-turn detail",
       "showing_partial_window": "Showing {{shown}} of {{total}} samples (histogram boundaries changed mid-window)",
       "span_col": "Span",
       "startup_faults": "Startup faults",
@@ -7840,14 +7971,20 @@
       "tab_startup": "Startup",
       "telemetry_is_off": "Telemetry is off",
       "throughput": "Throughput",
+      "time_col": "Time",
       "to_compaction_col": "To 90%",
       "top_spenders_link_to_chat": "Named dashboard sessions link to the chat",
+      "turn_col": "Turn",
       "turn_faults_one": "{{n}} fault of {{turns}}",
       "turn_faults_other": "{{n}} faults of {{turns}}",
       "turn_latency_p50": "Turn latency (p50)",
       "turns_col": "Turns",
+      "turns_empty": "No per-turn usage recorded in this window.",
+      "turns_error": "Couldn't load the turns.",
+      "turns_loading": "Loading turns…",
       "turns_measured_one": "{{n}} turn measured",
       "turns_measured_other": "{{n}} turns measured",
+      "turns_retry": "Retry",
       "turns_to_compaction_one": "{{n}} turn",
       "turns_to_compaction_other": "{{n}} turns",
       "untitled_conversation_on": "Untitled · {{date}}",

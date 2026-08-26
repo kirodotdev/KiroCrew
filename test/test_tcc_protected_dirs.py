@@ -203,6 +203,28 @@ class TestFileIndexPruning:
         assert "code" in walked, "non-TCC project dirs must still be indexed"
 
     @pytest.mark.asyncio
+    async def test_home_root_offers_dot_dir_but_not_tcc_dir(self, tmp_path):
+        """A dot-dir is an offered candidate (#5677); a TCC dir is not.
+
+        Regression: offering dot-dirs as candidates must not also start offering
+        (and os.stat-ing) the TCC-gated top-level folders from a $HOME root --
+        stat'ing one pops a consent modal. The candidate list must be TCC-pruned
+        too, while the dot-dir stays offered.
+        """
+        _make_home(tmp_path)
+        (tmp_path / ".config").mkdir()
+        with (
+            patch.object(platform_compat, "IS_MACOS", True),
+            patch.dict(os.environ, _home_env(tmp_path), clear=False),
+        ):
+            idx = FileIndex(str(tmp_path))
+            entries, _ = await __import__("asyncio").to_thread(idx._walk)
+        dir_names = {e[1] for e in entries if e[5] == "dir"}
+        assert ".config" in dir_names, "a dot-dir must be offered as a candidate"
+        for name in _TCC_DIRS:
+            assert name not in dir_names, f"{name} must not be offered as a candidate from $HOME"
+
+    @pytest.mark.asyncio
     async def test_scoped_tcc_dir_is_still_indexed(self, tmp_path):
         """Indexing ~/Downloads directly is deliberate — index it fully."""
         _make_home(tmp_path)

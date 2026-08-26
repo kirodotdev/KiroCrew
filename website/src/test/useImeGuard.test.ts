@@ -280,4 +280,80 @@ describe('useImeGuard', () => {
       }
     })
   })
+
+  describe('claimKey (synthetic delegate onto the instance latch)', () => {
+    // The delegate hands e.nativeEvent to ImeLatch.claimKey, so consumption
+    // happens on the NATIVE half: stopPropagation always on a decline,
+    // preventDefault only when both native signals are clear (the tracked
+    // latch window). The delegate itself stops the SYNTHETIC propagation on
+    // a decline — React walks its own flag for component ancestors, which
+    // the native call does not set. An ACCEPTED key is left untouched —
+    // unlike claimEnter, the caller consumes it as part of acting (a trap's
+    // own preventDefault).
+    const tabKey = (opts: { isComposing?: boolean; keyCode?: number } = {}) => {
+      const preventDefault = vi.fn()
+      const stopPropagation = vi.fn()
+      const syntheticStopPropagation = vi.fn()
+      const e = {
+        stopPropagation: syntheticStopPropagation,
+        nativeEvent: {
+          isComposing: opts.isComposing ?? false,
+          keyCode: opts.keyCode ?? 9,
+          preventDefault,
+          stopPropagation,
+        },
+      } as unknown as React.KeyboardEvent
+      return { e, preventDefault, stopPropagation, syntheticStopPropagation }
+    }
+
+    it('reports true and leaves the key untouched when no composition is in flight', () => {
+      const { result } = renderHook(() => useImeGuard())
+      const { e, preventDefault, stopPropagation, syntheticStopPropagation } = tabKey()
+      expect(result.current.claimKey(e)).toBe(true)
+      expect(preventDefault).not.toHaveBeenCalled()
+      expect(stopPropagation).not.toHaveBeenCalled()
+      expect(syntheticStopPropagation).not.toHaveBeenCalled()
+    })
+
+    it('declines and consumes inside the tracked-latch window (native signals clear)', () => {
+      // The WebKit hazard: the committing keydown arrives after compositionend
+      // with isComposing already false, so only the latch can see it — and the
+      // browser WOULD act on it, so the decline must own both halves.
+      vi.useFakeTimers()
+      try {
+        const { result } = renderHook(() => useImeGuard())
+        act(() => {
+          result.current.onCompositionStart()
+          result.current.onCompositionEnd()
+        })
+        const { e, preventDefault, stopPropagation, syntheticStopPropagation } = tabKey()
+        expect(result.current.claimKey(e)).toBe(false)
+        expect(preventDefault).toHaveBeenCalledTimes(1)
+        expect(stopPropagation).toHaveBeenCalledTimes(1)
+        expect(syntheticStopPropagation).toHaveBeenCalledTimes(1)
+
+        act(() => { vi.advanceTimersByTime(50) })
+        const after = tabKey()
+        expect(result.current.claimKey(after.e)).toBe(true)
+        expect(after.preventDefault).not.toHaveBeenCalled()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('declines a mid-composition key without cancelling its default action', () => {
+      // A native signal set means the browser is consuming the key for the
+      // IME itself (candidate navigation, or the commit) — cancelling that
+      // would eat the user's composition. Propagation still stops on BOTH
+      // halves: the key is not the caller's, and not any ancestor's either.
+      const { result } = renderHook(() => useImeGuard())
+      for (const opts of [{ isComposing: true }, { keyCode: 229 }]) {
+        const { e, preventDefault, stopPropagation, syntheticStopPropagation } = tabKey(opts)
+        expect(result.current.claimKey(e)).toBe(false)
+        expect(preventDefault).not.toHaveBeenCalled()
+        expect(stopPropagation).toHaveBeenCalledTimes(1)
+        expect(syntheticStopPropagation).toHaveBeenCalledTimes(1)
+      }
+    })
+  })
 })

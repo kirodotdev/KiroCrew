@@ -16,6 +16,13 @@ flag alone would fail the opt-in policy tests. Disabling the app hands the gestu
 legacy command palette, which is left in place precisely so that is a real choice rather than a
 downgrade; nothing about that path changes while the app is off.
 
+The flag reaches FRESH installs only. An install that registered `command-bar` while it was still
+default-off keeps `enabled: false` forever, and because this app has no page it appears in neither
+the launcher's own app list nor Discover — so those users have no way to learn it exists.
+`manager.backfill_default_on_builtins()`, which reads `manager._DEFAULT_ON_BACKFILL` and records
+delivery on the app's own record (`InstalledApp.defaultOnBackfilled`, written in the same atomic
+write that flips `enabled`), is what delivers the launcher to them; see app-kit-platform section 12.
+
 What makes the app worth existing is a single invariant: **the first page issues no network
 request.** The palette it replaces ran an unindexed scan over the sessions corpus on every
 keystroke, so fast typing could stall unrelated streaming. Command Bar's root carries only

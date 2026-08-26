@@ -4,8 +4,10 @@ import { Square, XOctagon } from 'lucide-react'
 import type { ChatMessage } from '../../types'
 
 import { i18nT } from '../../i18n/t'
+import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 /** Inline card for stop_event messages. Three visual states driven by meta.state. */
 export default memo(function StopEventCard({ message }: { message: ChatMessage }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const state = (message.meta?.state as string) ?? 'stopping'
 
   if (state === 'stopping') {

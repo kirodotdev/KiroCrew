@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Iterable, Mapping
 
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
+from kiro_crew.dashboard.boot_id import current_boot_id
 from kiro_crew.dashboard.revocation_gen import (
     current_revocation_gen,
     current_revocation_gen_or_none,
@@ -304,13 +305,17 @@ class RefreshStateManager:
                     try:
                         self._consumed_jtis[str(entry["jti"])] = float(entry["exp"])
                     except (TypeError, ValueError):
-                        logger.warning("refresh_tokens: dropping consumed_jti with bad exp: %r", entry)
+                        logger.warning(
+                            "refresh_tokens: dropping consumed_jti with bad exp: %r", entry
+                        )
             for entry in data.get("revoked_chains", []):
                 if isinstance(entry, dict) and "chain_id" in entry and "exp" in entry:
                     try:
                         self._revoked_chains[str(entry["chain_id"])] = float(entry["exp"])
                     except (TypeError, ValueError):
-                        logger.warning("refresh_tokens: dropping revoked_chain with bad exp: %r", entry)
+                        logger.warning(
+                            "refresh_tokens: dropping revoked_chain with bad exp: %r", entry
+                        )
 
     def _persist(self) -> None:
         if self._state_path is None:
@@ -327,12 +332,10 @@ class RefreshStateManager:
         with self._lock:
             data = {
                 "consumed_jtis": [
-                    {"jti": jti, "exp": exp}
-                    for jti, exp in self._consumed_jtis.items()
+                    {"jti": jti, "exp": exp} for jti, exp in self._consumed_jtis.items()
                 ],
                 "revoked_chains": [
-                    {"chain_id": cid, "exp": exp}
-                    for cid, exp in self._revoked_chains.items()
+                    {"chain_id": cid, "exp": exp} for cid, exp in self._revoked_chains.items()
                 ],
             }
             try:
@@ -381,9 +384,7 @@ def _get_state() -> RefreshStateManager:
     if _state_singleton is None:
         with _state_singleton_lock:
             if _state_singleton is None:
-                _state_singleton = RefreshStateManager(
-                    state_path=config_dir() / _STATE_FILE_NAME
-                )
+                _state_singleton = RefreshStateManager(state_path=config_dir() / _STATE_FILE_NAME)
     return _state_singleton
 
 
@@ -409,6 +410,7 @@ def generate_refresh_token(
     *,
     chain_id: str | None = None,
     ttl_seconds: int = MAX_REFRESH_TTL_SECS,
+    boot: str = "",
 ) -> tuple[str, str, str, float]:
     """Generate a refresh token.
 
@@ -417,6 +419,12 @@ def generate_refresh_token(
     Pass ``chain_id`` to continue an existing rotation chain (during refresh).
     Omit it to start a fresh chain (initial mint after ``kirocrew token``
     URL is consumed).
+
+    Pass ``boot`` to scope the chain to one gateway process — see
+    ``boot_id.current_boot_id``. Callers pass through the value they were given
+    rather than this function reading the live id, so a token's binding stays a
+    function of the credential it was rotated from. Empty string means unbound,
+    which is every caller that does not opt in.
     """
     now = time.time()
     session_ttl = min(ttl_seconds, MAX_REFRESH_TTL_SECS)
@@ -436,6 +444,10 @@ def generate_refresh_token(
         # (kirocrew logout) ends refresh chains, not just access cookies.
         "gen": current_revocation_gen(),
     }
+    if boot:
+        # Omitted rather than written empty so an unbound chain's payload is
+        # byte-identical to what it was before this claim existed.
+        payload_dict["boot"] = boot
     payload = json.dumps(payload_dict, separators=(",", ":")).encode()
     encoded_payload = _b64url_encode(payload)
     signature = _sign(payload)
@@ -496,7 +508,39 @@ def validate_refresh_token(token: str) -> tuple[bool, str, str, str, str, float]
         return False, user_id, "revocation state unavailable", chain_id, jti, session_exp
     if int(payload.get("gen", 0)) < current_gen:
         return False, user_id, "session revoked", chain_id, jti, session_exp
+    # Boot binding: mirrors the access-cookie check in ``token_auth``. Checked
+    # HERE as well as there because this is the one credential that can outlive
+    # an access cookie — rejecting the chain is what stops a restart-orphaned
+    # refresh cookie from minting a brand-new session on the phone's next visit.
+    token_boot = str(payload.get("boot", ""))
+    if token_boot and token_boot != current_boot_id():
+        return False, user_id, "session ended at gateway restart", chain_id, jti, session_exp
     return True, user_id, "", chain_id, jti, session_exp
+
+
+def refresh_token_boot(token: str) -> str:
+    """Return a refresh token's ``boot`` claim, or ``""`` when unbound.
+
+    A read-only accessor rather than a seventh element on
+    ``validate_refresh_token``'s return tuple: three call sites unpack that
+    tuple, and widening it to carry a value only the rotation path needs would
+    make the other two carry an unused placeholder.
+
+    Does NOT validate — callers use this only AFTER
+    :func:`validate_refresh_token` has accepted the token, which is also what
+    makes returning ``""`` on a decode failure safe here: an undecodable token
+    never reaches this function. Treating a failure as unbound is the
+    conservative direction anyway, since an unbound rotation is refused by the
+    caller rather than silently promoted.
+    """
+    try:
+        payload = json.loads(_b64url_decode(token.split(".")[0]))
+    except Exception:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    value = payload.get("boot", "")
+    return value if isinstance(value, str) else ""
 
 
 def refresh_cookie_name(port: str | int) -> str:

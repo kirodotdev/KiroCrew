@@ -767,6 +767,96 @@ class TestTheRoutesRequireTheInternalSecret:
         assert resp.status == 403, "a broken audit must not escalate a refusal to 500"
         assert self._body(resp)["code"] == "internal_secret_required"
 
+    def test_stop_with_the_secret_reaches_the_operation(self, tmp_path, monkeypatch):
+        """The stop ROUTE's success path, for the reason create's docstring gives:
+        only the 403 arm was covered, so a route-level defect on the reaching path
+        would ship dead."""
+        req = self._request(tmp_path, internal=True, path="/api/session-control/stop")
+
+        async def _ok(*_a, **_kw):
+            return {"ok": True, "target": "chat-2", "stopped": True}
+
+        monkeypatch.setattr(sc, "stop_target", _ok)
+        resp = asyncio.run(handlers_sc.api_session_control_stop(req))
+
+        assert resp.status == 200
+        assert self._body(resp)["target"] == "chat-2"
+
+    def test_stop_renders_a_refusal_as_its_status_not_a_500(self, tmp_path, monkeypatch):
+        """Same refusal contract the create and send routes hold."""
+        req = self._request(tmp_path, internal=True, path="/api/session-control/stop")
+
+        async def _boom(*_a, **_kw):
+            raise sc.SessionControlError(
+                "not addressable", status=403, code="linked_session_target"
+            )
+
+        monkeypatch.setattr(sc, "stop_target", _boom)
+        resp = asyncio.run(handlers_sc.api_session_control_stop(req))
+
+        assert resp.status == 403
+        assert self._body(resp)["code"] == "linked_session_target"
+
+    def test_send_without_the_secret_is_forbidden(self, tmp_path):
+        req = self._request(tmp_path, internal=False, path="/api/session-control/send")
+        resp = asyncio.run(handlers_sc.api_session_control_send(req))
+        assert resp.status == 403
+        assert self._body(resp)["code"] == "internal_secret_required"
+
+    def test_send_with_the_secret_delivers_to_the_target(self, tmp_path, monkeypatch):
+        """The send ROUTE needs its own test for the reason create's docstring gives:
+        a handler wired only in tests at the business layer ships dead if the route
+        itself refuses or never reaches the operation."""
+        req = self._request(tmp_path, internal=True, path="/api/session-control/send")
+        state = req.app["state"]
+        caller = state.get_slot("chat-1")
+        assert caller is not None
+        # Make chat-2 an addressable peer of the caller through the same helper the
+        # business-layer tests use, so this exercises the route rather than a
+        # hand-built slot that authorize_target would refuse for unrelated reasons.
+        _peer_target(state, "chat-2", caller)
+
+        async def _fake_run_chat(_state, _slot, _prompt):
+            return None
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner._run_chat", _fake_run_chat)
+
+        resp = asyncio.run(handlers_sc.api_session_control_send(req))
+
+        assert resp.status == 200, self._body(resp)
+        payload = self._body(resp)
+        assert payload["ok"] is True
+        assert payload["target"] == "chat-2"
+
+    def test_send_requires_a_non_empty_message(self, tmp_path):
+        """The message check lives in the ROUTE, not the business layer, so a
+        whitespace-only body must be refused here rather than delivered as a
+        blank turn."""
+        req = self._request(tmp_path, internal=True, path="/api/session-control/send")
+
+        async def _json():
+            return {"target": "chat-2", "message": "   "}
+
+        req.json = _json
+        resp = asyncio.run(handlers_sc.api_session_control_send(req))
+
+        assert resp.status == 400
+        assert self._body(resp)["code"] == "message_required"
+
+    def test_send_renders_a_refusal_as_its_status_not_a_500(self, tmp_path, monkeypatch):
+        """A SessionControlError from send comes back as its own refusal, the same
+        contract create's route holds."""
+        req = self._request(tmp_path, internal=True, path="/api/session-control/send")
+
+        async def _boom(*_a, **_kw):
+            raise sc.SessionControlError("busy", status=409, code="target_busy")
+
+        monkeypatch.setattr(sc, "send_to_target", _boom)
+        resp = asyncio.run(handlers_sc.api_session_control_send(req))
+
+        assert resp.status == 409
+        assert self._body(resp)["code"] == "target_busy"
+
     def test_read_without_the_secret_is_forbidden(self, tmp_path):
         req = self._request(
             tmp_path, internal=False, path="/api/session-control/read", method="GET"
@@ -1355,6 +1445,179 @@ def test_stop_is_refused_for_a_session_out_of_bounds(tmp_path):
         asyncio.run(sc.stop_target(state, caller_session_key=_key(caller), target="chat-hidden"))
 
 
+# ── session_send ──
+
+
+def test_send_to_an_idle_target_starts_a_turn_with_provenance(tmp_path, monkeypatch):
+    """The delivered prompt carries the caller tag, and an idle target runs now.
+
+    Provenance is the load-bearing part: the target renders the message as a
+    user row, and without the tag it is indistinguishable from something the
+    person typed into that session themselves.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _peer_target(state, "chat-2", caller)
+
+    ran: dict[str, str] = {}
+
+    async def _fake_run_chat(_state, slot, prompt):
+        ran["slot"] = slot.key
+        ran["prompt"] = prompt
+
+    monkeypatch.setattr("kiro_crew.dashboard.chat_runner._run_chat", _fake_run_chat)
+
+    async def _drive():
+        out = await sc.send_to_target(
+            state, caller_session_key=_key(caller), target="chat-2", message="do the thing"
+        )
+        # Let the enqueue_or_run_prompt task actually execute the fake turn.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        return out
+
+    out = asyncio.run(_drive())
+
+    assert out == {"ok": True, "target": "chat-2", "started": True}
+    assert ran["slot"] == "chat-2"
+    assert ran["prompt"].startswith("[sent by session ")
+    assert ran["prompt"].endswith("do the thing")
+    # The transcript shows the message as a user row, tag included.
+    assert any(
+        m.get("content", "").endswith("do the thing")
+        for m in target.messages
+        if m.get("role") == "user"
+    )
+
+
+def test_the_sent_body_passes_through_the_outbound_guard(tmp_path, monkeypatch):
+    """The message goes through `sanitize_outbound` before it is persisted.
+
+    It arrives from ANOTHER session's model, is appended to the target's
+    transcript as a user row and broadcast to every dashboard client, so this is
+    the same surface the steer path sanitizes before `slot.append`
+    (`chat_delivery`: "raw content must never reach an external surface"). A
+    credential-shaped string would otherwise be stored and displayed.
+
+    Mutation guard: dropping the `sanitize_outbound` call leaves the raw value.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _peer_target(state, "chat-2", caller)
+    monkeypatch.setattr(sc, "sanitize_outbound", lambda s: f"SANITIZED:{s}")
+
+    ran: dict[str, str] = {}
+
+    async def _fake_run_chat(_state, slot, prompt):
+        ran["prompt"] = prompt
+
+    monkeypatch.setattr("kiro_crew.dashboard.chat_runner._run_chat", _fake_run_chat)
+
+    async def _drive():
+        out = await sc.send_to_target(
+            state, caller_session_key=_key(caller), target="chat-2", message="tok=abc"
+        )
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        return out
+
+    asyncio.run(_drive())
+
+    assert ran["prompt"].endswith(
+        "SANITIZED:tok=abc"
+    ), "the sent body must pass through the outbound guard before it is delivered"
+    # The provenance tag is built by this function, not caller-supplied, so it is
+    # deliberately OUTSIDE the sanitized span.
+    assert ran["prompt"].startswith("[sent by session ")
+    assert any(
+        m.get("content", "").endswith("SANITIZED:tok=abc")
+        for m in target.messages
+        if m.get("role") == "user"
+    ), "the persisted transcript row must carry the sanitized body"
+
+
+def test_the_length_gate_measures_the_raw_body(tmp_path, monkeypatch):
+    """Validation happens on the RAW body, before redaction.
+
+    Redaction can only shrink the text, so gating the raw form is the honest
+    limit: a caller that sends 60K of credentials gets `message_too_long` rather
+    than silently passing because redaction squeezed it under the cap.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    _peer_target(state, "chat-2", caller)
+    # A redactor that collapses everything would hide an oversized body.
+    monkeypatch.setattr(sc, "sanitize_outbound", lambda _s: "x")
+
+    with pytest.raises(sc.SessionControlError) as err:
+        asyncio.run(
+            sc.send_to_target(
+                state,
+                caller_session_key=_key(caller),
+                target="chat-2",
+                message="a" * (sc.MAX_SEND_MESSAGE_CHARS + 1),
+            )
+        )
+    assert err.value.code == "message_too_long"
+
+
+def test_send_to_a_busy_target_queues_instead_of_racing(tmp_path):
+    """A mid-turn target must not get a second concurrent turn — the message
+    queues, and the caller is told so (`started: False`), because "ran" and
+    "will run later" are different answers to a coordinator."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _peer_target(state, "chat-2", caller)
+    _busy(target)
+
+    out = asyncio.run(
+        sc.send_to_target(
+            state, caller_session_key=_key(caller), target="chat-2", message="queued message"
+        )
+    )
+
+    assert out["started"] is False
+    assert any("queued message" in q.get("content", "") for q in target._queue)
+
+
+def test_send_is_refused_for_a_session_out_of_bounds(tmp_path):
+    """The same deny-by-default guard the other verbs share gates send too."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    _slot(state, "chat-hidden", memory_mode="incognito")
+    with pytest.raises(sc.SessionControlError):
+        asyncio.run(
+            sc.send_to_target(
+                state, caller_session_key=_key(caller), target="chat-hidden", message="hi"
+            )
+        )
+
+
+def test_send_refuses_an_empty_or_oversized_message(tmp_path):
+    """Size gates live in the business layer, not only in the tool schema —
+    the HTTP route is callable without the MCP layer's validation."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    _peer_target(state, "chat-2", caller)
+
+    with pytest.raises(sc.SessionControlError) as empty_exc:
+        asyncio.run(
+            sc.send_to_target(state, caller_session_key=_key(caller), target="chat-2", message="  ")
+        )
+    assert empty_exc.value.code == "message_empty"
+
+    with pytest.raises(sc.SessionControlError) as long_exc:
+        asyncio.run(
+            sc.send_to_target(
+                state,
+                caller_session_key=_key(caller),
+                target="chat-2",
+                message="x" * (sc.MAX_SEND_MESSAGE_CHARS + 1),
+            )
+        )
+    assert long_exc.value.code == "message_too_long"
+
+
 def test_session_control_routes_are_strict_internal():
     """Every registered session-control route must sit in the strict bucket.
 
@@ -1687,7 +1950,7 @@ def test_the_slot_cap_is_re_checked_after_the_await(tmp_path, monkeypatch):
     caller = _slot(state, "chat-1")
 
     def _resolve_then_fill(_workspace):
-        for i in range(sc._MAX_SLOTS_FOR_CREATE):
+        for i in range(sc.MAX_LIVE_SLOTS):
             _slot(state, f"filler-{i}")
         return str(tmp_path)
 
@@ -2223,3 +2486,27 @@ def test_the_denial_audit_does_not_persist_caller_supplied_credentials(tmp_path,
     )
     # The refusal must still be diagnosable: the code survives redaction.
     assert "target_not_found" in captured["resources"]
+
+
+def test_slot_cap_has_one_owning_constant() -> None:
+    """Every slot-creating path reads the SAME owning ceiling constant.
+
+    The live-slot ceiling used to be declared independently as ``= 500`` in
+    three modules (session create, chat fork, session import); raising it then
+    took three edits and the effective limit depended on which door the caller
+    came through. It now has one home -- ``state.MAX_LIVE_SLOTS`` in the module
+    that owns ``live_slot_count()`` -- and each door imports that one name. This
+    pins that no door has re-introduced its own literal: all three modules must
+    expose the identical owning object.
+    """
+    from kiro_crew.dashboard import chat_fork
+    from kiro_crew.dashboard import session_control as sc_mod
+    from kiro_crew.dashboard import session_transfer
+    from kiro_crew.dashboard import state as state_mod
+
+    owning = state_mod.MAX_LIVE_SLOTS
+    # Each door imported the owning constant into its own namespace; assert they
+    # are the very same object, so a re-introduced per-door literal is caught.
+    assert sc_mod.MAX_LIVE_SLOTS is owning
+    assert chat_fork.MAX_LIVE_SLOTS is owning
+    assert session_transfer.MAX_LIVE_SLOTS is owning

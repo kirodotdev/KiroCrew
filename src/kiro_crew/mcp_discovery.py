@@ -42,6 +42,7 @@ from kiro_crew.env import (
     spec_path_key,
 )
 from kiro_crew.hooks import safe_read_file
+from kiro_crew.mcp_grant import grant_observed
 from kiro_crew.mcp_provenance import ABSENT, resolve_write
 from kiro_crew.mcp_utils import kiro_entry_client_id, kiro_entry_scopes, mcp_server_alias
 from kiro_crew.sandbox import (
@@ -385,6 +386,12 @@ class _ProbeResult:
     # UI can render "as of <time>". Two clocks, one write, no drift.
     probed_at_wall: float = 0.0
     probe_mode: str = "handshake"
+    # Authorization evidence from the probe response. Cached alongside the status
+    # because the panel is served from this cache for the whole TTL — a badge that
+    # only distinguished sign-in state on the one uncached read would spend almost
+    # all of its life showing the vaguer wording.
+    auth_challenge: bool = False
+    auth_grant_present: bool | None = None
 
 
 # Module-level probe cache: server name → result
@@ -446,6 +453,8 @@ def _cache_probe(server: McpServerInfo) -> None:
         tool_annotations=[dict(a) for a in server.tool_annotations],
         probed_at_wall=server.probed_at,
         probe_mode=server.probe_mode,
+        auth_challenge=server.auth_challenge,
+        auth_grant_present=server.auth_grant_present,
     )
 
 
@@ -638,6 +647,21 @@ class McpServerInfo:
     # API payload so a badge can say WHEN it was true — the caches legitimately
     # serve results up to their TTL, and an undated "Online" reads as "now".
     probed_at: float = 0.0
+    # -- authorization state (remote probes only) ---------------------------
+    # True when the probe response carried a recognisable OAuth challenge, False
+    # when it did not. False is genuinely "not known to need OAuth" and not "does
+    # not need it": a server can refuse a tokenless probe without saying why.
+    #
+    # A boolean rather than the scheme name because that is all any consumer asks.
+    # The challenge's scope list and RFC 9728 metadata URL are parsed (they are
+    # what makes the challenge recognisable) but deliberately not carried: nothing
+    # renders them, and an exported field with no reader is surface without a
+    # purpose.
+    auth_challenge: bool = False
+    # Whether the runtime holds a grant for this url: True/False are observations,
+    # None means the lookup could not answer. Only meaningful alongside
+    # ``auth_challenge``; see :func:`_runtime_grant_present`.
+    auth_grant_present: bool | None = None
 
     @property
     def is_remote(self) -> bool:
@@ -672,6 +696,18 @@ class McpServerInfo:
                 d["scopes"] = list(self.scopes)
             if self.client_id:
                 d["clientId"] = self.client_id
+            # Gated on ``auth_challenge`` being set, so an absent key means "this
+            # probe learned nothing about authorization" and a present
+            # ``authGrantPresent`` is always a real observation. A client that
+            # cannot tell those apart would render "sign-in required" for every
+            # unprobed remote row.
+            if self.auth_challenge:
+                d["authChallenge"] = True
+                # Omitted when the lookup could not answer, so a client never sees
+                # "couldn't observe" as "observed absent" -- absence renders as the
+                # safe wording, a false would name an action.
+                if self.auth_grant_present is not None:
+                    d["authGrantPresent"] = self.auth_grant_present
         if self.disabled_tools:
             d["disabledTools"] = self.disabled_tools
         if self.disabled:
@@ -1271,6 +1307,14 @@ def list_servers() -> list[McpServerInfo]:
         s.error = error
         s.probed_at = probed_at
         s.probe_mode = probe_mode
+        # Read through ``probe_metadata`` rather than widening ``_get_cached``'s
+        # tuple, and taken even from an expired entry: a server that demanded
+        # OAuth an hour ago still demands it, so the wording should not regress
+        # to the vaguer form the moment the TTL lapses.
+        cached = probe_metadata(s.name)
+        if cached is not None:
+            s.auth_challenge = cached.auth_challenge
+            s.auth_grant_present = cached.auth_grant_present
 
     return list(servers.values())
 
@@ -1320,11 +1364,103 @@ def _needs_authorization(
     return False
 
 
+# A challenge comes from an endpoint that has not authenticated anything yet, so
+# every bound here is on untrusted input.
+_MAX_CHALLENGE_LEN = 2048
+_CHALLENGE_PARAM_RE = re.compile(r'([A-Za-z_][A-Za-z0-9_-]*)\s*=\s*"([^"]*)"')
+
+
+def _is_bearer_challenge(header_value: str) -> bool:
+    """Whether a ``WWW-Authenticate`` value is a recognisable OAuth challenge.
+
+    A predicate rather than the parsed parts, because recognising the challenge is
+    the whole job: the scope list and the metadata URL are the evidence that this
+    IS one, and nothing downstream renders either. Deliberately not a general RFC
+    9110 auth-param parser — a challenge naming another scheme, or one whose params
+    are unquoted, reads as "not a challenge" and the caller falls back to the
+    status code alone.
+
+    ``resource_metadata`` counts only when it is https. The value is the server's
+    own claim about itself (RFC 9728 §5.1), and an http or javascript URL arriving
+    from an unauthenticated endpoint is not evidence of anything.
+
+    Total by construction: a probe must never fail because of the shape of a
+    header, so anything that is not a string is simply not a challenge.
+    """
+    if not isinstance(header_value, str) or not header_value:
+        return False
+    if len(header_value) > _MAX_CHALLENGE_LEN:
+        return False
+    challenge_parts = header_value.lstrip().split(None, 1)
+    if len(challenge_parts) != 2 or challenge_parts[0].lower() != "bearer":
+        return False
+    params = {k.lower(): v for k, v in _CHALLENGE_PARAM_RE.findall(header_value)}
+    if params.get("resource_metadata", "").lower().startswith("https://"):
+        return True
+    return bool(params.get("scope", "").split())
+
+
+async def _runtime_grant_present(mcp_url: str, name: str) -> bool | None:
+    """Whether the kiro-cli runtime holds an OAuth grant for ``mcp_url``.
+
+    Three-valued on purpose. ``True``/``False`` are observations; **``None`` means
+    the question could not be answered**, and the caller must not let that reach
+    the payload as ``False``. The distinction is load-bearing: "no grant held" is
+    what makes "Sign-in required" honest, so a cache home that cannot be read at
+    all — a permission error, a broken mount — degrades to ``None``, and absence
+    from the payload renders as the safe "Not verified" instead.
+
+    ``None`` does NOT cover artifact-layout drift, and it is worth being exact
+    about that. If kiro-cli re-keys the paths this mirrors, the stat succeeds
+    against a path that simply is not there, so ``grant_presence`` returns
+    ``False`` and an already-authorized server reads "Sign-in required". That row
+    does NOT recover on its own, and a maintainer must not deprioritize the drift
+    on the assumption that it does: a second sign-in mints artifacts under the
+    NEW key while this keeps stat-ing the old one, so the row goes on asking for
+    a sign-in until this mirror is corrected. The recorded-hash tests pin the
+    mirror only against itself, so such a change would not fail in-repo either —
+    catching it needs an observation of an artifact kiro-cli actually wrote.
+
+    The three-valued answer comes from :func:`mcp_grant.grant_presence`, which the
+    persisted connection view resolves through as well -- one spelling of "present,
+    absent, or unknowable", so the two surfaces cannot disagree about the same
+    artifacts, and neither can lose the middle answer.
+
+    The probe holds no token of its own (Kiro Crew stores no credentials), so the
+    runtime's own artifacts are the only evidence available, and they are stat-ed
+    for presence, never read. ``mcp_grant`` is a leaf module for exactly that
+    reason: the derivation is shared with the mint rather than copied, and it
+    carries none of the agent or ACP graph, so this is an ordinary module-scope
+    import with nothing deferred to request time.
+
+    ``name`` is what gets logged, never ``mcp_url``: a user-added endpoint can
+    carry a credential in its userinfo or query string, and this runs for any URL
+    someone typed, not just a vetted one.
+    """
+    # ``audit_absence``: this caller reads once and renders the answer either way,
+    # so an ABSENT grant is acted on just as much as a held one -- it is what turns
+    # the row into "Sign-in required". The mint's polling watcher keeps the
+    # default, where only the acted-on TRUE is recorded.
+    present = await grant_observed(mcp_url, audit_absence=True)
+    if present is None:
+        # ``name``, never ``mcp_url``: a user-added endpoint can carry a credential
+        # in its userinfo or query string, and this line lands in gateway.log.
+        logger.debug("MCP probe [%s]: grant presence unreadable", name)
+    return present
+
+
 async def _probe_remote(server: McpServerInfo) -> McpServerInfo:
     """Probe a remote Streamable HTTP MCP server via POST."""
     server.status = "probing"
     server.probed_at = time.time()
     server.probe_mode = "handshake"
+    # Each probe is the sole authority for its own authorization evidence, so it
+    # starts from zero. ``list_servers`` rehydrates these from the NAME-keyed probe
+    # cache before a re-probe, so a row whose url was edited would otherwise
+    # inherit the previous endpoint's challenge and keep reporting "Sign-in
+    # required" for a server that never asked for one.
+    server.auth_challenge = False
+    server.auth_grant_present = None
     try:
         init_body = {
             "jsonrpc": "2.0",
@@ -1346,6 +1482,13 @@ async def _probe_remote(server: McpServerInfo) -> McpServerInfo:
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(server.url, json=init_body, headers=hdrs) as resp:
                 if resp.status != 200:
+                    # The CHALLENGE is recorded on both outcomes. A rejected
+                    # static credential is still an OAuth server, and that is
+                    # precisely the case where the user most needs to be told the
+                    # token they pasted is the wrong kind of credential.
+                    server.auth_challenge = _is_bearer_challenge(
+                        resp.headers.get("WWW-Authenticate", "")
+                    )
                     if _needs_authorization(resp.status, resp.headers, server.headers):
                         # A remote OAuth server answers a tokenless probe with
                         # 401 (or 403 + WWW-Authenticate). That is the expected
@@ -1355,6 +1498,17 @@ async def _probe_remote(server: McpServerInfo) -> McpServerInfo:
                         # report "needs_auth" instead of a misleading error.
                         server.status = "needs_auth"
                         server.error = ""
+                        # The GRANT, unlike the challenge, is looked up only on
+                        # this branch. Its sole reader gates on ``needs_auth``, so
+                        # on an error row the stat would run -- and
+                        # ``grant_observed`` could write a critical SEL event --
+                        # for an observation nothing reads, against that helper's
+                        # own rule that the access owing a trail is the one a
+                        # caller ACTS on.
+                        if server.auth_challenge:
+                            server.auth_grant_present = await _runtime_grant_present(
+                                server.url, server.name
+                            )
                     else:
                         server.status = "error"
                         server.error = f"HTTP {resp.status}"
@@ -1617,11 +1771,18 @@ async def probe_server(
 
         # Resolve command to absolute path using the merged env PATH
         effective_path = env.get("PATH") or ""
+        # A command carrying a directory component is not PATH-searched:
+        # ``shutil.which`` looks it up directly and ignores ``path=``. Reporting
+        # ``effective_path`` for it would name directories that were never
+        # consulted, inverting the not-installed/installed-elsewhere distinction
+        # the search-path report exists to draw -- so the report gets "" while
+        # the lookup below still uses the real PATH.
+        reported_path = "" if os.path.dirname(server.command) else effective_path
         resolved = shutil.which(server.command, path=effective_path)
         if not resolved:
             server.status = "error"
-            server.error = _unresolved_error(server.command, effective_path)
-            _warn_unresolvable_once(server.name, server.command, effective_path)
+            server.error = _unresolved_error(server.command, reported_path)
+            _warn_unresolvable_once(server.name, server.command, reported_path)
             return server
 
         # The command resolved, so forget any prior "not found" report — keyed on
@@ -1889,10 +2050,15 @@ async def probe_server(
         )
     except FileNotFoundError:
         server.status = "error"
-        server.error = _unresolved_error(server.command, effective_path)
-        # ``effective_path`` was bound before the try, so it is always safe to
-        # read here even if the failure preceded PATH resolution.
-        _warn_unresolvable_once(server.name, server.command, effective_path)
+        # Report the search path only for a bare command: a directory-qualified
+        # one is looked up directly by shutil.which, not PATH-searched, so naming
+        # ``effective_path`` would cite directories never consulted. Recomputed
+        # here (not read from ``reported_path``) because this handler can fire
+        # before the try-body binds it, just as ``effective_path`` is bound
+        # before the try for exactly that reason.
+        _reported = "" if os.path.dirname(server.command) else effective_path
+        server.error = _unresolved_error(server.command, _reported)
+        _warn_unresolvable_once(server.name, server.command, _reported)
     except SandboxUnavailableError as exc:
         # The PROBE could not run — this says nothing about the server, and the
         # two must not be reported alike. Ahead of the generic clause, which would

@@ -5,6 +5,7 @@ import SubagentCompletionCard from '../pages/chat/SubagentCompletionCard'
 import {
   isSubagentCompletionMessage,
   parseSubagentCompletion,
+  isModelDowngrade,
 } from '../pages/chat/subagentCompletion'
 import type { RootState } from '../store'
 import type { ChatMessage } from '../types'
@@ -504,5 +505,189 @@ describe('card containment', () => {
     expect(body.classList.contains('focus-visible:ring-2')).toBe(true)
     expect(body.classList.contains('focus-visible:ring-inset')).toBe(true)
     expect(body.classList.contains('focus-visible:ring-accent')).toBe(true)
+  })
+})
+
+describe('model provenance on the completion card (#3582)', () => {
+  const store = () => createTestStore({ chat: {} as unknown as ChatState })
+
+  const metaWith = (requestedModel: string, resolvedModel: string) => ({
+    subagentCompletion: {
+      kind: 'single',
+      agentId: '53e3e5eb',
+      agentName: 'kirocrew',
+      outcome: 'ok',
+      task: 'review the diff',
+      note: '',
+      requestedModel,
+      resolvedModel,
+    },
+  })
+
+  it('parses requested and resolved model from meta', () => {
+    const p = parseSubagentCompletion(SINGLE, metaWith('claude-opus-4.8', 'claude-opus-4.8'))!
+    expect(p.kind).toBe('single')
+    if (p.kind !== 'single') return
+    expect(p.requestedModel).toBe('claude-opus-4.8')
+    expect(p.resolvedModel).toBe('claude-opus-4.8')
+  })
+
+  it('defaults both model fields to empty when meta omits them (and on the legacy prose path)', () => {
+    const fromBareMeta = parseSubagentCompletion(SINGLE, {
+      subagentCompletion: { kind: 'single', agentId: '53e3e5eb', outcome: 'ok' },
+    })!
+    const fromProse = parseSubagentCompletion(SINGLE)!
+    for (const p of [fromBareMeta, fromProse]) {
+      expect(p.kind).toBe('single')
+      if (p.kind !== 'single') continue
+      expect(p.requestedModel).toBe('')
+      expect(p.resolvedModel).toBe('')
+    }
+  })
+
+  it('renders the resolved model chip when known', () => {
+    renderWithProviders(
+      <SubagentCompletionCard message={msg(SINGLE, { meta: metaWith('', 'claude-opus-4.8') })} />,
+      { store: store() },
+    )
+    const chip = screen.getByTestId('subagent-completion-model')
+    expect(chip.textContent).toContain('claude-opus-4.8')
+    // No downgrade (nothing was pinned) → not the warn styling.
+    expect(chip.className).not.toContain('text-warn')
+  })
+
+  it('flags a downgrade when the served model differs from the pinned one', () => {
+    renderWithProviders(
+      <SubagentCompletionCard
+        message={msg(SINGLE, { meta: metaWith('claude-opus-4.8', 'claude-opus-4.7') })}
+      />,
+      { store: store() },
+    )
+    const chip = screen.getByTestId('subagent-completion-model')
+    expect(chip.textContent).toContain('claude-opus-4.7')
+    expect(chip.className).toContain('text-warn')
+    expect(chip.getAttribute('title')).toContain('claude-opus-4.8')
+    expect(chip.getAttribute('title')).toContain('claude-opus-4.7')
+  })
+
+  it('omits the model chip entirely when the model is unknown', () => {
+    const { container } = renderWithProviders(
+      <SubagentCompletionCard message={msg(SINGLE, { meta: metaWith('', '') })} />,
+      { store: store() },
+    )
+    expect(container.querySelector('[data-testid="subagent-completion-model"]')).toBeNull()
+  })
+})
+
+describe('isModelDowngrade / normalizeModelId (GPT review on #3582)', () => {
+  it('does not flag a dotted pin vs its dashed served id as a downgrade', () => {
+    // The false positive the reviews caught: config pins are dotted
+    // (claude-opus-4.8) while adapters advertise dashed (claude-opus-4-8);
+    // normalizeModelKey folds `.`->`-` and case, so these are the same model.
+    expect(isModelDowngrade('claude-opus-4.8', 'claude-opus-4-8')).toBe(false)
+    expect(isModelDowngrade('Claude-Opus-4.8', 'claude-opus-4-8')).toBe(false)
+  })
+
+  it('does not flag an alias pin vs its provider-canonical served id (prefix/suffix)', () => {
+    // normalizeModelKey does not fold the provider prefix / version suffix; we
+    // strip a KNOWN leading provider prefix + trailing version suffix and then
+    // require exact equality — an honored pin, not a downgrade (#3582).
+    expect(isModelDowngrade('claude-opus-4.8', 'us.anthropic.claude-opus-4-8-v1:0')).toBe(false)
+    expect(isModelDowngrade('claude-opus-4.8', 'us.anthropic.claude-opus-4-8')).toBe(false)
+    expect(isModelDowngrade('claude-opus-4-8', 'anthropic.claude-opus-4-8:0')).toBe(false)
+  })
+
+  it('does not flag the "auto"/"default" sentinel or an unknown id', () => {
+    // These fold to "auto" (no explicit pin) — no promise to break.
+    expect(isModelDowngrade('auto', 'claude-opus-4-8')).toBe(false)
+    expect(isModelDowngrade('AUTO', 'gpt-5.6-sol')).toBe(false)
+    expect(isModelDowngrade('default', 'gpt-5.6-sol')).toBe(false)
+    expect(isModelDowngrade('', 'gpt-5.6-sol')).toBe(false)
+    expect(isModelDowngrade('claude-opus-4.8', '')).toBe(false)
+  })
+
+  it('DOES flag a genuine model change, including a version-family shift', () => {
+    expect(isModelDowngrade('claude-opus-4.8', 'claude-opus-4.7')).toBe(true)
+    expect(isModelDowngrade('claude-opus-4.8', 'gpt-5.6-sol')).toBe(true)
+    // The UX false-negative: a version-family PREFIX is a different model and
+    // must NOT be swallowed by prefix/suffix folding.
+    expect(isModelDowngrade('claude-opus-4', 'claude-opus-4-1')).toBe(true)
+    expect(isModelDowngrade('claude-opus-4.8', 'us.anthropic.claude-opus-4-7-v1:0')).toBe(true)
+    // Boundary: opus-4-8 must NOT be treated as the same as opus-4-80.
+    expect(isModelDowngrade('claude-opus-4-8', 'claude-opus-4-80')).toBe(true)
+  })
+
+  it('treats an UNRECOGNIZED routing prefix as inconclusive, never a downgrade (#5394)', () => {
+    // A partition/provider outside the known strip set (a new region token,
+    // a vendor the fold has never heard of) leaves the served id as
+    // `<unknown-prefix>-<bare pin>` — an unstripped routing shape, not
+    // evidence of a different model. A missed downgrade is safer than a
+    // false amber on an honored pin.
+    expect(isModelDowngrade('claude-opus-4.8', 'apac.anthropic.claude-opus-4-8-v1:0')).toBe(false)
+    expect(isModelDowngrade('claude-opus-4.8', 'newvendor.claude-opus-4-8')).toBe(false)
+    expect(isModelDowngrade('gpt-5.6-sol', 'azure.openai.gpt-5.6-sol')).toBe(false)
+  })
+
+  it('folds BOTH sides symmetrically: a canonical-form pin vs its bare served id (#5394)', () => {
+    // A pin can itself be written in provider-canonical form; stripping only
+    // the served side would false-flag the honored pin.
+    expect(isModelDowngrade('us.anthropic.claude-opus-4-8-v1:0', 'claude-opus-4-8')).toBe(false)
+    expect(isModelDowngrade('anthropic.claude-opus-4-8:0', 'claude-opus-4.8')).toBe(false)
+  })
+
+  it('still flags a genuinely different model under an unknown prefix (#5394)', () => {
+    // The inconclusive guard requires the WHOLE tail to match at a token
+    // boundary — a different bare model under an unknown prefix is not a
+    // suffix match and must keep flagging.
+    expect(isModelDowngrade('claude-opus-4.8', 'apac.anthropic.claude-opus-4-7-v1:0')).toBe(true)
+  })
+
+  it('still flags when BOTH sides carry version/date tails that differ (#5394)', () => {
+    // Dated snapshot ids are first-class pins (model_registry carries two
+    // -YYYYMMDD snapshots of one base): a tail is folded only to MEET a
+    // tail-less side, so two PRESENT tails must agree — different snapshots
+    // or revisions of the same base are different models and must flag.
+    expect(isModelDowngrade('claude-3-5-sonnet-20241022', 'claude-3-5-sonnet-20240620')).toBe(true)
+    expect(
+      isModelDowngrade(
+        'anthropic.claude-3-5-sonnet-20241022-v2:0',
+        'anthropic.claude-3-5-sonnet-20240620-v1:0',
+      ),
+    ).toBe(true)
+    // Matching tails on both sides are an honored pin, not a downgrade.
+    expect(
+      isModelDowngrade('us.anthropic.claude-opus-4-8-v1:0', 'anthropic.claude-opus-4-8-v1:0'),
+    ).toBe(false)
+  })
+})
+
+describe('downgrade is visible, not hover-only (UX review on #3582)', () => {
+  const store = () => createTestStore({ chat: {} as unknown as ChatState })
+  const meta = (req: string, res: string) => ({
+    subagentCompletion: {
+      kind: 'single', agentId: '53e3e5eb', agentName: 'kirocrew', outcome: 'ok',
+      task: 'review', note: '', requestedModel: req, resolvedModel: res,
+    },
+  })
+
+  it('renders a persistent requested-vs-served banner (role=status) on a real downgrade', () => {
+    renderWithProviders(
+      <SubagentCompletionCard message={msg(SINGLE, { meta: meta('claude-opus-4.8', 'claude-opus-4.7') })} />,
+      { store: store() },
+    )
+    const banner = screen.getByTestId('subagent-completion-downgrade')
+    expect(banner.getAttribute('role')).toBe('status')
+    expect(banner.textContent).toContain('claude-opus-4.8')
+    expect(banner.textContent).toContain('claude-opus-4.7')
+  })
+
+  it('shows NO downgrade banner when the served model matches the dashed spelling', () => {
+    const { container } = renderWithProviders(
+      <SubagentCompletionCard message={msg(SINGLE, { meta: meta('claude-opus-4.8', 'claude-opus-4-8') })} />,
+      { store: store() },
+    )
+    expect(container.querySelector('[data-testid="subagent-completion-downgrade"]')).toBeNull()
+    // The chip still shows the served model, without the warn styling.
+    expect(screen.getByTestId('subagent-completion-model').className).not.toContain('text-warn')
   })
 })

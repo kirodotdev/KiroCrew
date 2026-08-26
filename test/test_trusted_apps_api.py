@@ -577,6 +577,7 @@ async def test_revoke_runs_the_full_teardown_in_order(home: Path, tmp_path: Path
     calls: list[str] = []
 
     async def _on_app_disable(name: str, record: dict, **_kw: object) -> dict:
+        assert _kw["bounded_startup_cleanup"] is True
         calls.append(f"on_app_disable:{name}")
         return {}
 
@@ -615,6 +616,51 @@ async def test_revoke_runs_the_full_teardown_in_order(home: Path, tmp_path: Path
         f"stop_app_backend:{_APP}",
         f"deregister_app:{_APP}",
         f"disable_app:{_APP}",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_trust_withdrawal_refuses_before_teardown_when_startup_is_live(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Residual startup ownership leaves every runtime surface unchanged."""
+    import kiro_crew.apps.teardown as appteardown
+
+    calls: list[str] = []
+
+    async def _startup_preflight(name: str, *, bounded: bool = False) -> bool:
+        assert name == _APP
+        assert bounded is True
+        calls.append("startup_preflight")
+        return False
+
+    async def _must_not_run(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("teardown mutated runtime state after ownership refusal")
+
+    monkeypatch.setattr(appteardown, "stop_app_startup_hooks", _startup_preflight)
+    monkeypatch.setattr(appteardown, "notify_app_disabled", _must_not_run)
+    monkeypatch.setattr(appteardown, "on_app_disable", _must_not_run)
+    monkeypatch.setattr(
+        appteardown,
+        "stop_app_backend",
+        lambda _name: pytest.fail("backend stop ran after ownership refusal"),
+    )
+    monkeypatch.setattr(
+        appteardown,
+        "deregister_app",
+        lambda _name: pytest.fail("deregistration ran after ownership refusal"),
+    )
+
+    result = await appteardown.teardown_app_runtime(
+        _APP, {"manifest": {}, "enabled": True}, withdrawing_trust=True
+    )
+
+    assert result.ok is False
+    assert calls == ["startup_preflight"]
+    assert result.warnings == []
+    assert result.failures == [
+        "startup cleanup incomplete: detached startup hook is still running; "
+        "teardown made no runtime changes"
     ]
 
 
@@ -1661,6 +1707,37 @@ async def test_failed_cron_cleanup_does_not_report_a_successful_revoke(
             assert resp.status == 200
             assert (await resp.json())["disabled"] is True
     assert _APP not in _stored(home).get("apps_trusted", [])
+
+
+@pytest.mark.asyncio
+async def test_live_detached_startup_hook_does_not_report_successful_revoke(
+    home: Path, tmp_path: Path, mock_sel
+):
+    """Residual startup code is a hard, retryable teardown failure."""
+    import kiro_crew.apps.teardown as appteardown
+
+    async def _still_running(name: str, record: dict, **_kw: object) -> dict:
+        return {
+            "startup_cleanup": (
+                "failed: detached startup hook is still running after cancellation"
+            )
+        }
+
+    _install(tmp_path, _APP, enabled=True)
+    with (
+        patch.object(appteardown, "on_app_disable", _still_running),
+        patch.object(appteardown, "stop_app_backend", lambda name: True),
+        patch.object(appteardown, "deregister_app", lambda name: None),
+    ):
+        async with _client() as client:
+            assert (await client.post(f"/api/security/trusted-apps/{_APP}")).status == 200
+            resp = await client.delete(f"/api/security/trusted-apps/{_APP}")
+            assert resp.status == 409
+            body = await resp.json()
+            assert body["code"] == "teardown_incomplete"
+            assert any("startup cleanup incomplete" in f for f in body["failures"])
+
+    assert _APP in _stored(home).get("apps_trusted", [])
 
 
 @pytest.mark.asyncio

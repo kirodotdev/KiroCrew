@@ -289,6 +289,82 @@ class TestTemplate:
         text = ec2.load_template()
         assert "${!tail_ctx}" in text
 
+    def test_failure_reason_is_filtered_to_printable_ascii(self):
+        # CloudFormation rejects a WaitCondition Reason carrying control or
+        # non-ASCII bytes ("Resource status reason contains invalid
+        # characters"), replacing the real bootstrap error with a charset
+        # complaint -- and the rollback then destroys the setup log, the only
+        # copy of that error. dnf/git/npm/vite routinely emit ANSI escapes and
+        # UTF-8 glyphs, so fail() must filter BOTH inputs of the reason (the
+        # folded log tail and the caller's "$1" message) to printable ASCII.
+        # Both delivery paths (cfn-signal -r and the curl PUT fallback) read
+        # the same variable, so the single-point filter covers both.
+        text = ec2.load_template()
+        # log tail + "$1" message; >= so a future third use doesn't fail this
+        assert text.count("tr -cd '\\40-\\176'") >= 2
+        # Order matters: newlines fold to '|' BEFORE the printable filter
+        # (newline is itself a control byte the filter would silently eat),
+        # and the byte cap stays AFTER it (an all-ASCII payload cannot have a
+        # multi-byte sequence for the cap to split).
+        assert "| tr '\\n' '|' | tr -cd '\\40-\\176' | tail -c 900" in text
+        assert "| tr -d '\"\\\\' | tr '\\n' '|' | tr -cd '\\40-\\176'" in text
+
+    def test_failure_reason_pipeline_replica_yields_clean_reason(self):
+        # Pure-python replica of fail()'s reason pipeline (no harness executes
+        # the template's bash). Each stage mirrors one command, in order:
+        # tail -n 25 -> tr -d '\r"\' -> grep -aviE <noise> -> tr '\n' '|'
+        # -> tr -cd '\40-\176' -> tail -c 900, then the "$1" half and the
+        # head -c 1000 cap. Feeds a log tail carrying an ANSI escape sequence,
+        # multi-byte UTF-8 glyphs, a raw control byte, and noise lines hitting
+        # both grep alternation branches in mixed case, and asserts the
+        # produced reason is entirely printable ASCII (0x20-0x7e) and at most
+        # 1000 bytes. A negative control (same pipeline WITHOUT the printable
+        # filter) proves the assertions can fail, so the test constrains the
+        # filter rather than its own construction.
+        log_lines = [b"padding line %d" % i for i in range(25)] + [
+            b'step one ok',
+            b'Installing npm dependencies for the dashboard',
+            b'INSTALLING KIROCREW AND DEPENDENCIES',
+            b'Building React App (vite)',
+            b'\x1b[31mnpm error\x1b[0m: build "failed"',
+            b'caf\xc3\xa9 \xe4\xb8\xad\xe6\x96\x87 glyphs',
+            b'bell\x07done back\\slash\r',
+        ]
+
+        def printable(data: bytes) -> bytes:
+            return bytes(b for b in data if 0x20 <= b <= 0x7E)
+
+        noise = re.compile(rb"Installing (npm|kirocrew and) depend|building React app", re.I)
+
+        def pipeline(lines: list[bytes], message: bytes, ascii_filter: bool) -> bytes:
+            step = printable if ascii_filter else (lambda data: data)
+            # tail_ctx=$(tail -n 25 "$LOG" | tr -d '\r"\' | grep -aviE <noise>
+            #            | tr '\n' '|' | tr -cd '\40-\176' | tail -c 900)
+            tail25 = b"\n".join(lines[-25:])
+            stripped = tail25.translate(None, delete=b'\r"\\')
+            kept = [ln for ln in stripped.split(b"\n") if not noise.search(ln)]
+            tail_ctx = step(b"|".join(kept))[-900:]
+            # reason="$(printf '%s' "$1" | tr -d '"\' | tr '\n' '|'
+            #           | tr -cd '\40-\176') :: ...<tail_ctx>"
+            msg = step(message.translate(None, delete=b'"\\').replace(b"\n", b"|"))
+            return (msg + b" :: ..." + tail_ctx)[:1000]  # head -c 1000
+
+        message = 'dashboard "build" missing: caf\u00e9 \x1b[1mnpm\x1b[0m err'.encode()
+
+        # Negative control: without the tr -cd stage the reason is dirty.
+        dirty = pipeline(log_lines, message, ascii_filter=False)
+        assert dirty != printable(dirty), "fixture lost its non-printable bytes"
+
+        reason = pipeline(log_lines, message, ascii_filter=True)
+        assert reason == printable(reason), f"non-printable byte survived: {reason!r}"
+        assert len(reason) <= 1000
+        # The real error text survives; the ANSI escape degrades to printable
+        # residue ("[31m") instead of poisoning the signal, and the noise
+        # filter dropped both alternation branches case-insensitively.
+        assert b"npm error" in reason and b"build failed" in reason
+        assert b"\x1b" not in reason
+        assert b"KIROCREW AND" not in reason and b"React App" not in reason
+
     def test_no_non_ascii_in_property_values(self):
         """EC2 rejects non-ASCII in values like GroupDescription — guard against it.
 

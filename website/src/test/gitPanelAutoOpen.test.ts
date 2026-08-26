@@ -7,7 +7,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 
 const GIT_PANEL_KEY_PREFIX = 'mc-git-panel-opened:'
-const FOLDER_PANEL_KEY_PREFIX = 'mc-folder-panel-opened:'
 
 beforeEach(() => {
   localStorage.clear()
@@ -51,22 +50,5 @@ describe('git panel auto-open-once localStorage marker', () => {
 
     expect(localStorage.getItem(keyA)).toBe('1')
     expect(localStorage.getItem(keyB)).toBeNull()
-  })
-})
-
-describe('folder panel auto-open-once localStorage marker', () => {
-  it('marker prevents re-opening the folder tab for the same slot+path', () => {
-    const slot = 'slot-1'
-    const path = '/home/user/project'
-    const key = `${FOLDER_PANEL_KEY_PREFIX}${slot}:${path}`
-
-    // First visit: no marker
-    expect(localStorage.getItem(key)).toBeNull()
-
-    // Simulate auto-open
-    localStorage.setItem(key, '1')
-
-    // Second visit: marker present
-    expect(localStorage.getItem(key)).toBe('1')
   })
 })

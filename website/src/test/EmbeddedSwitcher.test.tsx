@@ -22,6 +22,7 @@ const model = (over: Partial<HostModel> = {}): HostModel => ({
   macInset: false,
   electron: true,
   pinnedCrews: [],
+  stableOrder: false,
   ...over,
 })
 
@@ -93,18 +94,86 @@ describe('EmbeddedInstanceTabBar (option B)', () => {
     expect(screen.queryByTestId('crew-chip-row')).toBeNull()
   })
 
-  it('does not offer the stable-order toggle, which has no host-model relay yet', async () => {
-    // The stable-order preference is not relayed through the host model, so a
-    // pane toggling it would write only its own cross-origin localStorage and
-    // drift from the parent header and sibling panes. Until that relay exists the
-    // embedded switcher hides the control rather than half-working.
+  it('offers the stable-order toggle and reflects the relayed value', async () => {
+    // The preference is relayed through the host model (`stableOrder`), so the
+    // embedded switcher shows the same control the local bar does, pre-checked to
+    // the parent's value rather than reading its own cross-origin localStorage.
     const store = createTestStore({
-      instances: { warm: {}, activeId: null, mru: [], unread: {}, host: model({ activeId: null }) },
+      instances: {
+        warm: {}, activeId: null, mru: [], unread: {},
+        host: model({ activeId: null, stableOrder: true }),
+      },
     })
     renderWithProviders(<InstanceTabBar variant="inline" />, { store })
     await userEvent.click(screen.getByRole('button', { name: /Switch crew/i }))
+    const toggle = await screen.findByTestId('crew-stable-order-toggle')
+    expect(toggle).toBeTruthy()
+    expect(toggle.getAttribute('aria-checked')).toBe('true')
+  })
+
+  it('withholds the stable-order toggle from a host that predates the relay', async () => {
+    // Version skew, host side: an older parent omits `stableOrder` from its model
+    // AND has no `mc-set-stable-order` handler. Offering the toggle there would
+    // let the user click a checkbox that can never change state, so absence
+    // (parsed to `null`) both orders by the pre-relay default and hides it.
+    const store = createTestStore({
+      instances: {
+        warm: {}, activeId: null, mru: [], unread: {},
+        host: model({ activeId: null, stableOrder: null }),
+      },
+    })
+    const { container } = renderWithProviders(<InstanceTabBar variant="inline" />, { store })
+    await userEvent.click(screen.getByRole('button', { name: /Switch crew/i }))
     await screen.findByRole('menuitemradio', { name: /Cloud One/ })
     expect(screen.queryByTestId('crew-stable-order-toggle')).toBeNull()
+    // Ordering falls back to the pre-relay default: the active crew still leads.
+    expect(container.querySelector('.tb-crew-active-chip')).not.toBeNull()
+  })
+
+  it('relays a stable-order toggle up to the parent instead of writing its own store', async () => {
+    const post = vi.spyOn(window.parent, 'postMessage').mockImplementation(() => {})
+    const store = createTestStore({
+      instances: {
+        warm: {}, activeId: null, mru: [], unread: {},
+        // Relayed value is off, so flipping it must post `on: true` up. Like the
+        // pin, the pane cannot persist the parent-owned preference locally.
+        host: model({ activeId: null, stableOrder: false }),
+      },
+    })
+    renderWithProviders(<InstanceTabBar variant="inline" />, { store })
+
+    await userEvent.click(screen.getByRole('button', { name: /Switch crew/i }))
+    await userEvent.click(await screen.findByTestId('crew-stable-order-toggle'))
+    expect(post).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'mc-set-stable-order', on: true }),
+      '*',
+    )
+  })
+
+  it('does NOT pull the active pinned crew to a leading chip when stable-order is relayed on', () => {
+    // The exact runtime scenario the relay must fix: a CONNECTED remote crew is
+    // the active pane, it is pinned, and the parent relays stableOrder=true. The
+    // active crew must be highlighted in place inside the chip row, never hoisted
+    // to a leading `tb-crew-active-chip` — that hoist is the reorder-on-switch.
+    const store = createTestStore({
+      instances: {
+        warm: {}, activeId: null, mru: [], unread: {},
+        host: model({ activeId: 'cd-1', pinnedCrews: ['cd-1'], stableOrder: true }),
+      },
+    })
+    const { container } = renderWithProviders(<InstanceTabBar variant="inline" />, { store })
+    expect(container.querySelector('.tb-crew-active-chip')).toBeNull()
+  })
+
+  it('DOES lead with the active crew when stable-order is relayed off (proves the mechanism)', () => {
+    const store = createTestStore({
+      instances: {
+        warm: {}, activeId: null, mru: [], unread: {},
+        host: model({ activeId: 'cd-1', pinnedCrews: ['cd-1'], stableOrder: false }),
+      },
+    })
+    const { container } = renderWithProviders(<InstanceTabBar variant="inline" />, { store })
+    expect(container.querySelector('.tb-crew-active-chip')).not.toBeNull()
   })
 
   it('relays a pin toggle up to the parent instead of writing its own store', async () => {
@@ -140,12 +209,13 @@ describe('EmbeddedHostBridge (option B relay)', () => {
       window.dispatchEvent(
         new MessageEvent('message', {
           source: window.parent,
-          data: { type: 'mc-host-model', ...model({ macInset: true, self: { state: 'connected' } }) },
+          data: { type: 'mc-host-model', ...model({ macInset: true, self: { state: 'connected' }, stableOrder: true }) },
         }),
       )
     })
     await waitFor(() => expect(store.getState().instances.host?.tabs).toHaveLength(1))
     expect(store.getState().instances.host?.macInset).toBe(true)
+    expect(store.getState().instances.host?.stableOrder).toBe(true)
     expect(document.documentElement.classList.contains('embedded-mac-inset')).toBe(true)
   })
 
@@ -197,5 +267,33 @@ describe('EmbeddedHostBridge (option B relay)', () => {
     } finally {
       __resetFocusMode()
     }
+  })
+
+  it('records a missing stableOrder as null rather than false', async () => {
+    // The pane must be able to tell "host says off" from "host never sent it":
+    // only the latter means the host has no mc-set-stable-order handler, and the
+    // bar keys the toggle's visibility off exactly that distinction.
+    vi.spyOn(window.parent, 'postMessage').mockImplementation(() => {})
+    const store = createTestStore()
+    renderWithProviders(<EmbeddedHostBridge />, { store })
+
+    const { stableOrder: _omitted, ...withoutStableOrder } = model()
+    act(() => {
+      window.dispatchEvent(new MessageEvent('message', {
+        source: window.parent,
+        data: { type: 'mc-host-model', ...withoutStableOrder },
+      }))
+    })
+    await waitFor(() => expect(store.getState().instances.host?.tabs).toHaveLength(1))
+    expect(store.getState().instances.host?.stableOrder).toBeNull()
+
+    // An explicit false IS an opinion and is preserved as false.
+    act(() => {
+      window.dispatchEvent(new MessageEvent('message', {
+        source: window.parent,
+        data: { type: 'mc-host-model', ...model({ stableOrder: false }) },
+      }))
+    })
+    await waitFor(() => expect(store.getState().instances.host?.stableOrder).toBe(false))
   })
 })

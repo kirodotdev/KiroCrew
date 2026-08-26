@@ -740,6 +740,23 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "shared code: a channel cannot forget what it does not call.",
     ),
     (
+        "Webex delivery",
+        "webex/renderer.py",
+        "The Webex DELIVERY boundary. Webex renders markdown, so it reassembles a "
+        "credential the driver's literal-byte scan of the provider stream could "
+        "not match contiguously (`AKIA**IOSF**ODNN7EXAMPLE`, a link target broken "
+        "by emphasis) -- and this channel adds two egress paths of its own that "
+        "carry the same text: the numbered `[OPTIONS:]` fallback posted when an "
+        "Adaptive Card send fails, and the local-path references restored when an "
+        "upload fails. The final answer is therefore re-scanned through "
+        "redact_for_display (messaging/display_safety.py) on the DISPLAYED form, "
+        "with the same redactor pair TurnDriver streams through. Deliberately "
+        "without the mention defang the shared `display_safe` adds: that "
+        "neutralizes `@everyone`-style broadcast grammars, Webex has none, and "
+        "this channel's allow-list is email addresses -- so defanging would mangle "
+        "every address the agent legitimately prints.",
+    ),
+    (
         "iMessage delivery",
         "imessage/renderer.py",
         "The iMessage DELIVERY boundary. This channel is the one that collapses "

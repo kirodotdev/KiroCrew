@@ -373,16 +373,31 @@ async def test_compose_nudge_body_survives_snapshot_failure(monkeypatch):
 
 
 def test_gateway_fire_callbacks_use_the_composer():
-    """All three fire paths must go through compose_nudge_body — reverting a
-    call site to the snapshot-less render_nudge_message drops ledger
-    injection for that surface silently."""
+    """EVERY fire path must go through compose_nudge_body — reverting a call site
+    to the snapshot-less render_nudge_message drops ledger injection for that
+    surface silently.
+
+    Enumerated rather than counted. A hardcoded total says "3" until a channel is
+    added, and then it fails for the one reason that is NOT a defect (a new
+    adapter) while a channel that quietly opted itself out could keep the total
+    correct by existing. Naming the offenders also tells whoever broke it which
+    surface lost its ledger.
+    """
     import inspect
+    import re
 
     from kiro_crew.slack import gateway
 
     src = inspect.getsource(gateway)
-    assert (
-        src.count("compose_nudge_body(loop.message, loop.stop_sentinel_path, loop.slot_key)") == 3
+    # Split on the adapter definitions so each body is attributed to its own name.
+    parts = re.split(r"\n    async def (?=_fire_\w+_nudge\()", src)[1:]
+    adapters = {p.split("(", 1)[0]: p for p in parts}
+    assert adapters, "no _fire_*_nudge adapters found — this pattern went stale"
+
+    offenders = sorted(name for name, body in adapters.items() if "compose_nudge_body" not in body)
+    assert not offenders, (
+        "these fire adapters do not call compose_nudge_body, so their surface's "
+        f"loops start each cycle without the work-ledger snapshot: {offenders}"
     )
 
 

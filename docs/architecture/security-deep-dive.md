@@ -89,7 +89,9 @@ active YOLO grant can never route around a hard deny.
 Confines the `kiro-cli` subprocess tree with platform-native isolation, hiding
 credential directories by bind-mount (Linux user + mount namespaces) or file-read
 denial (macOS Seatbelt), and scrubbing credential-bearing environment variables
-on the way in. The parent gateway process is unaffected.
+on the way in. Windows has no Kiro Crew OS wrapper, so positively identified
+official Kiro CLI spawns delegate to the CLI's built-in sandbox; their environment
+is scrubbed by the parent before spawn. The parent gateway process is unaffected.
 
 **`agent.sandbox` defaults to `"auto"`, engaging OS-level isolation
 (namespace on Linux, sandbox-exec on macOS).** The only alternative value is
@@ -124,11 +126,16 @@ Two properties are load-bearing at the architecture level:
   the discoverable path is instead a consent step in `kirocrew setup`, which
   prompts (default no) when `detect_backend()` reports `"none"` and writes the
   key only on an explicit yes.
+- **Windows Kiro delegation is not a global fail-open.** `is_kiro_cli=True` from a
+  reviewed official-Kiro spawn site delegates directly to Kiro's built-in sandbox
+  before backend probing. A Kiro-looking filename is insufficient on Windows.
+  Third-party ACP backends, scripts, hooks and other subprocesses still take the
+  normal no-backend refusal and require the explicit opt-in above.
 - **Delegation is audited, never silent.** When `kiro-cli`'s internal sandbox owns
   isolation for a spawn, the decision is config-driven (never a reaction to a wrap
   failure), logged once per process, and SEL-audited on an audit-or-deny basis: if
-  the audit cannot be written, the delegation is refused and Kiro Crew's own
-  Seatbelt takes the spawn.
+  the audit cannot be written, the delegation is refused. Kiro Crew's own Seatbelt
+  takes the spawn on macOS; Windows returns to its no-backend fail-closed policy.
 
 **Launcher shims are deliberately not bypassed on the delegated path.** On that
 path the shim is part of `kiro-cli`'s own sandbox mechanism, so resolving past it

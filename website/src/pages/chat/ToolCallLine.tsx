@@ -26,6 +26,7 @@ import { FileDiff } from 'lucide-react'
 import { i18nT } from '../../i18n/t'
 import { fmtDateFields, fmtDuration as fmtDurationParts, fmtUnit } from '../../i18n/format'
 import { api } from '../../api/client'
+import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 
 // Tool-call ids that have already played their one-shot `.ft-block-reveal`
 // entrance fade. A CSS animation re-fires on every DOM *mount*, and a pill
@@ -98,6 +99,7 @@ function StatusRow({ show, children }: { show: boolean; children: ReactNode }) {
 /** Inline tool call pill. Click toggles an expanded panel below the pill that
  *  shows purpose / input / output. */
 export default memo(function ToolCallLine({ message, running: _running, slot, onFileOpen, disclosure, disclosureKey, onDisclosureChange, appInPanel, onOpenApp }: { message: ChatMessage; running: boolean; slot?: string; onFileOpen?: (path: string) => void; disclosure?: boolean; disclosureKey?: string; onDisclosureChange?: (key: string, expanded: boolean) => void; appInPanel?: boolean; onOpenApp?: (toolCallId: string) => void }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const dispatch = useAppDispatch()
   const label = message.content.replace(/^🔧\s*/, '')
   const toolCallId = message.meta?.tool_call_id as string | undefined
@@ -753,7 +755,25 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
         ? (e) => { if (e.target === e.currentTarget) setRevealPlayed(true) }
         : undefined}
     >
-      <div className={`inline-flex items-start gap-1 group/toolpill ${ROW_PILL_WRAPPER_CLASS}`}>
+      {/* The pill (icon + label) and the file chip WRAP rather than sharing one
+          line unconditionally. The chip is `shrink-0` with its own 240px label
+          cap while the pill's label is `min-w-0` shrinkable, so on a no-wrap row
+          the chip takes its width first and the label lives on whatever is left
+          — in a 358px column that left the pill 78px and stacked "Editing
+          <long_name>.ion" into a ten-line ribbon beside a chip carrying the same
+          truncated name.
+          The wrap is deliberately NOT gated on a viewport breakpoint. The
+          starvation is a function of the COLUMN's width, and the column is not
+          the viewport: `ChatPane` sets `--mc-content-width: 100%`, so a
+          quarter-width pane in the session grid is a ~350px column at a 1440px
+          viewport. Flex wrapping already keys on the space actually available,
+          which is the same axis as the defect — a `md:` gate would have re-pinned
+          exactly those panes to one row and let the ribbon back in.
+          Wrapping also costs less than an unconditional column: a flex item
+          wraps on its BASE size, so the common short row ("Reading the turn
+          grouping" + TurnBlock.tsx) keeps its chip beside the label and only a
+          pair that genuinely cannot share the width pays a second line. */}
+      <div className={`inline-flex flex-wrap items-start gap-x-0 gap-y-1 group/toolpill ${ROW_PILL_WRAPPER_CLASS}`}>
       {/* No `font-mono`: the pill's label is prose with the odd argument spliced
           in ("Searching for 'YOLO' in src"), not code, and Tailwind's
           `font-mono` pins `var(--mono)` — which the Font Family setting never
@@ -798,10 +818,18 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
           ancestor handler. Unlike the pill label, the chip is always visible: it
           carries the filename (the whole point in purpose mode) and the full
           path lives in the tooltip + expanded details. Neutral at rest, accent
-          on hover; the icon inherits the button's currentColor. */}
+          on hover; the icon inherits the button's currentColor. The `ms-2`
+          cancels the wrapper's -ml-2, so when the chip wraps onto its own line
+          its left edge lands on the message column's text edge instead of 8px
+          into the gutter. It is unconditional because no CSS condition — a media
+          query or a container query — can report whether a flex line WRAPPED;
+          keying it on a width threshold would only be a proxy that is wrong on
+          both sides of its guess. The wrapper's row gap is therefore 0 and this
+          margin is the whole separation: 8px on an unwrapped row, where it was
+          the wrapper's 4px before. */}
       {showFileOpen && filePath && (
         <button
-          className="pi-morph shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded font-mono text-[12px] leading-5 bg-bg-hover text-muted hover:text-accent hover:bg-accent/10 cursor-pointer transition-colors focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
+          className="pi-morph shrink-0 inline-flex items-center gap-1 ms-2 px-1.5 py-0.5 rounded font-mono text-[12px] leading-5 bg-bg-hover text-muted hover:text-accent hover:bg-accent/10 cursor-pointer transition-colors focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
           style={{ marginTop: '1px' }}
           onClick={(e) => { e.stopPropagation(); onFileOpen!(filePath) }}
           title={i18nT('pages.chat.toolCallLine.open_in_side_panel', { path: filePath })}

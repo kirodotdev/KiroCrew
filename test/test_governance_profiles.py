@@ -8,7 +8,9 @@ narrowing, and mtime hot-reload.
 from __future__ import annotations
 
 import json
+import os
 import threading
+import time
 
 import pytest
 
@@ -1398,6 +1400,114 @@ def test_fallback_profile_names_empty_on_valid_profiles(profiles_dir):
         },
     )
     assert gp.fallback_profile_names() == frozenset()
+
+
+def test_companion_edition_profile_with_unregistered_capability_stays_loaded(profiles_dir):
+    """A host.json naming a capability THIS build does not register must still load.
+
+    The internal edition registers extra ``capabilities.*`` rows and seeds them into
+    ``host.json``; a public build sharing the same data home has no such rows. The
+    profile must NOT degrade to the deny-all fallback (which showed every governance
+    row as "deny all" in the dashboard) — the unknown key is skipped and the known
+    controls keep governing.
+    """
+    _write(
+        profiles_dir,
+        "host",
+        {
+            "name": "host",
+            "bind": {"type": "surface", "id": "dashboard"},
+            "tools": {"mode": "allow", "allow": ["read"]},
+            "capabilities": {
+                "capability_install": {"enabled": True},
+                "external_access": {"enabled": True},
+                "spawn": {"enabled": True},
+            },
+        },
+    )
+    gp.reset_store()
+    assert gp.fallback_profile_names() == frozenset()
+    prof = gp.resolve_active_scope("dashboard:slot1")
+    assert prof is not None and prof.name == "host"
+    assert prof.unknown_scopes == (
+        "capabilities.capability_install",
+        "capabilities.external_access",
+    )
+    # Not the deny-all fallback: the declared allow-set survived.
+    tools = prof.get("tools")
+    assert tools is not None and tools.permits("read").permitted  # type: ignore[union-attr]
+
+    # L3: the record must survive the mtime/fingerprint reload path, not just the
+    # first load — a cached snapshot that dropped it would make the operator signal
+    # disappear on the next edit.
+    path = profiles_dir / "host.json"
+    body = json.loads(path.read_text())
+    body["tools"] = {"mode": "allow", "allow": ["read", "code"]}
+    path.write_text(json.dumps(body))
+    os.utime(path, (time.time() + 5, time.time() + 5))
+    reloaded = gp.resolve_active_scope("dashboard:slot1")
+    assert reloaded is not None and reloaded.name == "host"
+    assert reloaded.unknown_scopes == (
+        "capabilities.capability_install",
+        "capabilities.external_access",
+    )
+    assert gp.fallback_profile_names() == frozenset()
+    # …and the edit actually took effect, proving a fresh parse ran.
+    reloaded_tools = reloaded.get("tools")
+    assert reloaded_tools.permits("code").permitted  # type: ignore[union-attr]
+
+
+def test_companion_edition_profile_with_unregistered_narrowing_degrades_to_deny_all(
+    profiles_dir,
+):
+    """An unknown capability declared ``enabled: false`` must NOT be tolerated.
+
+    ``spwan`` is a typo for ``spawn``. Tolerating it would silently permit the
+    capability the operator tried to disable, so the profile fails closed and the
+    loader substitutes the bind-preserving deny-all fallback — loud, not silent.
+    """
+    _write(
+        profiles_dir,
+        "host",
+        {
+            "name": "host",
+            "bind": {"type": "surface", "id": "dashboard"},
+            "tools": {"mode": "allow", "allow": ["read"]},
+            "capabilities": {"spwan": {"enabled": False}},
+        },
+    )
+    gp.reset_store()
+    assert "host" in gp.fallback_profile_names()
+    prof = gp.resolve_active_scope("dashboard:slot1")
+    # Bound to its surface, but deny-all: the declared allow-set did NOT survive.
+    assert prof is not None
+    tools = prof.get("tools")
+    assert tools is not None and not tools.permits("read").permitted  # type: ignore[union-attr]
+    assert gp.unknown_profile_scopes() == {}
+
+
+def test_unknown_profile_scopes_reports_only_tolerated_profiles(profiles_dir):
+    """The operator-signal accessor names the tolerated keys per file stem."""
+    _write(
+        profiles_dir,
+        "host",
+        {
+            "name": "host",
+            "bind": {"type": "surface", "id": "dashboard"},
+            "capabilities": {"external_access": {"enabled": True}},
+        },
+    )
+    _write(
+        profiles_dir,
+        "cron-tight",
+        {
+            "name": "cron-tight",
+            "bind": {"type": "surface", "id": "cron"},
+            "capabilities": {"spawn": {"enabled": False}},
+        },
+    )
+    gp.reset_store()
+    assert gp.unknown_profile_scopes() == {"host": ("capabilities.external_access",)}
 
 
 def test_fallback_profile_names_includes_unreadable_file(profiles_dir, monkeypatch):

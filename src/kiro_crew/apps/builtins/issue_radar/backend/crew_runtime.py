@@ -696,6 +696,7 @@ async def launch_crew(
         idle_secs=DEFAULT_IDLE_SECS,
         max_cycles=0,
         stop_sentinel_path=str(stop_sentinel_path(owner, repo, str(crew.get("id")), root)),
+        admission_check=lambda: state.get_slot(slot.key) is slot,
     )
     return slot
 
@@ -732,7 +733,10 @@ async def _capped_run_chat(state: Any, slot: Any, prompt: str) -> None:
     finished one must not look the same from the outside.
     """
     try:
-        await state.run_background_turn(slot, _run_chat(state, slot, prompt))
+        await state.run_background_turn(
+            slot,
+            _run_chat(state, slot, prompt, _directive_user_origin=False),
+        )
     except (asyncio.TimeoutError, TimeoutError):
         logger.warning(
             "issue-radar: crew turn on %s never got a background-turn permit",

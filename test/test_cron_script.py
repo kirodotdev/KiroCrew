@@ -123,7 +123,7 @@ class TestRunCommandSandboxed:
     """Tests for run_command_sandboxed shell execution."""
 
     @pytest.fixture(autouse=True)
-    def _passthrough_sandbox(self, monkeypatch):
+    def _passthrough_sandbox(self, monkeypatch, posix_test_shell):
         """Run commands directly, bypassing the OS-sandbox wrap.
 
         These tests exercise the run_command_sandboxed output/exit-code plumbing,
@@ -137,8 +137,9 @@ class TestRunCommandSandboxed:
         )
         # Bypass the runtime shell probe (which itself spawns a child): these
         # tests exercise the run_command_sandboxed plumbing, not shell fingerprinting.
-        # Return "sh" so Popen mocks that assert on argv[0] still see it.
-        monkeypatch.setattr("kiro_crew.cron_script._resolve_command_shell", lambda: "sh")
+        monkeypatch.setattr(
+            "kiro_crew.cron_script._resolve_command_shell", lambda: posix_test_shell
+        )
 
     def test_basic_echo(self):
         result = run_command_sandboxed("echo hello")
@@ -166,6 +167,57 @@ class TestRunCommandSandboxed:
         result = run_command_sandboxed("head -c 70000 /dev/zero | tr '\\0' 'x'")
         assert "truncated" in result["output"]
         assert len(result["output"]) <= 70000
+
+    def test_nonzero_exit_reports_stderr_tail_not_head(self):
+        """A leading startup warning must not displace the terminal error."""
+        leading_warning = "startup warning: " + ("x" * 1000)
+        terminal_error = "sh: fatal: actual cause"
+        mock_proc = MagicMock()
+        mock_proc.returncode = 1
+        mock_proc.communicate.return_value = ("", leading_warning + "\n" + terminal_error)
+        with patch("subprocess.Popen", return_value=mock_proc):
+            result = run_command_sandboxed("boom")
+        assert result["status"] == "error"
+        assert "actual cause" in result["output"]
+        assert "startup warning" not in result["output"]
+
+    def test_nonzero_exit_redacts_stderr_before_truncating(self):
+        """A credential straddling the 1000-char boundary must not leak its tail.
+
+        Redaction must run on the WHOLE stderr before the tail slice: slicing
+        first can cut off a secret's detectable prefix, so the pattern no
+        longer matches and the raw tail reaches the cron result.
+        """
+        # Built at runtime so no credential-shaped literal lands in the repo.
+        fake_key = "AKIA" + "B" * 16  # matches the AWS access-key-id pattern
+        # Sized so the 1000-char tail window starts 2 chars into the credential:
+        # a slice-then-redact order keeps "IA" + all 16 B's but drops the
+        # "AK" prefix, so the pattern no longer matches and the tail leaks.
+        padding = "p" * 100
+        trailing = "e" * 982
+        stderr_text = padding + fake_key + trailing
+        assert len(stderr_text) - 1000 == len(padding) + 2
+        mock_proc = MagicMock()
+        mock_proc.returncode = 1
+        mock_proc.communicate.return_value = ("", stderr_text)
+        with patch("subprocess.Popen", return_value=mock_proc):
+            result = run_command_sandboxed("boom")
+        assert result["status"] == "error"
+        assert "B" * 16 not in result["output"]
+        assert fake_key not in result["output"]
+        # Positive proof the payload flowed through redaction (not a vacuous
+        # pass on an empty result): the marker's tail survives the tail slice.
+        assert "credential]" in result["output"]
+        assert "e" * 50 in result["output"]
+
+    def test_nonzero_exit_short_stderr_stays_whole(self):
+        """A stderr already shorter than the 1000-char bound is kept whole."""
+        mock_proc = MagicMock()
+        mock_proc.returncode = 1
+        mock_proc.communicate.return_value = ("", "short failure\n")
+        with patch("subprocess.Popen", return_value=mock_proc):
+            result = run_command_sandboxed("boom")
+        assert result["output"].endswith("stderr:\nshort failure")
 
 
 class TestCronSandboxUnavailableIsStructuredNotRaised:
@@ -326,7 +378,7 @@ class TestRunScriptSandboxed:
     """Tests for run_script_sandboxed Python function execution."""
 
     @pytest.fixture(autouse=True)
-    def _passthrough_sandbox(self, monkeypatch):
+    def _passthrough_sandbox(self, monkeypatch, posix_test_shell):
         """Bypass OS-sandbox wrap and ensure subprocess can import kiro_crew.
 
         wrap_argv fails closed when no sandbox backend is available (e.g. macOS 26
@@ -345,8 +397,9 @@ class TestRunScriptSandboxed:
         )
         # Bypass the runtime shell probe (which itself spawns a child): these
         # tests exercise the run_command_sandboxed plumbing, not shell fingerprinting.
-        # Return "sh" so Popen mocks that assert on argv[0] still see it.
-        monkeypatch.setattr("kiro_crew.cron_script._resolve_command_shell", lambda: "sh")
+        monkeypatch.setattr(
+            "kiro_crew.cron_script._resolve_command_shell", lambda: posix_test_shell
+        )
 
     def _write_script(self, tmp_path, code):
         crons_dir = tmp_path / ".kirocrew" / "crons"
@@ -790,7 +843,7 @@ class TestRunCommandSandboxedEdgeCases:
     """Additional edge case tests for run_command_sandboxed."""
 
     @pytest.fixture(autouse=True)
-    def _passthrough_sandbox(self, monkeypatch):
+    def _passthrough_sandbox(self, monkeypatch, posix_test_shell):
         """Bypass the OS-sandbox wrap so these plumbing tests run without a
         sandbox backend (see TestRunCommandSandboxed._passthrough_sandbox)."""
         monkeypatch.setattr(
@@ -798,8 +851,9 @@ class TestRunCommandSandboxedEdgeCases:
         )
         # Bypass the runtime shell probe (which itself spawns a child): these
         # tests exercise the run_command_sandboxed plumbing, not shell fingerprinting.
-        # Return "sh" so Popen mocks that assert on argv[0] still see it.
-        monkeypatch.setattr("kiro_crew.cron_script._resolve_command_shell", lambda: "sh")
+        monkeypatch.setattr(
+            "kiro_crew.cron_script._resolve_command_shell", lambda: posix_test_shell
+        )
 
     def test_command_with_env_vars(self):
         result = run_command_sandboxed("echo $HOME")
@@ -1166,15 +1220,16 @@ class TestRunCommandSandboxedExceptions:
     """Tests for run_command_sandboxed timeout and exception paths."""
 
     @pytest.fixture(autouse=True)
-    def _passthrough_sandbox(self, monkeypatch):
+    def _passthrough_sandbox(self, monkeypatch, posix_test_shell):
         """See TestRunCommandSandboxed._passthrough_sandbox."""
         monkeypatch.setattr(
             "kiro_crew.cron_script.wrap_argv", lambda argv, **k: (list(argv), None)
         )
         # Bypass the runtime shell probe (which itself spawns a child): these
         # tests exercise the run_command_sandboxed plumbing, not shell fingerprinting.
-        # Return "sh" so Popen mocks that assert on argv[0] still see it.
-        monkeypatch.setattr("kiro_crew.cron_script._resolve_command_shell", lambda: "sh")
+        monkeypatch.setattr(
+            "kiro_crew.cron_script._resolve_command_shell", lambda: posix_test_shell
+        )
 
     def test_timeout_returns_error(self):
         # Real subprocess: communicate(timeout=1) fires and the child is killed.
@@ -1288,6 +1343,38 @@ class TestRunScriptSandboxedErrorPaths:
             result = run_script_sandboxed("/f.py:run", "j1", "")
         assert result["status"] == "error"
         assert "Bad output" in result.get("error", "")
+
+    def test_bad_json_output_redacts_before_truncating(self, tmp_path):
+        """A credential straddling the 200-char boundary must not leak its head.
+
+        Redaction must run on the WHOLE stdout before the head slice: slicing
+        first can cut a secret mid-pattern, so redaction no longer matches and
+        the raw head reaches the diagnostic.
+        """
+        # Built at runtime so no credential-shaped literal lands in the repo.
+        fake_key = "AKIA" + "B" * 16  # matches the AWS access-key-id pattern
+        # Sized so the 200-char head window ends 10 chars into the credential:
+        # a slice-then-redact order keeps "AKIA" + 6 B's — too short for the
+        # pattern to match, so the raw head leaks into the diagnostic.
+        padding = "p" * 190
+        stdout_text = padding + fake_key + "e" * 50
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate.return_value = (stdout_text, "")
+        with patch(
+            "kiro_crew.cron_script.resolve_script_path", return_value=("/f.py", "run")
+        ), patch("kiro_crew.cron_script.wrap_argv", return_value=(["true"], None)), patch(
+            "subprocess.Popen", return_value=mock_proc
+        ):
+            result = run_script_sandboxed("/f.py:run", "j1", "")
+        assert result["status"] == "error"
+        assert "AKIA" not in result["error"]
+        assert fake_key not in result["error"]
+        # Positive proof the payload flowed through redaction (not a vacuous
+        # pass on an empty diagnostic): the 200-char head window ends 10 chars
+        # into the replacement marker, so its head survives the slice.
+        assert "[REDACTED:" in result["error"]
+        assert padding in result["error"]
 
 
 class TestMcpCronHandlerPaths:

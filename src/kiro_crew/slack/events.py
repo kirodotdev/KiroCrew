@@ -16,6 +16,7 @@ processing the same Slack event twice.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -1960,12 +1961,20 @@ async def _route_message(
 
     # ── Workspace routing cache for org-wide installs ──
     # Slack Web API calls (chat.postMessage, chat.startStream, etc.) need
-    # team_id when the bot is org-wide installed; record the channel→team
-    # mapping so outbound posts on this channel route to the correct
-    # workspace and avoid ``team_access_not_granted``.
-    record_team = getattr(orch.slack, "record_channel_team", None)
-    if record_team and team_id:
-        record_team(channel, team_id)
+    # team_id when the bot is org-wide installed, and the value must be the
+    # workspace the CHANNEL lives in. ``event.team`` is the AUTHOR's
+    # workspace — a participant's, not the channel's, on a Slack Connect
+    # shared channel — so it must never seed this cache; resolve the home
+    # workspace from conversations_info instead (cached per process).
+    ensure_home_team = getattr(orch.slack, "ensure_channel_team", None)
+    if ensure_home_team is not None:
+        # The seam is duck-typed on purpose: orch.slack may be the real
+        # client, a test double, or a wrapper that implements this hook
+        # synchronously or as a coroutine. Accept either; only an awaitable
+        # is awaited.
+        outcome = ensure_home_team(channel)
+        if inspect.isawaitable(outcome):
+            await outcome
 
     # ── Access control: record authorization decision early for SEL audit ──
     # The ephemeral rejection is deferred until after activation checks so

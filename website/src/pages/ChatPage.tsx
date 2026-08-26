@@ -13,7 +13,8 @@ import { isBrowseCommand } from '../utils/browseCommand'
 // importable from here; the implementation lives in `utils/browseCommand` so a
 // pure test need not pull ChatPage's module graph.
 export { isBrowseCommand }
-import { useSwipeEdge } from '../hooks/useSwipeEdge'
+import { useDrawerSwipe, animateDrawer } from '../hooks/useDrawerSwipe'
+import { shouldReplaceSessionUrl } from '../utils/sessionUrlHistory'
 import type { ResizeInfo } from '../utils/resizeImage'
 import { useAppSelector, useAppDispatch, store } from '../store'
 import { useConnected } from '../hooks/useConnected'
@@ -34,7 +35,7 @@ import {
   requestSlotReveal,
   mcpAppKey,
 } from '../store/chatSlice'
-import { confirmedDelivered } from '../utils/sendDelivery'
+import { confirmedDelivered, readSendReceipt } from '../utils/sendDelivery'
 import { addNotification, removeNotificationByTs } from '../store/notificationsSlice'
 import { onTerminalReady, sendToTerminalSession } from '../utils/terminalRegistry'
 import { addTab as addDockTerminal } from '../hooks/useBottomTerminal'
@@ -67,7 +68,7 @@ import { useScrollManager } from './chat/useScrollManager'
 import { shouldPaginateOlder } from './chat/pagination'
 import EarlierMessagesBar from './chat/EarlierMessagesBar'
 import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
-import { parseFiles, prepareSendPayload, resolveFileSegment, buildFileLabels, buildRelMap, findUnreferencedAttachments, parseDirTokens, serializeDirTokens, parseDirs, resolveDirSegment, spliceDirTokens } from '../utils/fileTokens'
+import { addPendingFile, parseFiles, prepareSendPayload, resolveFileSegment, buildFileLabels, buildRelMap, findUnreferencedAttachments, hasExactRelMention, normalizeWindowsPath, parseDirTokens, serializeDirTokens, parseDirs, resolveDirSegment, spliceDirTokens, VIDEO_EXT } from '../utils/fileTokens'
 import { classifyDrop } from '../utils/dropClassify'
 import { makeRelative } from '../components/FilePickerMenu'
 import { type PasteBlock, expandAll as expandPasteTokens, findTokenRanges, pruneBlocks as pruneBlocksUtil, remapCarriedBlocks, saveStoredPaste, recollapsePastes } from '../utils/pasteTokens'
@@ -156,7 +157,7 @@ import { detectPreviewUrl, previewFeedDecision } from '../utils/detectPreviewUrl
 import { fileLandingSlot } from '../utils/uploadRouting'
 import ChatSidebar, { SIDEBAR_MIN, SIDEBAR_MAX } from './ChatSidebar'
 import { toSlug, resolveMsgIndex } from '../utils/shareUrl'
-import { DRAFT_SAVE_DEBOUNCE_MS, loadDrafts, mergeIntoDraft, saveDrafts as persistDrafts, setDraft } from '../utils/chatDrafts'
+import { DRAFT_SAVE_DEBOUNCE_MS, loadDrafts, mergeIntoDraft, mergeRecoveredDraft, saveDrafts as persistDrafts, setDraft } from '../utils/chatDrafts'
 import { loadFileDrafts, saveFileDrafts as persistFileDrafts, setFileDraft } from '../utils/chatFileDrafts'
 import { loadPasteDrafts, savePasteDrafts as persistPasteDrafts, setPasteDraft } from '../utils/chatPasteDrafts'
 import { loadSessionRefDrafts, saveSessionRefDrafts as persistSessionRefDrafts, setSessionRefDraft } from '../utils/chatSessionRefDrafts'
@@ -188,7 +189,7 @@ import { focusComposerAfter, revealComposer } from './chat/composerFocus'
 import { useHoverIntent } from '../hooks/useHoverIntent'
 import { useKnowledgeFetch, extractKnowledgeQuery, expandKnowledgeBlock } from './chat/useKnowledgeFetch'
 import { KnowledgePicker } from './chat/KnowledgePicker'
-import { BookOpen, EyeOff, Loader, Pen, ChevronDown, ChevronRight, Plug, ArrowDown, MessageSquare, MessageSquareDot, Sparkles, VenetianMask, Clock, Undo2, Columns2, ExternalLink, Paperclip, Folder, X } from 'lucide-react'
+import { BookOpen, EyeOff, Loader, Pen, ChevronDown, ChevronRight, Plug, ArrowDown, MessageSquare, Sparkles, VenetianMask, Clock, Undo2, Columns2, ExternalLink, Paperclip, Folder, X } from 'lucide-react'
 import { PanelLeftSolid, PanelLeftLight, PanelRightSolid } from '../components/icons/panels'
 
 import InfoTip from '../components/InfoTip'
@@ -196,7 +197,7 @@ import { FileCard } from '../components/FileCard'
 import SlotTagPopover from '../components/SlotTagPopover'
 import { TagPopoverProvider } from '../hooks/useTagPopover'
 
-import { AnimatePresence, motion } from 'framer-motion'
+import { AnimatePresence, motion, useMotionValue, useTransform } from 'framer-motion'
 import DetailPanel from '../components/DetailPanel'
 
 import type { ChatMessage, Artifact } from '../types'
@@ -220,6 +221,7 @@ import { ErrorCard } from './chat/ErrorCard'
 import WorkflowProgressBar from './chat/WorkflowProgressBar'
 import { tryQuickSend } from '../lib/quickSend'
 import { rewindWithRollback } from '../lib/rewindCall'
+import { isChatPageSurface } from '../utils/channelOrigin'
 
 
 import { i18nT } from '../i18n/t'
@@ -777,14 +779,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const queryClient = useQueryClient()
   const provider = useProvider()
   const [searchParams, setSearchParams] = useSearchParams()
+  // Declared with the other top-of-component hooks because the ?sid= URL-sync
+  // effect reads it (mobile replaces rather than pushes a session switch), and
+  // that effect is defined well above where the layout hooks start.
+  const isMobile = useIsMobile()
   const slots = useAppSelector(s => s.dashboard.slots)
   // Unified chat view: show default, orchestrator and crew slots together.
   // App-owned worker slots (s.app) are excluded by the sidebar itself.
   const filteredSlots = useMemo(
-    () => slots.filter(s => {
-      const sk = s.surface ?? s.mode ?? ''
-      return sk === '' || sk === 'orchestrator' || sk === 'crew'
-    }),
+    () => slots.filter(s => isChatPageSurface(s.surface ?? s.mode)),
     [slots],
   )
   const filteredSlotsRef = useRef(filteredSlots)
@@ -3047,7 +3050,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     const requestSlot = targetSlot !== undefined ? targetSlot : activeSlotRef.current
     setUploadError('')
     if (files.length > 20) { setUploadError(i18nT('pages.chatPage.too_many_files_max_20')); return }
-    const big = files.find(f => f.size > 50 * 1024 * 1024)
+    // Video is deliberately exempt from this pre-check: it has a much larger
+    // server-side ceiling and streams to disk there, so the 50 MB figure this
+    // message states would be a lie for a recording. Its own 413 carries the
+    // real cap and surfaces through the `upload_failed_error` branch below,
+    // the same route every other server-side rejection already takes.
+    const big = files.find(f => !VIDEO_EXT.test(f.name) && f.size > 50 * 1024 * 1024)
     if (big) { setUploadError(i18nT('pages.chatPage.file_too_large', { name: big.name })); return }
     setUploading(true)
     try {
@@ -3765,13 +3773,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     next.delete('autoSend')
     next.delete('newSession')
     next.delete('msg')
-    // Push a new history entry on a real session switch (already viewing a
-    // different session) so native Back/Forward retraces sessions; replace for
-    // the initial activation (no prior sid) and same-session path normalization.
+    // Push vs replace — see `shouldReplaceSessionUrl` for why mobile never
+    // pushes. Kept as a named predicate rather than an inline boolean so the
+    // reasoning has somewhere to live and a test can pin it.
     const isSessionSwitch = !!current && current !== activeSlot
-    navigate(`${basePath}${slug ? '/' + slug : ''}?${next}`, { replace: !isSessionSwitch })
+    navigate(`${basePath}${slug ? '/' + slug : ''}?${next}`, { replace: shouldReplaceSessionUrl({ isSessionSwitch, isMobile }) })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSlot, filteredSlots, navigate, basePath, location.pathname, embedded, noUrlSync])
+  }, [activeSlot, filteredSlots, navigate, basePath, location.pathname, embedded, noUrlSync, isMobile])
   // Re-fetch slot messages on mount (handles nav away + back).
   // Skip when newSession=1 — createSlot in send() will set the active slot;
   // dispatching switchSlot here would race and overwrite it.
@@ -4134,24 +4142,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         )
         const restoredPastes = [...keepPastes, ...carriedPastes]
         const keepText = onScreen ? inputRef.current : (uiSlot ? drafts.current[uiSlot] ?? '' : '')
-        // Don't append a payload the composer already holds: a synchronously
-        // rejected create can land before React flushes the clear, and the user may
-        // have typed AROUND the payload during a slow one (superset case). The match
-        // must be whitespace-delimited, not a bare substring — payload "test" inside
-        // a newer draft "latest" is a different message, and treating it as already
-        // restored would drop it.
-        // Dedupe ONLY on exact equality. A whitespace-delimited occurrence is not
-        // proof the payload was already restored — a draft like "please run tests
-        // first" contains the distinct payload "run tests" — and treating it as
-        // restored drops the message. Equality still covers the case this guard
-        // exists for (a synchronously rejected create landing before React flushes
-        // the clear), and errs toward a visible duplicate rather than silent loss.
-        const alreadyRestored = keepText.trim() === payload.trim()
-        const restoredText = !keepText.trim()
-          ? payload
-          : alreadyRestored
-            ? keepText
-            : `${keepText.replace(/\s+$/, '')}\n\n${payload}`
+        // Keep whatever the user typed while the create was in flight and append
+        // the payload after it, without duplicating one the composer already
+        // holds — a synchronously rejected create can land before React flushes
+        // the clear. `mergeRecoveredDraft` owns that rule for every recovery
+        // site, including the send-failure path further down.
+        const restoredText = mergeRecoveredDraft(keepText, payload)
         if (onScreen && uiSlot) {
           setInput(restoredText); setPasteBlocks(restoredPastes); setPendingFiles(restoredFiles); setPendingSessions(restoredRefs)
           // clearPending() above already consumed the knowledge selection, so a
@@ -4323,15 +4319,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         new Set(keepPastes.map(b => b.seq)),
       )
       const pastesBack = [...keepPastes, ...carriedPastes]
-      // Joined rather than interpolated: the blank line between the kept draft and
-      // the recovered payload is message structure, not copy, and keeping it out of
-      // a template literal keeps this line off the i18n gate honestly rather than
-      // by exemption (same treatment as appendSessionRefLinks).
-      const textBack = !keepText.trim()
-        ? carriedText
-        : keepText.trim() === carriedText.trim()
-          ? keepText
-          : [keepText.replace(/\s+$/, ''), carriedText].join('\n\n')
+      // Same merge rule as the create-failure path above, and the separator lives
+      // in `mergeRecoveredDraft` rather than in a template literal here: the blank
+      // line between the kept draft and the recovered payload is message
+      // structure, not copy, so it stays off the i18n gate honestly rather than by
+      // exemption (same treatment as appendSessionRefLinks).
+      const textBack = mergeRecoveredDraft(keepText, carriedText)
       setDraft(drafts.current, slot, textBack)
       setPasteDraft(pasteDrafts.current, slot, pastesBack)
       setSessionRefDraft(sessionRefDrafts.current, slot, refsBack)
@@ -4343,14 +4336,22 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     try {
       const r = await api.sendChat(llmTxt, slot ?? undefined, colorThemeRef.current, controller.signal, metaPayload, steerNow)
       clearTimeout(timeout)
-      const body = await r.json().catch(() => ({}))
-      if (!body.queued && !body.ok) {
+      const { body, outcome } = await readSendReceipt(r)
+      // An UNKNOWN outcome — a 2xx whose body would not parse — reaches neither
+      // arm below and is the point of routing through `readSendReceipt`. The
+      // request was accepted and only its answer is mangled, so this send sits
+      // where the abort in the catch below sits: it may have started a turn that
+      // is streaming right now. Reporting a refusal there would hand the payload
+      // back and invite a retry that duplicates a delivered turn, so an unknown
+      // takes no action rather than asserting a refusal it cannot prove.
+      if (outcome === 'refused') {
         dispatch(setSlotRunning(false))
-        dispatch(appendMessage({ role: 'error', content: body.error || i18nT('pages.chatPage.send_failed'), cls: '' }))
+        const reason = typeof body.error === 'string' ? body.error : ''
+        dispatch(appendMessage({ role: 'error', content: reason || i18nT('pages.chatPage.send_failed'), cls: '' }))
         // The server explicitly accepted neither (`ok` nor `queued`), so nothing
         // was sent — recovering the composer cannot duplicate a delivered turn.
         restoreComposerAfterFailedSend()
-      } else if (steerNow && _busy && !body.queued && !body.steered) {
+      } else if (outcome === 'accepted' && steerNow && _busy && !body.queued && !body.steered) {
         // A steer-flagged send the server neither queued nor injected: it
         // started a turn, so no `queue_push` or `steer_push` echo is coming and
         // the busy rule above left the text with nothing to represent it.
@@ -4603,6 +4604,71 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   }, [dispatch, activeSlot, search])
   const currentProjectRef = useRef<string | undefined>(undefined)
   currentProjectRef.current = currentSlot?.project || undefined
+
+  // "Add to context" from the file-browser rail's row context menu: insert the
+  // SAME `@`-mention the file picker does, so a right-click is just a second
+  // entry point to the existing mention plumbing. A file gets an `@rel` token
+  // plus a staged upload (chip + `[attached_file N]` on send); a folder gets a
+  // bare `@rel/` reference (the token IS the reference — no upload). The caret
+  // is unknown from the tree, so both append. Idempotent: re-adding a path
+  // already referenced in the composer is a no-op.
+  const handleAddToContext = useCallback((absPath: string, kind: 'file' | 'dir') => {
+    // `absPath` arrives from the tree with a forward-slash-normalized Windows
+    // root; normalize the project root the same way (Windows-shaped roots
+    // only — normalizeWindowsPath leaves POSIX paths, where `\` is a legal
+    // name character, untouched) so makeRelative can relativize on native
+    // Windows instead of keeping the absolute path.
+    const rel = makeRelative(absPath, normalizeWindowsPath(currentProjectRef.current || ''))
+    if (kind === 'dir') {
+      // spliceDirTokens dedupes by exact string -- it only ever sees bare
+      // RELATIVE tokens, with no platform context to prove a `\` is a
+      // Windows separator rather than a literal POSIX filename character, so
+      // it cannot safely widen the comparison itself. Widen HERE instead,
+      // gated on the PROJECT being Windows-shaped (an absolute path DOES
+      // carry a provable drive-letter/UNC prefix): only then can the Windows
+      // @-picker's backslash-form dir token (`@src\utils\`) be recognized as
+      // the SAME folder this handler's forward-slash `rel` (`src/utils/`)
+      // refers to. On a POSIX project this widening never triggers, so two
+      // genuinely different directories (`src/a\b/` vs `src/a/b/`) can never
+      // be conflated.
+      const relSlash = rel.endsWith('/') ? rel : `${rel}/`
+      const project = currentProjectRef.current || ''
+      const projectIsWindowsShaped = normalizeWindowsPath(project) !== project
+      const dup = projectIsWindowsShaped && parseDirTokens(inputRef.current).some(
+        t => t.rel.replace(/\\/g, '/') === relSlash,
+      )
+      if (!dup) {
+        const spliced = spliceDirTokens(inputRef.current, null, [rel])
+        if (spliced.changed) setInput(spliced.value)
+      }
+    } else {
+      const token = `@${rel}`
+      // hasExactRelMention checks EXACTLY this rel (either separator
+      // rendition — the Windows @-picker inserts backslash rels), never a
+      // shorter basename suffix: two staged files sharing a basename could
+      // otherwise cross-match on a single `@util.ts` mention, and later
+      // removing the SECOND file's chip (whose fallback derivation also
+      // suffix-walks) would then strip the FIRST file's mention instead.
+      // Checked against the live text (not inside the updater) because the
+      // token BOOKKEEPING must follow the same branch: on the already-mentioned
+      // no-op the token present in the text may be a different form than the
+      // one derived here, and recording ours would make chip-remove strip a
+      // token that is not there while leaving the real one behind.
+      const alreadyMentioned = hasExactRelMention(inputRef.current, rel)
+      if (!alreadyMentioned) {
+        setInput(prev => {
+          const lead = prev && !/\s$/.test(prev) ? ' ' : ''
+          return `${prev}${lead}${token} `
+        })
+        pickedFileTokens.current[absPath] = token
+      }
+      // addPendingFile dedupes by canonical Windows identity: the @-picker may
+      // have already staged this file in native `C:\…` form, and an exact check
+      // would send it twice under two attachment markers.
+      setPendingFiles(prev => addPendingFile(prev, absPath))
+    }
+    revealComposer()
+  }, [])
 
   // ── Follow-up card actions (suggest_followup MCP tool) ───────────────────
   // Both routes PRE-FILL a composer and stop; neither sends. `setPendingInput`
@@ -5087,7 +5153,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // it, so exiting focus mode restores what the user had. null = focus mode is
   // not the reason the list is hidden (the user owns the state).
   const sidebarAutoHidden = useRef<boolean | null>(null)
-  const isMobile = useIsMobile()
   const [sidePanelDock] = useSidePanelDock()
   // Recomputed on every dock flip: the wrapper keeps one React key across the
   // flip, so both axes have to stay named or the flipped-away one gets driven
@@ -6241,12 +6306,66 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // through renderUserContentCb), so they are omitted to keep it stable.
   }, [messages, visibleIndexMap, slotRunning, slotState, lastTextIdx, handleFileOpen, handleArtifactOpen, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, handleRegenerate, handleEditResend, slotHasMore, renderUserContentCb, highlightTs, activeSlotTitle, mode, dispatch, handleOpenDiff, handlePlanFromHere, navigate, planTaskId, artifactPaths, autoNudgeLoop, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, handleSubagentPanelOpen, isPinned, handleTogglePinForMessage, connectionsUiOn, showRefusedPress])
 
-  const [mobileSessions, setMobileSessions] = useState(false)
-  // Close mobile sessions panel when a session is selected
-  useEffect(() => { if (isMobile) setMobileSessions(false) }, [activeSlot]) // eslint-disable-line react-hooks/exhaustive-deps
-  // Reset mobile sessions state when leaving mobile viewport
-  useEffect(() => { if (!isMobile) setMobileSessions(false) }, [isMobile])
-  // Swipe from left edge to open sidebar, swipe left on backdrop to close
+  /**
+   * Mobile sessions drawer, as ONE value rather than an open flag plus a
+   * mounted flag. `closing` exists because the panel must stay in the DOM while
+   * it slides out — with two booleans that window is exactly where they drift
+   * apart, and the panel either unmounts mid-slide or is left mounted after it.
+   *
+   * `open` is the intent (the toggle reads it, aria reads it); mount is
+   * `phase !== 'closed'`. There is one writer per transition below, and the
+   * gesture reports through `onSettle` rather than writing the phase itself.
+   */
+  const [drawerPhase, setDrawerPhase] = useState<'closed' | 'open' | 'closing'>('closed')
+  const mobileSessions = drawerPhase === 'open'
+  const drawerMounted = drawerPhase !== 'closed'
+  /** Panel offset in px: `-innerWidth` offscreen, `0` at rest. A MotionValue so
+   *  the drag writes it at frame rate without re-rendering this component. */
+  const drawerX = useMotionValue(0)
+  /** The scrim tracks the panel instead of running its own fade, so a half-drag
+   *  is half-dimmed and a cancelled drag un-dims with the finger. */
+  const drawerScrim = useTransform(drawerX, x => {
+    const w = typeof window === 'undefined' ? 1 : window.innerWidth || 1
+    return Math.max(0, Math.min(1, 1 + x / w))
+  })
+  // Read for the transition guards below. The animation each transition starts
+  // is a side effect, so it must not live inside a setState updater — React may
+  // invoke an updater more than once, which would start the settle twice.
+  const drawerPhaseRef = useRef(drawerPhase)
+  drawerPhaseRef.current = drawerPhase
+  const openSidebar = useCallback(() => {
+    if (drawerPhaseRef.current === 'open') return
+    // Seat it offscreen before the mount so the first painted frame is the
+    // closed offset, then let the shared settle carry it in.
+    if (drawerPhaseRef.current === 'closed') drawerX.set(-(window.innerWidth || 0))
+    drawerPhaseRef.current = 'open'
+    setDrawerPhase('open')
+    animateDrawer(drawerX, 0)
+  }, [drawerX])
+  /** Mount the panel for a drag in progress. Deliberately NOT `openSidebar`:
+   *  that one runs the settle to the rest position, which would race the finger
+   *  for the same value and pull the panel out from under it. The gesture has
+   *  already seated the offset and owns it until release. */
+  const beginDrawerDrag = useCallback(() => {
+    drawerPhaseRef.current = 'open'
+    setDrawerPhase('open')
+  }, [])
+  const closeSidebar = useCallback(() => {
+    if (drawerPhaseRef.current !== 'open') return
+    drawerPhaseRef.current = 'closing'
+    setDrawerPhase('closing')
+    animateDrawer(drawerX, -(window.innerWidth || 0), () => {
+      drawerPhaseRef.current = 'closed'
+      setDrawerPhase('closed')
+    })
+  }, [drawerX])
+  // Close the drawer when a session is selected. Routed through closeSidebar so
+  // it slides out — flipping straight to 'closed' would unmount it on the spot.
+  useEffect(() => { if (isMobile) closeSidebar() }, [activeSlot]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Leaving the mobile viewport: drop the panel with no slide. There is no
+  // mobile drawer to animate on the other side of that crossing, and the
+  // desktop sidebar owns its own open state.
+  useEffect(() => { if (!isMobile) setDrawerPhase('closed') }, [isMobile])
   const chatContainerRef = useRef<HTMLDivElement>(null)
   // Measured container height — sizes the sidebar border-box morph (the panel
   // rect the box shrinks from on collapse and grows back to on expand).
@@ -6309,10 +6428,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const inlineSidePanelShowing = !activitySlot
     && shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen })
     && !isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen })
-  const openSidebar = useCallback(() => setMobileSessions(true), [])
-  const closeSidebar = useCallback(() => setMobileSessions(false), [])
-  useSwipeEdge(chatContainerRef, { enabled: isMobile && !mobileSessions, edge: 'left', edgeZone: 0.35, onSwipe: openSidebar })
-  useSwipeEdge(chatContainerRef, { enabled: isMobile && mobileSessions, edge: 'right', threshold: 50, edgeZone: 9999, onSwipe: closeSidebar })
+  // ONE binding for both directions: an inward drag from the left band opens the
+  // drawer, a leftward drag anywhere on the open drawer closes it. Which rule
+  // applies is read live from `open` inside the hook, so the opening drag does
+  // not tear its own listeners down when the panel mounts mid-gesture.
+  const drawerDragging = useDrawerSwipe(chatContainerRef, {
+    enabled: isMobile && !embedded,
+    open: mobileSessions,
+    x: drawerX,
+    onGestureOpen: beginDrawerDrag,
+    onSettle: open => { if (!open) { drawerPhaseRef.current = 'closed'; setDrawerPhase('closed') } },
+  })
   /** Reveal a session's pull request / issue in that session's side panel.
    *
    *  Fires from a sidebar chip AFTER ChatSidebar has dispatched the slot switch,
@@ -6359,9 +6485,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // The mobile session drawer covers the panel it would reveal into. The
     // activeSlot effect closes it on a real switch, but a chip on the session
     // already open does not change activeSlot.
-    if (isMobile) setMobileSessions(false)
+    if (isMobile) closeSidebar()
     return true
-  }, [dispatch, isMobile, selectSource])
+  }, [dispatch, isMobile, selectSource, closeSidebar])
   // Web Preview expand mode — broadcast by the Web Preview tab's
   // expand toggle. When on, hide the session list and maximize the side panel
   // (passed to SidePanel), so the preview gets max room and chat shrinks to its
@@ -6388,7 +6514,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       const expanded = !!(e as CustomEvent<{ expanded?: boolean }>).detail?.expanded
       setPreviewExpanded(expanded)
       if (expanded) {
-        setMobileSessions(false)
+        closeSidebar()
         if (sidebarAutoHidden.current === null) sidebarAutoHidden.current = sidebarPinnedRef.current
         setSidebarPinned(false)
         return
@@ -6513,15 +6639,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     <JiraHostsCtx.Provider value={jiraSourceHosts}>
     <div ref={chatContainerRef} className="flex flex-1 min-h-0 h-full overflow-hidden relative">
       <AnimatePresence>
-        {isMobile && mobileSessions && (
+        {isMobile && drawerMounted && (
           <motion.div
             key="sessions-backdrop"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.25 }}
+            style={{ opacity: drawerScrim }}
             className="fixed inset-0 z-[46] bg-black/50 backdrop-blur-sm"
-            onClick={() => setMobileSessions(false)}
+            // Ignored while a drag owns the panel: the release that ends a
+            // close gesture lands here as a click, and treating it as a
+            // tap-to-dismiss would run a second close over the settle.
+            onClick={() => { if (!drawerDragging) closeSidebar() }}
           />
         )}
       </AnimatePresence>
@@ -6591,7 +6717,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           />
         </div>
       ) : (
-      <OverlayDrawer open={sidebarOpen} width={isMobile ? window.innerWidth : sidebarWidth} dragging={sidebarDragging} morph={!isMobile} morphTarget={TOGGLE_RECT} expandFrom={expandFrom} contentH={Math.max(0, containerH - 8)} className={isMobile ? 'mobile-sessions-overlay fixed top-[42px] bottom-0 left-0 z-50 bg-bg-elevated !py-0 rounded-r-xl shadow-lg max-w-[calc(100vw-2.5rem)] [&>*]:!rounded-none [&>*]:!border-0 [&>*]:!m-0' : ''}>
+      <OverlayDrawer open={isMobile ? drawerMounted : sidebarOpen} width={isMobile ? window.innerWidth : sidebarWidth} dragging={sidebarDragging} slideX={isMobile ? drawerX : undefined} morph={!isMobile} morphTarget={TOGGLE_RECT} expandFrom={expandFrom} contentH={Math.max(0, containerH - 8)} className={isMobile ? 'mobile-sessions-overlay fixed top-safe-offset-[42px] bottom-safe left-safe z-50 bg-bg-elevated !py-0 rounded-r-xl shadow-lg max-w-[calc(100vw-2.5rem)] [&>*]:!rounded-none [&>*]:!border-0 [&>*]:!m-0' : ''}>
         <ChatSidebar
           slots={filteredSlots}
           activeSlot={activeSlot}
@@ -6655,7 +6781,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             OVER it — leaving no way to close a panel that covers the whole
             screen. It would also be pointing at a chat pane the panel has
             squeezed to zero width. Sessions stay reachable meanwhile via the
-            left-edge swipe (useSwipeEdge above).
+            left-edge drag (useDrawerSwipe above).
 
             Suppressed when EMBEDDED for the same reason it is suppressed
             behind the side panel: `fixed` anchors it to the VIEWPORT, not to
@@ -6664,9 +6790,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             overlapping tap targets on the app's primary exit. A host that
             embeds one scoped conversation has no sessions list to open. */}
         {isMobile && !embedded && !sidebarOpen && !inlineSidePanelShowing && !(activeSlot && (messages.length > 0 || slotRunning)) && (
-          <div className="fixed top-[42px] left-2 z-10">
-            <button className="p-2 rounded-lg text-muted hover:text-text bg-bg-elevated border border-border shadow-sm cursor-pointer" onClick={() => setMobileSessions(true)} aria-label={i18nT('pages.chatPage.toggle_sessions')}>
-              {effectiveMode === 'orchestrator' ? <MessageSquareDot size={18} /> : <MessageSquare size={18} />}
+          <div className="fixed top-safe-offset-[42px] left-safe ml-2 z-10">
+            <button className="p-2 rounded-lg text-muted hover:text-text bg-bg-elevated border border-border shadow-sm cursor-pointer" onClick={openSidebar} aria-label={i18nT('pages.chatPage.toggle_sessions')}>
+              {/* Same glyph as the desktop toggle: a control is named by the SURFACE
+                  it opens, and this opens the sessions panel. Solid rather than
+                  `PanelLeftLight` because this form only renders while that panel is
+                  closed. It carries no conversation-mode variant -- mode belongs to
+                  the conversation, not to the drawer, and the header's own mode
+                  control already shows it. */}
+              <PanelLeftSolid size={18} />
             </button>
           </div>
         )}
@@ -6710,8 +6842,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   <span aria-hidden="true" className={`absolute left-[52px] top-[13px] w-px h-5 bg-border transition-opacity ${sidebarOpen ? 'opacity-0 duration-100' : 'opacity-100 duration-150 delay-[90ms]'}`} />
                 )}
                 {embedMode !== 'chat' && isMobile && (
-                  <button className="p-1 rounded-md text-muted hover:text-text cursor-pointer bg-transparent border-none pointer-events-auto" onClick={() => setMobileSessions(p => !p)} aria-label={i18nT('pages.chatPage.toggle_sessions')}>
-                    {effectiveMode === 'orchestrator' ? <MessageSquareDot size={16} /> : <MessageSquare size={16} />}
+                  <button className="p-1 rounded-md text-muted hover:text-text cursor-pointer bg-transparent border-none pointer-events-auto" onClick={() => mobileSessions ? closeSidebar() : openSidebar()} aria-label={i18nT('pages.chatPage.toggle_sessions')}>
+                    {/* Mirrors the desktop toggle exactly, state included: solid
+                        while the panel is hidden, light while it is showing. */}
+                    {mobileSessions ? <PanelLeftLight size={16} /> : <PanelLeftSolid size={16} />}
                   </button>
                 )}
                 <div className="group/header flex min-w-0 items-stretch gap-0.5 pointer-events-auto">
@@ -6730,7 +6864,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                     // a stored request would outlive the view and fire on
                     // whichever sidebar mounts next.
                     sidebarAutoHidden.current = null
-                    if (isMobile) setMobileSessions(true)
+                    if (isMobile) openSidebar()
                     else if (!sidebarPinned) setSidebarPinned(true)
                     dispatch(requestSlotReveal(activeSlot))
                   } : undefined}
@@ -7303,8 +7437,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               // and additionally record their inserted token for remove.
               onFileSelect={(path, kind, token) => {
                 if (kind === 'dir') return
-                if (token) pickedFileTokens.current[path] = token
-                setPendingFiles(prev => prev.includes(path) ? prev : [...prev, path])
+                // Stage under the canonical (forward-slash Windows) identity —
+                // the same form the tree context menu stages — so the SAME file
+                // picked through both entry points dedupes instead of sending
+                // twice. Token bookkeeping keys on the staged form so remove
+                // finds it.
+                const canon = normalizeWindowsPath(path)
+                if (token) pickedFileTokens.current[canon] = token
+                setPendingFiles(prev => addPendingFile(prev, canon))
               }}
               onFileOpen={handleFileOpen}
               project={currentSlot?.project || ''}
@@ -7316,6 +7456,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               onDragLeave={dropTargetProps.onDragLeave}
               voiceRecording={voiceOwned && voice.recording}
               voiceTranscribing={voiceOwned && voice.transcribing}
+              /* Ungated: `startVoice` refuses on `voice.transcribing` outright,
+                 so the voice controls have to read the same global fact. */
+              voiceTranscribeActive={voice.transcribing}
               voiceError={voice.error}
               voiceLevel={voiceOwned ? voice.level : 0}
               voiceDeviceLabel={voiceOwned ? voice.deviceLabel : ''}
@@ -7332,6 +7475,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               onVoiceToggle={voiceInputSupported ? toggleVoice : undefined}
               onVoiceCancel={voiceInputSupported ? cancelVoice : undefined}
               onVoicePrewarm={voiceInputSupported ? voice.prewarm : undefined}
+              onVoiceStart={voiceInputSupported ? startVoice : undefined}
+              onVoiceStop={voiceInputSupported ? stopVoice : undefined}
+              voiceCaptureActive={voice.recording}
               agentName={currentSlot?.agent || 'default'}
               agentSource={installedAgents.find(a => a.name === (currentSlot?.agent || 'default'))?.source}
               modelName={shownModel}
@@ -7585,6 +7731,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               slot={activeSlot || ''}
               onFileOpen={handleFileOpen}
               onArtifactOpen={handleArtifactOpen}
+              onAddToContext={handleAddToContext}
               projectDir={currentSlot?.project || undefined} navLinks={chatNav.links} navResolving={chatNav.resolving}
               sources={panelSources} selectedSourceUrl={selectedSourceUrl} onSelectSource={selectSourceUrl} onReconcileSource={reconcileSourceUrl}
               issues={panelIssues} selectedIssueUrl={selectedIssueUrl} onSelectIssue={selectIssueUrl} onReconcileIssue={reconcileIssueUrl}
@@ -7623,6 +7770,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 slot={activeSlot || ''}
                 onFileOpen={handleFileOpen}
                 onArtifactOpen={handleArtifactOpen}
+                onAddToContext={handleAddToContext}
                 projectDir={currentSlot?.project || undefined} navLinks={chatNav.links} navResolving={chatNav.resolving}
                 sources={panelSources} selectedSourceUrl={selectedSourceUrl} onSelectSource={selectSourceUrl} onReconcileSource={reconcileSourceUrl}
               issues={panelIssues} selectedIssueUrl={selectedIssueUrl} onSelectIssue={selectIssueUrl} onReconcileIssue={reconcileIssueUrl}

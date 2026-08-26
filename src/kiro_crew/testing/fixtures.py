@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -53,6 +54,12 @@ from kiro_crew.seed import seed
 __all__ = ["seeded_home"]
 if pytest is not None:
     __all__.append("seeded_home_fixture")
+
+
+def _retry_readonly_removal(func: object, path: str, _exc_info: object) -> None:
+    """Let ``rmtree`` remove fixture files copied read-only on Windows."""
+    os.chmod(path, stat.S_IWRITE)
+    func(path)  # type: ignore[operator]
 
 
 @contextmanager
@@ -98,7 +105,7 @@ def seeded_home(fixture_name: str) -> Iterator[Path]:
             # symlink we need to preserve. The seed-side SYMLINK guardrails
             # don't apply here because we created tmpdir ourselves via
             # ``mkdtemp`` which never returns a symlink.
-            shutil.rmtree(tmpdir, ignore_errors=True)
+            shutil.rmtree(tmpdir, onerror=_retry_readonly_removal)
 
 
 if pytest is not None:

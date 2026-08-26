@@ -6,6 +6,7 @@ import { ToolInputText } from '../../components/ToolInputText'
 import { useRowDisclosure } from './rowDisclosure'
 
 import { i18nT } from '../../i18n/t'
+import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 interface CollapsibleToolGroupProps {
   count: number
   autoExpand?: boolean
@@ -58,6 +59,7 @@ function extractPreview(meta?: Record<string, unknown>): string {
 
 /** Collapsible row that wraps tool/thinking/permission messages — always collapsed unless autoExpand. */
 const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExpand, disclosureKey, hasPermission, isRunning, children, permissionMeta, pendingPermCount, onApprove, canTrust, onViewActivity, activityOpen }: CollapsibleToolGroupProps) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [expanded, setExpanded] = useRowDisclosure(disclosureKey, !!autoExpand)
   const userToggled = useRef(false)
   const [submitting, setSubmitting] = useState(false)
@@ -114,7 +116,7 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExp
   return (
     <div className="my-1">
       <button
-        className={`flex items-center gap-2 px-4 py-2 rounded-md text-[13px] leading-5 font-mono text-muted bg-card ring-1 ring-inset forced-colors:border cursor-pointer transition-all w-full text-left ${needsAttention && !expanded ? 'ring-amber-400 hover:ring-amber-300' : localResolved ? 'ring-ok/60 hover:ring-ok/80' : 'ring-border hover:ring-border-strong'} hover:text-text`}
+        className={`flex items-center gap-2 px-4 py-2 rounded-md text-[13px] leading-5 font-mono text-muted bg-card ring-1 ring-inset forced-colors:border cursor-pointer transition-all w-full text-left ${needsAttention ? 'ring-amber-400 hover:ring-amber-300' : localResolved ? 'ring-ok/60 hover:ring-ok/80' : 'ring-border hover:ring-border-strong'} hover:text-text`}
         onClick={() => { userToggled.current = true; setExpanded(e => !e) }}
         aria-expanded={expanded}
         aria-label={`${expanded ? i18nT('pages.chat.collapsibleToolGroup.collapse') : i18nT('pages.chat.collapsibleToolGroup.expand')} ${labelText}`}
@@ -134,13 +136,19 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExp
         <span>{labelNode}</span>
       </button>
 
-      {/* Inline approval: command preview + action buttons */}
-      {needsAttention && !expanded && onApprove && truncated && (
+      {/* Inline approval: command preview + action buttons. Rendered in BOTH
+          disclosure states: a pending group auto-expands while the agent is
+          running (ChatMessageList sets autoExpand on recent running groups),
+          and grouped permission messages render null inside the children, so
+          gating this row on !expanded left the expanded pending group with no
+          actionable buttons — a dead end exactly while the agent is parked
+          waiting on the user (#5487). */}
+      {needsAttention && onApprove && truncated && (
         <div className="mt-1 ml-4 pl-3 shadow-[inset_2px_0_0_0_theme(colors.amber.400)] forced-colors:border-l-2">
           <pre className="bg-bg-hover rounded-md px-3 py-2 text-[13px] leading-5 font-mono overflow-x-auto whitespace-pre-wrap break-all max-h-[4.5em] overflow-y-auto mb-2"><ToolInputText text={truncated} /></pre>
         </div>
       )}
-      {needsAttention && !expanded && onApprove && (
+      {needsAttention && onApprove && (
         <div className="mt-1 ml-4 pl-3 flex gap-2 flex-wrap">
           <button disabled={submitting} className="px-3 py-1 rounded-md border border-border bg-transparent text-muted text-[13px] leading-5 cursor-pointer font-body hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all disabled:opacity-50 disabled:cursor-not-allowed" onClick={e => { e.stopPropagation(); submitDecision('approved') }}><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.approve')}</button>
           {canTrust && <button disabled={submitting} className="px-3 py-1 rounded-md border border-border bg-transparent text-muted text-[13px] leading-5 cursor-pointer font-body hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all disabled:opacity-50 disabled:cursor-not-allowed" onClick={e => { e.stopPropagation(); submitDecision('trust') }}><Handshake className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.trust')}</button>}

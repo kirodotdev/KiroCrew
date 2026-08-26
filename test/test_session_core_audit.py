@@ -26,7 +26,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kiro_crew.config import KiroCrewConfig
-from kiro_crew.session import SessionManager, _Session
+from kiro_crew.session import FirstTurnState, SessionManager, _Session
 
 
 @pytest.fixture
@@ -64,7 +64,7 @@ async def test_open_task_session_revalidates_dead_provider_after_semaphore(cfg):
     key = "task:step1"
 
     dead_provider = _dead_after_probe_provider()
-    sess = _Session(provider=dead_provider, is_new=False)
+    sess = _Session(provider=dead_provider, first_turn=FirstTurnState.NOTHING_ARMED)
     sm._sessions[key] = sess
     # Occupy the turn so the fast-path acquire() below blocks.
     await sess.semaphore.acquire()
@@ -112,7 +112,7 @@ async def test_open_task_session_revalidates_removed_session_after_semaphore(cfg
     key = "task:step2"
 
     old_provider = _dead_after_probe_provider()
-    sess = _Session(provider=old_provider, is_new=False)
+    sess = _Session(provider=old_provider, first_turn=FirstTurnState.NOTHING_ARMED)
     sm._sessions[key] = sess
     await sess.semaphore.acquire()
 
@@ -166,7 +166,7 @@ async def test_open_task_session_lost_race_revalidates_recycled_winner(cfg):
 
     # The winner registered by another coroutine during our runtime bootstrap.
     winner_provider = _dead_after_probe_provider()  # flips dead below
-    winner = _Session(provider=winner_provider, is_new=False)
+    winner = _Session(provider=winner_provider, first_turn=FirstTurnState.NOTHING_ARMED)
 
     fresh_runtime = MagicMock()
     fresh_runtime.create_session = AsyncMock(return_value=MagicMock())
@@ -228,7 +228,7 @@ async def test_open_task_session_reuses_live_session_fast_path(cfg):
     key = "task:step3"
 
     live_provider = _dead_after_probe_provider()  # stays alive
-    sess = _Session(provider=live_provider, is_new=False)
+    sess = _Session(provider=live_provider, first_turn=FirstTurnState.NOTHING_ARMED)
     sm._sessions[key] = sess
 
     sm._get_or_bootstrap_run_runtime = AsyncMock(  # type: ignore[method-assign]
@@ -335,7 +335,7 @@ async def test_reacquire_and_validate_releases_semaphore_on_cancellation(cfg):
     key = "sess:reacquire-cancel"
 
     provider = _dead_after_probe_provider()  # reports alive
-    sess = _Session(provider=provider, is_new=False)
+    sess = _Session(provider=provider, first_turn=FirstTurnState.NOTHING_ARMED)
     sm._sessions[key] = sess
 
     # Hold self._lock so the method parks on `async with self._lock:` AFTER it

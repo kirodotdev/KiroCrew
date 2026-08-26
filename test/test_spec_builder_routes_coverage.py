@@ -62,6 +62,11 @@ def _pin_state_dir(tmp_path: Path):
         mock.patch.object(r, "_INDEX_PATH", state / "index.json"),
         mock.patch.object(r, "_DELETED_PATH", state / "deleted.json"),
         mock.patch.object(r, "_SETTINGS_PATH", state / "settings.json"),
+        mock.patch.object(r, "_EXECUTION_CLAIMS", {}),
+        mock.patch.object(r, "_EXECUTION_STOPS", {}),
+        mock.patch.object(r, "_PENDING_DISPATCH_CLAIMS", {}),
+        mock.patch.object(r, "_OBSERVED_SLOT_KEYS", {}),
+        mock.patch.object(r, "_OBSERVED_SPEC_DIRS", {}),
     ):
         r._SLOT_KEYS.clear()
         yield state
@@ -282,6 +287,9 @@ class TestNormalizeSpecState:
                 "options": ["A", "B"],
                 "recommended": "A",
                 "answer": "",
+                # This backend's field, never the agent's: normalization always
+                # reports False and only the recorded-answer overlay sets it.
+                "locked": False,
             }
         ]
         assert out["blocking"] == "waiting on review"
@@ -583,9 +591,10 @@ class TestContained:
 
 class TestResolveSpecDir:
     def test_the_default_is_the_kiro_standard_location(self, tmp_path):
-        assert r._resolve_spec_dir(str(tmp_path), "demo") == (
-            tmp_path / ".kiro" / "specs" / "demo"
-        ).resolve()
+        assert (
+            r._resolve_spec_dir(str(tmp_path), "demo")
+            == (tmp_path / ".kiro" / "specs" / "demo").resolve()
+        )
 
     def test_an_absolute_base_path_override_stays_per_spec(self, tmp_path):
         r._save_settings({"base_path": str(tmp_path / "store")})
@@ -609,9 +618,7 @@ class TestScanSubdirs:
 
     def test_each_entry_carries_its_full_path(self, tmp_path):
         (tmp_path / "src").mkdir()
-        assert r._scan_subdirs(str(tmp_path)) == [
-            {"name": "src", "path": str(tmp_path / "src")}
-        ]
+        assert r._scan_subdirs(str(tmp_path)) == [{"name": "src", "path": str(tmp_path / "src")}]
 
     @requires_symlinks
     def test_a_link_pointing_at_a_sensitive_directory_is_not_listed(self, tmp_path):
@@ -678,9 +685,7 @@ class TestReadSpecText:
             assert r._read_spec_text(tmp_path, "tasks.md") is None
 
     def test_a_raising_reader_fails_closed(self, tmp_path):
-        with mock.patch.object(
-            r, "safe_read_file_bytes_nolink", side_effect=RuntimeError("boom")
-        ):
+        with mock.patch.object(r, "safe_read_file_bytes_nolink", side_effect=RuntimeError("boom")):
             assert r._read_spec_text(tmp_path, "tasks.md") is None
 
     def test_undecodable_bytes_are_replaced_rather_than_raising(self, tmp_path):
@@ -724,7 +729,12 @@ class TestCollectSpecDocuments:
         # An absent document carries no metadata at all: there is no hash to edit
         # against, so the editor has nothing to base a write on. And an unwritten
         # tasks.md is zero of zero rather than a missing progress reading.
-        assert meta == {"docs": {}, "tasks": [], "task_progress": {"done": 0, "total": 0}}
+        assert meta == {
+            "docs": {},
+            "tasks": [],
+            "task_progress": {"done": 0, "total": 0},
+            "decision_recovery_pending": False,
+        }
 
     def test_documents_are_redacted_on_their_way_out(self, tmp_path):
         (tmp_path / "requirements.md").write_text(f"token is {CRED_NAME}")
@@ -998,9 +1008,7 @@ class TestUnlinkQuietly:
 
 class TestDiscardQueuedWork:
     def test_all_three_relaunch_sources_are_dropped(self):
-        slot = SimpleNamespace(
-            _queue=["next"], _pending_steers=["steer"], _pending_synthesis=True
-        )
+        slot = SimpleNamespace(_queue=["next"], _pending_steers=["steer"], _pending_synthesis=True)
         r._discard_queued_work(slot)
         assert slot._queue == []
         assert slot._pending_steers == []
@@ -1222,9 +1230,7 @@ class TestDeleteReservation:
     @pytest.mark.asyncio
     async def test_marking_refuses_a_spec_that_moved(self, tmp_path):
         _write_index({"demo": _entry(tmp_path / "demo")})
-        assert not await r._mark_deleting(
-            "demo", expect_spec_dir="/elsewhere", expect_slot_key=""
-        )
+        assert not await r._mark_deleting("demo", expect_spec_dir="/elsewhere", expect_slot_key="")
         assert not await r._mark_deleting(
             "demo",
             expect_spec_dir=str(tmp_path / "demo"),
@@ -1239,9 +1245,7 @@ class TestDeleteReservation:
     async def test_releasing_leaves_the_entry_exactly_as_it_was(self, tmp_path):
         entry = _entry(tmp_path / "demo")
         _write_index({"demo": dict(entry)})
-        await r._mark_deleting(
-            "demo", expect_spec_dir=str(tmp_path / "demo"), expect_slot_key=""
-        )
+        await r._mark_deleting("demo", expect_spec_dir=str(tmp_path / "demo"), expect_slot_key="")
         assert await r._unmark_deleting("demo", expect_spec_dir=str(tmp_path / "demo"))
         assert r._load_index()["demo"] == entry
 
@@ -1508,8 +1512,10 @@ def _git_env(proc=None, *, cleanup: str = ""):
     """
     spawn = mock.Mock(return_value=(["git", "--version"], {"PATH": "/usr/bin"}, cleanup))
     create = mock.AsyncMock(return_value=proc if proc is not None else _FakeProc())
-    return spawn, create, mock.patch.multiple(
-        r, _prepare_git_spawn=spawn, create_subprocess_limited=create
+    return (
+        spawn,
+        create,
+        mock.patch.multiple(r, _prepare_git_spawn=spawn, create_subprocess_limited=create),
     )
 
 
@@ -1783,7 +1789,10 @@ class TestRollbackWorktreeIfOurs:
         with mock.patch.object(r, "_remove_worktree", remove):
             assert (
                 await r._rollback_worktree_if_ours(
-                    "demo", was_ours=True, repo_root="/repo", created_worktree="",
+                    "demo",
+                    was_ours=True,
+                    repo_root="/repo",
+                    created_worktree="",
                     worktree_branch="spec/demo",
                 )
                 is False
@@ -1798,8 +1807,11 @@ class TestRollbackWorktreeIfOurs:
         with mock.patch.object(r, "_remove_worktree", remove):
             assert (
                 await r._rollback_worktree_if_ours(
-                    "demo", was_ours=False, repo_root="/repo",
-                    created_worktree="/repo-wt-demo", worktree_branch="spec/demo",
+                    "demo",
+                    was_ours=False,
+                    repo_root="/repo",
+                    created_worktree="/repo-wt-demo",
+                    worktree_branch="spec/demo",
                 )
                 is False
             )
@@ -1811,8 +1823,11 @@ class TestRollbackWorktreeIfOurs:
         with mock.patch.object(r, "_remove_worktree", remove):
             assert (
                 await r._rollback_worktree_if_ours(
-                    "demo", was_ours=True, repo_root="/repo",
-                    created_worktree="/repo-wt-demo", worktree_branch="spec/demo",
+                    "demo",
+                    was_ours=True,
+                    repo_root="/repo",
+                    created_worktree="/repo-wt-demo",
+                    worktree_branch="spec/demo",
                 )
                 is True
             )
@@ -1839,7 +1854,8 @@ class _Slot:
         self._pending_synthesis = False
         self.queued: list[str] = []
 
-    def queue_append(self, message: str) -> None:
+    def queue_append(self, message: str, *, directive_user_origin: bool) -> None:
+        assert directive_user_origin is False
         self._queue.append(message)
 
     def append(self, role: str, content: str) -> None:
@@ -1875,7 +1891,9 @@ class _State:
 
 
 def _no_rehydrate():
-    return mock.patch.object(r, "rehydrate_slot_from_history_async", mock.AsyncMock(return_value=None))
+    return mock.patch.object(
+        r, "rehydrate_slot_from_history_async", mock.AsyncMock(return_value=None)
+    )
 
 
 class TestEnsureWorkerSlot:
@@ -1892,6 +1910,32 @@ class TestEnsureWorkerSlot:
         assert state._slots == {}
         ops = [c.kwargs["operation"] for c in _quiet_sel.log_api_access.call_args_list]
         assert "spec_slot_name_denied" in ops
+
+    @pytest.mark.asyncio
+    async def test_denied_name_audit_redacts_before_truncating(self, tmp_path, _quiet_sel):
+        """#5582: a credential straddling the 64-char audit cut must not leak.
+
+        The old spelling ``_redact(name[:64])`` sliced first, so a key cut at
+        the boundary lost its tail, stopped matching the credential regex, and
+        the raw prefix escaped into the SEL audit row.
+
+        The fabricated AKIA-shaped literal is deliberately inlined rather than
+        bound to a ``secret``-named variable: CodeQL's name-based sensitive-
+        source heuristic would otherwise taint this real call path and flag
+        every downstream ``logger.warning(..., name, ...)`` in production code
+        as clear-text secret logging (10 false alerts on unchanged lines).
+        """
+        # fails the grammar; the 64-char cut lands 8 chars into the 20-char key
+        name = "x" * 56 + "AKIAIOSFODNN7EXAMPLE" + " tail"
+        state = _State()
+        assert await r._ensure_worker_slot(state, name, _entry(tmp_path)) is None
+        denied = [
+            c.kwargs["resources"]
+            for c in _quiet_sel.log_api_access.call_args_list
+            if c.kwargs["operation"] == "spec_slot_name_denied"
+        ]
+        assert denied, "the denial must still be audited"
+        assert all("AKIA" not in res for res in denied)
 
     @pytest.mark.asyncio
     async def test_a_cold_slot_is_created_scoped_and_titled(self, tmp_path):
@@ -2148,9 +2192,7 @@ class TestTeardownWorkerSlot:
             "kiro_crew.dashboard.chat_persistence.save_slot_off_loop",
             mock.AsyncMock(side_effect=OSError("disk full")),
         ):
-            assert (
-                await r._teardown_worker_slot(state, "demo", require_archive=True) is False
-            )
+            assert await r._teardown_worker_slot(state, "demo", require_archive=True) is False
         assert state._slots["spec-builder-demo"] is slot
         ops = [c.kwargs["operation"] for c in _quiet_sel.log_api_access.call_args_list]
         assert "spec_slot_archive_failed" in ops
@@ -2270,6 +2312,35 @@ class TestSerializeMessages:
         state = _State(**{"spec-builder-demo": slot})
         out = await r._serialize_messages(state, "spec-builder-demo")
         assert out == [{"role": "tool", "content": "fs_write tasks.md", "ts": "1"}]
+
+    @pytest.mark.asyncio
+    async def test_a_tool_line_credential_straddling_the_cut_is_not_leaked(self):
+        """#5582: a credential straddling the 200-char cut must not leak.
+
+        The old spelling ``_redact(first[:200])`` sliced first, so a key cut at
+        the boundary lost its tail, stopped matching the credential regex, and
+        the raw prefix escaped into the embedded-chat payload.
+        The fabricated AKIA-shaped literal is inlined rather than bound to a
+        ``secret``-named variable, which would trip CodeQL's name-based
+        sensitive-source heuristic on this real call path.
+        """
+        # cut lands 8 chars into the fabricated 20-char key
+        first = "x" * 192 + "AKIAIOSFODNN7EXAMPLE" + " trailing"
+        slot = _Slot("spec-builder-demo")
+        slot.messages = [{"role": "tool", "content": first + "\nmore", "ts": "1"}]
+        state = _State(**{"spec-builder-demo": slot})
+        out = await r._serialize_messages(state, "spec-builder-demo")
+        assert "AKIA" not in out[0]["content"]
+        assert len(out[0]["content"]) <= 200
+
+    @pytest.mark.asyncio
+    async def test_a_plain_tool_line_truncation_unchanged(self):
+        """Ordinary path is result-preserving: no secret ⇒ the same 200-char slice."""
+        slot = _Slot("spec-builder-demo")
+        slot.messages = [{"role": "tool", "content": "t" * 250 + "\nmore", "ts": "1"}]
+        state = _State(**{"spec-builder-demo": slot})
+        out = await r._serialize_messages(state, "spec-builder-demo")
+        assert out[0]["content"] == "t" * 200
 
     @pytest.mark.asyncio
     async def test_an_empty_tool_turn_does_not_raise_on_the_first_line(self):
@@ -2607,6 +2678,21 @@ class TestRequireAuth:
     def test_an_authenticated_request_passes(self):
         assert r._require_auth(_mk("GET", "specs")) is None
 
+    def test_an_app_token_interactive_denial_is_audited(self, _quiet_sel):
+        request = _mk("POST", "specs/demo/message")
+        request["app"] = "trusted-app"
+
+        denied = r._require_interactive_user(request)
+
+        assert denied is not None and denied.status == 403
+        assert _body(denied)["code"] == "interactive_user_required"
+        assert _quiet_sel.log_api_access.call_args.kwargs == {
+            "caller": r.APP_NAME,
+            "operation": "spec_interactive_user_denied",
+            "outcome": "denied",
+            "resources": "",
+        }
+
 
 class TestReadJson:
     @pytest.mark.asyncio
@@ -2725,9 +2811,7 @@ class TestHandleRepoInfo:
     async def test_a_path_that_fails_the_chokepoint_answers_not_a_repo(self, tmp_path):
         # The hand-rolled is_absolute()/is_dir() pair skipped the sensitive-path
         # denial _safe_dir applies, and statted on the event loop.
-        out = await r._handle_repo_info(
-            _mk("GET", "repo-info", query=f"path={tmp_path}/missing")
-        )
+        out = await r._handle_repo_info(_mk("GET", "repo-info", query=f"path={tmp_path}/missing"))
         assert _body(out) == {"is_git": False}
 
     @pytest.mark.asyncio
@@ -2820,9 +2904,10 @@ class TestHandleSettings:
         # settings.json is agent-writable, so a credential parked in base_path
         # would otherwise be rendered verbatim in the dashboard.
         r._save_settings({"base_path": f"/srv/{CRED_NAME}"})
-        assert CRED_NAME not in _body(await r._handle_get_settings(_mk("GET", "settings")))[
-            "base_path"
-        ]
+        assert (
+            CRED_NAME
+            not in _body(await r._handle_get_settings(_mk("GET", "settings")))["base_path"]
+        )
 
     @pytest.mark.asyncio
     async def test_a_malformed_body_is_400(self):
@@ -3095,9 +3180,7 @@ class TestHandleCreate:
         assert "import_existing" in payload["error"]
 
     @pytest.mark.asyncio
-    async def test_a_resolved_path_outside_its_root_is_400_and_audited(
-        self, tmp_path, _quiet_sel
-    ):
+    async def test_a_resolved_path_outside_its_root_is_400_and_audited(self, tmp_path, _quiet_sel):
         with mock.patch.object(
             r, "_prepare_spec_dir", return_value=(tmp_path / "elsewhere", "escape")
         ):
@@ -3136,10 +3219,11 @@ class TestHandleCreate:
 
     @pytest.mark.asyncio
     async def test_a_slot_owned_by_another_app_unwinds_the_insert(self, tmp_path):
-        state = _State(
-            **{"spec-builder-demo": _Slot("spec-builder-demo", app="issue-radar")}
-        )
-        with _no_rehydrate(), mock.patch.object(r, "_ensure_worker_slot", mock.AsyncMock(return_value=None)):
+        state = _State(**{"spec-builder-demo": _Slot("spec-builder-demo", app="issue-radar")})
+        with (
+            _no_rehydrate(),
+            mock.patch.object(r, "_ensure_worker_slot", mock.AsyncMock(return_value=None)),
+        ):
             out = await r._handle_create(
                 _mk(
                     "POST",
@@ -3381,9 +3465,7 @@ class TestHandleGet:
         ]
         state = _State(**{"spec-builder-demo-0123abcd": slot})
         with _no_rehydrate():
-            out = await r._handle_get(
-                _mk("GET", "specs/demo", state=state, match={"name": "demo"})
-            )
+            out = await r._handle_get(_mk("GET", "specs/demo", state=state, match={"name": "demo"}))
         payload = _body(out)
         assert payload["phase"] == "tasks"
         assert payload["files"]["requirements.md"] == "the requirements"
@@ -3449,16 +3531,10 @@ class TestHandleGet:
         spec.mkdir()
         _write_index({"demo": _entry(spec)})
         state = _State(
-            **{
-                "spec-builder-demo-0123abcd": _Slot(
-                    "spec-builder-demo-0123abcd", app="issue-radar"
-                )
-            }
+            **{"spec-builder-demo-0123abcd": _Slot("spec-builder-demo-0123abcd", app="issue-radar")}
         )
         with _no_rehydrate():
-            out = await r._handle_get(
-                _mk("GET", "specs/demo", state=state, match={"name": "demo"})
-            )
+            out = await r._handle_get(_mk("GET", "specs/demo", state=state, match={"name": "demo"}))
         assert out.status == 409 and _body(out)["code"] == "slot_owned_by_another_app"
 
     @pytest.mark.asyncio
@@ -3504,11 +3580,7 @@ class TestHandleMessages:
     async def test_a_foreign_slot_refuses_rather_than_leaking_the_conversation(self, tmp_path):
         _write_index({"demo": _entry(tmp_path / "demo")})
         state = _State(
-            **{
-                "spec-builder-demo-0123abcd": _Slot(
-                    "spec-builder-demo-0123abcd", app="issue-radar"
-                )
-            }
+            **{"spec-builder-demo-0123abcd": _Slot("spec-builder-demo-0123abcd", app="issue-radar")}
         )
         with _no_rehydrate():
             out = await r._handle_messages(
@@ -3585,9 +3657,7 @@ class TestHandleMessage:
         _no_dispatch.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_a_delete_that_lands_during_slot_acquisition_is_409(
-        self, tmp_path, _no_dispatch
-    ):
+    async def test_a_delete_that_lands_during_slot_acquisition_is_409(self, tmp_path, _no_dispatch):
         # _ensure_worker_slot awaits, so a delete can start AND finish between the
         # first check and the dispatch.
         _write_index({"demo": _entry(tmp_path / "demo")})
@@ -3699,7 +3769,9 @@ class TestHandleHandoff:
     @pytest.mark.asyncio
     async def test_a_spec_replaced_during_the_filesystem_hop_is_409(self, tmp_path):
         def _prepare_then_replace(*_a, **_kw):
-            r._save_index({"demo": _entry(tmp_path / "demo", slot_key="spec-builder-demo-ffffffff")})
+            r._save_index(
+                {"demo": _entry(tmp_path / "demo", slot_key="spec-builder-demo-ffffffff")}
+            )
             return True, "/spec/STOP"
 
         with mock.patch.object(r, "_prepare_handoff", _prepare_then_replace):
@@ -3795,9 +3867,7 @@ class TestHandleHandoff:
         assert "spec_handoff_aborted" in ops
 
     @pytest.mark.asyncio
-    async def test_a_refused_authorization_is_403_and_unwinds(
-        self, tmp_path, _armed, _no_dispatch
-    ):
+    async def test_a_refused_authorization_is_403_and_unwinds(self, tmp_path, _armed, _no_dispatch):
         _armed.authz.return_value = (None, "message limit reached", 0)
         with _ready_handoff(), _no_rehydrate():
             out = await r._handle_handoff(_handoff_request(tmp_path, _State()))
@@ -3829,7 +3899,11 @@ class TestHandleHandoff:
 
         _armed.authz.side_effect = _authz_then_delete
         remove = mock.AsyncMock()
-        with _ready_handoff(), _no_rehydrate(), mock.patch.object(r, "_remove_nudge_loop", remove):
+        with (
+            _ready_handoff(),
+            _no_rehydrate(),
+            mock.patch.object(r, "_remove_nudge_loop_for_slot", remove),
+        ):
             out = await r._handle_handoff(_handoff_request(tmp_path, _State()))
         assert out.status == 409 and _body(out)["code"] == "spec_changed_during_start"
         # Ours arrives after the delete's own by-name teardown, so it must be
@@ -4049,6 +4123,7 @@ class TestHandleDelete:
         _write_index({"demo": _entry(tmp_path / "demo")})
         with (
             mock.patch.object(r, "_mark_deleting", mock.AsyncMock(return_value=True)),
+            mock.patch.object(r, "_commit_delete_teardown", mock.AsyncMock(return_value=True)),
             mock.patch.object(r, "_remove_nudge_loop", mock.AsyncMock()),
             mock.patch.object(r, "_teardown_worker_slot", mock.AsyncMock(return_value=True)),
             mock.patch.object(r, "_mutate_index", mock.AsyncMock(return_value=False)),
@@ -4070,9 +4145,7 @@ class TestHandleDelete:
         state = _State(**{"spec-builder-demo-0123abcd": slot})
         with (
             mock.patch.object(r, "_remove_nudge_loop", mock.AsyncMock()),
-            mock.patch(
-                "kiro_crew.dashboard.chat_persistence.save_slot_off_loop", mock.AsyncMock()
-            ),
+            mock.patch("kiro_crew.dashboard.chat_persistence.save_slot_off_loop", mock.AsyncMock()),
         ):
             out = await r._handle_delete(
                 _mk(
@@ -4146,6 +4219,7 @@ class TestRegisterRoutes:
             ("POST", f"{base}/specs"),
             ("GET", f"{base}/specs/{{name}}"),
             ("GET", f"{base}/specs/{{name}}/messages"),
+            ("POST", f"{base}/specs/{{name}}/recover-decision"),
             ("POST", f"{base}/specs/{{name}}/message"),
             ("POST", f"{base}/specs/{{name}}/handoff"),
             # Alias: the SPA page calls this "execute".
@@ -4293,9 +4367,7 @@ class TestTeardownFailureBranches:
             raise RuntimeError("teardown blew up")
 
         with (
-            mock.patch(
-                "kiro_crew.dashboard.chat_persistence.save_slot_off_loop", mock.AsyncMock()
-            ),
+            mock.patch("kiro_crew.dashboard.chat_persistence.save_slot_off_loop", mock.AsyncMock()),
             mock.patch.object(asyncio, "wait_for", _explode),
         ):
             assert await r._teardown_worker_slot(state, "demo") is True

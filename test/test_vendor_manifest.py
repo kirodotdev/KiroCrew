@@ -246,6 +246,20 @@ def test_committed_manifest_exists_and_parses() -> None:
     assert entries, "committed manifest is empty"
 
 
+@pytest.mark.parametrize(
+    "pattern",
+    (
+        "src/kiro_crew/_vendor/**/*.py text eol=lf",
+        "src/kiro_crew/_vendor/**/*.md text eol=lf",
+        "src/kiro_crew/_vendor/**/*.typed text eol=lf",
+    ),
+)
+def test_vendor_text_payloads_are_checkout_byte_stable(pattern: str) -> None:
+    """The byte manifest must see the same vendor text on every checkout."""
+    attributes = (_REPO_ROOT / ".gitattributes").read_text(encoding="utf-8")
+    assert pattern in attributes
+
+
 def test_ci_wires_the_manifest_gate() -> None:
     """ci.yml must run the verifier unconditionally — the vendored tree gets
     no other content review, so a gate that exists but is not wired (or is

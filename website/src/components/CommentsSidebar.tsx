@@ -10,6 +10,7 @@ import { useAutoGrowTextarea } from '../hooks/useAutoGrowTextarea'
 
 import { i18nT } from '../i18n/t'
 import { fmtDateFields } from '../i18n/format'
+import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 /** Short relative-ish timestamp for a comment row. */
 function fmtTs(ts: string): string {
   if (!ts) return ''
@@ -358,6 +359,7 @@ const SIDEBAR_DEFAULT_STYLE: React.CSSProperties = { height: 'calc(100vh - 240px
  *  widget, where text-selection anchoring isn't available inside the
  *  sandboxed iframe — comments degrade to whole-artifact). */
 export const CommentsSidebar = memo(function CommentsSidebar(props: CommentsSidebarProps) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const isMobile = useIsMobile()
   const {
     comments, loading, remoteSyncError, onAdd, onReply, onResolve,

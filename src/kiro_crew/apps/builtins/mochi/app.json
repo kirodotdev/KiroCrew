@@ -92,5 +92,11 @@
       ],
       "disabled": false
     }
-  }
+  },
+  "useCases": [
+    "Keep a quiet desktop pet that chats, tracks reminders and public-page changes, and adapts around connected calendar events."
+  ],
+  "configuration": [
+    "Use Kiro Crew Desktop, enable Mochi, choose its appearance and behavior, then add watch targets in chat or on the dashboard; schedule-aware planning requires a connected calendar MCP tool."
+  ]
 }

@@ -152,16 +152,31 @@ jobs:
 
       # Post the required check-run as EARLY as possible, keyed to head_sha, so
       # the "UX Review" status always exists (finalized below regardless of path).
+      #
+      # `external_id` carries the PR number, which is what makes the finalize
+      # sweep safe: a check-run of this name on this head can belong to ANOTHER
+      # pull request (two PRs may share a commit), and completing that one would
+      # publish a verdict computed from a different diff. The sweep matches on
+      # this id, so it can only ever finish a run this pull request created.
+      #
+      # `details_url` carries this run's URL: a workflow_run-triggered run is
+      # keyed to the DEFAULT branch context, so this stamp is the only link
+      # from the PR head back to the lane run — the human-override handler
+      # reads it to re-run the lane, and a human clicking the check lands on
+      # the run logs instead of a bare check-run page.
       - name: Open check-run (in progress)
         id: check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           HEAD: ${{ steps.pr.outputs.head_sha }}
+          PR: ${{ steps.pr.outputs.pr }}
         run: |
           set -uo pipefail
           id="$(gh api --method POST "repos/$REPO/check-runs" \
             -f name="UX Review" -f head_sha="$HEAD" -f status="in_progress" \
+            -f external_id="ux-pr-$PR" \
+            -f details_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID" \
             --jq '.id')"
           echo "id=$id" >> "$GITHUB_OUTPUT"
 
@@ -249,7 +264,14 @@ jobs:
           changed="$( { grep -E '^\+\+\+ b/' "$PATCH" | sed 's#^+++ b/##'; \
                         grep -E '^--- a/' "$PATCH" | sed 's#^--- a/##'; } \
                       2>/dev/null | grep -v '^/dev/null$' | sort -u || true )"
-          if printf '%s\n' "$changed" | grep -qE '^(website/|temp-screenshots/|\.github/screenshots/)'; then
+          # Here-string, NOT `printf … | grep -q`: under `pipefail` a matching
+          # `grep -q` exits as soon as it has its answer, closing the pipe while
+          # `printf` is still writing. `printf` then dies on SIGPIPE and the
+          # pipeline reports 141 for input that DID match, so a UI change is
+          # silently classified as not-UI-relevant and this review skips green.
+          # A here-string takes the writer out of the pipeline entirely, so no
+          # exit status can be manufactured by pipe timing.
+          if grep -qE '^(website/|temp-screenshots/|\.github/screenshots/)' <<< "$changed"; then
             echo "ui=true" >> "$GITHUB_OUTPUT"
             echo "UI-relevant changes detected; running UX review."
           else
@@ -273,7 +295,7 @@ jobs:
         # errored advisory review must never fail the gate; only a real BLOCK
         # does). Gated on the UI-scope pass.
         if: steps.scope.outputs.ui == 'true'
-        uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1
+        uses: anthropics/claude-code-action@459ad358ae43fea66bfefd0a1f8d840b4b9791fb # v1
         with:
           # Inference via Amazon Bedrock. Model id form (bare, regional `us.`
           # inference profile, no `[1m]` tag) is load-bearing — see the
@@ -680,6 +702,19 @@ jobs:
           # Machine-parse the verdict header the prompt requires (case-insensitive).
           verdict="$(printf '%s\n' "$summary" | grep -iE '^UX-Verdict:' | head -n1 | sed -E 's/^[^:]*:[[:space:]]*//' | tr -d '\r' | tr '[:lower:]' '[:upper:]')"
           [ -z "$verdict" ] && verdict="UNKNOWN"
+          # Require the CURRENT-HEAD proof marker before honouring that verdict.
+          # The prompt emits `[UX-REVIEWED] <sha>`, but parsing the
+          # `UX-Verdict:` header alone made the marker decorative: a reply
+          # carrying a stale or rewritten marker still scored as a verdict for
+          # THIS revision, so a UX verdict earned on older code could be
+          # presented as current. Absent or mismatched -> fall through to the
+          # existing non-blocking "could not complete" path rather than
+          # inventing a verdict. Here-string, not `printf | grep`, so a long
+          # summary cannot manufacture a SIGPIPE status under `pipefail`.
+          if ! grep -qF "[UX-REVIEWED] $HEAD" <<< "$summary"; then
+            echo "verdict header present but no [UX-REVIEWED] $HEAD marker; treating as UNKNOWN"
+            verdict="UNKNOWN"
+          fi
           echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
           case "$verdict" in
             PASS) badge="✅ PASS" ;;
@@ -741,6 +776,7 @@ jobs:
           REPO: ${{ github.repository }}
           HEAD: ${{ steps.pr.outputs.head_sha || github.event.workflow_run.head_sha }}
           CHECK_ID: ${{ steps.check.outputs.id }}
+          PR: ${{ steps.pr.outputs.pr }}
           VERDICT: ${{ steps.post.outputs.verdict }}
         run: |
           set -uo pipefail
@@ -756,15 +792,64 @@ jobs:
             *)
               conclusion="neutral"; title="review incomplete (advisory)" ;;
           esac
+          summary="Advisory fork UX review for $HEAD. See the PR comment for details."
+          # complete <check-run id> <conclusion> <title> — one retry, because a
+          # single transient 5xx here is what strands the run: the check-run stays
+          # `in_progress` forever, and pr-readiness counts ANY non-completed run of
+          # this name as pending — including after a successful re-run — so the PR
+          # sits at `readiness: checking` with no event able to clear it.
+          complete() {
+            for attempt in 1 2; do
+              if gh api --method PATCH "repos/$REPO/check-runs/$1" \
+                -f status="completed" -f conclusion="$2" \
+                -f "output[title]=UX Review — $3" \
+                -f "output[summary]=$summary" >/dev/null 2>&1; then
+                return 0
+              fi
+              sleep 5
+            done
+            echo "::warning::could not complete check-run $1 for $HEAD"
+            return 1
+          }
           if [ -n "${CHECK_ID:-}" ]; then
-            gh api --method PATCH "repos/$REPO/check-runs/$CHECK_ID" \
-              -f status="completed" -f conclusion="$conclusion" \
-              -f "output[title]=UX Review — $title" \
-              -f "output[summary]=Advisory fork UX review for $HEAD. See the PR comment for details." >/dev/null || true
+            complete "$CHECK_ID" "$conclusion" "$title" || true
           elif [ -n "${HEAD:-}" ]; then
+            # external_id makes this fallback check-run discoverable by the
+            # override handler's fork rerun lookup, same as the opening POST.
+            # PR can be empty in exactly this branch (HEAD has a workflow_run
+            # fallback, PR does not), and a malformed "ux-pr-" id would
+            # match nothing -- stamp it only when the PR is known.
+            ext_args=()
+            if [ -n "${PR:-}" ]; then
+              ext_args=(-f external_id="ux-pr-$PR")
+            fi
             gh api --method POST "repos/$REPO/check-runs" \
               -f name="UX Review" -f head_sha="$HEAD" \
-              -f status="completed" -f conclusion="neutral" \
+              -f status="completed" -f conclusion="neutral" "${ext_args[@]}" \
+              -f details_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID" \
               -f "output[title]=UX Review — could not run (advisory)" \
               -f "output[summary]=The fork UX review job failed before producing a verdict; advisory, does not block merge." >/dev/null || true
+          fi
+          # Sweep any still-incomplete run of this name that THIS pull request
+          # created (ours, if the PATCH above lost both attempts, or one stranded
+          # by a previous run). Scoped by `external_id`: a check-run of this name
+          # on this head can belong to another PR that shares the commit, and
+          # completing that one would publish a verdict computed from a different
+          # diff -- the wedge is closed without ever touching a sibling's review.
+          # Completed with THIS run's computed verdict, not a hardcoded neutral:
+          # a genuine BLOCK whose own PATCH lost both attempts must not be
+          # swept into a verdict pr-readiness no longer gates on. With no
+          # verdict, $conclusion is already neutral/"review incomplete".
+          if [ -n "${HEAD:-}" ] && [ -n "${PR:-}" ]; then
+            enc="$(jq -rn '"UX Review" | @uri')"
+            stranded="$(gh api --method GET \
+              "repos/$REPO/commits/$HEAD/check-runs?check_name=$enc&per_page=100" \
+              --jq ".check_runs[]
+                    | select(.status != \"completed\")
+                    | select(.external_id == \"ux-pr-$PR\")
+                    | .id" 2>/dev/null || true)"
+            for id in $stranded; do
+              echo "completing stranded check-run $id for $HEAD (PR #$PR)"
+              complete "$id" "$conclusion" "$title" || true
+            done
           fi

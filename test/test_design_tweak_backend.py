@@ -21,6 +21,7 @@ from typing import Any
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew.apps.builtins.design_tweak.backend import server
 from kiro_crew.platform_compat import IS_POSIX
 
@@ -64,6 +65,7 @@ class TestContained:
         with pytest.raises(server._PathEscape):
             server._contained(base, "../app-evil/leak.txt")
 
+    @requires_symlinks
     def test_symlink_escape_rejected(self, tmp_path):
         base = tmp_path / "proj"
         base.mkdir()
@@ -823,6 +825,7 @@ class TestPreviewSuppliedSourcePathsAreContained:
         )
         assert source_file == str(Path(os.path.realpath(proj)) / "sub" / "index.html")
 
+    @requires_symlinks
     def test_symlink_escape_in_preview_url_is_rejected(self, tmp_path, monkeypatch):
         """A symlink inside the project pointing out of it must not resolve.
 
@@ -1262,6 +1265,7 @@ class TestKiroCrewInternalTreesAreNeverServed:
         assert code == 403
         assert b"xoxb-secret" not in body
 
+    @requires_symlinks
     def test_a_symlink_into_the_crew_home_is_refused(self, tmp_path, monkeypatch):
         """The check realpaths, so a link inside the project cannot launder it."""
         home = tmp_path / "home"
@@ -1312,6 +1316,7 @@ class TestEntryPointCannotLaunderASecret:
     is resolved.
     """
 
+    @requires_symlinks
     def test_index_html_symlinked_to_env_is_not_served(self, tmp_path):
         root = tmp_path / "site"
         root.mkdir()
@@ -1322,6 +1327,7 @@ class TestEntryPointCannotLaunderASecret:
         assert b"live-secret" not in body
         assert code != 200
 
+    @requires_symlinks
     def test_entry_symlinked_into_the_crew_home_is_not_served(self, tmp_path, monkeypatch):
         home = tmp_path / "home"
         crew = home / ".kiro" / "crew"
@@ -1337,6 +1343,7 @@ class TestEntryPointCannotLaunderASecret:
         assert b"signing-key" not in body
         assert code != 200
 
+    @requires_symlinks
     def test_find_entry_skips_a_secret_and_keeps_looking(self, tmp_path):
         """A later legitimate candidate must still be found."""
         root = tmp_path / "site"
@@ -1368,6 +1375,7 @@ class TestHtmlScanDoesNotFollowSymlinks:
     sensitive-path floor exists to withhold.
     """
 
+    @requires_symlinks
     def test_a_symlinked_directory_is_not_enumerated(self, tmp_path):
         secret = tmp_path / "protected"
         secret.mkdir()
@@ -1381,6 +1389,7 @@ class TestHtmlScanDoesNotFollowSymlinks:
         assert "real.html" in found
         assert not any("private-notes" in f for f in found), found
 
+    @requires_symlinks
     def test_a_symlinked_file_is_not_listed(self, tmp_path):
         secret = tmp_path / "protected"
         secret.mkdir()
@@ -1393,6 +1402,7 @@ class TestHtmlScanDoesNotFollowSymlinks:
         found = server._scan_html(root)
         assert found == ["real.html"], found
 
+    @requires_symlinks
     def test_the_404_page_cannot_disclose_a_symlinked_tree(self, tmp_path):
         """End-to-end: a project with NO entry page renders the diagnostic listing."""
         secret = tmp_path / "protected"

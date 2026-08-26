@@ -22,9 +22,11 @@ import { i18nT } from '../../i18n/t'
 import { useRowDisclosure } from './rowDisclosure'
 import {
   parseSubagentCompletionMessage,
+  isModelDowngrade,
   type ParsedSubagentCompletion,
   type SubagentOutcome,
 } from './subagentCompletion'
+import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 
 function outcomeLabel(outcome: SubagentOutcome): string {
   if (outcome === 'failed') return i18nT('pages.chat.subagentCompletionCard.failed')
@@ -99,6 +101,7 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
    *  (the embed SDK), which then render the card without the button. */
   onOpenPanel?: (parsed: ParsedSubagentCompletion) => void
 }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const parsed = parseSubagentCompletionMessage(message)
   const failed = parsed !== null && (parsed.kind === 'single' ? parsed.outcome === 'failed' : parsed.failed > 0)
   // A restart orphan: the run was cut short but its result survived on disk, so
@@ -116,6 +119,16 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
   if (!parsed) return null
 
   const stopped = parsed.kind === 'single' && parsed.outcome === 'stopped'
+  // The model the run actually served (issue #3582), shown as a chip on the
+  // single-agent card. When the spawn pinned a model AND the served id differs,
+  // it is a downgrade (routing/config/availability) — flag it so a model-pinned
+  // review's real model is not silently misread.
+  const resolvedModel = parsed.kind === 'single' ? parsed.resolvedModel : ''
+  const requestedModel = parsed.kind === 'single' ? parsed.requestedModel : ''
+  // Namespace-aware: a short alias and the canonical provider id name the same
+  // model, so compare normalized (see isModelDowngrade) rather than raw !==,
+  // which falsely flagged aliases and the "auto" sentinel (GPT review on #3582).
+  const modelDowngraded = isModelDowngrade(requestedModel, resolvedModel)
   // A digest chunk that is not the wave's last one reports a PARTIAL delivery.
   // Neither a success tick nor an in-progress spinner is honest about it: the
   // first reads "wave done" while siblings are still running, and the second
@@ -186,6 +199,31 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
             )}
           </>
         )}
+        {resolvedModel && (
+          <code
+            className={`${CHIP} font-mono max-w-[8rem] ${
+              modelDowngraded
+                ? 'bg-warn-subtle border-warn/20 text-warn'
+                : 'bg-accent/10 border-accent/20 text-accent/80'
+            }`}
+            data-testid="subagent-completion-model"
+            title={
+              modelDowngraded
+                ? i18nT('pages.chat.activityViewer.model_downgraded', {
+                    requested: requestedModel,
+                    resolved: resolvedModel,
+                  })
+                : i18nT('pages.chat.activityViewer.model_label', { model: resolvedModel })
+            }
+          >
+            {modelDowngraded && <AlertCircle size={10} aria-hidden />}
+            {/* Left-truncate: long ids share a provider prefix
+                (us.anthropic.claude-…), so clipping the END hides the one part
+                that says WHICH model. rtl+plaintext keeps the glyphs in logical
+                LTR order while the ellipsis falls on the left (UX review #3582). */}
+            <span className="truncate inline-block max-w-full [direction:rtl] [unicode-bidi:plaintext] text-left align-bottom">{resolvedModel}</span>
+          </code>
+        )}
         {parsed.kind === 'single' ? (
           <span className="text-[10px] leading-4 text-muted font-mono truncate hidden sm:inline">
             {parsed.agentId}
@@ -231,6 +269,26 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
           )}
         </div>
       </div>
+      {modelDowngraded && (
+        // Visible (not hover-only) requested-vs-served text. The chip's tooltip
+        // is invisible to touch / keyboard / screen-reader users, but the
+        // requested-vs-served fact IS the audit point of this feature, so it is
+        // rendered as persistent text here too (UX review #3582). role=status so
+        // AT announces it; the amber matches the chip.
+        <div
+          className="flex items-start gap-1.5 px-3 py-1.5 border-t border-warn/20 bg-warn-subtle/50 text-[11px] leading-4 text-warn"
+          role="status"
+          data-testid="subagent-completion-downgrade"
+        >
+          <AlertCircle size={12} className="shrink-0 mt-0.5" aria-hidden />
+          <span className="min-w-0 break-words">
+            {i18nT('pages.chat.activityViewer.model_downgraded', {
+              requested: requestedModel,
+              resolved: resolvedModel,
+            })}
+          </span>
+        </div>
+      )}
       {expanded && parsed.body && (
         // max-h + overflow-y-auto: a wave digest grows one block per agent, so a
         // 7+-agent batch renders taller than the viewport. The body scrolls
@@ -251,6 +309,7 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
           data-testid="subagent-completion-body"
           role="region"
           aria-labelledby={headlineId}
+          // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex
           tabIndex={0}
         >
           {/* softBreaks: the payload is machine-composed plain text whose line

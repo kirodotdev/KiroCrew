@@ -39,17 +39,44 @@
  * diffs, and it can be re-run if an upstream sync reintroduces the pattern.
  * Run with `--check` in CI to fail on reintroduction.
  *
+ * ## The `--check` contract has two tiers
+ *
+ * 1. **i18nT-adjacent glue — HARD ZERO.** The patterns below, where the plural
+ *    ternary follows an `i18nT('key')` call. All 33 were converted, so any
+ *    match is a reintroduction and fails outright.
+ * 2. **Fully hardcoded literals — CEILING, fails only on growth.** The same
+ *    defect with no `i18nT` anywhere in it (`scripts/lib/hardcoded-plural.mjs`
+ *    is the detector). Those sites cannot be auto-converted — each needs a new
+ *    catalog key plus translations — so the frozen debt is pinned at
+ *    `HARDCODED_CEILING` and only a NEW site fails the check. The ceiling
+ *    ratchets DOWN as sites are converted; see the constant's comment for the
+ *    one sanctioned reason to raise it.
+ *
  *   node scripts/i18n-plural-codemod.mjs [--check]
  */
 
 import * as fs from 'fs'
 import * as path from 'path'
 import { fileURLToPath } from 'url'
+import { findHardcodedPluralSites } from './lib/hardcoded-plural.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
 const SRC = path.join(ROOT, 'src')
 const CHECK = process.argv.includes('--check')
+
+/**
+ * Ceiling for the SECOND tier (see the header): fully hardcoded plural
+ * literals, which the i18nT-anchored patterns below cannot see. `--check`
+ * fails only when the count GROWS past this number; lower it as sites are
+ * converted. Raising it is reserved for exactly one case: a concurrent merge
+ * added a site, so an unrelated PR inherits the red — that PR may raise the
+ * ceiling with a line explaining the growth is inherited, or convert the added
+ * site. A measured count, not a target: it equals the number of matching sites
+ * in `src/` when the detector landed, because a hard zero would have failed on
+ * arrival and been disabled.
+ */
+const HARDCODED_CEILING = 7
 
 /**
  * The two shapes in the codebase, both anchored so the count expression is
@@ -93,10 +120,18 @@ function walk(dir, out = []) {
 const touchedKeys = new Set()
 const changedFiles = []
 const skipped = []
+const hardcodedSites = []
 
 for (const file of walk(SRC)) {
   const before = fs.readFileSync(file, 'utf-8')
   let after = before
+
+  // Tier two, counted but never rewritten: fully hardcoded plural glue. Each
+  // site needs a NEW catalog key plus translations, which no codemod can
+  // invent — so it is only counted against HARDCODED_CEILING.
+  for (const site of findHardcodedPluralSites(before)) {
+    hardcodedSites.push({ file: path.relative(ROOT, file), line: site.line, text: site.text })
+  }
 
   for (const re of PATTERNS) {
     after = after.replace(re, (m, countExpr, gap, key, ternaryExpr) => {
@@ -147,7 +182,13 @@ if (!CHECK && touchedKeys.size) {
 }
 
 if (CHECK) {
+  // Both tiers are evaluated and printed before the exit, for the same reason
+  // `i18n-check.mjs` replaced the `&&` chain: short-circuiting on the first
+  // failure means an author learns about the second one a CI round later.
+  let failed = false
+
   if (changedFiles.length) {
+    failed = true
     console.error(
       `\nFAIL: ${changedFiles.length} file(s) still use the literal-'s' plural hack:\n`
       + changedFiles.map(f => `  ${f}`).join('\n')
@@ -155,10 +196,45 @@ if (CHECK) {
       + ` catalog forms. Appending 's' outside i18nT() cannot be fixed by any`
       + ` translation — see scripts/i18n-plural-codemod.mjs.\n`,
     )
-    process.exit(1)
+  } else {
+    console.log('OK: no literal-\'s\' pluralization found.')
   }
-  console.log('OK: no literal-\'s\' pluralization found.')
+
+  const n = hardcodedSites.length
+  if (n > HARDCODED_CEILING) {
+    failed = true
+    console.error(
+      `\nFAIL: ${n} hardcoded plural literal(s) — ${n - HARDCODED_CEILING} above the ceiling of ${HARDCODED_CEILING}:\n`
+      + hardcodedSites.map(s => `  ${s.file}:${s.line}  ${s.text}`).join('\n')
+      + `\n\nEvery site is listed so yours is findable: the one(s) this branch added are`
+      + `\nthe growth. Replace the glued suffix with i18nT('key', { count: n }) and`
+      + `\n_one/_other catalog forms — see this script's header for why no hardcoded`
+      + `\nspelling can be correct in 12 languages. If no listed site is yours, a`
+      + `\nconcurrent merge grew the count under you: convert the added site, or raise`
+      + `\nHARDCODED_CEILING in the same PR with a line explaining the growth is`
+      + `\ninherited.\n`,
+    )
+  } else if (n < HARDCODED_CEILING) {
+    console.log(
+      `OK: ${n} hardcoded plural literal(s), below the ceiling of ${HARDCODED_CEILING}. `
+      + `Optional: lower HARDCODED_CEILING to ${n} in scripts/i18n-plural-codemod.mjs to tighten the ratchet.`,
+    )
+  } else {
+    console.log(`OK: ${n} hardcoded plural literal(s), at the ceiling of ${HARDCODED_CEILING}.`)
+  }
+
+  // exitCode rather than process.exit(): an immediate exit can terminate the
+  // process before piped stdout/stderr flush, and the runner reads a silent
+  // child as MISSING rows — a truncated verdict, not a fast one.
+  process.exitCode = failed ? 1 : 0
 } else {
   console.log(`rewrote ${changedFiles.length} file(s), ${touchedKeys.size} key(s)`)
   console.log([...touchedKeys].sort().join('\n'))
+  if (hardcodedSites.length) {
+    console.log(
+      `\n${hardcodedSites.length} hardcoded plural literal(s) need MANUAL conversion `
+      + `(each needs a new catalog key, so no codemod can rewrite them):\n`
+      + hardcodedSites.map(s => `  ${s.file}:${s.line}  ${s.text}`).join('\n'),
+    )
+  }
 }

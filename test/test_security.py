@@ -5580,11 +5580,56 @@ class TestWindowsPathShapes:
             'cmd /c copy "%APPDATA:~0%\\kiro-cli\\data.sqlite3" .\\loot.db',
             # Braced PowerShell spelling.
             'del "${env:APPDATA}\\kiro-cli\\data.sqlite3"',
+            # cmd.exe delayed expansion names the same location.
+            'cmd /V:ON /c copy /Y evil.sqlite "!APPDATA!\\kiro-cli\\data.sqlite3"',
         ]
         for cmd in cmds:
             assert is_sensitive_bash_command(cmd) is not None, cmd
         # Other %APPDATA% content stays allowed.
         assert is_sensitive_bash_command('type "%APPDATA%\\SomeApp\\config.json"') is None
+
+    def test_localappdata_alias_of_fenced_store_is_blocked(self) -> None:
+        # %LOCALAPPDATA% points INTO AppData\Local -- where CURRENT kiro-cli
+        # keeps its store, now a trust anchor in kiro_usage_api._CLI_SQLITE_DBS
+        # -- so this spelling names the fenced store without the AppData\Local
+        # text the home-anchored branch matches on. Without its own alias
+        # branch, a shell command could WRITE the very file whose
+        # unwritability the from_cli_store trust claim rests on.
+        cmds = [
+            'del "%LOCALAPPDATA%\\kiro-cli\\data.sqlite3"',
+            "type '%LOCALAPPDATA%\\amazon-q\\data.sqlite3'",
+            "cat '%LOCALAPPDATA%/kiro-cli/data.sqlite3'",
+            'del "$env:LOCALAPPDATA\\kiro-cli\\data.sqlite3"',
+            # A write verb: the exact forgery the trust claim must exclude.
+            'cmd /c copy /Y evil.sqlite "%LOCALAPPDATA%\\kiro-cli\\data.sqlite3"',
+            # Single-dot segments are canonical-equivalent to their absence.
+            'cmd /c copy /Y evil.sqlite "%LOCALAPPDATA%\\.\\kiro-cli\\data.sqlite3"',
+            # cmd.exe expansion modifiers resolve to the same location.
+            'cmd /c copy "%LOCALAPPDATA:~0%\\kiro-cli\\data.sqlite3" .\\loot.db',
+            # Braced PowerShell spelling.
+            'del "${env:LOCALAPPDATA}\\kiro-cli\\data.sqlite3"',
+            # cmd.exe delayed expansion names the same location, with the
+            # same expansion modifiers.
+            'cmd /V:ON /c copy /Y evil.sqlite "!LOCALAPPDATA!\\kiro-cli\\data.sqlite3"',
+            'cmd /V:ON /c type "!LOCALAPPDATA:~0!\\kiro-cli\\data.sqlite3"',
+            # %LOCALAPPDATA% ends in Local, so \..\Local is a canonical no-op.
+            'del "%LOCALAPPDATA%\\..\\Local\\kiro-cli\\data.sqlite3"',
+        ]
+        for cmd in cmds:
+            assert is_sensitive_bash_command(cmd) is not None, cmd
+        # Other %LOCALAPPDATA% content stays allowed.
+        assert (
+            is_sensitive_bash_command('type "%LOCALAPPDATA%\\SomeApp\\config.json"')
+            is None
+        )
+        # The home-anchored native spelling of the Local store is fenced too
+        # (via the _SENSITIVE_HOME_DIRS entry, not the alias branch).
+        assert (
+            is_sensitive_bash_command(
+                "type 'C:\\Users\\u\\AppData\\Local\\kiro-cli\\data.sqlite3'"
+            )
+            is not None
+        )
 
     def test_backslash_relative_traversal_is_blocked(self) -> None:
         assert is_sensitive_bash_command("type ..\\..\\.aws\\credentials") is not None

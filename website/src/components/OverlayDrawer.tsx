@@ -1,9 +1,26 @@
-import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
+import { AnimatePresence, motion, useReducedMotion, type MotionValue } from 'framer-motion'
 
 interface Props {
   open: boolean
   width: number
   dragging?: boolean
+  /**
+   * Slide mode (mobile): the panel keeps a fixed width and is positioned by
+   * this offset in px — `-viewportWidth` offscreen, `0` at rest. Supplied as a
+   * MotionValue so the gesture can drive it without re-rendering the chat pane
+   * once per touchmove, and so the drag and the settle write the SAME channel
+   * (a width tween cannot be handed a half-finished drag).
+   *
+   * Width was the wrong channel for this panel: animating 0 -> viewport width
+   * under `overflow-hidden` reveals the sidebar left-to-right like a wipe
+   * rather than sliding a panel in, and it cannot represent a partial drag
+   * without reflowing the sidebar's own contents on every frame.
+   *
+   * When set, mount/unmount timing belongs to the CALLER: it holds the panel
+   * mounted until the slide-out finishes, so this component does no exit
+   * animation of its own.
+   */
+  slideX?: MotionValue<number>
   /** Morph mode: the panel's visible window (clip-path) collapses into
    *  `morphTarget` and expands back out — the content itself never moves or
    *  deforms. The outer width still animates for layout reflow. */
@@ -28,7 +45,7 @@ interface Props {
 const EASE = [0.32, 0.72, 0, 1] as const
 const DUR = 0.24
 
-export default function OverlayDrawer({ open, width, dragging, morph, morphTarget, expandFrom, contentH, className, children }: Props) {
+export default function OverlayDrawer({ open, width, dragging, slideX, morph, morphTarget, expandFrom, contentH, className, children }: Props) {
   const reduce = useReducedMotion()
   // Gesture end settles from the live presentation value via a critically
   // damped spring (no overshoot, no visible jump) — never a fixed ease tween.
@@ -42,6 +59,29 @@ export default function OverlayDrawer({ open, width, dragging, morph, morphTarge
   // into the button and expanding like it pouring back out (iPadOS-style
   // masked container transform). Pure px strings so Framer can interpolate.
   const morphable = morph && !reduce && morphTarget && contentH && width > 0 && contentH > 0
+  // Slide mode short-circuits every branch below. The offset is the ONLY
+  // animated channel, and it is owned by `slideX` — so there is no `initial` /
+  // `animate` / `exit` here at all, and no clip morph (that is the desktop
+  // collapse-into-the-toggle motion, which has no mobile counterpart).
+  //
+  // `open` still gates the mount, but the caller keeps it true until the
+  // slide-out completes: an `exit` animation would compete with the settle the
+  // gesture hook is already running on this same value.
+  if (slideX) {
+    return (
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            key="drawer-slide"
+            style={{ width, x: slideX }}
+            className={`shrink-0 pb-2 overflow-hidden ${className || ''}`}
+          >
+            {children}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    )
+  }
   const panelH = contentH ?? 0
   /** One clamped CSS length. Every side is floored at 0 because a negative inset
    *  is invalid and drops the clip entirely — the panel would flash full-size. */

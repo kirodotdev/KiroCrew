@@ -12,7 +12,7 @@
  * QueryClientProvider wrapper, an `api` module mock, small fixture makers).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor, act } from '@testing-library/react'
+import { render, screen, waitFor, act, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 
@@ -28,6 +28,7 @@ vi.mock('../api/client', () => ({
 import { PierreWorkspaceTreeImpl } from '../pierre/PierreWorkspaceTreeImpl'
 import { api } from '../api/client'
 import { treeMock } from './__mocks__/pierreTreesReact'
+import type { MenuItem, MenuContext } from './__mocks__/pierreTreesReact'
 
 const ROOT = '/repo/project'
 const PATHS = ['README.md', 'src/a/b.ts']
@@ -430,5 +431,128 @@ describe('PierreWorkspaceTreeImpl — search forwarding', () => {
 
     // '' and null both mean "no search"; the model only accepts null for that.
     expect(treeMock.last().calls.search).toEqual([null, 'rail', null, null])
+  })
+})
+
+describe('PierreWorkspaceTreeImpl — row context menu', () => {
+  // Baseline composition the wrapper hands `useFileTree`: the `<FileTree>`
+  // renderContextMenu wiring forces `enabled: true` on top of this, but the
+  // trigger config here is what survives.
+  it('enables both right-click and the hover button as context-menu triggers', async () => {
+    renderTree()
+    await waitForTree()
+    expect(treeMock.last().options).toMatchObject({
+      composition: { contextMenu: { triggerMode: 'both', buttonVisibility: 'when-needed' } },
+    })
+  })
+
+  it('wires renderContextMenu only when a host is present to hand the row to', async () => {
+    // `<FileTree>`'s own `renderContextMenu != null` check forces the menu
+    // enabled unconditionally, so passing it with no `onAddToContext` would
+    // open a menu whose only action closes itself and does nothing.
+    const { update } = renderTree()
+    await waitForTree()
+    expect(treeMock.fileTreeProps.at(-1)!.renderContextMenu).toBeUndefined()
+
+    update({ onAddToContext: vi.fn() })
+    expect(typeof treeMock.fileTreeProps.at(-1)!.renderContextMenu).toBe('function')
+  })
+
+  const openMenu = (item: MenuItem) => {
+    const close = vi.fn()
+    const context: MenuContext = {
+      anchorElement: document.createElement('div'),
+      anchorRect: document.createElement('div').getBoundingClientRect(),
+      close,
+      restoreFocus: vi.fn(),
+    }
+    const node = treeMock.fileTreeProps.at(-1)!.renderContextMenu!(item, context)
+    return { close, ...render(<>{node}</>) }
+  }
+
+  it('offers a single Add to chat action on a file, wired to the absolute path', async () => {
+    const onAddToContext = vi.fn()
+    renderTree({ onAddToContext })
+    await waitForTree()
+
+    const { close } = openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+
+    // Row click already opens a file, so the menu carries no Open duplicate.
+    expect(screen.queryByRole('menuitem', { name: 'Open' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Add to chat' }))
+    expect(onAddToContext).toHaveBeenCalledWith(`${ROOT}/src/a/b.ts`, 'file')
+    expect(close).toHaveBeenCalledTimes(1)
+  })
+
+  it('focuses the first item on open so the keyboard path can activate it', async () => {
+    // Pierre focuses the tree ROW when it opens the menu, never this slotted
+    // content, so without an explicit focus a Shift+F10 user would sit on the
+    // row: the item's own Enter/Space handler could never fire.
+    const onAddToContext = vi.fn()
+    renderTree({ onAddToContext })
+    await waitForTree()
+
+    openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+    const menuitem = screen.getByRole('menuitem', { name: 'Add to chat' })
+    expect(menuitem).toHaveFocus()
+
+    // And the focused item actually activates on Enter.
+    fireEvent.keyDown(menuitem, { key: 'Enter' })
+    expect(onAddToContext).toHaveBeenCalledWith(`${ROOT}/src/a/b.ts`, 'file')
+  })
+
+  it('reports a directory as a dir add', async () => {
+    const onAddToContext = vi.fn()
+    renderTree({ onAddToContext })
+    await waitForTree()
+
+    const { close } = openMenu({ kind: 'directory', name: 'a', path: 'src/a' })
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Add to chat' }))
+    expect(onAddToContext).toHaveBeenCalledWith(`${ROOT}/src/a`, 'dir')
+    expect(close).toHaveBeenCalledTimes(1)
+  })
+
+  it('normalizes a native-Windows mixed-separator path to forward slashes', async () => {
+    // On native Windows the tree root is backslash-separated while Pierre paths
+    // are POSIX, so a raw join is `C:\repo\project/src/a/b.ts`. Left mixed, the
+    // mention host's makeRelative cannot relativize it (absolute token +
+    // duplicate attachment); the reported path must be forward-slash throughout.
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({ root: 'C:\\repo\\project' }))
+    const onAddToContext = vi.fn()
+    renderTree({ onAddToContext })
+    await waitForTree()
+
+    openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Add to chat' }))
+    expect(onAddToContext).toHaveBeenCalledWith('C:/repo/project/src/a/b.ts', 'file')
+  })
+
+  it('does not double a separator when the project root is a Windows drive root', async () => {
+    // A drive-root project (`D:\`) normalizes to `D:/`, which ALREADY ends in
+    // a separator. Left un-stripped, the join produces `D://item.path` -- a
+    // double slash the mention host's makeRelative prefix-strip then consumes
+    // only ONE of, leaving a stray leading `/` on the relativized result.
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({ root: 'D:\\' }))
+    const onAddToContext = vi.fn()
+    renderTree({ onAddToContext })
+    await waitForTree()
+
+    openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Add to chat' }))
+    expect(onAddToContext).toHaveBeenCalledWith('D:/src/a/b.ts', 'file')
+  })
+
+  it('leaves a POSIX filename containing a backslash untouched', async () => {
+    // `\` is a legal character in a POSIX filename. Only a Windows-shaped ROOT
+    // is separator-normalized; the row's own path must pass through verbatim,
+    // or the staged mention would point at a nonexistent nested path.
+    const onAddToContext = vi.fn()
+    renderTree({ onAddToContext })
+    await waitForTree()
+
+    openMenu({ kind: 'file', name: 'weird\\name.txt', path: 'src/weird\\name.txt' })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Add to chat' }))
+    expect(onAddToContext).toHaveBeenCalledWith(`${ROOT}/src/weird\\name.txt`, 'file')
   })
 })

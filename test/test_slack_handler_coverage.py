@@ -1489,7 +1489,7 @@ class TestRouteLinkedThread:
         state.get_linked_slot.return_value = slot
         monkeypatch.setattr(h, "_dashboard_state", state)
         assert await h.maybe_route_linked_thread("do it", "t1", "U1", "C1", slack, "t1") is True
-        slot.queue_append.assert_called_once_with("do it")
+        slot.queue_append.assert_called_once_with("do it", directive_user_origin=True)
         slot.append.assert_called_once()
         state.push_slots_update.assert_called_once()
 

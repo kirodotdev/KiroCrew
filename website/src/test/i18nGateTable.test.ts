@@ -35,7 +35,7 @@ const HEALTHY: Record<string, { status: number, text: string }> = {
   pseudo: run(0, 'OK: en-XA.json matches 5811 English keys.'),
   keys: run(0, 'OK: 6459 static key references all resolve, 1 dynamic site(s) at baseline (99.98% static coverage), no shadowing.'),
   codemod: run(0, '2 unextracted string(s) — below the baseline of 3.'),
-  plural: run(0, "OK: no literal-'s' pluralization found."),
+  plural: run(0, "OK: no literal-'s' pluralization found.\nOK: 37 hardcoded plural literal(s), at the ceiling of 37."),
   dnt: run(0, 'OK: 19 DNT term(s) intact across 9 catalog(s) — 62207 value(s) scanned.'),
   manifest: run(0, 'OK: 16 built-in manifests, 147 strings match locales/en.json exactly.'),
   units: run(0, '[added-lines] 0 number+unit literal(s) on lines you wrote\n[vs-base] 0 touched file(s) gained number+unit literals\nOK: 52 un-migrated number+unit literal(s) across 1026 file(s), baseline 74.'),
@@ -270,17 +270,76 @@ describe('the table covers the chain it replaced', () => {
     // this mine to fix", enforcement answers "can this fail when it improves".
     for (const c of CHECKS) {
       expect(['diff', 'repo'], c.id).toContain(c.scope)
-      expect(['zero', 'hard-zero', 'info'], c.id).toContain(c.enforce)
+      expect(['zero', 'hard-zero', 'ceiling', 'info'], c.id).toContain(c.enforce)
     }
-    // Only a diff-scoped check or a whole-repo HARD ZERO may fail the step. Every other
-    // whole-repo number is a stored total another branch can move without touching your
-    // files, so it reports. `dynamic-keys` was the last bidirectional ratchet in the repo.
+    // Three kinds of check may fail the step: a diff-scoped one, a whole-repo HARD
+    // ZERO, and a whole-repo CEILING that fails only on GROWTH. The ceiling kind is
+    // deliberately confined to the one check below: unlike the info rows, whose
+    // stored totals another branch can move without touching your files AND whose
+    // failure names no diff anyone can fix, a ceiling failure prints every site with
+    // file:line, so a red always names lines an author can check against their own
+    // diff. Every other whole-repo number reports. `dynamic-keys` was the last
+    // bidirectional ratchet in the repo.
+    expect(CHECKS.filter(c => c.enforce === 'ceiling').map(c => c.id))
+      .toEqual(['plurals-hardcoded'])
     expect(CHECKS.filter(c => c.enforce === 'info').map(c => c.id))
       .toEqual(['unit-ceiling', 'dynamic-keys', 'extractable', 'untranslated', 'allcaps',
         'untranslated-passthrough'])
-    for (const c of CHECKS.filter(x => x.scope === 'repo' && x.enforce !== 'hard-zero')) {
-      expect(c.enforce, `${c.id} is whole-repo and not a hard zero, so it must be info`)
+    for (const c of CHECKS.filter(x => x.scope === 'repo'
+      && x.enforce !== 'hard-zero' && x.enforce !== 'ceiling')) {
+      expect(c.enforce, `${c.id} is whole-repo and not a hard zero or ceiling, so it must be info`)
         .toBe('info')
+    }
+  })
+})
+
+describe('the plural script hosts two tiers that fail independently', () => {
+  // One script, two verdicts: the i18nT-adjacent HARD ZERO and the hardcoded-literal
+  // CEILING. The script prints BOTH before exiting (learning the second failure a CI
+  // round later is the `&&`-chain defect the runner exists to remove), so each row
+  // must judge itself by its own line — inheriting the shared exit code would mark
+  // the passing tier FAIL whenever its sibling is the one that failed. One cost of
+  // the second row, accepted: `ownedBy` is now 2, so a plural-script crash that
+  // prints nothing recognisable resolves BOTH rows NOT RUN and fails through the
+  // generic unexplained path instead of naming `[plurals]` — fails closed either
+  // way (the it.each(SCRIPTS) invariant above covers it).
+  //
+  // Mocks are assembled stdout-then-stderr with the blank line the script's
+  // console.error emits, because that is how the runner concatenates a real run's
+  // streams — a mock in the other order would pin an adjacency no real output has.
+  it('attributes ceiling growth to plurals-hardcoded while the hard zero stays PASS', () => {
+    const { rows, bad, failed } = decide({
+      plural: run(1, "OK: no literal-'s' pluralization found.\n"
+        + '\nFAIL: 38 hardcoded plural literal(s) — 1 above the ceiling of 37:\n'
+        + "  src/pages/A.tsx:12  ${n} widget${n > 1 ? 's' : ''}\n"),
+    })
+    expect(row(rows, 'plurals').state).toBe('PASS')
+    expect(row(rows, 'plurals-hardcoded').state).toBe('FAIL')
+    expect(bad.map(r => r.id)).toEqual(['plurals-hardcoded'])
+    expect(failed).toBe(true)
+  })
+
+  it('attributes a reintroduced i18nT-adjacent site while the ceiling stays PASS', () => {
+    const { rows, bad, failed } = decide({
+      plural: run(1, 'OK: 37 hardcoded plural literal(s), at the ceiling of 37.\n'
+        + "\nFAIL: 2 file(s) still use the literal-'s' plural hack:\n  src/A.tsx\n"),
+    })
+    expect(row(rows, 'plurals').state).toBe('FAIL')
+    expect(row(rows, 'plurals-hardcoded').state).toBe('PASS')
+    expect(bad.map(r => r.id)).toEqual(['plurals'])
+    expect(failed).toBe(true)
+  })
+
+  it('reads the ceiling line below AND exactly at the ceiling', () => {
+    // Same trap `extractable` fell into: the at-ceiling and below-ceiling sentences
+    // differ, and a pattern that misses one makes the row MISSING on a healthy tree.
+    for (const line of [
+      "OK: no literal-'s' pluralization found.\nOK: 30 hardcoded plural literal(s), below the ceiling of 37. Optional: lower HARDCODED_CEILING to 30 in scripts/i18n-plural-codemod.mjs to tighten the ratchet.",
+      "OK: no literal-'s' pluralization found.\nOK: 37 hardcoded plural literal(s), at the ceiling of 37.",
+    ]) {
+      const { rows, failed } = decide({ plural: run(0, line) })
+      expect(row(rows, 'plurals-hardcoded').state, line).toBe('PASS')
+      expect(failed, line).toBe(false)
     }
   })
 })

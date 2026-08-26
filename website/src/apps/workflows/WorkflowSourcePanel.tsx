@@ -20,6 +20,7 @@ import { FileCode, Pencil, Play, ChevronRight } from 'lucide-react'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 
 import { i18nT } from '../../i18n/t'
+import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 const CORE_API_BASE = '/api/workflows'
 
 interface RerunOk {
@@ -47,6 +48,7 @@ const WorkflowSourcePanel = memo(function WorkflowSourcePanel({
   source,
   sourceError,
 }: WorkflowSourcePanelProps) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState<string>('')

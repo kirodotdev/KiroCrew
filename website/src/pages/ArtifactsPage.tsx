@@ -836,7 +836,7 @@ function FolderCard({ folder, folders, previewArtifacts, actions }: {
                   )}
                   <div className="text-[11px] text-muted mt-0.5">
                     {i18nT('pages.artifactsPage.artifact', { count: stats.artifactCount })}
-                    {stats.subfolderCount > 0 ? ` · ${stats.subfolderCount} folder${stats.subfolderCount === 1 ? '' : 's'}` : ''}
+                    {stats.subfolderCount > 0 ? ` · ${i18nT('pages.artifactsPage.folder', { count: stats.subfolderCount })}` : ''}
                   </div>
                 </div>
                 <div className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
@@ -1748,7 +1748,7 @@ function FolderRow({ folder, folders, depth, expanded, onToggle, actions, dropHi
                     <span className="text-sm text-text-strong font-medium truncate">{folder.name}</span>
                   )}
                   <span className="text-[11px] text-muted">
-                    {stats.artifactCount}{stats.subfolderCount > 0 ? ` · ${stats.subfolderCount} folder${stats.subfolderCount === 1 ? '' : 's'}` : ''}
+                    {stats.artifactCount}{stats.subfolderCount > 0 ? ` · ${i18nT('pages.artifactsPage.folder', { count: stats.subfolderCount })}` : ''}
                   </span>
                   <span className="ml-auto opacity-0 group-hover:opacity-100 transition-opacity">
                     <FolderMenu folder={folder} folders={folders} actions={actions} />

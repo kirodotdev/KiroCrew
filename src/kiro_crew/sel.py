@@ -731,7 +731,7 @@ class SecurityEventLog:
         # the fallback taken when the writer thread cannot start (see
         # ``_may_rotate``) — where a blocking call freezes every gateway task.
         try:
-            os.chmod(self._path, 0o600)
+            os.chmod(self._path, 0o600)  # lockdown-ok: #5228 -- icacls would block the event loop
         except OSError:
             logger.warning("Failed to enforce 0o600 permissions on SEL audit log %s", self._path, exc_info=True)
         self._live_seen = (written.st_dev, written.st_ino, written.st_size)

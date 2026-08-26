@@ -45,7 +45,9 @@ The electron-builder configuration lives in
 - Windows target: assisted NSIS. A 164×314 welcome/finish sidebar and a 150×57
   page header reuse the Kiro Crew logo while preserving native NSIS controls,
   localization, the per-user default, and the no-UAC default path. The installer
-  deliberately has no custom page animation or timer work on the NSIS UI thread;
+  cross-fades the native top-level dialog at page boundaries with Win32's
+  alpha-blended window animation, honoring the client-area animation preference.
+  It performs no timer-driven bitmap work or `Sleep` on the NSIS UI thread;
   Windows CI installs the real artifact, records its duration, and enforces a
   5-minute ceiling.
 - linux targets: `AppImage`, `deb`, `rpm` (category `Development`). One backend
@@ -476,6 +478,39 @@ The command-palette trigger is positioned from the window midpoint rather than
 the remaining flex space, so asymmetric menu and status controls do not shift it.
 Linux retains the window manager's native frame and menu bar.
 
+#### Focus mode: verify these seams after an Electron or Radix bump
+
+Focus mode (hide the shell chrome behind hover) rests on three mechanisms that
+key on behavior no API contract guarantees, and each fails **silently** — the
+unit tests mock these seams, so a broken one still passes CI and only manual
+macOS testing catches it. Run this short checklist whenever you bump Electron or
+Radix (`website/electron/package.json`, `@radix-ui/*` in `website/package.json`):
+
+1. **Toggle focus mode, then drag the revealed header to move the window.**
+   Exercises the drag-region re-send in
+   [`website/electron/focus-chrome.js`](../../website/electron/focus-chrome.js):
+   Electron's `setWindowButtonVisibility` mutates the window styleMask and drops
+   the renderer's declared `-webkit-app-region:drag` regions, so the renderer
+   re-declares them by briefly adding a 1px drag element. If a bump changes when
+   Chromium re-sends the region set, the revealed header selects text instead of
+   moving the window.
+2. **Peek the header, then move the pointer down into the content.** The header
+   should close. Peek the rail, then move the pointer right past the rail track —
+   it should close too. Exercises the **positional** close in
+   [`website/src/App.tsx`](../../website/src/App.tsx) (`departWhen: clientY > 48`
+   for the top peek, `clientX > 248` for the rail): the revealed header doubles
+   as the drag surface and a drag region eats pointer events before hit-testing,
+   so the close is driven by pointer position, not by `mouseleave`. If a bump
+   changes hover/pointer-event delivery, the peek sticks open or never opens.
+3. **Peek the header, then open the instance switcher.** The header must stay on
+   screen while the switcher menu is open. Exercises the header-pin heuristic in
+   [`website/src/App.tsx`](../../website/src/App.tsx): Radix portals the menu to
+   `document.body`, so the pin rides on a `[aria-haspopup][aria-expanded="true"]`
+   query against the header rather than DOM containment. If a Radix bump changes
+   the ARIA a trigger emits (`aria-haspopup` absent, or `aria-expanded="true"`
+   emitted by default with nothing open), the header either slides away under the
+   open menu or pins permanently from first paint.
+
 ### `find-bin.js` — locating the binary
 
 `findKirocrewBin()` checks well-known paths in order and returns the first
@@ -516,10 +551,19 @@ unit-testable without mocking globals.
   validated to `1–65535`). `BACKEND_URL` / health checks target that port.
 - Sets `KIROCREW_PROJECT_DIR` to the Electron app's parent directory so the
   bundled `agents/` and `skills/` are discovered.
+- On every desktop platform, pins `PYTHONUTF8=1` and
+  `PYTHONIOENCODING=utf-8:backslashreplace` at the Electron-to-Gateway spawn
+  boundary. This applies before CPython constructs redirected stdout/stderr and
+  is inherited by the Gateway's `os.execv` successor plus its MCP/session
+  children. Consequently the initial launch, Tailnet/explicit restart, update
+  and stale-asset re-exec, and Electron liveness respawn all use the same UTF-8
+  contract instead of falling back to the Windows ANSI code page or an
+  incompatible inherited POSIX encoding override.
 - Leaves the inherited child `PATH` unchanged. The gateway prerequisite service
-  probes supported Kiro CLI locations independently, so Finder-launched macOS
-  apps and Linux desktop launchers still find user-local installations without
-  mutating the shell environment.
+  probes supported Kiro CLI locations independently — including the Windows
+  per-user install at `%LOCALAPPDATA%\Kiro-Cli` — so desktop launches find
+  user-local installations without mutating the shell environment or requiring
+  the already-running gateway to inherit an installer-updated `PATH`.
 - On window close the app hides to the tray; quitting sends `SIGTERM` to the
   gateway process.
 

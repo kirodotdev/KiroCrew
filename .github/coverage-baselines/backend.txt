@@ -80,7 +80,5 @@ src/kiro_crew/suggestions.py 18.7   # 31/166
 src/kiro_crew/telegram/client.py 61.8   # 306/495
 src/kiro_crew/telegram/gateway.py 15.5   # 11/71
 src/kiro_crew/tips.py 64.9   # 335/516
-src/kiro_crew/transcribe.py 74.6   # 258/346
 src/kiro_crew/webex/client.py 64.1   # 173/270
-src/kiro_crew/webex/gateway.py 20.4   # 10/49
 src/kiro_crew/weixin/gateway.py 20.4   # 11/54

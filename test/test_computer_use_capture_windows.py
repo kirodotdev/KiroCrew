@@ -488,6 +488,108 @@ class TestPersistJpeg:
         monkeypatch.setattr(C, "ensure_shots_dir", boom)
         assert C.persist_jpeg(b"JPEGBYTES") == ""
 
+    def test_a_failed_write_removes_the_partial_frame(self, monkeypatch, tmp_path) -> None:
+        """A write failure must not strand the just-allocated frame in the spool.
+
+        ``mkstemp`` succeeds and the SUBSEQUENT write raises: the caller is handed
+        ``""`` and can never learn the path, so a leftover here is an invisible,
+        partially-written file of the operator's screen pixels that nothing owns.
+        The path is this invocation's own allocation, so removing exactly it is
+        safe — pre-existing frames are untouched.
+        """
+        allocated: list[str] = []
+        allocated_fds: list[int] = []
+        real_mkstemp = C.tempfile.mkstemp
+
+        def recording_mkstemp(*args, **kwargs):
+            fd, path = real_mkstemp(*args, **kwargs)
+            allocated_fds.append(fd)
+            allocated.append(path)
+            return fd, path
+
+        closed_by_os_close: list[int] = []
+        real_close = C.os.close
+
+        def recording_close(fd):
+            closed_by_os_close.append(fd)
+            real_close(fd)
+
+        real_fdopen = C.os.fdopen
+
+        def failing_fdopen(fd, *args, **kwargs):
+            handle = real_fdopen(fd, *args, **kwargs)
+
+            class _FailingHandle:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *exc):
+                    # Close like the real ``with`` would, so the unlink under
+                    # test runs against a closed file — the state Windows needs.
+                    handle.close()
+                    return False
+
+                def write(self, data):
+                    raise OSError("disk full")
+
+            return _FailingHandle()
+
+        monkeypatch.setattr(C, "shots_dir", lambda: str(tmp_path))
+        monkeypatch.setattr(C, "trim_shots_dir", lambda: None)
+        monkeypatch.setattr(C, "_dir_ready", True)
+        monkeypatch.setattr(C.tempfile, "mkstemp", recording_mkstemp)
+        monkeypatch.setattr(C.os, "fdopen", failing_fdopen)
+        monkeypatch.setattr(C.os, "close", recording_close)
+        assert C.persist_jpeg(b"JPEGBYTES") == ""
+        assert allocated, "the seam never allocated a file, so the test exercised nothing"
+        assert not pathlib.Path(allocated[0]).exists()
+        assert list(tmp_path.iterdir()) == []
+        # ``fdopen`` ADOPTED the descriptor, so the ``with`` owns closing it. An
+        # explicit ``os.close`` on the raw number here would be a double-close
+        # that can hit an unrelated descriptor another thread was just handed.
+        assert not (set(allocated_fds) & set(closed_by_os_close))
+
+    def test_a_failed_fdopen_closes_the_fd_and_removes_the_frame(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """``fdopen`` raising BEFORE adopting the fd must not leak it or the file.
+
+        Nothing else will ever close that descriptor, and Windows refuses to
+        unlink a file with an open handle — so this branch (and only this
+        branch) closes the raw fd before the unlink.
+        """
+        allocated: list[str] = []
+        allocated_fds: list[int] = []
+        real_mkstemp = C.tempfile.mkstemp
+
+        def recording_mkstemp(*args, **kwargs):
+            fd, path = real_mkstemp(*args, **kwargs)
+            allocated_fds.append(fd)
+            allocated.append(path)
+            return fd, path
+
+        closed_by_os_close: list[int] = []
+        real_close = C.os.close
+
+        def recording_close(fd):
+            closed_by_os_close.append(fd)
+            real_close(fd)
+
+        def boom_fdopen(fd, *args, **kwargs):
+            raise OSError("out of file descriptors")
+
+        monkeypatch.setattr(C, "shots_dir", lambda: str(tmp_path))
+        monkeypatch.setattr(C, "trim_shots_dir", lambda: None)
+        monkeypatch.setattr(C, "_dir_ready", True)
+        monkeypatch.setattr(C.tempfile, "mkstemp", recording_mkstemp)
+        monkeypatch.setattr(C.os, "fdopen", boom_fdopen)
+        monkeypatch.setattr(C.os, "close", recording_close)
+        assert C.persist_jpeg(b"JPEGBYTES") == ""
+        assert allocated, "the seam never allocated a file, so the test exercised nothing"
+        assert not pathlib.Path(allocated[0]).exists()
+        assert list(tmp_path.iterdir()) == []
+        assert closed_by_os_close.count(allocated_fds[0]) == 1
+
 
 class TestEnsureShotsDir:
     def test_it_creates_the_directory_owner_only(self, monkeypatch, tmp_path) -> None:

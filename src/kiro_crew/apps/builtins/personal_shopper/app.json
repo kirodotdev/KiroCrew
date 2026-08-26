@@ -47,5 +47,14 @@
   ],
   "backend": {
     "routes": "backend.routes:register_routes"
-  }
+  },
+  "useCases": [
+    "Research products from named public stores while keeping the decision, cart, account, and checkout under your control."
+  ],
+  "configuration": [
+    "No store credentials are needed; save optional Preferences and Sites for your own reference, then paste the relevant constraints and store names into the advisor conversation."
+  ],
+  "screenshots": [
+    "/app-assets/personal-shopper/screenshot-main.png"
+  ]
 }

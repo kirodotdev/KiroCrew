@@ -301,6 +301,11 @@ make wheel                                   # builds dist/kirocrew-*.whl
 docker build -f docker/Dockerfile -t kirocrew:dev .
 ```
 
+The Dockerfile consumes the wheel through a BuildKit bind mount, so the build
+requires BuildKit — the default builder since Docker 23. On an older engine
+(where the classic builder rejects `RUN --mount` with `Unknown flag: mount`),
+prefix the build with `DOCKER_BUILDKIT=1`.
+
 ## Troubleshooting
 
 For solutions to common Docker deployment issues — port binding, permission

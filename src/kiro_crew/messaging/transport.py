@@ -46,9 +46,14 @@ class TransportCapabilities:
 
     * ``max_message_chars`` — the cross-surface mirror leg chunks on it
       (``dashboard/chat_runner.py``) and five renderers size their own chunks
-      from it. This is a CHARACTER count. A byte-capped platform (Webex) must
-      declare a character value that is safe under its byte limit, because the
-      chunker counts chars and cannot see bytes.
+      from it. This is a CHARACTER count.
+    * ``max_message_bytes`` — the same limit measured in UTF-8 BYTES, for a
+      platform whose cap is bytes (Webex: 7439). ``0`` means "not byte-capped".
+      A char count cannot express a byte cap safely: the only sound char value is
+      the byte budget divided by four (the worst case), which fragments every
+      ASCII reply into quarters. So a byte-capped transport declares BOTH — the
+      char value stays as the safe floor for a caller that can only count chars,
+      and this is what a caller that can measure bytes uses instead.
     * ``supports_proactive_send`` — gates mirror-link creation (HTTP 400) and
       the outbound mirror leg (skipped).
     * ``supports_session_resume`` — gates whether connecting a channel from the
@@ -73,6 +78,23 @@ class TransportCapabilities:
       WHOLE list through ``messaging.renderer.render_options_as_text``, which is
       the same helper with zero widget slots, so every choice arrives as a
       numbered line rather than being deleted with the trailer.
+
+    * ``rich_blocks`` — gates whether a renderer attaches a native widget at
+      all. Webex reads it before building an Adaptive Card, for both the
+      tool-approval prompt (``on_prompt_choice``) and an ``[OPTIONS:]`` trailer
+      (``_options_card``). A channel declaring ``False`` keeps the numbered-text
+      and typed-reply forms, which work everywhere — so the flag decides whether
+      a widget APPEARS, never whether the user can answer.
+
+    * ``mention_grammars`` — whether the platform parses a broadcast-mention
+      grammar (``@everyone``, Slack's ``<!channel>``) in a message body.
+      ``messaging.renderer.display_safe_for`` reads it at the channel-NEUTRAL
+      proactive sinks and applies the zero-width-space defang only where one
+      exists. Default True, because the failure directions are asymmetric: a
+      needless defang mangles text cosmetically, a missing one lets a
+      prompt-injected ``@everyone`` mass-notify. Webex declares False — it has no
+      broadcast grammar and its allow-list IS email addresses, so the defang makes
+      every address the agent prints uncopyable.
 
     * ``files_outbound`` — gates whether a renderer pulls local image
       references out of a sealed segment and uploads them. Discord's renderer
@@ -102,7 +124,7 @@ class TransportCapabilities:
     capability-gated interface work will consume them; do NOT write code that
     assumes they are enforced):
 
-    * ``streaming``, ``edit``, ``reactions``, ``rich_blocks``, ``threads``
+    * ``streaming``, ``edit``, ``reactions``, ``threads``
     * ``files_inbound`` — the transport ingests user attachments into the turn.
 
     Defaults are deliberately conservative (the WhatsApp-like floor) so a
@@ -127,6 +149,7 @@ class TransportCapabilities:
     native_tables: bool = False
     # parameters (channels differ widely -- NOT booleans)
     max_message_chars: int = 4096  # CHARS. Slack path caps 3900, Telegram 4000, Discord 1900
+    max_message_bytes: int = 0  # UTF-8 BYTES; 0 = the platform is not byte-capped
     max_buttons: int = 3  # TOTAL interactive choices per prompt (WhatsApp reply buttons = 3)
     # send-policy
     supports_proactive_send: bool = True  # WhatsApp: False outside the 24h window
@@ -145,6 +168,19 @@ class TransportCapabilities:
     # direction: a transport that forgets to declare it is read strictly, which
     # over-reports failure rather than inventing success.
     returns_message_id: bool = True
+    # Whether the platform parses a BROADCAST-MENTION grammar in a message body
+    # (``@everyone``, Slack's ``<!channel>``). Read by
+    # ``messaging.renderer.display_safe_for`` to decide whether untrusted text
+    # needs the zero-width-space defang.
+    #
+    # Default True because the two failure directions are not symmetric:
+    # defanging a platform that needs none inserts a ZWSP that cosmetically
+    # mangles text, while NOT defanging one that does lets a prompt-injected
+    # ``@everyone`` mass-notify. So a transport that forgets to declare it is
+    # over-defanged, never under-defanged. Declare False only with the reason,
+    # because the cost is real: Webex has no broadcast grammar AND its allow-list
+    # IS email addresses, so the defang corrupts every address the agent prints.
+    mention_grammars: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -158,10 +194,12 @@ class TransportCapabilities:
             "table_mode": self.table_mode,
             "native_tables": self.native_tables,
             "max_message_chars": self.max_message_chars,
+            "max_message_bytes": self.max_message_bytes,
             "max_buttons": self.max_buttons,
             "supports_proactive_send": self.supports_proactive_send,
             "supports_session_resume": self.supports_session_resume,
             "returns_message_id": self.returns_message_id,
+            "mention_grammars": self.mention_grammars,
         }
 
 

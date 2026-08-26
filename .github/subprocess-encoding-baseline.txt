@@ -13,7 +13,6 @@
 1 conftest.py
 1 src/kiro_crew/acp/client.py
 3 src/kiro_crew/apple_speech/__init__.py
-3 src/kiro_crew/apps/backend.py
 1 src/kiro_crew/apps/builtins/auto_improvement/backend/deps.py
 1 src/kiro_crew/apps/builtins/auto_improvement/profiles/github_repo/profile.py
 1 src/kiro_crew/apps/builtins/auto_improvement/spine/agent_runner.py
@@ -36,9 +35,8 @@
 1 src/kiro_crew/builtin_skills/browser-recording/scripts/record_browser.py
 2 src/kiro_crew/builtin_skills/ios-simulator-preview/scripts/sim_mirror.py
 1 src/kiro_crew/cli.py
-6 src/kiro_crew/cli_doctor.py
+5 src/kiro_crew/cli_doctor.py
 1 src/kiro_crew/cli_perf.py
-1 src/kiro_crew/cli_server.py
 2 src/kiro_crew/cli_setup.py
 1 src/kiro_crew/cloud/aws.py
 4 src/kiro_crew/cron_script.py
@@ -58,7 +56,7 @@
 1 src/kiro_crew/mcp_shared.py
 4 src/kiro_crew/platform_compat.py
 1 src/kiro_crew/pod/launchd.py
-3 src/kiro_crew/pod/runtime.py
+2 src/kiro_crew/pod/runtime.py
 2 src/kiro_crew/sandbox.py
 2 src/kiro_crew/service/apparmor.py
 4 src/kiro_crew/service/linux.py
@@ -108,7 +106,6 @@
 1 test/test_perf_boot_path.py
 3 test/test_playwright_cli_installer.py
 1 test/test_playwright_e2e.py
-1 test/test_pod.py
 3 test/test_pod_e2e_harness_paths.py
 1 test/test_pptx_maker_preview_tools.py
 1 test/test_pr_quality_gates.py

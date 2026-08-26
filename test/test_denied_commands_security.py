@@ -282,7 +282,9 @@ class TestSelfProtectionFlagInterposition:
         """Not over-broad: the flag run alone must never satisfy a rule.
 
         Benign invocations -- other subcommands behind the same flags, the flags
-        alone, and cloud subcommands outside the destructive list -- stay allowed.
+        alone, cloud subcommands outside the destructive list, and a lifecycle
+        word sitting AFTER an unrelated subcommand (direct or module form) --
+        stay allowed.
         """
         from kiro_crew import security
 
@@ -293,6 +295,15 @@ class TestSelfProtectionFlagInterposition:
             "kirocrew --no-jail doctor",
             "kirocrew -v status",
             "kirocrew -vv cloud status",
+            # A lifecycle word AFTER an unrelated subcommand is not a lifecycle
+            # command: neither tier may scan past the first subcommand word
+            # (#5837, folded from the retired TestCatalog matrix).
+            "kirocrew doctor restart",
+            "kirocrew gateway status restart",
+            "kirocrew cloud status destroy",
+            "python -m kiro_crew doctor restart",
+            "python -m kiro_crew gateway status restart",
+            "python -m kiro_crew cloud status destroy",
         ):
             assert not security.is_denied(
                 allowed, denied_regexes=effective
@@ -351,10 +362,19 @@ class TestSelfProtectionFlagInterposition:
 
     @staticmethod
     def _dressings(words):
-        """Shell spellings that all tokenize to argv ``[kirocrew, *words]``."""
+        """Shell spellings whose argv carries the plain flag/verb tokens.
+
+        Every entry reaches the shell as ``kirocrew [<flag>] <words...>`` after
+        the shell's own de-escaping and quote removal. The ``bare`` and
+        ``real-flag`` entries also match the regex tier directly; the escaped,
+        continued, and quoted entries split a token in the raw string the regex
+        tier matches, so only the floor catches those.
+        """
         rest = " ".join(words)
         first = words[0]
         tail = (" " + " ".join(words[1:])) if len(words) > 1 else ""
+        each_quoted = " ".join(f'"{w}"' for w in words)
+        each_single_quoted = " ".join(f"'{w}'" for w in words)
         return {
             "bare": f"kirocrew {rest}",
             "real-flag": f"kirocrew -v {rest}",
@@ -362,7 +382,16 @@ class TestSelfProtectionFlagInterposition:
             "escaped-verb-letter": f"kirocrew \\{first}{tail}",  # \restart -> restart
             "line-continuation-flag": f"kirocrew -\\\nv {rest}",
             "continuation-before-verb": f"kirocrew \\\n{first}{tail}",
-            "each-word-quoted": "kirocrew " + " ".join(f'"{w}"' for w in words),
+            "each-word-quoted": f"kirocrew {each_quoted}",
+            "each-word-single-quoted": f"kirocrew {each_single_quoted}",
+            # Quoted FLAGS (#5837, folded from the retired TestCatalog matrix):
+            # the quotes split the flag token in the raw text, but the shell
+            # strips them, so the interposed flag still lands in argv. The full
+            # flag-by-quote-style cross lives in
+            # ``test_self_protection_denied_under_the_full_quoting_cross``.
+            "double-quoted-flag": f'kirocrew "-v" {rest}',  # "-v" -> -v
+            "single-quoted-flag": f"kirocrew '-v' {rest}",
+            "quoted-flag-and-quoted-verb": f'kirocrew "-v" {each_quoted}',
         }
 
     def test_self_protection_subcommands_denied_under_every_shell_dressing(self):
@@ -375,19 +404,66 @@ class TestSelfProtectionFlagInterposition:
                     cmd, denied_regexes=effective
                 ), f"{rule_id} not denied under {label}: {cmd!r}"
 
-    def test_self_protection_floor_covers_the_four_subcommand_rules(self):
+    _QUOTES = ('"', "'")
+    # Single-token global options. ``-v --no-jail`` from ``_FLAGS`` is two
+    # tokens and cannot be quoted as one flag, so it has no quoted cell.
+    _SINGLE_TOKEN_FLAGS = ("-v", "-vv", "--verbose", "--no-jail")
+
+    @classmethod
+    def _quoting_cross(cls, prefix: str, words: "list[str]") -> "list[str]":
+        """Every quoting spelling of ``<prefix> [flag] <words...>``.
+
+        The full cross the retired TestCatalog matrix asserted (#5837): quoted
+        verbs, quoted flags, and both together, in each quote style, for every
+        single-token global option. The shell strips the quotes, so every cell
+        lands as the same argv and must stay denied.
+        """
+        rest = " ".join(words)
+        quoted_word_forms = [" ".join(f"{q}{w}{q}" for w in words) for q in cls._QUOTES]
+        cmds = [f"{prefix} {form}" for form in quoted_word_forms]
+        for flag in cls._SINGLE_TOKEN_FLAGS:
+            cmds.extend(f"{prefix} {flag} {form}" for form in quoted_word_forms)
+            for q in cls._QUOTES:
+                cmds.append(f"{prefix} {q}{flag}{q} {rest}")
+                cmds.extend(f"{prefix} {q}{flag}{q} {form}" for form in quoted_word_forms)
+        return cmds
+
+    def test_self_protection_denied_under_the_full_quoting_cross(self):
+        from kiro_crew import security
+
+        effective = self._effective()
+        for rule_id, words in self._SUBCOMMANDS.items():
+            for cmd in self._quoting_cross("kirocrew", list(words)):
+                assert security.is_denied(
+                    cmd, denied_regexes=effective
+                ), f"{rule_id} not denied in the quoting cross: {cmd!r}"
+
+    def test_self_protection_floor_covers_every_subcommand_rule(self):
         """The argv floor must cover every self-protection subcommand rule, so a
         regex-only rule cannot silently ship bypassable by shell de-escaping.
+
+        ``_SUBCOMMANDS`` (which feeds the dressing, quoting-cross, and launcher
+        walks) is tied to the LIVE floor set here, the way ``_TEMPLATES`` is
+        tied to the category by ``test_every_self_protection_rule_has_a_template``:
+        a floor-listed rule whose template names a ``kirocrew`` CLI subcommand
+        must appear in ``_SUBCOMMANDS`` (and vice versa), so a fifth subcommand
+        rule joining the floor cannot silently skip all three walks. The kill
+        rules key on a kill target, not a CLI subcommand, and the credential
+        mint rule is outside the self-protection category -- neither has a
+        ``kirocrew ...`` template, so the derivation excludes them.
         """
         from kiro_crew import security
 
-        expected = {
-            "self-protection-restart",
-            "self-protection-update",
-            "self-protection-gateway-restart",
-            "self-protection-cloud",
+        floor_subcommand_ids = {
+            rule_id
+            for rule_id in security._SELF_PROTECTION_FLOOR_RULE_IDS
+            if self._TEMPLATES.get(rule_id, "").startswith("kirocrew ")
         }
-        assert expected <= security._SELF_PROTECTION_FLOOR_RULE_IDS
+        assert set(self._SUBCOMMANDS) == floor_subcommand_ids, (
+            "every floor-listed kirocrew-subcommand rule must register its "
+            "words in _SUBCOMMANDS (and every _SUBCOMMANDS entry must be "
+            "floor-listed), or the shell-dressing walks silently skip it"
+        )
         # the predicate for each is wired and fires on a de-escaped argv
         assert security._is_self_restart("kirocrew -\\v restart")
         assert security._is_self_update("kirocrew \\update")
@@ -460,6 +536,49 @@ class TestSelfProtectionFlagInterposition:
         assert not security._is_self_restart("python -m kiro_crew status")
         assert not security._is_self_cloud_destructive("python -m kiro_crew cloud status")
         assert not security._is_self_restart("python -m pytest test/test_restart.py")
+
+    def test_self_protection_module_form_denied_under_version_launchers(self):
+        """Every interpreter launcher spelling of ``-m kiro_crew`` dispatches the
+        same self-action (#5837, folded from the retired TestCatalog matrix).
+
+        The spellings come from ``security._PYTHON_PROGRAM_RE``: version-suffixed
+        binaries, the Windows ``py`` launcher (its version selector is an
+        interpreter flag taking no operand), interpreter flags with separate
+        operands (``-X dev``), and the attached ``-mkiro_crew`` form. Each is
+        crossed with a bare and flag-interposed tail plus the full quoting
+        cross from ``_quoting_cross``, so every launcher cell the retired
+        TestCatalog matrix asserted survives here.
+        """
+        from kiro_crew import security
+
+        effective = self._effective()
+        launchers = (
+            "python -m kiro_crew",
+            "python3 -B -m kiro_crew",
+            "python3.12 -X dev -m kiro_crew",
+            "py -3.12 -m kiro_crew",
+            "python -mkiro_crew",
+        )
+        for launcher in launchers:
+            for rule_id, words in self._SUBCOMMANDS.items():
+                rest = " ".join(words)
+                cmds = [f"{launcher} {rest}"]
+                cmds.extend(f"{launcher} {flag} {rest}" for flag in self._SINGLE_TOKEN_FLAGS)
+                cmds.extend(self._quoting_cross(launcher, list(words)))
+                for cmd in cmds:
+                    assert security.is_denied(
+                        cmd, denied_regexes=effective
+                    ), f"{rule_id} not denied via version launcher: {cmd!r}"
+        # The same launchers running a benign subcommand (or another program
+        # entirely) stay allowed -- the launcher spelling is not the trigger.
+        for allowed in (
+            "py -3.12 -m kiro_crew status",
+            "python3.12 -X dev -m kiro_crew doctor",
+            "python3 -B -m pytest test/test_restart.py",
+        ):
+            assert not security.is_denied(
+                allowed, denied_regexes=effective
+            ), f"false positive on {allowed!r}"
 
     def test_self_protection_floor_is_not_over_broad(self):
         """The floor matches a real subcommand invocation, not a mention, a
@@ -1158,6 +1277,19 @@ class TestUserRegexReDoSGate:
     def test_is_safe_user_regex_rejects_catastrophic(self):
         for pat in self._CATASTROPHIC:
             assert not is_safe_user_regex(pat), pat
+
+    def test_wrapped_builtin_flag_run_gets_no_user_regex_exemption(self):
+        """A USER regex embedding a built-in flag-run fragment verbatim must not
+        inherit the built-in scrub: wrapping the fragment in an outer quantifier
+        nests its ``*`` and backtracks catastrophically.  Only a COMPLETE
+        built-in pattern is exempt."""
+        from kiro_crew.security import (
+            _DANGEROUS_AWS_FLAG_RUN,
+            _LINEARIZED_AWS_FLAG_RUN,
+        )
+
+        for fragment in (_DANGEROUS_AWS_FLAG_RUN, _LINEARIZED_AWS_FLAG_RUN):
+            assert not is_safe_user_regex("(?:" + fragment + ")+Z")
 
     def test_is_safe_user_regex_rejects_malformed(self):
         assert not is_safe_user_regex("(unclosed")

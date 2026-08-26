@@ -56,14 +56,13 @@ from __future__ import annotations
 import os
 import plistlib
 import re
-import shlex
 import shutil
 import subprocess
 import time
 from pathlib import Path
 
 from kiro_crew.pod.config import PodConfig, environment_vars
-from kiro_crew.pod.unit import _kirocrew_bin
+from kiro_crew.pod.unit import _kirocrew_argv as _shared_kirocrew_argv
 
 # Reverse-DNS label namespace. One label per pod; the name has already been
 # through runtime.validate_name (single safe segment, no '/', no '..'), which is
@@ -166,13 +165,8 @@ def log_paths(cfg: PodConfig, name: str) -> tuple[Path, Path]:
 
 
 def _kirocrew_argv() -> list[str]:
-    """``ProgramArguments`` needs a real argv, not systemd's command string.
-
-    ``unit._kirocrew_bin()`` may return ``"<python> -m kiro_crew"`` (two words)
-    when no console script is installed, so it is split rather than used as a
-    single path.
-    """
-    return shlex.split(_kirocrew_bin())
+    """Return the shared entry-point prefix in launchd's list form."""
+    return list(_shared_kirocrew_argv())
 
 
 def render_plist(cfg: PodConfig, name: str) -> dict[str, object]:

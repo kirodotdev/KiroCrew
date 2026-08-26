@@ -15,6 +15,7 @@ import errno
 import functools
 import io
 import logging
+import ntpath
 import os
 import shutil
 import signal
@@ -38,6 +39,47 @@ IS_WINDOWS: bool = sys.platform == "win32"
 IS_POSIX: bool = not IS_WINDOWS
 IS_LINUX: bool = sys.platform == "linux"
 IS_MACOS: bool = sys.platform == "darwin"
+
+
+_UTF8_PROCESS_ENV = {
+    "PYTHONUTF8": "1",
+    "PYTHONIOENCODING": "utf-8:backslashreplace",
+}
+
+
+def _ensure_utf8_process_environment() -> None:
+    """Pin UTF-8 for Python successors and child processes on every platform.
+
+    ``sys.stdout.reconfigure`` can repair the current process, but Windows
+    implements ``os.execv`` by creating a successor process.  Its standard
+    streams are constructed before Kiro Crew code runs, so the encoding must be
+    present in the environment at interpreter startup.  POSIX ``execv`` keeps
+    the current environment, where an inherited ``PYTHONIOENCODING`` can also
+    override the platform's normal UTF-8 defaults.  Overwrite inherited settings
+    deliberately: Kiro Crew's process tree emits Unicode as part of its normal
+    protocols and boot output.
+    """
+    os.environ.update(_UTF8_PROCESS_ENV)
+
+
+def reexec_python_module(module: str, args: Sequence[str]) -> None:
+    """Replace this process with ``sys.executable -m module``.
+
+    Windows reconstructs an ``execv`` command line from ``argv`` and reparses
+    it in the child.  A full ``argv[0]`` containing spaces is split before the
+    module flag, so Python treats the path suffix as a script name.  The
+    executable path passed separately to ``execv`` still selects the exact
+    interpreter; only its display name needs to be space-free.
+    """
+    # Publish UTF-8 before exec so in-app gateway restarts (Tailnet, update,
+    # stale-assets, explicit restart) cannot create a successor that inherits a
+    # Windows ANSI stream or a hostile POSIX PYTHONIOENCODING and crashes on the
+    # first emoji printed during boot.
+    _ensure_utf8_process_environment()
+    executable = sys.executable
+    argv0 = ntpath.basename(executable) if IS_WINDOWS else executable
+    os.execv(executable, [argv0, "-m", module, *args])
+
 
 # Python's os.rename() replaces an existing empty directory on POSIX. Directory
 # publication sometimes needs the stronger create-if-absent contract, which the
@@ -226,13 +268,16 @@ def rename_noreplace(
     src_bytes = os.fsencode(src)
     dst_bytes = os.fsencode(dst)
     ctypes.set_errno(0)
-    if fn(
-        src_dir_fd,
-        src_bytes,
-        dst_dir_fd,
-        dst_bytes,
-        _RENAME_NOREPLACE_FLAG,
-    ) == 0:
+    if (
+        fn(
+            src_dir_fd,
+            src_bytes,
+            dst_dir_fd,
+            dst_bytes,
+            _RENAME_NOREPLACE_FLAG,
+        )
+        == 0
+    ):
         return
     error = ctypes.get_errno()
     if error in {errno.EEXIST, errno.ENOTEMPTY}:
@@ -320,20 +365,28 @@ def tcc_prune_walk_dirs(root: str, dirpath: str, dirnames: list[str]) -> list[st
 
 
 def ensure_utf8_console() -> None:
-    """Make stdout/stderr UTF-8 on Windows so KiroCrew's emoji output can't crash it.
+    """Keep Kiro Crew's process tree UTF-8 and repair current Windows streams.
 
     KiroCrew prints non-ASCII glyphs throughout its CLI/gateway output. On
     Windows the default console code page is cp1252, and when stdout is a pipe
     (e.g. the gateway launched detached with redirected output, or under the
     KiroCrewHub client) Python encodes prints as cp1252 — so the FIRST non-ASCII
     print raises ``UnicodeEncodeError: 'charmap' codec can't encode character``
-    and the process dies before the gateway binds. POSIX defaults to UTF-8, so
-    this is a no-op there. Best-effort: reconfigure (Python 3.7+) the streams to
-    UTF-8 with backslashreplace so a stray un-encodable char degrades to an
-    escape instead of crashing. Idempotent and safe to call once at startup.
+    and the process dies before the gateway binds.  On every platform, publish
+    the encoding contract for later re-exec and child processes; an inherited
+    ``PYTHONIOENCODING`` can otherwise override POSIX UTF-8 defaults too.  On
+    Windows, best-effort reconfigure (Python 3.7+) the current streams to UTF-8
+    with backslashreplace so a stray un-encodable char degrades to an escape
+    instead of crashing. Idempotent and safe to call once at startup.
     """
+    _ensure_utf8_process_environment()
     if not IS_WINDOWS:
         return
+    # Repair the current streams below, and separately make the invariant
+    # inheritable by MCP/session children and any later re-exec.  Environment
+    # variables affect the next interpreter at construction time; setting them
+    # here is intentional even though they cannot retroactively rebuild the
+    # current process's streams.
     for name in ("stdout", "stderr"):
         stream = getattr(sys, name, None)
         if stream is None:  # pythonw / fully detached — no stream to fix
@@ -819,6 +872,17 @@ _DARWIN_MAXPATHLEN = 1024
 _DARWIN_VNODE_INFO_PATH_SIZE = _DARWIN_VNODE_INFO_SIZE + _DARWIN_MAXPATHLEN
 _DARWIN_PROC_VNODEPATHINFO_SIZE = 2 * _DARWIN_VNODE_INFO_PATH_SIZE
 
+# ``proc_pidinfo(PROC_PIDTBSDINFO)`` fills a ``proc_bsdinfo`` struct whose
+# start-time pair lives at fixed offsets: 12 leading uint32 fields (48 bytes),
+# ``pbi_comm[16]`` + ``pbi_name[32]`` (96), then 6 more 4-byte fields (120),
+# then ``pbi_start_tvsec`` / ``pbi_start_tvusec`` as two uint64s (120 / 128,
+# struct size 136). Only those two matter here; the total size doubles as the
+# layout check.
+_DARWIN_PROC_PIDTBSDINFO = 3
+_DARWIN_PROC_BSDINFO_SIZE = 136
+_DARWIN_PBI_START_TVSEC_OFFSET = 120
+_DARWIN_PBI_START_TVUSEC_OFFSET = 128
+
 _darwin_libproc: Any = None
 _darwin_libproc_loaded = False
 
@@ -877,6 +941,47 @@ def _darwin_process_cwd(pid: int) -> str | None:
         raw = buf.raw[_DARWIN_VNODE_INFO_SIZE:_DARWIN_VNODE_INFO_PATH_SIZE]
         cwd = raw.split(b"\0", 1)[0].decode("utf-8", errors="replace")
         return cwd or None
+    except Exception:
+        return None
+
+
+def _darwin_process_start_microtime(pid: int) -> str | None:
+    """macOS start time of *pid* via ``libproc``, at microsecond resolution.
+
+    ``proc_pidinfo(PROC_PIDTBSDINFO)`` needs no entitlement for a same-uid
+    process and never spawns a subprocess. The value is the absolute wall-clock
+    start instant (``pbi_start_tvsec`` / ``pbi_start_tvusec``), so it stays
+    unique across reboots and is six decimal orders finer than the 1s ``ps -o
+    lstart=`` probe — fine enough that a recycled PID cannot alias within the
+    same second. The kernel reports how many bytes it filled; anything other
+    than the exact struct size means the layout assumed by the offsets above no
+    longer matches, so the answer is refused rather than sliced out of the
+    wrong place (same rule as the cwd probe).
+    """
+    lib = _darwin_libproc_handle()
+    if lib is None:
+        return None
+    try:
+        buf = ctypes.create_string_buffer(_DARWIN_PROC_BSDINFO_SIZE)
+        filled = lib.proc_pidinfo(
+            pid,
+            _DARWIN_PROC_PIDTBSDINFO,
+            0,
+            buf,
+            _DARWIN_PROC_BSDINFO_SIZE,
+        )
+        if filled != _DARWIN_PROC_BSDINFO_SIZE:
+            return None
+        # Both x86_64 and arm64 macOS are little-endian.
+        sec = int.from_bytes(
+            buf.raw[_DARWIN_PBI_START_TVSEC_OFFSET:_DARWIN_PBI_START_TVUSEC_OFFSET], "little"
+        )
+        usec = int.from_bytes(
+            buf.raw[_DARWIN_PBI_START_TVUSEC_OFFSET:_DARWIN_PROC_BSDINFO_SIZE], "little"
+        )
+        if sec <= 0:
+            return None
+        return f"{sec}.{usec:06d}"
     except Exception:
         return None
 
@@ -1191,6 +1296,41 @@ def _log_tool_outside_trusted_dirs(name: str, directories: tuple[str, ...]) -> N
     )
 
 
+#: Git for Windows' fixed install roots. ``trusted_system_bin`` only probes the
+#: system directories, and git is never there on Windows, so without this every
+#: Windows source install resolves ``git`` to ``None``. Fixed literal roots, not
+#: ``%ProgramFiles%``: reading the environment would let a poisoned variable
+#: redirect the lookup to an agent-writable directory — the exact hole the pin
+#: exists to close. A non-default-drive install still misses and degrades to
+#: "unavailable", which is honest: the fallback widens the pin only to paths an
+#: unprivileged attacker cannot write.
+_WINDOWS_GIT_DIRS = (
+    r"C:\Program Files\Git\cmd",
+    r"C:\Program Files (x86)\Git\cmd",
+)
+
+
+def trusted_git_bin() -> str | None:
+    """The ``git`` executable resolved off ``PATH``, or ``None`` if untrustworthy.
+
+    :func:`trusted_system_bin` plus the Windows install-root fallback, shared by
+    every caller that spawns git for a privileged or unattended purpose (the
+    doctor's read-only probes, and the update seam — where what git returns
+    decides which code the process installs and re-executes).
+
+    ``None`` means "do not spawn git at all". Callers MUST treat it as a refusal;
+    falling back to a bare ``"git"`` reinstates the hazard.
+    """
+    git = trusted_system_bin("git")
+    if git is None and IS_WINDOWS:
+        for directory in _WINDOWS_GIT_DIRS:
+            candidate = os.path.join(directory, "git.exe")
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+        return None
+    return git
+
+
 def trusted_system_bin(name: str) -> str | None:
     """Resolve *name* from fixed system directories, ignoring ``PATH``.
 
@@ -1307,8 +1447,8 @@ def reveal_in_file_manager(target: str) -> bool:
         return True
     except OSError:
         logger.warning(
-            "file manager did not start for %s; caller should degrade", target,
-            exc_info=True)
+            "file manager did not start for %s; caller should degrade", target, exc_info=True
+        )
         return False
 
 
@@ -1338,8 +1478,8 @@ def open_with_default_app(target: str) -> bool:
         return True
     except OSError:
         logger.warning(
-            "default application did not start for %s; caller should degrade",
-            target, exc_info=True)
+            "default application did not start for %s; caller should degrade", target, exc_info=True
+        )
         return False
 
 
@@ -1417,9 +1557,7 @@ def process_descendants(pid: int) -> list[int]:
     if type(pid) is not int or pid <= 1:
         return []
     try:
-        parent_map = (
-            _windows_process_parent_map() if IS_WINDOWS else _posix_process_parent_map()
-        )
+        parent_map = _windows_process_parent_map() if IS_WINDOWS else _posix_process_parent_map()
     except Exception:  # noqa: BLE001 - introspection must never break a kill path
         return []
     return _descendants_from_parent_map(pid, parent_map)
@@ -2011,7 +2149,7 @@ def _normalize_local_address(address: str) -> str:
     addr = address.strip().strip("[]").lower()
     if addr.startswith("::ffff:"):
         # v4-mapped form of a v4 address; compare the embedded v4 part.
-        addr = addr[len("::ffff:"):]
+        addr = addr[len("::ffff:") :]
     return addr
 
 
@@ -2103,9 +2241,7 @@ def find_port_listeners(port: int) -> list[PortListener]:
             elif tag == "n" and cur_pid is not None and value.endswith(suffix):
                 # ``n127.0.0.1:8080`` / ``n*:8080`` / ``n[::1]:8080`` — strip
                 # the port suffix and the v6 brackets to the bare host part.
-                entry = PortListener(
-                    cur_pid, value[: -len(suffix)].strip("[]"), cur_family
-                )
+                entry = PortListener(cur_pid, value[: -len(suffix)].strip("[]"), cur_family)
                 if entry not in seen:
                     seen.add(entry)
                     listeners.append(entry)
@@ -2472,6 +2608,78 @@ def process_start_time(pid: int) -> str | None:
         return None
 
 
+#: (pid, token) cache for :func:`own_process_start_time`. Keyed by PID rather
+#: than a bare value so a forked child re-reads its OWN identity instead of
+#: inheriting the parent's — the OTEL SDK re-installs metric exporters in fork
+#: children via ``os.register_at_fork``, so children genuinely export under
+#: this token. Two threads racing the first read is benign: both compute the
+#: same immutable tuple for the same process.
+_OWN_START_TIME: tuple[int, str | None] | None = None
+
+
+def _linux_boot_id() -> str | None:
+    """The kernel's per-boot UUID, or ``None`` when unreadable."""
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text().strip() or None
+    except OSError:
+        return None
+
+
+def _own_identity_token(pid: int) -> str | None:
+    """Reboot-unique start-time token for THIS process, or ``None``.
+
+    The aggregator DISABLES its value-drop reset heuristic for any stream that
+    carries a token, trusting one token = one OS process. A token that cannot
+    honor that contract is therefore worse than no token — an aliased coarse
+    token would merge two lifetimes AND mute the heuristic that catches the
+    merge — so every degraded read returns ``None`` (no identity field, legacy
+    heuristic applies) rather than a best-effort value:
+
+    * **Linux** — ``/proc`` start ticks count from BOOT, so a post-reboot
+      process can repeat an earlier boot's (PID, ticks) pair; metric shards
+      outlive boots. The kernel's per-boot UUID makes the pair reboot-unique;
+      without it, no token.
+    * **macOS** — ``proc_pidinfo`` reports the absolute start instant at
+      microsecond resolution, so a recycled PID cannot alias within the 1s
+      window the ``ps -o lstart=`` probe cannot see past. Without ``libproc``,
+      no token — the 1s probe is exactly such an aliasable coarse source.
+    * **Windows** — the creation ``FILETIME`` (100ns units since 1601) is
+      absolute, already reboot-unique and alias-proof.
+    * **Other POSIX** — only the 1s ``ps`` probe exists: no token.
+    """
+    if sys.platform == "linux":
+        ticks = process_start_time(pid)
+        boot = _linux_boot_id()
+        return f"{ticks}:{boot}" if ticks and boot else None
+    if sys.platform == "darwin":
+        return _darwin_process_start_microtime(pid)
+    if IS_WINDOWS:
+        return process_start_time(pid)
+    return None
+
+
+def own_process_start_time() -> str | None:
+    """This process's own start-time identity, read once and cached.
+
+    A module-scope cache of :func:`_own_identity_token` for the calling
+    process. The cache is the contract, not an optimisation: every reader
+    inside one process must observe the SAME token for the process lifetime,
+    so a metrics provider rebuilt in-process (telemetry off/on) stamps records
+    that stitch into one stream with those written before the rebuild — and a
+    read that degrades mid-process (a ``libproc`` load failing on one call)
+    must not flip the process between stamped and unstamped forms.
+
+    Fail soft: an unreadable or alias-prone platform answer is cached as
+    ``None`` for the process lifetime, so a consumer emits no identity at all
+    rather than an identity that flaps between absent and present.
+    """
+    global _OWN_START_TIME
+    pid = os.getpid()
+    if _OWN_START_TIME is None or _OWN_START_TIME[0] != pid:
+        _OWN_START_TIME = (pid, _own_identity_token(pid))
+    return _OWN_START_TIME[1]
+
+
 def process_thread_count(pid: int) -> int | None:
     """Thread count of *pid*, or ``None`` when it cannot be determined.
 
@@ -2765,9 +2973,7 @@ def _close_process_handle(handle: int) -> None:
         logger.debug("CloseHandle failed for process handle %d", handle, exc_info=True)
 
 
-def kill_process_tree_pinned(
-    pid: int, expected_start_time: str, sig: int = SIGTERM
-) -> bool:
+def kill_process_tree_pinned(pid: int, expected_start_time: str, sig: int = SIGTERM) -> bool:
     """Kill *pid*'s tree only while its verified identity is PINNED OPEN.
 
     :func:`kill_process_tree` addresses the target by PID, and on Windows it
@@ -3977,6 +4183,54 @@ def proc_peak_rss_bytes() -> int:
         return _ru_maxrss_bytes() or 0
     counters = _windows_memory_counters()
     return 0 if counters is None else int(counters.PeakWorkingSetSize)
+
+
+# Per-process fd directories, in preference order: /proc/self/fd (Linux),
+# /dev/fd (macOS/BSD; also present on Linux as a symlink to the former).
+_FD_DIRS = ("/proc/self/fd", "/dev/fd")
+
+
+def count_open_fds() -> int | None:
+    """Return this process's open file descriptor count, or None if unavailable.
+
+    The one shared probe behind both the ``kirocrew.process.open_fds`` gauge
+    (``metrics/process_gauges.py``) and gatewayd's zombie-diagnostic
+    ``fd_count`` snapshot field, so the two figures cannot drift apart.
+
+    - POSIX: entry count of ``/proc/self/fd`` (Linux) or ``/dev/fd``
+      (macOS/BSD), minus one because enumerating the directory opens one fd
+      itself (the directory handle) — callers want the steady state.
+    - Windows: ``GetProcessHandleCount`` — kernel HANDLEs, not fds, so the
+      semantics are platform-dependent (callers document this). Returned raw:
+      the query opens no extra handle, so no correction applies.
+
+    Returns None when no probe works; each caller maps its own sentinel.
+    """
+    for fd_dir in _FD_DIRS:
+        try:
+            return max(0, len(os.listdir(fd_dir)) - 1)
+        except OSError:
+            continue
+    if not IS_WINDOWS:
+        return None
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+        # argtypes/restype are load-bearing on 64-bit: without them ctypes
+        # defaults GetCurrentProcess's return to a 32-bit int and TRUNCATES the
+        # pseudo-handle (see _windows_memory_counters).
+        kernel32.GetCurrentProcess.argtypes = []
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel32.GetProcessHandleCount.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        kernel32.GetProcessHandleCount.restype = wintypes.BOOL
+        handle_count = wintypes.DWORD()
+        if kernel32.GetProcessHandleCount(kernel32.GetCurrentProcess(), ctypes.byref(handle_count)):
+            return int(handle_count.value)
+        return None
+    except Exception:
+        return None
 
 
 def proc_rss_bytes_for_pid(pid: int) -> int | None:

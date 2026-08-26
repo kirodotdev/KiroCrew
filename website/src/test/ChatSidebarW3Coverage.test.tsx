@@ -403,7 +403,7 @@ describe('ChatSidebar — list-view folder header', () => {
     renderSidebar()
     openFolderMenu('f1')
     fireEvent.click(screen.getByTestId('folder-delete-f1'))
-    expect(confirmFn).toHaveBeenCalledWith('Delete "Alpha"? Sessions will be ungrouped.')
+    expect(confirmFn).toHaveBeenCalledWith('Delete “Alpha”? Sessions will be ungrouped.')
     expect(mocks.deleteChatFolder).not.toHaveBeenCalled()
 
     confirmFn.mockReturnValue(true)

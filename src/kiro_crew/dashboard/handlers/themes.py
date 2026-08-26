@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import shutil
@@ -68,6 +69,8 @@ from kiro_crew.security import (
     redact_exfiltration_urls,
 )
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
+
+logger = logging.getLogger(__name__)
 
 # Theme install/serve traverses the O_NOFOLLOW + fd-real-path chokepoint in
 # hooks (safe_read_file_bytes_nolink), which has no Windows implementation
@@ -682,8 +685,12 @@ async def api_theme_detail(request: web.Request) -> web.Response:
             discovery_executor(), _validate_theme_dir, dir_target
         )
         if err or summary is None:
+            # ``err`` can name the on-disk theme directory; keep it server-side
+            # and send the client a generic message (rendered verbatim in the UI).
+            logger.warning("invalid installed theme: %s", err)
             return web.json_response(
-                {"error": f"invalid installed theme: {err}"}, status=500
+                {"error": "invalid installed theme", "code": "invalid_installed_theme"},
+                status=500,
             )
         manifest, _m_err = await loop.run_in_executor(
             discovery_executor(),

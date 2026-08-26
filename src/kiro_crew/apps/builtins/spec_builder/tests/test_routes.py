@@ -25,11 +25,12 @@ import json
 import os
 import re
 import sys
+import textwrap
 import threading
 import time
 import types
 from pathlib import Path
-from typing import cast
+from typing import Callable, cast
 
 import pytest
 from aiohttp import web
@@ -38,6 +39,22 @@ from aiohttp.test_utils import TestClient, TestServer
 from kiro_crew.apps.builtins.spec_builder.backend import routes
 
 _BASE = "/api/apps/spec-builder"
+_REAL_DECISIONS_PATH: Path | None = None
+_DEFAULT_DECISION_STATE = {
+    "decisions": [
+        {
+            "id": "transport",
+            "title": "Inbound transport",
+            "options": [],
+        }
+    ]
+}
+_SERIALIZED_EFFECTS = (
+    "_mutate_index(",  # registers or removes an index entry
+    "_save_index(",  # ditto, unlocked writer
+    "authorize_and_add_nudge(",  # arms an autonomous timer that will dispatch later
+    "_dispatch_turn(",  # starts a turn now
+)
 
 
 # ── HTTP harness ─────────────────────────────────────────────────────────────
@@ -54,6 +71,23 @@ def _redirect_state(monkeypatch, tmp_path):
     # deletion tests wrote into the USER's live state and made their real deleted
     # specs discoverable again.
     monkeypatch.setattr(routes, "_DELETED_PATH", state_dir / "deleted.json")
+    # The decision ledger lives under the security keystone's trust root, OUTSIDE
+    # this dir, so it needs its own redirect -- and the autouse guard below watches
+    # the real one, which is what catches a test that forgets.
+    monkeypatch.setattr(routes, "_DECISIONS_PATH", state_dir / "decisions.json")
+    # Process-owned execution claims are scoped to the same temporary app state.
+    # A failed test must not leave a pre-dispatch claim that affects the next one.
+    monkeypatch.setattr(routes, "_EXECUTION_CLAIMS", {})
+    monkeypatch.setattr(routes, "_EXECUTION_STOPS", {})
+    monkeypatch.setattr(routes, "_PENDING_DISPATCH_CLAIMS", {})
+    monkeypatch.setattr(routes, "_REVOKED_EXECUTION_CLAIMS", set())
+    monkeypatch.setattr(routes, "_REVOKED_PENDING_DISPATCH_CLAIMS", set())
+    monkeypatch.setattr(routes, "_STOP_ROLLBACK_TASKS", set())
+    monkeypatch.setattr(routes, "_OBSERVED_SLOT_KEYS", {})
+    monkeypatch.setattr(routes, "_OBSERVED_SPEC_DIRS", {})
+    monkeypatch.setattr(routes, "_INDEXED_SPEC_IDENTITIES", set())
+    monkeypatch.setattr(routes, "_INDEXED_SPEC_NAMES", set())
+    monkeypatch.setattr(routes, "_INDEXED_SPEC_DIRS", set())
     monkeypatch.setattr(routes, "is_app_enabled", lambda name: True)
     return state_dir
 
@@ -95,13 +129,19 @@ def _never_touch_the_real_state(monkeypatch, tmp_path):
     tests rewrote the real deleted.json. The guard therefore compares the WHOLE
     directory (names + mtimes) rather than one known filename, so the next file
     this app learns to write is covered without anyone remembering to list it.
+
+    The decision ledger needs its own watch: it lives under the security keystone's
+    ``trust/`` root, OUTSIDE this app's state dir, so the directory comparison above
+    cannot see it -- and it holds the user's real recorded answers.
     """
     before = _live_state_snapshot()
+    before_ledger = _live_decisions_snapshot()
     _redirect_state(monkeypatch, tmp_path / "_autouse_state")
     yield
     assert (
         _live_state_snapshot() == before
     ), f"a test wrote to the live state dir: {_REAL_STATE_DIR}"
+    assert _live_decisions_snapshot() == before_ledger, "a test wrote to the live decision ledger"
 
 
 #: The un-redirected state dir the autouse guard watches. ``None`` until
@@ -574,7 +614,10 @@ def test_normalize_spec_state_redacts_keys_not_just_values():
     # Only the documented keys survive — arbitrary (possibly secret-bearing)
     # keys cannot reach the browser at all.
     assert set(out) == {"decisions", "blocking", "context"}
-    assert set(out["decisions"][0]) == {"id", "title", "options", "recommended", "answer"}
+    assert set(out["decisions"][0]) == {"id", "title", "options", "recommended", "answer", "locked"}
+    # `locked` is this backend's own field, never the agent's: normalization always
+    # reports False and only _apply_recorded_answers may set it.
+    assert out["decisions"][0]["locked"] is False
 
 
 def test_normalize_spec_state_rejects_non_dict():
@@ -798,7 +841,7 @@ def test_detail_handler_offloads_all_filesystem_work():
     heartbeats included) for the duration of every poll."""
 
     src = inspect.getsource(routes._handle_get)
-    assert "asyncio.to_thread(_collect_spec_documents" in src
+    assert "asyncio.to_thread(" in src and "_collect_spec_documents" in src
     # No inline reader calls left in the handler body.
     for inline in ("_read_spec_files(", "_derive_phase(", "_read_spec_text("):
         assert inline not in src, f"{inline} still called inline in the detail handler"
@@ -1862,7 +1905,9 @@ def test_handoff_commits_before_dispatch_and_unwinds_on_deletion():
     release = src.index("async def _release(")
     release_end = src.index('_audit("spec_handoff_aborted"', release)
     helper = src[release:release_end]
-    assert "_remove_nudge_loop(" in helper, "the release leaves the armed nudge loop running"
+    assert (
+        "_remove_nudge_loop_for_slot(" in helper
+    ), "the release leaves the armed nudge loop running"
     assert "_teardown_worker_slot(" in helper, "the release leaves the worker slot behind"
     assert 'status="planning"' in helper, "the release leaves the spec marked executing"
 
@@ -1875,9 +1920,11 @@ def test_handoff_commits_before_dispatch_and_unwinds_on_deletion():
     assert claim < src.index("_ensure_worker_slot("), "the slot is created before the claim"
     assert claim < arm, "the loop is armed before the execution state is recorded"
     assert claim < dispatch, "handoff dispatches before claiming the run"
-    assert (
-        src[claim:dispatch].count("_release(") == 4
-    ), "an abort arm does not release the loop, the recorded state and the slot"
+    assert src[claim:dispatch].count("_release(") == 11, (
+        "an abort arm does not release the loop, the recorded state and the slot"
+        " — every early return between the claim and the dispatch must release,"
+        " including both same-slot busy checks and the final alias check"
+    )
 
 
 # ── blocking sentinel write on the event loop ────────────────────────────────
@@ -2369,7 +2416,15 @@ async def test_handoff_refuses_when_authorization_is_unavailable(tmp_path, monke
     spec_dir = tmp_path / "wd" / ".kiro" / "specs" / "s"
     spec_dir.mkdir(parents=True)
     (spec_dir / "tasks.md").write_text("- [ ] task")
-    routes._save_index({"s": {"spec_dir": str(spec_dir), "working_dir": str(tmp_path / "wd")}})
+    routes._save_index(
+        {
+            "s": {
+                "spec_dir": str(spec_dir),
+                "working_dir": str(tmp_path / "wd"),
+                "slot_key": "spec-builder-s",
+            }
+        }
+    )
 
     dispatched: list[str] = []
     monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append("x"))
@@ -2406,7 +2461,15 @@ async def test_handoff_refuses_when_authorization_raises(tmp_path, monkeypatch):
     spec_dir = tmp_path / "wd" / ".kiro" / "specs" / "s"
     spec_dir.mkdir(parents=True)
     (spec_dir / "tasks.md").write_text("- [ ] task")
-    routes._save_index({"s": {"spec_dir": str(spec_dir), "working_dir": str(tmp_path / "wd")}})
+    routes._save_index(
+        {
+            "s": {
+                "spec_dir": str(spec_dir),
+                "working_dir": str(tmp_path / "wd"),
+                "slot_key": "spec-builder-s",
+            }
+        }
+    )
 
     dispatched: list[str] = []
     monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append("x"))
@@ -2647,18 +2710,28 @@ def test_no_handler_reads_the_index_on_the_event_loop():
     # function that actually runs on the loop.
     allowed = {
         "_aload_index",
+        "_aload_index_with_slot_identity",
+        "_aload_index_with_decision_alias_status",
         "_mutate_index",
         "_load_index_with_discovery",
         "_recover_abandoned_reservations",
         "_load_index",
         "_prepare_handoff",
         "_write_stop_sentinel_for_spec",
+        "_claim_decision_locked",
+        "_forget_decisions_locked",
+        "_alias_slots_locked",
     }
     for off_loop in (
+        "_aload_index_with_slot_identity",
+        "_aload_index_with_decision_alias_status",
         "_load_index_with_discovery",
         "_recover_abandoned_reservations",
         "_prepare_handoff",
         "_write_stop_sentinel_for_spec",
+        "_claim_decision_locked",
+        "_forget_decisions_locked",
+        "_alias_slots_locked",
     ):
         doc = inspect.getdoc(getattr(routes, off_loop)) or ""
         assert "BLOCKING" in doc, (
@@ -2688,8 +2761,9 @@ def test_no_handler_reads_the_index_on_the_event_loop():
         routes._handle_delete,
         routes._handle_create,
     ):
-        assert "await _aload_index()" in inspect.getsource(
-            handler
+        source = inspect.getsource(handler)
+        assert (
+            "await _aload_index()" in source or "await _aload_index_with_slot_identity(" in source
         ), f"{handler.__name__} does not read the index off the loop"
 
 
@@ -3584,6 +3658,7 @@ async def test_handoff_confirms_identity_before_acquiring_the_slot(tmp_path, mon
     def _prepare_then_recreate(spec_dir, name="", expect_slot_key=""):
         # Mirrors the real signature: the handler now passes the name and the
         # identity it started with so the CLEAR itself can be refused.
+        routes._forget_observed_slot_identity("swap", expect_slot_key)
         routes._save_index(
             {"swap": {"spec_dir": str(new_dir), "working_dir": str(tmp_path / "new")}}
         )
@@ -3786,10 +3861,11 @@ async def test_nudge_loop_removal_keeps_the_fsync_off_the_loop(tmp_path, monkeyp
     # Assert the PROPERTY, not one implementation of it. This app needs
     # remove() to keep the fsync off the event loop (a Pause click or a spec
     # delete must not block chat on a wedged disk). Upstream now provides that
-    # inline in remove() itself (#425); it previously lived in a helper this
-    # branch added. Either shape satisfies the app, so the assertions below
-    # describe the behaviour and stay agnostic about where it is written.
-    src = inspect.getsource(an.AutoNudgeService.remove)
+    # inline in remove() itself or in the transaction-owned helper it delegates
+    # to. Either shape satisfies the app, so inspect the complete call path.
+    src = inspect.getsource(an.AutoNudgeService.remove) + inspect.getsource(
+        an.AutoNudgeService._remove_unserialized
+    )
     assert "persist=False" in src, "remove() still fsyncs inline"
     assert "run_in_executor" in src, "remove() does not offload the write"
     assert "CancelledError" in src, "remove() does not drain the write on cancel"
@@ -4120,7 +4196,15 @@ async def test_failed_handoff_keeps_a_pre_existing_conversation(tmp_path, monkey
     spec_dir = tmp_path / "wd" / ".kiro" / "specs" / "chatty"
     spec_dir.mkdir(parents=True)
     (spec_dir / "tasks.md").write_text("- [ ] task")
-    routes._save_index({"chatty": {"spec_dir": str(spec_dir), "working_dir": str(tmp_path / "wd")}})
+    routes._save_index(
+        {
+            "chatty": {
+                "spec_dir": str(spec_dir),
+                "working_dir": str(tmp_path / "wd"),
+                "slot_key": "spec-builder-chatty",
+            }
+        }
+    )
 
     class _Loop:
         id = "loop-armed"
@@ -4239,7 +4323,7 @@ def test_delete_orders_reserve_teardown_remove():
     src = inspect.getsource(routes._handle_delete)
     reserve = src.index("_mark_deleting(")
     teardown = src.index("_teardown_worker_slot(")
-    remove = src.index("_mutate_index(_pop_if_same)")
+    remove = src.index("await _mutate_index(", src.index("def _pop_if_same"))
     assert reserve < teardown, "the session is torn down before the name is reserved"
     assert teardown < remove, "the entry is removed before the conversation is archived"
     # The failure arm releases the reservation rather than renaming the spec.
@@ -4256,7 +4340,9 @@ def test_handoff_unwind_is_gated_on_having_created_the_slot():
     # the body contains one now (the best-effort loop removal), and slicing to it
     # cut the assertion's search space to nothing.
     release = src[start : src.index('_audit("spec_handoff_aborted"', start)]
-    assert "if not slot_pre_existed:" in release, "unwind tears down a slot it may not have created"
+    assert (
+        "if owned and not slot_pre_existed:" in release
+    ), "unwind tears down a slot it may not have created"
 
 
 # ── GPT round-31 findings (#518) ─────────────────────────────────────────────
@@ -4413,6 +4499,7 @@ async def test_create_refuses_when_the_spec_is_replaced_during_slot_setup(tmp_pa
     async def _ensure_then_replace(state, name, meta, **kwargs):
         out = await real_ensure(state, name, meta, **kwargs)
         # The concurrent delete+recreate, landing inside the await window.
+        routes._forget_observed_slot_identity(name, str(meta.get("slot_key", "")))
         routes._save_index({"racy": {"spec_dir": str(other), "working_dir": str(other.parent)}})
         return out
 
@@ -4847,7 +4934,7 @@ async def test_stop_reads_the_body_before_the_index(tmp_path, monkeypatch):
     capture_at = src.index("_exec_loop_id(name)")
     assert body_at < index_at < capture_at, "the body await is not first"
     # And no await may sit between the verified identity and the capture.
-    between = src[src.index("_client_identity_mismatch(claimed") : capture_at]
+    between = src[src.rindex("_client_identity_mismatch(claimed", 0, capture_at) : capture_at]
     assert "await" not in between, "an await reopened the capture window"
 
 
@@ -4863,8 +4950,13 @@ def test_every_identity_checked_handler_parses_the_body_first():
     ):
         src = inspect.getsource(handler)
         assert "claimed = await _client_claim(request)" in src, handler.__name__
-        assert src.index("claimed = await _client_claim(request)") < src.rindex(
-            "_aload_index()"
+        deciding_read = max(
+            src.rfind("_aload_index()"),
+            src.rfind("_aload_index_with_slot_identity("),
+        )
+        assert deciding_read >= 0, f"{handler.__name__} has no indexed identity read"
+        assert (
+            src.index("claimed = await _client_claim(request)") < deciding_read
         ), f"{handler.__name__} reads the deciding index snapshot before the body"
 
 
@@ -5247,7 +5339,7 @@ def test_a_freshly_minted_slot_key_survives_the_commit(tmp_path, monkeypatch):
 def test_both_index_chokepoints_refresh_the_resolver():
     """Source guard: read-only refresh is what caused the split, so the writer
     must refresh too."""
-    for fn in (routes._load_index, routes._save_index):
+    for fn in (routes._load_index_snapshot, routes._save_index):
         assert "_refresh_slot_keys" in inspect.getsource(fn), fn.__name__
 
 
@@ -5735,7 +5827,16 @@ async def test_deletion_during_authorization_removes_the_armed_loop(tmp_path, mo
     spec_dir = tmp_path / "wd" / ".kiro" / "specs" / "gone"
     spec_dir.mkdir(parents=True)
     (spec_dir / "tasks.md").write_text("- [ ] task")
-    routes._save_index({"gone": {"spec_dir": str(spec_dir), "working_dir": str(tmp_path / "wd")}})
+    captured_slot_key = "spec-builder-gone-1234abcd"
+    routes._save_index(
+        {
+            "gone": {
+                "spec_dir": str(spec_dir),
+                "working_dir": str(tmp_path / "wd"),
+                "slot_key": captured_slot_key,
+            }
+        }
+    )
     removed: list[str] = []
     dispatched: list[str] = []
     monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append("x"))
@@ -5748,7 +5849,7 @@ async def test_deletion_during_authorization_removes_the_armed_loop(tmp_path, mo
             self.armed = False
 
         def get_by_slot(self, key):
-            return _Loop() if self.armed else None
+            return _Loop() if self.armed and key == captured_slot_key else None
 
         async def remove(self, loop_id):
             self.armed = False
@@ -5943,8 +6044,8 @@ async def test_delete_tombstones_before_dropping_the_entry(tmp_path, monkeypatch
 
     original_mutate = routes._mutate_index
 
-    async def _watched(fn):
-        result = await original_mutate(fn)
+    async def _watched(fn, **kwargs):
+        result = await original_mutate(fn, **kwargs)
         order.append("pop" if result else "pop-failed")
         return result
 
@@ -5998,7 +6099,7 @@ def test_delete_orders_the_tombstone_before_the_pop():
     non-deleting arm must clear it."""
     src = inspect.getsource(routes._handle_delete)
     remember = src.index("_remember_deleted")
-    pop = src.index("_mutate_index(_pop_if_same)")
+    pop = src.index("await _mutate_index(", src.index("def _pop_if_same"))
     assert remember < pop, "the entry is dropped before the directory is tombstoned"
     assert src.count("_forget_deleted") >= 2, "a non-deleting arm leaves the tombstone behind"
 
@@ -6142,6 +6243,7 @@ async def test_create_abort_does_not_drop_a_replacement_spec(tmp_path, monkeypat
     async def _ensure_then_replace(state, name, meta, **kw):
         got = await real_ensure(state, name, meta, **kw)
         # The delete + re-import lands while the slot is being set up.
+        routes._forget_observed_slot_identity(name, str(meta.get("slot_key", "")))
         routes._save_index({"reused": dict(replacement)})
         return got
 
@@ -6588,8 +6690,8 @@ async def test_removal_failure_keeps_the_spec_hidden_for_a_retry(tmp_path, monke
 
     async def _fail_the_removal(fn):
         calls["n"] += 1
-        # The mark succeeds; the removal (second mutation) does not.
-        if calls["n"] >= 2:
+        # The mark and durable teardown boundary succeed; the removal does not.
+        if calls["n"] >= 3:
             return False
         return await real_mutate(fn)
 
@@ -6610,6 +6712,9 @@ async def test_removal_failure_keeps_the_spec_hidden_for_a_retry(tmp_path, monke
     monkeypatch.setattr(routes, "_mutate_index", real_mutate)
     entry = routes._load_index()["stuck"]
     assert entry.get(routes._DELETING), "the reservation was dropped, un-hiding the spec"
+    monkeypatch.setattr(routes, "_PROCESS_ID", "replacement-process")
+    restarted = routes._load_index()["stuck"]
+    assert restarted.get(routes._DELETING), "restart exposed the torn-down spec"
 
 
 # ── GPT round-57 findings (#518) ───────────────────────────────────────────────
@@ -6900,6 +7005,9 @@ def _slot_stub():
     slot = _Slot()
 
     class _State:
+        def __init__(self):
+            self._background_tasks: set[asyncio.Task] = set()
+
         def get_slot(self, key):
             return None
 
@@ -7079,9 +7187,23 @@ def test_message_revalidates_between_slot_acquisition_and_dispatch():
         "no re-pin between slot acquisition and dispatch: a delete finishing in "
         "that window would have its turn dispatched anyway"
     )
-    # ...and nothing may await between that refusal and the synchronous dispatch.
+    # Every decision-delivery await after the re-pin is recoverable: the claim writes a
+    # pending outbox entry, and the delivery helper finalizes it only after relay. The
+    # directory turn lock still excludes delete and other Spec Builder dispatches.
     tail = between[between.index("_touch_spec(") :]
-    assert "await " not in tail, f"an await slipped in before dispatch: {tail!r}"
+    awaits = [
+        ln.strip() for ln in tail.splitlines() if "await " in ln and not ln.strip().startswith("#")
+    ]
+    allowed = (
+        "asyncio.to_thread(",
+        "_claim_decision(",
+        "_pending_decisions(",
+        "_deliver_pending_decision(",
+        "_final_alias_conflict(",
+    )
+    assert all(
+        any(name in ln for name in allowed) for ln in awaits
+    ), f"a non-pinning await slipped in before dispatch: {awaits!r}"
 
 
 @pytest.mark.asyncio
@@ -7428,7 +7550,7 @@ def test_unwind_gates_the_rollback_on_the_pinned_pop():
     through, not re-derive ownership or hardcode it."""
     src = inspect.getsource(routes._handle_create)
     unwind = src[src.index("async def _unwind_create") :]
-    pop = unwind.index("was_ours = await _mutate_index(_pop_if_ours)")
+    pop = unwind.index("was_ours = await _mutate_index(")
     call = unwind.index("_rollback_worktree_if_ours(")
     assert pop < call, "ownership must be established before the rollback"
     args = unwind[call : unwind.index(")", unwind.index("worktree_branch=worktree_branch", call))]
@@ -7451,17 +7573,21 @@ def test_remove_worktree_is_destructive_enough_to_need_the_gate():
 
 
 def test_only_the_post_insert_unwind_needs_the_gate():
-    """Scope guard: the three EARLY rollbacks are unconditional on purpose.
+    """Scope guard: the six early rollbacks are unconditional on purpose.
 
     They run before the index insert, so no other request can hold the name --
     and _create_worktree would itself have failed had a concurrent create already
     made `<repo>-wt-<name>`. Gating those would orphan a worktree on every
     legitimate 400/409. Only the post-insert unwind spans an await (the slot
     acquisition) during which a delete + recreate can land.
+
+    The ledger refusals are reached after awaits of their own, but both precede the
+    insert, so this create has claimed nothing and ``created_worktree`` is still only
+    ever the one it made itself -- the same reasoning that leaves the others ungated.
     """
     src = inspect.getsource(routes._handle_create)
     early = src[: src.index("async def _unwind_create")]
-    assert early.count("_remove_worktree(") == 3, (
+    assert early.count("_remove_worktree(") == 6, (
         "the early-rollback count changed -- re-audit whether the new one spans "
         "an await after the index insert (if so it needs the ownership gate too)"
     )
@@ -7946,9 +8072,11 @@ class _RecordingSlot:
         self.running = True
         self.appended: list[tuple[str, str]] = []
         self.queued: list[str] = []
+        self.queued_origins: list[bool] = []
 
-    def queue_append(self, message):
+    def queue_append(self, message, **kwargs):
         self.queued.append(message)
+        self.queued_origins.append(kwargs["directive_user_origin"])
 
     def append(self, role, content, cls="", ts="", *, broadcast=True, meta=None):
         self.appended.append((role, content))
@@ -8728,7 +8856,7 @@ async def test_task_slot_materialization_serializes_delete_capture(tmp_path, mon
     release_ensure = asyncio.Event()
     delete_waiting = asyncio.Event()
     mark_entered = asyncio.Event()
-    real_lock = routes._spec_execution_lock
+    real_lock = routes._turn_lock
     real_mark = routes._mark_deleting
     lock_calls = 0
     captured: list[object] = []
@@ -8741,12 +8869,12 @@ async def test_task_slot_materialization_serializes_delete_capture(tmp_path, mon
         slots[key] = _IdleSlot(key)
         return slots[key]
 
-    def _watched_lock(request, name):
+    def _watched_lock(spec_dir):
         nonlocal lock_calls
         lock_calls += 1
         if lock_calls == 2:
             delete_waiting.set()
-        return real_lock(request, name)
+        return real_lock(spec_dir)
 
     async def _watched_mark(*args, **kwargs):
         mark_entered.set()
@@ -8761,7 +8889,7 @@ async def test_task_slot_materialization_serializes_delete_capture(tmp_path, mon
         return True
 
     monkeypatch.setattr(routes, "_ensure_worker_slot", _held_slot_materialization)
-    monkeypatch.setattr(routes, "_spec_execution_lock", _watched_lock)
+    monkeypatch.setattr(routes, "_turn_lock", _watched_lock)
     monkeypatch.setattr(routes, "_mark_deleting", _watched_mark)
     monkeypatch.setattr(routes, "_dispatch_turn", lambda *_args: order.append("dispatch-task"))
     monkeypatch.setattr(routes, "_remove_nudge_loop", _remove_loop)
@@ -8799,7 +8927,7 @@ async def test_task_final_snapshot_serializes_the_whole_plan_claim(tmp_path, mon
     execute_waiting = asyncio.Event()
     claim_entered = asyncio.Event()
     real_to_thread = routes.asyncio.to_thread
-    real_lock = routes._spec_execution_lock
+    real_lock = routes._turn_lock
     real_claim = routes._claim_execution
     snapshot_calls = 0
     lock_calls = 0
@@ -8814,12 +8942,12 @@ async def test_task_final_snapshot_serializes_the_whole_plan_claim(tmp_path, mon
                 await release_snapshot.wait()
         return await real_to_thread(func, *args, **kwargs)
 
-    def _watched_lock(request, name):
+    def _watched_lock(spec_dir):
         nonlocal lock_calls
         lock_calls += 1
         if lock_calls == 2:
             execute_waiting.set()
-        return real_lock(request, name)
+        return real_lock(spec_dir)
 
     async def _watched_claim(*args, **kwargs):
         claim_entered.set()
@@ -8830,7 +8958,7 @@ async def test_task_final_snapshot_serializes_the_whole_plan_claim(tmp_path, mon
         slot.running = True
 
     monkeypatch.setattr(routes.asyncio, "to_thread", _held_final_snapshot)
-    monkeypatch.setattr(routes, "_spec_execution_lock", _watched_lock)
+    monkeypatch.setattr(routes, "_turn_lock", _watched_lock)
     monkeypatch.setattr(routes, "_claim_execution", _watched_claim)
     monkeypatch.setattr(routes, "_dispatch_turn", _mark_running)
     monkeypatch.setattr(routes, "_autonudge_instance", lambda: object())
@@ -8868,7 +8996,7 @@ async def test_task_final_snapshot_serializes_delete_reservation(tmp_path, monke
     delete_waiting = asyncio.Event()
     mark_entered = asyncio.Event()
     real_to_thread = routes.asyncio.to_thread
-    real_lock = routes._spec_execution_lock
+    real_lock = routes._turn_lock
     real_mark = routes._mark_deleting
     snapshot_calls = 0
     lock_calls = 0
@@ -8883,12 +9011,12 @@ async def test_task_final_snapshot_serializes_delete_reservation(tmp_path, monke
                 await release_snapshot.wait()
         return await real_to_thread(func, *args, **kwargs)
 
-    def _watched_lock(request, name):
+    def _watched_lock(spec_dir):
         nonlocal lock_calls
         lock_calls += 1
         if lock_calls == 2:
             delete_waiting.set()
-        return real_lock(request, name)
+        return real_lock(spec_dir)
 
     async def _watched_mark(*args, **kwargs):
         mark_entered.set()
@@ -8902,7 +9030,7 @@ async def test_task_final_snapshot_serializes_delete_reservation(tmp_path, monke
         return True
 
     monkeypatch.setattr(routes.asyncio, "to_thread", _held_final_snapshot)
-    monkeypatch.setattr(routes, "_spec_execution_lock", _watched_lock)
+    monkeypatch.setattr(routes, "_turn_lock", _watched_lock)
     monkeypatch.setattr(routes, "_mark_deleting", _watched_mark)
     monkeypatch.setattr(routes, "_dispatch_turn", lambda *_args: order.append("dispatch-task"))
     monkeypatch.setattr(routes, "_remove_nudge_loop", _remove_loop)
@@ -9781,9 +9909,9 @@ def test_document_and_task_reads_stay_off_the_event_loop():
     and write caller-supplied paths, and the detail endpoint beside them is polled
     every 2.5s. Blocking filesystem work must ride a worker thread."""
     for handler, blocking in (
-        (routes._handle_approve, "_current_hash"),
+        (routes._approve_locked, "_current_hash"),
         (routes._handle_run_task, "_tasks"),
-        (routes._handle_duplicate, "_copy"),
+        (routes._duplicate_locked, "_copy"),
     ):
         src = inspect.getsource(handler)
         # Matched on the two tokens rather than one formatted call string: the
@@ -9792,3 +9920,7172 @@ def test_document_and_task_reads_stay_off_the_event_loop():
         assert (
             "asyncio.to_thread(" in src and blocking in src
         ), f"{handler.__name__} may be doing filesystem work inline"
+
+
+def _live_decisions_snapshot() -> tuple[bool, int]:
+    """(exists, size) of the REAL decision ledger, captured before redirection."""
+    global _REAL_DECISIONS_PATH
+    if _REAL_DECISIONS_PATH is None:
+        _REAL_DECISIONS_PATH = routes._decisions_path()
+    try:
+        return True, _REAL_DECISIONS_PATH.stat().st_size
+    except OSError:
+        return False, 0
+
+
+@web.middleware
+async def _app_auth_mw(request, handler):
+    """Model an authenticated app token, which also carries a user identity."""
+    request["user"] = "tester"
+    request["app"] = "spec-builder"
+    return await handler(request)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"text": "ordinary app-authored message"},
+        {
+            "text": "Decision - Transport: HTTPS",
+            "decision_id": "transport",
+            "decision_option": "HTTPS",
+        },
+    ],
+)
+async def test_app_tokens_cannot_mint_human_spec_messages(body, tmp_path, monkeypatch):
+    """App tokens are authenticated but cannot authorize user-only directives."""
+    _redirect_state(monkeypatch, tmp_path)
+    app = web.Application(middlewares=[_app_auth_mw])
+    routes.register_routes(app)
+
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post(f"{_BASE}/specs/s/message", json=body)
+        payload = await response.json()
+
+    assert response.status == 403
+    assert payload["code"] == "interactive_user_required"
+
+
+def test_normalize_spec_state_ignores_an_agent_authored_lock():
+    """The agent must not be able to declare a decision locked (or unlock one it
+    answered) by writing the field itself."""
+    out = routes._normalize_spec_state(
+        {"decisions": [{"id": "a", "title": "t", "locked": True, "answer": "x"}]}
+    )
+    assert out is not None
+    assert out["decisions"][0]["locked"] is False
+
+
+@pytest.mark.asyncio
+async def test_nudge_maintenance_pause_is_durable_and_waits_for_a_firing_timer(
+    tmp_path,
+):
+    """Orphan cleanup gets a restart marker before it snapshots the worker slot."""
+    from kiro_crew import autonudge as an
+
+    svc = an.AutoNudgeService(base_dir=tmp_path)
+    loop = await svc.add(
+        slot_key="spec-builder-s-1234abcd",
+        message="continue",
+        idle_secs=60,
+        max_cycles=1,
+    )
+    original_timer = svc._timers.pop(loop.id)
+    original_timer.cancel()
+    await original_timer
+
+    write_done = threading.Event()
+    real_write = svc._write_state
+
+    def _record_write(payload):
+        real_write(payload)
+        write_done.set()
+
+    svc._write_state = _record_write  # type: ignore[method-assign]
+    release = asyncio.Event()
+    firing_timer = asyncio.create_task(release.wait())
+    svc._timers[loop.id] = firing_timer
+    svc._firing.add(loop.id)
+    pause = asyncio.create_task(svc.deactivate_and_wait(loop.id))
+    assert await asyncio.to_thread(write_done.wait, 2.0)
+
+    assert loop.active is False
+    assert not pause.done()
+    reloaded = await an.AutoNudgeService.load_for_maintenance(base_dir=tmp_path)
+    persisted = reloaded.get_by_slot(loop.slot_key)
+    assert persisted is not None and persisted.active is False
+
+    release.set()
+    assert await pause is True
+    svc._firing.discard(loop.id)
+
+
+@pytest.mark.asyncio
+async def test_nudge_maintenance_pause_waits_for_a_replacement_timer(
+    tmp_path,
+):
+    """A turn-complete rearm during the persisted pause cannot escape cleanup."""
+    from kiro_crew import autonudge as an
+
+    svc = an.AutoNudgeService(base_dir=tmp_path)
+    loop = await svc.add(
+        slot_key="spec-builder-s-1234abcd",
+        message="continue",
+        idle_secs=60,
+        max_cycles=1,
+    )
+    original_timer = svc._timers.pop(loop.id)
+    original_timer.cancel()
+    await original_timer
+
+    write_done = threading.Event()
+    real_write = svc._write_state
+
+    def _record_write(payload):
+        real_write(payload)
+        write_done.set()
+
+    svc._write_state = _record_write  # type: ignore[method-assign]
+    await svc._lock.acquire()
+    pause = asyncio.create_task(svc.deactivate_and_wait(loop.id))
+    await asyncio.sleep(0)
+
+    release = asyncio.Event()
+    replacement_timer = asyncio.create_task(release.wait())
+    svc._timers[loop.id] = replacement_timer
+    svc._firing.add(loop.id)
+    svc._lock.release()
+    assert await asyncio.to_thread(write_done.wait, 2.0)
+
+    assert loop.active is False
+    assert not pause.done()
+    release.set()
+    assert await pause is True
+    svc._firing.discard(loop.id)
+
+
+@pytest.mark.asyncio
+async def test_nudge_remove_failure_restores_the_retryable_loop(tmp_path, monkeypatch):
+    """A failed durable delete cannot make its retained row invisible in memory."""
+    from kiro_crew import autonudge as an
+
+    svc = an.AutoNudgeService(base_dir=tmp_path)
+    loop = await svc.add(
+        slot_key="spec-builder-s-1234abcd",
+        message="continue",
+        idle_secs=60,
+        max_cycles=1,
+    )
+    await svc.update(loop.id, active=False)
+    events: list[str] = []
+    svc.subscribe(lambda event, _loop: events.append(event))
+    real_write = svc._write_state
+
+    def _fail_write(_payload):
+        raise OSError("store unavailable")
+
+    monkeypatch.setattr(svc, "_write_state", _fail_write)
+    with pytest.raises(OSError, match="store unavailable"):
+        await svc.remove(loop.id)
+
+    assert svc.get_by_slot(loop.slot_key) is loop
+    assert loop in svc.list_all()
+    assert "removed" not in events
+
+    monkeypatch.setattr(svc, "_write_state", real_write)
+    await svc.remove(loop.id)
+    assert svc.get_by_slot(loop.slot_key) is None
+    assert events == ["removed"]
+
+
+@pytest.mark.asyncio
+async def test_nudge_maintenance_transaction_serializes_service_startup(tmp_path, monkeypatch):
+    """Startup loads only after an offline cleanup commits its authoritative view."""
+    from kiro_crew import autonudge as an
+
+    monkeypatch.setenv("KIROCREW_AUTONUDGE", "1")
+    monkeypatch.setattr(an, "_INSTANCE", None)
+    seed = an.AutoNudgeService(base_dir=tmp_path)
+    loop = await seed.add(
+        slot_key="spec-builder-s-1234abcd",
+        message="continue",
+        idle_secs=60,
+        max_cycles=1,
+    )
+    await seed.update(loop.id, active=False)
+
+    live = an.AutoNudgeService(base_dir=tmp_path)
+    load_started = threading.Event()
+    real_load = live._load
+
+    def _record_load():
+        load_started.set()
+        real_load()
+
+    monkeypatch.setattr(live, "_load", _record_load)
+    starter = None
+    try:
+        async with an.AutoNudgeService.maintenance_service(base_dir=tmp_path) as offline:
+            starter = asyncio.create_task(live.start())
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            assert not load_started.is_set()
+            await offline.remove(loop.id)
+
+        await starter
+        assert load_started.is_set()
+        assert live.list_all() == []
+        assert live._timers == {}
+    finally:
+        live.stop()
+        if starter is not None and not starter.done():
+            starter.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await starter
+
+
+@pytest.mark.asyncio
+async def test_nudge_maintenance_transactions_reload_after_a_peer_commit(tmp_path, monkeypatch):
+    """Concurrent offline cleanup cannot write from a pre-transaction snapshot."""
+    from kiro_crew import autonudge as an
+
+    monkeypatch.setattr(an, "_INSTANCE", None)
+    seed = an.AutoNudgeService(base_dir=tmp_path)
+    first_loop = await seed.add(
+        slot_key="spec-builder-s-1234abcd",
+        message="first",
+        idle_secs=60,
+        max_cycles=1,
+    )
+    second_loop = await seed.add(
+        slot_key="spec-builder-t-deadbeef",
+        message="second",
+        idle_secs=60,
+        max_cycles=1,
+    )
+    await seed.update(first_loop.id, active=False)
+    await seed.update(second_loop.id, active=False)
+
+    peer_entered = asyncio.Event()
+
+    async def _peer_view() -> set[str]:
+        async with an.AutoNudgeService.maintenance_service(base_dir=tmp_path) as peer:
+            peer_entered.set()
+            return {loop.id for loop in peer.list_all()}
+
+    peer_task = None
+    try:
+        async with an.AutoNudgeService.maintenance_service(base_dir=tmp_path) as first:
+            peer_task = asyncio.create_task(_peer_view())
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            assert not peer_entered.is_set()
+            await first.remove(first_loop.id)
+
+        assert await peer_task == {second_loop.id}
+    finally:
+        if peer_task is not None and not peer_task.done():
+            peer_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await peer_task
+
+
+@pytest.mark.asyncio
+async def test_nudge_maintenance_excludes_a_failing_live_remove(tmp_path, monkeypatch):
+    """A rolled-back live removal stays visible to the maintenance scan."""
+    from kiro_crew import autonudge as an
+
+    live = an.AutoNudgeService(base_dir=tmp_path)
+    loop = await live.add(
+        slot_key="spec-builder-s-1234abcd",
+        message="continue",
+        idle_secs=60,
+        max_cycles=1,
+    )
+    await live.update(loop.id, active=False)
+    monkeypatch.setattr(an, "_INSTANCE", live)
+    write_started = threading.Event()
+    release_write = threading.Event()
+    real_write = live._write_state
+
+    def _fail_removal(payload):
+        if not payload["loops"]:
+            write_started.set()
+            release_write.wait(timeout=5)
+            raise OSError("disk unavailable")
+        real_write(payload)
+
+    monkeypatch.setattr(live, "_write_state", _fail_removal)
+    maintenance_entered = asyncio.Event()
+
+    async def _scan() -> set[str]:
+        async with an.AutoNudgeService.maintenance_service(base_dir=tmp_path) as view:
+            maintenance_entered.set()
+            return {item.id for item in view.list_all()}
+
+    removal = asyncio.create_task(live.remove(loop.id))
+    scan = None
+    try:
+        assert await asyncio.to_thread(write_started.wait, 2)
+        scan = asyncio.create_task(_scan())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert not maintenance_entered.is_set()
+        release_write.set()
+        with pytest.raises(OSError, match="disk unavailable"):
+            await removal
+        assert await scan == {loop.id}
+    finally:
+        release_write.set()
+        live.stop()
+        for task in (removal, scan):
+            if task is not None and not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
+
+@pytest.mark.asyncio
+async def test_nudge_maintenance_excludes_a_live_reactivation(tmp_path, monkeypatch):
+    """An external update cannot revive a row during administrative removal."""
+    from kiro_crew import autonudge as an
+
+    live = an.AutoNudgeService(base_dir=tmp_path)
+    loop = await live.add(
+        slot_key="spec-builder-s-1234abcd",
+        message="continue",
+        idle_secs=60,
+        max_cycles=1,
+    )
+    await live.update(loop.id, active=False)
+    monkeypatch.setattr(an, "_INSTANCE", live)
+    updater = None
+    try:
+        async with an.AutoNudgeService.maintenance_service(base_dir=tmp_path) as view:
+            updater = asyncio.create_task(live.update(loop.id, active=True))
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            assert not updater.done()
+            await view.remove(loop.id)
+
+        assert await updater is None
+        assert live.list_all() == []
+        assert live._timers == {}
+    finally:
+        live.stop()
+        if updater is not None and not updater.done():
+            updater.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await updater
+
+
+@pytest.mark.asyncio
+async def test_partial_slot_teardown_keeps_the_delete_reserved(tmp_path, monkeypatch):
+    """A spec cannot reappear after one captured worker was already destroyed."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    stale_slot_key = "spec-builder-s-feedbeef"
+    routes._OBSERVED_SPEC_DIRS[stale_slot_key] = routes._decision_key(spec_dir)
+    slots = {
+        slot_key: types.SimpleNamespace(key=slot_key),
+        stale_slot_key: types.SimpleNamespace(key=stale_slot_key),
+    }
+
+    class _State:
+        def get_slot(self, key):
+            return slots.get(key)
+
+    teardown_results = iter((True, False))
+
+    async def _partially_teardown(*_args, **_kwargs):
+        return next(teardown_results)
+
+    monkeypatch.setattr(routes, "_teardown_worker_slot", _partially_teardown)
+
+    await client.start_server()
+    try:
+        client.app["state"] = _State()
+        response = await client.delete(
+            f"{_BASE}/specs/s",
+            json={"spec_dir": spec_dir, "slot_key": slot_key},
+        )
+        body = await response.json()
+    finally:
+        await client.close()
+
+    assert response.status == 503, body
+    assert body["code"] == "archive_failed"
+    assert "retry" in body["error"]
+    entry = routes._load_index()["s"]
+    assert entry.get(routes._DELETING), "the partially deleted spec was unhidden"
+    assert spec_dir in routes._load_deleted(), "the partial delete lost its tombstone"
+    monkeypatch.setattr(routes, "_PROCESS_ID", "replacement-process")
+    restarted = routes._load_index()["s"]
+    assert restarted.get(routes._DELETING), "restart exposed the partial delete"
+
+
+@pytest.mark.asyncio
+async def test_index_and_legacy_runtime_identity_are_captured_under_one_lock(tmp_path, monkeypatch):
+    """A replacement writer cannot refresh the resolver between the two values."""
+    _redirect_state(monkeypatch, tmp_path)
+    spec_dir = str(tmp_path / "wd" / ".kiro" / "specs" / "legacy")
+    routes._save_index({"legacy": {"spec_dir": spec_dir}})
+    snapshot_read = threading.Event()
+    release_snapshot = threading.Event()
+    real_load = routes._load_index
+    load_count = 0
+
+    def _load_and_pause_once():
+        nonlocal load_count
+        index = real_load()
+        load_count += 1
+        if load_count == 1:
+            snapshot_read.set()
+            assert release_snapshot.wait(timeout=5)
+        return index
+
+    monkeypatch.setattr(routes, "_load_index", _load_and_pause_once)
+    capture = asyncio.create_task(routes._aload_index_with_slot_identity("legacy"))
+    assert await asyncio.to_thread(snapshot_read.wait, 5)
+    replacement_key = routes._new_slot_key("legacy")
+
+    def _replace(index):
+        index["legacy"]["slot_key"] = replacement_key
+        return True
+
+    replacement = asyncio.create_task(routes._mutate_index(_replace))
+    await asyncio.sleep(0)
+    release_snapshot.set()
+
+    index, runtime_key, observed_key = await capture
+    assert await replacement
+    assert "slot_key" not in index["legacy"]
+    assert runtime_key == "spec-builder-legacy"
+    assert observed_key == ""
+    assert routes._load_index()["legacy"]["slot_key"] == replacement_key
+
+
+@pytest.mark.asyncio
+async def test_legacy_delete_refuses_same_path_replacement_before_reservation(
+    tmp_path, monkeypatch
+):
+    """A missing legacy key still has the captured name-derived creation identity.
+
+    Replacing that row at the same name and directory after DELETE's snapshot must
+    not let the stale request reserve and remove the replacement.
+    """
+    client = _make_client(monkeypatch, tmp_path)
+    base = tmp_path / "wd" / ".kiro" / "specs"
+    (base / "legacy").mkdir(parents=True)
+    spec_dir = str(base / "legacy")
+    routes._save_index(
+        {
+            "legacy": {
+                "spec_dir": spec_dir,
+                "working_dir": str(tmp_path / "wd"),
+                "spec_type": "feature",
+                "status": "planning",
+            }
+        }
+    )
+    replacement_keys: list[str] = []
+    real_alias_status = routes._aload_index_with_decision_alias_status
+
+    async def _replace_then_check_aliases(directory):
+        index = await routes._aload_index()
+        replacement_key = routes._new_slot_key("legacy")
+        replacement_keys.append(replacement_key)
+        index["legacy"]["slot_key"] = replacement_key
+        routes._save_index(index)
+        return await real_alias_status(directory)
+
+    monkeypatch.setattr(
+        routes, "_aload_index_with_decision_alias_status", _replace_then_check_aliases
+    )
+
+    await client.start_server()
+    try:
+        client.app["state"] = None
+        response = await client.delete(f"{_BASE}/specs/legacy")
+        body = await response.json()
+    finally:
+        await client.close()
+
+    assert response.status == 404, body
+    current = routes._load_index()["legacy"]
+    assert current["slot_key"] == replacement_keys[0]
+    assert routes._DELETING not in current
+    assert spec_dir not in routes._load_deleted()
+
+
+def test_queued_dispatch_preserves_structural_directive_provenance():
+    slot = _RecordingSlot()
+
+    routes._dispatch_turn(_NoopState(), slot, "automated seed")
+    routes._dispatch_turn(
+        _NoopState(),
+        slot,
+        "human answer",
+        directive_user_origin=True,
+    )
+
+    assert slot.queued_origins == [False, True]
+
+
+@pytest.mark.parametrize(
+    ("handler", "expected"),
+    [
+        (routes._handle_create, False),
+        (routes._handle_handoff, False),
+        (routes._handle_message, True),
+        (routes._deliver_pending_decision, True),
+    ],
+)
+def test_spec_dispatch_callers_assign_directive_provenance(handler, expected):
+    """Only direct human input may authorize session-retargeting directives."""
+    tree = ast.parse(textwrap.dedent(inspect.getsource(handler)))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_dispatch_turn"
+    ]
+    assert len(calls) == 1
+    keyword = next(
+        (kw for kw in calls[0].keywords if kw.arg == "directive_user_origin"),
+        None,
+    )
+    if keyword is None:
+        actual = False
+    else:
+        assert isinstance(keyword.value, ast.Constant)
+        actual = keyword.value.value
+    assert actual is expected
+
+
+async def _mark_reserved(name: str) -> bool:
+    """Stamp a delete reservation this process owns, as the delete handler does."""
+
+    def _apply(index: dict) -> bool:
+        index[name][routes._DELETING] = {"owner": routes._PROCESS_ID, "at": time.time()}
+        return True
+
+    return await routes._mutate_index(_apply)
+
+
+def _final_answer(decision_id: str, option: str) -> dict[str, str]:
+    """Build one final durable entry for tests that seed the protected store."""
+    return {
+        "decision_id": decision_id,
+        "option": option,
+        "fingerprint": "",
+        "status": "final",
+        "message": "",
+        "delivery_id": "",
+    }
+
+
+def _decision_record(store: dict, spec_dir: str) -> dict[str, str]:
+    """Test projection of durable entries as decision id to option."""
+    return {
+        entry["decision_id"]: entry["option"]
+        for entry in routes._decision_entries(store, spec_dir).values()
+    }
+
+
+async def _recorded_answers(spec_dir: str) -> dict[str, str]:
+    """Read the test projection without blocking the event loop."""
+
+    def _read() -> dict[str, str]:
+        with routes._DECISIONS_LOCK:
+            store, _usable = routes._read_decisions()
+            return _decision_record(store, spec_dir)
+
+    return await asyncio.to_thread(_read)
+
+
+def _decision_spec(tmp_path, *, state: dict | None = _DEFAULT_DECISION_STATE) -> tuple[str, str]:
+    """Index one spec named ``s`` and return ``(spec_dir, slot_key)``."""
+    spec_dir = tmp_path / "wd" / ".kiro" / "specs" / "s"
+    spec_dir.mkdir(parents=True, exist_ok=True)
+    if state is not None:
+        (spec_dir / ".spec-state.json").write_text(json.dumps(state))
+    slot_key = routes._new_slot_key("s")
+    routes._save_index(
+        {
+            "s": {
+                "spec_dir": str(spec_dir),
+                "working_dir": str(tmp_path / "wd"),
+                "spec_type": "feature",
+                "status": "planning",
+                "slot_key": slot_key,
+            }
+        }
+    )
+    return str(spec_dir), slot_key
+
+
+def test_decision_fingerprint_ignores_option_order():
+    """Reordering the same choices cannot make a settled question answerable again."""
+    first = {
+        "id": "transport",
+        "title": "Inbound transport",
+        "options": ["HTTPS", "WebSocket"],
+    }
+    reordered = {
+        "id": "transport",
+        "title": "Inbound transport",
+        "options": ["WebSocket", "HTTPS"],
+    }
+
+    assert routes._decision_fingerprint(first) == routes._decision_fingerprint(reordered)
+
+
+@pytest.mark.asyncio
+async def test_reusing_an_id_for_a_different_question_does_not_inherit_the_answer(
+    tmp_path, monkeypatch
+):
+    """The id is only one field of a decision's identity.
+
+    An agent may legitimately reuse a short id after replacing a question. Matching the
+    durable answer by id alone locks the replacement card to a choice that it never
+    offered and prevents the user from answering the new question.
+    """
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    dispatched: list[str] = []
+
+    def _dispatch(*args, **kwargs):
+        dispatched.append(args[2])
+        kwargs["on_consumed"](True)
+
+    monkeypatch.setattr(routes, "_dispatch_turn", _dispatch)
+
+    state, _slot = _slot_stub()
+    state._background_tasks = set()
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        first = await client.post(
+            f"{_BASE}/specs/s/message",
+            json={
+                "spec_dir": spec_dir,
+                "slot_key": slot_key,
+                "decision_id": "transport",
+                "decision_option": "HTTPS",
+                "text": "Decision - Inbound transport: HTTPS",
+            },
+        )
+        assert first.status == 200, await first.json()
+
+        Path(spec_dir, ".spec-state.json").write_text(
+            json.dumps(
+                {
+                    "decisions": [
+                        {
+                            "id": "transport",
+                            "title": "Storage engine",
+                            "options": ["SQLite", "PostgreSQL"],
+                        }
+                    ]
+                }
+            )
+        )
+        detail = await (await client.get(f"{_BASE}/specs/s")).json()
+        replacement = detail["state"]["decisions"][0]
+
+        second = await client.post(
+            f"{_BASE}/specs/s/message",
+            json={
+                "spec_dir": spec_dir,
+                "slot_key": slot_key,
+                "decision_id": "transport",
+                "decision_option": "SQLite",
+                "text": "Decision - Storage engine: SQLite",
+            },
+        )
+        assert second.status == 200, await second.json()
+        if state._background_tasks:
+            await asyncio.gather(*list(state._background_tasks))
+
+        # Re-emitting the original fingerprint must find its original immutable
+        # answer. Keeping only the newest fingerprint lets this third card overwrite
+        # the first record and reverse a choice the agent already consumed.
+        Path(spec_dir, ".spec-state.json").write_text(json.dumps(_DEFAULT_DECISION_STATE))
+        third = await client.post(
+            f"{_BASE}/specs/s/message",
+            json={
+                "spec_dir": spec_dir,
+                "slot_key": slot_key,
+                "decision_id": "transport",
+                "decision_option": "WebSocket",
+                "text": "Decision - Inbound transport: WebSocket",
+            },
+        )
+        third_payload = await third.json()
+    finally:
+        await client.close()
+
+    assert replacement["locked"] is False
+    assert replacement["answer"] == ""
+    assert third.status == 409, third_payload
+    assert third_payload.get("code") == "decision_already_answered", third_payload
+    assert third_payload.get("answer") == "HTTPS", third_payload
+    assert dispatched == [
+        "Decision - Inbound transport: HTTPS",
+        "Decision - Storage engine: SQLite",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_claim_for_an_absent_decision_is_refused(tmp_path, monkeypatch):
+    """A stale card cannot mint a durable answer after its question disappeared."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path, state={"decisions": []})
+    dispatched: list[str] = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a[2]))
+
+    state, _slot = _slot_stub()
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(
+            f"{_BASE}/specs/s/message",
+            json={
+                "spec_dir": spec_dir,
+                "slot_key": slot_key,
+                "decision_id": "transport",
+                "decision_option": "HTTPS",
+                "text": "Decision - Inbound transport: HTTPS",
+            },
+        )
+        payload = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 409, payload
+    assert payload.get("code") == "decision_not_found", payload
+    assert dispatched == []
+    assert await _recorded_answers(spec_dir) == {}
+
+
+@pytest.mark.asyncio
+async def test_a_claim_is_refused_when_decision_state_is_unreadable(tmp_path, monkeypatch):
+    """A failed state read cannot establish which question the stale card names."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    Path(spec_dir, ".spec-state.json").write_text("{not json")
+    dispatched: list[str] = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a[2]))
+
+    state, _slot = _slot_stub()
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(
+            f"{_BASE}/specs/s/message",
+            json={
+                "spec_dir": spec_dir,
+                "slot_key": slot_key,
+                "decision_id": "transport",
+                "decision_option": "HTTPS",
+                "text": "Decision - Inbound transport: HTTPS",
+            },
+        )
+        payload = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 503, payload
+    assert payload.get("code") == "decision_state_unreadable", payload
+    assert dispatched == []
+    assert await _recorded_answers(spec_dir) == {}
+
+
+@pytest.mark.asyncio
+async def test_a_claim_left_pending_by_a_crash_is_replayed_only_by_a_post(tmp_path, monkeypatch):
+    """The durable write must be an outbox, not a premature delivered receipt.
+
+    This is the exact crash window: the claim reaches disk and the process exits before
+    `_dispatch_turn`. A replacement gateway's first detail poll may report that recovery
+    is needed, but it must stay read-only; the authenticated recovery POST delivers that
+    same pending message and then makes the answer final.
+    """
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    decision, usable = routes._current_decision(Path(spec_dir), "transport")
+    assert usable and decision is not None
+    fingerprint = routes._decision_fingerprint(decision)
+
+    outcome, _held = await routes._claim_decision(
+        "s",
+        "transport",
+        "HTTPS",
+        expect_spec_dir=spec_dir,
+        expect_slot_key=slot_key,
+        fingerprint=fingerprint,
+        message="Decision - Inbound transport: HTTPS",
+        delivery_id="delivery-crash",
+    )
+    assert outcome == routes._CLAIM_RECORDED
+
+    dispatched: list[str] = []
+
+    def _dispatch(*args, **kwargs):
+        dispatched.append(args[2])
+        kwargs["on_consumed"](True)
+
+    monkeypatch.setattr(routes, "_dispatch_turn", _dispatch)
+    state, _slot = _slot_stub()
+    state._background_tasks = set()
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        detail_resp = await client.get(f"{_BASE}/specs/s")
+        detail = await detail_resp.json()
+        assert detail_resp.status == 200, detail
+        assert detail.get("decision_recovery_pending") is True
+        assert dispatched == [], "a GET request dispatched an agent turn"
+        assert [
+            entry.get("delivery_id") for entry in await routes._pending_decisions(spec_dir)
+        ] == ["delivery-crash"]
+
+        recover_resp = await client.post(
+            f"{_BASE}/specs/s/recover-decision",
+            json={"spec_dir": spec_dir, "slot_key": slot_key},
+        )
+        recovered = await recover_resp.json()
+    finally:
+        await client.close()
+
+    assert recover_resp.status == 200, recovered
+    assert recovered == {"ok": True}
+    assert dispatched == ["Decision - Inbound transport: HTTPS"]
+    if state._background_tasks:
+        await asyncio.gather(*list(state._background_tasks))
+    pending = await routes._pending_decisions(spec_dir)
+    assert pending == [], "the replayed outbox entry was not marked final"
+
+    outcome, held = await routes._claim_decision(
+        "s",
+        "transport",
+        "Streaming",
+        expect_spec_dir=spec_dir,
+        expect_slot_key=slot_key,
+        fingerprint=fingerprint,
+        message="Decision - Inbound transport: Streaming",
+        delivery_id="delivery-later",
+    )
+    assert (outcome, held) == (routes._CLAIM_TAKEN, "HTTPS")
+
+
+@pytest.mark.asyncio
+async def test_crash_replay_preserves_a_maximum_length_decision_option(tmp_path, monkeypatch):
+    """The durable prompt is bounded without truncating the selected option."""
+    title = "T" * routes._MAX_FIELD
+    option = "O" * routes._MAX_FIELD
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(
+        tmp_path,
+        state={"decisions": [{"id": "transport", "title": title, "options": [option]}]},
+    )
+    decision, usable = routes._current_decision(Path(spec_dir), "transport")
+    assert usable and decision is not None
+    fingerprint = routes._decision_fingerprint(decision)
+    prompt = routes._decision_answer_prompt(decision, option)
+    assert len(prompt) <= routes._MAX_DECISION_PROMPT
+    assert prompt.endswith(option)
+
+    outcome, _held = await routes._claim_decision(
+        "s",
+        "transport",
+        option,
+        expect_spec_dir=spec_dir,
+        expect_slot_key=slot_key,
+        fingerprint=fingerprint,
+        message=prompt,
+        delivery_id="delivery-long-option",
+    )
+    assert outcome == routes._CLAIM_RECORDED
+
+    dispatched: list[str] = []
+
+    def _dispatch(*args, **kwargs):
+        dispatched.append(args[2])
+        kwargs["on_consumed"](True)
+
+    monkeypatch.setattr(routes, "_dispatch_turn", _dispatch)
+    state, _slot = _slot_stub()
+    state._background_tasks = set()
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        detail_resp = await client.get(f"{_BASE}/specs/s")
+        detail = await detail_resp.json()
+        assert detail_resp.status == 200, detail
+        assert detail.get("decision_recovery_pending") is True
+        assert dispatched == []
+        recover_resp = await client.post(
+            f"{_BASE}/specs/s/recover-decision",
+            json={"spec_dir": spec_dir, "slot_key": slot_key},
+        )
+        recovered = await recover_resp.json()
+    finally:
+        await client.close()
+
+    assert recover_resp.status == 200, recovered
+    assert recovered == {"ok": True}
+    assert dispatched == [prompt]
+    assert dispatched[0].endswith(option)
+    source = inspect.getsource(routes._handle_message)
+    assert "message=_decision_answer_prompt(current_decision, decision_option)" in source
+
+
+@pytest.mark.asyncio
+async def test_replay_abandons_an_answer_for_a_question_that_was_replaced(tmp_path, monkeypatch):
+    """Crash recovery must revalidate the durable prompt before relaying it.
+
+    A channel turn can replace the decision after the answer is claimed but before
+    delivery. The surviving outbox row names the old fingerprint, so replay must drop
+    that unconsumed row rather than inject a stale answer into the new conversation.
+    """
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    decision, usable = routes._current_decision(Path(spec_dir), "transport")
+    assert usable and decision is not None
+    fingerprint = routes._decision_fingerprint(decision)
+    outcome, _held = await routes._claim_decision(
+        "s",
+        "transport",
+        "HTTPS",
+        expect_spec_dir=spec_dir,
+        expect_slot_key=slot_key,
+        fingerprint=fingerprint,
+        message="Decision - Inbound transport: HTTPS",
+        delivery_id="delivery-stale",
+    )
+    assert outcome == routes._CLAIM_RECORDED
+    Path(spec_dir, ".spec-state.json").write_text(
+        json.dumps(
+            {
+                "decisions": [
+                    {
+                        "id": "storage",
+                        "title": "Storage engine",
+                        "options": ["SQLite", "PostgreSQL"],
+                    }
+                ]
+            }
+        )
+    )
+
+    dispatched: list[str] = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a[2]))
+    state, _slot = _slot_stub()
+    state._background_tasks = set()
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.get(f"{_BASE}/specs/s")
+        payload = await resp.json()
+        assert resp.status == 200, payload
+        assert payload.get("decision_recovery_pending") is True
+        assert dispatched == []
+        recover_resp = await client.post(
+            f"{_BASE}/specs/s/recover-decision",
+            json={"spec_dir": spec_dir, "slot_key": slot_key},
+        )
+        recovered = await recover_resp.json()
+    finally:
+        await client.close()
+
+    assert recover_resp.status == 200, recovered
+    assert recovered == {"ok": False}
+    assert dispatched == []
+    assert await routes._pending_decisions(spec_dir) == []
+    assert await _recorded_answers(spec_dir) == {}
+
+
+@pytest.mark.asyncio
+async def test_replay_retains_a_relayed_answer_when_the_model_may_have_consumed_it(
+    tmp_path, monkeypatch
+):
+    """A post-consumption crash must not erase the durable one-way decision.
+
+    The model can consume Q1, write Q2, and then lose the gateway before the watcher
+    marks Q1 final. Its persisted delivery row proves relay but not consumption, so
+    the durable pre-model relay boundary is the surviving ambiguity marker. Recovery
+    cannot safely resend or delete the row; retaining it is the only fail-closed answer.
+    """
+    _redirect_state(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    decision, usable = routes._current_decision(Path(spec_dir), "transport")
+    assert usable and decision is not None
+    fingerprint = routes._decision_fingerprint(decision)
+    outcome, _held = await routes._claim_decision(
+        "s",
+        "transport",
+        "HTTPS",
+        expect_spec_dir=spec_dir,
+        expect_slot_key=slot_key,
+        fingerprint=fingerprint,
+        message="Decision - Inbound transport: HTTPS",
+        delivery_id="delivery-maybe-consumed",
+    )
+    assert outcome == routes._CLAIM_RECORDED
+    assert await routes._mark_decision_relayed(
+        spec_dir,
+        "transport",
+        fingerprint,
+        "delivery-maybe-consumed",
+    )
+    Path(spec_dir, ".spec-state.json").write_text(
+        json.dumps(
+            {
+                "decisions": [
+                    {
+                        "id": "storage",
+                        "title": "Storage engine",
+                        "options": ["SQLite", "PostgreSQL"],
+                    }
+                ]
+            }
+        )
+    )
+    pending = (await routes._pending_decisions(spec_dir))[0]
+    state, slot = _slot_stub()
+    state._background_tasks = set()
+    slot.messages = []
+    dispatched: list[str] = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a[2]))
+
+    assert await routes._deliver_pending_decision(state, slot, spec_dir, pending) is False
+    assert dispatched == []
+    retained = await routes._pending_decisions(spec_dir)
+    assert [entry.get("delivery_id") for entry in retained] == ["delivery-maybe-consumed"]
+    assert await _recorded_answers(spec_dir) == {"transport": "HTTPS"}
+
+
+@pytest.mark.asyncio
+async def test_replay_skips_a_stale_relay_that_precedes_a_current_answer(tmp_path, monkeypatch):
+    """A retained ambiguity marker cannot permanently starve a newer answer."""
+    _redirect_state(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    first, usable = routes._current_decision(Path(spec_dir), "transport")
+    assert usable and first is not None
+    first_fingerprint = routes._decision_fingerprint(first)
+    outcome, _held = await routes._claim_decision(
+        "s",
+        "transport",
+        "HTTPS",
+        expect_spec_dir=spec_dir,
+        expect_slot_key=slot_key,
+        fingerprint=first_fingerprint,
+        message="Decision - Inbound transport: HTTPS",
+        delivery_id="delivery-stale-relay",
+    )
+    assert outcome == routes._CLAIM_RECORDED
+    assert await routes._mark_decision_relayed(
+        spec_dir,
+        "transport",
+        first_fingerprint,
+        "delivery-stale-relay",
+    )
+
+    Path(spec_dir, ".spec-state.json").write_text(
+        json.dumps(
+            {
+                "decisions": [
+                    {
+                        "id": "storage",
+                        "title": "Storage engine",
+                        "options": ["SQLite", "PostgreSQL"],
+                    }
+                ]
+            }
+        )
+    )
+    second, usable = routes._current_decision(Path(spec_dir), "storage")
+    assert usable and second is not None
+    outcome, _held = await routes._claim_decision(
+        "s",
+        "storage",
+        "SQLite",
+        expect_spec_dir=spec_dir,
+        expect_slot_key=slot_key,
+        fingerprint=routes._decision_fingerprint(second),
+        message="Decision - Storage engine: SQLite",
+        delivery_id="delivery-current",
+    )
+    assert outcome == routes._CLAIM_RECORDED
+
+    state, slot = _slot_stub()
+    dispatched: list[str] = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **_k: dispatched.append(a[2]))
+
+    assert await routes._replay_pending_decision(
+        state,
+        slot,
+        "s",
+        routes._load_index()["s"],
+    )
+    assert dispatched == ["Decision - Storage engine: SQLite"]
+    retained = await routes._pending_decisions(spec_dir)
+    assert retained[0]["delivery_id"] == "delivery-stale-relay"
+
+
+@pytest.mark.asyncio
+async def test_delivery_refuses_to_start_when_the_relay_boundary_cannot_be_saved(
+    tmp_path, monkeypatch
+):
+    """The model cannot consume an answer whose durable ambiguity marker failed."""
+    _redirect_state(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    decision, usable = routes._current_decision(Path(spec_dir), "transport")
+    assert usable and decision is not None
+    fingerprint = routes._decision_fingerprint(decision)
+    outcome, _held = await routes._claim_decision(
+        "s",
+        "transport",
+        "HTTPS",
+        expect_spec_dir=spec_dir,
+        expect_slot_key=slot_key,
+        fingerprint=fingerprint,
+        message="Decision - Inbound transport: HTTPS",
+        delivery_id="delivery-no-boundary",
+    )
+    assert outcome == routes._CLAIM_RECORDED
+    pending = (await routes._pending_decisions(spec_dir))[0]
+    state, slot = _slot_stub()
+    state._background_tasks = set()
+    dispatched: list[str] = []
+
+    async def _fail_relay_boundary(*_args, **_kwargs):
+        return False
+
+    monkeypatch.setattr(routes, "_mark_decision_relayed", _fail_relay_boundary)
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a[2]))
+
+    assert await routes._deliver_pending_decision(state, slot, spec_dir, pending) is False
+    assert dispatched == []
+    retained = await routes._pending_decisions(spec_dir)
+    assert [(entry.get("status"), entry.get("delivery_id")) for entry in retained] == [
+        ("pending", "delivery-no-boundary")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_turn_that_takes_the_slot_during_relay_restores_pending(tmp_path, monkeypatch):
+    """A pre-dispatch refusal cannot retain a relay the model never received."""
+    _redirect_state(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    decision, usable = routes._current_decision(Path(spec_dir), "transport")
+    assert usable and decision is not None
+    fingerprint = routes._decision_fingerprint(decision)
+    outcome, _held = await routes._claim_decision(
+        "s",
+        "transport",
+        "HTTPS",
+        expect_spec_dir=spec_dir,
+        expect_slot_key=slot_key,
+        fingerprint=fingerprint,
+        message="Decision - Inbound transport: HTTPS",
+        delivery_id="delivery-raced",
+    )
+    assert outcome == routes._CLAIM_RECORDED
+    pending = (await routes._pending_decisions(spec_dir))[0]
+    state, slot = _slot_stub()
+    state._background_tasks = set()
+    reservation = asyncio.create_task(asyncio.sleep(0))
+    await reservation
+    slot.task = reservation
+    real_mark_relayed = routes._mark_decision_relayed
+
+    async def _mark_then_lose_reservation(*args, **kwargs):
+        marked = await real_mark_relayed(*args, **kwargs)
+        rival = asyncio.create_task(asyncio.sleep(0))
+        await rival
+        slot.task = rival
+        return marked
+
+    monkeypatch.setattr(routes, "_mark_decision_relayed", _mark_then_lose_reservation)
+    monkeypatch.setattr(
+        routes,
+        "_dispatch_turn",
+        lambda *_args, **_kwargs: pytest.fail("the raced answer was dispatched"),
+    )
+
+    assert not await routes._deliver_pending_decision(
+        state,
+        slot,
+        spec_dir,
+        pending,
+        turn_reservation=reservation,
+    )
+    retained = await routes._pending_decisions(spec_dir)
+    assert [(entry.get("status"), entry.get("delivery_id")) for entry in retained] == [
+        ("pending", "delivery-raced")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_channel_turn_replacing_the_question_during_claim_cannot_receive_stale_answer(
+    tmp_path, monkeypatch
+):
+    """The slot reservation and final revalidation close the generic-chat race."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    state, slot = _slot_stub()
+    state._background_tasks = set()
+    dispatched: list[str] = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a[2]))
+    real_claim = routes._claim_decision
+    reservation_seen = False
+
+    async def _claim_while_channel_turn_replaces_question(*args, **kwargs):
+        nonlocal reservation_seen
+        reservation_seen = slot.task is asyncio.current_task()
+        outcome = await real_claim(*args, **kwargs)
+        Path(spec_dir, ".spec-state.json").write_text(
+            json.dumps(
+                {
+                    "decisions": [
+                        {
+                            "id": "storage",
+                            "title": "Storage engine",
+                            "options": ["SQLite", "PostgreSQL"],
+                        }
+                    ]
+                }
+            )
+        )
+
+        async def _completed_channel_turn() -> None:
+            return None
+
+        rival = asyncio.create_task(_completed_channel_turn())
+        await rival
+        slot.task = rival
+        return outcome
+
+    monkeypatch.setattr(routes, "_claim_decision", _claim_while_channel_turn_replaces_question)
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(
+            f"{_BASE}/specs/s/message",
+            json={
+                "spec_dir": spec_dir,
+                "slot_key": slot_key,
+                "decision_id": "transport",
+                "decision_option": "HTTPS",
+                "text": "Decision - Inbound transport: HTTPS",
+            },
+        )
+        payload = await resp.json()
+    finally:
+        await client.close()
+
+    assert reservation_seen, "generic chat could still observe the slot as idle"
+    assert resp.status == 409, payload
+    assert payload.get("code") == "decision_changed_before_delivery", payload
+    assert dispatched == []
+    assert await routes._pending_decisions(spec_dir) == []
+    assert await _recorded_answers(spec_dir) == {}
+
+
+@pytest.mark.asyncio
+async def test_a_message_queued_behind_a_refused_reservation_is_drained(monkeypatch):
+    """A validation refusal must not strand generic chat queued behind it."""
+    from kiro_crew.dashboard import chat_runner
+
+    state, slot = _slot_stub()
+    slot._queue = []
+    drained = asyncio.Event()
+
+    async def _drain(_state, _slot):
+        assert _state is state
+        assert _slot is slot
+        drained.set()
+        return True
+
+    monkeypatch.setattr(chat_runner, "_start_next_queued_turn", _drain)
+
+    async def _refused_request() -> None:
+        reservation = routes._reserve_slot_turn(state, slot)
+        assert reservation is asyncio.current_task()
+        slot._queue.append({"id": "queued", "content": "continue"})
+
+    request_task = asyncio.create_task(_refused_request())
+    await request_task
+    await asyncio.wait_for(drained.wait(), timeout=1)
+    if state._background_tasks:
+        await asyncio.gather(*list(state._background_tasks))
+
+
+@pytest.mark.asyncio
+async def test_recovery_replays_an_unconsumed_delivery_without_a_second_chat_row(
+    tmp_path, monkeypatch
+):
+    """A durable chat row proves display, not model consumption."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    decision, usable = routes._current_decision(Path(spec_dir), "transport")
+    assert usable and decision is not None
+    fingerprint = routes._decision_fingerprint(decision)
+    outcome, _held = await routes._claim_decision(
+        "s",
+        "transport",
+        "HTTPS",
+        expect_spec_dir=spec_dir,
+        expect_slot_key=slot_key,
+        fingerprint=fingerprint,
+        message="Decision - Inbound transport: HTTPS",
+        delivery_id="delivery-relayed",
+    )
+    assert outcome == routes._CLAIM_RECORDED
+    assert await routes._mark_decision_relayed(
+        spec_dir,
+        "transport",
+        fingerprint,
+        "delivery-relayed",
+    )
+
+    dispatched: list[tuple[str, bool]] = []
+    consumed_callbacks: list[Callable[[bool], None]] = []
+
+    def _dispatch(*args, **kwargs):
+        dispatched.append((args[2], kwargs.get("append_user", True)))
+        consumed_callbacks.append(kwargs["on_consumed"])
+
+    monkeypatch.setattr(routes, "_dispatch_turn", _dispatch)
+    state, slot = _slot_stub()
+    state._background_tasks = set()
+    slot.messages = [
+        {
+            "role": "user",
+            "content": "Decision - Inbound transport: HTTPS",
+            "meta": {"spec_decision_delivery_id": "delivery-relayed"},
+        }
+    ]
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        detail_resp = await client.get(f"{_BASE}/specs/s")
+        detail = await detail_resp.json()
+        assert detail_resp.status == 200, detail
+        assert detail.get("decision_recovery_pending") is True
+        assert dispatched == [], "a GET request dispatched an agent turn"
+
+        recover_resp = await client.post(
+            f"{_BASE}/specs/s/recover-decision",
+            json={"spec_dir": spec_dir, "slot_key": slot_key},
+        )
+        recovered = await recover_resp.json()
+    finally:
+        await client.close()
+
+    assert recover_resp.status == 200, recovered
+    assert recovered == {"ok": True}
+    assert dispatched == [("Decision - Inbound transport: HTTPS", False)]
+    assert await routes._pending_decisions(
+        spec_dir
+    ), "a transcript marker finalized the answer before the model consumed it"
+
+    async def _report_consumed() -> None:
+        consumed_callbacks[0](True)
+
+    await asyncio.create_task(_report_consumed())
+    if state._background_tasks:
+        await asyncio.gather(*list(state._background_tasks))
+    assert await routes._pending_decisions(spec_dir) == []
+
+
+@pytest.mark.asyncio
+async def test_a_consumed_delivery_cannot_replay_during_or_after_finalization(
+    tmp_path, monkeypatch
+):
+    """A detail poll's stale pending snapshot must not duplicate a consumed answer."""
+    _redirect_state(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    decision, usable = routes._current_decision(Path(spec_dir), "transport")
+    assert usable and decision is not None
+    fingerprint = routes._decision_fingerprint(decision)
+    outcome, _held = await routes._claim_decision(
+        "s",
+        "transport",
+        "HTTPS",
+        expect_spec_dir=spec_dir,
+        expect_slot_key=slot_key,
+        fingerprint=fingerprint,
+        message="Decision - Inbound transport: HTTPS",
+        delivery_id="delivery-settling",
+    )
+    assert outcome == routes._CLAIM_RECORDED
+    stale_pending = (await routes._pending_decisions(spec_dir))[0]
+
+    state, slot = _slot_stub()
+    state._background_tasks = set()
+    alias_slot = types.SimpleNamespace(running=False, messages=[], task=None)
+    turns: list[asyncio.Task[None]] = []
+    dispatched: list[str] = []
+
+    def _dispatch(*args, **kwargs):
+        async def _consuming_turn() -> None:
+            kwargs["on_consumed"](True)
+
+        dispatched.append(args[2])
+        turn = asyncio.create_task(_consuming_turn())
+        slot.task = turn
+        turns.append(turn)
+        return turn
+
+    finalize_started = asyncio.Event()
+    allow_finalize = asyncio.Event()
+    real_finalize = routes._finalize_decision
+
+    async def _slow_finalize(*args, **kwargs):
+        finalize_started.set()
+        await allow_finalize.wait()
+        return await real_finalize(*args, **kwargs)
+
+    monkeypatch.setattr(routes, "_dispatch_turn", _dispatch)
+    monkeypatch.setattr(routes, "_finalize_decision", _slow_finalize)
+
+    assert await routes._deliver_pending_decision(state, slot, spec_dir, stale_pending) is True
+    await turns[0]
+    await finalize_started.wait()
+    assert (
+        await routes._deliver_pending_decision(state, alias_slot, spec_dir, stale_pending) is False
+    ), "an alias slot bypassed the directory-wide in-flight settlement"
+
+    allow_finalize.set()
+    if state._background_tasks:
+        await asyncio.gather(*list(state._background_tasks))
+    assert await routes._pending_decisions(spec_dir) == []
+    assert (
+        await routes._deliver_pending_decision(state, alias_slot, spec_dir, stale_pending) is False
+    ), "a stale pending snapshot bypassed the durable final status"
+    assert dispatched == ["Decision - Inbound transport: HTTPS"]
+
+
+@pytest.mark.asyncio
+async def test_irreversible_consumption_finalizes_before_the_turn_finishes(tmp_path, monkeypatch):
+    """A streamed token closes the crash-replay window immediately."""
+    _redirect_state(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    decision, usable = routes._current_decision(Path(spec_dir), "transport")
+    assert usable and decision is not None
+    fingerprint = routes._decision_fingerprint(decision)
+    outcome, _held = await routes._claim_decision(
+        "s",
+        "transport",
+        "HTTPS",
+        expect_spec_dir=spec_dir,
+        expect_slot_key=slot_key,
+        fingerprint=fingerprint,
+        message="Decision - Inbound transport: HTTPS",
+        delivery_id="delivery-irrevocable",
+    )
+    assert outcome == routes._CLAIM_RECORDED
+    pending = (await routes._pending_decisions(spec_dir))[0]
+
+    state, slot = _slot_stub()
+    state._background_tasks = set()
+    irreversible_reported = asyncio.Event()
+    allow_turn_finish = asyncio.Event()
+    finalize_done = asyncio.Event()
+    real_finalize = routes._finalize_decision
+
+    def _dispatch(*_args, **kwargs):
+        on_irreversibly_consumed = kwargs["on_irreversibly_consumed"]
+
+        async def _streaming_turn() -> None:
+            await on_irreversibly_consumed()
+            irreversible_reported.set()
+            await allow_turn_finish.wait()
+
+        turn = asyncio.create_task(_streaming_turn())
+        slot.task = turn
+        return turn
+
+    async def _observe_finalize(*args, **kwargs):
+        finalized = await real_finalize(*args, **kwargs)
+        finalize_done.set()
+        return finalized
+
+    monkeypatch.setattr(routes, "_dispatch_turn", _dispatch)
+    monkeypatch.setattr(routes, "_finalize_decision", _observe_finalize)
+
+    assert await routes._deliver_pending_decision(state, slot, spec_dir, pending) is True
+    await irreversible_reported.wait()
+    await finalize_done.wait()
+    assert not allow_turn_finish.is_set()
+    assert await routes._pending_decisions(spec_dir) == []
+
+    allow_turn_finish.set()
+    if state._background_tasks:
+        await asyncio.gather(*list(state._background_tasks))
+
+
+@pytest.mark.asyncio
+async def test_a_failed_finalization_retries_without_replaying_the_consumed_answer(
+    tmp_path, monkeypatch
+):
+    """A transient ledger failure keeps the process-local consumption claim."""
+    _redirect_state(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    decision, usable = routes._current_decision(Path(spec_dir), "transport")
+    assert usable and decision is not None
+    fingerprint = routes._decision_fingerprint(decision)
+    outcome, _held = await routes._claim_decision(
+        "s",
+        "transport",
+        "HTTPS",
+        expect_spec_dir=spec_dir,
+        expect_slot_key=slot_key,
+        fingerprint=fingerprint,
+        message="Decision - Inbound transport: HTTPS",
+        delivery_id="delivery-finalize-retry",
+    )
+    assert outcome == routes._CLAIM_RECORDED
+    stale_pending = (await routes._pending_decisions(spec_dir))[0]
+
+    state, slot = _slot_stub()
+    state._background_tasks = set()
+    alias_slot = types.SimpleNamespace(running=False, messages=[], task=None)
+    turns: list[asyncio.Task[None]] = []
+    dispatched: list[str] = []
+
+    def _dispatch(*args, **kwargs):
+        async def _consuming_turn() -> None:
+            kwargs["on_consumed"](True)
+
+        dispatched.append(args[2])
+        turn = asyncio.create_task(_consuming_turn())
+        slot.task = turn
+        turns.append(turn)
+        return turn
+
+    real_finalize = routes._finalize_decision
+    finalize_calls = 0
+
+    async def _fail_once_then_finalize(*args, **kwargs):
+        nonlocal finalize_calls
+        finalize_calls += 1
+        if finalize_calls == 1:
+            return False
+        return await real_finalize(*args, **kwargs)
+
+    monkeypatch.setattr(routes, "_dispatch_turn", _dispatch)
+    monkeypatch.setattr(routes, "_finalize_decision", _fail_once_then_finalize)
+
+    assert await routes._deliver_pending_decision(state, slot, spec_dir, stale_pending) is True
+    await turns[0]
+    if state._background_tasks:
+        await asyncio.gather(*list(state._background_tasks))
+    assert await routes._pending_decisions(spec_dir)
+
+    assert (
+        await routes._deliver_pending_decision(state, alias_slot, spec_dir, stale_pending) is False
+    )
+    assert await routes._pending_decisions(spec_dir) == []
+    assert finalize_calls == 2
+    assert dispatched == ["Decision - Inbound transport: HTTPS"]
+
+
+@pytest.mark.asyncio
+async def test_a_retracted_consumption_report_leaves_the_delivery_pending(tmp_path, monkeypatch):
+    """The first empty response reports completion, then retracts before return."""
+    _redirect_state(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    decision, usable = routes._current_decision(Path(spec_dir), "transport")
+    assert usable and decision is not None
+    fingerprint = routes._decision_fingerprint(decision)
+    outcome, _held = await routes._claim_decision(
+        "s",
+        "transport",
+        "HTTPS",
+        expect_spec_dir=spec_dir,
+        expect_slot_key=slot_key,
+        fingerprint=fingerprint,
+        message="Decision - Inbound transport: HTTPS",
+        delivery_id="delivery-empty",
+    )
+    assert outcome == routes._CLAIM_RECORDED
+
+    state, slot = _slot_stub()
+    state._background_tasks = set()
+    turns: list[asyncio.Task[None]] = []
+
+    def _dispatch(*_args, **kwargs):
+        async def _empty_turn() -> None:
+            kwargs["on_consumed"](True)
+            kwargs["on_consumed"](False)
+
+        turn = asyncio.create_task(_empty_turn())
+        turns.append(turn)
+        return turn
+
+    monkeypatch.setattr(routes, "_dispatch_turn", _dispatch)
+    pending = (await routes._pending_decisions(spec_dir))[0]
+
+    assert await routes._deliver_pending_decision(state, slot, spec_dir, pending) is True
+    await turns[0]
+    if state._background_tasks:
+        await asyncio.gather(*list(state._background_tasks))
+
+    assert await routes._pending_decisions(
+        spec_dir
+    ), "the transient completion report finalized a prompt that was requeued"
+
+
+@pytest.mark.asyncio
+async def test_second_answer_to_one_decision_is_refused(tmp_path, monkeypatch):
+    """The first answer dispatches; a later one for the same decision does not.
+
+    This is the case the state file cannot catch: the agent has not written
+    ``answer`` yet (its turn has not run), so nothing on disk says the decision is
+    settled -- only this backend's record does."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+
+    dispatched: list = []
+
+    def _dispatch(*args, **kwargs):
+        dispatched.append(args[2])
+        kwargs["on_consumed"](True)
+
+    monkeypatch.setattr(routes, "_dispatch_turn", _dispatch)
+
+    state, _slot = _slot_stub()
+    state._background_tasks = set()
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        body = {"spec_dir": spec_dir, "slot_key": slot_key, "decision_id": "transport"}
+        first = await client.post(
+            f"{_BASE}/specs/s/message",
+            json={**body, "decision_option": "HTTPS", "text": "Decision - transport: HTTPS"},
+        )
+        second = await client.post(
+            f"{_BASE}/specs/s/message",
+            json={
+                **body,
+                "decision_option": "Streaming",
+                "text": "Decision - transport: Streaming",
+            },
+        )
+        payload = await second.json()
+    finally:
+        await client.close()
+
+    assert first.status == 200
+    assert second.status == 409, payload
+    assert payload.get("code") == "decision_already_answered", payload
+    # The refusal names the answer the agent actually has, so the client can show
+    # the settled state rather than a bare error.
+    assert payload.get("answer") == "HTTPS", payload
+    assert dispatched == [
+        "Decision - Inbound transport: HTTPS"
+    ], "a second answer reached the agent, reversing a settled decision"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_answers_to_one_decision_dispatch_once(tmp_path, monkeypatch):
+    """The double-click race. Both requests read the decision as unanswered, so
+    only an atomic claim can keep one of them out -- a client-side lock cannot,
+    and neither can a check-then-write."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+
+    dispatched: list = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a[2]))
+
+    state, _slot = _slot_stub()
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        body = {"spec_dir": spec_dir, "slot_key": slot_key, "decision_id": "transport"}
+        results = await asyncio.gather(
+            client.post(
+                f"{_BASE}/specs/s/message", json={**body, "decision_option": "A", "text": "A"}
+            ),
+            client.post(
+                f"{_BASE}/specs/s/message", json={**body, "decision_option": "B", "text": "B"}
+            ),
+        )
+        statuses = sorted(r.status for r in results)
+    finally:
+        await client.close()
+
+    assert statuses == [200, 409], statuses
+    assert len(dispatched) == 1, f"both clicks reached the agent: {dispatched}"
+
+
+@pytest.mark.asyncio
+async def test_a_plain_message_is_never_locked(tmp_path, monkeypatch):
+    """Only a decision answer is one-way. Ordinary chat keeps working, repeatedly,
+    and writes nothing to the ledger."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+
+    dispatched: list = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a[2]))
+
+    state, _slot = _slot_stub()
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        body = {"spec_dir": spec_dir, "slot_key": slot_key}
+        one = await client.post(f"{_BASE}/specs/s/message", json={**body, "text": "looks good"})
+        two = await client.post(f"{_BASE}/specs/s/message", json={**body, "text": "looks good"})
+    finally:
+        await client.close()
+
+    assert (one.status, two.status) == (200, 200)
+    assert len(dispatched) == 2
+    assert await _recorded_answers(spec_dir) == {}
+
+
+@pytest.mark.asyncio
+async def test_a_re_emitted_pending_decision_reads_as_answered(tmp_path, monkeypatch):
+    """The card that came back. The agent re-writes a settled decision id with
+    ``answer: null``; the detail read must still report the recorded answer and
+    mark it locked, or the UI renders options for a decision that is closed."""
+    _redirect_state(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(
+        tmp_path,
+        state={
+            "decisions": [
+                {
+                    "id": "transport",
+                    "title": "Inbound transport",
+                    "options": ["HTTPS", "Streaming"],
+                    "answer": None,
+                }
+            ]
+        },
+    )
+    outcome, _held = await routes._claim_decision(
+        "s", "transport", "HTTPS", expect_spec_dir=spec_dir, expect_slot_key=slot_key
+    )
+    assert outcome == routes._CLAIM_RECORDED
+
+    app = web.Application(middlewares=[_auth_mw])
+    routes.register_routes(app)
+    async with TestClient(TestServer(app)) as client:
+        client.app["state"] = _slot_stub()[0]
+        resp = await client.get(f"{_BASE}/specs/s")
+        data = await resp.json()
+
+    assert resp.status == 200, data
+    decision = data["state"]["decisions"][0]
+    assert decision["answer"] == "HTTPS", "the agent's pending re-emission won"
+    assert decision["locked"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_recorded_answer_is_redacted_on_egress(tmp_path, monkeypatch):
+    """index.json is agent-writable, so the ledger is untrusted input like every
+    other field -- and the overlay bypasses the state file's own scrub."""
+    _redirect_state(monkeypatch, tmp_path)
+    secret = "AKIAIOSFODNN7EXAMPLE"
+    spec_dir, _slot_key = _decision_spec(
+        tmp_path,
+        state={"decisions": [{"id": "d", "title": "Which key", "answer": None}]},
+    )
+    routes._save_decisions(
+        {
+            routes._decision_key(spec_dir): {
+                "name": "s",
+                "answers": {"d": _final_answer("d", f"use {secret}")},
+            }
+        }
+    )
+
+    app = web.Application(middlewares=[_auth_mw])
+    routes.register_routes(app)
+    async with TestClient(TestServer(app)) as client:
+        client.app["state"] = _slot_stub()[0]
+        resp = await client.get(f"{_BASE}/specs/s")
+        data = await resp.json()
+
+    assert secret not in json.dumps(data["state"])
+
+
+@pytest.mark.asyncio
+async def test_a_claim_is_pinned_to_the_spec_it_was_made_for(tmp_path, monkeypatch):
+    """A delete-and-recreate in flight must not have an answer stamped onto the
+    replacement's entry -- same identity pin every other mutation takes."""
+    _redirect_state(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+
+    wrong_dir, _ = await routes._claim_decision(
+        "s", "d", "A", expect_spec_dir=str(tmp_path / "elsewhere"), expect_slot_key=slot_key
+    )
+    wrong_key, _ = await routes._claim_decision(
+        "s", "d", "A", expect_spec_dir=spec_dir, expect_slot_key="spec-builder-s-other"
+    )
+
+    assert wrong_dir == routes._CLAIM_STALE
+    assert wrong_key == routes._CLAIM_STALE
+    assert await _recorded_answers(spec_dir) == {}
+
+
+@pytest.mark.asyncio
+async def test_a_full_ledger_refuses_rather_than_dispatching_unrecorded(tmp_path, monkeypatch):
+    """The cap fails CLOSED. Dispatching an answer this backend could not record
+    would produce exactly the re-answerable card the ledger exists to prevent."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(
+        tmp_path,
+        state={"decisions": [{"id": "one-too-many", "title": "Last decision", "options": ["A"]}]},
+    )
+    # Simulate Windows, where the ledger contract case-folds every directory key.
+    monkeypatch.setattr(routes.os.path, "normcase", lambda path: path.upper())
+    routes._save_decisions(
+        {
+            routes._decision_key(spec_dir): {
+                "name": "s",
+                "answers": {
+                    f"d{i}": _final_answer(f"d{i}", "A") for i in range(routes._MAX_RECORDED)
+                },
+            }
+        }
+    )
+
+    dispatched: list = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a[2]))
+
+    state, _slot = _slot_stub()
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(
+            f"{_BASE}/specs/s/message",
+            json={
+                "spec_dir": spec_dir,
+                "slot_key": slot_key,
+                "decision_id": "one-too-many",
+                "decision_option": "A",
+                "text": "A",
+            },
+        )
+        payload = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 409, payload
+    assert payload.get("code") == "decision_ledger_full", payload
+    assert dispatched == []
+
+
+def test_the_claim_is_a_pending_outbox_before_delivery():
+    """Source guard for the recoverable claim -> relay -> final ordering."""
+    src = inspect.getsource(routes._handle_message)
+    claim = src.index("_claim_decision(")
+    deliver = src.index("_deliver_pending_decision(")
+    assert claim < deliver, "the decision is relayed before its pending claim is durable"
+    lock = src.index("async with _turn_lock(")
+    assert lock < claim and lock < deliver, (
+        "the claim and delivery are not both inside the turn lock, so another handler "
+        "can interleave with the outbox relay"
+    )
+    claim_src = inspect.getsource(routes._claim_decision_locked)
+    assert '"status": "pending" if delivery_id else "final"' in claim_src
+    deliver_src = inspect.getsource(routes._deliver_pending_decision)
+    assert "on_consumed" in deliver_src
+    assert "_finalize_decision(" in deliver_src
+
+
+@pytest.mark.asyncio
+async def test_a_claim_is_refused_while_a_delete_is_reserved(tmp_path, monkeypatch):
+    """The claim must honour the delete reservation, like every other mutation.
+
+    Without it the claim commits (spec_dir still matches) while the pre-dispatch
+    re-pin refuses, because THAT pin does honour the marker. The answer is then
+    recorded and never sent -- and a delete that rolls back leaves the entry alive
+    with a decision locked to an answer the agent never received, which nothing
+    can re-open."""
+    _redirect_state(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+
+    async def _reserve(idx_name: str) -> None:
+        def _apply(index: dict) -> bool:
+            index[idx_name][routes._DELETING] = {"owner": routes._PROCESS_ID, "at": time.time()}
+            return True
+
+        await routes._mutate_index(_apply)
+
+    await _reserve("s")
+    outcome, _held = await routes._claim_decision(
+        "s", "transport", "HTTPS", expect_spec_dir=spec_dir, expect_slot_key=slot_key
+    )
+
+    assert outcome == routes._CLAIM_STALE
+    assert (
+        await _recorded_answers(spec_dir) == {}
+    ), "an answer was recorded onto a spec whose delete was in flight"
+
+
+@pytest.mark.asyncio
+async def test_the_ledger_key_matches_the_id_the_detail_read_serves(tmp_path, monkeypatch):
+    """The overlay matches the ledger KEY against the id from the state file, so
+    the two must be normalized identically.
+
+    An id carrying whitespace (or longer than a tighter cap) used to be stripped
+    on the wire but not in the state projection. The mismatch is silent in the
+    worst way: the answer IS recorded, no card is ever locked, and the decision
+    stays re-answerable forever."""
+    client = _make_client(monkeypatch, tmp_path)
+    raw_id = "  transport shape  "
+    spec_dir, slot_key = _decision_spec(
+        tmp_path,
+        state={"decisions": [{"id": raw_id, "title": "Inbound transport", "options": ["HTTPS"]}]},
+    )
+
+    def _dispatch(*_args, **kwargs):
+        kwargs["on_consumed"](True)
+
+    monkeypatch.setattr(routes, "_dispatch_turn", _dispatch)
+
+    state, _slot = _slot_stub()
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        # The SPA echoes back the id the detail read gave it, verbatim.
+        served = routes._normalize_spec_state(
+            json.loads((Path(spec_dir) / ".spec-state.json").read_text())
+        )
+        assert served is not None
+        served_id = served["decisions"][0]["id"]
+        resp = await client.post(
+            f"{_BASE}/specs/s/message",
+            json={
+                "spec_dir": spec_dir,
+                "slot_key": slot_key,
+                "decision_id": served_id,
+                "decision_option": "HTTPS",
+                "text": "Decision - Inbound transport: HTTPS",
+            },
+        )
+        assert resp.status == 200, await resp.json()
+        if state._background_tasks:
+            await asyncio.gather(*list(state._background_tasks))
+        detail = await (await client.get(f"{_BASE}/specs/s")).json()
+    finally:
+        await client.close()
+
+    decision = detail["state"]["decisions"][0]
+    assert (
+        decision["locked"] is True
+    ), "the recorded answer did not match the served id, so the card is still clickable"
+    assert decision["answer"] == "HTTPS"
+
+
+@pytest.mark.asyncio
+async def test_an_answer_without_its_option_is_refused(tmp_path, monkeypatch):
+    """The option is what gets recorded and later rendered. A decision answer that
+    carries no option cannot be recorded honestly, so it is refused rather than
+    falling back to the composed prompt."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    dispatched: list = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a[2]))
+
+    state, _slot = _slot_stub()
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(
+            f"{_BASE}/specs/s/message",
+            json={
+                "spec_dir": spec_dir,
+                "slot_key": slot_key,
+                "decision_id": "transport",
+                "text": "Decision - transport: HTTPS",
+            },
+        )
+        payload = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 400, payload
+    assert payload.get("code") == "decision_option_required", payload
+    assert dispatched == []
+
+
+@pytest.mark.asyncio
+async def test_the_card_shows_the_option_not_the_whole_prompt(tmp_path, monkeypatch):
+    """The agent receives a canonical prompt while the card records only the choice."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(
+        tmp_path,
+        state={
+            "decisions": [{"id": "transport", "title": "Inbound transport", "options": ["HTTPS"]}]
+        },
+    )
+    dispatched: list = []
+
+    def _dispatch(*args, **kwargs):
+        dispatched.append(args[2])
+        kwargs["on_consumed"](True)
+
+    monkeypatch.setattr(routes, "_dispatch_turn", _dispatch)
+
+    state, _slot = _slot_stub()
+    state._background_tasks = set()
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        client_prompt = "Decision — “Inbound transport”: HTTPS"
+        resp = await client.post(
+            f"{_BASE}/specs/s/message",
+            json={
+                "spec_dir": spec_dir,
+                "slot_key": slot_key,
+                "decision_id": "transport",
+                "decision_option": "HTTPS",
+                "text": client_prompt,
+            },
+        )
+        assert resp.status == 200, await resp.json()
+        if state._background_tasks:
+            await asyncio.gather(*list(state._background_tasks))
+        detail = await (await client.get(f"{_BASE}/specs/s")).json()
+    finally:
+        await client.close()
+
+    assert dispatched == [
+        "Decision - Inbound transport: HTTPS"
+    ], "the agent must receive the server-built prompt"
+    assert (
+        detail["state"]["decisions"][0]["answer"] == "HTTPS"
+    ), "the card renders the composed prompt instead of the chosen option"
+
+
+@pytest.mark.asyncio
+async def test_a_delete_that_lands_after_the_repin_strands_no_claim(tmp_path, monkeypatch):
+    """The window the in-claim reservation check does NOT cover, closed by ordering.
+
+    A DELETE reserving after the pre-dispatch re-pin used to reach a claim that had
+    already committed: the dispatch was refused, and when the delete rolled back the
+    spec came back with a decision locked to an answer the agent never received.
+    With the claim as the last await, the same delete makes the CLAIM refuse, so
+    nothing is recorded and the user can answer again."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    dispatched: list = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a[2]))
+
+    real_touch = routes._touch_spec
+    calls: list[int] = []
+
+    async def _touch_then_reserve(name, **kw):
+        out = await real_touch(name, **kw)
+        calls.append(1)
+        # The second _touch_spec is the pre-dispatch re-pin; the delete reserves
+        # immediately after it returns, which is the window under test.
+        if len(calls) == 2:
+
+            def _apply(index: dict) -> bool:
+                index[name][routes._DELETING] = {"owner": routes._PROCESS_ID, "at": time.time()}
+                return True
+
+            await routes._mutate_index(_apply)
+        return out
+
+    monkeypatch.setattr(routes, "_touch_spec", _touch_then_reserve)
+
+    state, _slot = _slot_stub()
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(
+            f"{_BASE}/specs/s/message",
+            json={
+                "spec_dir": spec_dir,
+                "slot_key": slot_key,
+                "decision_id": "transport",
+                "decision_option": "HTTPS",
+                "text": "Decision - transport: HTTPS",
+            },
+        )
+        payload = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 409, payload
+    assert dispatched == []
+    assert await _recorded_answers(spec_dir) == {}, (
+        "an answer stayed recorded although its dispatch was refused -- the decision "
+        "is now locked to something the agent never received"
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_answer_is_refused_while_the_agent_is_running(tmp_path, monkeypatch):
+    """A running slot QUEUES the message, and Pause clears that queue by design --
+    so a queued answer may never be delivered while the ledger claims it was.
+
+    Refused instead of queued, and nothing recorded, so the user can answer again
+    once the turn ends."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    dispatched: list = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a[2]))
+    # The gate sits BEFORE the claim, so a busy click never touches the ledger at
+    # all -- it does not record-then-release, which would churn index.json (and
+    # leave a lock behind if the release failed).
+    claims: list = []
+    real_claim = routes._claim_decision
+
+    async def _record_claim(*a, **kw):
+        claims.append(a)
+        return await real_claim(*a, **kw)
+
+    monkeypatch.setattr(routes, "_claim_decision", _record_claim)
+
+    state, slot = _slot_stub()
+    slot.running = True
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(
+            f"{_BASE}/specs/s/message",
+            json={
+                "spec_dir": spec_dir,
+                "slot_key": slot_key,
+                "decision_id": "transport",
+                "decision_option": "HTTPS",
+                "text": "Decision - transport: HTTPS",
+            },
+        )
+        payload = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 409, payload
+    assert payload.get("code") == "decision_agent_busy", payload
+    assert dispatched == []
+    assert claims == [], "a busy click reached the ledger instead of being refused first"
+    assert await _recorded_answers(spec_dir) == {}
+
+
+@pytest.mark.asyncio
+async def test_a_plain_message_still_queues_behind_a_running_turn(tmp_path, monkeypatch):
+    """The busy refusal is scoped to decision answers. Ordinary chat keeps its
+    queue-behind-the-turn behaviour -- that is how a user steers a working agent."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    dispatched: list = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a[2]))
+
+    state, slot = _slot_stub()
+    slot.running = True
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(
+            f"{_BASE}/specs/s/message",
+            json={"spec_dir": spec_dir, "slot_key": slot_key, "text": "also check the auth flow"},
+        )
+    finally:
+        await client.close()
+
+    assert resp.status == 200
+    assert dispatched == ["also check the auth flow"]
+
+
+def test_the_decision_ledger_is_not_in_the_agent_writable_index():
+    """The record must not live on ``index.json``.
+
+    That file is agent-writable by design (its own docstrings say so), so a ledger
+    field on it could be erased to re-open a settled decision or forged to lock one
+    the user never answered -- and a forged entry also puts an answer on screen
+    that nobody chose."""
+    src = inspect.getsource(routes)
+    assert (
+        "answered_decisions" not in src
+    ), "the ledger is back on an index entry, where the agent can rewrite it"
+    write = inspect.getsource(routes._claim_decision_locked)
+    assert "_mutate_index(" not in write, (
+        "the claim writes through the index mutator again, so the record is " "agent-writable"
+    )
+    assert "_DECISIONS_LOCK" in write
+    assert "_save_decisions(" in write
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "~/.kiro/crew/trust/spec-builder-decisions.json",
+        "~/.kirocrew/trust/spec-builder-decisions.json",
+        # The PARENT, which is the half a leaf-only entry missed.
+        "~/.kiro/crew/trust",
+        "~/.kirocrew/trust",
+    ],
+)
+def test_the_decision_ledger_is_on_the_security_keystone(path):
+    """Read+write keystone, like the Notes vault registry and the Ops Mission
+    Control policy: app-owned, not a secret, but forging or erasing it defeats the
+    app's safety property, so the agent must reach it through neither the file
+    tools nor a shell.
+
+    The PARENT is gated too. Under this app's own state dir it was not: a directory
+    below ``workspace/`` is not a sensitive path, so one ``ln -s`` naming it
+    redirected every read and write, and this backend opens the path directly (as
+    keystone writers must) so it would have followed the link."""
+    from kiro_crew import security
+
+    assert security.is_sensitive_path(path)
+    assert security.is_sensitive_bash_command(f"echo x > {path}") is not None
+    assert security.is_sensitive_bash_command(f"cat {path}") is not None
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "ln -s /tmp/evil ~/.kiro/crew/trust",
+        "ln -sf /tmp/evil ~/.kiro/crew/trust/spec-builder-decisions.json",
+        "mv ~/.kiro/crew/trust /tmp/x",
+        "mv /tmp/evil ~/.kiro/crew/trust/spec-builder-decisions.json",
+        "rm -rf ~/.kiro/crew/trust",
+        "cp /tmp/evil ~/.kiro/crew/trust/spec-builder-decisions.json",
+    ],
+)
+def test_the_ledger_directory_cannot_be_swapped_or_removed(cmd):
+    """The reported vector: replace the ledger's PARENT and the backend follows it.
+    Every verb that could repoint or destroy the directory (or plant a file in it)
+    has to be refused, not just a read or a redirect at the leaf."""
+    from kiro_crew import security
+
+    assert security.is_sensitive_bash_command(cmd) is not None, cmd
+
+
+def test_the_ledger_is_not_under_the_apps_own_state_dir(tmp_path, monkeypatch):
+    """Source/behaviour guard: the default location must be the gated trust root.
+
+    Anything under the app's state dir has a replaceable parent, which is the defect
+    this move fixes -- and it would come back silently, because the app opens the
+    path directly and a symlinked parent reads and writes exactly like a real one."""
+    monkeypatch.setattr(routes, "_DECISIONS_PATH", None)
+    monkeypatch.setattr(routes, "_STATE_DIR", tmp_path / "state")
+
+    path = routes._decisions_path()
+
+    assert path.parent.name == "trust", path
+    assert (tmp_path / "state") not in path.parents, path
+    from kiro_crew import security
+
+    assert security.is_sensitive_path(str(path))
+    assert security.is_sensitive_path(str(path.parent))
+
+
+@pytest.mark.asyncio
+async def test_a_forged_ledger_for_another_spec_dir_is_ignored(tmp_path, monkeypatch):
+    """A record is scoped to the spec_dir it was written for. A delete leaves the
+    documents on disk, so a re-import under the same name at a different path is a
+    DIFFERENT spec and must start with no answers."""
+    _redirect_state(monkeypatch, tmp_path)
+    spec_dir, _slot_key = _decision_spec(tmp_path)
+    routes._save_decisions(
+        {
+            str(tmp_path / "somewhere-else"): {
+                "name": "s",
+                "answers": {"d": _final_answer("d", "A")},
+            }
+        }
+    )
+
+    assert await _recorded_answers(spec_dir) == {}
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_spec_forgets_its_answers(tmp_path, monkeypatch):
+    """Otherwise a re-import at the same name AND path inherits locks from the spec
+    that was deleted, and its cards are settled before the user answers anything."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    assert (
+        await routes._claim_decision(
+            "s", "transport", "HTTPS", expect_spec_dir=spec_dir, expect_slot_key=slot_key
+        )
+    )[0] == routes._CLAIM_RECORDED
+
+    await client.start_server()
+    try:
+        client.app["state"] = None
+        resp = await client.delete(f"{_BASE}/specs/s")
+    finally:
+        await client.close()
+
+    assert resp.status == 200, await resp.text()
+    assert await _recorded_answers(spec_dir) == {}
+
+
+@pytest.mark.asyncio
+async def test_a_torn_ledger_file_reads_as_nothing_recorded(tmp_path, monkeypatch):
+    """Degrade toward answerable, never toward a locked card nobody can clear, and
+    never toward raising inside a request."""
+    _redirect_state(monkeypatch, tmp_path)
+    spec_dir, _slot_key = _decision_spec(tmp_path)
+    routes._decisions_path().parent.mkdir(parents=True, exist_ok=True)
+    routes._decisions_path().write_text("{ not json")
+
+    assert await _recorded_answers(spec_dir) == {}
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_ledger_refuses_the_write_instead_of_erasing_it(tmp_path, monkeypatch):
+    """A corrupt read must not become data loss.
+
+    Treating an unreadable file as an empty ledger and saving over it would erase
+    every recorded answer -- for every spec -- and make settled decisions answerable
+    again. Reads still fail soft (the card stays answerable, which is the safe
+    direction); WRITES refuse."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    routes._save_decisions(
+        {
+            "/elsewhere": {
+                "name": "other",
+                "answers": {"kept": _final_answer("kept", "yes")},
+            }
+        }
+    )
+    corrupt = routes._decisions_path().read_text()[:-3]  # truncate the JSON
+    routes._decisions_path().write_text(corrupt)
+
+    dispatched: list = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a[2]))
+
+    state, _slot = _slot_stub()
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(
+            f"{_BASE}/specs/s/message",
+            json={
+                "spec_dir": spec_dir,
+                "slot_key": slot_key,
+                "decision_id": "transport",
+                "decision_option": "HTTPS",
+                "text": "Decision - transport: HTTPS",
+            },
+        )
+        payload = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 503, payload
+    assert payload.get("code") == "decision_record_unreadable", payload
+    assert dispatched == []
+    # The unreadable file is left EXACTLY as it was rather than replaced.
+    assert routes._decisions_path().read_text() == corrupt
+
+
+@pytest.mark.asyncio
+async def test_a_delete_reserved_during_the_claim_records_nothing(tmp_path, monkeypatch):
+    """The window a separate liveness hop left open: a DELETE reserving between the
+    check and the write. Both now happen under ``_INDEX_LOCK`` in one hop, and
+    ``_mark_deleting`` takes that same lock, so the two serialize."""
+    _redirect_state(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    assert await _mark_reserved("s")
+
+    outcome, _held = await routes._claim_decision(
+        "s", "transport", "HTTPS", expect_spec_dir=spec_dir, expect_slot_key=slot_key
+    )
+
+    assert outcome == routes._CLAIM_STALE
+    assert await _recorded_answers(spec_dir) == {}
+
+
+def test_the_claim_checks_liveness_and_writes_in_one_transaction():
+    """Source guard: the index read and the ledger write must sit inside the SAME
+    ``_INDEX_LOCK`` block, not in two hops. Split across hops, a delete reserving in
+    between has its answer recorded for a spec already being torn down."""
+    src = inspect.getsource(routes._claim_decision_locked)
+    lock = src.index("with _INDEX_LOCK:")
+    assert src.index("_spec_is_live(") > lock
+    assert src.index("_save_decisions(") > lock
+    assert "await" not in src, "the transaction body awaits, so it is not one hop"
+    # And the async wrapper must do nothing but hand it to a worker thread.
+    wrapper = inspect.getsource(routes._claim_decision)
+    assert "asyncio.to_thread(" in wrapper
+    assert "_read_decisions(" not in wrapper
+
+
+def test_the_detail_read_scopes_the_slot_from_a_fresh_index_read():
+    """Source guard: nothing may await between the detail handler's FRESH index read
+    and the ``_ensure_worker_slot`` call that consumes its ``meta``.
+
+    A delete-and-re-import in that window hands the replacement's slot the stale
+    entry, and the agent's next turn then runs in the OLD project directory. Reading
+    this backend's decision ledger separately opened exactly that window; the read
+    belongs in the one filesystem hop above instead."""
+    src = inspect.getsource(routes._handle_get)
+    fresh_call = "await _aload_index_with_decision_alias_status("
+    fresh = src.rindex(fresh_call)
+    # The CALL, not the comment that names the helper a few lines above it.
+    scope = src.index("await _ensure_worker_slot(")
+    assert fresh < scope, "the slot is scoped before the index is re-read"
+    between = src[fresh + len(fresh_call) : scope]
+    awaits = [
+        ln.strip()
+        for ln in between.splitlines()
+        if "await " in ln and not ln.strip().startswith("#")
+    ]
+    assert (
+        not awaits
+    ), f"an await sits between the fresh index read and the slot scoping: {awaits!r}"
+
+
+@pytest.mark.asyncio
+async def test_the_detail_read_serves_the_recorded_answer(tmp_path, monkeypatch):
+    """The overlay still applies now that it happens inside the document hop."""
+    _redirect_state(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(
+        tmp_path,
+        state={"decisions": [{"id": "transport", "title": "Inbound", "options": ["HTTPS"]}]},
+    )
+    assert (
+        await routes._claim_decision(
+            "s", "transport", "HTTPS", expect_spec_dir=spec_dir, expect_slot_key=slot_key
+        )
+    )[0] == routes._CLAIM_RECORDED
+
+    app = web.Application(middlewares=[_auth_mw])
+    routes.register_routes(app)
+    async with TestClient(TestServer(app)) as client:
+        client.app["state"] = _slot_stub()[0]
+        data = await (await client.get(f"{_BASE}/specs/s")).json()
+
+    decision = data["state"]["decisions"][0]
+    assert decision["locked"] is True
+    assert decision["answer"] == "HTTPS"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_index_removal_puts_the_answers_back(tmp_path, monkeypatch):
+    """A spec that survives a failed delete keeps its answers.
+
+    This is what fixes the ordering rather than compensating for it: the ledger is
+    cleared only AFTER the index entry is actually gone, so a failure of the index write
+    cannot leave the spec alive with its decisions answerable again. There is no restore
+    path to get wrong, because nothing was removed.
+    """
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    assert (
+        await routes._claim_decision(
+            "s", "transport", "HTTPS", expect_spec_dir=spec_dir, expect_slot_key=slot_key
+        )
+    )[0] == routes._CLAIM_RECORDED
+
+    real_mutate = routes._mutate_index
+    calls: list[int] = []
+
+    async def _fail_the_final_pop(mutate):
+        calls.append(1)
+        # The pop is the LAST index mutation of the delete; the reservation and
+        # durable teardown boundary before it must still work.
+        if len(calls) >= 3:
+            return False
+        return await real_mutate(mutate)
+
+    monkeypatch.setattr(routes, "_mutate_index", _fail_the_final_pop)
+
+    await client.start_server()
+    try:
+        client.app["state"] = None
+        resp = await client.delete(f"{_BASE}/specs/s")
+        payload = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 503, payload
+    assert payload.get("code") == "index_write_failed", payload
+    assert await _recorded_answers(spec_dir) == {
+        "transport": "HTTPS"
+    }, "the spec survived the failed delete with its recorded answers erased"
+
+
+@pytest.mark.asyncio
+async def test_no_turn_can_start_while_an_answer_is_being_recorded(tmp_path, monkeypatch):
+    """The turn lock, behaviourally.
+
+    A turn starting between the running-check and the dispatch would have the answer
+    QUEUED behind it (and droppable by a Pause) while the ledger claims it was
+    delivered. Undoing the claim at that point needs a write that can itself fail, so
+    the answer path holds the lock instead: another would-be dispatcher cannot get in
+    until this one has dispatched.
+    """
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    dispatched: list = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a[2]))
+
+    # What the racing dispatcher observed when it finally got the lock: the number of
+    # dispatches already made. 0 would mean it cut in before ours.
+    seen_at_acquire: list[int] = []
+    race: list = []
+    real_claim = routes._claim_decision
+
+    async def _claim_while_another_dispatcher_waits(*a, **kw):
+        async def _other_dispatcher() -> None:
+            # By DIRECTORY, the key the handler uses (see _turn_lock).
+            async with routes._turn_lock(spec_dir):
+                seen_at_acquire.append(len(dispatched))
+
+        race.append(asyncio.create_task(_other_dispatcher()))
+        await asyncio.sleep(0)  # let it reach the lock
+        return await real_claim(*a, **kw)
+
+    monkeypatch.setattr(routes, "_claim_decision", _claim_while_another_dispatcher_waits)
+
+    state, _slot = _slot_stub()
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(
+            f"{_BASE}/specs/s/message",
+            json={
+                "spec_dir": spec_dir,
+                "slot_key": slot_key,
+                "decision_id": "transport",
+                "decision_option": "HTTPS",
+                "text": "Decision - transport: HTTPS",
+            },
+        )
+        body = await resp.text()
+    finally:
+        await client.close()
+    await asyncio.gather(*race)
+
+    assert resp.status == 200, body
+    assert len(dispatched) == 1
+    assert seen_at_acquire == [1], (
+        "another dispatcher acquired the turn lock before this answer was dispatched, "
+        f"so the answer could have been queued: {seen_at_acquire!r}"
+    )
+
+
+def test_every_turn_start_takes_the_turn_lock():
+    """Source guard: a dispatcher that skips the lock can start a turn between a
+    decision answer's running-check and its dispatch, which is what the lock exists to
+    prevent. The CREATE path is exempt: the spec does not exist before it, so no answer
+    can be in flight for it."""
+    for handler in (routes._handle_message, routes._handle_handoff):
+        src = inspect.getsource(handler)
+        assert (
+            "async with _turn_lock(" in src
+        ), f"{handler.__name__} dispatches a turn without taking the turn lock"
+        assert src.index("async with _turn_lock(") < src.index(
+            "_dispatch_turn("
+        ), f"{handler.__name__} takes the lock after dispatching"
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_spec_retains_its_turn_lock(tmp_path, monkeypatch):
+    """This test asserted the OPPOSITE until round 24, as housekeeping: a deleted
+    spec's lock was dropped rather than accumulating for the process lifetime.
+
+    That was unsafe at any reference count. A handler that called `_turn_lock()`
+    before the eviction is already waiting on the OLD object, so the next arrival is
+    handed a brand-new lock and the two serialize against nothing -- concurrent turns
+    over the same documents, which is the hole the directory-keyed lock exists to
+    close, reopened by its own cleanup. A waiter holds the object rather than an index
+    entry, so no reference count can make the eviction safe; the lock stays.
+
+    What is given up is one small asyncio.Lock per directory that ever had a turn.
+    The ledger clear is unaffected and still asserted here.
+    """
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, _slot_key = _decision_spec(tmp_path)
+    lock = routes._turn_lock(spec_dir)
+    assert routes._turn_key(spec_dir) in routes._TURN_LOCKS
+
+    await client.start_server()
+    try:
+        client.app["state"] = None
+        resp = await client.delete(f"{_BASE}/specs/s")
+    finally:
+        await client.close()
+
+    assert resp.status == 200, await resp.text()
+    assert routes._turn_lock(spec_dir) is lock, (
+        "the delete replaced the directory's lock, so a waiter and the next arrival "
+        "would serialize on different objects"
+    )
+    assert await _recorded_answers(spec_dir) == {}
+
+
+@pytest.mark.asyncio
+async def test_a_same_path_reimport_during_the_read_is_refused(tmp_path, monkeypatch):
+    """A delete leaves the documents on disk, so a re-import at the same name AND path
+    is a DIFFERENT creation. A spec_dir-only freshness check passed it, pairing the
+    replacement's metadata with documents and a decision record read for the spec that
+    is gone -- serving the deleted spec's locked answers on the new one."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    assert (
+        await routes._claim_decision(
+            "s", "transport", "HTTPS", expect_spec_dir=spec_dir, expect_slot_key=slot_key
+        )
+    )[0] == routes._CLAIM_RECORDED
+
+    real_collect = routes._collect_spec_documents
+
+    def _collect_then_reimport(sd):
+        # Same name, same path, NEW creation -- exactly what a delete + re-import
+        # leaves behind.
+        idx = routes._load_index()
+        routes._forget_observed_slot_identity("s", str(idx["s"].get("slot_key", "")))
+        idx["s"]["slot_key"] = routes._new_slot_key("s")
+        routes._save_index(idx)
+        return real_collect(sd)
+
+    monkeypatch.setattr(routes, "_collect_spec_documents", _collect_then_reimport)
+
+    await client.start_server()
+    try:
+        client.app["state"] = _slot_stub()[0]
+        resp = await client.get(f"{_BASE}/specs/s")
+        payload = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 409, payload
+    assert payload.get("code") == "spec_changed_during_read", payload
+
+
+@pytest.mark.asyncio
+async def test_a_failed_ledger_write_is_a_named_refusal_not_a_500(tmp_path, monkeypatch):
+    """A full or unwritable data home must not 500.
+
+    A 500 carries no code the client can act on, so its optimistic lock would stay
+    while NOTHING was recorded or dispatched -- a locked card for an answer the agent
+    never got. The named pre-dispatch refusal is what lets the card re-open."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    dispatched: list = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a[2]))
+
+    def _no_space(_store: dict) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(routes, "_save_decisions", _no_space)
+
+    state, _slot = _slot_stub()
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(
+            f"{_BASE}/specs/s/message",
+            json={
+                "spec_dir": spec_dir,
+                "slot_key": slot_key,
+                "decision_id": "transport",
+                "decision_option": "HTTPS",
+                "text": "Decision - transport: HTTPS",
+            },
+        )
+        payload = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 503, payload
+    assert payload.get("code") == "decision_record_write_failed", payload
+    assert dispatched == []
+
+
+@pytest.mark.asyncio
+async def test_a_raised_index_removal_still_restores_the_answers(tmp_path, monkeypatch):
+    """``_mutate_index`` can RAISE as well as return False (a full data home), and both
+    leave the spec in the index with its answers already cleared. The restore must run
+    on either path, or a restart exposes the surviving spec with its settled decisions
+    answerable again."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    assert (
+        await routes._claim_decision(
+            "s", "transport", "HTTPS", expect_spec_dir=spec_dir, expect_slot_key=slot_key
+        )
+    )[0] == routes._CLAIM_RECORDED
+
+    real_mutate = routes._mutate_index
+    calls: list[int] = []
+
+    async def _raise_on_the_final_pop(mutate):
+        calls.append(1)
+        if len(calls) >= 3:
+            raise OSError(28, "No space left on device")
+        return await real_mutate(mutate)
+
+    monkeypatch.setattr(routes, "_mutate_index", _raise_on_the_final_pop)
+
+    await client.start_server()
+    try:
+        client.app["state"] = None
+        resp = await client.delete(f"{_BASE}/specs/s")
+        payload = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 503, payload
+    assert payload.get("code") == "index_write_failed", payload
+    assert await _recorded_answers(spec_dir) == {"transport": "HTTPS"}
+
+
+@pytest.mark.asyncio
+async def test_the_delete_holds_the_turn_lock(tmp_path, monkeypatch):
+    """A handoff that has already passed its freshness check would otherwise acquire
+    the lock after the delete released it and start a turn on a spec that is gone. The
+    delete holds the lock across its whole destructive sequence, so the other handler
+    sees either a live spec or none."""
+    client = _make_client(monkeypatch, tmp_path)
+    _decision_spec(tmp_path)
+
+    # What the racing dispatcher saw when it got the lock: whether the spec was still
+    # indexed. With the delete holding the lock it must be gone by then.
+    still_indexed: list[bool] = []
+    race: list = []
+    real_forget = routes._forget_decisions
+
+    async def _forget_while_another_dispatcher_waits(*a, **kw):
+        async def _other_dispatcher() -> None:
+            async with routes._turn_lock("s"):
+                still_indexed.append("s" in await routes._aload_index())
+
+        race.append(asyncio.create_task(_other_dispatcher()))
+        await asyncio.sleep(0)
+        return await real_forget(*a, **kw)
+
+    monkeypatch.setattr(routes, "_forget_decisions", _forget_while_another_dispatcher_waits)
+
+    await client.start_server()
+    try:
+        client.app["state"] = None
+        resp = await client.delete(f"{_BASE}/specs/s")
+    finally:
+        await client.close()
+    await asyncio.gather(*race)
+
+    assert resp.status == 200, await resp.text()
+    assert still_indexed == [False], (
+        "another dispatcher held the lock while the spec was still indexed mid-delete, "
+        f"so it could have started a turn on a spec being removed: {still_indexed!r}"
+    )
+
+
+def test_a_turn_lock_from_a_dead_loop_is_not_reused(tmp_path, monkeypatch):
+    """An asyncio.Lock binds to the loop that first awaits it, so a module-level
+    registry outliving a loop would hand back a lock bound to the dead one and raise
+    "is bound to a different event loop" on acquisition.
+
+    Deliberately NOT an asyncio test: it drives two loops of its own, which cannot be
+    done from inside a running one."""
+    _redirect_state(monkeypatch, tmp_path)
+
+    async def _take() -> int:
+        lock = routes._turn_lock("s")
+        async with lock:
+            return id(lock)
+
+    first = asyncio.new_event_loop()
+    try:
+        first_id = first.run_until_complete(_take())
+    finally:
+        first.close()
+
+    second = asyncio.new_event_loop()
+    try:
+        second_id = second.run_until_complete(_take())  # must not raise
+    finally:
+        second.close()
+
+    assert first_id != second_id, "the lock from the closed loop was reused"
+
+
+def test_every_destructive_or_dispatching_handler_takes_the_turn_lock():
+    """Source guard. A handler that starts OR destroys a turn without the lock can
+    interleave with an answer being recorded. The CREATE path is exempt: the spec does
+    not exist before it, so no answer can be in flight for it."""
+    for handler in (routes._handle_message, routes._handle_handoff, routes._handle_delete):
+        src = inspect.getsource(handler)
+        tree = ast.parse(textwrap.dedent(src))
+        locked = any(
+            isinstance(node, ast.AsyncWith)
+            and any(
+                isinstance(item.context_expr, ast.Call)
+                and isinstance(item.context_expr.func, ast.Name)
+                and item.context_expr.func.id == "_turn_lock"
+                for item in node.items
+            )
+            for node in ast.walk(tree)
+        )
+        assert locked, f"{handler.__name__} runs without taking the turn lock"
+
+
+@pytest.mark.asyncio
+async def test_the_ledger_parent_is_created_on_first_write(tmp_path, monkeypatch):
+    """The ledger lives under ``trust/``, not this app's state dir, so on a fresh
+    install its parent may not exist yet -- and the app's own mkdir is the only thing
+    that creates it. Without this the FIRST answer of a new install fails to record."""
+    _redirect_state(monkeypatch, tmp_path)
+    # A parent that does not exist, exactly like a fresh install's trust root.
+    ledger = tmp_path / "fresh-home" / "trust" / "spec-builder-decisions.json"
+    monkeypatch.setattr(routes, "_DECISIONS_PATH", ledger)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    assert not ledger.parent.exists()
+
+    outcome, _held = await routes._claim_decision(
+        "s", "transport", "HTTPS", expect_spec_dir=spec_dir, expect_slot_key=slot_key
+    )
+
+    assert outcome == routes._CLAIM_RECORDED
+    assert ledger.is_file()
+    assert await _recorded_answers(spec_dir) == {"transport": "HTTPS"}
+
+
+def test_a_duplicate_decision_id_is_dropped():
+    """The id IS the identity: the ledger is keyed on it and the overlay matches on it,
+    so two cards claiming one id would both settle when either is answered -- and the
+    second would display an answer chosen for the first. The FIRST occurrence wins."""
+    out = routes._normalize_spec_state(
+        {
+            "decisions": [
+                {"id": "transport", "title": "Inbound transport", "options": ["HTTPS"]},
+                {"id": "transport", "title": "Something else entirely", "options": ["A"]},
+            ]
+        }
+    )
+    assert out is not None
+    assert [d["title"] for d in out["decisions"]] == ["Inbound transport"]
+
+
+@pytest.mark.asyncio
+async def test_an_undispatched_answer_is_never_reopened(tmp_path, monkeypatch):
+    """The crash window, resolved in the only direction that keeps the guarantee.
+
+    A ledger write and the dispatch it authorizes are two steps and no ordering makes
+    them atomic. If the process dies in between, the answer is recorded but undelivered
+    -- and it STAYS recorded, across restarts. Reopening it would be a silent reversal of
+    a decision that may already have reached the agent, which is the whole defect this
+    file exists to prevent; a locked card showing the user's own choice is a stall the
+    user clears by saying so in the spec's chat.
+    """
+    _redirect_state(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    assert (
+        await routes._claim_decision(
+            "s", "transport", "HTTPS", expect_spec_dir=spec_dir, expect_slot_key=slot_key
+        )
+    )[0] == routes._CLAIM_RECORDED
+
+    # Nothing else ran: no dispatch, no second write. A restart changes nothing, since
+    # the record carries no process-scoped state that a new process could disown.
+    monkeypatch.setattr(routes, "_PROCESS_ID", "9999:a-new-process")
+
+    assert await _recorded_answers(spec_dir) == {"transport": "HTTPS"}
+    outcome, held = await routes._claim_decision(
+        "s", "transport", "Streaming", expect_spec_dir=spec_dir, expect_slot_key=slot_key
+    )
+    assert outcome == routes._CLAIM_TAKEN, "a recorded answer was reopened after a restart"
+    assert held == "HTTPS"
+
+
+def test_nothing_writes_the_ledger_after_the_dispatch():
+    """Source guard: the claim is the LAST ledger write before the dispatch, and there
+    is no write after it.
+
+    A post-dispatch write to mark the answer delivered cannot work: its own failure is
+    indistinguishable from the crash it would be detecting, so a reader could only treat
+    the record as unconfirmed -- reopening a delivered answer. The absence of that write
+    is the invariant, so it is worth pinning.
+    """
+    src = inspect.getsource(routes._handle_message)
+    assert "_claim_decision(" in src
+    after = src[src.index("_dispatch_turn(") :]
+    for writer in ("_claim_decision", "_save_decisions", "_confirm_decision", "_forget_decisions"):
+        assert writer not in after, f"{writer} runs after the dispatch"
+
+
+@pytest.mark.asyncio
+async def test_a_delete_whose_cleanup_fails_still_deletes(tmp_path, monkeypatch):
+    """The ledger cleanup is housekeeping, so it cannot fail a delete that has happened.
+
+    The index entry and the conversation are already gone by then; refusing here would
+    report a spec as alive when it is not. A leftover entry is bounded and only readable
+    by a spec re-created at the same name AND path -- which, by the identity this ledger
+    uses, is the same spec.
+    """
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    assert (
+        await routes._claim_decision(
+            "s", "transport", "HTTPS", expect_spec_dir=spec_dir, expect_slot_key=slot_key
+        )
+    )[0] == routes._CLAIM_RECORDED
+
+    def _boom(_store):
+        raise OSError("read-only data home")
+
+    monkeypatch.setattr(routes, "_save_decisions", _boom)
+
+    await client.start_server()
+    try:
+        client.app["state"] = None
+        resp = await client.delete(f"{_BASE}/specs/s")
+        payload = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 200, payload
+    assert "s" not in await routes._aload_index()
+
+
+@pytest.mark.asyncio
+async def test_a_delete_clears_the_record_after_the_index_entry(tmp_path, monkeypatch):
+    """...and on the happy path the entry IS cleared, so the ledger does not accumulate
+    answers for specs that no longer exist."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    assert (
+        await routes._claim_decision(
+            "s", "transport", "HTTPS", expect_spec_dir=spec_dir, expect_slot_key=slot_key
+        )
+    )[0] == routes._CLAIM_RECORDED
+
+    await client.start_server()
+    try:
+        client.app["state"] = None
+        resp = await client.delete(f"{_BASE}/specs/s")
+    finally:
+        await client.close()
+
+    assert resp.status == 200, await resp.text()
+    assert await _recorded_answers(spec_dir) == {}
+
+
+def test_the_delete_clears_the_ledger_after_the_index_write():
+    """Source guard on that order. Clearing FIRST is what let a crash strand a surviving
+    spec with its answers erased."""
+    src = inspect.getsource(routes._handle_delete)
+    pop = src.index("await _mutate_index(", src.index("def _pop_if_same"))
+    assert pop < src.index(
+        "_forget_decisions("
+    ), "the ledger is cleared before the index entry is removed"
+
+
+def test_an_undecodable_record_is_unusable_not_an_exception(tmp_path, monkeypatch):
+    """``read_text`` decodes, so non-UTF-8 bytes raise UnicodeDecodeError -- a
+    ValueError, which the OSError handler does not catch.
+
+    Every caller is built around the (store, usable) contract, so an undecodable file
+    has to arrive as "exists but unusable": the detail read fails soft and a claim
+    refuses. Left uncaught it left this function by raising, which is a 500 carrying no
+    code the client could act on.
+    """
+    path = tmp_path / "spec-builder-decisions.json"
+    path.write_bytes(b'{"/x": {"name": "s", "answers": {"d": "\xff\xfe not utf-8"}}}')
+    monkeypatch.setattr(routes, "_DECISIONS_PATH", path)
+
+    store, usable = routes._read_decisions()
+
+    assert store == {}
+    assert usable is False, "an undecodable ledger reported itself as writable"
+
+
+def test_a_recorded_answer_round_trips_non_ascii(tmp_path, monkeypatch):
+    """The ledger's encoding is a property of the FILE, not of the host reading it.
+
+    ``atomic_write`` always emits UTF-8 while ``read_text()`` without an encoding decodes
+    with the platform default -- the ANSI code page on Windows. Under that asymmetry an
+    option carrying an em dash came back mojibake, so the locked card displayed an answer
+    the user never chose. Asserting the exact string back is what pins the explicit
+    encoding on the read; the undecodable-bytes test above cannot, since on a UTF-8 host
+    both spellings behave alike.
+    """
+    monkeypatch.setattr(routes, "_DECISIONS_PATH", tmp_path / "spec-builder-decisions.json")
+    option = "HTTPS — with mTLS (日本語, café)"
+    # A real directory, keyed the way the code keys it: a hard-coded "/x" resolves to a
+    # drive-anchored path on Windows, so the store key and the lookup key disagreed there.
+    spec_dir = tmp_path / "the-spec"
+    spec_dir.mkdir()
+    key = routes._decision_key(str(spec_dir))
+
+    routes._save_decisions(
+        {key: {"name": "s", "answers": {"transport": _final_answer("transport", option)}}}
+    )
+    store, usable = routes._read_decisions()
+
+    assert usable is True
+    assert _decision_record(store, str(spec_dir)) == {"transport": option}
+
+
+@pytest.mark.asyncio
+async def test_an_alias_name_for_the_same_folder_cannot_re_answer(tmp_path, monkeypatch):
+    """A name is a label the agent can mint more of; the directory is the spec.
+
+    Adding a second index entry pointing at the SAME spec directory used to give the
+    alias its own empty record, so its cards rendered answerable and a click dispatched
+    a conflicting answer over the same documents. Keyed on the directory, both names
+    resolve to one record.
+    """
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    assert (
+        await routes._claim_decision(
+            "s", "transport", "HTTPS", expect_spec_dir=spec_dir, expect_slot_key=slot_key
+        )
+    )[0] == routes._CLAIM_RECORDED
+
+    # The alias: a second, perfectly valid index entry for the same files.
+    index = await routes._aload_index()
+    alias_key = routes._new_slot_key("s-alias")
+    index["s-alias"] = {**index["s"], "slot_key": alias_key}
+    routes._save_index(index)
+
+    dispatched: list = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a[2]))
+    state, _slot = _slot_stub()
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(
+            f"{_BASE}/specs/s-alias/message",
+            json={
+                "spec_dir": spec_dir,
+                "slot_key": alias_key,
+                "decision_id": "transport",
+                "decision_option": "Streaming",
+                "text": "Decision - transport: Streaming",
+            },
+        )
+        payload = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 409, payload
+    assert payload.get("code") == "decision_already_answered", payload
+    assert payload.get("answer") == "HTTPS"
+    assert dispatched == [], "the alias dispatched a second answer for a settled decision"
+
+
+def _macos_case_aliases(monkeypatch) -> None:
+    """Make path identity behave like a case-insensitive Darwin volume."""
+    monkeypatch.setattr(routes, "_CASE_FOLD_TURN_KEYS", True)
+    monkeypatch.setattr(routes.os.path, "normcase", lambda path: path)
+    monkeypatch.setattr(
+        routes.os.path,
+        "samefile",
+        lambda left, right: os.path.normpath(left).casefold() == os.path.normpath(right).casefold(),
+    )
+
+
+def _add_case_alias(spec_dir: str, alias_slot_key: str) -> str:
+    """Add an upgrade-state alias whose lexical ledger key differs."""
+    index = routes._load_index()
+    alias_dir = str(Path(spec_dir).with_name(Path(spec_dir).name.swapcase()))
+    index["s-alias"] = {
+        **index["s"],
+        "spec_dir": alias_dir,
+        "slot_key": alias_slot_key,
+    }
+    routes._save_index(index)
+    return alias_dir
+
+
+@pytest.mark.asyncio
+async def test_macos_case_alias_cannot_mint_a_second_decision_ledger(tmp_path, monkeypatch):
+    """Upgrade-state aliases with distinct lexical keys fail closed on claim."""
+    _redirect_state(monkeypatch, tmp_path)
+    _macos_case_aliases(monkeypatch)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    outcome, _held = await routes._claim_decision(
+        "s",
+        "transport",
+        "HTTPS",
+        expect_spec_dir=spec_dir,
+        expect_slot_key=slot_key,
+    )
+    assert outcome == routes._CLAIM_RECORDED
+
+    alias_slot_key = routes._new_slot_key("s-alias")
+    alias_dir = _add_case_alias(spec_dir, alias_slot_key)
+    outcome, _held = await routes._claim_decision(
+        "s-alias",
+        "transport",
+        "Streaming",
+        expect_spec_dir=alias_dir,
+        expect_slot_key=alias_slot_key,
+    )
+
+    assert outcome == routes._CLAIM_ALIAS_CONFLICT
+    store, usable = routes._read_decisions()
+    assert usable is True
+    assert routes._decision_key(alias_dir) not in store
+    assert _decision_record(store, spec_dir) == {"transport": "HTTPS"}
+
+
+@pytest.mark.asyncio
+async def test_macos_single_path_rewrite_cannot_fork_the_decision_ledger(tmp_path, monkeypatch):
+    """A protected old key fails closed after the sole index spelling changes."""
+    client = _make_client(monkeypatch, tmp_path)
+    _macos_case_aliases(monkeypatch)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    outcome, _held = await routes._claim_decision(
+        "s",
+        "transport",
+        "HTTPS",
+        expect_spec_dir=spec_dir,
+        expect_slot_key=slot_key,
+    )
+    assert outcome == routes._CLAIM_RECORDED
+
+    rewritten_dir = str(Path(spec_dir).with_name("S"))
+    index = routes._load_index()
+    index["s"]["spec_dir"] = rewritten_dir
+    routes._save_index(index)
+
+    outcome, _held = await routes._claim_decision(
+        "s",
+        "transport",
+        "Streaming",
+        expect_spec_dir=rewritten_dir,
+        expect_slot_key=slot_key,
+    )
+
+    await client.start_server()
+    try:
+        client.app["state"] = None
+        detail = await client.get(f"{_BASE}/specs/s")
+        detail_body = await detail.json()
+        deleted = await client.delete(f"{_BASE}/specs/s")
+        delete_body = await deleted.json()
+    finally:
+        await client.close()
+
+    assert outcome == routes._CLAIM_ALIAS_CONFLICT
+    assert detail.status == 409, detail_body
+    assert detail_body["code"] == "decision_directory_alias_conflict"
+    assert deleted.status == 409, delete_body
+    assert delete_body["code"] == "decision_directory_alias_conflict"
+    store, usable = routes._read_decisions()
+    assert usable is True
+    assert routes._decision_key(rewritten_dir) not in store
+    assert _decision_record(store, spec_dir) == {"transport": "HTTPS"}
+
+
+@pytest.mark.asyncio
+async def test_claim_uses_one_ledger_snapshot_for_alias_validation_and_write(tmp_path, monkeypatch):
+    """A transient alias-check read cannot be followed by a write from a new snapshot."""
+    _macos_case_aliases(monkeypatch)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    outcome, _held = await routes._claim_decision(
+        "s",
+        "transport",
+        "HTTPS",
+        expect_spec_dir=spec_dir,
+        expect_slot_key=slot_key,
+    )
+    assert outcome == routes._CLAIM_RECORDED
+
+    rewritten_dir = str(Path(spec_dir).with_name("S"))
+    index = routes._load_index()
+    index["s"]["spec_dir"] = rewritten_dir
+    routes._save_index(index)
+    read_decisions = routes._read_decisions
+    reads = 0
+
+    def _fail_once():
+        nonlocal reads
+        reads += 1
+        return ({}, False) if reads == 1 else read_decisions()
+
+    monkeypatch.setattr(routes, "_read_decisions", _fail_once)
+    outcome, _held = await routes._claim_decision(
+        "s",
+        "transport",
+        "Streaming",
+        expect_spec_dir=rewritten_dir,
+        expect_slot_key=slot_key,
+    )
+    monkeypatch.setattr(routes, "_read_decisions", read_decisions)
+
+    assert outcome == routes._CLAIM_UNREADABLE
+    assert reads == 1
+    store, usable = routes._read_decisions()
+    assert usable is True
+    assert routes._decision_key(rewritten_dir) not in store
+    assert _decision_record(store, spec_dir) == {"transport": "HTTPS"}
+
+
+@pytest.mark.asyncio
+async def test_macos_case_alias_conflict_refuses_detail_and_delete(tmp_path, monkeypatch):
+    """Serving or deleting cannot strand a settled record under another spelling."""
+    client = _make_client(monkeypatch, tmp_path)
+    _macos_case_aliases(monkeypatch)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    outcome, _held = await routes._claim_decision(
+        "s",
+        "transport",
+        "HTTPS",
+        expect_spec_dir=spec_dir,
+        expect_slot_key=slot_key,
+    )
+    assert outcome == routes._CLAIM_RECORDED
+    alias_slot_key = routes._new_slot_key("s-alias")
+    _add_case_alias(spec_dir, alias_slot_key)
+
+    await client.start_server()
+    try:
+        client.app["state"] = None
+        detail = await client.get(f"{_BASE}/specs/s")
+        detail_body = await detail.json()
+        deleted = await client.delete(f"{_BASE}/specs/s")
+        delete_body = await deleted.json()
+    finally:
+        await client.close()
+
+    assert detail.status == 409, detail_body
+    assert detail_body["code"] == "decision_directory_alias_conflict"
+    assert deleted.status == 409, delete_body
+    assert delete_body["code"] == "decision_directory_alias_conflict"
+    assert set(routes._load_index()) == {"s", "s-alias"}
+    assert await _recorded_answers(spec_dir) == {"transport": "HTTPS"}
+
+
+@pytest.mark.asyncio
+async def test_alias_added_during_delete_prevents_the_index_pop(tmp_path, monkeypatch):
+    """A late alias keeps an already-torn-down delete reserved for retry."""
+    client = _make_client(monkeypatch, tmp_path)
+    _macos_case_aliases(monkeypatch)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    outcome, _held = await routes._claim_decision(
+        "s",
+        "transport",
+        "HTTPS",
+        expect_spec_dir=spec_dir,
+        expect_slot_key=slot_key,
+    )
+    assert outcome == routes._CLAIM_RECORDED
+
+    async def _teardown_with_alias(*_args, **_kwargs) -> bool:
+        alias_slot_key = routes._new_slot_key("s-alias")
+        index = routes._load_index()
+        alias = dict(index["s"])
+        alias["spec_dir"] = str(Path(spec_dir).with_name("S"))
+        alias["slot_key"] = alias_slot_key
+        index["s-alias"] = alias
+        routes._save_index(index)
+        return True
+
+    monkeypatch.setattr(routes, "_teardown_worker_slot", _teardown_with_alias)
+
+    await client.start_server()
+    try:
+        client.app["state"] = None
+        response = await client.delete(f"{_BASE}/specs/s")
+        body = await response.json()
+    finally:
+        await client.close()
+
+    assert response.status == 409, body
+    assert body["code"] == "decision_directory_alias_conflict"
+    assert "retry" in body["error"]
+    index = routes._load_index()
+    assert set(index) == {"s", "s-alias"}
+    assert index["s"].get(routes._DELETING), "the torn-down spec was re-exposed"
+    assert spec_dir in routes._load_deleted(), "the delete lost its tombstone"
+    assert await _recorded_answers(spec_dir) == {"transport": "HTTPS"}
+
+
+def test_malformed_index_path_cannot_crash_directory_identity(tmp_path, monkeypatch):
+    """Agent-written NUL paths are rejected and samefile failures are contained."""
+    _redirect_state(monkeypatch, tmp_path)
+    routes._save_index({"broken": {"spec_dir": "\x00"}})
+
+    assert routes._load_index() == {}
+    assert routes._same_spec_dir("\x00", str(tmp_path)) is False
+
+
+@pytest.mark.asyncio
+async def test_a_renamed_spec_keeps_its_recorded_answers(tmp_path, monkeypatch):
+    """The other side of the same coin: renaming the index entry cannot reopen a
+    decision, because the record is not keyed on the name.
+
+    This is what makes an index rewrite structurally unable to reach a settled answer,
+    rather than something that has to be detected and refused.
+    """
+    _redirect_state(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    assert (
+        await routes._claim_decision(
+            "s", "transport", "HTTPS", expect_spec_dir=spec_dir, expect_slot_key=slot_key
+        )
+    )[0] == routes._CLAIM_RECORDED
+
+    index = await routes._aload_index()
+    index["renamed"] = index.pop("s")
+    routes._save_index(index)
+
+    assert await _recorded_answers(spec_dir) == {"transport": "HTTPS"}
+    outcome, held = await routes._claim_decision(
+        "renamed",
+        "transport",
+        "Streaming",
+        expect_spec_dir=spec_dir,
+        expect_slot_key=index["renamed"]["slot_key"],
+    )
+    assert outcome == routes._CLAIM_TAKEN, "a rename reopened a settled decision"
+    assert held == "HTTPS"
+
+
+def test_a_symlinked_spelling_cannot_record_a_second_answer(tmp_path, monkeypatch):
+    """Until round 28 this asserted the KEY collapsed a symlinked spelling.
+
+    It did, via resolve() -- and that bought a worse hole, because the spec directory
+    belongs to the agent: swapping the directory for a symlink moved the key while the
+    index identity still matched, so a settled record went missing and the card
+    re-opened. A key derived from mutable filesystem state is a key the agent can move.
+
+    The alias-by-spelling guarantee therefore moved to the WRITE end. The key is now
+    lexical (two spellings ARE two keys), and `_claim_decision_locked` refuses a
+    spec_dir that does not verify as itself -- so the aliased spelling cannot record
+    anything, which is what the collapse existed to prevent.
+    """
+    _redirect_state(monkeypatch, tmp_path)
+    real = tmp_path / "real-spec"
+    real.mkdir()
+    link = tmp_path / "link-spec"
+    link.symlink_to(real, target_is_directory=True)
+
+    # Lexical now, so the spellings no longer share a key...
+    assert routes._decision_key(str(link)) != routes._decision_key(str(real))
+    # ...and that is safe because the aliased spelling is refused at the write gate.
+    assert (
+        routes._verified_spec_dir(link) is None
+    ), "a symlinked spelling verifies as itself, so it could mint a second record"
+    assert (
+        routes._verified_spec_dir(real) is not None
+    ), "the real directory must still verify, or no spec could record an answer"
+
+
+@pytest.mark.asyncio
+async def test_a_claim_through_an_aliased_spelling_is_refused(tmp_path, monkeypatch):
+    """The write gate that replaced the resolving key.
+
+    Two index entries, one spelling the directory directly and one through a symlink.
+    The key is lexical now, so the aliased entry has its OWN key -- which would be an
+    empty record, exactly the alias hole. Once both spellings are live, claims fail
+    closed before either key can be written.
+    """
+    _redirect_state(monkeypatch, tmp_path)
+    real = tmp_path / "proj" / ".kiro" / "specs" / "real"
+    real.mkdir(parents=True)
+    link = tmp_path / "proj" / ".kiro" / "specs" / "alias"
+    link.symlink_to(real, target_is_directory=True)
+
+    entry = {
+        "working_dir": str(tmp_path / "proj"),
+        "spec_type": "feature",
+        "status": "planning",
+        "created_at": 1.0,
+        "updated_at": 1.0,
+    }
+    real_entry = {
+        **entry,
+        "spec_dir": str(real),
+        "slot_key": "spec-builder-real-aaaaaaaa",
+    }
+    routes._save_index({"real": real_entry})
+
+    # The real spec records its answer normally.
+    outcome, _held = await routes._claim_decision(
+        "real",
+        "transport",
+        "HTTPS",
+        expect_spec_dir=str(real),
+        expect_slot_key="spec-builder-real-aaaaaaaa",
+    )
+    assert outcome == routes._CLAIM_RECORDED, outcome
+
+    routes._save_index(
+        {
+            "real": real_entry,
+            "alias": {
+                **entry,
+                "spec_dir": str(link),
+                "slot_key": "spec-builder-alias-bbbbbbbb",
+            },
+        }
+    )
+
+    # The aliased spelling is refused rather than minting its own record.
+    outcome, _held = await routes._claim_decision(
+        "alias",
+        "transport",
+        "Streaming",
+        expect_spec_dir=str(link),
+        expect_slot_key="spec-builder-alias-bbbbbbbb",
+    )
+    assert outcome == routes._CLAIM_ALIAS_CONFLICT, (
+        f"the aliased spelling recorded an answer ({outcome}), so a settled decision "
+        "can be answered a second time through a symlink"
+    )
+    store, _usable = routes._read_decisions()
+    assert (
+        routes._decision_key(str(link)) not in store
+    ), "a second ledger record was minted for the aliased spelling"
+    assert _decision_record(store, str(real)) == {"transport": "HTTPS"}
+
+
+def test_the_ledger_key_touches_no_filesystem(tmp_path):
+    """The property that makes a settled decision un-reopenable by the agent.
+
+    Replaces test_nothing_canonicalizes_a_path_on_the_event_loop, which policed WHERE
+    the resolving key could be computed. Purity makes that concern structurally
+    impossible instead: the key cannot move, so it cannot be moved off a record, and
+    there is no filesystem call to keep off the event loop.
+    """
+    real = tmp_path / "spec"
+    real.mkdir()
+    key_before = routes._decision_key(str(real))
+
+    # Replace the directory with a symlink to somewhere else -- exactly the swap an
+    # agent can perform on its own spec directory.
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    real.rmdir()
+    real.symlink_to(elsewhere, target_is_directory=True)
+
+    assert routes._decision_key(str(real)) == key_before, (
+        "swapping the directory moved the ledger key, so a settled decision would read "
+        "as unanswered and the card would re-open"
+    )
+    # And the derivation itself calls nothing but lexical helpers. Checked on the AST,
+    # not the text: a substring scan matches the docstring that explains the rule.
+    fn = ast.parse(textwrap.dedent(inspect.getsource(routes._decision_key))).body[0]
+    called = set()
+    for inner in ast.walk(fn):
+        if isinstance(inner, ast.Call):
+            target = inner.func
+            called.add(
+                target.attr
+                if isinstance(target, ast.Attribute)
+                else getattr(target, "id", "<expr>")
+            )
+    assert called <= {
+        "normcase",
+        "normpath",
+    }, f"the ledger key derivation calls more than lexical helpers: {sorted(called)}"
+
+
+@pytest.mark.asyncio
+async def test_a_delete_clears_the_record_for_that_folder_only(tmp_path, monkeypatch):
+    """The delete clears by directory, so it cannot reach another spec's record."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    other = str(tmp_path / "another-spec")
+    assert (
+        await routes._claim_decision(
+            "s", "transport", "HTTPS", expect_spec_dir=spec_dir, expect_slot_key=slot_key
+        )
+    )[0] == routes._CLAIM_RECORDED
+    store, _usable = routes._read_decisions()
+    store[routes._decision_key(other)] = {
+        "name": "other",
+        "answers": {"kept": _final_answer("kept", "yes")},
+    }
+    routes._save_decisions(store)
+
+    await client.start_server()
+    try:
+        client.app["state"] = None
+        resp = await client.delete(f"{_BASE}/specs/s")
+    finally:
+        await client.close()
+
+    assert resp.status == 200, await resp.text()
+    assert await _recorded_answers(spec_dir) == {}
+    assert await _recorded_answers(other) == {"kept": "yes"}
+
+
+@pytest.mark.asyncio
+async def test_deleting_one_alias_leaves_the_shared_record_alone(tmp_path, monkeypatch):
+    """The record belongs to the directory, so it outlives any one name pointing at it.
+
+    Keying on the directory is what closes the alias hole, but it also means a single
+    name's delete must not clear the record: the surviving alias still serves those
+    documents, and a cleared record would hand it a clean slate for decisions that are
+    already settled -- the alias hole again, reached through a delete.
+    """
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    assert (
+        await routes._claim_decision(
+            "s", "transport", "HTTPS", expect_spec_dir=spec_dir, expect_slot_key=slot_key
+        )
+    )[0] == routes._CLAIM_RECORDED
+
+    index = await routes._aload_index()
+    alias_key = routes._new_slot_key("s-alias")
+    index["s-alias"] = {**index["s"], "slot_key": alias_key}
+    routes._save_index(index)
+
+    await client.start_server()
+    try:
+        client.app["state"] = None
+        resp = await client.delete(f"{_BASE}/specs/s")
+    finally:
+        await client.close()
+
+    assert resp.status == 200, await resp.text()
+    assert await _recorded_answers(spec_dir) == {
+        "transport": "HTTPS"
+    }, "deleting one name cleared the record the surviving alias still needs"
+    outcome, held = await routes._claim_decision(
+        "s-alias",
+        "transport",
+        "Streaming",
+        expect_spec_dir=spec_dir,
+        expect_slot_key=alias_key,
+    )
+    assert outcome == routes._CLAIM_TAKEN, "the surviving alias could re-answer"
+    assert held == "HTTPS"
+
+
+@pytest.mark.asyncio
+async def test_an_alias_mid_turn_blocks_the_answer(tmp_path, monkeypatch):
+    """A running turn under ANY name on this directory blocks the answer.
+
+    Aliases are separate sessions over the same documents, so checking only this
+    request's own slot let one alias record and dispatch an answer while the other's
+    agent was still working -- two concurrent agents, one set of files, and an answer
+    delivered to whichever won.
+    """
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+
+    index = await routes._aload_index()
+    alias_key = routes._new_slot_key("s-alias")
+    index["s-alias"] = {**index["s"], "slot_key": alias_key}
+    routes._save_index(index)
+
+    dispatched: list = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a[2]))
+
+    # The ALIAS is mid-turn; the name being answered is idle.
+    state, _slot = _slot_stub()
+    busy = types.SimpleNamespace(key=alias_key, running=True, messages=[])
+    real_get_slot = state.get_slot
+
+    def _get_slot(key):
+        return busy if key == alias_key else real_get_slot(key)
+
+    state.get_slot = _get_slot
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(
+            f"{_BASE}/specs/s/message",
+            json={
+                "spec_dir": spec_dir,
+                "slot_key": slot_key,
+                "decision_id": "transport",
+                "decision_option": "HTTPS",
+                "text": "Decision - transport: HTTPS",
+            },
+        )
+        payload = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 409, payload
+    # `spec_busy_elsewhere`, not `decision_agent_busy`: the blocker is a DIFFERENT
+    # session on these files, which refuses every kind of dispatch, not just answers.
+    assert payload.get("code") == "spec_busy_elsewhere", payload
+    assert dispatched == [], "an answer was dispatched while an alias's agent was working"
+    assert (
+        await _recorded_answers(spec_dir) == {}
+    ), "the answer was recorded even though nothing was dispatched"
+
+
+@pytest.mark.asyncio
+async def test_an_alias_turn_that_starts_and_finishes_during_claim_defers_the_answer(
+    tmp_path, monkeypatch
+):
+    """Final alias verification must observe a cleared task's generation.
+
+    Dashboard chat does not take Spec Builder's directory lock. An alias turn can
+    therefore fit wholly inside an off-loop ledger write and read idle at both ends;
+    production clears its task back to ``None``, so only monotonic history can prevent
+    concurrent decision dispatch.
+    """
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    index = await routes._aload_index()
+    alias_key = _alias_of(index, "s", "s-alias")
+    state, _slot = _slot_stub()
+
+    from kiro_crew.dashboard.state import _ChatSlot
+
+    alias_slot = _ChatSlot(alias_key)
+    real_get_slot = state.get_slot
+
+    def _get_slot(key):
+        return alias_slot if key == alias_key else real_get_slot(key)
+
+    state.get_slot = _get_slot
+    state._background_tasks = set()
+    dispatched: list[str] = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a[2]))
+    real_mark_relayed = routes._mark_decision_relayed
+
+    async def _mark_while_alias_turn_runs(*args, **kwargs):
+        marked = await real_mark_relayed(*args, **kwargs)
+
+        async def _alias_turn() -> None:
+            return None
+
+        alias_slot.task = asyncio.create_task(_alias_turn())
+        await alias_slot.task
+        # Normal queue teardown publishes idle by clearing the task. A snapshot of
+        # only ``slot.task`` therefore sees ``None`` both before and after this turn.
+        alias_slot.append("done", "", "done")
+        alias_slot.task = None
+        return marked
+
+    monkeypatch.setattr(routes, "_mark_decision_relayed", _mark_while_alias_turn_runs)
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(
+            f"{_BASE}/specs/s/message",
+            json={
+                "spec_dir": spec_dir,
+                "slot_key": slot_key,
+                "decision_id": "transport",
+                "decision_option": "HTTPS",
+                "text": "Decision - transport: HTTPS",
+            },
+        )
+        payload = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 503, payload
+    assert payload.get("code") == "decision_delivery_pending", payload
+    assert dispatched == []
+    pending = await routes._pending_decisions(spec_dir)
+    assert [(entry.get("status"), entry.get("option")) for entry in pending] == [
+        ("pending", "HTTPS")
+    ]
+
+
+def test_the_turn_lock_is_keyed_by_directory_not_name():
+    """Source guard. A per-name lock is what let two aliases start turns on one
+    directory concurrently, so the key is worth pinning."""
+    for handler in (routes._handle_message, routes._handle_handoff, routes._handle_delete):
+        body = inspect.getsource(handler)
+        assert (
+            "_turn_lock(name)" not in body
+        ), f"{handler.__name__} still locks by name, so an alias gets its own lock"
+        assert (
+            "_turn_lock(_decision_key" not in body
+        ), f"{handler.__name__} should hold the key in a local, not re-derive it"
+        assert (
+            "_decision_key(" in body
+        ), f"{handler.__name__} does not derive its lock key from the directory"
+
+
+@pytest.mark.asyncio
+async def test_deleting_one_alias_keeps_the_shared_turn_lock(tmp_path, monkeypatch):
+    """The lock is keyed by directory, so it must outlive any one name using it.
+
+    Dropping it while another alias is still indexed would hand the next arrival a
+    brand-new lock object, and a turn could then start on documents another turn is
+    already working -- the very race the directory-keyed lock closes. Only the LAST name
+    on a directory may retire its lock.
+    """
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, _slot_key = _decision_spec(tmp_path)
+    routes._turn_lock(spec_dir)
+    key = routes._turn_key(spec_dir)
+    assert key in routes._TURN_LOCKS
+    held = routes._TURN_LOCKS[key]
+
+    index = await routes._aload_index()
+    index["s-alias"] = {**index["s"], "slot_key": routes._new_slot_key("s-alias")}
+    routes._save_index(index)
+
+    await client.start_server()
+    try:
+        client.app["state"] = None
+        resp = await client.delete(f"{_BASE}/specs/s")
+    finally:
+        await client.close()
+
+    assert resp.status == 200, await resp.text()
+    assert routes._TURN_LOCKS.get(key) is held, "the surviving alias lost the lock it serializes on"
+
+
+def _alias_of(index: dict, name: str, alias: str) -> str:
+    """Add a second index entry for the same directory. Returns its slot key."""
+    alias_key = routes._new_slot_key(alias)
+    index[alias] = {**index[name], "slot_key": alias_key}
+    routes._save_index(index)
+    return alias_key
+
+
+class _HeldTurnLock:
+    """Expose when a handler reaches its directory-lock boundary."""
+
+    def __init__(self) -> None:
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def __aenter__(self):
+        self.entered.set()
+        await self.release.wait()
+        return self
+
+    async def __aexit__(self, *_exc) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_an_alias_added_while_message_waits_for_the_turn_lock_is_seen(tmp_path, monkeypatch):
+    """The alias snapshot must be taken after entering the directory lock.
+
+    An agent may add an index alias while a request waits. If the request scans first,
+    the alias can dispatch under the shared lock and the stale request then starts a
+    second agent over the same files without seeing it.
+    """
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    state, _slot = _slot_stub()
+    held_lock = _HeldTurnLock()
+    monkeypatch.setattr(routes, "_turn_lock", lambda _key: held_lock)
+
+    dispatched: list = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a[2]))
+
+    request_task = None
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        request_task = asyncio.create_task(
+            client.post(
+                f"{_BASE}/specs/s/message",
+                json={"spec_dir": spec_dir, "slot_key": slot_key, "text": "just a note"},
+            )
+        )
+        await held_lock.entered.wait()
+
+        alias_key = _alias_of(await routes._aload_index(), "s", "s-alias")
+        busy = types.SimpleNamespace(key=alias_key, running=True, messages=[])
+        real_get_slot = state.get_slot
+        state.get_slot = lambda key: busy if key == alias_key else real_get_slot(key)
+        held_lock.release.set()
+
+        resp = await request_task
+        payload = await resp.json()
+    finally:
+        held_lock.release.set()
+        if request_task is not None and not request_task.done():
+            request_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await request_task
+        await client.close()
+
+    assert resp.status == 409, payload
+    assert payload.get("code") == "spec_busy_elsewhere", payload
+    assert dispatched == [], "the stale pre-lock alias snapshot admitted a second agent"
+
+
+@pytest.mark.asyncio
+async def test_an_alias_added_while_handoff_waits_for_the_turn_lock_is_seen(tmp_path, monkeypatch):
+    """A handoff must discover aliases only after entering the directory lock."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, _slot_key = _decision_spec(tmp_path, state={"phase": "tasks"})
+    (Path(spec_dir) / "tasks.md").write_text("- [ ] a task\n")
+    state, _slot = _slot_stub()
+    held_lock = _HeldTurnLock()
+    monkeypatch.setattr(routes, "_turn_lock", lambda _key: held_lock)
+    monkeypatch.setattr(routes, "_autonudge_instance", lambda: object())
+
+    authorized: list = []
+    dispatched: list = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a[2]))
+
+    async def _authorized(**_kw):
+        authorized.append(True)
+        return types.SimpleNamespace(id="loop-1"), "", 200
+
+    monkeypatch.setattr(routes, "authorize_and_add_nudge", _authorized)
+
+    request_task = None
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        request_task = asyncio.create_task(
+            client.post(f"{_BASE}/specs/s/handoff", json={"spec_dir": spec_dir})
+        )
+        await held_lock.entered.wait()
+
+        alias_key = _alias_of(await routes._aload_index(), "s", "s-alias")
+        busy = types.SimpleNamespace(key=alias_key, running=True, messages=[])
+        real_get_slot = state.get_slot
+        state.get_slot = lambda key: busy if key == alias_key else real_get_slot(key)
+        held_lock.release.set()
+
+        resp = await request_task
+        payload = await resp.json()
+    finally:
+        held_lock.release.set()
+        if request_task is not None and not request_task.done():
+            request_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await request_task
+        await client.close()
+
+    assert resp.status == 409, payload
+    assert payload.get("code") == "spec_busy_elsewhere", payload
+    assert authorized == [], "the stale pre-lock alias snapshot armed a second agent"
+    assert dispatched == [], "the stale pre-lock alias snapshot dispatched a second agent"
+
+
+@pytest.mark.asyncio
+async def test_stop_that_finishes_before_handoff_gets_the_lock_prevents_dispatch(
+    tmp_path, monkeypatch
+):
+    """A successful Stop must revoke a handoff claim that is still waiting.
+
+    Handoff records ``executing`` before it acquires the directory lock. Stop can
+    therefore take the lock first, halt that creation, and commit ``planning``.
+    Once Stop reports success, the older handoff must not arm or dispatch a run.
+    """
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path, state={"phase": "tasks"})
+    (Path(spec_dir) / "tasks.md").write_text("- [ ] a task\n")
+
+    slot = types.SimpleNamespace(
+        key=slot_key,
+        _app=routes.APP_NAME,
+        running=False,
+        task=None,
+        messages=[],
+        project=str(tmp_path / "wd"),
+        _titled=True,
+    )
+
+    class _State:
+        def __init__(self):
+            self._background_tasks: set[asyncio.Task] = set()
+
+        def get_slot(self, key):
+            return slot if key == slot_key else None
+
+        def get_or_create_slot(self, _key, app=""):
+            return slot
+
+    state = _State()
+    claimed = asyncio.Event()
+    resume_handoff = asyncio.Event()
+    real_ensure = routes._ensure_worker_slot
+
+    async def _hold_after_claim(*args, **kwargs):
+        claimed.set()
+        await resume_handoff.wait()
+        return await real_ensure(*args, **kwargs)
+
+    async def _halted(*_args, **_kwargs):
+        return None
+
+    authorized: list[bool] = []
+    dispatched: list[str] = []
+
+    async def _authorized(**_kwargs):
+        authorized.append(True)
+        return types.SimpleNamespace(id="loop-1"), "", 200
+
+    monkeypatch.setattr(routes, "_ensure_worker_slot", _hold_after_claim)
+    monkeypatch.setattr(routes, "_halt_execution", _halted)
+    monkeypatch.setattr(routes, "_autonudge_instance", lambda: object())
+    monkeypatch.setattr(routes, "authorize_and_add_nudge", _authorized)
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a[2]))
+
+    handoff = None
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        handoff = asyncio.create_task(
+            client.post(
+                f"{_BASE}/specs/s/handoff",
+                json={"spec_dir": spec_dir, "slot_key": slot_key},
+            )
+        )
+        await claimed.wait()
+        assert routes._load_index()["s"]["status"] == "executing"
+
+        stopped = await client.post(
+            f"{_BASE}/specs/s/stop",
+            json={"spec_dir": spec_dir, "slot_key": slot_key},
+        )
+        stop_payload = await stopped.json()
+        assert stopped.status == 200, stop_payload
+        assert routes._load_index()["s"]["status"] == "planning"
+
+        resume_handoff.set()
+        response = await handoff
+        payload = await response.json()
+    finally:
+        resume_handoff.set()
+        if handoff is not None and not handoff.done():
+            handoff.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await handoff
+        await client.close()
+
+    assert response.status == 409, payload
+    assert payload.get("code") == "execution_stopped_during_start", payload
+    assert authorized == [], "the stopped handoff still armed an autonomous loop"
+    assert dispatched == [], "the stopped handoff restarted the agent after Stop returned"
+
+
+@pytest.mark.asyncio
+async def test_stop_barrier_revokes_the_old_generation_and_refuses_a_new_one():
+    """Agent-writable index fields cannot mint or preserve handoff ownership."""
+    dir_key = "/canonical/spec"
+    slot_key = "spec-builder-s-first"
+    first, refusal = routes._reserve_execution_claim(dir_key, slot_key, "s")
+    assert first and refusal == ""
+
+    async with routes._execution_stop_barrier(dir_key, slot_key, "s") as capture:
+        assert not routes._execution_claim_is_current(dir_key, first)
+        blocked, refusal = routes._reserve_execution_claim(dir_key, slot_key, "s")
+        assert blocked == "" and refusal == "stopping"
+        capture.commit()
+
+    second, refusal = routes._reserve_execution_claim(dir_key, slot_key, "s")
+    assert second and second != first and refusal == ""
+    async with routes._execution_stop_barrier(
+        f"{dir_key}-replacement", f"{slot_key}-replacement", "replacement"
+    ):
+        assert routes._execution_claim_is_current(dir_key, second)
+    rewritten_dir_key = f"{dir_key}-rewritten"
+    async with routes._execution_stop_barrier(rewritten_dir_key, slot_key, "s") as capture:
+        assert not routes._execution_claim_is_current(dir_key, second)
+        blocked, refusal = routes._reserve_execution_claim(dir_key, slot_key, "s")
+        assert blocked == "" and refusal == "stopping"
+        capture.commit()
+    assert not routes._execution_claim_is_current(dir_key, second)
+
+
+@pytest.mark.asyncio
+async def test_uncommitted_stop_barrier_restores_a_directory_matched_claim():
+    """A stale control cannot consume the only handle to an older live loop."""
+    old_dir = "/canonical/spec"
+    old_slot = "spec-builder-s-1234abcd"
+    token, refusal = routes._reserve_execution_claim(old_dir, old_slot, "s")
+    assert token and refusal == ""
+
+    async with routes._execution_stop_barrier(old_dir, "spec-builder-t-deadbeef", "t") as capture:
+        assert old_slot in capture
+        assert not routes._execution_claim_is_current(old_dir, token)
+        routes._prune_finished_dispatch_claims()
+
+    assert routes._execution_claim_is_current(old_dir, token)
+    async with routes._execution_stop_barrier(old_dir, old_slot, "s") as capture:
+        capture.commit()
+
+
+@pytest.mark.asyncio
+async def test_uncommitted_stop_barrier_restores_a_directory_matched_pending_turn():
+    """A refused teardown cannot erase an ordinary turn's ownership claim."""
+    old_dir = "/canonical/spec"
+    old_slot = "spec-builder-s-1234abcd"
+    token = routes._reserve_pending_dispatch(old_dir, old_slot, "s")
+    assert token
+
+    async with routes._execution_stop_barrier(old_dir, "spec-builder-t-deadbeef", "t"):
+        assert not routes._pending_dispatch_is_current(token)
+        assert token in routes._PENDING_DISPATCH_CLAIMS
+
+    assert routes._pending_dispatch_is_current(token)
+    routes._drop_pending_dispatch(token)
+
+
+@pytest.mark.asyncio
+async def test_stop_rollback_prunes_a_published_pending_turn_that_finished_revoked():
+    """A completion callback hidden by provisional revocation is reconciled."""
+    old_dir = "/canonical/spec"
+    old_slot = "spec-builder-s-1234abcd"
+    release = asyncio.Event()
+    turn = asyncio.create_task(release.wait())
+    slot = types.SimpleNamespace(task=turn, running=True)
+    token = routes._reserve_pending_dispatch(old_dir, old_slot, "s")
+    assert token
+    routes._bind_pending_dispatch_to_turn(token, slot, turn)
+
+    async with routes._execution_stop_barrier(old_dir, "spec-builder-t-deadbeef", "t"):
+        slot.running = False
+        release.set()
+        await turn
+        await asyncio.sleep(0)
+        assert token in routes._PENDING_DISPATCH_CLAIMS
+
+    assert token not in routes._PENDING_DISPATCH_CLAIMS
+    replacement = routes._reserve_pending_dispatch(old_dir, old_slot, "s")
+    assert replacement
+    routes._drop_pending_dispatch(replacement)
+
+
+@pytest.mark.asyncio
+async def test_stop_rollback_rebinds_a_pending_claim_to_its_live_successor():
+    """Rollback preserves automatic retry ownership while the retry is active."""
+    old_dir = "/canonical/spec"
+    old_slot = "spec-builder-s-1234abcd"
+    first_release = asyncio.Event()
+    successor_release = asyncio.Event()
+    first = asyncio.create_task(first_release.wait())
+    successor = asyncio.create_task(successor_release.wait())
+    slot = types.SimpleNamespace(task=first, running=True)
+    token = routes._reserve_pending_dispatch(old_dir, old_slot, "s")
+    routes._bind_pending_dispatch_to_turn(token, slot, first)
+
+    async with routes._execution_stop_barrier(old_dir, "spec-builder-t-deadbeef", "t"):
+        slot.task = successor
+        first_release.set()
+        await first
+        await asyncio.sleep(0)
+
+    assert routes._PENDING_DISPATCH_CLAIMS[token][3] is successor
+    successor_release.set()
+    await successor
+    await asyncio.sleep(0)
+    assert token not in routes._PENDING_DISPATCH_CLAIMS
+
+
+@pytest.mark.asyncio
+async def test_rolled_back_stop_settles_a_handoff_that_observed_revocation(tmp_path, monkeypatch):
+    """A failed teardown cannot leave an aborted handoff durably executing."""
+    _redirect_state(monkeypatch, tmp_path)
+    spec_dir = str(tmp_path / "spec")
+    slot_key = "spec-builder-s-1234abcd"
+    routes._save_index(
+        {
+            "s": {
+                "spec_dir": spec_dir,
+                "slot_key": slot_key,
+                "status": "executing",
+            }
+        }
+    )
+    reserved = asyncio.Event()
+    token_box: list[str] = []
+
+    async def _handoff_owner():
+        token, refusal = routes._reserve_execution_claim(spec_dir, slot_key, "s")
+        assert token and refusal == ""
+        token_box.append(token)
+        reserved.set()
+        while routes._execution_claim_is_current(spec_dir, token):
+            await asyncio.sleep(0)
+
+    owner = asyncio.create_task(_handoff_owner())
+    await reserved.wait()
+    async with routes._execution_stop_barrier(spec_dir, "spec-builder-t-deadbeef", "t"):
+        await owner
+
+    await asyncio.gather(*tuple(routes._STOP_ROLLBACK_TASKS))
+    assert routes._load_index()["s"]["status"] == "planning"
+    assert not routes._execution_claim_is_current(spec_dir, token_box[0])
+
+
+@pytest.mark.asyncio
+async def test_index_keeps_resolving_an_observed_per_creation_slot_key(tmp_path, monkeypatch):
+    """An agent cannot detach a live turn by replacing its authenticated slot key."""
+    _redirect_state(monkeypatch, tmp_path)
+    spec_dir = str(tmp_path / "spec")
+    original = "spec-builder-s-1234abcd"
+    replacement = "spec-builder-s-deadbeef"
+    routes._save_index({"s": {"spec_dir": spec_dir, "slot_key": original}})
+    assert routes._load_index()["s"]["slot_key"] == original
+
+    routes._index_path().write_text(
+        json.dumps({"s": {"spec_dir": spec_dir, "slot_key": replacement}})
+    )
+
+    changed = routes._load_index()["s"]
+    assert changed["slot_key"] == replacement
+    assert routes._slot_key("s") == original
+    assert routes._OBSERVED_SLOT_KEYS["s"] == original
+    assert await routes._pin_legacy_slot_identity("s", changed) is None
+
+
+def test_index_refresh_replaces_observed_identity_maps(tmp_path, monkeypatch):
+    """A worker refresh cannot resize a snapshot being read on the event loop."""
+    _redirect_state(monkeypatch, tmp_path)
+    first_slot = "spec-builder-s-1234abcd"
+    second_slot = "spec-builder-t-deadbeef"
+    first_dir = str(tmp_path / "first")
+    second_dir = str(tmp_path / "second")
+    routes._save_index({"s": {"spec_dir": first_dir, "slot_key": first_slot}})
+    slot_keys_snapshot = routes._OBSERVED_SLOT_KEYS
+    spec_dirs_snapshot = routes._OBSERVED_SPEC_DIRS
+
+    routes._save_index(
+        {
+            "s": {"spec_dir": first_dir, "slot_key": first_slot},
+            "t": {"spec_dir": second_dir, "slot_key": second_slot},
+        }
+    )
+
+    assert routes._OBSERVED_SLOT_KEYS is not slot_keys_snapshot
+    assert routes._OBSERVED_SPEC_DIRS is not spec_dirs_snapshot
+    assert slot_keys_snapshot == {"s": first_slot}
+    assert spec_dirs_snapshot == {first_slot: routes._decision_key(first_dir)}
+
+
+def test_identity_release_replaces_observed_identity_maps(tmp_path, monkeypatch):
+    """Worker teardown cannot resize a snapshot being read on the event loop."""
+    _redirect_state(monkeypatch, tmp_path)
+    first_slot = "spec-builder-s-1234abcd"
+    second_slot = "spec-builder-t-deadbeef"
+    routes._OBSERVED_SLOT_KEYS.update({"s": first_slot, "t": second_slot})
+    routes._OBSERVED_SPEC_DIRS.update({first_slot: "/first", second_slot: "/second"})
+    slot_keys_snapshot = routes._OBSERVED_SLOT_KEYS
+    spec_dirs_snapshot = routes._OBSERVED_SPEC_DIRS
+
+    routes._forget_observed_slot_identity("s", first_slot)
+
+    assert routes._OBSERVED_SLOT_KEYS is not slot_keys_snapshot
+    assert routes._OBSERVED_SPEC_DIRS is not spec_dirs_snapshot
+    assert slot_keys_snapshot == {"s": first_slot, "t": second_slot}
+    assert spec_dirs_snapshot == {first_slot: "/first", second_slot: "/second"}
+    assert routes._OBSERVED_SLOT_KEYS == {"t": second_slot}
+    assert routes._OBSERVED_SPEC_DIRS == {second_slot: "/second"}
+
+
+@pytest.mark.asyncio
+async def test_deleted_creation_releases_its_observed_slot_identity(tmp_path, monkeypatch):
+    """A trusted delete permits a later creation to mint a fresh identity."""
+    _redirect_state(monkeypatch, tmp_path)
+    spec_dir = str(tmp_path / "spec")
+    original = "spec-builder-s-1234abcd"
+    replacement = "spec-builder-s-deadbeef"
+    routes._save_index({"s": {"spec_dir": spec_dir, "slot_key": original}})
+
+    routes._index_path().write_text(
+        json.dumps({"s": {"spec_dir": spec_dir, "slot_key": replacement}})
+    )
+    routes._load_index()
+    assert routes._slot_key("s") == original
+
+    def _delete(index):
+        del index["s"]
+        return True
+
+    assert await routes._mutate_index(
+        _delete,
+        on_commit=lambda: routes._forget_observed_slot_identity("s", replacement, original),
+    )
+    routes._save_index({"s": {"spec_dir": spec_dir, "slot_key": replacement}})
+
+    assert routes._load_index()["s"]["slot_key"] == replacement
+
+
+@pytest.mark.asyncio
+async def test_restored_execution_loop_blocks_dispatch_after_identity_rewrite(
+    tmp_path, monkeypatch
+):
+    """A restart-persistent loop remains exclusive without process claims."""
+    _redirect_state(monkeypatch, tmp_path)
+    old_dir = str(tmp_path / "old-spec")
+    new_dir = str(tmp_path / "new-spec")
+    old_slot = "spec-builder-s-1234abcd"
+    new_slot = "spec-builder-t-deadbeef"
+    loop = types.SimpleNamespace(
+        id="restored-loop",
+        active=True,
+        slot_key=old_slot,
+        message=f"{routes._EXECUTION_HANDOFF_PREFIX}s'. The plan is approved.",
+        stop_sentinel_path=str(Path(old_dir) / "STOP"),
+    )
+
+    class _Svc:
+        def list_all(self):
+            return [loop]
+
+        def get_by_slot(self, key):
+            return loop if key == old_slot else None
+
+    monkeypatch.setattr(routes, "_autonudge_instance", lambda: _Svc())
+
+    routes._save_index({"t": {"spec_dir": old_dir, "slot_key": new_slot}})
+    assert routes._reserve_pending_dispatch(old_dir, new_slot, "t") == ""
+    assert routes._reserve_execution_claim(old_dir, new_slot, "t") == (
+        "",
+        "taken",
+    )
+
+    routes._save_index({"t": {"spec_dir": new_dir, "slot_key": new_slot}})
+    assert routes._reserve_pending_dispatch(new_dir, new_slot, "t") == ""
+    async with routes._execution_stop_barrier(new_dir, new_slot, "t") as capture:
+        assert capture[old_slot] == loop.id
+
+
+@pytest.mark.asyncio
+async def test_restored_execution_loop_keeps_rewritten_same_directory_executing(
+    tmp_path, monkeypatch
+):
+    """Detail keeps Pause visible for a restored loop under its old slot key."""
+    _redirect_state(monkeypatch, tmp_path)
+    spec_dir = str(tmp_path / "spec")
+    old_slot = "spec-builder-s-1234abcd"
+    new_slot = "spec-builder-t-deadbeef"
+    loop = types.SimpleNamespace(
+        id="restored-loop",
+        active=True,
+        slot_key=old_slot,
+        message=f"{routes._EXECUTION_HANDOFF_PREFIX}s'. Continue.",
+        stop_sentinel_path=str(Path(spec_dir) / "STOP"),
+    )
+
+    class _Svc:
+        def list_all(self):
+            return [loop]
+
+        def get_by_slot(self, key):
+            return loop if key == old_slot else None
+
+    monkeypatch.setattr(routes, "_autonudge_instance", lambda: _Svc())
+    meta = {"spec_dir": spec_dir, "slot_key": new_slot, "status": "executing"}
+    routes._save_index({"t": meta})
+
+    status = await routes._effective_status("t", meta, types.SimpleNamespace(running=False))
+
+    assert status == "executing"
+    assert routes._load_index()["t"]["status"] == "executing"
+
+
+def _maintenance_loader(service):
+    """Build the AutoNudge class seam around one authoritative test service."""
+
+    class _Loader:
+        @classmethod
+        @contextlib.asynccontextmanager
+        async def maintenance_service(cls, base_dir=None):
+            yield service
+
+    return _Loader
+
+
+@pytest.mark.asyncio
+async def test_create_cleanup_removes_a_fully_orphaned_execution_loop(tmp_path, monkeypatch):
+    """An empty index has an app-owned recovery path for a durable orphan."""
+    _redirect_state(monkeypatch, tmp_path)
+    orphan_slot = "spec-builder-s-1234abcd"
+    loop = types.SimpleNamespace(
+        id="orphan-loop",
+        active=True,
+        slot_key=orphan_slot,
+        message=f"{routes._EXECUTION_HANDOFF_PREFIX}s'. Continue.",
+        stop_sentinel_path=str(tmp_path / "old-spec" / "STOP"),
+    )
+    removed: list[str] = []
+    torn_down: list[object] = []
+    orphan_slot_state = types.SimpleNamespace(
+        key=orphan_slot,
+        _app=routes.APP_NAME,
+        running=True,
+    )
+
+    class _State:
+        def __init__(self):
+            self.slot: object | None = orphan_slot_state
+
+        def get_slot(self, key):
+            return self.slot if key == orphan_slot else None
+
+    state = _State()
+
+    class _Svc:
+        def list_all(self):
+            return [] if removed else [loop]
+
+        def get_by_slot(self, key):
+            return loop if key == orphan_slot and not removed else None
+
+        async def deactivate_and_wait(self, loop_id):
+            assert loop_id == loop.id
+            loop.active = False
+            return True
+
+        async def remove(self, loop_id):
+            removed.append(loop_id)
+            loop.active = False
+
+    async def _teardown(_state, _name, *, only_slot, require_archive):
+        assert require_archive is True
+        torn_down.append(only_slot)
+        state.slot = None
+        return True
+
+    service = _Svc()
+    monkeypatch.setattr(routes, "_autonudge_instance", lambda: service)
+    monkeypatch.setattr(routes, "_AutoNudgeService", _maintenance_loader(service))
+    monkeypatch.setattr(routes, "_teardown_worker_slot", _teardown)
+    routes._save_index({})
+    assert routes._reserve_pending_dispatch("/new/spec", "spec-builder-n-deadbeef", "n") == ""
+
+    assert await routes._remove_orphaned_executions(state) == {orphan_slot}
+
+    assert removed == [loop.id]
+    assert torn_down == [orphan_slot_state]
+    token = routes._reserve_pending_dispatch("/new/spec", "spec-builder-n-deadbeef", "n")
+    assert token
+    routes._drop_pending_dispatch(token)
+
+
+@pytest.mark.asyncio
+async def test_create_cleanup_rechecks_a_slot_materialized_while_its_loop_quiesces(
+    tmp_path, monkeypatch
+):
+    """A firing timer cannot publish a worker after cleanup's slot snapshot."""
+    _redirect_state(monkeypatch, tmp_path)
+    orphan_slot = "spec-builder-s-1234abcd"
+    loop = types.SimpleNamespace(
+        id="orphan-loop",
+        active=True,
+        slot_key=orphan_slot,
+        message=f"{routes._EXECUTION_HANDOFF_PREFIX}s'. Continue.",
+        stop_sentinel_path=str(tmp_path / "old-spec" / "STOP"),
+    )
+    published = types.SimpleNamespace(
+        key=orphan_slot,
+        _app=routes.APP_NAME,
+        running=True,
+    )
+    torn_down: list[object] = []
+
+    class _State:
+        slot = None
+
+        def get_slot(self, key):
+            return self.slot if key == orphan_slot else None
+
+    state = _State()
+
+    class _Svc:
+        def list_all(self):
+            return [loop]
+
+        def get_by_slot(self, key):
+            return loop if key == orphan_slot else None
+
+        async def deactivate_and_wait(self, loop_id):
+            assert loop_id == loop.id
+            loop.active = False
+            state.slot = published
+            return True
+
+        async def remove(self, loop_id):
+            assert loop_id == loop.id
+
+    async def _teardown(_state, _name, *, only_slot, require_archive):
+        assert require_archive is True
+        torn_down.append(only_slot)
+        state.slot = None
+        return True
+
+    service = _Svc()
+    monkeypatch.setattr(routes, "_autonudge_instance", lambda: service)
+    monkeypatch.setattr(routes, "_AutoNudgeService", _maintenance_loader(service))
+    monkeypatch.setattr(routes, "_teardown_worker_slot", _teardown)
+    routes._save_index({})
+
+    assert await routes._remove_orphaned_executions(state) == {orphan_slot}
+    assert torn_down == [published]
+
+
+@pytest.mark.asyncio
+async def test_create_cleanup_keeps_a_quiesced_loop_until_worker_archive_succeeds(
+    tmp_path, monkeypatch
+):
+    """A retry or restart retains the identity when cancellation times out."""
+    _redirect_state(monkeypatch, tmp_path)
+    orphan_slot = "spec-builder-s-1234abcd"
+    loop = types.SimpleNamespace(
+        id="orphan-loop",
+        active=True,
+        slot_key=orphan_slot,
+        message=f"{routes._EXECUTION_HANDOFF_PREFIX}s'. Continue.",
+        stop_sentinel_path=str(tmp_path / "old-spec" / "STOP"),
+    )
+    slot = types.SimpleNamespace(key=orphan_slot, _app=routes.APP_NAME, running=True)
+    removed: list[str] = []
+
+    class _State:
+        def get_slot(self, key):
+            return slot if key == orphan_slot else None
+
+    class _Svc:
+        def list_all(self):
+            return [loop]
+
+        def get_by_slot(self, key):
+            return loop if key == orphan_slot else None
+
+        async def deactivate_and_wait(self, loop_id):
+            assert loop_id == loop.id
+            loop.active = False
+            return True
+
+        async def remove(self, loop_id):
+            removed.append(loop_id)
+
+    async def _failed_archive(*_args, **_kwargs):
+        return False
+
+    service = _Svc()
+    monkeypatch.setattr(routes, "_autonudge_instance", lambda: service)
+    monkeypatch.setattr(routes, "_AutoNudgeService", _maintenance_loader(service))
+    monkeypatch.setattr(routes, "_teardown_worker_slot", _failed_archive)
+    routes._save_index({})
+
+    with pytest.raises(RuntimeError, match="could not be archived"):
+        await routes._remove_orphaned_executions(_State())
+
+    assert loop.active is False
+    assert removed == []
+    assert routes._matching_execution_loops("", "", set(), include_orphans=True) == {
+        orphan_slot: loop.id
+    }
+
+
+@pytest.mark.asyncio
+async def test_create_cleanup_loads_durable_loops_when_autonudge_is_disabled(tmp_path, monkeypatch):
+    """Disabling timers cannot hide an old loop from Create recovery."""
+    _redirect_state(monkeypatch, tmp_path)
+    orphan_slot = "spec-builder-s-1234abcd"
+    loop = types.SimpleNamespace(
+        id="orphan-loop",
+        active=True,
+        slot_key=orphan_slot,
+        message=f"{routes._EXECUTION_HANDOFF_PREFIX}s'. Continue.",
+        stop_sentinel_path=str(tmp_path / "old-spec" / "STOP"),
+    )
+    removed: list[str] = []
+
+    class _OfflineSvc:
+        def list_all(self):
+            return [loop]
+
+        def get_by_slot(self, key):
+            return loop if key == orphan_slot else None
+
+        async def deactivate_and_wait(self, loop_id):
+            assert loop_id == loop.id
+            loop.active = False
+            return True
+
+        async def remove(self, loop_id):
+            removed.append(loop_id)
+
+    offline = _OfflineSvc()
+
+    class _Loader:
+        @classmethod
+        @contextlib.asynccontextmanager
+        async def maintenance_service(cls, base_dir=None):
+            yield offline
+
+    class _State:
+        def get_slot(self, _key):
+            return None
+
+    monkeypatch.setattr(routes, "_autonudge_instance", lambda: None)
+    monkeypatch.setattr(routes, "_AutoNudgeService", _Loader)
+    routes._save_index({})
+
+    assert await routes._remove_orphaned_executions(_State()) == {orphan_slot}
+    assert removed == [loop.id]
+
+
+def test_create_removes_orphaned_loops_before_filesystem_side_effects():
+    """Recovery precedes worktree and spec-directory creation."""
+    src = inspect.getsource(routes._handle_create)
+    cleanup_at = src.index("await _remove_orphaned_executions(")
+    worktree_at = src.index("await _create_worktree(")
+    spec_dir_at = src.index("_prepare_spec_dir")
+
+    assert cleanup_at < worktree_at < spec_dir_at
+
+
+@pytest.mark.asyncio
+async def test_create_refuses_an_unreadable_index_before_orphan_cleanup(tmp_path, monkeypatch):
+    """Invalid index bytes cannot make durable workers look orphaned."""
+    client = _make_client(monkeypatch, tmp_path)
+    index_path = routes._index_path()
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    index_path.write_text("not-json")
+    cleaned: list[bool] = []
+    prepared: list[bool] = []
+
+    async def _cleanup(_state):
+        cleaned.append(True)
+        return set()
+
+    def _prepare(*_args, **_kwargs):
+        prepared.append(True)
+        return tmp_path / "spec", ""
+
+    monkeypatch.setattr(routes, "_remove_orphaned_executions", _cleanup)
+    monkeypatch.setattr(routes, "_prepare_spec_dir", _prepare)
+    await client.start_server()
+    try:
+        response = await client.post(
+            f"{_BASE}/specs",
+            json={"name": "new", "working_dir": str(tmp_path), "spec_type": "quick"},
+        )
+        payload = await response.json()
+    finally:
+        await client.close()
+
+    assert response.status == 503, payload
+    assert payload.get("code") == "spec_index_unavailable"
+    assert cleaned == []
+    assert prepared == []
+    assert index_path.read_text() == "not-json"
+
+
+@pytest.mark.asyncio
+async def test_create_refuses_before_side_effects_when_orphan_cleanup_fails(tmp_path, monkeypatch):
+    """An unremovable orphan cannot overlap a partially-created replacement."""
+    client = _make_client(monkeypatch, tmp_path)
+    prepared: list[str] = []
+
+    async def _fail_cleanup(_state):
+        raise OSError("autonudge store unavailable")
+
+    def _prepare(*_args, **_kwargs):
+        prepared.append("prepared")
+        return tmp_path / "spec", None
+
+    monkeypatch.setattr(routes, "_remove_orphaned_executions", _fail_cleanup)
+    monkeypatch.setattr(routes, "_prepare_spec_dir", _prepare)
+    await client.start_server()
+    try:
+        response = await client.post(
+            f"{_BASE}/specs",
+            json={"name": "new", "working_dir": str(tmp_path), "spec_type": "quick"},
+        )
+        payload = await response.json()
+    finally:
+        await client.close()
+
+    assert response.status == 503, payload
+    assert payload.get("code") == "orphaned_execution_cleanup_failed"
+    assert prepared == []
+
+
+@pytest.mark.asyncio
+async def test_create_cleanup_archives_an_orphaned_direct_turn_without_a_loop(
+    tmp_path, monkeypatch
+):
+    """Removing the last index row cannot detach an already-running worker."""
+    _redirect_state(monkeypatch, tmp_path)
+    old_slot = "spec-builder-s-1234abcd"
+    old_dir = str(tmp_path / "old-spec")
+    routes._save_index({"s": {"spec_dir": old_dir, "slot_key": old_slot}})
+    routes._save_index({})
+    slot = types.SimpleNamespace(key=old_slot, _app=routes.APP_NAME, running=True)
+    torn_down: list[object] = []
+
+    class _Svc:
+        def list_all(self):
+            return []
+
+    class _State:
+        def __init__(self):
+            self.slot: object | None = slot
+
+        def get_slot(self, key):
+            return self.slot if key == old_slot else None
+
+    state = _State()
+
+    async def _teardown(_state, _name, *, only_slot, require_archive):
+        assert require_archive is True
+        torn_down.append(only_slot)
+        state.slot = None
+        return True
+
+    service = _Svc()
+    monkeypatch.setattr(routes, "_autonudge_instance", lambda: service)
+    monkeypatch.setattr(routes, "_AutoNudgeService", _maintenance_loader(service))
+    monkeypatch.setattr(routes, "_teardown_worker_slot", _teardown)
+
+    assert await routes._remove_orphaned_executions(state) == {old_slot}
+    assert torn_down == [slot]
+    assert old_slot not in routes._OBSERVED_SLOT_KEYS.values()
+    assert old_slot not in routes._OBSERVED_SPEC_DIRS
+
+
+@pytest.mark.asyncio
+async def test_create_cleanup_keeps_the_witness_when_orphan_archive_fails(tmp_path, monkeypatch):
+    """A failed transcript archive remains retryable and blocks replacement."""
+    _redirect_state(monkeypatch, tmp_path)
+    old_slot = "spec-builder-s-1234abcd"
+    old_dir = str(tmp_path / "old-spec")
+    routes._save_index({"s": {"spec_dir": old_dir, "slot_key": old_slot}})
+    routes._save_index({})
+    slot = types.SimpleNamespace(key=old_slot, _app=routes.APP_NAME, running=True)
+
+    class _Svc:
+        def list_all(self):
+            return []
+
+    class _State:
+        def get_slot(self, key):
+            return slot if key == old_slot else None
+
+    async def _failed_archive(*_args, **_kwargs):
+        return False
+
+    service = _Svc()
+    monkeypatch.setattr(routes, "_autonudge_instance", lambda: service)
+    monkeypatch.setattr(routes, "_AutoNudgeService", _maintenance_loader(service))
+    monkeypatch.setattr(routes, "_teardown_worker_slot", _failed_archive)
+
+    with pytest.raises(RuntimeError, match="could not be archived"):
+        await routes._remove_orphaned_executions(_State())
+
+    assert routes._OBSERVED_SLOT_KEYS["s"] == old_slot
+    assert routes._OBSERVED_SPEC_DIRS[old_slot] == routes._decision_key(old_dir)
+
+
+@pytest.mark.asyncio
+async def test_stop_barrier_captures_unindexed_observed_turn_after_full_rewrite(
+    tmp_path, monkeypatch
+):
+    """Changing name, directory, and slot cannot detach an embedded-chat turn."""
+    _redirect_state(monkeypatch, tmp_path)
+    old_dir = str(tmp_path / "old-spec")
+    old_slot = "spec-builder-s-1234abcd"
+    routes._save_index({"s": {"spec_dir": old_dir, "slot_key": old_slot}})
+    routes._load_index()
+    routes._save_index(
+        {
+            "t": {
+                "spec_dir": str(tmp_path / "new-spec"),
+                "slot_key": "spec-builder-t-deadbeef",
+            }
+        }
+    )
+
+    async with routes._execution_stop_barrier(
+        str(tmp_path / "new-spec"), "spec-builder-t-deadbeef", "t"
+    ) as capture:
+        assert old_slot in capture
+
+
+@pytest.mark.asyncio
+async def test_unrelated_teardown_does_not_capture_a_same_name_slot_rewrite(tmp_path, monkeypatch):
+    """A surviving name remains the control endpoint for its observed worker."""
+    _redirect_state(monkeypatch, tmp_path)
+    old_slot = "spec-builder-s-1234abcd"
+    rewritten_slot = "spec-builder-s-deadbeef"
+    unrelated_slot = "spec-builder-t-feedface"
+    old_dir = str(tmp_path / "old-spec")
+    routes._save_index({"s": {"spec_dir": old_dir, "slot_key": old_slot}})
+    routes._save_index(
+        {
+            "s": {"spec_dir": old_dir, "slot_key": rewritten_slot},
+            "t": {
+                "spec_dir": str(tmp_path / "unrelated"),
+                "slot_key": unrelated_slot,
+            },
+        }
+    )
+
+    assert old_slot not in routes._unindexed_observed_slot_keys()
+    async with routes._execution_stop_barrier(
+        str(tmp_path / "unrelated"), unrelated_slot, "t"
+    ) as capture:
+        assert old_slot not in capture
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw_slot", [None, "not-owned"])
+async def test_unrelated_teardown_does_not_capture_a_surviving_name_with_bad_slot(
+    tmp_path, monkeypatch, raw_slot
+):
+    """A missing or invalid raw key does not erase the old control endpoint."""
+    _redirect_state(monkeypatch, tmp_path)
+    old_slot = "spec-builder-s-1234abcd"
+    old_dir = str(tmp_path / "old-spec")
+    loop = types.SimpleNamespace(
+        id="loop-s",
+        active=True,
+        slot_key=old_slot,
+        message=f"{routes._EXECUTION_HANDOFF_PREFIX}s'. Continue.",
+        stop_sentinel_path=str(Path(old_dir) / "STOP"),
+    )
+
+    class _Svc:
+        def list_all(self):
+            return [loop]
+
+        def get_by_slot(self, key):
+            return loop if key == old_slot else None
+
+    monkeypatch.setattr(routes, "_autonudge_instance", lambda: _Svc())
+    routes._save_index({"s": {"spec_dir": old_dir, "slot_key": old_slot}})
+    routes._save_index(
+        {
+            "s": {"spec_dir": old_dir, "slot_key": raw_slot},
+            "t": {
+                "spec_dir": str(tmp_path / "unrelated"),
+                "slot_key": "spec-builder-t-feedface",
+            },
+        }
+    )
+
+    assert old_slot not in routes._unindexed_observed_slot_keys()
+    assert old_slot not in routes._matching_execution_loops("", "", set(), include_orphans=True)
+
+
+def test_global_orphan_scan_ignores_an_unrelated_monitor_without_a_sentinel(tmp_path, monkeypatch):
+    """An empty target cannot turn two empty directory keys into a direct match."""
+    _redirect_state(monkeypatch, tmp_path)
+    loop = types.SimpleNamespace(
+        id="ordinary-loop",
+        active=True,
+        slot_key="spec-builder-ordinary-1234abcd",
+        message=f"{routes._EXECUTION_HANDOFF_PREFIX}ordinary'. Continue.",
+        stop_sentinel_path="",
+    )
+
+    class _Svc:
+        def list_all(self):
+            return [loop]
+
+    monkeypatch.setattr(routes, "_autonudge_instance", lambda: _Svc())
+    routes._save_index({})
+
+    assert routes._matching_execution_loops("", "", set(), include_orphans=True) == {}
+
+
+@pytest.mark.parametrize("raw_slot", [None, "not-owned"])
+def test_restart_keeps_a_bad_slot_row_from_orphaning_its_durable_loop(
+    tmp_path, monkeypatch, raw_slot
+):
+    """Cold-start name and directory witnesses do not depend on a valid raw key."""
+    _redirect_state(monkeypatch, tmp_path)
+    old_dir = str(tmp_path / "old-spec")
+    old_slot = "spec-builder-s-1234abcd"
+    loop = types.SimpleNamespace(
+        id="loop-s",
+        active=True,
+        slot_key=old_slot,
+        message=f"{routes._EXECUTION_HANDOFF_PREFIX}s'. Continue.",
+        stop_sentinel_path=str(Path(old_dir) / "STOP"),
+    )
+
+    class _Svc:
+        def list_all(self):
+            return [loop]
+
+    monkeypatch.setattr(routes, "_autonudge_instance", lambda: _Svc())
+    routes._save_index({"s": {"spec_dir": old_dir, "slot_key": raw_slot}})
+
+    assert routes._OBSERVED_SLOT_KEYS == {}
+    assert routes._SLOT_KEYS == {}
+    assert routes._matching_execution_loops("", "", set(), include_orphans=True) == {}
+
+
+def test_targeted_cleanup_finds_an_inactive_loop_after_a_valid_slot_rewrite(tmp_path, monkeypatch):
+    """A rewritten control endpoint still reaches its retained recovery marker."""
+    _redirect_state(monkeypatch, tmp_path)
+    spec_dir = str(tmp_path / "spec")
+    old_slot = "spec-builder-s-1234abcd"
+    new_slot = "spec-builder-s-deadbeef"
+    loop = types.SimpleNamespace(
+        id="loop-s",
+        active=False,
+        slot_key=old_slot,
+        message=f"{routes._EXECUTION_HANDOFF_PREFIX}s'. Continue.",
+        stop_sentinel_path=str(Path(spec_dir) / "STOP"),
+    )
+
+    class _Svc:
+        def list_all(self):
+            return [loop]
+
+    monkeypatch.setattr(routes, "_autonudge_instance", lambda: _Svc())
+    routes._save_index({"s": {"spec_dir": spec_dir, "slot_key": new_slot}})
+
+    assert routes._matching_execution_loops("", "", set(), include_orphans=True) == {}
+    assert routes._matching_execution_loops(
+        "s",
+        routes._decision_key(spec_dir),
+        {new_slot},
+        include_orphans=True,
+        include_inactive_direct=True,
+    ) == {old_slot: loop.id}
+
+
+def test_inactive_indexed_loop_does_not_block_a_new_dispatch(tmp_path, monkeypatch):
+    """A bounded run's recovery record stays teardown-only after planning resumes."""
+    _redirect_state(monkeypatch, tmp_path)
+    spec_dir = str(tmp_path / "spec")
+    slot_key = "spec-builder-s-1234abcd"
+    loop = types.SimpleNamespace(
+        id="loop-s",
+        active=False,
+        slot_key=slot_key,
+        message=f"{routes._EXECUTION_HANDOFF_PREFIX}s'. Continue.",
+        stop_sentinel_path=str(Path(spec_dir) / "STOP"),
+    )
+
+    class _Svc:
+        def list_all(self):
+            return [loop]
+
+        def get_by_slot(self, key):
+            return loop if key == slot_key else None
+
+    monkeypatch.setattr(routes, "_autonudge_instance", lambda: _Svc())
+    routes._save_index({"s": {"spec_dir": spec_dir, "slot_key": slot_key}})
+
+    assert not routes._dispatch_claim_conflicts(spec_dir, slot_key, "s")
+    assert routes._matching_execution_loops(
+        "s",
+        routes._decision_key(spec_dir),
+        {slot_key},
+        include_inactive_direct=True,
+    ) == {slot_key: loop.id}
+
+
+def test_delete_releases_every_captured_observed_creation_identity(tmp_path, monkeypatch):
+    """Successful teardown clears witnesses whose old name also disappeared."""
+    _redirect_state(monkeypatch, tmp_path)
+    old_slot = "spec-builder-s-1234abcd"
+    new_slot = "spec-builder-t-deadbeef"
+    routes._OBSERVED_SLOT_KEYS.update({"s": old_slot, "t": new_slot})
+    routes._SLOT_KEYS.update({"s": old_slot, "t": new_slot})
+    routes._OBSERVED_SPEC_DIRS.update({old_slot: "/old", new_slot: "/new"})
+
+    routes._forget_observed_slot_identity("t", new_slot, old_slot)
+
+    assert "s" not in routes._OBSERVED_SLOT_KEYS
+    assert "s" not in routes._SLOT_KEYS
+    assert "t" not in routes._OBSERVED_SLOT_KEYS
+    assert "t" not in routes._SLOT_KEYS
+    assert old_slot not in routes._OBSERVED_SPEC_DIRS
+    assert new_slot not in routes._OBSERVED_SPEC_DIRS
+
+
+@pytest.mark.asyncio
+async def test_dispatch_claims_arbitrate_across_rewritten_identity():
+    """A rewritten index cannot start a second generation during final validation."""
+    old_dir_key = "/canonical/spec"
+    rewritten_dir_key = "/rewritten/spec"
+    old_slot_key = "spec-builder-s-first"
+    rewritten_slot_key = "spec-builder-s-second"
+
+    first = routes._reserve_pending_dispatch(old_dir_key, old_slot_key, "s")
+    assert first
+    assert routes._reserve_pending_dispatch(rewritten_dir_key, rewritten_slot_key, "s") == ""
+    blocked, refusal = routes._reserve_execution_claim(rewritten_dir_key, rewritten_slot_key, "s")
+    assert blocked == "" and refusal == "taken"
+
+    routes._drop_pending_dispatch(first)
+    execution, refusal = routes._reserve_execution_claim(rewritten_dir_key, rewritten_slot_key, "s")
+    assert execution and refusal == ""
+    assert routes._reserve_pending_dispatch(old_dir_key, old_slot_key, "s") == ""
+
+
+@pytest.mark.asyncio
+async def test_finished_pending_claim_owner_does_not_block_a_later_request():
+    """Request teardown is an ownership boundary even before its callback runs."""
+
+    async def _reserve() -> str:
+        return routes._reserve_pending_dispatch("/canonical/spec", "slot", "s")
+
+    owner = asyncio.create_task(_reserve())
+    stale = await owner
+    assert stale
+    assert owner.done()
+
+    current = routes._reserve_pending_dispatch("/rewritten/spec", "replacement", "s")
+    assert current and current != stale
+    assert not routes._pending_dispatch_is_current(stale)
+
+
+@pytest.mark.asyncio
+async def test_published_claim_keeps_same_slot_message_queuing():
+    """A matching live turn is not a rewritten second generation."""
+    dir_key = "/canonical/spec"
+    slot_key = "spec-builder-s-first"
+    turn = asyncio.create_task(asyncio.sleep(60))
+    slot = types.SimpleNamespace(task=turn)
+    first = routes._reserve_pending_dispatch(dir_key, slot_key, "s")
+    routes._bind_pending_dispatch_to_turn(first, slot, turn)
+    try:
+        queued = routes._reserve_pending_dispatch(dir_key, slot_key, "s")
+        assert queued
+        routes._drop_pending_dispatch(queued)
+        assert (
+            routes._reserve_pending_dispatch("/rewritten/spec", "spec-builder-s-second", "s") == ""
+        )
+    finally:
+        routes._drop_pending_dispatch(first)
+        turn.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await turn
+
+
+@pytest.mark.asyncio
+async def test_stale_stop_does_not_revoke_the_current_creation_claim(tmp_path, monkeypatch):
+    """A rejected control from an old tab cannot cancel replacement startup."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path, state={"phase": "tasks"})
+    dir_key = routes._decision_key(spec_dir)
+    token, refusal = routes._reserve_execution_claim(dir_key, slot_key, "s")
+    assert token and refusal == ""
+
+    halted: list[str] = []
+
+    async def _halt(*_args, **_kwargs):
+        halted.append("halted")
+
+    monkeypatch.setattr(routes, "_halt_execution", _halt)
+    await client.start_server()
+    try:
+        response = await client.post(
+            f"{_BASE}/specs/s/stop",
+            json={"spec_dir": spec_dir, "slot_key": f"{slot_key}-stale"},
+        )
+        payload = await response.json()
+    finally:
+        await client.close()
+
+    assert response.status == 409, payload
+    assert payload.get("code") == "stale_client"
+    assert routes._execution_claim_is_current(dir_key, token)
+    assert halted == []
+
+
+def test_handoff_serializes_its_durable_claim_before_slot_creation():
+    """Stop must not finish before an older handoff's delayed claim write."""
+    src = inspect.getsource(routes._handle_handoff)
+    reserve_at = src.index("_reserve_execution_claim(")
+    claim_at = src.index("await _claim_execution(", reserve_at)
+    slot_at = src.index("_ensure_worker_slot(", claim_at)
+    lock_at = src.index("async with _turn_lock(", reserve_at, slot_at)
+    token_check_at = src.index("_execution_claim_is_current(", lock_at, claim_at)
+
+    assert reserve_at < lock_at < token_check_at < claim_at < slot_at
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("physically_equivalent", [True, False])
+async def test_final_alias_scan_refuses_own_slot_directory_rewrite(
+    tmp_path, monkeypatch, physically_equivalent
+):
+    """A rewritten current entry cannot move Stop onto a different lock key."""
+    _redirect_state(monkeypatch, tmp_path)
+    original_dir = "/physical/spec-a"
+    rewritten_dir = "/alias/spec-b"
+    slot_key = "spec-builder-s-1234abcd"
+    routes._save_index(
+        {
+            "s": {
+                "spec_dir": rewritten_dir,
+                "slot_key": slot_key,
+                "state": {"phase": "tasks"},
+            }
+        }
+    )
+    monkeypatch.setattr(
+        routes,
+        "_same_spec_dir",
+        lambda left, right: physically_equivalent
+        and {left, right} == {original_dir, rewritten_dir},
+    )
+
+    conflict = await routes._final_alias_conflict(
+        types.SimpleNamespace(get_slot=lambda _key: None),
+        original_dir,
+        slot_key,
+        {},
+        {},
+        own_name="s",
+    )
+
+    assert conflict == "s"
+
+
+@pytest.mark.asyncio
+async def test_final_alias_scan_refuses_own_slot_identity_rewrite(tmp_path, monkeypatch):
+    """A rewritten current entry cannot move Stop onto a different slot."""
+    _redirect_state(monkeypatch, tmp_path)
+    spec_dir = "/physical/spec"
+    original_slot = "spec-builder-s-1234abcd"
+    routes._save_index(
+        {
+            "s": {
+                "spec_dir": spec_dir,
+                "slot_key": "spec-builder-s-deadbeef",
+                "state": {"phase": "tasks"},
+            }
+        }
+    )
+    monkeypatch.setattr(routes, "_same_spec_dir", lambda left, right: left == right)
+
+    conflict = await routes._final_alias_conflict(
+        types.SimpleNamespace(get_slot=lambda _key: None),
+        spec_dir,
+        original_slot,
+        {},
+        {},
+        own_name="s",
+    )
+
+    assert conflict == "s"
+
+
+@pytest.mark.asyncio
+async def test_legacy_message_pins_its_name_derived_slot_before_alias_scan(tmp_path, monkeypatch):
+    """A genuine pre-key spec remains usable without weakening missing-key aliases."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir = tmp_path / "wd" / ".kiro" / "specs" / "s"
+    spec_dir.mkdir(parents=True)
+    routes._save_index(
+        {
+            "s": {
+                "spec_dir": str(spec_dir),
+                "working_dir": str(tmp_path / "wd"),
+                "spec_type": "feature",
+                "status": "planning",
+            }
+        }
+    )
+    state, _slot = _slot_stub()
+    dispatched: list[str] = []
+    monkeypatch.setattr(
+        routes,
+        "_dispatch_turn",
+        lambda *_args, **_kwargs: dispatched.append("sent"),
+    )
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        response = await client.post(
+            f"{_BASE}/specs/s/message",
+            json={"spec_dir": str(spec_dir), "text": "continue"},
+        )
+        payload = await response.json()
+    finally:
+        await client.close()
+
+    assert response.status == 200, payload
+    assert routes._load_index()["s"]["slot_key"] == "spec-builder-s"
+    assert dispatched == ["sent"]
+
+
+@pytest.mark.asyncio
+async def test_legacy_slot_read_cannot_erase_observed_per_creation_identity(tmp_path, monkeypatch):
+    """A temporary legacy key cannot make later key removal look like migration."""
+    _redirect_state(monkeypatch, tmp_path)
+    spec_dir = str(tmp_path / "spec")
+    per_creation = "spec-builder-s-1234abcd"
+    routes._save_index({"s": {"spec_dir": spec_dir, "slot_key": per_creation}})
+    routes._save_index({"s": {"spec_dir": spec_dir, "slot_key": "spec-builder-s"}})
+    routes._save_index({"s": {"spec_dir": spec_dir}})
+
+    assert routes._OBSERVED_SLOT_KEYS["s"] == per_creation
+    assert routes._slot_key("s") == per_creation
+    assert await routes._pin_legacy_slot_identity("s", {"spec_dir": spec_dir}) is None
+
+
+@pytest.mark.asyncio
+async def test_stop_revokes_a_message_after_its_final_scan_captured_old_identity(
+    tmp_path, monkeypatch
+):
+    """Stop on a rewritten path cannot be followed by the stale turn publication."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path, state={"phase": "tasks"})
+    state, _slot = _slot_stub()
+    final_scan_waiting = asyncio.Event()
+    release_final_scan = asyncio.Event()
+    scans = 0
+
+    async def _scan(*_args, **_kwargs):
+        nonlocal scans
+        scans += 1
+        if scans == 2:
+            final_scan_waiting.set()
+            await release_final_scan.wait()
+        return {}
+
+    monkeypatch.setattr(routes, "_alias_slots", _scan)
+    dispatched: list[str] = []
+    monkeypatch.setattr(
+        routes,
+        "_dispatch_turn",
+        lambda *_args, **_kwargs: dispatched.append("sent"),
+    )
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        request = asyncio.create_task(
+            client.post(
+                f"{_BASE}/specs/s/message",
+                json={"spec_dir": spec_dir, "slot_key": slot_key, "text": "continue"},
+            )
+        )
+        await asyncio.wait_for(final_scan_waiting.wait(), timeout=1)
+        rewritten_dir = str(tmp_path / "wd" / ".kiro" / "specs" / "rewritten")
+        replacement_slot = "spec-builder-s-deadbeef"
+        routes._save_index(
+            {
+                "s": {
+                    "spec_dir": rewritten_dir,
+                    "working_dir": str(tmp_path / "wd"),
+                    "spec_type": "feature",
+                    "status": "planning",
+                    "slot_key": replacement_slot,
+                }
+            }
+        )
+        async with routes._execution_stop_barrier(
+            routes._decision_key(rewritten_dir), replacement_slot, "s"
+        ) as capture:
+            capture.commit()
+        release_final_scan.set()
+        response = await request
+        payload = await response.json()
+    finally:
+        release_final_scan.set()
+        await client.close()
+
+    assert response.status == 409, payload
+    assert payload.get("code") == "execution_stopped_during_start"
+    assert dispatched == []
+
+
+@pytest.mark.asyncio
+async def test_stop_targets_the_published_slot_after_index_identity_rewrite(tmp_path, monkeypatch):
+    """A published turn remains stoppable under the identity it actually uses."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, old_slot_key = _decision_spec(tmp_path, state={"phase": "tasks"})
+    replacement_slot_key = "spec-builder-s-deadbeef"
+    old_turn = asyncio.create_task(asyncio.sleep(60))
+    old_slot = types.SimpleNamespace(
+        key=old_slot_key,
+        _app=routes.APP_NAME,
+        running=True,
+        task=old_turn,
+    )
+
+    class _State:
+        def get_slot(self, key):
+            return old_slot if key == old_slot_key else None
+
+    token = routes._reserve_pending_dispatch(routes._decision_key(spec_dir), old_slot_key, "s")
+    routes._bind_pending_dispatch_to_turn(token, old_slot, old_turn)
+    rewritten = routes._load_index()
+    rewritten["s"]["slot_key"] = replacement_slot_key
+    routes._save_index(rewritten)
+    halted: list[object] = []
+
+    async def _halted(*_args, **kwargs):
+        halted.append(kwargs.get("only_slot"))
+
+    monkeypatch.setattr(routes, "_halt_execution", _halted)
+    await client.start_server()
+    try:
+        client.app["state"] = _State()
+        response = await client.post(
+            f"{_BASE}/specs/s/stop",
+            json={"spec_dir": spec_dir, "slot_key": old_slot_key},
+        )
+        payload = await response.json()
+    finally:
+        old_turn.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await old_turn
+        await client.close()
+
+    assert response.status == 200, payload
+    assert halted == [old_slot]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["stop", "delete"])
+@pytest.mark.parametrize("with_claim", [True, False])
+@pytest.mark.parametrize("rewrite_directory", [True, False])
+async def test_teardown_targets_an_idle_published_autonudge_after_identity_rewrite(
+    tmp_path, monkeypatch, operation, with_claim, rewrite_directory
+):
+    """Stop and Delete find the old loop both before and after a gateway restart."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, old_slot_key = _decision_spec(tmp_path, state={"phase": "tasks"})
+    replacement_slot_key = "spec-builder-t-deadbeef"
+    old_turn = asyncio.create_task(asyncio.sleep(0))
+    old_slot = types.SimpleNamespace(
+        key=old_slot_key,
+        _app=routes.APP_NAME,
+        running=False,
+        task=old_turn,
+    )
+    loop = types.SimpleNamespace(
+        id="loop-old-identity",
+        active=not with_claim,
+        slot_key=old_slot_key,
+        stop_sentinel_path=Path(spec_dir) / "STOP",
+    )
+    removed: list[str] = []
+
+    class _Svc:
+        def list_all(self):
+            return [loop] if loop.active else []
+
+        def get_by_slot(self, key):
+            return loop if key == old_slot_key and loop.active else None
+
+        async def remove(self, loop_id):
+            removed.append(loop_id)
+            loop.active = False
+
+    class _State:
+        def get_slot(self, key):
+            return old_slot if key == old_slot_key else None
+
+    async def _archived(*_args, **_kwargs):
+        return True
+
+    monkeypatch.setattr(routes, "_autonudge_instance", lambda: _Svc())
+    monkeypatch.setattr(routes, "_teardown_worker_slot", _archived)
+    if with_claim:
+        claim, refusal = routes._reserve_execution_claim(
+            routes._decision_key(spec_dir), old_slot_key, "s"
+        )
+        assert claim and refusal == ""
+        loop.active = True
+        routes._bind_execution_claim_to_turn(
+            routes._decision_key(spec_dir), claim, old_slot, old_turn
+        )
+    await old_turn
+    await asyncio.sleep(0)
+
+    rewritten = routes._load_index().pop("s")
+    rewritten_dir = str(tmp_path / "rewritten-spec") if rewrite_directory else spec_dir
+    rewritten.update(
+        spec_dir=rewritten_dir,
+        slot_key=replacement_slot_key,
+        status="executing",
+    )
+    routes._save_index({"t": rewritten})
+
+    await client.start_server()
+    try:
+        client.app["state"] = _State()
+        body = {
+            "spec_dir": rewritten_dir,
+            "slot_key": replacement_slot_key,
+        }
+        if operation == "stop":
+            response = await client.post(f"{_BASE}/specs/t/stop", json=body)
+        else:
+            response = await client.delete(f"{_BASE}/specs/t", json=body)
+        payload = await response.json()
+    finally:
+        await client.close()
+
+    assert response.status == 200, payload
+    assert removed == [loop.id]
+    assert loop.active is False
+    if operation == "delete":
+        assert old_slot_key not in routes._OBSERVED_SPEC_DIRS
+        assert old_slot_key not in routes._OBSERVED_SLOT_KEYS.values()
+
+
+@pytest.mark.asyncio
+async def test_stop_arriving_during_authorization_unwinds_before_dispatch(tmp_path, monkeypatch):
+    """The post-authorization gate observes Stop before Stop acquires the lock."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path, state={"phase": "tasks"})
+    (Path(spec_dir) / "tasks.md").write_text("- [ ] a task\n")
+    slot = types.SimpleNamespace(
+        key=slot_key,
+        _app=routes.APP_NAME,
+        running=False,
+        task=None,
+        messages=[],
+        project=str(tmp_path / "wd"),
+        _titled=True,
+    )
+
+    class _State:
+        def __init__(self):
+            self._background_tasks: set[asyncio.Task] = set()
+
+        def get_slot(self, key):
+            return slot if key == slot_key else None
+
+        def get_or_create_slot(self, _key, app=""):
+            return slot
+
+    loop = types.SimpleNamespace(id="loop-authorization", active=False)
+    removed: list[str] = []
+
+    class _Svc:
+        def get_by_slot(self, _key):
+            return loop if loop.active else None
+
+        async def remove(self, loop_id):
+            removed.append(loop_id)
+            loop.active = False
+
+    authorizing = asyncio.Event()
+    release_authorization = asyncio.Event()
+    stop_published = asyncio.Event()
+
+    async def _authorized(**_kwargs):
+        authorizing.set()
+        await release_authorization.wait()
+        loop.active = True
+        return loop, "", 200
+
+    async def _halted(*_args, **_kwargs):
+        return None
+
+    real_barrier = routes._execution_stop_barrier
+
+    @contextlib.asynccontextmanager
+    async def _observed_barrier(dir_key, barrier_slot_key, barrier_name):
+        async with real_barrier(dir_key, barrier_slot_key, barrier_name) as claimed_slot_keys:
+            stop_published.set()
+            yield claimed_slot_keys
+
+    dispatched: list[str] = []
+    monkeypatch.setattr(routes, "_autonudge_instance", lambda: _Svc())
+    monkeypatch.setattr(routes, "authorize_and_add_nudge", _authorized)
+    monkeypatch.setattr(routes, "_halt_execution", _halted)
+    monkeypatch.setattr(routes, "_execution_stop_barrier", _observed_barrier)
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a[2]))
+
+    handoff = stop = None
+    await client.start_server()
+    try:
+        client.app["state"] = _State()
+        handoff = asyncio.create_task(
+            client.post(
+                f"{_BASE}/specs/s/handoff",
+                json={"spec_dir": spec_dir, "slot_key": slot_key},
+            )
+        )
+        await authorizing.wait()
+        stop = asyncio.create_task(
+            client.post(
+                f"{_BASE}/specs/s/stop",
+                json={"spec_dir": spec_dir, "slot_key": slot_key},
+            )
+        )
+        await stop_published.wait()
+        release_authorization.set()
+
+        handoff_response = await handoff
+        handoff_payload = await handoff_response.json()
+        stop_response = await stop
+        stop_payload = await stop_response.json()
+    finally:
+        release_authorization.set()
+        for task in (handoff, stop):
+            if task is not None and not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+        await client.close()
+
+    assert handoff_response.status == 409, handoff_payload
+    assert handoff_payload.get("code") == "execution_stopped_during_start"
+    assert stop_response.status == 200, stop_payload
+    assert removed == [loop.id], "the handoff's armed loop survived its revoked claim"
+    assert dispatched == [], "handoff dispatched after Stop published its barrier"
+
+
+@pytest.mark.asyncio
+async def test_an_alias_mid_turn_blocks_an_ordinary_message(tmp_path, monkeypatch):
+    """Not just decision answers: ANY dispatch would be a second agent on these files.
+
+    Gating the alias check on `decision_id` left the plain message path wide open -- the
+    ordinary way a user talks to a spec -- so two agents could edit one spec's documents
+    concurrently while the decision lock looked after itself.
+    """
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    alias_key = _alias_of(await routes._aload_index(), "s", "s-alias")
+
+    dispatched: list = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a[2]))
+    state, _slot = _slot_stub()
+    busy = types.SimpleNamespace(key=alias_key, running=True, messages=[])
+    real_get_slot = state.get_slot
+    state.get_slot = lambda k: busy if k == alias_key else real_get_slot(k)
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(
+            f"{_BASE}/specs/s/message",
+            json={"spec_dir": spec_dir, "slot_key": slot_key, "text": "just a note"},
+        )
+        payload = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 409, payload
+    assert payload.get("code") == "spec_busy_elsewhere", payload
+    assert dispatched == [], "a turn started while another view's agent was working"
+
+
+@pytest.mark.asyncio
+async def test_a_completed_alias_turn_during_repin_blocks_an_ordinary_message(
+    tmp_path, monkeypatch
+):
+    """An ordinary message's final gate sees alias history across its await."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    alias_key = _alias_of(await routes._aload_index(), "s", "s-alias")
+    from kiro_crew.dashboard.state import _ChatSlot
+
+    alias_slot = _ChatSlot(alias_key)
+    state, _slot = _slot_stub()
+    real_get_slot = state.get_slot
+    state.get_slot = lambda key: alias_slot if key == alias_key else real_get_slot(key)
+    real_touch = routes._touch_spec
+    touches = 0
+
+    async def _touch_while_alias_turn_completes(*args, **kwargs):
+        nonlocal touches
+        result = await real_touch(*args, **kwargs)
+        touches += 1
+        if touches == 2:
+            alias_slot.task = asyncio.create_task(asyncio.sleep(0))
+            await alias_slot.task
+            alias_slot.append("done", "", "done")
+            alias_slot.task = None
+        return result
+
+    monkeypatch.setattr(routes, "_touch_spec", _touch_while_alias_turn_completes)
+    dispatched: list[str] = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a[2]))
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(
+            f"{_BASE}/specs/s/message",
+            json={"spec_dir": spec_dir, "slot_key": slot_key, "text": "just a note"},
+        )
+        payload = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 409, payload
+    assert payload.get("code") == "spec_busy_elsewhere", payload
+    assert dispatched == []
+
+
+@pytest.mark.asyncio
+async def test_an_alias_missing_its_persisted_slot_key_refuses_a_message(tmp_path, monkeypatch):
+    """An agent-writable index edit cannot hide an alias's active worker.
+
+    A per-creation worker keeps running under the key minted when the alias was
+    created. If the alias later drops ``slot_key`` from the index, falling back to
+    its legacy name-derived key looks up a different, idle slot and admits a second
+    agent over the same files. An ownership-invalid key has to make the alias
+    occupied until its identity can be established again.
+    """
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    index = await routes._aload_index()
+    alias_key = _alias_of(index, "s", "s-alias")
+
+    edited = await routes._aload_index()
+    edited["s-alias"].pop("slot_key")
+    routes._save_index(edited)
+
+    dispatched: list = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a[2]))
+    state, _slot = _slot_stub()
+    busy = types.SimpleNamespace(key=alias_key, running=True, messages=[])
+    real_get_slot = state.get_slot
+    state.get_slot = lambda key: busy if key == alias_key else real_get_slot(key)
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(
+            f"{_BASE}/specs/s/message",
+            json={"spec_dir": spec_dir, "slot_key": slot_key, "text": "just a note"},
+        )
+        payload = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 409, payload
+    assert payload.get("code") == "spec_busy_elsewhere", payload
+    assert dispatched == [], "the missing alias identity hid its active worker"
+
+
+@pytest.mark.asyncio
+async def test_an_alias_mid_turn_blocks_a_handoff(tmp_path, monkeypatch):
+    """...and a handoff, which starts an autonomous build -- the most expensive way to
+    end up with two agents in one spec directory.
+
+    Until round 27 this asserted that the refusal RELEASES the loop it had already
+    armed, because arming happened before the turn lock: a bare 409 left an active
+    timer that later dispatched the very build the refusal denied. Round 27 moved
+    arming inside the lock and AFTER this check, so no loop is armed on this path at
+    all. The assertion is therefore stronger now -- authorization is never reached,
+    so there is nothing to leak and no release to get right.
+    """
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, _slot_key = _decision_spec(tmp_path, state={"phase": "tasks"})
+    (Path(spec_dir) / "tasks.md").write_text("- [ ] a task\n")
+    alias_key = _alias_of(await routes._aload_index(), "s", "s-alias")
+
+    state, _slot = _slot_stub()
+    busy = types.SimpleNamespace(key=alias_key, running=True, messages=[])
+    real_get_slot = state.get_slot
+    state.get_slot = lambda k: busy if k == alias_key else real_get_slot(k)
+
+    armed: list = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: armed.append(a[2]))
+    monkeypatch.setattr(routes, "_autonudge_instance", lambda: object())
+
+    authorized: list = []
+
+    async def _authorized(**_kw):
+        # (armed_loop, authz_err, status) -- the tuple the handler unpacks.
+        authorized.append(True)
+        return types.SimpleNamespace(id="loop-1"), "", 200
+
+    monkeypatch.setattr(routes, "authorize_and_add_nudge", _authorized)
+
+    released: list = []
+
+    async def _remove(_slot_key, *, only_loop_id=None):
+        released.append(only_loop_id)
+
+    monkeypatch.setattr(routes, "_remove_nudge_loop_for_slot", _remove)
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(f"{_BASE}/specs/s/handoff", json={"spec_dir": spec_dir})
+        payload = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 409, payload
+    assert payload.get("code") == "spec_busy_elsewhere", payload
+    assert armed == [], "a build was armed while another view's agent was working"
+    assert authorized == [], (
+        "the handoff armed a nudge loop before checking whether an alias was mid-turn, "
+        "so the refusal has a live timer to clean up again"
+    )
+    assert released == [], "nothing was armed, so nothing should have been released"
+
+
+@pytest.mark.asyncio
+async def test_a_completed_alias_turn_during_authorization_blocks_a_handoff(tmp_path, monkeypatch):
+    """The final handoff gate sees a turn whose task returned to ``None``."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, _slot_key = _decision_spec(tmp_path, state={"phase": "tasks"})
+    (Path(spec_dir) / "tasks.md").write_text("- [ ] a task\n")
+    alias_key = _alias_of(await routes._aload_index(), "s", "s-alias")
+    from kiro_crew.dashboard.state import _ChatSlot
+
+    alias_slot = _ChatSlot(alias_key)
+    state, _slot = _slot_stub()
+    real_get_slot = state.get_slot
+    state.get_slot = lambda key: alias_slot if key == alias_key else real_get_slot(key)
+    monkeypatch.setattr(routes, "_autonudge_instance", lambda: object())
+
+    async def _authorized(**_kw):
+        alias_slot.task = asyncio.create_task(asyncio.sleep(0))
+        await alias_slot.task
+        alias_slot.append("done", "", "done")
+        alias_slot.task = None
+        return types.SimpleNamespace(id="loop-alias-raced"), "", 200
+
+    monkeypatch.setattr(routes, "authorize_and_add_nudge", _authorized)
+    dispatched: list[str] = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a[2]))
+    released: list[str] = []
+
+    async def _remove(_slot_key, *, only_loop_id=None):
+        released.append(only_loop_id)
+
+    monkeypatch.setattr(routes, "_remove_nudge_loop_for_slot", _remove)
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(f"{_BASE}/specs/s/handoff", json={"spec_dir": spec_dir})
+        payload = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 409, payload
+    assert payload.get("code") == "spec_busy_elsewhere", payload
+    assert dispatched == []
+    assert released == ["loop-alias-raced"]
+    assert routes._load_index()["s"].get("status") == "planning"
+
+
+@pytest.mark.asyncio
+async def test_handoff_refuses_when_its_own_slot_starts_during_authorization(tmp_path, monkeypatch):
+    """Authorization awaits while channel traffic can start the same slot.
+
+    The pre-arm snapshot is no longer authoritative after that await. Dispatching the
+    build would queue it behind the new turn, and Pause deliberately clears that queue,
+    despite this endpoint reporting that execution started.
+    """
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, _slot_key = _decision_spec(tmp_path, state={"phase": "tasks"})
+    (Path(spec_dir) / "tasks.md").write_text("- [ ] a task\n")
+    state, slot = _slot_stub()
+    monkeypatch.setattr(routes, "_autonudge_instance", lambda: object())
+
+    async def _authorized(**_kw):
+        slot.running = True
+        return types.SimpleNamespace(id="loop-raced"), "", 200
+
+    monkeypatch.setattr(routes, "authorize_and_add_nudge", _authorized)
+    dispatched: list[str] = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a[2]))
+    released: list[str] = []
+
+    async def _remove(_slot_key, *, only_loop_id=None):
+        released.append(only_loop_id)
+
+    monkeypatch.setattr(routes, "_remove_nudge_loop_for_slot", _remove)
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(f"{_BASE}/specs/s/handoff", json={"spec_dir": spec_dir})
+        payload = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 409, payload
+    assert payload.get("code") == "spec_agent_busy", payload
+    assert dispatched == []
+    assert released == ["loop-raced"], "the armed timer survived the busy refusal"
+    assert routes._load_index()["s"].get("status") == "planning"
+
+
+@pytest.mark.asyncio
+async def test_handoff_refuses_when_its_own_slot_starts_during_the_final_repin(
+    tmp_path, monkeypatch
+):
+    """The final freshness write awaits, so channel traffic can start there too."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, _slot_key = _decision_spec(tmp_path, state={"phase": "tasks"})
+    (Path(spec_dir) / "tasks.md").write_text("- [ ] a task\n")
+    state, slot = _slot_stub()
+    monkeypatch.setattr(routes, "_autonudge_instance", lambda: object())
+
+    async def _authorized(**_kw):
+        return types.SimpleNamespace(id="loop-repin-raced"), "", 200
+
+    monkeypatch.setattr(routes, "authorize_and_add_nudge", _authorized)
+    real_touch = routes._touch_spec
+
+    async def _touch_then_start(*args, **kwargs):
+        result = await real_touch(*args, **kwargs)
+        if kwargs.get("exec_arming_at") == 0.0 and kwargs.get("status") is None:
+            slot.running = True
+        return result
+
+    monkeypatch.setattr(routes, "_touch_spec", _touch_then_start)
+    dispatched: list[str] = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a[2]))
+    released: list[str] = []
+
+    async def _remove(_slot_key, *, only_loop_id=None):
+        released.append(only_loop_id)
+
+    monkeypatch.setattr(routes, "_remove_nudge_loop_for_slot", _remove)
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(f"{_BASE}/specs/s/handoff", json={"spec_dir": spec_dir})
+        payload = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 409, payload
+    assert payload.get("code") == "spec_agent_busy", payload
+    assert dispatched == []
+    assert released == ["loop-repin-raced"], "the armed timer survived the busy refusal"
+    assert routes._load_index()["s"].get("status") == "planning"
+
+
+def test_the_busy_refusal_cannot_leak_an_armed_loop():
+    """Source guard: the busy check must precede the arm.
+
+    Round 18 fixed a leaked timer by releasing it in the refusal; round 27 removed
+    the leak instead by arming after the check. Ordering is the property worth
+    pinning -- a future edit that moves arming back above the check reintroduces a
+    hazard that only shows up as a build firing minutes after a 409.
+    """
+    src = inspect.getsource(routes._handle_handoff)
+    lock = src.index("async with _turn_lock(handoff_dir_key):")
+    busy = src.index("_busy_alias(", lock)
+    arm = src.index("await authorize_and_add_nudge(", lock)
+    assert busy < arm, (
+        "the handoff arms its nudge loop before checking for a busy alias, so a "
+        "refusal leaves a timer that dispatches the build it just denied"
+    )
+    assert lock < arm, (
+        "the loop is armed outside the directory turn lock, so its idle timer can "
+        "dispatch while this handler is still waiting for the lock"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_alias_set_excludes_our_own_slot(tmp_path, monkeypatch):
+    """Our own slot is the same session, and must never read as a concurrent editor.
+
+    That exclusion is what preserves same-slot queuing: a message to the session that is
+    working is queued by _dispatch_turn, the long-standing behaviour. Only ANOTHER name's
+    slot is a second agent on these documents, and only that refuses.
+    """
+    _redirect_state(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    alias_key = _alias_of(await routes._aload_index(), "s", "s-alias")
+
+    key = routes._decision_key(spec_dir)
+    aliases = await routes._alias_slots(key, own_slot_key=slot_key)
+
+    assert aliases == {alias_key: "s-alias"}
+    assert slot_key not in aliases, "our own running slot would read as a concurrent editor"
+
+
+def test_an_unresolvable_directory_keeps_its_normalized_literal_key(tmp_path, monkeypatch):
+    """A lexical key normalizes even when the directory cannot be resolved."""
+    loop_a = tmp_path / "A"
+    loop_b = tmp_path / "B"
+    loop_a.symlink_to(loop_b)
+    loop_b.symlink_to(loop_a)
+    monkeypatch.setattr(routes.os.path, "normcase", lambda path: path.lower())
+
+    assert routes._decision_key(str(loop_a)) == os.path.normpath(str(loop_a)).lower()
+
+
+@pytest.mark.asyncio
+async def test_an_alias_with_an_armed_build_blocks_the_answer(tmp_path, monkeypatch):
+    """A running turn is not the only way an alias occupies these documents.
+
+    An autonudge execution loop sits IDLE between its nudge cycles, so a busy check that
+    asks only whether the slot is running right now reads a live build as free: the other
+    name dispatches, then the loop's timer fires, and two agents write one spec's files.
+    The loop is as much an occupant as the turn it periodically starts.
+    """
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    alias_key = _alias_of(await routes._aload_index(), "s", "s-alias")
+
+    dispatched: list = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a[2]))
+
+    # The alias's slot is IDLE -- only its loop is armed, which is the whole point.
+    state, _slot = _slot_stub()
+    idle = types.SimpleNamespace(key=alias_key, running=False, messages=[])
+    real_get_slot = state.get_slot
+    state.get_slot = lambda k: idle if k == alias_key else real_get_slot(k)
+
+    class _Svc:
+        def get_by_slot(self, key):
+            return types.SimpleNamespace(active=True) if key == alias_key else None
+
+    monkeypatch.setattr(routes, "_autonudge_instance", lambda: _Svc())
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(
+            f"{_BASE}/specs/s/message",
+            json={
+                "spec_dir": spec_dir,
+                "slot_key": slot_key,
+                "decision_id": "transport",
+                "decision_option": "HTTPS",
+                "text": "Decision - transport: HTTPS",
+            },
+        )
+        payload = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 409, payload
+    assert payload.get("code") == "spec_busy_elsewhere", payload
+    assert dispatched == [], "an answer was dispatched while an alias's build was armed"
+    assert (
+        await _recorded_answers(spec_dir) == {}
+    ), "the answer was recorded even though nothing was dispatched"
+
+
+@pytest.mark.asyncio
+async def test_a_finished_alias_loop_does_not_block(tmp_path, monkeypatch):
+    """...and a loop the service has already deactivated is NOT an occupant.
+
+    The loop is capped, and the service flips `active` itself without telling this app, so
+    treating any registry hit as busy would strand every later dispatch behind a build that
+    finished.
+    """
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    alias_key = _alias_of(await routes._aload_index(), "s", "s-alias")
+
+    dispatched: list = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a[2]))
+    state, _slot = _slot_stub()
+    idle = types.SimpleNamespace(key=alias_key, running=False, messages=[])
+    real_get_slot = state.get_slot
+    state.get_slot = lambda k: idle if k == alias_key else real_get_slot(k)
+
+    class _Svc:
+        def get_by_slot(self, key):
+            return types.SimpleNamespace(active=False)
+
+    monkeypatch.setattr(routes, "_autonudge_instance", lambda: _Svc())
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(
+            f"{_BASE}/specs/s/message",
+            json={"spec_dir": spec_dir, "slot_key": slot_key, "text": "just a note"},
+        )
+    finally:
+        await client.close()
+
+    assert resp.status == 200, await resp.text()
+    assert dispatched == ["just a note"]
+
+
+def test_the_busy_check_reads_no_filesystem():
+    """Source guard: `_busy_alias` runs ON the event loop, so it must ask the nudge
+    registry by SLOT KEY and derive nothing itself.
+
+    Round 19 justified this with a claim that was wrong: `_slot_key` reads the
+    module-global `_SLOT_KEYS`, not the index, so calling it is not a filesystem hop.
+    The guard stands for the reason that survived round 21 -- key derivation belongs
+    in ONE off-loop place (`_alias_slots_locked`), because that is what makes every
+    alias key ownership-validated instead of trusted raw from an agent-writable file.
+    Re-deriving per call here would also invite an unvalidated shortcut back in.
+    """
+    src = inspect.getsource(routes._busy_alias)
+    assert "_exec_loop_active_for_slot(" in src, "the busy check ignores an armed loop"
+    assert "_exec_loop_active(" not in src.replace(
+        "_exec_loop_active_for_slot(", ""
+    ), "the busy check resolves a loop BY NAME, re-deriving a key it was handed"
+    assert "_slot_key(" not in src, "the busy check derives a key instead of using the resolved one"
+
+
+def test_alias_keys_are_resolved_not_trusted_from_the_index():
+    """Source guard: the alias scan must not read ``slot_key`` raw from the entry.
+
+    index.json is agent-writable, so a raw read lets an alias hide from the busy
+    scan. This is the one place the resolution happens, so pin it here.
+    """
+    src = inspect.getsource(routes._alias_slots_locked)
+    assert "_slot_key(other)" in src, "alias keys are not resolved through the validated map"
+    assert "_owns_slot_key(other, persisted)" in src
+    assert "out[persisted]" not in src, "the alias scan trusts the raw persisted key"
+
+
+class _AsyncReturn:
+    """An awaitable stand-in that ignores its arguments and returns ``value``."""
+
+    def __init__(self, value):
+        self.value = value
+
+    async def __call__(self, *_a, **_kw):
+        return self.value
+
+
+def _create_client(monkeypatch, tmp_path):
+    """A client whose create tail is stubbed out, plus its state.
+
+    ``_make_client`` performs the state redirect, so it must run BEFORE anything
+    seeds the ledger -- seeding first writes into the pre-redirect location, and a
+    test asserting "no answers recorded" would then pass while proving nothing.
+
+    The clear under test runs long before the worker slot is touched, so the slot
+    setup and the seed dispatch are stubbed: neither is what these tests measure.
+    """
+    client = _make_client(monkeypatch, tmp_path)
+    state, slot = _slot_stub()
+    monkeypatch.setattr(routes, "_ensure_worker_slot", _AsyncReturn(slot))
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *_a, **_kw: None)
+    return client, state
+
+
+@pytest.mark.asyncio
+async def test_creating_a_spec_clears_an_orphaned_record_at_its_path(tmp_path, monkeypatch):
+    """The residue a failed delete-cleanup leaves must not settle the NEXT spec.
+
+    A delete clears the ledger only after the index entry is gone, and only
+    best-effort, so a crash in that window leaves answers for documents that no
+    longer exist. Decision ids are agent-authored labels that recur across specs,
+    so without this the new spec's own question renders locked to an answer the
+    user never gave for it -- and answering it is refused.
+    """
+    project = tmp_path / "proj"
+    project.mkdir()
+    spec_dir = project / ".kiro" / "specs" / "reborn"
+    client, state = _create_client(monkeypatch, tmp_path)
+
+    # The residue: a record for this exact directory, with no index entry and no
+    # documents -- precisely what a delete whose cleanup failed leaves behind.
+    key = routes._decision_key(str(spec_dir))
+    routes._save_decisions(
+        {
+            key: {
+                "name": "reborn",
+                "answers": {"transport": _final_answer("transport", "HTTPS")},
+            }
+        }
+    )
+    routes._save_index({})
+    # The fixture must be readable through the redirect, or this test proves nothing.
+    assert await _recorded_answers(str(spec_dir)) == {"transport": "HTTPS"}
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(
+            f"{_BASE}/specs",
+            json={"name": "reborn", "working_dir": str(project), "spec_type": "feature"},
+        )
+        assert resp.status == 201, await resp.json()
+    finally:
+        await client.close()
+
+    assert await _recorded_answers(str(spec_dir)) == {}, (
+        "the new spec inherited the deleted spec's answers, so a question it never "
+        "asked renders locked and cannot be answered"
+    )
+
+
+@pytest.mark.asyncio
+async def test_creating_a_spec_keeps_a_live_alias_answers(tmp_path, monkeypatch):
+    """The boundary on the other side: clearing must never reopen a settled decision.
+
+    Two names can serve one directory. If another name is still indexed on it, its
+    answers are live -- erasing them on a create would hand that spec a clean slate
+    for decisions already settled, which is the reversal this design refuses.
+    """
+    project = tmp_path / "proj"
+    project.mkdir()
+    spec_dir = project / ".kiro" / "specs" / "shared"
+    client, state = _create_client(monkeypatch, tmp_path)
+
+    key = routes._decision_key(str(spec_dir))
+    routes._save_decisions(
+        {
+            key: {
+                "name": "alias",
+                "answers": {"transport": _final_answer("transport", "HTTPS")},
+            }
+        }
+    )
+    # A live alias: a DIFFERENT name, indexed, pointing at the same directory.
+    routes._save_index(
+        {
+            "alias": {
+                "working_dir": str(project),
+                "spec_dir": str(spec_dir),
+                "spec_type": "feature",
+                "status": "planning",
+                "slot_key": "spec-builder-alias-1",
+                "created_at": 1.0,
+                "updated_at": 1.0,
+            }
+        }
+    )
+    assert await _recorded_answers(str(spec_dir)) == {"transport": "HTTPS"}
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(
+            f"{_BASE}/specs",
+            json={"name": "shared", "working_dir": str(project), "spec_type": "feature"},
+        )
+        assert resp.status in (201, 409), await resp.json()
+    finally:
+        await client.close()
+
+    assert await _recorded_answers(str(spec_dir)) == {"transport": "HTTPS"}, (
+        "creating a second name on the directory erased the live alias's settled "
+        "answer, reopening a decision the user already made"
+    )
+
+
+@pytest.mark.asyncio
+async def test_importing_existing_documents_keeps_their_answers(tmp_path, monkeypatch):
+    """import_existing adopts documents that already exist, so their answers stand.
+
+    This is the case where the record was written FOR these files. Clearing here
+    would reopen settled decisions on re-adoption, so the create-time clear is
+    deliberately scoped to a spec whose documents are new.
+    """
+    project = tmp_path / "proj"
+    spec_dir = project / ".kiro" / "specs" / "adopted"
+    spec_dir.mkdir(parents=True)
+    (spec_dir / "requirements.md").write_text("# theirs")
+    client, state = _create_client(monkeypatch, tmp_path)
+
+    key = routes._decision_key(str(spec_dir))
+    routes._save_decisions(
+        {
+            key: {
+                "name": "adopted",
+                "answers": {"transport": _final_answer("transport", "HTTPS")},
+            }
+        }
+    )
+    routes._save_index({})
+    assert await _recorded_answers(str(spec_dir)) == {"transport": "HTTPS"}
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(
+            f"{_BASE}/specs",
+            json={
+                "name": "adopted",
+                "working_dir": str(project),
+                "spec_type": "feature",
+                "import_existing": True,
+            },
+        )
+        assert resp.status == 201, await resp.json()
+    finally:
+        await client.close()
+
+    assert await _recorded_answers(str(spec_dir)) == {
+        "transport": "HTTPS"
+    }, "adopting the documents an answer was recorded for dropped that answer"
+
+
+def test_the_create_time_clear_is_gated_on_new_documents():
+    """Source guard: the clear must sit behind ``not import_existing``.
+
+    Ungating it would clear on adoption too, which is the reversal direction --
+    and no unit test of the happy path would notice.
+    """
+    src = inspect.getsource(routes._handle_create)
+    assert "if not import_existing:" in src, "the create-time ledger clear is not gated"
+    gate = src.index("if not import_existing:")
+    clear = src.index("_forget_decisions(", gate)
+    body = src[gate:clear]
+    # Every line between the gate and the clear must stay indented under it.
+    for line in body.splitlines()[1:]:
+        if line.strip():
+            assert line.startswith(
+                "        "
+            ), "the ledger clear is not inside the import_existing gate"
+
+
+@pytest.mark.asyncio
+async def test_create_refuses_when_a_stale_record_survives_the_clear(tmp_path, monkeypatch):
+    """A failed clear over a READABLE record must refuse, not warn and continue.
+
+    Otherwise the create proceeds and the new spec inherits the answers the clear
+    was there to remove -- the round-20 bug, reached through its own failure branch.
+    """
+    project = tmp_path / "proj"
+    project.mkdir()
+    spec_dir = project / ".kiro" / "specs" / "stuck"
+    client, state = _create_client(monkeypatch, tmp_path)
+
+    key = routes._decision_key(str(spec_dir))
+    routes._save_decisions(
+        {
+            key: {
+                "name": "stuck",
+                "answers": {"transport": _final_answer("transport", "HTTPS")},
+            }
+        }
+    )
+    routes._save_index({})
+
+    # The ledger write fails, exactly as a full disk or a read-only state dir would.
+    def _boom(_store):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(routes, "_save_decisions", _boom)
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(
+            f"{_BASE}/specs",
+            json={"name": "stuck", "working_dir": str(project), "spec_type": "feature"},
+        )
+        status, payload = resp.status, await resp.json()
+    finally:
+        await client.close()
+
+    assert status == 503, f"{status}: {payload}"
+    assert payload["code"] == "decision_record_not_cleared", payload
+    # And nothing was registered, so a retry is clean rather than a half-built spec.
+    assert "stuck" not in routes._load_index(), (
+        "the refused create still registered the spec, so its cards would render "
+        "locked to the previous spec's answers"
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_refuses_when_the_ledger_is_unreadable(tmp_path, monkeypatch):
+    """This test asserted the OPPOSITE until round 26.
+
+    Round 21 let a create proceed when the clear failed only because the store was
+    unusable, reasoning that nothing can read a stale answer out of a store nothing
+    can read. That is wrong, and the error is worth keeping visible: unreadability
+    is a property of ONE READ, not of the store. A transient failure -- a partial
+    write, a momentary IO error -- leaves the old record intact on disk, so the
+    probe returned empty, the create proceeded, and the record became readable
+    again afterwards and overlaid its answers onto the brand-new spec.
+
+    So the refusal is back on the clear's own result, which is the only signal that
+    actually reports whether the ledger is clean. The cost is that a corrupt
+    decisions store blocks new spec creation -- loud, and the correct direction to
+    fail for a trust root.
+    """
+    project = tmp_path / "proj"
+    project.mkdir()
+    client, state = _create_client(monkeypatch, tmp_path)
+    routes._save_index({})
+    monkeypatch.setattr(routes, "_read_decisions", lambda: ({}, False))
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(
+            f"{_BASE}/specs",
+            json={"name": "fresh", "working_dir": str(project), "spec_type": "feature"},
+        )
+        status, payload = resp.status, await resp.json()
+    finally:
+        await client.close()
+
+    assert status == 503, f"{status}: {payload}"
+    assert payload["code"] == "decision_record_unreadable", payload
+    assert "fresh" not in routes._load_index(), "the refused create still registered the spec"
+
+
+def test_the_refusal_unwinds_a_worktree_it_created():
+    """Source guard: the 503 must not leak the worktree create just made.
+
+    Every other refusal in this handler removes it; this one is reached after the
+    worktree exists, so omitting it would leave an orphaned checkout behind.
+    """
+    src = inspect.getsource(routes._handle_create)
+    at = src.index("decision_record_not_cleared")
+    # Look back from the refusal payload to the branch it belongs to.
+    branch = src[src.index("if not cleared", 0) : at]
+    assert (
+        "_remove_worktree(" in branch
+    ), "the stale-record refusal returns without removing a worktree it created"
+
+
+def _two_names_one_dir(tmp_path, *, alias_key):
+    """Index two names on ONE spec directory; the alias carries ``alias_key``.
+
+    ``alias_key`` is written verbatim, which is the point: the field is
+    agent-writable, so the tests drive the values an agent could actually put there.
+    """
+    spec_dir = tmp_path / "proj" / ".kiro" / "specs" / "shared"
+    spec_dir.mkdir(parents=True)
+    entry = {
+        "working_dir": str(tmp_path / "proj"),
+        "spec_dir": str(spec_dir),
+        "spec_type": "feature",
+        "status": "planning",
+        "created_at": 1.0,
+        "updated_at": 1.0,
+    }
+    index = {
+        "mine": {**entry, "slot_key": "spec-builder-mine-aaaaaaaa"},
+        "alias": {**entry, "slot_key": alias_key},
+    }
+    routes._save_index(index)
+    return str(spec_dir)
+
+
+@pytest.mark.asyncio
+async def test_an_alias_with_no_slot_key_is_still_seen(tmp_path, monkeypatch):
+    """Deleting the field used to drop the alias from the scan entirely.
+
+    The old code skipped an entry with no key, so an agent could delete its own
+    ``slot_key`` and become invisible to every busy check -- then both names ran a
+    turn over the same documents.
+    """
+    _redirect_state(monkeypatch, tmp_path)
+    spec_dir = _two_names_one_dir(tmp_path, alias_key="")
+    dir_key = routes._decision_key(spec_dir)
+
+    aliases = await routes._alias_slots(dir_key, own_slot_key="spec-builder-mine-aaaaaaaa")
+
+    assert "alias" in aliases.values(), (
+        "an alias with no slot_key vanished from the scan, so a concurrent turn "
+        "under it would not block"
+    )
+    # Missing identity fails closed because a per-creation worker may still be running
+    # under the removed key; guessing the legacy key would make it invisible.
+    assert aliases == {None: "alias"}, aliases
+
+
+@pytest.mark.asyncio
+async def test_an_invalid_identity_cannot_claim_the_own_slot_exemption(tmp_path, monkeypatch):
+    """The fallback key is not proof that it names the running creation.
+
+    Removing a per-creation key makes ``_slot_key`` fall back to the legacy key. If
+    that fallback is compared with ``own_slot_key`` before ownership validation, the
+    invalid entry disappears from the busy scan even though its original worker may
+    still be editing the directory.
+    """
+    _redirect_state(monkeypatch, tmp_path)
+    spec_dir = Path(tmp_path, "spec")
+    spec_dir.mkdir()
+    routes._save_index(
+        {
+            "mine": {
+                "working_dir": str(tmp_path / "proj"),
+                "spec_dir": str(spec_dir),
+                "spec_type": "feature",
+                "status": "planning",
+                "created_at": 1.0,
+                "updated_at": 1.0,
+            }
+        }
+    )
+
+    aliases = await routes._alias_slots(
+        routes._decision_key(str(spec_dir)), own_slot_key="spec-builder-mine"
+    )
+
+    assert aliases == {None: "mine"}, (
+        "an ownership-invalid entry used its guessed legacy key to disappear as "
+        f"the caller's own slot: {aliases}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_alias_that_copies_our_key_is_still_seen(tmp_path, monkeypatch):
+    """Copying the caller's key used to make the alias read as "our own slot".
+
+    Own-slot exclusion exists so a same-session message can queue rather than be
+    refused. Keyed on a field the agent writes, it became a way to borrow the
+    exemption -- ownership validation rejects a key that does not encode the
+    alias's own name, so the copy cannot be claimed.
+    """
+    _redirect_state(monkeypatch, tmp_path)
+    spec_dir = _two_names_one_dir(tmp_path, alias_key="spec-builder-mine-aaaaaaaa")
+    dir_key = routes._decision_key(spec_dir)
+
+    aliases = await routes._alias_slots(dir_key, own_slot_key="spec-builder-mine-aaaaaaaa")
+
+    assert aliases == {
+        None: "alias"
+    }, f"the alias borrowed our slot key to escape the busy scan: {aliases}"
+
+
+@pytest.mark.asyncio
+async def test_a_legitimate_per_creation_key_still_resolves(tmp_path, monkeypatch):
+    """The boundary: a valid, owned key must survive resolution unchanged.
+
+    Otherwise the scan would look for a slot the alias does not actually run in,
+    and a genuinely busy alias would read as free.
+    """
+    _redirect_state(monkeypatch, tmp_path)
+    spec_dir = _two_names_one_dir(tmp_path, alias_key="spec-builder-alias-bbbbbbbb")
+    dir_key = routes._decision_key(spec_dir)
+
+    aliases = await routes._alias_slots(dir_key, own_slot_key="spec-builder-mine-aaaaaaaa")
+
+    assert aliases == {"spec-builder-alias-bbbbbbbb": "alias"}, aliases
+
+
+@pytest.mark.asyncio
+async def test_our_own_name_is_still_excluded(tmp_path, monkeypatch):
+    """Resolution must not break same-session queuing.
+
+    Our own slot is excluded so an ordinary message queues instead of being
+    refused; resolving keys must leave that exclusion working.
+    """
+    _redirect_state(monkeypatch, tmp_path)
+    spec_dir = _two_names_one_dir(tmp_path, alias_key="spec-builder-alias-bbbbbbbb")
+    dir_key = routes._decision_key(spec_dir)
+
+    aliases = await routes._alias_slots(dir_key, own_slot_key="spec-builder-alias-bbbbbbbb")
+
+    assert aliases == {
+        "spec-builder-mine-aaaaaaaa": "mine"
+    }, f"own-slot exclusion stopped working after resolution: {aliases}"
+
+
+@pytest.mark.asyncio
+async def test_stop_waits_for_an_in_flight_decision_answer(tmp_path, monkeypatch):
+    """The race: Stop used to cancel a turn a decision answer was mid-dispatch.
+
+    The answer path records the answer and dispatches it while holding the
+    directory turn lock. Stop took no lock, so it could land BETWEEN those two
+    steps -- the turn it cancelled was the one carrying the answer, and because the
+    record is never rewritten the card stayed locked to an answer the agent never
+    received. Stop now takes the same lock, so it cannot observe that midpoint.
+
+    Timing is deliberate: the halt sets an Event, and the assertion is that it does
+    not fire within a REAL timeout while the lock is held. An earlier version of
+    this test yielded with sleep(0), which never let the request cross its thread
+    hops -- so the halt was absent either way and removing the lock still passed.
+    """
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, _unused = _decision_spec(tmp_path)
+    dir_key = routes._decision_key(spec_dir)
+
+    halted = asyncio.Event()
+
+    async def _halt_spy(*_a, **_kw):
+        halted.set()
+
+    monkeypatch.setattr(routes, "_halt_execution", _halt_spy)
+
+    state, _slot = _slot_stub()
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        async with routes._turn_lock(dir_key):
+            stop = asyncio.ensure_future(client.post(f"{_BASE}/specs/s/stop", json={}))
+            with pytest.raises(asyncio.TimeoutError):
+                # Long enough for the request to finish _client_claim, _aload_index
+                # and _acanonical_dir -- i.e. long enough to reach the halt if it
+                # were not serialized. The mutation that frees the lock trips this.
+                await asyncio.wait_for(asyncio.shield(halted.wait()), timeout=1.5)
+            assert (
+                not halted.is_set()
+            ), "Stop halted the run while the answer path held the turn lock"
+        # Released: the same request must now get through.
+        await asyncio.wait_for(halted.wait(), timeout=5)
+        resp = await stop
+        await resp.read()
+    finally:
+        await client.close()
+
+    assert halted.is_set(), "Stop never halted after the lock was released"
+
+
+def test_stop_takes_the_directory_turn_lock():
+    """Source guard: Stop is destructive and must join the serialized family.
+
+    The behavioural test above can only observe the lock it knows about; this
+    pins that Stop keeps taking it, and takes it on the CANONICAL directory (a
+    name-keyed lock would not serialize two names on one spec).
+    """
+    src = inspect.getsource(routes._handle_stop_execution)
+    assert "_turn_lock(" in src, "Stop does not serialize against the answer path"
+    assert "_decision_key(" in src, "Stop keys its lock on something other than the directory"
+    lock_at = src.index("_turn_lock(")
+    assert "_halt_execution(" in src[lock_at:], "the halt runs outside the lock"
+
+
+def test_stop_rechecks_the_spec_after_waiting_for_the_lock():
+    """Waiting on a lock is an await, so the pre-lock snapshot can go stale.
+
+    Halting on that snapshot could cancel a REPLACEMENT spec's run, which is the
+    same class of bug the body-first ordering above the lock already guards.
+    """
+    src = inspect.getsource(routes._handle_stop_execution)
+    lock_at = src.index("_turn_lock(dir_key)")
+    after = src[lock_at:]
+    assert "_aload_index()" in after, "Stop reuses a snapshot taken before it held the lock"
+    assert after.index("_aload_index()") < after.index(
+        "_halt_execution("
+    ), "Stop re-reads the index only after halting, which is too late"
+
+
+@pytest.mark.asyncio
+async def test_stop_refuses_a_spec_recreated_at_the_same_path(tmp_path, monkeypatch):
+    """The directory cannot detect a delete + recreate; the slot key can.
+
+    Round 23 rechecked the canonical directory after waiting for the lock, but a
+    recreate at the SAME path resolves to the same directory -- so the recheck
+    passed and Stop cancelled the replacement's run. Slot keys are minted per
+    creation, so the replacement necessarily carries a different one.
+    """
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    dir_key = routes._decision_key(spec_dir)
+
+    halted: list = []
+
+    async def _halt_spy(*_a, **_kw):
+        halted.append("halt")
+
+    monkeypatch.setattr(routes, "_halt_execution", _halt_spy)
+
+    state, _slot = _slot_stub()
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        async with routes._turn_lock(dir_key):
+            stop = asyncio.ensure_future(client.post(f"{_BASE}/specs/s/stop", json={}))
+            await asyncio.sleep(0.75)  # let it reach the lock and block there
+            # The spec is deleted and recreated at the SAME path while Stop waits:
+            # same directory, new creation, new slot key.
+            index = routes._load_index()
+            routes._forget_observed_slot_identity("s", slot_key)
+            index["s"]["slot_key"] = "spec-builder-s-99999999"
+            routes._save_index(index)
+        resp = await stop
+        status, payload = resp.status, await resp.json()
+    finally:
+        await client.close()
+
+    assert status == 409, f"{status}: {payload}"
+    assert payload["code"] == "stale_client", payload
+    assert halted == [], "Stop cancelled the run of a spec created after it started waiting"
+    assert slot_key != "spec-builder-s-99999999"
+
+
+def test_no_path_evicts_a_turn_lock():
+    """Source guard: nothing may pop `_TURN_LOCKS`.
+
+    The eviction is unsafe from every call site for the same reason, so the rule is
+    global rather than per-handler -- a future cleanup that reintroduces it here
+    would silently reopen concurrent turns.
+    """
+    src = inspect.getsource(routes)
+    assert "_TURN_LOCKS.pop(" not in src, "a turn lock is evicted somewhere"
+    assert "del _TURN_LOCKS[" not in src, "a turn lock is deleted somewhere"
+    assert "_TURN_LOCKS.clear()" not in src, "the turn lock registry is cleared somewhere"
+
+
+async def _index_has(name: str, *, timeout: float) -> bool:
+    """True once *name* is registered, False if it never arrives in time."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if name in await asyncio.to_thread(routes._load_index):
+            return True
+        await asyncio.sleep(0.05)
+    return False
+
+
+@pytest.mark.asyncio
+async def test_create_waits_for_the_directory_turn_lock(tmp_path, monkeypatch):
+    """A create must not register while a delete holds the directory's lock.
+
+    Delete removes its index entry and THEN scans for other names referencing the
+    directory to decide whether to clear the ledger. A registration landing after
+    that scan let the cleanup erase answers the newly adopted spec owned, so the
+    two must not interleave.
+
+    The wait is measured against a REAL timeout: create crosses several thread
+    hops before reaching the lock, so a sleep(0) yield would prove nothing.
+    """
+    project = tmp_path / "proj"
+    project.mkdir()
+    spec_dir = project / ".kiro" / "specs" / "serialized"
+    client, state = _create_client(monkeypatch, tmp_path)
+    routes._save_index({})
+    dir_key = routes._decision_key(str(spec_dir))
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        async with routes._turn_lock(dir_key):
+            post = asyncio.ensure_future(
+                client.post(
+                    f"{_BASE}/specs",
+                    json={
+                        "name": "serialized",
+                        "working_dir": str(project),
+                        "spec_type": "feature",
+                    },
+                )
+            )
+            assert not await _index_has("serialized", timeout=1.5), (
+                "the create registered while the directory's turn lock was held, so "
+                "a delete's ledger cleanup could erase its answers"
+            )
+        # Released: the same request must now complete.
+        assert await _index_has("serialized", timeout=10), "the create never registered"
+        resp = await post
+        assert resp.status == 201, await resp.json()
+    finally:
+        await client.close()
+
+
+def test_every_handler_that_starts_work_holds_the_turn_lock():
+    """The invariant, widened after round 27 found the axis it was missing.
+
+    Round 25 stated this as "every handler that mutates the index holds the lock",
+    which is why a handler that ARMED A TIMER outside the lock was found by a
+    reviewer instead of by this test: the timer dispatched on its own while the
+    handler still waited for the lock. Causing work to start has three shapes, not
+    one -- register/remove an index entry, arm a nudge loop, or dispatch a turn --
+    and all three must be serialized on the directory.
+
+    Enumerated rather than listed by name, so a handler added later is covered.
+    """
+    offenders: dict[str, list[str]] = {}
+    checked: list[str] = []
+    for attr in dir(routes):
+        if not attr.startswith("_handle_"):
+            continue
+        fn = getattr(routes, attr)
+        if not callable(fn):
+            continue
+        try:
+            src = inspect.getsource(fn)
+        except (OSError, TypeError):  # pragma: no cover - not Python-defined
+            continue
+        effects = [e for e in _SERIALIZED_EFFECTS if e in src]
+        if not effects:
+            continue
+        checked.append(attr)
+        if "_turn_lock(" not in src:
+            offenders[attr] = effects
+
+    assert checked, "the guard found no work-starting handlers -- it has gone blind"
+    assert not offenders, (
+        f"these handlers start work without the directory turn lock: {offenders}. "
+        "Registering an entry, arming a nudge timer and dispatching a turn are all "
+        "ways to put an agent into a spec's files, so each needs serializing."
+    )
+
+
+def _effect_calls_outside_turn_lock(fn) -> list[str]:
+    """Serialized effects in *fn* that are NOT lexically inside an `async with
+    _turn_lock(...)` block.
+
+    On the AST rather than on text, because "is the lock present in this function"
+    is the question that let round 28 through: create held the lock around its index
+    insert and dispatched its seed ~190 lines after the block closed. Containment is
+    the property; presence is not.
+    """
+    tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+
+    guarded: list[ast.AST] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.AsyncWith):
+            continue
+        for item in node.items:
+            call = item.context_expr
+            name = (
+                call.func.id
+                if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+                else ""
+            )
+            if name == "_turn_lock":
+                guarded.append(node)
+
+    guarded_nodes = {id(inner) for block in guarded for inner in ast.walk(block)}
+    outside = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fname = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
+        if fname not in {
+            "_mutate_index",
+            "_save_index",
+            "authorize_and_add_nudge",
+            "_dispatch_turn",
+        }:
+            continue
+        if id(node) not in guarded_nodes:
+            outside.append(f"{fname}@line{node.lineno}")
+    return outside
+
+
+def test_every_serialized_effect_is_inside_the_lock_not_merely_near_it():
+    """The invariant, made positional after round 28.
+
+    Rounds 23-27 each fixed one handler that started work outside the directory turn
+    lock, and each time the guard I wrote was weaker than the rule it stood for:
+    first per-path, then presence-anywhere-in-the-handler. This checks CONTAINMENT on
+    the AST, for every handler and every effect, which is the form that would have
+    caught create dispatching its seed after the block closed.
+    """
+    offenders: dict[str, list[str]] = {}
+    checked: list[str] = []
+    for attr in dir(routes):
+        if not attr.startswith("_handle_"):
+            continue
+        fn = getattr(routes, attr)
+        if not callable(fn):
+            continue
+        try:
+            inspect.getsource(fn)
+        except (OSError, TypeError):  # pragma: no cover - not Python-defined
+            continue
+        outside = _effect_calls_outside_turn_lock(fn)
+        src = inspect.getsource(fn)
+        if not any(
+            e in src
+            for e in (
+                "_mutate_index(",
+                "_save_index(",
+                "authorize_and_add_nudge(",
+                "_dispatch_turn(",
+            )
+        ):
+            continue
+        checked.append(attr)
+        if outside:
+            offenders[attr] = outside
+
+    assert checked, "the guard found no work-starting handlers -- it has gone blind"
+    assert not offenders, (
+        f"these handlers start work OUTSIDE the directory turn lock: {offenders}. "
+        "Registering an entry, arming a nudge timer and dispatching a turn must each "
+        "happen inside the block, not merely somewhere in the same function."
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_dispatches_its_seed_before_anything_else_can_run(tmp_path, monkeypatch):
+    """A registered spec whose seed has not been dispatched must accept nothing else.
+
+    The lock used to close at the index insert, so a list poll could expose the spec
+    while create was still awaiting slot setup; a concurrent message then took the
+    lock and started the FIRST turn, leaving the seed queued second and the persisted
+    conversation beginning with something other than the prompt that defines the spec.
+    """
+    project = tmp_path / "proj"
+    project.mkdir()
+    spec_dir = project / ".kiro" / "specs" / "seeded"
+    client, state = _create_client(monkeypatch, tmp_path)
+    routes._save_index({})
+    dir_key = routes._decision_key(str(spec_dir))
+
+    dispatched: list = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a[2]))
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        async with routes._turn_lock(dir_key):
+            post = asyncio.ensure_future(
+                client.post(
+                    f"{_BASE}/specs",
+                    json={"name": "seeded", "working_dir": str(project), "spec_type": "feature"},
+                )
+            )
+            await asyncio.sleep(1.0)
+            assert dispatched == [], (
+                "create dispatched its seed while the directory's turn lock was held, "
+                "so a concurrent turn could have gone first"
+            )
+        resp = await post
+        assert resp.status == 201, await resp.json()
+    finally:
+        await client.close()
+
+    assert dispatched, "the seed was never dispatched"
+
+
+def test_discovery_is_exempt_only_because_the_tombstone_covers_it():
+    """The one adopter outside the lock family, and why that is sound.
+
+    Discovery adopts directories found on disk and cannot take a per-directory lock
+    for an unbounded sweep. It is safe because a delete leaves a tombstone that
+    discovery consults, so it cannot adopt a directory mid-teardown. If that
+    consultation ever disappears, discovery needs the lock instead -- and this test
+    is what says so.
+    """
+    src = inspect.getsource(routes._discover_folder_specs)
+    assert "_deleted" in src or "tombstone" in src.lower(), (
+        "discovery no longer consults the delete tombstone, so it can adopt a "
+        "directory whose teardown is still running -- it now needs the turn lock"
+    )
+
+
+async def _answer(client, state, *, spec_dir, slot_key, option, decision_id="transport"):
+    """POST a decision answer, returning (status, payload)."""
+    resp = await client.post(
+        f"{_BASE}/specs/s/message",
+        json={
+            "spec_dir": spec_dir,
+            "slot_key": slot_key,
+            "decision_id": decision_id,
+            "decision_option": option,
+            "text": f"Decision - {decision_id}: {option}",
+        },
+    )
+    return resp.status, await resp.json()
+
+
+@pytest.mark.asyncio
+async def test_an_option_the_decision_no_longer_offers_is_refused(tmp_path, monkeypatch):
+    """A card is a snapshot; the decision behind it can be re-emitted.
+
+    Same id, revised options: a tab still showing the old render posts an option the
+    replacement never offered. The claim would record it and the overlay would lock
+    the card -- permanently -- to a choice the user cannot see and the agent cannot
+    honour. Nothing downstream can undo that, because the ledger is never rewritten.
+    """
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(
+        tmp_path,
+        state={"decisions": [{"id": "transport", "title": "Inbound", "options": ["gRPC", "AMQP"]}]},
+    )
+    dispatched: list = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a[2]))
+
+    state, _slot = _slot_stub()
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        # "HTTPS" was on the card this client rendered; the decision now offers neither.
+        status, payload = await _answer(
+            client, state, spec_dir=spec_dir, slot_key=slot_key, option="HTTPS"
+        )
+    finally:
+        await client.close()
+
+    assert status == 409, f"{status}: {payload}"
+    assert payload["code"] == "decision_option_not_offered", payload
+    assert dispatched == [], "the stale option reached the agent"
+    assert await _recorded_answers(spec_dir) == {}, (
+        "the stale option was recorded, so the card is now locked to a choice the "
+        "decision does not offer"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_decision_replaced_while_the_answer_waits_for_the_lock_is_refused(
+    tmp_path, monkeypatch
+):
+    """Validation must describe state after the preceding serialized turn.
+
+    A request can parse a still-visible card while another turn owns the directory
+    lock. If that turn replaces the question before releasing the lock, the waiting
+    request must validate again inside the lock rather than deliver its stale answer.
+    """
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    dispatched: list[str] = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a[2]))
+
+    held = routes._turn_lock(spec_dir)
+    await held.acquire()
+    lock_attempted = asyncio.Event()
+
+    class _ProbedLock:
+        async def __aenter__(self):
+            lock_attempted.set()
+            await held.acquire()
+            return held
+
+        async def __aexit__(self, *_exc):
+            held.release()
+
+    monkeypatch.setattr(routes, "_turn_lock", lambda _key: _ProbedLock())
+
+    state, _slot = _slot_stub()
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        post = asyncio.create_task(
+            client.post(
+                f"{_BASE}/specs/s/message",
+                json={
+                    "spec_dir": spec_dir,
+                    "slot_key": slot_key,
+                    "decision_id": "transport",
+                    "decision_option": "HTTPS",
+                    "text": "Decision - transport: HTTPS",
+                },
+            )
+        )
+        await lock_attempted.wait()
+        Path(spec_dir, ".spec-state.json").write_text(
+            json.dumps(
+                {
+                    "decisions": [
+                        {
+                            "id": "storage",
+                            "title": "Storage engine",
+                            "options": ["SQLite", "PostgreSQL"],
+                        }
+                    ]
+                }
+            )
+        )
+        held.release()
+        resp = await post
+        payload = await resp.json()
+    finally:
+        if held.locked():
+            held.release()
+        await client.close()
+
+    assert resp.status == 409, payload
+    assert payload.get("code") == "decision_not_found", payload
+    assert dispatched == []
+    assert await _recorded_answers(spec_dir) == {}
+
+
+@pytest.mark.asyncio
+async def test_an_option_the_decision_still_offers_is_accepted(tmp_path, monkeypatch):
+    """The boundary: this must not refuse the ordinary answer.
+
+    Without this, a fix that refused everything would still pass the test above.
+    """
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(
+        tmp_path,
+        state={
+            "decisions": [{"id": "transport", "title": "Inbound", "options": ["HTTPS", "gRPC"]}]
+        },
+    )
+    dispatched: list = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a[2]))
+
+    state, _slot = _slot_stub()
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        status, payload = await _answer(
+            client, state, spec_dir=spec_dir, slot_key=slot_key, option="HTTPS"
+        )
+    finally:
+        await client.close()
+
+    assert status == 200, f"{status}: {payload}"
+    assert await _recorded_answers(spec_dir) == {
+        "transport": "HTTPS"
+    }, "a legitimate answer was not recorded"
+    assert dispatched, "a legitimate answer never reached the agent"
+
+
+@pytest.mark.asyncio
+async def test_a_decision_with_no_declared_options_accepts_any_answer(tmp_path, monkeypatch):
+    """Carve-out one, and it is structural: nothing to violate.
+
+    A decision that declares no options constrains nothing, so there is no offer an
+    answer can fall outside of. Refusing here would break free-form decisions.
+    """
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(
+        tmp_path, state={"decisions": [{"id": "transport", "title": "Inbound"}]}
+    )
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: None)
+
+    state, _slot = _slot_stub()
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        status, payload = await _answer(
+            client, state, spec_dir=spec_dir, slot_key=slot_key, option="anything at all"
+        )
+    finally:
+        await client.close()
+
+    assert status == 200, f"{status}: {payload}"
+
+
+@pytest.mark.asyncio
+async def test_a_decision_absent_from_state_is_refused(tmp_path, monkeypatch):
+    """A stale card cannot claim an id after the current question disappeared."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path, state={"decisions": []})
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: None)
+
+    state, _slot = _slot_stub()
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        status, payload = await _answer(
+            client, state, spec_dir=spec_dir, slot_key=slot_key, option="HTTPS"
+        )
+    finally:
+        await client.close()
+
+    assert status == 409, f"{status}: {payload}"
+    assert payload.get("code") == "decision_not_found", payload
+    assert await _recorded_answers(spec_dir) == {}
+
+
+@pytest.mark.asyncio
+async def test_two_spellings_of_one_directory_share_the_turn_lock(monkeypatch):
+    """A raw path and a normalized key must resolve to the SAME lock object.
+
+    Round 28 made the ledger key lexical via `normcase`, which lowercases on Windows.
+    Call sites passing a raw path then hashed to a different dictionary entry than
+    those passing `_decision_key(...)` -- two locks for one directory, so two turns
+    could run on the same documents. That is the exact hole the directory-keyed lock
+    exists to close, reintroduced by the fix for a different one.
+
+    `normcase` is the identity on Linux, so this simulates Windows explicitly. Without
+    the patch the assertion holds trivially and proves nothing.
+    """
+    monkeypatch.setattr(routes.os.path, "normcase", lambda p: p.lower())
+    routes._TURN_LOCKS.clear()
+
+    raw = "/Some/Spec/Dir"
+    lock_from_raw = routes._turn_lock(raw)
+    lock_from_key = routes._turn_lock(routes._decision_key(raw))
+    lock_from_other_case = routes._turn_lock("/SOME/spec/DIR")
+
+    assert lock_from_raw is lock_from_key, (
+        "a raw path and its normalized key produced different locks, so two handlers "
+        "would serialize on different objects for one directory"
+    )
+    assert (
+        lock_from_raw is lock_from_other_case
+    ), "two case spellings of one directory produced different locks"
+    assert (
+        len(routes._TURN_LOCKS) == 1
+    ), f"one directory minted {len(routes._TURN_LOCKS)} lock entries"
+
+
+@pytest.mark.asyncio
+async def test_macos_case_variants_share_the_turn_lock(monkeypatch):
+    """Darwin preserves path case even when its volume does not distinguish it."""
+    monkeypatch.setattr(routes, "_CASE_FOLD_TURN_KEYS", True)
+    monkeypatch.setattr(routes.os.path, "normcase", lambda path: path)
+    routes._TURN_LOCKS.clear()
+
+    first = routes._turn_lock("/Some/Spec/CaseSpec")
+    second = routes._turn_lock("/Some/Spec/casespec")
+
+    assert first is second
+    assert len(routes._TURN_LOCKS) == 1
+
+
+@pytest.mark.asyncio
+async def test_create_refuses_a_second_name_for_the_same_normalized_directory(
+    tmp_path, monkeypatch
+):
+    """Create arbitration uses the directory identity, not only the label.
+
+    Windows treats case variants as one path. Without a directory collision check,
+    two names could each receive a slot and dispatch an agent into the same files.
+    Patching ``normcase`` makes that filesystem identity deterministic on every host.
+    """
+    project = tmp_path / "proj"
+    project.mkdir()
+    client, state = _create_client(monkeypatch, tmp_path)
+    monkeypatch.setattr(routes.os.path, "normcase", lambda path: path.lower())
+    dispatched: list[str] = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *_a, **_kw: dispatched.append("x"))
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        first = await client.post(
+            f"{_BASE}/specs",
+            json={"name": "CaseSpec", "working_dir": str(project), "spec_type": "feature"},
+        )
+        second = await client.post(
+            f"{_BASE}/specs",
+            json={"name": "casespec", "working_dir": str(project), "spec_type": "feature"},
+        )
+        first_body = await first.json()
+        second_body = await second.json()
+    finally:
+        await client.close()
+
+    assert first.status == 201, first_body
+    assert second.status == 409, second_body
+    assert second_body["code"] == "spec_dir_in_use"
+    assert set(routes._load_index()) == {"CaseSpec"}
+    assert dispatched == ["x"], "both names dispatched agents into one directory"
+
+
+@pytest.mark.asyncio
+async def test_create_refuses_a_macos_case_alias_for_the_same_directory(tmp_path, monkeypatch):
+    """Create asks the filesystem whether differently cased paths are aliases."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    client, state = _create_client(monkeypatch, tmp_path)
+    monkeypatch.setattr(routes, "_CASE_FOLD_TURN_KEYS", True)
+    monkeypatch.setattr(routes.os.path, "normcase", lambda path: path)
+    monkeypatch.setattr(
+        routes.os.path,
+        "samefile",
+        lambda left, right: os.path.normpath(left).casefold() == os.path.normpath(right).casefold(),
+    )
+    dispatched: list[str] = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *_a, **_kw: dispatched.append("x"))
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        responses = await asyncio.gather(
+            client.post(
+                f"{_BASE}/specs",
+                json={
+                    "name": "CaseSpec",
+                    "working_dir": str(project),
+                    "spec_type": "feature",
+                },
+            ),
+            client.post(
+                f"{_BASE}/specs",
+                json={
+                    "name": "casespec",
+                    "working_dir": str(project),
+                    "spec_type": "feature",
+                },
+            ),
+        )
+        bodies = [await response.json() for response in responses]
+    finally:
+        await client.close()
+
+    statuses = [response.status for response in responses]
+    assert sorted(statuses) == [201, 409], list(zip(statuses, bodies))
+    refusal = bodies[statuses.index(409)]
+    # The loser's refusal code depends on the filesystem, not on the race: the
+    # casefolded turn lock serializes both creates, and when the two spellings
+    # survive as distinct resolved paths (case-sensitive volumes) the loser hits
+    # the ``samefile`` alias probe and is refused as
+    # ``decision_directory_alias_conflict``. When the volume collapses the second
+    # spelling onto the winner's directory (case-insensitive volumes, as on the
+    # Windows CI shard), the resolved keys become lexically equal, the alias scan
+    # skips them, and the lexical duplicate check refuses as ``spec_dir_in_use``.
+    # Both refusals satisfy the invariant this test locks in — exactly one create
+    # succeeds and both spellings map to one directory — so either code is a
+    # correct outcome.
+    assert refusal["code"] in {"spec_dir_in_use", "decision_directory_alias_conflict"}
+    assert len(routes._load_index()) == 1
+    assert dispatched == ["x"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("import_existing", [False, True])
+async def test_create_refuses_an_equivalent_orphan_ledger_before_inserting(
+    tmp_path, monkeypatch, import_existing
+):
+    """A protected record under another spelling cannot poison a new create."""
+    client, state = _create_client(monkeypatch, tmp_path)
+    _macos_case_aliases(monkeypatch)
+    # Use two lexically distinct sibling paths and make the filesystem report them
+    # as aliases. A case-only spelling is not a valid simulation on Windows:
+    # ``Path.resolve()`` canonicalizes ``S`` back to the existing ``s`` directory,
+    # so both spellings have the same ledger key and there is no alias to reject.
+    monkeypatch.setattr(routes.os.path, "samefile", lambda _left, _right: True)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    outcome, _held = await routes._claim_decision(
+        "s",
+        "transport",
+        "HTTPS",
+        expect_spec_dir=spec_dir,
+        expect_slot_key=slot_key,
+    )
+    assert outcome == routes._CLAIM_RECORDED
+    routes._save_index({})
+    dispatched: list[str] = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *_a, **_kw: dispatched.append("x"))
+
+    project = Path(spec_dir).parents[2]
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        response = await client.post(
+            f"{_BASE}/specs",
+            json={
+                "name": "alias",
+                "working_dir": str(project),
+                "spec_type": "feature",
+                "import_existing": import_existing,
+            },
+        )
+        body = await response.json()
+    finally:
+        await client.close()
+
+    assert response.status == 409, body
+    assert body["code"] == "decision_directory_alias_conflict"
+    assert routes._load_index() == {}
+    assert dispatched == []
+    assert await _recorded_answers(spec_dir) == {"transport": "HTTPS"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("import_existing", [False, True])
+async def test_create_refuses_an_unreadable_ledger_before_inserting(
+    tmp_path, monkeypatch, import_existing
+):
+    """A transient ledger read failure cannot admit a potentially poisoned alias."""
+    client, state = _create_client(monkeypatch, tmp_path)
+    _macos_case_aliases(monkeypatch)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    outcome, _held = await routes._claim_decision(
+        "s",
+        "transport",
+        "HTTPS",
+        expect_spec_dir=spec_dir,
+        expect_slot_key=slot_key,
+    )
+    assert outcome == routes._CLAIM_RECORDED
+    routes._save_index({})
+    monkeypatch.setattr(routes, "_read_decisions", lambda: ({}, False))
+    dispatched: list[str] = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *_a, **_kw: dispatched.append("x"))
+
+    project = Path(spec_dir).parents[2]
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        response = await client.post(
+            f"{_BASE}/specs",
+            json={
+                "name": "S",
+                "working_dir": str(project),
+                "spec_type": "feature",
+                "import_existing": import_existing,
+            },
+        )
+        body = await response.json()
+    finally:
+        await client.close()
+
+    assert response.status == 503, body
+    assert body["code"] == "decision_record_unreadable"
+    assert routes._load_index() == {}
+    assert dispatched == []

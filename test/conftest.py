@@ -6,6 +6,8 @@ import asyncio
 import os
 import pathlib
 import shutil
+import socket
+import struct
 import sys
 import warnings
 
@@ -15,6 +17,37 @@ from hypothesis import HealthCheck, settings
 from kiro_crew.safety_override import reset_singleton as _reset_safety_override
 from kiro_crew.slack.client import SlackClientOps
 from kiro_crew.slack.handler import _PHASE_EMOJIS, _build_phase_emojis
+
+if os.name == "nt":
+
+    class _WindowsTestProactorEventLoop(asyncio.ProactorEventLoop):
+        """Close the loop wakeup socket without filling Windows' TIME_WAIT table."""
+
+        def _close_self_pipe(self) -> None:
+            # Windows implements ``socketpair`` with a localhost TCP connection.
+            # pytest-asyncio 0.20 creates two fresh loops per async test, so this
+            # 62k-test suite can consume the 16,384-port dynamic range before
+            # TIME_WAIT entries expire.  Abortive close is safe for the loop's
+            # private wakeup socket (it carries no application data) and releases
+            # the port immediately while preserving a fresh Proactor loop per test.
+            linger = struct.pack("hh", 1, 0)
+            # Only the write end gets abortive close.  ``ProactorEventLoop``
+            # cancels the pending read and normally closes ``_ssock`` first;
+            # resetting that read end itself turns otherwise-clean async-test
+            # teardown into ``ConnectionResetError``.  Resetting the peer after
+            # the read end has closed still prevents a TIME_WAIT entry.
+            write_socket = self._csock
+            if write_socket is not None:
+                try:
+                    write_socket.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, linger)
+                except OSError:
+                    pass
+            super()._close_self_pipe()
+
+    class _WindowsTestEventLoopPolicy(asyncio.WindowsProactorEventLoopPolicy):
+        _loop_factory = _WindowsTestProactorEventLoop
+
+    asyncio.set_event_loop_policy(_WindowsTestEventLoopPolicy())
 
 # ── Hypothesis profiles ─────────────────────────────────────────────────
 # Default (CI): fast iteration.  Run ``HYPOTHESIS_PROFILE=thorough python -m pytest``
@@ -63,6 +96,31 @@ requires_symlinks = pytest.mark.skipif(
     not _HAS_SYMLINKS,
     reason="creating a symlink needs SeCreateSymbolicLinkPrivilege on Windows",
 )
+
+
+def _find_posix_test_shell() -> str | None:
+    """Return a real POSIX shell without mistaking Windows' WSL launcher for one."""
+    if os.name != "nt":
+        return shutil.which("sh")
+
+    git = shutil.which("git")
+    candidates: list[pathlib.Path] = []
+    if git:
+        candidates.append(pathlib.Path(git).resolve().parents[1] / "bin" / "bash.exe")
+    for variable in ("ProgramFiles", "ProgramFiles(x86)"):
+        root = os.environ.get(variable)
+        if root:
+            candidates.append(pathlib.Path(root) / "Git" / "bin" / "bash.exe")
+    return next((str(path) for path in candidates if path.is_file()), None)
+
+
+@pytest.fixture
+def posix_test_shell() -> str:
+    """Provide a shell for POSIX command-plumbing tests on every supported host."""
+    shell = _find_posix_test_shell()
+    if shell is None:
+        pytest.skip("a POSIX test shell is not available")
+    return shell
 
 
 # ── Windows CI ──────────────────────────────────────────────────────────
@@ -340,6 +398,30 @@ def _reset_safety_override_between_tests():
 
 
 @pytest.fixture(autouse=True)
+def _reset_degraded_config_observations():
+    """Forget the loader's process-sticky malformed-config observations.
+
+    ``kiro_crew.config.loader`` remembers every malformed config section it has
+    ever seen for the LIFE OF THE PROCESS (deliberately: ``load()``'s migration
+    repairs the file on first read, so the observation is the only surviving
+    evidence, and the publish gate fails closed on it). Tests share one
+    interpreter, so without this reset any test that writes a malformed
+    ``config.json`` — loader error-path tests do — makes the publish/deploy
+    gate deny in every LATER test in the same worker, failing tests in files
+    that never touched the config (seen as ``TestPending`` 4xx refusals in
+    ``test_deploy_handlers_coverage.py`` under random orderings).
+
+    ``reset_degraded_observations`` documents tests as its only legitimate
+    caller; this fixture is that caller.
+    """
+    from kiro_crew.config.loader import reset_degraded_observations
+
+    reset_degraded_observations()
+    yield
+    reset_degraded_observations()
+
+
+@pytest.fixture(autouse=True)
 def _restore_autonudge_singleton():
     """Floor under ``autonudge._INSTANCE`` — the process-global service reference.
 
@@ -562,12 +644,29 @@ def _ensure_event_loop():
         ``run_until_complete`` blows up with ``RuntimeError: Event loop is closed``. We
         detect a closed/absent loop and install a fresh open one so each test starts clean.
     """
+    created_loop = None
     try:
         loop = asyncio.get_event_loop()
         if loop.is_closed():
-            asyncio.set_event_loop(asyncio.new_event_loop())
+            created_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(created_loop)
     except RuntimeError:
-        asyncio.set_event_loop(asyncio.new_event_loop())
+        created_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(created_loop)
+
+    yield
+
+    # ``asyncio.run`` clears the policy's current loop, so the next test needs a
+    # replacement.  On Windows each ProactorEventLoop owns a socketpair; leaving
+    # every replacement open eventually exhausts the ephemeral-port range and
+    # makes ``new_event_loop()`` hang until pytest kills every xdist worker.
+    if created_loop is not None and not created_loop.is_closed():
+        created_loop.close()
+    try:
+        if asyncio.get_event_loop() is created_loop:
+            asyncio.set_event_loop(None)
+    except RuntimeError:
+        pass
 
 
 @pytest.fixture(autouse=True)

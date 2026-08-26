@@ -534,7 +534,7 @@ describe('MarkdownPanel — save and cancel', () => {
     const onSave = vi.fn(async () => {})
     mountDirty({ onSave })
     // Cmd+S is gated on `editing` — the shortcut belongs to the edit surface.
-    fireEvent.click(screen.getByText('View Source'))
+    fireEvent.click(screen.getByText('Edit'))
     fireEvent.keyDown(document, { key: 's', metaKey: true })
     await waitFor(() => expect(onSave).toHaveBeenCalledOnce())
   })
@@ -545,7 +545,7 @@ describe('MarkdownPanel — save and cancel', () => {
     // save would persist the very draft the user is about to discard.
     const onSave = vi.fn(async () => {})
     mountDirty({ onSave })
-    fireEvent.click(screen.getByText('View Source'))
+    fireEvent.click(screen.getByText('Edit'))
     fireEvent.keyDown(document, { key: 'Escape' })
     await screen.findByRole('dialog')
     fireEvent.keyDown(document, { key: 's', metaKey: true })
@@ -731,7 +731,7 @@ describe('MarkdownPanel — fullscreen overlay', () => {
 
   it('carries the editing toolbar into the overlay', async () => {
     mountPanel({ content: 'edited body', savedBaseline: 'disk body' })
-    fireEvent.click(screen.getByText('View Source'))
+    fireEvent.click(screen.getByText('Edit'))
     openPanelMenu()
     fireEvent.click(screen.getByText('Full screen'))
     const dialog = await screen.findByRole('dialog')
@@ -817,7 +817,7 @@ describe('MarkdownPanel — preview find', () => {
 
   it('hands Cmd+F back to the editor when the panel leaves preview', async () => {
     mountPanel({ content: 'alpha beta\n' })
-    fireEvent.click(screen.getByText('View Source'))
+    fireEvent.click(screen.getByText('Edit'))
     fireEvent.keyDown(document, { key: 'f', metaKey: true })
     await waitFor(() => expect(screen.queryByLabelText('Find in document')).toBeNull())
   })
@@ -875,7 +875,7 @@ describe('MarkdownPanel — inline comment highlights', () => {
     seedDraft('beta')
     mountPanel({ filePath: FILE, content: BODY, onSubmitComments: vi.fn() })
     await waitFor(() => expect(highlightRegistry.has('mc-comment')).toBe(true))
-    fireEvent.click(screen.getByText('View Source'))
+    fireEvent.click(screen.getByText('Edit'))
     await waitFor(() => expect(highlightRegistry.has('mc-comment')).toBe(false))
   })
 
@@ -1152,16 +1152,16 @@ describe('MarkdownPanel — view options', () => {
 
   it('returns to the preview from source mode via the same toggle', () => {
     mountPanel()
-    fireEvent.click(screen.getByText('View Source'))
-    expect(screen.getByText('View Preview')).toBeInTheDocument()
-    fireEvent.click(screen.getByText('View Preview'))
-    expect(screen.getByText('View Source')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('Edit'))
+    expect(screen.getByText('Preview')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('Preview'))
+    expect(screen.getByText('Edit')).toBeInTheDocument()
   })
 
   it('hides the source/preview toggle for a file whose only renderer is a viewer', async () => {
     mountPanel({ filePath: '/tmp/diagram.png', content: 'iVBORw0KGgo=' })
     await waitFor(() => expect(document.querySelector('img')).not.toBeNull())
-    expect(screen.queryByText('View Source')).toBeNull()
+    expect(screen.queryByText('Edit')).toBeNull()
     expect(screen.queryByLabelText('Toggle diff view')).toBeNull()
   })
 
@@ -1170,8 +1170,8 @@ describe('MarkdownPanel — view options', () => {
     // they open in the Pierre editor and the mode toggle is hidden.
     mountPanel({ filePath: '/tmp/mod.py', content: 'a = 1\n' })
     expect(await screen.findByTestId('pierre-editor')).toBeInTheDocument()
-    expect(screen.queryByText('View Source')).toBeNull()
-    expect(screen.queryByText('View Preview')).toBeNull()
+    expect(screen.queryByText('Edit')).toBeNull()
+    expect(screen.queryByText('Preview')).toBeNull()
   })
 })
 

@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAppDispatch } from '../store'
 import { switchSlot } from '../store/chatSlice'
 import { api } from '../api/client'
+import { readSendReceipt } from '../utils/sendDelivery'
 import type { AgentSource } from './useAgentSync'
 import { useImeGuard } from './useImeGuard'
 import { KIRO_GHOST_PIXELS } from './sceneText'
@@ -352,9 +353,20 @@ export function useSceneInteraction(
         // through to 'sent' below — the state asserting the opposite of what
         // happened, for precisely the errors that matter.
         const r = await api.sendChat(msg, slotKey)
-        const body = await r.json().catch(() => ({}))
-        if (!body.ok && !body.queued) {
+        const { body, outcome } = await readSendReceipt(r)
+        if (outcome === 'refused') {
           reportFailedSend(typeof body.error === 'string' ? body.error : undefined)
+          return
+        }
+        if (outcome === 'unknown') {
+          // A 2xx whose body would not parse says the request was ACCEPTED and
+          // only its answer is mangled, so this send may well be running. It
+          // gets neither verdict: 'failed' would hand the payload back and
+          // invite a retry that duplicates a delivered turn, and the 'sent' tick
+          // plus the mini-thread echo below would assert a delivery nothing
+          // proves. The composer drops back to idle with whatever newer text it
+          // holds, the same silence the other send paths keep for this state.
+          if (sameComposer()) setSendState('idle')
           return
         }
       }

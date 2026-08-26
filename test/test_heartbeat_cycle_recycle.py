@@ -179,13 +179,13 @@ class TestRecycleHeartbeat:
         change: previously a session under 70% context and under 40 prompts
         was preserved, which is what let the heartbeat transcript accumulate
         across cycles while the docs promised fresh context."""
-        from kiro_crew.session import SessionManager, _Session
+        from kiro_crew.session import FirstTurnState, SessionManager, _Session
 
         mgr = SessionManager(cfg=_make_cfg(), provider_factory=MagicMock())
         provider = MagicMock()
         provider.context_usage_pct = MagicMock(return_value=15.0)
         provider.shutdown = AsyncMock()
-        sess = _Session(provider=provider, is_new=False)
+        sess = _Session(provider=provider, first_turn=FirstTurnState.NOTHING_ARMED)
         sess.prompt_count = 5
         mgr._sessions[HEARTBEAT_KEY] = sess
 
@@ -198,13 +198,13 @@ class TestRecycleHeartbeat:
     async def test_recycles_at_pct_threshold(self):
         """A full session is recycled too — the next ``get_or_create``
         creates a fresh one on demand."""
-        from kiro_crew.session import SessionManager, _Session
+        from kiro_crew.session import FirstTurnState, SessionManager, _Session
 
         mgr = SessionManager(cfg=_make_cfg(), provider_factory=MagicMock())
         provider = MagicMock()
         provider.context_usage_pct = MagicMock(return_value=72.0)
         provider.shutdown = AsyncMock()
-        sess = _Session(provider=provider, is_new=False)
+        sess = _Session(provider=provider, first_turn=FirstTurnState.NOTHING_ARMED)
         sess.prompt_count = 10
         mgr._sessions[HEARTBEAT_KEY] = sess
 
@@ -220,13 +220,13 @@ class TestRecycleHeartbeat:
     async def test_recycles_when_context_pct_unavailable(self):
         """A provider that can't report context% is recycled all the same —
         there is no threshold left to fall back on."""
-        from kiro_crew.session import SessionManager, _Session
+        from kiro_crew.session import FirstTurnState, SessionManager, _Session
 
         mgr = SessionManager(cfg=_make_cfg(), provider_factory=MagicMock())
         provider = MagicMock()
         provider.context_usage_pct = MagicMock(return_value=0.0)
         provider.shutdown = AsyncMock()
-        sess = _Session(provider=provider, is_new=False)
+        sess = _Session(provider=provider, first_turn=FirstTurnState.NOTHING_ARMED)
         sess.prompt_count = 1
         mgr._sessions[HEARTBEAT_KEY] = sess
 

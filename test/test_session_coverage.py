@@ -38,6 +38,7 @@ from kiro_crew.session import (
     _STUCK_TURN_REPORT_SECS,
     BACKGROUND_KEY,
     HEARTBEAT_KEY,
+    FirstTurnState,
     SessionManager,
     _context_pct_is_unknown,
     _model_fallback,
@@ -259,7 +260,7 @@ class TestAdoptProvider:
             prev_turn_cancelled=True,
             provider_switch_replay=True,
             needs_context_reinjection=True,
-            resumed_armed=True,
+            first_turn=FirstTurnState.RESUMED,
         )
 
         sess.adopt_provider(new)
@@ -270,9 +271,25 @@ class TestAdoptProvider:
         assert sess.prev_turn_cancelled is False
         assert sess.provider_switch_replay is False
         assert sess.needs_context_reinjection is False
-        assert sess.resumed_armed is False, "a replacement is fresh, not resumed"
+        assert sess.first_turn is FirstTurnState.FRESH, "a replacement is fresh, not resumed"
         assert sess.agent == "researcher"
         assert sess.approval_policy == "auto"
+
+    @pytest.mark.parametrize(
+        "start", [FirstTurnState.NOTHING_ARMED, FirstTurnState.FRESH]
+    )
+    def test_non_resumed_first_turn_states_survive_adoption(self, start) -> None:
+        """Only the RESUMED half of the observation is stale on a replacement.
+        The production caller recycles a mid-life, already-claimed session
+        (NOTHING_ARMED): re-arming it here would make the next turn report
+        ``is_new=True`` and re-inject Kiro Crew history onto a live
+        transcript — the exact failure shape the one-shot state exists to
+        prevent."""
+        sess = _Session(provider=_stub_provider(), first_turn=start)
+
+        sess.adopt_provider(_stub_provider())
+
+        assert sess.first_turn is start
 
 
 # ── _ProviderBgSession ───────────────────────────────────────────────────────
@@ -550,21 +567,21 @@ class TestRemoveIfUnclaimed:
 
     @pytest.mark.asyncio
     async def test_a_consumed_session_is_kept(self, mgr) -> None:
-        sess = _register(mgr, "dashboard:1", is_new=False)
+        sess = _register(mgr, "dashboard:1", first_turn=FirstTurnState.NOTHING_ARMED)
         assert await mgr.remove_if_unclaimed("dashboard:1") is False
         assert mgr._sessions["dashboard:1"] is sess
         sess.provider.shutdown.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_session_mid_turn_is_kept(self, mgr) -> None:
-        sess = _register(mgr, "dashboard:1", is_new=True)
+        sess = _register(mgr, "dashboard:1", first_turn=FirstTurnState.FRESH)
         await sess.semaphore.acquire()
         assert await mgr.remove_if_unclaimed("dashboard:1") is False
         assert "dashboard:1" in mgr._sessions
 
     @pytest.mark.asyncio
     async def test_an_unclaimed_session_is_shut_down_and_forgotten(self, mgr) -> None:
-        sess = _register(mgr, "dashboard:1", is_new=True)
+        sess = _register(mgr, "dashboard:1", first_turn=FirstTurnState.FRESH)
         mgr._compact_cooldown_until["dashboard:1"] = 123.0
         mgr.set_origin_link("dashboard:1", ChannelLink(channel_type="dashboard"))
 
@@ -581,7 +598,7 @@ class TestRemoveIfUnclaimed:
     ) -> None:
         img = tmp_path / "img.png"
         img.write_bytes(b"fake")
-        sess = _register(mgr, "dashboard:1", is_new=True)
+        sess = _register(mgr, "dashboard:1", first_turn=FirstTurnState.FRESH)
         sess.queue.append(("ts1", "queued", {"image_temp_paths": [str(img)]}))
 
         assert await mgr.remove_if_unclaimed("dashboard:1") is True

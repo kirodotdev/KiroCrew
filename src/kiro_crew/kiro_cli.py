@@ -197,7 +197,11 @@ def known_kiro_cli_dirs(
     """Return fixed and inherited directories where Kiro CLI may be installed."""
 
     if platform_name == "win32":
-        dirs = [str(Path(_windows_program_files(environ)) / "Kiro-Cli")]
+        local_app_data = Path(environ.get("LOCALAPPDATA") or home / "AppData" / "Local")
+        dirs = [
+            str(local_app_data / "Kiro-Cli"),
+            str(Path(_windows_program_files(environ)) / "Kiro-Cli"),
+        ]
     else:
         dirs = [
             str(home / ".local" / "bin"),
@@ -214,10 +218,10 @@ def known_kiro_cli_dirs(
         )
     if include_inherited_path and platform_name == "win32":
         dirs.extend(part for part in environ.get("PATH", "").split(";") if part)
-        # A GUI-launched Windows gateway may omit its venv's Scripts directory
-        # from PATH. ACP launch still needs the console-script fallback that
-        # existed before setup and ACP adopted this shared resolver.
-        dirs.append(str(Path(sys.executable).parent))
+        # A GUI-launched Windows gateway can retain an old PATH after a user
+        # installs a CLI. Keep the inherited order, then add the shared set of
+        # standard user tool directories and the venv Scripts fallback.
+        dirs.extend(part for part in augmented_path("", home=str(home)).split(os.pathsep) if part)
     elif include_inherited_path:
         dirs.extend(
             part for part in augmented_path(environ.get("PATH", "")).split(os.pathsep) if part
@@ -251,6 +255,12 @@ def find_kiro_cli_candidates(
     result: list[str] = []
     for candidate in _unique(candidates):
         if platform_compat.is_executable_file(candidate, platform_name=platform_name):
+            if platform_name == "win32":
+                try:
+                    if os.path.getsize(candidate) == 0:
+                        continue
+                except OSError:
+                    continue
             result.append(os.path.realpath(candidate) if platform_name == "win32" else candidate)
     return result
 

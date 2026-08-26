@@ -57,7 +57,7 @@
 
 ## Checklist
 
-- [ ] Single commit with a Conventional Commits title (`feat|fix|docs|refactor|perf|test|chore|ci|build|revert: ...`)
+- [ ] At most two commits (one is the norm), with a Conventional Commits title (`feat|fix|docs|refactor|perf|test|chore|ci|build|revert: ...`)
 - [ ] Existing tests pass and new tests added for new functionality
 - [ ] Self-review completed; code follows project style guidelines
 - [ ] Documentation updated (if applicable)

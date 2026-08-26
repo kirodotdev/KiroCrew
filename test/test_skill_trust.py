@@ -484,3 +484,196 @@ class TestListing:
         assert [row["path"] for row in rows] == [project]
         assert rows[0]["exists"] is True
         assert isinstance(rows[0]["granted_at"], int)
+
+
+class TestInstanceBinding:
+    """A grant is consent for the CONTENT reviewed, and a path is a reusable name.
+
+    Delete the reviewed repository, create a different one at the same canonical
+    path -- a routine move on a shared dev host, and the normal life of a CI
+    checkout directory -- and a path-only grant is inherited by content nobody
+    reviewed, whose ``SKILL.md`` then enters the agent context with instruction
+    authority the operator never gave it. The grant therefore records the
+    directory INSTANCE, and enforcement compares it.
+    """
+
+    def test_a_different_directory_at_the_same_path_is_not_trusted(self, tmp_path: Path) -> None:
+        """The finding's exact scenario, end to end."""
+        project = _real_dir(tmp_path, "project")
+        skill_trust.grant_project_trust(project)
+        assert skill_trust.is_project_trusted(project) is True
+
+        # The identity the grant actually bound, captured before the delete.
+        granted_st = os.stat(project)
+        granted_instance = (granted_st.st_dev, granted_st.st_ino)
+
+        # Replace the reviewed tree with a different directory at the same
+        # path. On Linux ``_instance_identity`` is ``dev:ino`` alone (no birth
+        # time), so the replacement must land on a DIFFERENT inode for the
+        # untrusted outcome to be observable -- and recreating after the delete
+        # would leave that to the allocator, which is free to hand the
+        # just-freed inode straight back (the flake in #5932). Creating the
+        # replacement WHILE the granted directory still exists forces distinct
+        # inodes -- two live directories on one device cannot share one -- and
+        # the rename preserves the replacement's inode while giving it the
+        # granted path.
+        replacement = _real_dir(tmp_path, "replacement-instance")
+        os.rmdir(project)
+        os.rename(replacement, project)
+
+        recreated = os.path.realpath(project)
+        assert recreated == project, "the path is unchanged; only the instance differs"
+        replacement_st = os.stat(project)
+        assert (replacement_st.st_dev, replacement_st.st_ino) != granted_instance, (
+            "precondition: inode reuse -- the replacement directory was handed "
+            "the granted directory's own (st_dev, st_ino) back, so the trust "
+            "assertions below could not distinguish the instances"
+        )
+        skill_trust.reset_cache_for_tests()
+
+        assert skill_trust.is_project_trusted(project) is False
+        assert skill_trust.is_key_trusted(project) is False
+
+    def test_the_reviewed_directory_stays_trusted_across_ordinary_edits(
+        self, tmp_path: Path
+    ) -> None:
+        """The property that keeps the binding from re-prompting on real work.
+
+        Writing, editing and deleting files inside the tree -- which is what
+        authoring a skill IS -- must not invalidate consent. This is why the
+        identity is the directory instance rather than a content fingerprint or
+        ``st_ctime``, both of which move when the operator edits their own skills.
+
+        The ``utime`` call is the point rather than decoration: it moves the
+        directory's own mtime/ctime with no content change at all, so a future
+        identity that folded either in would fail here.
+        """
+        project = _real_dir(tmp_path, "project")
+        skill_trust.grant_project_trust(project)
+
+        skills = Path(project) / ".kiro" / "skills"
+        skills.mkdir(parents=True)
+        (skills / "SKILL.md").write_text("# edited\n", encoding="utf-8")
+        (skills / "SKILL.md").write_text("# edited again\n", encoding="utf-8")
+        os.utime(project)  # bump the directory's own mtime/ctime
+        skill_trust.reset_cache_for_tests()
+
+        assert skill_trust.is_project_trusted(project) is True
+
+    def test_a_grant_records_the_identity_it_enforces(self, tmp_path: Path) -> None:
+        project = _real_dir(tmp_path, "project")
+        skill_trust.grant_project_trust(project)
+
+        stored = json.loads(skill_trust.store_path().read_text(encoding="utf-8"))
+        entry = stored["granted"][0]
+        assert entry["path"] == project
+        assert entry["identity"] == skill_trust._instance_identity(project)
+        assert entry["identity"], "an empty identity would silently exempt the row"
+
+    def test_re_granting_a_replaced_directory_rebinds_it(self, tmp_path: Path) -> None:
+        """An explicit re-grant must take effect.
+
+        The dedup loop used to return early on a path match. Left that way, an
+        operator re-granting a path whose directory had been replaced would get a
+        no-op: the new tree stays untrusted, with the settings page showing a grant
+        for it and no surface explaining the contradiction.
+        """
+        project = _real_dir(tmp_path, "project")
+        skill_trust.grant_project_trust(project)
+        os.rmdir(project)
+        _real_dir(tmp_path, "an-intervening-inode")
+        _real_dir(tmp_path, "project")
+        skill_trust.reset_cache_for_tests()
+        assert skill_trust.is_project_trusted(project) is False
+
+        skill_trust.grant_project_trust(project)
+        skill_trust.reset_cache_for_tests()
+
+        assert skill_trust.is_project_trusted(project) is True
+        stored = json.loads(skill_trust.store_path().read_text(encoding="utf-8"))
+        paths = [e["path"] for e in stored["granted"]]
+        assert paths.count(project) == 1, "a rebind replaces the row, it does not duplicate it"
+
+    def test_a_grant_on_an_unreadable_directory_is_refused(self, tmp_path: Path) -> None:
+        """Never record a path-only row: that is the shape being eliminated."""
+        missing = str(tmp_path / "not-there")
+        with pytest.raises(ValueError):
+            skill_trust.grant_project_trust(missing)
+        assert not skill_trust.store_path().exists()
+
+    def test_a_pre_binding_grant_is_listed_but_not_enforced(self, tmp_path: Path) -> None:
+        """The migration boundary: fail closed, but visibly rather than silently.
+
+        A row written before grants carried an identity cannot say WHICH directory
+        the operator reviewed, so honoring it would leave open exactly the
+        replacement path this binding closes -- being inherited from an older build
+        does not make a path-only row mean more than it says.
+
+        Not enforcing it is not the same as deleting it. The row stays listed and
+        is reported unbound, so the operator is re-ASKED rather than silently
+        un-consented, and one re-grant binds it.
+        """
+        project = _real_dir(tmp_path, "project")
+        _write_store_raw(
+            json.dumps({"version": 1, "granted": [{"path": project, "granted_at": 1}]})
+        )
+
+        assert skill_trust.is_project_trusted(project) is False
+        assert skill_trust.is_key_trusted(project) is False
+        # Still visible, and visibly unbound -- the operator can act on it.
+        rows = skill_trust.list_trusted_projects()
+        assert [r["path"] for r in rows] == [project]
+        assert rows[0]["bound"] is False
+        assert project in skill_trust.trusted_keys(), "listed as granted, just not enforced"
+
+        skill_trust.grant_project_trust(project)
+        skill_trust.reset_cache_for_tests()
+
+        assert skill_trust.is_project_trusted(project) is True
+        assert skill_trust.list_trusted_projects()[0]["bound"] is True
+
+    def test_an_unreadable_directory_is_not_trusted(self, tmp_path: Path) -> None:
+        """No readable identity means no match -- never a fallback to the path.
+
+        The store row here is identity-LESS on purpose. A bound row's token is
+        path+identity, which a path-only fallback could not match anyway, so a
+        bound row cannot detect one; an identity-less row's token WOULD be the bare
+        path, which makes this the only shape that exposes a fallback if one is
+        ever reintroduced.
+        """
+        project = _real_dir(tmp_path, "project")
+        _write_store_raw(
+            json.dumps({"version": 1, "granted": [{"path": project, "granted_at": 1}]})
+        )
+        os.rmdir(project)
+        skill_trust.reset_cache_for_tests()
+
+        assert skill_trust.is_key_trusted(project) is False
+        assert skill_trust.is_project_trusted(project) is False
+
+    def test_a_bound_row_does_not_also_match_on_the_path_alone(self, tmp_path: Path) -> None:
+        """Otherwise the binding is decorative: a stale identity would fall back."""
+        project = _real_dir(tmp_path, "project")
+        _write_store_raw(
+            json.dumps(
+                {
+                    "version": 1,
+                    "granted": [{"path": project, "identity": "0:0:0", "granted_at": 1}],
+                }
+            )
+        )
+
+        assert skill_trust.is_project_trusted(project) is False
+        assert skill_trust.is_key_trusted(project) is False
+        assert skill_trust.list_trusted_projects()[0]["bound"] is True
+
+    def test_an_identity_is_not_confusable_with_a_path(self, tmp_path: Path) -> None:
+        """The token separator is NUL, which no path component can contain.
+
+        A printable separator would let a crafted directory name make one half of
+        the token read as the other.
+        """
+        assert skill_trust._TOKEN_SEP == "\x00"
+        project = _real_dir(tmp_path, "project")
+        identity = skill_trust._instance_identity(project)
+        assert skill_trust._binding_token(project, identity) == f"{project}\x00{identity}"

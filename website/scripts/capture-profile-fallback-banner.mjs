@@ -28,7 +28,7 @@ import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { serveDist } from './lib/serve-dist.mjs'
-import { installApiFixtures, logPageFailures } from './lib/api-fixtures.mjs'
+import { shootSettingsFrame } from './lib/governance-capture.mjs'
 
 const OUT = process.argv[2] || '../temp-screenshots/profile-fallback-visibility'
 const PREFIX = process.argv[3] || 'shot'
@@ -128,49 +128,14 @@ async function main() {
   const browser = await chromium.launch()
 
   async function shoot(name, fallback_profiles, scopes) {
-    const context = await browser.newContext({
-      viewport: { width: 1500, height: 980 },
-      // Settings rows are 12-13px type; a 1x shot renders soft on GitHub.
-      deviceScaleFactor: 2,
-    })
-    const page = await context.newPage()
-    await installApiFixtures(page, {
+    await shootSettingsFrame(browser, base, `${OUT}/${PREFIX}-${name}.png`, {
       '/api/security/posture': POSTURE,
       '/api/security/denied-commands': DENIED,
       '/api/governance/policy': governance(fallback_profiles, scopes),
       '/api/config/kirocrew': { agent: { yolo_duration: '6h', apps_allow_third_party: false } },
       '/api/theme/boot': { mode: 'dark', theme: '' },
     })
-    logPageFailures(page)
-    await page.addInitScript(() => {
-      localStorage.clear()
-      localStorage.setItem('mc-theme', 'dark')
-      localStorage.setItem('mc-onboarded', '1')
-      // The app shell reads the Electron updater bridge during boot and does not
-      // tolerate its absence in a plain browser — without this stub every
-      // settings tab dies in the shell's error boundary before the panel renders.
-      window.updateAPI = {
-        onState: () => () => {},
-        check: async () => ({ ok: true }),
-        download: async () => ({ ok: true }),
-        install: async () => ({ ok: true }),
-        getInfo: async () => ({
-          version: '0.5.0', channel: 'stable', stampedChannel: 'stable',
-          channelSwitchable: true, channelPreference: '',
-          platform: 'darwin-arm64', packaged: true,
-        }),
-        setChannel: async () => ({ ok: true }),
-      }
-    })
-    // Path-routed, NOT hash-routed: serve-dist has an index.html fallback, and a
-    // '#/settings' URL leaves location.pathname at '/' so the shell error-boundaries.
-    await page.goto(`${base}/settings?tab=security&section=governance`, {
-      waitUntil: 'domcontentloaded',
-    })
-    await page.waitForTimeout(1800)
-    await page.screenshot({ path: `${OUT}/${PREFIX}-${name}.png` })
     console.log(`${PREFIX}-${name}.png`)
-    await context.close()
   }
 
   await shoot('01-lockdown-without-signal', [])

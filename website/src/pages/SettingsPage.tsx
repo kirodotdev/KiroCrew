@@ -57,13 +57,13 @@ function buildTabs() {
     { key: 'notifications', label: i18nT('settings.tabs.notifications.label'), icon: <Bell size={16} />, group: GROUP_PREFERENCES, description: i18nT('settings.tabs.notifications.description') },
     { key: 'shortcuts', label: i18nT('settings.tabs.shortcuts.label'), icon: <Keyboard size={16} />, group: GROUP_PREFERENCES, description: i18nT('settings.tabs.shortcuts.description') },
     { key: 'skills', label: i18nT('settings.tabs.skills.label'), icon: <Sparkles size={16} />, group: GROUP_PREFERENCES, description: i18nT('settings.tabs.skills.description') },
-    { key: 'channels', label: i18nT('settings.tabs.channels.label'), icon: <Link2 size={16} />, description: i18nT('settings.tabs.channels.description') },
+    { key: 'channels', label: i18nT('settings.tabs.channels.label'), icon: <Link2 size={16} />, description: i18nT('settings.tabs.channels.description'), hostsSubNav: true },
     { key: 'browser', label: i18nT('settings.tabs.browser.label'), icon: <Globe size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.browser.description') },
     { key: 'computer-use', label: i18nT('settings.tabs.computerUse.label'), icon: <SquareMousePointer className="lucide-inline" />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.computerUse.description') },
     { key: 'webhooks', label: i18nT('settings.tabs.webhooks.label'), icon: <Webhook size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.webhooks.description') },
     { key: 'instances', label: i18nT('settings.tabs.instances.label'), icon: <Server size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.instances.description') },
     { key: 'privacy', label: i18nT('privacyDisclosure.settingsLabel'), icon: <Fingerprint className="lucide-inline" />, group: GROUP_SYSTEM, description: i18nT('privacyDisclosure.settingsDescription') },
-    { key: 'security', label: i18nT('settings.tabs.security.label'), icon: <ShieldCheck size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.security.description') },
+    { key: 'security', label: i18nT('settings.tabs.security.label'), icon: <ShieldCheck size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.security.description'), hostsSubNav: true },
     { key: 'secrets', label: i18nT('settings.tabs.secrets.label'), icon: <KeyRound size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.secrets.description') },
     { key: 'developer', label: i18nT('settings.tabs.developer.label'), icon: <Code size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.developer.description') },
     // The trailing divider fences off the entries that are not settings at all.
@@ -89,18 +89,21 @@ export default function SettingsPage() {
 
   // Legacy deep-link remap: the five per-channel tabs collapsed into one
   // Channels tab. ?tab=slack (bookmarks, command palette history, docs)
-  // becomes ?tab=channels&channel=slack. Plain useEffect on purpose:
-  // react-router 7 drops navigations fired from useLayoutEffect during the
-  // initial mount (its ready flag is set in a passive effect), so the remap
-  // must run as a passive effect too. Until it fires, SidePanelLayout treats
-  // the unknown tab as the default (Overview) for one frame.
+  // becomes ?tab=channels&sub=slack — the CANONICAL second-level param, so the
+  // navigation shell's level test sees the drill-in (writing the old `channel`
+  // alias here rendered two stacked back bars on a phone). Plain useEffect on
+  // purpose: react-router 7 drops navigations fired from useLayoutEffect
+  // during the initial mount (its ready flag is set in a passive effect), so
+  // the remap must run as a passive effect too. Until it fires,
+  // SidePanelLayout treats the unknown tab as the default (Overview) for one
+  // frame.
   const rawTab = params.get('tab')
   useEffect(() => {
     if (rawTab && CHANNEL_KEYS.includes(rawTab)) {
       setParams(prev => {
         const next = new URLSearchParams(prev)
         next.set('tab', 'channels')
-        next.set('channel', rawTab)
+        next.set('sub', rawTab)
         return next
       }, { replace: true })
     }
@@ -136,6 +139,7 @@ export default function SettingsPage() {
     <SidePanelLayout
       title={i18nT('pages.settingsPage.settings')}
       tabs={tabs}
+      headerRightDock="bottom-float"
       // Keyed apart from the main window: an embedded pane has a different tab
       // roster (no Instances), so the two must not restore each other's tab.
       rememberKey={embedded ? 'settings-embedded' : 'settings'}

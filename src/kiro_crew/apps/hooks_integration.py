@@ -76,6 +76,21 @@ def get_lifecycle_dispatcher() -> LifecycleDispatcher | None:
     return _lifecycle_dispatcher
 
 
+async def stop_retained_startup_hooks(
+    app_name: str, *, bounded: bool
+) -> bool:
+    """Wait for retained startup execution, failing closed on ownership errors."""
+    if _lifecycle_dispatcher is None:
+        return True
+    try:
+        return await _lifecycle_dispatcher.stop_detached_startup_hooks(
+            app_name, bounded=bounded
+        )
+    except Exception:  # noqa: BLE001 - destructive lifecycle work must fail closed
+        logger.exception("Could not verify detached startup-hook cleanup for %s", app_name)
+        return False
+
+
 def _app_hook_root(app_name: str) -> Path:
     """Return the immutable shipped root when one owns this app name."""
     return shipped_builtin_app_root(app_name) or app_dir(app_name)
@@ -191,7 +206,9 @@ async def on_app_enable(
     # Invoke on_startup hook if declared
     startup_hook = hooks.get("on_startup", "")
     if startup_hook and _lifecycle_dispatcher:
-        success = await _lifecycle_dispatcher._invoke(app_name, startup_hook, ctx)
+        success = await _lifecycle_dispatcher._invoke(
+            app_name, startup_hook, ctx, phase="startup"
+        )
         result["hooks_startup"] = "ok" if success else "failed"
 
     # Report health status
@@ -207,8 +224,24 @@ async def on_app_enable(
     return result
 
 
+async def stop_app_startup_hooks(
+    app_name: str, *, bounded: bool = False
+) -> bool:
+    """Prove retained startup ownership clear before teardown mutates state."""
+    if not _lifecycle_dispatcher:
+        return True
+    return await _lifecycle_dispatcher.stop_detached_startup_hooks(
+        app_name, bounded=bounded
+    )
+
+
 async def on_app_disable(
-    app_name: str, app_info: dict[str, Any], *, run_app_hooks: bool = True
+    app_name: str,
+    app_info: dict[str, Any],
+    *,
+    run_app_hooks: bool = True,
+    bounded_startup_cleanup: bool = False,
+    startup_stopped: bool | None = None,
 ) -> dict[str, Any]:
     """Called before an app is disabled — deregister routes and invoke shutdown hook.
 
@@ -217,13 +250,34 @@ async def on_app_disable(
     caller passes it when there is no reason to believe the app is running: its
     shutdown hook is third-party code, and *starting* that code as part of
     withdrawing its permission to run would turn the security operation into an
-    execution vector. Nothing that STOPS something is ever skipped by this flag —
-    see the split in ``apps/teardown.py``.
+    execution vector. Nothing that STOPS something is ever skipped by this flag.
+
+    ``bounded_startup_cleanup`` distinguishes trust withdrawal from ordinary
+    disable. Ordinary disable waits until an owned detached startup task exits;
+    trust withdrawal stays bounded and reports residual execution as a hard
+    failure so the grant remains in place for a retry. Shared teardown passes a
+    pre-established ``startup_stopped`` result so this function cannot repeat the
+    ownership wait after other teardown work has begun.
     """
     result: dict[str, Any] = {}
     manifest = app_info.get("manifest", {})
     backend = manifest.get("backend", {})
     hooks = backend.get("hooks", {})
+
+    # A startup hook may have been detached after its readiness deadline. It is
+    # still third-party code with a live AppContext, so disable/revocation must
+    # stop it even if the current manifest no longer declares hooks. A resistant
+    # task becomes a hard teardown failure; callers keep trust in place rather
+    # than falsely claiming all app code stopped.
+    if startup_stopped is None:
+        startup_stopped = await stop_app_startup_hooks(
+            app_name, bounded=bounded_startup_cleanup
+        )
+    if not startup_stopped:
+        result["startup_cleanup"] = (
+            "failed: detached startup hook is still running; teardown not started"
+        )
+        return result
 
     if hooks:
         sel().log_api_access(
@@ -233,13 +287,16 @@ async def on_app_disable(
             resources=app_name,
         )
 
-    # Invoke on_shutdown hook if declared
+    # Invoke on_shutdown only after retained startup ownership is proven clear.
+    # Trust withdrawal must stay bounded and must never overlap partially
+    # initialized startup state with an unbounded third-party shutdown hook.
     shutdown_hook = hooks.get("on_shutdown", "")
-    if shutdown_hook and _lifecycle_dispatcher and run_app_hooks:
+    if shutdown_hook and _lifecycle_dispatcher and run_app_hooks and startup_stopped:
         success = await _lifecycle_dispatcher._invoke(
             app_name,
             shutdown_hook,
             _lifecycle_dispatcher._build_context(app_info),
+            phase="shutdown",
         )
         result["hooks_shutdown"] = "ok" if success else "failed"
 
@@ -370,7 +427,9 @@ async def on_gateway_startup(
         # Invoke on_startup hook (if declared)
         startup_hook = hooks.get("on_startup", "")
         if startup_hook and _lifecycle_dispatcher:
-            success = await _lifecycle_dispatcher._invoke(name, startup_hook, ctx)
+            success = await _lifecycle_dispatcher._invoke(
+                name, startup_hook, ctx, phase="startup"
+            )
             if success:
                 logger.info("Startup hook invoked for: %s", name)
 
@@ -383,13 +442,7 @@ async def on_gateway_shutdown() -> None:
     # list_apps() walks the apps dir (two file reads per app) — off the loop.
     installed = await asyncio.to_thread(list_apps)
     enabled = [a for a in installed if a.get("enabled")]
-    apps_with_hooks = [
-        a
-        for a in enabled
-        if a.get("manifest", {}).get("backend", {}).get("hooks", {}).get("on_shutdown")
-    ]
-
-    if apps_with_hooks:
-        invoked = await _lifecycle_dispatcher.dispatch_shutdown(apps_with_hooks)
+    if enabled:
+        invoked = await _lifecycle_dispatcher.dispatch_shutdown(enabled)
         if invoked:
             logger.info("Shutdown hooks invoked for: %s", ", ".join(invoked))

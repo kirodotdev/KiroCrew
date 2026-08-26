@@ -767,21 +767,27 @@ class TestCreateWorktreeSync:
             (sync_env.dest, "feat/x", {"claimed": True, "created": False, "base_sha": "c0ffee"})
         ]
 
-    def test_mkdir_oserror_is_a_500_reporting_strerror(self, sync_env, monkeypatch):
+    def test_mkdir_oserror_is_a_500(self, sync_env, monkeypatch):
         def denied(path, *a, **kw):
             raise PermissionError(13, "Permission denied")
 
         monkeypatch.setattr(wt.os, "mkdir", denied)
         payload, status = wt._create_worktree_sync(sync_env.root, "feat/x")
         assert status == 500
-        assert "Permission denied" in payload["error"]
+        # The OSError strerror + destination path stay server-side; the client
+        # body (rendered verbatim in the UI) gets a generic message + code.
+        assert "Permission denied" not in payload["error"]
+        assert payload["error"] == "cannot create worktree directory"
+        assert payload["code"] == "worktree_mkdir_failed"
         assert sync_env.cleanups[0][2]["created"] is False
 
-    def test_mkdir_oserror_without_strerror_still_reports(self, sync_env, monkeypatch):
+    def test_mkdir_oserror_without_strerror_still_500(self, sync_env, monkeypatch):
         monkeypatch.setattr(wt.os, "mkdir", MagicMock(side_effect=OSError("odd failure")))
         payload, status = wt._create_worktree_sync(sync_env.root, "feat/x")
         assert status == 500
-        assert "odd failure" in payload["error"]
+        assert "odd failure" not in payload["error"]
+        assert payload["error"] == "cannot create worktree directory"
+        assert payload["code"] == "worktree_mkdir_failed"
 
     def test_a_timeout_cleans_up_and_re_raises(self, sync_env):
         sync_env.add_raises = subprocess.TimeoutExpired(["git"], wt._GIT_TIMEOUT)

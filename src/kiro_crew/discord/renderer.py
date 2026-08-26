@@ -56,13 +56,14 @@ import urllib.parse
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.constants import OPTIONS_RE_TRAILER, split_trailing_protocol_suffix
+from kiro_crew.constants import split_trailing_protocol_suffix
 from kiro_crew.discord.client import (
     DISCORD_MAX_FILE_BYTES,
     DISCORD_MAX_FILES_PER_MESSAGE,
     DISCORD_MAX_TEXT,
     DISCORD_MAX_TOTAL_UPLOAD_BYTES,
 )
+from kiro_crew.messaging.approval import APPROVAL_TIMEOUT_S
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.outbound_files import (
     ExtractLimits,
@@ -77,6 +78,7 @@ from kiro_crew.messaging.renderer import (
     apply_options_cap,
     chunk_text,
     new_approval_nonce,
+    split_options_trailer,
 )
 from kiro_crew.messaging.split import split_markdown_safe
 from kiro_crew.messaging.status_reactions import (
@@ -128,7 +130,8 @@ _TYPING_REFRESH_S = 8.0
 _EDIT_THROTTLE_S = 1.2
 
 # Interactive approval wait; deny-by-default when it elapses with no press.
-_APPROVAL_TIMEOUT_S = 300.0
+# Owned by messaging.approval so every channel's window is the same one.
+_APPROVAL_TIMEOUT_S = APPROVAL_TIMEOUT_S
 
 #: Phase → reaction for the shared status ladder. Unicode only: Discord's
 #: reaction route takes the emoji itself as a path segment, so a Slack-style
@@ -168,14 +171,6 @@ _MAX_BUTTONS = _BUTTONS_PER_ROW * _MAX_ACTION_ROWS
 #: Component-spec ceiling on a button label.
 _BUTTON_LABEL_CHARS = 80
 
-# Trailing "[OPTIONS: a | b | c]" -- extracted for button-row rendering. Matched
-# only at the very END of the message, so use the DOTALL/trailer canonical
-# parser. Defined once in constants.py (shared with the Slack/dashboard/Telegram/
-# WeCom surfaces) so the ReDoS-hardened grammar can never drift; see
-# OPTIONS_RE_TRAILER for the full rationale. Per-choice whitespace is stripped by
-# the caller.
-_OPTIONS_RE = OPTIONS_RE_TRAILER
-
 # kiro-cli's inline "[STEERING steer-<id>: …]" steer-ack marker (see the
 # Telegram renderer for the full rationale — Discord likewise has no parser).
 _STEER_MARKER_RE = re.compile(r"\[STEERING\b[^\]\r\n]*\]", re.IGNORECASE)
@@ -183,17 +178,13 @@ _STEER_SUMMARY_RE = re.compile(r"\[STEERING\s+steer-[0-9a-f]+\s*:\s*([^\]\r\n]*)
 
 
 def _extract_options(text: str) -> tuple[str, list[str]]:
-    """Split text into (body, options). Handles the streamed partial too."""
-    m = _OPTIONS_RE.search(text)
-    if m:
-        body = text[: m.start()].rstrip()
-        options = [o.strip() for o in m.group(1).split("|") if o.strip()]
-        return body, options
-    # Hold back an incomplete "[OPTIONS…" fragment mid-stream.
-    idx = text.rfind("[OPTIONS")
-    if idx != -1 and "]" not in text[idx:]:
-        return text[:idx].rstrip(), []
-    return text, []
+    """Split text into ``(body, options)``, holding back a streamed partial.
+
+    ``hide_partial=True`` because this renderer STREAMS: a still-arriving
+    ``[OPTIONS…`` fragment really may be a marker mid-flight, and the next frame
+    re-renders from the full buffer, so hiding it costs nothing permanent.
+    """
+    return split_options_trailer(text, hide_partial=True)
 
 
 def _strip_steering(text: str) -> str:

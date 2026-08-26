@@ -328,7 +328,7 @@ def _crew_session_key() -> tuple[str, str]:
             "Error: this tool needs a directly-identified dashboard session. "
             "A subagent resolves to its parent's session, which would read and "
             "write the parent crew's ledger. Run this from the crew's own "
-            "session."
+            "session." + mcp_core.strict_identity_diagnosis()
         )
     return _crew_sk, ""
 

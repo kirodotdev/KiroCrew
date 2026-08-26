@@ -1,10 +1,8 @@
 """Tests for api_cron_delete HTTP handler (DELETE /api/crons/{id}).
 
-The single-delete path must emit the same class of SEL audit event as the
-batch handler (``cron.batch_delete``): after a job disappears from
-``crons.json`` the audit trail is the only way to tell a deliberate delete
-from accidental data loss, so a single delete without an audit record is a
-gap, not a smaller batch.
+The handler must pass its attribution to ``CronService.remove_job_async`` and
+must not emit a second call-site audit. The service seam owns the record after
+the store mutation settles.
 """
 
 from __future__ import annotations
@@ -32,7 +30,9 @@ def _make_state(existing_ids):
     state = MagicMock()
     state.crons = MagicMock()
 
-    async def remove_job_async(job_id):
+    async def remove_job_async(job_id, *, actor, source):
+        assert actor == "dashboard"
+        assert source == "api_cron_delete"
         if job_id in known:
             known.discard(job_id)
             return True
@@ -47,8 +47,7 @@ def _make_state(existing_ids):
 class TestApiCronDeleteAudit:
     @pytest.fixture(autouse=True)
     def stub_sel(self):
-        # Stub the SEL recorder so tests don't write real audit events; expose
-        # it so the audit-event tests can assert on it.
+        # The handler must not retain a duplicate call-site audit.
         with patch("kiro_crew.dashboard.handlers.cron._sel") as sel_fn:
             recorder = MagicMock()
             sel_fn.return_value = recorder
@@ -62,12 +61,10 @@ class TestApiCronDeleteAudit:
             assert resp.status == 200
             data = await resp.json()
             assert data["ok"] is True
-        stub_sel.log_api_access.assert_called_once()
-        kw = stub_sel.log_api_access.call_args.kwargs
-        assert kw["operation"] == "cron.remove"
-        assert kw["source"] == "api_cron_delete"
-        assert kw["outcome"] == "ok"
-        assert "job-1" in kw["resources"]
+        state.crons.remove_job_async.assert_awaited_once_with(
+            "job-1", actor="dashboard", source="api_cron_delete"
+        )
+        stub_sel.log_api_access.assert_not_called()
         # Delete behavior itself is unchanged: history purged + refresh pushed.
         state.crons.get_history().delete_job_history.assert_awaited_once_with("job-1")
         state.push_refresh.assert_called_once_with("crons")
@@ -80,11 +77,10 @@ class TestApiCronDeleteAudit:
             assert resp.status == 200
             data = await resp.json()
             assert data["ok"] is False
-        stub_sel.log_api_access.assert_called_once()
-        kw = stub_sel.log_api_access.call_args.kwargs
-        assert kw["operation"] == "cron.remove"
-        assert kw["outcome"] == "not_found"
-        assert "ghost" in kw["resources"]
+        state.crons.remove_job_async.assert_awaited_once_with(
+            "ghost", actor="dashboard", source="api_cron_delete"
+        )
+        stub_sel.log_api_access.assert_not_called()
         state.push_refresh.assert_not_called()
 
     @pytest.mark.asyncio
@@ -112,10 +108,10 @@ class TestApiCronDeleteAudit:
             # The handler does not swallow the history failure; the audit must
             # already have been written regardless of how the response ends.
             assert resp.status == 500
-        stub_sel.log_api_access.assert_called_once()
-        kw = stub_sel.log_api_access.call_args.kwargs
-        assert kw["operation"] == "cron.remove"
-        assert kw["outcome"] == "ok"
+        state.crons.remove_job_async.assert_awaited_once_with(
+            "job-1", actor="dashboard", source="api_cron_delete"
+        )
+        stub_sel.log_api_access.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_audit_failure_never_fails_a_completed_delete(self, stub_sel):
@@ -123,7 +119,6 @@ class TestApiCronDeleteAudit:
         # HMAC key validation) and can raise. The job is already gone by then:
         # the delete must still report success, purge history, and refresh.
         state = _make_state(["job-1"])
-        stub_sel.log_api_access.side_effect = RuntimeError("SEL trust root unavailable")
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.delete("/api/crons/job-1")
             assert resp.status == 200
@@ -131,3 +126,4 @@ class TestApiCronDeleteAudit:
             assert data["ok"] is True
         state.crons.get_history().delete_job_history.assert_awaited_once_with("job-1")
         state.push_refresh.assert_called_once_with("crons")
+        stub_sel.log_api_access.assert_not_called()

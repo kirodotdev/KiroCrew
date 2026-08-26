@@ -18,8 +18,9 @@ so the caller reads remediation instead of a raw regex. It is metadata only: it
 never participates in matching. Create-only, mirroring ``pattern`` — neither has
 an edit endpoint; you delete the rule and re-add it.
 
-Mutations run under the shared config lock, write atomically (0600), and emit a
-SEL audit entry (``ok`` on success, ``denied`` on reject). Governance
+Mutations run under the shared config lock, write atomically (owner-only
+before the payload is published), and emit a SEL audit entry (``ok`` on
+success, ``denied`` on reject). Governance
 ``commands``-scope pins force a built-in rule enabled even when the user disabled
 it or set disable-all (tightest-wins): a pinned rule cannot be turned off (409)
 and always counts as enabled in the snapshot.
@@ -83,6 +84,7 @@ from kiro_crew.platform.governance_profiles import (
     bound_surfaces,
     fallback_profile_names,
     resolve_active_scope,
+    unknown_profile_scopes,
 )
 from kiro_crew.security import DENY_REASON_MATCH_PREFIX
 
@@ -352,28 +354,30 @@ async def _write_denied_state(mutate) -> dict:
 
     ``mutate(denied: dict) -> None`` edits the opt-out object (the file root) in
     place. Runs under the shared config lock. Returns the updated object so the
-    caller can hot-reload the live HookManager. The file is written 0600 (owner-
-    only, like other keystone secrets).
+    caller can hot-reload the live HookManager.     The file is locked down to the
+    owner only on every write: 0600 on POSIX and an owner-only DACL on Windows.
+    The lockdown is applied to the temp file before any content reaches it, so
+    the keystone never exists in a world-readable file.
 
     The blocking read-modify-write (disk read, JSON (de)serialize, atomic
     replace) runs in a thread executor so it never stalls the gateway event
     loop; the async config lock still serializes concurrent mutations.
     """
-    from kiro_crew.agent import _atomic_json_write
+    from kiro_crew.atomic_write import atomic_write
+
     path: Path = denied_commands_path()
 
     def _read_modify_write() -> dict:
         denied = _read_denied_strict()
         mutate(denied)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_json_write(path, denied)
-        # Keystone file: restrict to owner (best-effort; matches other secrets).
-        try:
-            from kiro_crew.platform_compat import chmod_safe
-
-            chmod_safe(path, 0o600)
-        except Exception:
-            logger.debug("could not chmod denied_commands.json to 0600", exc_info=True)
+        # atomic_write(..., restrict_to_owner=True) refuses a linked parent
+        # before it mkdir's, then locks the temp. A mkdir here would walk
+        # through a planted link and create dirs under its target first.
+        atomic_write(
+            path,
+            json.dumps(denied, indent=2) + "\n",
+            restrict_to_owner=True,
+        )
         return denied
 
     async with _get_config_lock():
@@ -581,14 +585,45 @@ async def api_denied_command_user_add(request: web.Request) -> web.Response:
     # Reject catastrophic-backtracking (ReDoS) patterns before they can enter the
     # effective set: the gate runs user regexes synchronously on the event loop,
     # so an unsafe pattern like ``(a+)+$`` would freeze the gateway.
-    from kiro_crew.security import is_safe_user_regex
+    from kiro_crew.security import (
+        _DANGEROUS_AWS_FLAG_RUN,
+        _LINEARIZED_AWS_FLAG_RUN,
+        is_safe_user_regex,
+    )
 
     if not is_safe_user_regex(pattern):
-        _audit(request, operation=op, outcome="denied", resources="redos_unsafe")
-        return web.json_response(
-            {"error": "pattern rejected: unsafe (catastrophic-backtracking) regex"},
-            status=400,
+        error = "pattern rejected: unsafe (catastrophic-backtracking) regex"
+        # A user who copies a built-in pattern and tweaks it embeds the dangerous
+        # flag-run fragment verbatim and hits a dead end: the fragment is exempt
+        # from the backtracking check only as part of a COMPLETE built-in pattern
+        # (the scrub in ``is_safe_user_regex`` is builtin-gated), and a complete
+        # built-in never reaches this branch, so any pattern here is
+        # user-authored. Name the fragment so the trigger is self-explanatory --
+        # but only when it really is the trigger: the hint is emitted only if
+        # the pattern with both fragments scrubbed would pass, mirroring the
+        # builtin scrub (the linearized form is checked too for symmetry with
+        # it). ``is_safe_user_regex`` returns False on a non-compiling residue,
+        # so a misleading hint fails safe to the generic message.
+        embedded = next(
+            (
+                frag
+                for frag in (_DANGEROUS_AWS_FLAG_RUN, _LINEARIZED_AWS_FLAG_RUN)
+                if frag in pattern
+            ),
+            None,
         )
+        if embedded is not None:
+            scrubbed = pattern.replace(_DANGEROUS_AWS_FLAG_RUN, "").replace(
+                _LINEARIZED_AWS_FLAG_RUN, ""
+            )
+            if is_safe_user_regex(scrubbed):
+                error += (
+                    f"; the embedded built-in flag-run fragment '{embedded}' is"
+                    " the trigger. It is exempt only inside a complete built-in"
+                    " pattern, so remove or rewrite that fragment"
+                )
+        _audit(request, operation=op, outcome="denied", resources="redos_unsafe")
+        return web.json_response({"error": error}, status=400)
 
     # Optional operator note. Absent is the norm (and the pre-existing shape), so
     # a missing key is NOT an error — but a present-and-wrong-typed one is, to
@@ -1821,6 +1856,20 @@ def build_governance_policy_snapshot() -> dict:
             # against file stems mislabels a profile whose declared name collides
             # with a broken sibling's stem, whereas these ARE the stems.
             "fallback_profiles": sorted(fallback_profile_names()),
+            # Capability scopes a profile declares that THIS build does not
+            # register, by file stem → sorted scope names. NAMES ONLY, same
+            # exposure contract as the two fields above.
+            #
+            # These profiles LOADED (enforcement is intact and the key governs
+            # nothing here) so they are absent from ``fallback_profiles`` — which
+            # is exactly why they need their own field: the asymmetric key-open
+            # tolerance means a tolerated key is otherwise visible only in a
+            # startup log line. Non-empty is normal when the data home is shared
+            # with an edition that registers extra rows, and is a typo signal
+            # when it is not.
+            "unknown_profile_scopes": {
+                stem: sorted(scopes) for stem, scopes in unknown_profile_scopes().items()
+            },
             "unavailable": False,
             "scopes": scopes,
         }
@@ -1834,6 +1883,7 @@ def build_governance_policy_snapshot() -> dict:
             "surface": "host",
             "other_bound_surfaces": [],
             "fallback_profiles": [],
+            "unknown_profile_scopes": {},
             "unavailable": True,
             "scopes": [],
         }

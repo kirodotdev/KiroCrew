@@ -287,8 +287,10 @@ cancel and edit wait for the server's own frame before changing what the user
 sees.
 
 The composer's DRAFT behaviour is not owned here. It comes from the chat SDK's
-`app-sdk/useComposerDraft`, which this surface was the first consumer of, and
-which owns four invariants this file must not re-derive:
+`app-sdk/useComposerDraft`, which this surface was the first consumer of
+(`app-sdk/ChatEmbed.tsx` the second, wired to its bare `<input>` via the same
+`submitOnEnter`/`isComposing` without attaching `textareaRef` — no auto-grow
+box to size), and which owns four invariants this file must not re-derive:
 
 - A follow-up pick edits the draft, and the picked set is read back OFF the draft
   rather than stored beside it. The draft is what gets submitted, so it is the

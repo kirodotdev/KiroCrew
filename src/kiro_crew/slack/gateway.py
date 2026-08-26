@@ -94,7 +94,11 @@ from kiro_crew.cron import (
 from kiro_crew.cron_script import run_command_sandboxed, run_script_sandboxed
 from kiro_crew.dashboard import cautious_boot, start_dashboard
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
-from kiro_crew.dashboard.chat_runner import _resolve_channel_target, _run_chat
+from kiro_crew.dashboard.chat_runner import (
+    _arm_queued_delivery_settlement,
+    _resolve_channel_target,
+    _run_chat,
+)
 from kiro_crew.dashboard.chat_utils import (
     CRON_NOTIFICATION_KIND,
     SUBAGENT_COMPLETION_KIND,
@@ -161,9 +165,12 @@ from kiro_crew.history import ConversationLog, HistoryConsolidator
 from kiro_crew.hooks import HookManager, HooksConfig, hooks_config_from_config_dict
 from kiro_crew.learn import LessonStore
 from kiro_crew.llm_helpers import (
+    TURN_FALLBACK_ATTR,
     PromptBusyExhaustedError,
     ToolApprovalPolicy,
     acp_error_is_transient,
+    configured_fallback_chain,
+    provider_fallback_active,
     provider_last_turn_usage,
     save_conversation_turn_off_loop,
     stream_and_collect,
@@ -194,7 +201,7 @@ from kiro_crew.messaging.link import (
     channel_namespace_of,
     parse_session_key,
 )
-from kiro_crew.messaging.split import split_markdown_safe
+from kiro_crew.messaging.renderer import chunk_for_transport
 from kiro_crew.messaging.transport import InboundMessage, delivery_confirmed
 from kiro_crew.platform import boot_platform
 from kiro_crew.platform.context import (
@@ -213,6 +220,17 @@ from kiro_crew.platform.update_capability import (
     CHECK_SUCCEEDED,
     CHECK_UNCHECKED,
     EXTERNALLY_MANAGED_STAMPS,
+)
+from kiro_crew.platform.update_governance import (
+    commits_ahead,
+    git_command_env,
+    hidden_worktree_edits,
+    is_primary_branch,
+    loggable_path,
+    repo_exec_config_reason,
+    resolve_remote_url,
+    tracks_upstream,
+    update_blocked_reason,
 )
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.safety_override import safety_override
@@ -246,6 +264,7 @@ from kiro_crew.subagent import (
     SubagentInfo,
     SubagentManager,
     ToolApprovalCallback,
+    _injection_notice_outcome,
     resolve_max_subagents,
 )
 from kiro_crew.subagent_completion_meta import (
@@ -1074,6 +1093,34 @@ def _vet_at_claim_then(
             "payload refused rather than run beside the next fire"
         )
     return fn(*args)
+
+
+def _annotate_model_fallback(text: str, provider: Any) -> str:
+    """Prepend the throttle-fallback warning to a delivered unattended result.
+
+    Unattended surfaces (cron/heartbeat) have no chat card to announce a
+    fallback swap on, so the delivered result text itself carries the warning —
+    the same visibility contract as the interactive notice card, and the same
+    pattern as the acquire-time ``_annotate_model_downgrade``. The marker is
+    read from :data:`TURN_FALLBACK_ATTR` (set by ``stream_and_collect``'s
+    fallback walk) and left in place: the swap is sticky for the session, so
+    every run served by the fallback repeats the warning until the restore
+    probe moves the session back. Model ids come from config, which is
+    LLM-reachable via MCP — redact before they reach Slack/dashboard.
+    """
+    fb = getattr(provider, TURN_FALLBACK_ATTR, None)
+    if not fb:
+        return text
+    try:
+        primary, candidate = fb
+    except Exception:
+        return text
+    safe_primary = redact_credentials(redact_exfiltration_urls(str(primary))[0])[0]
+    safe_candidate = redact_credentials(redact_exfiltration_urls(str(candidate))[0])[0]
+    return (
+        f"⚠️ Model '{safe_primary}' throttled; this run was served by fallback "
+        f"'{safe_candidate}'.\n\n" + text
+    )
 
 
 async def _cron_stream_with_posttoken_resume(
@@ -2289,6 +2336,12 @@ class GatewayOrchestrator:
                 "--version",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                # Own process group (POSIX; no-op on Windows) so the tree kill
+                # in `_kill_startup_child` below reaches any descendants, not
+                # just the direct child — the kill+reap arms were already here,
+                # but without a session of its own the group signal had nothing
+                # to address beyond the child's PID.
+                start_new_session=platform_compat.IS_POSIX,
             )
         except Exception:
             return  # binary missing/unspawnable — same silence as before
@@ -2834,14 +2887,19 @@ class GatewayOrchestrator:
             # literal-only scan here let a markdown-collapse credential
             # (`AKIA**...**`, which the client renders whole) reach the channel,
             # and every caller inherits the gap rather than each one carrying it.
+            # ``redact_via_context`` stays the redactor rather than the neutral
+            # ``display_safe``: it is context-aware, and the shared sink's default
+            # pair would silently drop that.
             safe_text, _ = redact_for_display(text, redact_via_context)
-            # Fence-safe, not fixed-width: a blind slice through a code block
-            # leaves part two with no opener, so every line in it reads as prose
-            # and a channel's dialect converter rewrites the `**`, `#` and `- `
-            # INSIDE the code. A sub-agent's diff or log dump is exactly that
-            # shape. The shared splitter seals each chunk with a synthetic closer
-            # and reopens the next with the original opener line.
-            parts = split_markdown_safe(safe_text, transport.capabilities.max_message_chars)
+            # ``chunk_for_transport``: the transport's OWN unit (bytes for a
+            # byte-capped channel like Webex, chars otherwise) and fence-safe on
+            # both paths. A blind slice through a code block leaves part two with
+            # no opener, so every line reads as prose and a channel's dialect
+            # converter rewrites the `**`, `#` and `- ` INSIDE the code -- a
+            # sub-agent's diff or log dump is exactly that shape. The shared
+            # splitter seals each chunk with a synthetic closer and reopens the
+            # next with the original opener line.
+            parts = chunk_for_transport(safe_text, transport.capabilities)
             for part in parts:
                 # Stop on the first UNCONFIRMED part rather than pressing on: the
                 # remaining chunks of a message whose head never landed would arrive
@@ -3024,7 +3082,12 @@ class GatewayOrchestrator:
                             task = spawn_guarded_turn(
                                 self.dashboard_state,
                                 slot,
-                                _run_chat(self.dashboard_state, slot, wrapped),
+                                _run_chat(
+                                    self.dashboard_state,
+                                    slot,
+                                    wrapped,
+                                    _directive_user_origin=False,
+                                ),
                             )
                             slot.task = task
                         self.dashboard_state.push_slots_update()
@@ -3042,7 +3105,12 @@ class GatewayOrchestrator:
                 logger.warning("Cron '%s' delivery failed: %s", job.name, notify_exc)
             if remove and delivered and self.cron_svc:
                 try:
-                    removed = await self.cron_svc.remove_job_async(job.id)
+                    await self.cron_svc.remove_job_async(
+                        job.id,
+                        actor="cron",
+                        source="cron",
+                        one_shot_path="cron_gateway",
+                    )
                 except CronStoreBusy:
                     # No caller to retry this fire-and-forget removal, so hand
                     # it to the service's deferred-removal queue: the job is
@@ -3057,17 +3125,6 @@ class GatewayOrchestrator:
                         "Cron '%s': store busy, queued one-shot removal for " "the next timer tick",
                         job.name,
                     )
-                else:
-                    if removed:
-                        # SEL audit: automated one-shot (Done) removal after
-                        # delivery (issue #5408). One owner for the record
-                        # shape: the service's helper emits the same
-                        # cron.remove event as the deferred-drain and
-                        # run-merge paths, best-effort and exception-contained
-                        # (audit unavailability never fails the delivery
-                        # callback). removed=False means another path already
-                        # deleted the job — that path owns the audit record.
-                        self.cron_svc.audit_one_shot_removal(job.id, "cron_gateway")
 
         async def _alert_cron_failure(job: CronJob, detail: str, *, denied: bool = False) -> None:
             """Tell the user WHY a script/command cron run failed or was denied.
@@ -4162,9 +4219,11 @@ class GatewayOrchestrator:
                                 else self._interactive_approval("cron")
                             ),
                             on_tool_gate=_gate.note,
+                            fallback_models=configured_fallback_chain(),
                         )
                         if not result_text:
                             result_text = "_No response._"
+                        result_text = _annotate_model_fallback(result_text, client)
                         logger.info("Cron '%s': agent '%s' completed", job.name, agent)
 
                         # ── Per-turn usage row: background spend. ──
@@ -4184,7 +4243,11 @@ class GatewayOrchestrator:
                                 # requested id would attribute spend to a model
                                 # that never executed. Blank defers to
                                 # model_source, which reports what actually ran.
-                                "" if _seq_downgraded else (job.model or ""),
+                                (
+                                    ""
+                                    if (_seq_downgraded or provider_fallback_active(client))
+                                    else (job.model or "")
+                                ),
                                 _turn_usage,
                                 provider=(
                                     self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"
@@ -4295,6 +4358,7 @@ class GatewayOrchestrator:
                         None if job.approval_mode == "auto" else self._interactive_approval("cron")
                     ),
                     on_tool_gate=_gate.note,
+                    fallback_models=configured_fallback_chain(),
                 )
 
                 if not result_text:
@@ -4302,6 +4366,7 @@ class GatewayOrchestrator:
 
                 if _model_downgraded:
                     result_text = _annotate_model_downgrade(result_text)
+                result_text = _annotate_model_fallback(result_text, client)
 
                 job.set_run_result(result_text)
 
@@ -4324,8 +4389,13 @@ class GatewayOrchestrator:
                         _turn_usage.credits += _carried_credits
                     await persist_token_record_async(
                         session_key,
-                        # Blank on a downgrade — see the sequential site above.
-                        "" if _model_downgraded else (job.model or ""),
+                        # Blank on a downgrade or an active fallback — see the
+                        # sequential site above / provider_fallback_active.
+                        (
+                            ""
+                            if (_model_downgraded or provider_fallback_active(client))
+                            else (job.model or "")
+                        ),
                         _turn_usage,
                         provider=_provider,
                         surface="cron",
@@ -5044,12 +5114,14 @@ class GatewayOrchestrator:
                         approval_policy=ToolApprovalPolicy.HOOK_BASED,
                         hooks=heartbeat_hooks,
                         on_tool_approval=self._heartbeat_approval,
+                        fallback_models=configured_fallback_chain(),
                     ),
                     timeout=HEARTBEAT_TASK_TIMEOUT_SECS,
                 )
 
                 if not result_text:
                     result_text = "_No response._"
+                result_text = _annotate_model_fallback(result_text, client)
 
                 # ── Per-turn usage row: attribute heartbeat spend. ──
                 await _persist_turn_row(
@@ -5384,6 +5456,102 @@ class GatewayOrchestrator:
             logger.exception("AutoNudge: discord nudge failed for %s (loop %s)", key, loop.id)
             return False
 
+    async def _fire_webex_nudge(self, loop: NudgeLoop) -> bool:
+        """Drive one unattended nudge turn in a Webex DM session.
+
+        Sibling of :meth:`_fire_discord_nudge`, with the same four guards and for
+        the same reasons: a synthetic injection bypasses ``transport.receive``, so
+        authorization, the generation check and the busy check are this caller's
+        responsibility rather than the transport's.
+
+        The nudge is routed through the dispatcher — the exact path a real DM
+        takes — so queue/steer handling, rendering, byte-safe chunking and
+        persistence all behave like a user turn. ``interpret_commands=False``
+        keeps the nudge text from being parsed as a ``/command``.
+        """
+        key = loop.slot_key
+        transports = getattr(self.dashboard_state, "channel_transports", None) or {}
+        transport = transports.get("webex")
+        dispatcher = transport.dispatcher if transport is not None else None
+        if transport is None or dispatcher is None:
+            logger.info("AutoNudge skip: webex transport not running (loop %s)", loop.id)
+            return False
+        # Key shape: webex:{agent}:direct:{email}[:genN]
+        parts = key.split(":")
+        if len(parts) < 4 or parts[2] != "direct":
+            logger.warning("AutoNudge: unsupported webex key %s — removing loop %s", key, loop.id)
+            if self.autonudge_svc:
+                await self.autonudge_svc.remove(loop.id)
+            return False
+        email = parts[3]
+        # Defence in depth: the create endpoint checks the allow-list too, but it
+        # can shrink after a loop was created, and a synthetic turn never passes
+        # through the transport's own gate.
+        if not transport.is_authorized(email):
+            logger.warning("AutoNudge: webex user not authorized — removing loop %s", loop.id)
+            if self.autonudge_svc:
+                await self.autonudge_svc.remove(loop.id)
+            return False
+        # Generation guard: a `/new` mints a new key, and firing into the rotated
+        # one would run in a fresh session with none of the loop's context — and
+        # an `autonudge_stop` from that session could never find this loop.
+        try:
+            current_key = dispatcher.current_session_key(email)
+        except Exception:
+            current_key = key
+        if current_key != key:
+            logger.info("AutoNudge: webex session rotated — removing loop %s", loop.id)
+            if self.autonudge_svc:
+                await self.autonudge_svc.remove(loop.id)
+            return False
+        sessions = getattr(dispatcher, "sessions", None)
+        if sessions is not None and sessions.is_busy(key):
+            logger.info("AutoNudge skip: webex session busy (loop %s)", loop.id)
+            return False
+        # The SHARED fire-path composer, same as the slack/discord/dashboard
+        # adapters: it applies the {{STOP_FILE}} substitution and prefixes the
+        # session's durable work-ledger snapshot, so a Webex loop starts each cycle
+        # from that state rather than from transcript memory. Calling the bare
+        # template substitution instead would silently opt this channel out of the
+        # ledger — the one feature whose whole point is surviving context loss.
+        msg_body = await compose_nudge_body(loop.message, loop.stop_sentinel_path, loop.slot_key)
+        tagged = f"[auto-nudge cycle {loop.cycle_count + 1}]\n{msg_body}"
+        # Imported HERE, not at module scope: this file is on the gateway boot
+        # path, and it deliberately keeps every channel client behind
+        # TYPE_CHECKING so enabling one channel does not cost every launch the
+        # import of all of them. Reached only when a Webex loop actually fires.
+        from kiro_crew.webex.client import WebexInbound
+        from kiro_crew.webex.transport import ROOM_DIRECT
+
+        try:
+            # The room this conversation is actually being read in, so the synthetic
+            # turn rebinds the SAME origin location a real message would. Webex's
+            # ``resolve_conversation`` answers with the EMAIL — its send path maps an
+            # email-shaped id onto ``toPersonEmail`` — which delivers correctly but is
+            # a SECOND spelling of "this room", and the origin bind is matched by
+            # value (see ``_origin_mirror_link``): a nudge-written link in that
+            # spelling makes a later ``/unlink`` miss the binding. So the persisted
+            # link wins when there is one, and the email is only the first-turn
+            # fallback, where no binding exists to disagree with yet.
+            existing = sessions.get_origin_link(key) if sessions is not None else None
+            room_id = getattr(existing, "channel_id", "") or await transport.resolve_conversation(
+                email
+            )
+            synthetic = WebexInbound(
+                person_email=email,
+                room_id=room_id,
+                text=tagged,
+                room_type=ROOM_DIRECT,
+            )
+            await asyncio.wait_for(
+                dispatcher.handle_message(synthetic, interpret_commands=False),
+                timeout=_NUDGE_TURN_TIMEOUT,
+            )
+            return True
+        except Exception:
+            logger.exception("AutoNudge: webex nudge failed (loop %s)", loop.id)
+            return False
+
     async def _fire_dashboard_nudge(self, loop: NudgeLoop) -> bool:
         """Drive one nudge turn in a dashboard chat slot.
 
@@ -5504,7 +5672,13 @@ class GatewayOrchestrator:
             self.dashboard_state,
             slot,
             self.dashboard_state.run_background_turn(
-                slot, _run_chat(self.dashboard_state, slot, tagged)
+                slot,
+                _run_chat(
+                    self.dashboard_state,
+                    slot,
+                    tagged,
+                    _directive_user_origin=False,
+                ),
             ),
         )
         # Mirror dashboard /api/chat/send path so slot.running == True and sidebar
@@ -5537,6 +5711,8 @@ class GatewayOrchestrator:
                     return await self._fire_slack_nudge(loop)
                 if loop.slot_key.startswith("discord:"):
                     return await self._fire_discord_nudge(loop)
+                if loop.slot_key.startswith("webex:"):
+                    return await self._fire_webex_nudge(loop)
                 logger.warning(
                     "AutoNudge: unsupported channel key %s — removing loop %s",
                     loop.slot_key,
@@ -6073,7 +6249,14 @@ class GatewayOrchestrator:
                     _retrigger_recovery(slot, parent_key)
 
             _task = asyncio.create_task(
-                bounded_chat_turn(_run_chat(self.dashboard_state, slot, msg)),
+                bounded_chat_turn(
+                    _run_chat(
+                        self.dashboard_state,
+                        slot,
+                        msg,
+                        _directive_user_origin=False,
+                    )
+                ),
             )
             slot.task = _task
             self._background_tasks.add(_task)
@@ -6303,6 +6486,8 @@ class GatewayOrchestrator:
                 outcome=single_outcome,
                 agent_name=info.agent or "",
                 task=task_text,
+                requested_model=info.requested_model or info.model or "",
+                resolved_model=info.resolved_model or "",
             )
 
             parent_key = info.parent_session_key
@@ -6796,9 +6981,65 @@ class GatewayOrchestrator:
                             return
 
                         # Slot is idle — start _run_chat.
+                        #
+                        # This branch hands the digest off ASYNCHRONOUSLY: the
+                        # turn is a task, and `_on_done` returns to
+                        # `_report_terminal` while it is still pending — so a
+                        # bare return here is a local routing success, not
+                        # evidence the parent received anything (#2233). Owe
+                        # the delivery bookkeeping to the turn's CONSUMPTION
+                        # instead, through the same `_defer_queued_delivery`
+                        # the queue branch uses: it records the debt (the
+                        # completed member's own tombstone AND any held wave
+                        # siblings) in the slot's content-keyed ledger, keyed
+                        # on this announce, and flags `_delivery_queued` — so
+                        # the run loop's `mark_delivered` and its digest-hold
+                        # settle both become no-ops for this route, and the
+                        # two settle paths cannot both fire.
+                        #
+                        # The task's own OUTCOME is deliberately not the
+                        # signal: `_run_chat` returns NORMALLY on a signed-out
+                        # CLI, a dead provider, exhausted retries and a first
+                        # empty response — several of them after re-queueing
+                        # the announce itself — so "the task finished cleanly"
+                        # says nothing about delivery. Consumption does, and a
+                        # failure before it re-queues the announce, whose drain
+                        # claims this same content-keyed debt on the replay. An
+                        # unconfirmed hand-off leaves the debt parked on
+                        # purpose: a duplicate announce after a restart is
+                        # visible to the parent and recoverable, a lost result
+                        # is neither.
+                        #
+                        # Computed BEFORE the transfer (which detaches the held
+                        # ids); stays False when there is nothing to owe — a
+                        # failed or stopped solo member settles through its own
+                        # failure tombstone, not this ledger.
+                        _owes_delivery = bool(info._digest_settle_ids) or (
+                            not _flush_only and info.outcome == "completed"
+                        )
+                        self._defer_queued_delivery(
+                            _injection_slot, announce, info, flush_only=_flush_only
+                        )
+                        _consumed: list[bool] = [False]
+
+                        def _note_consumed(consumed: bool = True) -> None:
+                            # False is a retraction: the first empty response
+                            # re-queues this exact announce verbatim, so the
+                            # delivery that counts has not happened yet.
+                            _consumed[0] = consumed
+
+                        _run_kwargs: dict[str, Any] = {}
+                        if _owes_delivery:
+                            _run_kwargs["_on_consumed"] = _note_consumed
                         _task = asyncio.create_task(
                             bounded_chat_turn(
-                                _run_chat(self.dashboard_state, _injection_slot, announce)
+                                _run_chat(
+                                    self.dashboard_state,
+                                    _injection_slot,
+                                    announce,
+                                    _directive_user_origin=False,
+                                    **_run_kwargs,
+                                )
                             )
                         )
                         _injection_slot.task = _task
@@ -6822,6 +7063,20 @@ class GatewayOrchestrator:
                                     )
 
                         _task.add_done_callback(_on_inject_done)
+                        if _owes_delivery:
+                            # Settle the owed tombstones only once the model has
+                            # consumed this turn's prompt — the drain's own
+                            # settlement path, reused verbatim (#2233, riding
+                            # the #4839 ledger). If the transfer above fell
+                            # back (stubbed slot), the ledger holds no debt and
+                            # the claim inside is an empty no-op.
+                            _arm_queued_delivery_settlement(
+                                self.dashboard_state,
+                                _injection_slot,
+                                _task,
+                                [announce],
+                                _consumed,
+                            )
                         self.dashboard_state.push_slots_update()
                         logger.info("Subagent %s → _run_chat in %s", info.id, _slot_name)
                     finally:
@@ -7299,14 +7554,18 @@ class GatewayOrchestrator:
                     task_preview, _ = redact_credentials(task_preview)
                     error_text, _ = redact_exfiltration_urls(extra.get("error", "timed out"))
                     error_text, _ = redact_credentials(error_text)
+                    # The visible transcript card must state the run's real
+                    # outcome, same as the queued LLM copy: this event fires for
+                    # every terminal state whose report could not be injected,
+                    # not only successful completions.
+                    outcome_line = _injection_notice_outcome(info)
                     slot.append(
                         "assistant",
                         f"{SUBAGENT_COMPLETION_PREFIX}\n"
                         f"Agent `{info.id}` ❌\n"
                         f"Task: {task_preview}\n\n"
                         f"Error: {error_text}\n"
-                        f"⚠️ Result delivery timed out — the subagent finished but "
-                        f"its result could not be injected into this session.",
+                        f"⚠️ Result delivery failed — {outcome_line}",
                         "msg msg-a",
                         meta={
                             SUBAGENT_COMPLETION_META_KEY: single_completion_meta(
@@ -7314,6 +7573,8 @@ class GatewayOrchestrator:
                                 outcome=OUTCOME_FAILED,
                                 agent_name=info.agent or "",
                                 task=task_preview,
+                                requested_model=info.requested_model or info.model or "",
+                                resolved_model=info.resolved_model or "",
                             )
                         },
                     )
@@ -8385,7 +8646,7 @@ class GatewayOrchestrator:
                 )
         if self.sessions:
             await self.sessions.close_all()
-        os.execv(sys.executable, [sys.executable, "-m", "kiro_crew"] + sys.argv[1:])
+        platform_compat.reexec_python_module("kiro_crew", sys.argv[1:])
 
     async def _check_for_updates_legacy(self) -> None:
         """Legacy update check — the existing layout-aware logic."""
@@ -8590,38 +8851,139 @@ class GatewayOrchestrator:
         proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
         if not proj:
             return
+        # Timeout/cancel discipline for every spawn below. Function-local like
+        # the wheel path's import further down this file: the helper owns the
+        # kill-the-tree + bounded-reap contract, and there is exactly one
+        # implementation of it (issue #4210 exists to close the two-conventions
+        # gap, not to add a second helper).
+        from kiro_crew.platform.update_provider import _kill_and_reap
+
         try:
+            # Every git call below reads a tree an agent can write, and several of
+            # them (`status`, `diff`, `reset`) will EXEC a program the repository
+            # names in its own config. Bound once here, ahead of the first spawn,
+            # so the whole sequence is covered and a later-added command cannot
+            # quietly opt out of it.
+            #
+            # A redirected work tree is handled separately, by the
+            # `repo_exec_config_reason` refusal below: git ignores a
+            # `core.worktree` supplied through the environment, so it cannot be
+            # pinned here.
+            #
+            # `git_command_env` BUILDS the environment rather than merging over
+            # `os.environ`, because an inherited `GIT_DIR` has to be ABSENT and a
+            # merge can only add keys. Left in place it would point every call
+            # below at unrelated metadata while `cwd` still says `proj`.
+            _git_env = git_command_env()
+
+            # `git` itself is resolved OFF `PATH`. A gateway's `PATH` can lead
+            # with an agent-writable directory (a worktree venv's `bin`,
+            # `~/.local/bin`), so a bare `"git"` lets a planted shim run — and on
+            # THIS path what git reports decides which code is installed and
+            # re-executed, so the shim would not merely lie, it would choose the
+            # payload. `AGENTS.md` already requires this for system tools;
+            # `cli_doctor` already did it for git.
+            #
+            # Resolved ONCE here rather than per call, so every step below runs
+            # the same binary: re-resolving per spawn would leave a window for the
+            # answer to change mid-sequence.
+            _git = platform_compat.trusted_git_bin()
+            if _git is None:
+                logger.warning(
+                    "Auto-update: skipping — no trustworthy `git` outside PATH. "
+                    "Run `kirocrew update` to apply this manually."
+                )
+                if self.dashboard_state:
+                    self.dashboard_state.clear_update_progress()
+                    self.dashboard_state.push_refresh("update_available")
+                return
+
             # Detect current branch
             branch_proc = await asyncio.create_subprocess_exec(
-                "git",
+                _git,
                 "rev-parse",
                 "--abbrev-ref",
                 "HEAD",
                 cwd=proj,
+                env=_git_env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
+                # Own process group (POSIX; no-op on Windows) so a timeout or
+                # cancellation kill reaches the whole tree, not just the direct
+                # child. Every spawn in this method carries the same discipline
+                # (issue #4210): on TimeoutError/CancelledError, kill the tree
+                # and reap under a bound via the shared `_kill_and_reap`, then
+                # re-raise so the outer handler keeps its current behaviour —
+                # without this the child is ABANDONED on timeout, not stopped.
+                start_new_session=platform_compat.IS_POSIX,
             )
-            branch_out, _ = await asyncio.wait_for(branch_proc.communicate(), timeout=10)
+            try:
+                branch_out, _ = await asyncio.wait_for(branch_proc.communicate(), timeout=10)
+            except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
+                await _kill_and_reap(branch_proc)
+                raise
             if branch_proc.returncode != 0:
                 logger.error("Auto-update: could not determine current branch")
                 return
             branch = branch_out.strip().decode() if branch_out else ""
-            if not branch or branch == "HEAD":
-                branch = "mainline"
 
-            # Only auto-update on mainline — beta/feature branches need manual update
-            if branch != "mainline":
-                logger.debug("Auto-update: skipping — on branch %s, not mainline", branch)
+            # Only a PRIMARY branch is auto-updated: a feature or beta branch
+            # needs a deliberate `kirocrew update`, and a detached HEAD has no
+            # branch to fast-forward at all.
+            #
+            # This gate read `branch != "mainline"` — inherited verbatim from the
+            # internal repo whose primary line is named that — so on this repo,
+            # whose primary line is `main`, it matched nothing and returned at
+            # `logger.debug`. Every git checkout (the documented `install.sh`
+            # path) therefore never auto-updated, and said so nowhere.
+            #
+            # `is_primary_branch` reads a reviewed allowlist and nothing else, so
+            # no local git ref can steer or veto this decision. See its docstring
+            # — this is also the path a mandatory `min_version` floor drives.
+            if not is_primary_branch(branch):
+                logger.info(
+                    "Auto-update: skipping — %s is not a primary branch",
+                    branch or "detached HEAD",
+                )
+                return
+
+            # A content filter or textconv driver is named BY THE REPOSITORY, so
+            # there is no fixed key to pin and `_git_env` cannot reach it. Refuse
+            # the unattended run rather than execute it; the operator still has
+            # `kirocrew update`, where a human is deciding.
+            exec_config = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: repo_exec_config_reason(proj)
+            )
+            if exec_config:
+                logger.warning(
+                    "Auto-update refused: %s, which git would run during the update",
+                    exec_config,
+                )
+                if self.dashboard_state:
+                    self.dashboard_state.push_refresh("update_available")
+                return
+
+            # The availability check compares HEAD against `@{u}` (the TRACKED
+            # upstream) while this applies `origin/<branch>`. On a fork checkout
+            # whose branch tracks `upstream` and whose `origin` is a stale fork,
+            # those are different refs: the check sees the canonical remote move
+            # ahead and the reset below would discard commits. Only reset when the
+            # branch tracks the remote this actually fetches and pins.
+            if not await asyncio.get_running_loop().run_in_executor(
+                None, lambda: tracks_upstream(proj, branch)
+            ):
+                logger.info(
+                    "Auto-update: skipping — %s does not track origin, and the "
+                    "update check measures against its tracked upstream",
+                    branch,
+                )
+                if self.dashboard_state:
+                    self.dashboard_state.push_refresh("update_available")
                 return
 
             # Source pin, checked before the fetch. This is the most privileged
             # update path in the product — no auth, no click, `git reset --hard`
             # + pip + execv on boot — so a blocked host must not touch its tree.
-            from kiro_crew.platform.update_governance import (
-                resolve_remote_url,
-                update_blocked_reason,
-            )
-
             blocked = await asyncio.get_running_loop().run_in_executor(
                 None, lambda: update_blocked_reason(resolve_remote_url(proj, remote="origin"))
             )
@@ -8635,70 +8997,363 @@ class GatewayOrchestrator:
                 self.dashboard_state.push_update_progress("pulling", "Fetching latest changes…")
 
             fetch = await asyncio.create_subprocess_exec(
-                "git",
+                _git,
                 "fetch",
                 "origin",
                 branch,
                 cwd=proj,
+                env=_git_env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                start_new_session=platform_compat.IS_POSIX,
             )
-            await asyncio.wait_for(fetch.communicate(), timeout=60)
+            try:
+                await asyncio.wait_for(fetch.communicate(), timeout=60)
+            except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
+                await _kill_and_reap(fetch)
+                raise
 
             if fetch.returncode != 0:
                 if self.dashboard_state:
                     self.dashboard_state.clear_update_progress()
                 return
 
+            # Capture the fetched commit as an OID, immediately after the fetch,
+            # and use that OID for the comparison AND the reset below. A ref name
+            # is re-resolved on every command, so `origin/<branch>` could be moved
+            # by a concurrent fetch between the decision and the reset — deciding
+            # against one commit and resetting to another. An OID cannot move.
+            #
+            # The ref is spelled in FULL (`refs/remotes/origin/...`) because the
+            # short form is ambiguous in the attacker's favour: rev-parse's
+            # disambiguation order checks `refs/tags/<name>` BEFORE
+            # `refs/remotes/<name>`, so a tag literally named `origin/main`
+            # resolves instead of the remote-tracking branch — and the update's
+            # own `git fetch` auto-follows tags, so publishing that tag upstream
+            # is enough to create it locally. git prints "refname is ambiguous"
+            # to stderr and still writes the TAG's OID to stdout, which is what
+            # this capture reads, so the short form fails silently here.
+            target_proc = await asyncio.create_subprocess_exec(
+                _git,
+                "rev-parse",
+                "--verify",
+                f"refs/remotes/origin/{branch}^{{commit}}",
+                cwd=proj,
+                env=_git_env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                start_new_session=platform_compat.IS_POSIX,
+            )
+            try:
+                target_out, _ = await asyncio.wait_for(target_proc.communicate(), timeout=10)
+            except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
+                await _kill_and_reap(target_proc)
+                raise
+            target = (target_out or b"").strip().decode()
+            if target_proc.returncode != 0 or not target:
+                logger.warning(
+                    "Auto-update: skipping — could not resolve origin/%s to a commit",
+                    branch,
+                )
+                if self.dashboard_state:
+                    self.dashboard_state.clear_update_progress()
+                return
+
             # Check if there are actually new commits
             diff_proc = await asyncio.create_subprocess_exec(
-                "git",
+                _git,
                 "diff",
                 "HEAD",
-                f"origin/{branch}",
+                target,
                 "--quiet",
                 cwd=proj,
+                env=_git_env,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
+                start_new_session=platform_compat.IS_POSIX,
             )
-            await asyncio.wait_for(diff_proc.wait(), timeout=10)
+            try:
+                await asyncio.wait_for(diff_proc.wait(), timeout=10)
+            except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
+                await _kill_and_reap(diff_proc)
+                raise
             if diff_proc.returncode == 0:
                 # No diff — already up to date
                 if self.dashboard_state:
                     self.dashboard_state.clear_update_progress()
                 return
 
-            # Warn if local tracked-file edits will be discarded
+            # LAST-MOMENT REVALIDATION, after the fetch and immediately before the
+            # only destructive step. Everything checked so far was checked
+            # earlier: the availability verdict came from a separate pass, and
+            # the config probe ran before the fetch. A checkout is a live tree —
+            # a developer can commit, or repo config can be rewritten, in the
+            # window between those checks and this reset. `reset --hard` is not
+            # recoverable from, so the two facts that decide whether it destroys
+            # anything are re-read here rather than trusted from before.
+            #
+            # 1. Local commits. `git status --porcelain` below reports
+            #    working-tree edits, NOT commits, and the `git diff` above is
+            #    satisfied by any difference in either direction — so a checkout
+            #    that is ahead of origin passes both and then loses those commits.
+            # Counted against `target` — the OID the reset will use — not against
+            # `origin/<branch>`. A ref is re-resolved per command, so a concurrent
+            # fetch could advance it, make this read zero against the new tip, and
+            # leave the reset discarding commits relative to the old one.
+            ahead = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: commits_ahead(proj, target)
+            )
+            if ahead != 0:
+                logger.warning(
+                    "Auto-update: skipping — %s is ahead of origin/%s by %s commit(s); "
+                    "a reset would discard them. Run `kirocrew update` to decide.",
+                    branch,
+                    branch,
+                    "an unknown number of" if ahead is None else ahead,
+                )
+                if self.dashboard_state:
+                    self.dashboard_state.clear_update_progress()
+                    self.dashboard_state.push_refresh("update_available")
+                return
+
+            # 2. The work tree, and the repo-named exec drivers, re-read after the
+            #    fetch. The earlier probe is a check-then-use otherwise: config
+            #    rewritten in between would redirect this reset, or hand the
+            #    checkout's own driver to the command that performs it.
+            exec_config_now = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: repo_exec_config_reason(proj)
+            )
+            if exec_config_now:
+                logger.warning("Auto-update refused before reset: %s", exec_config_now)
+                if self.dashboard_state:
+                    self.dashboard_state.clear_update_progress()
+                    self.dashboard_state.push_refresh("update_available")
+                return
+
+            # 3. Uncommitted tracked edits. REFUSE, like the two checks above —
+            #    this one used to log a warning and then reset anyway, which made
+            #    an unattended boot-time update the one code path that could
+            #    silently destroy a developer's uncommitted work. `reset --hard`
+            #    is not recoverable and nothing here has the standing to make
+            #    that trade on the developer's behalf: the count check one screen
+            #    up already refuses for COMMITTED work and defers to `kirocrew
+            #    update`, and uncommitted work is the strictly more fragile case
+            #    (a discarded commit is at least recoverable from the reflog; an
+            #    uncommitted edit is gone). The manual path keeps the destructive
+            #    semantics, because there a human chose them.
+            #
+            #    Untracked files are excluded: `reset --hard` preserves them, so
+            #    task specs and notes are not a reason to refuse.
             status_proc = await asyncio.create_subprocess_exec(
-                "git",
+                _git,
                 "status",
                 "--porcelain",
                 cwd=proj,
+                env=_git_env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
+                start_new_session=platform_compat.IS_POSIX,
             )
-            status_out, _ = await asyncio.wait_for(status_proc.communicate(), timeout=10)
-            if status_out and status_out.strip():
-                tracked = [
-                    ln
-                    for ln in status_out.decode(errors="replace").splitlines()
-                    if not ln.startswith("??")
-                ]
-                if tracked:
-                    logger.warning("Auto-update: discarding local tracked-file changes in %s", proj)
+            try:
+                status_out, _ = await asyncio.wait_for(status_proc.communicate(), timeout=10)
+            except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
+                await _kill_and_reap(status_proc)
+                raise
+            if status_proc.returncode != 0:
+                # Cannot prove the tree is clean, and the next step is
+                # irreversible — treat an unreadable status as dirty.
+                logger.warning(
+                    "Auto-update: skipping — could not read the work-tree status of %s; "
+                    "a reset could discard uncommitted changes. Run `kirocrew update`.",
+                    loggable_path(proj),
+                )
+                if self.dashboard_state:
+                    self.dashboard_state.clear_update_progress()
+                    self.dashboard_state.push_refresh("update_available")
+                return
+            tracked = [
+                ln
+                for ln in (status_out or b"").decode(errors="replace").splitlines()
+                if ln.strip() and not ln.startswith("??")
+            ]
+            if tracked:
+                logger.warning(
+                    "Auto-update: skipping — %s has %s uncommitted tracked change(s); "
+                    "a reset would discard them. Run `kirocrew update` to decide.",
+                    loggable_path(proj),
+                    len(tracked),
+                )
+                if self.dashboard_state:
+                    self.dashboard_state.clear_update_progress()
+                    self.dashboard_state.push_refresh("update_available")
+                return
 
-            # Hard reset to remote — discards local tracked-file edits,
-            # untracked files (task specs, notes) are preserved.
+            # 3b. Tracked edits git was TOLD not to look at. `status --porcelain`
+            #     above honours `assume-unchanged` / `skip-worktree` and reports a
+            #     clean tree for an edited file, while `reset --hard` still
+            #     overwrites it -- so check 3 alone cannot see this loss.
+            hidden = await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), lambda: hidden_worktree_edits(proj)
+            )
+            if hidden is None or hidden:
+                logger.warning(
+                    "Auto-update: skipping — %s has %s tracked change(s) hidden by "
+                    "assume-unchanged/skip-worktree (e.g. %s); a reset would discard "
+                    "them. Run `kirocrew update` to decide.",
+                    loggable_path(proj),
+                    "an unknown number of" if hidden is None else len(hidden),
+                    loggable_path(hidden[0]) if hidden else "unknown",
+                )
+                if self.dashboard_state:
+                    self.dashboard_state.clear_update_progress()
+                    self.dashboard_state.push_refresh("update_available")
+                return
+
+            # 4. Untracked files that the TARGET would create. `reset --hard`
+            #    leaves untracked files alone ONLY while they do not collide with
+            #    a path the target adds -- where it does, the local file is
+            #    overwritten. `git status --porcelain` reports such a file as
+            #    `??`, which check 3 deliberately skips, so this is the one
+            #    data-loss case that survives a "clean" tracked tree. Verified:
+            #    upstream adds `newfile.txt`, a local untracked `newfile.txt` is
+            #    replaced by the upstream content.
+            #
+            #    Detected rather than prevented by switching to `merge --ff-only`:
+            #    the reset semantics are deliberate (documented as discarding
+            #    tracked edits) and this path keeps them. A collision is a refusal
+            #    for the same reason as the three above -- it is unrecoverable and
+            #    unattended.
+            added_proc = await asyncio.create_subprocess_exec(
+                _git,
+                "diff",
+                "--name-only",
+                "--diff-filter=A",
+                # Rename detection is ON by default for porcelain diffs, and it
+                # DEFEATS this guard: a pure `git mv` upstream is reported as a
+                # single `R` entry, which `--diff-filter=A` excludes, so the
+                # destination path never appears as added. Verified — upstream
+                # renaming `a.txt` to `b.txt` yields `R100` and an EMPTY added
+                # list, while an untracked local `b.txt` is still overwritten by
+                # the reset. `--no-renames` decomposes the rename into a delete
+                # plus an add, which is what this check needs to see.
+                "--no-renames",
+                "-z",
+                "HEAD",
+                target,
+                cwd=proj,
+                env=_git_env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                start_new_session=platform_compat.IS_POSIX,
+            )
+            try:
+                added_out, _ = await asyncio.wait_for(added_proc.communicate(), timeout=10)
+            except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
+                await _kill_and_reap(added_proc)
+                raise
+            if added_proc.returncode != 0:
+                logger.warning(
+                    "Auto-update: skipping — could not list the paths %s would add; "
+                    "a reset could overwrite untracked files. Run `kirocrew update`.",
+                    branch,
+                )
+                if self.dashboard_state:
+                    self.dashboard_state.clear_update_progress()
+                    self.dashboard_state.push_refresh("update_available")
+                return
+            # `os.fsdecode`, NOT `.decode(errors="replace")`: a path byte that is
+            # not valid UTF-8 becomes U+FFFD under `replace`, and the resulting
+            # name does not exist on disk — so the check answers "no collision"
+            # for a file it is looking straight at. Verified: a `bad\xffname.txt`
+            # decodes to `bad\ufffdname.txt` (lexists False) under `replace` and
+            # to `bad\udcffname.txt` (lexists True) under `fsdecode`, and the
+            # reset overwrote it. `fsdecode` round-trips through surrogateescape,
+            # which is what the os functions below need.
+            added_names = [os.fsdecode(raw) for raw in (added_out or b"").split(b"\0") if raw]
+
+            def _obstructions(name: str) -> bool:
+                """Whether *name* collides with something already on disk.
+
+                Two shapes, both unrecoverable and both invisible to check 3:
+
+                * the path ITSELF exists untracked, and the reset overwrites it;
+                * an ANCESTOR exists as a non-directory. When the target adds
+                  `pkg/mod.py` and `pkg` is locally an untracked FILE, git must
+                  replace that file with a directory — `lexists("pkg/mod.py")` is
+                  False, so checking only the full path misses it. Verified: the
+                  untracked `pkg` was destroyed while the full-path check passed.
+                """
+                full = os.path.join(proj, name)
+                if os.path.lexists(full):
+                    return True
+                parent = os.path.dirname(name)
+                while parent:
+                    candidate = os.path.join(proj, parent)
+                    # Link check FIRST: `isdir` follows the link, so an untracked
+                    # symlink-to-directory reported "directory, not an
+                    # obstruction" -- and the reset then replaced the developer's
+                    # symlink with a real directory. Verified against real git.
+                    #
+                    # `is_link_or_junction`, not `os.path.islink`: `islink` returns
+                    # False for a Windows JUNCTION, so a junction ancestor would
+                    # read as a plain directory and the reset would write through
+                    # it, outside the checkout. AGENTS.md names this helper as the
+                    # required form for exactly this reason, and its own docstring
+                    # describes this failure -- using the bare `islink` here was a
+                    # rule violation, not a judgement call.
+                    if platform_compat.is_link_or_junction(candidate):
+                        return True
+                    if os.path.lexists(candidate) and not os.path.isdir(candidate):
+                        return True
+                    parent = os.path.dirname(parent)
+                return False
+
+            # Offloaded: `_obstructions` walks each added path's ancestors with
+            # synchronous `os.path` probes, so a large update would run an
+            # unbounded stat walk ON THE EVENT LOOP and stall every chat and the
+            # heartbeat (`no-blocking-call-on-event-loop`).
+            collisions = await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(),
+                lambda: [name for name in added_names if _obstructions(name)],
+            )
+            if collisions:
+                logger.warning(
+                    "Auto-update: skipping — %s would add %s path(s) that already "
+                    "exist untracked here (e.g. %s); a reset would overwrite them. "
+                    "Run `kirocrew update` to decide.",
+                    branch,
+                    len(collisions),
+                    # `loggable_path`, not the raw name: this is the one log line
+                    # that carries a filename straight from git output, and a
+                    # non-UTF-8 byte in it would make logging DROP the record --
+                    # silently losing the evidence that the update refused here.
+                    loggable_path(collisions[0]),
+                )
+                if self.dashboard_state:
+                    self.dashboard_state.clear_update_progress()
+                    self.dashboard_state.push_refresh("update_available")
+                return
+
+            # Hard reset to remote. Reached only with a clean tracked tree and no
+            # untracked collisions, so it overwrites nothing the developer owns.
             reset = await asyncio.create_subprocess_exec(
-                "git",
+                _git,
                 "reset",
                 "--hard",
-                f"origin/{branch}",
+                target,
                 cwd=proj,
+                env=_git_env,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
+                start_new_session=platform_compat.IS_POSIX,
             )
-            await asyncio.wait_for(reset.wait(), timeout=10)
+            try:
+                await asyncio.wait_for(reset.wait(), timeout=10)
+            except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
+                # This child is a MUTATION, not a query: abandoned, it is a
+                # hard reset still running against the operator's checkout.
+                await _kill_and_reap(reset)
+                raise
             if reset.returncode != 0:
                 logger.error("Auto-update: git reset --hard failed (rc=%d)", reset.returncode)
                 if self.dashboard_state:
@@ -8708,14 +9363,34 @@ class GatewayOrchestrator:
 
             # Update the optional kiro-cli backend if present.
             if shutil.which("kiro-cli"):
+                kiro_update: asyncio.subprocess.Process | None = None
                 try:
                     kiro_update = await asyncio.create_subprocess_exec(
                         "kiro-cli",
                         "update",
                         stdout=asyncio.subprocess.DEVNULL,
                         stderr=asyncio.subprocess.DEVNULL,
+                        # Own process group (POSIX; no-op on Windows) so the
+                        # kill in the arms below reaches the whole tree.
+                        start_new_session=platform_compat.IS_POSIX,
                     )
                     await asyncio.wait_for(kiro_update.wait(), timeout=120)
+                except (TimeoutError, asyncio.TimeoutError):
+                    # Kill the tree BEFORE falling through: this step is
+                    # non-fatal, but the code below rebuilds the frontend and
+                    # reinstalls the Python deps, and an abandoned
+                    # `kiro-cli update` would keep mutating the installation
+                    # concurrently — the same half-replaced-install race the
+                    # wheel path's CancelledError branch exists to prevent.
+                    if kiro_update is not None:
+                        await _kill_and_reap(kiro_update)
+                    logger.debug("Auto-update: kiro-cli update timed out (non-fatal)")
+                except asyncio.CancelledError:
+                    # Shutdown cancels the update task; without this the child
+                    # keeps mutating the installation unsupervised.
+                    if kiro_update is not None:
+                        await _kill_and_reap(kiro_update)
+                    raise
                 except Exception:
                     logger.debug("Auto-update: kiro-cli update failed (non-fatal)")
 
@@ -8799,8 +9474,15 @@ class GatewayOrchestrator:
                     cwd=proj,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    # Own process group (POSIX; no-op on Windows) so the kill
+                    # below reaches pip's build-backend grandchildren too.
+                    start_new_session=platform_compat.IS_POSIX,
                 )
-                _fb_out, fb_err = await asyncio.wait_for(fallback.communicate(), timeout=300)
+                try:
+                    _fb_out, fb_err = await asyncio.wait_for(fallback.communicate(), timeout=300)
+                except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
+                    await _kill_and_reap(fallback)
+                    raise
                 if fallback.returncode == 0:
                     logger.info(
                         "Auto-update: core deps repaired after pip failure (%s)",
@@ -8872,7 +9554,7 @@ class GatewayOrchestrator:
             # Use -m kiro_crew rather than sys.argv[0] so the restart resolves
             # the freshly reinstalled entry point regardless of how the
             # original process was launched.
-            os.execv(sys.executable, [sys.executable, "-m", "kiro_crew"] + sys.argv[1:])
+            platform_compat.reexec_python_module("kiro_crew", sys.argv[1:])
         except Exception:
             logger.warning("Auto-update failed", exc_info=True)
             if self.dashboard_state:
@@ -9091,7 +9773,7 @@ class GatewayOrchestrator:
         if self.sessions:
             await self.sessions.close_all()
         # Restart into the freshly-installed version.
-        os.execv(sys.executable, [sys.executable, "-m", "kiro_crew"] + sys.argv[1:])
+        platform_compat.reexec_python_module("kiro_crew", sys.argv[1:])
 
     # ------------------------------------------------------------------
     # Main run loop

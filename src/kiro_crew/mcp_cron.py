@@ -38,7 +38,11 @@ from kiro_crew.cron import (
 from kiro_crew.cron_script import resolve_script_path
 from kiro_crew.cron_trigger import _JOB_ID_RE, trigger_cron_job
 from kiro_crew.mcp_caller import current_caller
-from kiro_crew.mcp_core import _resolve_session_key, _resolve_session_key_strict
+from kiro_crew.mcp_core import (
+    _resolve_session_key,
+    _resolve_session_key_strict,
+    strict_identity_diagnosis,
+)
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
 from kiro_crew.platform import current_context
 from kiro_crew.platform import redact_via_context as redact
@@ -1561,7 +1565,7 @@ def _unidentified_caller_refusal(tool_name: str) -> str:
     return (
         "Error: cannot determine which session is calling, so this write is "
         "refused. Manage jobs from the CLI (`kirocrew cron ...`), which carries "
-        "admin authority."
+        "admin authority." + strict_identity_diagnosis("kirocrew-cron")
     )
 
 
@@ -1955,24 +1959,9 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         if own_err:
             return own_err
         try:
-            removed = svc.remove_job(jid)
+            removed = svc.remove_job(jid, actor="mcp", source="mcp")
         except CronStoreBusy:
             return "Error: cron store busy, please retry"
-        # SEL audit: single delete records the affected job and outcome, same
-        # shape as cron.create/cron.update above. Best-effort and exception-
-        # contained: the first sel() of a process CONSTRUCTS the log and can
-        # raise, and the job is already removed — a completed delete must not
-        # surface as a tool error because the audit trail is unavailable.
-        try:
-            sel().log_api_access(
-                caller="mcp",
-                operation="cron.remove",
-                outcome="allowed" if removed else "not_found",
-                source="mcp",
-                resources=f"job_id={jid}",
-            )
-        except Exception:
-            logger.warning("SEL audit for cron_remove failed (job %s)", jid, exc_info=True)
         if removed:
             return f"Removed job: {jid}"
         return f"Job not found: {jid}"
@@ -2007,11 +1996,15 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 resources=f"count={len(jobs)}",
             )
         try:
-            for j in jobs:
-                svc.remove_job(j.id)
+            # Distinct from the ``removed: bool`` that ``cron_remove``'s
+            # single-job path binds above: this is the batch's removed-id LIST,
+            # and reusing the name would rebind one variable to two types.
+            removed_ids, _missing = svc.remove_jobs_sync(
+                [j.id for j in jobs], actor=session_key or "mcp", source="mcp"
+            )
         except CronStoreBusy:
             return "Error: cron store busy, please retry"
-        return f"Removed {len(jobs)} job(s)."
+        return f"Removed {len(removed_ids)} job(s)."
 
     if name == "cron_pause":
         jid = args["job_id"]

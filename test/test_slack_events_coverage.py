@@ -83,6 +83,8 @@ def _make_orch(
     orch.slack = AsyncMock()
     # Sync accessor on an AsyncMock would return an un-awaited coroutine.
     orch.slack.record_channel_team = MagicMock()
+    # Same for the home-team resolver the inbound path awaits.
+    orch.slack.ensure_channel_team = AsyncMock()
     # A bare AsyncMock's return_value is itself an AsyncMock, so `info.get(...)`
     # in the display-name lookup would hand back a coroutine. Return a real dict.
     orch.slack.get_user_info = AsyncMock(return_value={})

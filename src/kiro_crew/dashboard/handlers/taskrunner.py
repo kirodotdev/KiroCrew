@@ -153,6 +153,7 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
         spec_path = str(resolved)
 
     # Handle inline spec content
+    created_spec: Path | None = None
     if spec_path.startswith("__inline__:"):
         content = spec_path[len("__inline__:"):]
         if not content.strip():
@@ -162,6 +163,7 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
         fpath = Path(work_dir) / fname
         fpath.parent.mkdir(parents=True, exist_ok=True)
         fpath.write_text(content, encoding="utf-8")
+        created_spec = fpath
         spec_path = str(fpath)
 
     try:
@@ -180,6 +182,19 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
             auto_approve=auto_approve,
         )
     except Exception as exc:
+        # The handler owns the temp file ONLY when it created it: a rejected
+        # start must not strand TASK_*.md orphans in the work dir, and an
+        # external spec the caller passed by path must never be deleted.
+        # Cleanup is best-effort — its failure must not replace the startup
+        # error the client is about to receive.
+        if created_spec is not None:
+            try:
+                created_spec.unlink(missing_ok=True)
+            except OSError:
+                logger.warning(
+                    "failed to remove inline spec %s after a rejected start",
+                    created_spec, exc_info=True,
+                )
         return web.json_response({"error": str(exc)}, status=400)
     return web.json_response({"ok": True, "spec": spec_path, "task_id": task_id})
 
@@ -397,7 +412,9 @@ async def api_taskrunner_to_chat(request: web.Request) -> web.Response:
         slot.append("user", summary, "msg msg-u")
         from kiro_crew.dashboard.chat import _run_chat  # noqa: F811
 
-        task = asyncio.create_task(_run_chat(state, slot, summary))
+        task = asyncio.create_task(
+            _run_chat(state, slot, summary, _directive_user_origin=False)
+        )
         slot.task = task
         state._background_tasks.add(task)
         task.add_done_callback(state._background_tasks.discard)
@@ -468,7 +485,7 @@ async def api_taskrunner_to_chat(request: web.Request) -> web.Response:
     # Auto-trigger LLM response so user doesn't have to send a message
     from kiro_crew.dashboard.chat import _run_chat  # noqa: F811
 
-    task = asyncio.create_task(_run_chat(state, slot, summary))
+    task = asyncio.create_task(_run_chat(state, slot, summary, _directive_user_origin=False))
     slot.task = task
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)
@@ -623,9 +640,14 @@ async def api_taskrunner_from_chat(request: web.Request) -> web.Response:
         if task_id:
             run = await state.task_runner.update_plan(task_id, steps)
         else:
-            new_id = f"plan_{uuid.uuid4().hex[:8]}"
-            task_dir = state.task_runner._work_dir / new_id
-            task_dir.mkdir(parents=True, exist_ok=True)
+            while True:
+                new_id = f"plan_{uuid.uuid4().hex[:8]}"
+                task_dir = state.task_runner._work_dir / new_id
+                try:
+                    task_dir.mkdir(parents=True, exist_ok=False)
+                    break
+                except FileExistsError:
+                    continue
             run = Project(
                 spec_path="",
                 spec_content="",
@@ -640,6 +662,10 @@ async def api_taskrunner_from_chat(request: web.Request) -> web.Response:
                 run = await state.task_runner.update_plan(new_id, steps)
             except ValueError:
                 state.task_runner._runs.pop(new_id, None)
+                try:
+                    task_dir.rmdir()
+                except OSError:
+                    logger.warning("Failed to remove rejected chat plan directory %s", task_dir)
                 raise
     except ValueError as exc:
         return web.json_response({"error": str(exc)}, status=400)

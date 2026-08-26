@@ -303,18 +303,18 @@ def _patch_prevent_sleep_flag(monkeypatch, enabled: bool):  # type: ignore[no-un
 def test_should_prevent_sleep_off_by_config(monkeypatch):  # type: ignore[no-untyped-def]
     server = _patch_prevent_sleep_flag(monkeypatch, enabled=False)
     # Even with an active turn, an opted-out user's machine may sleep.
-    assert asyncio.run(server._should_prevent_sleep(_FakeState(_FakeSessions(True)))) is False
+    assert asyncio.run(server._should_prevent_sleep(_FakeState(_FakeSessions(True)), 0)) is False
 
 
 def test_should_prevent_sleep_requires_active_turn(monkeypatch):  # type: ignore[no-untyped-def]
     server = _patch_prevent_sleep_flag(monkeypatch, enabled=True)
-    assert asyncio.run(server._should_prevent_sleep(_FakeState(_FakeSessions(False)))) is False
-    assert asyncio.run(server._should_prevent_sleep(_FakeState(_FakeSessions(True)))) is True
+    assert asyncio.run(server._should_prevent_sleep(_FakeState(_FakeSessions(False)), 0)) is False
+    assert asyncio.run(server._should_prevent_sleep(_FakeState(_FakeSessions(True)), 0)) is True
 
 
 def test_should_prevent_sleep_no_sessions(monkeypatch):  # type: ignore[no-untyped-def]
     server = _patch_prevent_sleep_flag(monkeypatch, enabled=True)
-    assert asyncio.run(server._should_prevent_sleep(_FakeState(None))) is False
+    assert asyncio.run(server._should_prevent_sleep(_FakeState(None), 0)) is False
 
 
 def test_prevent_sleep_is_editable_and_defaults_off():

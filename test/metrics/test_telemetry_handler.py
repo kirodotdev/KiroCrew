@@ -6,6 +6,7 @@ logic, so a regression in the shard parser or percentile math fails the test.
 """
 
 import json
+import math
 from pathlib import Path
 
 from kiro_crew.dashboard.handlers.telemetry import _aggregate, _Hist, _pct_from_buckets
@@ -288,6 +289,148 @@ def test_aggregate_cumulative_detects_counter_reset_on_pid_reuse(tmp_path: Path)
     assert rows and rows[0]["total"] == 30.0
 
 
+def _cumulative_metric(points: list[tuple[int, float]]) -> dict:
+    return {
+        "name": "kirocrew.process.cpu.seconds",
+        "data": {
+            "aggregation_temporality": 2,
+            "is_monotonic": True,
+            "data_points": [
+                {"attributes": {}, "value": v, "time_unix_nano": ts} for ts, v in points
+            ],
+        },
+    }
+
+
+def _identity_line(metrics: list, identity: str | None) -> str:
+    """One export-cycle line, optionally stamped like the local exporter.
+
+    The attribute key is spelled literally on purpose: it pins the WIRE format
+    already sitting in shards on disk, so renaming the schema constant cannot
+    silently orphan every stamped shard.
+    """
+    rm: dict = {"scope_metrics": [{"metrics": metrics}]}
+    if identity is not None:
+        rm["resource"] = {"attributes": {"kirocrew.process.start_time": identity}}
+    return json.dumps({"resource_metrics": [rm]})
+
+
+def test_aggregate_cumulative_identity_splits_reused_pid_without_a_value_drop(tmp_path: Path):
+    """A changed identity is a process boundary even when no value drop exists.
+
+    The value heuristic's one blind spot: PID reuse where the new process's
+    FIRST snapshot (150) already exceeds the old process's max (140), so no
+    drop is ever observed and the two lifetimes merge into one stream —
+    reporting 175-100=75, which credits the 140→150 gap between the processes
+    as if it were observed activity. The resource-level identity makes the
+    boundary deterministic: each process is its own stream with its own
+    window-relative baseline, (140-100) + (175-150) = 65.
+    """
+    shard = tmp_path / "metrics-2026-08-21-1234.jsonl"
+    shard.write_text(
+        _identity_line([_cumulative_metric([(100, 100.0), (200, 140.0)])], "111")
+        + "\n"
+        + _identity_line([_cumulative_metric([(300, 150.0), (400, 175.0)])], "222")
+        + "\n",
+        encoding="utf-8",
+    )
+    result = _aggregate([shard])
+    rows = [o for o in result["other"] if o["name"] == "kirocrew.process.cpu.seconds"]
+    assert rows and rows[0]["total"] == 65.0
+
+
+def test_aggregate_cumulative_same_identity_stitches_across_provider_rebuild(tmp_path: Path):
+    """An unchanged identity keeps rebuild segments in ONE stream.
+
+    A telemetry off/on toggle rebuilds the provider in-process; the rebuilt
+    exporter stamps the SAME module-cached token, so its re-emitted snapshots
+    join the existing stream and stay idempotent no-ops — 150-100=50, never a
+    doubled total and never a fresh baseline per rebuild.
+    """
+    shard = tmp_path / "metrics-2026-08-21-1234.jsonl"
+    shard.write_text(
+        _identity_line([_cumulative_metric([(100, 100.0), (200, 140.0)])], "111")
+        + "\n"
+        + _identity_line([_cumulative_metric([(300, 140.0), (400, 150.0)])], "111")
+        + "\n",
+        encoding="utf-8",
+    )
+    result = _aggregate([shard])
+    rows = [o for o in result["other"] if o["name"] == "kirocrew.process.cpu.seconds"]
+    assert rows and rows[0]["total"] == 50.0
+
+
+def test_aggregate_cumulative_identity_stream_treats_a_drop_as_garbage_not_reset(tmp_path: Path):
+    """Within one identity, a value below the running max is never banked.
+
+    One identity is one OS process, whose observable counters are monotonic —
+    so a lower sample is shard garbage. Banking it as a reset would count the
+    pre-drop segment AND the recovery: 140+150-100=190 for a stream whose real
+    in-window growth is 150-100=50.
+    """
+    shard = tmp_path / "metrics-2026-08-21-1234.jsonl"
+    shard.write_text(
+        _identity_line(
+            [_cumulative_metric([(100, 100.0), (200, 140.0), (300, 5.0), (400, 150.0)])],
+            "111",
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    result = _aggregate([shard])
+    rows = [o for o in result["other"] if o["name"] == "kirocrew.process.cpu.seconds"]
+    assert rows and rows[0]["total"] == 50.0
+
+
+def test_aggregate_cumulative_non_string_identity_reads_as_identity_less(tmp_path: Path):
+    """A malformed identity type must not mint a stream or mute the heuristic.
+
+    The exporter only ever writes a string token. A corrupt shard carrying a
+    number/list/object there would, if stringified, create an identity-keyed
+    stream and silently disable reset banking — turning a genuine 100→10→30
+    reset (30 of activity) into max-baseline arithmetic (0). Non-strings read
+    as identity-less, so the value heuristic still banks the reset.
+    """
+    line = {
+        "resource_metrics": [
+            {
+                "resource": {"attributes": {"kirocrew.process.start_time": 12345}},
+                "scope_metrics": [
+                    {"metrics": [_cumulative_metric([(100, 100.0), (200, 10.0), (300, 30.0)])]}
+                ],
+            }
+        ]
+    }
+    shard = tmp_path / "metrics-2026-08-21-1234.jsonl"
+    shard.write_text(json.dumps(line) + "\n", encoding="utf-8")
+    result = _aggregate([shard])
+    rows = [o for o in result["other"] if o["name"] == "kirocrew.process.cpu.seconds"]
+    assert rows and rows[0]["total"] == 30.0
+
+
+def test_aggregate_cumulative_legacy_lines_keep_the_value_heuristic(tmp_path: Path):
+    """Identity-less shards aggregate bit-for-bit as before, alongside stamped ones.
+
+    The legacy stream (no resource field, written before the identity existed)
+    still banks on a value drop — baseline 100, reset to 10, growth to 30 ⇒ 30
+    — while an identity-carrying stream from another process contributes its
+    own window-relative delta (175-150=25). Streams add: 55.
+    """
+    legacy = tmp_path / "metrics-2026-08-21-1234.jsonl"
+    legacy.write_text(
+        _identity_line([_cumulative_metric([(100, 100.0), (200, 10.0), (300, 30.0)])], None) + "\n",
+        encoding="utf-8",
+    )
+    stamped = tmp_path / "metrics-2026-08-21-5678.jsonl"
+    stamped.write_text(
+        _identity_line([_cumulative_metric([(400, 150.0), (500, 175.0)])], "222") + "\n",
+        encoding="utf-8",
+    )
+    result = _aggregate([legacy, stamped])
+    rows = [o for o in result["other"] if o["name"] == "kirocrew.process.cpu.seconds"]
+    assert rows and rows[0]["total"] == 55.0
+
+
 def test_aggregate_cumulative_totals_are_shard_order_independent(tmp_path: Path):
     """Reset detection runs on time-ordered samples, not shard file order.
 
@@ -383,12 +526,181 @@ def test_aggregate_rejects_non_finite_scalars(tmp_path: Path):
             ]
         },
     }
-    result = _aggregate([_write_shard(tmp_path, [metric])])
+    # A Sum whose aggregation_temporality is itself poisoned: int(inf) raises
+    # OverflowError, which the coercion's except tuple must absorb (the point
+    # degrades to non-cumulative instead of 500ing the endpoint).
+    poisoned_temporality = {
+        "name": "kirocrew.poisoned.temporality",
+        "data": {
+            "data_points": [{"attributes": {}, "value": 3.0, "time_unix_nano": 7}],
+            "aggregation_temporality": float("inf"),
+            "is_monotonic": True,
+        },
+    }
+    result = _aggregate([_write_shard(tmp_path, [metric, poisoned_temporality])])
     rows = [o for o in result["other"] if o["name"] == "kirocrew.process.threads.os"]
     assert rows and rows[0]["kind"] == "gauge"
     # inf value skipped; inf timestamp coerces the point to ts=0 (sorts
     # oldest), so ts=9 wins.
     assert rows[0]["latest"] == 97.0
+    # The poisoned-temporality Sum degrades to a delta counter (cumulative
+    # False), still counted -- and the payload stays strict JSON.
+    poisoned = [o for o in result["other"] if o["name"] == "kirocrew.poisoned.temporality"]
+    assert poisoned and poisoned[0]["kind"] == "counter"
+    json.dumps(result, allow_nan=False)
+
+
+def test_aggregate_rejects_non_finite_histogram_fields(tmp_path: Path):
+    """Histogram mirror of the scalar guard: one poisoned data point degrades
+    that point, never the endpoint.
+
+    Python's json module parses Infinity/NaN literals, so before the fix a
+    poisoned histogram point flowed straight through ``_Hist.add``'s bare
+    float()/int() coercions: an inf sum/min/bound reached json.dumps and
+    emitted an ``Infinity`` literal (which browser JSON.parse rejects), and
+    an inf count/bucket_count/timestamp raised uncaught OverflowError."""
+    poisoned_sum = _hist_dp({}, ns=2)
+    poisoned_sum["sum"] = float("inf")
+    poisoned_min = _hist_dp({}, ns=3)
+    poisoned_min["min"] = float("nan")
+    poisoned_bound = _hist_dp({}, ns=4)
+    poisoned_bound["explicit_bounds"] = [10, float("inf"), 30, 40, 50]
+    poisoned_count = _hist_dp({}, ns=5)
+    poisoned_count["count"] = float("inf")
+    poisoned_bucket = _hist_dp({}, ns=6)
+    poisoned_bucket["bucket_counts"][1] = float("nan")
+    poisoned_ts = _hist_dp({}, count=3, ns=7)
+    poisoned_ts["time_unix_nano"] = float("inf")
+    # json accepts arbitrary-precision ints: float(10**400) raises
+    # OverflowError, a third path past a naive isfinite check.
+    oversized_count = _hist_dp({}, ns=9)
+    oversized_count["count"] = 10**400
+    # A truthy non-list container raises TypeError at iteration, not inside
+    # the element coercion.
+    scalar_bounds = _hist_dp({}, ns=10)
+    scalar_bounds["explicit_bounds"] = 5
+    scalar_buckets = _hist_dp({}, ns=11)
+    scalar_buckets["bucket_counts"] = True
+    good = _hist_dp({}, count=2, ns=8, each_ms=25.0)
+
+    metric = {
+        "name": "kirocrew.mcp.backend.acquire.duration",
+        "data": {
+            "data_points": [
+                poisoned_sum,
+                poisoned_min,
+                poisoned_bound,
+                poisoned_count,
+                poisoned_bucket,
+                poisoned_ts,
+                oversized_count,
+                scalar_bounds,
+                scalar_buckets,
+                good,
+            ]
+        },
+    }
+    result = _aggregate([_write_shard(tmp_path, [metric])])
+    row = next(o for o in result["other"] if o["name"] == "kirocrew.mcp.backend.acquire.duration")
+
+    # Structurally poisoned points (sum/bound/count/bucket) are skipped whole;
+    # the nan-min point survives with min degraded; the inf-timestamp point
+    # survives sorting oldest. 1 (poisoned_min) + 3 (poisoned_ts) + 2 (good).
+    assert row["count"] == 6
+    assert row["other_generations"] == 0
+    # The emitted payload must serialize to strict JSON — no Infinity/NaN
+    # literal anywhere (this is what the browser's JSON.parse enforces).
+    json.dumps(result, allow_nan=False)
+
+
+def test_hist_add_validates_the_whole_point_before_mutation():
+    """The _Hist.add invariant: nothing invalid ever enters group state.
+
+    Three residual classes past the plain non-finite guard:
+    - EXACTNESS: integer counts must not roundtrip through float
+      (int(float(2**53 + 1)) silently rounds and corrupts emitted counts).
+    - ACCUMULATION: two individually finite 1e308 sums overflow the
+      accumulator to inf, which json.dumps emits as an Infinity literal.
+    - STRUCTURE: a bucket_counts shorter/longer than len(bounds)+1 cannot
+      merge into the group's shape (IndexError in percentile interpolation);
+      the buckets degrade to absent while the point's scalars still count.
+    """
+    big = 2**53 + 1  # not representable as float; float roundtrip rounds it
+    h = _Hist()
+    exact = _hist_dp({}, ns=1)
+    exact["count"] = big
+    exact["bucket_counts"] = [0, big, 0, 0, 0, 0]
+    h.add(exact)
+    assert h.count == big, "integer count must be preserved exactly"
+    assert h.buckets[1] == big
+
+    # Prospective accumulated-sum guard: the second point is skipped whole.
+    h2 = _Hist()
+    a = _hist_dp({}, ns=1)
+    a["sum"] = 1e308
+    b = _hist_dp({}, ns=2)
+    b["sum"] = 1e308
+    h2.add(a)
+    h2.add(b)
+    g = h2._groups[tuple(float(x) for x in _BOUNDS)]
+    assert math.isfinite(g["sum"])
+    assert h2.count == 1, "the overflowing point is skipped whole"
+
+    # Structural guard: a bucket list disagreeing with len(bounds)+1 cannot
+    # merge into the group's shape. The buckets are dropped but the point's
+    # independently-validated scalars still accumulate (pinned upstream by
+    # test_telemetry_handlers_cov80.py -- no IndexError, count keeps counting).
+    h3 = _Hist()
+    short = _hist_dp({}, ns=1)
+    short["explicit_bounds"] = [10]
+    short["bucket_counts"] = [0, 0, 1]  # needs exactly 2 for one bound
+    h3.add(short)
+    assert h3.count == 1, "shape-mismatched buckets degrade; the point still counts"
+    assert h3.buckets == [], "the disagreeing bucket list itself is dropped"
+    # Integer-field strictness: oversized, boolean, negative, and fractional
+    # counts are rejected whole, never clamped, coerced, or truncated.
+    h3b = _Hist()
+    for bad_count in (2**64, True, -1, 2.5):
+        p = _hist_dp({}, ns=1)
+        p["count"] = bad_count
+        h3b.add(p)
+    assert h3b.count == 0
+    # A FALSY non-list container (false/0/"") is garbage, not "absent" —
+    # only a genuinely missing or null key defaults to empty.
+    for bad_container in (False, 0, ""):
+        p = _hist_dp({}, ns=1)
+        p["bucket_counts"] = bad_container
+        h3b.add(p)
+    assert h3b.count == 0
+    none_ok = _hist_dp({}, ns=1)
+    none_ok["explicit_bounds"] = None  # null key = absent, point stays legal
+    none_ok["bucket_counts"] = None
+    h3.add(none_ok)
+    assert h3.count == 1
+
+    # Falsy garbage never substitutes a default: "" as sum must skip the
+    # point, not silently record 0.0 and skew the mean.
+    h4 = _Hist()
+    bad_sum = _hist_dp({}, ns=1)
+    bad_sum["sum"] = ""
+    h4.add(bad_sum)
+    assert h4.count == 0
+    # protobuf JSON encodes uint64 as strings: parse exactly, no float round.
+    quoted = _hist_dp({}, ns=1)
+    quoted["count"] = str(big)
+    quoted["bucket_counts"] = [0, big, 0, 0, 0, 0]
+    h4.add(quoted)
+    assert h4.count == big, "quoted integer count must be preserved exactly"
+
+    # Derived arithmetic must stay finite: individually finite bounds whose
+    # adjacent span overflows (hi - lo = inf) would poison percentile
+    # interpolation with an Infinity literal.
+    h5 = _Hist()
+    wide = _hist_dp({}, ns=1)
+    wide["explicit_bounds"] = [-1e308, 1e308]
+    wide["bucket_counts"] = [0, 1, 0]
+    h5.add(wide)
+    assert h5.count == 0, "non-finite interpolation span is skipped whole"
 
 
 def test_aggregate_gauges_keep_latest_not_sum(tmp_path: Path):

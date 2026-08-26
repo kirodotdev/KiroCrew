@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew.artifacts import (
     MAX_CONTENT_BYTES,
     MAX_VERSIONS,
@@ -1012,6 +1013,7 @@ class TestSourcePathSecurityHardening:
         assert store._try_read_source_path(traversal) is None
         assert store._try_write_source_path(traversal, "data") is False
 
+    @requires_symlinks
     def test_symlink_to_sensitive_resolves_before_sensitive_check(
         self, store: ArtifactStore, tmp_path: Path, monkeypatch
     ) -> None:

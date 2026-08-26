@@ -161,7 +161,12 @@ describe('root purity ratchet', () => {
     const src = readFileSync(join(__dirname, 'CommandBarOverlay.tsx'), 'utf8')
     expect(src).toContain('rankRootRows(rootRows, query, usage)')
     expect(src).not.toMatch(/rankRootRows\(rootRows,\s*debounced/)
-    expect(src).toMatch(/fallbackVisible = !scope && query\.trim\(\)\.length > 0/)
+    // The fallback row rides the same live query. It used to be a `fallbackVisible`
+    // boolean; it is now a slot pushed under that condition, so the condition is what
+    // this pins rather than the name it was held in.
+    expect(src).toMatch(/if \(query\.trim\(\)\.length > 0\)/)
+    expect(src).toMatch(/tag: 'fallback'/)
+    expect(src).not.toMatch(/if \(debounced\.trim\(\)\.length > 0\)/)
   })
 
   it('backs its aria-modal promise with a real focus trap', () => {
@@ -171,6 +176,9 @@ describe('root purity ratchet', () => {
     const src = readFileSync(join(__dirname, 'CommandBarOverlay.tsx'), 'utf8')
     expect(src).toMatch(/useDialogFocusTrap\(dialogRef,/)
     const dialog = src.slice(src.indexOf('ref={dialogRef}'))
-    expect(dialog.slice(0, 600)).toContain('aria-modal="true"')
+    // The window is generous because the props it spans carry their own reasoning in
+    // comments; what is being asserted is that `aria-modal` sits on the SAME element
+    // as the trap ref, not that it is within N characters of it.
+    expect(dialog.slice(0, 1600)).toContain('aria-modal="true"')
   })
 })

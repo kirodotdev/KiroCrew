@@ -447,7 +447,7 @@ When your change is ready, the workflow is already codified rather than left to
 taste. See Development Skills above: `kirocrew-worktree-dev` covers building and
 verifying in a worktree, and `prepare-pr` takes it from there, driving the change
 to a review-ready pull request by committing, syncing onto the base, squashing to
-the single commit this repo requires, opening or updating the PR, then polling CI
+the one or two commits this repo allows, opening or updating the PR, then polling CI
 and the review bots and fixing what they find. An agent that loads it follows the
 same route a maintainer would, which is why the process holds regardless of who or
 what wrote the code. If you are contributing with an agent, point it at that skill

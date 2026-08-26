@@ -538,7 +538,7 @@ def report(violations: Iterable[Violation], *, enforcing: bool,
     if not violations:
         scope = f"elements touched since {base}" if enforcing else "whole tree"
         print(f"focus-cue gate: every Tab-reachable element in the {scope} "
-              f"keeps a focus cue ✓")
+              f"keeps a focus cue OK")
         return 0
     if enforcing:
         print(f"::error::focus-cue gate: {len(violations)} element(s) this change "
@@ -833,7 +833,7 @@ def self_test() -> int:
         for line in failures:
             print(line)
         return 1
-    print(f"focus-cue gate self-test: {len(PROBES) + 2} probes agree ✓")
+    print(f"focus-cue gate self-test: {len(PROBES) + 2} probes agree OK")
     return 0
 
 

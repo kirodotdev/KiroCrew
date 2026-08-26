@@ -17,6 +17,10 @@ import { ESLint } from 'eslint'
 
 const WEBSITE_ROOT = join(__dirname, '..', '..')
 const SRC = join(WEBSITE_ROOT, 'src')
+// Loading the complete type-aware ESLint config can exceed Vitest's default on
+// Windows (especially while the backend shard is active), even though the
+// in-memory probe itself is tiny. Keep this guard deterministic across hosts.
+const ESLINT_PROBE_TIMEOUT_MS = 120_000
 
 /** Every .ts/.tsx file under src/, tests included. */
 function sourceFiles(dir: string): string[] {
@@ -60,7 +64,7 @@ describe('highlight.js barrel is not in the eager bundle', () => {
     const messages = result.messages.filter(m => m.ruleId?.endsWith('no-restricted-imports'))
     expect(messages).toHaveLength(1)
     expect(messages[0].severity).toBe(2)
-  }, 30000)
+  }, ESLINT_PROBE_TIMEOUT_MS)
 
   it('still allows the type-only import the core wrapper needs', async () => {
     // `utils/hljsLanguages.ts` imports `HLJSApi` as a type; that erases at
@@ -70,5 +74,5 @@ describe('highlight.js barrel is not in the eager bundle', () => {
       filePath: join(SRC, 'restrictedImportProbe.ts'),
     })
     expect(result.messages.filter(m => m.ruleId?.endsWith('no-restricted-imports'))).toEqual([])
-  }, 30000)
+  }, ESLINT_PROBE_TIMEOUT_MS)
 })

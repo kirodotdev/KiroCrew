@@ -44,5 +44,18 @@
       "macos",
       "linux"
     ]
-  }
+  },
+  "useCases": [
+    "Annotate live UI elements in context and send a source-mapped batch of visual changes to a coding agent."
+  ],
+  "configuration": [
+    "Load a local web project, start its detected dev server or enter an existing URL, switch to Edit mode, right-click elements, then send the batch."
+  ],
+  "screenshots": [
+    "/app-assets/design-tweak/screenshot-main.png"
+  ],
+  "heroImage": "/app-assets/design-tweak/hero-light.svg",
+  "heroImageDark": "/app-assets/design-tweak/hero-dark.svg",
+  "heroImageDetail": "/app-assets/design-tweak/hero-detail-light.svg",
+  "heroImageDetailDark": "/app-assets/design-tweak/hero-detail-dark.svg"
 }

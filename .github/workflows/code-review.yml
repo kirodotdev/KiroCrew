@@ -340,7 +340,7 @@ jobs:
 
   # ── PR Hygiene ───────────────────────────────────────────────────────
   # Enforces: (1) conventional commit message format on PR title,
-  # (2) single commit per PR (squash before merge).
+  # (2) at most two commits per PR (squash review-round noise before merge).
   pr-hygiene:
     name: PR Hygiene
     runs-on: ubuntu-latest
@@ -375,20 +375,24 @@ jobs:
           fi
           echo "PR title follows conventional commits: $PR_TITLE"
 
-      # ── Single commit per PR ────────────────────────────────────────
-      # Contributors must squash into one commit before pushing.
-      # This keeps PRs atomic and reviewable as a single logical change.
-      - name: Enforce single commit
+      # ── Commit count per PR ─────────────────────────────────────────
+      # Contributors may carry at most two commits. One remains the norm;
+      # the second exists so a mechanical follow-up (a generated artifact
+      # rebuild, a formatting sweep) can stay separable from the change it
+      # accompanies instead of being squashed into it. Anything beyond that
+      # is review-round noise and must be squashed before pushing.
+      - name: Enforce commit count
         env:
           # base.sha (not the merge-base): rev-list is a commit-range query, so
           # a non-ancestor base still yields only the PR's own commits — see the
           # merge-base fix (#4968), which deliberately left this site alone.
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
+          MAX_COMMITS: "2"
         run: |
           COMMIT_COUNT=$(git rev-list --count "$BASE".."$HEAD")
-          if [ "$COMMIT_COUNT" -ne 1 ]; then
-            echo "::error::PR must contain exactly 1 commit (has $COMMIT_COUNT). Squash before pushing:"
+          if [ "$COMMIT_COUNT" -lt 1 ] || [ "$COMMIT_COUNT" -gt "$MAX_COMMITS" ]; then
+            echo "::error::PR must contain 1 or $MAX_COMMITS commits (has $COMMIT_COUNT). Squash before pushing:"
             echo ""
             echo "  git fetch origin"
             echo "  git rebase origin/main"
@@ -398,4 +402,4 @@ jobs:
             echo ""
             exit 1
           fi
-          echo "Single commit verified."
+          echo "Commit count verified ($COMMIT_COUNT of at most $MAX_COMMITS)."

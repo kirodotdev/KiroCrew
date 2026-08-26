@@ -1059,13 +1059,15 @@ class TestScriptHookStorePersistence:
         assert store.update(hook.id, {"timeout": 1}).timeout == 1
         assert store.update(hook.id, {"timeout": 300}).timeout == 300
 
-    def test_a_bool_timeout_is_accepted_as_its_int_value(self, tmp_path):
-        # Documents current behaviour, not an endorsement: bool is a subclass of
-        # int, so ``True`` satisfies the isinstance+range check and lands as a
-        # 1-second timeout. Recorded so a future tightening is a deliberate change.
+    def test_a_bool_timeout_is_rejected(self, tmp_path):
+        # The deliberate tightening the old test anticipated (issue #5444):
+        # ``bool`` is an ``int`` subclass, but ``True`` as a timeout is
+        # meaningless, so the shared validator now rejects it at the update
+        # boundary rather than silently landing a 1-second timeout.
         store = ScriptHookStore(tmp_path)
         hook = store.create({"name": "h1", "command": "true"})
-        assert store.update(hook.id, {"timeout": True}).timeout is True
+        with pytest.raises(ValueError, match="timeout must be an integer"):
+            store.update(hook.id, {"timeout": True})
 
     def test_update_applies_only_known_fields(self, tmp_path):
         store = ScriptHookStore(tmp_path)

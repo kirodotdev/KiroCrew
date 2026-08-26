@@ -262,6 +262,64 @@ class TestCliLearnAddReportsTheOutcome:
         assert exited is None
         assert capsys.readouterr().out.startswith("Saved: prefer ruff over flake8")
 
+    def test_an_insert_qualifies_saved_with_the_embedding_note(self, tmp_path, capsys):
+        """A CLI insert says the vector is pending, not an unqualified success.
+
+        The CLI builds its store with no ``embed_fn``, so every row it inserts
+        lands with a NULL embedding and only becomes vector-searchable after the
+        gateway's boot-time re-embed sweep. An unqualified ``Saved:`` told the
+        user the lesson was fully indexed when it was not.
+        """
+        jsonl, exited = self._run(tmp_path)
+        assert exited is None
+        out = capsys.readouterr().out
+        assert "Saved: prefer ruff over flake8" in out
+        assert "keyword-searchable now" in out
+        assert "re-embed sweep" in out
+        assert "once its embedding backend" in out
+        assert "Semantic dedup did not run" in out
+
+    def test_an_enrichment_carries_the_same_embedding_note(self, tmp_path, capsys):
+        """An enrichment changes the stored value, which CLEARS the row's vector.
+
+        The semantic upsert keeps an embedding only when the value is unchanged,
+        so attaching a clause leaves the row NULL for the same sweep an insert
+        waits on — the note applies to both write outcomes. But NOT the dedup
+        clause: an enrichment matched its row in write_lesson's pass 1, which
+        skips the generic substring/topic-overlap scan (pass 2 iterates
+        ``[] if matched else lesson_rows``), so claiming that scan ran would
+        report a check that never happened.
+        """
+        jsonl, exited = self._run(
+            tmp_path,
+            negative="not for typing",
+            pre=("prefer ruff over flake8", "knowledge", None),
+        )
+        assert exited is None
+        out = capsys.readouterr().out
+        assert "Updated the stored lesson with this clause" in out
+        assert "re-embed sweep" in out
+        assert "cleared the row's existing embedding vector" in out
+        assert "Semantic dedup did not run" not in out
+
+    def test_non_writing_outcomes_do_not_carry_the_embedding_note(self, tmp_path, capsys):
+        """The note describes a row this call wrote; a decline wrote none.
+
+        A no-op re-submit and a dedup decline leave the store exactly as it was,
+        so promising a backfill would attribute a pending repair to a write that
+        never happened.
+        """
+        jsonl, exited = self._run(tmp_path, pre=("prefer ruff over flake8", "tool", None))
+        assert exited is None
+        assert "re-embed sweep" not in capsys.readouterr().out
+        jsonl, exited = self._run(
+            tmp_path,
+            rule="run the linter",
+            pre=("always run the linter before pushing a branch", "tool", None),
+        )
+        assert exited is None
+        assert "re-embed sweep" not in capsys.readouterr().out
+
     def test_an_enrichment_does_not_echo_the_submitted_category(self, tmp_path, capsys):
         """Only an INSERT may echo the category, because only then is it what is stored.
 

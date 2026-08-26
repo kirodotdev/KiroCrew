@@ -834,6 +834,34 @@ def fallback_profile_names() -> "frozenset[str]":
     return _STORE.snapshot().fallback_profiles
 
 
+def unknown_profile_scopes() -> "Dict[str, Tuple[str, ...]]":
+    """Per-profile capability scopes THIS build does not register, by file stem.
+
+    Mirrors :func:`fallback_profile_names` — same fail-quiet contract, same
+    names-only exposure. Populated by the asymmetric key-open tolerance in
+    ``governance._parse_controls``: a profile declaring an unregistered
+    ``capabilities.*`` child with ``enabled: true`` loads successfully and records
+    the key here instead of degrading to deny-all.
+
+    Enforcement is unaffected (the key governs nothing in this build), so this is
+    purely an operator signal: without it a tolerated key is only visible in a
+    startup log line. It distinguishes the benign cross-edition case (a data home
+    shared with an edition that registers extra rows) from a typo in a profile the
+    operator believes is in force.
+
+    Profiles with nothing unknown are omitted, so an empty mapping means clean.
+    Returns ``{}`` when the store cannot be trusted yet (never-loaded, mid
+    first-load).
+    """
+    if not _STORE.resolved():
+        return {}
+    out: Dict[str, Tuple[str, ...]] = {}
+    for stem, profile in _STORE.snapshot().by_name.items():
+        if profile.unknown_scopes:
+            out[stem] = tuple(profile.unknown_scopes)
+    return out
+
+
 def any_configured_profile_governs(ref: str) -> bool:
     """True if ANY loaded profile has an opinion on *ref*.
 

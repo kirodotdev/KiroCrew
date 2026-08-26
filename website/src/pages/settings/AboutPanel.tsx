@@ -5,6 +5,7 @@ import { RefreshCw, Scale, CheckCircle2, AlertCircle, Bug, GitBranch, GitCommitH
 import { Link } from 'react-router-dom'
 import { Progress } from '@/components/ui/progress'
 import { Card, CardTitle, Btn, Toggle } from '../../components/ui'
+import { SettingsToggle } from '../../components/settings'
 import { useBranding } from '../../hooks/useBranding'
 import { useAppSelector } from '../../store'
 import { codeBrowserBranchUrl, codeBrowserCommitUrl } from '../../lib/codeBrowser'
@@ -15,7 +16,7 @@ import { api, ApiError } from '../../api/client'
 import { copyToClipboard } from '../../utils/clipboard'
 
 import { i18nT } from '../../i18n/t'
-import { fmtDateTimeNumeric, fmtList } from '../../i18n/format'
+import { fmtDateTimeNumeric, fmtList, fmtRelative } from '../../i18n/format'
 import type { UpdateState } from '../../hooks/useUpdateSubscription'
 
 /** Human-readable transfer rate for the progress label. */
@@ -123,6 +124,12 @@ type UpdateInfo = {
   stampedChannel?: string | null
   channelSwitchable?: boolean
   channelPreference?: string
+  /**
+   * Whether a discovered update downloads without a click. ON by default in the
+   * desktop shell; `undefined` from a shell that predates the preference, which
+   * is why the toggle reads it as `!== false` rather than truthy.
+   */
+  autoDownload?: boolean
   platform?: string
   /** Manual-reinstall permalink from the main process; absent when no lane. */
   downloadUrl?: string | null
@@ -140,6 +147,9 @@ type UpdateAPI = {
   install: () => Promise<unknown>
   getInfo: () => Promise<UpdateInfo>
   setChannel?: (channel: string) => Promise<{ ok: boolean; error?: string }>
+  // Optional so the panel still renders against an older desktop shell whose
+  // preload has no such bridge: the toggle is hidden rather than throwing.
+  setAutoDownload?: (enabled: boolean) => Promise<{ ok: boolean; error?: string }>
 }
 
 function getUpdateApi(): UpdateAPI | undefined {
@@ -292,6 +302,8 @@ export function AboutPanel() {
   // visit, before any manual check has populated the local counts.
   const statusAhead = useAppSelector(s => s.dashboard.status?.update_commits_ahead) || 0
   const statusBehind = useAppSelector(s => s.dashboard.status?.update_commits_behind) || 0
+  const lastCheckedAt = useAppSelector(s => s.dashboard.status?.update_last_checked_at) ?? null
+  const checkIntervalSecs = useAppSelector(s => s.dashboard.status?.update_check_interval_secs) ?? 43200
   const queryClient = useQueryClient()
   const desktopApi = getUpdateApi()
   const isDesktop = !!desktopApi
@@ -337,6 +349,13 @@ export function AboutPanel() {
   const channelMutation = useMutation({
     mutationFn: (next: string) => desktopApi!.setChannel!(next),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['update-info'] }),
+  })
+  // Auto-download opt-out. The toggle renders from info.autoDownload, so the
+  // invalidate is what moves it -- there is no local optimistic state to roll
+  // back, and a failed write simply leaves the switch where it was.
+  const autoDownloadMutation = useMutation({
+    mutationFn: (next: boolean) => desktopApi!.setAutoDownload!(next),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['update-info'] }),
   })
 
   const version = info?.version || gatewayVersion || '—'
@@ -827,7 +846,7 @@ export function AboutPanel() {
 
         {isDesktop && channel && !isExternallyManaged && (
           info?.channelSwitchable && desktopApi?.setChannel ? (
-            <div className="flex flex-col" data-testid="channel-switcher">
+            <div className="flex flex-col" data-testid="channel-switcher" data-setting-label={i18nT('pages.settings.aboutPanel.update_channel')}>
               <div className="flex items-center justify-between py-1.5 text-sm gap-3">
                 <div className="flex flex-col items-start min-w-0">
                   <span className="text-muted">{i18nT('pages.settings.aboutPanel.update_channel')}</span>
@@ -898,7 +917,7 @@ export function AboutPanel() {
           // Switching persists the preference and re-checks; it never installs.
           // The new lane's build then arrives through the normal Update surface
           // below, so a channel change is never an unconsented version jump.
-          <div className="flex flex-col" data-testid="gateway-channel-switcher">
+          <div className="flex flex-col" data-testid="gateway-channel-switcher" data-setting-label={i18nT('pages.settings.aboutPanel.update_channel')}>
             <div className="flex items-center justify-between py-1.5 text-sm gap-3">
               <div className="flex flex-col items-start min-w-0">
                 <span className="text-muted">{i18nT('pages.settings.aboutPanel.update_channel')}</span>
@@ -1103,6 +1122,24 @@ export function AboutPanel() {
               </div>
               {status && <div className="text-[13px]">{status}</div>}
               {updateCard}
+              {/* Auto-download opt-out. ON by default, so this row is the only
+                  place a user can decline the background download — it renders
+                  whenever the desktop bridge exposes the setter, and is absent
+                  on an older shell that does not. `autoDownload` comes from the
+                  updater's own getInfo(), not from a local copy of the store, so
+                  the switch reflects what the updater will actually do.
+                  Reuses the gateway row's label: on desktop the downloaded
+                  update installs on the next restart/quit, which is exactly what
+                  it says. */}
+              {desktopApi?.setAutoDownload && (
+                <div className="pt-1 border-t border-border">
+                  <SettingsToggle
+                    label={i18nT('pages.settings.aboutPanel.auto_update_on_restart')}
+                    checked={info?.autoDownload !== false}
+                    onChange={next => autoDownloadMutation.mutate(next)}
+                  />
+                </div>
+              )}
             </div>
           )
         ) : (
@@ -1196,7 +1233,18 @@ export function AboutPanel() {
             ) : (
               <>
                 <p className="text-sm text-muted">
-                  {botName || 'Kiro Crew'} {i18nT('pages.settings.aboutPanel.checks_for_updates_automatically_you_can_also_ch')}
+                  {lastCheckedAt
+                    ? i18nT('pages.settings.aboutPanel.checks_for_updates_with_timing', {
+                        name: botName || 'Kiro Crew',
+                        timing: i18nT('pages.settings.aboutPanel.last_checked_ago_next_check_in', {
+                          ago: fmtRelative(lastCheckedAt * 1000),
+                          // Clamp: after machine sleep the scheduled check can be
+                          // past-due, and an unclamped value renders a future event
+                          // in the past tense ("next automatic check 8 hours ago").
+                          next: fmtRelative(Math.max((lastCheckedAt + checkIntervalSecs) * 1000, Date.now())),
+                        }),
+                      })
+                    : <>{botName || 'Kiro Crew'} {i18nT('pages.settings.aboutPanel.checks_for_updates_automatically_you_can_also_ch')}</>}
                 </p>
                 <div>
                   <Btn onClick={() => gwCheck.mutate()} disabled={gwCheck.isPending}>
@@ -1243,6 +1291,7 @@ export function AboutPanel() {
                 pull and apply" tooltip here would accept input for something that
                 cannot happen. Say what it will actually do instead. */}
             <div className="flex items-center justify-between pt-2.5 border-t border-border"
+              data-setting-label={i18nT('pages.settings.aboutPanel.notify_when_an_update_is_available')}
               title={gwSelfUpdate
                 ? i18nT('pages.settings.aboutPanel.automatically_pull_and_apply_updates_when_the_ga')
                 : i18nT('pages.settings.aboutPanel.auto_update_notify_only_on_this_install')}>

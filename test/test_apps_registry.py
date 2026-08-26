@@ -27,6 +27,7 @@ import json
 import os
 import stat
 import sys
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -477,6 +478,122 @@ async def test_provenance_signer_comes_from_cloned_manifest(monkeypatch, tmp_pat
     assert getattr(signer_calls[0], "version", "") == "9.9.9"
     assert provenance["signer"] == "cloned-signer"
     assert provenance["commit"] == "a" * 40
+
+
+@pytest.mark.asyncio
+async def test_registry_fresh_reinstall_checks_retained_startup_before_clone(
+    monkeypatch, tmp_path
+):
+    """Missing metadata must not hide retained old-version startup ownership."""
+    src = tmp_path / "app-sources" / "demoapp"
+    _identity_harness(
+        monkeypatch,
+        src,
+        cloned_manifest={"name": "demoapp", "version": "2.0.0"},
+    )
+    monkeypatch.setattr(registry, "get_app", lambda _name: None)
+
+    from kiro_crew.apps import hooks_integration
+
+    cleanup_calls: list[tuple[str, bool]] = []
+
+    async def _cleanup(app_name: str, *, bounded: bool) -> bool:
+        cleanup_calls.append((app_name, bounded))
+        return False
+
+    monkeypatch.setattr(
+        hooks_integration, "stop_retained_startup_hooks", _cleanup
+    )
+
+    async def _must_not_clone(*args, **kwargs):
+        raise AssertionError("fresh reinstall must not clone while old code runs")
+
+    monkeypatch.setattr(registry, "_clone_build_app", _must_not_clone)
+
+    result = await registry.install_from_registry("demoapp")
+
+    assert result["ok"] is False
+    assert result["code"] == "startup_hook_still_running"
+    assert result["retryable"] is True
+    assert cleanup_calls == [("demoapp", True)]
+
+
+@pytest.mark.asyncio
+async def test_registry_fresh_reinstall_rechecks_retained_startup_before_replacement(
+    monkeypatch, tmp_path
+):
+    """A fresh-looking reinstall must recheck ownership after clone and build."""
+    src = tmp_path / "app-sources" / "demoapp"
+    _identity_harness(
+        monkeypatch,
+        src,
+        cloned_manifest={"name": "demoapp", "version": "2.0.0"},
+    )
+    monkeypatch.setattr(registry, "get_app", lambda _name: None)
+
+    from kiro_crew.apps import hooks_integration
+
+    cleanup_calls: list[tuple[str, bool]] = []
+
+    async def _cleanup(app_name: str, *, bounded: bool) -> bool:
+        cleanup_calls.append((app_name, bounded))
+        return len(cleanup_calls) == 1
+
+    monkeypatch.setattr(
+        hooks_integration, "stop_retained_startup_hooks", _cleanup
+    )
+
+    def _must_not_replace(*args, **kwargs):
+        raise AssertionError("fresh reinstall must not replace files while old code runs")
+
+    monkeypatch.setattr(registry, "install_app", _must_not_replace)
+    monkeypatch.setattr(registry, "update_app", _must_not_replace)
+
+    result = await registry.install_from_registry("demoapp")
+
+    assert result["ok"] is False
+    assert result["code"] == "startup_hook_still_running"
+    assert result["retryable"] is True
+    assert cleanup_calls == [("demoapp", True), ("demoapp", True)]
+
+
+@pytest.mark.asyncio
+async def test_registry_reinstall_rechecks_retained_startup_before_replacement(
+    monkeypatch, tmp_path
+):
+    """A hook retained during clone/build must still block old-file replacement."""
+    src = tmp_path / "app-sources" / "demoapp"
+    _identity_harness(
+        monkeypatch,
+        src,
+        cloned_manifest={"name": "demoapp", "version": "2.0.0"},
+    )
+    monkeypatch.setattr(registry, "get_app", lambda _name: {"name": "demoapp"})
+
+    from kiro_crew.apps import hooks_integration
+
+    cleanup_calls: list[tuple[str, bool]] = []
+
+    async def _cleanup(app_name: str, *, bounded: bool) -> bool:
+        cleanup_calls.append((app_name, bounded))
+        # No task at admission time; one becomes retained while clone/build runs.
+        return len(cleanup_calls) == 1
+
+    monkeypatch.setattr(
+        hooks_integration, "stop_retained_startup_hooks", _cleanup
+    )
+
+    def _must_not_update(*args, **kwargs):
+        raise AssertionError("registry reinstall must not replace old files")
+
+    monkeypatch.setattr(registry, "update_app", _must_not_update)
+
+    result = await registry.install_from_registry("demoapp")
+
+    assert result["ok"] is False
+    assert result["code"] == "startup_hook_still_running"
+    assert result["retryable"] is True
+    assert cleanup_calls == [("demoapp", True), ("demoapp", True)]
 
 
 @pytest.mark.asyncio
@@ -1407,6 +1524,26 @@ class TestApplyTrustFields:
 # external app was silently dropped from the store the moment the catalog came
 # online. list_catalog_apps now appends external-registry rows itself.
 # ---------------------------------------------------------------------------
+_PINNED_SHA = "a" * 40
+
+
+def _pinned_catalog_entry(name: str) -> dict[str, Any]:
+    """A catalog entry `official_catalog.inventory` accepts as installable.
+
+    The real `inventory` runs over this, so the coordinates have to satisfy its
+    validation (https clone URL, full-length lowercase-hex pin) rather than being
+    waved through by a stub.
+    """
+    return {
+        "name": name,
+        "source": {
+            "type": "git",
+            "url": f"https://github.com/org/{name}",
+            "ref": _PINNED_SHA,
+        },
+    }
+
+
 class TestCatalogAppsIncludesExternalRegistries:
     @pytest.mark.asyncio
     async def test_external_registry_app_appears_when_catalog_is_online(self, monkeypatch):
@@ -1515,6 +1652,11 @@ class TestCatalogAppsIncludesExternalRegistries:
         )
         monkeypatch.setattr(registry, "_load_registry_file", lambda: [])
         monkeypatch.setattr(registry, "list_installed_apps", lambda: [])
+        # The catalog pins nothing either, so the row stays filtered -- and the
+        # listing never reaches for a real fetch.
+        monkeypatch.setattr(
+            registry.official_catalog, "fetch_inventory_entries", lambda: []
+        )
 
         async def _fake_external():
             # External registry tries to claim the filtered-out catalog name.
@@ -1532,6 +1674,165 @@ class TestCatalogAppsIncludesExternalRegistries:
         # EXTERNAL row pointing at the "evil" repo.
         assert rows.get("filtered-git", {}).get("provenance") != "external"
         assert "filtered-git" not in rows
+
+    # -----------------------------------------------------------------------
+    # Regression: the storefront intersected every catalog `git` row with the
+    # BUNDLED SEED, which ships only at release cadence. `inventory` was added so
+    # the catalog itself could supply validated pinned coordinates, and the install
+    # path honours them (`inventory_for_install`) -- but this listing was written a
+    # day earlier and still asked the seed. The two resolvers disagreed: install
+    # accepted a catalog-only app while the store hid it, so a freshly published
+    # app was undiscoverable until a release shipped a new seed.
+    # -----------------------------------------------------------------------
+    @pytest.mark.asyncio
+    async def test_a_catalog_pinned_git_row_is_listed_without_a_seed_entry(self, monkeypatch):
+        """A `git` row the catalog PINS is listed even though the seed omits it."""
+        catalog_rows = [
+            {"name": "keep-app", "displayName": "Keep App"},
+            {"name": "pinned-app", "source": {"type": "git"}},
+        ]
+        monkeypatch.setattr(
+            registry.official_catalog, "list_catalog_rows", lambda: catalog_rows
+        )
+        # The seed names NOTHING -- the catalog alone has to carry this row.
+        monkeypatch.setattr(registry, "_load_registry_file", lambda: [])
+        monkeypatch.setattr(registry, "list_installed_apps", lambda: [])
+        monkeypatch.setattr(
+            registry.official_catalog,
+            "fetch_inventory_entries",
+            lambda: [_pinned_catalog_entry("pinned-app")],
+        )
+
+        async def _fake_external():
+            return []
+
+        async def _fake_resolve(entry):
+            return entry
+
+        monkeypatch.setattr(registry, "_load_external_registries", _fake_external)
+        monkeypatch.setattr(registry, "_resolve_manifest", _fake_resolve)
+
+        rows = {r["name"]: r for r in await registry.list_catalog_apps()}
+        assert "pinned-app" in rows, "a catalog-pinned git row must reach the store"
+        # It is an official row, and still unverified -- listing it does not mint
+        # the first-party badge from a document trusted only as far as TLS.
+        assert rows["pinned-app"]["provenance"] != "external"
+        assert rows["pinned-app"]["verified"] is False
+        assert "keep-app" in rows
+
+    @pytest.mark.asyncio
+    async def test_a_name_only_the_local_cache_claims_is_not_listed(self, monkeypatch):
+        """The unlock is authorised by the FRESH document, never by the cache.
+
+        `list_catalog_rows` reads the cache under the data home, which is
+        agent-writable. A planted row there must not BECOME a listed row: it would
+        render with official provenance and dedupe the real same-named external row
+        out of the listing, so a consent prompt would describe an official app while
+        the name grant it produces installs the external one.
+        """
+        monkeypatch.setattr(
+            registry.official_catalog,
+            "list_catalog_rows",
+            lambda: [{"name": "planted-app", "source": {"type": "git"}}],
+        )
+        monkeypatch.setattr(registry, "_load_registry_file", lambda: [])
+        monkeypatch.setattr(registry, "list_installed_apps", lambda: [])
+        # The fetched document pins a DIFFERENT app, so it never authorises
+        # "planted-app" -- only the cache claims that name.
+        monkeypatch.setattr(
+            registry.official_catalog,
+            "fetch_inventory_entries",
+            lambda: [_pinned_catalog_entry("honest-app")],
+        )
+
+        async def _fake_external():
+            return []
+
+        async def _fake_resolve(entry):
+            return entry
+
+        monkeypatch.setattr(registry, "_load_external_registries", _fake_external)
+        monkeypatch.setattr(registry, "_resolve_manifest", _fake_resolve)
+
+        rows = {r["name"]: r for r in await registry.list_catalog_apps()}
+        assert "planted-app" not in rows
+
+    @pytest.mark.asyncio
+    async def test_an_unreachable_catalog_degrades_to_the_seed(self, monkeypatch):
+        """A listing must never fail because the catalog cannot be reached.
+
+        Without the fresh document there is nothing authorising the catalog-only
+        row, so it stays filtered -- the listing this path produced before the
+        catalog could supply coordinates -- and the rest of the store still renders.
+        """
+        catalog_rows = [
+            {"name": "keep-app", "displayName": "Keep App"},
+            {"name": "pinned-app", "source": {"type": "git"}},
+        ]
+        monkeypatch.setattr(
+            registry.official_catalog, "list_catalog_rows", lambda: catalog_rows
+        )
+        monkeypatch.setattr(registry, "_load_registry_file", lambda: [])
+        monkeypatch.setattr(registry, "list_installed_apps", lambda: [])
+
+        def _unavailable():
+            raise registry.official_catalog.CatalogUnavailable("cdn is down")
+
+        monkeypatch.setattr(
+            registry.official_catalog, "fetch_inventory_entries", _unavailable
+        )
+
+        async def _fake_external():
+            return []
+
+        async def _fake_resolve(entry):
+            return entry
+
+        monkeypatch.setattr(registry, "_load_external_registries", _fake_external)
+        monkeypatch.setattr(registry, "_resolve_manifest", _fake_resolve)
+
+        rows = {r["name"]: r for r in await registry.list_catalog_apps()}
+        assert "pinned-app" not in rows
+        assert "keep-app" in rows, "the rest of the store still renders"
+
+    @pytest.mark.asyncio
+    async def test_no_fresh_fetch_when_the_seed_already_covers_every_git_row(
+        self, monkeypatch
+    ):
+        """The storefront is the hot path, so the fetch is paid only when it can
+        change the answer. With every `git` row already seeded there is nothing to
+        unlock, and the listing must stay at one cached read."""
+        catalog_rows = [{"name": "seeded-app", "source": {"type": "git"}}]
+        monkeypatch.setattr(
+            registry.official_catalog, "list_catalog_rows", lambda: catalog_rows
+        )
+        monkeypatch.setattr(
+            registry, "_load_registry_file", lambda: [{"name": "seeded-app"}]
+        )
+        monkeypatch.setattr(registry, "list_installed_apps", lambda: [])
+
+        calls: list[int] = []
+
+        def _counting():
+            calls.append(1)
+            return []
+
+        monkeypatch.setattr(
+            registry.official_catalog, "fetch_inventory_entries", _counting
+        )
+
+        async def _fake_external():
+            return []
+
+        async def _fake_resolve(entry):
+            return entry
+
+        monkeypatch.setattr(registry, "_load_external_registries", _fake_external)
+        monkeypatch.setattr(registry, "_resolve_manifest", _fake_resolve)
+
+        rows = {r["name"]: r for r in await registry.list_catalog_apps()}
+        assert calls == [], "the seed already answers, so no fetch may be paid"
+        assert "seeded-app" in rows
 
 
 # ---------------------------------------------------------------------------

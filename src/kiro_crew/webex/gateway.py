@@ -75,10 +75,29 @@ async def maybe_start_webex(orch: "GatewayOrchestrator") -> "WebexClient | None"
             conv_log=getattr(orch, "conv_log", None),
             approval_mode=_resolve_approval_mode(orch),
         )
-        client = WebexClient(token=bot_token)
-        transport = WebexTransport(
-            client, allowed_emails=allowed_emails, dispatch=dispatcher.handle_message
+        webex_cfg = orch._cfg.webex
+        client = WebexClient(
+            token=bot_token,
+            # An explicit host pins a restricted network; empty means discover the
+            # org's own regional Device Manager, which is what a non-US-resident
+            # org needs for inbound to work at all. Passed through UNCHANGED —
+            # defaulting it here would spell a pin and "discover" identically, and
+            # the client could no longer tell them apart.
+            device_base=webex_cfg.wdm_base,
         )
+        transport = WebexTransport(
+            client,
+            allowed_emails=allowed_emails,
+            dispatch=dispatcher.handle_message,
+            allow_group_rooms=bool(webex_cfg.allow_group_rooms),
+            allowed_room_ids=list(webex_cfg.allowed_room_ids or []),
+        )
+        if webex_cfg.allow_group_rooms and not webex_cfg.allowed_room_ids:
+            logger.warning(
+                "Webex: group spaces are enabled but allowed_room_ids is empty — "
+                "every space message is REJECTED (fail closed). Add the space IDs "
+                "you want answered to webex.allowed_room_ids."
+            )
         # Inbound: client WS events -> transport.receive (authorize + normalize)
         # -> dispatcher.handle_message (drive the turn on the shared TurnDriver).
         # set_message_handler avoids the client<->transport construction cycle.

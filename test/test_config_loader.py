@@ -101,12 +101,15 @@ def _load_absent_config() -> KiroCrewConfig:
     with tempfile.TemporaryDirectory() as d:
         missing = Path(d) / "config.json"
         missing_local = Path(d) / "config.local.json"
-        with unittest.mock.patch(
-            "kiro_crew.config.loader.config_path",
-            return_value=missing,
-        ), unittest.mock.patch(
-            "kiro_crew.config.loader.config_local_path",
-            return_value=missing_local,
+        with (
+            unittest.mock.patch(
+                "kiro_crew.config.loader.config_path",
+                return_value=missing,
+            ),
+            unittest.mock.patch(
+                "kiro_crew.config.loader.config_local_path",
+                return_value=missing_local,
+            ),
         ):
             return KiroCrewConfig.load()
 
@@ -333,6 +336,31 @@ def test_slack_home_tab_sessions_per_kind_parsed_and_round_trips():
     # Survives a to_dict() -> load() round-trip.
     reloaded = _load_from_dict(loaded.to_dict())
     assert reloaded.slack.home_tab_sessions_per_kind == 42
+
+
+class TestFallbackModelLoad:
+    """agent.fallback_model flows through the explicit load() kwargs."""
+
+    def test_load_coerces_registry_alias(self) -> None:
+        loaded = _load_from_dict({"agent": {"fallback_model": "opus-4.8-1m"}})
+        assert loaded.agent.fallback_model == "claude-opus-4.8"
+
+    def test_load_default_is_auto(self) -> None:
+        # DEFAULT PIN: a config without the key loads "auto" — fallback ON via
+        # the backend's availability-aware routing.
+        assert _load_from_dict({}).agent.fallback_model == "auto"
+
+    def test_load_explicit_empty_disables(self) -> None:
+        # ROLLBACK PIN: fallback_model "" is the opt-out — pre-feature behavior.
+        assert _load_from_dict({"agent": {"fallback_model": ""}}).agent.fallback_model == ""
+
+    def test_load_malformed_value_never_crashes(self) -> None:
+        loaded = _load_from_dict({"agent": {"fallback_model": {"not": "a string"}}})
+        assert loaded.agent.fallback_model == "auto"
+
+    def test_round_trips_through_to_dict(self) -> None:
+        loaded = _load_from_dict({"agent": {"fallback_model": "claude-opus-5"}})
+        assert loaded.to_dict()["agent"]["fallback_model"] == "claude-opus-5"
 
 
 class TestMalformedConfigValuesNeverCrashLoad:
@@ -1547,6 +1575,23 @@ class TestEdgeCases:
         """recent_tint_count defaults to 0 (off) when not in config."""
         cfg = _load_from_dict({})
         assert cfg.dashboard.recent_tint_count == 0
+
+    def test_update_nudge_loaded_from_config(self) -> None:
+        """The popup's snooze/skip record round-trips through load, so a GET
+        after a PATCH reads back what was written."""
+        rec = {"version": "0.5.0", "snoozed_until": 1756000000.0, "skipped": True}
+        cfg = _load_from_dict({"dashboard": {"update_nudge": rec}})
+        assert cfg.dashboard.update_nudge == rec
+
+    def test_update_nudge_defaults_to_empty_dict(self) -> None:
+        cfg = _load_from_dict({})
+        assert cfg.dashboard.update_nudge == {}
+
+    def test_update_nudge_non_dict_coerces_to_empty(self) -> None:
+        """A hand-edited scalar must not crash load or leak a non-dict to the
+        dashboard's config read-back."""
+        cfg = _load_from_dict({"dashboard": {"update_nudge": "corrupt"}})
+        assert cfg.dashboard.update_nudge == {}
 
     def test_embedding_provider_defaults_to_llama_cpp(self) -> None:
         """embedding_provider defaults to 'llama_cpp' (in-process, default-on)."""

@@ -30,6 +30,13 @@ export interface StatusData {
   /** Copyable upgrade command for an install that cannot apply in-process ("" when none). */
   update_command?: string
   /**
+   * The candidate release's version string ("" until a check has found a newer
+   * build). Carried on the hot-path subset so the proactive update popup can
+   * key its per-version snooze/skip without calling the check endpoint; the
+   * changelog text deliberately is not.
+   */
+  update_latest_version?: string
+  /**
    * The release channel this INSTALL follows (the `channel` file `cli.sh` wrote).
    * "" when the layout has no channel at all — a git checkout tracks a remote, a
    * desktop bundle and a container are updated by something else — which is what
@@ -49,6 +56,8 @@ export interface StatusData {
    */
   update_commits_ahead?: number
   update_commits_behind?: number
+  update_last_checked_at?: number | null
+  update_check_interval_secs?: number
   update_progress?: { step: string; detail: string } | null
   version?: string
   /**
@@ -574,6 +583,14 @@ export interface McpServer {
   /** Wall-clock seconds of the probe that produced `status`; 0/absent = never probed. */
   probedAt?: number
   presence?: McpScopePresence
+  /** True when the last probe met a recognisable OAuth challenge. Absent means
+   *  the probe learned nothing about authorization — NOT that none is needed,
+   *  so it must not be rendered as "no sign-in required". */
+  authChallenge?: boolean
+  /** Whether the kiro-cli runtime already holds a grant for this url. Only sent
+   *  alongside `authChallenge`; absent is "unknown", which is why the sign-in
+   *  wording is gated on an explicit `false`. */
+  authGrantPresent?: boolean
   /** Optional status-enrichment fields supplied by newer runtimes. */
   accountLabel?: string
   connectedSince?: string
@@ -877,6 +894,11 @@ export interface ChatMessage {
 
 export interface SubagentActivity {
   id: string; task: string; agent: string
+  /** Model the live session actually resolved to serve, '' when unknown. Folded
+   *  from the `model` field on the `subagent_spawn`/`subagent_done`/snapshot WS
+   *  frames; shown beside the agent pill in the Subagents panel so a model-pinned
+   *  run's real model is visible (#3582). */
+  model?: string
   status: 'pending' | 'running' | 'tool' | 'done' | 'error' | 'stopped'
   streaming: string; lastTool: string
   startedAt: number; elapsed: number; error?: string

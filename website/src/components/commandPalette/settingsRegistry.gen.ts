@@ -6,6 +6,39 @@ import type { SettingEntry } from './settingsTypes'
 export const SETTINGS_REGISTRY: SettingEntry[] = 
 [
   {
+    "id": "about.auto-update-on-restart",
+    "label": "Auto-update on restart",
+    "labelKey": "pages.settings.aboutPanel.auto_update_on_restart",
+    "tab": "about",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
+    "id": "about.update-notifications",
+    "labelKey": "pages.settings.aboutPanel.notify_when_an_update_is_available",
+    "tab": "about",
+    "type": "toggle",
+    "occurrence": 1,
+    "configKey": "auto_update",
+    "label": "Notify when an update is available"
+  },
+  {
+    "id": "about.update-channel",
+    "labelKey": "pages.settings.aboutPanel.update_channel",
+    "tab": "about",
+    "type": "buttonGroup",
+    "occurrence": 1,
+    "label": "Update channel"
+  },
+  {
+    "id": "browser.attach-token",
+    "labelKey": "pages.settings.browserPanel.token_label",
+    "tab": "browser",
+    "type": "input",
+    "occurrence": 1,
+    "label": "Extension token (optional)"
+  },
+  {
     "id": "browser.use-the-built-in-browser",
     "label": "Use the built-in browser",
     "labelKey": "pages.settings.browserPanel.use_builtin_label",
@@ -13,6 +46,146 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "type": "toggle",
     "occurrence": 1,
     "configKey": "dashboard.use_builtin_browser"
+  },
+  {
+    "id": "channels.allowed-emails-webex",
+    "label": "Allowed emails (Webex)",
+    "labelKey": "pages.settings.webexPanel.allowed_emails",
+    "labelSuffix": "Webex",
+    "description": "Webex account emails permitted to DM the bot. Empty = nobody (fail closed) — anyone in an org can message a Webex bot, so add only your own.",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "webex"
+    }
+  },
+  {
+    "id": "channels.allowed-enterprise-orgs-slack",
+    "label": "Allowed enterprise orgs (Slack)",
+    "labelKey": "pages.settings.slackPanel.allowed_enterprise_orgs",
+    "labelSuffix": "Slack",
+    "description": "Enterprise Grid org IDs to allow (starts with E or T). Leave empty to allow all orgs.",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    }
+  },
+  {
+    "id": "channels.allowed-handles-imessage",
+    "label": "Allowed handles (iMessage)",
+    "labelKey": "pages.settings.iMessagePanel.allowed_handles",
+    "labelSuffix": "iMessage",
+    "description": "Phone numbers or Apple Account emails allowed to message the agent. Empty denies everyone — anyone who knows this Mac's handle can send to it, so there is no safe default. Formatting is ignored.",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "imessage"
+    }
+  },
+  {
+    "id": "channels.allowed-numbers-whatsapp",
+    "label": "Allowed numbers (WhatsApp)",
+    "labelKey": "pages.settings.whatsAppPanel.allowed_wa_ids",
+    "labelSuffix": "WhatsApp",
+    "description": "Phone numbers (digits with country code, no plus sign) that may also chat with the agent. Empty adds nobody beyond you.",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "whatsapp"
+    }
+  },
+  {
+    "id": "channels.allowed-space-ids-webex",
+    "label": "Allowed space IDs (Webex)",
+    "labelKey": "pages.settings.webexPanel.allowed_room_ids",
+    "labelSuffix": "Webex",
+    "description": "Empty means no space is answered, so turning the switch on alone grants nothing. The sender must also be on the allowed-emails list. A space ID is an opaque string — list yours with:\ncurl -H \"Authorization: Bearer $WEBEX_BOT_TOKEN\" https://webexapis.com/v1/rooms",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "webex"
+    }
+  },
+  {
+    "id": "channels.allowed-user-ids-discord",
+    "label": "Allowed user IDs (Discord)",
+    "labelKey": "pages.settings.botChannelPanel.allowed_user_ids",
+    "labelSuffix": "Discord",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "discord"
+    }
+  },
+  {
+    "id": "channels.allowed-user-ids-telegram",
+    "label": "Allowed user IDs (Telegram)",
+    "labelKey": "pages.settings.botChannelPanel.allowed_user_ids",
+    "labelSuffix": "Telegram",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "telegram"
+    }
+  },
+  {
+    "id": "channels.allowed-user-ids-wechat",
+    "label": "Allowed user IDs (WeChat)",
+    "labelKey": "pages.settings.weixinPanel.allowed_user_ids",
+    "labelSuffix": "WeChat",
+    "description": "Allowed WeChat user IDs. Empty = deny all (fail closed).",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "weixin"
+    }
+  },
+  {
+    "id": "channels.allowed-user-ids-wecom",
+    "label": "Allowed user IDs (WeCom)",
+    "labelKey": "pages.settings.botChannelPanel.allowed_user_ids",
+    "labelSuffix": "WeCom",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "wecom"
+    }
+  },
+  {
+    "id": "channels.allowed-users-email-or-aad-object-id-teams",
+    "label": "Allowed users (email or AAD object id) (Teams)",
+    "labelKey": "pages.settings.teamsPanel.allowed_users_email_or_aad_object_id",
+    "labelSuffix": "Teams",
+    "description": "Azure AD UPNs/emails OR object ids permitted to DM the bot. Teams activities reliably carry the object id (email is often absent), so object ids work out of the box. Empty = nobody (fail closed).",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "teams"
+    }
+  },
+  {
+    "id": "channels.answer-in-group-spaces-webex",
+    "label": "Answer in group spaces (Webex)",
+    "labelKey": "pages.settings.webexPanel.allow_group_spaces",
+    "labelSuffix": "Webex",
+    "description": "Off by default. A reply in a space is visible to everyone in it, including people not on the allowed-emails list.",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "webex"
+    }
   },
   {
     "id": "channels.app-client-id-teams",
@@ -26,6 +199,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
       "channel": "teams"
     },
     "configKey": "teams.app_id"
+  },
+  {
+    "id": "channels.app-password-client-secret-teams",
+    "label": "App password (client secret) (Teams)",
+    "labelKey": "pages.settings.teamsPanel.app_password_client_secret",
+    "labelSuffix": "Teams",
+    "description": "Azure Bot client secret. Stored only in .env (never config.json).",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "teams"
+    }
   },
   {
     "id": "channels.enable-imessage-channel-imessage",
@@ -63,6 +249,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1,
     "params": {
       "channel": "weixin"
+    }
+  },
+  {
+    "id": "channels.enable-the-whatsapp-channel-whatsapp",
+    "label": "Enable the WhatsApp channel (WhatsApp)",
+    "labelKey": "pages.settings.whatsAppPanel.enable_the_whatsapp_channel",
+    "labelSuffix": "WhatsApp",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "whatsapp"
     }
   },
   {
@@ -175,6 +373,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "channels.file-sessions-in-a-folder-whatsapp",
+    "label": "File sessions in a folder (WhatsApp)",
+    "labelKey": "pages.settings.botChannelPanel.file_sessions_in_folder",
+    "labelSuffix": "WhatsApp",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "whatsapp"
+    }
+  },
+  {
     "id": "channels.folder-name-discord",
     "label": "Folder name (Discord)",
     "labelKey": "pages.settings.botChannelPanel.session_folder_name",
@@ -279,6 +489,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "channels.folder-name-whatsapp",
+    "label": "Folder name (WhatsApp)",
+    "labelKey": "pages.settings.botChannelPanel.session_folder_name",
+    "labelSuffix": "WhatsApp",
+    "description": "Created for you when you turn this on, if it does not already exist.",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "whatsapp"
+    }
+  },
+  {
     "id": "channels.hard-context-threshold-teams",
     "label": "Hard context threshold % (Teams)",
     "labelKey": "pages.settings.channels.hard_threshold_label",
@@ -291,6 +514,31 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
       "channel": "teams"
     },
     "configKey": "teams.hard_threshold_pct"
+  },
+  {
+    "id": "channels.hard-context-threshold-webex",
+    "label": "Hard context threshold % (Webex)",
+    "labelKey": "pages.settings.webexPanel.hard_context_threshold",
+    "labelSuffix": "Webex",
+    "description": "Compact automatically at this point, even without a decision, so the context window never overflows.",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "webex"
+    }
+  },
+  {
+    "id": "channels.how-the-agent-joins-in-whatsapp",
+    "label": "How the agent joins in (WhatsApp)",
+    "labelKey": "pages.settings.whatsAppPanel.how_the_agent_joins_in",
+    "labelSuffix": "WhatsApp",
+    "tab": "channels",
+    "type": "select",
+    "occurrence": 1,
+    "params": {
+      "channel": "whatsapp"
+    }
   },
   {
     "id": "channels.messages-database-path-imessage",
@@ -332,6 +580,31 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "channels.reply-in-thread-webex",
+    "label": "Reply in thread (Webex)",
+    "labelKey": "pages.settings.webexPanel.reply_in_thread",
+    "labelSuffix": "Webex",
+    "description": "Reply under the message's own thread when it has one, which keeps a busy space readable.",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "webex"
+    }
+  },
+  {
+    "id": "channels.seconds-between-unprompted-replies-whatsapp",
+    "label": "Seconds between unprompted replies (WhatsApp)",
+    "labelKey": "pages.settings.whatsAppPanel.seconds_between_unprompted_replies",
+    "labelSuffix": "WhatsApp",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "whatsapp"
+    }
+  },
+  {
     "id": "channels.send-replies-over-imessage",
     "label": "Send replies over (iMessage)",
     "labelKey": "pages.settings.iMessagePanel.service",
@@ -352,6 +625,32 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Post the model's reasoning as a thread reply. Disable to keep responses concise.",
     "tab": "channels",
     "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    }
+  },
+  {
+    "id": "channels.slack-app-token-slack",
+    "label": "Slack app token (Slack)",
+    "labelKey": "pages.settings.slackPanel.slack_app_token",
+    "labelSuffix": "Slack",
+    "description": "App-level token required for Socket Mode (starts with xapp-).",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    }
+  },
+  {
+    "id": "channels.slack-bot-token-slack",
+    "label": "Slack bot token (Slack)",
+    "labelKey": "pages.settings.slackPanel.slack_bot_token",
+    "labelSuffix": "Slack",
+    "description": "From OAuth & Permissions after installing your Slack app (starts with xoxb-).",
+    "tab": "channels",
+    "type": "input",
     "occurrence": 1,
     "params": {
       "channel": "slack"
@@ -408,6 +707,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "channels.soft-context-threshold-webex",
+    "label": "Soft context threshold % (Webex)",
+    "labelKey": "pages.settings.webexPanel.soft_context_threshold",
+    "labelSuffix": "Webex",
+    "description": "When a conversation's context passes this, suggest /compact or /new instead of compacting automatically.",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "webex"
+    }
+  },
+  {
     "id": "channels.soft-context-threshold-wecom",
     "label": "Soft context threshold % (WeCom)",
     "labelKey": "pages.settings.botChannelPanel.soft_context_threshold",
@@ -432,6 +744,55 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
       "channel": "teams"
     },
     "configKey": "teams.tenant_id"
+  },
+  {
+    "id": "channels.webex-bot-token-webex",
+    "label": "Webex bot token (Webex)",
+    "labelKey": "pages.settings.webexPanel.webex_bot_token",
+    "labelSuffix": "Webex",
+    "description": "Bot access token from developer.webex.com (My Webex Apps).",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "webex"
+    }
+  },
+  {
+    "id": "channels.when-the-agent-may-speak-whatsapp",
+    "label": "When the agent may speak (WhatsApp)",
+    "labelKey": "pages.settings.whatsAppPanel.when_the_agent_may_speak",
+    "labelSuffix": "WhatsApp",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "whatsapp"
+    }
+  },
+  {
+    "id": "channels.who-can-message-the-agent-whatsapp",
+    "label": "Who can message the agent (WhatsApp)",
+    "labelKey": "pages.settings.whatsAppPanel.who_can_message_the_bot",
+    "labelSuffix": "WhatsApp",
+    "tab": "channels",
+    "type": "select",
+    "occurrence": 1,
+    "params": {
+      "channel": "whatsapp"
+    }
+  },
+  {
+    "id": "channels.who-can-message-the-bot-wechat",
+    "label": "Who can message the bot (WeChat)",
+    "labelKey": "pages.settings.weixinPanel.who_can_message_the_bot",
+    "labelSuffix": "WeChat",
+    "tab": "channels",
+    "type": "select",
+    "occurrence": 1,
+    "params": {
+      "channel": "weixin"
+    }
   },
   {
     "id": "chat.auto-compact-threshold",
@@ -538,6 +899,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "tab": "chat",
     "type": "input",
     "occurrence": 1
+  },
+  {
+    "id": "chat.fallback-model",
+    "label": "Fallback model",
+    "labelKey": "pages.settings.chatPanel.fallback_model",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1,
+    "configKey": "agent.fallback_model"
   },
   {
     "id": "chat.feature-tips",
@@ -867,6 +1237,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "display.default-for-new-sessions",
+    "labelKey": "pages.settings.displayPanel.default_for_new_sessions",
+    "tab": "display",
+    "type": "buttonGroup",
+    "occurrence": 1,
+    "label": "Default for New Sessions",
+    "description": "None, auto-cycle, or pick a fixed color."
+  },
+  {
     "id": "display.default-shell",
     "label": "Default shell",
     "labelKey": "pages.settings.displayPanel.terminal_shell",
@@ -984,12 +1363,110 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "instances.enable-remote-crew-management",
+    "labelKey": "pages.settings.instancesPanel.enable_remote_crew_management",
+    "tab": "instances",
+    "type": "toggle",
+    "occurrence": 1,
+    "configKey": "instances.enabled",
+    "label": "Enable remote crew management"
+  },
+  {
+    "id": "notifications.sound-category-turn",
+    "labelKey": "pages.settings.notificationsPanel.category_turn",
+    "tab": "notifications",
+    "type": "select",
+    "occurrence": 1,
+    "label": "Agent replies",
+    "description": "When the agent finishes a turn in any chat"
+  },
+  {
+    "id": "notifications.sound-category-approval",
+    "labelKey": "pages.settings.notificationsPanel.category_approval",
+    "tab": "notifications",
+    "type": "select",
+    "occurrence": 1,
+    "label": "Approval",
+    "description": "Tool approval requests"
+  },
+  {
+    "id": "notifications.sound-category-cron",
+    "labelKey": "pages.settings.notificationsPanel.category_cron",
+    "tab": "notifications",
+    "type": "select",
+    "occurrence": 1,
+    "label": "Cron",
+    "description": "Scheduled job completions"
+  },
+  {
+    "id": "notifications.sound-category-all",
+    "labelKey": "pages.settings.notificationsPanel.category_all",
+    "tab": "notifications",
+    "type": "select",
+    "occurrence": 1,
+    "label": "Default (all categories)",
+    "description": "Fallback sound when no category-specific override is set"
+  },
+  {
+    "id": "notifications.sound-category-heartbeat",
+    "labelKey": "pages.settings.notificationsPanel.category_heartbeat",
+    "tab": "notifications",
+    "type": "select",
+    "occurrence": 1,
+    "label": "Heartbeat",
+    "description": "Heartbeat task results"
+  },
+  {
     "id": "notifications.play-sound-on-new-notifications",
     "label": "Play sound on new notifications",
     "labelKey": "pages.settings.notificationsPanel.play_sound_on_new_notifications",
     "tab": "notifications",
     "type": "toggle",
     "occurrence": 1
+  },
+  {
+    "id": "notifications.sources",
+    "labelKey": "pages.settings.notificationsPanel.sources",
+    "tab": "notifications",
+    "type": "toggle",
+    "occurrence": 1,
+    "label": "Sources",
+    "description": "Mute notification sources or override their priority. Muted notifications stay in history but never badge, sound, or banner."
+  },
+  {
+    "id": "notifications.sound-category-subagent",
+    "labelKey": "pages.settings.notificationsPanel.category_subagent",
+    "tab": "notifications",
+    "type": "select",
+    "occurrence": 1,
+    "label": "Subagent",
+    "description": "Background subagent completions"
+  },
+  {
+    "id": "notifications.sound-category-taskrunner",
+    "labelKey": "pages.settings.notificationsPanel.category_taskrunner",
+    "tab": "notifications",
+    "type": "select",
+    "occurrence": 1,
+    "label": "Tasks",
+    "description": "Task Runner completions"
+  },
+  {
+    "id": "notifications.volume",
+    "labelKey": "pages.settings.notificationsPanel.volume",
+    "tab": "notifications",
+    "type": "stepper",
+    "occurrence": 1,
+    "label": "Volume"
+  },
+  {
+    "id": "notifications.sound-category-hook",
+    "labelKey": "pages.settings.notificationsPanel.category_hook",
+    "tab": "notifications",
+    "type": "select",
+    "occurrence": 1,
+    "label": "Webhook",
+    "description": "External hook triggers"
   },
   {
     "id": "privacy.record-metrics",
@@ -1077,6 +1554,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
       "section": "tailnet"
     },
     "label": "Trust this machine's tailnet name"
+  },
+  {
+    "id": "security.your-custom-denies",
+    "labelKey": "pages.settings.securityPanel.your_custom_denies",
+    "tab": "security",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "section": "rules"
+    },
+    "label": "Your custom denies",
+    "description": "Add your own deny patterns (Python-compatible regex). These are enforced at Kiro Crew's PreToolUse gate alongside the built-in rules."
   },
   {
     "id": "shortcuts.enable-shortcuts",
@@ -1281,6 +1770,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "tab": "voice",
     "type": "select",
     "occurrence": 2
+  },
+  {
+    "id": "voice.shortcut-key",
+    "label": "Shortcut key",
+    "labelKey": "pages.settings.sttSettings.ptt_key",
+    "tab": "voice",
+    "type": "select",
+    "occurrence": 1
   },
   {
     "id": "voice.speed",

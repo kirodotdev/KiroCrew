@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
+import subprocess
+import sys
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -30,6 +33,7 @@ from kiro_crew.mcp_discovery import (
     probe_server,
     sync_to_agent_config,
 )
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 
 def _clear_cache() -> None:
@@ -1834,6 +1838,310 @@ class TestProbeRemote:
         # Other statuses are never needs_auth.
         assert _needs_authorization(500, {}, {}) is False
 
+    def test_a_real_oauth_challenge_is_recognised(self) -> None:
+        """The two pieces of evidence that make a 401 an OAuth challenge."""
+        from kiro_crew.mcp_discovery import _is_bearer_challenge
+
+        assert _is_bearer_challenge(
+            'Bearer resource_metadata="https://mcp.example.ai/.well-known/'
+            'oauth-protected-resource/mcp", scope="openid email offline_access"'
+        )
+        # Either piece alone is enough.
+        assert _is_bearer_challenge('Bearer resource_metadata="https://x.example/.well-known/y"')
+        assert _is_bearer_challenge('Bearer scope="openid"')
+
+    @pytest.mark.parametrize(
+        "challenge",
+        [
+            pytest.param("", id="empty"),
+            pytest.param('Basic realm="x"', id="another-scheme-entirely"),
+            pytest.param('BearerToken scope="openid"', id="bearer-prefix-is-another-scheme"),
+            pytest.param(
+                'bearerish resource_metadata="https://x.example/y"',
+                id="bearer-word-prefix-is-another-scheme",
+            ),
+            pytest.param("Bearer", id="bearer-with-no-evidence"),
+            pytest.param('Bearer scope=""', id="empty-scope"),
+            pytest.param('Bearer resource_metadata="http://insecure.example/x"', id="http-metadata"),
+            pytest.param(
+                'Bearer resource_metadata="javascript:alert(1)"', id="non-http-scheme-metadata"
+            ),
+            pytest.param("Bearer resource_metadata=" + "x" * 4096, id="over-length"),
+            pytest.param(None, id="not-a-string-at-all"),
+        ],
+    )
+    def test_anything_it_cannot_vouch_for_is_not_a_challenge(self, challenge) -> None:
+        """Unrecognised or unsafe evidence reads as "no challenge", and never raises.
+
+        An http or javascript metadata URL from an unauthenticated endpoint is not
+        evidence of anything, so it does not count toward recognition.
+        """
+        from kiro_crew.mcp_discovery import _is_bearer_challenge
+
+        assert _is_bearer_challenge(challenge) is False
+
+    @pytest.mark.asyncio
+    async def test_a_tokenless_401_records_the_challenge_and_an_absent_grant(self) -> None:
+        """needs_auth carries the evidence that separates it from 'signed in already'."""
+        server = McpServerInfo(name="remote", url="https://example.com/mcp")
+
+        resp = MagicMock()
+        resp.status = 401
+        resp.headers = {
+            "WWW-Authenticate": 'Bearer resource_metadata="https://example.com/.well-known/x",'
+            ' scope="openid email"'
+        }
+        resp.__aenter__ = AsyncMock(return_value=resp)
+        resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("kiro_crew.mcp_discovery.aiohttp.ClientSession", return_value=mock_session), patch(
+            "kiro_crew.mcp_discovery._runtime_grant_present", AsyncMock(return_value=False)
+        ):
+            result = await _probe_remote(server)
+
+        assert result.status == "needs_auth"
+        assert result.auth_challenge is True
+        assert result.auth_grant_present is False
+        payload = result.to_dict()
+        assert payload["authChallenge"] is True
+        assert payload["authGrantPresent"] is False
+
+    @pytest.mark.asyncio
+    async def test_an_existing_runtime_grant_is_reported_alongside_needs_auth(self) -> None:
+        """A held grant is what makes 'cannot verify' the honest wording rather than 'sign in'."""
+        server = McpServerInfo(name="remote", url="https://example.com/mcp")
+
+        resp = MagicMock()
+        resp.status = 401
+        resp.headers = {"WWW-Authenticate": 'Bearer scope="openid"'}
+        resp.__aenter__ = AsyncMock(return_value=resp)
+        resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("kiro_crew.mcp_discovery.aiohttp.ClientSession", return_value=mock_session), patch(
+            "kiro_crew.mcp_discovery._runtime_grant_present", AsyncMock(return_value=True)
+        ):
+            result = await _probe_remote(server)
+
+        assert result.status == "needs_auth"
+        assert result.auth_grant_present is True
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_static_credential_still_records_the_oauth_challenge(self) -> None:
+        """The error branch keeps the challenge — and looks up no grant.
+
+        A pasted token against an OAuth-only server is a real error — but the
+        useful thing to say is that the server wants a sign-in, not that it
+        answered 401.
+
+        The GRANT is the half that stops here. Its only reader gates on
+        ``needs_auth``, so a lookup on this branch would run a stat, and let
+        ``grant_observed`` write a critical SEL event, for an observation nothing
+        renders.
+        """
+        server = McpServerInfo(
+            name="remote",
+            url="https://example.com/mcp",
+            headers={"Authorization": "Bearer pasted-placeholder"},
+        )
+
+        resp = MagicMock()
+        resp.status = 401
+        resp.headers = {"WWW-Authenticate": 'Bearer scope="openid offline_access"'}
+        resp.__aenter__ = AsyncMock(return_value=resp)
+        resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        grant_lookup = AsyncMock(return_value=False)
+        with patch("kiro_crew.mcp_discovery.aiohttp.ClientSession", return_value=mock_session), patch(
+            "kiro_crew.mcp_discovery._runtime_grant_present", grant_lookup
+        ):
+            result = await _probe_remote(server)
+
+        assert result.status == "error"
+        assert "401" in result.error
+        assert result.auth_challenge is True
+        grant_lookup.assert_not_awaited()
+        assert result.auth_grant_present is None
+        assert "authGrantPresent" not in result.to_dict()
+
+    def test_a_probe_that_learned_nothing_emits_no_auth_keys(self) -> None:
+        """An absent key is what lets a client tell 'unknown' from 'no grant'."""
+        payload = McpServerInfo(name="remote", url="https://example.com/mcp").to_dict()
+
+        assert "authChallenge" not in payload
+        assert "authGrantPresent" not in payload
+
+    def test_the_probe_cache_round_trips_the_authorization_evidence(self) -> None:
+        """The panel is served from this cache, so the evidence has to survive it."""
+        from kiro_crew.mcp_discovery import _cache_probe, probe_metadata
+
+        server = McpServerInfo(
+            name="cached-remote",
+            url="https://example.com/mcp",
+            status="needs_auth",
+            auth_challenge=True,
+            auth_grant_present=True,
+        )
+        _cache_probe(server)
+
+        cached = probe_metadata("cached-remote")
+        assert cached is not None
+        assert cached.auth_challenge is True
+        assert cached.auth_grant_present is True
+
+    @pytest.mark.asyncio
+    async def test_an_unobservable_grant_is_omitted_rather_than_reported_absent(self) -> None:
+        """"Could not observe" must not reach the client as "no grant".
+
+        The sign-in wording is gated on an explicit ``false``, so emitting ``false``
+        when the lookup merely failed would tell the owner of an already-authorized
+        server to sign in again — the exact harm the gate exists to prevent. An
+        unreadable cache home lands here.
+        """
+        server = McpServerInfo(name="remote", url="https://example.com/mcp")
+
+        resp = MagicMock()
+        resp.status = 401
+        resp.headers = {"WWW-Authenticate": 'Bearer scope="openid"'}
+        resp.__aenter__ = AsyncMock(return_value=resp)
+        resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("kiro_crew.mcp_discovery.aiohttp.ClientSession", return_value=mock_session), patch(
+            "kiro_crew.mcp_discovery._runtime_grant_present", AsyncMock(return_value=None)
+        ):
+            result = await _probe_remote(server)
+
+        assert result.status == "needs_auth"
+        assert result.auth_challenge is True
+        assert result.auth_grant_present is None
+        payload = result.to_dict()
+        assert payload["authChallenge"] is True
+        assert "authGrantPresent" not in payload
+
+    @pytest.mark.asyncio
+    async def test_the_probe_asks_for_the_absent_grant_to_be_audited(self) -> None:
+        """The probe acts on absence, so it must not inherit the mint's poll default.
+
+        ``grant_observed`` records only the positive unless a caller opts in,
+        because the mint polls and would otherwise write a critical SEL event per
+        iteration. The probe is the opposite shape: one read, and the NEGATIVE is
+        what turns a row into "Sign-in required". Without the opt-in that acted-on
+        access leaves no trail at all.
+        """
+        from kiro_crew.mcp_discovery import _runtime_grant_present
+
+        lookup = AsyncMock(return_value=False)
+        with patch("kiro_crew.mcp_discovery.grant_observed", lookup):
+            assert await _runtime_grant_present("https://example.com/mcp", "remote") is False
+
+        lookup.assert_awaited_once_with("https://example.com/mcp", audit_absence=True)
+
+    def test_importing_this_module_does_not_pull_in_the_mint_engine(self) -> None:
+        """The grant helpers are shared through a leaf module, not through the mint.
+
+        This module is reachable from the handlers package the gateway imports at
+        boot, and ``connections.mint`` reaches the agent and ACP layers -- which
+        ``test_the_handlers_package_does_not_import_the_mint_engine`` refuses to
+        have loaded at boot. Sharing via ``mcp_grant`` is what lets the grant
+        lookup be an ordinary module-scope import instead of a runtime one, so
+        that separation is the thing worth pinning.
+
+        Run in a subprocess: this test module already imports the mint, so an
+        in-process ``sys.modules`` check would always find it.
+        """
+        probe = (
+            "import sys; import kiro_crew.mcp_discovery;"
+            " print('MINT' if 'kiro_crew.connections.mint' in sys.modules else 'CLEAN')"
+        )
+        out = subprocess.run(
+            [sys.executable, "-c", probe], capture_output=True, timeout=180, **UTF8_TEXT
+        )
+        assert out.returncode == 0, out.stderr[-2000:]
+        assert out.stdout.strip().endswith("CLEAN"), out.stdout
+
+    @pytest.mark.asyncio
+    async def test_a_re_probe_does_not_inherit_the_previous_endpoints_challenge(self) -> None:
+        """Authorization evidence is per-probe, never carried forward.
+
+        The probe cache is keyed by NAME and ``list_servers`` rehydrates these
+        fields onto the row before a re-probe, so a server whose url was edited
+        arrives carrying the OLD endpoint's verdict. A probe that only ever SETS
+        the flags would keep reporting "Sign-in required" for an endpoint that
+        never asked for one.
+        """
+        server = McpServerInfo(
+            name="remote",
+            url="https://example.com/mcp",
+            auth_challenge=True,
+            auth_grant_present=True,
+        )
+
+        resp = MagicMock()
+        resp.status = 401
+        resp.headers = {}  # a bare 401: no challenge this time
+        resp.__aenter__ = AsyncMock(return_value=resp)
+        resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("kiro_crew.mcp_discovery.aiohttp.ClientSession", return_value=mock_session):
+            result = await _probe_remote(server)
+
+        assert result.status == "needs_auth"
+        assert result.auth_challenge is False
+        assert result.auth_grant_present is None
+        assert "authChallenge" not in result.to_dict()
+
+    @pytest.mark.asyncio
+    async def test_a_credential_bearing_url_never_reaches_the_log(self, caplog) -> None:
+        """The grant lookup runs for ANY url a user typed, so it must not log one.
+
+        A custom endpoint can carry a credential in its userinfo or query string.
+        The probe's own failure path therefore names the server, never the url —
+        this line lands in gateway.log, which is not a credential store.
+        """
+        from kiro_crew.mcp_discovery import _runtime_grant_present
+
+        secret_url = "https://user:sup3r-secret@mcp.example.com/mcp?token=abcd1234"
+
+        # ``None`` is what an unreadable cache home resolves to: ``grant_presence``
+        # classifies the failed stat itself, so nothing raises out to this caller.
+        with patch("kiro_crew.mcp_discovery.grant_observed", AsyncMock(return_value=None)):
+            with caplog.at_level(logging.DEBUG, logger="kiro_crew.mcp_discovery"):
+                present = await _runtime_grant_present(secret_url, "higgsfield")
+
+        # None, not False: the lookup could not answer, and the payload must not
+        # report that as "no grant" -- that would name an action on no evidence.
+        assert present is None
+        blob = "\n".join(r.getMessage() for r in caplog.records)
+        assert "sup3r-secret" not in blob
+        assert "abcd1234" not in blob
+        assert "mcp.example.com" not in blob
+        # The server name is what makes the line diagnosable at all.
+        assert "higgsfield" in blob
+
     @pytest.mark.asyncio
     async def test_probe_remote_connection_error(self) -> None:
         """Connection failure sets error status."""
@@ -1871,6 +2179,35 @@ class TestProbeRemote:
 
         mock_remote.assert_not_awaited()
         assert result.status == "error"
+
+    @pytest.mark.asyncio
+    async def test_directory_qualified_command_reports_no_search_path(self) -> None:
+        """A directory-qualified command is looked up directly, not PATH-searched.
+
+        Regression for #5053: ``shutil.which`` returns before it reads ``path=``
+        when the command carries a directory component, so it checks exactly the
+        one location named. Reporting the declared search path for it told the
+        reader it "searched N directories" that were never consulted -- the exact
+        not-installed vs installed-elsewhere confusion #4954 exists to prevent,
+        stated backwards. The error for such a command must be the bare
+        ``command not found: <cmd>`` with no directory list.
+        """
+        abs_missing = os.path.join(os.sep, "opt", "vendor", "bin", "ghost-mcp")
+        server = McpServerInfo(name="dirq", command=abs_missing)
+        result = await probe_server(server)
+        assert result.status == "error"
+        assert f"command not found: {abs_missing}" in result.error
+        assert "directories" not in result.error  # nothing was searched
+        assert "empty PATH" not in result.error
+
+    @pytest.mark.asyncio
+    async def test_bare_command_still_reports_the_search_path(self) -> None:
+        """The bare-command path is unchanged: it IS PATH-searched, so say so."""
+        server = McpServerInfo(name="bare", command="ghost-mcp-xyz")
+        result = await probe_server(server)
+        assert result.status == "error"
+        assert "command not found: ghost-mcp-xyz" in result.error
+        assert "directories" in result.error  # PATH was searched, report it
 
 
 class TestProbeServerConsentGate:
@@ -2418,7 +2755,11 @@ class TestProbeServerTimeout:
     @pytest.mark.asyncio
     async def test_probe_server_timeout_on_tools_list(self) -> None:
         """probe_server times out on tools/list (second readline), covering L456."""
-        server = McpServerInfo(name="slow-server", command="sleep", args=["999"])
+        server = McpServerInfo(
+            name="slow-server",
+            command=sys.executable,
+            args=["-c", "import time; time.sleep(999)"],
+        )
 
         init_resp = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}).encode() + b"\n"
 
@@ -2448,7 +2789,7 @@ class TestProbeServerTimeout:
     @pytest.mark.asyncio
     async def test_probe_server_config_fallback_on_error(self) -> None:
         """probe_server falls back to 15s when config loading fails."""
-        server = McpServerInfo(name="test", command="echo")
+        server = McpServerInfo(name="test", command=sys.executable)
 
         mock_proc = AsyncMock()
         mock_proc.stdin = AsyncMock()

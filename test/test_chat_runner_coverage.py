@@ -915,6 +915,10 @@ class TestCrossSurfaceReply:
         state = _state(tmp_path)
         transport = AsyncMock()
         transport.capabilities.max_message_chars = 10
+        # Explicit 0: a MagicMock attribute is a child object, not a number,
+        # so chunk_for_transport cannot compare it. 0 = not byte-capped, which
+        # is the character path this test is about.
+        transport.capabilities.max_message_bytes = 0
         link = MagicMock(channel_id="123", thread_id=None, channel_type="telegram")
 
         with patch.object(chat_runner, "_resolve_mirror_target", return_value=(link, transport)):
@@ -927,6 +931,7 @@ class TestCrossSurfaceReply:
         state = _state(tmp_path)
         transport = AsyncMock()
         transport.capabilities.max_message_chars = 4096
+        transport.capabilities.max_message_bytes = 0
         transport.send_message.side_effect = RuntimeError("offline")
         link = MagicMock(channel_id="123", thread_id=None, channel_type="telegram")
 

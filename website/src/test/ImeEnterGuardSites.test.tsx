@@ -212,6 +212,39 @@ describe('ProjectPicker path input — rule 2: gate the Enter path only', () => 
     await act(async () => { await vi.advanceTimersByTimeAsync(0) })
     expect(vi.mocked(api.browseDirs)).toHaveBeenCalledWith('/home/u/alpha')
   })
+
+  // The Escape || Tab branch closes the picker and returns focus to the
+  // trigger — the composition-abort harm on a composable free-text path
+  // field: an IME candidate-cycling Tab (or candidate-cancelling Escape)
+  // must not be adopted as "leave the picker".
+  async function openBrowseWithSpy() {
+    const onOpenChange = vi.fn()
+    renderWithProviders(
+      <ProjectPicker open={true} onOpenChange={onOpenChange} anchorRect={rect(100, 50)} onSelect={vi.fn()} />,
+    )
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    return { input: screen.getByPlaceholderText('/path/to/project') as HTMLInputElement, onOpenChange }
+  }
+
+  it('does NOT close the picker on the committing Tab in the post-composition window', async () => {
+    const { input, onOpenChange } = await openBrowseWithSpy()
+    armLatch(input)
+    fireEvent.keyDown(input, { key: 'Tab' })
+    expect(onOpenChange).not.toHaveBeenCalled()
+  })
+
+  it('does NOT close the picker on an Escape that cancels a candidate', async () => {
+    const { input, onOpenChange } = await openBrowseWithSpy()
+    armLatch(input)
+    fireEvent.keyDown(input, { key: 'Escape' })
+    expect(onOpenChange).not.toHaveBeenCalled()
+  })
+
+  it('closes the picker on a plain Tab (positive control)', async () => {
+    const { input, onOpenChange } = await openBrowseWithSpy()
+    fireEvent.keyDown(input, { key: 'Tab' })
+    expect(onOpenChange).toHaveBeenCalledWith(false)
+  })
 })
 
 describe('BroadcastBar input — rule 1 single-line Enter-only site: bindEnter', () => {

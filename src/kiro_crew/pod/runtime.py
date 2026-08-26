@@ -231,8 +231,9 @@ def resolve_checkout(
 
 
 # --------------------------------------------------------------------------- #
-# Port derivation. POSIX ``cksum`` is a specific CRC that is NOT zlib.crc32, so
-# we shell the same binary rather than reimplement it and risk drifting the port.
+# Port derivation. POSIX ``cksum`` is a specific CRC that is NOT zlib.crc32.
+# Implementing that standard algorithm here keeps existing pod ports stable while
+# making a fresh Windows install independent of an external POSIX executable.
 # --------------------------------------------------------------------------- #
 def _pinned_port(cfg: PodConfig, name: str) -> int | None:
     """A ``PORT=`` pinned in the pod's env file wins over derivation."""
@@ -242,16 +243,39 @@ def _pinned_port(cfg: PodConfig, name: str) -> int | None:
     return None
 
 
+def _posix_cksum(data: bytes) -> int:
+    """Return the CRC printed by POSIX ``cksum`` for *data*.
+
+    POSIX folds the byte length into the CRC, least-significant byte first, then
+    complements the result.  Keep the bitwise form small and auditable; pod names
+    are at most 64 bytes, so a lookup table would add complexity without useful
+    performance.
+    """
+    crc = 0
+
+    def _fold_byte(current: int, byte: int) -> int:
+        current ^= byte << 24
+        for _ in range(8):
+            current = (
+                ((current << 1) ^ 0x04C11DB7) if current & 0x80000000 else current << 1
+            ) & 0xFFFFFFFF
+        return current
+
+    for byte in data:
+        crc = _fold_byte(crc, byte)
+    length = len(data)
+    while length:
+        crc = _fold_byte(crc, length & 0xFF)
+        length >>= 8
+    return (~crc) & 0xFFFFFFFF
+
+
 def derive_port(cfg: PodConfig, name: str) -> int:
     """Resolve pod *name*'s port: pinned ``PORT=`` else ``base + (cksum % 199) + 1``."""
     pinned = _pinned_port(cfg, name)
     if pinned is not None:
         return pinned
-    try:
-        out = subprocess.run(["cksum"], input=name, capture_output=True, text=True, timeout=5)
-        cks = int(out.stdout.split()[0])
-    except (OSError, ValueError, IndexError, subprocess.SubprocessError) as exc:
-        raise PodError(f"cksum failed for {name!r}: {exc}") from exc
+    cks = _posix_cksum(name.encode("utf-8"))
     return cfg.base_port + (cks % 199) + 1
 
 
@@ -354,9 +378,7 @@ def require_systemd() -> None:
             "Use `./dev-backend.sh` to preview a worktree on this platform."
         )
     if shutil.which("systemctl") is None:
-        raise PodError(
-            "pods require `systemctl --user`, but no `systemctl` was found on PATH."
-        )
+        raise PodError("pods require `systemctl --user`, but no `systemctl` was found on PATH.")
     if not has_session_bus():
         uid = getattr(os, "getuid", lambda: -1)()
         user = os.environ.get("USER") or os.environ.get("LOGNAME") or str(uid)
@@ -1121,8 +1143,16 @@ def write_pod_config(home_dir: Path, seed: str) -> None:
         return
     sanitized = sanitized_seed_config(Path(seed)) if seed else None
     cfg_data = sanitized if sanitized is not None else {"tunnel": {"enabled": False}}
-    dst_cfg.write_text(json.dumps(cfg_data, indent=2))
-    os.chmod(dst_cfg, stat.S_IRUSR | stat.S_IWUSR)  # 0o600 owner read/write only
+    # Create-only (the exists() guard above): lock the temp down before any
+    # token-bearing payload reaches the published name. write_text then chmod
+    # left the file at its inherited DACL until the chmod returned, and the
+    # chmod itself was a no-op on Windows. atomic_write encodes UTF-8; the
+    # previous write_text call did not pass encoding=.
+    atomic_write(
+        dst_cfg,
+        json.dumps(cfg_data, indent=2),
+        restrict_to_owner=True,
+    )
 
 
 def cleanup_home(cfg: PodConfig, name: str) -> int:

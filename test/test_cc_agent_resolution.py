@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from conftest import requires_symlinks
 from kiro_crew.slack.handler import _list_all_agent_names, _resolve_cc_agent_name
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -117,6 +118,7 @@ class TestResolveCcAgentName:
         result = _resolve_cc_agent_name("", cc_plugins_dir=tmp_path)
         assert result is None
 
+    @requires_symlinks
     def test_symlink_to_sensitive_path_rejected(self, tmp_path: Path, monkeypatch) -> None:
         """A symlinked agent .md whose target is a sensitive path is not read.
 

@@ -7,6 +7,7 @@ import { sanitizeLlmOutput } from '../../utils/sanitize'
 import type { SubagentActivity } from '../../types'
 
 import { i18nT } from '../../i18n/t'
+import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 const EMPTY_SUBAGENTS: Record<string, SubagentActivity> = {}
 
 /** Max agent rows rendered in the chip — exceptions (stalled/retrying) sort
@@ -32,6 +33,7 @@ interface SpawnListResponse {
 
 /** Active subagent summary above the chat input. */
 const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: string | null }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   // Use chatSlice.subagents — populated by subagent_spawn/tool/done WS events
   // (dashboardSlice.subagentRunning only updates on subagent_status which fires at completion)
   const dispatch = useAppDispatch()
@@ -171,8 +173,9 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
                 className="shrink-0 flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded border border-accent/40 text-accent/80 hover:bg-accent/10 hover:text-accent cursor-pointer transition-all bg-transparent disabled:opacity-50"
                 onClick={retryFailed}
                 disabled={retrying}
-                aria-label={`Retry ${failedIds.length} failed subagent${failedIds.length > 1 ? 's' : ''}`}
               >
+                {/* No aria-label: the accessible name IS the visible text below,
+                    so WCAG 2.5.3 (Label in Name) holds by construction. */}
                 <RotateCcw size={11} className={retrying ? 'animate-spin' : ''} /> {i18nT('pages.chat.subagentProgressBar.retry_failed_count', { count: failedIds.length })}
               </button>
             )}
@@ -182,7 +185,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
                 onClick={stopAll}
                 aria-label={stoppableCount > 1 ? i18nT('pages.chat.subagentProgressBar.stop_all_running_subagents') : i18nT('pages.chat.subagentProgressBar.stop_running_subagent')}
               >
-                <X size={11} /> {i18nT('pages.chat.subagentProgressBar.stop')}{stoppableCount > 1 ? ' all' : ''}
+                <X size={11} /> {stoppableCount > 1 ? i18nT('pages.chat.subagentProgressBar.stop_all') : i18nT('pages.chat.subagentProgressBar.stop')}
               </button>
             )}
           </span>
@@ -217,7 +220,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
                   <span className="min-w-0 flex-1">
                     <span className="flex items-center gap-1.5">
                       <span className="min-w-0 flex-1 truncate text-text">{agentLabel}</span>
-                      <span className="shrink-0 font-mono tabular-nums text-muted/50">{elapsed}{i18nT('pages.chat.subagentProgressBar.s')}{typeof a.toolCount === 'number' && a.toolCount > 0 ? ` · ${a.toolCount} tool${a.toolCount > 1 ? 's' : ''}` : ''}</span>
+                      <span className="shrink-0 font-mono tabular-nums text-muted/50">{elapsed}{i18nT('pages.chat.subagentProgressBar.s')}{typeof a.toolCount === 'number' && a.toolCount > 0 ? ` · ${i18nT('pages.chat.subagentProgressBar.tool', { count: a.toolCount })}` : ''}</span>
                     </span>
                     {a.retrying ? (
                       <span className="text-info flex items-center gap-1">

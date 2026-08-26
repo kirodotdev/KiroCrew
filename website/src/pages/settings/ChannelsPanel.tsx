@@ -1,9 +1,7 @@
-import React, { useEffect } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import React from 'react'
 import { useQueries, useQuery } from '@tanstack/react-query'
-import { ChevronRight, ArrowLeft } from 'lucide-react'
 import { api } from '../../api/client'
-import { useContainerWidth } from '../../hooks/useContainerWidth'
+import { SettingsSubNav } from '../../components/SettingsSubNav'
 import { SlackIcon } from '../../components/SlackIcon'
 import { DiscordIcon } from '../../components/DiscordIcon'
 import { TelegramLogo } from '../../components/TelegramLogo'
@@ -58,10 +56,6 @@ const CHANNELS: ChannelEntry[] = [
 
 export const CHANNEL_KEYS = CHANNELS.map(c => c.key)
 
-/** Two-pane breakpoint on the CONTENT area width (not the viewport): below
- *  this the tab collapses to list <-> detail with a back button. */
-const TWO_PANE_MIN_WIDTH = 760
-
 function statusLine(s: ChannelStatus | undefined, isError: boolean): { text: string; color: string; dot: boolean } {
   if (isError) return { text: i18nT('pages.settings.channelsPanel.status_unavailable'), color: 'var(--muted)', dot: false }
   if (!s) return { text: i18nT('pages.settings.channelsPanel.checking'), color: 'var(--muted)', dot: false }
@@ -70,11 +64,6 @@ function statusLine(s: ChannelStatus | undefined, isError: boolean): { text: str
   return { text: i18nT('pages.settings.channelsPanel.needs_setup'), color: 'var(--muted)', dot: false }
 }
 
-/** Channels tab: responsive list-detail over the five chat integrations.
- *  Wide content area = persistent list + detail side by side; narrow = the
- *  list alone, drilling into a full-width detail view with a back button.
- *  Selection is URL-backed (?channel=slack) so deep links and the legacy
- *  ?tab=slack remap land on the right channel. */
 /** Per-channel `channels`-governance state, driven off the policy map. Every
  *  channel (Slack included) is governed: a policy that denies a channel blocks
  *  its inbound + tool-approval chokepoints, so the UI must reflect that. The
@@ -97,38 +86,10 @@ function govState(
   return 'unavailable'
 }
 
+/** Channels tab: SettingsSubNav list-detail over the chat integrations.
+ *  Selection is URL-backed (?sub=slack; legacy ?channel= still lands) so deep
+ *  links and the legacy ?tab=slack remap keep working. */
 export function ChannelsPanel() {
-  const [params, setParams] = useSearchParams()
-  const [containerRef, width] = useContainerWidth<HTMLDivElement>()
-  // null width = first paint before measurement; assume wide to avoid flashing
-  // the narrow layout on desktop.
-  const twoPane = width === null || width >= TWO_PANE_MIN_WIDTH
-
-  const rawChannel = params.get('channel')
-  const selectedKey = CHANNELS.some(c => c.key === rawChannel) ? rawChannel : null
-  // Wide mode always shows a detail pane; default to the first channel.
-  const effectiveKey = selectedKey ?? (twoPane ? CHANNELS[0].key : null)
-  const selected = CHANNELS.find(c => c.key === effectiveKey) ?? null
-
-  const setChannel = (key: string | null) => setParams(prev => {
-    const next = new URLSearchParams(prev)
-    if (key) next.set('channel', key)
-    else next.delete('channel')
-    return next
-  }, { replace: true })
-
-  // Canonicalize the wide-mode implicit selection into the URL. Without this,
-  // shrinking the container below the two-pane breakpoint would flip
-  // effectiveKey to null and drop the implicitly-selected panel to the bare
-  // list. Gated on a REAL measurement (width !== null): the pre-measurement
-  // paint optimistically renders wide, but writing channel=slack before the
-  // ResizeObserver reports would make a fresh narrow visit open Slack instead
-  // of the channel list.
-  useEffect(() => {
-    if (width !== null && twoPane && !selectedKey) setChannel(CHANNELS[0].key)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [width, twoPane, selectedKey])
-
   const statuses = useQueries({
     queries: CHANNELS.map(c => ({
       queryKey: [c.queryKey],
@@ -162,91 +123,55 @@ export function ChannelsPanel() {
   const channelGov = (key: string): ChannelGovState =>
     govState(key, govPolicy, govLoading, govError)
 
-  const list = (
-    <div
-      className={twoPane ? 'w-[280px] shrink-0' : 'w-full'}
-      role="listbox"
-      aria-label={i18nT('pages.settings.channelsPanel.chat_channels')}
-    >
-      <div className="rounded-lg border border-border bg-card overflow-hidden">
-        {CHANNELS.map((c, i) => {
-          const st = statusLine(statuses[i].data as ChannelStatus | undefined, statuses[i].isError)
-          const active = twoPane && c.key === effectiveKey
-          const gov = channelGov(c.key)
-          const denied = gov === 'denied'
-          return (
-            <button
-              key={c.key}
-              role="option"
-              aria-selected={active}
-              onClick={() => setChannel(c.key)}
-              className={`flex items-center gap-3 w-full text-left px-3.5 py-2.5 cursor-pointer border-none transition-colors ${
-                i > 0 ? 'border-t border-t-border border-solid border-x-0 border-b-0' : ''
-              } ${active ? 'bg-accent-subtle' : 'bg-transparent hover:bg-bg-hover'} ${denied ? 'opacity-60' : ''}`}
-            >
-              <span className="w-5 h-5 shrink-0 flex items-center justify-center">{c.logo}</span>
-              <span className="flex-1 min-w-0">
-                <span className={`block text-[13.5px] font-semibold ${active ? 'text-accent' : 'text-text-strong'}`}>{c.name}</span>
-                {denied ? (
-                  // A policy-denied channel shows "Off by admin" instead of its
-                  // connection status — the status is moot while the channel is
-                  // governed off. Full text in the title for the compact chip.
-                  <span
-                    className="inline-block mt-0.5 px-1.5 py-px rounded-full text-[11px] font-semibold uppercase bg-bg-hover text-muted border border-border whitespace-nowrap"
-                    title={i18nT('pages.settings.channelsPanel.off_by_admin')}
-                  >
-                    {i18nT('pages.settings.channelsPanel.off_by_admin')}
-                  </span>
-                ) : (
-                  <span className="flex items-center gap-1.5 text-[11.5px]" style={{ color: st.color }}>
-                    {st.dot && <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: st.color }} />}
-                    {st.text}
-                  </span>
-                )}
-              </span>
-              {!twoPane && <ChevronRight size={14} className="text-muted shrink-0" />}
-            </button>
-          )
-        })}
-      </div>
-    </div>
-  )
+  const items = CHANNELS.map((c, i) => {
+    const st = statusLine(statuses[i].data as ChannelStatus | undefined, statuses[i].isError)
+    const denied = channelGov(c.key) === 'denied'
+    return {
+      key: c.key,
+      label: c.name,
+      icon: c.logo,
+      dimmed: denied,
+      summary: denied ? (
+        // A policy-denied channel shows "Off by admin" instead of its
+        // connection status — the status is moot while the channel is
+        // governed off. Full text in the title for the compact chip.
+        <span
+          className="inline-block mt-0.5 px-1.5 py-px rounded-full text-[11px] font-semibold uppercase bg-bg-hover text-muted border border-border whitespace-nowrap"
+          title={i18nT('pages.settings.channelsPanel.off_by_admin')}
+        >
+          {i18nT('pages.settings.channelsPanel.off_by_admin')}
+        </span>
+      ) : (
+        <span className="flex items-center gap-1.5 text-[11.5px]" style={{ color: st.color }}>
+          {st.dot && <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: st.color }} />}
+          {st.text}
+        </span>
+      ),
+    }
+  })
 
-  // Layout notes: both responsive modes render the SAME three child slots in
-  // the same order (list?, back-button?, panel-wrapper) so React reconciles
-  // the panel wrapper by position and <selected.Panel> is NEVER remounted by
-  // a width transition — remounting would discard unsaved form drafts
-  // (tokens mid-paste, allowlists mid-edit). Only changing the selected
-  // channel (key=) remounts the panel, which is intended.
   return (
-    <div ref={containerRef}>
-      <div className={twoPane ? 'flex gap-6 items-start' : 'flex flex-col'}>
-        {(twoPane || !selected) && list}
-        {!twoPane && selected && (
-          <button
-            onClick={() => setChannel(null)}
-            className="flex items-center gap-1.5 self-start text-[13px] font-medium text-accent bg-transparent border-none cursor-pointer px-0 py-1 mb-2 hover:underline"
-          >
-            <ArrowLeft size={14} />
-            {i18nT('pages.settings.channelsPanel.channels')}
-          </button>
-        )}
-        <div className={twoPane ? 'flex-1 min-w-0' : 'w-full'}>
-          {selected && (
-            // The editable config panel renders ONLY on a confirmed ALLOW; a
-            // denied / still-loading / unavailable governance state shows the
-            // corresponding notice instead, so a user never edits (or the page
-            // never flashes) a form whose config wouldn't take effect.
-            channelGov(selected.key) === 'allowed'
-              ? <selected.Panel key={selected.key} />
-              : <ChannelDisabledPanel
-                  key={`${selected.key}-gov`}
-                  label={selected.name}
-                  variant={channelGov(selected.key) as 'denied' | 'pending' | 'unavailable'}
-                />
-          )}
-        </div>
-      </div>
-    </div>
+    <SettingsSubNav
+      items={items}
+      railWidth={280}
+      listLabel={i18nT('pages.settings.channelsPanel.chat_channels')}
+      backLabel={i18nT('pages.settings.channelsPanel.channels')}
+    >
+      {active => {
+        const selected = CHANNELS.find(c => c.key === active)
+        if (!selected) return null
+        // The editable config panel renders ONLY on a confirmed ALLOW; a
+        // denied / still-loading / unavailable governance state shows the
+        // corresponding notice instead, so a user never edits (or the page
+        // never flashes) a form whose config wouldn't take effect.
+        return channelGov(selected.key) === 'allowed'
+          ? <selected.Panel key={selected.key} />
+          : <ChannelDisabledPanel
+              key={`${selected.key}-gov`}
+              label={selected.name}
+              variant={channelGov(selected.key) as 'denied' | 'pending' | 'unavailable'}
+            />
+      }}
+    </SettingsSubNav>
   )
 }

@@ -2,7 +2,7 @@
   "name": "spec-builder",
   "version": "0.1.0",
   "displayName": "Spec Builder",
-  "description": "Spec-driven development inside Kiro Crew: turn a feature idea into Requirements \u2192 Design \u2192 Tasks with an embedded agent, review the markdown in-app, then hand the approved plan off to an autonomous execution session.",
+  "description": "Spec-driven development inside Kiro Crew: turn a feature idea into Requirements → Design → Tasks with an embedded agent, review the markdown in-app, then hand the approved plan off to an autonomous execution session.",
   "author": "kirocrew",
   "tags": [
     "specs",
@@ -24,7 +24,9 @@
   "backend": {
     "routes": "backend.routes:register_routes"
   },
-  "skills": ["skills/spec-workflow"],
+  "skills": [
+    "skills/spec-workflow"
+  ],
   "ui": {
     "pages": [
       {
@@ -38,5 +40,14 @@
   "heroImage": "/app-assets/spec-builder/hero-light.svg",
   "heroImageDark": "/app-assets/spec-builder/hero-dark.svg",
   "heroImageDetail": "/app-assets/spec-builder/hero-detail-light.svg",
-  "heroImageDetailDark": "/app-assets/spec-builder/hero-detail-dark.svg"
+  "heroImageDetailDark": "/app-assets/spec-builder/hero-detail-dark.svg",
+  "useCases": [
+    "Turn a feature, bug, or quick task into reviewable repository-aware requirements, design, and implementation steps."
+  ],
+  "configuration": [
+    "Choose a project folder and Feature, Bug, or Quick mode, optionally create a fresh worktree, then review and approve each generated stage before starting the build."
+  ],
+  "screenshots": [
+    "/app-assets/spec-builder/screenshot-main.png"
+  ]
 }

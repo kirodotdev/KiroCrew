@@ -96,6 +96,7 @@ const EXTERNALLY_MANAGED_MARKER = "EXTERNALLY-MANAGED";
 const EXTERNALLY_MANAGED_MAX_BYTES = 8192;
 const MANAGED_BY_MAX_CHARS = 128;
 const UPDATE_COMMAND_MAX_CHARS = 512;
+const CHECK_COMMAND_MAX_CHARS = 512;
 
 /**
  * Is this install's update lifecycle owned by an external package manager?
@@ -106,9 +107,12 @@ const UPDATE_COMMAND_MAX_CHARS = 512;
  * `<resourcesPath>/EXTERNALLY-MANAGED`. I/O-bearing and fully injectable, like
  * resolveLinuxInstall above.
  *
- * The marker body is optional JSON `{managedBy, updateCommand}`: `managedBy`
- * names the owning system for the About panel, `updateCommand` is the command
- * the panel offers to copy. Every degenerate marker — empty, unparsable,
+ * The marker body is optional JSON `{managedBy, updateCommand, checkCommand}`:
+ * `managedBy` names the owning system for the About panel, `updateCommand` is
+ * the command the panel offers to copy AND (when the managed auto-update path
+ * is active) the command run to apply an update, and `checkCommand` is the
+ * optional command run to discover whether an update is available. Every
+ * degenerate marker — empty, unparsable,
  * over-cap, a directory, a symlink, a dangling symlink — still means MANAGED:
  * an operator who dropped SOMETHING at that name gets the safe behavior
  * (updater off) even when the metadata is wrong, never a silent fallback to
@@ -118,7 +122,7 @@ const UPDATE_COMMAND_MAX_CHARS = 512;
  * @param {object} [o]
  * @param {object} [o.env=process.env]
  * @param {string} [o.resourcesPath=process.resourcesPath]
- * @returns {{managedBy:string, updateCommand:string}|null} null when not managed
+ * @returns {{managedBy:string, updateCommand:string, checkCommand:string}|null} null when not managed
  */
 function readExternallyManaged({ env = process.env, resourcesPath = process.resourcesPath } = {}) {
   let raw = null;
@@ -157,6 +161,7 @@ function readExternallyManaged({ env = process.env, resourcesPath = process.reso
   }
   let managedBy = "";
   let updateCommand = "";
+  let checkCommand = "";
   try {
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === "object") {
@@ -166,11 +171,14 @@ function readExternallyManaged({ env = process.env, resourcesPath = process.reso
       if (typeof parsed.updateCommand === "string") {
         updateCommand = parsed.updateCommand.trim().slice(0, UPDATE_COMMAND_MAX_CHARS);
       }
+      if (typeof parsed.checkCommand === "string") {
+        checkCommand = parsed.checkCommand.trim().slice(0, CHECK_COMMAND_MAX_CHARS);
+      }
     }
   } catch {
     // Presence alone is the signal; a bare marker means managed, no metadata.
   }
-  return { managedBy, updateCommand };
+  return { managedBy, updateCommand, checkCommand };
 }
 
 // Can the AppImage replace itself, i.e. is the directory HOLDING the image
@@ -437,9 +445,20 @@ function manualDownloadUrl(channel, osPlatform, osArch = process.arch, linuxForm
  * made deliberately — so they are set in one audited place rather than
  * scattered:
  *
- * - autoDownload=false        consent-first UX: discovery must never download.
- *                             The default (true) would download megabytes on a
- *                             background check with no user action.
+ * - autoDownload=false        electron-updater must never fetch from INSIDE
+ *                             checkForUpdates. This is not the same question as
+ *                             "may an update download without a click": that is
+ *                             a policy read per discovery from
+ *                             getAutoDownloadPreference(), and when it is on the
+ *                             "update-available" handler calls startDownload()
+ *                             itself. Keeping the library flag false is what
+ *                             makes every download — automatic or consented —
+ *                             pass through that one guarded function, so the
+ *                             preference can actually turn it off and the
+ *                             re-entrancy guards apply to both callers.
+ *                             It also keeps discovery cheap on macOS: see the
+ *                             autoInstallOnAppQuit note below for why staging,
+ *                             not fetching, is the dangerous step there.
  * - autoInstallOnAppQuit=false FALSE ON EVERY PLATFORM, for two different
  *                             reasons -- electron-updater gives this one flag
  *                             two unrelated meanings:
@@ -588,6 +607,17 @@ function initAutoUpdate(deps) {
     Notification,
     getFlavor,
     getChannelPreference = () => "",
+    // Whether discovery may proceed straight to a download without a click.
+    // Read FRESH per event, like getChannelPreference, so toggling it in
+    // Settings takes effect on the next check with no re-init.
+    //
+    // Defaults to FALSE, and that is deliberate: the module's fallback must be
+    // the consent path, so a host that forgets to wire this loses the
+    // convenience rather than silently downloading behind the user. The PRODUCT
+    // default (on) lives in main.js where the preference store does, and
+    // test/update-ipc-registration.test.js pins that wiring so it cannot
+    // disappear unnoticed.
+    getAutoDownloadPreference = () => false,
     notifyUpdateFound = null,
     stopGateway,
     // Host hook: an install is now in flight, so a gateway that stops answering
@@ -691,6 +721,13 @@ function initAutoUpdate(deps) {
       stampedChannel: stamped,
       channelSwitchable: !managed && (stamped === "insider" || stamped === "stable"),
       channelPreference: getChannelPreference() || "",
+      // Current auto-download policy, so About renders the toggle from the
+      // value the updater will actually act on rather than from its own copy
+      // of the store. Read through the same guard as the event path: a
+      // throwing reader reports "off", matching what would happen on discovery.
+      autoDownload: (() => {
+        try { return !!getAutoDownloadPreference(); } catch { return false; }
+      })(),
       // Externally-managed metadata, both empty on a self-updating install.
       managedBy: managed ? managed.managedBy || "" : "",
       updateCommand: managed ? managed.updateCommand || "" : "",
@@ -711,8 +748,298 @@ function initAutoUpdate(deps) {
   // override, so it wins over every runtime detection below — the updater is
   // never armed and the feed is never contacted.
   if (managed) {
-    log.info(`[update] externally managed${managed.managedBy ? ` by ${managed.managedBy}` : ""} — auto-update disabled`);
-    return { check: () => {}, download: async () => {}, install: async () => {}, getInfo, disabled: "externally-managed" };
+    // A BARE marker (present, but no updateCommand) means "someone else owns
+    // updates and gave us nothing to run": keep the historical no-op behavior.
+    if (!managed.updateCommand) {
+      log.info(`[update] externally managed${managed.managedBy ? ` by ${managed.managedBy}` : ""} — auto-update disabled`);
+      return { check: () => {}, download: async () => {}, install: async () => {}, getInfo, disabled: "externally-managed" };
+    }
+
+    // MANAGED AUTO-UPDATE (marker-driven): the marker carries the very
+    // commands that own this install's lifecycle, so instead of arming
+    // electron-updater or contacting the feed (which would fight the external
+    // manager), we discover and apply updates by SHELLING the marker's own
+    // commands.
+    //
+    // TRUST / HARDENING: the EXTERNALLY-MANAGED marker is an operator/packager
+    // file under <resourcesPath>, and — unlike the Python security_policy pins,
+    // which live in a home dir a prompt-injected agent shell cannot write — it
+    // is NOT a protected trust root; on a user-writable install its directory
+    // may be writable. So we do not lean on the marker's integrity: we HARDEN
+    // EXECUTION instead (see runManagedCommand) — a narrowed system-only PATH so
+    // a planted shim on the user's PATH cannot shadow a command, cwd="/" (never
+    // the app or an inherited dir), a timeout, and bounded retained output. The
+    // command still runs through a shell, so the writer MUST name absolute
+    // binaries (a bare name will not resolve under the narrowed PATH); we NEVER
+    // interpolate untrusted input. Platform-agnostic: the same path serves
+    // macOS/Windows/Linux.
+    log.info(`[update] externally managed${managed.managedBy ? ` by ${managed.managedBy}` : ""} — managed auto-update (self-contained commands)`);
+
+    let foundVersion = null; // last version discovered by the checkCommand, awaiting apply
+    let managedQuitArmed = false; // is a before-quit auto-apply handler installed?
+    let managedInstalling = false; // an apply is in progress — pause the poll
+
+    // Mirror emitError's renderer contract (emitError itself is defined further
+    // down, after this early return, so it is out of scope here): a failure
+    // WITH ITS PHASE so the card can distinguish check from install failures.
+    const emitManagedError = (phase, err) => {
+      const { code, detail, httpStatus } = classifyError(err);
+      log.error(`[update] managed ${phase} failed (${code})`, err);
+      emit("error", {
+        phase,
+        code,
+        message: detail,
+        ...(httpStatus === undefined ? {} : { httpStatus }),
+      });
+    };
+
+    // Bound retained output so a chatty command cannot exhaust memory (we keep
+    // DRAINING both streams either way), and cap how long an apply / check runs.
+    const MANAGED_OUTPUT_CAP = 64 * 1024;
+    const MANAGED_APPLY_TIMEOUT_MS = 30 * 60 * 1000; // 30 min ceiling for an apply
+    const MANAGED_CHECK_TIMEOUT_MS = 45 * 1000; // a check must not hang the UI
+    const MANAGED_VERSION_CAP = 128; // a version string is short; cap like the sibling
+    // A narrowed, non-user-writable PATH: an agent-writable entry on the user's
+    // own PATH cannot shadow a command. The marker's commands must name ABSOLUTE
+    // binaries (a bare name will not resolve here) — mirrors CommandProvider.
+    const managedPath = () =>
+      process.platform === "win32"
+        ? [
+            `${process.env.SystemRoot || "C:\\Windows"}\\System32`,
+            process.env.SystemRoot || "C:\\Windows",
+          ].join(";")
+        : "/usr/bin:/bin:/usr/sbin:/sbin";
+
+    // Run a marker command through the platform shell, resolving to
+    // {code, out} (combined stdout+stderr, capped). Never rejects: spawn errors
+    // and timeouts resolve with a non-zero code so callers treat them uniformly.
+    // Hardened like the Python CommandProvider: narrowed PATH, cwd="/", a
+    // timeout, and bounded retained output.
+    const runManagedCommand = (command, { timeout } = {}) => new Promise((resolve) => {
+      const cp = require("child_process");
+      let out = "";        // combined stdout+stderr, for logging an apply
+      let outStdout = "";  // stdout ONLY, for deriving the check's version
+      let settled = false;
+      // `failed` marks that the command could not be RUN to completion (spawn
+      // error or timeout kill), as distinct from running and exiting non-zero.
+      // The check path treats these differently: a run that exits non-zero is
+      // "no update", but a command that could not run at all is an error.
+      const done = (code, failed) => {
+        if (!settled) {
+          settled = true;
+          resolve({ code: typeof code === "number" ? code : 1, out, stdout: outStdout, failed: !!failed });
+        }
+      };
+      // Keep consuming BOTH streams (so the pipe never blocks the child) but
+      // stop RETAINING once capped. stdout is captured separately because the
+      // version is derived from stdout ONLY — a warning printed to stderr must
+      // never be mistaken for the version.
+      const capped = (s) => (s.length > MANAGED_OUTPUT_CAP ? s.slice(0, MANAGED_OUTPUT_CAP) : s);
+      const onStdout = (d) => {
+        const s = d.toString();
+        if (out.length < MANAGED_OUTPUT_CAP) out = capped(out + s);
+        if (outStdout.length < MANAGED_OUTPUT_CAP) outStdout = capped(outStdout + s);
+      };
+      const onStderr = (d) => {
+        if (out.length < MANAGED_OUTPUT_CAP) out = capped(out + d.toString());
+      };
+      let child;
+      try {
+        // `command` is NOT user input: it is operator-controlled text from the
+        // EXTERNALLY-MANAGED marker, and execution is hardened (narrowed system
+        // PATH, cwd="/", bounded output, timeout). See the trust note above.
+        // nosemgrep: javascript.lang.security.detect-child-process.detect-child-process
+        child = cp.spawn(command, { // nosemgrep: javascript.lang.security.detect-child-process.detect-child-process
+          shell: true,
+          cwd: "/",
+          env: { ...process.env, PATH: managedPath() },
+          ...(timeout ? { timeout } : {}),
+        });
+      } catch (err) {
+        log.error("[update] managed command spawn threw", err);
+        return done(1, true);
+      }
+      if (child.stdout) child.stdout.on("data", onStdout);
+      if (child.stderr) child.stderr.on("data", onStderr);
+      child.on("error", (err) => { log.error("[update] managed command error", err); done(1, true); });
+      // A timeout kill closes with a null exit code and a signal; treat that as
+      // "could not run", not as a non-zero exit.
+      child.on("close", (code, signal) => done(code, code === null && signal != null));
+    });
+
+    // The command run to APPLY an update, on quit and on explicit install.
+    // Bounded by a ceiling timeout so a wedged package manager cannot hang quit.
+    const runUpdateCommand = () => runManagedCommand(managed.updateCommand, { timeout: MANAGED_APPLY_TIMEOUT_MS });
+
+    // Fresh-read the auto-download preference; a throwing reader fails toward
+    // NOT auto-installing (same direction as the feed path's deferred handler).
+    const autoDownloadOn = () => {
+      try { return !!getAutoDownloadPreference(); } catch (err) {
+        log.error("[update] getAutoDownloadPreference threw — treating as off", err);
+        return false;
+      }
+    };
+
+    // Auto-on-restart: apply the discovered update on the next natural quit.
+    // Mirrors deferredInstallOnQuit — pref is re-read FRESH at quit time so a
+    // toggle-off between discovery and quit is honored.
+    const managedInstallOnQuit = (event) => {
+      // Nothing pending (a later check cleared it, or it was already applied):
+      // let the quit proceed normally — never relaunch into a withdrawn update.
+      if (!foundVersion) {
+        log.info("[update] managed quit handler fired with no pending update — not applying");
+        return;
+      }
+      let stillOn = false;
+      try { stillOn = !!getAutoDownloadPreference(); } catch (err) {
+        log.error("[update] getAutoDownloadPreference threw on quit — not installing", err);
+      }
+      if (!stillOn) {
+        log.info("[update] managed auto-download off at quit — not applying on quit");
+        return;
+      }
+      event.preventDefault();
+      (async () => {
+        managedInstalling = true;
+        emit("installing", { version: foundVersion });
+        try { if (onInstallDispatched) onInstallDispatched(); } catch { /* advisory */ }
+        try { if (stopGateway) await stopGateway(); } catch (err) {
+          log.error("[update] managed stop on quit errored", err);
+        }
+        log.info("[update] managed deferred install on quit — running update command");
+        const { code } = await runUpdateCommand();
+        if (code === 0) {
+          app.relaunch();
+        } else {
+          // The apply failed; the user asked to quit, so honor that and exit
+          // WITHOUT relaunching into a version that did not install.
+          log.error(`[update] managed deferred install failed (exit ${code}) — quitting without relaunch`);
+          try { if (onInstallFailed) onInstallFailed(); } catch { /* advisory */ }
+        }
+        app.exit(0);
+      })();
+    };
+
+    // Undo a quit-time auto-apply armed by an earlier check and forget the
+    // discovered version. Called when a later check finds nothing pending, so a
+    // normal quit does not relaunch into an update the external manager already
+    // applied or withdrew — the feed path clears its deferred state for the
+    // same reason.
+    const disarmManagedQuit = () => {
+      foundVersion = null;
+      if (managedQuitArmed) {
+        app.removeListener("before-quit", managedInstallOnQuit);
+        managedQuitArmed = false;
+      }
+    };
+
+    async function managedCheck() {
+      emit("checking");
+      if (!managed.checkCommand) {
+        // The marker says how to APPLY an update but gives no way to DISCOVER
+        // one. This is a check error, NOT a green "up to date": a silent
+        // "latest" would hide every future update for this install forever.
+        log.info("[update] managed: no checkCommand — cannot check for updates");
+        emitManagedError("check", new Error("this managed install has no checkCommand"));
+        return;
+      }
+      const { code, stdout, failed } = await runManagedCommand(managed.checkCommand, {
+        timeout: MANAGED_CHECK_TIMEOUT_MS,
+      });
+      if (failed) {
+        // Could not RUN the command (spawn error or timeout) — an error, not
+        // "up to date". Mirrors the sibling CommandProvider, which returns an
+        // error verdict for a check it could not execute.
+        log.error("[update] managed check could not run");
+        emitManagedError("check", new Error("managed check command failed to run"));
+        return;
+      }
+      if (code !== 0) {
+        // Ran and exited non-zero: no update available (sibling contract). Undo
+        // any quit-time auto-apply armed by an earlier check that DID find one,
+        // so a normal quit does not relaunch into a withdrawn/applied update.
+        log.info(`[update] managed check: up to date (code=${code})`);
+        disarmManagedQuit();
+        emit("not-available");
+        return;
+      }
+      // Sibling contract: exit 0 and stdout IS the version (trimmed, capped).
+      // Derived from stdout ONLY so a stderr warning is never read as a version.
+      const version = stdout.trim().slice(0, MANAGED_VERSION_CAP);
+      if (!version) {
+        // Exit 0 that prints NO version is a broken command, not an available
+        // update: treating it as available would relaunch to the SAME version
+        // forever. Fail the check rather than report "latest".
+        log.error("[update] managed check: exit 0 but printed no version");
+        emitManagedError("check", new Error("managed check command produced no version"));
+        return;
+      }
+      foundVersion = version;
+      log.info(`[update] managed check: update available -> ${version}`);
+      emit("found", { version });
+      // Auto-on-restart: if the user allows auto-download, arm a one-shot
+      // before-quit handler that applies on the natural quit.
+      if (autoDownloadOn() && !managedQuitArmed) {
+        managedQuitArmed = true;
+        app.once("before-quit", managedInstallOnQuit);
+      }
+    }
+
+    async function managedDownload() {
+      // Managed download+apply is ONE step (the updateCommand). "download" just
+      // lights the UI Install action; it never applies. Discover first if the
+      // UI raced the check.
+      if (!foundVersion) {
+        await managedCheck();
+      }
+      if (foundVersion) {
+        emit("downloaded", { version: foundVersion });
+      }
+    }
+
+    async function managedInstall() {
+      managedInstalling = true;
+      emit("installing", { version: foundVersion });
+      try { if (onInstallDispatched) onInstallDispatched(); } catch { /* advisory */ }
+      try { if (stopGateway) await stopGateway(); } catch (err) {
+        log.error("[update] managed stop before install errored", err);
+      }
+      const { code } = await runUpdateCommand();
+      if (code === 0) {
+        log.info("[update] managed install succeeded — relaunching");
+        app.relaunch();
+        app.exit(0);
+        return;
+      }
+      log.error(`[update] managed install failed (exit ${code})`);
+      try { if (onInstallFailed) onInstallFailed(); } catch { /* advisory */ }
+      emitManagedError("install", new Error(`managed update command exited ${code}`));
+    }
+
+    // Auto-check on launch and on the same interval as the feed path, so a
+    // managed install DISCOVERS updates without the user clicking Check
+    // (auto-update is on by default). Background checks only discover — an
+    // apply still requires the auto-download preference or an explicit install.
+    // The poll skips windows where an apply is already in flight, and both
+    // timers are unref'd so they never hold the process open (Electron quit,
+    // tests).
+    const managedLaunchTimer = setTimeout(() => {
+      managedCheck().catch((err) => log.error("[update] managed launch check threw", err));
+    }, LAUNCH_CHECK_DELAY_MS);
+    const managedPollTimer = setInterval(() => {
+      if (!managedInstalling) {
+        managedCheck().catch((err) => log.error("[update] managed poll check threw", err));
+      }
+    }, CHECK_INTERVAL_MS);
+    if (typeof managedLaunchTimer.unref === "function") managedLaunchTimer.unref();
+    if (typeof managedPollTimer.unref === "function") managedPollTimer.unref();
+
+    return {
+      check: () => managedCheck(),
+      download: () => managedDownload(),
+      install: () => managedInstall(),
+      getInfo,
+    };
   }
   // Updating requires an installed, signed bundle (macOS code signature
   // validation is mandatory for Squirrel.Mac; Linux AppImage needs the
@@ -802,6 +1129,15 @@ function initAutoUpdate(deps) {
   let downloading = false;
   let stagedVersion = null; // version electron-updater has downloaded + staged
   let stagedNotes = "";
+  // Was the staged build fetched by the auto-download policy rather than asked
+  // for? It decides whether turning the preference OFF also disarms the
+  // install-on-quit: a stage the user never requested must not land on a user
+  // who has just declined auto-updates, while a stage they explicitly
+  // downloaded stays armed because the preference is not what put it there.
+  let stagedWasAutomatic = false;
+  // Set when startDownload() is entered from the discovery handler, and read by
+  // the update-downloaded handler -- the event carries no provenance of its own.
+  let downloadWasAutomatic = false;
   let foundVersion = null; // last version surfaced to the user, awaiting consent
   let installing = false;
   let quitHandled = false;
@@ -904,10 +1240,21 @@ function initAutoUpdate(deps) {
   }
 
   /**
-   * Explicit user consent: download the version last surfaced by safeCheck.
-   * Never called automatically — this is the whole point of autoDownload=false.
+   * Download the version last surfaced by safeCheck.
+   *
+   * Reached two ways: the user's explicit Download action, and — when
+   * getAutoDownloadPreference() is on — automatically from the
+   * "update-available" handler. Both enter here rather than through
+   * electron-updater's own autoDownload flag, which stays false: routing every
+   * download through one guarded function is what keeps the decision
+   * inspectable, cancellable by preference, and identical on all platforms.
+   *
+   * Every early return below is load-bearing for the automatic caller, which
+   * fires on a 4-hourly timer and can therefore re-enter: an in-flight download
+   * is not restarted, an already-staged version is not re-fetched, and a call
+   * with nothing discovered discovers instead of blind-downloading.
    */
-  async function startDownload() {
+  async function startDownload({ automatic = false } = {}) {
     if (downloading) { emit("downloading", { version: pendingVersion() }); return; }
     if (updateReady && stagedVersion) {
       emit("downloaded", { version: stagedVersion, notes: stagedNotes });
@@ -920,8 +1267,9 @@ function initAutoUpdate(deps) {
       await safeCheck();
       return;
     }
-    log.info(`[update] user consented — downloading ${foundVersion}`);
+    log.info(`[update] downloading ${foundVersion}`);
     downloading = true;
+    downloadWasAutomatic = automatic;
     emit("downloading", { version: pendingVersion() });
     try {
       await autoUpdater.downloadUpdate();
@@ -1088,6 +1436,33 @@ function initAutoUpdate(deps) {
   // preventDefault, stop the gateway, then quitAndInstall.
   function deferredInstallOnQuit(event) {
     if (quitHandled || !updateReady) return;
+    // The opt-out has to govern the update the user opted out BECAUSE OF.
+    // Without this, the nudge says "downloading, will install on your next
+    // quit", the user follows it to the toggle and switches it off, and the
+    // stage lands anyway — the one outcome the toggle promises will not happen.
+    // Only an AUTOMATIC stage is dropped: one the user downloaded on purpose
+    // stays armed, because the preference is not what put it there.
+    //
+    // The bytes are kept either way. This disarms the install, it does not
+    // discard the stage, so an explicit Install still applies it immediately
+    // with nothing to re-download.
+    if (stagedWasAutomatic) {
+      let stillAuto = false;
+      try {
+        stillAuto = !!getAutoDownloadPreference();
+      } catch (err) {
+        // Unreadable preference: treat as opted OUT here. This is the same
+        // fail-toward-consent direction as the discovery path, and on this path
+        // it is the one that cannot surprise anyone -- the app quits as asked
+        // and the stage is still there to install later.
+        log.error("[update] getAutoDownloadPreference threw on quit — not installing", err);
+      }
+      if (!stillAuto) {
+        log.info(`[update] auto-download off — leaving ${stagedVersion} staged instead of `
+          + "installing on quit");
+        return;
+      }
+    }
     quitHandled = true;
     event.preventDefault();
     (async () => {
@@ -1209,8 +1584,10 @@ function initAutoUpdate(deps) {
     log.info("[update] up to date");
     emit("not-available");
   });
-  // CONSENT GATE: with autoDownload=false this fires on DISCOVERY, before any
-  // bytes move. Surface what was found and wait for an explicit download().
+  // DISCOVERY, before any bytes move. electron-updater's autoDownload stays
+  // false so it never fetches inside checkForUpdates; whether a download
+  // follows is OUR decision, made here from the preference, so the automatic
+  // and the consent paths share one guarded entry point (startDownload).
   autoUpdater.on("update-available", (info) => {
     foundVersion = (info && info.version) || null;
     // A stage is only useful if it is still the latest thing on the feed.
@@ -1223,7 +1600,7 @@ function initAutoUpdate(deps) {
         emit("downloaded", { version: stagedVersion, notes: stagedNotes });
         return;
       }
-      // Superseded: drop the stale stage so consent re-downloads the NEWEST
+      // Superseded: drop the stale stage so the next download takes the NEWEST
       // build rather than installing an already-old one.
       log.info(`[update] staged ${stagedVersion} superseded by ${foundVersion} — discarding stage`);
       updateReady = false;
@@ -1231,18 +1608,33 @@ function initAutoUpdate(deps) {
       stagedNotes = "";
       app.removeListener("before-quit", deferredInstallOnQuit);
     }
-    log.info(`[update] found ${foundVersion} (running ${app.getVersion()}) — awaiting user consent`);
-    // Nudge hook: main.js shows a native notification pointing at
-    // Settings > About (deduped there, once per version). Discovery-only —
-    // download/install still require the explicit consent actions.
+    let autoDownload = false;
+    try {
+      autoDownload = !!getAutoDownloadPreference();
+    } catch (err) {
+      // A throwing preference reader must not cost the user the discovery
+      // nudge, and it must not be read as consent either — fall back to the
+      // consent path, which is the safe half.
+      log.error("[update] getAutoDownloadPreference threw — treating as off", err);
+    }
+    log.info(`[update] found ${foundVersion} (running ${app.getVersion()}) — `
+      + (autoDownload ? "auto-downloading" : "awaiting user consent"));
+    // Nudge hook: main.js shows a native notification (deduped there, once per
+    // version). Its copy differs by mode, so pass the mode rather than letting
+    // main.js re-read the preference and risk disagreeing with this decision.
     if (typeof notifyUpdateFound === "function") {
-      try { notifyUpdateFound(foundVersion); } catch (err) { log.error("[update] notifyUpdateFound threw", err); }
+      try { notifyUpdateFound(foundVersion, { autoDownload }); } catch (err) { log.error("[update] notifyUpdateFound threw", err); }
     }
     emit("found", {
       version: foundVersion,
       notes: notesFrom(info),
       pubDate: (info && info.releaseDate) || "",
     });
+    // AFTER the "found" emit: the renderer must see the version it is about to
+    // download, and startDownload() emits "downloading" over the top of it.
+    // Fire-and-forget — startDownload owns its own error reporting, and this
+    // handler is a synchronous event listener that cannot await.
+    if (autoDownload) void startDownload({ automatic: true });
   });
   autoUpdater.on("download-progress", (p) => {
     // New capability vs. the hand-rolled updater: real progress, so the card
@@ -1258,6 +1650,7 @@ function initAutoUpdate(deps) {
     downloading = false;
     stagedVersion = (info && info.version) || null;
     stagedNotes = notesFrom(info);
+    stagedWasAutomatic = downloadWasAutomatic;
     log.info(`[update] downloaded ${stagedVersion} — ${uiDriven ? "notifying UI" : "prompting"}`);
     emit("downloaded", { version: stagedVersion || app.getVersion(), notes: stagedNotes });
     if (uiDriven) {

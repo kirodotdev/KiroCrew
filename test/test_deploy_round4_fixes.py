@@ -10,6 +10,8 @@ from unittest.mock import patch
 import pytest
 from aiohttp import web
 
+from conftest import requires_symlinks
+
 SCRIPTS_DIR = Path(__file__).parent.parent / "src" / "kiro_crew" / "deploy" / "skills" / "artifact-deploy" / "scripts"
 
 
@@ -32,6 +34,7 @@ class TestSecretFileValidation:
     def _mod(self):
         self.mod = _load_script("attach_backend.py")
 
+    @requires_symlinks
     def test_symlinked_file_rejected(self, tmp_path: Path):
         """Symlinked secret files must be rejected."""
         real = tmp_path / "real_secret"

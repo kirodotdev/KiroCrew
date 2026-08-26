@@ -522,7 +522,7 @@ export function DisplayPanel() {
             onReset={() => setTintCount(RECENT_TINT_COUNT)}
           />
           {/* Color swatches use raw buttons — circular color dots don't fit SettingsButtonGroup's text-button pattern */}
-          <div className="flex flex-col gap-1.5 py-1.5">
+          <div className="flex flex-col gap-1.5 py-1.5" data-setting-label={i18nT('pages.settings.displayPanel.default_for_new_sessions')}>
             <span className="text-[13px] font-semibold text-text">{i18nT('pages.settings.displayPanel.default_for_new_sessions')}</span>
             <div className="text-[12px] text-muted">{i18nT('pages.settings.displayPanel.none_auto_cycle_or_pick_a_fixed_color')}</div>
             <div className="flex flex-wrap items-center gap-1.5">

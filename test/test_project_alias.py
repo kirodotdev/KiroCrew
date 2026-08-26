@@ -91,6 +91,29 @@ class TestRedactAndConvert:
         result = _run_to_project(run)
         assert result["description"] == ""
 
+    def test_run_to_project_description_redacts_before_truncating(self):
+        """#5582: a credential straddling the 4000-char cut must not leak.
+
+        The old spelling ``_redact(desc[:4000])`` sliced first, so a key cut at
+        the boundary lost its tail, stopped matching the credential regex, and
+        the raw prefix escaped into the dashboard payload.
+        The fabricated AKIA-shaped literal is inlined rather than bound to a
+        ``secret``-named variable, which would trip CodeQL's name-based
+        sensitive-source heuristic on this real call path.
+        """
+        run = _make_run()
+        # cut lands 8 chars into the fabricated 20-char key
+        run.description = "x" * 3992 + "AKIAIOSFODNN7EXAMPLE" + " trailing"
+        result = _run_to_project(run)
+        assert "AKIA" not in result["description"]
+        assert len(result["description"]) <= 4000
+
+    def test_run_to_project_plain_description_truncation_unchanged(self):
+        """Ordinary path is result-preserving: no secret ⇒ the same 4000-char slice."""
+        run = _make_run()
+        run.description = "d" * 4100
+        assert _run_to_project(run)["description"] == "d" * 4000
+
     def test_run_to_project_description_falls_back_to_spec_content(self):
         run = _make_run()
         run.spec_content = "Do the thing"

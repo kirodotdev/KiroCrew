@@ -1035,6 +1035,7 @@ class TestFromChat:
         assert _body(resp)["error"] == "bad step"
         # The placeholder run must not survive a rejected plan.
         assert runner._runs == {}
+        assert list(runner._work_dir.glob("plan_*")) == []
 
 
 # ── refine ──

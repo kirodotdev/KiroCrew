@@ -13,7 +13,7 @@
  * so the registry below is the same module instance the component sees.
  */
 import { useRef } from 'react'
-import type { CSSProperties, ReactElement } from 'react'
+import type { CSSProperties, ReactElement, ReactNode } from 'react'
 
 export type StatusEntry = { path: string; status: string }
 
@@ -109,9 +109,25 @@ export function createFakeModel(options: Record<string, unknown>) {
 
 export type FakeModel = ReturnType<typeof createFakeModel>
 
+/** Mirrors the subset of `@pierre/trees`' context-menu API the wrapper touches:
+ *  the row descriptor and the `close()` the menu calls after each action. */
+export type MenuItem = { kind: 'directory' | 'file'; name: string; path: string }
+export type MenuContext = {
+  anchorElement: HTMLElement
+  anchorRect: DOMRect
+  close: (options?: { restoreFocus?: boolean }) => void
+  restoreFocus: () => void
+}
+type FileTreeMockProps = {
+  model: unknown
+  className?: string
+  style?: CSSProperties
+  renderContextMenu?: (item: MenuItem, context: MenuContext) => ReactNode
+}
+
 export const treeMock = {
   models: [] as FakeModel[],
-  fileTreeProps: [] as Array<{ model: unknown; className?: string; style?: CSSProperties }>,
+  fileTreeProps: [] as FileTreeMockProps[],
   reset() {
     this.models.length = 0
     this.fileTreeProps.length = 0
@@ -135,7 +151,7 @@ export function useFileTree(options: Record<string, unknown>): { model: FakeMode
   return { model: ref.current }
 }
 
-export function FileTree(props: { model: unknown; className?: string; style?: CSSProperties }): ReactElement {
+export function FileTree(props: FileTreeMockProps): ReactElement {
   treeMock.fileTreeProps.push(props)
   return <div data-testid="file-tree" className={props.className} style={props.style} />
 }

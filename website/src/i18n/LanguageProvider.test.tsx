@@ -138,8 +138,8 @@ describe('LanguageProvider', () => {
   })
 
   // A regional tag must land on the bare code, or the locale-specific font
-  // override keyed on it — `html:lang(ja)`, `html:lang(ko)` — never matches and the
-  // script silently renders through the Simplified Chinese alias.
+  // override keyed on it — `html:lang(ja)`, `html:lang(ko)` — never matches and
+  // Kana / Hangul fall through to the untagged OS cascade instead of their aliases.
   it.each([['ja-JP', 'ja'], ['ko-KR', 'ko']])(
     'normalizes the %s browser tag for the locale-specific font override',
     async (tag, expected) => {

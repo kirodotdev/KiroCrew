@@ -1028,13 +1028,21 @@ def _update(force: bool = False) -> None:
     print(f"  📂 {proj}")
 
     # Detect current branch
-    branch_result = subprocess.run(
-        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-        cwd=proj,
-        capture_output=True,
-        timeout=10,
-        **UTF8_TEXT,
-    )
+    try:
+        branch_result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=proj,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=10,
+            **UTF8_TEXT,
+        )
+    except subprocess.TimeoutExpired as exc:
+        logging.getLogger(__name__).warning(
+            "git rev-parse timed out after %ss during update", exc.timeout
+        )
+        print("❌ Could not determine current branch (git rev-parse timed out)")
+        sys.exit(1)
     if branch_result.returncode != 0:
         print("❌ Could not determine current branch")
         sys.exit(1)
@@ -1054,25 +1062,44 @@ def _update(force: bool = False) -> None:
 
     # Fetch + reset --hard: no merge conflicts, untracked files preserved
     print("  ⬇️  git fetch…")
-    result = subprocess.run(
-        ["git", "fetch", "origin", branch],
-        cwd=proj,
-        capture_output=True,
-        timeout=60,
-        **UTF8_TEXT,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "fetch", "origin", branch],
+            cwd=proj,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=60,
+            **UTF8_TEXT,
+        )
+    except subprocess.TimeoutExpired as exc:
+        logging.getLogger(__name__).warning(
+            "git fetch timed out after %ss during update", exc.timeout
+        )
+        print(f"  ❌ git fetch timed out after {exc.timeout}s")
+        sys.exit(1)
     if result.returncode != 0:
         print(f"  ❌ git fetch failed:\n{result.stderr.strip()}")
         sys.exit(1)
 
     # Check if there are new commits
-    diff_result = subprocess.run(
-        ["git", "diff", "HEAD", f"origin/{branch}", "--quiet"],
-        cwd=proj,
-        capture_output=True,
-        timeout=10,
-    )
-    if diff_result.returncode == 0:
+    try:
+        diff_result = subprocess.run(
+            ["git", "diff", "HEAD", f"origin/{branch}", "--quiet"],
+            cwd=proj,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=10,
+        )
+        up_to_date = diff_result.returncode == 0
+    except subprocess.TimeoutExpired as exc:
+        logging.getLogger(__name__).warning(
+            "git diff timed out after %ss during update", exc.timeout
+        )
+        # Same branch a non-zero exit takes: assume new commits exist and let
+        # the divergence guard below re-classify before anything destructive.
+        print("  ⚠️  git diff timed out — continuing to the divergence check")
+        up_to_date = False
+    if up_to_date:
         print("\n✅ Already up to date!")
         return
 
@@ -1145,13 +1172,24 @@ def _update(force: bool = False) -> None:
         print(f"  ⚠️  --force: discarding {ahead} local commit(s) not on origin/{branch}.")
 
     # Warn about local tracked-file changes before discarding
-    status = subprocess.run(
-        ["git", "status", "--porcelain"],
-        cwd=proj,
-        capture_output=True,
-        timeout=10,
-        **UTF8_TEXT,
-    )
+    try:
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=proj,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=10,
+            **UTF8_TEXT,
+        )
+    except subprocess.TimeoutExpired as exc:
+        logging.getLogger(__name__).warning(
+            "git status timed out after %ss during update", exc.timeout
+        )
+        # Fail closed: this check exists to warn before the hard reset
+        # discards local tracked changes, so an unreadable answer must
+        # refuse the reset — same stance as the unreadable-divergence guard.
+        print("  ❌ Could not check for local changes (git status timed out)")
+        sys.exit(1)
     tracked_changes = [
         line for line in status.stdout.strip().splitlines() if not line.startswith("??")
     ]
@@ -1188,13 +1226,21 @@ def _update(force: bool = False) -> None:
         sys.exit(1)
 
     print(f"  🔄 git reset --hard origin/{branch}…")
-    result = subprocess.run(
-        ["git", "reset", "--hard", f"origin/{branch}"],
-        cwd=proj,
-        capture_output=True,
-        timeout=10,
-        **UTF8_TEXT,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "reset", "--hard", f"origin/{branch}"],
+            cwd=proj,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=10,
+            **UTF8_TEXT,
+        )
+    except subprocess.TimeoutExpired as exc:
+        logging.getLogger(__name__).warning(
+            "git reset timed out after %ss during update", exc.timeout
+        )
+        print(f"  ❌ git reset timed out after {exc.timeout}s")
+        sys.exit(1)
     if result.returncode != 0:
         print(f"  ❌ git reset failed:\n{result.stderr.strip()}")
         sys.exit(1)
@@ -1202,7 +1248,18 @@ def _update(force: bool = False) -> None:
     # Update the optional kiro-cli backend if present.
     if shutil.which("kiro-cli"):
         print("  🔄 kiro-cli update")
-        subprocess.run(["kiro-cli", "update"], capture_output=True, timeout=120)
+        try:
+            subprocess.run(
+                ["kiro-cli", "update"],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                timeout=120,
+            )
+        except subprocess.TimeoutExpired as exc:
+            logging.getLogger(__name__).warning(
+                "kiro-cli update timed out after %ss; skipping (best-effort)", exc.timeout
+            )
+            print("  ⚠️  kiro-cli update timed out — run manually: kiro-cli update")
 
     # Ensure a supported Node.js for frontend builds
     from kiro_crew.cli import _ensure_node  # circular import: cli -> cli_server -> cli
@@ -1231,33 +1288,48 @@ def _update(force: bool = False) -> None:
     print("\n✅ Kiro Crew updated!")
     print(f"\n{DATA_WARNING}\n")
 
-    # Re-install agent config so new denied commands take effect.
-    # Run as subprocess since the current process has old code loaded.
+    _refresh_agent_config(proj)
+
+
+def _refresh_agent_config(proj: str) -> None:
+    """Re-install agent config so new denied commands take effect.
+
+    Runs as a subprocess since the current process has old code loaded. The
+    refresh is best-effort: the update itself has already succeeded, so any
+    failure here downgrades to a warning telling the operator to re-run setup.
+
+    Two hardening properties this call site must keep:
+
+    * ``stdin`` is ``DEVNULL``. With ``capture_output=True`` the child's
+      output is piped into a buffer nobody displays until the call returns,
+      so any prompt it asks is invisible — and with an inherited terminal it
+      would block silently until the timeout. EOF on stdin makes a prompt
+      return immediately instead of hanging (``_input_or_skip`` takes its
+      ``_SetupAborted`` path, which setup treats as a clean skip; a bare
+      ``input()`` gets ``EOFError``), structurally, without relying on every
+      prompt in setup to guard itself with an isatty check.
+    * ``TimeoutExpired`` is caught. It is raised, not returned, so without a
+      handler a slow refresh would traceback out of ``kirocrew update`` right
+      after the success banner printed.
+    """
     print("  🔒 Refreshing agent config…")
     try:
         r = subprocess.run(
             [sys.executable, "-m", "kiro_crew", "setup", "--agent-only"],
             cwd=proj,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=30,
-            # Output is captured here, so an inherited stdin would let any prompt
-            # the child reaches block invisibly until the timeout: a prompt
-            # nobody can see is a hang. DEVNULL makes it EOF instead, which the
-            # wizard's `_input_or_skip` and `_SetupAborted` path already handles,
-            # and it holds for prompts added later rather than depending on each
-            # one carrying its own terminal check. Same posture as the detached
-            # gateway spawn in `_restart`.
-            stdin=subprocess.DEVNULL,
             env={**os.environ, "PYTHONIOENCODING": "utf-8"},
             **UTF8_TEXT,
         )
-    except subprocess.TimeoutExpired:
-        # Without this the timeout raises past the "Kiro Crew updated" banner
-        # already printed above and ends the command in a traceback, instead of
-        # the actionable warning below.
-        print("  ⚠️  Agent config refresh timed out after 30s")
-        r = None
-    if r is not None and r.returncode == 0:
+    except subprocess.TimeoutExpired as exc:
+        logging.getLogger(__name__).warning(
+            "agent-only config refresh timed out after %ss; skipping (best-effort)", exc.timeout
+        )
+        print("  ⚠️  Agent config refresh timed out — run: kirocrew setup --agent-only")
+        return
+    if r.returncode == 0:
         print("  ✅ Agent config refreshed (deniedCommands + hooks updated)")
     else:
         print("  ⚠️  Agent config refresh failed — run: kirocrew setup --agent-only")
@@ -1795,8 +1867,8 @@ def _logs_cmd(args: argparse.Namespace) -> None:
         probe = subprocess.run(
             ["journalctl", "-u", unit, "-n", "1", "--no-pager"],
             capture_output=True,
-            text=True,
             check=False,
+            **UTF8_TEXT,
         )
         if probe.returncode == 0 and probe.stdout.strip():
             if follow:

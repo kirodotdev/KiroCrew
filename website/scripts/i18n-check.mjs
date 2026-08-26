@@ -96,16 +96,19 @@ const section = (title, pick) => {
   }
   out('')
 }
-// Three sections, because "can this fail" is now a different question from "is this
-// mine". Only a diff-scoped check and a whole-repo HARD ZERO can fail the step: a hard
-// zero has no ceiling, so a new one is always somebody's diff. Every other whole-repo
-// number is a stored total that another branch can move without touching your files, and
-// those are reported.
+// Four sections, because "can this fail" is now a different question from "is this
+// mine". A diff-scoped check and a whole-repo HARD ZERO fail the step: a hard zero has
+// no ceiling, so a new one is always somebody's diff. A whole-repo CEILING fails only
+// when its class GROWS — the frozen sites are inherited, a new one is a diff, and the
+// failure lists every site so yours is findable. Every other whole-repo number is a
+// stored total that another branch can move without touching your files, and those are
+// reported.
 section('YOURS — diff-scoped, fails on any finding', r => r.scope === 'diff')
 section('WHOLE REPO, ENFORCED — no ceiling to inherit', r => r.scope === 'repo' && r.enforce === 'hard-zero')
+section('WHOLE REPO, CEILING — fails only on growth', r => r.scope === 'repo' && r.enforce === 'ceiling')
 section('WHOLE REPO, REPORT ONLY — cannot fail this step', r => r.scope === 'repo' && r.enforce === 'info')
 
-const ceilings = rows.filter(r => r.enforce === 'info' && r.note)
+const ceilings = rows.filter(r => (r.enforce === 'info' || r.enforce === 'ceiling') && r.note)
 for (const r of ceilings) out(`  [${r.id}] ${r.summary} — ${r.note}`)
 if (ceilings.length) out('')
 
@@ -125,6 +128,13 @@ for (const r of bad) {
     out(`  -> [${r.id}] is whole-repo but a HARD ZERO, so there is no ceiling and no`)
     out('     inherited number to blame — a new one almost always comes from this diff.')
     out(`     The offending sites are in the ${fileOf(r.script)} group below.\n`)
+  } else if (r.enforce === 'ceiling') {
+    out(`  -> [${r.id}] is a growth ratchet: the frozen sites are inherited debt, but the`)
+    out('     count only GROWS when a diff adds a site. Every site is listed with file:line')
+    out(`     in the ${fileOf(r.script)} group below — the one(s) matching your diff are the`)
+    out('     growth. If none is yours, a concurrent merge grew the count under you:')
+    out('     convert the added site, or raise the ceiling in the same PR with a line')
+    out('     explaining the growth is inherited.\n')
   } else {
     out(`  -> [${r.id}] is a STORED COUNT (${ENFORCE_LABEL[r.enforce]}), so your diff may not`)
     out('     have caused it: another branch can move this number without touching your')

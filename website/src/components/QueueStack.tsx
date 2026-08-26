@@ -7,6 +7,7 @@ import { useImeGuard } from '../hooks/useImeGuard'
 import { i18nT } from '../i18n/t'
 import { parseRecoveryMessage } from '../pages/chat/RecoveryCard'
 import { hasSubagentCompletionPrefix } from '../pages/chat/subagentCompletion'
+import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 /** System-injected sub-agent completion deliveries waiting for the busy slot.
  *  These are NOT user messages: they must not be editable/cancellable (either
  *  would silently lose a finished agent's result) and rendering each as a
@@ -166,6 +167,7 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
    *  of overlapping it. */
   fuseBelow?: boolean
 }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [_expanded, setExpanded] = useState(false)
   const expanded = _expanded && messages.length > 1
   const [editingId, setEditingId] = useState<string | null>(null)

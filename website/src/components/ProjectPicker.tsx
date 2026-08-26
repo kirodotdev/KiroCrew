@@ -256,7 +256,18 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
                 else if (e.key === 'ArrowLeft' && e.currentTarget.selectionStart === 0 && e.currentTarget.selectionEnd === 0 && browseParent && browseParent !== browsePath) {
                   e.preventDefault(); browse(browseParent)                            // caret at start -> go to parent
                 }
-                else if (e.key === 'Escape' || e.key === 'Tab') { e.preventDefault(); onOpenChange(false); btnRef?.current?.focus() }
+                else if (e.key === 'Escape' || e.key === 'Tab') {
+                  // This input is a composable free-text path field. An Escape
+                  // or Tab the IME owns is cancelling or cycling the candidate
+                  // list, not leaving the picker — acting on it would close the
+                  // popover and yank focus mid-composition. `claimKey` claims
+                  // through this input's own tracked latch (the
+                  // `bindComposition` spread above feeds it) and owns the
+                  // whole decline: native consumption per the latch contract,
+                  // and the synthetic propagation stop React ancestors read.
+                  if (!ime.claimKey(e)) return
+                  e.preventDefault(); onOpenChange(false); btnRef?.current?.focus()
+                }
               }}
               className="flex-1 bg-bg-elevated border border-border rounded px-2 py-1.5 text-[13px] font-mono text-text placeholder:text-muted focus:outline-none focus-visible:border-accent"
             />

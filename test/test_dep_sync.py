@@ -1010,6 +1010,48 @@ def test_every_interpreter_probe_runs_isolated_with_a_neutral_cwd(tmp_path):
         assert kwargs.get("cwd") == target.parent, "probe needs a neutral cwd"
 
 
+def test_probe_forwards_a_timeout_to_the_child(tmp_path):
+    """Interactive callers (the doctor's deps check, the STT toolchain scan)
+    bound the probe so a wedged interpreter cannot hang them; the sync path's
+    default ``None`` keeps its unbounded wait."""
+    target = tmp_path / "venv" / "bin" / "python"
+    target.parent.mkdir(parents=True)
+    seen: list[dict] = []
+
+    def fake_run(cmd, **kwargs):
+        seen.append(kwargs)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with patch.object(dep_sync.subprocess, "run", side_effect=fake_run):
+        dep_sync._probe_interpreter(target, "print(1)", timeout=7)
+        dep_sync._probe_interpreter(target, "print(1)")
+
+    assert seen[0].get("timeout") == 7
+    assert seen[1].get("timeout") is None
+
+
+def test_probe_absolutizes_a_relative_interpreter_path(tmp_path, monkeypatch):
+    """A relative target -- ``shutil.which`` returns one for a relative PATH
+    entry -- must not be re-resolved against the probe's own cwd pin: spawning
+    ``tools/python3`` from ``cwd=tools`` would look for ``tools/tools/python3``
+    and report a healthy interpreter as unprobeable."""
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "python3").touch()
+    monkeypatch.chdir(tmp_path)
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["argv0"] = cmd[0]
+        seen["cwd"] = kwargs.get("cwd")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with patch.object(dep_sync.subprocess, "run", side_effect=fake_run):
+        dep_sync._probe_interpreter(Path("tools/python3"), "print(1)")
+
+    assert seen["argv0"] == str(tmp_path / "tools" / "python3")
+    assert seen["cwd"] == tmp_path / "tools"
+
+
 def test_sync_captures_pip_output_instead_of_writing_it_to_stderr(tmp_path, capsys):
     """pip's output must reach ``emit``, never the inherited stderr.
 

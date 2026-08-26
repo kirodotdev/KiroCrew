@@ -6,11 +6,15 @@ operations are deliberately thin: they reuse the same creation, stop and history
 paths the dashboard itself uses, so a controlled session behaves exactly like one
 a human is typing into.
 
-**Nothing here writes into another session's conversation.** Reading returns a
-transcript tail; stopping cancels an in-flight turn the way the Stop button does;
-creating opens an empty session in the user's sidebar. Every verb is therefore
-resolved and authorized at the moment it acts, with no delivery that can be
-delayed past its own authorization.
+**One verb here writes into another session's conversation: ``session_send``.**
+Reading returns a transcript tail; stopping cancels an in-flight turn the way the
+Stop button does; creating opens an empty session in the user's sidebar; sending
+delivers a message the target runs as its next turn, redacted through
+``sanitize_outbound`` and prefixed with a ``[sent by session … via session_send]``
+envelope so it can never render as something the person typed. An IDLE target runs
+it under the authorization that admitted it; a BUSY target queues it, and the
+generic drain re-runs no check — an accepted window, not an oversight, because a
+human-typed queued message shares it (see the spec, and issue #5911).
 
 Authorization is deny-by-default and checked in one place
 (:func:`authorize_target`) for the two operations that take a target, so a guard
@@ -34,21 +38,16 @@ from kiro_crew.config.loader import (
 from kiro_crew.dashboard.chat_delivery import sanitize_outbound
 from kiro_crew.dashboard.chat_persistence import _TRANSIENT_ROLES as _PERSISTENCE_TRANSIENT_ROLES
 from kiro_crew.dashboard.chat_utils import slot_history_key
-from kiro_crew.dashboard.state import SlotOrigin
+from kiro_crew.dashboard.state import MAX_LIVE_SLOTS, SlotOrigin
 from kiro_crew.history import metadata_now_iso, transcript_stem
 from kiro_crew.security import redact, redact_and_truncate
 from kiro_crew.sel import sel
+from kiro_crew.validation import MAX_LONG_STRING
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
 logger = logging.getLogger(__name__)
-
-#: Live-slot ceiling for `session_create`, matching `_MAX_SLOTS_FOR_FORK` and
-#: `_MAX_SLOTS_FOR_IMPORT`. Every path that allocates a slot enforces the same
-#: number; a creator that skipped it would make the cap advisory, since nothing
-#: else bounds how many sessions one caller may open.
-_MAX_SLOTS_FOR_CREATE = 500
 
 # Reads are cheap but not free — each one walks the target's in-memory window.
 MAX_READ_MESSAGES = 100
@@ -471,9 +470,9 @@ async def create_session(
             code="caller_workspace_changed",
         )
     _refuse_ineligible_creator(state, live_caller)
-    if state.live_slot_count() >= _MAX_SLOTS_FOR_CREATE:
+    if state.live_slot_count() >= MAX_LIVE_SLOTS:
         raise SessionControlError(
-            f"slot cap reached ({_MAX_SLOTS_FOR_CREATE})",
+            f"slot cap reached ({MAX_LIVE_SLOTS})",
             code="slot_cap_reached",
             status=429,
         )
@@ -856,6 +855,102 @@ async def stop_target(
         detail={"result": result.get("info", "stopping")},
     )
     return {"ok": True, "target": slot.key, **result}
+
+
+#: Cap on one delivered message. Aliased to ``validation.MAX_LONG_STRING`` rather
+#: than restated as its own number: a seed prompt is that shape, the MCP schema
+#: layer already rejects on that constant, and two spellings of one 50k limit
+#: would drift apart the first time either moved.
+MAX_SEND_MESSAGE_CHARS = MAX_LONG_STRING
+
+#: Provenance prefix on every delivered message. The target's transcript renders
+#: the message as a user row, and without this line it is indistinguishable from
+#: something the person typed — the same reason auto-nudge tags its injected
+#: turns ``[auto-nudge cycle N]``. The model in the target session sees it too,
+#: so it can weigh the instruction as coming from a peer session, not its user.
+_SEND_PROVENANCE = "[sent by session {caller} via session_send]\n\n"
+
+
+async def send_to_target(
+    state: "DashboardState",
+    *,
+    caller_session_key: str,
+    target: str,
+    message: str,
+) -> dict[str, Any]:
+    """Deliver *message* to *target* as its next agent turn.
+
+    The delivery path is the same queue-vs-run decision the dashboard composer
+    uses (``enqueue_or_run_prompt``): an idle target starts a turn immediately,
+    a busy one queues the message for its next turn. Both outcomes are reported
+    distinctly — ``started`` says which happened — because "it ran" and "it will
+    run later" must not look the same to a caller coordinating several sessions.
+
+    The turn is NOT charged against the background-turn cap, and deliberately so:
+    that cap only binds unattended (app-owned) slots, and every target this
+    function can authorize is attended — see the comment at the delivery call.
+    """
+    # Same prewarm ordering as `stop_target`, for the same reasons: the SEL
+    # write inside `authorize_target`'s deny path must be a cache hit, and the
+    # config warm must be the LAST suspension before the synchronous gate.
+    try:
+        await asyncio.to_thread(sel)
+    except Exception:  # noqa: BLE001 - a prewarm failure must not fail the send
+        logger.warning("session-control SEL prewarm failed", exc_info=True)
+    await prewarm_enabled_check()
+
+    body = message.strip()
+    if not body:
+        raise SessionControlError("message is empty", code="message_empty", status=400)
+    if len(body) > MAX_SEND_MESSAGE_CHARS:
+        raise SessionControlError(
+            f"message exceeds {MAX_SEND_MESSAGE_CHARS} characters",
+            code="message_too_long",
+            status=400,
+        )
+
+    slot = authorize_target(
+        state,
+        caller_session_key=caller_session_key,
+        target=target,
+        operation="send",
+    )
+
+    # Deferred for the same import cycle `stop_target` documents.
+    from kiro_crew.dashboard.chat_runner import _run_chat
+
+    caller_key = caller_slot_key(state, caller_session_key)
+    # Sanitized on the same grounds as the steer path (``chat_delivery`` sanitizes
+    # before ``slot.append``): this body comes from ANOTHER session and is persisted
+    # into — and broadcast from — the target's transcript, so raw content must never
+    # reach that surface. The length gate above deliberately measures the RAW body:
+    # redaction can only shrink the text, so validating the raw form is the honest
+    # limit and keeps the error keyed to what the caller actually sent.
+    prompt = _SEND_PROVENANCE.format(caller=caller_key or "unknown") + sanitize_outbound(body)
+
+    # `_run_chat` is passed straight through, NOT wrapped in
+    # `state.run_background_turn`: that cap is structurally unreachable here.
+    # `run_background_turn` returns the coroutine untouched for an attended slot
+    # (`state.py`, "this wrapper is inert"), `_ChatSlot.unattended` is
+    # `bool(self._app) and not self._human_seen`, and `authorize_target` refuses
+    # every `_app` target above (`app_scoped_target`) — so no target this
+    # function can reach is ever unattended, and a wrapper would only add a
+    # never-taken timeout arm. The composer's own queued path does the same
+    # (`server.py` passes `_run_chat` directly).
+    started = bool(slot.enqueue_or_run_prompt(prompt, _run_chat, state))
+    try:
+        state.push_slots_update()
+    except Exception:  # pragma: no cover - sidebar refresh is best-effort
+        logger.debug("session_send: push_slots_update failed", exc_info=True)
+
+    _audit(
+        caller_session_key=caller_session_key,
+        operation="send",
+        slot_key=slot.key,
+        outcome="allowed",
+        detail={"started": started, "chars": len(body)},
+    )
+    return {"ok": True, "target": slot.key, "started": started}
 
 
 def read_messages(

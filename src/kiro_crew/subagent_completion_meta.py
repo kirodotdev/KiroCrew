@@ -41,6 +41,8 @@ def single_completion_meta(
     agent_name: str = "",
     task: str = "",
     note: str = "",
+    requested_model: str = "",
+    resolved_model: str = "",
 ) -> dict:
     """Structured facts for a per-agent completion card.
 
@@ -49,6 +51,14 @@ def single_completion_meta(
     gateway restart") — the ONLY explanation those messages carry — so the card
     can fold it into the payload without re-reading the header line. Empty on the
     ordinary completion path, where the status word is redundant with the chip.
+
+    ``requested_model`` is the model the spawn PINNED (``""`` ⇒ none, deferring
+    to the provider default); ``resolved_model`` is the model the session
+    ACTUALLY served (``""`` ⇒ unknown/inconclusive, never a wildcard). The card
+    shows the resolved model and flags a mismatch when both are known and differ
+    — making a model-pinned review's real model auditable (issue #3582). Both
+    default to ``""`` so existing callers are unchanged and the key is simply
+    absent-equivalent when a provider cannot report a model.
     """
     return {
         "kind": "single",
@@ -57,6 +67,8 @@ def single_completion_meta(
         "outcome": outcome,
         "task": task,
         "note": note,
+        "requestedModel": requested_model,
+        "resolvedModel": resolved_model,
     }
 
 

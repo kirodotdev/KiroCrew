@@ -9,15 +9,18 @@ import re
 import subprocess
 import sys
 import tempfile
+import uuid
 import zipfile
 from datetime import datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Any
 
 from aiohttp import web
 
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.artifacts import get_default_store
 from kiro_crew.config.loader import KiroCrewConfig, config_dir, data_home
+from kiro_crew.dashboard import part_stream
 from kiro_crew.dashboard.handlers.files import (
     _ZIP_CONTAINER_EXTS,
     _content_matches_ext,
@@ -53,9 +56,9 @@ from kiro_crew.knowledge.llm_pool import DEFAULT_EXTRACTION_EFFORT, LLMPool
 from kiro_crew.knowledge.readers import FileReader
 from kiro_crew.knowledge.retrieval import HybridRetriever
 from kiro_crew.knowledge.spend import source_spend
+from kiro_crew.knowledge.store import KnowledgeBundleError
 from kiro_crew.knowledge.sync import SyncScheduler
 from kiro_crew.knowledge.watcher import KnowledgeWatcher
-from kiro_crew.messaging.raster import SNIFF_BYTES
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
 
@@ -151,6 +154,52 @@ def _store(request: web.Request):
 
 def _pipeline(request: web.Request):
     return request.app.get("knowledge_pipeline")
+
+
+async def _json_object_body(
+    request: web.Request, *, allow_absent: bool = False
+) -> tuple[dict[str, Any] | None, web.Response | None]:
+    """Parse the request body as a JSON **object**, or produce the 400 to return.
+
+    ``await request.json()`` happily returns a list, string, or number for a
+    body that is valid JSON but not an object, and every caller in this module
+    then calls ``.get()`` on the result -- which raises and turns a client
+    mistake into a 500. One owner for the parse-and-shape guard keeps the
+    module's ``request.json()`` call sites on a single contract instead of
+    bespoke per-handler guards.
+
+    Returns ``(body, None)`` on success, or ``(None, error_response)`` when
+    the caller should return early. *allow_absent* treats a request without a
+    readable body as an empty object, for endpoints whose fields all have
+    defaults.
+
+    Deliberately separate from ``_shared.read_bounded_json``, which shares the
+    ``invalid_json``/``body_not_object`` codes: switching these nine sites onto
+    it would mean choosing a byte cap per endpoint (its ``max_bytes`` must be
+    a number, and knowledge bundles have no principled ceiling today), would
+    change the ``"invalid JSON"`` message text existing tests and callers pin,
+    and it has no *allow_absent*. Consolidating the two helpers is deferred
+    scope, not a disagreement about the contract.
+    """
+    if allow_absent and not request.can_read_body:
+        return {}, None
+    try:
+        parsed = await request.json()
+    except (LookupError, RecursionError, ValueError):
+        # json.JSONDecodeError and UnicodeDecodeError are ValueError
+        # subclasses; LookupError is an unknown charset= codec in the
+        # client's Content-Type header; RecursionError is a deeply nested
+        # JSON document blowing the parser's stack. All are client mistakes.
+        # Transport failures (disconnect mid-body, read timeout) deliberately
+        # propagate: they are not a client JSON mistake and keep their 500
+        # status class.
+        return None, web.json_response(
+            {"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if not isinstance(parsed, dict):
+        return None, web.json_response(
+            {"error": "body must be a JSON object", "code": "body_not_object"},
+            status=400)
+    return parsed, None
 
 
 def _create_embedder(app):
@@ -490,10 +539,10 @@ async def update_item(request: web.Request) -> web.Response:
     item_id = request.match_info["id"]
     if not store.get_item(item_id):
         return web.json_response({"error": "not found"}, status=404)
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await _json_object_body(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # _json_object_body returns (dict, None) on success
     allowed = {"tags", "item_type", "status", "title", "summary", "namespace"}
     fields = {k: v for k, v in body.items() if k in allowed}
     if not fields:
@@ -823,10 +872,10 @@ async def pick_folder(request: web.Request) -> web.Response:
 async def add_source(request: web.Request) -> web.Response:
     """POST /api/knowledge/sources -- add a remote source."""
     store = _store(request)
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await _json_object_body(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # _json_object_body returns (dict, None) on success
     name = body.get("name", "")
     source_type = body.get("source_type", "")
     uri = body.get("uri", "")
@@ -1172,10 +1221,10 @@ async def rename_source(request: web.Request) -> web.Response:
     source_id = request.match_info["id"]
     if not store.db.execute("SELECT 1 FROM sources WHERE id = ?", (source_id,)).fetchone():
         return web.json_response({"error": "not found"}, status=404)
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await _json_object_body(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # _json_object_body returns (dict, None) on success
     name = body.get("name")
     if not isinstance(name, str):
         return web.json_response({"error": "name must be a string"}, status=400)
@@ -1300,7 +1349,10 @@ async def retry_file(request: web.Request) -> web.Response:
     """POST /api/knowledge/sources/{id}/files/retry -- reset file to pending."""
     store = _store(request)
     source_id = request.match_info["id"]
-    body = await request.json()
+    body, body_err = await _json_object_body(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # _json_object_body returns (dict, None) on success
     file_path = body.get("file_path", "")
     if not file_path:
         return web.json_response({"error": "file_path required"}, status=400)
@@ -1319,7 +1371,10 @@ async def skip_file(request: web.Request) -> web.Response:
     """POST /api/knowledge/sources/{id}/files/skip -- mark file as skipped."""
     store = _store(request)
     source_id = request.match_info["id"]
-    body = await request.json()
+    body, body_err = await _json_object_body(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # _json_object_body returns (dict, None) on success
     file_path = body.get("file_path", "")
     if not file_path:
         return web.json_response({"error": "file_path required"}, status=400)
@@ -1344,10 +1399,10 @@ async def ingest_text(request: web.Request) -> web.Response:
     pipeline = _pipeline(request)
     if not pipeline:
         return web.json_response({"error": "pipeline not configured"}, status=503)
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await _json_object_body(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # _json_object_body returns (dict, None) on success
     text = body.get("text", "")
     if not text:
         return web.json_response({"error": "no text provided"}, status=400)
@@ -1469,39 +1524,32 @@ async def ingest_file(request: web.Request) -> web.Response:
     filename = getattr(field, "filename", None) or "upload"
     suffix = Path(filename).suffix
     ext = suffix.lower()
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix, prefix="kn_")
+    staged = Path(tempfile.gettempdir()) / f"kn_{uuid.uuid4().hex}{suffix}"
     try:
-        total_size = 0
-        # Capture the leading bytes so the claimed extension can be verified
-        # against the file signature; SNIFF_BYTES covers every signature in the
-        # sibling gate (PNG magic is 8, WEBP needs bytes 8:12, zip/PDF fewer).
-        head = bytearray()
-        while True:
-            chunk = await field.read_chunk()  # type: ignore[union-attr]
-            if not chunk:
-                break
-            total_size += len(chunk)
-            if total_size > _MAX_INGEST_FILE_SIZE:
-                tmp.close()
-                Path(tmp.name).unlink(missing_ok=True)
-                return web.json_response(
-                    {"error": f"file too large (max {_MAX_INGEST_FILE_SIZE // (1024 * 1024)} MB)"}, status=413)
-            if len(head) < SNIFF_BYTES:
-                head.extend(chunk[: SNIFF_BYTES - len(head)])
-            tmp.write(chunk)
-        tmp.close()
+        # The signature gate (CWE-434) and the byte ceiling are both enforced by
+        # the shared streaming path, which judges the leading bytes while they
+        # are still in memory. That is stricter than this call site used to be:
+        # it wrote the whole file first and only then sniffed, so rejected
+        # content did reach the filesystem. Cleanup on cancellation is the
+        # helper's, not this function's -- see part_stream's docstring.
+        await part_stream.stream_part_to_file(
+            field,  # type: ignore[arg-type]
+            staged,
+            max_bytes=_MAX_INGEST_FILE_SIZE,
+            accepts=lambda head: _content_matches_ext(ext, head),
+        )
+    except part_stream.PartTooLarge:
+        return web.json_response(
+            {"error": f"file too large (max {_MAX_INGEST_FILE_SIZE // (1024 * 1024)} MB)"},
+            status=413,
+        )
+    except part_stream.PartContentMismatch:
+        _sel_log("ingest", filename=filename, outcome="rejected")
+        return web.json_response(
+            {"error": f"file content does not match its type: {ext}"}, status=400
+        )
 
-        # Content-signature gate (CWE-434): the extension is attacker-controlled
-        # and FileReader dispatches to binary parsers (.pdf/.docx) purely by
-        # extension, so verify the magic bytes match the claimed type BEFORE the
-        # file is handed to a parser. Text formats have no reliable signature and
-        # pass through, matching the sibling upload gate in handlers/files.py.
-        if not _content_matches_ext(ext, bytes(head)):
-            Path(tmp.name).unlink(missing_ok=True)
-            _sel_log("ingest", filename=filename, outcome="rejected")
-            return web.json_response(
-                {"error": f"file content does not match its type: {ext}"}, status=400)
-
+    try:
         # Decompression-bomb guard (CWE-770): a valid-signature OOXML/zip can
         # still be a bomb whose members expand unbounded once python-docx / the
         # zip parser opens it. Bound the declared member count and aggregate
@@ -1510,9 +1558,9 @@ async def ingest_file(request: web.Request) -> web.Response:
         # corrupt/lying archive. Run off the event loop so a hostile central
         # directory can't stall the gateway loop/heartbeat.
         if ext in _ZIP_CONTAINER_EXTS:
-            reason = await asyncio.to_thread(_inspect_zip_archive, tmp.name)
+            reason = await asyncio.to_thread(_inspect_zip_archive, str(staged))
             if reason is not None:
-                Path(tmp.name).unlink(missing_ok=True)
+                staged.unlink(missing_ok=True)
                 _sel_log("ingest", filename=filename, outcome="rejected", reason=reason)
                 return web.json_response(
                     {"error": f"{ext} archive rejected ({reason})"}, status=400)
@@ -1542,7 +1590,7 @@ async def ingest_file(request: web.Request) -> web.Response:
             finally:
                 Path(tmp_path).unlink(missing_ok=True)
 
-        task = asyncio.create_task(_bg_ingest(tmp.name, source_id))
+        task = asyncio.create_task(_bg_ingest(str(staged), source_id))
         app_tasks = request.app.setdefault("_bg_tasks", set())
         app_tasks.add(task)
         task.add_done_callback(app_tasks.discard)
@@ -1551,7 +1599,7 @@ async def ingest_file(request: web.Request) -> web.Response:
         return web.json_response({"source_id": source_id, "status": "processing"})
     except Exception:
         logger.exception("Ingestion failed for %s", filename)
-        Path(tmp.name).unlink(missing_ok=True)
+        staged.unlink(missing_ok=True)
         return web.json_response({"error": "internal server error"}, status=500)
 
 
@@ -1592,10 +1640,10 @@ async def export_all(request: web.Request) -> web.Response:
 
 async def import_bundle(request: web.Request) -> web.Response:
     """POST /api/knowledge/import -- accept .knowledge JSON bundle."""
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await _json_object_body(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # _json_object_body returns (dict, None) on success
     shape_error = _validate_knowledge_bundle(body)
     if shape_error is not None:
         _sel_log("import", outcome="rejected", reason=shape_error)
@@ -1620,15 +1668,45 @@ async def import_bundle(request: web.Request) -> web.Response:
         rel["description"] = _redact(rel.get("description"))
     try:
         result = _store(request).import_bundle(body)
-    except (KeyError, sqlite3.Error, OverflowError) as exc:
-        # OverflowError: a bundle integer field (e.g. chunk_index) too large
-        # for SQLite's 64-bit INTEGER, raised at bind time inside the store
-        # call -- neither a KeyError nor a sqlite3.Error, so it needs its own
-        # arm or it leaks through as an unhandled 500.
+    except KnowledgeBundleError as exc:
+        # The store enforces the JSON-column well-formedness invariant
+        # (sources.properties / entities.aliases) at the writer; surface its
+        # typed rejection as a clean 400.  Unlike the driver errors below,
+        # its message is validator-crafted (the same class as the handler's
+        # own shape errors above), so it is safe to render verbatim.
         _sel_log("import", outcome="rejected", reason=str(exc))
         return web.json_response(
             {"error": f"malformed bundle: {exc}", "code": "malformed_knowledge_bundle"},
             status=400,
+        )
+    except (KeyError, OverflowError, sqlite3.IntegrityError,
+            sqlite3.ProgrammingError, sqlite3.DataError) as exc:
+        # Only failures that genuinely mean a bad bundle earn a 400:
+        # IntegrityError (constraint/FK violations), ProgrammingError and
+        # DataError (bad values reaching the SQL layer), KeyError (missing
+        # required field), and OverflowError (a bundle integer field, e.g.
+        # chunk_index, too large for SQLite's 64-bit INTEGER, raised at bind
+        # time inside the store call -- neither a KeyError nor a
+        # sqlite3.Error, so it needs its own arm).  The exception detail
+        # stays server-side: the dashboard renders ``error`` verbatim, so
+        # raw driver text must not reach the client.
+        logger.warning("Knowledge bundle import rejected: %s", exc)
+        _sel_log("import", outcome="rejected", reason=str(exc))
+        return web.json_response(
+            {"error": "malformed bundle", "code": "malformed_knowledge_bundle"},
+            status=400,
+        )
+    except sqlite3.Error as exc:
+        # Operational store failures -- OperationalError from a locked DB
+        # past busy_timeout or a full disk, and every other sqlite3.Error --
+        # are not the client's fault: a 400 "malformed bundle" for a valid
+        # file sends the user off debugging their export.  Surface them as a
+        # 5xx with a generic body; the detail is logged server-side only.
+        logger.exception("Knowledge bundle import failed in the store")
+        _sel_log("import", outcome="error", reason=str(exc))
+        return web.json_response(
+            {"error": "internal server error", "code": "knowledge_import_failed"},
+            status=500,
         )
     _sel_log("import", **result)
     return web.json_response(result)
@@ -1708,7 +1786,10 @@ async def batch_embed_items(request: web.Request) -> web.Response:
     if not await embedder.is_available_async():
         return web.json_response({"error": "Embedding model not available"}, status=503)
 
-    body = await request.json() if request.can_read_body else {}
+    body, body_err = await _json_object_body(request, allow_absent=True)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # _json_object_body returns (dict, None) on success
     rebuild = body.get("rebuild", False)
     force = body.get("force", False)
 
@@ -1879,11 +1960,10 @@ async def add_agent_document_route(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "pipeline not configured",
              "code": "pipeline_unavailable"}, status=503)
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response(
-            {"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    body, body_err = await _json_object_body(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # _json_object_body returns (dict, None) on success
     result = await add_agent_document(
         pipeline,
         title=str(body.get("title") or ""),

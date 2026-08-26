@@ -186,6 +186,13 @@ async def api_hooks_create(request: web.Request) -> web.Response:
         hook = await _mutate_hook_store(store.create, validated)
     except _StoreUnavailable:
         return _store_unavailable_response()
+    except ValueError as exc:
+        # store.create now enforces the same invariants as store.update via the
+        # shared validator, so it can raise ValueError. The HOOK_CREATE_SCHEMA
+        # check above normally rejects bad input first, but catch it here too so
+        # any schema/validator drift surfaces as a 400 (like the update handler)
+        # rather than an unhandled 500.
+        return web.json_response({"error": str(exc), "code": "invalid_hook"}, status=400)
     _sel().log_api_access(
         caller=request.get("user", "dashboard"),
         operation="hook.create",
@@ -374,8 +381,11 @@ _hook_semaphore = asyncio.Semaphore(_HOOK_MAX_CONCURRENT)
 # and admits both.
 #
 # Mutated only from the event loop (single-threaded), so a plain set is safe
-# without a lock. Entries are removed in the runner's finally so a failed turn
-# cannot wedge a key permanently.
+# without a lock — PROVIDED the accept path tests membership and `.add()`s the
+# key in one synchronous critical section with no `await` between them. An await
+# there yields to the loop and lets a second same-key request pass the test
+# before the first claims, admitting both (TOCTOU). Entries are removed in the
+# runner's finally so a failed turn cannot wedge a key permanently.
 _hook_inflight_sessions: set[str] = set()
 
 
@@ -886,6 +896,15 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
 
     # One turn per sessionKey. Checked BEFORE the capacity gate so an overlapping
     # call is refused for the accurate reason rather than reported as "capacity".
+    #
+    # Check-and-claim is a single synchronous critical section: the membership
+    # test and the `.add()` run back-to-back with NO `await` between them, so on
+    # the single-threaded event loop no second same-key request can interleave
+    # and pass the test before this one has claimed. An `await` here (e.g. the
+    # capacity semaphore acquire, which yields) would reopen that TOCTOU window
+    # and let both callers proceed to a task — the very race this guards. The
+    # claim is unwound on every path below that does not spawn the runner; a
+    # spawned runner releases it in its own finally.
     if session_key in _hook_inflight_sessions:
         _sel().log_api_access(
             caller="webhook",
@@ -911,9 +930,11 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
             },
             status=409,
         )
+    _hook_inflight_sessions.add(session_key)  # claim — no await since the check above
 
-    # Fire-and-forget: run agent in background, return immediately
+    # From here the key is claimed; every non-spawning exit MUST release it.
     if _hook_semaphore.locked():
+        _hook_inflight_sessions.discard(session_key)
         _sel().log_api_access(
             caller="webhook",
             operation="hooks.agent",
@@ -932,18 +953,24 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
             detail=f"Rejected: {_HOOK_MAX_CONCURRENT} concurrent runs already in flight",
         )
         return web.json_response(
-            {"error": f"hook capacity reached ({_HOOK_MAX_CONCURRENT})", "code": "capacity_reached"}, status=429
+            {"error": f"hook capacity reached ({_HOOK_MAX_CONCURRENT})", "code": "capacity_reached"},
+            status=429,
         )
-    await _hook_semaphore.acquire()  # immediate — no race in single-threaded asyncio
-    _sel().log_api_access(
-        caller="webhook",
-        operation="hooks.agent",
-        outcome="accepted",
-        source="webhook",
-        resources=session_key,
-    )
-    _hook_inflight_sessions.add(session_key)
+
+    permit_acquired = False
     try:
+        # With a positive count acquire completes synchronously; the key was
+        # already claimed above even if a test double or future implementation
+        # makes this await yield.
+        await _hook_semaphore.acquire()
+        permit_acquired = True
+        _sel().log_api_access(
+            caller="webhook",
+            operation="hooks.agent",
+            outcome="accepted",
+            source="webhook",
+            resources=session_key,
+        )
         task = asyncio.create_task(
             _run_hook_agent(
                 state,
@@ -957,8 +984,11 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
             )
         )
     except BaseException:
+        # No runner exists to release the claim or permit. This also covers
+        # audit failures between acquire and create_task.
         _hook_inflight_sessions.discard(session_key)
-        _hook_semaphore.release()
+        if permit_acquired:
+            _hook_semaphore.release()
         raise
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)

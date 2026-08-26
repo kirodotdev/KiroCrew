@@ -7,6 +7,7 @@ import { ROW_ANIM_MS, ROW_CSS_CLICKABLE_TITLE, ROW_CSS_CLOSING, ROW_CSS_OPEN } f
 import { countLines } from '../utils/diffLineCounts'
 
 import { i18nT } from '../i18n/t'
+import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 export interface FileChangeEntry {
   path: string
   before: string
@@ -317,6 +318,7 @@ const FileChangeChips = memo(function FileChangeChips({ fileChanges, onOpenDiff,
   artifactPaths?: Set<string>
   disclosureKey?: string
 }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   if (!fileChanges?.length) return null
   // Minimal keeps the wrapping pill row; anything else uses the grouped card.
   if (style === 'minimal') {

@@ -699,6 +699,11 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # fixed-argv helper, _probe_interpreter, which is where their single
         # spawn now lives: `<target python> -I -X utf8 -c <fixed probe>` with a
         # neutral cwd, so the answer describes the venv instead of the caller.
+        # The doctor's venv deps check (cli_doctor._venv_deps_ok) and the STT
+        # scripts-dir probe (transcribe._python3_bin_dir) route through the
+        # same helper for the same reason: their argv is equally fixed, and an
+        # unisolated `python -c` would let a decoy on the caller's
+        # PYTHONPATH/CWD answer for the interpreter under test.
         "dep_sync.py::_probe_interpreter",
         "dep_sync.py::sync",
         "dep_sync.py::sync_or_reinstall",
@@ -769,13 +774,6 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # classification as ``cli_doctor.py::_doctor`` above.
         "cli_doctor.py::_discord_intent_grants",
         "cli_doctor.py::_doctor_mcp_tools",
-        # Read-only diagnostic for the KAS backend section: ``<kiro-cli> acp
-        # --help`` with a fully constant argv tail — the binary comes from
-        # ``shutil.which(KIRO_CLI_BIN)`` (a fixed name, never agent-supplied)
-        # and the two trailing tokens are module constants. Operator-invoked
-        # doctor, 15s-capped, help text only — no session, no mutation. Same
-        # classification as the other fixed-argv doctor probes.
-        "cli_doctor.py::_kas_engine_flag_supported",
         # Read-only diagnostic for the Source Checkout section: ``git -C <repo>
         # rev-parse/rev-list`` with a hardcoded argv whose only variable is the
         # install's own source directory (derived from the package's module
@@ -808,6 +806,13 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "cli_server.py::_logs_cmd",
         "cli_server.py::_spawn_detached_gateway",
         "cli_server.py::_update",
+        # The agent-only config refresh extracted from _update: a fixed argv
+        # (`<this interpreter> -m kiro_crew setup --agent-only`) built from
+        # sys.executable plus literals, cwd from the detected install layout —
+        # no shell, no PATH lookup, nothing agent-influenced. stdin=DEVNULL
+        # and TimeoutExpired handling are pinned by
+        # test_update_agent_refresh.py.
+        "cli_server.py::_refresh_agent_config",
         # (_divergence_verdict removed — its counting now delegates to the
         # git_divergence module, allowlisted below, and spawns nothing itself.)
         "cli_server.py::_update_wheel",
@@ -976,13 +981,16 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "mcp_gateway/gatewayd.py::main",
         "mcp_gateway/manager.py::_spawn_once",
         "mcp_gateway/stub.py::main",
-        # Read-only `git config` / `git ls-remote --get-url` resolving which
-        # remote the update would fetch from, for the `updates.source` pin. Fixed
-        # list-argv (no shell=True), no agent input: the branch lands mid-key
+        # The update seam's one read-only git chokepoint: `git config` (the
+        # `updates.source` pin's remote, the repo-driver probe, and which remote a
+        # branch tracks) and `git ls-remote --get-url`. Fixed list-argv (no
+        # shell=True), no agent input: the branch lands mid-key
         # (`branch.<x>.remote`) so it cannot lead with a dash, and the remote
         # name — which is read out of git config and COULD — is passed after
         # `--`. Must NOT be sandboxed: it reads the real checkout's git metadata.
-        "platform/update_governance.py::_git",
+        # It does carry `git_neutralizer_env()`, so repo config cannot make these
+        # reads exec a program (`core.fsmonitor` and friends are pinned).
+        "platform/update_governance.py::_git_probe",
         # Read-only `git rev-parse --show-toplevel` deciding whether the install
         # root IS a working tree. Fixed list-argv (no shell=True); the only
         # variable is the path, which comes from KIROCREW_PROJECT_DIR — an
@@ -1047,7 +1055,6 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "pod/provision.py::_run",
         "pod/runtime.py::_git_worktrees",
         "pod/runtime.py::_run",
-        "pod/runtime.py::derive_port",
         "pod/runtime.py::recent_journal",
         "sandbox.py::_probe_sandbox_exec",
         "sandbox.py::_ssh_supports_accept_new",
@@ -1143,7 +1150,9 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "apple_speech/__init__.py::inventory",
         "apple_speech/__init__.py::start",
         "apple_speech/__init__.py::transcribe",
-        "transcribe.py::_python3_bin_dir",
+        # (`transcribe.py::_python3_bin_dir` is absent: its scripts-dir probe
+        # routes through `dep_sync.py::_probe_interpreter`, so an entry here
+        # would be stale.)
         "transcribe.py::_run_whisper_cli",
         "transcribe.py::_transcribe_aws",
         # JSON-Schema ``pattern`` validation for MCP app→gateway tool-call args
@@ -1542,4 +1551,192 @@ def test_bundled_skill_assets_are_not_imported():
         "exempts:\n  " + "\n  ".join(sorted(offenders)) + "\n\nEither move the "
         "shared logic into a real module under src/kiro_crew (where the spawn "
         "audit reviews it), or drop the import."
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Gateway spawn timeout discipline — issue #4210
+#
+# `slack/gateway.py` spawns children on the boot and auto-update paths. PR
+# #4049 established the discipline for a spawn that can time out: own process
+# group (`start_new_session` on POSIX), tree-kill + bounded reap on
+# TimeoutError AND on CancelledError. These two ratchets make the discipline
+# structural: the NEXT spawn added to the file cannot silently regress to an
+# abandoned-child-on-timeout, because the audit below fails until it carries
+# the same treatment.
+# ═══════════════════════════════════════════════════════════════════════════
+
+_GATEWAY_REL = "slack/gateway.py"
+
+#: Functions that own the kill-the-tree + bounded-reap contract. The module
+#: helper lives in `platform/update_provider.py`; the two `_startup_child`
+#: methods are the boot-path equivalent (kill and reap split in two).
+_TREE_KILL_FUNCS = frozenset({"_kill_and_reap", "_kill_startup_child"})
+
+
+@functools.cache
+def _gateway_tree() -> ast.Module:
+    path = _SRC_ROOT / "slack" / "gateway.py"
+    return ast.parse(path.read_text(encoding="utf-8"), str(path))
+
+
+def _is_spawn_call(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr.startswith("create_subprocess_")
+    )
+
+
+def _handler_catches(handler: ast.ExceptHandler, name: str) -> bool:
+    """Whether *handler* names *name* (bare or attribute-qualified) explicitly.
+
+    A blanket ``except Exception`` deliberately does NOT count: the discipline
+    requires the timeout/cancel arm to be explicit so the kill is visibly tied
+    to the abandonment hazard, and `_auto_apply_update`'s outer
+    ``except Exception`` (which does not kill) must not satisfy this audit.
+    """
+    types = handler.type
+    if types is None:
+        return False
+    parts = types.elts if isinstance(types, ast.Tuple) else [types]
+    for part in parts:
+        if isinstance(part, ast.Name) and part.id == name:
+            return True
+        if isinstance(part, ast.Attribute) and part.attr == name:
+            return True
+    return False
+
+
+def _handler_kills(handler: ast.ExceptHandler, proc_name: str) -> bool:
+    """Whether *handler*'s body calls a tree-kill helper on *proc_name*."""
+    for node in ast.walk(handler):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        fname = (
+            fn.id if isinstance(fn, ast.Name) else fn.attr if isinstance(fn, ast.Attribute) else ""
+        )
+        if fname not in _TREE_KILL_FUNCS:
+            continue
+        if any(isinstance(a, ast.Name) and a.id == proc_name for a in node.args):
+            return True
+    return False
+
+
+def test_gateway_spawns_all_own_session():
+    """Every subprocess spawn in slack/gateway.py starts its own session.
+
+    `proc.kill()` signals only the direct child; without
+    ``start_new_session`` the process-group tree kill in the timeout/cancel
+    arms has no group of its own to address, so grandchildren survive the
+    kill and keep running (issue #4210).
+    """
+    missing: list[str] = []
+    spawns = 0
+    for node in ast.walk(_gateway_tree()):
+        if not _is_spawn_call(node):
+            continue
+        spawns += 1
+        if not any(kw.arg == "start_new_session" for kw in node.keywords):
+            missing.append(f"{_GATEWAY_REL}:{node.lineno}")
+    assert spawns >= 10, (
+        f"only {spawns} spawn sites found in {_GATEWAY_REL} — the audit's "
+        "spawn matcher no longer matches the file's spawn idiom; fix the "
+        "matcher rather than deleting the ratchet"
+    )
+    assert not missing, (
+        "Spawn(s) in slack/gateway.py without start_new_session — a timeout "
+        "kill would reach only the direct child, abandoning its descendants "
+        "(issue #4210):\n  " + "\n  ".join(missing) + "\n\nAdd "
+        "start_new_session=platform_compat.IS_POSIX to the spawn."
+    )
+
+
+def test_gateway_proc_waits_all_kill_on_timeout_and_cancel():
+    """Every ``wait_for(<proc>.communicate()|.wait())`` in slack/gateway.py
+    sits under explicit TimeoutError AND CancelledError arms that tree-kill
+    that proc.
+
+    Without the arm, the child is ABANDONED on timeout — the exception
+    propagates (or is swallowed) while the process keeps running with no
+    supervisor, which on the auto-update path means a `git reset` or
+    `kiro-cli update` still mutating the installation (issue #4210).
+    """
+    offenders: list[str] = []
+    audited = 0
+    for func in ast.walk(_gateway_tree()):
+        if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        # Names assigned from a spawn IN THIS function. A proc received as a
+        # parameter (the reap helpers) is that caller's site, audited there.
+        proc_names = {
+            t.id
+            for stmt in ast.walk(func)
+            if isinstance(stmt, ast.Assign)
+            and isinstance(stmt.value, ast.Await)
+            and _is_spawn_call(stmt.value.value)
+            for t in stmt.targets
+            if isinstance(t, ast.Name)
+        }
+        if not proc_names:
+            continue
+        # Map each wait_for-on-a-proc to the Trys enclosing it in their body.
+        parents: dict[ast.AST, ast.AST] = {}
+        for parent in ast.walk(func):
+            for child in ast.iter_child_nodes(parent):
+                parents[child] = parent
+        for node in ast.walk(func):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "wait_for"
+                and node.args
+                and isinstance(node.args[0], ast.Call)
+                and isinstance(node.args[0].func, ast.Attribute)
+                and node.args[0].func.attr in ("communicate", "wait")
+                and isinstance(node.args[0].func.value, ast.Name)
+                and node.args[0].func.value.id in proc_names
+            ):
+                continue
+            audited += 1
+            proc_name = node.args[0].func.value.id
+            timeout_ok = cancel_ok = False
+            cursor: ast.AST | None = node
+            while cursor is not None and cursor is not func:
+                parent = parents.get(cursor)
+                if isinstance(parent, ast.Try) and cursor in ast.walk(parent):
+                    # Only count Trys where the wait sits in the BODY (an
+                    # already-handling arm re-waiting is the reap, not a site).
+                    in_body = any(
+                        cursor is stmt or cursor in ast.walk(stmt) for stmt in parent.body
+                    )
+                    if in_body:
+                        for handler in parent.handlers:
+                            if _handler_kills(handler, proc_name):
+                                if _handler_catches(handler, "TimeoutError"):
+                                    timeout_ok = True
+                                if _handler_catches(handler, "CancelledError"):
+                                    cancel_ok = True
+                cursor = parent
+            if not (timeout_ok and cancel_ok):
+                lacking = " and ".join(
+                    what
+                    for what, ok in (("TimeoutError", timeout_ok), ("CancelledError", cancel_ok))
+                    if not ok
+                )
+                offenders.append(
+                    f"{_GATEWAY_REL}:{node.lineno} ({func.name}: {proc_name}) lacks a "
+                    f"{lacking} arm that tree-kills the proc"
+                )
+    assert audited >= 10, (
+        f"only {audited} proc wait sites found in {_GATEWAY_REL} — the audit's "
+        "wait matcher no longer matches the file's idiom; fix the matcher "
+        "rather than deleting the ratchet"
+    )
+    assert not offenders, (
+        "wait_for on a spawned proc without kill+reap discipline (issue "
+        "#4210):\n  " + "\n  ".join(offenders) + "\n\nWrap the wait in explicit "
+        "TimeoutError and CancelledError arms that call _kill_and_reap (or the "
+        "startup-child kill/reap pair) on the proc before returning/re-raising."
     )

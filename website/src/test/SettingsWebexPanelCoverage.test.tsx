@@ -62,6 +62,13 @@ function config(over: Partial<WebexConfigData> = {}): WebexConfigData {
     bot_token_preview: '',
     enabled: false,
     allowed_emails: ['first@example.com'],
+    // Group spaces default OFF with a deny-all room list: the state the channel
+    // ships in, and the one the security copy describes.
+    allow_group_rooms: false,
+    allowed_room_ids: [],
+    reply_in_thread: true,
+    soft_threshold_pct: 80,
+    hard_threshold_pct: 95,
     ...over,
   }
 }
@@ -308,9 +315,17 @@ describe('WebexPanel save payload', () => {
     fireEvent.click(saveBtn())
 
     await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    // toEqual, not toMatchObject: the payload is the whole contract with the
+    // save endpoint, so a field silently dropped from it — which is how a setting
+    // stops persisting while the UI still shows the new value — fails here.
     expect(save.mock.calls[0][0]).toEqual({
       enabled: true,
       allowed_emails: ['first@example.com'],
+      allow_group_rooms: false,
+      allowed_room_ids: [],
+      reply_in_thread: true,
+      soft_threshold_pct: 80,
+      hard_threshold_pct: 95,
       session_folder: '',
     })
     expect(await screen.findByText('Saved.', undefined, { timeout: 5_000 })).toBeInTheDocument()
@@ -508,5 +523,213 @@ describe('WebexPanel save failure', () => {
     expect(
       await screen.findByText('Save failed. Is the gateway running?', undefined, { timeout: 5_000 }),
     ).toBeInTheDocument()
+  })
+})
+
+/* ── group spaces + behavior controls ─────────────────────────────────────── */
+
+describe('WebexPanel group spaces', () => {
+  it('hides the space allow-list until group spaces are enabled', async () => {
+    seed()
+    await hydrated()
+
+    // The allow-list is meaningless while the channel is DM-only, and showing it
+    // would suggest naming a space is enough on its own.
+    expect(screen.queryByText('Allowed space IDs')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Answer in group spaces' }))
+
+    expect(screen.getByText('Allowed space IDs')).toBeInTheDocument()
+  })
+
+  it('says that enabling group spaces alone grants nothing', async () => {
+    // The copy IS the security contract here: the switch plus an empty room list
+    // answers no space at all, and a reader has to be able to tell.
+    seed({ allow_group_rooms: true })
+    await hydrated()
+
+    expect(
+      screen.getByText(/turning the switch on alone grants nothing/i),
+    ).toBeInTheDocument()
+  })
+
+  it('forwards an added space id', async () => {
+    const { save } = seed({ allow_group_rooms: true })
+    await hydrated()
+
+    fireEvent.change(screen.getByPlaceholderText(/^Y2lzY29zcGFyazovL3VzL1JPT00v/), {
+      target: { value: 'Y2lzY29zcGFyazovL3VzL1JPT00vZXhhbXBsZQ' },
+    })
+    fireEvent.click(screen.getAllByRole('button', { name: /add/i })[1])
+    fireEvent.click(saveBtn())
+
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({
+      allow_group_rooms: true,
+      allowed_room_ids: ['Y2lzY29zcGFyazovL3VzL1JPT00vZXhhbXBsZQ'],
+    })
+  })
+
+  it('renders the group-space switch off by default', async () => {
+    seed()
+    await hydrated()
+    expect(screen.getByRole('switch', { name: 'Answer in group spaces' })).not.toBeChecked()
+  })
+
+  it('warns in amber while the switch is on and no space is named', async () => {
+    // The switch ON with an empty list is a configuration that silently does
+    // nothing, so it earns a warning rather than the grey description alone.
+    seed({ allow_group_rooms: true })
+    await hydrated()
+
+    expect(screen.getByText(/Add the bot to the space, then paste/i)).toBeInTheDocument()
+  })
+
+  it('drops the warning once a space is named', async () => {
+    seed({ allow_group_rooms: true, allowed_room_ids: ['ROOMID'] })
+    await hydrated()
+
+    expect(screen.queryByText(/Add the bot to the space, then paste/i)).not.toBeInTheDocument()
+  })
+
+  it('shows how to obtain a space id', async () => {
+    // A Webex room id is an opaque blob with no UI that reveals it, so without
+    // this the field cannot be filled in at all.
+    seed({ allow_group_rooms: true })
+    await hydrated()
+
+    expect(screen.getByText(/webexapis\.com\/v1\/rooms/)).toBeInTheDocument()
+  })
+})
+
+describe('WebexPanel threshold validation', () => {
+  it('refuses a non-numeric threshold instead of substituting the default', async () => {
+    // `Number(x) || 80` silently replaced a typo with the default, so the field
+    // showed a number the user never chose after a "successful" save.
+    const { save } = seed()
+    await hydrated()
+
+    fireEvent.change(screen.getByDisplayValue('80'), { target: { value: '8 5' } })
+    fireEvent.click(saveBtn())
+
+    expect(save).not.toHaveBeenCalled()
+    expect(await screen.findByText(/Soft context threshold must be a whole number/i)).toBeInTheDocument()
+  })
+
+  it('refuses an out-of-range hard threshold', async () => {
+    const { save } = seed()
+    await hydrated()
+
+    fireEvent.change(screen.getByDisplayValue('95'), { target: { value: '140' } })
+    fireEvent.click(saveBtn())
+
+    expect(save).not.toHaveBeenCalled()
+    expect(await screen.findByText(/Hard context threshold must be a whole number/i)).toBeInTheDocument()
+  })
+
+  it('refuses an inverted pair rather than letting the server reorder it', async () => {
+    // The hard threshold is checked first, so a soft value above it would never
+    // be reached — the server normalizes the pair, and doing that silently
+    // changes auto-compaction behaviour the user believes they set.
+    const { save } = seed()
+    await hydrated()
+
+    fireEvent.change(screen.getByDisplayValue('80'), { target: { value: '96' } })
+    fireEvent.click(saveBtn())
+
+    expect(save).not.toHaveBeenCalled()
+    expect(await screen.findByText(/must not be higher than the hard one/i)).toBeInTheDocument()
+  })
+
+  it('accepts a valid pair and forwards it as numbers', async () => {
+    const { save } = seed()
+    await hydrated()
+
+    fireEvent.change(screen.getByDisplayValue('80'), { target: { value: '70' } })
+    fireEvent.change(screen.getByDisplayValue('95'), { target: { value: '90' } })
+    fireEvent.click(saveBtn())
+
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({
+      soft_threshold_pct: 70,
+      hard_threshold_pct: 90,
+    })
+  })
+})
+
+describe('WebexPanel connection hint', () => {
+  it('names the empty email allow-list as the missing piece', async () => {
+    // `configured` counts the allow-list, so a token with no email reads as "not
+    // configured" — and returning early on that leaves this operator with no
+    // explanation at all while every other channel names what is missing.
+    seed({ configured: false, bot_token_set: true, enabled: true, allowed_emails: [] })
+    await hydrated()
+
+    expect(screen.getByText(/No allowed emails/i)).toBeInTheDocument()
+  })
+
+  it('says nothing when the token itself is missing', async () => {
+    // Nothing is wrong yet: the panel's own setup steps are the guidance.
+    seed({ configured: false, bot_token_set: false, enabled: true, allowed_emails: [] })
+    await hydrated()
+
+    expect(screen.queryByText(/No allowed emails/i)).not.toBeInTheDocument()
+  })
+})
+
+describe('WebexPanel behavior controls', () => {
+  it('forwards a changed threshold pair', async () => {
+    const { save } = seed()
+    await hydrated()
+
+    fireEvent.change(screen.getByDisplayValue('80'), { target: { value: '60' } })
+    fireEvent.change(screen.getByDisplayValue('95'), { target: { value: '90' } })
+    fireEvent.click(saveBtn())
+
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({
+      soft_threshold_pct: 60,
+      hard_threshold_pct: 90,
+    })
+  })
+
+  it('keeps a half-typed threshold as typed rather than coercing it', async () => {
+    // The draft holds strings on purpose: a number-typed draft turns a partial "6"
+    // into 6 and fights the user mid-edit.
+    seed()
+    await hydrated()
+
+    const soft = screen.getByDisplayValue('80')
+    fireEvent.change(soft, { target: { value: '' } })
+
+    expect(soft).toHaveValue('')
+  })
+
+  it('refuses a cleared threshold rather than persisting it', async () => {
+    // An empty field must not persist as 0 — that would make every turn look
+    // over-threshold and compact immediately. It is REFUSED rather than silently
+    // filled with the default, so the user learns the field is still empty
+    // instead of finding a number they did not type.
+    const { save } = seed()
+    await hydrated()
+
+    fireEvent.change(screen.getByDisplayValue('80'), { target: { value: '' } })
+    fireEvent.click(saveBtn())
+
+    expect(save).not.toHaveBeenCalled()
+    expect(
+      await screen.findByText(/Soft context threshold must be a whole number/i),
+    ).toBeInTheDocument()
+  })
+
+  it('forwards the threading toggle', async () => {
+    const { save } = seed()
+    await hydrated()
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Reply in thread' }))
+    fireEvent.click(saveBtn())
+
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ reply_in_thread: false })
   })
 })

@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew.apps.builtins.auto_research.handlers import (
     DEFAULT_DEPTH_DECAY,
     DEFAULT_EXECUTION_MODE,
@@ -730,6 +731,7 @@ class TestStalledCampaignVerdict:
         status, _ = _stalled_campaign_verdict(self.CID, [p])
         assert status == CampaignStatus.FAILED
 
+    @requires_symlinks
     def test_marker_symlink_is_not_trusted(self, _isolate: Path):
         """A LINK at the marker path is rejected by the reader outright — a
         marker symlinked to an unbounded source (e.g. /dev/zero) must never
@@ -803,6 +805,7 @@ class TestStalledCampaignVerdict:
         d.mkdir(parents=True, exist_ok=True)
         assert _read_worker_done(self.CID) is None
 
+    @requires_symlinks
     def test_clear_marker_symlink_removes_link_not_target(self, _isolate: Path):
         """A symlink at the marker path is unlinked — its target's contents
         must never be recursively deleted."""
@@ -1295,6 +1298,7 @@ class TestHTTPHandlers:
             slot_key = f"research-{cid}"
             slot = SimpleNamespace(key=slot_key)
             state.get_or_create_slot.return_value = slot
+            state.get_slot.return_value = slot
             old_loop = await svc.add(slot_key=slot_key, message="old run", idle_secs=60)
             await svc.update(
                 old_loop.id,
@@ -2583,7 +2587,11 @@ class TestWatchdogStopTombstone:
 
         assert removal_attempts == h._TERMINAL_LOOP_REMOVAL_ATTEMPTS
         assert get_campaign(cid)["status"] == CampaignStatus.STOPPED
-        assert svc.get_by_slot(f"research-{cid}") is None
+        retained = svc.get_by_slot(f"research-{cid}")
+        assert retained is not None
+        assert retained.id == loop.id
+        assert retained.active is False
+        assert retained.id not in svc._timers
         assert last_counts == {}
         assert last_ts == {}
         svc.stop()

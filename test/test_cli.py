@@ -1172,14 +1172,10 @@ class TestCronCli:
             mock_svc.remove_job.return_value = True
             args = argparse.Namespace(cron_action="remove", job_id="abc123")
             _cron(args)
-            mock_svc.remove_job.assert_called_once_with("abc123")
-            mock_sel.return_value.log_api_access.assert_called_once_with(
-                caller="cli",
-                operation="cron.remove",
-                outcome="allowed",
-                source="cli",
-                resources="job_id=abc123",
+            mock_svc.remove_job.assert_called_once_with(
+                "abc123", actor="cli", source="cli"
             )
+            mock_sel.return_value.log_api_access.assert_not_called()
 
     def test_cron_remove_not_found_audits_not_found(self):
         with (
@@ -1190,13 +1186,10 @@ class TestCronCli:
             mock_svc.remove_job.return_value = False
             args = argparse.Namespace(cron_action="remove", job_id="ghost")
             _cron(args)
-            mock_sel.return_value.log_api_access.assert_called_once_with(
-                caller="cli",
-                operation="cron.remove",
-                outcome="not_found",
-                source="cli",
-                resources="job_id=ghost reason=not_found",
+            mock_svc.remove_job.assert_called_once_with(
+                "ghost", actor="cli", source="cli"
             )
+            mock_sel.return_value.log_api_access.assert_not_called()
 
     def test_cron_remove_succeeds_when_audit_raises(self, capsys):
         # The first sel() of a process constructs the log and can raise; the
@@ -1208,12 +1201,12 @@ class TestCronCli:
         ):
             mock_svc = mock_svc_cls.return_value
             mock_svc.remove_job.return_value = True
-            mock_sel.side_effect = RuntimeError("SEL trust root unavailable")
             args = argparse.Namespace(cron_action="remove", job_id="abc123")
             _cron(args)
             out = capsys.readouterr()
             assert "Removed job: abc123" in out.out
-            assert "audit log write failed" in out.err
+            assert out.err == ""
+            mock_sel.assert_not_called()
 
 
 class TestPortEnvValidatedAtEntry:
@@ -4380,6 +4373,9 @@ class TestMcpBuiltinDispatch:
         builtin_name = "fakebuiltin"
         # Patch the registry the CLI reads when building subparsers and dispatching.
         monkeypatch.setattr(cli_mod, "_BUILTIN_NAMES", [builtin_name])
+        # The verb is only registered (and dispatched) when the builtin's
+        # mcp_server module resolves (#5901) — make the synthetic one resolve.
+        monkeypatch.setattr(cli_mod, "_builtin_mcp_server_available", lambda _name: True)
         mock_module = MagicMock()
 
         monkeypatch.setattr(sys, "argv", ["kirocrew", f"mcp-{builtin_name}"])

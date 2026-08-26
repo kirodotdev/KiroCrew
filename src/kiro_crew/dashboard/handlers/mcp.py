@@ -1037,6 +1037,28 @@ async def api_mcp_sync(request: web.Request) -> web.Response:
     )
 
 
+def _string_identifier(body: dict, field: str) -> tuple[str, web.Response | None]:
+    """Read one mutation identifier the dashboard's forms post.
+
+    The field must be a STRING before normalization: a truthy non-string
+    (array/object/number from a malformed client) used to reach ``.strip()``
+    and surface as HTTP 500 before any validation ran — past the point where
+    such a handler would already hold the config lock or have touched
+    persistence. Missing or blank keeps the handlers' existing required-field
+    responses untouched; only the TYPE contract is new, and its 400 carries a
+    stable machine-readable ``code``.
+    """
+    raw = body.get(field)
+    if raw is None:
+        raw = ""
+    if isinstance(raw, str):
+        return raw.strip(), None
+    return "", web.json_response(
+        {"error": f"{field} must be a string", "code": f"mcp.{field}_not_string"},
+        status=400,
+    )
+
+
 async def api_mcp_toggle(request: web.Request) -> web.Response:
     """POST /api/mcp/toggle — enable or disable an MCP server globally.
 
@@ -1047,7 +1069,9 @@ async def api_mcp_toggle(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
-    name = body.get("name", "").strip()
+    name, err = _string_identifier(body, "name")
+    if err is not None:
+        return err
     enabled = body.get("enabled", True)
     if not name:
         return web.json_response({"error": "name is required"}, status=400)
@@ -1111,8 +1135,12 @@ async def api_mcp_toggle_tool(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
-    server = body.get("server", "").strip()
-    tool = body.get("tool", "").strip()
+    server, err = _string_identifier(body, "server")
+    if err is not None:
+        return err
+    tool, err = _string_identifier(body, "tool")
+    if err is not None:
+        return err
     enabled = body.get("enabled", True)
     if not server or not tool:
         return web.json_response({"error": "server and tool are required"}, status=400)
@@ -1219,7 +1247,9 @@ async def api_mcp_remove(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
-    name = body.get("name", "").strip()
+    name, err = _string_identifier(body, "name")
+    if err is not None:
+        return err
     if not name:
         return web.json_response({"error": "name is required"}, status=400)
 
@@ -2418,7 +2448,11 @@ async def api_mcp_gateway_enable(request: web.Request) -> web.Response:
                 source="dashboard",
                 resources=f"enabled={enabled} error={exc}",
             )
-            return web.json_response({"error": f"apply failed: {exc}"}, status=500)
+            # The exception detail is in the SEL log above; the client body
+            # (rendered verbatim into a localized UI) gets a generic message.
+            return web.json_response(
+                {"error": "apply failed", "code": "mcp_apply_failed"}, status=500
+            )
 
     sel().log_api_access(
         caller=request.get("user", "dashboard"),
@@ -3061,8 +3095,11 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
         except ConfigReadError:
             return web.json_response({"error": "config.json is corrupt"}, status=500)
         except OSError as exc:
+            # OSError can carry a filesystem path; keep it server-side and send
+            # the client a generic message (rendered verbatim into a localized UI).
+            logger.warning("mcp config lock failed: %s", exc)
             return web.json_response(
-                {"error": f"could not lock config.json: {exc}", "code": "config_lock_failed"},
+                {"error": "could not lock config.json", "code": "config_lock_failed"},
                 status=503,
             )
 
@@ -3093,7 +3130,11 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
                     source="dashboard",
                     resources=f"{audited} stub={stub} error={exc}",
                 )
-                return web.json_response({"error": f"apply failed: {exc}"}, status=500)
+                # Detail is in the SEL log above; the verbatim-rendered client
+                # body gets a generic message.
+                return web.json_response(
+                    {"error": "apply failed", "code": "mcp_apply_failed"}, status=500
+                )
         elif not nothing_written:
             # No callback means no gateway wired this process -- but the allowlist
             # was already persisted above, so the change WAS recorded and takes

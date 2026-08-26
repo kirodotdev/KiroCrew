@@ -14,6 +14,7 @@ import subprocess
 
 import pytest
 
+from kiro_crew import platform_compat
 from kiro_crew.platform import update_capability
 from kiro_crew.platform.update_capability import (
     _git_toplevel,
@@ -290,11 +291,11 @@ class TestRunningFromCheckout:
         self._pin_checkout(monkeypatch, None)
         assert running_from_checkout(str(tmp_path)) is False
 
-    def test_a_symlink_to_the_checkout_still_matches(self, tmp_path, monkeypatch):
+    def test_a_directory_alias_to_the_checkout_still_matches(self, tmp_path, monkeypatch):
         real = tmp_path / "real"
         real.mkdir()
         link = tmp_path / "link"
-        link.symlink_to(real, target_is_directory=True)
+        platform_compat.symlink_or_junction(real, link)
         self._pin_checkout(monkeypatch, real)
         assert running_from_checkout(str(link)) is True
 

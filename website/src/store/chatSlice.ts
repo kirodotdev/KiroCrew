@@ -2,6 +2,7 @@ import { createSlice, createAsyncThunk, createSelector, type PayloadAction } fro
 import { api } from '../api/client'
 import { addSlotOptimistic, updateSlot, removeSlotOptimistic, markSlotRead, fetchSlots, slotSurfaceKey, sseSlots, sseConnected } from './dashboardSlice'
 import { resolveDefaultColor } from '../utils/sessionColors'
+import { isChatPageSurface } from '../utils/channelOrigin'
 import { isSystemNoticeKind } from '../lib/systemNotice'
 import { gcSessionStorage } from '../utils/storageGc'
 import type { RootState } from './index'
@@ -1781,7 +1782,12 @@ export const resumeFromHistory = createAsyncThunk(
     // Without a cursor this response cannot be paged, so do not advertise more:
     // a zero cursor beside hasMore renders an affordance that loads nothing.
     const cursor = typeof d.next_before === 'number' ? d.next_before : null
-    return { ok: d.ok, key: d.key, nextBefore: cursor ?? 0, messages: filterMessages(d.messages || []), hasMore: cursor !== null && (d.has_more || false), total: d.total || 0 }
+    // `surface` (falling back to `mode`) is returned so a caller resuming from
+    // a surface that cannot display every slot (ChatPage's unified view only
+    // shows default/orchestrator/crew, see isChatPageSurface) can tell a
+    // silently-unusable resume apart from a genuinely failed one (#3624) --
+    // the request succeeds either way, so `ok` alone cannot distinguish them.
+    return { ok: d.ok, key: d.key, surface: d.surface ?? d.mode, nextBefore: cursor ?? 0, messages: filterMessages(d.messages || []), hasMore: cursor !== null && (d.has_more || false), total: d.total || 0 }
   },
 )
 
@@ -2772,7 +2778,7 @@ const chatSlice = createSlice({
         if (b) { b.approving = action.payload.approving; return }
       }
     },
-    sseSubagentSpawn(state, action: PayloadAction<{ slot: string; id: string; task: string; agent: string }>) {
+    sseSubagentSpawn(state, action: PayloadAction<{ slot: string; id: string; task: string; agent: string; model?: string }>) {
       if (isUnsafeKey(action.payload.slot) || isUnsafeKey(action.payload.id)) return
       const subs = action.payload.slot !== state.activeSlot
         ? (state.slotActivity[safeKey(action.payload.slot)] ??= { toolLog: [], subagents: {} }).subagents
@@ -2781,6 +2787,9 @@ const chatSlice = createSlice({
       if (existing?.status === 'pending') {
         existing.status = 'running'
         existing.agent = action.payload.agent || existing.agent || 'kirocrew'
+        // Only overwrite a known model with another known one — never clobber a
+        // resolved id back to '' if a later frame omits it.
+        if (action.payload.model) existing.model = action.payload.model
         // The spawn event carries the authoritative task text (the pending
         // card's task is derived from the approval title, which may be empty
         // or just "spawn_run") — always prefer the spawn payload's task.
@@ -2789,6 +2798,7 @@ const chatSlice = createSlice({
       }
       subs[safeKey(action.payload.id)] = {
         id: action.payload.id, task: action.payload.task, agent: action.payload.agent || 'kirocrew',
+        model: action.payload.model || '',
         status: 'running', streaming: existing?.streaming || '', lastTool: '', startedAt: existing?.startedAt || Date.now(), elapsed: 0,
         toolCount: 0, stalled: false,
       }
@@ -2894,7 +2904,7 @@ const chatSlice = createSlice({
         if (st === 'done' || st === 'error' || st === 'stopped') delete subs[id]
       }
     },
-    sseSubagentDone(state, action: PayloadAction<{ slot: string; id: string; elapsed: number; error?: string; stopped?: boolean; outcome?: 'completed' | 'failed' | 'stopped'; task?: string; agent?: string; result?: string }>) {
+    sseSubagentDone(state, action: PayloadAction<{ slot: string; id: string; elapsed: number; error?: string; stopped?: boolean; outcome?: 'completed' | 'failed' | 'stopped'; task?: string; agent?: string; model?: string; result?: string }>) {
       if (isUnsafeKey(action.payload.slot) || isUnsafeKey(action.payload.id)) return
       const subs = action.payload.slot !== state.activeSlot
         ? (state.slotActivity[safeKey(action.payload.slot)] ??= { toolLog: [], subagents: {} }).subagents
@@ -2927,6 +2937,10 @@ const chatSlice = createSlice({
         a.streaming = ''
         if (action.payload.task && !a.task) a.task = action.payload.task
         if (action.payload.agent && !a.agent) a.agent = action.payload.agent
+        // The done frame carries the authoritative served model (the CC path
+        // has resolved it by completion). Prefer a known value, but never
+        // clobber a prior known id back to '' if this frame omits it.
+        if (action.payload.model) a.model = action.payload.model
         if (isNative && action.payload.result !== undefined) a.result = action.payload.result
       }
       else {
@@ -2934,6 +2948,7 @@ const chatSlice = createSlice({
           id: action.payload.id,
           task: action.payload.task || '',
           agent: action.payload.agent || 'kirocrew',
+          model: action.payload.model || '',
           status: doneStatus,
           streaming: '',
           lastTool: '',
@@ -3191,7 +3206,7 @@ const chatSlice = createSlice({
       if (idx >= 0) side.messages.splice(idx, 1)
       side.pending = false
     },
-    sseSubagentSnapshot(state, action: PayloadAction<{ id: string; slot: string; task: string; agent: string; streaming: string; last_tool: string; started: number; tool_count?: number; stalled?: boolean }>) {
+    sseSubagentSnapshot(state, action: PayloadAction<{ id: string; slot: string; task: string; agent: string; model?: string; streaming: string; last_tool: string; started: number; tool_count?: number; stalled?: boolean; idle_secs?: number }>) {
       const d = action.payload
       if (isUnsafeKey(d.slot) || isUnsafeKey(d.id)) return
       const subs = d.slot && d.slot !== state.activeSlot
@@ -3201,11 +3216,23 @@ const chatSlice = createSlice({
       // Live events can interleave with replay because subscription starts before
       // snapshots are sent. Never let a stale running snapshot demote a terminal card.
       if (existing?.status === 'done' || existing?.status === 'error') return
+      const stalled = d.stalled ?? false
       subs[safeKey(d.id)] = {
         id: d.id, task: d.task, agent: d.agent || 'kirocrew',
+        // Prefer the snapshot's model; fall back to any id a live frame already
+        // set, so a reconnect that omits it does not blank the pill.
+        model: d.model || existing?.model || '',
         status: d.last_tool ? 'tool' : 'running', streaming: d.streaming, lastTool: d.last_tool,
         startedAt: d.started * 1000, elapsed: 0,
-        toolCount: d.tool_count ?? 0, stalled: d.stalled ?? false,
+        toolCount: d.tool_count ?? 0, stalled,
+        // Same pairing rule as sseSubagentStalled: the idle span lives and dies
+        // with the flag it justifies, so a non-stalled snapshot can never carry
+        // one. `stalledAt` is the receipt instant — the row advances the figure
+        // from here rather than freezing it beside a live elapsed counter.
+        // Both stay undefined when the gateway omits `idle_secs`, which keeps
+        // the plain "no activity" fallback reachable for an older gateway.
+        idleSecs: stalled ? d.idle_secs : undefined,
+        stalledAt: stalled && typeof d.idle_secs === 'number' ? Date.now() : undefined,
         approval_id: existing?.approval_id, approving: existing?.approving,
       }
     },
@@ -4212,11 +4239,28 @@ const chatSlice = createSlice({
         writeSlotPage(state, key, revived, warmIsPrefix ? hasMore : undefined,
           warmIsPrefix && hasMore ? boundedLen : undefined)
         retainServerTotal(state, key, total, running, warmSeq)
-        // Clear the per-slot run indicator (the _done frame already idles it;
-        // this is belt-and-braces for the fetch-completes-after-_done ordering).
-        const run = (state.slotRun[safeKey(key)] ??= { state: 'idle' })
-        run.state = 'idle'
-        run.lastChunkSeq = undefined
+        // Idle the per-slot run indicator only when the server says the turn is
+        // NOT running. This is a pure non-regression gate for the reconnect
+        // caller (which warms slots MID-TURN): idling is idempotent with the
+        // _done frame — the turn-done caller's belt-and-braces contract for the
+        // fetch-completes-after-_done ordering, unchanged — while the
+        // unconditional write it replaces wiped a RUNNING background pane's
+        // indicator with no server-side recovery until the next chunk frame.
+        // Deliberately NO write in the running direction: the warm is a
+        // point-in-time snapshot racing the ordered live-frame writers
+        // (chunk -> streaming, _done -> idle), and any promotion policy has a
+        // losing ordering (a late fulfillment resurrected a pane a _done had
+        // already idled, wedging its composer locked with no healer inside the
+        // reconnect suppression window). A turn that STARTED while the socket
+        // was down therefore still reads idle until its first post-reconnect
+        // frame — exactly as on main today, where reconnect never touches
+        // background run state at all; closing that pre-existing gap needs an
+        // ordering token on the run entry and is tracked separately.
+        if (!running) {
+          const run = (state.slotRun[safeKey(key)] ??= { state: 'idle' })
+          run.state = 'idle'
+          run.lastChunkSeq = undefined
+        }
         seedContextUsage(state, key, action.payload.context)
       })
       .addCase(createSlot.pending, (state) => { state.creatingSlot = true })
@@ -4275,6 +4319,13 @@ const chatSlice = createSlice({
         }
       })
       .addCase(resumeFromHistory.fulfilled, (state, action) => {
+        // A resume that resolved to a surface ChatPage cannot display must not
+        // mutate this slice at all: consuming the history row while the notice
+        // says "can't be opened" reads as data loss, and switching activeSlot
+        // to an undisplayable slot is the silent bounce #3624 exists to stop.
+        // The wire resume itself already happened (the caller's notice handles
+        // telling the user); the row stays reachable in Older Sessions.
+        if (action.payload.ok && !isChatPageSurface(action.payload.surface)) return
         if (action.payload.ok) {
           // The row just became an open tab, so it leaves the Older-sessions
           // pane — that pane is the complement of the tab list, and leaving the

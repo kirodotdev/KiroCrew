@@ -325,7 +325,7 @@ export default function ComputerUseLiveView() {
   if (phase === 'chip') {
     return (
       <button
-        className="fixed z-[60] bottom-4 left-4 flex items-center gap-2 px-3 py-2 rounded-full border border-border bg-card shadow-lg hover:bg-bg-hover transition-colors"
+        className="fixed z-[60] bottom-safe-offset-4 left-safe-offset-4 flex items-center gap-2 px-3 py-2 rounded-full border border-border bg-card shadow-lg hover:bg-bg-hover transition-colors"
         onClick={() => setPhase('open')}
         aria-label={i18nT('components.computerUseLiveView.show_live_desktop_view')}
         title={i18nT('components.computerUseLiveView.show_live_desktop_view')}

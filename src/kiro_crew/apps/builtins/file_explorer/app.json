@@ -43,5 +43,14 @@
   "heroImage": "/app-assets/file-explorer/hero-light.svg",
   "heroImageDark": "/app-assets/file-explorer/hero-dark.svg",
   "heroImageDetail": "/app-assets/file-explorer/hero-detail-light.svg",
-  "heroImageDetailDark": "/app-assets/file-explorer/hero-detail-dark.svg"
+  "heroImageDetailDark": "/app-assets/file-explorer/hero-detail-dark.svg",
+  "useCases": [
+    "Read, search, preview, download, or discuss files on the gateway host without granting the page write access."
+  ],
+  "configuration": [
+    "Enable the app and open an allowed directory from the path bar; no account is required, and git or ripgrep only add optional status and search enhancements."
+  ],
+  "screenshots": [
+    "/app-assets/file-explorer/screenshot-main.png"
+  ]
 }

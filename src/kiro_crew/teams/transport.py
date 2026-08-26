@@ -11,9 +11,10 @@ Dependency direction is ``teams -> messaging`` (allowed); the neutral
 Teams is DM-only and fail-closed:
 
 * Direct/personal rooms only: in a channel or group chat the bot's reply would
-  land in front of non-authorized members, exposing tool output (same reasoning
-  as the Webex/Telegram direct-only gate). Non-personal scopes are denied and
-  audited BEFORE authorization.
+  land in front of non-authorized members, exposing tool output. Webex and
+  Telegram admit a non-DM room only because each pairs a per-room session with an
+  explicit room allow-list; Teams has neither, so non-personal scopes are denied
+  and audited BEFORE authorization.
 * No streaming: the renderer posts a typing indicator, keeps it alive, and
   delivers the final answer in one shot (``streaming=False``). Buttons ARE real
   here -- an Adaptive Card ``Action.Submit`` round-trips as a message activity --

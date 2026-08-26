@@ -35,6 +35,7 @@ from kiro_crew.dashboard.chat_runner import _resolve_channel_target, _resolve_mi
 from kiro_crew.dashboard.chat_slack import list_slack_channels
 from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.link import (
     SLACK_NAMESPACE,
     UNBIND_REASON_DASHBOARD_UNLINK,
@@ -376,7 +377,11 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
         # message arrives in full instead of being cut at 2,000 chars. No Slack
         # mrkdwn conversion here: this path targets Telegram/Discord/Teams.
         speaker = "You" if row.get("role") == "user" else "Kiro Crew"
-        text = redact_via_context(backfill_content(row))
+        # DISPLAY form, not just the byte scan: a catch-up row reaches the channel
+        # without passing a renderer, so a markdown-collapse credential would be
+        # reassembled whole by the client. Same floor and same context-aware
+        # redactor as the live legs in ``chat_runner``.
+        text, _ = redact_for_display(backfill_content(row), redact_via_context)
         return split_markdown_safe(f"{speaker}: {text}", max_chars)
 
     # Bound the INLINE delivery. Unlike the Slack drain this cannot be

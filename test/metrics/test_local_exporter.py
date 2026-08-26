@@ -3,6 +3,7 @@
 import json
 from unittest.mock import MagicMock
 
+import pytest
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 
@@ -96,13 +97,9 @@ def test_prune_warns_and_defers_once_without_persistent_state(tmp_path, caplog):
 
 def test_prune_protects_live_canonical_writer(tmp_path, monkeypatch):
     exp = JsonlMetricExporter(tmp_path, retention_days=7)
-    day = local_exporter.datetime.now(
-        local_exporter.timezone.utc
-    ).strftime("%Y-%m-%d")
+    day = local_exporter.datetime.now(local_exporter.timezone.utc).strftime("%Y-%m-%d")
     live = _shard(tmp_path, f"metrics-{day}-123.jsonl", 10, age_days=30)
-    rotated = _shard(
-        tmp_path, f"metrics-{day}-123-1.jsonl", 10, age_days=30
-    )
+    rotated = _shard(tmp_path, f"metrics-{day}-123-1.jsonl", 10, age_days=30)
     monkeypatch.setattr(platform_compat, "pid_exists", lambda pid: pid == 123)
 
     exp._prune()
@@ -128,9 +125,7 @@ def test_prune_enforces_total_size_cap_oldest_first(tmp_path):
     assert mid.exists()
 
 
-def test_export_rotates_live_shard_before_it_can_grow_past_cap(
-    tmp_path, monkeypatch
-):
+def test_export_rotates_live_shard_before_it_can_grow_past_cap(tmp_path, monkeypatch):
     # Fresh CI runners can have monotonic uptime below the 300s throttle.
     monkeypatch.setattr(local_exporter.time, "monotonic", lambda: 1.0)
     exp = JsonlMetricExporter(tmp_path, max_total_mb=1)
@@ -202,9 +197,7 @@ def test_export_writes_when_prune_lock_is_contended(tmp_path, monkeypatch):
         nonlocal pruned
         pruned = True
 
-    monkeypatch.setattr(
-        platform_compat, "try_acquire_lock", lambda _fd, *, exclusive: False
-    )
+    monkeypatch.setattr(platform_compat, "try_acquire_lock", lambda _fd, *, exclusive: False)
     monkeypatch.setattr(exp, "_prune", mark_pruned)
 
     assert exp.export(payload).name == "SUCCESS"
@@ -268,3 +261,70 @@ def test_export_then_prune_never_raises(tmp_path):
         assert list(tmp_path.glob("metrics-*.jsonl"))
     finally:
         provider.shutdown()
+
+
+# ── Resource-level process identity (deterministic cumulative resets) ──────
+
+
+def test_export_stamps_process_identity_at_resource_level(tmp_path):
+    """Every record carries the writing process's start-time token, once.
+
+    The token rides at resource level — never as a per-metric attribute — so
+    the dashboard aggregator can key cumulative streams by (PID, identity,
+    attrs) and detect PID reuse deterministically without multiplying any
+    instrument's series cardinality.
+    """
+    own = platform_compat.own_process_start_time()
+    if own is None:
+        pytest.skip("process start time unavailable on this platform")
+    provider = _provider(tmp_path)
+    try:
+        provider.get_meter("test").create_counter("kirocrew.test.count").add(1)
+        provider.force_flush()
+        provider.get_meter("test").create_counter("kirocrew.test.count").add(1)
+        provider.force_flush()
+
+        (shard,) = tmp_path.glob("metrics-*.jsonl")
+        lines = shard.read_text(encoding="utf-8").strip().splitlines()
+        assert len(lines) == 2
+        for line in lines:
+            parsed = json.loads(line)
+            for rm in parsed["resource_metrics"]:
+                attrs = rm["resource"]["attributes"]
+                # Same module-cached token on every record this process writes,
+                # so provider rebuilds stitch into one stream.
+                assert attrs[local_exporter.RESOURCE_ATTR_PROCESS_START_TIME] == own
+    finally:
+        provider.shutdown()
+
+
+def test_export_omits_identity_when_platform_read_unavailable(tmp_path, monkeypatch):
+    """Fail soft: no token means NO field, never an empty or fake identity.
+
+    An absent field is what routes the aggregator onto its legacy value
+    heuristic; an empty-string stamp would be a third shape nothing handles.
+    """
+    monkeypatch.setattr(platform_compat, "own_process_start_time", lambda: None)
+    provider = _provider(tmp_path)
+    try:
+        provider.get_meter("test").create_counter("kirocrew.test.count").add(1)
+        provider.force_flush()
+
+        (shard,) = tmp_path.glob("metrics-*.jsonl")
+        parsed = json.loads(shard.read_text(encoding="utf-8").strip().splitlines()[0])
+        for rm in parsed["resource_metrics"]:
+            attrs = rm["resource"]["attributes"]
+            assert local_exporter.RESOURCE_ATTR_PROCESS_START_TIME not in attrs
+    finally:
+        provider.shutdown()
+
+
+def test_stamp_returns_the_line_untouched_when_the_shape_resists_mutation():
+    """A resource whose ``attributes`` is not a mapping costs the stamp, not the payload.
+
+    The docstring's promise is load-bearing: a stamping failure inside
+    ``export()``'s try block would otherwise fail the whole cycle and drop the
+    metrics that were just serialized.
+    """
+    hostile = json.dumps({"resource_metrics": [{"resource": {"attributes": "not-a-mapping"}}]})
+    assert local_exporter._stamp_process_identity(hostile) == hostile

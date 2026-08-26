@@ -532,7 +532,7 @@ describe('deleting a pack', () => {
     await openDetail('Boba')
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
 
-    expect(confirmSpy).toHaveBeenCalledWith('Delete appearance pack "Boba"? This cannot be undone.')
+    expect(confirmSpy).toHaveBeenCalledWith('Delete appearance pack “Boba”? This cannot be undone.')
     expect(api.galleryDelete).not.toHaveBeenCalled()
     expect(screen.getByRole('dialog')).toBeInTheDocument()
   })

@@ -63,18 +63,17 @@ def test_os_thread_count_matches_proc_when_available():
     assert count >= threading.active_count()
 
 
-def test_open_fds_positive_and_excludes_probe_fd():
-    count = pg.read_open_fds()
-    if count is None:
-        pytest.skip("no fd directory on this platform")
-    # stdin/stdout/stderr at minimum; the enumeration fd itself is excluded.
-    assert count >= 3
+def test_open_fds_delegates_to_the_shared_probe():
+    # The probe's behavior (fd-dir correction, Windows handle count) is pinned
+    # in test_platform_compat_coverage.py; here only the delegation matters.
+    with patch.object(pg.platform_compat, "count_open_fds", return_value=17):
+        assert pg.read_open_fds() == 17
 
 
 def test_readers_return_none_not_raise_when_proc_missing():
     with patch.object(pg.platform_compat, "process_thread_count", return_value=None):
         assert pg.read_os_threads() is None
-    with patch.object(pg.os, "listdir", side_effect=OSError("no proc")):
+    with patch.object(pg.platform_compat, "count_open_fds", return_value=None):
         assert pg.read_open_fds() is None
 
 
@@ -177,10 +176,14 @@ def test_observable_counters_survive_provider_rebuild(tmp_path):
     provider, and telemetry consent changes rebuild the provider in-process —
     the first post-rebuild collection would re-emit the process-lifetime total
     as one giant delta. With CUMULATIVE export each cycle re-emits the running
-    snapshot, and the aggregator reduces the (PID, attrs) stream time-ordered
-    and window-relative, so two providers writing to the same shard (an off/on
-    toggle) still aggregate to the in-window activity: never a doubled 250,
-    never the four export cycles summed (500), and never the raw lifetime
+    snapshot, and the aggregator reduces the (PID, process-identity, attrs)
+    stream time-ordered and window-relative — both providers run in THIS
+    process, so the exporter stamps the same module-cached identity on every
+    record and the segments stitch into one stream (on a platform without a
+    start-time read the records carry no identity and the value heuristic
+    stitches them identically). Two providers writing to the same shard (an
+    off/on toggle) still aggregate to the in-window activity: never a doubled
+    250, never the four export cycles summed (500), and never the raw lifetime
     snapshot — the stream's first sample (100) is the baseline, so the growth
     to 150 reports as 50.
     """

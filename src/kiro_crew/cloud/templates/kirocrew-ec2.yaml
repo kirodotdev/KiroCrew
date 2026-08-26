@@ -99,11 +99,12 @@ Parameters:
     MinValue: 1024
     MaxValue: 65535
     Description: >-
-      Port the crew's gateway listens on. The local tunnel MIRRORS this port
-      (the remote gateway only trusts CSRF/WebSocket Origins on its own
-      configured port), so every simultaneously-connected crew needs a distinct
-      value and it must not collide with the operator's own gateway port. The
-      launcher allocates one; 5476 is the default only for a direct deploy.
+      Port the crew's gateway listens on. The launcher registers the instance
+      with the registry's own stock remote-port default, so this Default must
+      equal DEFAULT_REMOTE_DASHBOARD_PORT in cloud/connect.py -- a test pins
+      the two together. Crews may share this value: the hub allocates its LOCAL
+      forward port independently, so simultaneously-connected crews do not
+      collide. Override only for a direct (non-launcher) deploy.
   AllowSshCidr:
     Type: String
     Default: ""
@@ -294,7 +295,18 @@ Resources:
       #   surface it. Quotes/backslashes are stripped because the fallback
       #   curl embeds the reason in hand-built JSON; an unescaped quote would
       #   malform the body and the WaitCondition would hang to timeout instead
-      #   of failing cleanly. The ${!tail_ctx} inside fail() is
+      #   of failing cleanly. Both the log tail and the caller's message are
+      #   then filtered to printable ASCII (space..tilde): CloudFormation
+      #   rejects a Reason carrying control or non-ASCII bytes ("Resource
+      #   status reason contains invalid characters"), which would replace
+      #   the real error with a charset complaint -- and dnf/git/npm/vite
+      #   routinely emit ANSI escapes and UTF-8 glyphs. Newlines fold to '|'
+      #   BEFORE the filter (newline is itself a control byte); the filter
+      #   drops ESC so an ANSI sequence degrades to printable residue, and an
+      #   all-ASCII payload means the byte-level 1000-byte cap can no longer
+      #   split a multi-byte UTF-8 sequence at the reason= point (an upstream
+      #   byte cap like fe_err's tail -c 500 may still split one, but the "$1"
+      #   filter drops the orphan continuation bytes). The ${!tail_ctx} inside fail() is
       #   CloudFormation's !Sub literal escape, NOT bash indirect expansion:
       #   !Sub renders it as the plain dollar-brace form, an ordinary bash
       #   expansion at runtime; without the "!" escape, !Sub would try to
@@ -386,9 +398,9 @@ Resources:
       #   (the default clone-of-main path). install.sh stages website/dist ->
       #   src/kiro_crew/static/dist.
       # "systemd unit": a system-level unit so the gateway survives reboots
-      #   and runs as ec2-user. The local tunnel MIRRORS DashboardPort, so the
-      #   crew must listen on the launcher-allocated port, not the built-in
-      #   default -- hence the KIROCREW_PORT Environment line.
+      #   and runs as ec2-user. The registry records DashboardPort as the
+      #   instance's remote_port, so the gateway must listen on exactly this
+      #   parameter -- hence the KIROCREW_PORT Environment line.
       # Editing hazard: the whole UserData is ONE CloudFormation !Sub, so any
       #   dollar-brace token in the script -- even inside a bash comment -- is
       #   parsed as a Sub variable and breaks change-set creation. Use plain
@@ -415,9 +427,9 @@ Resources:
             echo "BOOTSTRAP FAILED: $1"
             tail_ctx=$(tail -n 25 "$LOG" 2>/dev/null | tr -d '\r"\\' \
               | grep -aviE 'Installing (npm|kirocrew and) depend|building React app' \
-              | tr '\n' '|' | tail -c 900)
+              | tr '\n' '|' | tr -cd '\40-\176' | tail -c 900)
             # NB: ${!tail_ctx} is the !Sub literal escape, not bash indirection.
-            reason="$(echo "$1" | tr -d '"\\') :: ...${!tail_ctx}"
+            reason="$(printf '%s' "$1" | tr -d '"\\' | tr '\n' '|' | tr -cd '\40-\176') :: ...${!tail_ctx}"
             /opt/aws/bin/cfn-signal -e 1 -r "$(echo "$reason" | head -c 1000)" "$HANDLE" || \
               curl -s -X PUT -H 'Content-Type:' --data-binary \
                 "{\"Status\":\"FAILURE\",\"Reason\":\"$(echo "$reason" | head -c 1000)\",\"UniqueId\":\"kirocrew\",\"Data\":\"fail\"}" "$HANDLE" || true
@@ -583,7 +595,7 @@ Resources:
           WorkingDirectory=$RUN_HOME
           Environment=HOME=$RUN_HOME
           Environment=PATH=$RUN_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
-          # The local tunnel mirrors this launcher-allocated port.
+          # The registry records this port as the instance's remote_port.
           Environment=KIROCREW_PORT=${DashboardPort}
 
           [Install]

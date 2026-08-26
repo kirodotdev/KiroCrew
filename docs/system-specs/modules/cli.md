@@ -511,7 +511,7 @@ All write paths emit SEL audit events (`config_get`, `config_set`, `config_set_f
 
 After each message, checks `provider.context_usage_pct()`:
 - `>= autocompact_pct` (default 70%): compact → shutdown → restart provider, reset counter
-- `>= autocompact_pct - CONTEXT_WARN_MARGIN_PCT` (50% on the default): warning printed to stderr. Relative, not absolute: the compact arm is tested first, so an absolute warn level at or above the threshold would be unreachable
+- `>= autocompact_pct - CONTEXT_WARN_MARGIN_PCT`: warning printed to stderr. Relative, not absolute: the compact arm is tested first, so an absolute warn level at or above the threshold would be unreachable
 
 CLI compaction is blocking (single-user, acceptable).
 

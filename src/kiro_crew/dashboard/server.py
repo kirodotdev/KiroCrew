@@ -43,6 +43,7 @@ from kiro_crew.dashboard import (
     chat,
     handlers,
     tailnet,
+    tailnet_serve,
 )
 from kiro_crew.dashboard.crash_dump_store import (
     claim_dump_notification,
@@ -224,13 +225,60 @@ async def _prune_browser_snapshots_loop() -> None:
         await asyncio.sleep(30 * 60.0)
 
 
-async def _should_prevent_sleep(state: DashboardState) -> bool:
+#: The tailnet publish state is a subprocess round trip (`tailscale serve
+#: status`), and the prevent-sleep poll runs every 15s — far too often to spawn a
+#: CLI each time. Cached SEPARATELY from the mobile-access card's own reads, which
+#: stay live on purpose: a stale awake decision costs at most one window of
+#: battery, while a stale card would show the operator the wrong next action.
+_TAILNET_AWAKE_TTL_SECS = 60.0
+
+#: ``(monotonic expiry, published)``. Module-level so both server entrypoints
+#: share one cache rather than each paying its own subprocess.
+_tailnet_awake_cache: tuple[float, bool] = (0.0, False)
+
+
+async def _tailnet_publish_keeps_awake(port: int) -> bool:
+    """Whether serve is currently fronting *port*, TTL-cached. Never raises."""
+    global _tailnet_awake_cache
+    if not port:
+        return False
+    now = time.monotonic()
+    expiry, cached = _tailnet_awake_cache
+    if expiry > now:
+        return cached
+    try:
+        serve = await asyncio.to_thread(tailnet_serve.serve_state, port)
+        # ``published is None`` means we could not tell. Treated as NOT published,
+        # because the fail-closed direction for this decision is letting the host
+        # sleep — an unresolvable probe must not pin a laptop awake indefinitely.
+        published = serve.published is True
+    except Exception:
+        logger.debug("prevent-sleep tailnet probe failed", exc_info=True)
+        published = False
+    _tailnet_awake_cache = (now + _TAILNET_AWAKE_TTL_SECS, published)
+    return published
+
+
+async def _should_prevent_sleep(state: DashboardState, port: int) -> bool:
     """Whether the host should be kept awake right now.
 
-    True only when the user opted in (``dashboard.prevent_sleep``) AND some live
-    session has a turn in flight. Reads config live so toggling the flag takes
-    effect on the next poll without a restart. Fail-closed: any error resolves to
-    "allow sleep" so a config/lookup hiccup can never wedge the machine awake.
+    Two independent reasons, either sufficient on its own:
+
+    * **A turn is in flight**, and the user opted in via
+      ``dashboard.prevent_sleep``. The original reason this poll exists.
+    * **The dashboard is published on this machine's tailnet**, and
+      ``dashboard.tailscale.keep_awake`` is on. A phone loses the dashboard the
+      moment the laptop idles, so publishing is itself the opt-in — an operator
+      who put the dashboard on their tailnet asked for it to stay reachable.
+      Deliberately NOT also gated on ``dashboard.prevent_sleep``: that switch is
+      scoped to in-flight turns, and making someone find it to keep a published
+      dashboard alive would be the wrong switch in the wrong place. The escape
+      hatch is ``keep_awake``, which turns off the awake half without
+      unpublishing.
+
+    Reads config live so either toggle takes effect on the next poll without a
+    restart. Fail-closed throughout: any error resolves to "allow sleep", so a
+    config or daemon hiccup can never wedge the machine awake.
     """
     try:
         # KiroCrewConfig.load() does a stat and, on a cache miss, a JSON read +
@@ -238,10 +286,22 @@ async def _should_prevent_sleep(state: DashboardState) -> bool:
         # and this runs on the gateway event loop every poll — offload it so a
         # slow read can never stall chat/heartbeat (no-blocking-call-on-event-loop).
         cfg = await asyncio.to_thread(KiroCrewConfig.load)
-        if not cfg.dashboard.prevent_sleep:
-            return False
+        # Both reads sit INSIDE the guard, and that placement is the actual
+        # defence: a config object predating the tailscale section raises on the
+        # attribute, and outside the guard that would propagate — a partially
+        # formed config wedging a laptop awake, since the poll swallows the error
+        # and retries forever. The getattr defaults are belt-and-braces on top.
+        tailscale_cfg = getattr(cfg.dashboard, "tailscale", None)
+        tailnet_enabled = bool(getattr(tailscale_cfg, "enabled", False))
+        tailnet_keep_awake = bool(getattr(tailscale_cfg, "keep_awake", False))
+        tailnet_wants_awake = tailnet_enabled and tailnet_keep_awake
+        opted_into_turn_wake = bool(getattr(cfg.dashboard, "prevent_sleep", False))
     except Exception:
         logger.debug("prevent-sleep config read failed", exc_info=True)
+        return False
+    if tailnet_wants_awake and await _tailnet_publish_keeps_awake(port):
+        return True
+    if not opted_into_turn_wake:
         return False
     sessions = getattr(state, "sessions", None)
     if sessions is None:
@@ -341,6 +401,7 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # tool is unreachable in production while handler-level tests still pass.
         "/api/session-control/create",
         "/api/session-control/stop",
+        "/api/session-control/send",
         "/api/session-control/read",
     }
 )
@@ -1128,6 +1189,9 @@ def _register_mcp_routes(app: web.Application) -> None:
     )
     app.router.add_post(
         "/api/session-control/stop", _deferred_session_control("api_session_control_stop")
+    )
+    app.router.add_post(
+        "/api/session-control/send", _deferred_session_control("api_session_control_send")
     )
     app.router.add_get(
         "/api/session-control/read", _deferred_session_control("api_session_control_read")
@@ -2226,8 +2290,15 @@ def _register_prevent_sleep_shutdown(app: web.Application, state: DashboardState
     app.on_cleanup.append(_prevent_sleep_shutdown)
 
 
-def _arm_prevent_sleep_poll(state: DashboardState) -> None:
+def _arm_prevent_sleep_poll(state: DashboardState, port: int) -> None:
     """Create the sleep inhibitor and start its poll task on the running loop.
+
+    *port* is the port this server actually bound, needed because one of the two
+    awake reasons is "``tailscale serve`` is fronting this dashboard" — a question
+    that can only be asked about a specific port. It is the bound port rather than
+    the configured one for the same reason ``kirocrew tailnet up`` insists on
+    evidence: if the configured port was occupied the gateway moved, and asking
+    about the wrong port would report someone else's serve mapping as ours.
 
     Keeps the host awake while any session has a turn in flight, but only when
     the user opted in via ``dashboard.prevent_sleep``. Decoupled from the turn
@@ -2250,7 +2321,7 @@ def _arm_prevent_sleep_poll(state: DashboardState) -> None:
             while True:
                 await asyncio.sleep(_PREVENT_SLEEP_POLL_INTERVAL_SECS)
                 try:
-                    inhibitor.set_active(await _should_prevent_sleep(state))
+                    inhibitor.set_active(await _should_prevent_sleep(state, port))
                 except Exception:
                     logger.debug("prevent-sleep poll toggle failed", exc_info=True)
         except asyncio.CancelledError:
@@ -2656,7 +2727,12 @@ async def start_dashboard(
 
     app = web.Application(
         client_max_size=60 * 1024 * 1024
-    )  # 60 MB: covers 50 MB upload + multipart overhead
+    )  # 60 MB: covers a 50 MB BUFFERED upload + multipart overhead. NOT a
+    # ceiling on every upload: aiohttp enforces this in Request.read()/.post(),
+    # not on the streaming multipart() reader, so the video path in
+    # handlers/files.py streams past it under its own _MAX_VIDEO_UPLOAD_BYTES
+    # (pinned by test_streaming_bypasses_the_app_client_max_size). Reading this
+    # number as a global request cap is the false invariant to avoid.
     app["state"] = state
     # Bind the serving loop once, here: this runs ON that loop, so every
     # surface that later hands work in from a foreign thread -- slots
@@ -3273,8 +3349,10 @@ async def start_dashboard(
 
     # ── Prevent-sleep poll ───────────────────────────────────────────────────
     # Keep the host awake while a turn is in flight (opt-in via
-    # dashboard.prevent_sleep). Shared with the headless --slack-only entrypoint.
-    _arm_prevent_sleep_poll(state)
+    # dashboard.prevent_sleep), or while the dashboard is published on the
+    # tailnet (opt-out via dashboard.tailscale.keep_awake). Shared with the
+    # headless --slack-only entrypoint.
+    _arm_prevent_sleep_poll(state, port)
 
     # Arm the stall watchdog only when faulthandler is enabled — i.e. under the
     # real gateway entrypoint (see cli `gateway` dispatch). Tests that spin up
@@ -3648,7 +3726,12 @@ async def start_api_server(
 
     app = web.Application(
         client_max_size=60 * 1024 * 1024
-    )  # 60 MB: covers 50 MB upload + multipart overhead
+    )  # 60 MB: covers a 50 MB BUFFERED upload + multipart overhead. NOT a
+    # ceiling on every upload: aiohttp enforces this in Request.read()/.post(),
+    # not on the streaming multipart() reader, so the video path in
+    # handlers/files.py streams past it under its own _MAX_VIDEO_UPLOAD_BYTES
+    # (pinned by test_streaming_bypasses_the_app_client_max_size). Reading this
+    # number as a global request cap is the false invariant to avoid.
     app["state"] = state
     # Bind the serving loop once, here: this runs ON that loop, so every
     # surface that later hands work in from a foreign thread -- slots
@@ -3868,7 +3951,7 @@ async def start_api_server(
     # Arm the prevent-sleep poll now the loop is up and the port is bound
     # (shutdown hook already registered above). Headless --slack-only mode keeps
     # the host awake during a long Slack task exactly as the full dashboard does.
-    _arm_prevent_sleep_poll(state)
+    _arm_prevent_sleep_poll(state, port)
 
     # Boot-to-ready (rec #1): headless API server is bound and ready. Privacy-safe
     # fixed labels only; best-effort.

@@ -62,6 +62,10 @@ export interface SpecDecision {
   options?: string[]
   recommended?: string
   answer?: string
+  /** Set by the backend for a decision whose answer it has already dispatched.
+   *  Such a decision is settled for good: the card must never render options for
+   *  it again, even if the agent's own state file re-emits it as pending. */
+  locked?: boolean
 }
 
 /** Phase-2 structured state the agent maintains in .spec-state.json. */
@@ -108,6 +112,9 @@ export interface SpecDetail {
   state?: SpecState
   context?: SpecContextStats
   running?: boolean
+  /** A crash left an accepted answer waiting for relay. The detail GET reports
+   *  this only; the client requests recovery through a CSRF-protected POST. */
+  decision_recovery_pending?: boolean
 }
 
 /** Directory listing for the project folder picker (GET /browse?path=). */
@@ -172,6 +179,13 @@ export class SpecApiError extends Error {
   }
 }
 
+/** An error carrying the backend's machine-readable `code`, when it sent one.
+ *  Callers use it to tell a definite refusal ("nothing was recorded") apart from an
+ *  ambiguous failure (the write may have committed and the response was lost). */
+export interface ApiError extends Error {
+  code?: string
+}
+
 async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   const r = await fetch(API + path, {
     credentials: 'same-origin',
@@ -207,7 +221,20 @@ export const specApi = {
   // One response carries both sets; the rail already groups on `archived`.
   list: (signal?: AbortSignal) => req<SpecListResponse>('/specs', { signal }),
   create: (body: CreateSpecBody) => req<{ name?: string }>('/specs', { method: 'POST', body: JSON.stringify(body) }),
-  get: (name: string, signal?: AbortSignal) => req<SpecDetail>('/specs/' + enc(name), { signal }),
+  get: async (name: string, signal?: AbortSignal) => {
+    const detail = await req<SpecDetail>('/specs/' + enc(name), { signal })
+    if (detail.decision_recovery_pending && detail.spec_dir && detail.slot_key) {
+      const recovered = await req<{ ok: boolean }>(
+        '/specs/' + enc(name) + '/recover-decision',
+        {
+          method: 'POST',
+          body: JSON.stringify(identity(detail)),
+        },
+      )
+      if (recovered.ok) detail.running = true
+    }
+    return detail
+  },
   // specDir is the identity the CLIENT rendered: the backend compares it against
   // the live index so a stale tab cannot drive a same-name spec that was deleted
   // and recreated pointing somewhere else.
@@ -219,6 +246,18 @@ export const specApi = {
     req<void>('/specs/' + enc(name) + '/message', {
       method: 'POST',
       body: JSON.stringify({ text, ...identity(id) }),
+    }),
+  // A decision card's answer, sent with the decision's id so the backend can
+  // record it and refuse a second answer for the same decision. Same endpoint as
+  // `message` — the id is what makes the write one-way.
+  //
+  // `option` is the bare choice and `text` the composed prompt the agent reads.
+  // They are separate fields because the backend records the OPTION: recording the
+  // prompt would render the whole localized sentence back as the answer.
+  answerDecision: (name: string, decisionId: string, option: string, text: string, id?: SpecIdentity) =>
+    req<void>('/specs/' + enc(name) + '/message', {
+      method: 'POST',
+      body: JSON.stringify({ text, decision_id: decisionId, decision_option: option, ...identity(id) }),
     }),
   execute: (name: string, id?: SpecIdentity) =>
     req<void>('/specs/' + enc(name) + '/execute', {
@@ -400,4 +439,48 @@ export function phaseLabel(phase: string): string {
   return Object.prototype.hasOwnProperty.call(PHASE_LABEL_KEY, phase)
     ? i18nT(PHASE_LABEL_KEY[phase])
     : phase
+}
+
+// ── detail poll cadence ──────────────────────────────────────────────────────
+// The Tasks panel is a progress view over tasks.md. That file is also written by
+// the agent and by hand in an editor, neither of which goes through a Spec
+// Builder mutation — so a poll armed only by last-dispatch / slot.running sits
+// idle while checkboxes flip on disk. These constants are the single owner of
+// the cadences SpecDetail reads.
+
+/** Fast poll while a turn is in flight, the Tasks tab is open, or tasks.md just changed. */
+export const SPEC_DETAIL_FAST_POLL_MS = 2500
+/** Catch the worker slot coming up after a dispatch (running is still false). */
+export const SPEC_DETAIL_DISPATCH_POLL_MS = 1200
+/** Idle poll when nothing is writing and the user is not watching Tasks. */
+export const SPEC_DETAIL_IDLE_POLL_MS = 6000
+/** How long a dispatch or an observed tasks.md hash change keeps the fast window. */
+export const SPEC_DETAIL_FOLLOWUP_MS = 20000
+
+export interface SpecDetailPollInput {
+  running?: boolean
+  status?: string
+  /** True while the document tab showing the checklist is selected. */
+  watchingTasks?: boolean
+  msSinceDispatch?: number
+  msSinceTasksChange?: number
+}
+
+/** Interval for the spec-detail React Query poll.
+ *
+ *  Fast while the worker is active, for a follow-up window after THIS view
+ *  dispatched an instruction, while the user is looking at the Tasks panel,
+ *  and for the same follow-up window after tasks.md's content hash changes
+ *  (an agent or a hand edit that never hit lastSendAt). Otherwise idle.
+ */
+export function specDetailPollMs(input: SpecDetailPollInput): number {
+  if (input.running || input.status === 'executing') return SPEC_DETAIL_FAST_POLL_MS
+  if ((input.msSinceDispatch ?? Number.POSITIVE_INFINITY) < SPEC_DETAIL_FOLLOWUP_MS) {
+    return SPEC_DETAIL_DISPATCH_POLL_MS
+  }
+  if (input.watchingTasks) return SPEC_DETAIL_FAST_POLL_MS
+  if ((input.msSinceTasksChange ?? Number.POSITIVE_INFINITY) < SPEC_DETAIL_FOLLOWUP_MS) {
+    return SPEC_DETAIL_FAST_POLL_MS
+  }
+  return SPEC_DETAIL_IDLE_POLL_MS
 }

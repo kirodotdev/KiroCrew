@@ -45,6 +45,15 @@ _LOGGER_NAME = "kiro_crew.acp.session_handle"
 _WINDOW_BUDGET = _DEFAULT_PROMPT_TIMEOUT * _TURN_CEILING_WINDOW_FRACTION
 
 
+def _watchdog_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    """Return only records emitted by the logger this module exercises."""
+    return [record for record in caplog.records if record.name == _LOGGER_NAME]
+
+
+def _watchdog_text(caplog: pytest.LogCaptureFixture) -> str:
+    return "\n".join(record.getMessage() for record in _watchdog_records(caplog))
+
+
 def _fake_config(*, turn_timeout: float = CHAT_TURN_TIMEOUT, **watchdog: float) -> KiroCrewConfig:
     """A real config object with only the two sections under test set.
 
@@ -103,8 +112,8 @@ def test_over_ceiling_window_is_clamped_with_a_warning(
 
     assert wd.tool_stall_suspect_secs == _WINDOW_BUDGET
     assert wd.tool_stall_hard_cap_secs == _WINDOW_BUDGET
-    assert "tool_stall_suspect_secs" in caplog.text
-    assert "clamping" in caplog.text
+    assert "tool_stall_suspect_secs" in _watchdog_text(caplog)
+    assert "clamping" in _watchdog_text(caplog)
 
 
 def test_in_range_windows_pass_through_untouched(
@@ -116,7 +125,7 @@ def test_in_range_windows_pass_through_untouched(
 
     assert wd.check_after_secs == 45.0
     assert wd.tool_stall_suspect_secs == 1200.0
-    assert caplog.text == ""
+    assert _watchdog_records(caplog) == []
 
 
 def test_a_lowered_chat_ceiling_warns_but_does_not_shrink_the_window(
@@ -131,8 +140,8 @@ def test_a_lowered_chat_ceiling_warns_but_does_not_shrink_the_window(
         wd = _load_with(monkeypatch, cfg)
 
     assert wd.tool_stall_suspect_secs == 3600.0
-    assert "chat_turn_timeout_secs" in caplog.text
-    assert "clamping" not in caplog.text
+    assert "chat_turn_timeout_secs" in _watchdog_text(caplog)
+    assert "clamping" not in _watchdog_text(caplog)
 
 
 def test_sampling_interval_is_not_a_window(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -175,7 +184,7 @@ def test_first_deferral_logs_on_a_freshly_booted_host(
     with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
         handle._log_working_deferral(120.0, "live shell child 4242", _DEFAULT_PROMPT_TIMEOUT)
 
-    assert len(caplog.records) == 1
+    assert len(_watchdog_records(caplog)) == 1
 
 
 def test_short_deferral_stays_at_info(caplog: pytest.LogCaptureFixture) -> None:
@@ -185,18 +194,22 @@ def test_short_deferral_stays_at_info(caplog: pytest.LogCaptureFixture) -> None:
             _WORKING_WARN_AFTER_SECS - 1, "live shell child 4242", _DEFAULT_PROMPT_TIMEOUT
         )
 
-    assert [r.levelno for r in caplog.records] == [logging.INFO]
+    assert [r.levelno for r in _watchdog_records(caplog)] == [logging.INFO]
 
 
 def test_long_deferral_escalates_to_warning(caplog: pytest.LogCaptureFixture) -> None:
     handle = _handle()
     with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
+        # Async teardown from an earlier test may be collected during this call;
+        # it must not become evidence about the watchdog's own log level.
+        logging.getLogger("asyncio").error("unrelated pending-task teardown")
         handle._log_working_deferral(
             _WORKING_WARN_AFTER_SECS, "live shell child 4242", _DEFAULT_PROMPT_TIMEOUT
         )
 
-    assert [r.levelno for r in caplog.records] == [logging.WARNING]
-    assert "verdict WORKING" in caplog.text
+    assert any(record.name == "asyncio" for record in caplog.records)
+    assert [r.levelno for r in _watchdog_records(caplog)] == [logging.WARNING]
+    assert "verdict WORKING" in _watchdog_text(caplog)
 
 
 def test_escalation_scales_down_to_a_short_turn(caplog: pytest.LogCaptureFixture) -> None:
@@ -211,7 +224,7 @@ def test_escalation_scales_down_to_a_short_turn(caplog: pytest.LogCaptureFixture
     with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
         handle._log_working_deferral(idle, "live shell child 4242", short_turn)
 
-    assert [r.levelno for r in caplog.records] == [logging.WARNING]
+    assert [r.levelno for r in _watchdog_records(caplog)] == [logging.WARNING]
 
 
 def test_a_long_turn_does_not_delay_escalation(caplog: pytest.LogCaptureFixture) -> None:
@@ -223,7 +236,7 @@ def test_a_long_turn_does_not_delay_escalation(caplog: pytest.LogCaptureFixture)
             _WORKING_WARN_AFTER_SECS, "live shell child 4242", _DEFAULT_PROMPT_TIMEOUT * 4
         )
 
-    assert [r.levelno for r in caplog.records] == [logging.WARNING]
+    assert [r.levelno for r in _watchdog_records(caplog)] == [logging.WARNING]
 
 
 def test_escalation_still_honours_the_rate_limit(caplog: pytest.LogCaptureFixture) -> None:
@@ -236,7 +249,7 @@ def test_escalation_still_honours_the_rate_limit(caplog: pytest.LogCaptureFixtur
                 _WORKING_WARN_AFTER_SECS * 2, "live shell child 4242", _DEFAULT_PROMPT_TIMEOUT
             )
 
-    assert len(caplog.records) == 1
+    assert len(_watchdog_records(caplog)) == 1
 
     # Past the interval the next line is emitted, still at WARNING.
     handle._working_logged_ts = time.monotonic() - (_WORKING_LOG_INTERVAL_SECS + 1)
@@ -245,4 +258,4 @@ def test_escalation_still_honours_the_rate_limit(caplog: pytest.LogCaptureFixtur
             _WORKING_WARN_AFTER_SECS * 2, "live shell child 4242", _DEFAULT_PROMPT_TIMEOUT
         )
 
-    assert [r.levelno for r in caplog.records] == [logging.WARNING, logging.WARNING]
+    assert [r.levelno for r in _watchdog_records(caplog)] == [logging.WARNING, logging.WARNING]

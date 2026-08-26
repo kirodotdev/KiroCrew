@@ -3,6 +3,7 @@
 Tests the actual _cron_callback dispatch for script and command jobs,
 including delivery, concurrency guard, timeout handling, and Report().
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -96,10 +97,12 @@ async def _run_script_callback(gw, job, script_result=None, vet_reason=None, sid
         {"side_effect": side_effect} if side_effect is not None else {"return_value": script_result}
     )
 
-    with patch("kiro_crew.slack.gateway.CronService") as mock_cron_cls, \
-         patch("kiro_crew.slack.gateway.run_script_sandboxed", **mock_kw) as mock_run, \
-         patch("kiro_crew.slack.gateway.vet_job_at_fire_time", return_value=vet_reason), \
-         patch("kiro_crew.slack.gateway.sel"):
+    with (
+        patch("kiro_crew.slack.gateway.CronService") as mock_cron_cls,
+        patch("kiro_crew.slack.gateway.run_script_sandboxed", **mock_kw) as mock_run,
+        patch("kiro_crew.slack.gateway.vet_job_at_fire_time", return_value=vet_reason),
+        patch("kiro_crew.slack.gateway.sel"),
+    ):
 
         def capture_cron(on_job=None, **kw):
             nonlocal captured_cb
@@ -134,13 +137,16 @@ async def _run_command_callback(gw, job, cmd_result=None, side_effect=None, vet_
     # the REAL gate, and patching it unconditionally would silence them.
     gate = (
         patch("kiro_crew.slack.gateway.vet_job_at_fire_time", return_value=vet_reason)
-        if vet_reason is not None else nullcontext()
+        if vet_reason is not None
+        else nullcontext()
     )
 
-    with patch("kiro_crew.slack.gateway.CronService") as mock_cron_cls, \
-         patch("kiro_crew.slack.gateway.run_command_sandboxed", **mock_kw) as mock_run, \
-         gate, \
-         patch("kiro_crew.slack.gateway.sel"):
+    with (
+        patch("kiro_crew.slack.gateway.CronService") as mock_cron_cls,
+        patch("kiro_crew.slack.gateway.run_command_sandboxed", **mock_kw) as mock_run,
+        gate,
+        patch("kiro_crew.slack.gateway.sel"),
+    ):
 
         def capture_cron(on_job=None, **kw):
             nonlocal captured_cb
@@ -225,7 +231,9 @@ class TestScriptExecution:
         result, _ = await _run_script_callback(gw, job, {"status": "done", "message": "CR merged"})
         assert "CR merged" in (result or "")
         assert job.last_result == "CR merged"
-        gw.cron_svc.remove_job_async.assert_called_once_with("sj1")
+        gw.cron_svc.remove_job_async.assert_called_once_with(
+            "sj1", actor="cron", source="cron", one_shot_path="cron_gateway"
+        )
 
     @pytest.mark.asyncio
     async def test_done_busy_store_defers_removal_not_dropped(self):
@@ -238,11 +246,15 @@ class TestScriptExecution:
         job = _make_script_job()
         captured_cb = None
 
-        with patch("kiro_crew.slack.gateway.CronService") as mock_cron_cls, \
-             patch("kiro_crew.slack.gateway.run_script_sandboxed",
-                   return_value={"status": "done", "message": "CR merged"}), \
-             patch("kiro_crew.slack.gateway.vet_job_at_fire_time", return_value=None), \
-             patch("kiro_crew.slack.gateway.sel"):
+        with (
+            patch("kiro_crew.slack.gateway.CronService") as mock_cron_cls,
+            patch(
+                "kiro_crew.slack.gateway.run_script_sandboxed",
+                return_value={"status": "done", "message": "CR merged"},
+            ),
+            patch("kiro_crew.slack.gateway.vet_job_at_fire_time", return_value=None),
+            patch("kiro_crew.slack.gateway.sel"),
+        ):
 
             def capture_cron(on_job=None, **kw):
                 nonlocal captured_cb
@@ -260,7 +272,9 @@ class TestScriptExecution:
             assert captured_cb is not None
             await captured_cb(job)
 
-        gw.cron_svc.remove_job_async.assert_called_once_with("sj1")
+        gw.cron_svc.remove_job_async.assert_called_once_with(
+            "sj1", actor="cron", source="cron", one_shot_path="cron_gateway"
+        )
         # The removal was queued for deferred drain, not dropped.
         gw.cron_svc.defer_removal.assert_called_once_with("sj1")
 
@@ -268,7 +282,9 @@ class TestScriptExecution:
     async def test_report_does_not_remove_job(self):
         gw = _make_gw()
         job = _make_script_job(session_key="dashboard:chat-1")
-        result, _ = await _run_script_callback(gw, job, {"status": "report", "message": "DRB passed"})
+        result, _ = await _run_script_callback(
+            gw, job, {"status": "report", "message": "DRB passed"}
+        )
         assert "DRB passed" in (result or "")
         assert job.last_result == "DRB passed"
         gw.cron_svc.remove_job_async.assert_not_called()
@@ -277,7 +293,9 @@ class TestScriptExecution:
     async def test_error_increments_failures(self):
         gw = _make_gw()
         job = _make_script_job()
-        result, _ = await _run_script_callback(gw, job, {"status": "error", "error": "something broke"})
+        result, _ = await _run_script_callback(
+            gw, job, {"status": "error", "error": "something broke"}
+        )
         # Error is handled internally (logged, not re-raised)
         assert result is None
         assert job.last_status == "error"
@@ -292,9 +310,11 @@ class TestScriptExecution:
         # Should skip without calling run_script_sandboxed
         captured_cb = None
 
-        with patch("kiro_crew.slack.gateway.CronService") as mock_cron_cls, \
-             patch("kiro_crew.slack.gateway.run_script_sandboxed") as mock_run, \
-             patch("kiro_crew.slack.gateway.sel"):
+        with (
+            patch("kiro_crew.slack.gateway.CronService") as mock_cron_cls,
+            patch("kiro_crew.slack.gateway.run_script_sandboxed") as mock_run,
+            patch("kiro_crew.slack.gateway.sel"),
+        ):
 
             def capture_cron(on_job=None, **kw):
                 nonlocal captured_cb
@@ -322,7 +342,9 @@ class TestCommandExecution:
     async def test_ok_command_stores_output(self):
         gw = _make_gw()
         job = _make_command_job()
-        result, _ = await _run_command_callback(gw, job, {"status": "ok", "output": "hello\n", "exit_code": 0})
+        result, _ = await _run_command_callback(
+            gw, job, {"status": "ok", "output": "hello\n", "exit_code": 0}
+        )
         assert job.last_status == "ok"
         assert "hello" in job.last_result
 
@@ -330,7 +352,9 @@ class TestCommandExecution:
     async def test_error_command_increments_failures(self):
         gw = _make_gw()
         job = _make_command_job()
-        result, _ = await _run_command_callback(gw, job, {"status": "error", "output": "Exit code 1\n", "exit_code": 1})
+        result, _ = await _run_command_callback(
+            gw, job, {"status": "error", "output": "Exit code 1\n", "exit_code": 1}
+        )
         assert job.last_status == "error"
         assert job.consecutive_failures == 1
 
@@ -338,7 +362,9 @@ class TestCommandExecution:
     async def test_empty_output_no_delivery(self):
         gw = _make_gw()
         job = _make_command_job()
-        result, _ = await _run_command_callback(gw, job, {"status": "ok", "output": "", "exit_code": 0})
+        result, _ = await _run_command_callback(
+            gw, job, {"status": "ok", "output": "", "exit_code": 0}
+        )
         assert result is None  # no output = no delivery
 
     @pytest.mark.asyncio
@@ -447,7 +473,9 @@ class TestCommandExecution:
         gw = _make_gw()
         job = _make_command_job(last_result="42 widgets")
         result, mock_run = await _run_command_callback(
-            gw, job, {"status": "ok", "output": "unused", "exit_code": 0},
+            gw,
+            job,
+            {"status": "ok", "output": "unused", "exit_code": 0},
             vet_reason="command not permitted at fire time",
         )
         assert result is None
@@ -462,7 +490,10 @@ class TestCommandExecution:
         gw = _make_gw()
         job = _make_script_job(last_result="42 widgets")
         result, mock_run = await _run_script_callback(
-            gw, job, {"status": "ok"}, vet_reason="script changed on disk",
+            gw,
+            job,
+            {"status": "ok"},
+            vet_reason="script changed on disk",
         )
         assert result is None
         mock_run.assert_not_called()
@@ -506,7 +537,9 @@ class TestCommandExecution:
     async def test_timeout_passed_to_subprocess(self):
         gw = _make_gw()
         job = _make_command_job(timeout=120)
-        _, mock_run = await _run_command_callback(gw, job, {"status": "ok", "output": "done\n", "exit_code": 0})
+        _, mock_run = await _run_command_callback(
+            gw, job, {"status": "ok", "output": "done\n", "exit_code": 0}
+        )
         # Verify cmd_timeout was passed
         mock_run.assert_called_once()
         args = mock_run.call_args[0]
@@ -519,11 +552,13 @@ class TestCommandExecution:
         # fire time, not just at cron_add authoring time.
         gw = _make_gw()
         job = _make_command_job()
-        with patch("kiro_crew.mcp_cron._vet_cron_capability_governance", return_value=None), \
-             patch(
-                 "kiro_crew.mcp_cron._vet_command_governance",
-                 return_value="Error: cron command blocked by governance policy: denied",
-             ):
+        with (
+            patch("kiro_crew.mcp_cron._vet_cron_capability_governance", return_value=None),
+            patch(
+                "kiro_crew.mcp_cron._vet_command_governance",
+                return_value="Error: cron command blocked by governance policy: denied",
+            ),
+        ):
             result, mock_run = await _run_command_callback(
                 gw, job, {"status": "ok", "output": "hello\n", "exit_code": 0}
             )
@@ -551,8 +586,10 @@ class TestCommandExecution:
     async def test_fire_time_governance_allow_still_executes(self):
         gw = _make_gw()
         job = _make_command_job()
-        with patch("kiro_crew.mcp_cron._vet_cron_capability_governance", return_value=None), \
-             patch("kiro_crew.mcp_cron._vet_command_governance", return_value=None):
+        with (
+            patch("kiro_crew.mcp_cron._vet_cron_capability_governance", return_value=None),
+            patch("kiro_crew.mcp_cron._vet_command_governance", return_value=None),
+        ):
             result, mock_run = await _run_command_callback(
                 gw, job, {"status": "ok", "output": "hello\n", "exit_code": 0}
             )
@@ -729,7 +766,9 @@ class TestFireTimeDenyOneShotRetention:
         gw = _make_gw()
         job = _make_script_job(delete_after_run=True)
         result, mock_run = await _run_script_callback(
-            gw, job, {"status": "ok"},
+            gw,
+            job,
+            {"status": "ok"},
             vet_reason="Error: cron scheduling blocked by governance policy: x",
         )
         assert result is None
@@ -765,9 +804,7 @@ class TestFireTimeDenyOneShotRetention:
         svc._merge_job_result(job)
         # include_disabled: the denied one-shot is parked DISABLED, so the
         # default (enabled-only) listing hides it — retention is what matters.
-        stored = next(
-            (j for j in svc.list_jobs(include_disabled=True) if j.id == job.id), None
-        )
+        stored = next((j for j in svc.list_jobs(include_disabled=True) if j.id == job.id), None)
         assert stored is not None, "denied one-shot was deleted"
         # Parked DISABLED so a past-due at-job cannot refire every tick.
         assert stored.enabled is False
@@ -783,9 +820,7 @@ class TestFireTimeDenyOneShotRetention:
         leaving it enabled would make it due again on every timer tick."""
         from kiro_crew.cron import CronService
 
-        job = _make_script_job(
-            schedule=CronSchedule(kind="at", at_ts=1.0), delete_after_run=True
-        )
+        job = _make_script_job(schedule=CronSchedule(kind="at", at_ts=1.0), delete_after_run=True)
 
         async def _deny(j):
             # Mirrors the gateway deny branch: mark refusal, return normally.
@@ -808,44 +843,55 @@ class TestFireTimeAuditTrail:
         from kiro_crew.mcp_cron import vet_job_at_fire_time
 
         job = _make_command_job()
-        with patch("kiro_crew.mcp_cron._vet_cron_capability_governance",
-                   return_value=None), \
-             patch("kiro_crew.mcp_cron._vet_command_governance", return_value=None), \
-             patch("kiro_crew.mcp_cron.sel") as mock_sel:
+        with (
+            patch("kiro_crew.mcp_cron._vet_cron_capability_governance", return_value=None),
+            patch("kiro_crew.mcp_cron._vet_command_governance", return_value=None),
+            patch("kiro_crew.mcp_cron.sel") as mock_sel,
+        ):
             assert vet_job_at_fire_time(job) is None
         calls = mock_sel.return_value.log_governance_decision.call_args_list
-        assert any(c.kwargs.get("outcome") == "allowed"
-                   and c.kwargs.get("session_key") == f"cron:{job.id}" for c in calls)
+        assert any(
+            c.kwargs.get("outcome") == "allowed" and c.kwargs.get("session_key") == f"cron:{job.id}"
+            for c in calls
+        )
 
     def test_denied_fire_emits_governance_decision(self):
         from kiro_crew.mcp_cron import vet_job_at_fire_time
 
         job = _make_command_job()
-        with patch("kiro_crew.mcp_cron._vet_cron_capability_governance",
-                   return_value=None), \
-             patch("kiro_crew.mcp_cron._vet_command_governance",
-                   return_value="Error: cron command blocked by governance policy: x"), \
-             patch("kiro_crew.mcp_cron.sel") as mock_sel:
+        with (
+            patch("kiro_crew.mcp_cron._vet_cron_capability_governance", return_value=None),
+            patch(
+                "kiro_crew.mcp_cron._vet_command_governance",
+                return_value="Error: cron command blocked by governance policy: x",
+            ),
+            patch("kiro_crew.mcp_cron.sel") as mock_sel,
+        ):
             assert vet_job_at_fire_time(job) is not None
         calls = mock_sel.return_value.log_governance_decision.call_args_list
-        assert any(c.kwargs.get("outcome") == "denied"
-                   and c.kwargs.get("scope") == "commands" for c in calls)
+        assert any(
+            c.kwargs.get("outcome") == "denied" and c.kwargs.get("scope") == "commands"
+            for c in calls
+        )
 
     def test_script_body_deny_emits_scoped_decision(self):
         from kiro_crew.mcp_cron import vet_job_at_fire_time
 
         job = _make_script_job()
-        with patch("kiro_crew.mcp_cron._vet_cron_capability_governance",
-                   return_value=None), \
-             patch("kiro_crew.mcp_cron.resolve_script_path",
-                   return_value=("/tmp/x.py", "run")), \
-             patch("kiro_crew.mcp_cron._vet_script_file",
-                   return_value="Error: cron script blocked: x"), \
-             patch("kiro_crew.mcp_cron.sel") as mock_sel:
+        with (
+            patch("kiro_crew.mcp_cron._vet_cron_capability_governance", return_value=None),
+            patch("kiro_crew.mcp_cron.resolve_script_path", return_value=("/tmp/x.py", "run")),
+            patch(
+                "kiro_crew.mcp_cron._vet_script_file", return_value="Error: cron script blocked: x"
+            ),
+            patch("kiro_crew.mcp_cron.sel") as mock_sel,
+        ):
             assert vet_job_at_fire_time(job) is not None
         calls = mock_sel.return_value.log_governance_decision.call_args_list
-        assert any(c.kwargs.get("outcome") == "denied"
-                   and c.kwargs.get("scope") == "cron_script_body" for c in calls)
+        assert any(
+            c.kwargs.get("outcome") == "denied" and c.kwargs.get("scope") == "cron_script_body"
+            for c in calls
+        )
 
 
 class TestTimeoutPersistence:
@@ -853,6 +899,7 @@ class TestTimeoutPersistence:
 
     def test_timeout_round_trips(self, tmp_path):
         from kiro_crew.cron import CronService
+
         svc = CronService(base_dir=tmp_path)
         job = svc.add_job(
             name="timeout-test",
@@ -893,7 +940,9 @@ class TestAutoPause:
         gw = _make_gw()
         job = _make_command_job()
         for i in range(4):
-            await _run_command_callback(gw, job, {"status": "error", "output": f"err {i}", "exit_code": 1})
+            await _run_command_callback(
+                gw, job, {"status": "error", "output": f"err {i}", "exit_code": 1}
+            )
             assert job.enabled is True
         await _run_command_callback(gw, job, {"status": "error", "output": "err 4", "exit_code": 1})
         assert job.enabled is False
@@ -980,11 +1029,13 @@ async def _run_llm_callback(gw, job, *, get_or_create_side_effect=None):
     _embed_mock = AsyncMock(return_value=("full prompt", None))
     _stream_mock = AsyncMock(return_value="Agent response here")
 
-    with patch("kiro_crew.slack.gateway.CronService") as mock_cron_cls, \
-         patch("kiro_crew.slack.gateway.run_in_embed_pool", _embed_mock), \
-         patch("kiro_crew.slack.gateway.stream_and_collect", _stream_mock), \
-         patch("kiro_crew.slack.gateway.sel"), \
-         patch("kiro_crew.slack.gateway.build_cron_session_context") as mock_ctx:
+    with (
+        patch("kiro_crew.slack.gateway.CronService") as mock_cron_cls,
+        patch("kiro_crew.slack.gateway.run_in_embed_pool", _embed_mock),
+        patch("kiro_crew.slack.gateway.stream_and_collect", _stream_mock),
+        patch("kiro_crew.slack.gateway.sel"),
+        patch("kiro_crew.slack.gateway.build_cron_session_context") as mock_ctx,
+    ):
 
         mock_ctx.return_value = (f"cron:{job.id}", job.message)
 
@@ -1093,6 +1144,91 @@ class TestModelFallback:
             await _run_llm_callback(gw, job, get_or_create_side_effect=_side_effect)
 
 
+class TestThrottleFallbackCronWiring:
+    """agent.fallback_model reaches the cron turn, and a fallback-served run
+    is visibly annotated (never silent)."""
+
+    @pytest.mark.asyncio
+    async def test_chain_is_threaded_into_stream_and_collect(self):
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(model="")
+        with patch(
+            "kiro_crew.slack.gateway.configured_fallback_chain",
+            return_value=("fb-1", "fb-2"),
+        ):
+            _result, stream_mock = await _run_llm_callback(gw, job)
+        assert stream_mock.await_args.kwargs["fallback_models"] == ("fb-1", "fb-2")
+
+    @pytest.mark.asyncio
+    async def test_fallback_served_run_is_annotated(self):
+        from kiro_crew.llm_helpers import TURN_FALLBACK_ATTR
+
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(model="")
+        provider_mock = MagicMock()
+        setattr(provider_mock, TURN_FALLBACK_ATTR, ("primary-m", "fb-m"))
+
+        async def _side_effect(*args, **kwargs):
+            return (provider_mock, True, False)
+
+        result, _ = await _run_llm_callback(gw, job, get_or_create_side_effect=_side_effect)
+        assert result.startswith("⚠️ Model 'primary-m' throttled")
+        assert "fb-m" in result
+        assert "Agent response here" in result
+
+    @pytest.mark.asyncio
+    async def test_fallback_served_run_blanks_pinned_model_in_usage_row(self):
+        """A pinned job.model must NOT be billed while a fallback served the
+        turn — the usage row blanks it so model_source reports what ran."""
+        from kiro_crew.llm_helpers import TURN_FALLBACK_ATTR
+
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(model="pinned-model")
+        provider_mock = MagicMock()
+        setattr(provider_mock, TURN_FALLBACK_ATTR, ("pinned-model", "fb-m"))
+
+        async def _side_effect(*args, **kwargs):
+            return (provider_mock, True, False)
+
+        with patch(
+            "kiro_crew.slack.gateway.persist_token_record_async", new_callable=AsyncMock
+        ) as persist_mock:
+            await _run_llm_callback(gw, job, get_or_create_side_effect=_side_effect)
+        assert persist_mock.await_count >= 1
+        # Positional arg 1 is the model; blank = defer to model_source.
+        assert persist_mock.await_args.args[1] == ""
+
+    @pytest.mark.asyncio
+    async def test_unswapped_run_still_bills_pinned_model(self):
+        """No fallback marker -> the explicit pin is recorded unchanged."""
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(model="pinned-model")
+        with patch(
+            "kiro_crew.slack.gateway.persist_token_record_async", new_callable=AsyncMock
+        ) as persist_mock:
+            await _run_llm_callback(gw, job)
+        assert persist_mock.await_count >= 1
+        assert persist_mock.await_args.args[1] == "pinned-model"
+
+    def test_annotate_noop_without_marker(self):
+        from types import SimpleNamespace
+
+        from kiro_crew.slack.gateway import _annotate_model_fallback
+
+        provider = SimpleNamespace()
+        assert _annotate_model_fallback("text", provider) == "text"
+
+    def test_annotate_malformed_marker_is_noop(self):
+        from types import SimpleNamespace
+
+        from kiro_crew.llm_helpers import TURN_FALLBACK_ATTR
+        from kiro_crew.slack.gateway import _annotate_model_fallback
+
+        provider = SimpleNamespace()
+        setattr(provider, TURN_FALLBACK_ATTR, ("only-one",))
+        assert _annotate_model_fallback("text", provider) == "text"
+
+
 class TestExecutePreservesCallbackStatus:
     """CronService._execute must not clobber a failure the callback reported by
     mutating the job. Command/script callbacks return NORMALLY and signal
@@ -1181,12 +1317,13 @@ class TestCronUsageRow:
         persist = AsyncMock()
         # Patch gateway's own bindings: the imports are at module scope there,
         # so patching the source module would not be seen by the call site.
-        with patch(
-            "kiro_crew.slack.gateway.persist_token_record_async", persist
-        ), patch(
-            "kiro_crew.slack.gateway.read_context_tokens",
-            MagicMock(return_value=(1234, 200000)),
-            create=True,
+        with (
+            patch("kiro_crew.slack.gateway.persist_token_record_async", persist),
+            patch(
+                "kiro_crew.slack.gateway.read_context_tokens",
+                MagicMock(return_value=(1234, 200000)),
+                create=True,
+            ),
         ):
             await _run_llm_callback(gw, job)
 
@@ -1204,16 +1341,18 @@ class TestCronUsageRow:
         job = _make_llm_job(model="claude-opus-4-8")
 
         persist = AsyncMock()
-        with patch(
-            "kiro_crew.slack.gateway.persist_token_record_async", persist
-        ), patch(
-            "kiro_crew.slack.gateway.read_context_tokens",
-            MagicMock(return_value=(10, 100)),
-            create=True,
-        ), patch(
-            "kiro_crew.slack.gateway.read_effective_agent",
-            MagicMock(return_value="kirocrew"),
-            create=True,
+        with (
+            patch("kiro_crew.slack.gateway.persist_token_record_async", persist),
+            patch(
+                "kiro_crew.slack.gateway.read_context_tokens",
+                MagicMock(return_value=(10, 100)),
+                create=True,
+            ),
+            patch(
+                "kiro_crew.slack.gateway.read_effective_agent",
+                MagicMock(return_value="kirocrew"),
+                create=True,
+            ),
         ):
             await _run_llm_callback(gw, job)
 
@@ -1236,12 +1375,13 @@ class TestCronUsageRow:
             return (provider_mock, True, False)
 
         persist = AsyncMock()
-        with patch(
-            "kiro_crew.slack.gateway.persist_token_record_async", persist
-        ), patch(
-            "kiro_crew.slack.gateway.read_context_tokens",
-            MagicMock(return_value=(10, 100)),
-            create=True,
+        with (
+            patch("kiro_crew.slack.gateway.persist_token_record_async", persist),
+            patch(
+                "kiro_crew.slack.gateway.read_context_tokens",
+                MagicMock(return_value=(10, 100)),
+                create=True,
+            ),
         ):
             await _run_llm_callback(gw, job, get_or_create_side_effect=_side_effect)
 
@@ -1256,9 +1396,7 @@ class TestCronUsageRow:
         job = _make_script_job()
 
         persist = AsyncMock()
-        with patch(
-            "kiro_crew.slack.gateway.persist_token_record_async", persist
-        ):
+        with patch("kiro_crew.slack.gateway.persist_token_record_async", persist):
             await _run_script_callback(gw, job, {"status": "ok"})
 
         persist.assert_not_awaited()
@@ -1269,9 +1407,7 @@ class TestCronUsageRow:
         job = _make_command_job()
 
         persist = AsyncMock()
-        with patch(
-            "kiro_crew.slack.gateway.persist_token_record_async", persist
-        ):
+        with patch("kiro_crew.slack.gateway.persist_token_record_async", persist):
             await _run_command_callback(
                 gw, job, {"status": "ok", "output": "hello\n", "exit_code": 0}
             )
@@ -1590,9 +1726,9 @@ class TestCronPoolQueueWait:
 
         # Off-loop: _merge_job_result enters the bounded sync store lock.
         await asyncio.to_thread(svc._merge_job_result, created)
-        assert any(j.id == created.id for j in svc.list_jobs()), (
-            "a one-shot that never ran was deleted as though it had run"
-        )
+        assert any(
+            j.id == created.id for j in svc.list_jobs()
+        ), "a one-shot that never ran was deleted as though it had run"
 
     @pytest.mark.asyncio
     async def test_a_starved_one_shot_at_job_is_not_parked_disabled(self, tmp_path):
@@ -1681,9 +1817,9 @@ class TestCronPoolQueueWait:
         job = _make_command_job(timeout_secs=1800)  # the default wake budget
         # 1850s: past the reaper's un-widened 1800s, inside the 2700s execution
         # deadline the job is actually entitled to.
-        assert await self._one_reaper_sweep(svc, job, 1850) is False, (
-            "the reaper force-killed a job still inside its own execution deadline"
-        )
+        assert (
+            await self._one_reaper_sweep(svc, job, 1850) is False
+        ), "the reaper force-killed a job still inside its own execution deadline"
 
     @pytest.mark.asyncio
     async def test_the_reaper_still_kills_a_job_past_the_widened_deadline(self, tmp_path):
@@ -1696,9 +1832,9 @@ class TestCronPoolQueueWait:
 
         svc = CronService(base_dir=tmp_path, on_job=lambda *a, **k: None)
         job = _make_command_job(timeout_secs=1800)
-        assert await self._one_reaper_sweep(svc, job, 2800) is True, (
-            "the reaper stopped killing a genuinely overrunning job"
-        )
+        assert (
+            await self._one_reaper_sweep(svc, job, 2800) is True
+        ), "the reaper stopped killing a genuinely overrunning job"
 
     @pytest.mark.asyncio
     async def test_the_reaper_window_is_not_widened_for_a_message_job(self, tmp_path):
@@ -1717,9 +1853,9 @@ class TestCronPoolQueueWait:
             schedule=CronSchedule(kind="every", every_secs=60),
         )
         job.timeout_secs = 1800
-        assert await self._one_reaper_sweep(svc, job, 1850) is True, (
-            "a message job got a pool queue allowance it can never use"
-        )
+        assert (
+            await self._one_reaper_sweep(svc, job, 1850) is True
+        ), "a message job got a pool queue allowance it can never use"
 
     @pytest.mark.asyncio
     async def test_a_message_jobs_fire_time_gate_does_not_spend_its_execution_budget(
@@ -1911,16 +2047,16 @@ class TestCronPoolQueueWait:
         svc, job, gw = await self._message_one_shot_run(tmp_path, gate_pool, starve=True)
 
         assert job.run_never_started is True, "starvation did not mark the run as never started"
-        assert job.last_error.startswith("fire-time gate "), (
-            f"gate starvation was not reported as such: {job.last_error!r}"
-        )
+        assert job.last_error.startswith(
+            "fire-time gate "
+        ), f"gate starvation was not reported as such: {job.last_error!r}"
         assert not gw.sessions.get_or_create.called, "the job dispatched; this is not a starved run"
 
         # Off-loop: _merge_job_result enters the bounded sync store lock.
         await asyncio.to_thread(svc._merge_job_result, job)
-        assert any(j.id == job.id for j in svc.list_jobs()), (
-            "the starved message one-shot was deleted by a run that never dispatched"
-        )
+        assert any(
+            j.id == job.id for j in svc.list_jobs()
+        ), "the starved message one-shot was deleted by a run that never dispatched"
 
     @pytest.mark.asyncio
     async def test_a_dispatched_message_one_shot_is_still_deleted(self, tmp_path, gate_pool):
@@ -1934,13 +2070,15 @@ class TestCronPoolQueueWait:
         """
         svc, job, gw = await self._message_one_shot_run(tmp_path, gate_pool, starve=False)
 
-        assert gw.sessions.get_or_create.called, "the control never dispatched, so it proves nothing"
+        assert (
+            gw.sessions.get_or_create.called
+        ), "the control never dispatched, so it proves nothing"
         assert job.run_never_started is False, "a dispatched run was marked never-started"
 
         await asyncio.to_thread(svc._merge_job_result, job)
-        assert not any(j.id == job.id for j in svc.list_jobs()), (
-            "a message one-shot that DID dispatch was retained; the marker is too broad"
-        )
+        assert not any(
+            j.id == job.id for j in svc.list_jobs()
+        ), "a message one-shot that DID dispatch was retained; the marker is too broad"
 
     @pytest.mark.asyncio
     async def test_the_execution_deadline_accounts_for_the_gate_bound(self, tmp_path):
@@ -1983,12 +2121,7 @@ class TestCronPoolQueueWait:
                 await svc._execute_with_timeout(job)
             wake = effective_wake_budget(job)
             gate = ex.cron_gate_budget(wake)
-            owed = (
-                wake
-                + _pool_queue_allowance(job)
-                + math.ceil(gate)
-                + _vet_allowance(job)
-            )
+            owed = wake + _pool_queue_allowance(job) + math.ceil(gate) + _vet_allowance(job)
             assert captured["timeout"] == owed, (
                 f"armed {captured['timeout']}s for a run owed {owed}s "
                 f"(wake {wake} + queue {_pool_queue_allowance(job)} + gate {gate} "
@@ -2024,9 +2157,9 @@ class TestCronPoolQueueWait:
 
         svc = CronService(base_dir=tmp_path, on_job=lambda *a, **k: None)
         job = _make_command_job(timeout_secs=1800)
-        assert await self._one_reaper_sweep(svc, job, 2715) is False, (
-            "the reaper force-killed a job inside the gate-inclusive execution deadline"
-        )
+        assert (
+            await self._one_reaper_sweep(svc, job, 2715) is False
+        ), "the reaper force-killed a job inside the gate-inclusive execution deadline"
 
     @pytest.mark.asyncio
     async def test_a_slow_gate_does_not_consume_a_message_one_shot(self, tmp_path, gate_pool):
@@ -2049,9 +2182,9 @@ class TestCronPoolQueueWait:
         assert job.run_never_started is True, "a gate that overran its bound was not retained"
         assert not gw.sessions.get_or_create.called, "the job dispatched; the gate did not overrun"
         await asyncio.to_thread(svc._merge_job_result, job)
-        assert any(j.id == job.id for j in svc.list_jobs()), (
-            "a message one-shot was deleted by a gate that overran its own bound"
-        )
+        assert any(
+            j.id == job.id for j in svc.list_jobs()
+        ), "a message one-shot was deleted by a gate that overran its own bound"
 
     @pytest.mark.asyncio
     async def test_a_gate_cancelled_by_the_wake_deadline_keeps_its_one_shot(
@@ -2080,18 +2213,18 @@ class TestCronPoolQueueWait:
             tmp_path, gate_pool, starve=False, budget=1, cancel_gate=True
         )
 
-        assert not gw.sessions.get_or_create.called, (
-            "the job dispatched, so the gate was never cancelled and this proves nothing"
-        )
-        assert job.run_never_started is True, (
-            "a run cancelled at the fire-time gate was not marked never-started"
-        )
+        assert (
+            not gw.sessions.get_or_create.called
+        ), "the job dispatched, so the gate was never cancelled and this proves nothing"
+        assert (
+            job.run_never_started is True
+        ), "a run cancelled at the fire-time gate was not marked never-started"
 
         # Off-loop: _merge_job_result enters the bounded sync store lock.
         await asyncio.to_thread(svc._merge_job_result, job)
-        assert any(j.id == job.id for j in svc.list_jobs()), (
-            "the one-shot was deleted by a run cancelled at the gate before it dispatched"
-        )
+        assert any(
+            j.id == job.id for j in svc.list_jobs()
+        ), "the one-shot was deleted by a run cancelled at the gate before it dispatched"
 
     @pytest.mark.asyncio
     async def test_a_returned_verdict_clears_the_retention_marker(self, tmp_path):
@@ -2130,9 +2263,9 @@ class TestCronPoolQueueWait:
 
             assert reason == verdict
             assert starved is False
-            assert job.run_never_started is False, (
-                f"a returned verdict ({verdict!r}) left the retention marker set"
-            )
+            assert (
+                job.run_never_started is False
+            ), f"a returned verdict ({verdict!r}) left the retention marker set"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

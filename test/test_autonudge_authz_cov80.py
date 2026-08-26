@@ -232,6 +232,112 @@ async def test_add_denies_discord_when_the_transport_is_not_running(audits: list
     assert svc.added == []
 
 
+async def test_add_denies_webex_when_the_transport_is_not_running(audits: list[dict]) -> None:
+    """Deny-by-default, mirroring the Discord branch: an authenticated caller must
+    not be able to mint a loop that DMs an arbitrary Webex user through the agent."""
+    svc = RecordingSvc()
+    loop, error, status = await authorize_and_add_nudge(
+        svc=svc,
+        state=_state(transports={}),
+        slot_key="webex:kirocrew:direct:user@example.com",
+        message="watch",
+        source="dashboard",
+    )
+    assert loop is None and status == 404 and "webex transport not running" in error
+    assert svc.added == []
+
+
+async def test_add_denies_a_non_dm_webex_session(audits: list[dict]) -> None:
+    """A space session is a shared audience, so it is never an arm target."""
+    svc = RecordingSvc()
+    transport = SimpleNamespace(
+        dispatcher=SimpleNamespace(current_session_key=lambda _e: ""),
+        is_authorized=lambda _e: True,
+    )
+    loop, error, status = await authorize_and_add_nudge(
+        svc=svc,
+        state=_state(transports={"webex": transport}),
+        slot_key="webex:kirocrew:forum:space:ROOM1",
+        message="watch",
+        source="dashboard",
+    )
+    assert loop is None and status == 400 and "DM sessions only" in error
+    assert svc.added == []
+
+
+async def test_add_denies_a_webex_user_off_the_allowlist(audits: list[dict]) -> None:
+    svc = RecordingSvc()
+    transport = SimpleNamespace(
+        dispatcher=SimpleNamespace(current_session_key=lambda _e: ""),
+        is_authorized=lambda _e: False,
+    )
+    loop, error, status = await authorize_and_add_nudge(
+        svc=svc,
+        state=_state(transports={"webex": transport}),
+        slot_key="webex:kirocrew:direct:intruder@example.com",
+        message="watch",
+        source="dashboard",
+    )
+    assert loop is None and status == 403 and "allowed_emails" in error
+    assert svc.added == []
+
+
+async def test_add_denies_a_webex_key_that_is_not_the_users_current_session(
+    audits: list[dict],
+) -> None:
+    """Blocks spoofing another ``webex:`` session, exactly as Discord's does."""
+    svc = RecordingSvc()
+    transport = SimpleNamespace(
+        dispatcher=SimpleNamespace(
+            current_session_key=lambda _e: "webex:kirocrew:direct:user@example.com:gen3"
+        ),
+        is_authorized=lambda _e: True,
+    )
+    loop, error, status = await authorize_and_add_nudge(
+        svc=svc,
+        state=_state(transports={"webex": transport}),
+        slot_key="webex:kirocrew:direct:user@example.com",
+        message="watch",
+        source="dashboard",
+    )
+    assert loop is None and status == 404 and "current session" in error
+    assert svc.added == []
+
+
+async def test_add_webex_rechecks_session_ownership_at_commit_time(
+    audits: list[dict], tmp_path: Path
+) -> None:
+    """An allow-listed Webex session removed during cleanup must not be
+    recreated by an arm request that passed the initial authorization check."""
+    slot_key = "webex:kirocrew:direct:user@example.com"
+    dispatcher = SimpleNamespace(current_session_key=lambda _email: slot_key)
+    transport = SimpleNamespace(
+        dispatcher=dispatcher,
+        is_authorized=lambda _email: True,
+    )
+    state = _state(transports={"webex": transport})
+    svc = RecordingSvc()
+
+    loop, error, status = await authorize_and_add_nudge(
+        svc=svc,
+        state=state,
+        slot_key=slot_key,
+        message="watch",
+        stop_sentinel_path=str(tmp_path / "stop-webex"),
+        source="dashboard",
+    )
+
+    assert error is None and status == 200 and loop is not None
+    admission_check = svc.added[0]["admission_check"]
+    assert admission_check()
+
+    state.channel_transports["webex"] = SimpleNamespace(
+        dispatcher=dispatcher,
+        is_authorized=lambda _email: True,
+    )
+    assert not admission_check()
+
+
 async def test_add_denies_a_non_dm_discord_session(audits: list[dict]) -> None:
     """Only DM sessions are nudge-able; a guild/channel-shaped key must be
     refused before the allowlist check so it can never reach a public channel."""
@@ -279,7 +385,6 @@ async def test_add_denies_discord_when_the_current_session_lookup_raises(
         "telegram:9001",
         "whatsapp:kirocrew:direct:15550100",
         "unified:kirocrew",
-        "webex:kirocrew:direct:user@example.com",
         "teams:kirocrew:direct:29:1abcdef",
         "weixin:kirocrew:direct:oUserOpenId",
         "imessage:kirocrew:direct:+15550100",
@@ -289,8 +394,8 @@ async def test_add_rejects_a_channel_transport_it_cannot_authorize(
     audits: list[dict], slot_key: str
 ) -> None:
     """``is_channel_key`` classifies every proactive-capable namespace, but only
-    Slack and Discord have ownership checks here — anything else must be refused
-    rather than falling through to an unvalidated arm.
+    Slack, Discord and Webex have ownership checks here — anything else must be
+    refused rather than falling through to an unvalidated arm.
 
     Widening the classifier deliberately does NOT widen this chokepoint: a
     namespace becomes armable only together with an ownership check here and a

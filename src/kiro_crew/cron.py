@@ -53,11 +53,62 @@ from kiro_crew.constants import env_flag_enabled
 from kiro_crew.cron_history import CronHistoryStore, CronRunRecord
 from kiro_crew.executors import _CRON_QUEUE_WAIT_SECS, cron_gate_budget, subprocess_executor
 from kiro_crew.resource_status import admission_check
-from kiro_crew.validation import MAX_CRON_MESSAGE
+from kiro_crew.validation import CHANNEL_MAX_LEN, MAX_CRON_MESSAGE, MAX_SHORT_STRING
 
 logger = logging.getLogger(__name__)
 
 # ── Constants ──
+
+# Table-driven string-field caps for the persistence chokepoint. Every
+# caller-supplied string field persisted by _build_job/_update_job_locked
+# is listed here with its cap matching the REST/MCP boundary schemas
+# (CRON_ADD_SCHEMA / cron_update ToolSchema in validation.py). A helper
+# iterates this table so adding a field requires ONE edit, not two.
+_CRON_STRING_FIELD_CAPS: tuple[tuple[str, int], ...] = (
+    ("name", MAX_SHORT_STRING),
+    ("message", MAX_CRON_MESSAGE),
+    ("channel", CHANNEL_MAX_LEN),
+    ("thread_ts", 30),
+    ("agent_id", MAX_SHORT_STRING),
+    ("created_by", MAX_SHORT_STRING),
+    ("folder_id", MAX_SHORT_STRING),
+    ("session_key", MAX_SHORT_STRING),
+    ("model", MAX_SHORT_STRING),
+    ("command", 5000),
+    ("script", 200),
+    ("timezone", 50),
+)
+
+
+def _validate_cron_string_fields(
+    values: dict[str, object],
+    *,
+    required: frozenset[str] = frozenset(),
+) -> None:
+    """Type+length gate for every caller-supplied string field.
+
+    Iterates _CRON_STRING_FIELD_CAPS. For each field:
+    - If in *required*: always validates (rejects non-str or over-cap).
+    - Otherwise: ``None`` and ``""`` mean "not set" and are skipped; any
+      other value — including falsy non-strings like ``[]`` or ``0``, which
+      a bare truthiness test would silently admit — must be a string within
+      the cap.
+    """
+    for field_name, cap in _CRON_STRING_FIELD_CAPS:
+        val = values.get(field_name)
+        if field_name in required:
+            if not isinstance(val, str):
+                raise ValueError(f"{field_name} must be a string")
+            if len(val) > cap:
+                raise ValueError(f"{field_name} exceeds max length {cap}")
+        else:
+            if val is None or val == "":
+                continue
+            if not isinstance(val, str):
+                raise ValueError(f"{field_name} must be a string")
+            if len(val) > cap:
+                raise ValueError(f"{field_name} exceeds max length {cap}")
+
 
 # Resolved per call, never captured at import: an import-time binding freezes
 # the data home and defeats pod isolation, the lazy legacy-home migration and
@@ -784,10 +835,21 @@ def _record_is_enabled(j: dict[str, Any]) -> bool:
 def _job_from_record(j: dict[str, Any]) -> CronJob:
     """Build one :class:`CronJob` from its serialized record.
 
-    Raises ``KeyError``/``TypeError``/``AttributeError`` when the record is
-    malformed (missing required keys, or not shaped like a job object at all).
-    The caller (:meth:`CronService._load`) isolates that failure to THIS entry
-    — one bad record must never discard the rest of the store (#4664).
+    Raises ``KeyError``/``TypeError`` when the record is malformed (missing
+    required keys, or not shaped like a job object at all). The caller
+    (:meth:`CronService._load`) isolates that failure to THIS entry — one bad
+    record must never discard the rest of the store (#4664).
+
+    It does NOT raise ``AttributeError`` for any record ``json.loads`` can
+    produce: every ``.get()`` below is dominated by a ``[...]`` subscript on the
+    same object, and only a ``dict`` survives a string subscript. An
+    ``AttributeError`` from this function therefore signals a defect in this
+    code, not bad data, so :meth:`CronService._load` deliberately lets it
+    propagate rather than catching it: catching it there would reclassify a
+    valid job as malformed, and because ``_save`` rewrites ``jobs[]`` from
+    ``self._jobs`` the next write would erase that job from disk permanently —
+    turning a code defect into silent, unrecoverable data loss. Letting it
+    propagate trades a loud failure at load for that silent loss.
     """
     return CronJob(
         id=j["id"],
@@ -1597,18 +1659,28 @@ class CronService:
         valid_approval_modes = ("", "auto")
         if approval_mode not in valid_approval_modes:
             raise ValueError(f"Invalid approval_mode: {approval_mode!r}")
-        # Message cap enforced HERE, at the persistence owner, for the same
-        # reason as timezone/skip_dates below: every create path (MCP, apps
-        # SDK, dashboard, CLI) shares one check, so no surface can admit a
-        # message the others would reject. Uses the cron-specific cap, not
-        # MAX_MEDIUM_STRING — a cron message is a task prompt (see
-        # validation.MAX_CRON_MESSAGE). Type-checked first: len() succeeds on
-        # a list, and a non-str message would be persisted into crons.json and
-        # only blow up at fire time inside _build_prompt.
-        if not isinstance(message, str):
-            raise ValueError("message must be a string")
-        if len(message) > MAX_CRON_MESSAGE:
-            raise ValueError(f"message exceeds max length {MAX_CRON_MESSAGE}")
+        # Table-driven type+length gate for every persisted string field.
+        # Runs at the persistence owner so EVERY create path (MCP, apps SDK,
+        # dashboard, CLI) shares one check. name and message are required
+        # (validated even when empty); all other fields use the falsy-skip
+        # pattern (None/"" = "not set").
+        _validate_cron_string_fields(
+            {
+                "name": name,
+                "message": message,
+                "channel": channel,
+                "thread_ts": thread_ts,
+                "agent_id": agent_id,
+                "created_by": created_by,
+                "folder_id": folder_id,
+                "session_key": session_key,
+                "model": model,
+                "command": command,
+                "script": script,
+                "timezone": timezone,
+            },
+            required=frozenset({"name", "message"}),
+        )
         if timeout_secs and not 1 <= int(timeout_secs) <= 86400:
             raise ValueError(f"timeout_secs must be within 1..86400, got {timeout_secs}")
         if timeout_secs and (command or script):
@@ -1821,15 +1893,12 @@ class CronService:
                     if kwargs["approval_mode"] not in valid_approval_modes:
                         raise ValueError(f"Invalid approval_mode: {kwargs['approval_mode']!r}")
                 # Validate before any mutations
-                if "message" in kwargs and kwargs["message"]:
-                    # Same chokepoint rationale as _build_job: every update
-                    # surface (MCP, dashboard PATCH, CLI) funnels here. Type
-                    # first — len() succeeds on a list, which would then be
-                    # persisted and only raise at fire time in _build_prompt.
-                    if not isinstance(kwargs["message"], str):
-                        raise ValueError("message must be a string")
-                    if len(kwargs["message"]) > MAX_CRON_MESSAGE:
-                        raise ValueError(f"message exceeds max length {MAX_CRON_MESSAGE}")
+                # Table-driven type+length gate for every updatable string
+                # field. Falsy values are intentional no-ops (the assignment
+                # section below skips them too).
+                _validate_cron_string_fields(
+                    {f: kwargs[f] for f, _ in _CRON_STRING_FIELD_CAPS if f in kwargs},
+                )
                 if (
                     "cron_expr" in kwargs
                     and kwargs["cron_expr"]
@@ -1963,26 +2032,87 @@ class CronService:
                 return job
         return None
 
-    def remove_job(self, job_id: str) -> bool:
+    def remove_job(
+        self,
+        job_id: str,
+        *,
+        actor: str,
+        source: str,
+        one_shot_path: str | None = None,
+    ) -> bool:
         """Remove a job by ID.
+
+        ``actor`` and ``source`` are required so every caller-requested
+        removal is attributable at this mutation seam. Automated one-shot
+        callers additionally provide ``one_shot_path`` to retain their
+        distinct audit outcome and path discriminator.
 
         Raises :class:`CronStoreBusy` on lock contention; see
         :meth:`remove_job_async` for the event-loop-safe variant.
         """
         ok = self._remove_job_locked(job_id)
+        self._audit_requested_removal(
+            job_id,
+            removed=ok,
+            actor=actor,
+            source=source,
+            one_shot_path=one_shot_path,
+        )
         if ok:
             self._arm_timer()
         return ok
 
-    async def remove_job_async(self, job_id: str) -> bool:
+    async def remove_job_async(
+        self,
+        job_id: str,
+        *,
+        actor: str,
+        source: str,
+        one_shot_path: str | None = None,
+    ) -> bool:
         """Event-loop-safe :meth:`remove_job`: the lock+save runs off the loop.
 
         Raises :class:`CronStoreBusy` (retryable) on sustained contention.
         """
         ok = await asyncio.to_thread(self._remove_job_locked, job_id)
+        self._audit_requested_removal(
+            job_id,
+            removed=ok,
+            actor=actor,
+            source=source,
+            one_shot_path=one_shot_path,
+        )
         if ok:
             self._arm_timer()
         return ok
+
+    def _audit_requested_removal(
+        self,
+        job_id: str,
+        *,
+        removed: bool,
+        actor: str,
+        source: str,
+        one_shot_path: str | None = None,
+    ) -> None:
+        """Audit one removal after persistence and outside the store lock."""
+        if one_shot_path is not None:
+            if removed:
+                self.audit_one_shot_removal(job_id, one_shot_path)
+            return
+        resources = f"job_id={job_id}"
+        if not removed:
+            resources += " reason=not_found"
+        try:
+            sel.sel().log_api_access(
+                caller=actor,
+                operation="cron.remove",
+                outcome="allowed" if removed else "not_found",
+                source=source,
+                resources=resources,
+            )
+        except Exception:
+            logger.warning("SEL audit for cron removal failed (job %s)", job_id, exc_info=True)
 
     def defer_removal(self, job_id: str) -> None:
         """Queue a one-shot job for removal on the next timer tick.
@@ -2133,8 +2263,13 @@ class CronService:
                 logger.info("Removed %d cron job(s) in batch", len(targets))
         return removed, missing
 
-    async def remove_jobs(self, job_ids: list[str]) -> tuple[list[str], list[str]]:
+    async def remove_jobs(
+        self, job_ids: list[str], *, actor: str, source: str
+    ) -> tuple[list[str], list[str]]:
         """Remove many jobs under ONE lock/reload/save, off the event loop.
+
+        ``actor`` and ``source`` are required so the completed batch is
+        audited here after persistence, outside the store lock.
 
         Returns ``(removed_ids, missing_ids)`` preserving input order. Looping
         :meth:`remove_job` per id would pay the file-lock + reload +
@@ -2144,12 +2279,39 @@ class CronService:
         runs in a worker thread; only ``_arm_timer`` (asyncio.create_task)
         runs back on the loop, and only when something was actually removed.
         """
-        removed, missing = await asyncio.to_thread(self._remove_jobs_locked, list(job_ids))
+        requested = list(job_ids)
+        removed, missing = await asyncio.to_thread(self._remove_jobs_locked, requested)
+        self._audit_requested_batch_removal(
+            requested, removed, missing, actor=actor, source=source
+        )
         if removed:
             self._arm_timer()
         return removed, missing
 
-    def remove_jobs_sync(self, job_ids: list[str]) -> tuple[list[str], list[str]]:
+    def _audit_requested_batch_removal(
+        self,
+        requested: list[str],
+        removed: list[str],
+        missing: list[str],
+        *,
+        actor: str,
+        source: str,
+    ) -> None:
+        """Audit one caller-requested batch after persistence and off-lock."""
+        try:
+            sel.sel().log_api_access(
+                caller=actor,
+                operation="cron.batch_delete",
+                outcome="ok" if removed else "failed",
+                source=source,
+                resources=f"requested={requested} deleted={removed} failed={missing}",
+            )
+        except Exception:
+            logger.warning("SEL audit for cron batch removal failed", exc_info=True)
+
+    def remove_jobs_sync(
+        self, job_ids: list[str], *, actor: str, source: str
+    ) -> tuple[list[str], list[str]]:
         """Synchronous sibling of :meth:`remove_jobs` — ONE atomic locked batch.
 
         Removes every id in ``job_ids`` under a SINGLE :meth:`_remove_jobs_locked`
@@ -2162,7 +2324,11 @@ class CronService:
         facade (the ``_file_lock`` loop-safety guard rejects it on a running
         loop). On the loop use :meth:`remove_jobs`.
         """
-        removed, missing = self._remove_jobs_locked(list(job_ids))
+        requested = list(job_ids)
+        removed, missing = self._remove_jobs_locked(requested)
+        self._audit_requested_batch_removal(
+            requested, removed, missing, actor=actor, source=source
+        )
         if removed:
             self._arm_timer()
         return removed, missing
@@ -3523,11 +3689,17 @@ class CronService:
             # well-formed job survives. The whole-store reset below is reserved
             # for a genuinely unparseable file (json.JSONDecodeError), where
             # there is nothing to salvage.
+            #
+            # The caught tuple is deliberately NARROWER than the exceptions
+            # _job_from_record can raise: KeyError and TypeError are its two
+            # bad-data signals, and AttributeError is not reachable from JSON.
+            # See _job_from_record's docstring for why, and for what catching it
+            # would cost.
             jobs: list[CronJob] = []
             for j in records:
                 try:
                     jobs.append(_job_from_record(j))
-                except (KeyError, TypeError, AttributeError) as entry_exc:
+                except (KeyError, TypeError) as entry_exc:
                     entry_id = (
                         j.get("id", "<missing id>") if isinstance(j, dict) else "<not an object>"
                     )

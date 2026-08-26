@@ -42,6 +42,7 @@ from kiro_crew.sandbox import (
     wrap_argv,
 )
 from kiro_crew.sel import sel
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 logger = logging.getLogger(__name__)
 
@@ -398,7 +399,9 @@ def _resolve_nvm_path(binary_name: str) -> str | None:
     try:
         result = subprocess.run(
             ["bash", "-c", f'source "{nvm_sh}" --no-use && nvm which current'],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            timeout=10,
+            **UTF8_TEXT,
         )
         if result.returncode == 0 and result.stdout.strip():
             nvm_node = result.stdout.strip()

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import difflib
 import fnmatch
+import functools
 import hashlib
 import json
 import logging
@@ -595,6 +596,49 @@ def _walk_confined_skill_tree(base: Path) -> Iterator[tuple[str, list[str], list
         yield from _walk_confined_skill_fd(fd, base)
     finally:
         os.close(fd)
+
+
+def _disabled_app_names() -> frozenset[str]:
+    """Installed apps that are currently DISABLED.
+
+    Used to keep a disabled app's bundled skills out of trigger matching.
+    ``bridges`` registers each app skill under ``skills/<app>/<skill>`` (plus a
+    flat link), so the first path segment names the owning app.
+
+    Read once per matching pass rather than per skill: this runs on every
+    message, and ``is_app_enabled`` reads a JSON file per call. Failures return
+    an EMPTY set on purpose — the gate then hides nothing, which keeps a
+    transient read error from silently stripping an enabled app's skills.
+    Deferred import: ``apps.manager`` is a higher layer than this module.
+    """
+    try:
+        from kiro_crew.apps.manager import list_apps
+
+        return frozenset(
+            str(a.get("name")) for a in list_apps() if a.get("name") and not a.get("enabled")
+        )
+    except Exception:
+        logger.debug("skills: could not read app enablement", exc_info=True)
+        return frozenset()
+
+
+@functools.lru_cache(maxsize=None)
+def _builtin_dir_app_name(pkg_dir: str) -> str | None:
+    """The manifest name of the builtin app shipped in *pkg_dir*, or ``None``.
+
+    A shipped builtin's package directory is named for its Python package
+    (``auto_improvement``) while the app registry keys on the manifest name
+    (``auto-improvement``), so the mapping must come from the manifest itself —
+    the same source ``apps.discovery`` registers builtins from. Cached for the
+    process lifetime: the installed package tree is immutable while running,
+    and this is consulted from the per-message trigger-matching pass.
+    """
+    try:
+        with open(os.path.join(pkg_dir, "app.json"), encoding="utf-8") as fh:
+            name = json.load(fh).get("name")
+        return name if isinstance(name, str) and name else None
+    except Exception:
+        return None
 
 
 def _iter_skill_files(
@@ -1899,6 +1943,47 @@ class SkillsLoader:
                 }
             )
         return skills
+
+    def _owning_app(self, name: str, skill_file: Path) -> str | None:
+        """The app whose bundle this skill came from, or ``None``.
+
+        Two shapes have to resolve to the same owner, because ``bridges``
+        registers every app skill twice and either registration can be the one
+        this walk kept (see ``_iter_skill_files``'s ``seen_real`` note):
+
+        * the namespaced ``skills/<app>/<skill>`` directory — the first segment
+          of ``name`` IS the app;
+        * the flat ``skills/<skill>`` link, whose name says nothing — so the
+          real path is consulted. An externally installed app resolves under
+          the data home's apps root, where the directory name IS the app name.
+          A shipped BUILTIN resolves inside the package tree
+          (``…/apps/builtins/<pkg dir>/skills/…``), and its package directory
+          (``auto_improvement``) is not its app name (``auto-improvement``) —
+          the manifest in that directory is the authoritative mapping (see
+          ``apps.discovery``).
+
+        Path-shaped, not manifest-keyed, on purpose: it must answer for a
+        third-party app just as well as a builtin, and the registration layout
+        is the one thing every app shares.
+        """
+        head = name.split("/", 1)[0]
+        if head != name:
+            return head
+        try:
+            from kiro_crew.apps.manager import apps_dir
+
+            real = Path(os.path.realpath(skill_file))
+            root = apps_dir()
+            if real.is_relative_to(root):
+                # <apps root>/<app>/... — the segment directly under the root.
+                return real.relative_to(root).parts[0]
+            builtins_root = Path(os.path.realpath(Path(__file__).parent)) / "apps" / "builtins"
+            if real.is_relative_to(builtins_root):
+                pkg_dir = builtins_root / real.relative_to(builtins_root).parts[0]
+                return _builtin_dir_app_name(str(pkg_dir))
+        except Exception:
+            return None
+        return None
 
     def _owned_hint(self, skill_file: Path) -> bool:
         """Whether *skill_file* sits under the directory Kiro Crew owns.
@@ -3938,12 +4023,21 @@ class SkillsLoader:
         Returns up to ``max_triggered`` skills sorted by best overlap score.
         """
         text_words = set(re.findall(r"\w+", text.lower()))
+        # Disabling an app must actually stop its skills loading. The skill tree
+        # an app bundles was never gated on the app's enabled state, so a
+        # disabled app's skills stayed in this index and kept matching into
+        # every turn's context on generic trigger words — burning tokens and
+        # polluting the prompt for an app the user explicitly opted out of,
+        # with no visible reason (#4023).
+        disabled_apps = _disabled_app_names()
 
         scored: list[tuple[str, float]] = []
         # Skills a negative trigger actively excluded — a permission DENY that
         # must still be audited (see the audit event below).
         negated_skills: list[str] = []
         for name, skill_file, _within in self._iter(project_dir):
+            if disabled_apps and self._owning_app(name, skill_file) in disabled_apps:
+                continue
             meta = self._cached_frontmatter(skill_file, within=_within)
             if meta.get("always", "").lower() == "true":
                 continue

@@ -7,6 +7,7 @@ closure: every character is attributed exactly once, which is what lets a reader
 trust the per-block sizes. These drive the real function over realistic prompt
 shapes rather than restating its arithmetic.
 """
+
 from kiro_crew.context_blocks import (
     REPLY_FORMAT_LABEL,
     UNCLASSIFIED_LABEL,
@@ -237,7 +238,9 @@ class TestExpandedInputAttribution:
         prompt = self._prompt(message)
         # Caller passes the ORIGINAL typed length (attributable_user_chars with
         # prompt_expanded=False and original_len=len(typed)).
-        blocks = split_blocks(prompt, user_chars=attributable_user_chars(len(typed), prompt_expanded=False))
+        blocks = split_blocks(
+            prompt, user_chars=attributable_user_chars(len(typed), prompt_expanded=False)
+        )
         # The user gets exactly their typed text — not the skill body.
         assert blocks[USER_LABEL] == len(typed)
         # The appended skill classifies by its own marker.
@@ -249,7 +252,9 @@ class TestExpandedInputAttribution:
         # After @prompt expansion the whole message is injected SOP content.
         sop = "Execute the following instructions:\n\n" + ("do the thing. " * 40)
         prompt = self._prompt(sop)
-        blocks = split_blocks(prompt, user_chars=attributable_user_chars(len(sop), prompt_expanded=True))
+        blocks = split_blocks(
+            prompt, user_chars=attributable_user_chars(len(sop), prompt_expanded=True)
+        )
         # None of the SOP body is attributed to the user.
         assert blocks.get(USER_LABEL, 0) == 0
         assert sum(blocks.values()) == len(prompt)
@@ -423,7 +428,9 @@ class TestAppendedSuffixDoesNotShiftUserOffset:
         # body opens with a [Skill: ...] marker), then an APPENDED persona with
         # no marker of its own — it folds into the loaded_skill block.
         trailer = "[Skill: demo]\nskill body line one\nskill body line two\n"
-        persona = "\n[THEME PERSONA]\n" + ("persona voice line. " * 12) + "\n[END THEME PERSONA]\n\n"
+        persona = (
+            "\n[THEME PERSONA]\n" + ("persona voice line. " * 12) + "\n[END THEME PERSONA]\n\n"
+        )
         prompt = f"{header}{typed}{trailer}{persona}"
 
         # Correct offset excludes the appended suffix: no prepend here, so 0.
@@ -506,3 +513,136 @@ class TestPrependedContextOffset:
         # No crash, closure holds, nothing negative.
         assert sum(out.values()) == len(prompt)
         assert all(v > 0 for v in out.values())
+
+
+class TestABlockEndsAtItsOwnCloser:
+    """A block owns up to its closer, not up to whatever marker comes next.
+
+    Before this, a span ran to the next OPENING marker, which silently turned
+    unattributed characters into MIS-attributed ones — and the panel cannot tell a
+    genuinely large block from a small one that swallowed its neighbours. The
+    trigger is ordinary: the blocks between two markers are conditional (workspace
+    identity and the docs pointer are skipped for a custom agent, the memory family
+    for a session sealed from the user's memory), so their absence is exactly what
+    lets an earlier block absorb everything downstream. Measured on one real
+    session, a ~470-char profile block was reported as 8,116.
+    """
+
+    def test_unmarked_text_after_a_closer_is_unclassified_not_the_block(self):
+        profile = "[USER PROFILE]\nrole: dev.\n[End of user profile]\n\n"
+        orphan = "some assembly text nobody gave a marker\n\n"
+        replay = "[CONVERSATION HISTORY — replay]\nu: hi\n[END CONVERSATION HISTORY]\n\n"
+        prompt = profile + orphan + replay
+        out = split_blocks(prompt)
+        assert out["user_profile"] == len(profile), "the block is its own span, no more"
+        assert out[UNCLASSIFIED_LABEL] == len(orphan), "the orphan is named as unknown"
+        assert out["conversation_replay"] == len(replay)
+        assert sum(out.values()) == len(prompt)
+
+    def test_the_separator_after_a_closer_stays_with_its_block(self):
+        """The blank line a block emits after closing is its own, so it must not
+        become a two-character crumb of `unclassified` after every closed block."""
+        profile = "[USER PROFILE]\nrole: dev.\n[End of user profile]\n\n"
+        prompt = profile + "[CURRENT DATE] today\n"
+        out = split_blocks(prompt)
+        assert out["user_profile"] == len(profile)
+        assert UNCLASSIFIED_LABEL not in out
+
+    def test_a_wrapper_whose_nested_blocks_open_first_is_unchanged(self):
+        """`[SESSION CONTEXT` closes long after the memory family opens inside it.
+
+        The closer search is bounded by the next opening marker, so the wrapper
+        never finds its own closer in range and ends where it always did. Without
+        that bound the wrapper would swallow every block nested inside it.
+        """
+        head = "[SESSION CONTEXT — background]\n"
+        mem = "[Memory — profile]\nlikes tea\n[End of memory]\n\n"
+        tail = "[END OF SESSION CONTEXT]\n\n"
+        prompt = head + mem + tail
+        out = split_blocks(prompt)
+        assert out["session_wrapper"] == len(head), "the wrapper stops at the nested block"
+        assert out["memory"] == len(mem), "the nested block keeps its own span"
+        # The wrapper's own closer trails the last nested block, which has already
+        # closed, so it is unattributed rather than silently booked to memory.
+        assert out[UNCLASSIFIED_LABEL] == len(tail)
+        assert sum(out.values()) == len(prompt)
+
+    def test_one_loaded_skill_does_not_claim_the_skills_index(self):
+        """`[End of skill]` is a PREFIX of `[End of skills]`.
+
+        An unanchored closer would match inside the index's own closer and let a
+        single loaded skill book the entire index that follows it.
+        """
+        skill = "[Skill: widgets]\nuse mcwidget.\n[End of skill]\n\n"
+        index = "[Skills:]\n- widgets\n- artifacts\n[End of skills]\n\n"
+        prompt = skill + index
+        out = split_blocks(prompt)
+        assert out["loaded_skill"] == len(skill)
+        assert out["skill_index"] == len(index)
+        assert sum(out.values()) == len(prompt)
+
+    def test_a_block_quoting_its_own_closer_still_ends_at_the_real_one(self):
+        """A block's content can contain its own closer verbatim.
+
+        A custom agent prompt that documents the envelope it is injected into
+        embeds `[END AGENT SYSTEM PROMPT]` as text. Ending the block at that
+        quotation would book the rest of its real body as `unclassified` — a new
+        mis-measurement introduced by closer awareness itself. The LAST match
+        before the next opener is right by construction: nothing of the block
+        follows its real closer, so an earlier occurrence in range is content.
+        """
+        body = (
+            "[AGENT SYSTEM PROMPT]\n"
+            "Your turn is wrapped like this:\n"
+            "[END AGENT SYSTEM PROMPT]\n"  # quoted by the prompt, not the real end
+            "and that wrapper is not yours to emit.\n"
+            "[END AGENT SYSTEM PROMPT]\n\n"
+        )
+        orphan = "assembly text with no marker\n\n"
+        prompt = body + orphan + "[CURRENT DATE] today\n"
+        out = split_blocks(prompt)
+        assert out["agent_instructions"] == len(
+            body
+        ), "the block must run to its REAL closer, not to the one it quotes"
+        assert out[UNCLASSIFIED_LABEL] == len(orphan)
+        assert sum(out.values()) == len(prompt)
+
+    def test_a_block_with_no_closer_still_runs_to_the_next_marker(self):
+        """Single-line blocks emit no closer, and running to the next marker is
+        correct for them — there is nothing in between to mis-attribute."""
+        date = "[CURRENT DATE] Monday\n"
+        runtime = "[RUNTIME] dashboard\n"
+        prompt = date + runtime
+        out = split_blocks(prompt)
+        assert out["date"] == len(date)
+        assert out["surface"] == len(runtime)
+        assert UNCLASSIFIED_LABEL not in out
+
+    def test_the_history_prefix_block_stops_at_its_own_closer(self):
+        """``chat_persistence`` emits this block with a closer, so it must have a
+        ``_CLOSERS`` entry — an opener in ``_MARKERS`` whose real closer is not
+        listed keeps exactly the absorbing behaviour this table removes."""
+        block = (
+            "[Previous chat history for this tab — session was reset after stop]\n"
+            "user: hello\n"
+            "[End of history]\n\n"
+        )
+        orphan = "assembly text with no marker\n\n"
+        prompt = block + orphan + "[CURRENT DATE] today\n"
+        out = split_blocks(prompt)
+        assert out["history_prefix"] == len(block)
+        assert out[UNCLASSIFIED_LABEL] == len(orphan)
+        assert sum(out.values()) == len(prompt)
+
+    def test_both_hook_context_closer_spellings_are_recognised(self):
+        """Two emit sites, two spellings: ``context.py`` writes ``[End of hook
+        context]`` and ``chat_runner.py`` writes ``[End hook context]``. A table
+        covering only one leaves the other block absorbing what follows it."""
+        for closer in ("[End of hook context]", "[End hook context]"):
+            block = f"[Hook context]\nsomething a hook added\n{closer}\n\n"
+            orphan = "assembly text with no marker\n\n"
+            prompt = block + orphan + "[CURRENT DATE] today\n"
+            out = split_blocks(prompt)
+            assert out["hook_context"] == len(block), f"{closer} was not treated as a closer"
+            assert out[UNCLASSIFIED_LABEL] == len(orphan)
+            assert sum(out.values()) == len(prompt)

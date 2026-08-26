@@ -6,11 +6,12 @@ import { useAppDispatch, useAppSelector } from '../store'
 import { store } from '../store'
 import { sseStatus, sseConnected, sseDisconnected, sseSlots, sseTodoUpdate, setChannelTrusted, sseSlotTitle, triggerRefresh, fetchSlots, markSlotUnread, setUpdateProgress, sseSubagentStatus, sseSubagentText, touchSlotActivity, patchSlotSourceLinks, type SubagentDetail } from '../store/dashboardSlice'
 import { addNotification, ackNotificationByTs, unackNotificationByTs, removeNotificationByTs, clearAllNotifications, fetchNotifications, markBootNotificationsFetched } from '../store/notificationsSlice'
-import { MC_NOTIFICATION_EVENT, TURN_DONE_KIND, APPROVAL_KIND, shouldChimeOnTurnDone, type McNotificationDetail } from './notificationEvent'
+import { dispatchMcNotification, TURN_DONE_KIND, APPROVAL_KIND, shouldChimeOnTurnDone } from './notificationEvent'
 import { emitThemeSound } from './themeSound'
 import {
   fetchHistory, missedChunkMarker, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, refreshSlot, warmSlotCache, sseContextUsage, clearMessages, setVoicePlaying, setVoiceAudio, resolveByApprovalId, clearSubagentsForSnapshot, sseSubagentPending, sseSubagentSpawn, sseSubagentQueued, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolActivity, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, setSlotStatusDetail, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages, appendSlotMessage, setQuestionCard, resolveQuestionCard, setFollowupCard, setFolderSuggestion, sseMcpAppRender, setGoalLoops, sseGoalLoop, sseSideQueue, reconcileWorkflowRuns
 } from '../store/chatSlice'
+import { anchorForSlot, loadLayout, sessionSlots } from './splitLayoutStore'
 import { TAB_ID } from '../api/tabId'
 import { api } from '../api/client'
 import { sanitizeLlmOutput } from '../utils/sanitize'
@@ -692,6 +693,31 @@ export function useWebSocket() {
         // Re-fetch active slot messages to recover from missed chunks
         const active = store.getState().chat.activeSlot
         if (active) dispatch(refreshSlot(active))
+        // refreshSlot self-guards to the ACTIVE slot, but the queue event family
+        // (queue_push/cancel/edit/reorder) is broadcast fire-and-forget with no
+        // replay — a mutation that happened while the socket was down never
+        // reaches this client, so a pane co-rendered in the active slot's split
+        // keeps rendering the queue it held at the drop (#2348). Warm every
+        // OTHER live member of that persisted split: warmSlotCache is the
+        // sanctioned background hydration (self-guards against the active slot,
+        // writes only the per-slot caches and never the active `messages`,
+        // rebuilds queued rows from the server's canonical queue), so the
+        // re-hydration is authoritative and idempotent. Members are validated
+        // against live slots (the ChatPage.splitAnchorForActive pattern) so a
+        // stale layout naming a deleted session costs no 404. With no persisted
+        // split nothing is dispatched. The catch keeps a corrupt persisted
+        // layout from aborting the rest of reconnect setup (resubscribes and
+        // focus re-announce below).
+        if (active) {
+          try {
+            const liveKeys = new Set(store.getState().dashboard.slots.map(s => s.key))
+            for (const member of new Set(sessionSlots(loadLayout(anchorForSlot(active))))) {
+              if (member !== active && liveKeys.has(member)) dispatch(warmSlotCache(member))
+            }
+          } catch (err) {
+            console.warn('reconnect split-pane warm skipped', err)
+          }
+        }
         // Eagerly subscribe to subagent events so chunks arrive even when
         // Activity Panel isn't open — final result still comes via done event.
         dispatch(clearSubagentsForSnapshot())
@@ -935,12 +961,7 @@ export function useWebSocket() {
             // RFC Phase 3: muted-channel (silenced) and passive notes are
             // feed-only — no sound.
             if (!n.silenced && n.priority !== 'passive') {
-              try {
-                const detail: McNotificationDetail = { kind: n.kind }
-                window.dispatchEvent(new CustomEvent(MC_NOTIFICATION_EVENT, { detail }))
-              } catch (err) {
-                console.warn('mc-notification listener error', err)
-              }
+              dispatchMcNotification(n.kind)
             }
             break
           }
@@ -960,12 +981,7 @@ export function useWebSocket() {
             // Approval-blocked chime: the agent is stuck until the user acts.
             // Suppressed during reconnect catch-up (same policy as turn-done).
             if (!reconnectingRef.current) {
-              try {
-                const detail: McNotificationDetail = { kind: APPROVAL_KIND }
-                window.dispatchEvent(new CustomEvent(MC_NOTIFICATION_EVENT, { detail }))
-              } catch (err) {
-                console.warn('mc-notification listener error', err)
-              }
+              dispatchMcNotification(APPROVAL_KIND)
             }
             // Browser notification when tab not focused (permission must be granted via UI interaction elsewhere)
             if (typeof Notification !== 'undefined' && document.hidden && Notification.permission === 'granted') {
@@ -1316,7 +1332,7 @@ export function useWebSocket() {
             break
           }
           case 'subagent_spawn':
-            dispatch(sseSubagentSpawn(data as { slot: string; id: string; task: string; agent: string }))
+            dispatch(sseSubagentSpawn(data as { slot: string; id: string; task: string; agent: string; model?: string }))
             break
           case 'subagent_queued':
             dispatch(sseSubagentQueued(data as { slot: string; queued: number }))
@@ -1335,7 +1351,7 @@ export function useWebSocket() {
             dispatch(sseSubagentRetrying(data as { slot: string; id: string; attempt?: number }))
             break
           case 'subagent_done':
-            dispatch(sseSubagentDone(data as { slot: string; id: string; elapsed: number; error?: string; stopped?: boolean; outcome?: 'completed' | 'failed' | 'stopped'; task?: string; agent?: string; result?: string }))
+            dispatch(sseSubagentDone(data as { slot: string; id: string; elapsed: number; error?: string; stopped?: boolean; outcome?: 'completed' | 'failed' | 'stopped'; task?: string; agent?: string; model?: string; result?: string }))
             break
           case 'app_reload':
             // App dev-mode live reload: the gateway watched a dev-flagged app's
@@ -1343,7 +1359,7 @@ export function useWebSocket() {
             window.dispatchEvent(new CustomEvent('mc:app-reload', { detail: data as { app: string } }))
             break
           case 'subagent_snapshot':
-            dispatch(sseSubagentSnapshot(data as { id: string; slot: string; task: string; agent: string; streaming: string; last_tool: string; started: number; tool_count?: number; stalled?: boolean }))
+            dispatch(sseSubagentSnapshot(data as { id: string; slot: string; task: string; agent: string; model?: string; streaming: string; last_tool: string; started: number; tool_count?: number; stalled?: boolean }))
             break
           case 'subagent_batch_update':
             // Scale plumbing: one coalesced ~1s frame replacing per-event
@@ -1456,12 +1472,7 @@ export function useWebSocket() {
               slot: data.slot,
               reconnecting: reconnectingRef.current,
             })) {
-              try {
-                const detail: McNotificationDetail = { kind: TURN_DONE_KIND }
-                window.dispatchEvent(new CustomEvent(MC_NOTIFICATION_EVENT, { detail }))
-              } catch (err) {
-                console.warn('mc-notification listener error', err)
-              }
+              dispatchMcNotification(TURN_DONE_KIND)
             }
             if (data.slot && data.slot !== store.getState().chat.activeSlot && !reconnectingRef.current) {
               dispatch(markSlotUnread(data.slot))

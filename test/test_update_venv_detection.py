@@ -296,6 +296,35 @@ class TestRestartGateway:
         await _restart_gateway(state)
         assert execv_called, "os.execv should have been called even if close raises"
 
+    @pytest.mark.asyncio
+    async def test_concurrent_restart_is_coalesced_before_session_drain(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """Only one caller may drain and exec a gateway process at a time."""
+        from kiro_crew.dashboard.handlers.updates import _restart_gateway
+
+        state = _make_state(monkeypatch, tmp_path)
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        execv_called: list[tuple] = []
+
+        async def blocking_close() -> None:
+            entered.set()
+            await release.wait()
+
+        state.sessions = MagicMock()
+        state.sessions.close_all = blocking_close
+        monkeypatch.setattr("kiro_crew.dashboard.chat.save_all_slots_to_history", lambda s: None)
+        monkeypatch.setattr("os.execv", lambda *a, **k: execv_called.append(a))
+        monkeypatch.setattr("asyncio.sleep", AsyncMock(return_value=None))
+
+        first = asyncio.create_task(_restart_gateway(state))
+        await entered.wait()
+        assert await _restart_gateway(state) is False
+        release.set()
+        assert await first is True
+        assert len(execv_called) == 1
+
 
 class TestApiUpdateApplyVenvDispatch:
     """Tests for the install-path dispatch logic in api_update_apply."""

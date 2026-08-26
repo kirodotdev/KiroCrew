@@ -234,19 +234,29 @@ class RealSlackClient(SlackClientOps):
 
     def __init__(self, bot_token: str):
         self._web = AsyncWebClient(token=bot_token)
-        # Channel→workspace team_id cache.  Populated from inbound events
-        # by record_channel_team() and used to auto-inject team_id into
+        # Channel→workspace team_id cache. Populated ONLY from
+        # conversations_info()'s home-workspace answer by
+        # ensure_channel_team(), and used to auto-inject team_id into
         # outbound chat.* / reactions.* calls so org-wide (Enterprise Grid)
-        # installs route to the correct workspace.  Empty for non-org-wide
-        # installs — _inject_team becomes a no-op in that case.
+        # installs route to the correct workspace. The team on an inbound
+        # event is the AUTHOR's workspace, which on a Slack Connect shared
+        # channel is not the workspace the channel lives in, so it must
+        # never feed this cache. Empty for non-org-wide installs —
+        # _inject_team becomes a no-op in that case.
         self._channel_team: dict[str, str] = {}
+        # Channels whose home team could not be resolved this process. One
+        # failed lookup must not become one extra API call per inbound
+        # message for the rest of the run; a gateway restart clears the set
+        # and lets resolution try again.
+        self._channel_team_unresolvable: set[str] = set()
 
     def record_channel_team(self, channel: str, team_id: str) -> None:
         """Cache the workspace team_id for a channel.  Idempotent.
 
-        Called from inbound event handlers so subsequent outbound API
-        calls on the same channel can include team_id, which org-wide
-        installs require to avoid ``team_access_not_granted``.
+        Only a CANONICAL home-team answer may enter here: outbound calls
+        route by the workspace the channel lives in, so this method must be
+        fed from :meth:`ensure_channel_team` (conversations_info), never
+        from an inbound event's author-side ``team`` field.
         """
         if not (channel and team_id):
             return
@@ -257,6 +267,53 @@ class RealSlackClient(SlackClientOps):
             cache = {}
             self._channel_team = cache
         cache[channel] = team_id
+
+    async def ensure_channel_team(self, channel: str) -> None:
+        """Resolve a channel's HOME workspace into the routing cache.
+
+        Inbound handlers call this once per message. conversations_info
+        answers with the caller's own ``context_team_id`` for the channel,
+        which is the workspace the channel lives in — the value every
+        outbound ``team_id`` has to carry on an org-wide install. Recording
+        the author's team instead is what flipped shared-channel caches to
+        a participant's workspace and demoted replies off streaming with
+        ``team_access_not_granted``.
+
+        Best-effort: a channel that cannot be resolved simply stays out of
+        the cache, which leaves outbound calls without team_id — the same
+        routing Slack does for a cache miss — and lands in
+        ``_channel_team_unresolvable`` so the failure costs one lookup per
+        process rather than one per message.
+        """
+        if not channel:
+            return
+        cache = getattr(self, "_channel_team", None) or {}
+        if channel in cache:
+            return
+        unresolvable = getattr(self, "_channel_team_unresolvable", None)
+        if unresolvable is None:
+            unresolvable = set()
+            self._channel_team_unresolvable = unresolvable
+        if channel in unresolvable:
+            return
+        try:
+            resp = await self._web.conversations_info(channel=channel)
+            ch = (
+                resp.data.get("channel", {})  # type: ignore[union-attr]
+                if hasattr(resp, "data")
+                else {}
+            )
+            home = str(ch.get("context_team_id") or "")
+        except Exception:
+            logger.info(
+                "could not resolve the home workspace of channel %s", channel,
+                exc_info=True,
+            )
+            home = ""
+        if home:
+            self.record_channel_team(channel, home)
+        else:
+            unresolvable.add(channel)
 
     def _inject_team(self, channel: str, kwargs: dict[str, Any]) -> None:
         """Add team_id to kwargs from cache, if known and not already set.
@@ -482,10 +539,10 @@ class RealSlackClient(SlackClientOps):
                 "task_display_mode": "plan",
             }
             # Workspace routing for org-wide installs.  Prefer the cached
-            # team for this channel — that's the workspace the channel lives
-            # in, which is what ``body["team_id"]`` must route to.  Fall
-            # back to the recipient's team_id only when the cache hasn't
-            # been populated yet (first message into a never-seen channel).
+            # home team for this channel — that's the workspace the channel
+            # lives in, which is what ``body["team_id"]`` must route to.
+            # Fall back to the caller-supplied recipient's team_id only when
+            # the home team hasn't been resolved yet.
             cache = getattr(self, "_channel_team", None)
             cached_team = cache.get(channel) if cache else None
             workspace_team = cached_team or team_id

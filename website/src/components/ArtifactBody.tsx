@@ -2,6 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Download, Image as ImageIcon, ImageOff, RotateCw } from 'lucide-react'
 import { useTheme } from '../hooks/useTheme'
 import { useSandboxDoc } from '../hooks/useSandboxDoc'
+import { useScrollMemory } from '../hooks/useScrollMemory'
 import { useCommentBridge, type IframeSelection } from '../hooks/useCommentBridge'
 import { InlineCommentOverlay } from './InlineCommentOverlay'
 import { sanitizeCssValue } from '../lib/cssSanitize'
@@ -11,6 +12,7 @@ import type { FileType } from './FileRenderers'
 import type { Artifact, ArtifactComment } from '../types'
 
 import { i18nT } from '../i18n/t'
+import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 // Shared renderer for the full-page route and the chat side-panel Artifacts
 // tab (markdown/text/json/svg natively via ContentRenderer; widget/html via
 // the sandboxed iframe).
@@ -71,7 +73,7 @@ export function isEditableKind(kind: Artifact['kind']): boolean {
 export const ArtifactBodyNative = memo(function ArtifactBodyNative({
   kind, content, editing, onChange, previewRef,
   comments, activeCommentId, scrollNonce, onActivateComment, unreadRootIds,
-  heightStyle, flush,
+  heightStyle, flush, scrollMemoryKey,
 }: {
   kind: Artifact['kind']
   content: string
@@ -96,13 +98,25 @@ export const ArtifactBodyNative = memo(function ArtifactBodyNative({
    *  `ContentRenderer`, whose non-markdown paths draw a second border of their
    *  own unless told to run flush. */
   flush?: boolean
+  /** Cross-remount scroll identity (slot + tab id) — see `useScrollMemory`.
+   *  Passed only by the side panel's EMBEDDED body: a chat-slot switch
+   *  unmounts that instance, and this brings the document back where the
+   *  user left it. The full-page route and the fullscreen overlay omit it
+   *  (different lifecycles, and a second instance sharing the key would
+   *  fight the first over recording). */
+  scrollMemoryKey?: string
 }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const fileType = fileTypeForKind(kind)
   const ext = extForKind(kind)
   const isRichType = fileType === 'json' || fileType === 'svg' || fileType === 'html' || fileType === 'image' || fileType === 'csv' || fileType === 'pdf'
   const isMarkdown = fileType === 'markdown'
   const lang = langFor(ext)
   const scrollerRef = useRef<HTMLDivElement>(null)
+  // This div is the REAL scroll container for natively-rendered artifacts —
+  // the panel's outer wrapper never overflows (measured in the #5701 capture
+  // harness), so the memory must live here to observe anything.
+  const scrollMemory = useScrollMemory(scrollMemoryKey, scrollerRef, content !== '')
   const displayContent = isMarkdown ? content : wrapCode(content, ext)
   // Comment overlay for every natively-rendered body that has a previewRef —
   // markdown (rendered DOM) AND the code path (text/json/svg). Widgets/HTML use
@@ -111,6 +125,7 @@ export const ArtifactBodyNative = memo(function ArtifactBodyNative({
   return (
     <div
       ref={scrollerRef}
+      onScroll={scrollMemory.onScroll}
       className={`relative overflow-auto ${flush ? '' : 'rounded-xl border border-border bg-card'}`}
       style={heightStyle ?? { minHeight: 480, height: 'calc(100vh - 240px)' }}
     >
@@ -166,6 +181,7 @@ export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
   /** Override the iframe height (side-panel fit). */
   heightStyle?: React.CSSProperties
 }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const { theme, colorTheme, themeVersion } = useTheme()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const themeVars = useMemo(() => readThemeVars(), [theme, colorTheme, themeVersion])
@@ -289,6 +305,7 @@ export const ArtifactBodyImage = memo(function ArtifactBodyImage({
    *  bodies. Falls back to the full-page reading height. */
   heightStyle?: React.CSSProperties
 }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const url = artifactAssetUrl(slug)
   const alt = artifact.image?.alt || artifact.name
   const downloadName =

@@ -39,6 +39,29 @@ MAX_ATTR_COUNT = 32
 MAX_ATTR_VALUE_LEN = 128
 
 # ---------------------------------------------------------------------------
+# C4 — Resource-level attribute contract
+# ---------------------------------------------------------------------------
+
+# The writing process's OS start-time identity, stamped ONCE per exported JSONL
+# record at resource level by ``local_exporter.JsonlMetricExporter`` (source:
+# ``platform_compat.own_process_start_time``, module-cached per process).
+# Resource level rather than a per-metric attribute deliberately: the value is
+# per-process (exactly one per shard writer), so a metric attribute would
+# multiply every instrument's series cardinality for zero information gain.
+# Together with the shard-filename PID it makes cumulative-counter reset
+# detection deterministic in the dashboard aggregator — a changed token for the
+# same PID IS a process boundary, closing the value-heuristic blind spot where
+# a reusing process out-accumulates its predecessor. The token is opaque,
+# host-local, and reboot-unique (Linux start ticks suffixed with the boot UUID;
+# macOS microsecond start instant; Windows creation FILETIME); nothing parses
+# or compares it across hosts. A read that cannot honor one-token-one-process
+# (unreadable boot UUID, no ``libproc``, 1s-only sources) emits NO token at
+# all — the aggregator mutes its reset heuristic for token-carrying streams,
+# so an aliasable coarse token would be worse than none — and the legacy value
+# heuristic applies instead.
+RESOURCE_ATTR_PROCESS_START_TIME = "kirocrew.process.start_time"
+
+# ---------------------------------------------------------------------------
 # C4 — Privacy helpers
 # ---------------------------------------------------------------------------
 
@@ -74,9 +97,7 @@ def _is_high_entropy(value: str) -> bool:
         and re.fullmatch(r"[A-Za-z0-9+/]+={0,2}", stripped)
     ):
         try:
-            decoded = base64.b64decode(stripped, validate=True).decode(
-                "utf-8", "ignore"
-            )
+            decoded = base64.b64decode(stripped, validate=True).decode("utf-8", "ignore")
         except (binascii.Error, ValueError):
             decoded = ""
         if decoded and decoded != stripped:
@@ -100,9 +121,7 @@ def _is_high_entropy(value: str) -> bool:
         for ch in value:
             freq[ch] = freq.get(ch, 0) + 1
         length = len(value)
-        entropy = -sum(
-            (c / length) * math.log2(c / length) for c in freq.values()
-        )
+        entropy = -sum((c / length) * math.log2(c / length) for c in freq.values())
         # High entropy threshold (4.5 bits/char is suspicious for attribute values)
         if entropy > 4.5:
             return True
@@ -157,33 +176,25 @@ def validate_name(name: str, *, app_id: Optional[str] = None) -> str:
         ValueError: If the name violates namespace rules.
     """
     if not name or not _METRIC_NAME_RE.match(name):
-        raise ValueError(
-            f"Invalid metric name {name!r}: must be lowercase dotted identifiers"
-        )
+        raise ValueError(f"Invalid metric name {name!r}: must be lowercase dotted identifiers")
 
     if app_id is not None:
         # App callers CANNOT spoof core or gen_ai namespaces.
         if name.startswith(NS_CORE):
-            raise ValueError(
-                f"App {app_id!r} cannot emit metrics in the kirocrew.* namespace"
-            )
+            raise ValueError(f"App {app_id!r} cannot emit metrics in the kirocrew.* namespace")
         if name.startswith(NS_GENAI):
-            raise ValueError(
-                f"App {app_id!r} cannot emit metrics in the gen_ai.* namespace"
-            )
+            raise ValueError(f"App {app_id!r} cannot emit metrics in the gen_ai.* namespace")
         # App metrics MUST be prefixed with app.<app_id>.
         expected_prefix = f"app.{app_id}."
         if not name.startswith(expected_prefix):
             raise ValueError(
-                f"App {app_id!r} metrics must start with {expected_prefix!r}, "
-                f"got {name!r}"
+                f"App {app_id!r} metrics must start with {expected_prefix!r}, " f"got {name!r}"
             )
     else:
         # Core callers: must use kirocrew.* or gen_ai.*
         if not (name.startswith(NS_CORE) or name.startswith(NS_GENAI)):
             raise ValueError(
-                f"Core metric name must start with {NS_CORE!r} or "
-                f"{NS_GENAI!r}, got {name!r}"
+                f"Core metric name must start with {NS_CORE!r} or " f"{NS_GENAI!r}, got {name!r}"
             )
 
     return name
@@ -213,9 +224,7 @@ def validate_attrs(
         ValueError: If attribute count exceeds MAX_ATTR_COUNT.
     """
     if len(attrs) > MAX_ATTR_COUNT:
-        raise ValueError(
-            f"Attribute count {len(attrs)} exceeds maximum {MAX_ATTR_COUNT}"
-        )
+        raise ValueError(f"Attribute count {len(attrs)} exceeds maximum {MAX_ATTR_COUNT}")
 
     sanitized: Dict[str, Union[str, int, bool, float]] = {}
     for key, value in attrs.items():

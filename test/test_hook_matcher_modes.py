@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -176,22 +177,37 @@ class TestSkillsOnlyFire:
         assert len(results) == 0
 
     @pytest.mark.asyncio
-    async def test_skills_with_command_runs_command(self, store: ScriptHookStore):
+    async def test_skills_with_command_runs_command(self, tmp_path: Path):
         """fire() takes the command path (never skills-only) when a command is set.
 
-        The API layer rejects command+skills (the skills would be inert), but the
-        store itself does not validate, so this pins the lower-level fire()
-        behavior for such a stored config: the command runs, skills are ignored.
+        Both write paths (create/update) now reject command+skills (issue
+        #5444) — the skills would be inert — so a mixed hook can only reach the
+        store via deserialization of a hand-edited / older ``hooks.json``. This
+        pins the defense-in-depth ``fire()`` behavior for such a persisted
+        config: the command runs, the skills are ignored, and it does NOT take
+        the skills-only shortcut.
         """
-        store.create(
-            {
-                "name": "mixed-hook",
-                "event": HOOK_EVENT_USER_PROMPT_SUBMIT,
-                "command": "echo extra-context",
-                "matcher": "",
-                "skills": ["skill-a"],
-            }
+        # Persist a mixed hook directly (bypassing create's validation) to model
+        # a hand-edited store file, then load it fail-soft via from_dict.
+        path = tmp_path / "hooks.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "hooks": [
+                        {
+                            "id": "mixed",
+                            "name": "mixed-hook",
+                            "event": HOOK_EVENT_USER_PROMPT_SUBMIT,
+                            "command": "echo extra-context",
+                            "matcher": "",
+                            "skills": ["skill-a"],
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
         )
+        store = ScriptHookStore(tmp_path)
         results = await store.fire(HOOK_EVENT_USER_PROMPT_SUBMIT, "anything")
         # When command is set, the subprocess path runs (not skills-only).
         # In sandboxed CI the command may be governance-blocked (exit -1 or 2),

@@ -38,13 +38,21 @@ from typing import Any, Iterator, NamedTuple
 from aiohttp import web
 
 from kiro_crew import __version__, beacon
+from kiro_crew import sel as _sel_mod
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
 from kiro_crew.dashboard.chat_utils import slot_transcript_key
-from kiro_crew.dashboard.handlers.usage import context_occupancy, context_trace, cost_breakdown
+from kiro_crew.dashboard.handlers.usage import (
+    SPEND_WINDOW_DAYS,
+    context_occupancy,
+    context_trace,
+    cost_breakdown,
+    slot_turn_usage,
+)
 from kiro_crew.dashboard.state import NEW_SESSION_TITLE
 from kiro_crew.hooks import validate_file_path
 from kiro_crew.metrics.provider import TELEMETRY_ENV_VAR, env_pin
+from kiro_crew.metrics.schema import RESOURCE_ATTR_PROCESS_START_TIME
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
@@ -254,33 +262,106 @@ class _Hist:
         self._groups: dict[tuple[float, ...], dict[str, Any]] = {}
 
     def add(self, dp: dict[str, Any], outcome: str = "") -> None:
-        bc = dp.get("bucket_counts") or []
-        try:
-            key = tuple(float(b) for b in (dp.get("explicit_bounds") or []))
-        except (TypeError, ValueError):
+        # INVARIANT: the WHOLE data point is validated before the FIRST group
+        # mutation, so a rejected point never half-lands and nothing invalid
+        # can enter durable group state. Shards are external input and
+        # Python's json accepts Infinity/NaN literals plus arbitrary-precision
+        # integers, so every read routes through the _finite/_finite_int
+        # chokepoints with the scalar branch's contract: value-poisoned
+        # fields (bounds, count, sum, bucket counts) skip the whole point;
+        # optional stats (min/max) degrade per-stat; a bucket list whose
+        # length disagrees with its bounds degrades to no-buckets (the point
+        # still counts); a garbage timestamp sorts oldest. Validation covers three
+        # classes: VALUE (finite, exact -- ints never roundtrip through
+        # float), STRUCTURE (containers are lists; a bucket list only merges
+        # when it has exactly len(bounds)+1 entries, so group buckets always
+        # match their bounds signature), and ACCUMULATION (the prospective sum must
+        # stay finite -- two individually finite 1e308 sums must not emit an
+        # Infinity literal downstream).
+        bounds_raw = dp.get("explicit_bounds")
+        bc_raw = dp.get("bucket_counts")
+        if bounds_raw is None:
+            bounds_raw = []
+        if bc_raw is None:
+            bc_raw = []
+        if not isinstance(bounds_raw, (list, tuple)) or not isinstance(bc_raw, (list, tuple)):
+            # Any non-list container is garbage and skips the point: a truthy
+            # one (e.g. "explicit_bounds": 5) would raise TypeError at the
+            # for-loop, and a falsy one (false, 0, "") must not silently read
+            # as "absent" and corrupt the group's shape. Only a genuinely
+            # missing/null key defaults to empty.
             return
+        bounds_f: list[float] = []
+        for b in bounds_raw:
+            fb = _finite(b)
+            if fb is None:
+                return
+            if bounds_f and not math.isfinite(fb - bounds_f[-1]):
+                # Derived values must stay finite too: two individually
+                # finite bounds like -1e308 and 1e308 subtract to inf inside
+                # _pct_from_buckets' interpolation (hi - lo) and the API
+                # would emit an Infinity literal. Same class as the
+                # accumulated-sum guard below.
+                return
+            bounds_f.append(fb)
+        key = tuple(bounds_f)
+        n_raw = dp.get("count", 0)
+        n = _finite_int(0 if n_raw is None else n_raw)
+        if n is None:
+            return
+        # Uniform defaulting rule for every field in this method: ONLY a
+        # missing or null key takes the default; any other value must survive
+        # validation on its own ("" or false substituting 0 would let a
+        # malformed point silently skew the mean).
+        sum_raw = dp.get("sum", 0.0)
+        fsum = _finite(0.0 if sum_raw is None else sum_raw)
+        if fsum is None:
+            return
+        bc_f: list[int] = []
+        for v in bc_raw:
+            fv = _finite_int(v)
+            if fv is None:
+                return
+            bc_f.append(fv)
+        # A histogram point's bucket_counts has one more entry than its
+        # bounds (the trailing +Inf bucket). A mismatched length cannot merge
+        # into this bounds generation's shape (it would poison the group's
+        # buckets and crash the percentile interpolation with IndexError),
+        # but it is a merge-compatibility problem, not value poisoning: the
+        # point's independently-validated scalars are still truthful, so the
+        # disagreeing bucket list is DROPPED and the point still counts --
+        # the same degrade path as a count-only point (no bucket_counts at
+        # all), which stays legal. Pinned upstream by
+        # test_telemetry_handlers_cov80.py (count keeps accumulating).
+        if bc_f and len(bc_f) != len(bounds_f) + 1:
+            bc_f = []
         g = self._groups.get(key)
+        # Prospective-accumulation check BEFORE mutation: adding a finite sum
+        # to a finite accumulator can still overflow to inf.
+        acc_sum = (float(g["sum"]) if g is not None else 0.0) + fsum
+        if not math.isfinite(acc_sum):
+            return
         if g is None:
             g = {
                 "count": 0,
                 "sum": 0.0,
                 "min": None,
                 "max": None,
-                "buckets": [0] * len(bc) if bc else [],
+                "buckets": [0] * len(bc_f) if bc_f else [],
                 "bounds": list(key),
                 "outcomes": {},
                 "newest_ns": 0,
             }
             self._groups[key] = g
-        try:
-            ns = int(dp.get("time_unix_nano") or 0)
-        except (TypeError, ValueError):
+        ts_raw = dp.get("time_unix_nano")
+        ns = _finite_int(0 if ts_raw is None else ts_raw)
+        if ns is None:
+            # Ordering-only field: garbage degrades to oldest, never skips.
             ns = 0
         if ns > int(g["newest_ns"]):
             g["newest_ns"] = ns
-        n = int(dp.get("count", 0) or 0)
         g["count"] += n
-        g["sum"] += float(dp.get("sum", 0.0) or 0.0)
+        g["sum"] = acc_sum
         if outcome:
             # Outcome tallies MUST be grouped too. Scoping only the buckets and
             # count would leave the outcome breakdown summing across generations
@@ -288,20 +369,20 @@ class _Hist:
             # an outcome bar totalling more than N, and a fault rate computed
             # over a different population than the latency next to it.
             g["outcomes"][outcome] = g["outcomes"].get(outcome, 0) + n
-        mn, mx = dp.get("min"), dp.get("max")
+        mn, mx = _finite(dp.get("min")), _finite(dp.get("max"))
         if mn is not None:
             g["min"] = mn if g["min"] is None else min(g["min"], mn)
         if mx is not None:
             g["max"] = mx if g["max"] is None else max(g["max"], mx)
-        if bc:
+        if bc_f:
             if not g["buckets"]:
-                g["buckets"] = [0] * len(bc)
-            # Same bounds signature implies same bucket length; the guard only
-            # defends against a malformed shard mixing lengths under one bounds
-            # list, which would otherwise raise IndexError.
-            if len(bc) == len(g["buckets"]):
-                for j, v in enumerate(bc):
-                    g["buckets"][j] += int(v or 0)
+                g["buckets"] = [0] * len(bc_f)
+            # Same bounds signature implies same bucket length (enforced per
+            # point above), so this always holds; kept as cheap defense in
+            # depth against a group built by older state.
+            if len(bc_f) == len(g["buckets"]):
+                for j, v in enumerate(bc_f):
+                    g["buckets"][j] += v
 
     def _dominant(self) -> dict[str, Any] | None:
         """The generation holding the newest sample.
@@ -399,7 +480,8 @@ class _Hist:
 def _finite(raw: Any) -> float | None:
     """Coerce a shard scalar to a finite float, or None.
 
-    THE single entry point for scalar reads in ``_aggregate``. Shards are
+    THE single entry point for untrusted shard reads — the scalar branch in
+    ``_aggregate`` and every field ``_Hist.add`` consumes. Shards are
     external input and Python's ``json`` accepts ``Infinity``/``NaN``
     literals, so a bare ``float(...)`` admits values that poison sums and an
     ``int(float(...))`` timestamp conversion raises ``OverflowError`` — four
@@ -408,11 +490,52 @@ def _finite(raw: Any) -> float | None:
     """
     try:
         v = float(raw)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: json accepts arbitrary-precision integers, and
+        # float(10**400) overflows rather than returning inf.
         return None
     if not math.isfinite(v):
         return None
     return v
+
+
+# OTel histogram count fields are uint64 on the wire; anything beyond this
+# scale is garbage, and the bound keeps accumulated counts far below float
+# range so downstream stats (float division in ``stats()``) cannot overflow.
+_INT_BOUND = 2**63
+
+
+def _finite_int(raw: Any) -> int | None:
+    """Coerce a shard integer field (count, bucket count, ns) EXACTLY, or None.
+
+    Integer inputs never roundtrip through float -- ``int(float(2**53 + 1))``
+    silently rounds to 2**53 and the API would emit corrupted counts.
+    Booleans (JSON ``true``/``false``) are garbage in an integer field, a
+    negative value is invalid for uint64-wire counts, and a fractional value
+    would silently truncate -- all three reject rather than coerce. Values
+    beyond the uint64-scale bound are rejected either way.
+    """
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        i = raw
+    elif isinstance(raw, str):
+        # protobuf JSON encodes uint64/int64 as STRINGS; parse them exactly
+        # ("9007199254740993" through float would round to ...992). A
+        # non-integer string falls through to the float path (e.g. "3.0").
+        try:
+            i = int(raw)
+        except ValueError:
+            f = _finite(raw)
+            if f is None or not f.is_integer():
+                return None
+            i = int(f)
+    else:
+        f = _finite(raw)
+        if f is None or not f.is_integer():
+            return None
+        i = int(f)
+    return i if 0 <= i <= _INT_BOUND else None
 
 
 def _day_of(dp: dict[str, Any], fallback: str) -> str:
@@ -469,8 +592,8 @@ def _iter_export_cycles(
 
 def _iter_metric_points(
     shard_paths: list[Path],
-) -> Iterator[tuple[str, dict[str, Any], str, str, dict[str, Any]]]:
-    """Yield ``(name, data point, shard day, shard pid, data block)`` per point.
+) -> Iterator[tuple[str, dict[str, Any], str, str, str, dict[str, Any]]]:
+    """Yield ``(name, data point, shard day, shard pid, identity, data block)``.
 
     Every ``kirocrew.*`` data point is yielded; the name filter is load-bearing
     rather than defensive. One meter carries all three namespaces the recorder
@@ -479,26 +602,37 @@ def _iter_metric_points(
     Dropping the other two here is what keeps them out of :func:`_other_series`,
     whose rows the startup panel renders as core metrics.
 
+    ``identity`` is the writing process's resource-level start-time token
+    (``RESOURCE_ATTR_PROCESS_START_TIME``, stamped by the local exporter), or
+    ``""`` for legacy shards written before the field existed — the scope level
+    is still pure OTLP grouping and stays unread. Tolerate-garbage applies
+    twice: a resource whose shape is not the exporter's dict form, AND a token
+    that is not a string (the exporter only ever writes strings), both read as
+    identity-less rather than raising or minting a spurious identity — a
+    stringified garbage value would silently disable the legacy reset
+    heuristic for that stream.
+
     The metric-level ``data`` block rides along because a Sum's block carries
     ``aggregation_temporality``/``is_monotonic`` while a Gauge's carries neither
     — the scalar branch of :func:`_aggregate` classifies on it.
     """
     for obj, shard_day, shard_pid in _iter_export_cycles(shard_paths):
-        # resource -> scope -> metric is pure OTLP grouping; nothing below reads
-        # the resource or the scope.
-        metrics = (
-            m
-            for rm in obj.get("resource_metrics", []) or []
-            for sm in rm.get("scope_metrics", []) or []
-            for m in sm.get("metrics", []) or []
-        )
-        for metric in metrics:
-            name = metric.get("name") or ""
-            if not name.startswith("kirocrew."):
-                continue
-            data = metric.get("data") or {}
-            for dp in data.get("data_points", []) or []:
-                yield name, dp, shard_day, shard_pid, data
+        for rm in obj.get("resource_metrics", []) or []:
+            resource = rm.get("resource")
+            res_attrs = resource.get("attributes") if isinstance(resource, dict) else None
+            identity = ""
+            if isinstance(res_attrs, dict):
+                raw = res_attrs.get(RESOURCE_ATTR_PROCESS_START_TIME)
+                if isinstance(raw, str):
+                    identity = raw
+            for sm in rm.get("scope_metrics", []) or []:
+                for metric in sm.get("metrics", []) or []:
+                    name = metric.get("name") or ""
+                    if not name.startswith("kirocrew."):
+                        continue
+                    data = metric.get("data") or {}
+                    for dp in data.get("data_points", []) or []:
+                        yield name, dp, shard_day, shard_pid, identity, data
 
 
 def _daily_series(daily: dict[str, dict[str, _Hist]]) -> list[dict[str, Any]]:
@@ -554,7 +688,7 @@ def _other_series(
 
 
 def _cumulative_series(
-    other_cum: dict[str, dict[tuple[str, str], list[tuple[int, float]]]],
+    other_cum: dict[str, dict[tuple[str, str, str], list[tuple[int, float]]]],
 ) -> list[dict[str, Any]]:
     """Window-relative totals for CUMULATIVE sums, name-sorted.
 
@@ -572,30 +706,46 @@ def _cumulative_series(
       process that started in-window loses at most the activity before its
       first export cycle — under-reporting, never over-reporting.
 
-    Within a sorted stream, counter-RESET detection still applies: a value
-    dropping below its own segment max marks a process boundary (PID reuse,
-    restart), banking the finished segment; re-emitted snapshots >= the max are
-    no-ops, so provider rebuilds (telemetry off/on) stay idempotent. Stream
-    total = banked segments + live segment - baseline (never negative: the
-    baseline is a member of the first segment, so that segment's max bounds
-    it); cross-process total = sum over streams.
+    Streams are keyed by (shard PID, process identity, attrs). The identity is
+    the resource-level start-time token the exporter stamps
+    (``RESOURCE_ATTR_PROCESS_START_TIME``), so a PID reused by a new process
+    lands in a NEW stream deterministically — each process contributes its own
+    window-relative delta even when the reuser's first snapshot already exceeds
+    the predecessor's maximum, the one shape the value heuristic below cannot
+    see. An unchanged identity across provider rebuilds (telemetry off/on)
+    stitches the rebuild segments into one stream. Within an identity-keyed
+    stream a value below the running maximum is shard garbage, never a reset:
+    one identity is one OS process, whose observable counters are monotonic,
+    and banking a garbage drop would double-count the recovery.
+
+    The value-below-segment-max RESET heuristic applies ONLY to identity-less
+    streams (legacy shards written before the field existed, or platforms
+    whose start-time read is unavailable): a drop marks a process boundary,
+    banking the finished segment; re-emitted snapshots >= the max are no-ops,
+    so provider rebuilds stay idempotent. Either way, stream total = banked
+    segments + live segment - baseline (never negative: the baseline is a
+    member of the first segment, so that segment's max bounds it);
+    cross-process total = sum over streams.
     """
     out: list[dict[str, Any]] = []
     for name in sorted(other_cum):
         cum_attrs: dict[str, float] = {}
         cum_total = 0.0
-        for (_, csig), samples in other_cum[name].items():
+        for (_, identity, csig), samples in other_cum[name].items():
             ordered = sorted(samples, key=lambda t: t[0])
             baseline = ordered[0][1]
-            banked = 0.0
-            seg: float | None = None
-            for _, val in ordered:
-                if seg is not None and val < seg:
-                    banked += seg
-                    seg = val
-                else:
-                    seg = val if seg is None else max(seg, val)
-            cval = banked + (seg or 0.0) - baseline
+            if identity:
+                cval = max(val for _, val in ordered) - baseline
+            else:
+                banked = 0.0
+                seg: float | None = None
+                for _, val in ordered:
+                    if seg is not None and val < seg:
+                        banked += seg
+                        seg = val
+                    else:
+                        seg = val if seg is None else max(seg, val)
+                cval = banked + (seg or 0.0) - baseline
             if csig:
                 cum_attrs[csig] = cum_attrs.get(csig, 0.0) + cval
             else:
@@ -687,16 +837,19 @@ def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
     # concurrently — collapsing them on timestamp alone would show whichever
     # process exported last as "the" process state.
     other_gauge: dict[str, dict[tuple[str, str], tuple[int, float]]] = {}
-    # CUMULATIVE sums (observable counters): per (pid, attrs) stream, buffer
-    # (time_unix_nano, value) samples during the scan. The reduction —
-    # timestamp ordering, counter-RESET detection, window-relative baseline —
-    # happens in _cumulative_series once the scan is done, because shard
-    # iteration order is not chronological and reset detection is only sound
-    # on a time-ordered stream.
-    other_cum: dict[str, dict[tuple[str, str], list[tuple[int, float]]]] = {}
+    # CUMULATIVE sums (observable counters): per (pid, process-identity,
+    # attrs) stream, buffer (time_unix_nano, value) samples during the scan.
+    # The identity is the resource-level start-time token, so a reused PID
+    # starts a NEW stream deterministically ("" for legacy shards, which
+    # reduce under the value heuristic). The reduction — timestamp ordering,
+    # counter-RESET detection, window-relative baseline — happens in
+    # _cumulative_series once the scan is done, because shard iteration order
+    # is not chronological and reset detection is only sound on a time-ordered
+    # stream.
+    other_cum: dict[str, dict[tuple[str, str, str], list[tuple[int, float]]]] = {}
     turn = _Hist()
 
-    for name, dp, shard_day, shard_pid, data in _iter_metric_points(shard_paths):
+    for name, dp, shard_day, shard_pid, identity, data in _iter_metric_points(shard_paths):
         attrs = dp.get("attributes") or {}
         is_hist = "bucket_counts" in dp
         if name == _STARTUP_METRIC and is_hist:
@@ -753,14 +906,16 @@ def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
             # accumulate across cycles. CUMULATIVE sums (observable counters:
             # CPU seconds, GC stats) re-emit a process-lifetime snapshot every
             # cycle, so summing them would multiply by cycle count — they are
-            # buffered per (PID, attrs) stream and reduced window-relative
-            # after the scan (_cumulative_series). Gauges keep the newest
-            # sample per attribute set.
+            # buffered per (PID, identity, attrs) stream and reduced
+            # window-relative after the scan (_cumulative_series). Gauges keep
+            # the newest sample per attribute set.
             is_sum = "aggregation_temporality" in data or "is_monotonic" in data
             try:
-                # OTel JSON: DELTA=1, CUMULATIVE=2.
+                # OTel JSON: DELTA=1, CUMULATIVE=2. Same chokepoint contract
+                # as _finite: json accepts Infinity literals, and int(inf)
+                # raises OverflowError, not ValueError.
                 cumulative = int(data.get("aggregation_temporality") or 0) == 2
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 cumulative = False
             key = ",".join(f"{k}={attrs[k]}" for k in sorted(attrs)) if attrs else ""
             if is_sum and cumulative:
@@ -770,7 +925,9 @@ def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
                     # it the stream baseline, resurrecting the
                     # lifetime-as-window-total bug on one corrupt record.
                     continue
-                other_cum.setdefault(name, {}).setdefault((shard_pid, key), []).append((ts, val))
+                other_cum.setdefault(name, {}).setdefault((shard_pid, identity, key), []).append(
+                    (ts, val)
+                )
             elif is_sum:
                 rec = other_ctr.setdefault(name, {"total": 0.0, "by_attr": {}})
                 rec["total"] += val
@@ -930,12 +1087,107 @@ async def api_context_trace(request: web.Request) -> web.Response:
 
     Independent of the telemetry main switch: the usage rows this reads are
     always written, so the trace works with OTEL collection off.
+
+    Dashboard-only. Unlike ``/api/usage/turns`` this reader has no row-ownership
+    model, and its rows carry the turn's billing — so an app caller is refused
+    outright (deny-by-default, App Kit §5.2) rather than handed an arbitrary
+    slot's data. The 404 is indistinguishable from an unknown route on purpose,
+    and the refusal is SEL-audited like every app-caller decision.
     """
+    request_app = str(request.get("app", "") or "")
     slot = (request.query.get("slot") or "").strip()
+    if request_app:
+
+        def _audit_denied() -> None:
+            _sel_mod.sel().log_api_access(
+                caller=request_app,
+                operation="context_trace",
+                outcome="denied",
+                source="app_isolation",
+                resources=f"slot={slot or '(missing)'}",
+                error="dashboard-only endpoint",
+            )
+
+        await asyncio.to_thread(_audit_denied)
+        return web.json_response({"error": "not found", "code": "not_found"}, status=404)
     if not slot:
         return web.json_response({"error": "slot is required", "code": "slot_required"}, status=400)
     trace = await asyncio.to_thread(context_trace, slot, _WINDOW_DAYS)
     return web.json_response(trace)
+
+
+async def api_usage_turns(request: web.Request) -> web.Response:
+    """GET /api/usage/turns?slot=<session key>[&days=N] — per-turn usage rows.
+
+    The per-turn drill-down under the Spend tab's aggregate, and the surface an
+    APP is granted (via its manifest's ``permissions.api``) to account for what
+    its own agent slots cost — tokens, credits, duration and the context meter,
+    one row per turn. Same independence as the context trace: usage rows are
+    always written, so this works with OTEL collection off.
+
+    App isolation is ROW-level (App Kit §5.2, deny-by-default): an app caller
+    receives only rows stamped with its own app at write time, however the slot
+    is named and whether or not it is still live. A foreign slot key therefore
+    answers 200 with no rows — indistinguishable from a slot that never ran —
+    and rows that predate the stamp are invisible to app callers. A live-slot
+    ownership check was deliberately rejected: it leaks on slot-name reuse and
+    denies an app its own completed sessions, which are exactly what an audit
+    reads. A DISABLED app is refused outright (``is_app_enabled``,
+    deny-by-default, same gate the opt-in builtin routes wrap every handler
+    in): disable must revoke read access, not only future writes.
+
+    Every app-caller decision is SEL-logged — including a malformed request's
+    refusal, so a probing app leaves a trail — and all SEL calls plus the
+    enablement check run off-loop (first use initialises SEL's key material on
+    disk). ``days`` clamps to the spend window's ceiling rather than refusing:
+    shards beyond it have been retired anyway.
+    """
+    request_app = str(request.get("app", "") or "")
+    slot = (request.query.get("slot") or "").strip()
+
+    def _audit(outcome: str, error: str = "", resources: str = "") -> None:
+        _sel_mod.sel().log_api_access(
+            caller=request_app,
+            operation="usage_turns",
+            outcome=outcome,
+            source="app_isolation",
+            resources=resources or f"slot={slot or '(missing)'}",
+            error=error,
+        )
+
+    if request_app and not await asyncio.to_thread(_app_is_enabled, request_app):
+        await asyncio.to_thread(_audit, "denied", "app is disabled")
+        return web.json_response({"error": "not found", "code": "not_found"}, status=404)
+    if not slot:
+        if request_app:
+            await asyncio.to_thread(_audit, "denied", "slot missing")
+        return web.json_response({"error": "slot is required", "code": "slot_required"}, status=400)
+    try:
+        days = int(request.query.get("days") or SPEND_WINDOW_DAYS)
+    except ValueError:
+        days = SPEND_WINDOW_DAYS
+    days = max(1, min(days, SPEND_WINDOW_DAYS))
+    turns = await asyncio.to_thread(
+        slot_turn_usage, slot, days, app=request_app if request_app else None
+    )
+    if request_app:
+        await asyncio.to_thread(_audit, "allowed", "", f"slot={slot} rows={len(turns)}")
+    return web.json_response({"slot": slot, "days": days, "turns": turns})
+
+
+def _app_is_enabled(app_name: str) -> bool:
+    """Deny-by-default enablement probe, import deferred to the worker thread.
+
+    Late import for the same reason the builtin routes defer theirs: the apps
+    manager pulls in the registry, and a module-scope import here would create
+    a handlers→apps import edge the dashboard package deliberately avoids.
+    """
+    try:
+        from kiro_crew.apps.manager import is_app_enabled
+
+        return bool(is_app_enabled(app_name))
+    except Exception:  # noqa: BLE001 — an unanswerable check is a denial
+        return False
 
 
 def _persisted_titles(conversation_log: Any, slot_keys: list[str]) -> dict[str, str]:

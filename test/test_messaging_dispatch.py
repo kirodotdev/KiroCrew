@@ -334,6 +334,50 @@ def _capture_driver_kwargs(box: list) -> type:
     return _Capturing
 
 
+# ---------------------------------------------------------------------------
+# What the pipeline forwards to the driver, and what it binds per turn.
+#
+# Both of these were asymmetries rather than missing features: the field existed
+# on the driver and the helper existed in ``link``, but the shared pipeline never
+# passed them, so every channel riding ``drive_turn`` (webex, wecom, teams,
+# weixin, imessage) silently lost a capability the forked channels had.
+# ---------------------------------------------------------------------------
+
+
+class _MirrorSessions(_Sessions):
+    """Adds the origin/mirror surface ``drive_turn`` binds through."""
+
+    def __init__(self, *, opt_out: bool = False, existing=None, raises: bool = False):
+        super().__init__()
+        self.origin_links: dict = {}
+        self.mirror_links: dict = {} if existing is None else dict(existing)
+        self._opt_out = opt_out
+        self._raises = raises
+
+    def set_origin_link(self, key, link):
+        if self._raises:
+            raise RuntimeError("session map unavailable")
+        self.origin_links[key] = link
+
+    def mirror_opt_out(self, key) -> bool:
+        return self._opt_out
+
+    def get_mirror_link(self, key):
+        return self.mirror_links.get(key)
+
+    def set_mirror_link(self, key, link, *, reason=""):
+        self.mirror_links[key] = link
+
+
+def _capture_turn_driver(box: dict) -> type:
+    class _Capturing(_Driver):
+        def __init__(self, provider, renderer, **kw):
+            box.update(kw)
+            super().__init__(provider, renderer, **kw)
+
+    return _Capturing
+
+
 def test_auto_approve_session_reaches_the_driver(monkeypatch) -> None:
     """A channel with no approve/deny buttons needs an out-of-band trust grant.
 
@@ -600,3 +644,181 @@ class TestCancellationSurvivesAGovernanceDeny:
         stub = _gate(monkeypatch, permitted=True)
         assert asyncio.run(D.inbound_permitted("whatsapp", text="anything")) is True
         assert stub.asked == ["whatsapp"], "governance must be consulted first, once"
+
+
+def test_the_origin_conversation_is_recorded_and_bound(monkeypatch) -> None:
+    from kiro_crew.messaging.link import ChannelLink
+
+    _patch_pipeline(monkeypatch)
+    sessions = _MirrorSessions()
+    turn = _turn(_Renderer())
+    turn.origin_conversation = ChannelLink("weixin", channel_id="ROOM", thread_id=None)
+
+    asyncio.run(drive_turn(turn, sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert sessions.origin_links[turn.session_key].channel_id == "ROOM"
+    assert sessions.mirror_links[turn.session_key].channel_id == "ROOM"
+
+
+def test_a_unified_key_records_no_origin_conversation(monkeypatch) -> None:
+    """``dm_scope="unified"`` collapses every allowed user's DM into one bucket.
+
+    So "the conversation this session is read in" has no single answer: recording
+    one points the session's origin at whichever human spoke LAST, and a later
+    notice (a cron result, a subagent completion) lands in that person's chat
+    regardless of whose turn produced it. ``bind_origin_mirror`` already declines
+    for exactly this reason, so the sibling ``set_origin_link`` must not be the
+    hole that reopens it.
+    """
+    from kiro_crew.messaging.link import ChannelLink
+
+    _patch_pipeline(monkeypatch)
+    sessions = _MirrorSessions()
+    turn = _turn(_Renderer())
+    turn.session_key = "unified:agentA"
+    turn.origin_conversation = ChannelLink("webex", channel_id="ROOM_A", thread_id=None)
+
+    asyncio.run(drive_turn(turn, sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert sessions.origin_links == {}
+    assert sessions.mirror_links == {}
+
+
+def test_a_turn_that_omits_the_origin_conversation_binds_nothing(monkeypatch) -> None:
+    _patch_pipeline(monkeypatch)
+    sessions = _MirrorSessions()
+
+    asyncio.run(drive_turn(_turn(_Renderer()), sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert sessions.origin_links == {}
+    assert sessions.mirror_links == {}
+
+
+def test_the_persisted_opt_out_is_honoured(monkeypatch) -> None:
+    """An in-channel unlink has to survive the user's next message.
+
+    The bind is re-asserted every turn, so without reading the opt-out "off"
+    would last exactly until they typed again.
+    """
+    from kiro_crew.messaging.link import ChannelLink
+
+    _patch_pipeline(monkeypatch)
+    sessions = _MirrorSessions(opt_out=True)
+    turn = _turn(_Renderer())
+    turn.origin_conversation = ChannelLink("weixin", channel_id="ROOM", thread_id=None)
+
+    asyncio.run(drive_turn(turn, sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert sessions.mirror_links == {}
+
+
+def test_a_binding_aimed_elsewhere_is_not_repointed(monkeypatch) -> None:
+    # The dashboard can aim a session's mirror at any surface; overwriting it
+    # would silently redirect the user's replies into this conversation.
+    from kiro_crew.messaging.link import ChannelLink
+
+    _patch_pipeline(monkeypatch)
+    elsewhere = ChannelLink("discord", channel_id="99", thread_id=None)
+    sessions = _MirrorSessions(existing={"weixin:agentA:direct:userA": elsewhere})
+    turn = _turn(_Renderer())
+    turn.origin_conversation = ChannelLink("weixin", channel_id="ROOM", thread_id=None)
+
+    asyncio.run(drive_turn(turn, sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert sessions.mirror_links["weixin:agentA:direct:userA"] is elsewhere
+
+
+def test_a_bind_failure_does_not_drop_the_turn(monkeypatch) -> None:
+    """This is the widest call site in the codebase — five channels route here.
+
+    Losing the mirror costs a dashboard convenience; raising costs the user the
+    answer they are waiting for.
+    """
+    from kiro_crew.messaging.link import ChannelLink
+
+    _patch_pipeline(monkeypatch)
+    sessions = _MirrorSessions(raises=True)
+    turn = _turn(_Renderer())
+    turn.origin_conversation = ChannelLink("weixin", channel_id="ROOM", thread_id=None)
+
+    asyncio.run(drive_turn(turn, sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert sessions.successes == 1
+    assert sessions.released == 1
+
+
+class _KnownProviderSessions(_Sessions):
+    """Returns an identifiable provider, so the hook's argument can be asserted."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.provider = object()
+
+    async def get_or_create(self, key, agent=None, channel_id=None, **kw):
+        return self.provider, False, False
+
+
+def test_the_live_provider_is_handed_to_the_channel(monkeypatch) -> None:
+    """A channel that uploads local files needs the provider's own cwd as the
+    extraction root, and that is unknowable until ``get_or_create`` returns.
+
+    Reading it from the session map BEFORE the turn yields ``None`` on the first
+    message of every session generation, so the feature is silently off for
+    exactly the turn that introduces it and mysteriously on afterwards.
+    """
+    seen: list = []
+    _patch_pipeline(monkeypatch)
+    sessions = _KnownProviderSessions()
+    turn = _turn(_Renderer())
+    turn.bind_provider = seen.append
+
+    asyncio.run(drive_turn(turn, sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert seen == [sessions.provider]
+
+
+def test_the_hook_runs_before_the_driver(monkeypatch) -> None:
+    # Whatever it authorizes has to be in place for the turn it belongs to, not
+    # the next one.
+    order: list[str] = []
+    _patch_pipeline(monkeypatch)
+
+    class _OrderedDriver(_Driver):
+        def __init__(self, *a, **kw) -> None:
+            order.append("driver")
+            super().__init__(*a, **kw)
+
+    monkeypatch.setattr(D, "TurnDriver", _OrderedDriver)
+    turn = _turn(_Renderer())
+    turn.bind_provider = lambda _p: order.append("bind")
+
+    asyncio.run(drive_turn(turn, sessions=_Sessions(), ctx_builder=_CtxBuilder()))
+
+    assert order == ["bind", "driver"]
+
+
+def test_a_failing_hook_degrades_the_feature_not_the_turn(monkeypatch) -> None:
+    # Guarded like the origin bind: what it authorizes is an enhancement, so a
+    # failure must not drop an answer the user is waiting for.
+    _patch_pipeline(monkeypatch)
+    sessions = _Sessions()
+    turn = _turn(_Renderer())
+
+    def _boom(_provider) -> None:
+        raise RuntimeError("no cwd")
+
+    turn.bind_provider = _boom
+
+    asyncio.run(drive_turn(turn, sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert sessions.successes == 1
+    assert sessions.released == 1
+
+
+def test_a_turn_that_omits_the_hook_still_runs(monkeypatch) -> None:
+    _patch_pipeline(monkeypatch)
+    sessions = _Sessions()
+
+    asyncio.run(drive_turn(_turn(_Renderer()), sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert sessions.successes == 1

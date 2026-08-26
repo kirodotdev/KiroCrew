@@ -31,7 +31,7 @@
  */
 import { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { Home, Search, Bell, Lightbulb, Bug, Layers, Coins, AudioWaveform, ChevronDown, Menu } from 'lucide-react'
+import { Home, Search, Bell, Lightbulb, Bug, Layers, Coins, AudioWaveform, ChevronDown } from 'lucide-react'
 
 import { initI18n } from '../src/i18n/all'
 import '../src/index.css'
@@ -201,7 +201,13 @@ function TopBarMobile() {
   return (
     <header className="topbar topbar-glass relative pl-3 pr-3" data-topbar style={{ height: 42 }}>
       <div className="tb-left relative h-full px-2">
-        <button className="p-2 rounded-md bg-transparent border-none text-muted shrink-0" aria-label="nav"><Menu size={20} /></button>
+        {/* The nav button, verbatim from App.tsx. `/logo.png` is a GATEWAY route, so
+            the harness serves nothing for it and the shot shows an empty rounded box:
+            the layout under test is the 24px box the classes fix, which `object-contain`
+            cannot change, so the missing bitmap costs the rungs nothing. */}
+        <button className="group p-2 rounded-md bg-transparent border-none text-muted shrink-0" aria-label="nav">
+          <img src="/logo.png" alt="" aria-hidden="true" className="w-6 h-6 rounded-md shrink-0 object-contain transition-transform duration-300 group-hover:rotate-[-8deg]" />
+        </button>
         <div className="instance-tab-bar-inline flex items-center h-full gap-1 min-w-0">
           <div className="flex items-center gap-1 min-w-0">
             <button

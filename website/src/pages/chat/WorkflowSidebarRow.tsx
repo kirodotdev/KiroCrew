@@ -16,6 +16,7 @@ import WorkflowSourcePanel from '../../apps/workflows/WorkflowSourcePanel'
 import { useRunSnapshot } from '../../apps/workflows/useRunSnapshot'
 
 import { i18nT } from '../../i18n/t'
+import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 export interface WfRunRow {
   run_id: string
   name?: string
@@ -29,6 +30,7 @@ export interface WfRunRow {
 }
 
 const WorkflowSidebarRow = memo(function WorkflowSidebarRow({ row }: { row: WfRunRow }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [expanded, setExpanded] = useState(false)
   const { snapshot, error: snapshotError } = useRunSnapshot(row.run_id, {
     enabled: expanded,

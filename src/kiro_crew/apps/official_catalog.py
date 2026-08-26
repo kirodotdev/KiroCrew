@@ -24,11 +24,11 @@ instead of degrading silently:
 - **Display-only inventory.** ``list_catalog_rows`` maps the published list's
   DISPLAY fields (identity, name, summary, version, tags, author, asset refs)
   into storefront rows. It emits no clone coordinates and no ``origin``, because
-  the catalog is trusted only as far as TLS: install coordinates stay with the
-  seed and external registries, and a non-builtin row never mints the verified
-  badge. ``list_catalog_apps`` intersects the rendered set with the seed's
-  installable entries, so a catalog-only ``git`` name renders nothing until it is
-  installable.
+  the catalog is trusted only as far as TLS, and a non-builtin row never mints
+  the verified badge. Install coordinates come from ``inventory``, materialised
+  ONLY from a fresh fetch (``fetch_inventory_entries``) and never from the cache,
+  so ``list_catalog_apps`` keeps a ``git`` row that either the seed, an external
+  registry, or the catalog's own pins can install.
 """
 
 from __future__ import annotations
@@ -697,8 +697,8 @@ def list_catalog_rows() -> list[dict[str, Any]]:
         if isinstance(source, dict):
             # The source TYPE is a display marker (builtin vs git), not install
             # coordinates: url/ref stay out, so the catalog cannot name a clone
-            # target. ``registry.list_catalog_apps`` uses it to intersect git rows
-            # with the seed's installable set.
+            # target. ``registry.list_catalog_apps`` uses it to gate git rows on
+            # the installable set: the seed's names plus the catalog's own pins.
             stype = _curated_str(source.get("type"))
             if stype in ("builtin", "git"):
                 row["source"] = {"type": stype}

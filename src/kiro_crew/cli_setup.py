@@ -776,8 +776,9 @@ def _setup_sandbox_consent() -> None:
         # Kiro Crew rather than disabling it. Neither warrants this opt-in.
         return
     # A prompt nobody can see is a hang, not consent: `kirocrew update` runs
-    # setup with its output captured while stdin is still inherited, so an
-    # invisible question would block until that path's timeout aborts the update.
+    # setup with its output captured and stdin on DEVNULL, so a question asked
+    # there is invisible and reads EOF. This guard keeps the decision at a real
+    # terminal rather than letting a non-interactive run answer it.
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         print("  ⚠️  No sandbox backend on this host, so agent subprocesses are")
         print("     refused. Run `kirocrew setup` from a terminal to decide, or set")

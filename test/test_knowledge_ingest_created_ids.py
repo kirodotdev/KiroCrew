@@ -25,14 +25,17 @@ This file ratchets the conversion for the three sites:
 
 The ``_old_item_ids`` reads that share the query TEXT but mean "the
 pre-existing item group this call must delete" are deliberately out of scope
-(no callback can supply them); the ratchet pins their count so a re-introduced
-snapshot still fails the test.
+(no callback can supply them); they live in ``_resolve_old_item_ids`` and run
+inside the off-loop duplicate-gate hop (#4441). The ratchet pins the literal
+to that helper alone so a re-introduced snapshot still fails the test.
 """
 
 from __future__ import annotations
 
 import ast
+import hashlib
 import pathlib
+import threading
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -49,9 +52,10 @@ from kiro_crew.knowledge.store import KnowledgeStore
 
 _KNOWLEDGE_SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "knowledge"
 
-# The retired snapshot's query text. The remaining occurrences pinned below are
-# the _old_item_ids reads: same text, different meaning (the PRIOR group this
-# call must delete -- not what it created), tracked separately from #4431.
+# The retired snapshot's query text. The one occurrence pinned below is the
+# _old_item_ids resolver: same text, different meaning (the PRIOR group this
+# call must delete -- not what it created), tracked separately from #4431 and
+# run off-loop inside the duplicate-gate hop since #4441.
 _SNAPSHOT_QUERY = "SELECT id FROM items WHERE source_id"
 
 
@@ -369,16 +373,36 @@ class TestSnapshotQueryRatchet:
             "import_bundle writes."
         )
 
-    def test_ingest_text_keeps_only_the_old_group_reads(self):
+    def test_ingest_text_has_no_on_loop_group_read(self):
         tree = ast.parse((_KNOWLEDGE_SRC / "ingestion.py").read_text(errors="replace"))
         hits = _count_snapshot_literals(_find_def(tree, "ingest_text"))
-        assert len(hits) == 2, (
-            f"ingest_text contains {len(hits)} '{_SNAPSHOT_QUERY}' literals at "
-            f"lines {hits}; exactly 2 are expected -- the _old_item_ids "
-            "resolution reads (the PRIOR group this call replaces, which no "
-            "callback can supply). More means the before/after created-ids "
-            "snapshot came back; fewer means the old-group reads moved and "
-            "this ratchet must be repointed."
+        assert hits == [], (
+            f"ingest_text contains '{_SNAPSHOT_QUERY}' literals at lines "
+            f"{hits}; it must contain none. Both the created-ids snapshot "
+            "(#4431) and the inline _old_item_ids resolution (#4441) are "
+            "retired here: the old-group read lives in _resolve_old_item_ids "
+            "and runs inside the off-loop duplicate-gate hop."
+        )
+
+    def test_ingest_file_has_no_on_loop_group_read(self):
+        tree = ast.parse((_KNOWLEDGE_SRC / "ingestion.py").read_text(errors="replace"))
+        hits = _count_snapshot_literals(_find_def(tree, "ingest_file"))
+        assert hits == [], (
+            f"ingest_file contains '{_SNAPSHOT_QUERY}' literals at lines "
+            f"{hits}; it must contain none. The _old_item_ids resolution "
+            "(#4441) lives in _resolve_old_item_ids and runs inside the "
+            "off-loop duplicate-gate hop -- an inline read here lands on the "
+            "asyncio event loop (~20k rows per read on a large source)."
+        )
+
+    def test_resolver_is_the_single_group_read(self):
+        tree = ast.parse((_KNOWLEDGE_SRC / "ingestion.py").read_text(errors="replace"))
+        hits = _count_snapshot_literals(_find_def(tree, "_resolve_old_item_ids"))
+        assert len(hits) == 1, (
+            f"_resolve_old_item_ids contains {len(hits)} '{_SNAPSHOT_QUERY}' "
+            f"literals at lines {hits}; exactly 1 is expected. Zero means the "
+            "old-group read moved and every ratchet in this class must be "
+            "repointed; more means the query was duplicated inside the helper."
         )
 
     def test_ingest_artifact_has_no_source_snapshot(self):
@@ -390,3 +414,107 @@ class TestSnapshotQueryRatchet:
             "through on_committed from inside the finalize hop that commits "
             "them -- the same contract agent_source.py consumes."
         )
+
+
+class TestOldGroupReadRunsOffLoop:
+    """The _old_item_ids full-source reads run on a worker thread (#4441).
+
+    One test per original on-loop read site: ingest_file's replace-all and
+    existing-local-file paths, ingest_text's changed-existing (URI hit, hash
+    mismatch) and replace-all paths. Each spies on the resolver to record the
+    thread it ran on, and pins the semantics (the resolved group still drives
+    the replace) so the off-loop move cannot silently drop the read.
+    """
+
+    @staticmethod
+    def _spy_resolver(pipeline):
+        calls: list[int] = []
+        real = pipeline._resolve_old_item_ids
+
+        def _spy(source_id):
+            calls.append(threading.get_ident())
+            return real(source_id)
+
+        pipeline._resolve_old_item_ids = _spy
+        return calls
+
+    @pytest.mark.asyncio
+    async def test_ingest_file_replace_all_resolves_off_loop(self, pipeline, kstore, tmp_path):
+        source_id = kstore.add_source("remote", "url", "https://example.test/doc")
+        stale = kstore.add_item("old", "superseded", "document", source_id=source_id)
+        calls = self._spy_resolver(pipeline)
+        loop_thread = threading.get_ident()
+
+        f = tmp_path / "doc.md"
+        f.write_text("# heading\nbody text long enough to split", encoding="utf-8")
+        job_id = await pipeline.ingest_file(str(f), source_id=source_id)
+
+        assert job_id is not None
+        assert calls, "the replace-all group read never ran"
+        assert all(t != loop_thread for t in calls), (
+            "_resolve_old_item_ids ran on the event-loop thread -- the "
+            "full-source read blocks the loop for >1s on a large library"
+        )
+        # The resolved group actually drove the replace: the stale item is gone.
+        assert stale not in _item_ids(kstore, source_id)
+
+    @pytest.mark.asyncio
+    async def test_ingest_file_changed_local_file_resolves_off_loop(
+        self, pipeline, kstore, tmp_path
+    ):
+        f = tmp_path / "doc.md"
+        f.write_text("# heading\nfirst version body text", encoding="utf-8")
+        assert await pipeline.ingest_file(str(f)) is not None
+        source = kstore.get_source_by_uri(str(f.resolve()))
+        assert source is not None
+        before = _item_ids(kstore, source["id"])
+        assert before != set()
+
+        calls = self._spy_resolver(pipeline)
+        loop_thread = threading.get_ident()
+        f.write_text("# heading\nsecond version body text", encoding="utf-8")
+        assert await pipeline.ingest_file(str(f)) is not None
+
+        assert calls, "the existing-local-file group read never ran"
+        assert all(t != loop_thread for t in calls)
+        # The prior version's group was replaced, not accumulated.
+        assert _item_ids(kstore, source["id"]).isdisjoint(before)
+
+    @pytest.mark.asyncio
+    async def test_ingest_text_changed_existing_resolves_off_loop(self, pipeline, kstore):
+        text = "body text long enough to split"
+        content_hash = hashlib.sha256(text.encode()).hexdigest()
+        # A source at the hash-derived URI whose recorded hash DIFFERS forces
+        # the changed-content branch of the no-source_id path.
+        source_id = kstore.add_source(
+            "Doc",
+            "manual",
+            f"manual://{content_hash[:16]}",
+            properties={"content_hash": "stale"},
+        )
+        stale = kstore.add_item("old", "superseded", "document", source_id=source_id)
+        calls = self._spy_resolver(pipeline)
+        loop_thread = threading.get_ident()
+
+        job_id = await pipeline.ingest_text(text, "Doc")
+
+        assert job_id is not None
+        assert calls, "the changed-existing group read never ran"
+        assert all(t != loop_thread for t in calls)
+        assert stale not in _item_ids(kstore, source_id)
+
+    @pytest.mark.asyncio
+    async def test_ingest_text_replace_all_resolves_off_loop(self, pipeline, kstore):
+        source_id = kstore.add_source("notes", "manual", "manual://fixed-uri")
+        stale = kstore.add_item("old", "superseded", "document", source_id=source_id)
+        calls = self._spy_resolver(pipeline)
+        loop_thread = threading.get_ident()
+
+        job_id = await pipeline.ingest_text(
+            "body text long enough to split", "Doc", source_id=source_id
+        )
+
+        assert job_id is not None
+        assert calls, "the replace-all group read never ran"
+        assert all(t != loop_thread for t in calls)
+        assert stale not in _item_ids(kstore, source_id)

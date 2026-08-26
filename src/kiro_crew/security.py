@@ -2063,8 +2063,9 @@ def is_safe_user_regex(pattern: str) -> bool:
     reject/skip a pattern that fails this check so a catastrophic user regex can
     never freeze the synchronous PreToolUse gate.
 
-    The known-safe linearized aws flag run is stripped before the structural
-    check so the (harmless) built-in construct is never misflagged.
+    The known-safe aws flag runs are stripped before the structural check only
+    when the complete pattern is a built-in.  A user pattern wrapping the same
+    fragment receives no exemption.
 
     A pattern with a TOP-LEVEL alternation (``a|b``) is also rejected: it cannot
     be split on ``.*`` for the linear full-length fragment matcher, so it would
@@ -2078,7 +2079,11 @@ def is_safe_user_regex(pattern: str) -> bool:
         re.compile(pattern)
     except re.error:
         return False
-    scrubbed = pattern.replace(_DANGEROUS_AWS_FLAG_RUN, "").replace(_LINEARIZED_AWS_FLAG_RUN, "")
+    scrubbed = pattern
+    if pattern in BUILTIN_DENY_PATTERNS:
+        scrubbed = pattern.replace(_DANGEROUS_AWS_FLAG_RUN, "").replace(
+            _LINEARIZED_AWS_FLAG_RUN, ""
+        )
     if _redos_prone(scrubbed):
         return False
     return not _has_top_level_alternation(scrubbed)
@@ -4798,10 +4803,15 @@ _SENSITIVE_HOME_DIRS: list[str] = [
     ".local/share/amazon-q",
     "Library/Application Support/kiro-cli",
     "Library/Application Support/amazon-q",
-    # Windows layout of the same stores (%APPDATA% defaults to
-    # ~/AppData/Roaming). This matcher is home-anchored, so a Roaming profile
-    # redirected outside the home directory is not covered — the default
-    # location is what agent file tools can reach by a fixed relative path.
+    # Windows layouts of the same stores. Current kiro-cli writes the local,
+    # non-roaming app-data directory (%LOCALAPPDATA% defaults to
+    # ~/AppData/Local); the Roaming entries cover layouts that used
+    # %APPDATA% (defaults to ~/AppData/Roaming). These matchers are
+    # home-anchored, so a profile redirected outside the home directory is not
+    # covered -- the default location is what agent file tools can reach by a
+    # fixed relative path.
+    "AppData/Local/kiro-cli",
+    "AppData/Local/amazon-q",
     "AppData/Roaming/kiro-cli",
     "AppData/Roaming/amazon-q",
 ]
@@ -4922,6 +4932,14 @@ _CREW_SECRET_LEAVES: list[str] = [
     # dir is gated (like ``profiles``/``run``) so future trust-root material is
     # covered without a new entry. sel.py opens the key directly, not through
     # this gate.
+    #
+    # Spec Builder's decision record (``trust/spec-builder-decisions.json``) relies
+    # on that whole-directory gating. The app refuses a second answer for a decision
+    # it has recorded, so an agent able to write the file could erase an entry to
+    # make a settled decision answerable again, or forge one to lock a decision the
+    # user never answered. Gating the leaf alone was not enough: its parent under
+    # ``workspace/`` was itself replaceable with one ``ln -s``, and the app opens the
+    # path directly (as keystone writers must), so it would have followed the link.
     "trust",
     "security_events.jsonl",
     # Rotated SEL segments. sel.py closes the live log at a size cap and renames
@@ -5528,6 +5546,9 @@ def _build_sensitive_regex() -> re.Pattern[str]:
     # by their remainder.
     appdata_var = (
         r"(?:%APPDATA(?::[^%\s]*)?%"
+        # cmd.exe delayed expansion (`cmd /V:ON`): `!APPDATA!` names the same
+        # location as `%APPDATA%`, with the same expansion modifiers.
+        r"|!APPDATA(?::[^!\s]*)?!"
         rf"|{re.escape('$env:APPDATA')}"
         rf"|{re.escape('${env:APPDATA}')})"
     )
@@ -5541,6 +5562,32 @@ def _build_sensitive_regex() -> re.Pattern[str]:
     appdata_sensitive_path = (
         rf"{appdata_var}(?:{win_sep}\.\.{win_sep}Roaming)*"
         rf"{win_gsep}(?:{appdata_remainders})(?:{win_sep}|\s|$|['\"])"
+    )
+    # ``%LOCALAPPDATA%`` is the same shape one directory over: it points INTO
+    # ``AppData\Local``, so ``%LOCALAPPDATA%\kiro-cli\data.sqlite3`` names a
+    # fenced store without the ``AppData\Local`` text the home-anchored branch
+    # requires. Without this branch the shell tier would not cover the very
+    # spelling that names the CURRENT kiro-cli store on Windows, while the
+    # tuple in ``kiro_usage_api._CLI_SQLITE_DBS`` treats that store as a trust
+    # anchor — the fence the trust claim rests on must hold at this tier too.
+    localappdata_var = (
+        r"(?:%LOCALAPPDATA(?::[^%\s]*)?%"
+        # cmd.exe delayed expansion (`cmd /V:ON`): `!LOCALAPPDATA!` names the
+        # same location as `%LOCALAPPDATA%`, with the same expansion modifiers.
+        r"|!LOCALAPPDATA(?::[^!\s]*)?!"
+        rf"|{re.escape('$env:LOCALAPPDATA')}"
+        rf"|{re.escape('${env:LOCALAPPDATA}')})"
+    )
+    localappdata_remainders = "|".join(
+        win_gsep.join(re.escape(part) for part in d.split("/")[2:])
+        for d in _SENSITIVE_HOME_DIRS
+        if d.startswith("AppData/Local/")
+    )
+    # ``%LOCALAPPDATA%`` ends in ``Local`` by definition, so ``\..\Local``
+    # right after it is this anchor's canonical no-op.
+    localappdata_sensitive_path = (
+        rf"{localappdata_var}(?:{win_sep}\.\.{win_sep}Local)*"
+        rf"{win_gsep}(?:{localappdata_remainders})(?:{win_sep}|\s|$|['\"])"
     )
     # Windows-native spelling of the write-protected leaves. The POSIX leaf
     # branch above anchors on ``/`` separators, so on Windows the resolved home
@@ -5649,13 +5696,15 @@ def _build_sensitive_regex() -> re.Pattern[str]:
         rf"|(?:^|.*[\s'\"=:,;]){write_protected_path}"
         # (4) Windows-native spelling, verb-independent (same token anchor):
         # covers quoted backslash paths AND embedded-script literals that the
-        # tokenizing passes cannot see. (5) the %APPDATA% alias of the fenced
-        # Roaming stores. (6) the write-protected leaves in that same native
-        # spelling, which branch (3) cannot see. (7) the distinctive leaves as a
-        # bare path SEGMENT, with no anchor at all, because branches (3) and (6)
-        # both fall to a ``cd`` plus a relative name.
+        # tokenizing passes cannot see. (5) the %APPDATA% / %LOCALAPPDATA%
+        # aliases of the fenced Roaming/Local stores. (6) the write-protected
+        # leaves in that same native spelling, which branch (3) cannot see.
+        # (7) the distinctive leaves as a bare path SEGMENT, with no anchor at
+        # all, because branches (3) and (6) both fall to a ``cd`` plus a
+        # relative name.
         rf"|(?:^|.*[\s'\"=:,;]){win_sensitive_path}"
         rf"|(?:^|.*[\s'\"=:,;]){appdata_sensitive_path}"
+        rf"|(?:^|.*[\s'\"=:,;]){localappdata_sensitive_path}"
         rf"|(?:^|.*[\s'\"=:,;]){win_write_protected_path}"
         # (8) ~/.kiro/agents (POSIX and Windows-native spelling, plus the
         # ``$KIRO_HOME`` override), matched verb-INDEPENDENTLY with the same token
@@ -7011,6 +7060,12 @@ def _check_sensitive_via_normalizer(command: str) -> str | None:
     # the line prompts. The taint pass already denies that shape, so this widens
     # nothing in practice.
     seen_bases: list[str] = []
+    # Classifying a base resolves symlinks and sensitive-home roots. A chained
+    # parameter expansion revisits the same bases many times, so repeating that
+    # filesystem work made this synchronous gate exceed its latency ceiling
+    # under normal test load. The filesystem cannot change while this one
+    # command is being inspected; keep the classification only for this call.
+    base_sensitivity: dict[str, bool] = {}
     # The directories `cd -` goes back to.
     prev_bases: list[str] = []
     # Saved (base_dirs, prev_bases, assignments) per open subshell.
@@ -7221,7 +7276,7 @@ def _check_sensitive_via_normalizer(command: str) -> str | None:
             if not raw_targets:
                 # A bare `cd` goes to the home directory.
                 base_dirs = [os.path.expanduser("~")]
-                _remember_bases(seen_bases, base_dirs)
+                _remember_bases(seen_bases, base_dirs, base_sensitivity)
                 continue
             # A Windows home anchor becomes `~` BEFORE anything else looks at the
             # token: the hypothesis below reads `$env:USERPROFILE` as the variable
@@ -7267,7 +7322,7 @@ def _check_sensitive_via_normalizer(command: str) -> str | None:
             base_dirs = next_bases
             if len(base_dirs) > _MAX_TRACKED_BASES:
                 del base_dirs[: len(base_dirs) - _MAX_TRACKED_BASES]
-            _remember_bases(seen_bases, next_bases)
+            _remember_bases(seen_bases, next_bases, base_sensitivity)
             continue
 
         # No read-verb requirement: the operands of this segment are checked
@@ -7316,7 +7371,9 @@ def _check_sensitive_via_normalizer(command: str) -> str | None:
     return _check_sensitive_cd_taint(command)
 
 
-def _remember_bases(seen: list[str], bases: list[str]) -> None:
+def _remember_bases(
+    seen: list[str], bases: list[str], sensitivity: dict[str, bool]
+) -> None:
     """Add *bases* to the never-pruned *seen* list, keeping order and uniqueness.
 
     Bounded so a long chain of `cd`s cannot grow it without limit; the cap is far
@@ -7331,11 +7388,10 @@ def _remember_bases(seen: list[str], bases: list[str]) -> None:
         # Never evict sensitive bases -- an attacker could flood with dummy cd
         # targets to push a real sensitive base out of the tracked set.
         excess = len(seen) - _MAX_TRACKED_BASES
-        evictable = [
-            i
-            for i, b in enumerate(seen)
-            if not is_sensitive_path(b) and not _dir_holds_sensitive_leaf(b)
-        ]
+        for base in seen:
+            if base not in sensitivity:
+                sensitivity[base] = is_sensitive_path(base) or _dir_holds_sensitive_leaf(base)
+        evictable = [i for i, base in enumerate(seen) if not sensitivity[base]]
         to_remove = set(evictable[:excess])
         seen[:] = [b for i, b in enumerate(seen) if i not in to_remove]
 

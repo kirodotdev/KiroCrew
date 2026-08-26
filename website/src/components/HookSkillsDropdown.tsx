@@ -2,10 +2,29 @@
  * Dropdown panel for HookSkillsSelect — renders inside a portal.
  * Separated for coverage isolation (createPortal doesn't render in happy-dom).
  */
+import { useCallback, useLayoutEffect, useState } from 'react'
 import { Brain, Minus } from 'lucide-react'
 import { createPortal } from 'react-dom'
 import { Input } from './ui'
 import { i18nT } from '../i18n/t'
+
+/**
+ * Restore focus to the trigger after the menu closes, but only when it is still
+ * connected to the document AND focusable. A trigger can be unmounted (the form
+ * closed under the open menu) or hidden by the time Escape fires; calling
+ * `.focus()` on a detached node silently moves focus to <body>, stranding the
+ * keyboard user. `isConnected` catches the unmount; `offsetParent` (null when
+ * the element or an ancestor is `display:none`) catches the hidden case that a
+ * connection check alone misses.
+ */
+function restoreFocusIfSafe(el: HTMLElement | null): void {
+  if (!el || !el.isConnected) return
+  // offsetParent is null for display:none subtrees and for position:fixed
+  // elements; a fixed trigger is unusual here (the trigger is an inline button),
+  // so treat null as "not focusable" rather than guessing.
+  if (el.offsetParent === null) return
+  el.focus()
+}
 
 interface CatalogSkill {
   key: string
@@ -31,16 +50,42 @@ export default function HookSkillsDropdown({
   anchorRef, dropdownRef, inputRef, filter, setFilter,
   onClose, selected, filtered, byKey, onAdd, onRemove,
 }: Props) {
-  if (!anchorRef.current) return null
+  // The menu is a fixed-position portal, so it must be positioned from the
+  // trigger's viewport rect. Reading getBoundingClientRect() once during render
+  // freezes that position: any scroll or resize while the menu is open leaves it
+  // detached from the trigger. Track the rect in state and recompute it on
+  // scroll (capture phase, to catch scrolling in any ancestor container, not
+  // just the window) and resize.
+  const [rect, setRect] = useState<DOMRect | null>(
+    () => anchorRef.current?.getBoundingClientRect() ?? null,
+  )
+
+  const recompute = useCallback(() => {
+    setRect(anchorRef.current?.getBoundingClientRect() ?? null)
+  }, [anchorRef])
+
+  useLayoutEffect(() => {
+    // Sync the rect on mount (the trigger may have moved between the initial
+    // state read and the effect) and whenever the layout can shift under us.
+    recompute()
+    window.addEventListener('scroll', recompute, true)
+    window.addEventListener('resize', recompute)
+    return () => {
+      window.removeEventListener('scroll', recompute, true)
+      window.removeEventListener('resize', recompute)
+    }
+  }, [recompute, selected])
+
+  if (!rect) return null
   return createPortal(
     <div
       ref={dropdownRef}
       className="fixed z-50 bg-bg-elevated border border-border rounded-lg shadow-xl p-1 w-72 max-h-60 overflow-y-auto"
       style={{
-        top: anchorRef.current.getBoundingClientRect().bottom + 4,
-        left: anchorRef.current.getBoundingClientRect().left,
+        top: rect.bottom + 4,
+        left: rect.left,
       }}
-      onKeyDown={e => { if (e.key === 'Escape') { onClose(); anchorRef.current?.focus() } }}
+      onKeyDown={e => { if (e.key === 'Escape') { onClose(); restoreFocusIfSafe(anchorRef.current) } }}
     >
       <Input
         ref={inputRef}

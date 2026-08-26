@@ -85,6 +85,10 @@ extend_skip = ["_vendor"]
 
 [tool.mypy]
 mypy_path = "src"
+# Keep the blocking gate host-independent. CI type-checks the Linux deployment
+# surface, while mypy otherwise selects typeshed from the developer's host and
+# reports guarded POSIX APIs as missing when this same command runs on Windows.
+platform = "linux"
 # See https://mypy.readthedocs.io/en/latest/config_file.html for more mypy options.
 
 # Enables the type-checker on the interior of functions without type annotations.

@@ -75,9 +75,7 @@ async def test_direct_local_health_with_served_host_keeps_identity() -> None:
 @pytest.mark.asyncio
 async def test_forwarded_loopback_health_omits_build_identity() -> None:
     """A reverse-proxied remote request is not treated as desktop-local."""
-    resp = await core_mod.api_health(
-        _probe_req(headers={"X-Forwarded-For": "203.0.113.9"})
-    )
+    resp = await core_mod.api_health(_probe_req(headers={"X-Forwarded-For": "203.0.113.9"}))
     assert json.loads(resp.body) == {"ok": True}
 
 
@@ -104,9 +102,7 @@ def _req_with_state(
     if state is not None:
         state.ready = startup_complete
     req = MagicMock(spec=web.Request)
-    req.headers = {
-        "Host": "127.0.0.1:5476" if host_allowed else "attacker.example"
-    }
+    req.headers = {"Host": "127.0.0.1:5476" if host_allowed else "attacker.example"}
     app = {"state": state} if state is not None else {}
     app["allowed_origins"] = {"http://localhost:5476"}
     req.app = app
@@ -131,8 +127,7 @@ async def test_ready_disallowed_host_gets_only_the_ready_bit() -> None:
     )
     assert resp.status == 503
     assert json.loads(resp.body) == {"ready": False}, (
-        "unready detail (startup/checks markers) must be withheld from "
-        "disallowed-Host callers"
+        "unready detail (startup/checks markers) must be withheld from " "disallowed-Host callers"
     )
 
 
@@ -154,9 +149,7 @@ async def test_ready_returns_503_after_bind_until_startup_complete() -> None:
     """A bound server stays unready while post-bind startup work is running."""
     state = MagicMock()
     state.sessions = MagicMock()
-    resp = await core_mod.api_ready(
-        _req_with_state(state, startup_complete=False)
-    )
+    resp = await core_mod.api_ready(_req_with_state(state, startup_complete=False))
     assert resp.status == 503
     body = json.loads(resp.body)
     assert body["ready"] is False
@@ -394,9 +387,7 @@ async def test_disallowed_host_non_probe_still_403s_in_middleware_chain() -> Non
     from aiohttp.test_utils import TestClient, TestServer
 
     async with TestClient(TestServer(_host_barrier_app())) as client:
-        resp = await client.get(
-            "/api/sessions", headers={"Host": "attacker.example"}
-        )
+        resp = await client.get("/api/sessions", headers={"Host": "attacker.example"})
         assert resp.status == 403
         assert "Host header not allowed" in await resp.text()
 
@@ -409,9 +400,7 @@ async def test_allowed_host_non_probe_passes_host_barrier() -> None:
     from aiohttp.test_utils import TestClient, TestServer
 
     async with TestClient(TestServer(_host_barrier_app())) as client:
-        resp = await client.get(
-            "/api/sessions", headers={"Host": "localhost:5476"}
-        )
+        resp = await client.get("/api/sessions", headers={"Host": "localhost:5476"})
         assert resp.status == 200
 
 
@@ -427,9 +416,9 @@ def test_both_servers_install_the_shared_host_barrier() -> None:
     dashboard_src = inspect.getsource(server_mod.start_dashboard)
     api_src = inspect.getsource(server_mod.start_api_server)
     for src, name in ((dashboard_src, "start_dashboard"), (api_src, "start_api_server")):
-        assert "_make_host_validation_middleware(" in src, (
-            f"{name} no longer uses the shared host-validation factory"
-        )
+        assert (
+            "_make_host_validation_middleware(" in src
+        ), f"{name} no longer uses the shared host-validation factory"
         assert "async def host_validation_middleware" not in src, (
             f"{name} re-introduced an inline host-validation middleware; "
             "keep the shared factory as the single exemption point"
@@ -453,9 +442,9 @@ def test_every_middleware_denial_is_audited_off_the_loop() -> None:
     from kiro_crew.dashboard import server as server_mod
 
     helper = inspect.getsource(server_mod._audit_denied)
-    assert "asyncio.to_thread" in helper, (
-        "_audit_denied no longer offloads the SEL write off the event loop"
-    )
+    assert (
+        "asyncio.to_thread" in helper
+    ), "_audit_denied no longer offloads the SEL write off the event loop"
     assert "except Exception" in helper, "_audit_denied is no longer best-effort"
 
     # Both pre-audit barriers are built by a shared factory, so the deny arms live
@@ -465,9 +454,9 @@ def test_every_middleware_denial_is_audited_off_the_loop() -> None:
         (server_mod._make_csrf_middleware, "csrf"),
     ):
         src = inspect.getsource(func)
-        assert "_audit_denied(" in src, (
-            f"{name} has a deny arm that no longer audits via _audit_denied"
-        )
+        assert (
+            "_audit_denied(" in src
+        ), f"{name} has a deny arm that no longer audits via _audit_denied"
         assert 'outcome="denied"' not in src, (
             f"{name} re-grew a hand-rolled denial audit; route it through "
             "_audit_denied so the off-loop and best-effort properties hold "
@@ -503,9 +492,9 @@ def test_both_servers_warm_the_kiro_readiness_probe() -> None:
         (server_mod.start_dashboard, "start_dashboard"),
         (server_mod.start_api_server, "start_api_server"),
     ):
-        assert "warm_up()" in inspect.getsource(func), (
-            f"{name} no longer warms the Kiro readiness probe at startup"
-        )
+        assert "warm_up()" in inspect.getsource(
+            func
+        ), f"{name} no longer warms the Kiro readiness probe at startup"
 
 
 @pytest.mark.asyncio

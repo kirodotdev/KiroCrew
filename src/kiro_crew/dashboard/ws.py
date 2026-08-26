@@ -7,6 +7,7 @@ import json
 import logging
 import sys
 import time
+from typing import Any
 
 from aiohttp import WSCloseCode, WSMsgType, web
 
@@ -38,6 +39,52 @@ SUBAGENT_REPLAY_BATCH_THRESHOLD = 8
 SIDE_RESULT_EVENT = "chat.side_result"
 SIDE_QUEUE_EVENT = "chat.side_queue"
 SIDE_KIND = "side"
+
+
+def build_subagent_snapshot(a: Any, *, now: float | None = None) -> dict:
+    """Build the ``subagent_snapshot`` replay frame's ``data`` for one agent.
+
+    Extracted from the reconnect handler so the frame's CONTENTS can be
+    asserted directly — the handler around it needs a live aiohttp WS, which is
+    why the omission this fixes went unnoticed.
+
+    ``idle_secs`` is the span that justifies the stall badge. The live
+    ``subagent_stalled`` event carries it; this replay frame did not, so ANY
+    reconnect during an active stall degraded the row to the plain
+    "no activity" wording that was only ever meant for a gateway too old to
+    send the field (#3929).
+
+    It is computed at replay time rather than replaying the original transition
+    value: by reconnect the agent has usually been idle longer than it was when
+    flagged, and ``last_activity`` is already the field the reaper itself
+    measures. Clamped at 0 so a clock adjustment cannot produce a negative span.
+
+    The key is OMITTED entirely when the agent is not stalled, so a client
+    cannot attach an idle span to a healthy row — the reducer pairs the span
+    with the flag and would otherwise have to defend against the mismatch.
+    """
+    ts = time.time() if now is None else now
+
+    def _r(t: str) -> str:
+        t, _ = redact_exfiltration_urls(t)
+        t, _ = redact_credentials(t)
+        return t
+
+    data: dict = {
+        "id": a.id,
+        "slot": subagent_event_slot(a.parent_session_key),
+        "task": _r(a.task),
+        "agent": _r(a.agent),
+        "model": a.resolved_model,
+        "streaming": _r(a.streaming_text),
+        "last_tool": _r(a.last_tool),
+        "tool_count": a.tool_count,
+        "stalled": a.stalled,
+    }
+    if a.stalled:
+        data["idle_secs"] = max(0, int(ts - a.last_activity))
+    data["started"] = a.started
+    return data
 
 
 def _audit_grant_quietly(app: str, event: str) -> None:
@@ -646,21 +693,10 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                         if state.subagents:
                             for a in state.subagents.running:
                                 try:
-                                    slot = subagent_event_slot(a.parent_session_key)
                                     _replay.append(
                                         {
                                             "type": "subagent_snapshot",
-                                            "data": {
-                                                "id": a.id,
-                                                "slot": slot,
-                                                "task": _r(a.task),
-                                                "agent": _r(a.agent),
-                                                "streaming": _r(a.streaming_text),
-                                                "last_tool": _r(a.last_tool),
-                                                "tool_count": a.tool_count,
-                                                "stalled": a.stalled,
-                                                "started": a.started,
-                                            },
+                                            "data": build_subagent_snapshot(a),
                                         }
                                     )
                                 except Exception:
@@ -688,6 +724,7 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                                                 "outcome": a.outcome,
                                                 "task": _r(a.task),
                                                 "agent": _r(a.agent),
+                                                "model": a.resolved_model,
                                             },
                                         }
                                     )

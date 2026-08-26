@@ -1,5 +1,5 @@
 import { compareText } from '../i18n/format'
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useRef } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { AlertTriangle, Anchor, Link2, Lock, MoreHorizontal, Pencil, Play } from 'lucide-react'
 import { api } from '../api/client'
@@ -175,7 +175,16 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
   const [creating, setCreating] = useState(false)
   const [editing, setEditing] = useState<string | null>(null)
   const [testResult, setTestResult] = useState<{ id: string; data: HookTestResult } | null>(null)
+  // Inline failure state for a rejected hook-test request (network error, 5xx,
+  // etc.). This is distinct from testResult (a completed run, which can itself
+  // report a non-zero exit) and from the global mutError banner: the request
+  // never produced a HookTestResult, so the panel would otherwise render empty.
+  const [testError, setTestError] = useState<{ id: string; message: string } | null>(null)
   const [filter, setFilter] = useState('')
+  // React Query's pending render is asynchronous. Claim request ownership in a
+  // ref before mutate() so two same-tick clicks cannot launch overlapping tests
+  // whose callbacks would race to populate one shared result panel.
+  const testInFlight = useRef(false)
 
   const mutOpts = { onSuccess: () => refresh(), onError: (e: Error) => e }
   const createMut = useMutation({ mutationFn: (data: Partial<Hook>) => api.createHook(data), ...mutOpts, onSuccess: () => { setCreating(false); refresh() } })
@@ -191,7 +200,15 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
     onSettled: async () => { await refresh() },
   })
   const toggleMut = useMutation({ mutationFn: (id: string) => api.toggleHook(id), ...mutOpts })
-  const testMut = useMutation({ mutationFn: (id: string) => api.testHook(id), onSuccess: (r: { result: HookTestResult }, id: string) => { setTestResult({ id, data: r.result }); refresh() } })
+  const testMut = useMutation({
+    mutationFn: (id: string) => api.testHook(id),
+    onSuccess: (r: { result: HookTestResult }, id: string) => { setTestError(null); setTestResult({ id, data: r.result }); refresh() },
+    // Populate the inline panel on rejection so a failed request is not shown as
+    // an empty result. The global mutError banner still fires (testMut.error is
+    // read into it below), so the global error path is preserved, not replaced.
+    onError: (e: Error, id: string) => { setTestError({ id, message: e instanceof Error ? e.message : String(e) }) },
+    onSettled: () => { testInFlight.current = false },
+  })
 
   // Delete is the shared arm→Confirm→decay machine (useArmedDelete, the
   // CronRowActions convention — SchedulePage consumes it the same way). A
@@ -206,7 +223,13 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
   const handleCreate = (data: Partial<Hook>) => createMut.mutate(data)
   const handleUpdate = (id: string, data: Partial<Hook>) => updateMut.mutate({ id, data })
   const handleToggle = (id: string) => toggleMut.mutate(id)
-  const handleTest = (id: string) => { setTestResult(null); testMut.mutate(id) }
+  const handleTest = (id: string) => {
+    if (testInFlight.current) return
+    testInFlight.current = true
+    setTestResult(null)
+    setTestError(null)
+    testMut.mutate(id)
+  }
 
   const enabled = hooks.filter(h => h.enabled).length
   const totalRuns = hooks.reduce((s, h) => s + h.run_count, 0)
@@ -380,7 +403,7 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                             aria-label, which would override the label a sighted user
                             reads (WCAG 2.5.3, Label in Name); the row names the hook. */}
                         <div className="flex items-center gap-1.5">
-                          <Btn onClick={() => handleTest(h.id)} className="bg-accent/10 text-accent border-accent/30 hover:bg-accent/20">{i18nT('pages.hooksPage.test')}</Btn>
+                          <Btn disabled={testMut.isPending} onClick={() => handleTest(h.id)} className="bg-accent/10 text-accent border-accent/30 hover:bg-accent/20">{i18nT('pages.hooksPage.test')}</Btn>
                           <Btn
                             danger
                             disabled={isDeleting(h.id)}
@@ -400,7 +423,7 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                             <DropdownMenuContent align="end" className="min-w-[160px]">
                               {/* Test is also in the row; repeated here so the menu is a
                                   complete account of what can be done to the hook. */}
-                              <DropdownMenuItem onSelect={() => handleTest(h.id)}>
+                              <DropdownMenuItem disabled={testMut.isPending} onSelect={() => handleTest(h.id)}>
                                 <Play size={13} className="shrink-0 text-accent" />
                                 <span>{i18nT('pages.hooksPage.test')}</span>
                               </DropdownMenuItem>
@@ -423,14 +446,27 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
             return (
               <div className="mt-3 bg-bg-elevated border border-border rounded-lg p-4 animate-scale-in">
                 <div className="flex items-center gap-3 mb-2">
-                  <span className="text-sm font-medium text-text">{i18nT('pages.hooksPage.test_result')}{h ? `: ${h.name}` : ''}</span>
+                  <span className="min-w-0 break-words text-sm font-medium text-text">{i18nT('pages.hooksPage.test_result')}{h ? `: ${h.name}` : ''}</span>
                   <Badge variant={testResult.data.exit_code === 0 ? 'ok' : 'err'}>{testResult.data.exit_code === 0 ? 'OK' : `exit ${testResult.data.exit_code}`}</Badge>
                   <span className="text-[12px] text-muted font-mono">{testResult.data.duration_ms}{i18nT('pages.hooksPage.ms')}</span>
-                  <Btn onClick={() => setTestResult(null)} className="ml-auto">×</Btn>
+                  <Btn aria-label={i18nT('app.dismiss')} onClick={() => setTestResult(null)} className="ml-auto shrink-0">×</Btn>
                 </div>
                 {testResult.data.error && <div className="text-[13px] text-danger mb-1">{testResult.data.error}</div>}
                 {testResult.data.stdout && <pre className="whitespace-pre-wrap text-[12px] font-mono text-text/80 bg-bg border border-border rounded-md p-3 max-h-[200px] overflow-auto">{testResult.data.stdout}</pre>}
                 {testResult.data.stderr && <pre className="whitespace-pre-wrap text-[12px] font-mono text-warn bg-bg border border-border rounded-md p-3 max-h-[100px] overflow-auto mt-2">{testResult.data.stderr}</pre>}
+              </div>
+            )
+          })()}
+          {testError && (() => {
+            const h = hooks.find(x => x.id === testError.id)
+            return (
+              <div role="alert" className="mt-3 bg-danger-subtle border border-danger/30 rounded-lg p-4 animate-scale-in">
+                <div className="flex items-center gap-3 mb-2">
+                  <AlertTriangle className="lucide-inline text-danger shrink-0" />
+                  <span className="min-w-0 break-words text-sm font-medium text-text">{i18nT('pages.hooksPage.test_failed')}{h ? `: ${h.name}` : ''}</span>
+                  <Btn aria-label={i18nT('app.dismiss')} onClick={() => setTestError(null)} className="ml-auto shrink-0">×</Btn>
+                </div>
+                <div className="break-words text-[13px] text-danger">{testError.message}</div>
               </div>
             )
           })()}

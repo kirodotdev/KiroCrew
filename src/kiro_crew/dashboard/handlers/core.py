@@ -1240,7 +1240,9 @@ echo "Done. whisper=$(command -v whisper 2>/dev/null || echo 'check PATH') ffmpe
 async def api_stt_transcribe(request: web.Request) -> web.Response:
     """POST /api/stt/transcribe — transcribe uploaded audio via whisper."""
     import tempfile  # noqa: F811
+    import uuid
 
+    from kiro_crew.dashboard import part_stream
     from kiro_crew.transcribe import is_available, transcribe_audio  # noqa: F811
 
     if not is_available():
@@ -1254,19 +1256,19 @@ async def api_stt_transcribe(request: web.Request) -> web.Response:
     # Use uploaded filename extension (recording.webm / .mp4 / .ogg)
     fname = getattr(field, "filename", None) or "recording.webm"
     ext = os.path.splitext(fname)[1] or ".webm"
-    fd, tmp = tempfile.mkstemp(suffix=ext)
+    # A fresh unpublished path: stream_part_to_file writes to a sibling temp
+    # off the event loop and publishes here atomically, so no exit path (413,
+    # backend failure, cancellation) can leave a partial file at this name.
+    tmp = os.path.join(tempfile.gettempdir(), f"kc_stt_{uuid.uuid4().hex}{ext}")
     try:
-        os.close(fd)
-        size = 0
-        with open(tmp, "wb") as f:
-            while True:
-                chunk = await field.read_chunk(8192)  # type: ignore[union-attr]
-                if not chunk:
-                    break
-                size += len(chunk)
-                if size > 25 * 1024 * 1024:  # 25 MB cap
-                    return web.json_response({"error": "audio too large"}, status=413)
-                f.write(chunk)
+        try:
+            await part_stream.stream_part_to_file(
+                field,  # type: ignore[arg-type]
+                Path(tmp),
+                max_bytes=25 * 1024 * 1024,
+            )
+        except part_stream.PartTooLarge:
+            return web.json_response({"error": "audio too large"}, status=413)
 
         text = await transcribe_audio(tmp)
         if text:
@@ -1754,6 +1756,17 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "pattern": r"^[A-Za-z0-9._\-\[\]]*$",
         "validate_fn": _validate_role_model,
     },
+    # Throttle-exhaustion fallback model. Single value: "auto" (default) defers
+    # to the backend's availability-aware routing; a concrete id is tried first
+    # with "auto" as the final fallthrough; "" disables the feature. Same
+    # grammar + entitlement validation as the role-model pins ("" / "auto"
+    # always allow), so the dropdown and the wire cannot disagree.
+    "agent.fallback_model": {
+        "type": "str",
+        "max_len": 64,
+        "pattern": r"^[A-Za-z0-9._\-\[\]]*$",
+        "validate_fn": _validate_role_model,
+    },
     "agent.reasoning_effort": {"type": "enum", "values": ["", *EFFORT_LEVELS]},
     # Per-role reasoning effort, paired with role_models. Same enum as the chat
     # default; "" = inherit. Applies only on reasoning-capable models.
@@ -1794,6 +1807,21 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "auto_update": {"type": "bool"},
     "dashboard.mcp_probe_timeout_secs": {"type": "int", "min": 5, "max": 120},
     "dashboard.recent_tint_count": {"type": "int", "min": 0, "max": 10},
+    # Per-version snooze/skip verdict for the proactive update popup, written
+    # as ONE atomic record: the three fields only mean anything together, so
+    # per-field writes would open both a crash window (old verdict paired
+    # with a new version) and a two-client interleave that reassembles a
+    # verdict nobody expressed. Persisted in gateway config (not browser
+    # storage) so the decision holds across browsers and the desktop app's
+    # embedded dashboard.
+    "dashboard.update_nudge": {
+        "type": "dict",
+        "keys": {
+            "version": {"type": "str", "max_len": 128},
+            "snoozed_until": {"type": "float", "min": 0.0, "max": 4102444800.0},
+            "skipped": {"type": "bool"},
+        },
+    },
     # Default shell for the built-in terminal panel (Settings → Display →
     # Terminal). "" = unset, use $SHELL / the platform default. The executable
     # check lives as an off-loop special case in the PATCH handler (a PATH
@@ -2041,6 +2069,54 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             reason = validate_fn(value, request)
             if reason:
                 return _deny(reason, f"{path_key}={value}")
+    elif spec["type"] == "dict":
+        # One-level record written ATOMICALLY as a single value, for settings
+        # where multiple scalar fields form one verdict and a partial write is
+        # itself the bug (e.g. the update popup's version+snooze+skip record).
+        # Strict by design: every declared key present, no undeclared keys,
+        # each value validated against its scalar subspec — so this cannot
+        # become a generic JSON passthrough.
+        if not isinstance(value, dict):
+            return _deny("must be an object", f"{path_key}={value}")
+        keys_spec = spec["keys"]
+        unknown = set(value) - set(keys_spec)
+        if unknown:
+            return _deny(f"unknown key(s): {sorted(unknown)}", f"{path_key}={value}")
+        missing = set(keys_spec) - set(value)
+        if missing:
+            return _deny(f"missing key(s): {sorted(missing)}", f"{path_key}={value}")
+        validated: dict = {}
+        for sub_key, sub_spec in keys_spec.items():
+            sub_val = value[sub_key]
+            if sub_spec["type"] == "str":
+                if not isinstance(sub_val, str):
+                    return _deny(f"{sub_key} must be a string", f"{path_key}={value}")
+                if len(sub_val) > sub_spec.get("max_len", 256):
+                    return _deny(
+                        f"{sub_key} must be at most {sub_spec.get('max_len', 256)} characters",
+                        f"{path_key}={value}",
+                    )
+            elif sub_spec["type"] == "bool":
+                if not isinstance(sub_val, bool):
+                    return _deny(f"{sub_key} must be a boolean", f"{path_key}={value}")
+            elif sub_spec["type"] == "float":
+                # bool is an int subclass; refuse it before coercion so
+                # `true` cannot silently store 1.0.
+                if isinstance(sub_val, bool):
+                    return _deny(f"{sub_key} must be a number", f"{path_key}={value}")
+                try:
+                    sub_val = float(sub_val)
+                except (TypeError, ValueError):
+                    return _deny(f"{sub_key} must be a number", f"{path_key}={value}")
+                if not math.isfinite(sub_val):
+                    return _deny(f"{sub_key} must be a finite number", f"{path_key}={value}")
+                lo, hi = sub_spec.get("min", 0.0), sub_spec.get("max", 999999.0)
+                if sub_val < lo or sub_val > hi:
+                    return _deny(f"{sub_key} must be between {lo} and {hi}", f"{path_key}={value}")
+            else:
+                return _deny("unsupported config type", f"{path_key}={value}", 500)
+            validated[sub_key] = sub_val
+        value = validated
     else:
         return _deny("unsupported config type", f"{path_key}={value}", 500)
 
@@ -2199,6 +2275,10 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
         for slot in state._slots.values():
             if slot.model:
                 slot.model = ""
+                # Deliberate model change: bump the pick generation so the
+                # fallback restore probe drops any sticky state instead of
+                # restoring a model id from the previous provider.
+                slot._model_pick_gen += 1
         state.push_slots_update()
         logger.info(
             "Provider switched to %s — config rebuilt, factory reloaded, slot models cleared", value

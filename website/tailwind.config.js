@@ -5,6 +5,53 @@
  * transform — see the note in `ui/dialog.tsx`.
  */
 import tailwindcssAnimate from 'tailwindcss-animate'
+import tailwindPlugin from 'tailwindcss/plugin'
+
+/* iOS safe-area utilities, emitted locally.
+ *
+ * The dashboard is a standalone-display PWA whose viewport declares
+ * viewport-fit=cover, so on a notched iPhone the web view spans the whole
+ * screen. The shell insets its in-flow chrome once with `p-safe`; every
+ * `fixed` surface escapes that padding and opts in on its own, which
+ * src/test/safeArea.guard.test.ts enforces.
+ *
+ * This was `tailwindcss-safe-area@0.8.0` and is now ~25 lines here instead.
+ * That package's current line is Tailwind v4-only, so a v3 project is pinned
+ * to a terminal 0.8.0 forever -- including its wrong-edge logical utilities
+ * (`me-safe`/`pe-safe`/`end-safe` read safe-area-inset-LEFT for an inline-END
+ * property), which then need their own test banning them. Emitting only the
+ * families this codebase actually uses removes the pin, the ban, and the
+ * dependency in one move; the utility names are identical either way.
+ *
+ * `offset` is env + n (keeps a surface's intended gap ABOVE the inset).
+ * `or` is max(env, n) (a minimum gutter that widens only when there is one).
+ * Both go through matchUtilities, which is what makes an arbitrary value like
+ * `top-safe-offset-[42px]` resolve as well as a spacing-scale step.
+ */
+const EDGES = ['top', 'right', 'bottom', 'left']
+const inset = edge => `env(safe-area-inset-${edge})`
+
+const safeArea = tailwindPlugin(({ addUtilities, matchUtilities, theme }) => {
+  addUtilities({
+    '.p-safe': {
+      paddingTop: inset('top'),
+      paddingRight: inset('right'),
+      paddingBottom: inset('bottom'),
+      paddingLeft: inset('left'),
+    },
+    ...Object.fromEntries(EDGES.map(e => [`.${e}-safe`, { [e]: inset(e) }])),
+  })
+  for (const edge of EDGES) {
+    matchUtilities(
+      { [`${edge}-safe-offset`]: v => ({ [edge]: `calc(${inset(edge)} + ${v})` }) },
+      { values: theme('spacing'), supportsNegativeValues: true },
+    )
+    matchUtilities(
+      { [`${edge}-safe-or`]: v => ({ [edge]: `max(${inset(edge)}, ${v})` }) },
+      { values: theme('spacing') },
+    )
+  }
+})
 
 /** Alpha-aware theme color backed by a CSS variable.
  *
@@ -179,5 +226,5 @@ export default {
       },
     },
   },
-  plugins: [tailwindcssAnimate],
+  plugins: [tailwindcssAnimate, safeArea],
 }

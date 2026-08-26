@@ -21,7 +21,7 @@ import { render, screen, waitFor, within, fireEvent, act } from '@testing-librar
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
-import { SAVE_DEBOUNCE_MS } from '../apps/md-notebook/constants'
+import { COLUMN_MAX_WIDTH, COLUMN_PAD_X, HEADER_CONTROLS_GAP, SAVE_DEBOUNCE_MS } from '../apps/md-notebook/constants'
 import type { Note, Vault } from '../apps/md-notebook/types'
 
 // Every capability the page requires. Kept as a literal rather than imported so
@@ -331,6 +331,133 @@ describe('MdNotebookPage', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Rendered' }))
     expect(screen.queryByRole('textbox', { name: 'Markdown source' })).toBeNull()
     expect(localStorage.getItem('mdnb-view')).toBe('"rendered"')
+  })
+
+  // The cap is asserted on the RENDERED body's wrapper, not the raw editor's
+  // padding: the raw measure is a `max(...)` expression and jsdom drops those,
+  // so a padding assertion would read as '' and pass without proving anything.
+  const renderedColumn = () => {
+    let el: HTMLElement | null = screen.getByText('Hello')
+    while (el && el.style.margin !== '0px auto') el = el.parentElement
+    return el as HTMLElement
+  }
+
+  it('lifts the reading column to full width, remembering the choice', async () => {
+    await renderWithOpenNote()
+    expect(renderedColumn().style.maxWidth).toBe(`${COLUMN_MAX_WIDTH}px`)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Medium width' }))
+    expect(renderedColumn().style.maxWidth).toBe('')
+    expect(localStorage.getItem('mdnb-full-width')).toBe('true')
+    // Same convention as ReadingWidthToggle: the control names the width in
+    // force, and pressed state goes with it.
+    expect(screen.getByRole('button', { name: 'Full width' }).getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('restores the full-width choice on mount', async () => {
+    localStorage.setItem('mdnb-full-width', 'true')
+    await renderWithOpenNote()
+    expect(renderedColumn().style.maxWidth).toBe('')
+    // The raw editor loses the centring padding in the same state.
+    await userEvent.click(screen.getByRole('button', { name: 'Markdown source' }))
+    const ta = screen.getByRole('textbox', { name: 'Markdown source' }) as HTMLTextAreaElement
+    expect(ta.style.paddingLeft).toBe(`${COLUMN_PAD_X}px`)
+  })
+
+  it('returns to the reading column, and remembers that too', async () => {
+    localStorage.setItem('mdnb-full-width', 'true')
+    await renderWithOpenNote()
+    await userEvent.click(screen.getByRole('button', { name: 'Full width' }))
+    expect(renderedColumn().style.maxWidth).toBe(`${COLUMN_MAX_WIDTH}px`)
+    expect(localStorage.getItem('mdnb-full-width')).toBe('false')
+  })
+
+  // happy-dom has no layout, so both boxes the title clearance is computed from
+  // are stubbed. The two are told apart by their inline position, which is what
+  // the page sets on each: the control cluster floats (absolute) inside the
+  // header band (relative).
+  const stubHeaderLayout = ({ band, controls }: { band: number; controls: number }) => {
+    const w = vi
+      .spyOn(HTMLElement.prototype, 'offsetWidth', 'get')
+      .mockImplementation(function (this: HTMLElement) {
+        if (this.style.position === 'absolute') return controls
+        if (this.style.position === 'relative') return band
+        return 0
+      })
+    const h = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(34)
+    return () => {
+      w.mockRestore()
+      h.mockRestore()
+    }
+  }
+
+  const titleBlock = () => {
+    let el: HTMLElement | null = screen.getByLabelText('Click to rename this note')
+    while (el && el.style.margin !== '0px auto') el = el.parentElement
+    return el as HTMLElement
+  }
+
+  it('keeps the title clear of the floating header controls at full width', async () => {
+    const restore = stubHeaderLayout({ band: 1200, controls: 208 })
+    try {
+      localStorage.setItem('mdnb-full-width', 'true')
+      await renderWithOpenNote()
+      // Edge to edge, so the title reserves the whole cluster: column pad +
+      // measured cluster + breathing gap.
+      expect(titleBlock().style.paddingRight).toBe(`${COLUMN_PAD_X + 208 + HEADER_CONTROLS_GAP}px`)
+      expect(titleBlock().style.paddingTop).toBe('24px')
+    } finally {
+      restore()
+    }
+  })
+
+  it('reserves only the overlap in the reading column', async () => {
+    const restore = stubHeaderLayout({ band: 1200, controls: 208 })
+    try {
+      await renderWithOpenNote()
+      // The centred 800px column stops 200px short of the pane edge, which
+      // already covers most of the cluster: only the remainder is reserved.
+      const overlap = (1200 + COLUMN_MAX_WIDTH) / 2 - COLUMN_PAD_X + HEADER_CONTROLS_GAP
+        - (1200 - COLUMN_PAD_X - 208)
+      expect(titleBlock().style.paddingRight).toBe(`${COLUMN_PAD_X + overlap}px`)
+    } finally {
+      restore()
+    }
+  })
+
+  it('drops the title below the controls when the pane cannot seat both', async () => {
+    const restore = stubHeaderLayout({ band: 320, controls: 208 })
+    try {
+      await renderWithOpenNote()
+      // Reserving here would leave the title 60px wide, and it wraps on any
+      // character, so it would render as a column of single letters. It takes
+      // its own row under the cluster instead: no clearance, and a top pad
+      // carrying the cluster's height.
+      expect(titleBlock().style.paddingRight).toBe(`${COLUMN_PAD_X}px`)
+      expect(titleBlock().style.paddingTop).toBe(`${24 + 34 + 8}px`)
+    } finally {
+      restore()
+    }
+  })
+
+  it('caps the control cluster to the pane and wraps it on a narrow pane', async () => {
+    const restore = stubHeaderLayout({ band: 320, controls: 208 })
+    try {
+      await renderWithOpenNote()
+      // A long locale's sync label can make the cluster wider than the pane
+      // itself; uncapped, its left edge pokes past the pane and
+      // `overflow-x-hidden` clips the view controls. The cap holds it to the
+      // band minus both pads (a plain pixel value, since happy-dom drops
+      // max()/calc() expressions), and wrap keeps every control reachable.
+      let cluster: HTMLElement | null = screen.getByRole('button', { name: 'Medium width' })
+      while (cluster && cluster.style.position !== 'absolute') cluster = cluster.parentElement
+      expect(cluster).not.toBeNull()
+      expect(cluster!.style.maxWidth).toBe(`${320 - COLUMN_PAD_X * 2}px`)
+      expect(cluster!.style.flexWrap).toBe('wrap')
+      expect(cluster!.style.justifyContent).toBe('flex-end')
+    } finally {
+      restore()
+    }
   })
 
   it('debounces an edit before persisting it, and does not save on the keystroke', async () => {

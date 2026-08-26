@@ -67,6 +67,61 @@ _MARKERS: Final[tuple[tuple[str, str], ...]] = (
 
 _COMPILED: Final = tuple((label, re.compile(pat)) for label, pat in _MARKERS)
 
+# Closing markers, by label. A block that has one owns only up to its OWN
+# closer; the characters between that closer and the next opening marker belong
+# to no block anybody named and are reported as ``unclassified``.
+#
+# Without this, a block's span ran all the way to the next marker it could find,
+# which silently turned "unattributed" into "MIS-attributed" — and the panel has
+# no way to tell a genuinely large block from a small one that swallowed its
+# neighbours. It is not a rare edge either: whichever blocks are conditional
+# (workspace identity and the docs pointer are skipped for a custom agent, the
+# memory family for a session sealed from the user's memory) are exactly the
+# ones whose absence lets an earlier block absorb everything downstream of it.
+# Measured on one real session: a ~470-char profile block was reported as 8,116.
+#
+# Only closers that the assembly actually emits are listed, so adding one is a
+# data change here rather than an edit to the scanner. A single-line block
+# (``[CURRENT DATE]``, ``[RUNTIME]``, …) has no closer and keeps the old
+# next-marker behaviour, which is correct for it: there is nothing in between.
+#
+# Nesting needs no special case. ``[SESSION CONTEXT`` wraps the memory family and
+# closes long after it, but the search below is bounded by the next opening
+# marker, so a wrapper whose nested blocks start first simply never finds its own
+# closer in range and ends where it always did.
+_CLOSERS: Final[dict[str, re.Pattern[str]]] = {
+    label: re.compile(pat)
+    for label, pat in (
+        ("critical_rules", r"\[END CRITICAL RULES\]"),
+        ("agent_instructions", r"\[END AGENT SYSTEM PROMPT\]"),
+        ("session_wrapper", r"\[END OF SESSION CONTEXT\]"),
+        ("workspace_identity", r"\[End of workspace identity\]"),
+        ("docs_pointer", r"\[END DOCUMENTATION\]"),
+        ("memory", r"\[End of memory\]"),
+        ("semantic_memory", r"\[End of semantic memory\]"),
+        ("skill_index", r"\[End of skills\]"),
+        ("lessons", r"\[End of learned corrections\]"),
+        ("episodic_memory", r"\[End of episodic memory\]"),
+        # Escaped `]` matters: `[End of skill]` is a prefix of `[End of skills]`,
+        # and an unanchored pattern would let one loaded skill claim the whole
+        # skills index that follows it.
+        ("loaded_skill", r"\[End of skill\]"),
+        ("skill_hint", r"\[End of relevant skills\]"),
+        ("channel_context", r"\[END SLACK THREAD CONTEXT\]"),
+        ("conversation_replay", r"\[END CONVERSATION HISTORY\]"),
+        # Two spellings reach this opener: `context.py` emits
+        # `[End of hook context]` and `chat_runner.py` emits `[End hook
+        # context]`. Both are real emit sites, so one alternation covers them
+        # rather than picking whichever the assembly happened to use last.
+        ("hook_context", r"\[End (?:of )?hook context\]"),
+        ("history_prefix", r"\[End of history\]"),
+        ("theme_persona", r"\[END THEME PERSONA\]"),
+        ("user_profile", r"\[End of user profile\]"),
+        ("ui_language", r"\[End of UI language\]"),
+        ("cancelled_turn", r"\[END PREVIOUS TURN\]"),
+    )
+}
+
 # The reply-format / tool-contract paragraphs the assembly appends after the
 # user's text. They open with a parenthesis at the start of a line and are the
 # only trailing blocks, so one anchored pattern covers all of them.
@@ -159,7 +214,13 @@ def split_blocks(
     # book its bytes as memory while the header's bytes were credited to the
     # message.
     header_at = next(
-        (m.start() for label, pat in _COMPILED if label == "request_header" for m in [pat.search(prompt)] if m),
+        (
+            m.start()
+            for label, pat in _COMPILED
+            if label == "request_header"
+            for m in [pat.search(prompt)]
+            if m
+        ),
         None,
     )
     user_start = user_end = -1
@@ -211,7 +272,33 @@ def split_blocks(
     # unrelated header bytes instead.
     user_taken = 0
     for index, (start, label) in enumerate(hits):
-        end = hits[index + 1][0] if index + 1 < len(hits) else len(prompt)
+        next_start = hits[index + 1][0] if index + 1 < len(hits) else len(prompt)
+        # A block owns up to its own closer when it has one IN RANGE, otherwise up
+        # to the next block. Bounding the search by ``next_start`` is what keeps a
+        # wrapper (whose nested blocks open before it closes) behaving as before.
+        end = next_start
+        closer = _CLOSERS.get(label)
+        if closer is not None:
+            # The LAST match before the next opener, not the first. A block's
+            # content can quote its own closer — a custom agent prompt that
+            # documents the envelope it is injected into embeds
+            # `[END AGENT SYSTEM PROMPT]` verbatim — and first-match would end the
+            # block at that quotation, booking the rest of its real body as
+            # `unclassified`. Last-match is right by construction: nothing of the
+            # block follows its real closer, so any earlier occurrence in range is
+            # content. Bounded by `next_start`, so this still cannot reach past the
+            # next block.
+            closed = None
+            for match in closer.finditer(prompt, start, next_start):
+                closed = match
+            if closed is not None:
+                end = closed.end()
+                # The blank line a block emits right after its own closer is that
+                # block's separator, not unattributed text. Keeping it here is what
+                # makes the remainder a real gap instead of a two-character crumb
+                # of `unclassified` after every single closed block.
+                while end < next_start and prompt[end] in " \t\r\n":
+                    end += 1
         seg = end - start
         if user_start >= 0:
             overlap = max(0, min(end, user_end) - max(start, user_start))
@@ -219,6 +306,18 @@ def split_blocks(
             user_taken += overlap
         if seg > 0:
             out[label] = out.get(label, 0) + seg
+        # The characters after this block's closer and before the next block
+        # started. Naming them ``unclassified`` is the whole point: they used to be
+        # billed to whichever block happened to precede them, which reads as a
+        # confident measurement of something nobody measured.
+        if end < next_start:
+            gap = next_start - end
+            if user_start >= 0:
+                overlap = max(0, min(next_start, user_end) - max(end, user_start))
+                gap -= overlap
+                user_taken += overlap
+            if gap > 0:
+                out[UNCLASSIFIED_LABEL] = out.get(UNCLASSIFIED_LABEL, 0) + gap
 
     if user_taken > 0:
         out[USER_LABEL] = out.get(USER_LABEL, 0) + user_taken

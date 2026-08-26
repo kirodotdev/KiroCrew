@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 
 import pytest
 
@@ -755,6 +756,138 @@ class TestExtensibility:
     def test_unknown_capability_key_aborts(self):
         with pytest.raises(PlatformCompositionError):
             parse_policy(_policy_body(capabilities={"bogus": {"enabled": True}}))
+
+
+class TestProfileUnknownCapabilityTolerance:
+    """A PROFILE tolerates an unregistered ``capabilities.*`` child, ASYMMETRICALLY.
+
+    Only ``{"enabled": true}`` is tolerated — it is inert, because a profile only
+    narrows and the intersection happens in ``resolve``. An unknown NARROWING
+    (``enabled: false``) or a malformed child still fails closed, because it is
+    indistinguishable from a typo'd narrowing of a CORE capability and honoring the
+    operator's intent means denying.
+
+    The cross-edition case this serves: an edition that ``register_scope``s extra
+    capability rows seeds a profile naming them with ``enabled: true``, and a build
+    WITHOUT those rows reads the same data home.
+    """
+
+    def test_unknown_capability_child_enabled_true_does_not_invalidate_the_profile(self):
+        prof = parse_profile(
+            {
+                "name": "host",
+                "capabilities": {
+                    "capability_install": {"enabled": True},
+                    "external_access": {"enabled": True},
+                    "spawn": {"enabled": False},
+                },
+            }
+        )
+        assert prof.name == "host"
+        # The unknown children are recorded, not enforced.
+        assert prof.unknown_scopes == (
+            "capabilities.capability_install",
+            "capabilities.external_access",
+        )
+        assert prof.get("capabilities.capability_install") is None
+        # …and the KNOWN sibling in the same block still parses and still governs.
+        assert prof.get("capabilities.spawn") == CapabilityGate(enabled=False)
+
+    def test_unknown_capability_child_enabled_false_fails_closed(self):
+        # THE TYPO-PROTECTION CASE. ``spwan`` is a typo for ``spawn``; tolerating it
+        # would silently PERMIT the capability the operator tried to disable. It must
+        # raise so the loader substitutes deny-all instead.
+        with pytest.raises(PlatformCompositionError):
+            parse_profile({"name": "host", "capabilities": {"spwan": {"enabled": False}}})
+
+    def test_unknown_capability_child_without_enabled_fails_closed(self):
+        # Intent is unreadable (it may carry scopes meant to narrow), so deny.
+        with pytest.raises(PlatformCompositionError):
+            parse_profile(
+                {"name": "host", "capabilities": {"vaulted": {"scopes": {"x": {"mode": "allow"}}}}}
+            )
+
+    def test_unknown_capability_child_non_dict_fails_closed(self):
+        for bogus in (True, False, "enabled", 1, [], None):
+            with pytest.raises(PlatformCompositionError):
+                parse_profile({"name": "host", "capabilities": {"vaulted": bogus}})
+
+    def test_enabled_must_be_exactly_true_not_merely_truthy(self):
+        # Guards against a widened predicate: only the boolean True is inert.
+        for truthy in (1, "true", ["yes"]):
+            with pytest.raises(PlatformCompositionError):
+                parse_profile({"name": "host", "capabilities": {"vaulted": {"enabled": truthy}}})
+
+    def test_unknown_capability_child_with_extra_keys_fails_closed(self):
+        # ENABLE-PLUS-NARROWING. A capability payload can carry inner narrowing
+        # rulesets (``spawn`` has ``agents``); a typo'd ``spwan`` declared
+        # ``{"enabled": true, "agents": {...allowlist...}}`` is an operator
+        # enabling spawn AND restricting which agents may be spawned. Skipping
+        # it would drop the inner narrowing, so any key beyond ``enabled``
+        # must fail closed. Only the exact one-key ``{"enabled": true}`` is
+        # provably inert.
+        with pytest.raises(PlatformCompositionError):
+            parse_profile(
+                {
+                    "name": "host",
+                    "capabilities": {
+                        "spwan": {
+                            "enabled": True,
+                            "agents": {"mode": "allow", "allow": []},
+                        }
+                    },
+                }
+            )
+
+    def test_unknown_capability_child_is_logged_with_profile_and_key(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.platform.governance"):
+            parse_profile({"name": "host", "capabilities": {"vaulted": {"enabled": True}}})
+        assert any(
+            "host" in r.getMessage() and "capabilities.vaulted" in r.getMessage()
+            for r in caplog.records
+            if r.levelno >= logging.WARNING
+        )
+
+    def test_same_key_in_a_policy_still_fails_closed(self):
+        # Tamper-evidence on the ceiling is unchanged (Rule 8): only the profile
+        # path is tolerant, and even there only for enabled:true.
+        with pytest.raises(PlatformCompositionError):
+            parse_policy(_policy_body(capabilities={"capability_install": {"enabled": True}}))
+
+    def test_policy_fallback_object_still_fails_closed(self):
+        # The policy's top-level ``fallback`` parses as a narrow-only profile but is
+        # NOT a profile FILE, so it gets no tolerance even for enabled:true.
+        with pytest.raises(PlatformCompositionError):
+            parse_policy(
+                _policy_body(fallback={"capabilities": {"capability_install": {"enabled": True}}})
+            )
+
+    def test_unknown_top_level_family_in_a_profile_still_fails_closed(self):
+        with pytest.raises(PlatformCompositionError):
+            parse_profile({"name": "host", "vault": {"mode": "allow", "allow": ["read"]}})
+
+    def test_a_profile_with_no_unknown_keys_records_nothing(self):
+        prof = parse_profile({"name": "host", "capabilities": {"spawn": {"enabled": True}}})
+        assert prof.unknown_scopes == ()
+
+    def test_extends_composition_preserves_the_record(self):
+        parent = parse_profile({"name": "base", "capabilities": {"vaulted": {"enabled": True}}})
+        child = parse_profile({"name": "leaf", "capabilities": {"othered": {"enabled": True}}})
+        merged = compose_profiles(parent, child)
+        assert merged.unknown_scopes == ("capabilities.vaulted", "capabilities.othered")
+
+    def test_a_registered_capability_parses_normally_again(self):
+        # Guards the append-only contract from the other side: once the row IS
+        # registered, the key stops being tolerated and starts being enforced.
+        register_scope("capabilities.capability_install", ScopeSpec(CAPABILITY))
+        try:
+            prof = parse_profile(
+                {"name": "host", "capabilities": {"capability_install": {"enabled": False}}}
+            )
+            assert prof.unknown_scopes == ()
+            assert prof.get("capabilities.capability_install") == CapabilityGate(enabled=False)
+        finally:
+            SCOPE_CATALOG.pop("capabilities.capability_install", None)
 
 
 class TestSchemaStrictness:

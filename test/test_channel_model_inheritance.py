@@ -171,3 +171,73 @@ class TestResolveNamedAgentModel:
         assert (
             KiroCrewConfig._resolve_named_agent_model("nomodel", agents_dir=tmp_path) == ""
         )
+
+
+class TestAgentSpecReadsAreHardened:
+    """Both model resolvers must read agent specs through the discovery
+    module's hardened reader (#4962), not bare ``read_text``: the agents
+    directory is user-writable and shared with other tools, so an oversized
+    file is refused at the read cap and a link resolving into a sensitive
+    path donates nothing."""
+
+    def test_named_resolver_refuses_an_oversized_spec(self, tmp_path, monkeypatch):
+        from kiro_crew import agent_discovery
+        from kiro_crew.hooks import FileTooLargeError
+
+        (tmp_path / "huge.json").write_text(json.dumps({"name": "huge", "model": "m"}))
+        monkeypatch.setattr(
+            agent_discovery,
+            "safe_read_file_bytes",
+            lambda _p: (_ for _ in ()).throw(FileTooLargeError()),
+        )
+        assert KiroCrewConfig._resolve_named_agent_model("huge", agents_dir=tmp_path) == ""
+
+    def test_named_resolver_refuses_a_link_into_a_sensitive_path(
+        self, tmp_path, monkeypatch
+    ):
+        # A directory junction needs no privilege on Windows and resolves
+        # through pathlib exactly like a symlink, so the guard is exercised
+        # here rather than skipped. The sensitive-path verdict is scoped to
+        # the junction's TARGET so the test proves resolution follows the
+        # link: a same-named spec OUTSIDE the link must still read fine.
+        from conftest import make_dir_link
+        from kiro_crew import agent_discovery
+
+        outside = tmp_path / "sensitive-outside"
+        outside.mkdir()
+        (outside / "link.json").write_text(json.dumps({"name": "link", "model": "stolen"}))
+        (tmp_path / "direct.json").write_text(json.dumps({"name": "direct", "model": "fine"}))
+        make_dir_link(tmp_path / "link", outside)
+        monkeypatch.setattr(
+            agent_discovery,
+            "is_sensitive_path",
+            lambda p: "sensitive-outside" in str(p),
+        )
+        assert KiroCrewConfig._resolve_named_agent_model("link", agents_dir=tmp_path) == ""
+        assert (
+            KiroCrewConfig._resolve_named_agent_model("direct", agents_dir=tmp_path)
+            == "fine"
+        )
+
+    def test_installed_spec_resolver_reads_through_the_hardened_reader(
+        self, tmp_path, monkeypatch
+    ):
+        # The installed kirocrew.json path goes through the same reader: a
+        # spec the reader refuses yields no model, and the resolver falls
+        # through to the bundled default instead of trusting the file.
+        import kiro_crew.config.loader as loader_mod
+        from kiro_crew import agent_discovery
+        from kiro_crew.hooks import FileTooLargeError
+
+        (tmp_path / "kirocrew.json").write_text(json.dumps({"model": "pinned"}))
+        monkeypatch.setattr(loader_mod, "kiro_agents_dir", lambda: tmp_path)
+        seen = {}
+
+        def _refusing_read(_path):
+            seen["called"] = True
+            raise FileTooLargeError()
+
+        monkeypatch.setattr(agent_discovery, "safe_read_file_bytes", _refusing_read)
+        result = KiroCrewConfig._resolve_agent_model()
+        assert seen["called"] is True
+        assert result != "pinned"

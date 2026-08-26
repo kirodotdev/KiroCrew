@@ -2,6 +2,8 @@ import { useState, useMemo, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw, Plug, AlertTriangle, Check, ChevronRight, Zap, X, Download, Braces } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
+import { Trans } from 'react-i18next'
+import { Link } from 'react-router-dom'
 import { api } from '../../api/client'
 import { Card, Btn, Badge, SearchInput, ContentSkeleton } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
@@ -101,15 +103,16 @@ function ScopeBadge({
  * `needs_auth` is not a failure. The status probe runs WITHOUT the OAuth token
  * kiro-cli holds (Kiro Crew keeps no credentials), so a remote OAuth server
  * answers it with 401 while the agent runtime calls the same server fine —
- * reported as "Error / HTTP 401" in #1853. The label says "Not verified" rather
- * than naming an action, because the 401 does not distinguish a server nobody
- * authorized from one authorized through kiro-cli: all we truthfully know is
- * that we cannot see this server's authorization from here.
+ * reported as "Error / HTTP 401" in #1853.
+ *
+ * Which of the three `needs_auth` labels applies turns on evidence the probe now
+ * collects: the server's own challenge says it wants OAuth, and the runtime's
+ * grant artifacts say whether anyone has completed it. See `mcpAuthState`.
  *
  * An unrecognised status stays "Unknown" — a newer gateway may report a state
  * this build predates, and inventing a label for it would be a guess.
  */
-function mcpStatusLabel(status: string): string {
+function mcpStatusLabel(status: string, auth: McpAuthState): string {
   switch (status) {
     case 'ok':
       return i18nT('pages.overview.mcpTab.online')
@@ -120,15 +123,52 @@ function mcpStatusLabel(status: string): string {
     case 'disabled':
       return i18nT('pages.overview.mcpTab.disabled')
     case 'needs_auth':
+      if (auth === 'sign_in_required') return i18nT('pages.overview.mcpTab.sign_in_required')
+      if (auth === 'signed_in') return i18nT('pages.overview.mcpTab.signed_in')
       return i18nT('pages.overview.mcpTab.not_verified')
     default:
       return i18nT('pages.overview.mcpTab.unknown')
   }
 }
 
-/** Only a hard failure is toned as an error; `needs_auth` rides the warn default. */
-function mcpStatusVariant(status: string): 'ok' | 'err' | 'warn' {
-  return status === 'ok' ? 'ok' : status === 'error' ? 'err' : 'warn'
+/** Which wording the probe's authorization evidence actually supports. */
+type McpAuthState = 'sign_in_required' | 'signed_in' | 'unknown'
+
+/**
+ * The `needs_auth` row's authorization state, from evidence rather than inference.
+ *
+ * One tri-state rather than a pair of booleans, because the two observations and
+ * the absence of an observation are three outcomes of one question, and pairing
+ * booleans is how a caller ends up rendering "signed in" for a row that reported
+ * nothing.
+ *
+ * Both branches test an EXPLICIT boolean. `authGrantPresent` is absent whenever
+ * the probe could not answer — an older gateway, or a cache home that would not
+ * read — and a falsy check would turn that silence into "no grant", telling the
+ * owner of a working server to sign in again. `undefined` therefore falls through
+ * to `unknown`, whose wording claims nothing either way.
+ */
+function mcpAuthState(s: McpServer): McpAuthState {
+  if (s.status !== 'needs_auth' || !s.authChallenge) return 'unknown'
+  if (s.authGrantPresent === true) return 'signed_in'
+  if (s.authGrantPresent === false) return 'sign_in_required'
+  return 'unknown'
+}
+
+/**
+ * Only a hard failure is toned as an error; `needs_auth` rides the warn default.
+ *
+ * A held grant is the exception, and it is toned `muted` rather than `warn`: amber
+ * is the panel's "you need to act" colour, and a scan by colour alone could not
+ * tell a resolved row from the one still asking to be signed in. It is not `ok`
+ * either — green would claim the server answers, which the probe cannot check
+ * without the runtime's token. Muted is the honest third reading: nothing here
+ * needs you.
+ */
+function mcpStatusVariant(status: string, auth: McpAuthState): 'ok' | 'err' | 'warn' | 'muted' {
+  if (status === 'ok') return 'ok'
+  if (status === 'error') return 'err'
+  return auth === 'signed_in' ? 'muted' : 'warn'
 }
 
 /**
@@ -137,12 +177,21 @@ function mcpStatusVariant(status: string): 'ok' | 'err' | 'warn' {
  *
  * A three-word badge cannot explain why the dashboard is unsure, and the badge is
  * exactly where someone meets that surprise — so the explanation belongs here,
- * one hover away. It reuses the Connections card's string rather than paraphrasing
- * it: this table renders inside the Connections page, and two wordings of one
- * limitation would drift and would cost every locale a second translation.
+ * one hover away. The `unknown` case reuses the Connections card's string rather
+ * than paraphrasing it: this table renders inside the Connections page, and two
+ * wordings of one limitation would drift and would cost every locale a second
+ * translation.
+ *
+ * The sign-in case splits its guidance across the two surfaces by what the reader
+ * needs BEFORE acting versus after. The row states the step, because a step nobody
+ * hovers to find is the bug this panel exists to fix; the outcome — refresh, and
+ * what the row becomes — waits here, because it is only useful once the sign-in is
+ * done, and an always-visible cell in a dense table pays for every sentence.
  */
-function mcpStatusHint(status: string, serverName: string): string | undefined {
+function mcpStatusHint(status: string, serverName: string, auth: McpAuthState): string | undefined {
   if (status !== 'needs_auth') return undefined
+  if (auth === 'sign_in_required') return i18nT('pages.overview.mcpTab.sign_in_required_next')
+  if (auth === 'signed_in') return i18nT('pages.overview.mcpTab.signed_in_help', { provider: serverName })
   return i18nT('pages.connectionsPage.not_verified_help', { provider: serverName })
 }
 
@@ -305,7 +354,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
       return r
     },
     onSuccess: (r) => {
-      setApplyMsg(`Applied ${r.applied ?? 0} change${(r.applied ?? 0) === 1 ? '' : 's'}`)
+      setApplyMsg(i18nT('pages.overview.mcpTab.applied_change', { count: r.applied ?? 0 }))
       setPending({})
       setPendingTools({})
       queryClient.invalidateQueries({ queryKey: ['mcp-servers'] })
@@ -381,11 +430,17 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
           {mcpFilter && <button className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-text transition-colors cursor-pointer" onClick={() => setMcpFilter('')} aria-label={i18nT('pages.overview.mcpTab.clear_search')}>{"\u00d7"}</button>}
         </div>
         <div className="ml-auto flex items-center gap-2">
-          <Btn onClick={() => probe.mutate()} disabled={probe.isPending} aria-label={i18nT('pages.overview.mcpTab.probe_mcp_servers')}><RefreshCw size={14} className={probe.isPending ? 'animate-spin' : ''} /></Btn>
+          {/* `title` as well as `aria-label`: the sign-in guidance names this control
+              by that string, and an icon-only button renders none of it — without a
+              hover the reader cannot match the instruction to the button it means. */}
+          <Btn onClick={() => probe.mutate()} disabled={probe.isPending} aria-label={i18nT('pages.overview.mcpTab.probe_mcp_servers')} title={i18nT('pages.overview.mcpTab.probe_mcp_servers')}><RefreshCw size={14} className={probe.isPending ? 'animate-spin' : ''} /></Btn>
         </div>
       </div>
       <div className="flex gap-2 flex-wrap mb-3">
-        {filtered.map(s => <Badge key={s.name} variant={mcpStatusVariant(s.status)}><Plug className="lucide-inline" /> {s.name}</Badge>)}
+        {/* Same tone rule as the row badge, from the same evidence: these chips carry
+            status by colour alone, so a signed-in server wearing the amber "act now"
+            tone here would undo the distinction the row badge just made. */}
+        {filtered.map(s => <Badge key={s.name} variant={mcpStatusVariant(s.status, mcpAuthState(s))}><Plug className="lucide-inline" /> {s.name}</Badge>)}
       </div>
       {isLoading ? <ContentSkeleton rows={6} /> : (
         <div ref={attachMcpScroller} className="overflow-x-auto">
@@ -501,8 +556,8 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                       {i18nT('pages.overview.mcpTab.declared')}
                     </Badge>
                   ) : (
-                    <Badge variant={mcpStatusVariant(s.status)} title={mcpStatusHint(s.status, s.name)}>
-                      {mcpStatusLabel(s.status)}
+                    <Badge variant={mcpStatusVariant(s.status, mcpAuthState(s))} title={mcpStatusHint(s.status, s.name, mcpAuthState(s))}>
+                      {mcpStatusLabel(s.status, mcpAuthState(s))}
                     </Badge>
                   )}
                   {!!s.probedAt && (
@@ -519,7 +574,41 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                   )}
                 </td>
                 <td className="px-2.5 py-2 border-b border-border text-[13px] w-full">
-                  {s.status === 'error' && s.error ? <span className="text-danger text-[12px]"><AlertTriangle className="lucide-inline" /> {s.error}</span> : s.tools?.length ? (<div>
+                  {s.status === 'error' && s.error ? (
+                    <span className="text-danger text-[12px]">
+                      <AlertTriangle className="lucide-inline" /> {s.error}
+                      {/* A configured Authorization header that the server rejected reads as
+                          an opaque HTTP code. When the same response advertised OAuth, the
+                          actionable fact is that no static token can satisfy this server. */}
+                      {!!s.authChallenge && !!s.headers && (
+                        /* Not `text-muted`: this line is the only actionable thing in the
+                           cell, and muting it under a prominent red status code emphasised
+                           the raw failure over the remedy. */
+                        <span className="block text-warn mt-0.5">{i18nT('pages.overview.mcpTab.oauth_not_a_static_token')}</span>
+                      )}
+                    </span>
+                  ) : mcpAuthState(s) === 'sign_in_required' ? (
+                    /* Prose in the wide column rather than an Authorize control: the sign-in
+                       prompt is raised by Kiro CLI during a session's MCP bring-up, which
+                       happens on a turn, and nothing the dashboard can call from this panel
+                       starts one — so a button here would claim an action it cannot perform.
+                       Navigating to chat IS something the panel can do, so that step is a
+                       link. The user starts a new session there because an existing session
+                       keeps the server set it started with. This column already carries the
+                       other explanation a row can need, and has the width for a sentence.
+                       The closure step stays VISIBLE, in one clause: a `title` reaches
+                       neither a keyboard nor a touch user, and the panel serves from the
+                       probe cache for the whole TTL — so someone returning from a
+                       completed sign-in meets a row still reading "Sign-in required" and
+                       concludes it failed. The badge's title carries the longer form,
+                       naming the control and the state the row lands in. */
+                    <span className="text-warn text-[12px]">
+                      <Trans
+                        i18nKey="pages.overview.mcpTab.sign_in_required_help"
+                        components={{ chatLink: <Link to="/chat" className="underline hover:text-accent transition-colors" /> }}
+                      />
+                    </span>
+                  ) : s.tools?.length ? (<div>
                     <button className="flex items-center gap-1 text-[12px] text-accent hover:text-accent-hover cursor-pointer transition-colors mb-1" onClick={() => setExpandedTools(prev => { const next = new Set(prev); if (next.has(s.name)) next.delete(s.name); else next.add(s.name); return next })}>{s.tools.length} {i18nT('pages.overview.mcpTab.tools_2')}{!expandedTools.has(s.name) && (s.disabledTools?.length || 0) > 0 && <span className="text-muted ml-1">{i18nT('pages.overview.mcpTab.off_count', { count: s.disabledTools!.length })}</span>}<ChevronRight size={14} className={`transition-transform duration-200 ${expandedTools.has(s.name) ? 'rotate-90' : ''}`} /></button>
                     <AnimatePresence>{expandedTools.has(s.name) && <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden"><div className="space-y-0.5">{s.tools.map(t => {
                       const currentlyDisabled = (s.disabledTools || []).includes(t)

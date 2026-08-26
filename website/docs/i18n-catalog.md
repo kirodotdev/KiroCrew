@@ -154,6 +154,17 @@ to verify none crept back in. Which keys are plural comes from that registry,
 never from sniffing a `_one` / `_other` suffix, because real copy ends in those
 words (`panel_to_add_one` is "panel to add one.").
 
+A **fully hardcoded** literal commits the same defect with no `i18nT` in it:
+
+```tsx
+// WRONG for the same reason — the suffix is chosen in JS, in English
+aria-label={`Retry ${n} failed subagent${n > 1 ? 's' : ''}`}
+```
+
+`--check` counts these too (`[plurals-hardcoded]`), against a ceiling that fails
+only when the class grows: the frozen sites each need a new catalog key, so they
+are converted by hand and the ceiling ratchets down with them.
+
 ## One key, one meaning
 
 **Never reuse a key across two grammatical roles.** English collapses distinctions
@@ -165,6 +176,35 @@ other languages keep, so a shared key forces a translator to guess:
   "please enter". It is two keys now, the verb one named `type_verb_to_confirm`.
 
 If a value's part of speech is not obvious from the key, **put it in the key**.
+
+## Destructive-confirm operands must be quoted
+
+A confirm string that interpolates a user-supplied name without quotes lets an
+ordinary-word name blend into the sentence: a pet named "Everything" produced
+"Reset Everything?", indistinguishable from a sentence about resetting
+everything (#4653, #4657, #4676, #4821).
+
+**Quote the operand in every authored catalog**, using that locale's pair from
+`OPERAND_QUOTE_PAIRS` in `scripts/lib/qa-checks.mjs` (curly doubles in English,
+guillemets with U+202F in French, `„“` in German, `「」` in Japanese, and so on).
+ASCII `"{{name}}"` is not enough.
+
+`src/i18n/destructiveConfirm.test.ts` is the convention detector, not an
+allowlist you can forget to extend:
+
+- every key whose **name** matches `/confirm/i` and whose English value
+  interpolates a placeholder must be on `QUOTED_OPERAND_CONFIRM_KEYS`, **or**
+- listed in `CONFIRM_OPERAND_KEY_EXEMPTIONS` with a reason (today: the #4657
+  kind-word forms, where "template" / "crew" already sit next to the name), **or**
+- interpolate **only** placeholder names in `EXEMPT_CONFIRM_PLACEHOLDER_NAMES`
+  (numerals, closed-set schedule fragments, version ids, and system error
+  text — they cannot parse as prose). The set lives next to the pin; do not
+  restate it here.
+
+A new confirm key with `{{name}}` and no kind word fails CI until it is quoted
+in all 12 catalogs and added to the pin. The glyph pin then requires **every**
+non-exempt placeholder in a pinned key to be wrapped, not merely one of them.
+After changing English, regenerate `en-XA.json` with `npm run i18n:pseudo`.
 
 **A literal token the user must type must never be a catalog value.** Keep it a
 code constant (`BULK_DELETE_TOKEN`), or translating it makes the action impossible
@@ -314,24 +354,30 @@ Kana, Hangul, Devanagari and Bengali, collects them into `--script-fallbacks` an
 consulted for Latin or general punctuation, so they cannot change Latin metrics
 or leading, and they are a no-op when the named face is not installed.
 
-The `:root` tokens use the Simplified Chinese `KC Han Fallback` and
-`KC Han Mono Fallback` aliases. Under `html:lang(ja)`, both shared tokens switch
+The `:root` tokens carry only the non-Han script aliases (Devanagari, Bengali).
+Regional Han faces are scoped with `html:lang(zh-CN)`, `html:lang(ja)`, and
+`html:lang(ko)` so untagged CJK in an English UI reaches the browser/OS
+locale-aware cascade instead of being forced through Simplified Chinese glyph
+forms. A bare `:lang(zh)` is not used: it also matches Traditional tags
+(`zh-TW`, `zh-HK`, `zh-Hant`). Under `html:lang(zh-CN)` the tokens switch to
+`KC Han Fallback` and `KC Han Mono Fallback`; under `html:lang(ja)` they switch
 to `KC Japanese Fallback` and `KC Japanese Mono Fallback`, whose ranges include
 Kana as well as shared ideographs; under `html:lang(ko)` they switch to
 `KC Korean Fallback` and `KC Korean Mono Fallback`, whose ranges add the Hangul
 syllable and Jamo blocks. Keep every other locale's aliases out of these tokens:
 if the named face is unavailable, the browser must reach its language-aware
-fallback for that script instead of being forced through a Simplified Chinese
-alias — which for Korean cannot draw Hangul at all. Every user font choice and
-theme declaration consumes the shared tokens, so changing the document language
-updates proportional and monospace fallbacks without a component-specific font
-stack.
+fallback for that script instead of being forced through a foreign Han alias —
+which for Korean cannot draw Hangul at all. The rules set only the fallback
+tokens: `--font-body` / `--mono` already resolve `var(--script-fallbacks)` on
+`<html>` (`:root` and `useZoom`), so document language updates both stacks
+without redeclaring them. Content `lang=` inside an English document is not
+wired; there is no in-repo producer of those attributes yet.
 
 **Do not reorder those stacks or drop the token when adding a family.** Moving a
 Latin family in front silently returns zh-CN, ja, ko, hi and bn to whatever the
 platform picks for a missing glyph. A test pins the `:root` tokens, every
-declaration site (including the theme blocks, which redeclare both), the Japanese
-and Korean locale overrides, and the ordering.
+declaration site (including the theme blocks, which redeclare both), the
+`html:lang(zh-CN/ja/ko)` overrides, and the ordering.
 
 ## Translating the corpus
 

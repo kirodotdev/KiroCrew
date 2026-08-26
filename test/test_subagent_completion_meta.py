@@ -67,7 +67,29 @@ class TestMetaHelperShapes:
             "outcome": "ok",
             "task": "add a label",
             "note": "",
+            "requestedModel": "",
+            "resolvedModel": "",
         }
+
+    def test_single_carries_requested_and_resolved_model(self) -> None:
+        # The served model is auditable against the requested pin (#3582): the
+        # card shows the resolved id and can flag a downgrade when the two differ.
+        m = single_completion_meta(
+            agent_id="a1",
+            outcome=OUTCOME_OK,
+            agent_name="kirocrew",
+            task="review the diff",
+            requested_model="claude-opus-4.8",
+            resolved_model="claude-opus-4.7",
+        )
+        assert m["requestedModel"] == "claude-opus-4.8"
+        assert m["resolvedModel"] == "claude-opus-4.7"
+
+    def test_single_model_fields_default_empty_when_unknown(self) -> None:
+        # A provider that cannot report a served model leaves both "" — the card
+        # must treat that as "don't show", never as a wildcard.
+        m = single_completion_meta(agent_id="a1", outcome=OUTCOME_OK)
+        assert m["requestedModel"] == "" and m["resolvedModel"] == ""
 
     def test_single_note_carries_the_only_explanation_on_orphan_shapes(self) -> None:
         m = single_completion_meta(

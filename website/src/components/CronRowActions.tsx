@@ -43,6 +43,15 @@ export default function CronRowActions({
   const sortedFolders = [...folders].sort((a, b) => a.order - b.order)
   const hasResult = !!job.has_result || !!job.has_slot
 
+  // Skip the API round-trip when the job is already in the chosen folder:
+  // selecting the currently-checked row would otherwise fire updateCron with
+  // no real change (and a follow-up reload). Normalize a missing folder_id to
+  // '' so "Ungrouped" while already ungrouped is also a no-op.
+  const move = (folderId: string) => {
+    if (folderId !== (job.folder_id ?? '')) onMove(folderId)
+    setOpen(false)
+  }
+
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
@@ -103,14 +112,14 @@ export default function CronRowActions({
             <span>{i18nT('pages.schedulePage.cronFolders.move_to_folder')}</span>
           </DropdownMenuSubTrigger>
           <DropdownMenuSubContent className="min-w-[160px] max-h-[240px] overflow-y-auto">
-            <DropdownMenuItem onSelect={() => { onMove(''); setOpen(false) }}>
+            <DropdownMenuItem onSelect={() => move('')}>
               <Folder size={13} className="shrink-0 text-muted" />
               <span>{i18nT('pages.schedulePage.cronFolders.ungrouped')}</span>
               {!job.folder_id && <Check size={13} className="ml-auto shrink-0 text-accent" />}
             </DropdownMenuItem>
             {sortedFolders.length > 0 && <DropdownMenuSeparator />}
             {sortedFolders.map(f => (
-              <DropdownMenuItem key={f.id} onSelect={() => { onMove(f.id); setOpen(false) }}>
+              <DropdownMenuItem key={f.id} onSelect={() => move(f.id)}>
                 <Folder size={13} className="shrink-0 text-accent" />
                 <span className="truncate">{f.name}</span>
                 {job.folder_id === f.id && <Check size={13} className="ml-auto shrink-0 text-accent" />}

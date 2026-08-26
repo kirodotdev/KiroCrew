@@ -284,7 +284,7 @@ async def test_core_deploy_provider_configured_when_profiles_exist(tmp_path, mon
 # --- concurrent registry write safety (item 5) --------------------------------
 
 def test_save_registry_concurrent_no_lost_updates(tmp_path, monkeypatch):
-    """Threaded concurrent save_registry calls must not lose updates."""
+    """Threaded registry mutations must not lose updates."""
     import threading
 
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
@@ -297,9 +297,8 @@ def test_save_registry_concurrent_no_lost_updates(tmp_path, monkeypatch):
     def writer(i: int) -> None:
         try:
             barrier.wait(timeout=5)
-            reg = profiles_mod.load_registry()
-            reg["profiles"].append(profiles_mod.make_entry(f"p{i}", "us-west-2"))
-            profiles_mod.save_registry(reg)
+            with profiles_mod.locked_registry() as reg:
+                reg["profiles"].append(profiles_mod.make_entry(f"p{i}", "us-west-2"))
         except Exception as e:
             errors.append(str(e))
 
@@ -310,16 +309,10 @@ def test_save_registry_concurrent_no_lost_updates(tmp_path, monkeypatch):
         t.join(timeout=10)
 
     assert not errors, f"threads raised: {errors}"
-    # With locking, final registry must have at least the last writer's entry
-    # (concurrent load-modify-write without locking could lose some). The lock
-    # guarantees NO lost updates — each write serializes, so the final file
-    # has exactly as many entries as the last writer saw + 1. But because each
-    # writer loads independently (not chaining), total entries may be <n_threads
-    # unless the test chains reads. What we CAN assert: the file is valid JSON
-    # and at least 1 profile exists (not corrupted/empty).
     final = profiles_mod.load_registry()
-    assert len(final["profiles"]) >= 1
-    # More importantly: no file corruption.
+    assert {entry["name"] for entry in final["profiles"]} == {
+        f"p{i}" for i in range(n_threads)
+    }
     raw = profiles_mod._registry_path().read_text(encoding="utf-8")
     parsed = json.loads(raw)
     assert "profiles" in parsed

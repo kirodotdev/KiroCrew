@@ -348,7 +348,22 @@ async def _run_apple_session(
         locale=cfg.stt.language_code or "en-US",
         sample_rate=STREAM_SAMPLE_RATE_HZ,
     )
-    problem = await session.start()
+    try:
+        problem = await session.start()
+    except BaseException:
+        # A cancelled start() has no owner on this side yet: the teardown
+        # `finally` below only exists once start() has returned. close() is
+        # idempotent, so running it on top of start()'s own cancellation
+        # cleanup is safe, and the endpointer holds no tasks this early so
+        # its aclose() is a free symmetry with the failure branch below. The
+        # end audit keeps the trail balanced — the stt_stream_start already
+        # emitted would otherwise have no matching end, since the raise
+        # bypasses every later emitter.
+        await session.close()
+        if endpointer is not None:
+            await endpointer.aclose()
+        _emit_end_audit(caller, outcome="error")
+        raise
     if problem:
         try:
             await ws.send_json({"type": "error", "message": problem})

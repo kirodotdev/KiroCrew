@@ -73,6 +73,8 @@ export const DiscoverySearchBar = forwardRef<HTMLInputElement, SearchBarProps>(
         <div className="mt-1.5 flex items-center justify-between text-xs text-muted">
           <span>{providers.length > 0 ? i18nT('components.discoverySearchBar.searching_2', { name: providers.join(', ') }) : '\u00A0'}</span>
           {debouncedQuery.length >= 2 && !isLoading && (
+            /* This plural base is also used by file-explorer's SearchPanel — keep the
+               key alive (or re-home it) if this component is ever removed. */
             <span>{i18nT('components.discoverySearchBar.result', { count: resultCount })}</span>
           )}
         </div>

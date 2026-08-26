@@ -120,6 +120,25 @@ describe('InstancesViewport', () => {
     expect((frame.parentElement as HTMLElement).style.display).toBe('none')
   })
 
+  it('delegates microphone and fullscreen to the cross-origin pane', async () => {
+    // The pane is a cross-origin iframe (same host, different port), where
+    // both features are denied unless the parent delegates them. Dropping
+    // either regresses a user-visible capability: mic -> getUserMedia rejects
+    // with NotAllowedError; fullscreen -> the fullscreen button on native
+    // <video> controls inside the embedded chat renders disabled.
+    const store = createTestStore({
+      instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
+    })
+    renderWithProviders(<InstancesViewport />, { store })
+    const frame = await waitFor(() => {
+      const f = document.querySelector('iframe')
+      if (!f) throw new Error('no iframe yet')
+      return f as HTMLIFrameElement
+    })
+    expect(frame.getAttribute('allow')).toBe('microphone; fullscreen')
+    expect(frame.hasAttribute('allowfullscreen')).toBe(true)
+  })
+
   it('renders the active instance iframe with the loopback token URL', async () => {
     const store = createTestStore({
       instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {} },

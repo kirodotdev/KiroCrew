@@ -295,6 +295,7 @@ async def _synthesize_piper(
     fd, path = tempfile.mkstemp(suffix=".wav")
     os.close(fd)
     sandbox_cleanup: str | None = None
+    succeeded = False
     try:
         try:
             cmd: list[str] = [bin_path, "-m", model, "-f", path]
@@ -322,23 +323,38 @@ async def _synthesize_piper(
                     proc.communicate(text.encode("utf-8")),
                     timeout=60,
                 )
-            except asyncio.TimeoutError:
-                # asyncio.wait_for cancels communicate() on timeout but does NOT
-                # terminate the child process — kill it explicitly to avoid a
-                # zombie piper consuming CPU after we return.
-                logger.error("piper timed out after 60s; killing subprocess")
+            except BaseException as exc:
+                # ``asyncio.wait_for`` cancels ``communicate()`` on timeout —
+                # and a caller cancellation (client disconnect) arrives here as
+                # CancelledError, as do interpreter-exit signals such as
+                # KeyboardInterrupt — but none of them terminate the child:
+                # kill it explicitly to avoid a zombie piper consuming CPU
+                # after we exit. Temp-file discard is owned by the ``finally``
+                # invariant below.
+                timed_out = isinstance(exc, asyncio.TimeoutError)
+                if timed_out:
+                    logger.error("piper timed out after 60s; killing subprocess")
                 try:
                     proc.kill()
-                except ProcessLookupError:
-                    pass
-                try:
-                    await proc.wait()
-                except Exception:
-                    logger.debug("piper wait after kill failed", exc_info=True)
-                try:
-                    os.unlink(path)
                 except OSError:
                     pass
+                # Reap via communicate(), not wait(): wait_for already
+                # cancelled the pipe readers, so a killed child blocked on a
+                # full PIPE would never be drained and wait() would hang.
+                try:
+                    await proc.communicate()
+                except Exception:
+                    logger.debug("piper wait after kill failed", exc_info=True)
+                except BaseException:
+                    # A repeat cancellation can land on the reap await. When we
+                    # are already propagating (non-timeout path) swallow it so
+                    # the ORIGINAL exception is the one that propagates; on the
+                    # timeout path it is a genuinely new cancellation, so let
+                    # it out.
+                    if timed_out:
+                        raise
+                if not timed_out:
+                    raise  # cancellation/interrupt must propagate to the caller
                 return None
             if proc.returncode != 0:
                 logger.error(
@@ -346,12 +362,11 @@ async def _synthesize_piper(
                     proc.returncode,
                     stderr.decode(errors="replace")[:500],
                 )
-                os.unlink(path)
                 return None
             if os.path.getsize(path) < 100:
                 logger.error("piper output too small")
-                os.unlink(path)
                 return None
+            succeeded = True
             return path
         except SandboxUnavailableError as exc:
             # Same fail-closed sandbox refusal as the Polly path — relay the
@@ -363,19 +378,19 @@ async def _synthesize_piper(
                 exc.kind,
                 exc,
             )
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
             return None
         except Exception:
             logger.exception("piper synthesis error")
+            return None
+    finally:
+        # Invariant, not per-exit cleanup: EVERY unsuccessful exit — including
+        # CancelledError, which ``except Exception`` does not catch — must
+        # discard the owned temp file, or a new exit path re-opens the leak.
+        if not succeeded:
             try:
                 os.unlink(path)
             except OSError:
                 pass
-            return None
-    finally:
         # Clean up the sandbox launcher script / seatbelt profile spawned
         # by wrap_argv (None on platforms without a sandbox backend).
         if sandbox_cleanup:
@@ -493,6 +508,7 @@ async def _synthesize_polly(
     fd, path = tempfile.mkstemp(suffix=".mp3")
     os.close(fd)
     sandbox_cleanup: str | None = None
+    succeeded = False
     try:
         try:
             cmd: list[str] = [aws_bin, "polly", "synthesize-speech"]
@@ -528,33 +544,47 @@ async def _synthesize_polly(
             )
             try:
                 _, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-            except asyncio.TimeoutError:
+            except BaseException as exc:
                 # ``asyncio.wait_for`` cancels ``proc.communicate()`` on
-                # timeout but does NOT terminate the child — kill it
-                # explicitly to avoid a hung ``aws polly`` process consuming
-                # resources after we return.
-                logger.error("Polly timed out after 30s; killing subprocess")
+                # timeout — and a caller cancellation (client disconnect)
+                # arrives here as CancelledError, as do interpreter-exit
+                # signals such as KeyboardInterrupt — but none of them
+                # terminate the child: kill it explicitly to avoid a hung
+                # ``aws polly`` process consuming resources after we exit.
+                # Temp-file discard is owned by the ``finally`` invariant
+                # below.
+                timed_out = isinstance(exc, asyncio.TimeoutError)
+                if timed_out:
+                    logger.error("Polly timed out after 30s; killing subprocess")
                 try:
                     proc.kill()
-                except ProcessLookupError:
-                    pass
-                try:
-                    await proc.wait()
-                except Exception:
-                    logger.debug("polly wait after kill failed", exc_info=True)
-                try:
-                    os.unlink(path)
                 except OSError:
                     pass
+                # Reap via communicate(), not wait(): wait_for already
+                # cancelled the pipe readers, so a killed child blocked on a
+                # full PIPE would never be drained and wait() would hang.
+                try:
+                    await proc.communicate()
+                except Exception:
+                    logger.debug("polly wait after kill failed", exc_info=True)
+                except BaseException:
+                    # A repeat cancellation can land on the reap await. When we
+                    # are already propagating (non-timeout path) swallow it so
+                    # the ORIGINAL exception is the one that propagates; on the
+                    # timeout path it is a genuinely new cancellation, so let
+                    # it out.
+                    if timed_out:
+                        raise
+                if not timed_out:
+                    raise  # cancellation/interrupt must propagate to the caller
                 return None
             if proc.returncode != 0:
                 logger.error("Polly failed: %s", stderr.decode())
-                os.unlink(path)
                 return None
             if os.path.getsize(path) < 100:
                 logger.error("Polly output too small")
-                os.unlink(path)
                 return None
+            succeeded = True
             return path
         except SandboxUnavailableError as exc:
             # A host with no OS sandbox backend (every Windows host, and Linux
@@ -575,19 +605,19 @@ async def _synthesize_polly(
                 exc.kind,
                 exc,
             )
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
             return None
         except Exception:
             logger.exception("Polly synthesis error")
+            return None
+    finally:
+        # Invariant, not per-exit cleanup: EVERY unsuccessful exit — including
+        # CancelledError, which ``except Exception`` does not catch — must
+        # discard the owned temp file, or a new exit path re-opens the leak.
+        if not succeeded:
             try:
                 os.unlink(path)
             except OSError:
                 pass
-            return None
-    finally:
         # Clean up the sandbox launcher script / seatbelt profile spawned
         # by wrap_argv (None on platforms without a sandbox backend).
         if sandbox_cleanup:
@@ -635,6 +665,11 @@ def split_sentences(text: str) -> list[str]:
 async def stitch_mp3s(paths: list[str], output: str | None = None) -> str | None:
     """Concatenate MP3 files into a single file using ffmpeg.
 
+    Returns ``None`` on failure (spawn error, timeout, non-zero exit, or an
+    empty output file). An output this call allocated itself (no ``output``
+    argument) is removed on any unsuccessful exit; a caller-supplied
+    ``output`` path is left untouched.
+
     Windows: ffmpeg is not guaranteed on PATH, so the dashboard-streaming stitch
     path fails there; making it optional with a warning is a known gap. The
     Slack thread-upload path is unaffected.
@@ -646,10 +681,23 @@ async def stitch_mp3s(paths: list[str], output: str | None = None) -> str | None
             shutil.copy2(paths[0], output)
             return output
         return paths[0]
+    owned = output is None
     if output is None:
         fd, output = tempfile.mkstemp(suffix=".mp3")
         os.close(fd)
+
+    def _discard_owned_output() -> None:
+        # On failure this function returns None, so no caller ever receives an
+        # internally allocated (mkstemp) path — remove it or it leaks with no
+        # surviving owner. A caller-supplied ``output`` is never ours to delete.
+        if owned:
+            try:
+                os.unlink(output)
+            except OSError:
+                pass
+
     concat = "|".join(paths)
+    succeeded = False
     try:
         proc = await asyncio.create_subprocess_exec(
             "ffmpeg",
@@ -662,13 +710,42 @@ async def stitch_mp3s(paths: list[str], output: str | None = None) -> str | None
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        await asyncio.wait_for(proc.communicate(), timeout=30)
-        if proc.returncode != 0 or not os.path.exists(output):
+        try:
+            await asyncio.wait_for(proc.communicate(), timeout=30)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            # asyncio.wait_for cancels communicate() but does NOT terminate
+            # the child — kill it explicitly (mirroring the piper/polly
+            # paths) so it stops consuming CPU and, on Windows, releases the
+            # output handle that would otherwise make the unlink in the
+            # ``finally`` below fail and re-leak the file.
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                await proc.communicate()
+            except Exception:
+                logger.debug("ffmpeg wait after kill failed", exc_info=True)
+            raise
+        if (
+            proc.returncode != 0
+            or not os.path.exists(output)
+            # The mkstemp allocation always exists, so "ffmpeg produced no
+            # output" manifests as an empty file, not an absent one.
+            or os.path.getsize(output) == 0
+        ):
             return None
+        succeeded = True
         return output
     except Exception:
         logger.exception("ffmpeg stitch failed")
         return None
+    finally:
+        # Invariant, not per-exit cleanup: EVERY unsuccessful exit — including
+        # CancelledError, which ``except Exception`` does not catch — must
+        # discard the owned output, or a new exit path re-opens the leak.
+        if not succeeded:
+            _discard_owned_output()
 
 
 async def streaming_voice_reply(

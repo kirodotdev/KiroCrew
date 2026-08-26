@@ -6,8 +6,10 @@ Follows the same injectable-dependency pattern as test_loop_watchdog.py.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -31,6 +33,55 @@ def dumps_dir(tmp_path: Path) -> Path:
     d = tmp_path / "crash-dumps"
     d.mkdir()
     return d
+
+
+@contextlib.contextmanager
+def opened_dump_file(dumps_dir: Path) -> Iterator[crash_dump_store.DumpFile]:
+    """Yield an open dump file and release its raw fd when the block exits.
+
+    ``open_dump_file`` hands out a raw descriptor from :func:`os.open`, and
+    ``DumpFile.close()`` is a deliberate no-op ("the fd lives until process
+    exit") with no finalizer anywhere in the module.  So a test that calls
+    ``open_dump_file`` releases nothing even with ``finally: f.close()``: it
+    leaks a descriptor for the rest of the session and holds the ``tmp_path``
+    dump file open, which blocks the fixture's cleanup on Windows.  Tests that
+    need the file only for their own body acquire it through here.
+
+    This is a test-local concern.  Production must keep never closing the fd —
+    faulthandler's C timer may fire at any moment — which is what
+    ``test_dump_file_fd_survives_dropping_last_python_reference`` pins.
+    """
+    import errno
+
+    # Capture the prior global BEFORE opening, so the value restored below is
+    # not itself the object this block is about to close.
+    prior_active = crash_dump_store._active_dump_file
+    # Sentinel bound BEFORE the try: ``fd`` is assigned partway through, so if
+    # open_dump_file raises, the finally must not convert that real failure into
+    # an UnboundLocalError.  -1 is never a valid descriptor.
+    fd = -1
+    try:
+        dump_file = open_dump_file(dumps_dir)
+        fd = dump_file.fileno()
+        yield dump_file
+    finally:
+        # open_dump_file publishes the object as ``_active_dump_file``; restore
+        # the prior value so the descriptor closed below is not left reachable
+        # from a module global for the rest of the session.
+        crash_dump_store._active_dump_file = prior_active
+        if fd != -1:
+            # Still exercise the documented file-like no-op that production
+            # offers for exactly this ``finally`` shape, then release the fd it
+            # deliberately does not.
+            dump_file.close()
+            try:
+                os.close(fd)
+            except OSError as exc:
+                # Tolerate ONLY EBADF: a regression that closed the fd early
+                # would raise here, and re-raising would mask the assertion in
+                # the caller that is the real signal.
+                if exc.errno != errno.EBADF:
+                    raise
 
 
 def _create_header_only_dump(
@@ -111,8 +162,7 @@ def test_rotate_empty_dir(dumps_dir: Path) -> None:
 
 
 def test_open_dump_file_creates_file(dumps_dir: Path) -> None:
-    f = open_dump_file(dumps_dir)
-    try:
+    with opened_dump_file(dumps_dir) as f:
         assert f is not None
         assert not f.closed
         # File should exist on disk
@@ -124,21 +174,16 @@ def test_open_dump_file_creates_file(dumps_dir: Path) -> None:
         content = files[0].read_text(encoding="utf-8")
         assert "KiroCrew loop-stall crash dump" in content
         assert "PID:" in content
-    finally:
-        f.close()
 
 
 def test_open_dump_file_returns_writable_fd(dumps_dir: Path) -> None:
-    f = open_dump_file(dumps_dir)
-    try:
+    with opened_dump_file(dumps_dir) as f:
         # faulthandler needs to write to this fd
         f.write("Thread 0x1234 (most recent call first):\n")
         f.flush()
         files = list(dumps_dir.iterdir())
         content = files[0].read_text(encoding="utf-8")
         assert "Thread 0x1234" in content
-    finally:
-        f.close()
 
 
 # ── Newest dump detection ──
@@ -323,8 +368,7 @@ def test_watchdog_dump_file_param_custom_callback(dumps_dir: Path) -> None:
     dump_targets: list[object] = []
 
     # Open a dump file
-    dump_file = open_dump_file(dumps_dir)
-    try:
+    with opened_dump_file(dumps_dir) as dump_file:
         # Create watchdog with dump_file — custom dump callback to verify it's wired
         wd = LoopStallWatchdog(
             stall_after=30.0,
@@ -338,8 +382,6 @@ def test_watchdog_dump_file_param_custom_callback(dumps_dir: Path) -> None:
         clock.advance(31.0)
         assert wd.check() is True
         assert dump_targets == ["called"]
-    finally:
-        dump_file.close()
 
 
 def test_watchdog_dump_file_default_dump(dumps_dir: Path) -> None:
@@ -363,8 +405,7 @@ def test_watchdog_dump_file_default_dump(dumps_dir: Path) -> None:
 
     clock = _Clock()
 
-    dump_file = open_dump_file(dumps_dir)
-    try:
+    with opened_dump_file(dumps_dir) as dump_file:
         wd = LoopStallWatchdog(
             stall_after=30.0,
             exit_after=None,
@@ -390,8 +431,6 @@ def test_watchdog_dump_file_default_dump(dumps_dir: Path) -> None:
         assert "thread" in content.lower(), (
             f"Expected thread stacks in dump file, got: {content!r}"
         )
-    finally:
-        dump_file.close()
 
 
 # ── fd stability (regression for #1571) ──
@@ -412,8 +451,7 @@ def test_dump_file_fd_survives_repeated_arm_cancel(dumps_dir: Path) -> None:
     import faulthandler
     import gc
 
-    dump_file = open_dump_file(dumps_dir)
-    try:
+    with opened_dump_file(dumps_dir) as dump_file:
         # Simulate 20 cancel/re-arm cycles (beat() every 5s for ~100s of runtime).
         # Each cycle exercises the same code path that runs in production.
         for _ in range(20):
@@ -436,21 +474,96 @@ def test_dump_file_fd_survives_repeated_arm_cancel(dumps_dir: Path) -> None:
         assert "thread" in content.lower(), (
             f"Expected thread stacks after 20 arm/cancel cycles, got: {content!r}"
         )
-    finally:
-        dump_file.close()
 
 
 def test_dump_file_fileno_is_stable(dumps_dir: Path) -> None:
     """The fd number returned by fileno() never changes across the DumpFile lifetime."""
-    dump_file = open_dump_file(dumps_dir)
-    try:
+    with opened_dump_file(dumps_dir) as dump_file:
         fd1 = dump_file.fileno()
         dump_file.write("some data\n")
         dump_file.flush()
         fd2 = dump_file.fileno()
         assert fd1 == fd2, "fileno() must return the same fd across calls"
+
+
+def test_dump_file_fd_survives_dropping_last_python_reference(dumps_dir: Path) -> None:
+    """The fd outlives every Python reference to the object that owns it (#1571).
+
+    This is the property that separates the raw-fd ``DumpFile`` from a buffered
+    ``open()``: faulthandler's C timer keeps only the integer fd, so if the last
+    Python reference to the file object is dropped and a finalizer closes the fd,
+    the timer later writes to a closed — or worse, a recycled — fd, and the dump
+    file keeps nothing but its header.  A buffered ``TextIOWrapper`` closes on
+    finalization; ``DumpFile`` never closes, so after collection the fd must
+    still be valid, still refer to the same file, and still be writable.
+
+    The two tests above cannot observe this: each keeps the file object bound to
+    a live local for its whole body, so it is never collectable and the
+    finalizer that would close the fd never runs.  ``open_dump_file`` also
+    publishes the object as ``_active_dump_file``, so that reference has to be
+    cleared as well before anything can be collected.
+    """
+    import errno
+    import gc
+
+    # Capture the prior global first, so the value restored in the finally is
+    # not itself a surviving reference to the object under test.
+    prior_active = crash_dump_store._active_dump_file
+    # Sentinel bound BEFORE the try: ``fd`` is assigned partway through the body,
+    # so if open_dump_file raises, the finally must not turn that failure into an
+    # UnboundLocalError.  -1 is never a valid descriptor.
+    fd = -1
+    try:
+        dump_file = open_dump_file(dumps_dir)
+        fd = dump_file.fileno()
+        dump_path = list(dumps_dir.iterdir())[0]
+        original_ino = os.stat(dump_path).st_ino
+
+        # Read the published reference into a bool rather than asserting on the
+        # object: an assert on ``dump_file`` itself can retain it in the frame,
+        # which would keep the object alive and make this test vacuous.
+        was_published = crash_dump_store._active_dump_file is dump_file
+
+        # Drop BOTH references — the module global and the local — then collect.
+        crash_dump_store._active_dump_file = None
+        del dump_file
+        gc.collect()
+
+        assert was_published, "open_dump_file must publish the DumpFile as _active_dump_file"
+
+        # (a) The fd is still valid.  A buffered file object's finalizer would
+        #     have closed it, and os.fstat would raise OSError(EBADF).
+        st = os.fstat(fd)
+
+        # (b) It is still the SAME file.  fd numbers are recycled, so an
+        #     unrelated open() could hand this number back out and make (a) and
+        #     (c) pass against a file that is not the dump.
+        assert st.st_ino == original_ino, (
+            f"fd {fd} no longer refers to the dump file (inode {st.st_ino} != "
+            f"{original_ino}) — it was closed and the number recycled"
+        )
+
+        # (c) It is still writable — this is what faulthandler's C thread does
+        #     when the timer fires, long after the arming frame has gone.
+        marker = b"# written after the last Python reference was dropped\n"
+        assert os.write(fd, marker) == len(marker)
+        assert marker.decode("utf-8") in dump_path.read_text(encoding="utf-8", errors="replace")
     finally:
-        dump_file.close()
+        crash_dump_store._active_dump_file = prior_active
+        # Release the raw fd this test opened.  DumpFile.close() is a deliberate
+        # no-op, so nothing else will: leaving it open leaks a descriptor for the
+        # rest of the session and holds the tmp_path dump file open, which blocks
+        # the fixture's cleanup on Windows.  Every assertion above has already
+        # run by this point, so closing here cannot weaken them.
+        if fd != -1:
+            try:
+                os.close(fd)
+            except OSError as exc:
+                # Tolerate ONLY EBADF: a regression to a buffered open() would
+                # have closed the fd during collection, and raising here would
+                # mask the os.fstat failure that is this test's actual signal.
+                if exc.errno != errno.EBADF:
+                    raise
 
 
 # ── dump_replay_lines ──
@@ -631,15 +744,15 @@ def test_open_dump_file_header_records_pid_domain(dumps_dir: Path) -> None:
     # later sweep on a different host/namespace treats it as unattributable,
     # and (where procfs exists) with the start ID so a recycled PID cannot
     # masquerade as the owner.
-    f = open_dump_file(dumps_dir)
-    content = f.path.read_text(encoding="utf-8")
-    start_id = crash_dump_store._pid_start_id(os.getpid())
-    start_tok = f" start={start_id}" if start_id is not None else ""
-    assert f"# PID: {os.getpid()} @ {crash_dump_store._pid_domain()}{start_tok}\n" in content
-    # And a same-process sweep must classify it as alive-owned, not sweep it.
-    removed = sweep_stale_dumps(dumps_dir, is_pid_alive=_dead_pid)
-    assert removed == 0
-    assert f.path.exists()
+    with opened_dump_file(dumps_dir) as f:
+        content = f.path.read_text(encoding="utf-8")
+        start_id = crash_dump_store._pid_start_id(os.getpid())
+        start_tok = f" start={start_id}" if start_id is not None else ""
+        assert f"# PID: {os.getpid()} @ {crash_dump_store._pid_domain()}{start_tok}\n" in content
+        # And a same-process sweep must classify it as alive-owned, not sweep it.
+        removed = sweep_stale_dumps(dumps_dir, is_pid_alive=_dead_pid)
+        assert removed == 0
+        assert f.path.exists()
 
 
 def test_sweep_keeps_header_only_dump_without_pid_line(dumps_dir: Path) -> None:

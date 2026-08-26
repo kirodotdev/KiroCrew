@@ -41,7 +41,8 @@ _HOOK = "may_send_to"
 #: removing a row means that channel became answerable without a principal too.
 _PRINCIPAL_ANSWERED = {
     "discord": "DM channel id is not the user snowflake; create_dm_channel is a POST",
-    "webex": "session binds room_id while the roster holds emails",
+    "webex": "a DM session binds room_id while the email roster holds emails "
+    "(a space answers from its own room allow-list instead)",
 }
 
 #: Transports that permit unconditionally, with the reason stated at the method.
@@ -445,10 +446,21 @@ class TestPrincipalAnsweredTransports:
     def test_discord_refuses_an_empty_conversation(self) -> None:
         assert self._discord(["42"]).may_send_to("", principal="42") is False
 
-    def _webex(self, allowed: list[str]) -> Any:
+    def _webex(
+        self,
+        allowed: list[str],
+        *,
+        rooms: list[str] | None = None,
+        group: bool = False,
+    ) -> Any:
         from kiro_crew.webex.transport import WebexTransport
 
-        return WebexTransport(object(), allowed_emails=allowed)
+        return WebexTransport(
+            object(),
+            allowed_emails=allowed,
+            allowed_room_ids=rooms or [],
+            allow_group_rooms=group,
+        )
 
     def test_webex_permits_an_allow_listed_principal_case_insensitively(self) -> None:
         t = self._webex(["alice@example.com"])
@@ -461,8 +473,34 @@ class TestPrincipalAnsweredTransports:
         )
 
     def test_webex_refuses_a_room_it_cannot_identify(self) -> None:
-        """Direct-rooms-only, so every route has exactly one recipient."""
+        """No principal AND no space roster to fall back on leaves nothing to check."""
         assert self._webex(["alice@example.com"]).may_send_to("room-1") is False
+
+    def test_webex_permits_an_allow_listed_space_with_no_principal(self) -> None:
+        """A space route carries no principal, and refusing one is data loss.
+
+        Its session key is ``forum``-namespaced on ``(chat_id, thread_id)``, so
+        ``_session_principal`` names nobody -- by design, since the audience is a
+        room. Answering only via the principal would therefore drop every
+        proactive send into an allow-listed space: the dashboard mirror, cron
+        results, subagent completions, compaction notices.
+        """
+        t = self._webex([], rooms=["space-1"], group=True)
+        assert t.may_send_to("space-1") is True
+
+    def test_webex_refuses_a_space_that_left_the_allow_list(self) -> None:
+        """The link is persisted, so it outlives the roster that authorized it."""
+        t = self._webex([], rooms=["space-1"], group=True)
+        assert t.may_send_to("space-2") is False
+
+    def test_webex_refuses_an_allow_listed_space_once_the_group_switch_is_off(self) -> None:
+        """Both halves of the inbound gate, so outbound is never the looser one."""
+        t = self._webex([], rooms=["space-1"], group=False)
+        assert t.may_send_to("space-1") is False
+
+    def test_webex_refuses_an_empty_conversation(self) -> None:
+        t = self._webex(["alice@example.com"])
+        assert t.may_send_to("", principal="alice@example.com") is False
 
 
 class TestTransportsThatPermitWithAReason:
@@ -537,6 +575,50 @@ class TestSessionPrincipalExtraction:
         """
         assert self._principal("unified:kirocrew") == ""
         assert self._principal("unified:kirocrew:gen2") == ""
+
+    def test_a_webex_space_key_and_its_transport_agree(self) -> None:
+        """Crosses the two modules that have to agree, using the REAL key builder.
+
+        The defect this pins was invisible to either side alone: the dispatcher
+        keys a space as a ``forum`` route (correctly -- its audience is a room, so
+        it must not borrow a participant's DM key), ``_session_principal`` then
+        names nobody (also correctly), and the transport refused for want of a
+        principal -- silently dropping every proactive send into an allow-listed
+        space. Only asking both questions in one test catches it, so the key is
+        built with ``build_dm_session_key`` and the same ``space:``-prefixed route
+        ``webex.transport_dispatch._route_of`` produces, rather than hand-written
+        here where it could drift from the grammar.
+        """
+        from kiro_crew.messaging.link import CHAT_TYPE_FORUM, build_dm_session_key
+        from kiro_crew.webex.transport import WebexTransport
+
+        room = "Y2lzY29zcGFyazovL3Jvb20xMjM"
+        key = build_dm_session_key("webex", "kirocrew", f"space:{room}", chat_type=CHAT_TYPE_FORUM)
+        transport = WebexTransport(
+            object(), allowed_emails=[], allowed_room_ids=[room], allow_group_rooms=True
+        )
+
+        assert self._principal(key) == ""
+        assert transport.may_send_to(room, None, principal=self._principal(key)) is True
+
+    def test_a_webex_unified_dm_stays_refused_by_the_space_arm(self) -> None:
+        """The space roster must not become a way back into a unified bucket.
+
+        A unified key names no principal either, so the space arm is the only thing
+        standing between it and a permit -- and it holds because the route is a 1:1
+        DM room, which no operator puts in the SPACE allow-list.
+        """
+        from kiro_crew.webex.transport import WebexTransport
+
+        transport = WebexTransport(
+            object(),
+            allowed_emails=["alice@example.com"],
+            allowed_room_ids=["space-1"],
+            allow_group_rooms=True,
+        )
+
+        assert self._principal("unified:kirocrew") == ""
+        assert transport.may_send_to("dm-room-1", principal="") is False
 
     def test_the_extractor_reads_only_the_key(self) -> None:
         """Pins the derivation as key-only, so no second record can creep back in.

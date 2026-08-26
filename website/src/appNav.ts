@@ -1,4 +1,5 @@
 import { appPageLabel } from './components/appstore/appManifest'
+import { manifestArt } from './components/appstore/useHeroArt'
 
 /**
  * Where an installed app lives in the dashboard — one definition, shared by every
@@ -32,9 +33,13 @@ export interface AppNavRecord {
   enabled?: boolean
   origin?: string
   orphaned?: boolean
+  /** Git URL the install recorded — the repo an external app's art resolves against. */
+  sourceUrl?: string
   manifest?: {
     iconUrl?: string
     iconUrlDark?: string
+    /** The repo a manifest declares for its own art paths, when it declares one. */
+    repo?: string
     ui?: {
       entry?: string
       pages?: AppNavPage[]
@@ -114,6 +119,7 @@ export function appNavTarget(app: AppNavRecord): AppNavTarget | null {
   const isBuiltin = app.origin === 'builtin'
   const orphaned = !!app.orphaned
   const appHostRouted = !isBuiltin || !!app.manifest?.ui?.entry
+  const artRepo = app.manifest?.repo || app.sourceUrl || ''
   const route = orphaned
     ? `/apps/migrate/${app.name}`
     : appHostRouted
@@ -123,11 +129,17 @@ export function appNavTarget(app: AppNavRecord): AppNavTarget | null {
     name: app.name,
     route,
     id: appHostRouted ? `app-${app.name}` : app.name,
-    label: appPageLabel(app.name, page.label, app.displayName),
+    label: appPageLabel(app.name, page.label, app.displayName, app.origin),
     orphaned,
     builtin: isBuiltin,
-    iconUrl: app.manifest?.iconUrl || '',
-    iconUrlDark: app.manifest?.iconUrlDark || '',
+    // Routed through the shared resolver rather than taken raw: an installed
+    // `app.json` is untrusted content, and both consumers of this target (the
+    // left rail and the command palette) render for EVERY enabled app on every
+    // dashboard load — so a manifest naming an external host would leak the
+    // viewer to it without them opening anything. A built-in's absolute
+    // `/app-assets/…` still passes through unchanged.
+    iconUrl: manifestArt(app.manifest?.iconUrl, artRepo),
+    iconUrlDark: manifestArt(app.manifest?.iconUrlDark, artRepo),
     iconName: page.icon || '',
     pageIconUrl: page.iconUrl || '',
   }

@@ -24,6 +24,7 @@ import reducer, {
   sseSubagentChunk,
   sseSubagentTool,
   sseSubagentDone,
+  sseSubagentSnapshot,
   sseToolActivity,
   sseToolResult,
   sseActivityEvent,
@@ -1251,6 +1252,35 @@ describe('subagent reducers', () => {
     expect(state.subagents['a1'].task).toBe('search code')
   })
 
+  it('sseSubagentSpawn carries the resolved model, and later frames never blank a known model (#3582)', () => {
+    // Spawn stamps the served model.
+    let state = reducer(withSlot, sseSubagentSpawn({ slot: 'slot-1', id: 'a1', task: 't', agent: 'kirocrew', model: 'claude-opus-4.8' }))
+    expect(state.subagents['a1'].model).toBe('claude-opus-4.8')
+    // A tool frame (no model field) must not clobber it.
+    state = reducer(state, sseSubagentTool({ slot: 'slot-1', id: 'a1', tool: 'grep' }))
+    expect(state.subagents['a1'].model).toBe('claude-opus-4.8')
+    // The done frame is authoritative and may refine it (CC path resolved late).
+    state = reducer(state, sseSubagentDone({ slot: 'slot-1', id: 'a1', elapsed: 1, outcome: 'completed', model: 'claude-opus-4.7' }))
+    expect(state.subagents['a1'].model).toBe('claude-opus-4.7')
+    // A done frame WITHOUT a model must not blank a known one.
+    let s2 = reducer(withSlot, sseSubagentSpawn({ slot: 'slot-1', id: 'a2', task: 't', agent: 'kirocrew', model: 'gpt-5.6-sol' }))
+    s2 = reducer(s2, sseSubagentDone({ slot: 'slot-1', id: 'a2', elapsed: 1, outcome: 'completed' }))
+    expect(s2.subagents['a2'].model).toBe('gpt-5.6-sol')
+  })
+
+  it('sseSubagentSpawn defaults model to empty when the frame omits it', () => {
+    const state = reducer(withSlot, sseSubagentSpawn({ slot: 'slot-1', id: 'a1', task: 't', agent: '' }))
+    expect(state.subagents['a1'].model).toBe('')
+  })
+
+  it('sseSubagentSnapshot restores the model on reconnect', () => {
+    const state = reducer(withSlot, sseSubagentSnapshot({
+      id: 'a1', slot: 'slot-1', task: 't', agent: 'kirocrew', model: 'claude-opus-4.8',
+      streaming: '', last_tool: '', started: 1,
+    }))
+    expect(state.subagents['a1'].model).toBe('claude-opus-4.8')
+  })
+
   it('sseSubagentSpawn preserves existing streaming text from pending', () => {
     let state = reducer(withSlot, sseSubagentPending({ slot: 'slot-1', id: 'a1', task: 'task', approval_id: 'spawn:a1' }))
     state = reducer(state, sseSubagentSpawn({ slot: 'slot-1', id: 'a1', task: 'task', agent: 'kirocrew' }))
@@ -1707,6 +1737,34 @@ describe('slotHistory — session navigation stack', () => {
       payload: 'B',
     })
     expect(state.slotHistory).toEqual(['A'])
+  })
+
+  it('resumeFromHistory.fulfilled with a non-chat surface keeps the history row and the active slot (#3624)', () => {
+    // The wire resume succeeded, but ChatPage cannot display the surface.
+    // Consuming the row while the sidebar's notice says "can't be opened"
+    // reads as data loss, and switching activeSlot to an undisplayable slot
+    // is the silent bounce itself -- the reducer must not mutate at all.
+    const before = { ...initial, activeSlot: 'A', history: [{ key: 'dash-1', title: 'Ops', messages: 3 }], historyOffset: 1, slotHistory: ['Z'] }
+    const after = reducer(before, {
+      type: 'chat/resumeFromHistory/fulfilled',
+      meta: { arg: { key: 'dash-1', title: 'Ops' }, requestId: 'r1', requestStatus: 'fulfilled' as const },
+      payload: { ok: true, key: 'dash-1', surface: 'dashboard', messages: [], hasMore: false, total: 0 },
+    })
+    expect(after.history).toEqual(before.history)
+    expect(after.activeSlot).toBe('A')
+    expect(after.historyOffset).toBe(1)
+    expect(after.slotHistory).toEqual(['Z'])
+  })
+
+  it('resumeFromHistory.fulfilled with a chat-page surface still consumes the row and switches', () => {
+    let state = { ...initial, activeSlot: 'A', history: [{ key: 'H', title: 'old', messages: 1 }] }
+    state = reducer(state, {
+      type: 'chat/resumeFromHistory/fulfilled',
+      meta: { arg: { key: 'H', title: 'old' }, requestId: 'r1', requestStatus: 'fulfilled' as const },
+      payload: { ok: true, key: 'H', surface: 'orchestrator', messages: [], hasMore: false, total: 0 },
+    })
+    expect(state.history).toEqual([])
+    expect(state.activeSlot).toBe('H')
   })
 
   it('resumeFromHistory.fulfilled pushes activeSlot onto history', () => {

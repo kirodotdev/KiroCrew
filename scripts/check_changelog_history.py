@@ -643,7 +643,7 @@ def main(argv: list[str]) -> int:
     base_ref = os.environ.get("CHANGELOG_BASE_REF", "").strip()
     if not base_ref:
         print(
-            "changelog-history: no draft sections ✓; no CHANGELOG_BASE_REF, so "
+            "changelog-history: no draft sections OK; no CHANGELOG_BASE_REF, so "
             "nothing to compare shipped history against (set it to enforce, e.g. "
             "CHANGELOG_BASE_REF=origin/main)"
         )
@@ -702,7 +702,7 @@ def main(argv: list[str]) -> int:
         return 1
 
     kept = len(parse_sections(base_text, base_grammar))
-    print(f"changelog-history: {kept} shipped section(s) at {base_ref} are intact " f"at head ✓")
+    print(f"changelog-history: {kept} shipped section(s) at {base_ref} are intact at head OK")
     return 0
 
 

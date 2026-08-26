@@ -167,17 +167,57 @@ HARD_WEDGE_CEILING_SECS = 2100.0
 # never trip it.
 _STUB_INBOX_MAXSIZE = 4096
 
+# Upper bound on the number of distinct URIs one stub may hold resource
+# subscriptions for. Same guard class as ``_STUB_INBOX_MAXSIZE``: table
+# entries are created by stub input and freed only on unsubscribe, a server
+# refusal, or detach, so without a bound one misbehaving tenant could grow
+# the shared broker's table (and gateway RSS) without limit. Generous — a
+# real client subscribes to a handful of URIs. Past the cap a subscribe is
+# answered locally with a JSON-RPC error instead of being forwarded.
+_RESOURCE_SUBSCRIPTIONS_MAX_PER_STUB = 1024
+
+# Upper bound on the orphaned-lease set (URIs whose gateway-originated
+# release the server refused with nobody left to route to). Same guard
+# class: entries accumulate for the backend's lifetime across detached
+# stubs, so a server that keeps refusing releases would otherwise grow the
+# set without bound. The set is telemetry hygiene (hazard suppression),
+# not correctness — evicting an arbitrary entry risks at most one unfair
+# hazard row, while an unbounded set is unbounded gateway memory.
+_ORPHANED_LEASES_MAX = 1024
+
+# Upper bound on a subscribable resource URI's LENGTH. The per-stub cap
+# bounds how MANY subscriptions a stub holds, not their bytes: without a
+# length bound, repeated accepted subscriptions to distinct near-frame-limit
+# URIs retain gigabytes of dictionary keys. Real resource URIs are short;
+# 8 KiB is far beyond any legitimate identifier. Overlong URIs are refused
+# locally before any table stores them.
+_RESOURCE_URI_MAX_LEN = 8192
+
+# JSON-RPC error code for a gateway-refused request (server-defined range).
+_JSONRPC_SERVER_ERROR = -32000
+
 # Server->client notifications that reflect backend-wide state identical for
 # every co-pooled tenant, so they are safe to fan out when we cannot attribute
 # them to a single owning stub. Everything else (progress, logging/message,
-# cancelled, resource-update) is request- or subscription-scoped: broadcasting
-# an unattributable one would leak one tenant's content to co-tenants — a
-# disclosure the non-pooled baseline never had — so those are dropped instead.
+# cancelled) is request-scoped: broadcasting an unattributable one would leak
+# one tenant's content to co-tenants — a disclosure the non-pooled baseline
+# never had — so those are dropped instead. ``notifications/resources/updated``
+# is subscription-scoped, not request-scoped, and is routed by the
+# ``uri -> {stub_uuid}`` table instead (``Backend._resource_update_targets``).
 _GLOBAL_BROADCAST_NOTIFICATIONS: frozenset[str] = frozenset({
     "notifications/tools/list_changed",
     "notifications/prompts/list_changed",
     "notifications/resources/list_changed",
 })
+
+# MCP resource-subscription wire methods and the notification they scope.
+# ``notifications/resources/updated`` carries only a URI — no request id — so
+# request-scoped attribution can never route it. The broker instead records
+# which stub sent ``resources/subscribe`` for which URI and delivers each
+# update to exactly those stubs (see ``Backend._resource_subscriptions``).
+_RESOURCES_SUBSCRIBE_METHOD = "resources/subscribe"
+_RESOURCES_UNSUBSCRIBE_METHOD = "resources/unsubscribe"
+_RESOURCES_UPDATED_NOTIFICATION = "notifications/resources/updated"
 
 
 def _is_heartbeat_id(msg_id: Any) -> bool:
@@ -228,6 +268,30 @@ class _PendingRequest:
     # == ``_APPS_STUB_SENTINEL``): the future the stdout pump resolves with the
     # backend's resources/read response so the parked fetch coroutine wakes.
     apps_future: Optional["asyncio.Future[dict[str, Any]]"] = None
+    # ``params.uri`` of a forwarded ``resources/subscribe`` /
+    # ``resources/unsubscribe``, captured so the response arm can apply the
+    # lease transition the reply confirms or refuses. Empty for every other
+    # method.
+    resource_uri: str = ""
+    # For a ``resources/subscribe``/``unsubscribe`` on an identity-capable
+    # server: the caller whose block was injected into the forward. Recorded
+    # into ``_grant_callers`` when the server GRANTS, so a later release can
+    # be sent as the principal that actually holds the grant — releasing as
+    # the connection (or as whatever caller a claim rekey later mapped the
+    # stub to) would be adjudicated as a different principal and could
+    # revoke a co-tenant's live subscription.
+    caller: Optional["CallerContext"] = None
+    # Set only on a gateway-originated post-respawn subscribe replay
+    # (stub_uuid == ``_RELEASE_STUB_SENTINEL``): the stub whose routing grant
+    # the replayed subscribe re-establishes on success.
+    replay_stub: str = ""
+    # The stub that ORIGINATED a subscribe later converted to the lease
+    # sentinel (retract, eviction, detach). Sentinelizing removes the
+    # pending from ``stub_uuid``-keyed accounting, and without this the
+    # per-stub subscription cap loses sight of it — a stub cycling
+    # subscribe/unsubscribe against an unresponsive server would grow the
+    # pending table without bound. Cap accounting only; never routed to.
+    origin_stub: str = ""
 
 
 def _strip_caller_meta(msg: dict[str, Any]) -> dict[str, Any]:
@@ -285,6 +349,25 @@ MCP_APPS_ENV_FALSE = ("0", "false", "no", "off")
 # :meth:`Backend._read_ui_resource` instead of any stub — mirrors the
 # ``"__init__"`` sentinel used for the gateway-driven initialize handshake.
 _APPS_STUB_SENTINEL = "__apps__"
+
+# Sentinel ``stub_uuid`` for gateway-originated lease maintenance on the
+# resource-subscription table: the ``resources/unsubscribe`` issued when the
+# last subscriber of a URI detaches without unsubscribing (so the server does
+# not keep firing updates nobody will receive), and the ``resources/subscribe``
+# replayed after a transparent respawn (so a live subscription survives the
+# backend swap). Responses are consumed in :meth:`Backend._route_backend_line`.
+_RELEASE_STUB_SENTINEL = "__release__"
+
+
+def _is_success_response(msg: dict[str, Any]) -> bool:
+    """Whether a JSON-RPC response frame is a settled SUCCESS: it must carry
+    a ``result`` and no ``error``. A malformed frame with neither is not a
+    grant — mutating the resource-subscription routing table on its strength
+    would let a co-tenant start (or stop) receiving updates on a verdict the
+    server never actually delivered, so lease transitions treat it as a
+    refusal (fail closed)."""
+    return "error" not in msg and "result" in msg
+
 
 # Deadline for the out-of-band ``resources/read`` round-trip. On timeout the
 # original tools/call response is delivered unmodified — the app render is
@@ -480,6 +563,80 @@ class Backend:
     # original id restored.
     _forward_id_seq: int = 0
     _pending_requests: dict[str, "_PendingRequest"] = field(default_factory=dict)
+    # Resource-subscription routing table: ``uri -> {stub_uuid}``, the set of
+    # stubs whose ``resources/subscribe`` the server ACCEPTED. Grants are
+    # recorded on the server's response, never at forward time, so an update
+    # racing an unconfirmed subscribe fails closed (dropped) instead of being
+    # delivered on a subscription the server may yet refuse — including a
+    # refusal made on per-caller authorization grounds. The notification
+    # carries only the URI — never resource content — so delivering it to a
+    # stub whose subscription for that URI was accepted discloses nothing
+    # across tenants.
+    _resource_subscriptions: dict[str, set[str]] = field(default_factory=dict)
+    # Lease bookkeeping for the coalesced (identity-less) path. A URI in
+    # ``_lease_awaiting_grant`` has its first subscribe forwarded and not yet
+    # answered; stubs joining during that window are parked in
+    # ``_lease_pending_riders`` as ``(stub_uuid, original_id)`` and answered
+    # with the server's actual verdict, so no stub is ever told "subscribed"
+    # on the strength of a lease that then fails to materialize. A URI in
+    # ``_lease_awaiting_release`` has its final unsubscribe forwarded and not
+    # yet answered; routing keeps the leaving stub until the server confirms,
+    # because a failed unsubscribe means the server retained the subscription
+    # and dropping routing early would silently discard live updates.
+    _lease_awaiting_grant: set[str] = field(default_factory=set)
+    _lease_awaiting_release: set[str] = field(default_factory=set)
+    _lease_pending_riders: dict[str, list[tuple[str, Any]]] = field(default_factory=dict)
+    # Final unsubscribes arriving while a URI's release is already in flight
+    # park here as ``(stub_uuid, original_id)`` — the release need not belong
+    # to the parking stub (its owner may have detached), so refusing would
+    # dead-end a legitimate leave. Exactly one release stays in flight per
+    # URI; every waiter settles on that one verdict: success drops the
+    # waiter from routing and answers it, refusal keeps it routed and hands
+    # it the server's error so it knows the unsubscribe did not take effect.
+    _lease_release_waiters: dict[str, list[tuple[str, Any]]] = field(default_factory=dict)
+    # Subscribes arriving while a URI's release is in flight park here. The
+    # ordered stream only orders the WRITES; the server may ANSWER out of
+    # order, so forwarding a replacement subscribe beside the release could
+    # land a grant the release then destroys upstream while local routing
+    # keeps the subscriber — silent update loss. A confirmed release drains
+    # these into one fresh forwarded subscribe (first parker as forwarder,
+    # the rest as riders); a refusal means the server retained the lease, so
+    # they join the still-live entry locally.
+    _lease_replacement_subscribes: dict[str, list[tuple[str, Any]]] = field(
+        default_factory=dict)
+    # Identity-capable servers only: the caller whose subscribe the server
+    # GRANTED, keyed ``(uri, stub_uuid)`` and recorded at response time — the
+    # only moment the grant principal is known for certain. A release for a
+    # departing stub is sent as THIS caller (never the connection's caller at
+    # teardown, and never a last-writer map: a claim rekey after the grant
+    # makes both identify the wrong principal and revoke a co-tenant's live
+    # subscription). Dropped when the grant is released or the entry pruned.
+    _grant_callers: dict[tuple[str, str], "CallerContext"] = field(
+        default_factory=dict)
+    # URIs whose upstream subscription is known RETAINED with no subscriber
+    # left to route to — a gateway-originated release was refused. Updates for
+    # these are dropped WITHOUT recording a hazard: the frames are a
+    # consequence of the broker's own lease handling, and recording them
+    # would withdraw the server's pooling recommendation for behaviour that
+    # is correct. Cleared when a later release succeeds or a new grant makes
+    # the URI attributable again.
+    _orphaned_leases: set[str] = field(default_factory=set)
+    # Replay-target URIs preserved at death. An in-flight replay lives only
+    # in ``_pending_requests`` (routing commits on the server's grant), so a
+    # replacement that dies before its replay responses arrive would erase
+    # those URIs in the backend-gone cleanup — and the NEXT respawn's
+    # ``resource_subscription_uris`` capture would find them nowhere,
+    # permanently darkening the subscription. Written once by
+    # ``_broadcast_backend_gone`` (terminal state, size bounded by the
+    # pending table it snapshots), read by the capture.
+    _gone_replay_uris: dict[str, set[str]] = field(default_factory=dict)
+    # Per-stub rekey generation, bumped by ``evict_stub_subscriptions``. A
+    # multi-URI replay awaits between writes; a claim landing mid-loop
+    # evicts the pendings written SO FAR, but the loop would keep writing
+    # the remaining URIs under the old owner — this counter lets the replay
+    # notice the rekey between writes and stop (fail closed: the new owner
+    # subscribes on its own).
+    _rekey_generation: dict[str, int] = field(default_factory=dict)
     # Initialize-cache state — first stub triggers an upstream handshake,
     # later stubs receive a synthesized response built from the cached result.
     _init_result: Optional[dict[str, Any]] = None
@@ -643,6 +800,170 @@ class Backend:
         )
         return inbox
 
+    async def evict_stub_subscriptions(self, stub_uuid: str) -> int:
+        """Evict ``stub_uuid``'s resource subscriptions because its stub is
+        being REKEYED to a different caller (warm-pool ``claim``) — the stub
+        stays attached, but grants belong to the OLD principal: without
+        eviction the new session would keep receiving the old session's
+        resource-update URIs (which can carry tokens or presigned params).
+
+        Ownership of caller-binding lives at the gatewayd connection layer;
+        this is the backend-side clearance it invokes at the moment of the
+        rekey. Identity-capable grants are released AS the grant-time caller
+        (shared-caller guard applies: the last sharer's eviction releases);
+        identity-less routing drops the stub with a last-subscriber release.
+        Returns the number of URIs evicted. In-flight and parked subscribe
+        transitions are RETRACTED (each id answered with a cancellation
+        error, pendings scoped so a late grant releases instead of routing):
+        a subscribe sent under the old owner must not land its grant on the
+        rekeyed stub. In-flight unsubscribes are SENTINELIZED (mirror of
+        ``detach_stub``): their table effects are already applied, but the
+        response would otherwise deliver under the OLD owner's request id
+        into the rekeyed stub's stream — an id the new owner may have
+        already reused for its own request.
+        """
+        # Bump FIRST, before any table work and any await: an in-flight
+        # replay loop checks this between its writes, and the bump must be
+        # visible from the moment the rekey is decided.
+        self._rekey_generation[stub_uuid] = (
+            self._rekey_generation.get(stub_uuid, 0) + 1
+        )
+        # --- retract in-flight/parked subscribe transitions (commit all
+        # table changes first, then reply; replies can re-enter via a
+        # full-inbox detach) ---
+        rekey_error = {
+            "code": _JSONRPC_SERVER_ERROR,
+            "message": "resources/subscribe retracted: stub ownership changed",
+        }
+        retract_replies: list[Any] = []
+        for table in (
+            self._lease_pending_riders,
+            self._lease_replacement_subscribes,
+            self._lease_release_waiters,
+        ):
+            for uri in list(table):
+                mine = [r for r in table[uri] if r[0] == stub_uuid]
+                if not mine:
+                    continue
+                remaining = [r for r in table[uri] if r[0] != stub_uuid]
+                if remaining:
+                    table[uri] = remaining
+                else:
+                    del table[uri]
+                retract_replies.extend(rid for _u, rid in mine if rid is not None)
+        for p in self._pending_requests.values():
+            if (
+                p.stub_uuid == stub_uuid
+                and p.method == _RESOURCES_UNSUBSCRIBE_METHOD
+                and p.resource_uri
+            ):
+                # The release was sent under the OLD owner: its response
+                # would otherwise deliver under the old request id into the
+                # rekeyed stub's stream — an id the new owner may have
+                # already reused. Sentinelize (mirror of ``detach_stub``):
+                # the response settles silently, table effects stay applied.
+                p.origin_stub = stub_uuid
+                p.stub_uuid = _RELEASE_STUB_SENTINEL
+                p.original_id = None
+                continue
+            if (
+                p.stub_uuid == stub_uuid
+                and p.method == _RESOURCES_SUBSCRIBE_METHOD
+                and p.resource_uri
+            ):
+                if p.original_id is not None:
+                    retract_replies.append(p.original_id)
+                riders = (
+                    []
+                    if self.supports_caller_identity
+                    else self._lease_pending_riders.get(p.resource_uri, [])
+                )
+                if riders:
+                    p.stub_uuid, p.original_id = riders.pop(0)
+                else:
+                    # Sentinelize keeping ``caller``: the late grant then
+                    # finds no replay stub and releases the lease AS the
+                    # old principal instead of routing it to the new owner.
+                    p.origin_stub = stub_uuid
+                    p.stub_uuid = _RELEASE_STUB_SENTINEL
+                    p.original_id = None
+                continue
+            if (
+                p.stub_uuid == _RELEASE_STUB_SENTINEL
+                and p.method == _RESOURCES_SUBSCRIBE_METHOD
+                and p.replay_stub == stub_uuid
+            ):
+                # An in-flight REPLAY targets the rekeyed stub by its
+                # ``replay_stub`` back-reference, not by ``stub_uuid`` — the
+                # subscribe retraction above cannot see it.  Left attached,
+                # its late grant would commit routing (and, on an
+                # identity-capable server, a grant-caller record) for a stub
+                # the OLD owner subscribed but the NEW owner now holds.
+                # Scope it to release-on-grant, exactly as the replay
+                # write-failure path does: nobody consumes the grant, so it
+                # releases instead of routing.
+                p.replay_stub = ""
+        # --- commit ALL routing-table removals before the FIRST await:
+        # the claim path reassigns the owner then awaits this eviction, so
+        # any frame routed during an await must already see the stub gone
+        # from the tables ---
+        evicted = 0
+        releases: list[tuple[str, Optional[CallerContext]]] = []
+        if self.supports_caller_identity:
+            # Walk the ROUTING TABLE, not ``_grant_callers``: a routed grant
+            # can lack a caller record (the grant arm records one only when
+            # the accepted subscribe carried caller metadata), and keying
+            # the eviction on the records alone would leave that entry
+            # routed — the new owner would keep receiving the old owner's
+            # URIs. Mirror of ``detach_stub``: known-caller grants release
+            # as their principal; unknown-caller grants are knowingly
+            # RETAINED and orphan-marked (a bare release would be
+            # adjudicated as the wrong principal).
+            id_emptied: list[str] = []
+            for uri, subscribers in self._resource_subscriptions.items():
+                if stub_uuid in subscribers:
+                    subscribers.discard(stub_uuid)
+                    evicted += 1
+                    if not subscribers:
+                        id_emptied.append(uri)
+            departed_keys = [
+                key for key in self._grant_callers if key[1] == stub_uuid
+            ]
+            for uri, _stub in departed_keys:
+                grant_caller = self._grant_callers.pop((uri, stub_uuid))
+                shared = any(
+                    other != stub_uuid
+                    and self._grant_callers.get((uri, other)) == grant_caller
+                    for other in self._resource_subscriptions.get(uri, set())
+                )
+                if not shared:
+                    releases.append((uri, grant_caller))
+            for uri in id_emptied:
+                del self._resource_subscriptions[uri]
+                if not any(u == uri for u, _c in releases):
+                    while len(self._orphaned_leases) >= _ORPHANED_LEASES_MAX:
+                        self._orphaned_leases.pop()
+                    self._orphaned_leases.add(uri)
+        else:
+            emptied: list[str] = []
+            for uri, subscribers in list(self._resource_subscriptions.items()):
+                if stub_uuid in subscribers:
+                    subscribers.discard(stub_uuid)
+                    evicted += 1
+                    if not subscribers:
+                        emptied.append(uri)
+            for uri in emptied:
+                del self._resource_subscriptions[uri]
+                if uri not in self._lease_awaiting_release:
+                    releases.append((uri, None))
+        # --- state committed; now the awaits ---
+        for reply_id in retract_replies:
+            await self._reply_locally(stub_uuid, reply_id, error=rekey_error)
+        for uri, release_caller in releases:
+            await self._release_upstream_subscriptions(
+                [uri], caller=release_caller)
+        return evicted
+
     async def detach_stub(self, stub_uuid: str) -> int:
         """Drop ``stub_uuid``'s inbox and clean up any pending requests
         owned by it. Returns the remaining refcount so the caller can
@@ -651,11 +972,145 @@ class Backend:
         async with self._inbox_lock:
             self._stub_inboxes.pop(stub_uuid, None)
             self.refcount = len(self._stub_inboxes)
-        # Drop any pending-request entries owned by the departing stub
-        # so the stdout pump does not try to send into a dead inbox.
+        # Bounded-table hygiene. (A replay in flight for a detached stub is
+        # already handled at grant time: a replay grant is honoured only
+        # while its stub is still attached.)
+        self._rekey_generation.pop(stub_uuid, None)
+        # A departing stub parked as a rider expects no further reply. This
+        # prune runs BEFORE the pending scan below: the scan promotes the
+        # first parked rider into the departing stub's in-flight subscribe,
+        # and a duplicate parking owned by the departing stub itself would
+        # otherwise be promoted — recording a phantom subscriber that blocks
+        # the release and swallows updates.
+        for uri in list(self._lease_pending_riders):
+            remaining = [
+                r for r in self._lease_pending_riders[uri] if r[0] != stub_uuid
+            ]
+            if remaining:
+                self._lease_pending_riders[uri] = remaining
+            else:
+                del self._lease_pending_riders[uri]
+        # Likewise a departing stub parked behind an in-flight release.
+        for uri in list(self._lease_release_waiters):
+            remaining = [
+                r for r in self._lease_release_waiters[uri] if r[0] != stub_uuid
+            ]
+            if remaining:
+                self._lease_release_waiters[uri] = remaining
+            else:
+                del self._lease_release_waiters[uri]
+        # And a departing stub whose replacement subscribe is parked.
+        for uri in list(self._lease_replacement_subscribes):
+            remaining = [
+                r for r in self._lease_replacement_subscribes[uri]
+                if r[0] != stub_uuid
+            ]
+            if remaining:
+                self._lease_replacement_subscribes[uri] = remaining
+            else:
+                del self._lease_replacement_subscribes[uri]
+        # Drop any pending-request entries owned by the departing stub so the
+        # stdout pump does not try to send into a dead inbox — EXCEPT an
+        # in-flight coalesced lease transition, whose response still has to
+        # settle shared state: a subscribe with parked riders is handed to the
+        # first rider (which then receives the server's verdict under its own
+        # id); one without riders is converted to the lease sentinel so a
+        # granted-but-unwanted lease is released instead of leaking.
         stale = [fid for fid, p in self._pending_requests.items() if p.stub_uuid == stub_uuid]
         for fid in stale:
+            p = self._pending_requests.get(fid)
+            if p is None:
+                continue
+            if p.resource_uri and p.method == _RESOURCES_SUBSCRIBE_METHOD:
+                # BOTH regimes: dropping the pending would drop the server's
+                # verdict — a late identity grant would strand the upstream
+                # lease with nobody to release it. Coalesced: hand it to the
+                # first parked rider; otherwise (including every identity
+                # pending, which never has riders) convert to the sentinel,
+                # whose grant arm releases a granted-but-unwanted lease as
+                # ``pending.caller`` — the right principal.
+                riders = (
+                    []
+                    if self.supports_caller_identity
+                    else self._lease_pending_riders.get(p.resource_uri, [])
+                )
+                if riders:
+                    p.stub_uuid, p.original_id = riders.pop(0)
+                else:
+                    p.origin_stub = stub_uuid
+                    p.stub_uuid = _RELEASE_STUB_SENTINEL
+                    p.original_id = None
+                continue
+            if p.resource_uri and p.method == _RESOURCES_UNSUBSCRIBE_METHOD:
+                # Let the release-in-flight settle silently; the table entry
+                # is pruned below either way.
+                p.origin_stub = stub_uuid
+                p.stub_uuid = _RELEASE_STUB_SENTINEL
+                p.original_id = None
+                continue
             self._pending_requests.pop(fid, None)
+        # Drop the departing stub from the resource-subscription table so a
+        # later ``notifications/resources/updated`` is not routed toward a
+        # departed stub — and release upstream whatever the departure
+        # strands. Identity-less: release when the departing stub was a
+        # URI's LAST subscriber (the one shared lease). Identity-capable:
+        # every grant is per caller, so the departing stub's grant is
+        # released AS the caller recorded at grant time — unless another
+        # still-routed stub shares that same caller for the URI (two stubs
+        # claimed to one session hold ONE per-caller grant upstream;
+        # releasing on the first detach would kill the survivor's updates).
+        # Without a release the server keeps firing updates nobody will
+        # receive, each landing in the deny-by-default drop and unfairly
+        # recording a hazard against the server for a gap that is ours.
+        # ALL table transitions commit before the release writes (a write
+        # can re-enter detach via a full-inbox drop).
+        emptied = []
+        for uri, subscribers in self._resource_subscriptions.items():
+            subscribers.discard(stub_uuid)
+            if not subscribers:
+                emptied.append(uri)
+        if self.supports_caller_identity:
+            identity_releases: list[tuple[str, CallerContext]] = []
+            departed_keys = [
+                key for key in self._grant_callers if key[1] == stub_uuid
+            ]
+            for uri, _stub in departed_keys:
+                grant_caller = self._grant_callers.pop((uri, stub_uuid))
+                shared = any(
+                    other != stub_uuid
+                    and self._grant_callers.get((uri, other)) == grant_caller
+                    for other in self._resource_subscriptions.get(uri, set())
+                )
+                if not shared:
+                    identity_releases.append((uri, grant_caller))
+            for uri in emptied:
+                del self._resource_subscriptions[uri]
+                if not any(u == uri for u, _c in identity_releases):
+                    # Routed grant with no recorded caller (identity server,
+                    # grant predates tracking or replay went unrecorded): a
+                    # bare release would be adjudicated as the wrong
+                    # principal, so the lease is knowingly RETAINED — mark
+                    # it orphaned so its updates are dropped without
+                    # charging a hazard to a blameless server.
+                    while len(self._orphaned_leases) >= _ORPHANED_LEASES_MAX:
+                        self._orphaned_leases.pop()
+                    self._orphaned_leases.add(uri)
+            for uri, grant_caller in identity_releases:
+                await self._release_upstream_subscriptions(
+                    [uri], caller=grant_caller)
+        else:
+            to_release = []
+            for uri in emptied:
+                del self._resource_subscriptions[uri]
+                # A URI whose release is already in flight (final
+                # unsubscribe forwarded, response pending) is not released
+                # twice; its awaiting-release flag stays up so the
+                # converted-to-sentinel response settles it (marking the
+                # lease orphaned on a refusal).
+                if uri not in self._lease_awaiting_release:
+                    to_release.append(uri)
+            if to_release:
+                await self._release_upstream_subscriptions(to_release)
         # Initialize-cache cleanup: if the departing stub was mid-wait for
         # a cached initialize reply, drop it from the pending list.
         self._init_pending = [
@@ -720,6 +1175,15 @@ class Backend:
             # one-initialized-per-backend invariant.
             return
 
+        if method in (_RESOURCES_SUBSCRIBE_METHOD, _RESOURCES_UNSUBSCRIBE_METHOD):
+            # Subscription lease bookkeeping. Returns True when the request
+            # was answered locally (a later subscriber joining a held lease,
+            # or a non-final unsubscribe) and must NOT reach the backend —
+            # the server holds one subscription per URI, and forwarding
+            # either frame would break a co-tenant's live subscription.
+            if await self._handle_resource_subscription(stub_uuid, method, msg):
+                return
+
         # Request/response rewrite: only requests carry both method AND id.
         # Pure notifications (method, no id) and pure responses (id, no
         # method) pass through without rewrite. Pure responses are kiro-cli
@@ -735,6 +1199,7 @@ class Backend:
                 progress_token = None
                 tool_name = ""
                 tool_arguments = None
+                resource_uri = ""
                 _params = msg.get("params")
                 if isinstance(_params, dict):
                     _meta = _params.get("_meta")
@@ -747,6 +1212,10 @@ class Backend:
                         _args = _params.get("arguments")
                         if isinstance(_args, dict):
                             tool_arguments = _args
+                    if method in (_RESOURCES_SUBSCRIBE_METHOD, _RESOURCES_UNSUBSCRIBE_METHOD):
+                        _uri = _params.get("uri")
+                        if isinstance(_uri, str):
+                            resource_uri = _uri
                 self._pending_requests[fid] = _PendingRequest(
                     stub_uuid=stub_uuid, original_id=orig_id, method=str(method or ""),
                     t_start_ms=time.monotonic() * 1000.0,
@@ -754,6 +1223,8 @@ class Backend:
                     session_key=(caller.session_key if caller is not None else ""),
                     tool_name=tool_name,
                     tool_arguments=tool_arguments,
+                    resource_uri=resource_uri,
+                    caller=(caller if resource_uri else None),
                 )
             elif method == "notifications/cancelled":
                 # A cancellation is a notification (method, no top-level id);
@@ -1062,8 +1533,63 @@ class Backend:
                 pending.stub_uuid, inbox,
                 (json.dumps(err, separators=(",", ":")) + "\n").encode("utf-8"),
             )
+        # Preserve replay-target URIs BEFORE the clear: an in-flight replay
+        # is the only record of its URI (routing commits on grant), and this
+        # backend dying is exactly the case where the grant never arrives.
+        # The next respawn's ``resource_subscription_uris`` capture reads
+        # these; a rekey-evicted replay has ``replay_stub == ""`` and is
+        # correctly NOT preserved (the old owner's URI must not follow the
+        # rekeyed stub).
+        for pending in self._pending_requests.values():
+            if (
+                pending.replay_stub
+                and pending.method == _RESOURCES_SUBSCRIBE_METHOD
+                and pending.resource_uri
+            ):
+                self._gone_replay_uris.setdefault(
+                    pending.replay_stub, set()
+                ).add(pending.resource_uri)
         self._pending_requests.clear()
         self._init_pending.clear()
+        # Parked lease work is NOT in ``_pending_requests``: a rider waiting
+        # on an in-flight grant, a replacement subscribe parked behind a
+        # release, and an unsubscribe waiting on a release verdict each hold
+        # a client request id that only a backend response would settle —
+        # and no response is coming. Answer each with the same synthetic
+        # error so no client id hangs forever (a replay parking carries no
+        # id and drops silently), then clear the lease coordination state:
+        # it gates writes onto a wire that no longer exists. The routing
+        # table ``_resource_subscriptions`` is deliberately KEPT — the
+        # transparent respawn reads it to replay live subscriptions onto the
+        # replacement backend. A full-inbox detach during these replies can
+        # re-enter teardown paths; the tables were already cleared above the
+        # replies, so re-entry finds them empty.
+        parked: list[tuple[str, Any]] = []
+        for table in (
+            self._lease_pending_riders,
+            self._lease_replacement_subscribes,
+            self._lease_release_waiters,
+        ):
+            for entries in table.values():
+                parked.extend(entries)
+            table.clear()
+        self._lease_awaiting_grant.clear()
+        self._lease_awaiting_release.clear()
+        for parked_uuid, parked_id in parked:
+            if parked_id is None:
+                continue
+            inbox = inboxes.get(parked_uuid)
+            if inbox is None:
+                continue
+            err = {
+                "jsonrpc": "2.0",
+                "id": parked_id,
+                "error": {"code": -32000, "message": f"backend gone: {reason}"},
+            }
+            await self._enqueue_to_stub(
+                parked_uuid, inbox,
+                (json.dumps(err, separators=(",", ":")) + "\n").encode("utf-8"),
+            )
 
     async def run_stdout_pump(self) -> None:
         """Read backend stdout line-by-line and route each line back to the
@@ -1247,6 +1773,132 @@ class Backend:
                 if fut is not None and not fut.done():
                     fut.set_result(msg)
                 return
+            if pending.stub_uuid == _RELEASE_STUB_SENTINEL:
+                # Gateway-originated lease maintenance (release after the last
+                # subscriber detached, a post-respawn replay, or a transition
+                # orphaned by its forwarder retracting/detaching mid-flight).
+                # Riders that parked on the URI after the orphaning are
+                # settled on the server's verdict exactly as the normal grant
+                # arm settles them — dropping a parking here would leave that
+                # stub's subscribe swallowed with no response, hung forever.
+                if pending.method == _RESOURCES_SUBSCRIBE_METHOD and pending.resource_uri:
+                    orphan_uri = pending.resource_uri
+                    self._lease_awaiting_grant.discard(orphan_uri)
+                    riders = self._lease_pending_riders.pop(orphan_uri, [])
+                    if _is_success_response(msg):
+                        granted: set[str] = set()
+                        # A replay grant is honoured only while its stub is
+                        # still attached — detach cannot see a sentinel-owned
+                        # pending, so this is where a mid-replay disconnect is
+                        # caught; granting the dead UUID would pin the lease
+                        # to a stub that can never drain it.
+                        if (
+                            pending.replay_stub
+                            and pending.replay_stub in self._stub_inboxes
+                        ):
+                            granted.add(pending.replay_stub)
+                        granted.update(rider_uuid for rider_uuid, _ in riders)
+                        # Routing is committed BEFORE any reply is awaited: a
+                        # reply into a full inbox detaches its stub, which
+                        # prunes the live table — updating the table from a
+                        # local set afterwards would reinsert the detached
+                        # UUID and route updates at a stub that is gone.
+                        if granted:
+                            self._resource_subscriptions.setdefault(
+                                orphan_uri, set()).update(granted)
+                            self._orphaned_leases.discard(orphan_uri)
+                            if (
+                                self.supports_caller_identity
+                                and pending.caller is not None
+                                and pending.replay_stub in granted
+                            ):
+                                # A replayed identity grant is held by the
+                                # replay's caller — record it so a later
+                                # detach can release as the right principal.
+                                self._grant_callers[
+                                    (orphan_uri, pending.replay_stub)
+                                ] = pending.caller
+                        elif orphan_uri not in self._resource_subscriptions:
+                            # A granted lease nobody wants: release on the
+                            # spot, as the caller that took it (a replay's
+                            # grant belongs to the replay's principal).
+                            await self._release_upstream_subscriptions(
+                                [orphan_uri], caller=pending.caller)
+                        for rider_uuid, rider_id in riders:
+                            await self._reply_locally(rider_uuid, rider_id, result={})
+                    else:
+                        error_obj = msg.get("error")
+                        # A refusal proves the server holds no lease; a
+                        # MALFORMED frame (no error either) proves nothing —
+                        # the subscribe may well have taken. Denying routing
+                        # while keeping such a lease would strand it live
+                        # upstream, with every later update charged to the
+                        # server as a hazard, so an unsettled verdict with
+                        # nobody routed releases the lease on the spot.
+                        if error_obj is None and (
+                            orphan_uri not in self._resource_subscriptions
+                        ):
+                            await self._release_upstream_subscriptions(
+                                [orphan_uri], caller=pending.caller)
+                        for rider_uuid, rider_id in riders:
+                            await self._reply_locally(
+                                rider_uuid, rider_id,
+                                error=error_obj if isinstance(error_obj, dict) else {
+                                    "code": _JSONRPC_SERVER_ERROR,
+                                    "message": "resources/subscribe refused by server",
+                                },
+                            )
+                elif pending.method == _RESOURCES_UNSUBSCRIBE_METHOD and pending.resource_uri:
+                    # A gateway-originated (or detach-orphaned) release
+                    # settled. On success the lease is cleanly gone; on a
+                    # refusal with nobody left to route to, the server has
+                    # RETAINED a subscription that is now a consequence of
+                    # the broker's own lease handling — its updates are
+                    # dropped without recording a hazard, so the server is
+                    # not condemned for behaviour that is correct. A
+                    # MALFORMED release response is DELIBERATELY treated as
+                    # a refusal here too: on the routing axis that fails
+                    # closed, and on the hazard-ledger axis it fails open
+                    # (orphan-marked, so unknowable frames are forgiven
+                    # rather than charged to the server).
+                    _rel_uri = pending.resource_uri
+                    self._lease_awaiting_release.discard(_rel_uri)
+                    waiters = self._lease_release_waiters.pop(_rel_uri, [])
+                    if _is_success_response(msg):
+                        self._orphaned_leases.discard(_rel_uri)
+                        subscribers = self._resource_subscriptions.get(_rel_uri)
+                        if subscribers is not None:
+                            for waiter_uuid, _waiter_id in waiters:
+                                subscribers.discard(waiter_uuid)
+                            if not subscribers:
+                                del self._resource_subscriptions[_rel_uri]
+                        for waiter_uuid, waiter_id in waiters:
+                            await self._reply_locally(
+                                waiter_uuid, waiter_id, result={})
+                        await self._drain_replacement_subscribes(
+                            _rel_uri, released=True)
+                    else:
+                        if _rel_uri not in self._resource_subscriptions:
+                            while len(self._orphaned_leases) >= _ORPHANED_LEASES_MAX:
+                                self._orphaned_leases.pop()
+                            self._orphaned_leases.add(_rel_uri)
+                        error_obj = msg.get("error")
+                        for waiter_uuid, waiter_id in waiters:
+                            await self._reply_locally(
+                                waiter_uuid, waiter_id,
+                                error=error_obj if isinstance(error_obj, dict) else {
+                                    "code": _JSONRPC_SERVER_ERROR,
+                                    "message": "resources/unsubscribe "
+                                               "refused by server",
+                                },
+                            )
+                        await self._drain_replacement_subscribes(
+                            _rel_uri, released=False)
+                return
+            if pending.resource_uri and pending.method in (
+                _RESOURCES_SUBSCRIBE_METHOD, _RESOURCES_UNSUBSCRIBE_METHOD
+            ):
+                await self._on_resource_subscription_response(pending, msg)
             # MCP Apps interception: a tools/call result carrying a ui://
             # resource is parked (the response is held off the stub) while an
             # out-of-band resources/read fetches the app payload. When it
@@ -1261,6 +1913,40 @@ class Backend:
             self.touch()
             return
         if method is not None and msg_id is None:
+            # Subscription-scoped: ``notifications/resources/updated`` carries
+            # no request id, so it is attributed by URI — delivered to every
+            # stub subscribed to that URI and only those. This arm is
+            # TERMINAL: URI is the only permitted attribution for this
+            # notification, so an update for a URI nobody subscribed to is
+            # dropped here (deny-by-default, hazard recorded) and never falls
+            # through to request-scoped attribution — a server-supplied
+            # ``_meta.relatedRequestId`` must not hand one tenant a URI that
+            # only a co-tenant ever named.
+            if method == _RESOURCES_UPDATED_NOTIFICATION:
+                targets = self._resource_update_targets(msg)
+                for target_uuid in targets:
+                    await self._deliver_to_stub(target_uuid, msg)
+                if not targets:
+                    _params = msg.get("params")
+                    _uri = _params.get("uri") if isinstance(_params, dict) else None
+                    if isinstance(_uri, str) and _uri in self._orphaned_leases:
+                        # A retained lease the broker failed to release: the
+                        # update is a consequence of OUR lease handling, so
+                        # it is dropped without condemning the server.
+                        # The URI is deliberately NOT logged — resource URIs
+                        # can carry tokens or presigned query parameters.
+                        logger.debug(
+                            "backend pid=%s dropping resources/updated for "
+                            "an orphaned lease (no hazard)", self.pid,
+                        )
+                    else:
+                        logger.debug(
+                            "backend pid=%s dropping resources/updated for a "
+                            "URI no stub subscribed to (never routed by "
+                            "request id)", self.pid,
+                        )
+                        self._record_hazard(hazards.HAZARD_UNATTRIBUTABLE_NOTIFICATION)
+                return
             # Attribute request-scoped notifications (progress, or a log tied
             # to an in-flight call) to their owning stub so they are not leaked
             # to co-pooled tenants sharing this backend.
@@ -1499,6 +2185,796 @@ class Backend:
             inboxes = list(self._stub_inboxes.items())
         for stub_uuid, inbox in inboxes:
             await self._enqueue_to_stub(stub_uuid, inbox, payload)
+
+    async def _handle_resource_subscription(
+        self, stub_uuid: str, method: str, msg: dict[str, Any]
+    ) -> bool:
+        """Apply subscription-lease bookkeeping for a stub-forwarded
+        ``resources/subscribe`` / ``resources/unsubscribe``; return ``True``
+        when the request was answered locally and must not be forwarded.
+
+        Routing grants are recorded on the server's RESPONSE, never at
+        forward time, so the table only ever names stubs whose subscription
+        the server actually accepted (fail-closed: an update racing the
+        response is dropped, not mis-routed).
+
+        Two regimes, split on ``supports_caller_identity``:
+
+        - An identity-capable server authorizes per caller, so EVERY
+          subscribe is forwarded with its own caller block and every stub
+          gets its own upstream authorization decision — no local coalescing
+          on the subscribe side (``_on_resource_subscription_response``
+          records the per-stub grant).
+        - An identity-less server sees every co-tenant as one principal, so
+          duplicate traffic tells it nothing; only lease TRANSITIONS reach
+          it. The first subscriber's subscribe takes the lease; a stub
+          arriving while that grant is in flight is PARKED and answered with
+          the server's actual verdict, never a premature success; a stub
+          arriving after the grant joins locally with the MCP empty result
+          (exactly as the initialize cache answers later stubs). A non-final
+          unsubscribe is answered locally; the final one is forwarded and the
+          routing entry is kept until the server confirms, because a failed
+          unsubscribe means the server RETAINED the subscription and dropping
+          routing early would silently discard live updates.
+
+        A request without a well-formed ``params.uri`` string is forwarded
+        verbatim with no table change: the backend rejects it with its own
+        error, and an entry keyed on garbage could never match an update.
+        """
+        params = msg.get("params")
+        uri = params.get("uri") if isinstance(params, dict) else None
+        if not isinstance(uri, str) or not uri:
+            return False
+        original_id = msg.get("id")
+        if len(uri) > _RESOURCE_URI_MAX_LEN:
+            # The per-stub cap bounds subscription COUNT, not bytes: 1024
+            # accepted near-frame-limit URIs would retain gigabytes of
+            # dictionary keys. Refuse locally before any table stores the
+            # key; the URI itself is never logged.
+            await self._reply_locally(
+                stub_uuid, original_id,
+                error={
+                    "code": _JSONRPC_SERVER_ERROR,
+                    "message": "resource URI exceeds the maximum supported "
+                               "length",
+                },
+            )
+            return True
+        if original_id is None:
+            # An id-less subscribe/unsubscribe is a notification-shaped frame
+            # the MCP spec does not define. No response can ever settle the
+            # lease transition it would start, so mutating lease state on it
+            # would wedge the URI permanently (later subscribers park behind
+            # a grant whose response never comes), and forwarding it would
+            # open a server-side subscription the broker never routes.
+            # Swallow it: a request without an id expects no reply.
+            return True
+        if method == _RESOURCES_SUBSCRIBE_METHOD:
+            # Cap check precedes EVERY subscribe branch, so a capped stub can
+            # neither open new leases nor keep joining co-tenants' URIs.
+            if self._stub_subscription_count(stub_uuid) >= _RESOURCE_SUBSCRIPTIONS_MAX_PER_STUB:
+                # The URI is deliberately NOT logged: resource URIs can carry
+                # credentials (tokens, presigned query params) and this line
+                # lands in the operator's plain-text log.
+                logger.warning(
+                    "backend pid=%s stub=%s at resource-subscription cap (%d); "
+                    "refusing subscribe",
+                    self.pid, stub_uuid, _RESOURCE_SUBSCRIPTIONS_MAX_PER_STUB,
+                )
+                await self._reply_locally(
+                    stub_uuid, original_id,
+                    error={
+                        "code": _JSONRPC_SERVER_ERROR,
+                        "message": "resource subscription limit reached",
+                    },
+                )
+                return True
+            if any(
+                p.stub_uuid == stub_uuid
+                and p.method == _RESOURCES_UNSUBSCRIBE_METHOD
+                and p.resource_uri == uri
+                for p in self._pending_requests.values()
+            ):
+                # This stub's own unsubscribe for the URI is still in flight.
+                # Its response may arrive AFTER a new grant (out-of-order
+                # server) and would then erase it — the releasing stub and the
+                # re-subscriber are the same uuid, so the per-stub discard
+                # cannot tell them apart. Refuse the resubscribe; the client
+                # retries once the unsubscribe settles.
+                await self._reply_locally(
+                    stub_uuid, original_id,
+                    error={
+                        "code": _JSONRPC_SERVER_ERROR,
+                        "message": "resources/unsubscribe for this URI is "
+                                   "still in flight; retry after it completes",
+                    },
+                )
+                return True
+            if self.supports_caller_identity:
+                # Per-caller authorization: the server must see this stub's
+                # own subscribe (the caller block is injected downstream).
+                return False
+            if uri in self._lease_awaiting_grant:
+                self._lease_pending_riders.setdefault(uri, []).append(
+                    (stub_uuid, original_id))
+                return True
+            subscribers = self._resource_subscriptions.get(uri)
+            if subscribers is not None and uri not in self._lease_awaiting_release:
+                subscribers.add(stub_uuid)
+                await self._reply_locally(stub_uuid, original_id, result={})
+                return True
+            if uri in self._lease_awaiting_release:
+                # A release for this URI is in flight. The one wire orders
+                # the WRITES, but the server may ANSWER out of order — a
+                # replacement grant landing before the release would leave
+                # local routing keeping this subscriber while the release
+                # then destroys the lease upstream: silent update loss.
+                # Park until the release settles; the drain either joins a
+                # retained lease locally or takes a fresh one with a
+                # subscribe forwarded strictly AFTER the release settled.
+                self._lease_replacement_subscribes.setdefault(uri, []).append(
+                    (stub_uuid, original_id))
+                return True
+            # First subscriber: forward to take the lease.
+            self._lease_awaiting_grant.add(uri)
+            return False
+        # --- resources/unsubscribe ---
+        if self.supports_caller_identity:
+            # Retract this stub's own in-flight subscribe for the URI first
+            # (mirror of the coalesced retract arm): its grant may be
+            # answered AFTER this unsubscribe on an out-of-order server,
+            # which would record routing for a stub that already left —
+            # stranding the upstream lease. Sentinelize keeping ``caller``
+            # so the late grant releases as the right principal; commit the
+            # transitions, then reply.
+            retracted_ids: list[Any] = []
+            for p in self._pending_requests.values():
+                if (
+                    p.stub_uuid == stub_uuid
+                    and p.method == _RESOURCES_SUBSCRIBE_METHOD
+                    and p.resource_uri == uri
+                ):
+                    if p.original_id is not None:
+                        retracted_ids.append(p.original_id)
+                    p.origin_stub = stub_uuid
+                    p.stub_uuid = _RELEASE_STUB_SENTINEL
+                    p.original_id = None
+            if retracted_ids:
+                retract_error = {
+                    "code": _JSONRPC_SERVER_ERROR,
+                    "message": "resources/subscribe retracted by a later "
+                               "unsubscribe",
+                }
+                for retracted_id in retracted_ids:
+                    await self._reply_locally(
+                        stub_uuid, retracted_id, error=retract_error)
+                if stub_uuid not in self._resource_subscriptions.get(uri, set()):
+                    # Nothing granted yet: the retract settles everything —
+                    # the sentinelized pending releases any late grant, so
+                    # the unsubscribe is truthfully answered locally.
+                    await self._reply_locally(stub_uuid, original_id, result={})
+                    return True
+            # A stub that holds NO grant for this URI must be answered
+            # locally, never forwarded: the server adjudicates an
+            # unsubscribe by CALLER, so a non-holder's forwarded frame
+            # would remove a same-caller HOLDER's live lease while that
+            # holder stayed locally routed — updates silently stop. (The
+            # retract arm above already handled the in-flight-subscribe
+            # case; this covers a stub with nothing outstanding at all.)
+            if stub_uuid not in self._resource_subscriptions.get(uri, set()):
+                await self._reply_locally(stub_uuid, original_id, result={})
+                return True
+            # Two stubs claimed to one session hold ONE per-caller grant
+            # upstream: forwarding either stub's unsubscribe would destroy
+            # the survivor's subscription while it stays locally routed.
+            # When another routed stub shares this stub's grant caller,
+            # settle locally — drop only this stub — and leave the upstream
+            # lease to the last sharer (same guard the detach path applies).
+            grant_caller = self._grant_callers.get((uri, stub_uuid))
+            if grant_caller is not None and any(
+                other != stub_uuid
+                and self._grant_callers.get((uri, other)) == grant_caller
+                for other in self._resource_subscriptions.get(uri, set())
+            ):
+                self._grant_callers.pop((uri, stub_uuid), None)
+                subscribers = self._resource_subscriptions.get(uri)
+                if subscribers is not None:
+                    subscribers.discard(stub_uuid)
+                    if not subscribers:
+                        del self._resource_subscriptions[uri]
+                await self._reply_locally(stub_uuid, original_id, result={})
+                return True
+            # Sole holder (or unknown grant): forward, and mutate routing on
+            # the response.
+            return False
+        if uri in self._lease_awaiting_grant:
+            # Retract while the grant is in flight. Every subscribe id this
+            # stub has outstanding for the URI is ANSWERED (with a
+            # cancellation error) before its parking or pending is removed or
+            # reassigned — a request silently dropped from the tables would
+            # hang in the client's id table forever. A parked rider is then
+            # unparked; the FORWARDER's pending is promoted to the first
+            # remaining rider, or converted to the lease sentinel so a
+            # granted-but-unwanted lease is released.
+            retract_error = {
+                "code": _JSONRPC_SERVER_ERROR,
+                "message": "resources/subscribe retracted by a later unsubscribe",
+            }
+            riders = self._lease_pending_riders.get(uri, [])
+            retracted = [r for r in riders if r[0] == stub_uuid]
+            self._lease_pending_riders[uri] = [r for r in riders if r[0] != stub_uuid]
+            # EVERY table transition is committed before the first reply is
+            # awaited: a reply into a full inbox detaches the stub, and
+            # detach both mutates the pending table mid-iteration and
+            # re-decides the very promotion this arm is making — the late
+            # reassignment would overwrite detach's promoted rider with the
+            # sentinel, leaving that rider's subscribe unanswered forever.
+            forwarder_reply_id: Any = None
+            forwarder_retracted = False
+            for p in self._pending_requests.values():
+                if (
+                    p.stub_uuid == stub_uuid
+                    and p.method == _RESOURCES_SUBSCRIBE_METHOD
+                    and p.resource_uri == uri
+                ):
+                    forwarder_retracted = True
+                    forwarder_reply_id = p.original_id
+                    remaining = self._lease_pending_riders.get(uri, [])
+                    if remaining:
+                        p.stub_uuid, p.original_id = remaining.pop(0)
+                    else:
+                        p.origin_stub = stub_uuid
+                        p.stub_uuid = _RELEASE_STUB_SENTINEL
+                        p.original_id = None
+                    break
+            for _retracted_uuid, retracted_id in retracted:
+                await self._reply_locally(stub_uuid, retracted_id, error=retract_error)
+            if forwarder_retracted:
+                await self._reply_locally(
+                    stub_uuid, forwarder_reply_id, error=retract_error)
+            await self._reply_locally(stub_uuid, original_id, result={})
+            return True
+        parked_replacements = [
+            r for r in self._lease_replacement_subscribes.get(uri, [])
+            if r[0] == stub_uuid
+        ]
+        if parked_replacements:
+            # This stub parked a replacement subscribe behind an in-flight
+            # release and now unsubscribes: leaving the parking in place
+            # would let the release drain re-subscribe a stub that has
+            # since asked to leave. Retract the parking (committed before
+            # any reply is awaited), answer each parked subscribe id with
+            # the cancellation error, then fall through — the routing
+            # checks below answer the unsubscribe itself truthfully.
+            remaining_repl = [
+                r for r in self._lease_replacement_subscribes[uri]
+                if r[0] != stub_uuid
+            ]
+            if remaining_repl:
+                self._lease_replacement_subscribes[uri] = remaining_repl
+            else:
+                del self._lease_replacement_subscribes[uri]
+            repl_retract_error = {
+                "code": _JSONRPC_SERVER_ERROR,
+                "message": "resources/subscribe retracted by a later "
+                           "unsubscribe",
+            }
+            for _parked_uuid, parked_id in parked_replacements:
+                await self._reply_locally(
+                    stub_uuid, parked_id, error=repl_retract_error)
+        subscribers = self._resource_subscriptions.get(uri)
+        if subscribers is not None and stub_uuid not in subscribers:
+            # A stub unsubscribing a URI it never held must not tear down a
+            # co-tenant's live lease.
+            await self._reply_locally(stub_uuid, original_id, result={})
+            return True
+        if subscribers is not None and len(subscribers) > 1:
+            subscribers.discard(stub_uuid)
+            await self._reply_locally(stub_uuid, original_id, result={})
+            return True
+        if uri in self._lease_awaiting_release:
+            # A final release for this URI is already in flight — and it may
+            # belong to a stub that has since detached, so a refusal would
+            # dead-end this stub: still routed, told to retry by a message
+            # nothing acts on. Park behind the one in-flight release instead
+            # (mirroring how the grant side parks riders) and settle on its
+            # verdict. Forwarding a second release would race two responses
+            # against one shared awaiting-release flag. Parkings are counted
+            # against the same per-stub cap as subscriptions — a repeated
+            # unsubscribe under a slow server must not grow the waiter list
+            # without bound.
+            parked = sum(
+                1
+                for waiters in self._lease_release_waiters.values()
+                for waiter_uuid, _waiter_id in waiters
+                if waiter_uuid == stub_uuid
+            )
+            if parked >= _RESOURCE_SUBSCRIPTIONS_MAX_PER_STUB:
+                # The URI is deliberately NOT logged: resource URIs can
+                # carry credentials.
+                logger.warning(
+                    "backend pid=%s stub=%s at release-waiter cap (%d); "
+                    "refusing unsubscribe",
+                    self.pid, stub_uuid, _RESOURCE_SUBSCRIPTIONS_MAX_PER_STUB,
+                )
+                await self._reply_locally(
+                    stub_uuid, original_id,
+                    error={
+                        "code": _JSONRPC_SERVER_ERROR,
+                        "message": "resource subscription limit reached",
+                    },
+                )
+                return True
+            self._lease_release_waiters.setdefault(uri, []).append(
+                (stub_uuid, original_id))
+            return True
+        if subscribers is None:
+            # Nothing tracked for this URI and no release in flight: there
+            # is no lease to protect, so the server answers the stray
+            # unsubscribe truthfully itself (forwarded unflagged — its
+            # response mutates no lease state).
+            return False
+        # Last subscriber: release the lease upstream. Routing keeps the stub
+        # until the server confirms (see _on_resource_subscription_response).
+        self._lease_awaiting_release.add(uri)
+        return False
+
+    async def _on_resource_subscription_response(
+        self, pending: "_PendingRequest", msg: dict[str, Any]
+    ) -> None:
+        """Apply the lease transition a subscribe/unsubscribe RESPONSE
+        confirms or refuses. The wire is one ordered stream, so transitions
+        arrive in the order their requests were forwarded.
+        """
+        uri = pending.resource_uri
+        ok = _is_success_response(msg)
+        if pending.method == _RESOURCES_SUBSCRIBE_METHOD:
+            if self.supports_caller_identity:
+                # Per-stub grant: only the caller the server accepted routes.
+                if ok:
+                    self._resource_subscriptions.setdefault(uri, set()).add(
+                        pending.stub_uuid)
+                    self._orphaned_leases.discard(uri)
+                    if pending.caller is not None:
+                        # Grant-time is the only moment the grant principal
+                        # is certain; detach releases with this caller.
+                        self._grant_callers[(uri, pending.stub_uuid)] = (
+                            pending.caller)
+                elif "error" not in msg:
+                    # UNSETTLED verdict (neither result nor error): the
+                    # subscribe may well have taken upstream, and recording
+                    # nothing would strand a live per-caller lease firing
+                    # updates that route nowhere. Release it as the caller
+                    # that took it — the same fail-closed release the
+                    # coalesced arms apply to malformed verdicts.
+                    await self._release_upstream_subscriptions(
+                        [uri], caller=pending.caller)
+                return
+            # Coalesced grant: the forwarder and every parked rider settle on
+            # the server's one verdict — success grants all of them, refusal
+            # grants none, and no rider was ever told "subscribed" early.
+            self._lease_awaiting_grant.discard(uri)
+            riders = self._lease_pending_riders.pop(uri, [])
+            if ok:
+                # Commit the whole grant BEFORE any reply is awaited: a reply
+                # into a full inbox detaches its stub, and when that empties
+                # the entry detach deletes it from the table — later adds
+                # through the stale set alias would then grant riders into a
+                # set the routing table no longer holds.
+                granted = self._resource_subscriptions.setdefault(uri, set())
+                granted.add(pending.stub_uuid)
+                granted.update(rider_uuid for rider_uuid, _ in riders)
+                self._orphaned_leases.discard(uri)
+                for rider_uuid, rider_id in riders:
+                    await self._reply_locally(rider_uuid, rider_id, result={})
+                return
+            error_obj = msg.get("error")
+            # A refusal proves the server holds no lease; a MALFORMED frame
+            # (no error either) proves nothing — the subscribe may have
+            # taken, and denying routing while keeping it would strand a
+            # live lease whose every update is charged to the server as a
+            # hazard. An unsettled verdict with nobody routed releases it.
+            if error_obj is None and uri not in self._resource_subscriptions:
+                await self._release_upstream_subscriptions([uri])
+            for rider_uuid, rider_id in riders:
+                await self._reply_locally(
+                    rider_uuid, rider_id,
+                    error=error_obj if isinstance(error_obj, dict) else {
+                        "code": _JSONRPC_SERVER_ERROR,
+                        "message": "resources/subscribe refused by server",
+                    },
+                )
+            return
+        # --- unsubscribe response ---
+        if self.supports_caller_identity:
+            if ok:
+                self._grant_callers.pop((uri, pending.stub_uuid), None)
+                subscribers = self._resource_subscriptions.get(uri)
+                if subscribers is not None:
+                    subscribers.discard(pending.stub_uuid)
+                    if not subscribers:
+                        del self._resource_subscriptions[uri]
+            return
+        if uri not in self._lease_awaiting_release:
+            return
+        self._lease_awaiting_release.discard(uri)
+        waiters = self._lease_release_waiters.pop(uri, [])
+        if ok:
+            # Release confirmed: drop the releasing stub and every parked
+            # waiter — all committed BEFORE any reply is awaited. A server
+            # may answer concurrent requests out of order, so a replacement
+            # subscribe forwarded behind this release can have been granted
+            # already — deleting the whole entry would silently discard that
+            # fresh grant.
+            subscribers = self._resource_subscriptions.get(uri)
+            if subscribers is not None:
+                subscribers.discard(pending.stub_uuid)
+                for waiter_uuid, _waiter_id in waiters:
+                    subscribers.discard(waiter_uuid)
+                if not subscribers:
+                    del self._resource_subscriptions[uri]
+            for waiter_uuid, waiter_id in waiters:
+                await self._reply_locally(waiter_uuid, waiter_id, result={})
+            await self._drain_replacement_subscribes(uri, released=True)
+            return
+        # On a refusal the server RETAINED the subscription, so routing keeps
+        # the entry; the unsubscribing stub receives the server's error and
+        # knows its unsubscribe did not take effect — and so does every
+        # parked waiter, which stays routed and may retry (the flag is down,
+        # so a retry forwards a fresh release).
+        error_obj = msg.get("error")
+        for waiter_uuid, waiter_id in waiters:
+            await self._reply_locally(
+                waiter_uuid, waiter_id,
+                error=error_obj if isinstance(error_obj, dict) else {
+                    "code": _JSONRPC_SERVER_ERROR,
+                    "message": "resources/unsubscribe refused by server",
+                },
+            )
+        await self._drain_replacement_subscribes(uri, released=False)
+
+    def resource_subscription_uris(self, stub_uuid: str) -> list[str]:
+        """URIs whose routing table names ``stub_uuid`` — the set a
+        transparent respawn must replay onto the replacement backend."""
+        routed = {
+            uri for uri, subscribers in self._resource_subscriptions.items()
+            if stub_uuid in subscribers
+        }
+        # An in-flight replay has not committed routing yet (routing is
+        # recorded only on the server's grant): if the replacement dies
+        # before its replay responses arrive, those URIs are in neither the
+        # routing table nor any pending the next respawn can see — captured
+        # from pendings here, or the subscription goes permanently dark.
+        routed.update(
+            p.resource_uri
+            for p in self._pending_requests.values()
+            if p.replay_stub == stub_uuid
+            and p.method == _RESOURCES_SUBSCRIBE_METHOD
+            and p.resource_uri
+        )
+        # URIs whose replay was in flight when THIS backend died: the
+        # backend-gone cleanup preserved them here because clearing the
+        # pending table erased their only record.
+        routed.update(self._gone_replay_uris.get(stub_uuid, ()))
+        return sorted(routed)
+
+    async def replay_resource_subscriptions(
+        self, stub_uuid: str, uris: list[str], *,
+        caller: Optional[CallerContext] = None,
+    ) -> None:
+        """Re-establish ``stub_uuid``'s subscriptions on a freshly respawned
+        backend, so a live subscription survives the transparent backend swap
+        instead of silently going dark (kiro-cli never learns the old backend
+        died, so it will never re-subscribe on its own).
+
+        Gateway-originated: each URI is re-subscribed under the lease
+        sentinel and the stub's routing grant is recorded only on the
+        server's success (a refusal leaves the update undelivered —
+        fail-closed — rather than mis-attributed). On an identity-capable
+        server the replay carries the connection's authoritative caller
+        block, so the server adjudicates it as the same caller that held the
+        original subscription; without a caller to inject there the replay is
+        skipped entirely, because a bare subscribe would be adjudicated as
+        the connection and could be refused — again failing closed.
+
+        A WRITE failure raises :class:`BackendGone` (the replacement's pipe
+        is already broken, so the respawn cannot succeed): swallowing it
+        would report a successful respawn whose subscriptions are silently
+        dark forever. Pendings for URIs written before the failure are
+        scoped to release-on-grant — with the respawn failed nobody will
+        consume those grants, so each late success releases its lease
+        instead of pinning it to a stub the caller is tearing down.
+        """
+        if self.supports_caller_identity and caller is None:
+            logger.debug(
+                "backend pid=%s skipping subscription replay for stub=%s: "
+                "identity-capable server and no caller context to inject",
+                self.pid, stub_uuid,
+            )
+            return
+        replay_generation = self._rekey_generation.get(stub_uuid, 0)
+        for uri in uris:
+            if self._rekey_generation.get(stub_uuid, 0) != replay_generation:
+                # A claim rekeyed this stub mid-replay. The eviction
+                # retracted the pendings written so far, but continuing
+                # would write the REMAINING URIs under the old owner and
+                # route their grants to the new one. Stop here — fail
+                # closed, the new owner subscribes on its own.
+                logger.debug(
+                    "backend pid=%s stopping subscription replay for "
+                    "stub=%s: stub was rekeyed mid-replay", self.pid,
+                    stub_uuid,
+                )
+                return
+            if stub_uuid in self._resource_subscriptions.get(uri, set()):
+                continue
+            if not self.supports_caller_identity:
+                # Identity-less: the server holds ONE subscription per URI,
+                # so a replay flows through the same per-URI lease
+                # coordination as a stub subscribe — two uncoordinated
+                # replays would put two grants in flight, and a later final
+                # unsubscribe would then release the server's single
+                # subscription while the other stub stayed locally routed.
+                # A replay parking carries no reply id (_reply_locally
+                # no-ops on None), so it settles silently on the verdict.
+                subscribers = self._resource_subscriptions.get(uri)
+                if uri in self._lease_awaiting_grant:
+                    self._lease_pending_riders.setdefault(uri, []).append(
+                        (stub_uuid, None))
+                    continue
+                if subscribers is not None and uri not in self._lease_awaiting_release:
+                    subscribers.add(stub_uuid)
+                    continue
+                if uri in self._lease_awaiting_release:
+                    self._lease_replacement_subscribes.setdefault(uri, []).append(
+                        (stub_uuid, None))
+                    continue
+                self._lease_awaiting_grant.add(uri)
+            fid = self._next_forward_id()
+            self._pending_requests[fid] = _PendingRequest(
+                stub_uuid=_RELEASE_STUB_SENTINEL, original_id=None,
+                method=_RESOURCES_SUBSCRIBE_METHOD, resource_uri=uri,
+                replay_stub=stub_uuid,
+                caller=caller,
+                t_start_ms=time.monotonic() * 1000.0,
+            )
+            replay_msg: dict[str, Any] = {
+                "jsonrpc": "2.0", "id": fid,
+                "method": _RESOURCES_SUBSCRIBE_METHOD,
+                "params": {"uri": uri},
+            }
+            if self.supports_caller_identity and caller is not None:
+                replay_msg = _inject_caller_meta(replay_msg, caller)
+            try:
+                await _write_json_line(self.stdin, replay_msg)
+            except Exception as exc:
+                self._pending_requests.pop(fid, None)
+                if not self.supports_caller_identity:
+                    # Unwind the lease claim so the URI is not wedged
+                    # awaiting a grant that was never written.
+                    self._lease_awaiting_grant.discard(uri)
+                # Scope any EARLIER replay pendings written in this pass to
+                # release-on-grant: their responses may still arrive, and
+                # with the respawn reported failed nobody consumes the
+                # grants — an attached replay_stub would pin each lease to
+                # a stub the caller is about to tear down.
+                for p in self._pending_requests.values():
+                    if (
+                        p.stub_uuid == _RELEASE_STUB_SENTINEL
+                        and p.method == _RESOURCES_SUBSCRIBE_METHOD
+                        and p.replay_stub == stub_uuid
+                    ):
+                        p.replay_stub = ""
+                # No URI in the line: resource URIs can carry credentials.
+                logger.debug(
+                    "backend pid=%s could not replay a resource "
+                    "subscription (write failed)", self.pid,
+                )
+                raise BackendGone(
+                    "subscription replay write failed on the replacement "
+                    "backend"
+                ) from exc
+
+    async def _reply_locally(
+        self,
+        stub_uuid: str,
+        original_id: Any,
+        *,
+        result: Optional[dict[str, Any]] = None,
+        error: Optional[dict[str, Any]] = None,
+    ) -> None:
+        """Answer a stub's request from the gateway without involving the
+        backend. A request without an id expects no reply, so none is sent."""
+        if original_id is None:
+            return
+        reply: dict[str, Any] = {"jsonrpc": "2.0", "id": original_id}
+        if error is not None:
+            reply["error"] = error
+        else:
+            reply["result"] = result if result is not None else {}
+        await self._deliver_to_stub(stub_uuid, reply)
+
+    def _stub_subscription_count(self, stub_uuid: str) -> int:
+        """Subscription load ``stub_uuid`` holds or is acquiring: confirmed
+        table grants, its own forwarded subscribes still awaiting the server,
+        and rider parkings — each counted INDIVIDUALLY, duplicates included.
+        Grants land on the response, so distinct-URI counting would let a
+        stub repeat one URI's subscribe unboundedly while the grant is in
+        flight, growing the rider list without limit under a slow server."""
+        confirmed = sum(
+            1 for subscribers in self._resource_subscriptions.values()
+            if stub_uuid in subscribers
+        )
+        in_flight = sum(
+            1 for p in self._pending_requests.values()
+            if p.stub_uuid == stub_uuid
+            and p.method == _RESOURCES_SUBSCRIBE_METHOD
+            and p.resource_uri
+        )
+        # Subscribes this stub originated that were since converted to the
+        # lease sentinel (retracted by an unsubscribe, an eviction, or a
+        # detach) but whose server response is still outstanding. Without
+        # these a stub cycling subscribe/unsubscribe against an
+        # unresponsive server would slip every cycle's pending out of its
+        # count and grow the table without bound.
+        sentinel_retained = sum(
+            1 for p in self._pending_requests.values()
+            if p.stub_uuid == _RELEASE_STUB_SENTINEL
+            and p.origin_stub == stub_uuid
+            and p.method == _RESOURCES_SUBSCRIBE_METHOD
+            and p.resource_uri
+        )
+        parked = sum(
+            1
+            for riders in self._lease_pending_riders.values()
+            for rider_uuid, _rider_id in riders
+            if rider_uuid == stub_uuid
+        )
+        replacement = sum(
+            1
+            for parkers in self._lease_replacement_subscribes.values()
+            for parker_uuid, _parker_id in parkers
+            if parker_uuid == stub_uuid
+        )
+        return confirmed + in_flight + sentinel_retained + parked + replacement
+
+    async def _drain_replacement_subscribes(
+        self, uri: str, *, released: bool
+    ) -> None:
+        """Settle subscribes that parked while ``uri``'s release was in
+        flight. On a CONFIRMED release the lease is gone, so the parkers
+        take it afresh with ONE forwarded subscribe — first parker as the
+        forwarder, the rest parked as riders settling on the same verdict —
+        serialized strictly AFTER the release on the wire. On a refusal the
+        server RETAINED the lease, so parkers join the still-live entry
+        locally (state committed before replies); when detach has pruned the
+        entry out from under a retained lease, a fresh subscribe is
+        forwarded instead (idempotent on the server's live subscription, and
+        its grant re-establishes routing).
+        """
+        parked = self._lease_replacement_subscribes.pop(uri, [])
+        if not parked:
+            return
+        subscribers = self._resource_subscriptions.get(uri)
+        if not released and subscribers is not None:
+            subscribers.update(parker_uuid for parker_uuid, _ in parked)
+            for parker_uuid, parker_id in parked:
+                await self._reply_locally(parker_uuid, parker_id, result={})
+            return
+        # Take the lease afresh with ONE subscribe forwarded under the
+        # sentinel, every parker riding on its verdict: success grants and
+        # answers each parker ({} for a stub subscribe, silently for an
+        # id-less replay parking), refusal answers each with the server's
+        # error. The sentinel arm owns exactly this settle already.
+        fid = self._next_forward_id()
+        self._pending_requests[fid] = _PendingRequest(
+            stub_uuid=_RELEASE_STUB_SENTINEL, original_id=None,
+            method=_RESOURCES_SUBSCRIBE_METHOD, resource_uri=uri,
+            t_start_ms=time.monotonic() * 1000.0,
+        )
+        self._lease_awaiting_grant.add(uri)
+        self._lease_pending_riders.setdefault(uri, []).extend(parked)
+        try:
+            await _write_json_line(self.stdin, {
+                "jsonrpc": "2.0", "id": fid,
+                "method": _RESOURCES_SUBSCRIBE_METHOD,
+                "params": {"uri": uri},
+            })
+        except Exception:
+            # Backend going away: unwind and answer every parker — an id
+            # silently dropped from the tables hangs in the client forever.
+            self._pending_requests.pop(fid, None)
+            self._lease_awaiting_grant.discard(uri)
+            remaining = [
+                r for r in self._lease_pending_riders.get(uri, [])
+                if r not in parked
+            ]
+            if remaining:
+                self._lease_pending_riders[uri] = remaining
+            else:
+                self._lease_pending_riders.pop(uri, None)
+            err = {
+                "code": _JSONRPC_SERVER_ERROR,
+                "message": "resources/subscribe could not be forwarded "
+                           "(backend going away)",
+            }
+            for parker_uuid, parker_id in parked:
+                await self._reply_locally(parker_uuid, parker_id, error=err)
+
+    async def _release_upstream_subscriptions(
+        self, uris: list[str], *, caller: Optional[CallerContext] = None,
+    ) -> None:
+        """Send a gateway-originated ``resources/unsubscribe`` for each URI
+        whose last subscriber departed without unsubscribing. Best-effort: a
+        backend that is already dying takes its subscriptions with it.
+
+        On an identity-capable server pass the caller that HOLDS the grant:
+        the release is adjudicated per principal, so a bare unsubscribe
+        (adjudicated as the connection) would be refused — or worse, revoke
+        a different principal's live subscription.
+        """
+        for uri in uris:
+            fid = self._next_forward_id()
+            self._pending_requests[fid] = _PendingRequest(
+                stub_uuid=_RELEASE_STUB_SENTINEL, original_id=None,
+                method=_RESOURCES_UNSUBSCRIBE_METHOD, resource_uri=uri,
+                t_start_ms=time.monotonic() * 1000.0,
+            )
+            if not self.supports_caller_identity:
+                # Mark the release in flight BEFORE writing: without the
+                # flag a replacement subscribe takes the first-subscriber
+                # path and forwards BESIDE this release, racing its answer
+                # order — the same silent update loss the stub-forwarded
+                # release path parks against. The sentinel response arm
+                # clears the flag and drains any parked replacements on the
+                # server's verdict. Identity-capable servers never coalesce
+                # (every subscribe forwards per caller), so the flag is not
+                # consulted there and setting it would only go stale.
+                self._lease_awaiting_release.add(uri)
+            release_msg: dict[str, Any] = {
+                "jsonrpc": "2.0", "id": fid,
+                "method": _RESOURCES_UNSUBSCRIBE_METHOD,
+                "params": {"uri": uri},
+            }
+            if self.supports_caller_identity and caller is not None:
+                release_msg = _inject_caller_meta(release_msg, caller)
+            try:
+                await _write_json_line(self.stdin, release_msg)
+            except Exception:
+                # Per-URI, not terminal: one failed write must not leak every
+                # remaining server-side lease (the pipe may also be gone, in
+                # which case the dying backend takes them all anyway).
+                self._pending_requests.pop(fid, None)
+                self._lease_awaiting_release.discard(uri)
+                # The lease is now RETAINED upstream through the broker's
+                # own failure: mark it orphaned so its later updates are
+                # dropped without charging a hazard to a blameless server.
+                while len(self._orphaned_leases) >= _ORPHANED_LEASES_MAX:
+                    self._orphaned_leases.pop()
+                self._orphaned_leases.add(uri)
+                # No URI in the line: resource URIs can carry credentials.
+                logger.debug(
+                    "backend pid=%s could not release a resource "
+                    "subscription (backend going away)", self.pid,
+                )
+                continue
+
+    def _resource_update_targets(self, msg: dict[str, Any]) -> set[str]:
+        """Return the stubs subscribed to an incoming
+        ``notifications/resources/updated``'s URI — empty when the URI is
+        missing, malformed, or has no subscribers (the caller then applies
+        the deny-by-default drop).
+
+        Returns a COPY: delivery awaits per stub, and a full inbox detaches
+        its stub mid-fan-out, which mutates the underlying table.
+        """
+        params = msg.get("params")
+        if not isinstance(params, dict):
+            return set()
+        uri = params.get("uri")
+        if not isinstance(uri, str) or not uri:
+            return set()
+        return set(self._resource_subscriptions.get(uri, ()))
 
     def _notification_owner(self, msg: dict[str, Any]) -> Optional[str]:
         """Best-effort attribution of a server->client notification to the one

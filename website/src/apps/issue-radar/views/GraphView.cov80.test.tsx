@@ -209,6 +209,103 @@ describe('GraphView FOCUS tree', () => {
   })
 })
 
+describe('GraphView FRONTIER overflow + jump', () => {
+  // One shared open blocker (900) gates N downstream issues, so every downstream
+  // is a WAITING row. With N > WAITING_CAP (30) the tail is hidden until the
+  // disclosure control expands the list.
+  function bigWaitingFixture(n: number): DepsResponse {
+    const edges: DepsResponse['edges'] = []
+    const nodes: DepsResponse['nodes'] = {
+      '900': { kind: 'issue', state: 'open', title: 'shared blocker' },
+    }
+    for (let i = 0; i < n; i++) {
+      const id = 100 + i
+      nodes[String(id)] = { kind: 'issue', state: 'open', title: `waiting item ${id}` }
+      edges.push({ blocked: id, blocker: 900, source: 'native' })
+    }
+    return { schema: 1, edges, nodes }
+  }
+
+  it('expands the waiting list to reveal a row beyond the cap', async () => {
+    // 40 waiting rows: ids 100..139. WAITING_CAP is 30, so IS-135 is hidden.
+    depsFn.mockResolvedValue(bigWaitingFixture(40))
+    renderView()
+    await frontierReady()
+    // a row within the cap is present; a row past it is not, until expanded
+    expect(screen.getByRole('button', { name: /IS-100\b/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /IS-135\b/ })).not.toBeInTheDocument()
+    // the overflow control is a real button reporting collapsed state
+    const disclosure = screen.getByRole('button', { name: /\+\d+ more/ })
+    expect(disclosure).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(disclosure)
+    // the hidden row is now revealed, and the control flips to expanded
+    await waitFor(() => expect(screen.getByRole('button', { name: /IS-135\b/ })).toBeInTheDocument())
+    expect(screen.getByRole('button', { name: /Show fewer/i })).toHaveAttribute('aria-expanded', 'true')
+  })
+
+  it('FRONTIER jump reaches a waiting row that sits inside the overflow', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    depsFn.mockResolvedValue(bigWaitingFixture(40))
+    renderView()
+    await frontierReady()
+    // IS-138 is past the cap and hidden on load
+    expect(screen.queryByRole('button', { name: /IS-138\b/ })).not.toBeInTheDocument()
+    const input = screen.getByRole('combobox', { name: /Jump to issue/i })
+    fireEvent.change(input, { target: { value: '138' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    // the jump expands the overflow so the target row is now in the DOM
+    await waitFor(() => expect(screen.getByRole('button', { name: /IS-138\b/ })).toBeInTheDocument())
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalled()
+  })
+
+  it('FRONTIER jump falls back to the tree for an item with no frontier row', async () => {
+    // The picker's datalist is every OPEN item, which is a superset of the rows
+    // FRONTIER draws: 900 is the shared blocker, so it is neither unblocked nor
+    // blocked-and-listed and has no row here. Picking it must still do something
+    // -- otherwise the input offers a suggestion that silently does nothing.
+    Element.prototype.scrollIntoView = vi.fn()
+    depsFn.mockResolvedValue(bigWaitingFixture(40))
+    renderView()
+    await frontierReady()
+    expect(screen.queryByRole('button', { name: /IS-900\b/ })).not.toBeInTheDocument()
+    const input = screen.getByRole('combobox', { name: /Jump to issue/i })
+    fireEvent.change(input, { target: { value: '900' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    // It answers by opening the focus tree rooted there, rather than no-opping.
+    await waitFor(() => expect(screen.getByRole('img')).toBeInTheDocument())
+  })
+
+  it('a second jump inside the ring window clears the first row ring', async () => {
+    // GPT round 2: the effect cleanup cancelled the pending removal timer without
+    // removing the attribute, so jumping A then B within REVEAL_RING_MS left A
+    // ringed forever -- two highlighted rows, one of them lying about the match.
+    Element.prototype.scrollIntoView = vi.fn()
+    depsFn.mockResolvedValue(bigWaitingFixture(40))
+    renderView()
+    await frontierReady()
+    const input = screen.getByRole('combobox', { name: /Jump to issue/i })
+
+    fireEvent.change(input, { target: { value: '100' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    const rowA = await waitFor(() => {
+      const el = document.querySelector('[data-ir-reveal="1"]')
+      expect(el).not.toBeNull()
+      return el as Element
+    })
+
+    // Second jump well inside the 1.6s window, so the timer never fired.
+    fireEvent.change(input, { target: { value: '101' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    // Exactly one row is ringed, and it is not the first one.
+    await waitFor(() => {
+      const ringed = document.querySelectorAll('[data-ir-reveal="1"]')
+      expect(ringed).toHaveLength(1)
+      expect(ringed[0]).not.toBe(rowA)
+    })
+  })
+})
+
 describe('GraphView narrow branch', () => {
   it('drops to FRONTIER when the pane goes narrow', async () => {
     depsFn.mockResolvedValue(fixture())

@@ -19,6 +19,7 @@
         "model": "auto",
         "role_models": {},
         "role_efforts": {},
+        "fallback_model": "auto",
         "reasoning_effort": "",
         "provider": "acp",
         "mcp_registry_mode": false,
@@ -174,6 +175,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null
+    },
+    {
+      "path": "agent.fallback_model",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Fallback model",
+      "help": "Model tried when the active model's transient-retry budget is exhausted (throttle/capacity). Default 'auto' defers to the backend's availability-aware routing; a concrete model id (as advertised by the provider, e.g. 'claude-opus-4.8') is tried first with 'auto' as the final fallthrough; empty ('') disables fallback entirely (fail loudly, pre-feature behavior). A fallback swap is announced in chat, sticks until the primary recovers, and the serving model is recorded in every turn's stats — never silent.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "auto"
     },
     {
       "path": "agent.reasoning_effort",
@@ -5005,6 +5020,10 @@
         "enabled": false,
         "bot_token": "",
         "allowed_emails": [],
+        "allow_group_rooms": false,
+        "allowed_room_ids": [],
+        "reply_in_thread": true,
+        "wdm_base": "",
         "soft_threshold_pct": 80,
         "hard_threshold_pct": 95,
         "session_folder": ""
@@ -5071,6 +5090,84 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null
+    },
+    {
+      "path": "webex.allow_group_rooms",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "webex"
+      ],
+      "label": "Allow Group Spaces",
+      "help": "Answer in group spaces as well as direct messages. Off by default: a reply in a space is visible to every member, including people who are not on the allow-list, so tool output would leave the DM. A Webex bot only ever sees messages that @mention it in a space.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "webex.allowed_room_ids",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "webex"
+      ],
+      "label": "Allowed Room IDs",
+      "help": "Webex space IDs the bot may answer in when group spaces are enabled. Empty = deny all (fail closed), so turning the switch on alone grants nothing; the sender must ALSO be on the email allow-list.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "webex.allowed_room_ids.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "webex.reply_in_thread",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "webex"
+      ],
+      "label": "Reply in Thread",
+      "help": "Reply under the message's own thread when it has one, keeping a space readable. Webex threads are flat, so a reply always attaches to the thread root.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "webex.wdm_base",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "webex"
+      ],
+      "label": "Device Manager Base URL",
+      "help": "Override the Webex Device Manager host used for the inbound WebSocket. Empty (the default) discovers the org's own regional host per token, which is what a non-US-resident org needs; set this only to pin a REGIONAL WEBEX host for a network that reaches it but not the service catalog. Must be an https Webex host (*.wbx2.com, *.webex.com, *.ciscospark.com) — the bot token rides device registration, so anything else is refused and discovery is used instead. An outbound proxy belongs in HTTPS_PROXY, not here.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "webex.soft_threshold_pct",
@@ -5455,9 +5552,11 @@
           "enabled": false,
           "trust_identity": false,
           "allowed_logins": [],
-          "pin_scope": "node"
+          "pin_scope": "node",
+          "keep_awake": true
         },
         "restore_sessions": false,
+        "qr_session_until_restart": true,
         "restore_window_minutes": 30,
         "surface_channel_sessions": true,
         "bot_name": "",
@@ -5487,6 +5586,7 @@
         "theme_color": "",
         "language": "",
         "recent_tint_count": 0,
+        "update_nudge": {},
         "onboarded": false,
         "import_onboarded": false,
         "privacy_acked": false,
@@ -5535,7 +5635,8 @@
         "enabled": false,
         "trust_identity": false,
         "allowed_logins": [],
-        "pin_scope": "node"
+        "pin_scope": "node",
+        "keep_awake": true
       }
     },
     {
@@ -5609,6 +5710,20 @@
       "defaultValue": "node"
     },
     {
+      "path": "dashboard.tailscale.keep_awake",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Keep Awake While Published",
+      "help": "Keep this machine's SYSTEM awake while the dashboard is published on the tailnet, so a phone does not lose the dashboard when the laptop idles. The display is still allowed to sleep. Publishing is the opt-in — this exists to opt back OUT of the awake half without unpublishing. Independent of dashboard.prevent_sleep, which keeps the host awake only while a turn is in flight.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
       "path": "dashboard.restore_sessions",
       "kind": "core",
       "type": "boolean",
@@ -5621,6 +5736,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "dashboard.qr_session_until_restart",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Phone Sign-In Lasts Until Restart",
+      "help": "Keep a phone signed in for as long as this gateway process runs. The QR code still has to be scanned within its short window; after that the phone is not signed out for being idle in ordinary use, and a gateway restart signs it out. The one remaining idle limit is the refresh credential's own 30-day lifetime, which each visit renews, so a phone that goes untouched for 30 days re-scans. Turn this OFF to go back to a timed session that expires on a clock whether or not the gateway is still running. Either way `kirocrew logout` ends the session immediately, and the session stays pinned to the peer it was established from.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
     },
     {
       "path": "dashboard.restore_window_minutes",
@@ -6027,6 +6156,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0
+    },
+    {
+      "path": "dashboard.update_nudge",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Update Nudge",
+      "help": "Per-version state for the proactive update popup. Written by the dashboard when the user snoozes or skips a release; a record only suppresses the popup for the version it names. Validated as one atomic record by the PATCH allowlist (dashboard.update_nudge); no Settings control reads it, so it carries no schema properties.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {}
     },
     {
       "path": "dashboard.onboarded",

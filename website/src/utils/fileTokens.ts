@@ -4,10 +4,37 @@ import { decodeLocalPath } from './urlTransform'
 
 export const IMG_EXT = /\.(png|jpe?g|gif|webp|bmp|svg)$/i
 
-/** Boundary-aware regex for @token matching. Prevents `@foo.ts` from matching inside `@foo.tsx`. */
+/** Video containers the upload boundary accepts, mirroring `_ALLOWED_VIDEO_EXT`
+ *  in `dashboard/handlers/files.py`. Kept in sync deliberately: this drives the
+ *  client's cap decision, and a client that is more permissive than the server
+ *  only produces uploads that die at the door. */
+export const VIDEO_EXT = /\.(mp4|m4v|mov|webm)$/i
+
+/** The server's own per-video ceiling (`_MAX_VIDEO_UPLOAD_BYTES`). Mirrored here
+ *  only for the surfaces that cannot report a server error and must therefore
+ *  pre-check locally; a surface that CAN report one should let the server's 413
+ *  speak, since it states the cap authoritatively. */
+export const VIDEO_MAX_BYTES = 512 * 1024 * 1024
+
+/** Boundary-aware regex for @token matching. Prevents `@foo.ts` from matching
+ *  inside `@foo.tsx` (right boundary) and inside `foo@bar.ts` (left boundary).
+ *
+ *  The left boundary is a CAPTURE GROUP, not a lookbehind: lookbehind is a
+ *  `SyntaxError` at `new RegExp` time on Safari < 16.4, and this is a runtime
+ *  `new RegExp` from a string that no bundler down-levels, so it would take
+ *  the render/send path down on a supported browser (the same hazard
+ *  `ReportView.tsx` documents and avoids). Consumers that REPLACE must
+ *  therefore re-emit group 1 -- see replaceTokens and serializeDirTokens,
+ *  which already follow this convention; `.test()` callers are unaffected.
+ *
+ *  The left boundary matters because without it `@README.md` inside unrelated
+ *  text like `foo@README.md` reads as a real mention: hasExactRelMention would
+ *  report a file "already mentioned" from that substring and skip inserting a
+ *  clean token, and prepareSendPayload would splice `[attached_file N] ...`
+ *  into the middle of that word at send time. */
 function tokenRegex(token: string, flags = ''): RegExp {
   const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  return new RegExp(`@${escaped}(?=\\s|$)`, flags)
+  return new RegExp(`(^|\\s)@${escaped}(?=\\s|$)`, flags)
 }
 
 /** Parse file paths from message meta or [attached_file N] patterns in content. */
@@ -203,7 +230,9 @@ export function replaceTokens(
   paths.forEach((p, i) => {
     const rel = [...relMap.entries()].find(([, v]) => v === p)?.[0]
     if (!rel) return
-    result = result.replace(tokenRegex(rel, 'g'), () => replacer(p, i))
+    // Re-emit group 1 (the captured leading boundary): tokenRegex matches the
+    // whitespace/start before `@`, so dropping it would eat the separator.
+    result = result.replace(tokenRegex(rel, 'g'), (_m: string, pre: string) => pre + replacer(p, i))
   })
   return result
 }
@@ -227,6 +256,52 @@ export interface SendPayload {
  *  the gateway's trusted attachment roots server-side. */
 const WIN_PRODUCER_PATH_RE = /^(?:[A-Za-z]:|\\\\[^\\/]+)[\\/]/
 
+/** Forward-slash form of a Windows-shaped absolute path (drive letter / UNC).
+ *  A path that is not Windows-shaped is returned untouched: on POSIX `\` is a
+ *  legal filename character, so a blanket backslash rewrite would corrupt a
+ *  real name (`weird\name.txt`) into a nonexistent nested path. */
+export function normalizeWindowsPath(p: string): string {
+  return WIN_PRODUCER_PATH_RE.test(p) ? p.replace(/\\/g, '/') : p
+}
+
+/** Append a picked file to the pending-attachment list, deduped by canonical
+ *  Windows path identity. The `@`-picker stages a native `C:\…` path while the
+ *  tree context menu stages the normalized `C:/…` form of the SAME file; an
+ *  exact-string check treats those as two files and the send carries duplicate
+ *  attachment markers.
+ *
+ *  A matching entry that is NOT already canonical (a restored draft or a
+ *  failed-send restore predating canonical staging) is REPLACED with the
+ *  canonical form, not merely kept: token bookkeeping and remove-chip lookups
+ *  key on the staged string, so a retained legacy `C:\…` entry would miss the
+ *  `C:/…` token key and strand the `@` mention in the composer. POSIX paths
+ *  are untouched either way. */
+export function addPendingFile(prev: string[], path: string): string[] {
+  const canon = normalizeWindowsPath(path)
+  const idx = prev.findIndex(p => normalizeWindowsPath(p) === canon)
+  if (idx === -1) return [...prev, canon]
+  if (prev[idx] === canon) return prev
+  const next = prev.slice()
+  next[idx] = canon
+  return next
+}
+
+/** True when `text` already carries an `@` mention of EXACTLY `rel`, in
+ *  either separator rendition (`@src/a/b.ts` or the native-Windows
+ *  `@src\a\b.ts` the picker inserts) -- never a shorter basename suffix.
+ *  Deliberately NOT a suffix walk (unlike buildRelMap): two staged files that
+ *  share a basename (\`src/a/util.ts\` vs \`src/b/util.ts\`) can both suffix-
+ *  match a single `@util.ts` mention, so a suffix-based guard reports the
+ *  SECOND file as "already mentioned" from the FIRST file's token -- and the
+ *  fallback chip-remove derivation (buildRelMap again) then strips that same
+ *  token when removing the second file's chip, deleting the first file's
+ *  mention instead. `rel` is the exact token `handleAddToContext` inserts, so
+ *  comparing against exactly that string (both separators) cannot cross-match
+ *  a different file. */
+export function hasExactRelMention(text: string, rel: string): boolean {
+  return tokenRegex(rel).test(text) || tokenRegex(rel.replace(/\//g, '\\')).test(text)
+}
+
 /** Markdown-safe destination for a local image path.
  *
  *  Raw paths break `![image](path)` in several ways (issue #3497):
@@ -247,7 +322,7 @@ const WIN_PRODUCER_PATH_RE = /^(?:[A-Za-z]:|\\\\[^\\/]+)[\\/]/
  *  `photo%20copy.png` must not decode to `photo copy.png`).
  */
 export function mdImageDest(p: string): string {
-  const normalized = WIN_PRODUCER_PATH_RE.test(p) ? p.replace(/\\/g, '/') : p
+  const normalized = normalizeWindowsPath(p)
   if (/^[\w/.@:~-]*$/.test(normalized) && !normalized.includes('%')) return normalized
   const escaped = normalized.replace(/%/g, '%25').replace(/[\\<>]/g, c => '\\' + c)
   return `<${escaped}>`
@@ -400,6 +475,13 @@ export function spliceDirTokens(
   caret: number | null,
   rels: string[],
 ): { value: string; caret: number; changed: boolean } {
+  // Exact-string dedupe. NOT separator-canonicalized: `\` is a legal POSIX
+  // filename character, and this function only ever sees bare RELATIVE
+  // tokens with no platform context to confirm a `\` is a Windows separator
+  // rather than part of a literal name (`src/a\b/` vs `src/a/b/` are then
+  // genuinely different directories). A caller that CAN prove Windows shape
+  // (an absolute path with a drive-letter/UNC prefix, via normalizeWindowsPath)
+  // owns that widened comparison itself -- see handleAddToContext (ChatPage.tsx).
   const existing = new Set(parseDirTokens(value).map(t => t.rel))
   const fresh: string[] = []
   for (const raw of rels) {

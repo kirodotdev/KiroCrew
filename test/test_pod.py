@@ -154,13 +154,16 @@ class TestConfig:
 
 class TestPortDerivation:
     def test_matches_posix_cksum_formula(self, cfg: PodConfig) -> None:
-        # POSIX cksum != zlib.crc32, so verify against a real cksum invocation.
-        for name in ["command-palette", "pod-cli", "x", "a-b_c.d"]:
-            cks = int(
-                subprocess.run(
-                    ["cksum"], input=name, capture_output=True, text=True
-                ).stdout.split()[0]
-            )
+        # Values produced by the POSIX cksum utility. Fixed vectors keep the
+        # compatibility check meaningful on hosts that do not ship that utility.
+        vectors = {
+            "command-palette": 3585389714,
+            "pod-cli": 3014794676,
+            "x": 12738659,
+            "a-b_c.d": 1771403360,
+        }
+        for name, cks in vectors.items():
+            assert rt._posix_cksum(name.encode("utf-8")) == cks
             assert rt.derive_port(cfg, name) == cfg.base_port + (cks % 199) + 1
 
     def test_in_band(self, cfg: PodConfig) -> None:
@@ -186,7 +189,9 @@ class TestNameValidation:
 
 
 class TestEnvFileAndPin:
-    def test_write_merge_preserves_keys(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_write_merge_preserves_keys(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setenv("KIROCREW_POD_ENV_DIR", str(tmp_path))
         c = PodConfig.load()
         rt.write_env_file(c, "x", {"CHECKOUT": "/a", "PORT": "7999"})
@@ -299,8 +304,16 @@ class TestUnitRendering:
         monkeypatch.setenv("KIROCREW_POD_ROOT", "/tmp/hermetic-pods")
         monkeypatch.setenv("KIROCREW_POD_REPO", "/tmp/some-repo")
         txt = unit_mod.render_unit(PodConfig.load())
-        assert "Environment=KIROCREW_POD_ROOT=/tmp/hermetic-pods" in txt
-        assert "Environment=KIROCREW_POD_REPO=/tmp/some-repo" in txt
+        assert 'Environment="KIROCREW_POD_ROOT=/tmp/hermetic-pods"' in txt
+        assert 'Environment="KIROCREW_POD_REPO=/tmp/some-repo"' in txt
+
+    def test_env_block_quotes_spaces(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("KIROCREW_POD_ROOT", "/tmp/pod root")
+        cfg = PodConfig.load()
+        txt = unit_mod.render_unit(cfg)
+        root_line = next(line for line in txt.splitlines() if "KIROCREW_POD_ROOT=" in line)
+        assert root_line.startswith('Environment="')
+        assert "pod root" in root_line
 
     def test_unit_path_uses_prefix(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("KIROCREW_POD_UNIT_PREFIX", "kirocrew-podtest")
@@ -308,7 +321,9 @@ class TestUnitRendering:
 
 
 class TestBootGuardrails:
-    def test_refuses_no_pinned_checkout(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_refuses_no_pinned_checkout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setenv("KIROCREW_POD_ENV_DIR", str(tmp_path / "env"))
         monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
         assert rt.boot(PodConfig.load(), "nope") == 3
@@ -538,7 +553,9 @@ class TestProvisionBuildPaths:
         monkeypatch.setattr(prov, "_find_python", lambda version="3.12": None)
         assert prov.ensure_venv(co) is False
 
-    def test_build_dist_npm_then_stages(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_build_dist_npm_then_stages(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         co = tmp_path / "wt"
         (co / "website").mkdir(parents=True)
 
@@ -667,9 +684,7 @@ class TestProvisionDependencyInstall:
 
     # ---- #230: venv dev extras ----
 
-    def test_pip_group_dev_attempted(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_pip_group_dev_attempted(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         co = tmp_path / "wt"
         co.mkdir()
         monkeypatch.setattr(prov, "_find_python", lambda version="3.12": "/usr/bin/python3.12")
@@ -688,8 +703,7 @@ class TestProvisionDependencyInstall:
         monkeypatch.setattr(prov, "_run", self._venv_seeding_run(co, calls, group_fails=True))
         assert prov.ensure_venv(co) is True
         assert any("--group" in c for c in calls)  # attempted --group dev
-        pip = str(prov.venv_bin_dir(co)
-                  / ("pip.exe" if platform_compat.IS_WINDOWS else "pip"))
+        pip = str(prov.venv_bin_dir(co) / ("pip.exe" if platform_compat.IS_WINDOWS else "pip"))
         assert [pip, "install", "--editable", str(co)] in calls  # then fell back
 
 
@@ -737,6 +751,18 @@ class TestPodConfigWrite:
         data = json.loads((home / "config.json").read_text(encoding="utf-8"))
         assert data["tunnel"]["enabled"] is False  # sanitized
         assert stat.S_IMODE((home / "config.json").stat().st_mode) == 0o600
+
+    def test_a_failed_lockdown_publishes_no_config(self, tmp_path: Path, monkeypatch) -> None:
+        """restrict_to_owner runs on the temp; a failure must not leave config.json."""
+        monkeypatch.setattr(
+            "kiro_crew.atomic_write.platform_compat.restrict_to_owner",
+            lambda path: (_ for _ in ()).throw(OSError("icacls: transient failure")),
+        )
+        home = tmp_path / "pod-home"
+        with pytest.raises(OSError, match="icacls"):
+            rt.write_pod_config(home, seed="")
+        assert not (home / "config.json").exists()
+        assert not list(home.glob("*.tmp"))
 
 
 class TestCleanupHome:
@@ -870,9 +896,7 @@ class TestLinuxTeardownOrdering:
             return _cp()
 
         monkeypatch.setattr(rt, "loaded_teardown_hook", lambda c, n: True)
-        monkeypatch.setattr(
-            rt.unit_mod, "install_unit", lambda c: order.append("re-render")
-        )
+        monkeypatch.setattr(rt.unit_mod, "install_unit", lambda c: order.append("re-render"))
         monkeypatch.setattr(rt, "cgroup_procs_file", lambda c, n: None)
         monkeypatch.setattr(rt, "systemctl", _systemctl)
         monkeypatch.setattr(rt, "cleanup_home", lambda c, n: 0)
@@ -886,9 +910,7 @@ class TestLinuxTeardownOrdering:
         every single `pod down`."""
         rendered: list[str] = []
         monkeypatch.setattr(rt.unit_mod, "unit_is_current", lambda c: True)
-        monkeypatch.setattr(
-            rt.unit_mod, "install_unit", lambda c: rendered.append("re-render")
-        )
+        monkeypatch.setattr(rt.unit_mod, "install_unit", lambda c: rendered.append("re-render"))
         monkeypatch.setattr(rt, "cgroup_procs_file", lambda c, n: None)
         monkeypatch.setattr(rt, "systemctl", lambda *a, **k: _cp())
         monkeypatch.setattr(rt, "cleanup_home", lambda c, n: 0)
@@ -903,7 +925,7 @@ class TestLinuxTeardownOrdering:
         unit_file = tmp_path / "pod@.service"
         unit_file.write_text("[Service]\nExecStart=/x\nExecStopPost=/y pod _cleanup %i\n")
         monkeypatch.setattr(rt.unit_mod, "unit_path", lambda c: unit_file)
-        monkeypatch.setattr(rt.unit_mod, "_kirocrew_bin", lambda: sys.executable)
+        monkeypatch.setattr(rt.unit_mod, "_kirocrew_argv", lambda: (sys.executable,))
         issued: list[str] = []
 
         def _systemctl(*args: str, **kwargs: object) -> subprocess.CompletedProcess:
@@ -935,9 +957,7 @@ class TestLinuxTeardownOrdering:
 
         # The unit file on disk looks perfectly current — the old gate's signal.
         monkeypatch.setattr(rt.unit_mod, "unit_is_current", lambda c: True)
-        monkeypatch.setattr(
-            rt.unit_mod, "install_unit", lambda c: order.append("re-render")
-        )
+        monkeypatch.setattr(rt.unit_mod, "install_unit", lambda c: order.append("re-render"))
         monkeypatch.setattr(rt, "systemctl", _systemctl)
         monkeypatch.setattr(rt, "cgroup_procs_file", lambda c, n: None)
         monkeypatch.setattr(rt, "cleanup_home", lambda c, n: 0)
@@ -947,17 +967,17 @@ class TestLinuxTeardownOrdering:
     def test_an_unanswerable_hook_query_refreshes_anyway(
         self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """"Cannot tell" must read as "the hook is there"; the other way round
+        """ "Cannot tell" must read as "the hook is there"; the other way round
         silently ships the defect on any host where the query fails."""
         order: list[str] = []
 
         def _systemctl(*args: str, **kwargs: object) -> subprocess.CompletedProcess:
             order.append(args[0])
-            return _cp(returncode=1, stderr="Failed to get properties") if args[0] == "show" else _cp()
+            return (
+                _cp(returncode=1, stderr="Failed to get properties") if args[0] == "show" else _cp()
+            )
 
-        monkeypatch.setattr(
-            rt.unit_mod, "install_unit", lambda c: order.append("re-render")
-        )
+        monkeypatch.setattr(rt.unit_mod, "install_unit", lambda c: order.append("re-render"))
         monkeypatch.setattr(rt, "systemctl", _systemctl)
         monkeypatch.setattr(rt, "cgroup_procs_file", lambda c, n: None)
         monkeypatch.setattr(rt, "cleanup_home", lambda c, n: 0)
@@ -975,9 +995,7 @@ class TestLinuxTeardownOrdering:
             order.append(args[0])
             return _cp(stdout="\n") if args[0] == "show" else _cp()
 
-        monkeypatch.setattr(
-            rt.unit_mod, "install_unit", lambda c: order.append("re-render")
-        )
+        monkeypatch.setattr(rt.unit_mod, "install_unit", lambda c: order.append("re-render"))
         monkeypatch.setattr(rt, "systemctl", _systemctl)
         monkeypatch.setattr(rt, "cgroup_procs_file", lambda c, n: None)
         monkeypatch.setattr(rt, "cleanup_home", lambda c, n: 0)
@@ -1129,7 +1147,7 @@ class TestTheUnitFileNeverOutlivesAFailedLoad:
     def _plane(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         unit_file = tmp_path / "pod@.service"
         monkeypatch.setattr(rt.unit_mod, "unit_path", lambda c: unit_file)
-        monkeypatch.setattr(rt.unit_mod, "_kirocrew_bin", lambda: sys.executable)
+        monkeypatch.setattr(rt.unit_mod, "_kirocrew_argv", lambda: (sys.executable,))
         monkeypatch.setattr(rt, "require_backend", lambda: None)
         return unit_file
 
@@ -1163,9 +1181,7 @@ class TestPodNameMutexOnLinux:
     down/up race the launchd backend needed the flock for: the mutex can no longer
     be a no-op there."""
 
-    def test_start_and_stop_hold_it(
-        self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_start_and_stop_hold_it(self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch) -> None:
         import contextlib as _ctx
 
         held: list[str] = []
@@ -1930,7 +1946,9 @@ class TestRuntimeHelpers:
         monkeypatch.setattr(rt, "systemctl", lambda *a, **k: _cp(returncode=3))
         assert rt.is_active(cfg, "x") is False
 
-    def test_active_names_parses_units(self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_active_names_parses_units(
+        self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         out = (
             "kirocrew-pod@alpha.service    loaded active running x\n"
             "kirocrew-pod@beta-two.service loaded active running y\n"
@@ -2053,7 +2071,9 @@ class TestCliVerbs:
         pod_cli._ls(cfg, argparse.Namespace(json=False))
         assert "no pods running" in capsys.readouterr().out
 
-    def test_ls_table_and_json(self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    def test_ls_table_and_json(
+        self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch, capsys
+    ) -> None:
         monkeypatch.setattr(rt, "active_names", lambda c: {"alpha"})
         monkeypatch.setattr(rt, "derive_port", lambda c, n: 7811)
         monkeypatch.setattr(rt, "health", lambda p: 403)
@@ -2076,7 +2096,9 @@ class TestCliVerbs:
         pod_cli._url(cfg, argparse.Namespace(name="alpha"))
         assert "http://127.0.0.1:7811" in capsys.readouterr().out
 
-    def test_install_writes_unit(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    def test_install_writes_unit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+    ) -> None:
         monkeypatch.setenv("HOME", str(tmp_path))
         # This test asserts the LINUX path, so satisfy the platform gate — the
         # suite must exercise it on macOS/Windows runners too.
@@ -2093,7 +2115,9 @@ class TestCliVerbs:
         assert "daemon-reload OK" in capsys.readouterr().out
         assert ("pod.install", "allowed") in recorded
 
-    def test_install_dies_on_reload_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_install_dies_on_reload_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setattr(rt, "require_systemd", lambda: None)
         monkeypatch.setattr(rt, "systemctl", lambda *a, **k: _cp(returncode=1))
@@ -2113,8 +2137,14 @@ class TestCliVerbs:
 class TestUpVerb:
     """Drive the big _up body end-to-end with the host boundary mocked."""
 
-    def _prep(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, ready: bool = True,
-              dist: bool = True) -> PodConfig:
+    def _prep(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        ready: bool = True,
+        dist: bool = True,
+    ) -> PodConfig:
         monkeypatch.setenv("KIROCREW_POD_WORKTREES_ROOT", str(tmp_path / "wts"))
         monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
         monkeypatch.setenv("KIROCREW_POD_ENV_DIR", str(tmp_path / "env"))
@@ -2124,7 +2154,9 @@ class TestUpVerb:
             _ready_worktree(tmp_path / "wts", "demo", venv=True, dist=dist)
         return PodConfig.load()
 
-    def test_up_happy_path_json(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    def test_up_happy_path_json(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+    ) -> None:
         c = self._prep(tmp_path, monkeypatch)
         monkeypatch.setattr(rt, "derive_port", lambda cfg, n: 7811)
         monkeypatch.setattr(rt, "is_active", lambda cfg, n: False)
@@ -2265,9 +2297,7 @@ class TestReviewRound1Fixes:
         c.env_file("x").write_text("CHECKOUT='/a/o'brien'\n")
         assert rt.read_env_file(c, "x")["CHECKOUT"] == "/a/o'brien"
 
-    def test_mint_token_quotes_ttl(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_mint_token_quotes_ttl(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path))
         c = PodConfig.load()
         home = c.home_dir("demo")
@@ -2448,9 +2478,7 @@ class TestEnvFileConcurrentWrite:
         after = env_path.read_bytes()
         assert head, "reader consumed nothing; the fixture is not exercising the seam"
         # The reader must have seen exactly one whole generation, old or new.
-        assert seen in (before, after), (
-            "torn read: the reader spliced two generations together"
-        )
+        assert seen in (before, after), "torn read: the reader spliced two generations together"
         # And the new generation must be complete on disk.
         final = rt.read_env_file(c, "demo")
         assert final["APPROVAL"] == "yolo"
@@ -2465,20 +2493,17 @@ class TestUnitExecSelfHeal:
         from kiro_crew.pod import unit as unit_mod
         from kiro_crew.pod.config import PodConfig
 
-        monkeypatch.setattr(
-            unit_mod, "unit_path", lambda cfg: tmp_path / "pod@.service"
-        )
-        (tmp_path / "pod@.service").write_text(
-            f"[Service]\n{exec_line}\nRestart=on-failure\n"
-        )
+        monkeypatch.setattr(unit_mod, "unit_path", lambda cfg: tmp_path / "pod@.service")
+        (tmp_path / "pod@.service").write_text(f"[Service]\n{exec_line}\nRestart=on-failure\n")
         return PodConfig.load()
 
     def test_dangling_binary_detected(self, tmp_path, monkeypatch):
         from kiro_crew.pod import unit as unit_mod
 
         cfg = self._cfg_with_unit(
-            tmp_path, monkeypatch,
-            f"ExecStart={tmp_path}/gone/.venv/bin/kirocrew pod _run %i",
+            tmp_path,
+            monkeypatch,
+            f"ExecStart={(tmp_path / 'gone/.venv/bin/kirocrew').as_posix()} pod _run %i",
         )
         assert unit_mod.unit_exec_ok(cfg) is False
 
@@ -2488,23 +2513,17 @@ class TestUnitExecSelfHeal:
         exe = tmp_path / "kirocrew"
         exe.write_text("#!/bin/sh\n")
         exe.chmod(0o755)
-        cfg = self._cfg_with_unit(
-            tmp_path, monkeypatch, f"ExecStart={exe} pod _run %i"
-        )
+        cfg = self._cfg_with_unit(tmp_path, monkeypatch, f"ExecStart={exe.as_posix()} pod _run %i")
         assert unit_mod.unit_exec_ok(cfg) is True
 
     def test_missing_unit_file_detected(self, tmp_path, monkeypatch):
         from kiro_crew.pod import unit as unit_mod
         from kiro_crew.pod.config import PodConfig
 
-        monkeypatch.setattr(
-            unit_mod, "unit_path", lambda cfg: tmp_path / "absent@.service"
-        )
+        monkeypatch.setattr(unit_mod, "unit_path", lambda cfg: tmp_path / "absent@.service")
         assert unit_mod.unit_exec_ok(PodConfig.load()) is False
 
-    def test_a_unit_carrying_the_removed_teardown_hook_is_not_current(
-        self, tmp_path, monkeypatch
-    ):
+    def test_a_unit_carrying_the_removed_teardown_hook_is_not_current(self, tmp_path, monkeypatch):
         """Units are written once by `pod install`, so on UPGRADE a machine keeps
         whatever it installed. Without this, an older unit's ExecStopPost would go
         on racing the pod's own subprocesses (and wiping the HOME on the stop half
@@ -2514,12 +2533,10 @@ class TestUnitExecSelfHeal:
         exe = tmp_path / "kirocrew"
         exe.write_text("#!/bin/sh\n")
         exe.chmod(0o755)
-        cfg = self._cfg_with_unit(tmp_path, monkeypatch, f"ExecStart={exe} pod _run %i")
+        cfg = self._cfg_with_unit(tmp_path, monkeypatch, f"ExecStart={exe.as_posix()} pod _run %i")
         unit_path = tmp_path / "pod@.service"
         assert unit_mod.unit_is_current(cfg) is True  # what this build renders
-        unit_path.write_text(
-            unit_path.read_text() + f"ExecStopPost={exe} pod _cleanup %i\n"
-        )
+        unit_path.write_text(unit_path.read_text() + f"ExecStopPost={exe} pod _cleanup %i\n")
         assert unit_mod.unit_is_current(cfg) is False
 
     def test_what_this_build_renders_is_current(self, cfg, monkeypatch, tmp_path):
@@ -2530,18 +2547,33 @@ class TestUnitExecSelfHeal:
         monkeypatch.setattr(unit_mod, "unit_path", lambda c: tmp_path / "pod@.service")
         # An executable that exists on every platform the suite runs on — a POSIX
         # path here made unit_exec_ok report "stale" on Windows.
-        monkeypatch.setattr(unit_mod, "_kirocrew_bin", lambda: sys.executable)
+        monkeypatch.setattr(unit_mod, "_kirocrew_argv", lambda: (sys.executable,))
         unit_mod.install_unit(cfg)
         assert unit_mod.unit_is_current(cfg) is True
 
-    def test_start_pod_reinstalls_a_stale_unit_before_booting_it(
-        self, cfg, monkeypatch
-    ):
+    def test_spaced_executable_is_quoted_and_current(self, cfg, monkeypatch, tmp_path):
+        from kiro_crew.pod import unit as unit_mod
+
+        exe = tmp_path / "venv with spaces" / "kirocrew"
+        exe.parent.mkdir()
+        exe.write_text("#!/bin/sh\n")
+        exe.chmod(0o755)
+        monkeypatch.setattr(unit_mod, "unit_path", lambda c: tmp_path / "pod@.service")
+        monkeypatch.setattr(unit_mod, "_kirocrew_argv", lambda: (str(exe),))
+        rendered = unit_mod.install_unit(cfg).read_text()
+        assert 'ExecStart="' in rendered
+        assert unit_mod.unit_is_current(cfg) is True
+
+    def test_malformed_execstart_is_stale(self, tmp_path, monkeypatch):
+        from kiro_crew.pod import unit as unit_mod
+
+        cfg = self._cfg_with_unit(tmp_path, monkeypatch, 'ExecStart="unterminated')
+        assert unit_mod.unit_exec_ok(cfg) is False
+
+    def test_start_pod_reinstalls_a_stale_unit_before_booting_it(self, cfg, monkeypatch):
         steps: list[str] = []
         monkeypatch.setattr(rt.unit_mod, "unit_is_current", lambda c: False)
-        monkeypatch.setattr(
-            rt.unit_mod, "install_unit", lambda c: steps.append("reinstall")
-        )
+        monkeypatch.setattr(rt.unit_mod, "install_unit", lambda c: steps.append("reinstall"))
 
         def _systemctl(*args, **kwargs):
             steps.append(args[0])
@@ -2555,7 +2587,8 @@ class TestUnitExecSelfHeal:
         from kiro_crew.pod import unit as unit_mod
 
         cfg = self._cfg_with_unit(
-            tmp_path, monkeypatch,
+            tmp_path,
+            monkeypatch,
             "ExecStart=python3 -m kiro_crew pod _run %i",
         )
         assert unit_mod.unit_exec_ok(cfg) is True
@@ -2668,9 +2701,7 @@ class TestSessionBus:
         assert env["XDG_RUNTIME_DIR"] == str(tmp_path / "run")
         assert env["DBUS_SESSION_BUS_ADDRESS"] == f"unix:path={sock}"
 
-    def test_derives_runtime_dir_from_uid_when_unset(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_derives_runtime_dir_from_uid_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """No ``XDG_RUNTIME_DIR`` → systemd's conventional ``/run/user/<uid>``."""
         monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
         monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
@@ -2782,17 +2813,16 @@ class TestSessionBus:
             ):
                 continue
             literal_systemd += 1
-            assert _uses_systemctl_env(node), (
-                f"line {node.lineno}: {head.value} spawned without env=_systemctl_env()"
-            )
+            assert _uses_systemctl_env(
+                node
+            ), f"line {node.lineno}: {head.value} spawned without env=_systemctl_env()"
 
         # journalctl in recent_journal is the one literal systemd spawn; if that
         # drops to zero the scan above has stopped covering anything.
         assert literal_systemd >= 1, "no literal systemd spawn found — scan is inert"
         # The variable-argv chokepoint every systemctl() call funnels through.
         chokepoint = next(
-            n for n in ast.walk(tree)
-            if isinstance(n, ast.FunctionDef) and n.name == "_run"
+            n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_run"
         )
         assert any(
             _is_subprocess_run(n) and _uses_systemctl_env(n)
@@ -2940,9 +2970,7 @@ class TestBootTimeSettings:
         monkeypatch.setattr(pod_cli, "_audit", lambda *a, **k: None)
         return PodConfig.load()
 
-    def test_up_records_the_mode(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_up_records_the_mode(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         c = self._prep_up(tmp_path, monkeypatch, active=False)
         pod_cli._up(
             c,
@@ -3023,9 +3051,7 @@ class TestBootTimeSettings:
     def test_boot_combines_crons_and_approval(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        argv = self._booted_argv(
-            tmp_path, monkeypatch, {"CRONS": "1", "APPROVAL": "reads"}
-        )
+        argv = self._booted_argv(tmp_path, monkeypatch, {"CRONS": "1", "APPROVAL": "reads"})
         assert argv == ["gateway", "--approval", "reads"]
 
     def test_up_records_crons(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -22,6 +22,7 @@ import { api } from '../../api/client'
 import { useTerminalEnabled, useTerminalTitle } from '../../utils/terminalRegistry'
 import type { usePanelTabs, ViewKind, PanelTab, TabKind } from '../../hooks/usePanelTabs'
 import { PINNED_VIEWS, useAllAppTabs } from '../../hooks/usePanelTabs'
+import { scrollMemoryKeyFor } from '../../hooks/useScrollMemory'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { useSidePanelDock } from '../../hooks/useSidePanelDock'
 import {
@@ -204,6 +205,10 @@ interface SidePanelProps {
    *  Threaded to the Artifacts tab so its rows open here instead of
    *  hard-navigating to the standalone detail page. */
   onArtifactOpen?: (slug: string) => void
+  /** Right-click "Add to context" on a file-browser row: forwards the ABSOLUTE
+   *  path and whether it is a file or a directory to the composer host, which
+   *  inserts the same `@`-mention the file picker does. */
+  onAddToContext?: (absPath: string, kind: 'file' | 'dir') => void
   projectDir?: string
   navLinks?: ExtractedLink[]
   navResolving?: boolean
@@ -354,7 +359,7 @@ export function measureSidePanelReservedW(): number {
 }
 
 export default function SidePanel({
-  tabsCtl, slot, onFileOpen, onArtifactOpen,
+  tabsCtl, slot, onFileOpen, onArtifactOpen, onAddToContext,
   projectDir, navLinks, navResolving, sources, selectedSourceUrl, onSelectSource, onReconcileSource,
   issues, selectedIssueUrl, onSelectIssue, onReconcileIssue,
   onAddSourceToChat, onSubmitComments, onFileSave, onClose,
@@ -713,6 +718,7 @@ export default function SidePanel({
                 <FilesHomePanel
                   projectDir={projectDir ?? ''}
                   onFileOpen={(abs, diff) => onFileOpen?.(abs, { diffMode: diff })}
+                  onAddToContext={onAddToContext}
                 />
               </div>
             )
@@ -762,6 +768,7 @@ export default function SidePanel({
                 onPathChange={(p) => patchTab(t.id, { path: p, title: p.replace(/\/+$/, '').split('/').pop() || p })}
                 onFileSave={onFileSave}
                 onFileOpen={onFileOpen}
+                onAddToContext={onAddToContext}
                 projectDir={projectDir}
                 onSubmitComments={onSubmitComments}
                 onTerminalSendToChat={onAddSourceToChat}
@@ -841,9 +848,11 @@ function McpAppTabBody({ tab, slot }: { tab: PanelTab; slot: string }) {
  * Rail visibility is a single app-wide preference; the rail only renders at
  * all when the chat has a project dir whose tree the backend serves.
  */
-function FileTabBody({ tab, projectDir, onContentChange, onDiskContent, onDiffModeChange, onFileSave, onFileOpen, onClose, onSubmitComments, onRevealConsumed }: {
+function FileTabBody({ tab, projectDir, scrollMemoryKey, onContentChange, onDiskContent, onDiffModeChange, onFileSave, onFileOpen, onAddToContext, onClose, onSubmitComments, onRevealConsumed }: {
   tab: PanelTab
   projectDir?: string
+  /** Cross-remount scroll identity (slot + tab id) — see `useScrollMemory`. */
+  scrollMemoryKey?: string
   onContentChange: (c: string) => void
   /** Disk-originated content (file watch / Refresh): the panel routes it here
    *  so the tab's saved baseline moves with the buffer it just replaced. */
@@ -851,6 +860,8 @@ function FileTabBody({ tab, projectDir, onContentChange, onDiskContent, onDiffMo
   onDiffModeChange: (diffMode: boolean) => void
   onFileSave: (fp: string, c: string) => Promise<void>
   onFileOpen?: (p: string, opts?: { diffMode?: boolean; replaceId?: string; canReplace?: () => boolean }) => void
+  /** Right-click "Add to context" on a rail row. */
+  onAddToContext?: (absPath: string, kind: 'file' | 'dir') => void
   onClose: () => void
   onSubmitComments?: (m: string) => void
   onRevealConsumed: () => void
@@ -867,6 +878,7 @@ function FileTabBody({ tab, projectDir, onContentChange, onDiskContent, onDiffMo
       embedded
       filePath={tab.path || ''}
       content={tab.content || ''}
+      scrollMemoryKey={scrollMemoryKey}
       onContentChange={onContentChange}
       onDiskContent={onDiskContent}
       savedBaseline={tab.savedContent}
@@ -883,6 +895,7 @@ function FileTabBody({ tab, projectDir, onContentChange, onDiskContent, onDiffMo
       browserRail={railUsable ? (
         <FileBrowserRail
           projectDir={projectDir}
+          onAddToContext={onAddToContext}
           selectedPath={tab.path || null}
           // In-place navigation: a tree click RE-TARGETS this tab (replaceId)
           // rather than spawning a sibling — only the pinned Files tab fans
@@ -902,7 +915,7 @@ function FileTabBody({ tab, projectDir, onContentChange, onDiskContent, onDiffMo
   )
 }
 
-function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDiskContent, onDiffModeChange, onRevealConsumed, onPathChange, onFileSave, onFileOpen, onSubmitComments, onTerminalSendToChat, diffLineNumbers, setDiffLineNumbers, diffSideBySide, setDiffSideBySide }: {
+function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDiskContent, onDiffModeChange, onRevealConsumed, onPathChange, onFileSave, onFileOpen, onAddToContext, onSubmitComments, onTerminalSendToChat, diffLineNumbers, setDiffLineNumbers, diffSideBySide, setDiffSideBySide }: {
   tab: PanelTab; active: boolean; slot: string
   /** The chat's project directory — the file-browser rail's tree root. */
   projectDir?: string
@@ -919,6 +932,8 @@ function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDi
   onPathChange: (p: string) => void
   onFileSave: (fp: string, c: string) => Promise<void>
   onFileOpen?: (p: string, opts?: { diffMode?: boolean; replaceId?: string; canReplace?: () => boolean }) => void
+  /** Right-click "Add to context" on a file-browser rail row. */
+  onAddToContext?: (absPath: string, kind: 'file' | 'dir') => void
   onSubmitComments?: (m: string) => void
   onTerminalSendToChat?: (text: string) => void
   diffLineNumbers: boolean; setDiffLineNumbers: (fn: (v: boolean) => boolean) => void
@@ -927,16 +942,23 @@ function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDi
   if (tab.kind === 'terminal') return <CliPanel sessionId={tab.sessionId ?? ''} cwd={tab.cwd} visible={active} onSendToChat={onTerminalSendToChat} />
   if (tab.kind === 'browser') return <WebPreviewPanel sessionKey={slot} active={active} />
   if (tab.kind === 'app') return <McpAppTabBody tab={tab} slot={slot} />
+  // Cross-remount scroll identity for document bodies. Same slot+id key shape
+  // as the app-frame list: the tab id is unique within a slot and stable in
+  // the persisted bucket, so leaving and returning to this chat resolves the
+  // same key.
+  const scrollMemoryKey = scrollMemoryKeyFor(slot, tab.id)
   if (tab.kind === 'file') {
     return (
       <FileTabBody
         tab={tab}
         projectDir={projectDir}
+        scrollMemoryKey={scrollMemoryKey}
         onContentChange={onContentChange}
         onDiskContent={onDiskContent}
         onDiffModeChange={onDiffModeChange}
         onFileSave={onFileSave}
         onFileOpen={onFileOpen}
+        onAddToContext={onAddToContext}
         onClose={onClose}
         onSubmitComments={onSubmitComments}
         onRevealConsumed={onRevealConsumed}
@@ -960,6 +982,7 @@ function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDi
         slug={tab.artifactSlug || ''}
         kind={tab.artifactKind || 'markdown'}
         content={tab.content || ''}
+        scrollMemoryKey={scrollMemoryKey}
         onClose={onClose}
         onSubmitComments={onSubmitComments}
       />

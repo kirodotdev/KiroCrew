@@ -8,16 +8,21 @@ import pytest
 
 from kiro_crew.acp.client import AcpError, AcpPromptBusy
 from kiro_crew.llm_helpers import (
+    FALLBACK_CANDIDATE_ATTEMPTS,
+    TURN_FALLBACK_ATTR,
+    FallbackState,
     PromptBusyExhaustedError,
     ToolApprovalPolicy,
     first_advertised_fallback,
+    next_fallback_candidate,
     parse_llm_json,
     parse_llm_json_list,
+    probe_fallback_restore,
     record_interaction_event,
     save_conversation_turn,
     stream_and_collect,
 )
-from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, EVENT_TOOL_CALL, LLMEvent
 
 
 class TestFirstAdvertisedFallback:
@@ -652,6 +657,623 @@ class TestStreamAndCollectModelFallback:
 
         # First call triggers fallback, second call propagates.
         assert call_count == 2
+
+
+class TestNextFallbackCandidate:
+    """Unit matrix for the throttle-fallback candidate selector."""
+
+    _ADV = ["claude-opus-5", "claude-opus-4.8", "claude-opus-4.7"]
+
+    def test_first_usable_candidate(self) -> None:
+        chain = ["claude-opus-5", "claude-opus-4.8"]
+        assert next_fallback_candidate(chain, "claude-fable-5", self._ADV) == "claude-opus-5"
+
+    def test_skips_active_model(self) -> None:
+        chain = ["claude-opus-5", "claude-opus-4.8"]
+        assert next_fallback_candidate(chain, "claude-opus-5", self._ADV) == "claude-opus-4.8"
+
+    def test_skips_active_model_case_insensitive(self) -> None:
+        chain = ["Claude-Opus-5", "claude-opus-4.8"]
+        assert next_fallback_candidate(chain, "claude-opus-5", self._ADV) == "claude-opus-4.8"
+
+    def test_skips_unadvertised_ids(self) -> None:
+        chain = ["not-served-model", "claude-opus-4.8"]
+        assert next_fallback_candidate(chain, "x", self._ADV) == "claude-opus-4.8"
+
+    def test_empty_chain_returns_none(self) -> None:
+        assert next_fallback_candidate([], "x", self._ADV) is None
+
+    def test_exhausted_chain_returns_none(self) -> None:
+        assert next_fallback_candidate(["not-served"], "x", self._ADV) is None
+
+    def test_skips_garbage_entries(self) -> None:
+        chain = ["", "  ", None, 42, "claude-opus-5"]  # type: ignore[list-item]
+        assert next_fallback_candidate(chain, "x", self._ADV) == "claude-opus-5"
+
+    def test_auto_is_a_candidate_when_advertised(self) -> None:
+        # "auto" (the backend's availability-aware routing) is the default
+        # fallback — it must be selectable like any other advertised id.
+        adv = [*self._ADV, "auto"]
+        assert next_fallback_candidate(["auto"], "claude-fable-5", adv) == "auto"
+
+    def test_auto_skipped_when_not_advertised(self) -> None:
+        # The fallthrough: a partition that does not serve "auto" skips it
+        # (the original error then surfaces) rather than sending a no-op swap.
+        assert next_fallback_candidate(["auto"], "claude-fable-5", self._ADV) is None
+
+    def test_fails_open_on_empty_advertised(self) -> None:
+        # Entitlement unknown is not entitlement denied (model_is_unusable's
+        # stance); the substitute set_model re-validates against the live list.
+        assert next_fallback_candidate(["some-model"], "x", []) == "some-model"
+        assert next_fallback_candidate(["some-model"], "x", None) == "some-model"
+
+
+class TestConfiguredFallbackChain:
+    """agent.fallback_model -> walk-order derivation (the one shared derivation)."""
+
+    def _chain_for(self, value: str) -> tuple[str, ...]:
+        from kiro_crew.llm_helpers import configured_fallback_chain
+
+        cfg = MagicMock()
+        cfg.agent.fallback_model = value
+        with patch("kiro_crew.llm_helpers.KiroCrewConfig") as kc:
+            kc.load.return_value = cfg
+            return configured_fallback_chain()
+
+    def test_empty_disables(self) -> None:
+        # ROLLBACK PIN: fallback_model "" == pre-feature behavior everywhere.
+        assert self._chain_for("") == ()
+
+    def test_auto_default_yields_auto_only(self) -> None:
+        assert self._chain_for("auto") == ("auto",)
+
+    def test_concrete_id_yields_id_then_auto(self) -> None:
+        # Fallthrough order: selected -> auto (-> backend default via
+        # set_model's own resolve when auto is unserved).
+        assert self._chain_for("claude-opus-4.8") == ("claude-opus-4.8", "auto")
+
+    def test_load_failure_disables(self) -> None:
+        from kiro_crew.llm_helpers import configured_fallback_chain
+
+        with patch("kiro_crew.llm_helpers.KiroCrewConfig") as kc:
+            kc.load.side_effect = RuntimeError("boom")
+            assert configured_fallback_chain() == ()
+
+
+class TestSetModelWitness:
+    """A non-raising set_model that did not move the model is a NO-OP, not a
+    transition — never published (walk) and never treated as restored (probe).
+    """
+
+    def _provider(self, model: str) -> MagicMock:
+        provider = MagicMock()
+        provider._model = model
+        provider.served_model = None
+        provider.available_models = None
+        provider.set_model = AsyncMock()  # no side effect: _model never moves
+        setattr(provider, TURN_FALLBACK_ATTR, None)
+        return provider
+
+    @pytest.mark.asyncio
+    async def test_unwitnessed_swap_is_not_published(self) -> None:
+        # set_model("claude-opus-4.8") silently no-ops (resolve collapsed it):
+        # the walk must skip the candidate instead of publishing a marker for
+        # a model that never took over.
+        from kiro_crew.llm_helpers import FallbackState, advance_fallback_candidate
+
+        provider = self._provider("primary-model")
+        fb = FallbackState(chain=("claude-opus-4.8",))
+        cand = await advance_fallback_candidate(provider, fb, surface="test")
+        assert cand is None
+        assert getattr(provider, TURN_FALLBACK_ATTR) is None
+
+    @pytest.mark.asyncio
+    async def test_witnessed_swap_is_published(self) -> None:
+        from kiro_crew.llm_helpers import FallbackState, advance_fallback_candidate
+
+        provider = self._provider("primary-model")
+
+        async def _move(model_id: str) -> None:
+            provider._model = model_id
+
+        provider.set_model = AsyncMock(side_effect=_move)
+        fb = FallbackState(chain=("claude-opus-4.8",))
+        cand = await advance_fallback_candidate(provider, fb, surface="test")
+        assert cand == "claude-opus-4.8"
+        assert getattr(provider, TURN_FALLBACK_ATTR) == ("primary-model", "claude-opus-4.8")
+
+    @pytest.mark.asyncio
+    async def test_noop_restore_keeps_the_marker(self) -> None:
+        # An "auto" primary that resolves to "" restores nothing: the session
+        # is still on the fallback, so the marker must survive for the next
+        # probe (clearing it re-opens the backfill permanent-pin door).
+        from kiro_crew.llm_helpers import probe_fallback_restore
+
+        provider = self._provider("fallback-model")
+        setattr(provider, TURN_FALLBACK_ATTR, ("auto", "fallback-model"))
+        await probe_fallback_restore(provider, surface="test")
+        assert getattr(provider, TURN_FALLBACK_ATTR) == ("auto", "fallback-model")
+
+    @pytest.mark.asyncio
+    async def test_witnessed_restore_clears_the_marker(self) -> None:
+        from kiro_crew.llm_helpers import probe_fallback_restore
+
+        provider = self._provider("fallback-model")
+
+        async def _move(model_id: str) -> None:
+            provider._model = model_id
+
+        provider.set_model = AsyncMock(side_effect=_move)
+        setattr(provider, TURN_FALLBACK_ATTR, ("primary-model", "fallback-model"))
+        await probe_fallback_restore(provider, surface="test")
+        assert getattr(provider, TURN_FALLBACK_ATTR) is None
+
+
+class TestProviderFallbackActive:
+    """The shared usage-attribution guard reads the sticky marker."""
+
+    def test_true_while_marker_present(self) -> None:
+        from kiro_crew.llm_helpers import provider_fallback_active
+
+        provider = MagicMock()
+        setattr(provider, TURN_FALLBACK_ATTR, ("primary-model", "fallback-model"))
+        assert provider_fallback_active(provider) is True
+
+    def test_false_without_marker_or_malformed(self) -> None:
+        from kiro_crew.llm_helpers import provider_fallback_active
+
+        provider = MagicMock(spec=[])  # no marker attribute at all
+        assert provider_fallback_active(provider) is False
+        provider2 = MagicMock()
+        setattr(provider2, TURN_FALLBACK_ATTR, "not-a-tuple")
+        assert provider_fallback_active(provider2) is False
+        provider3 = MagicMock()
+        setattr(provider3, TURN_FALLBACK_ATTR, ("only-one",))
+        assert provider_fallback_active(provider3) is False
+
+
+class TestAdvanceFallbackCandidateAutoPrimary:
+    """The shared walk seeds an empty active-model read as "auto".
+
+    ``provider_active_model`` deliberately filters the ``"auto"`` sentinel, so
+    an auto-routed session reads as ``""``. Left unseeded, that empty primary
+    (a) let the dashboard's stale-clear arm skip the slot heal — a temporary
+    fallback became a silent permanent pin — and (b) allowed an auto->auto
+    no-op swap announced by a lying notice card.
+    """
+
+    def _provider(self) -> MagicMock:
+        provider = MagicMock()
+        provider._model = "auto"
+        provider.served_model = None  # not a str -> ignored by the reader
+        provider.available_models = None  # advertised unknown -> fail-open
+
+        # Successful set_model syncs _model (real-provider behavior) so the
+        # witness observes the switch.
+        async def _move(model_id: str) -> None:
+            provider._model = model_id
+
+        provider.set_model = AsyncMock(side_effect=_move)
+        # No surviving marker: the getattr must yield a non-tuple.
+        setattr(provider, TURN_FALLBACK_ATTR, None)
+        return provider
+
+    @pytest.mark.asyncio
+    async def test_auto_chain_on_auto_session_is_exhausted_not_noop(self) -> None:
+        # chain ("auto",) on an auto-routed session: nothing to fall back to —
+        # the walk must exhaust (original error surfaces), never "swap" to the
+        # model already serving.
+        from kiro_crew.llm_helpers import FallbackState, advance_fallback_candidate
+
+        provider = self._provider()
+        fb = FallbackState(chain=("auto",))
+        cand = await advance_fallback_candidate(provider, fb, surface="test")
+        assert cand is None
+        provider.set_model.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_concrete_candidate_seeds_auto_primary(self) -> None:
+        # chain (id, "auto") on an auto-routed session: the concrete candidate
+        # applies, and the recorded primary is "auto" — the restore probe then
+        # re-enters auto routing instead of tripping the empty-primary arm.
+        from kiro_crew.llm_helpers import FallbackState, advance_fallback_candidate
+
+        provider = self._provider()
+        fb = FallbackState(chain=("claude-opus-4.8", "auto"))
+        cand = await advance_fallback_candidate(provider, fb, surface="test")
+        assert cand == "claude-opus-4.8"
+        assert fb.primary == "auto"
+        marker = getattr(provider, TURN_FALLBACK_ATTR)
+        assert marker == ("auto", "claude-opus-4.8")
+
+
+class TestFallbackState:
+    """Chain-walk state: monotonic position, no candidate revisited."""
+
+    def test_walks_in_order_and_exhausts(self) -> None:
+        st = FallbackState(("m1", "m2", "m3"))
+        adv = ["m1", "m2", "m3"]
+        assert st.next_candidate("active", adv) == "m1"
+        assert st.next_candidate("active", adv) == "m2"
+        assert st.next_candidate("active", adv) == "m3"
+        assert st.next_candidate("active", adv) is None
+        assert st.next_candidate("active", adv) is None  # stays exhausted
+
+    def test_skip_advances_past_unusable(self) -> None:
+        st = FallbackState(("active-model", "unadvertised", "m2"))
+        assert st.next_candidate("active-model", ["active-model", "m2"]) == "m2"
+        assert st.next_candidate("active-model", ["active-model", "m2"]) is None
+
+
+class TestStreamAndCollectThrottleFallback:
+    """Case 2.75: throttle-exhaustion fallback chain (agent.fallback_model)."""
+
+    _TRANSIENT = "Prompt error: {'message': 'Internal error: API Error: Internal server error'}"
+    _AUTH = "Bedrock authentication failed. Run 'ada credentials update'"
+
+    @staticmethod
+    def _provider(stream, advertised=("fb-1", "fb-2")):
+        provider = AsyncMock()
+        provider.cancel = AsyncMock()
+        provider.shutdown = AsyncMock()
+        provider.stream = stream
+        provider.available_models = MagicMock(return_value=[{"modelId": m} for m in advertised])
+        provider.served_model = "primary-model"
+        provider._model = "primary-model"
+
+        # Mirror the real substitute set_model: a successful send syncs the
+        # provider's model attrs (both AcpClient and AcpSessionProvider do).
+        # The witness in advance_fallback_candidate/probe_fallback_restore
+        # reads this to distinguish a real switch from a silent no-op.
+        async def _move(model_id: str) -> None:
+            provider._model = model_id
+            provider.served_model = model_id
+
+        provider.set_model = AsyncMock(side_effect=_move)
+        return provider
+
+    @pytest.mark.asyncio
+    async def test_fallback_serves_turn_after_budget_exhaustion(self) -> None:
+        """Same-model budget exhausts, the first advertised candidate is set
+        and serves the turn; the sticky marker is published on the provider."""
+        from kiro_crew.llm_helpers import _TRANSIENT_RETRIES
+
+        call_count = 0
+
+        async def _stream(msg):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= _TRANSIENT_RETRIES + 1:
+                raise AcpError(self._TRANSIENT)
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="fb-result")
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        provider = self._provider(_stream)
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await stream_and_collect(provider, "test", fallback_models=["fb-1", "fb-2"])
+
+        assert result == "fb-result"
+        assert call_count == _TRANSIENT_RETRIES + 2
+        provider.set_model.assert_awaited_once_with("fb-1")
+        assert getattr(provider, TURN_FALLBACK_ATTR) == ("primary-model", "fb-1")
+
+    @pytest.mark.asyncio
+    async def test_two_attempts_per_candidate_then_advance(self) -> None:
+        """A failing candidate gets exactly FALLBACK_CANDIDATE_ATTEMPTS
+        attempts, then the chain advances to the next candidate."""
+        from kiro_crew.llm_helpers import _TRANSIENT_RETRIES
+
+        call_count = 0
+        fail_until = _TRANSIENT_RETRIES + 1 + FALLBACK_CANDIDATE_ATTEMPTS
+
+        async def _stream(msg):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= fail_until:
+                raise AcpError(self._TRANSIENT)
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="fb2-result")
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        provider = self._provider(_stream)
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await stream_and_collect(provider, "test", fallback_models=["fb-1", "fb-2"])
+
+        assert result == "fb2-result"
+        # 4 same-model + 2 on fb-1 + 1 on fb-2 (success)
+        assert call_count == fail_until + 1
+        assert [c.args[0] for c in provider.set_model.await_args_list] == ["fb-1", "fb-2"]
+        assert getattr(provider, TURN_FALLBACK_ATTR) == ("primary-model", "fb-2")
+
+    @pytest.mark.asyncio
+    async def test_chain_exhaustion_surfaces_original_error_class(self) -> None:
+        """Every candidate fails: the ORIGINAL error class propagates, carrying
+        the chain's story for the delivering surface."""
+        from kiro_crew.llm_helpers import _TRANSIENT_RETRIES
+
+        call_count = 0
+
+        async def _stream(msg):
+            nonlocal call_count
+            call_count += 1
+            raise AcpError(self._TRANSIENT)
+            yield  # pragma: no cover
+
+        provider = self._provider(_stream)
+        with patch("asyncio.sleep", new_callable=AsyncMock), pytest.raises(AcpError) as ei:
+            await stream_and_collect(provider, "test", fallback_models=["fb-1", "fb-2"])
+
+        # 4 same-model + 2 per candidate × 2 candidates
+        assert call_count == (_TRANSIENT_RETRIES + 1) + 2 * FALLBACK_CANDIDATE_ATTEMPTS
+        story = getattr(ei.value, "_kc_fallback_story", "")
+        assert "fb-1" in story and "fb-2" in story
+        assert "primary-model" in story
+
+    @pytest.mark.asyncio
+    async def test_empty_chain_is_todays_behavior(self) -> None:
+        """REGRESSION PIN: with no chain configured, behavior is byte-for-byte
+        the pre-feature error surface — same attempt count, no set_model."""
+        from kiro_crew.llm_helpers import _TRANSIENT_RETRIES
+
+        call_count = 0
+
+        async def _stream(msg):
+            nonlocal call_count
+            call_count += 1
+            raise AcpError(self._TRANSIENT)
+            yield  # pragma: no cover
+
+        provider = self._provider(_stream)
+        with patch("asyncio.sleep", new_callable=AsyncMock), pytest.raises(AcpError) as ei:
+            await stream_and_collect(provider, "test")
+
+        assert call_count == _TRANSIENT_RETRIES + 1
+        provider.set_model.assert_not_awaited()
+        assert not hasattr(ei.value, "_kc_fallback_story")
+
+    @pytest.mark.asyncio
+    async def test_non_transient_error_mid_chain_propagates_immediately(self) -> None:
+        """An auth/validation error raised by a candidate fails fast — the
+        chain is for transient throttles only."""
+        from kiro_crew.llm_helpers import _TRANSIENT_RETRIES
+
+        call_count = 0
+
+        async def _stream(msg):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= _TRANSIENT_RETRIES + 1:
+                raise AcpError(self._TRANSIENT)
+            raise AcpError(self._AUTH)
+            yield  # pragma: no cover
+
+        provider = self._provider(_stream)
+        with patch("asyncio.sleep", new_callable=AsyncMock), pytest.raises(AcpError) as ei:
+            await stream_and_collect(provider, "test", fallback_models=["fb-1", "fb-2"])
+
+        assert call_count == _TRANSIENT_RETRIES + 2  # one attempt on fb-1, then fatal
+        assert "authentication" in str(ei.value)
+        provider.set_model.assert_awaited_once_with("fb-1")
+
+    @pytest.mark.asyncio
+    async def test_partial_output_never_falls_back(self) -> None:
+        """Streamed tokens block ALL retry paths, fallback included — a re-run
+        would duplicate the already-emitted output."""
+        call_count = 0
+
+        async def _stream(msg):
+            nonlocal call_count
+            call_count += 1
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="partial ")
+            raise AcpError(self._TRANSIENT)
+
+        provider = self._provider(_stream)
+        with patch("asyncio.sleep", new_callable=AsyncMock), pytest.raises(AcpError):
+            await stream_and_collect(provider, "test", fallback_models=["fb-1"])
+
+        assert call_count == 1
+        provider.set_model.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unadvertised_candidates_are_skipped(self) -> None:
+        from kiro_crew.llm_helpers import _TRANSIENT_RETRIES
+
+        call_count = 0
+
+        async def _stream(msg):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= _TRANSIENT_RETRIES + 1:
+                raise AcpError(self._TRANSIENT)
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok")
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        provider = self._provider(_stream, advertised=("fb-2",))
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await stream_and_collect(provider, "test", fallback_models=["fb-1", "fb-2"])
+
+        assert result == "ok"
+        provider.set_model.assert_awaited_once_with("fb-2")
+
+    @pytest.mark.asyncio
+    async def test_retry_transient_false_disables_fallback(self) -> None:
+        """A caller that owns the outer transient loop also owns fallback
+        policy — the inner chain must not fire."""
+        call_count = 0
+
+        async def _stream(msg):
+            nonlocal call_count
+            call_count += 1
+            raise AcpError(self._TRANSIENT)
+            yield  # pragma: no cover
+
+        provider = self._provider(_stream)
+        with patch("asyncio.sleep", new_callable=AsyncMock), pytest.raises(AcpError):
+            await stream_and_collect(
+                provider, "test", retry_transient=False, fallback_models=["fb-1"]
+            )
+
+        assert call_count == 1
+        provider.set_model.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_completed_tool_call_disables_the_chain(self) -> None:
+        """REGRESSION (review finding): a tool call can complete an EXTERNAL
+        MUTATION before any text streams. The same-model retry (Case 2,
+        pre-existing semantics) still runs, but the fallback chain must NOT
+        replay the original prompt — that would re-run the mutation once per
+        candidate attempt. Any fired tool across any attempt disables the
+        chain and the error surfaces as before the feature."""
+        from kiro_crew.llm_helpers import _TRANSIENT_RETRIES
+
+        call_count = 0
+
+        async def _stream(msg):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # Tool fires (external mutation completes), then the backend
+                # throttles before any text streams.
+                yield LLMEvent(kind=EVENT_TOOL_CALL, title="mutate-thing")
+            raise AcpError(self._TRANSIENT)
+            yield  # pragma: no cover
+
+        provider = self._provider(_stream)
+        with patch("asyncio.sleep", new_callable=AsyncMock), pytest.raises(AcpError):
+            await stream_and_collect(provider, "test", fallback_models=["fb-1", "fb-2"])
+
+        # Case 2's same-model budget still applied (pre-existing behavior),
+        # but the chain never engaged: no set_model, no extra replays.
+        assert call_count == _TRANSIENT_RETRIES + 1
+        provider.set_model.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_marker_seeded_primary_survives_second_walk(self) -> None:
+        """REGRESSION (review finding): a session already sitting on a
+        fallback (marker P->F1, restore failing) that exhausts again must
+        keep P as the primary — never record F1 as the primary — and must
+        not re-try the currently-failing F1."""
+        from kiro_crew.llm_helpers import _TRANSIENT_RETRIES
+
+        call_count = 0
+
+        async def _stream(msg):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= _TRANSIENT_RETRIES + 1:
+                raise AcpError(self._TRANSIENT)
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="fb2-result")
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        provider = self._provider(_stream)
+        provider.served_model = "fb-1"
+        provider._model = "fb-1"
+
+        async def _set_model(model_id):
+            if model_id == "true-primary":
+                # The primary is still throttled: the entry restore probe fails.
+                raise AcpError(self._TRANSIENT)
+            # Successful switch syncs the model attrs (real-provider behavior)
+            # so the walk witness observes it.
+            provider._model = model_id
+            provider.served_model = model_id
+
+        provider.set_model = AsyncMock(side_effect=_set_model)
+        setattr(provider, TURN_FALLBACK_ATTR, ("true-primary", "fb-1"))
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await stream_and_collect(provider, "test", fallback_models=["fb-1", "fb-2"])
+
+        assert result == "fb2-result"
+        # Restore probe tried the true primary; the walk then went straight to
+        # fb-2 (skipping the currently-failing fb-1) and PRESERVED the true
+        # primary in the marker — never fb-1.
+        assert [c.args[0] for c in provider.set_model.await_args_list] == [
+            "true-primary",
+            "fb-2",
+        ]
+        assert getattr(provider, TURN_FALLBACK_ATTR) == ("true-primary", "fb-2")
+
+
+class TestProbeFallbackRestore:
+    """Sticky-restore probe: one set_model(primary) at the next turn start."""
+
+    @staticmethod
+    def _provider(served="fb-1"):
+        provider = AsyncMock()
+        provider.served_model = served
+        provider._model = served
+
+        # Successful set_model syncs the model attrs (real-provider behavior);
+        # the restore witness reads this to confirm the session moved.
+        async def _move(model_id: str) -> None:
+            provider._model = model_id
+            provider.served_model = model_id
+
+        provider.set_model = AsyncMock(side_effect=_move)
+        return provider
+
+    @pytest.mark.asyncio
+    async def test_restores_primary_and_clears_marker(self) -> None:
+        provider = self._provider(served="fb-1")
+        setattr(provider, TURN_FALLBACK_ATTR, ("primary-model", "fb-1"))
+        await probe_fallback_restore(provider)
+        provider.set_model.assert_awaited_once_with("primary-model")
+        assert getattr(provider, TURN_FALLBACK_ATTR) is None
+
+    @pytest.mark.asyncio
+    async def test_failed_restore_keeps_fallback(self) -> None:
+        provider = self._provider(served="fb-1")
+        provider.set_model = AsyncMock(side_effect=AcpError("throttled again"))
+        setattr(provider, TURN_FALLBACK_ATTR, ("primary-model", "fb-1"))
+        await probe_fallback_restore(provider)
+        assert getattr(provider, TURN_FALLBACK_ATTR) == ("primary-model", "fb-1")
+
+    @pytest.mark.asyncio
+    async def test_stale_marker_cleared_without_touching_model(self) -> None:
+        """The session moved off our fallback by other means (explicit user
+        pick / reset): drop the marker, never override the newer choice."""
+        provider = self._provider(served="user-picked-model")
+        setattr(provider, TURN_FALLBACK_ATTR, ("primary-model", "fb-1"))
+        await probe_fallback_restore(provider)
+        provider.set_model.assert_not_awaited()
+        assert getattr(provider, TURN_FALLBACK_ATTR) is None
+
+    @pytest.mark.asyncio
+    async def test_no_marker_is_a_noop(self) -> None:
+        provider = self._provider()
+        setattr(provider, TURN_FALLBACK_ATTR, None)
+        await probe_fallback_restore(provider)
+        provider.set_model.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_stream_and_collect_probes_restore_at_entry(self) -> None:
+        """A provider carrying the sticky marker gets one restore attempt
+        BEFORE the turn streams."""
+
+        async def _stream(msg):
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok")
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        provider = AsyncMock()
+        provider.cancel = AsyncMock()
+        provider.shutdown = AsyncMock()
+        provider.stream = _stream
+        provider.served_model = "fb-1"
+        provider._model = "fb-1"
+
+        async def _move(model_id):
+            provider._model = model_id
+            provider.served_model = model_id
+
+        provider.set_model = AsyncMock(side_effect=_move)
+        setattr(provider, TURN_FALLBACK_ATTR, ("primary-model", "fb-1"))
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await stream_and_collect(provider, "test")
+
+        assert result == "ok"
+        provider.set_model.assert_awaited_once_with("primary-model")
+        assert getattr(provider, TURN_FALLBACK_ATTR) is None
 
 
 class TestRecordInteractionEvent:

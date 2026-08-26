@@ -23,6 +23,7 @@ import type { ChatMessage, SubagentActivity } from '../../types'
 import { SPAWN_LAUNCH_MARKER } from './types'
 
 import { i18nT } from '../../i18n/t'
+import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 /** The `spawn_run` tool result opens with "Spawned N subagent(s)." followed by
  *  one indented "  <id> (<agent>): <task>" line per accepted agent (see the
  *  spawn_run handler in mcp_core.py). Matching the header identifies the call
@@ -149,6 +150,7 @@ const SubagentRunCard = memo(function SubagentRunCard({
   launch: SpawnRunLaunch
   slot: string
 }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const dispatch = useAppDispatch()
   const activeSlot = useAppSelector(s => s.chat.activeSlot)
   const subagents = useAppSelector(s =>
@@ -184,7 +186,7 @@ const SubagentRunCard = memo(function SubagentRunCard({
   const fullyObservable = launch.ids.length >= total && counts.unknown === 0
 
   const label = counts.running > 0
-    ? `${counts.running} agent${counts.running === 1 ? '' : 's'} running`
+    ? i18nT('pages.chat.subagentRunCard.agent_running', { count: counts.running })
     // `chat.subagentQueued` is keyed by SLOT, not by launch, so the queued
     // branch must sit BELOW settled: otherwise a second wave queueing behind
     // the cap makes this (already finished) card report the other wave's queue.
@@ -195,13 +197,13 @@ const SubagentRunCard = memo(function SubagentRunCard({
       // "1 of 3 agents finished" would pin a permanently false statement in
       // scrollback, since the unobservable members can never be tallied.
       ? settled >= total && fullyObservable
-        ? `${total} agent${total === 1 ? '' : 's'} finished`
-        : `${total} agent${total === 1 ? '' : 's'} launched`
+        ? i18nT('pages.chat.subagentRunCard.agent_finished', { count: total })
+        : i18nT('pages.chat.subagentRunCard.agent_launched', { count: total })
       : queued > 0
         // Whole wave still behind the cap: "0 agents running" is technically
         // true and useless — name what is actually happening.
-        ? `${queued} agent${queued === 1 ? '' : 's'} queued`
-        : `${total} agent${total === 1 ? '' : 's'}`
+        ? i18nT('pages.chat.subagentRunCard.agent_queued', { count: queued })
+        : i18nT('pages.chat.subagentRunCard.agent', { count: total })
 
   const open = () => {
     // The Subagents panel is mounted for `activeSlot`, and split view

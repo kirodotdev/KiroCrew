@@ -19,6 +19,7 @@ import shutil
 import sys
 import time
 import urllib.parse
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -51,7 +52,10 @@ from kiro_crew.apps.dependency_ledger import (
 )
 from kiro_crew.apps.event_bus import build_broadcast_fn
 from kiro_crew.apps.execution import app_execution_denied
-from kiro_crew.apps.hooks_integration import on_app_enable
+from kiro_crew.apps.hooks_integration import (
+    on_app_enable,
+    stop_retained_startup_hooks,
+)
 
 # Aliased to keep `routes._run_lifecycle_script` patchable, which several tests rely on.
 from kiro_crew.apps.lifecycle_scripts import run_lifecycle_script as _run_lifecycle_script
@@ -533,8 +537,27 @@ async def handle_install_app(request: web.Request) -> web.Response:
 
     # Check minKiroCrewVersion before installing
     source_path = Path(source).expanduser().resolve()
+    if not source_path.is_dir():
+        detail = f"source is not a directory: {source_path}"
+        sel().log_api_access(
+            caller="dashboard",
+            operation="app_install",
+            outcome="failed",
+            resources=str(source_path),
+            error=detail,
+        )
+        return web.json_response(
+            {
+                "ok": False,
+                "name": "",
+                "error": detail,
+                "code": "source_not_directory",
+            },
+            status=400,
+        )
+
     manifest_path = source_path / "app.json"
-    lock_name = str(source_path)  # fallback lock key when manifest is unreadable
+    lock_name: str | None = None
     if manifest_path.is_file():
         try:
             manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -542,24 +565,51 @@ async def handle_install_app(request: web.Request) -> web.Response:
             if ver_err:
                 return web.json_response({"error": ver_err}, status=400)
             raw_name = manifest_data.get("name")
-            # Only a nonempty string is a usable lock key — anything else
-            # (list, dict, number) keeps the path fallback and is rejected
-            # by manifest validation inside install_app.
             if isinstance(raw_name, str) and raw_name:
                 lock_name = raw_name
         except (json.JSONDecodeError, OSError):
             pass
+
+    # A path is not an app identity: install_app may observe a manifest created
+    # or replaced after this preflight and target a different lifecycle lock.
+    if lock_name is None:
+        detail = "app manifest identity is unavailable or unreadable"
+        sel().log_api_access(
+            caller="dashboard",
+            operation="app_install",
+            outcome="denied",
+            resources=str(source_path),
+            error=detail,
+        )
+        return web.json_response(
+            {
+                "error": (
+                    "cannot install while app.json has no readable app identity; "
+                    "retry after the source manifest is stable"
+                ),
+                "code": "app_identity_unavailable",
+                "retryable": True,
+            },
+            status=409,
+        )
 
     # Per-app lifecycle lock (shared with registry installs), held across
     # the whole install transaction — copy, registration, and backend start —
     # so a concurrent uninstall cannot deregister between our copy and our
     # register, leaving a running backend for a removed app.
     async with app_lifecycle_lock(lock_name):
+        startup_refusal = await _refuse_while_startup_hook_runs(
+            lock_name, action="install"
+        )
+        if startup_refusal is not None:
+            return startup_refusal
+
         # Off-loop: the copy in install_app is blocking filesystem I/O that can
         # take minutes on large source trees — running it on the loop would trip
         # the loop-stall watchdog and kill the gateway.
         result = await asyncio.get_running_loop().run_in_executor(
-            subprocess_executor(), install_app, source
+            subprocess_executor(),
+            partial(install_app, source, expected_name=lock_name),
         )
         if not result.ok:
             sel().log_api_access(
@@ -586,6 +636,36 @@ async def handle_install_app(request: web.Request) -> web.Response:
             "registration": reg.to_dict(),
         },
         status=201,
+    )
+
+
+async def _refuse_while_startup_hook_runs(
+    name: str, *, action: str
+) -> web.Response | None:
+    """Refuse destructive lifecycle work while retained app code is still live."""
+    stopped = await stop_retained_startup_hooks(name, bounded=True)
+    if stopped:
+        return None
+
+    detail = "detached startup hook is still running or cleanup could not be verified"
+    sel().log_api_access(
+        caller="dashboard",
+        operation=f"app_{action}",
+        outcome="denied",
+        resources=name,
+        error=detail,
+    )
+    return web.json_response(
+        {
+            "error": (
+                f"cannot {action} {name!r} while its timed-out startup hook "
+                "is still running; retry after it exits"
+            ),
+            "code": "startup_hook_still_running",
+            "retryable": True,
+            "app": name,
+        },
+        status=409,
     )
 
 
@@ -618,8 +698,6 @@ async def handle_update_app(request: web.Request) -> web.Response:
     # to avoid leaving the app in a broken state on failure.
     if is_registry_source(source):
         registry_name = registry_name_from_source(source)
-        # One lock across re-install + resource swap + backend restart
-        # (install_from_registry is lock-free internally).
         async with app_lifecycle_lock(name):
             reg_install = await install_from_registry(registry_name)
             if not reg_install.get("ok"):
@@ -657,8 +735,14 @@ async def handle_update_app(request: web.Request) -> web.Response:
     # sequence must not interleave with another update/install/uninstall of
     # the same app — update_app moves user data through a shared
     # ``.{name}-data-tmp`` path, so an interleaving can destroy it.
-    # (The registry branch above locks inside install_from_registry.)
+    # (The registry branch above holds the same lock around install_from_registry.)
     async with app_lifecycle_lock(name):
+        startup_refusal = await _refuse_while_startup_hook_runs(
+            name, action="update"
+        )
+        if startup_refusal is not None:
+            return startup_refusal
+
         # Deregister old resources before update
         await _deregister_app_off_loop(name)
         await asyncio.get_running_loop().run_in_executor(
@@ -893,6 +977,15 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
     # timeout — acceptable, since those ops genuinely conflict and the lock is
     # per-app (other apps are unaffected).
     async with app_lifecycle_lock(name):
+        # A retained startup hook still owns the old app's AppContext. Bound the
+        # wait and refuse the uninstall if it remains live; deleting files or
+        # withdrawing trust first would falsely report that old code is gone.
+        startup_refusal = await _refuse_while_startup_hook_runs(
+            name, action="uninstall"
+        )
+        if startup_refusal is not None:
+            return startup_refusal
+
         # Step 0: the execution grant must be removable before anything is
         # destroyed. A grant is keyed on the app NAME alone, so one left behind
         # admits a DIFFERENT app later installed under this name — code execution
@@ -1389,6 +1482,12 @@ async def handle_disable_app(request: web.Request) -> web.Response:
     # resources — must not interleave with a concurrent install/update/
     # uninstall/enable of the same app.
     async with app_lifecycle_lock(name):
+        startup_refusal = await _refuse_while_startup_hook_runs(
+            name, action="disable"
+        )
+        if startup_refusal is not None:
+            return startup_refusal
+
         # `onDisable` is NOT run here: it runs inside `teardown_app_runtime`
         # below, so that revoking an app's execution grant runs it too. Keeping it
         # handler-only would make revoke weaker than disable — see the ordering

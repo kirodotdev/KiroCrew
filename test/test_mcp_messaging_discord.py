@@ -160,17 +160,106 @@ def test_slack_only_option_with_discord_is_refused(cron_caller, field: str, valu
     assert field in result
 
 
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("channel", "C0123ABC456"),
+        ("user", "U0123ABC456"),
+        ("blocks", [{"type": "divider"}]),
+        ("thread_ts", "1712793600.123456"),
+        ("reply_broadcast", True),
+        ("unfurl_links", False),
+        ("unfurl_media", False),
+        ("session", "discord"),
+    ],
+)
+def test_channel_target_with_a_slack_routing_field_is_refused(cron_caller, field, value) -> None:
+    """The pair addresses the destination directly, so a Slack-routing field
+    travelling with it reaches nothing.
+
+    Refused at the argument validator rather than dropped at the handler's early
+    return: the pair wins the routing, and a silently discarded ``channel`` or
+    ``thread_ts`` would let the caller read a private Webex DM as a threaded post
+    to a named Slack channel. Nothing is posted.
+    """
+    with patch("kiro_crew.mcp_core._post") as post:
+        result = _call_tool(
+            "send_message",
+            {"text": "hi", "channel_type": "webex", "target_id": "user:a@b.com", field: value},
+        )
+    post.assert_not_called()
+    assert result.startswith("Error:")
+    assert field in result
+
+
+def test_a_channel_addressed_send_does_not_claim_a_dm_or_notification(cron_caller) -> None:
+    """The addressed leg posts only to the named target and publishes no
+    dashboard notification, and the target may be a room, so the success string
+    must not borrow the DM leg's "DM + notification" claim.
+
+    Runs with an injected identity (``cron_caller``) because the addressed leg now
+    REQUIRES a strictly-resolved one; the refusal itself is pinned below.
+    """
+    with patch(
+        "kiro_crew.mcp_core._post", return_value={"ok": True, "delivered_to": "webex", "parts": 1}
+    ):
+        result = _call_tool(
+            "send_message",
+            {"text": "hi", "channel_type": "webex", "target_id": "room:Y2lzY29z"},
+        )
+    assert "DM" not in result and "notification" not in result
+    assert "webex" in result and "room:Y2lzY29z" in result
+
+
+def test_an_addressed_send_is_refused_without_a_verifiable_identity() -> None:
+    """The forwarded key becomes the governance SUBJECT at the egress chokepoint.
+
+    The lenient resolver walks process ancestors, so a sub-agent whose identity was
+    not injected resolves to its PARENT — forwarding that would hand the child the
+    parent's channel permissions. Strict resolution accepts only the
+    gateway-injected key or an HMAC-verified pid, and a channel-ADDRESSED send has
+    no benign default to fall back to (the gateway would vet it as the host), so it
+    is refused rather than sent under a borrowed identity. Nothing is posted.
+    """
+    with patch.dict("os.environ", {}, clear=True), patch("kiro_crew.mcp_core._post") as post:
+        result = _call_tool(
+            "send_message",
+            {"text": "hi", "channel_type": "webex", "target_id": "room:Y2lzY29z"},
+        )
+    post.assert_not_called()
+    assert result.startswith("Error:")
+    assert "cannot verify caller identity" in result
+
+
+def test_a_bare_send_still_works_without_a_verifiable_identity() -> None:
+    """Non-vacuity: only the ADDRESSED leg is refused.
+
+    A bare send has a benign destination (the dashboard notification), so refusing
+    it would break the default path for every unidentified caller.
+    """
+    with (
+        patch.dict("os.environ", {}, clear=True),
+        patch("kiro_crew.mcp_core._post", return_value={"ok": True}) as post,
+    ):
+        result = _call_tool("send_message", {"text": "hi"})
+    post.assert_called_once()
+    assert not result.startswith("Error:")
+
+
 def test_every_slack_only_field_is_covered_by_the_refusal() -> None:
     """The refusal list is the whole Slack option set, so none is silently kept.
 
-    ``channel_type`` is excluded alongside the routing fields because it is the
-    OTHER destination mechanism, not a Slack protocol option: it selects a non-Slack
-    transport, and combining it with these fields is refused by its own guard. A
-    genuinely new Slack option added to the schema still has to join
+    ``channel_type`` and ``target_id`` are excluded alongside the core fields
+    because together they are the OTHER destination mechanism, not Slack protocol
+    options: ``channel_type`` selects a non-Slack transport and ``target_id``
+    narrows it to one configured destination on that transport, and combining
+    either with a Slack routing field is refused by its own guard rather than
+    dropped. A genuinely new Slack option added to the schema still has to join
     ``_SLACK_ONLY_FIELDS`` or this fails, which is the point.
     """
     properties = set(_descriptor()["inputSchema"]["properties"])
-    assert set(_SLACK_ONLY_FIELDS) == properties - {"text", "title", "session", "channel_type"}
+    core = {"text", "title", "session", "channel_type", "target_id"}
+    assert set(_SLACK_ONLY_FIELDS) == properties - core
 
 
 def test_notification_only_fallback_warns_that_discord_missed(cron_caller) -> None:
@@ -253,6 +342,72 @@ async def test_discord_send_resolves_the_owner_dm_and_delivers(audit) -> None:
     transport.client.create_dm_channel.assert_awaited_once_with(OWNER_ID)
     transport.client.send_message.assert_awaited_once_with(DM_CHANNEL, "build is green")
     state.notify.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("channel", "C0123ABC456"),
+        ("thread_ts", "1712793600.123456"),
+        ("blocks", [{"type": "divider"}]),
+        ("session", "discord"),
+    ],
+)
+async def test_endpoint_refuses_a_channel_target_with_a_slack_routing_field(
+    audit, field, value
+) -> None:
+    """A DIRECT POST bypasses the MCP argument validator, so the handler owns the
+    same refusal: the pair addresses the destination directly and the early
+    return would drop a Slack-routing field without the caller seeing it."""
+    transport = _discord_transport()
+    async with TestClient(TestServer(_app(_state(transport)))) as client:
+        resp = await client.post(
+            "/api/send-message",
+            json={"text": "hi", "channel_type": "discord", "target_id": "user:1", field: value},
+        )
+        assert resp.status == 400
+        assert (await resp.json())["code"] == "slack_field_with_channel_target"
+    # Fail-closed: refused BEFORE any send or DM resolution.
+    transport.client.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_body_caller_session_is_ignored_without_internal_auth() -> None:
+    """A body-supplied ``caller_session`` is a self-declared governance identity.
+
+    Honoured only on the proven-internal transport (``internal_auth``, set solely
+    after an ``X-Internal-Secret`` match). Absent it, the addressed leg must vet
+    under the host sentinel, never the declared ``cron:*`` — otherwise a caller
+    that reached this route without the internal secret could pick a permissive
+    cron profile. This route is strict-internal today, so the guard is
+    defence-in-depth against a future reclassification.
+    """
+    seen: list[str] = []
+
+    async def _capture(state, channel_type, target_id, text, *, caller_session=""):
+        seen.append(caller_session)
+        return web.json_response({"ok": True, "delivered_to": channel_type, "parts": 1})
+
+    with patch.object(
+        __import__("kiro_crew.dashboard.handlers.messaging", fromlist=["_send_to_channel_target"]),
+        "_send_to_channel_target",
+        _capture,
+    ):
+        async with TestClient(TestServer(_app(_state(_discord_transport())))) as client:
+            # No internal_auth set on the request (the test app runs no auth
+            # middleware), so the declared cron identity must be dropped.
+            resp = await client.post(
+                "/api/send-message",
+                json={
+                    "text": "hi",
+                    "channel_type": "discord",
+                    "target_id": "user:1",
+                    "caller_session": "cron:evil",
+                },
+            )
+            assert resp.status == 200
+    assert seen == [""]
 
 
 @pytest.mark.asyncio

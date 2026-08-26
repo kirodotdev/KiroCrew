@@ -172,7 +172,6 @@ src/kiro_crew/apps/teardown.py
 src/kiro_crew/artifact_source.py
 src/kiro_crew/artifacts.py
 src/kiro_crew/atomic_write.py
-src/kiro_crew/autonudge_authz.py
 src/kiro_crew/beacon.py
 src/kiro_crew/builtin_skills/browser-recording/scripts/record_browser.py
 src/kiro_crew/builtin_skills/ios-simulator-preview/scripts/sim_mirror.py
@@ -200,7 +199,6 @@ src/kiro_crew/connections/l0_probe.py
 src/kiro_crew/connections/l0_record.py
 src/kiro_crew/connections/registry.py
 src/kiro_crew/connections/tool_aliases.py
-src/kiro_crew/context_blocks.py
 src/kiro_crew/context_management.py
 src/kiro_crew/crew_chat.py
 src/kiro_crew/cron.py
@@ -226,7 +224,6 @@ src/kiro_crew/dashboard/file_index.py
 src/kiro_crew/dashboard/handlers/agents.py
 src/kiro_crew/dashboard/handlers/artifacts.py
 src/kiro_crew/dashboard/handlers/ask_question.py
-src/kiro_crew/dashboard/handlers/auth_refresh.py
 src/kiro_crew/dashboard/handlers/cron.py
 src/kiro_crew/dashboard/handlers/discover.py
 src/kiro_crew/dashboard/handlers/files.py
@@ -248,7 +245,6 @@ src/kiro_crew/dashboard/handlers/taskrunner.py
 src/kiro_crew/dashboard/handlers/terminal.py
 src/kiro_crew/dashboard/handlers/themes.py
 src/kiro_crew/dashboard/handlers/tunnel.py
-src/kiro_crew/dashboard/handlers/usage.py
 src/kiro_crew/dashboard/handlers/webapp_preview.py
 src/kiro_crew/dashboard/handlers/weixin_qr.py
 src/kiro_crew/dashboard/handlers_channel.py
@@ -256,7 +252,6 @@ src/kiro_crew/dashboard/handlers_cloud.py
 src/kiro_crew/dashboard/handlers_instances.py
 src/kiro_crew/dashboard/loop_watchdog.py
 src/kiro_crew/dashboard/port_reclaim.py
-src/kiro_crew/dashboard/refresh_tokens.py
 src/kiro_crew/dashboard/routes/skills.py
 src/kiro_crew/dashboard/session_directive_apply.py
 src/kiro_crew/dashboard/session_health.py
@@ -268,7 +263,6 @@ src/kiro_crew/dashboard/system_notices.py
 src/kiro_crew/dashboard/tailnet_serve.py
 src/kiro_crew/dashboard/terminal_commands.py
 src/kiro_crew/dashboard/theme_validate.py
-src/kiro_crew/dashboard/token_auth.py
 src/kiro_crew/dashboard/token_secret.py
 src/kiro_crew/dashboard/turn_dispatch.py
 src/kiro_crew/dashboard/urls.py
@@ -371,7 +365,6 @@ src/kiro_crew/messaging/link.py
 src/kiro_crew/metrics/http_metrics.py
 src/kiro_crew/metrics/provider.py
 src/kiro_crew/metrics/recorder.py
-src/kiro_crew/metrics/schema.py
 src/kiro_crew/notifications/bus.py
 src/kiro_crew/notifications/resource_pressure.py
 src/kiro_crew/notifications/settings.py
@@ -379,12 +372,10 @@ src/kiro_crew/perf_sampler.py
 src/kiro_crew/platform/admission.py
 src/kiro_crew/platform/capability_bound.py
 src/kiro_crew/platform/update_layout.py
-src/kiro_crew/platform_compat.py
 src/kiro_crew/pod/cli.py
 src/kiro_crew/pod/config.py
 src/kiro_crew/pod/launchd.py
 src/kiro_crew/pod/provision.py
-src/kiro_crew/pod/runtime.py
 src/kiro_crew/pod/unit.py
 src/kiro_crew/providers/acp.py
 src/kiro_crew/publish_governance.py
@@ -412,7 +403,6 @@ src/kiro_crew/slack/events.py
 src/kiro_crew/slack/handler.py
 src/kiro_crew/slack/interactions.py
 src/kiro_crew/slack/sessions_view.py
-src/kiro_crew/subagent.py
 src/kiro_crew/subagent_persistence.py
 src/kiro_crew/subagent_scale.py
 src/kiro_crew/suggestions.py
@@ -433,13 +423,10 @@ src/kiro_crew/workflows/runner.py
 src/kiro_crew/workflows/service.py
 test/conftest.py
 test/fake_mcp_app_server.py
-test/metrics/test_context_blocks.py
 test/metrics/test_context_occupancy.py
-test/metrics/test_context_trace.py
 test/metrics/test_cost_breakdown.py
 test/metrics/test_gateway_http_metrics.py
 test/metrics/test_generation_disclosure.py
-test/metrics/test_local_exporter.py
 test/metrics/test_mcp_gateway_metrics.py
 test/metrics/test_provider_bucket_views.py
 test/metrics/test_schema.py
@@ -479,7 +466,6 @@ test/test_ai_spine_driver_coverage.py
 test/test_api_agent_config_put_succeeds.py
 test/test_api_agents_order.py
 test/test_api_file_diff.py
-test/test_api_health.py
 test/test_api_hook_test_stop_payload.py
 test/test_api_input_validation.py
 test/test_api_kiro_hooks.py
@@ -605,7 +591,6 @@ test/test_chat_turn_timeout_consistency.py
 test/test_chat_voice.py
 test/test_ci_surface_tests.py
 test/test_cli.py
-test/test_cli_commands_coverage.py
 test/test_cli_desktop.py
 test/test_cli_doctor.py
 test/test_cli_lazy_imports.py
@@ -624,7 +609,6 @@ test/test_computer_use_overlay.py
 test/test_computer_use_skylight.py
 test/test_computer_use_snapshot_macos.py
 test/test_config_meta_stamp.py
-test/test_config_patch.py
 test/test_config_rmw_preserves_settings.py
 test/test_connections_kiro_spec_fields.py
 test/test_connections_l0_probe.py
@@ -652,7 +636,6 @@ test/test_cron_cancel.py
 test/test_cron_context_meter_seed.py
 test/test_cron_count_from_disk.py
 test/test_cron_dedup.py
-test/test_cron_gateway_integration.py
 test/test_cron_history.py
 test/test_cron_locking_regression.py
 test/test_cron_message_cap.py
@@ -676,7 +659,6 @@ test/test_dashboard.py
 test/test_dashboard_approval.py
 test/test_dashboard_approval_window.py
 test/test_dashboard_branding.py
-test/test_dashboard_chat.py
 test/test_dashboard_chat_handlers_coverage.py
 test/test_dashboard_chat_rewind.py
 test/test_dashboard_config_gitlab_hosts.py
@@ -685,7 +667,6 @@ test/test_dashboard_cron_batch_delete_handler.py
 test/test_dashboard_cron_concurrent_create.py
 test/test_dashboard_file_io.py
 test/test_dashboard_files_coverage.py
-test/test_dashboard_handlers_core_coverage.py
 test/test_dashboard_hooks.py
 test/test_dashboard_no_legacy.py
 test/test_dashboard_origin.py
@@ -697,7 +678,6 @@ test/test_dashboard_sessions_memory.py
 test/test_dashboard_sessions_search.py
 test/test_dashboard_start_site.py
 test/test_dashboard_state_ws.py
-test/test_dashboard_status_snapshot.py
 test/test_dashboard_themes_coverage.py
 test/test_dashboard_updates_coverage.py
 test/test_dashboard_worktree_coverage.py
@@ -948,7 +928,6 @@ test/test_mcp_gateway_image_budget.py
 test/test_mcp_gateway_oversize.py
 test/test_mcp_gateway_pool_integ.py
 test/test_mcp_gateway_recaller.py
-test/test_mcp_gateway_rewriter.py
 test/test_mcp_gateway_rewriter_fingerprint.py
 test/test_mcp_gateway_session_inject.py
 test/test_mcp_gateway_shutdown_and_env.py
@@ -1040,11 +1019,8 @@ test/test_persistence_probe.py
 test/test_personal_shopper_no_purchase_capability.py
 test/test_pid_lifecycle.py
 test/test_platform_admission.py
-test/test_platform_compat.py
 test/test_platform_compat_coverage.py
 test/test_playwright_e2e.py
-test/test_pod.py
-test/test_pod_e2e_harness_paths.py
 test/test_pod_e2e_video_guard.py
 test/test_pod_launchd.py
 test/test_pod_self_contained.py
@@ -1077,7 +1053,6 @@ test/test_publish_feed_contract.py
 test/test_publish_providers.py
 test/test_publish_sync.py
 test/test_queue_during_subagents.py
-test/test_queue_edit.py
 test/test_queue_receipt.py
 test/test_quick_send.py
 test/test_read_bounded_json.py
@@ -1101,7 +1076,6 @@ test/test_restart_command.py
 test/test_reveal_in_file_manager.py
 test/test_reveal_path.py
 test/test_review_driver_loopback.py
-test/test_role_models.py
 test/test_route_registry.py
 test/test_run_config_write.py
 test/test_safety_override.py
@@ -1209,7 +1183,6 @@ test/test_source_providers_comment_guard.py
 test/test_source_summary.py
 test/test_spawn_followup.py
 test/test_spawn_list_redaction.py
-test/test_spec_builder_routes_coverage.py
 test/test_stable_release_gate.py
 test/test_stale_asset_watchdog.py
 test/test_steering_api.py
@@ -1226,13 +1199,11 @@ test/test_subagent_context_group_plumbing.py
 test/test_subagent_context_groups.py
 test/test_subagent_continuable.py
 test/test_subagent_cost.py
-test/test_subagent_cwd.py
 test/test_subagent_persistence.py
 test/test_subagent_reap_race.py
 test/test_subagent_scale.py
 test/test_subagent_sizing.py
 test/test_subagent_stall.py
-test/test_subagent_turn_resilience.py
 test/test_subquestion_queue.py
 test/test_sweep_stale_permissions.py
 test/test_sync_bridge.py
@@ -1241,7 +1212,6 @@ test/test_tag_session.py
 test/test_tail_fork_config.py
 test/test_tailnet_cli.py
 test/test_tailnet_e2e.py
-test/test_tailnet_governance.py
 test/test_tailnet_origin.py
 test/test_tailnet_serve.py
 test/test_tailnet_session_url.py
@@ -1266,7 +1236,6 @@ test/test_tips.py
 test/test_title_refresh.py
 test/test_to_dict_board_fields.py
 test/test_todo_list_surface.py
-test/test_token_auth.py
 test/test_toolbox_migration.py
 test/test_transcribe.py
 test/test_trusted_apps_api.py
@@ -1303,7 +1272,6 @@ test/test_website_build_heap.py
 test/test_wecom_config_handlers.py
 test/test_wecom_wire.py
 test/test_weixin_media.py
-test/test_weixin_qr.py
 test/test_weixin_wire.py
 test/test_windows_sim.py
 test/test_worker_pool.py
@@ -1319,7 +1287,6 @@ test/test_workflows_run_bounds.py
 test/test_workflows_runner.py
 test/test_workflows_store.py
 test/test_workspace_absolute_paths.py
-test/test_workspace_symlink_resume.py
 test/test_write_secret_file.py
 test/test_ws_and_plan_memory_fixes.py
 test/test_ws_event_scoping.py

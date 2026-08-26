@@ -756,7 +756,7 @@ class TestBackendGoneHandling:
         replacement = asyncio.create_task(asyncio.Event().wait(), name="cov-drain")
         respawn_args: list[tuple[Any, ...]] = []
 
-        async def _respawn(*args: Any):
+        async def _respawn(*args: Any, **kwargs: Any):
             # Mirror the real helper's contract: it stops the old inbox drain
             # before handing back a fresh backend, so the two writer tasks
             # never race onto the same socket.

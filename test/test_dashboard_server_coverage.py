@@ -82,7 +82,7 @@ class TestShouldPreventSleep:
         loader.load.side_effect = RuntimeError("corrupt config")
         monkeypatch.setattr(srv, "KiroCrewConfig", loader)
 
-        assert await srv._should_prevent_sleep(_state(sessions=MagicMock())) is False
+        assert await srv._should_prevent_sleep(_state(sessions=MagicMock()), 0) is False
 
     @pytest.mark.asyncio
     async def test_opt_out_allows_sleep_without_consulting_sessions(
@@ -93,7 +93,7 @@ class TestShouldPreventSleep:
         monkeypatch.setattr(srv, "KiroCrewConfig", loader)
         sessions = MagicMock()
 
-        assert await srv._should_prevent_sleep(_state(sessions=sessions)) is False
+        assert await srv._should_prevent_sleep(_state(sessions=sessions), 0) is False
         assert not sessions.any_active_turn.called
 
     @pytest.mark.asyncio
@@ -102,7 +102,7 @@ class TestShouldPreventSleep:
         loader.load.return_value = _cfg(prevent_sleep=True)
         monkeypatch.setattr(srv, "KiroCrewConfig", loader)
 
-        assert await srv._should_prevent_sleep(_state(sessions=None)) is False
+        assert await srv._should_prevent_sleep(_state(sessions=None), 0) is False
 
     @pytest.mark.asyncio
     async def test_active_turn_blocks_sleep(self, monkeypatch) -> None:
@@ -111,7 +111,7 @@ class TestShouldPreventSleep:
         monkeypatch.setattr(srv, "KiroCrewConfig", loader)
         sessions = MagicMock(any_active_turn=MagicMock(return_value=True))
 
-        assert await srv._should_prevent_sleep(_state(sessions=sessions)) is True
+        assert await srv._should_prevent_sleep(_state(sessions=sessions), 0) is True
 
     @pytest.mark.asyncio
     async def test_active_turn_probe_failure_allows_sleep(self, monkeypatch) -> None:
@@ -122,7 +122,7 @@ class TestShouldPreventSleep:
             any_active_turn=MagicMock(side_effect=RuntimeError("map busy"))
         )
 
-        assert await srv._should_prevent_sleep(_state(sessions=sessions)) is False
+        assert await srv._should_prevent_sleep(_state(sessions=sessions), 0) is False
 
 
 # ── _extra_frame_ancestors ──────────────────────────────────────────────
@@ -506,7 +506,7 @@ class TestArmPreventSleepPoll:
         monkeypatch.setattr(srv, "SleepInhibitor", lambda: inhibitor)
         monkeypatch.setattr(srv, "_PREVENT_SLEEP_POLL_INTERVAL_SECS", interval)
         state = _state()
-        srv._arm_prevent_sleep_poll(state)
+        srv._arm_prevent_sleep_poll(state, 0)
         return state
 
     @pytest.mark.asyncio
@@ -515,7 +515,7 @@ class TestArmPreventSleepPoll:
     ) -> None:
         polled = asyncio.Event()
 
-        async def _should(_state_arg: Any) -> bool:
+        async def _should(_state_arg: Any, _port: int) -> bool:
             polled.set()
             return True
 
@@ -536,7 +536,7 @@ class TestArmPreventSleepPoll:
     async def test_a_refusing_inhibitor_keeps_the_poll_alive(self, monkeypatch) -> None:
         polled = asyncio.Event()
 
-        async def _should(_state_arg: Any) -> bool:
+        async def _should(_state_arg: Any, _port: int) -> bool:
             polled.set()
             return True
 

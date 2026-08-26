@@ -275,3 +275,65 @@ describe('placement: a per-session tab, not a global page', () => {
     expect(screen.queryByRole('combobox')).toBeNull()
   })
 })
+
+describe('per-turn billing column', () => {
+  it('shows credits beside a turn that carries them, plus the column label and the total', () => {
+    render(
+      <ContextBreakdownPanel
+        trace={trace({
+          turns: [
+            turn({ credits: 3.5, duration_ms: 42_000 }),
+            turn({ ts: '2026-08-04T00:01:00Z', credits: 1.25 }),
+          ],
+          totals: { request_header: 3152, your_message: 12 },
+          injected_chars: 3164,
+          user_chars: 12,
+        })}
+        isLoading={false}
+      />,
+    )
+    expect(screen.getByText('Credits')).toBeInTheDocument()
+    // The credits label lives on the AXIS row, aligned above the fourth grid
+    // column — a label on the divider left "chars" sitting over the credits
+    // values of every row above it.
+    const axisRow = screen.getByText('chars').parentElement as HTMLElement
+    expect(within(axisRow).getByText('Credits')).toBeInTheDocument()
+    expect(axisRow.className).toContain('4rem')
+    expect(screen.getByText('3.5')).toBeInTheDocument()
+    expect(screen.getByText('1.25')).toBeInTheDocument()
+    // The whole-window row totals the same figures (rounded to one decimal).
+    expect(screen.getByTitle('Credits across the traced turns')).toHaveTextContent('4.8')
+  })
+
+  it('renders no billing column at all when no turn carries credits', () => {
+    render(
+      <ContextBreakdownPanel
+        trace={trace({
+          turns: [turn(), turn({ ts: '2026-08-04T00:01:00Z' })],
+          totals: { request_header: 3152, your_message: 12 },
+          injected_chars: 3164,
+          user_chars: 12,
+        })}
+        isLoading={false}
+      />,
+    )
+    // Pre-recorder history: three columns, no dash column and no label.
+    expect(screen.queryByText('Credits')).toBeNull()
+  })
+
+  it('marks a billing-less turn with a dash when its siblings are billed', () => {
+    render(
+      <ContextBreakdownPanel
+        trace={trace({
+          turns: [turn({ credits: 2 }), turn({ ts: '2026-08-04T00:01:00Z' })],
+          totals: { request_header: 3152, your_message: 12 },
+          injected_chars: 3164,
+          user_chars: 12,
+        })}
+        isLoading={false}
+      />,
+    )
+    expect(screen.getByText('Credits')).toBeInTheDocument()
+    expect(screen.getByText('—')).toBeInTheDocument()
+  })
+})

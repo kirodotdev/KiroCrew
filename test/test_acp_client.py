@@ -9548,25 +9548,25 @@ class TestAcpClientIsShellSignal:
         assert not_shell.is_shell is False
 
 
-class TestSpawnEnvChannelCredentialScrub:
-    """The default auto/standard ACP spawn path scrubs gateway channel creds.
+class TestSpawnEnvScrub:
+    """The default auto/standard ACP spawn path applies the full child scrub.
 
-    Guards the exact production path Codex flagged: ``AcpClient._spawn`` copies a
-    raw ``os.environ`` and calls ``wrap_argv`` directly (not
-    ``sandboxed_spawn_argv``), and the default tier's launcher does NOT strip
-    ``_AGENT_DENIED_ENV_KEYS`` — so the parent-level ``scrub_agent_denied_env``
-    must remove them before the child inherits the environment.
+    The parent-side enforcement is mandatory for raw Windows Kiro delegation;
+    POSIX launchers apply the same sensitive/Python scrub inline.
     """
 
     @pytest.mark.asyncio
-    async def test_client_spawn_scrubs_channel_creds_on_default_auto(self, monkeypatch):
+    async def test_client_spawn_scrubs_sensitive_env_on_default_auto(self, monkeypatch):
         monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "0000:FAKE-telegram")
         monkeypatch.setenv("WECOM_BOT_ID", "FAKE-wecom-bot")
         monkeypatch.setenv("WECOM_SECRET", "FAKE-wecom-secret")
         monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-FAKE")
         monkeypatch.setenv("KIROCREW_OWNER_ID", "U_FAKE_OWNER")
-        # A credential the standard sandbox intentionally exposes + a benign key
-        # must both survive the parent scrub.
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "FAKE-secret")
+        monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/fake-agent.sock")
+        monkeypatch.setenv("PYTHONPATH", "/gateway/pythonpath")
+        monkeypatch.setenv("PYTHONHOME", "/gateway/pythonhome")
+        # AWS account identity and a benign key are not denied.
         monkeypatch.setenv("AWS_ACCESS_KEY_ID", "FAKE-akid")
         monkeypatch.setenv("KIROCREW_UNRELATED_KEEPME", "keep-this-value")
 
@@ -9603,8 +9603,12 @@ class TestSpawnEnvChannelCredentialScrub:
             "WECOM_SECRET",
             "SLACK_BOT_TOKEN",
             "KIROCREW_OWNER_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "SSH_AUTH_SOCK",
+            "PYTHONPATH",
+            "PYTHONHOME",
         ):
-            assert key not in env, f"{key} leaked into default-auto ACP child env"
+            assert key not in env, f"{key} leaked into ACP child env"
         assert env.get("KIROCREW_UNRELATED_KEEPME") == "keep-this-value"
         assert env.get("AWS_ACCESS_KEY_ID") == "FAKE-akid"
 

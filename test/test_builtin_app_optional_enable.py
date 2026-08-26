@@ -865,3 +865,420 @@ class TestProperty7APIReturnsCompleteManifest:
         assert manifest["tags"] == ["hidden"]
         assert manifest["permissions"]["api"] == ["/api/test"]
         assert manifest["ui"]["pages"][0]["label"] == "Hidden"
+
+
+# ---------------------------------------------------------------------------
+# Default-on backfill: reaching installs that registered before the exemption
+# ---------------------------------------------------------------------------
+
+
+def _register_builtin_disabled(monkeypatch, tmp_path, name, *, backfilled: bool):
+    """Register *name* as a builtin and leave its record DISABLED.
+
+    Reproduces the state this backfill exists for: an install that registered the
+    app while it was still default-off. Written through the real registration
+    path first so ``source``/``origin`` carry genuine builtin provenance, then
+    flipped off — a hand-built record would not exercise
+    ``_builtin_owns_install``.
+    """
+    import kiro_crew.apps.manager as mgr
+
+    _ship_builtin(monkeypatch, tmp_path, name)
+    monkeypatch.setattr(mgr, "_BUILTIN_APPS", [{
+        "name": name,
+        "version": "1.0.0",
+        "displayName": name,
+        "description": "Registered before the default-on exemption existed",
+        "author": "kirocrew",
+        "defaultEnabled": False,
+    }])
+    monkeypatch.setattr(mgr, "_orphaned_builtins_cache", None)
+    monkeypatch.setattr(mgr, "_DEFAULT_ON_BUILTINS", frozenset({name}))
+    # Registered while the promotion did NOT yet exist, which is the whole premise:
+    # release N ships the app default-off, release N+1 adds it to the promotion set.
+    # Setting the set before registering would make the record born flagged (see
+    # test_a_fresh_registration_is_born_flagged) and there would be nothing owed.
+    monkeypatch.setattr(mgr, "_DEFAULT_ON_BACKFILL", frozenset())
+    register_builtin_apps()
+    meta = _read_installed(name)
+    assert meta is not None and meta.enabled is False
+    assert meta.defaultOnBackfilled is False
+    if backfilled:
+        monkeypatch.setattr(mgr, "_DEFAULT_ON_BACKFILL", frozenset({name}))
+    return meta
+
+
+class TestDefaultOnBackfill:
+    """``backfill_default_on_builtins()`` — the one-shot that reaches existing installs."""
+
+    def test_flips_a_disabled_promoted_builtin(self, app_home, monkeypatch, tmp_path):
+        """The case the backfill exists for: promotion owed, record still disabled."""
+        from kiro_crew.apps.manager import backfill_default_on_builtins
+
+        _register_builtin_disabled(monkeypatch, tmp_path, "late-default-on", backfilled=True)
+
+        assert backfill_default_on_builtins() == ["late-default-on"]
+        meta = _read_installed("late-default-on")
+        assert meta is not None
+        assert meta.enabled is True
+
+    def test_does_not_read_the_fresh_install_allowlist(self, app_home, monkeypatch, tmp_path):
+        """A default-on builtin NOT owed a promotion is left alone.
+
+        ``_DEFAULT_ON_BUILTINS`` answers what a fresh install enables;
+        ``_DEFAULT_ON_BACKFILL`` answers which promotion has not reached older
+        installs. Reading the first for the second question re-enables apps that
+        users deliberately turned off — the concrete case is ``projects``, which
+        has been default-on far longer than the allowlist has existed, so every
+        disabled record for it is an opt-out.
+        """
+        from kiro_crew.apps.manager import backfill_default_on_builtins
+
+        _register_builtin_disabled(monkeypatch, tmp_path, "long-default-on", backfilled=False)
+
+        assert backfill_default_on_builtins() == []
+        meta = _read_installed("long-default-on")
+        assert meta is not None
+        assert meta.enabled is False
+
+    def test_projects_is_not_backfilled(self):
+        """Ratchet on the real sets, not a fixture.
+
+        ``projects`` (Task Runner) shipped default-on long before the exemption
+        allowlist existed, so it has been enabled and visible in the sidebar on
+        every existing install; a disabled record is a user who found it and
+        turned it off. Adding it here would silently reverse that.
+        """
+        import kiro_crew.apps.manager as mgr
+
+        assert "projects" not in mgr._DEFAULT_ON_BACKFILL
+
+    def test_backfill_targets_are_all_default_on(self):
+        """A backfilled app must also be one a FRESH install enables.
+
+        Otherwise the backfill would enable something the shipped policy says
+        should be off, which is a promotion nobody declared.
+        """
+        import kiro_crew.apps.manager as mgr
+
+        stray = set(mgr._DEFAULT_ON_BACKFILL) - set(mgr._DEFAULT_ON_BUILTINS)
+        assert not stray, f"backfilled but not default-on: {sorted(stray)}"
+
+    def test_does_not_touch_a_user_owned_entry(self, app_home, monkeypatch, tmp_path):
+        """A user install under the same name keeps its own state.
+
+        Same boundary ``register_builtin_apps()`` keeps via
+        ``_builtin_owns_install``: the backfill must not enable something the
+        user installed and disabled themselves.
+        """
+        import kiro_crew.apps.manager as mgr
+        from kiro_crew.apps.manager import backfill_default_on_builtins
+
+        monkeypatch.setattr(mgr, "_DEFAULT_ON_BACKFILL", frozenset({"user-owned"}))
+        _write_installed("user-owned", InstalledApp(
+            name="user-owned",
+            version="1.0.0",
+            displayName="User owned",
+            enabled=False,
+            source="/home/someone/apps/user-owned",
+            origin="local",
+        ))
+
+        assert backfill_default_on_builtins() == []
+        meta = _read_installed("user-owned")
+        assert meta is not None
+        assert meta.enabled is False
+
+    def test_reports_nothing_when_already_enabled(self, app_home, monkeypatch, tmp_path):
+        """An already-enabled app is not reported as flipped.
+
+        The return value is what the caller logs, so a no-op start must not
+        claim it enabled something.
+        """
+        import kiro_crew.apps.manager as mgr
+        from kiro_crew.apps.manager import backfill_default_on_builtins
+
+        _ship_builtin(monkeypatch, tmp_path, "already-on")
+        monkeypatch.setattr(mgr, "_BUILTIN_APPS", [{
+            "name": "already-on",
+            "version": "1.0.0",
+            "displayName": "Already on",
+            "description": "Default-on and already enabled",
+            "author": "kirocrew",
+            "defaultEnabled": True,
+        }])
+        monkeypatch.setattr(mgr, "_orphaned_builtins_cache", None)
+        monkeypatch.setattr(mgr, "_DEFAULT_ON_BUILTINS", frozenset({"already-on"}))
+        monkeypatch.setattr(mgr, "_DEFAULT_ON_BACKFILL", frozenset({"already-on"}))
+        register_builtin_apps()
+        assert _read_installed("already-on").enabled is True  # precondition
+
+        assert backfill_default_on_builtins() == []
+        assert _read_installed("already-on").enabled is True
+
+    def test_honors_governance_deny(self, app_home, monkeypatch, tmp_path):
+        """A deny-by-default host policy is not bypassed by this path.
+
+        ``register_builtin_apps()`` re-applies ``_app_activation_denied`` to a
+        default-on builtin; arriving through the backfill instead must not be a
+        way around it.
+        """
+        import kiro_crew.apps.manager as mgr
+        from kiro_crew.apps.manager import backfill_default_on_builtins
+
+        _register_builtin_disabled(monkeypatch, tmp_path, "gov-denied", backfilled=True)
+        monkeypatch.setattr(mgr, "_app_activation_denied", lambda name: "denied by policy")
+
+        assert backfill_default_on_builtins() == []
+        meta = _read_installed("gov-denied")
+        assert meta is not None
+        assert meta.enabled is False
+
+    def test_ignores_an_app_this_install_never_registered(self, app_home, monkeypatch):
+        """An allowlist name with no record on disk is skipped, not created.
+
+        An older wheel may not ship the app at all; the backfill reads existing
+        state and must never conjure an install.
+        """
+        import kiro_crew.apps.manager as mgr
+        from kiro_crew.apps.manager import backfill_default_on_builtins
+
+        monkeypatch.setattr(mgr, "_DEFAULT_ON_BACKFILL", frozenset({"never-shipped"}))
+
+        assert backfill_default_on_builtins() == []
+        assert _read_installed("never-shipped") is None
+
+    def test_runs_once_per_app_then_respects_a_disable(self, app_home, monkeypatch, tmp_path):
+        """The load-bearing property: a second run must not override a disable.
+
+        Disabling the app is the only way to get a replaced host surface back, so
+        a backfill that re-ran would make the promotion impossible to opt out of.
+        """
+        from kiro_crew.apps.manager import backfill_default_on_builtins
+
+        _register_builtin_disabled(monkeypatch, tmp_path, "once-only", backfilled=True)
+
+        assert backfill_default_on_builtins() == ["once-only"]
+        # The user turns it back off.
+        meta = _read_installed("once-only")
+        meta.enabled = False
+        _write_installed("once-only", meta)
+
+        assert backfill_default_on_builtins() == []
+        assert _read_installed("once-only").enabled is False
+
+    def test_audits_the_activation(self, app_home, monkeypatch, tmp_path):
+        """Activating an app with no user request behind it is recorded in SEL.
+
+        The dashboard and CLI enable paths are reachable only by someone asking;
+        this one runs at startup, so without an event an operator cannot tell when
+        the app became active or why.
+        """
+        import kiro_crew.sel as sel_mod
+        from kiro_crew.apps.manager import backfill_default_on_builtins
+
+        _register_builtin_disabled(monkeypatch, tmp_path, "audited-app", backfilled=True)
+        events: list[dict] = []
+
+        class _Sel:
+            def log_api_access(self, **kw):
+                events.append(kw)
+
+        monkeypatch.setattr(sel_mod, "sel", lambda: _Sel())
+
+        assert backfill_default_on_builtins() == ["audited-app"]
+
+        assert len(events) == 1, "activation was not audited"
+        assert events[0]["operation"] == "app_default_on_backfill"
+        assert events[0]["outcome"] == "allowed"
+        assert "audited-app" in events[0]["resources"]
+
+    def test_a_failing_audit_sink_does_not_lose_the_promotion(
+        self, app_home, monkeypatch, tmp_path
+    ):
+        """Losing the audit line must not refuse the activation.
+
+        Same trade the trust-grant withdrawal above makes: the record is emitted
+        after the fact and never allowed to fail the operation.
+        """
+        import kiro_crew.sel as sel_mod
+        from kiro_crew.apps.manager import backfill_default_on_builtins
+
+        _register_builtin_disabled(monkeypatch, tmp_path, "audit-down", backfilled=True)
+
+        def _boom():
+            raise RuntimeError("sel sink unavailable")
+
+        monkeypatch.setattr(sel_mod, "sel", _boom)
+
+        assert backfill_default_on_builtins() == ["audit-down"]
+        assert _read_installed("audit-down").enabled is True
+
+    def test_a_failed_write_delivers_nothing_and_is_retried(
+        self, app_home, monkeypatch, tmp_path
+    ):
+        """A failed record write leaves NOTHING half-done, and the next start retries.
+
+        This is what one document buys. With a separate marker file there is no
+        correct ordering: marker-last loses the record of an enable that happened
+        (re-applied forever, reversing the user's disable), and marker-first can
+        outlive a failed flip (skipped forever, never delivered). Here the flag and
+        `enabled` land or fail together, so a failure is simply not-yet-done.
+
+        Pins the persisted outcome, not the order of the in-memory append: the
+        write raising propagates out of the call, so no caller ever sees a return
+        value to be misled by.
+        """
+        import kiro_crew.apps.manager as mgr
+        from kiro_crew.apps.manager import backfill_default_on_builtins
+
+        _register_builtin_disabled(monkeypatch, tmp_path, "write-fails", backfilled=True)
+
+        boom = {"on": True}
+        real_write = mgr._write_installed
+
+        def _maybe_fail(name, meta):
+            if boom["on"] and name == "write-fails":
+                raise OSError("no space left on device")
+            return real_write(name, meta)
+
+        monkeypatch.setattr(mgr, "_write_installed", _maybe_fail)
+
+        with pytest.raises(OSError):
+            backfill_default_on_builtins()
+
+        # Nothing persisted: still disabled, still unflagged.
+        meta = _read_installed("write-fails")
+        assert meta is not None
+        assert meta.enabled is False
+        assert meta.defaultOnBackfilled is False
+
+        boom["on"] = False
+        assert backfill_default_on_builtins() == ["write-fails"]
+        assert _read_installed("write-fails").enabled is True
+
+    def test_records_the_promotion_when_it_flips_nothing(self, app_home, monkeypatch, tmp_path):
+        """An already-enabled app is FLAGGED without being reported as flipped.
+
+        The flag is what stops a later start from reading the user's subsequent
+        disable as a promotion still owed; the return value stays empty because
+        nothing was activated.
+        """
+        import kiro_crew.apps.manager as mgr
+        from kiro_crew.apps.manager import backfill_default_on_builtins
+
+        _ship_builtin(monkeypatch, tmp_path, "on-and-unflagged")
+        monkeypatch.setattr(mgr, "_BUILTIN_APPS", [{
+            "name": "on-and-unflagged",
+            "version": "1.0.0",
+            "displayName": "On and unflagged",
+            "description": "Enabled by the user before the promotion shipped",
+            "author": "kirocrew",
+            "defaultEnabled": True,
+        }])
+        monkeypatch.setattr(mgr, "_orphaned_builtins_cache", None)
+        monkeypatch.setattr(mgr, "_DEFAULT_ON_BUILTINS", frozenset({"on-and-unflagged"}))
+        monkeypatch.setattr(mgr, "_DEFAULT_ON_BACKFILL", frozenset())
+        register_builtin_apps()
+        meta = _read_installed("on-and-unflagged")
+        assert meta.enabled is True and meta.defaultOnBackfilled is False  # precondition
+
+        monkeypatch.setattr(mgr, "_DEFAULT_ON_BACKFILL", frozenset({"on-and-unflagged"}))
+        assert backfill_default_on_builtins() == []
+        assert _read_installed("on-and-unflagged").defaultOnBackfilled is True
+
+    def test_a_fresh_registration_is_born_flagged(self, app_home, monkeypatch, tmp_path):
+        """A record created under the promoted default owes nothing.
+
+        Without this, "install, disable the app in that same session, restart"
+        re-enables it: the backfill would find a disabled record it had never
+        flagged and read the user's own choice as a promotion still owed. There is
+        no ordering fix for that, because on a fresh install the record may not
+        exist yet when first-run setup runs.
+        """
+        import kiro_crew.apps.manager as mgr
+        from kiro_crew.apps.manager import backfill_default_on_builtins, disable_app
+
+        _ship_builtin(monkeypatch, tmp_path, "born-flagged")
+        monkeypatch.setattr(mgr, "_BUILTIN_APPS", [{
+            "name": "born-flagged",
+            "version": "1.0.0",
+            "displayName": "Born flagged",
+            "description": "Registered on a fresh install under the promoted default",
+            "author": "kirocrew",
+            "defaultEnabled": True,
+        }])
+        monkeypatch.setattr(mgr, "_orphaned_builtins_cache", None)
+        monkeypatch.setattr(mgr, "_DEFAULT_ON_BUILTINS", frozenset({"born-flagged"}))
+        monkeypatch.setattr(mgr, "_DEFAULT_ON_BACKFILL", frozenset({"born-flagged"}))
+
+        register_builtin_apps()
+        assert _read_installed("born-flagged").defaultOnBackfilled is True
+
+        disable_app("born-flagged")
+        assert backfill_default_on_builtins() == []
+        assert _read_installed("born-flagged").enabled is False
+
+    def test_a_governance_denied_registration_is_still_owed_the_promotion(
+        self, app_home, monkeypatch, tmp_path
+    ):
+        """A fresh install that governance DENIED did not receive the promotion.
+
+        Registration gates the app off, so flagging the record would strand it:
+        relaxing the policy later could never deliver the launcher, because the
+        record would claim it already had. Matches the rule the backfill applies
+        to the same situation.
+        """
+        import kiro_crew.apps.manager as mgr
+        from kiro_crew.apps.manager import backfill_default_on_builtins
+
+        _ship_builtin(monkeypatch, tmp_path, "denied-at-birth")
+        monkeypatch.setattr(mgr, "_BUILTIN_APPS", [{
+            "name": "denied-at-birth",
+            "version": "1.0.0",
+            "displayName": "Denied at birth",
+            "description": "Promoted builtin that governance denied on first registration",
+            "author": "kirocrew",
+            "defaultEnabled": True,
+        }])
+        monkeypatch.setattr(mgr, "_orphaned_builtins_cache", None)
+        monkeypatch.setattr(mgr, "_DEFAULT_ON_BUILTINS", frozenset({"denied-at-birth"}))
+        monkeypatch.setattr(mgr, "_DEFAULT_ON_BACKFILL", frozenset({"denied-at-birth"}))
+        monkeypatch.setattr(mgr, "_app_activation_denied", lambda name: "denied by policy")
+
+        register_builtin_apps()
+        meta = _read_installed("denied-at-birth")
+        assert meta is not None
+        assert meta.enabled is False
+        assert meta.defaultOnBackfilled is False, "denied app was recorded as already promoted"
+
+        # Policy relaxed: the promotion is still owed, so it is delivered.
+        monkeypatch.setattr(mgr, "_app_activation_denied", lambda name: None)
+        assert backfill_default_on_builtins() == ["denied-at-birth"]
+        assert _read_installed("denied-at-birth").enabled is True
+
+    def test_a_later_promotion_is_not_swallowed_by_an_earlier_one(
+        self, app_home, monkeypatch, tmp_path
+    ):
+        """A promotion added in a LATER release still reaches the install.
+
+        Simulates the real sequence: release N delivers one promotion, release N+1
+        adds a second name to the set. Any design that records "the backfill has
+        run" once for the whole install -- rather than once per app -- would make
+        the second run a no-op and the app added later would never arrive.
+        """
+        import kiro_crew.apps.manager as mgr
+        from kiro_crew.apps.manager import backfill_default_on_builtins
+
+        # Release N: one promotion, delivered.
+        _register_builtin_disabled(monkeypatch, tmp_path, "shipped-earlier", backfilled=True)
+        assert backfill_default_on_builtins() == ["shipped-earlier"]
+
+        # Release N+1: a second name joins the set. Its record is still disabled
+        # on this install, exactly like the first one was.
+        _register_builtin_disabled(monkeypatch, tmp_path, "added-later", backfilled=True)
+        monkeypatch.setattr(
+            mgr, "_DEFAULT_ON_BACKFILL", frozenset({"shipped-earlier", "added-later"})
+        )
+
+        assert backfill_default_on_builtins() == ["added-later"]

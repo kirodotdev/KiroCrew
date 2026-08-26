@@ -154,8 +154,8 @@ export default function LabelsPanel({
                 key={l.name}
                 onClick={() => onPick?.(l.name)}
                 title={l.description
-                  ? `${l.description} — ${l.count} open`
-                  : `${l.count} open issue${l.count === 1 ? '' : 's'}`}
+                  ? i18nT('apps.issueRadar.views.tagging.labelsPanel.open_with_description', { description: l.description, count: l.count })
+                  : i18nT('apps.issueRadar.views.tagging.labelsPanel.open_issue', { count: l.count })}
                 style={{
                   backgroundColor: hexToRgba(l.color, unused ? 0.08 : 0.2),
                   color: 'var(--text)',

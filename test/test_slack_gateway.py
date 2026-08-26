@@ -6,6 +6,7 @@ import ast
 import asyncio
 import json
 import logging
+import os
 import sys
 import threading
 import time
@@ -2404,8 +2405,109 @@ class TestInitAutonudge:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def _git_exec_fake(
+    *,
+    branch: bytes = b"mainline\n",
+    fetch_rc: int = 0,
+    diff_rc: int = 1,
+    status_out: bytes = b"",
+    status_rc: int = 0,
+    reset_rc: int = 0,
+    other_rc: int = 0,
+    target: bytes = b"0" * 40 + b"\n",
+    added_out: bytes = b"",
+    added_rc: int = 0,
+    record: list | None = None,
+):
+    """A `create_subprocess_exec` fake that dispatches on the GIT SUBCOMMAND.
+
+    Deliberately NOT a call counter. `_auto_apply_update` has gained git calls
+    three times, and each time every counter-keyed fake silently re-mapped its
+    own cases -- the stub written for `fetch` started answering the `diff`, and
+    the tests failed for a reason that had nothing to do with what they assert.
+    Dispatching on argv keeps each stub bound to the command it describes, so
+    inserting a call is not a test edit.
+
+    Defaults describe the interesting path: a branch is detected, the fetch
+    succeeds, the diff reports changes (rc=1), the tree is clean, the target adds
+    no colliding paths, the reset succeeds, and non-git spawns succeed.
+    `other_rc` fails the latter while leaving every git step green.
+
+    Note that `git diff` is now TWO distinct calls with opposite rc conventions,
+    so this dispatches on their flags. Subcommand alone is not always enough --
+    when a new call reuses a subcommand, the discriminator has to get narrower.
+    """
+
+    async def _fake(*args, **kwargs):
+        if record is not None:
+            record.append(args)
+        argv = [a for a in args if isinstance(a, str)]
+        proc = AsyncMock()
+        proc.kill = MagicMock()
+        out: bytes = b""
+        rc = 0
+        if "rev-parse" in argv and "--abbrev-ref" in argv:
+            out = branch
+        elif "rev-parse" in argv:
+            out = target
+        elif "rev-list" in argv:
+            out = b"0\n"
+        elif "fetch" in argv:
+            rc = fetch_rc
+        elif "diff" in argv and any(a.startswith("--diff-filter") for a in argv):
+            # The added-paths listing before the reset. Distinguished by its
+            # flags, not by call order: the `--quiet` check below uses rc as a
+            # BOOLEAN ("there are differences"), while this one uses rc for
+            # success and returns paths on stdout -- so answering both from one
+            # `"diff" in argv` branch made every happy-path test refuse.
+            out = added_out
+            rc = added_rc
+        elif "diff" in argv:
+            rc = diff_rc
+        elif "status" in argv:
+            out = status_out
+            rc = status_rc
+        elif "reset" in argv:
+            rc = reset_rc
+        else:
+            # Not a git step: the dependency install, the core-dep repair, the
+            # optional kiro-cli update.
+            rc = other_rc
+        proc.returncode = rc
+        proc.communicate = AsyncMock(return_value=(out, b""))
+        proc.wait = AsyncMock(return_value=rc)
+        return proc
+
+    return _fake
+
+
 class TestAutoApplyUpdateGitPath:
     """Git-based auto-update (non-toolbox)."""
+
+    @pytest.fixture(autouse=True)
+    def _permit_update_preconditions(self):
+        """Neutralize the two seam preconditions so these tests keep their subject.
+
+        `_auto_apply_update` refuses outright when the checkout declares a
+        repo-named git driver, when the branch does not track the remote it resets
+        to, or when a tracked edit is hidden by assume-unchanged. All read the REAL
+        git metadata of ``KIROCREW_PROJECT_DIR``, which these tests point at a path
+        that is not a repo — so without this they would all pass vacuously by
+        refusing before reaching the fetch/reset sequence they exist to cover. The
+        refusals have their own tests in ``TestAutoApplyUpdatePreconditions`` and
+        ``TestAutoApplyUpdateResetPath``.
+        """
+        with patch(
+            "kiro_crew.slack.gateway.hidden_worktree_edits", return_value=[]
+        ), patch(
+            "kiro_crew.slack.gateway.repo_exec_config_reason",
+            return_value="",
+        ), patch(
+            "kiro_crew.slack.gateway.tracks_upstream", return_value=True
+        ), patch(
+            "kiro_crew.slack.gateway.commits_ahead", return_value=0
+        ):
+            yield
 
     @pytest.mark.asyncio
     async def test_fetch_fails_returns_early(self):
@@ -2414,21 +2516,7 @@ class TestAutoApplyUpdateGitPath:
         orch.dashboard_state = ds
 
         # branch detection succeeds, fetch fails
-        call_count = [0]
-
-        async def _fake_exec(*args, **kwargs):
-            call_count[0] += 1
-            proc = AsyncMock()
-            if call_count[0] == 1:
-                # branch detection
-                proc.communicate = AsyncMock(return_value=(b"mainline\n", b""))
-                proc.returncode = 0
-            else:
-                # fetch fails
-                proc.communicate = AsyncMock(return_value=(b"", b"error"))
-                proc.returncode = 1
-            proc.wait = AsyncMock(return_value=proc.returncode)
-            return proc
+        _fake_exec = _git_exec_fake(fetch_rc=1)
 
         with patch("kiro_crew.env.is_toolbox_install", return_value=False):
             with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
@@ -2442,24 +2530,8 @@ class TestAutoApplyUpdateGitPath:
         ds = _mock_dashboard_state()
         orch.dashboard_state = ds
 
-        call_count = [0]
-
-        async def _fake_exec(*args, **kwargs):
-            call_count[0] += 1
-            proc = AsyncMock()
-            if call_count[0] == 1:
-                # branch detection
-                proc.communicate = AsyncMock(return_value=(b"mainline\n", b""))
-                proc.returncode = 0
-            elif call_count[0] == 2:
-                # fetch succeeds
-                proc.communicate = AsyncMock(return_value=(b"", b""))
-                proc.returncode = 0
-            else:
-                # diff --quiet returns 0 (no diff)
-                proc.returncode = 0
-            proc.wait = AsyncMock(return_value=proc.returncode)
-            return proc
+        # diff --quiet reports no difference, so the run stops before the reset.
+        _fake_exec = _git_exec_fake(diff_rc=0)
 
         with patch("kiro_crew.env.is_toolbox_install", return_value=False):
             with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
@@ -3305,6 +3377,31 @@ class TestHeartbeatCallback:
 class TestAutoApplyUpdateVenvPath:
     """Venv-based auto-update (pip install -e .)."""
 
+    @pytest.fixture(autouse=True)
+    def _permit_update_preconditions(self):
+        """Neutralize the two seam preconditions so these tests keep their subject.
+
+        `_auto_apply_update` refuses outright when the checkout declares a
+        repo-named git driver, when the branch does not track the remote it resets
+        to, or when a tracked edit is hidden by assume-unchanged. All read the REAL
+        git metadata of ``KIROCREW_PROJECT_DIR``, which these tests point at a path
+        that is not a repo — so without this they would all pass vacuously by
+        refusing before reaching the fetch/reset sequence they exist to cover. The
+        refusals have their own tests in ``TestAutoApplyUpdatePreconditions`` and
+        ``TestAutoApplyUpdateResetPath``.
+        """
+        with patch(
+            "kiro_crew.slack.gateway.hidden_worktree_edits", return_value=[]
+        ), patch(
+            "kiro_crew.slack.gateway.repo_exec_config_reason",
+            return_value="",
+        ), patch(
+            "kiro_crew.slack.gateway.tracks_upstream", return_value=True
+        ), patch(
+            "kiro_crew.slack.gateway.commits_ahead", return_value=0
+        ):
+            yield
+
     @pytest.mark.asyncio
     async def test_venv_update_full_path(self):
         """Full venv update: fetch, diff, reset, pip install, restart."""
@@ -3313,44 +3410,7 @@ class TestAutoApplyUpdateVenvPath:
         orch.dashboard_state = ds
         orch.sessions = _mock_sessions()
 
-        call_count = [0]
-
-        async def _fake_exec(*args, **kwargs):
-            call_count[0] += 1
-            proc = AsyncMock()
-            proc.kill = MagicMock()
-            if call_count[0] == 1:
-                # branch detection → mainline
-                proc.communicate = AsyncMock(return_value=(b"mainline\n", b""))
-                proc.returncode = 0
-            elif call_count[0] == 2:
-                # fetch
-                proc.communicate = AsyncMock(return_value=(b"", b""))
-                proc.returncode = 0
-            elif call_count[0] == 3:
-                # diff --quiet → has changes (rc=1)
-                proc.returncode = 1
-            elif call_count[0] == 4:
-                # git status --porcelain → clean
-                proc.communicate = AsyncMock(return_value=(b"", b""))
-                proc.returncode = 0
-            elif call_count[0] == 5:
-                # git reset --hard
-                proc.returncode = 0
-            elif call_count[0] == 6:
-                # kiro-cli update
-                proc.returncode = 0
-            elif call_count[0] == 7:
-                # pip install -e .
-                proc.communicate = AsyncMock(return_value=(b"", b""))
-                proc.returncode = 0
-            else:
-                # extension installs, provider update
-                proc.returncode = 0
-            proc.wait = AsyncMock(return_value=proc.returncode)
-            if not hasattr(proc, 'communicate'):
-                proc.communicate = AsyncMock(return_value=(b"", b""))
-            return proc
+        _fake_exec = _git_exec_fake()
 
         with patch("kiro_crew.env.is_toolbox_install", return_value=False):
             with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
@@ -3375,6 +3435,83 @@ class TestAutoApplyUpdateVenvPath:
 
         ds.push_update_progress.assert_any_call("pulling", "Fetching latest changes…")
         ds.push_update_progress.assert_any_call("building", "Building frontend…")
+
+    @pytest.mark.asyncio
+    async def test_kiro_cli_update_timeout_kills_child_and_stays_nonfatal(self):
+        """A hung `kiro-cli update` is tree-killed AND the update stays non-fatal.
+
+        Both halves matter (issue #4210). Before the fix, the 120s timeout was
+        swallowed by the bare ``except Exception`` → DEBUG, so the run fell
+        through to the frontend build and dep reinstall while the ABANDONED
+        `kiro-cli update` kept mutating the installation concurrently — the
+        same half-replaced-install race the wheel path's CancelledError branch
+        exists to prevent. A kill-only assertion would pass on a fix that
+        turned the timeout fatal; the non-fatal half pins that the surrounding
+        contract (log at DEBUG, continue the update) is unchanged.
+        """
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        orch.sessions = _mock_sessions()
+
+        _git_fake = _git_exec_fake()
+        kiro_procs: list = []
+
+        async def _fake_exec(*args, **kwargs):
+            argv = [a for a in args if isinstance(a, str)]
+            if argv and argv[0] == "kiro-cli":
+                proc = AsyncMock()
+                proc.kill = MagicMock()
+                proc.returncode = None
+                # The wait never completes inside its 120s budget; raising the
+                # timeout from the awaited side is this file's precedent for
+                # an expired `asyncio.wait_for` (the arm under test catches
+                # the same exception either way).
+                proc.wait = AsyncMock(side_effect=asyncio.TimeoutError())
+                proc.communicate = AsyncMock(return_value=(b"", b""))
+                kiro_procs.append(proc)
+                return proc
+            return await _git_fake(*args, **kwargs)
+
+        killed: list = []
+
+        async def _fake_kill_and_reap(proc):
+            killed.append(proc)
+
+        with patch("kiro_crew.env.is_toolbox_install", return_value=False):
+            with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
+                with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+                    with patch(
+                        "kiro_crew.dep_sync.sync_or_reinstall", return_value=0
+                    ) as mock_install:
+                        with patch.object(
+                            GatewayOrchestrator, "_is_brazil_install", return_value=False
+                        ):
+                            with patch(
+                                "kiro_crew.slack.gateway.build_frontend_async",
+                                new_callable=AsyncMock,
+                            ) as mock_build:
+                                with patch("os.execv", side_effect=OSError("test")):
+                                    # Truthy: the optional kiro-cli step runs.
+                                    with patch(
+                                        "shutil.which", return_value="/usr/bin/kiro-cli"
+                                    ):
+                                        # The gateway resolves _kill_and_reap
+                                        # function-locally on every call, so
+                                        # patching the source module reaches it.
+                                        with patch(
+                                            "kiro_crew.platform.update_provider._kill_and_reap",
+                                            side_effect=_fake_kill_and_reap,
+                                        ):
+                                            await orch._auto_apply_update()
+
+        # Half 1: the hung child was killed (tree kill + bounded reap).
+        assert kiro_procs, "the kiro-cli update spawn never happened"
+        assert killed == kiro_procs
+        # Half 2: the timeout stayed NON-FATAL — the update continued into the
+        # frontend build and the dependency install exactly as before.
+        mock_build.assert_awaited_once()
+        assert mock_install.call_count == 1
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -3902,50 +4039,51 @@ class TestReembedSweepDefersTheModelLoad:
 class TestAutoApplyUpdateResetPath:
     """Public auto-update reset path: discards local edits, builds frontend, pips."""
 
+    @pytest.fixture(autouse=True)
+    def _permit_update_preconditions(self):
+        """Neutralize the two seam preconditions so these tests keep their subject.
+
+        `_auto_apply_update` refuses outright when the checkout declares a
+        repo-named git driver, when the branch does not track the remote it resets
+        to, or when a tracked edit is hidden by assume-unchanged. All read the REAL
+        git metadata of ``KIROCREW_PROJECT_DIR``, which these tests point at a path
+        that is not a repo — so without this they would all pass vacuously by
+        refusing before reaching the fetch/reset sequence they exist to cover. The
+        refusals have their own tests in ``TestAutoApplyUpdatePreconditions`` and
+        ``TestAutoApplyUpdateResetPath``.
+        """
+        with patch(
+            "kiro_crew.slack.gateway.hidden_worktree_edits", return_value=[]
+        ), patch(
+            "kiro_crew.slack.gateway.repo_exec_config_reason",
+            return_value="",
+        ), patch(
+            "kiro_crew.slack.gateway.tracks_upstream", return_value=True
+        ), patch(
+            "kiro_crew.slack.gateway.commits_ahead", return_value=0
+        ):
+            yield
+
     @pytest.mark.asyncio
     async def test_reset_then_frontend_then_pip(self):
-        """Local tracked edits are reset, then frontend build + pip install run.
+        """A CLEAN checkout resets, then frontend build + pip install run.
 
         Public OSS flow (no Brazil ws sync / toolbox / AIM): branch → fetch →
         diff → status → reset → [kiro-cli optional] → build frontend → pip.
+
+        This test used to pass ` M file.py` here and assert that the reset ran
+        anyway -- it encoded the warn-and-destroy behaviour that
+        `test_uncommitted_tracked_changes_refuse_the_reset` now forbids. The
+        happy path is a clean tree; the dirty tree is a refusal, not a variant
+        of this flow.
         """
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
         orch.dashboard_state = ds
         orch.sessions = _mock_sessions()
 
-        call_count = [0]
-
-        async def _fake_exec(*args, **kwargs):
-            call_count[0] += 1
-            proc = AsyncMock()
-            proc.kill = MagicMock()
-            if call_count[0] == 1:
-                # branch detection → mainline
-                proc.communicate = AsyncMock(return_value=(b"mainline\n", b""))
-                proc.returncode = 0
-            elif call_count[0] == 2:
-                # fetch
-                proc.communicate = AsyncMock(return_value=(b"", b""))
-                proc.returncode = 0
-            elif call_count[0] == 3:
-                # diff --quiet → has changes (rc=1)
-                proc.returncode = 1
-            elif call_count[0] == 4:
-                # git status --porcelain → has tracked changes
-                proc.communicate = AsyncMock(return_value=(b" M file.py\n", b""))
-                proc.returncode = 0
-            elif call_count[0] == 5:
-                # git reset --hard
-                proc.returncode = 0
-            else:
-                # pip install -e . (kiro-cli skipped via shutil.which=None)
-                proc.communicate = AsyncMock(return_value=(b"", b""))
-                proc.returncode = 0
-            proc.wait = AsyncMock(return_value=proc.returncode)
-            if not hasattr(proc, 'communicate'):
-                proc.communicate = AsyncMock(return_value=(b"", b""))
-            return proc
+        # Clean tracked tree: nothing for the reset to discard.
+        _fake_exec = _git_exec_fake(status_out=b"")
 
         with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
             with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
@@ -3963,6 +4101,618 @@ class TestAutoApplyUpdateResetPath:
         ds.push_update_progress.assert_any_call("building", "Rebuilding package…")
 
     @pytest.mark.asyncio
+    async def test_uncommitted_tracked_changes_refuse_the_reset(self):
+        """An unattended update must not delete a developer's uncommitted work.
+
+        This check used to log a warning and reset anyway, which made the
+        boot-time path the one place that could silently destroy uncommitted
+        edits. It now refuses, like the committed-work and exec-config checks
+        immediately above it, and defers to `kirocrew update` -- where a human
+        chose the destructive semantics.
+        """
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        orch.sessions = _mock_sessions()
+
+        spawned: list[tuple] = []
+        _fake_exec = _git_exec_fake(status_out=b" M file.py\n", record=spawned)
+
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
+            with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+                with patch(
+                    "kiro_crew.slack.gateway.build_frontend_async", new_callable=AsyncMock
+                ) as mock_build:
+                    with patch("os.execv") as mock_execv:
+                        with patch("shutil.which", return_value=None):
+                            await orch._auto_apply_update()
+
+        # The destructive step never ran.
+        assert not any(
+            "reset" in [str(a) for a in args] for args in spawned
+        ), spawned
+        # And nothing downstream of it ran either.
+        mock_build.assert_not_awaited()
+        mock_execv.assert_not_called()
+        ds.push_refresh.assert_any_call("update_available")
+
+    @pytest.mark.asyncio
+    async def test_untracked_files_alone_do_not_refuse(self):
+        """`reset --hard` preserves untracked files, so they are not a reason to stop.
+
+        Task specs and notes live untracked in a checkout. Refusing on them would
+        disable auto-update for essentially every real install, which is the same
+        silent no-op this PR exists to remove.
+        """
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        orch.sessions = _mock_sessions()
+
+        spawned: list[tuple] = []
+        _fake_exec = _git_exec_fake(status_out=b"?? notes.md\n", record=spawned)
+
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
+            with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+                with patch("kiro_crew.dep_sync.sync_or_reinstall", return_value=0):
+                    with patch(
+                        "kiro_crew.slack.gateway.build_frontend_async", new_callable=AsyncMock
+                    ):
+                        with patch("os.execv", side_effect=OSError("test")):
+                            with patch("shutil.which", return_value=None):
+                                await orch._auto_apply_update()
+
+        assert any("reset" in [str(a) for a in args] for args in spawned), spawned
+
+    @pytest.mark.asyncio
+    async def test_an_unresolvable_git_refuses_the_whole_update(self):
+        """With no trustworthy git, the unattended path does nothing at all.
+
+        Not even the branch probe: the first spawn would already be the planted
+        shim, and it is the one that decides every later step.
+        """
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        orch.sessions = _mock_sessions()
+
+        spawned: list[tuple] = []
+        _fake_exec = _git_exec_fake(record=spawned)
+
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
+            with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+                with patch(
+                    "kiro_crew.slack.gateway.platform_compat.trusted_git_bin",
+                    return_value=None,
+                ):
+                    with patch(
+                        "kiro_crew.slack.gateway.build_frontend_async",
+                        new_callable=AsyncMock,
+                    ) as mock_build:
+                        with patch("os.execv") as mock_execv:
+                            with patch("shutil.which", return_value=None):
+                                await orch._auto_apply_update()
+
+        assert spawned == [], spawned
+        mock_build.assert_not_awaited()
+        mock_execv.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_every_git_step_runs_the_resolved_binary(self):
+        """One resolution, used by every step -- no bare `git` anywhere.
+
+        Resolved once rather than per call so the whole sequence runs the same
+        binary; re-resolving per spawn would leave a window for the answer to
+        change mid-update.
+        """
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        orch.sessions = _mock_sessions()
+
+        spawned: list[tuple] = []
+        _fake_exec = _git_exec_fake(record=spawned)
+
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
+            with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+                with patch(
+                    "kiro_crew.slack.gateway.platform_compat.trusted_git_bin",
+                    return_value="/trusted/bin/git",
+                ):
+                    with patch("kiro_crew.dep_sync.sync_or_reinstall", return_value=0):
+                        with patch(
+                            "kiro_crew.slack.gateway.build_frontend_async",
+                            new_callable=AsyncMock,
+                        ):
+                            with patch("os.execv", side_effect=OSError("test")):
+                                with patch("shutil.which", return_value=None):
+                                    await orch._auto_apply_update()
+
+        git_calls = [
+            [str(a) for a in args]
+            for args in spawned
+            if args and str(args[0]).endswith("git")
+        ]
+        assert git_calls, spawned
+        for argv in git_calls:
+            assert argv[0] == "/trusted/bin/git", argv
+
+    @pytest.mark.asyncio
+    async def test_a_hidden_tracked_edit_refuses(self):
+        """An assume-unchanged edit must stop the unattended reset.
+
+        `status --porcelain` reports a clean tree for it, so check 3 passes and the
+        reset would silently overwrite the developer's edit.
+        """
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        orch.sessions = _mock_sessions()
+
+        spawned: list[tuple] = []
+        _fake_exec = _git_exec_fake(record=spawned)
+
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
+            with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+                with patch(
+                    "kiro_crew.slack.gateway.hidden_worktree_edits",
+                    return_value=["config/local.py"],
+                ):
+                    with patch("os.execv") as mock_execv:
+                        with patch("shutil.which", return_value=None):
+                            await orch._auto_apply_update()
+
+        assert not any("reset" in [str(a) for a in args] for args in spawned), spawned
+        mock_execv.assert_not_called()
+        ds.push_refresh.assert_any_call("update_available")
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_hidden_edit_state_refuses(self):
+        """`None` cannot prove the tree is safe, so it fails closed.
+
+        Same rule as an unknown ahead-count and an unreadable status.
+        """
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        orch.sessions = _mock_sessions()
+
+        spawned: list[tuple] = []
+        _fake_exec = _git_exec_fake(record=spawned)
+
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
+            with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+                with patch(
+                    "kiro_crew.slack.gateway.hidden_worktree_edits", return_value=None
+                ):
+                    with patch("os.execv") as mock_execv:
+                        with patch("shutil.which", return_value=None):
+                            await orch._auto_apply_update()
+
+        assert not any("reset" in [str(a) for a in args] for args in spawned), spawned
+        mock_execv.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_untracked_collision_refuses(self, tmp_path):
+        """`reset --hard` OVERWRITES an untracked file the target adds.
+
+        This is the data-loss case that survives a clean tracked tree:
+        `git status --porcelain` reports the local file as `??`, and the
+        tracked-change refusal deliberately skips those -- so without this check
+        the reset silently replaces it. Verified against real git while
+        developing the fix.
+        """
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        orch.sessions = _mock_sessions()
+
+        # The path the target would add EXISTS locally (untracked).
+        (tmp_path / "newfile.txt").write_text("MY PRECIOUS UNTRACKED WORK\n")
+
+        spawned: list[tuple] = []
+        _fake_exec = _git_exec_fake(added_out=b"newfile.txt\0", record=spawned)
+
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": str(tmp_path)}):
+            with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+                with patch(
+                    "kiro_crew.slack.gateway.build_frontend_async", new_callable=AsyncMock
+                ) as mock_build:
+                    with patch("os.execv") as mock_execv:
+                        with patch("shutil.which", return_value=None):
+                            await orch._auto_apply_update()
+
+        assert not any("reset" in [str(a) for a in args] for args in spawned), spawned
+        mock_build.assert_not_awaited()
+        mock_execv.assert_not_called()
+        ds.push_refresh.assert_any_call("update_available")
+        # The file is still the developer's.
+        assert (tmp_path / "newfile.txt").read_text() == "MY PRECIOUS UNTRACKED WORK\n"
+
+    @pytest.mark.asyncio
+    async def test_an_obstructing_untracked_ancestor_refuses(self, tmp_path):
+        """Target adds `pkg/mod.py`; locally `pkg` is an untracked FILE.
+
+        git must replace that file with a directory, destroying it -- but
+        `lexists("pkg/mod.py")` is False, so checking only the full path misses
+        it. Verified against real git while developing the fix.
+        """
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        orch.sessions = _mock_sessions()
+
+        (tmp_path / "pkg").write_text("MY PRECIOUS NOTES\n")
+
+        spawned: list[tuple] = []
+        _fake_exec = _git_exec_fake(added_out=b"pkg/mod.py\0", record=spawned)
+
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": str(tmp_path)}):
+            with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+                with patch("os.execv") as mock_execv:
+                    with patch("shutil.which", return_value=None):
+                        await orch._auto_apply_update()
+
+        assert not any("reset" in [str(a) for a in args] for args in spawned), spawned
+        mock_execv.assert_not_called()
+        assert (tmp_path / "pkg").read_text() == "MY PRECIOUS NOTES\n"
+
+    @pytest.mark.asyncio
+    async def test_a_symlinked_directory_ancestor_refuses(self, tmp_path):
+        """`isdir` follows a symlink, so the guard called it a plain directory.
+
+        Verified against real git: target adds `pkg/mod.py`, local untracked `pkg`
+        is a symlink to a directory, and the reset REPLACED the symlink with a real
+        directory -- destroying the developer's deliberate structure while the
+        collision guard reported nothing.
+        """
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        orch.sessions = _mock_sessions()
+
+        real = tmp_path / "elsewhere"
+        real.mkdir()
+        link = tmp_path / "pkg"
+        try:
+            link.symlink_to(real, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("this platform cannot create directory symlinks here")
+
+        spawned: list[tuple] = []
+        _fake_exec = _git_exec_fake(added_out=b"pkg/mod.py\0", record=spawned)
+
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": str(tmp_path)}):
+            with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+                with patch("os.execv") as mock_execv:
+                    with patch("shutil.which", return_value=None):
+                        await orch._auto_apply_update()
+
+        assert not any("reset" in [str(a) for a in args] for args in spawned), spawned
+        mock_execv.assert_not_called()
+        # The developer's symlink is still a symlink.
+        assert link.is_symlink()
+
+    @pytest.mark.asyncio
+    async def test_the_collision_scan_does_not_run_on_the_event_loop(self, tmp_path):
+        """`no-blocking-call-on-event-loop`: the ancestor walk is offloaded.
+
+        `_obstructions` stats every added path AND each of its ancestors, so a
+        large update would run an unbounded stat walk on the loop thread and stall
+        every chat and the heartbeat.
+
+        Asserts the THREAD the scan's own probes run on, not which executor object
+        some offload was handed: the first version of this test asserted the
+        latter and passed even with the scan inline, because another offload in
+        the same function already used that executor. Thread identity is the
+        property the rule is actually about.
+        """
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        orch.sessions = _mock_sessions()
+
+        loop_thread = threading.current_thread()
+        probe_threads: list[threading.Thread] = []
+        real_lexists = os.path.lexists
+
+        def recording_lexists(path):
+            if "scanned-target.py" in str(path):
+                probe_threads.append(threading.current_thread())
+            return real_lexists(path)
+
+        _fake_exec = _git_exec_fake(added_out=b"deep/nested/scanned-target.py\0")
+
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": str(tmp_path)}):
+            with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+                with patch("os.path.lexists", side_effect=recording_lexists):
+                    with patch("kiro_crew.dep_sync.sync_or_reinstall", return_value=0):
+                        with patch(
+                            "kiro_crew.slack.gateway.build_frontend_async",
+                            new_callable=AsyncMock,
+                        ):
+                            with patch("os.execv", side_effect=OSError("test")):
+                                with patch("shutil.which", return_value=None):
+                                    await orch._auto_apply_update()
+
+        assert probe_threads, "the collision scan never probed the added path"
+        assert all(
+            t is not loop_thread for t in probe_threads
+        ), f"scan ran on the event-loop thread: {[t.name for t in probe_threads]}"
+
+    @pytest.mark.asyncio
+    async def test_a_junction_ancestor_refuses(self, tmp_path):
+        """A Windows junction must be treated as a link, not a directory.
+
+        `os.path.islink` returns False for a junction, so the round-20 check would
+        read one as a plain directory and let the reset write THROUGH it, outside
+        the checkout. `AGENTS.md` names `is_link_or_junction` as the required form
+        for exactly this. Asserted by faking the junction verdict, since a real
+        junction cannot be created on POSIX.
+        """
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        orch.sessions = _mock_sessions()
+
+        (tmp_path / "pkg").mkdir()  # a plain dir to islink, a junction to the helper
+
+        spawned: list[tuple] = []
+        _fake_exec = _git_exec_fake(added_out=b"pkg/mod.py\0", record=spawned)
+
+        def fake_link_or_junction(path):
+            return str(path).endswith("pkg")
+
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": str(tmp_path)}):
+            with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+                with patch(
+                    "kiro_crew.slack.gateway.platform_compat.is_link_or_junction",
+                    side_effect=fake_link_or_junction,
+                ):
+                    with patch("os.execv") as mock_execv:
+                        with patch("shutil.which", return_value=None):
+                            await orch._auto_apply_update()
+
+        assert not any("reset" in [str(a) for a in args] for args in spawned), spawned
+        mock_execv.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_directory_ancestor_is_not_an_obstruction(self, tmp_path):
+        """An existing DIRECTORY ancestor is normal and must not refuse.
+
+        Every update that adds a file into an existing package would otherwise
+        stop -- the over-refusal that would disable auto-update in practice.
+        """
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        orch.sessions = _mock_sessions()
+
+        (tmp_path / "pkg").mkdir()
+
+        spawned: list[tuple] = []
+        _fake_exec = _git_exec_fake(added_out=b"pkg/mod.py\0", record=spawned)
+
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": str(tmp_path)}):
+            with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+                with patch("kiro_crew.dep_sync.sync_or_reinstall", return_value=0):
+                    with patch(
+                        "kiro_crew.slack.gateway.build_frontend_async", new_callable=AsyncMock
+                    ):
+                        with patch("os.execv", side_effect=OSError("test")):
+                            with patch("shutil.which", return_value=None):
+                                await orch._auto_apply_update()
+
+        assert any("reset" in [str(a) for a in args] for args in spawned), spawned
+
+    @pytest.mark.asyncio
+    async def test_a_non_utf8_added_path_is_still_matched(self, tmp_path):
+        """A path byte that is not valid UTF-8 must not decode into a miss.
+
+        Under `errors="replace"` the name becomes `bad\ufffdname.txt`, which does
+        not exist on disk, so the guard passes while the reset overwrites the real
+        file. `os.fsdecode` round-trips it.
+        """
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        orch.sessions = _mock_sessions()
+
+        raw = b"bad\xffname.txt"
+        try:
+            (tmp_path / os.fsdecode(raw)).write_bytes(b"MY PRECIOUS\n")
+        except (OSError, UnicodeError):
+            pytest.skip("this filesystem rejects non-UTF-8 names")
+
+        spawned: list[tuple] = []
+        _fake_exec = _git_exec_fake(added_out=raw + b"\0", record=spawned)
+
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": str(tmp_path)}):
+            with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+                with patch("os.execv") as mock_execv:
+                    with patch("shutil.which", return_value=None):
+                        await orch._auto_apply_update()
+
+        assert not any("reset" in [str(a) for a in args] for args in spawned), spawned
+        mock_execv.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_collision_refusal_logs_an_encodable_record(self, tmp_path, caplog):
+        """Reproduces the CI shard crash without needing xdist.
+
+        The collision refusal is the one log line carrying a filename straight
+        from git output. When that name is not valid UTF-8, an unsanitized record
+        raises inside the handler -- `logging` drops it, and `pytest-xdist`, which
+        serializes reports as UTF-8, dies with `DumpError` and takes the WHOLE
+        shard with it. That is what happened: one test killed shard 4 on both
+        Python versions while passing locally, because the local run disabled
+        `-n auto`.
+
+        Asserting encodability here is what makes the guard durable -- reverting
+        the sanitizer fails this test in a plain single-process run.
+        """
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        orch.sessions = _mock_sessions()
+
+        raw = b"bad\xffname.txt"
+        # `os.fsdecode` itself RAISES on Windows (UTF-8 + surrogatepass cannot
+        # decode an invalid start byte), so it belongs inside the guard: the
+        # hazard does not exist on a platform whose filenames are UTF-16, and this
+        # must SKIP there rather than error.
+        try:
+            name = os.fsdecode(raw)
+            name.encode("utf-8")
+        except UnicodeDecodeError:
+            pytest.skip("this platform cannot represent a non-UTF-8 name")
+        except UnicodeEncodeError:
+            pass
+        else:
+            pytest.skip("this platform's fsdecode produced an encodable name")
+        try:
+            (tmp_path / name).write_bytes(b"MY PRECIOUS\n")
+        except (OSError, UnicodeError):
+            pytest.skip("this filesystem rejects non-UTF-8 names")
+
+        _fake_exec = _git_exec_fake(added_out=raw + b"\0")
+
+        with caplog.at_level(logging.WARNING):
+            with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": str(tmp_path)}):
+                with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+                    with patch("os.execv"):
+                        with patch("shutil.which", return_value=None):
+                            await orch._auto_apply_update()
+
+        # The refusal must have been recorded...
+        refusals = [r for r in caplog.records if "already" in r.getMessage()]
+        assert refusals, [r.getMessage() for r in caplog.records]
+        # ...and EVERY record must survive a UTF-8 log sink / xdist report.
+        for record in caplog.records:
+            record.getMessage().encode("utf-8")
+
+    @pytest.mark.asyncio
+    async def test_the_added_paths_query_disables_rename_detection(self, tmp_path):
+        """Without `--no-renames` the collision guard is silently bypassable.
+
+        Rename detection is on by default for porcelain diffs, so a pure `git mv`
+        upstream is ONE `R` entry -- and `--diff-filter=A` excludes it, leaving the
+        destination path absent from the added list while the reset still
+        overwrites an untracked local file there.
+        `test_governance_updates` proves that against real git; this pins the flag
+        so the argv cannot regress.
+        """
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        orch.sessions = _mock_sessions()
+
+        spawned: list[tuple] = []
+        _fake_exec = _git_exec_fake(record=spawned)
+
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": str(tmp_path)}):
+            with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+                with patch("kiro_crew.dep_sync.sync_or_reinstall", return_value=0):
+                    with patch(
+                        "kiro_crew.slack.gateway.build_frontend_async", new_callable=AsyncMock
+                    ):
+                        with patch("os.execv", side_effect=OSError("test")):
+                            with patch("shutil.which", return_value=None):
+                                await orch._auto_apply_update()
+
+        added = [
+            [str(a) for a in args]
+            for args in spawned
+            if any(str(a).startswith("--diff-filter") for a in args)
+        ]
+        assert added, spawned
+        for argv in added:
+            assert "--no-renames" in argv, argv
+
+    @pytest.mark.asyncio
+    async def test_added_paths_that_do_not_exist_locally_do_not_refuse(self, tmp_path):
+        """Most updates add files. Only a COLLISION is a reason to stop.
+
+        Refusing whenever the target adds anything would disable auto-update for
+        ordinary upstream commits -- the silent no-op this PR exists to remove,
+        reintroduced by an over-broad guard.
+        """
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        orch.sessions = _mock_sessions()
+
+        spawned: list[tuple] = []
+        # Target adds two paths; neither exists in tmp_path.
+        _fake_exec = _git_exec_fake(added_out=b"a/new.py\0b/other.py\0", record=spawned)
+
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": str(tmp_path)}):
+            with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+                with patch("kiro_crew.dep_sync.sync_or_reinstall", return_value=0):
+                    with patch(
+                        "kiro_crew.slack.gateway.build_frontend_async", new_callable=AsyncMock
+                    ):
+                        with patch("os.execv", side_effect=OSError("test")):
+                            with patch("shutil.which", return_value=None):
+                                await orch._auto_apply_update()
+
+        assert any("reset" in [str(a) for a in args] for args in spawned), spawned
+
+    @pytest.mark.asyncio
+    async def test_an_unlistable_added_set_refuses(self, tmp_path):
+        """If the added-path list cannot be read, safety cannot be proven.
+
+        Fails closed, like the unreadable-status and unknown-ahead-count cases.
+        """
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        orch.sessions = _mock_sessions()
+
+        spawned: list[tuple] = []
+        _fake_exec = _git_exec_fake(added_rc=1, record=spawned)
+
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": str(tmp_path)}):
+            with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+                with patch(
+                    "kiro_crew.slack.gateway.build_frontend_async", new_callable=AsyncMock
+                ):
+                    with patch("os.execv") as mock_execv:
+                        with patch("shutil.which", return_value=None):
+                            await orch._auto_apply_update()
+
+        assert not any("reset" in [str(a) for a in args] for args in spawned), spawned
+        mock_execv.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_status_refuses(self):
+        """An unreadable work-tree status cannot prove the tree is clean.
+
+        The next step is irreversible, so an unanswerable question is treated as
+        the unsafe answer -- the same fail-closed rule the ahead-count uses when
+        `commits_ahead` returns None.
+        """
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        orch.sessions = _mock_sessions()
+
+        spawned: list[tuple] = []
+        _fake_exec = _git_exec_fake(status_rc=1, record=spawned)
+
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
+            with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+                with patch(
+                    "kiro_crew.slack.gateway.build_frontend_async", new_callable=AsyncMock
+                ):
+                    with patch("os.execv") as mock_execv:
+                        with patch("shutil.which", return_value=None):
+                            await orch._auto_apply_update()
+
+        assert not any("reset" in [str(a) for a in args] for args in spawned), spawned
+        mock_execv.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_a_refusal_skips_the_core_dep_repair_entirely(self):
         """A REFUSED sync must not be followed by a repair into the same venv.
 
@@ -3978,17 +4728,7 @@ class TestAutoApplyUpdateResetPath:
         orch.sessions = _mock_sessions()
 
         spawned: list[tuple] = []
-        call_count = [0]
-
-        async def _fake_exec(*args, **kwargs):
-            call_count[0] += 1
-            spawned.append(args)
-            proc = AsyncMock()
-            proc.kill = MagicMock()
-            proc.communicate = AsyncMock(return_value=(b"mainline\n", b""))
-            proc.returncode = 1 if call_count[0] == 3 else 0
-            proc.wait = AsyncMock(return_value=proc.returncode)
-            return proc
+        _fake_exec = _git_exec_fake(record=spawned)
 
         from kiro_crew import dep_sync
 
@@ -4012,6 +4752,49 @@ class TestAutoApplyUpdateResetPath:
         assert "restarting" not in steps
 
     @pytest.mark.asyncio
+    async def test_reset_target_is_resolved_through_the_full_remote_ref(self):
+        """The target capture must spell `refs/remotes/origin/<branch>`.
+
+        The short `origin/<branch>` is ambiguous in the attacker's favour:
+        rev-parse's disambiguation order checks `refs/tags/<name>` BEFORE
+        `refs/remotes/<name>`, so a tag literally named `origin/main` resolves
+        instead of the remote-tracking branch. The update's own fetch auto-follows
+        tags, so publishing that tag upstream creates it locally. git writes
+        "refname is ambiguous" to stderr and still prints the TAG's OID on stdout,
+        which is the stream this capture reads -- so the short form does not fail
+        loudly, it resets to attacker code.
+        """
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        orch.sessions = _mock_sessions()
+
+        spawned: list[tuple] = []
+        _fake_exec = _git_exec_fake(branch=b"main\n", record=spawned)
+
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
+            with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+                with patch(
+                    "kiro_crew.slack.gateway.build_frontend_async", new_callable=AsyncMock
+                ):
+                    with patch("os.execv"):
+                        with patch("shutil.which", return_value=None):
+                            await orch._auto_apply_update()
+
+        revparses = [
+            [str(a) for a in args]
+            for args in spawned
+            if "rev-parse" in [str(a) for a in args]
+            and "--abbrev-ref" not in [str(a) for a in args]
+        ]
+        assert revparses, spawned
+        assert any("refs/remotes/origin/main^{commit}" in argv for argv in revparses), (
+            revparses
+        )
+        # The bare form must not be what git is asked to resolve.
+        assert not any("origin/main^{commit}" in argv for argv in revparses), revparses
+
+    @pytest.mark.asyncio
     async def test_no_restart_after_any_unclean_sync_even_when_the_repair_works(self):
         """A nonzero sync never restarts, even when the core-dep repair succeeds.
 
@@ -4028,18 +4811,9 @@ class TestAutoApplyUpdateResetPath:
         orch.dashboard_state = ds
         orch.sessions = _mock_sessions()
 
-        call_count = [0]
-
-        async def _fake_exec(*args, **kwargs):
-            call_count[0] += 1
-            proc = AsyncMock()
-            proc.kill = MagicMock()
-            proc.communicate = AsyncMock(return_value=(b"mainline\n", b""))
-            # diff --quiet reports changes; everything else, INCLUDING the
-            # core-dep repair, succeeds.
-            proc.returncode = 1 if call_count[0] == 3 else 0
-            proc.wait = AsyncMock(return_value=proc.returncode)
-            return proc
+        # diff --quiet reports changes; everything else, INCLUDING the
+        # core-dep repair, succeeds.
+        _fake_exec = _git_exec_fake()
 
         with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
             with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
@@ -4074,23 +4848,9 @@ class TestAutoApplyUpdateResetPath:
         orch.dashboard_state = ds
         orch.sessions = _mock_sessions()
 
-        call_count = [0]
-
-        async def _fake_exec(*args, **kwargs):
-            call_count[0] += 1
-            proc = AsyncMock()
-            proc.kill = MagicMock()
-            if call_count[0] == 1:
-                proc.communicate = AsyncMock(return_value=(b"mainline\n", b""))
-                proc.returncode = 0
-            elif call_count[0] == 3:
-                proc.returncode = 1  # diff --quiet -> there are changes
-            else:
-                # Everything else, INCLUDING the core-dep repair, fails.
-                proc.communicate = AsyncMock(return_value=(b"", b"boom"))
-                proc.returncode = 0 if call_count[0] in (2, 4, 5) else 1
-            proc.wait = AsyncMock(return_value=proc.returncode)
-            return proc
+        # Every git step succeeds; the dependency install AND the core-dep
+        # repair both fail, which is the condition this test is about.
+        _fake_exec = _git_exec_fake(other_rc=1)
 
         with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
             with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
@@ -5940,7 +6700,11 @@ class TestSubagentChannelTransportDelivery:
         return SimpleNamespace(
             channel_type=channel_type,
             capabilities=SimpleNamespace(
-                supports_proactive_send=proactive, max_message_chars=max_chars
+                supports_proactive_send=proactive,
+                max_message_chars=max_chars,
+                # 0 = not byte-capped; the byte path is Webex's and is covered
+                # by test_messaging_split.py.
+                max_message_bytes=0,
             ),
             send_message=AsyncMock(return_value="mid-1"),
             resolve_configured_target=AsyncMock(side_effect=_identity_target),
@@ -7588,3 +8352,156 @@ class TestChannelSkipReasonAtTransportStart:
         with caplog.at_level(logging.WARNING):
             await self._start(orch, monkeypatch)
         assert self._channel_records(caplog) == []
+
+
+class TestAutoApplyUpdatePreconditions:
+    """The two refusals guarding the unattended reset, at the gateway level.
+
+    The seam functions have their own unit tests; these assert the gateway
+    actually HONOURS them — that it returns before spawning anything, rather than
+    computing a refusal and proceeding anyway.
+    """
+
+    @pytest.mark.asyncio
+    async def test_repo_declared_driver_refuses_before_running_a_driver(self):
+        """A repo-named filter/textconv driver would be run BY these git commands.
+
+        `-c` cannot pin an arbitrary driver name, so the run is refused. What must
+        be proven is that the refusal lands before the commands that would EXECUTE
+        such a driver — `status`, `diff` and `reset`. The branch probe ahead of it
+        is a pure ref read that runs no driver, and it carries the neutralizer env
+        regardless.
+        """
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+
+        argvs = []
+
+        async def _fake_exec(*args, **kwargs):
+            argvs.append(args)
+            proc = AsyncMock()
+            proc.kill = MagicMock()
+            proc.returncode = 0
+            proc.communicate = AsyncMock(return_value=(b"main\n", b""))
+            proc.wait = AsyncMock(return_value=0)
+            return proc
+
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}), patch(
+            "asyncio.create_subprocess_exec", side_effect=_fake_exec
+        ), patch(
+            "kiro_crew.slack.gateway.repo_exec_config_reason",
+            return_value="repository declares filter.evil.smudge",
+        ), patch(
+            "kiro_crew.slack.gateway.is_primary_branch", return_value=True
+        ), patch(
+            "kiro_crew.slack.gateway.tracks_upstream", return_value=True
+        ):
+            await orch._auto_apply_update()
+
+        for forbidden in ("status", "diff", "reset", "fetch"):
+            assert not any(forbidden in a for a in argvs), (forbidden, argvs)
+
+    @pytest.mark.asyncio
+    async def test_local_commits_refuse_before_the_reset(self):
+        """A checkout ahead of origin must not be `reset --hard` unattended.
+
+        Revalidated after the fetch, immediately before the reset, because the
+        availability verdict was reached in an earlier pass and a checkout is a
+        live tree. Asserts no `reset` spawn — a warning that still reset would
+        already have destroyed the commits.
+        """
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+
+        argvs = []
+
+        async def _fake_exec(*args, **kwargs):
+            argvs.append(args)
+            proc = AsyncMock()
+            proc.kill = MagicMock()
+            # `git diff --quiet` must report a difference so the run reaches the
+            # revalidation rather than stopping at "already up to date".
+            proc.returncode = 1 if "diff" in args else 0
+            proc.communicate = AsyncMock(return_value=(b"main\n", b""))
+            proc.wait = AsyncMock(return_value=proc.returncode)
+            return proc
+
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}), patch(
+            "asyncio.create_subprocess_exec", side_effect=_fake_exec
+        ), patch(
+            "kiro_crew.slack.gateway.repo_exec_config_reason",
+            return_value="",
+        ), patch(
+            "kiro_crew.slack.gateway.tracks_upstream", return_value=True
+        ), patch(
+            "kiro_crew.slack.gateway.commits_ahead", return_value=2
+        ):
+            await orch._auto_apply_update()
+
+        assert not any("reset" in a for a in argvs), argvs
+
+    @pytest.mark.asyncio
+    async def test_unknown_ahead_count_also_refuses(self):
+        """`None` means git could not answer, which must not read as zero."""
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+
+        argvs = []
+
+        async def _fake_exec(*args, **kwargs):
+            argvs.append(args)
+            proc = AsyncMock()
+            proc.kill = MagicMock()
+            proc.returncode = 1 if "diff" in args else 0
+            proc.communicate = AsyncMock(return_value=(b"main\n", b""))
+            proc.wait = AsyncMock(return_value=proc.returncode)
+            return proc
+
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}), patch(
+            "asyncio.create_subprocess_exec", side_effect=_fake_exec
+        ), patch(
+            "kiro_crew.slack.gateway.repo_exec_config_reason",
+            return_value="",
+        ), patch(
+            "kiro_crew.slack.gateway.tracks_upstream", return_value=True
+        ), patch(
+            "kiro_crew.slack.gateway.commits_ahead", return_value=None
+        ):
+            await orch._auto_apply_update()
+
+        assert not any("reset" in a for a in argvs), argvs
+
+    @pytest.mark.asyncio
+    async def test_branch_not_tracking_origin_refuses_before_fetch(self):
+        """The check measures `@{u}`; the apply resets `origin/<branch>`.
+
+        When they are different remotes the reset would discard commits, so the
+        apply stops. Only the branch probe may have run by then — nothing that
+        fetches or writes.
+        """
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+
+        argvs = []
+
+        async def _fake_exec(*args, **kwargs):
+            argvs.append(args)
+            proc = AsyncMock()
+            proc.kill = MagicMock()
+            proc.returncode = 0
+            proc.communicate = AsyncMock(return_value=(b"main\n", b""))
+            proc.wait = AsyncMock(return_value=0)
+            return proc
+
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}), patch(
+            "asyncio.create_subprocess_exec", side_effect=_fake_exec
+        ), patch(
+            "kiro_crew.slack.gateway.repo_exec_config_reason",
+            return_value="",
+        ), patch(
+            "kiro_crew.slack.gateway.tracks_upstream", return_value=False
+        ):
+            await orch._auto_apply_update()
+
+        assert not any("fetch" in a for a in argvs), argvs
+        assert not any("reset" in a for a in argvs), argvs

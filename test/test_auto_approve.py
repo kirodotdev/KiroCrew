@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -534,3 +535,86 @@ class TestAutoApproveProvenanceGating:
         # (async) SEL write failure reaches this fail-closed handler rather than
         # being swallowed by the background writer after the gate has returned.
         assert boom.log_tool_invocation.call_args.kwargs["critical"] is True
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Inline spec ownership: a rejected start must not leak its temp file
+# ══════════════════════════════════════════════════════════════════════
+
+
+class TestInlineSpecCleanup:
+    """POST /api/taskrunner writes inline specs to work/TASK_<id>.md before
+    calling start_background; when the start path raises, the handler owns
+    that file and must remove it — while a caller-supplied external path is
+    never the handler's to delete."""
+
+    async def _start(self, tmp_path: Path, body: dict, raising: bool):
+        runner = MagicMock()
+        runner._work_dir = str(tmp_path)
+        if raising:
+            runner.start_background = AsyncMock(side_effect=RuntimeError("boom: rejected"))
+        else:
+            runner.start_background = AsyncMock(return_value="tid")
+        app = web.Application()
+        app["state"] = SimpleNamespace(task_runner=runner)
+        req = make_mocked_request("POST", "/api/taskrunner", app=app)
+        req["app"] = ""
+        req.json = AsyncMock(return_value=body)
+        return await api_taskrunner_start(req), runner
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_inline_start_leaves_no_task_file_behind(self, tmp_path: Path) -> None:
+        resp, _ = await self._start(
+            tmp_path,
+            {"spec": "__inline__:# rejected plan", "source": "dashboard"},
+            raising=True,
+        )
+        assert resp.status == 400
+        assert list(tmp_path.glob("TASK_*.md")) == []
+
+    @pytest.mark.asyncio
+    async def test_the_original_error_survives_even_if_cleanup_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A best-effort unlink that itself fails must not replace the startup
+        # error the client is about to receive.
+        calls = {"n": 0}
+
+        def _flaky(self: Path, missing_ok: bool = False) -> None:
+            calls["n"] += 1
+            raise OSError("disk gone")
+
+        monkeypatch.setattr(Path, "unlink", _flaky, raising=False)
+        resp, _ = await self._start(
+            tmp_path,
+            {"spec": "__inline__:# rejected plan", "source": "dashboard"},
+            raising=True,
+        )
+        assert calls["n"] >= 1  # the cleanup was attempted
+        assert resp.status == 400
+        assert json.loads(resp.text)["error"].startswith("boom: rejected")
+
+    @pytest.mark.asyncio
+    async def test_an_external_spec_is_never_deleted_on_a_rejected_start(
+        self, tmp_path: Path
+    ) -> None:
+        external = tmp_path / "caller-owned.md"
+        external.write_text("# caller's own spec")
+        resp, _ = await self._start(
+            tmp_path,
+            {"spec": str(external), "source": "dashboard"},
+            raising=True,
+        )
+        assert resp.status == 400
+        assert external.exists(), "the handler deleted a caller-owned spec file"
+
+    @pytest.mark.asyncio
+    async def test_a_successful_inline_start_keeps_its_spec_file(self, tmp_path: Path) -> None:
+        resp, _ = await self._start(
+            tmp_path,
+            {"spec": "__inline__:# good plan", "source": "dashboard"},
+            raising=False,
+        )
+        assert resp.status == 200
+        payload = json.loads(resp.text)
+        assert Path(payload["spec"]).is_file()

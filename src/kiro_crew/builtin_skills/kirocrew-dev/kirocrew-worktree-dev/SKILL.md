@@ -311,10 +311,13 @@ gh pr create --base main --title "feat: <description>" --body "<details>"
 ```
 
 - PRs target `main`.
-- **One commit per PR.** CI enforces single-commit hygiene. Squash before
-  opening (`git rebase -i origin/main` or `git reset --soft origin/main` +
-  one commit), and fold review-round fixes in with `git commit --amend` +
-  `git push --force-with-lease origin feat/<name>` rather than stacking commits.
+- **At most two commits per PR.** CI blocks a third; one commit is the norm.
+  Squash before opening (`git rebase -i origin/main` or `git reset --soft
+  origin/main` + one commit), and fold review-round fixes in with
+  `git commit --amend` + `git push --force-with-lease origin feat/<name>`
+  rather than stacking commits. Spend the second commit only when a mechanical
+  follow-up (a regenerated artifact, a formatting sweep) is worth keeping
+  separable from the change it accompanies.
 - **Push as a standalone command.** Prefer running `git push` (including
   `--force-with-lease`) on its own line with explicit remote and branch —
   some agent security policies fail closed on pushes embedded in compound
@@ -424,7 +427,7 @@ the system does, not a changelog of how it got there.
   `xdist_group`-serialized tests (Rule 2).
 - A faiss-equipped or version-drifted mypy venv → local results that contradict
   CI in both directions (Rule 2: CI-parity venv).
-- Multi-commit branches → PR Hygiene check fails; squash first (Rule 7).
+- Branches with three or more commits → PR Hygiene check fails; squash first (Rule 7).
 - Committing or pushing without an explicit user request → violates the repo's
   agent safety convention (Rule 7).
 - Pushing directly to `main` → breaks CI for everyone; always use a feature

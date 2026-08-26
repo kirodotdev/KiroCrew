@@ -21,8 +21,10 @@ on the other end is a phone number rather than a workspace member:
   self-chat case, where the allow-listed handle is the identity the agent sends
   as and that flag is not dependable on its own (issue #5246).
 * **DM only, fail closed.** A reply in a group chat would deliver tool output
-  to members who are not on the allowlist, the same reasoning that already
-  makes Telegram and Webex direct-only.
+  to members who are not on the allowlist, the same reasoning that makes every
+  channel's non-DM path opt-in. Telegram and Webex can lift theirs because each
+  pairs a per-room session with an explicit room allow-list; this bridge has
+  neither, so DM-only is the whole gate rather than its default.
 * **Unauthorized inbound is dropped with no reply**, so an unknown sender
   learns nothing about what they reached.
 """

@@ -23,8 +23,6 @@ take — so a QR confirmation can never interleave with another config save.
 from __future__ import annotations
 
 import asyncio
-import base64
-import io
 import json
 import logging
 import time
@@ -58,18 +56,13 @@ def _render_qr_data_uri(scan_data: str) -> str:
     """Encode ``scan_data`` (the iLink login URL) into a PNG data URI.
 
     Runs in a worker thread: PNG encoding is CPU-bound and must not stall the
-    gateway event loop. Import is function-local deliberately — qrcode pulls
-    Pillow, and this is the only feature needing it at handler-module import.
+    gateway event loop. Delegates to :mod:`kiro_crew.qr`, the single owner of QR
+    encoding, so this surface and tailnet mobile access cannot drift into two
+    different encoders.
     """
-    import qrcode as _qrcode  # noqa: PLC0415 — heavy optional import, QR path only
+    from kiro_crew.qr import render_qr_data_uri  # noqa: PLC0415 - heavy import, QR path only
 
-    qr = _qrcode.QRCode(border=2, box_size=8)
-    qr.add_data(scan_data)
-    qr.make(fit=True)
-    image = qr.make_image(fill_color="black", back_color="white")
-    buf = io.BytesIO()
-    image.save(buf, format="PNG")
-    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+    return render_qr_data_uri(scan_data)
 
 
 def _prune_sessions() -> None:

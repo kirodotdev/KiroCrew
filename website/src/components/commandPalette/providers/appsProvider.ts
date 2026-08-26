@@ -66,8 +66,13 @@ function fallbackIcon(): ReactNode {
  *
  * Unlike the rail this does NOT warn-tint an orphaned app: the palette says so in
  * the row's subtitle instead, which reads at a glance without relying on colour.
+ *
+ * Exported because the Command Bar renders app rows too. A second copy of this
+ * chain is how the two surfaces drift: one that missed the `pageIconUrl` step
+ * would fall through to the generic package outline for every installed app, and
+ * nothing would fail — the row would just stop identifying itself.
  */
-function appIcon(target: AppNavTarget): ReactNode {
+export function appIcon(target: AppNavTarget): ReactNode {
   if (target.iconUrl) {
     return createElement(AppIcon, { iconUrl: target.iconUrl, icon: target.iconName, size: 16 })
   }

@@ -19,7 +19,7 @@ Source: `src/kiro_crew/metrics/` — `schema.py`, `recorder.py`, `provider.py`,
 | `schema.py` | Namespace constants (`NS_CORE = "kirocrew."`, `NS_GENAI = "gen_ai."`, `NS_APP_PREFIX = "app."`) + `validate_name` / `validate_attrs` / `redact` guardrails. Documents the low-cardinality contract. |
 | `recorder.py` | `MetricsRecorder` — facade over the OTEL `Meter`. Every metric passes namespace + privacy guardrails BEFORE reaching an instrument. Instrument-cache creation is lock-guarded (atomic check-then-create). Best-effort: a telemetry failure never propagates to the caller. `meter=None` = no-op recorder. |
 | `provider.py` | Consent gate + process-global recorder (`get_recorder()`) + graceful `shutdown()` / `reset_for_testing()`. `get_recorder()` serves a memoized recorder and re-resolves the `telemetry.enabled` consent value every `_CONSENT_RECHECK_SECS` (30s), rebuilding when it moved — see "Recorder lifecycle & threading" below. Public consent surface: `env_pin()` / `TELEMETRY_ENV_VAR`. When enabled, wires a `PeriodicExportingMetricReader` to the local JSONL exporter. Installs **one `View` per instrument** from `_HISTOGRAM_BUCKETS_MS`, each with its own `ExplicitBucketHistogramAggregation` boundaries (see below) — deliberately NOT a catch-all `instrument_type=Histogram` View. |
-| `local_exporter.py` | `JsonlMetricExporter` — appends one JSON line per export cycle to `<dir>/metrics-YYYY-MM-DD-<pid>.jsonl` (default dir `~/.kiro/crew/metrics`). Per-PID single-writer shards keep append + rotation lock-free, so concurrent exporters do not lose DELTA cycles. A private `.metrics.lock` serializes only retention sweeps; pruning skips canonical shards owned by live PIDs or modified within the safety window. **Bounded retention (rec #14):** shards rotate before an append exceeds `max_total_mb`; closed/expired shards are pruned directly by age and oldest-first size. Pruning is throttled to at most once per 300s and fully best-effort. Dir mode is 0o700, file mode 0o600, and nothing egresses the host. Declares DELTA `preferred_temporality` for Counter/UpDownCounter/Histogram so daily aggregation is an element-wise sum across cycles/PIDs. Observable counters are deliberately NOT mapped and export CUMULATIVE: the delta baseline lives in the provider, which is rebuilt in-process on a telemetry consent change, so DELTA would re-emit the process-lifetime total once per rebuild; the aggregator instead reduces cumulative streams window-relative (time-ordered reset detection + first-in-window baseline), which is rebuild-idempotent. |
+| `local_exporter.py` | `JsonlMetricExporter` — appends one JSON line per export cycle to `<dir>/metrics-YYYY-MM-DD-<pid>.jsonl` (default dir `~/.kiro/crew/metrics`). Per-PID single-writer shards keep append + rotation lock-free, so concurrent exporters do not lose DELTA cycles. A private `.metrics.lock` serializes only retention sweeps; pruning skips canonical shards owned by live PIDs or modified within the safety window. **Bounded retention (rec #14):** shards rotate before an append exceeds `max_total_mb`; closed/expired shards are pruned directly by age and oldest-first size. Pruning is throttled to at most once per 300s and fully best-effort. Dir mode is 0o700, file mode 0o600, and nothing egresses the host. Declares DELTA `preferred_temporality` for Counter/UpDownCounter/Histogram so daily aggregation is an element-wise sum across cycles/PIDs. Observable counters are deliberately NOT mapped and export CUMULATIVE: the delta baseline lives in the provider, which is rebuilt in-process on a telemetry consent change, so DELTA would re-emit the process-lifetime total once per rebuild; the aggregator instead reduces cumulative streams window-relative (deterministic identity boundary + time-ordered legacy reset detection + first-in-window baseline), which is rebuild-idempotent. **Process identity:** each record is stamped once at resource level with `kirocrew.process.start_time` (`schema.RESOURCE_ATTR_PROCESS_START_TIME`) — the writing process's OS start-time token from `platform_compat.own_process_start_time()`, module-cached so provider rebuilds inside one process stamp the SAME value, and reboot-unique (Linux start ticks + boot UUID; macOS microsecond `proc_pidinfo` instant; Windows creation FILETIME). A read that cannot honor one-token-one-process (unreadable boot UUID, no `libproc`, 1s-only sources) emits NO token rather than an aliasable coarse one — a degraded token would merge lifetimes AND mute the reset heuristic that catches merges. The shard-filename PID plus this token identify a process beyond PID reuse, making the aggregator's cumulative reset detection deterministic. The stamp lands on the serialized JSONL line, never on the SDK `Resource` — that `Resource` also feeds the opt-in OTLP reader, and this host-local token must not egress. Fail-soft: when the platform read is unavailable the field is absent and the aggregator's legacy value heuristic applies. Resource level, not a metric attribute, so it never multiplies series cardinality. |
 | `http_metrics.py` | Gateway HTTP observability (rec #1): `record_boot_to_ready()` (boot-to-ready histogram) + `make_route_latency_middleware()` (per-route latency, wired as the outermost middleware on both `start_dashboard`/`start_api_server`). Bounds `route_template` cardinality via `collect_route_templates()` (build-time snapshot) + `route_template()` (`__unknown__` fallback); clamps `method` to a fixed allowlist and `status_class` to `1xx`..`5xx`/`other`. Upgraded WebSocket connections and `text/event-stream` SSE responses are excluded because their handler elapsed time is connection/turn lifetime, not HTTP request latency. Best-effort — a telemetry failure never alters a response. |
 
 ## Recorder lifecycle & threading
@@ -267,7 +267,7 @@ presence without the endpoint string),
 
 | `kirocrew.process.threads.python` | gauge | — | `metrics/process_gauges.py::register_process_gauges`, callbacks run only at reader collection (no polling threads). `threading.active_count()`. |
 | `kirocrew.process.threads.os` | gauge | — | Same module; `platform_compat.process_thread_count(os.getpid())` — OS-level count that catches native pools (ggml, grpc) invisible to `threading`. Linux-only; None elsewhere (gap, not zero). |
-| `kirocrew.process.open_fds` | gauge | — | Same module; `/proc/self/fd` or `/dev/fd` entry count minus the enumeration fd. |
+| `kirocrew.process.open_fds` | gauge | — | Same module; delegates to `platform_compat.count_open_fds` (shared with gatewayd's zombie-diagnostic `fd_count`): `/proc/self/fd` or `/dev/fd` entry count minus the enumeration fd; Windows reports the kernel handle count (platform-dependent semantics). |
 | `kirocrew.process.memory.rss_bytes` / `.peak_rss_bytes` | gauge (By) | — | Same module; delegate to `platform_compat.proc_rss_bytes` (current) / `proc_peak_rss_bytes` (high-water mark), both cross-platform. A 0 return maps to None: gap, never a fake zero sample. |
 | `kirocrew.process.cpu.seconds` | counter (s) | — | Same module; `platform_compat.proc_cpu_seconds` cumulative user+system CPU, exported CUMULATIVE (rebuild-idempotent; see exporter row). |
 | `kirocrew.process.gc.collections` / `.collected` / `.uncollectable` | counter | `generation` (`0`/`1`/`2`) | Same module; `gc.get_stats()` per generation. Rules GC in/out of a leak diagnosis (rising uncollectable = reference cycles; flat collected with rising RSS = native leak). |
@@ -402,15 +402,27 @@ without a handler change. Scalar (non-histogram) metrics in `other` are
 classified by the SDK's own JSON markers — a Sum's `data` block carries
 `aggregation_temporality`/`is_monotonic`, a Gauge's carries neither. DELTA sums
 keep summing across cycles/PIDs; CUMULATIVE sums (observable counters) buffer
-samples per (PID, attrs) stream and reduce them time-ordered after the scan
-(shard iteration order is not chronological): counter-RESET detection — a
-snapshot below the stream's own maximum marks a process boundary (PID reuse,
-restart) and banks the finished segment, while re-emitted snapshots at/above the
-maximum are no-ops — keeps provider rebuilds idempotent AND a reused PID from
-overwriting an earlier process's total, and the stream's first in-window sample
-is subtracted as a baseline so a process older than the window reports only
-in-window activity, never its lifetime total (stream total = banked + live
-segment - baseline; add across streams). Non-finite
+samples per (PID, process-identity, attrs) stream and reduce them time-ordered
+after the scan (shard iteration order is not chronological). The identity half
+of the key is the resource-level `kirocrew.process.start_time` token the
+exporter stamps: a changed token for the same PID is a deterministic process
+boundary, so a reused PID starts a fresh stream even when the new process's
+first snapshot already exceeds the old maximum — the one shape value-based
+detection cannot see — while an unchanged token across provider rebuilds
+stitches the rebuild segments into one stream. Within an identity-keyed stream
+a value below the running maximum is treated as shard garbage (one identity is
+one OS process, whose counters are monotonic), never banked as a reset. Only a
+STRING token counts as an identity: a corrupt shard carrying any other type
+there reads as identity-less rather than minting a stream that mutes the
+heuristic. Identity-less streams (legacy shards, or platforms without a
+start-time read) reduce under the counter-RESET value heuristic — a snapshot
+below the stream's own maximum marks a process boundary and banks the finished
+segment, while re-emitted snapshots at/above the maximum are no-ops — so
+provider rebuilds stay idempotent and pre-change shards keep their exact
+totals. Either way the stream's first in-window sample is subtracted as a
+baseline so a process older than the window reports only in-window activity,
+never its lifetime total (stream total = banked + live segment - baseline; add
+across streams). Non-finite
 scalars (json's Infinity/NaN literals) are rejected per point via one shared
 coercion helper; gauges emit `kind: "gauge"` with `latest` (the newest sample,
 never a sum). Gauge samples are keyed per exporting shard PID so
@@ -580,8 +592,43 @@ both emitted spellings, with and without the colon — and the `[System: …]`
 regenerate line): a marker absent from `_MARKERS` does NOT surface as its own
 bucket, it
 folds into the PRECEDING recognised block and mislabels those bytes, so the set
-must stay complete. Only leading bytes before the first marker fall outside every
-block and surface as `unclassified`. The returned sizes sum EXACTLY to `len(prompt)` (closure); the user's
+must stay complete.
+A block owns the span from its opener up to **the earlier of** the next opener and
+its OWN closer (`_CLOSERS`, keyed by the same labels — only the closers the
+assembly actually emits are listed, so extending it is a data change rather than a
+scanner edit). **A label with an opener in `_MARKERS` but no `_CLOSERS` entry keeps
+the absorbing behaviour this table exists to remove**, so the two are kept in step
+by grepping the assembly for `[End ` / `[END ` rather than by adding a closer only
+when one is noticed. One opener can have MORE than one closer spelling — a hook
+context is closed `[End of hook context]` by `context.py` and `[End hook context]`
+by `chat_runner.py` — and an entry covering one spelling silently leaves the other
+block absorbing what follows it, so such a label carries an alternation rather than
+whichever spelling was found first. The closer taken is the LAST match before the next opener, not the
+first: a block's content can quote its own closer — a custom agent prompt that
+documents the envelope it is injected into embeds `[END AGENT SYSTEM PROMPT]`
+verbatim — and first-match would end the block at that quotation and book the rest
+of its real body as `unclassified`. Last-match is right by construction, because
+nothing of the block follows its real closer, so any earlier occurrence in range is
+content. The closer search is bounded by the next opener, which is what
+keeps a WRAPPER correct: `[SESSION CONTEXT` closes long after the memory family
+opens inside it, never finds its own closer in range, and ends where it always did
+— unbounded, it would swallow every block nested within. The blank line a block
+emits right after its closer stays with that block, so a closed block does not
+leave a two-character crumb behind it. Escaping matters in one place worth naming:
+`[End of skill]` is a PREFIX of `[End of skills]`, so an unanchored closer would
+let one loaded skill claim the whole skills index that follows it.
+Characters that fall between a block's closer and the next opener therefore
+surface as `unclassified`, as do leading bytes before the first marker. This is
+the honest reading and it replaces a silent one: without closer awareness a span
+ran all the way to the next opener, which turned *unattributed* bytes into
+*MIS-attributed* ones with no way for a reader to tell a genuinely large block from
+a small one that had absorbed its neighbours. The trigger is ordinary rather than
+exotic — the blocks between two openers are conditional (workspace identity and the
+docs pointer are skipped for a custom agent, the memory family for a session sealed
+from the user's memory), so their absence is exactly what lets an earlier block
+absorb everything downstream of it. Measured on one real session, a ~470-character
+`[USER PROFILE]` block was reported as 8,116.
+The returned sizes sum EXACTLY to `len(prompt)` (closure); the user's
 own text is carved into the `your_message` label using the exact `(start, end)`
 span that `build_message` reports through its `user_span_out` out-parameter. That
 span is authoritative because `build_message` is the only code that sees every
@@ -651,10 +698,78 @@ growing conversation it is surfaced as **"Not measured"** (never "Kiro built-in"
 and always tagged an estimate — it is not a claim that the bytes are Kiro's or
 unremovable. Rows
 predating the field carry no `ctx_blocks` and are skipped, not zero-filled, so
-the trace starts where the recording does. `handlers/telemetry.py::api_context_trace`
+the trace starts where the recording does. Each turn also carries the row's
+`credits` and `duration_ms` when the shard recorded usable numbers (same
+drop-the-field-not-the-row rule as `TURN_USAGE_FIELDS`): injection and billing
+live on the same shard row, so the trace returns both in one walk rather than
+making the panel re-join through the usage-turns reader what was never apart.
+The chat Activity panel renders them as a per-turn credits column that appears
+only when at least one traced turn carries billing — pre-recorder history stays
+three columns instead of growing an all-dash one.
+`handlers/telemetry.py::api_context_trace`
 serves it as `GET /api/telemetry/context-trace?slot=<session key>` (`400` when
 `slot` is missing or blank), independent of the `telemetry.enabled` switch since
-these rows are always written.
+these rows are always written. The endpoint is **dashboard-only**: unlike
+`/api/usage/turns` this reader has no row-ownership model, and its rows carry
+the turn's billing, so an app caller is refused outright with the standard
+indistinguishable `404` (`code: not_found`) and the refusal is SEL-audited
+(deny-by-default, App Kit §5.2) — an app that needs its own turns' billing has
+`/api/usage/turns`.
+
+**Row-timestamp parsing has one owner.** `usage._parse_row_dt` is the single
+spelling for reading a stored row timestamp (`Z` rewritten to `+00:00` for
+py3.10's `fromisoformat`; a naive stamp left naive so a caller's
+`.timestamp()` reads it in local time); `_parse_row_ts` derives the epoch form,
+and every shard/row reader in the module (`slot_spend`, `context_occupancy`,
+`cost_breakdown`, `slot_turn_usage`, the token-history and transcript-day
+readers) resolves timestamps through them. Two readers of the same rows must
+not disagree about which rows a window contains. `_usage_number` is likewise
+the one guard for copying a numeric field out of a row (bool is not a count;
+ints are accepted directly because `math.isfinite` would overflow on an
+oversized int; a non-finite float is dropped).
+
+**Per-turn usage rows for one session.** `usage.slot_turn_usage(slot, days)` is
+the per-turn drill-down under `slot_spend`'s aggregate: one row per turn with
+`ts`, `model`, and the numeric fields named by `usage.TURN_USAGE_FIELDS`
+(tokens in/out, cache create/read, `credits`, `cost`, `duration_ms`, and the
+context meter pair). A non-numeric or non-finite field is dropped from its row,
+never the row itself. `handlers/telemetry.py::api_usage_turns` serves it as
+`GET /api/usage/turns?slot=<session key>[&days=N]` (`400` on a missing slot;
+`days` clamps to `[1, SPEND_WINDOW_DAYS]` rather than refusing, because shards
+beyond the window are retired anyway). This is the endpoint an **app** is
+granted through its manifest's `permissions.api` to account for what its own
+agent slots cost — apps otherwise have no path to credits, and the shard files'
+location and row shape stay this module's private contract. **App isolation is
+ROW-level** (App Kit §5.2, deny-by-default): each row is stamped with the
+owning app at write time (`_build_token_record`'s `app` field, threaded from
+the turn's slot), and an app caller receives only rows stamped with its own
+app — however the slot is named, and whether or not it is still live. A
+live-slot ownership check was deliberately rejected: it leaks on slot-name
+reuse (a recreated slot vouches for the previous owner's retained rows) and
+denies an app its own completed sessions, which are exactly what an audit
+reads. A foreign slot key answers `200` with no rows — indistinguishable from
+a slot that never ran — and rows predating the stamp are invisible to app
+callers. A **disabled app is refused outright** (`is_app_enabled`,
+deny-by-default, the same gate the opt-in builtin routes wrap every handler
+in): disable revokes read access, not only future writes. Every app-caller
+decision is SEL-logged — including a malformed request's refusal — and SEL
+plus the enablement probe run off-loop. The window is enforced **per row**,
+not only per shard file (the oldest shard in a window covers a whole day);
+a row whose timestamp cannot be parsed is excluded — accounting excludes
+what it cannot date. Dashboard users (empty request app) read any slot; the
+Telemetry panel's Spend table is the dashboard consumer — each session row
+expands into its per-turn rows through this endpoint, which is where a
+mid-session model switch or a single runaway turn becomes visible (an average
+hides both).
+**Stamping boundary:** rows are stamped at the two write sites that can run
+app-owned work — the dashboard chat runner (the slot's `_app`) and the
+subagent completion path (`info.app`, an app-dispatched subagent's spend).
+The task-runner, workflow, Slack and background-one-liner writers do not
+stamp because those surfaces are not app-owned — an empty stamp there is the
+correct value, not a gap. Webhook-session rows are currently unstamped and
+therefore invisible to app callers; if webhook sessions gain app ownership,
+that write site must stamp too. Same independence from the
+`telemetry.enabled` switch as the context trace.
 
 **Where it renders.** The breakdown is a **per-session side-panel tab**
 (`ViewKind` `context`, opened from the panel's `+` menu directly under Logs), not

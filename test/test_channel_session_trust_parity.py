@@ -277,7 +277,19 @@ def _cfg(channel: str) -> SimpleNamespace:
             queue_mode="steer",
         ),
     )
-    setattr(cfg, channel, SimpleNamespace(hard_threshold_pct=95.0, soft_threshold_pct=80.0))
+    setattr(
+        cfg,
+        channel,
+        SimpleNamespace(
+            hard_threshold_pct=95.0,
+            soft_threshold_pct=80.0,
+            # Webex threads its replies, so its dispatcher reads this on every send.
+            # Harmless for the channels that do not: an attribute nobody looks at.
+            reply_in_thread=True,
+            # Read by the Webex card-press path when authorizing a sender.
+            allowed_emails=["kyle@example.com"],
+        ),
+    )
     return cfg
 
 
@@ -402,7 +414,15 @@ _CHANNELS: dict[str, Any] = {
 #: Channels that pass a real ``decider``, so a prompt IS clickable there. Their
 #: no-grant case ends in a refusal too -- the decider denies by default -- but only
 #: once its deadline passes, so these tests shorten it rather than waiting.
-_WIDGET_CHANNELS = frozenset({"teams"})
+_WIDGET_CHANNELS = frozenset({"teams", "webex"})
+
+#: Where each widget channel's click deadline lives, so the deny-by-default path
+#: can resolve immediately instead of waiting one out. Read per call inside the
+#: decider, so patching the module attribute is enough.
+_APPROVAL_DEADLINE_SYMBOL = {
+    "teams": "kiro_crew.teams.approvals.APPROVAL_TIMEOUT_SECS",
+    "webex": "kiro_crew.messaging.approval.APPROVAL_TIMEOUT_S",
+}
 
 
 def _run_turn(
@@ -411,8 +431,7 @@ def _run_turn(
     """Drive one real turn for *channel*; return its provider and renderer."""
     if channel in _WIDGET_CHANNELS:
         # Collapse the click deadline so the deny-by-default path resolves now.
-        # Read per call inside the decider, so patching the module value is enough.
-        monkeypatch.setattr("kiro_crew.teams.approvals.APPROVAL_TIMEOUT_SECS", 0.01)
+        monkeypatch.setattr(_APPROVAL_DEADLINE_SYMBOL[channel], 0.01)
     provider = _Provider()
     mod, renderer_attr, dispatcher, inbound = _CHANNELS[channel](_Sessions(provider), _Ctx(hooks))
     rendered: list[_Renderer] = []

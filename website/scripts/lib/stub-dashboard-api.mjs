@@ -20,6 +20,53 @@ export const json = (route, body, status = 200) => route.fulfill({
 })
 
 /**
+ * The `/api/config/kirocrew` body, matching `KiroCrewCfg` in
+ * `website/src/pages/overview/KiroCrewCfgTab.tsx`.
+ *
+ * Named ahead of the catch-all because that tab does
+ * `Object.entries(cfg.agents)` on mount. Under the catch-all's `{}`,
+ * `cfg.agents` is `undefined`, `Object.entries(undefined)` throws, the app-shell
+ * error boundary catches it, and the WHOLE PAGE renders blank — while the
+ * harness still exits 0 and still writes a PNG. That failure mode fails toward
+ * a false pass: a PR can cite a screenshot of an error boundary as evidence.
+ *
+ * Exported so a harness that needs a variation can spread it rather than
+ * hand-rolling the shape again. Eighteen harnesses had already done exactly
+ * that, and they had drifted — several spelled a workspace's directory `path`
+ * where the component reads `dir`, so those rows rendered blank in the
+ * screenshots that were supposed to prove them.
+ */
+export const KIROCREW_CONFIG_FIXTURE = {
+  agents: {
+    kirocrew: { kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'default' },
+  },
+  default_agent: 'kirocrew',
+  workspaces: { default: { dir: '~/.kiro/crew/workspace' } },
+  default_workspace: 'default',
+  memory_stores: {
+    default: { description: 'Default store', embedding_provider: '' },
+  },
+  default_memory_store: 'default',
+  agent: {
+    default_agent: 'kirocrew', provider: 'acp', model: 'auto',
+    approval_mode: 'interactive', sandbox: 'auto',
+    subagent_max_turns: 100, max_subagents: 3, subagent_auto_max: 16,
+    conductor_skill: false, tool_search: true,
+    max_channels: 8, max_channel_agents: 4, enforce_denied_commands: 'all',
+  },
+  session: { timeout_secs: 1800, pool_size: 2, pool_agent: 'kirocrew', pool_ttl_secs: 600 },
+  memory: { embedding_provider: 'local' },
+  auto_update: true,
+}
+
+/** The `/api/agent/config` body — the per-agent MCP view. */
+export const AGENT_CONFIG_FIXTURE = { name: 'kirocrew', mcpServers: {} }
+
+/** Whether an unmapped path should be guessed as an object rather than a list. */
+const objectish = path =>
+  /(config|tips|voice|autonudge|branding|status|usage-summary)/.test(path)
+
+/**
  * Install the gateway-free API stub on a page.
  *
  * @param {import('playwright').Page} page
@@ -53,6 +100,10 @@ export async function stubDashboardApi(page, opts = {}) {
     botName = 'Kiro Crew',
     extra = null,
   } = opts
+
+  // Per-install, so a long harness reports each unmapped path once rather than
+  // once per poll of the same endpoint.
+  const announced = new Set()
 
   // Swallow the dashboard's websocket so it does not retry-storm with no gateway.
   await page.routeWebSocket(/\/api\/ws/, () => {})
@@ -94,10 +145,25 @@ export async function stubDashboardApi(page, opts = {}) {
     if (path === '/api/agents' || path === '/api/chat/agents') {
       return json(route, [{ name: 'kirocrew', source: 'builtin' }, { name: 'oncall', source: 'aim' }])
     }
+    // Named BEFORE the catch-all: both paths match its `config` test, and the
+    // `{}` it would return blanks the whole Developer > Config surface (see
+    // KIROCREW_CONFIG_FIXTURE for why).
+    if (path === '/api/config/kirocrew') return json(route, KIROCREW_CONFIG_FIXTURE)
+    if (path === '/api/agent/config') return json(route, AGENT_CONFIG_FIXTURE)
     // Endpoints not worth naming individually: anything object-shaped gets {},
-    // everything else gets []. Guessing wrong only costs an empty panel.
-    const objectish = /(config|tips|voice|autonudge|branding|status|usage-summary)/.test(path)
-    return json(route, objectish ? {} : [])
+    // everything else gets []. Guessing wrong only costs an empty panel — in
+    // the cases where it does not, the endpoint belongs above this line.
+    //
+    // Announced once per path per run. The fixture gap this catch-all produced
+    // for /api/config/kirocrew was silent AND fatal, and a harness author with
+    // no reason to suspect the stub had nothing to go on: the page just came
+    // back blank. A guess is a reasonable default, but it should say so, so the
+    // NEXT unmapped endpoint is discoverable rather than mysterious.
+    if (!announced.has(path)) {
+      announced.add(path)
+      console.log(`STUB: no fixture for ${path} — guessing ${objectish(path) ? '{}' : '[]'}`)
+    }
+    return json(route, objectish(path) ? {} : [])
   })
 
   await page.addInitScript(([themeMode, keepStorage, entries]) => {

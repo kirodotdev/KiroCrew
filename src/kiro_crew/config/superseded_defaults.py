@@ -79,6 +79,20 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         new_default=True,
         changed_in="#4566",
     ),
+    # #4388 changed session.autocompact_pct from 90.0 to 70.0 because 90.0 was
+    # also the maximum its own validator accepted, so the shipped default was
+    # the most expensive value an operator could hold: credits scale with
+    # context and steepen near the ceiling, and compacting AT the ceiling pays
+    # that rate repeatedly before acting. It shipped deliberately without a
+    # migration -- on disk, "chose 90" and "90 was the default when this file
+    # was written" are the same bytes -- so an install materialized before it
+    # still compacts at 90 and nothing told anyone (issue #4389).
+    SupersededDefault(
+        dotted_key="session.autocompact_pct",
+        old_default=90.0,
+        new_default=70.0,
+        changed_in="#4388",
+    ),
 )
 
 

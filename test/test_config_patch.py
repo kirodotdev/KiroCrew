@@ -161,9 +161,7 @@ class TestTerminalShell:
     async def test_non_executable_rejected(self, tmp_config) -> None:
         app, _ = _make_app_with_state()
         async with TestClient(TestServer(app)) as client:
-            resp = await _patch(
-                client, "dashboard.terminal.shell", "/opt/definitely-not-a-shell"
-            )
+            resp = await _patch(client, "dashboard.terminal.shell", "/opt/definitely-not-a-shell")
             assert resp.status == 400
             body = await resp.json()
             assert "executable" in body["error"]
@@ -802,3 +800,69 @@ class TestTelemetryEnabledEgressGate:
             async with TestClient(TestServer(_make_app())) as c:
                 assert (await _patch(c, "telemetry.enabled", True)).status == 409
         reset.assert_not_called()
+
+
+# ── Update-nudge snooze/skip (dashboard.update_nudge) ────────────────────
+
+
+class TestUpdateNudgeKeys:
+    """The proactive update popup's per-version snooze/skip persistence.
+
+    ONE atomic dict write: the three fields form a single verdict, so
+    per-field writes would open both a crash window (an old verdict paired
+    with a new version) and a two-client interleave assembling a verdict
+    nobody expressed. The strict dict spec (all keys required, no extras,
+    per-key scalar validation) is what keeps this from becoming a generic
+    JSON passthrough.
+    """
+
+    _REC = {"version": "0.5.0", "snoozed_until": 1756000000.0, "skipped": True}
+
+    @pytest.mark.asyncio
+    async def test_full_record_round_trips_atomically(self, tmp_config) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "dashboard.update_nudge", self._REC)).status == 200
+        data = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert data["dashboard"]["update_nudge"] == self._REC
+
+    @pytest.mark.asyncio
+    async def test_non_object_rejected(self, tmp_config) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "dashboard.update_nudge", "0.5.0")).status == 400
+
+    @pytest.mark.asyncio
+    async def test_missing_key_rejected(self, tmp_config) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            rec = {"version": "0.5.0", "skipped": True}
+            assert (await _patch(c, "dashboard.update_nudge", rec)).status == 400
+
+    @pytest.mark.asyncio
+    async def test_unknown_key_rejected(self, tmp_config) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            rec = {**self._REC, "extra": 1}
+            assert (await _patch(c, "dashboard.update_nudge", rec)).status == 400
+
+    @pytest.mark.asyncio
+    async def test_version_overlong_rejected(self, tmp_config) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            rec = {**self._REC, "version": "x" * 129}
+            assert (await _patch(c, "dashboard.update_nudge", rec)).status == 400
+
+    @pytest.mark.asyncio
+    async def test_negative_snooze_rejected(self, tmp_config) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            rec = {**self._REC, "snoozed_until": -1.0}
+            assert (await _patch(c, "dashboard.update_nudge", rec)).status == 400
+
+    @pytest.mark.asyncio
+    async def test_bool_snooze_rejected(self, tmp_config) -> None:
+        # bool is an int subclass; a bare float() coercion would store 1.0.
+        async with TestClient(TestServer(_make_app())) as c:
+            rec = {**self._REC, "snoozed_until": True}
+            assert (await _patch(c, "dashboard.update_nudge", rec)).status == 400
+
+    @pytest.mark.asyncio
+    async def test_skipped_wrong_type_rejected(self, tmp_config) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            rec = {**self._REC, "skipped": "yes"}
+            assert (await _patch(c, "dashboard.update_nudge", rec)).status == 400

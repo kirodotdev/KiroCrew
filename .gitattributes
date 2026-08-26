@@ -9,6 +9,11 @@
 # file non-text disables newline conversion entirely.
 *.pem -text
 
+# Screenshots and other PNG assets are binary even when their compressed prefix
+# happens not to contain a NUL byte. Git's heuristic otherwise renders some PNGs
+# as text and applies whitespace/newline checks to compressed image bytes.
+*.png binary
+
 # Shell scripts and the data files they parse must keep LF on every checkout.
 # `core.autocrlf=true` is the Git-for-Windows default, so without this a Windows
 # clone rewrites these to CRLF and two things break there and only there:
@@ -28,3 +33,10 @@
 *.sh text eol=lf
 scripts/scrub-allowlist.txt text eol=lf
 *.nsh text eol=lf
+
+# The vendored-source integrity manifest hashes checkout bytes. Keep its text
+# payload byte-identical on Windows so core.autocrlf cannot make an untouched
+# vendor tree look modified; native libraries remain unclassified/binary.
+src/kiro_crew/_vendor/**/*.py text eol=lf
+src/kiro_crew/_vendor/**/*.md text eol=lf
+src/kiro_crew/_vendor/**/*.typed text eol=lf

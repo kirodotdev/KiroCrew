@@ -37,7 +37,8 @@ import secrets
 import time
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.constants import OPTIONS_RE_TRAILER, split_trailing_protocol_suffix
+from kiro_crew.constants import split_trailing_protocol_suffix
+from kiro_crew.messaging.approval import APPROVAL_TIMEOUT_S
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.outbound_files import (
     ExtractLimits,
@@ -52,6 +53,7 @@ from kiro_crew.messaging.renderer import (
     _default_redactor,
     apply_options_cap,
     new_approval_nonce,
+    split_options_trailer,
 )
 from kiro_crew.messaging.split import split_markdown_safe
 from kiro_crew.messaging.transport import TransportCapabilities
@@ -107,7 +109,8 @@ _TYPING_REFRESH_S = 4.0
 _EDIT_THROTTLE_S = 1.0
 
 # Interactive approval wait; deny-by-default when it elapses with no press.
-_APPROVAL_TIMEOUT_S = 300.0
+# Owned by messaging.approval so every channel's window is the same one.
+_APPROVAL_TIMEOUT_S = APPROVAL_TIMEOUT_S
 
 # ── Stall marks on the live bubble ──
 # Telegram has no message-reaction budget to spend on a phase indicator: a bot
@@ -153,14 +156,6 @@ _THINKING_SCAFFOLD = "<blockquote expandable>💭 </blockquote>"
 # ``close(failure_reason=...)`` so the user is never told to retry an error
 # that says retrying will not help.
 _GENERIC_ERROR_TEXT = "⚠️ Error — please try again"
-
-# Trailing "[OPTIONS: a | b | c]" -- extracted for inline-keyboard rendering.
-# Matched only at the very END of the message, so use the DOTALL/trailer
-# canonical parser. Defined once in constants.py (shared with the Slack/
-# dashboard/Discord/WeCom surfaces) so the ReDoS-hardened grammar can never
-# drift; see OPTIONS_RE_TRAILER for the full rationale. Per-choice whitespace is
-# stripped by the caller.
-_OPTIONS_RE = OPTIONS_RE_TRAILER
 
 
 def _display_safe(text: str) -> str:
@@ -214,17 +209,13 @@ def md_to_telegram_html_safe(text: str) -> str:
 
 
 def _extract_options(text: str) -> tuple[str, list[str]]:
-    """Split text into (body, options). Handles the streamed partial too."""
-    m = _OPTIONS_RE.search(text)
-    if m:
-        body = text[: m.start()].rstrip()
-        options = [o.strip() for o in m.group(1).split("|") if o.strip()]
-        return body, options
-    # Hold back an incomplete "[OPTIONS…" fragment mid-stream.
-    idx = text.rfind("[OPTIONS")
-    if idx != -1 and "]" not in text[idx:]:
-        return text[:idx].rstrip(), []
-    return text, []
+    """Split text into ``(body, options)``, holding back a streamed partial.
+
+    ``hide_partial=True`` because this renderer STREAMS: a still-arriving
+    ``[OPTIONS…`` fragment really may be a marker mid-flight, and the next frame
+    re-renders from the full buffer, so hiding it costs nothing permanent.
+    """
+    return split_options_trailer(text, hide_partial=True)
 
 
 # kiro-cli emits an inline "[STEERING steer-<id>: …]" ack marker when it folds a

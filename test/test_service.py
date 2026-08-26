@@ -20,7 +20,8 @@ import plistlib
 import re
 import shlex
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -3857,3 +3858,252 @@ class TestHeadlessApiKeyWarning:
         ):
             assert controller.install_service() == 0
         assert "Note: dropped key" in capsys.readouterr().out
+
+
+class TestAppArmorProfileValidation:
+    """``validate`` parses a profile WITHOUT loading it.
+
+    Loading needs root and a wrong profile that loads is a confined gateway that
+    cannot start; parsing first is what turns that into a message. ``--skip-cache``
+    is load-bearing: writing ``/var/cache/apparmor`` needs root and this runs
+    before any privileged step.
+    """
+
+    @staticmethod
+    def _fake_run(monkeypatch, *, returncode=0, stdout="", stderr="", raises=None):
+        from kiro_crew.service import apparmor as aa
+
+        seen: dict = {}
+
+        def _run(argv, **kw):
+            seen["argv"] = list(argv)
+            seen["kw"] = kw
+            if raises is not None:
+                raise raises
+            return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+
+        monkeypatch.setattr(aa.subprocess, "run", _run)
+        return seen
+
+    def test_a_clean_parse_reports_ok(self, monkeypatch):
+        from kiro_crew.service import apparmor as aa
+
+        seen = self._fake_run(monkeypatch)
+        ok, detail = aa.validate("/usr/sbin/apparmor_parser", "profile x {}")
+
+        assert (ok, detail) == (True, "")
+        assert seen["argv"][:3] == ["/usr/sbin/apparmor_parser", "-Q", "--skip-cache"]
+
+    def test_the_profile_text_reaches_the_parser_and_the_temp_file_is_removed(self, monkeypatch):
+        from kiro_crew.service import apparmor as aa
+
+        seen = self._fake_run(monkeypatch)
+        written: dict = {}
+
+        def _capture(argv, **kw):
+            written["text"] = Path(argv[-1]).read_text(encoding="utf-8")
+            written["path"] = argv[-1]
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(aa.subprocess, "run", _capture)
+        aa.validate("/usr/sbin/apparmor_parser", "profile marker {}")
+
+        assert written["text"] == "profile marker {}"
+        # The temp file carries a profile, not a secret, but leaving one per
+        # install attempt is still a leak of /tmp entries.
+        assert not Path(written["path"]).exists()
+        assert seen == {}
+
+    def test_a_parse_failure_returns_the_parsers_own_words(self, monkeypatch):
+        from kiro_crew.service import apparmor as aa
+
+        self._fake_run(monkeypatch, returncode=1, stderr="  syntax error at line 3  ")
+        assert aa.validate("/usr/sbin/apparmor_parser", "bad") == (
+            False,
+            "syntax error at line 3",
+        )
+
+    def test_stdout_is_used_when_stderr_is_empty(self, monkeypatch):
+        from kiro_crew.service import apparmor as aa
+
+        self._fake_run(monkeypatch, returncode=1, stdout="told you so")
+        assert aa.validate("/usr/sbin/apparmor_parser", "bad") == (False, "told you so")
+
+    def test_a_missing_parser_is_a_failure_not_a_crash(self, monkeypatch):
+        from kiro_crew.service import apparmor as aa
+
+        self._fake_run(monkeypatch, raises=OSError("no such file"))
+        ok, detail = aa.validate("/usr/sbin/apparmor_parser", "profile x {}")
+
+        assert ok is False
+        assert "no such file" in detail
+
+    def test_a_parser_timeout_is_a_failure_not_a_crash(self, monkeypatch):
+        import subprocess
+
+        from kiro_crew.service import apparmor as aa
+
+        self._fake_run(monkeypatch, raises=subprocess.TimeoutExpired("p", 30))
+        assert aa.validate("/usr/sbin/apparmor_parser", "profile x {}")[0] is False
+
+
+#: The AppImage path the attachment scan matches on, POSIX-flavoured on purpose.
+#: ``conflicting_attachment`` interpolates the path into a literal needle, and on
+#: Windows a plain ``Path("/opt/x")`` renders with BACKSLASHES — so the needle
+#: would never match the forward-slash profile text and the test would assert a
+#: platform artefact instead of the matching logic. AppArmor is Linux-only, so
+#: PurePosixPath is also what production actually passes here.
+_APPIMAGE = PurePosixPath("/opt/KiroCrew.AppImage")
+
+
+class TestAppArmorConflictingAttachment:
+    """Two profiles claiming one attachment is an ambiguous load.
+
+    A hand-written profile attached to the same AppImage is the workaround people
+    find first, so it is common rather than exotic — and the caller can only warn
+    about it if this finds it. Best effort by design: a literal scan, no policy
+    parsing, and an unreadable file is skipped rather than failing the install.
+    """
+
+    @staticmethod
+    def _dir(monkeypatch, tmp_path):
+        from kiro_crew.service import apparmor as aa
+
+        monkeypatch.setattr(aa, "LAUNCHER_PROFILE_PATH", tmp_path / aa.LAUNCHER_PROFILE_NAME)
+        return aa
+
+    def test_no_other_profile_means_no_conflict(self, monkeypatch, tmp_path):
+        aa = self._dir(monkeypatch, tmp_path)
+        assert aa.conflicting_attachment(_APPIMAGE) is None
+
+    def test_our_own_profile_is_never_the_conflict(self, monkeypatch, tmp_path):
+        aa = self._dir(monkeypatch, tmp_path)
+        (tmp_path / aa.LAUNCHER_PROFILE_NAME).write_text('"/opt/KiroCrew.AppImage" {}')
+        assert aa.conflicting_attachment(_APPIMAGE) is None
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            '"/opt/KiroCrew.AppImage" flags=(attach_disconnected) {}',
+            "profile local /opt/KiroCrew.AppImage {}",
+            "profile local\n/opt/KiroCrew.AppImage",
+        ],
+    )
+    def test_each_attachment_spelling_is_found(self, body: str, monkeypatch, tmp_path):
+        aa = self._dir(monkeypatch, tmp_path)
+        other = tmp_path / "local-kirocrew"
+        other.write_text(body)
+        assert aa.conflicting_attachment(_APPIMAGE) == str(other)
+
+    def test_a_profile_for_another_path_is_not_a_conflict(self, monkeypatch, tmp_path):
+        aa = self._dir(monkeypatch, tmp_path)
+        (tmp_path / "other").write_text('"/opt/SomethingElse.AppImage" {}')
+        assert aa.conflicting_attachment(_APPIMAGE) is None
+
+    def test_a_subdirectory_is_skipped(self, monkeypatch, tmp_path):
+        # /etc/apparmor.d has abstractions/ and tunables/ subdirectories; reading
+        # one as a file would raise, and this scan must not fail the install.
+        aa = self._dir(monkeypatch, tmp_path)
+        (tmp_path / "abstractions").mkdir()
+        assert aa.conflicting_attachment(_APPIMAGE) is None
+
+    def test_an_unreadable_file_is_skipped_not_fatal(self, monkeypatch, tmp_path):
+        aa = self._dir(monkeypatch, tmp_path)
+        (tmp_path / "unreadable").write_text("x")
+        good = tmp_path / "zz-real"
+        good.write_text('"/opt/KiroCrew.AppImage" {}')
+        real_read = Path.read_text
+
+        def _read(self, *a, **kw):
+            if self.name == "unreadable":
+                raise OSError("EACCES")
+            return real_read(self, *a, **kw)
+
+        monkeypatch.setattr(Path, "read_text", _read)
+        assert aa.conflicting_attachment(_APPIMAGE) == str(good)
+
+    def test_a_missing_directory_is_not_an_error(self, monkeypatch, tmp_path):
+        aa = self._dir(monkeypatch, tmp_path / "absent")
+        assert aa.conflicting_attachment(_APPIMAGE) is None
+
+
+class TestAppArmorLauncherUninstall:
+    """Unloading is idempotent and never raises.
+
+    An uninstall that fails hard leaves the user with a half-removed profile and
+    no way to finish; the file is what matters, so a failed UNLOAD is logged and
+    the removal still runs.
+    """
+
+    def test_nothing_to_do_when_no_profile_is_installed(self, monkeypatch, tmp_path):
+        from kiro_crew.service import apparmor as aa
+
+        monkeypatch.setattr(aa, "LAUNCHER_PROFILE_PATH", tmp_path / "absent")
+        outcome = aa.uninstall_launcher(lambda *a: None)
+        assert (outcome.changed, outcome.ok) == (False, True)
+
+    def test_it_unloads_then_removes(self, monkeypatch, tmp_path):
+        from kiro_crew.service import apparmor as aa
+
+        path = tmp_path / "kirocrew-launcher"
+        path.write_text("profile")
+        monkeypatch.setattr(aa, "LAUNCHER_PROFILE_PATH", path)
+        monkeypatch.setattr(aa, "parser_path", lambda: "/usr/sbin/apparmor_parser")
+        calls: list[tuple] = []
+
+        outcome = aa.uninstall_launcher(lambda *a: calls.append(a))
+
+        assert calls == [
+            ("/usr/sbin/apparmor_parser", "-R", str(path)),
+            ("rm", "-f", str(path)),
+        ]
+        assert outcome.changed is True and outcome.ok is True
+
+    def test_a_failed_unload_still_removes_the_file(self, monkeypatch, tmp_path):
+        from kiro_crew.service import apparmor as aa
+
+        path = tmp_path / "kirocrew-launcher"
+        path.write_text("profile")
+        monkeypatch.setattr(aa, "LAUNCHER_PROFILE_PATH", path)
+        monkeypatch.setattr(aa, "parser_path", lambda: "/usr/sbin/apparmor_parser")
+        calls: list[tuple] = []
+
+        def _sudo(*a):
+            if a[1] == "-R":
+                raise RuntimeError("kernel said no")
+            calls.append(a)
+
+        outcome = aa.uninstall_launcher(_sudo)
+
+        assert calls == [("rm", "-f", str(path))]
+        assert outcome.ok is True
+
+    def test_a_failed_removal_is_reported(self, monkeypatch, tmp_path):
+        from kiro_crew.service import apparmor as aa
+
+        path = tmp_path / "kirocrew-launcher"
+        path.write_text("profile")
+        monkeypatch.setattr(aa, "LAUNCHER_PROFILE_PATH", path)
+        monkeypatch.setattr(aa, "parser_path", lambda: None)
+
+        def _sudo(*a):
+            raise RuntimeError("read-only /etc")
+
+        outcome = aa.uninstall_launcher(_sudo)
+
+        assert outcome.ok is False
+        assert "read-only /etc" in outcome.message
+
+    def test_no_parser_skips_the_unload_and_still_removes(self, monkeypatch, tmp_path):
+        from kiro_crew.service import apparmor as aa
+
+        path = tmp_path / "kirocrew-launcher"
+        path.write_text("profile")
+        monkeypatch.setattr(aa, "LAUNCHER_PROFILE_PATH", path)
+        monkeypatch.setattr(aa, "parser_path", lambda: None)
+        calls: list[tuple] = []
+
+        outcome = aa.uninstall_launcher(lambda *a: calls.append(a))
+
+        assert calls == [("rm", "-f", str(path))]
+        assert outcome.changed is True

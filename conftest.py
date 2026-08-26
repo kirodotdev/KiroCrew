@@ -102,6 +102,32 @@ import warnings
 
 import pytest
 
+
+def _root_can_create_real_symlink() -> bool:
+    """Probe real-link capability for tests collected outside ``test/`` too.
+
+    Ordinary Windows shells commonly lack ``SeCreateSymbolicLinkPrivilege``.
+    This is a capability probe, not an OS guess: Developer Mode/elevated Windows
+    runners retain the security coverage, while only the exact tests inventoried
+    in ``test/requires-real-symlinks.txt`` skip on an incapable host.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        target = os.path.join(tmp, "target")
+        os.mkdir(target)
+        try:
+            os.symlink(
+                target,
+                os.path.join(tmp, "link"),
+                target_is_directory=True,
+            )
+        except (OSError, NotImplementedError, AttributeError):
+            return False
+        return True
+
+
+_ROOT_HAS_REAL_SYMLINKS = _root_can_create_real_symlink()
+
+
 #: Service managers whose *mutating* subcommands reconfigure, start, or stop a
 #: real service. Matched on BASENAME against every token of the argv, not just
 #: ``argv[0]``, because in this codebase the interesting name is usually not
@@ -998,7 +1024,13 @@ def pytest_runtest_setup(item):
 
 
 def pytest_collection_modifyitems(config, items):
-    """On Windows, skip the tracked known-gap tests (all parametrizations).
+    """Apply exact capability skips, then Windows' tracked known-gap skips.
+
+    Real-symlink tests are listed individually rather than intercepting
+    ``os.symlink`` globally.  A global interception also catches production
+    compatibility helpers before they can handle WinError 1314 and fall back to
+    a junction, silently dropping the Windows behavior those tests exist to
+    cover.  Exact collection markers leave every non-link path untouched.
 
     The list lives in ``test/windows-expected-failures.txt`` -- one unparametrized node
     id per line, captured from the first Windows CI runs. It is a burn-down backlog:
@@ -1016,6 +1048,24 @@ def pytest_collection_modifyitems(config, items):
     always spelled with ``/`` even on Windows, so the in-package entries need no
     translation.
     """
+    if not _ROOT_HAS_REAL_SYMLINKS:
+        listfile = _REPO_ROOT / "test" / "requires-real-symlinks.txt"
+        try:
+            text = listfile.read_text(encoding="utf-8")
+        except OSError:  # pragma: no cover - list file absent in a partial checkout
+            text = ""
+        requires_real_symlink = {
+            _base_nodeid(ln.strip())
+            for ln in text.splitlines()
+            if ln.strip() and not ln.startswith("#")
+        }
+        marker = pytest.mark.skip(
+            reason="test requires real symlink creation; host lacks that capability"
+        )
+        for item in items:
+            if _base_nodeid(item.nodeid) in requires_real_symlink:
+                item.add_marker(marker)
+
     if not platform_compat_or_none() or not platform_compat_or_none().IS_WINDOWS:
         return
     listfile = _REPO_ROOT / "test" / "windows-expected-failures.txt"
@@ -1971,10 +2021,7 @@ def _drain_windows_proactor_finalizers() -> None:
     def _suppress_closed_loop(unraisable: sys.UnraisableHookArgs) -> None:
         """Suppress 'Event loop is closed' from transport __del__."""
         exc = unraisable.exc_value
-        if (
-            isinstance(exc, RuntimeError)
-            and str(exc) == "Event loop is closed"
-        ):
+        if isinstance(exc, RuntimeError) and str(exc) == "Event loop is closed":
             # Silently swallow — the transport is being finalized after its loop
             # closed, which is harmless (the I/O is already done).
             return

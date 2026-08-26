@@ -1001,7 +1001,7 @@ export function RemoteCrewPanel() {
   if (disabled) {
     return (
       <Card>
-        <div className="flex items-center gap-2 text-text font-medium mb-1">
+        <div className="flex items-center gap-2 text-text font-medium mb-1" data-setting-label={i18nT('pages.settings.instancesPanel.enable_remote_crew_management')}>
           <Server className="lucide-inline" /> {i18nT('pages.settings.instancesPanel.multi_instance_management_is_off')}
         </div>
         <p className="text-[13px] text-muted mb-3">{i18nT('pages.settings.instancesPanel.enable_it_to_let_this_gateway_open_ssh_tunnels_t')}</p>

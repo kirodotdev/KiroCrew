@@ -98,6 +98,18 @@ async function main() {
   let page = null
   let wsServer = null
 
+  /** Best-effort teardown for EVERY exit path: an assertion failure that left
+   *  the browser or the static server alive kept this event loop spinning, so
+   *  a failing run hung instead of exiting non-zero. Idempotent — the success
+   *  path tears down explicitly too, right before its final assertions. */
+  async function cleanup() {
+    try { await context.close() } catch { /* already closed */ }
+    try { await browser.close() } catch { /* already closed */ }
+    try { srv.close() } catch { /* already closed */ }
+  }
+
+  try {
+
   /**
    * A FRESH page per theme. stubDashboardApi installs one `**\/api\/**` handler
    * and bakes the theme into /api/theme/boot, so calling it twice on one page
@@ -200,8 +212,7 @@ async function main() {
   console.log('decline cleared the card:', goneAfterDecline)
   console.log('decline made no extra API call:', moves.length === movesBefore)
 
-  await browser.close()
-  srv.close()
+  await cleanup()
 
   const ok = goneAfterAccept
     && goneAfterDecline
@@ -209,10 +220,15 @@ async function main() {
     && moves[0].body?.folder_id === 'f-i18n'
     && moves[0].path.endsWith(`/${SLOT}/folder`)
   if (!ok) {
-    console.error('FAIL: the card did not behave as documented')
-    process.exit(1)
+    // Throw, never process.exit(): exit() would skip the catch below, whose
+    // cleanup releases the browser and server this run still holds.
+    throw new Error('FAIL: the card did not behave as documented')
   }
   console.log('OK')
+  } catch (err) {
+    await cleanup()
+    throw err
+  }
 }
 
 main().catch(err => { console.error(err); process.exit(1) })

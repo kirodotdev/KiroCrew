@@ -19,7 +19,9 @@ The app will:
    `/api/status`, so it is never adopted; the app waits for the port to clear
    and spawns fresh instead
 2. Launch `kirocrew gateway` when needed
-3. Show a loading screen while the backend boots
+3. Show a loading screen while the backend boots. A live bundled backend gets an
+   extended Windows cold-start window; a child that actually exits still fails
+   immediately with its launch-log cause.
 4. Load the dashboard
 5. Point the user at Kiro CLI installation and sign-in on the gateway host when
    either prerequisite is missing
@@ -95,7 +97,9 @@ Notes:
   `KiroCrew Nightly Setup <version>.exe`), in `website/electron/dist/`.
 - The native welcome/finish sidebar and the header used on intermediate pages
   carry the Kiro Crew logo and ghost artwork. The standard NSIS controls and
-  localized instructions remain native; only their supporting artwork changes.
+  localized instructions remain native. Page boundaries use a short Win32
+  alpha-blended cross-fade that follows the system client-area animation setting;
+  extraction itself stays on the native progress page without timer-driven art.
 
 See `../../docs/guides/windows-install.md` for the CI-built installer and the
 current Windows support status.

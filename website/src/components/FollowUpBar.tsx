@@ -3,6 +3,7 @@ import { useScrollEdges } from '../hooks/useScrollEdges'
 import { ChevronLeft, ChevronRight, ArrowUp } from 'lucide-react'
 
 import { i18nT } from '../i18n/t'
+import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 export type FollowUpLayout = 'multiline' | 'scroll'
 
 interface FollowUpBarProps {
@@ -63,6 +64,14 @@ export const FOLLOWUP_CHIP_STAGGER_MAX_STEPS = 6
  * and a CSS duration that outgrew it would end the window mid-hop.
  */
 export const FOLLOWUP_CHIP_HOP_DURATION_MS = 420
+
+/**
+ * Single-click debounce on a chip that also offers double-click-to-send: the
+ * timer this long is what lets a double-click cancel the pending select.
+ * Exported so tests advance fake timers against the component's own value
+ * instead of a hand-copied literal that silently drifts.
+ */
+export const FOLLOWUP_CHIP_DEBOUNCE_MS = 220
 
 /**
  * How long the staggered entrance can still be in flight: the deepest rung of
@@ -248,7 +257,7 @@ function Chip({ option, isPicked, picked, quickSend, onSelect, onSend, className
     timerRef.current = setTimeout(() => {
       timerRef.current = null
       onSelect(option, synth)
-    }, 220)
+    }, FOLLOWUP_CHIP_DEBOUNCE_MS)
   }
 
   const handleDoubleClick = () => {
@@ -443,6 +452,7 @@ function MultilineLayout({ options, picked, onSelect, onSend, quickSend, animati
 }
 
 function FollowUpBar({ options, picked, onSelect, onSend, quickSend, layout = 'multiline' }: FollowUpBarProps) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   // Content-keyed, not identity-keyed: the caller rebuilds the array on every
   // render, so an identity comparison would restart the entrance constantly.
   // \u0000 cannot occur inside an option label.

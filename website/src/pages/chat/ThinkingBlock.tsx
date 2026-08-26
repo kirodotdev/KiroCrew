@@ -6,6 +6,7 @@ import { ROW_PILL_BUTTON_CLASS, ROW_PILL_WRAPPER_CLASS, ROW_RAIL_CLASS } from '.
 import { useStreamIdle } from './ChatFooter'
 
 import { i18nT } from '../../i18n/t'
+import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 
 /** Newest slice of the reasoning kept for the one-line live preview. Bounded so
  *  a long trace does not put tens of kB of nowrap text in the DOM on every
@@ -40,6 +41,7 @@ function liveTail(content: string): string {
  * partial/ill-formed and shouldn't run through the markdown renderer.
  */
 function ThinkingBlock({ content, disclosureKey }: { content: string; disclosureKey?: string }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   // Held outside the row: the transcript is virtualised, so this block is
   // unmounted whenever its row leaves the mounted window.
   const [expanded, setExpanded] = useRowDisclosure(disclosureKey, false)
@@ -108,15 +110,21 @@ function ThinkingBlock({ content, disclosureKey }: { content: string; disclosure
       >
         {/* Same deterministic centering as the tool pill's status icon: the
             label spans pin leading-5 (20px), so the 12px icon centers on the
-            first line at (20 − 12) / 2 = 4px. */}
-        <Sparkles size={12} className="shrink-0 text-accent" style={{ marginTop: '4px' }} />
+            first line at (20 − 12) / 2 = 4px. While reasoning is live the icon
+            gently pulses, reinforcing the label's streaming shimmer so a folded
+            row still reads as "in progress" even when the one-line tail is
+            empty between two bursts. */}
+        <Sparkles size={12} className={`shrink-0 text-accent${streaming ? ' animate-pulse' : ''}`} style={{ marginTop: '4px' }} />
         {/* The label is tense-aware: several locales render `thinking` as an
             explicitly in-progress form ("思考中", "考え中"), which reads wrong
             once the burst has settled. It rides the same growth-derived
             liveness as the preview line, so the row's whole header flips to
             the finished form the moment the preview disappears — and a block
-            restored from history starts on the finished form. */}
-        <span className="shrink-0 leading-5">{streaming ? i18nT('pages.chat.thinkingBlock.thinking') : i18nT('pages.chat.thinkingBlock.thought_process')}</span>
+            restored from history starts on the finished form. While live it
+            also carries `.streaming-glow` — the same accent shimmer-sweep the
+            streaming assistant answer uses — so a folded turn's single row
+            actively signals the model is still thinking. */}
+        <span className={`shrink-0 leading-5${streaming ? ' streaming-glow' : ''}`}>{streaming ? i18nT('pages.chat.thinkingBlock.thinking') : i18nT('pages.chat.thinkingBlock.thought_process')}</span>
         <ChevronRight
           size={13}
           className="shrink-0 transition-transform duration-200"

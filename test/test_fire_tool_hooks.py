@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -361,8 +362,27 @@ class TestRunScriptHookStopEnvCap:
         hook = ScriptHook(id="s1", name="stop-hook", event=HOOK_EVENT_STOP, command="cat", timeout=5)
         hook_event = {"hook_event_name": HOOK_EVENT_STOP, "cwd": "/", "assistant_text": full}
 
+        class FakeStdin:
+            def __init__(self):
+                self.data = bytearray()
+                self.closed = False
+
+            def write(self, data):
+                self.data.extend(data)
+
+            async def drain(self):
+                return None
+
+            def close(self):
+                self.closed = True
+
         fake_proc = MagicMock()
-        fake_proc.communicate = AsyncMock(return_value=(b"", b""))
+        fake_proc.stdin = FakeStdin()
+        fake_proc.stdout = asyncio.StreamReader()
+        fake_proc.stdout.feed_eof()
+        fake_proc.stderr = asyncio.StreamReader()
+        fake_proc.stderr.feed_eof()
+        fake_proc.wait = AsyncMock(return_value=0)
         fake_proc.returncode = 0
         captured: dict = {}
 
@@ -389,7 +409,8 @@ class TestRunScriptHookStopEnvCap:
         assert "[OPTIONS:" not in env_ctx
         # Assert on what actually reached the subprocess stdin (not the input
         # dict): the full segment, tail marker intact, is serialized to stdin.
-        stdin_bytes = fake_proc.communicate.call_args.kwargs["input"]
+        stdin_bytes = bytes(fake_proc.stdin.data)
+        assert fake_proc.stdin.closed is True
         parsed = json.loads(stdin_bytes)
         assert parsed["assistant_text"] == full
         assert "[OPTIONS:" in parsed["assistant_text"]

@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew import seed as seed_mod
 
 # A test here spawns a real `python -m kiro_crew gateway --help` child interpreter;
@@ -566,6 +567,7 @@ def test_seed_non_empty_rail_succeeds_with_replace(
     )
 
 
+@requires_symlinks
 def test_seed_replace_refuses_symlinked_target(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -591,6 +593,7 @@ def test_seed_replace_refuses_symlinked_target(
     assert (real_dir / "precious.txt").read_text(encoding="utf-8") == "must survive"
 
 
+@requires_symlinks
 def test_seed_refuses_symlinked_nonempty_target_without_replace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -880,6 +883,7 @@ def test_seed_regular_file_target_rejected(
     assert target_file.read_text(encoding="utf-8") == "some stale log the user left behind"
 
 
+@requires_symlinks
 def test_seed_empty_symlink_target_rejected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -935,6 +939,7 @@ def test_seed_double_resolve_target_called_once_per_role(
     assert (target / "fixture.yaml").is_file()
 
 
+@requires_symlinks
 def test_seed_symlink_to_file_rejected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -971,6 +976,7 @@ def test_seed_symlink_to_file_rejected(
     assert link.is_symlink()
 
 
+@requires_symlinks
 def test_seed_dangling_symlink_rejected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

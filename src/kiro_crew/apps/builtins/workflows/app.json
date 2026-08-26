@@ -45,5 +45,14 @@
   "heroImage": "/app-assets/workflows/hero-light.svg",
   "heroImageDark": "/app-assets/workflows/hero-dark.svg",
   "heroImageDetail": "/app-assets/workflows/hero-detail-light.svg",
-  "heroImageDetailDark": "/app-assets/workflows/hero-detail-dark.svg"
+  "heroImageDetailDark": "/app-assets/workflows/hero-detail-dark.svg",
+  "useCases": [
+    "Validate and inspect restricted workflow scripts or monitor core multi-agent workflow runs phase by phase."
+  ],
+  "configuration": [
+    "Enable the hidden app with kirocrew app enable workflows; validate DSL Python in Author, or use chat or MCP workflow tools when you need real agent orchestration and monitor it in Runs."
+  ],
+  "screenshots": [
+    "/app-assets/workflows/screenshot-main.png"
+  ]
 }
