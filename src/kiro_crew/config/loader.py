@@ -3060,9 +3060,9 @@ class DashboardConfig:
             "consequential enough (security, exposure, data loss, spend, "
             "anything hard to undo) that they cannot choose correctly without "
             "the reasoning, or as the undo path that rides along with a "
-            "destructive command. Every level preserves full detail "
-            "for security warnings, irreversible-action confirmations, and "
-            "ordered multi-step instructions.",
+            "destructive command. At every level security warnings and "
+            "irreversible-action confirmations always appear but stay brief, "
+            "and ordered multi-step instructions stay complete.",
             enum=["default", "concise", "ultra", "answer_only"],
         ),
     )

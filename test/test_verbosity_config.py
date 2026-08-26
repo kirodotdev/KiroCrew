@@ -53,6 +53,29 @@ class TestVerbosityBlockPlaceholder:
         assert "irreversible" in result
         assert "multi-step" in result
 
+    def test_concise_bounds_the_stakes_carveout_to_omission_not_length(self):
+        """The old carve-out ("Ignore concise mode and keep full detail for:
+        ...") switched the mode OFF at high stakes — an unbounded length
+        licence in the one place the reader most needs the call surfaced, not
+        buried. Recast on the same single axis answer_only uses: the warning
+        always appears but is one line (call, risk, undoability); an
+        order-sensitive multi-step procedure keeps its full length because a
+        dropped step IS an omission, and payload was already exempt as
+        correctness, not stakes.
+        """
+        result = " ".join(
+            _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="concise").split()
+        )
+        # The unbounded length licence is gone.
+        assert "Ignore concise mode" not in result
+        assert "keep full detail" not in result
+        # The bounded, omission-focused form is in: the warning must APPEAR,
+        # and it is one line.
+        assert "Stakes change what concise mode must not omit" in result
+        assert "always appear, each as one line naming the call, the risk" in result
+        assert "whether it can be undone" in result
+        assert "the mechanism and the failure modes are not required" in result
+
     def test_missing_verbosity_attr_defaults_to_empty(self):
         fake_cfg = SimpleNamespace(dashboard=SimpleNamespace(widget_density="more"))
         with patch("kiro_crew.context.KiroCrewConfig.load", return_value=fake_cfg):
@@ -161,7 +184,7 @@ class TestUltraConciseBlock:
         assert "Override it" not in concise
 
     def test_ultra_keeps_safety_carveout(self):
-        """The brevity floor: a terse reply must never truncate a security
+        """The brevity floor: a terse reply must never OMIT a security
         warning, a destructive-action confirmation, or a step in an ordered
         procedure — those failures cause mistakes, not just terseness.
         """
@@ -171,6 +194,32 @@ class TestUltraConciseBlock:
         assert "multi-step" in result
         # Correctness carve-out: code/errors are never compressed.
         assert "verbatim" in result
+
+    def test_ultra_bounds_the_stakes_carveout_to_omission_not_length(self):
+        """The old carve-out ("Never compress for brevity: security warnings,
+        ...") was an unbounded length licence: it authorised the model to stay
+        verbose exactly at high stakes, the one place ultra's whole framing
+        (the reader closes the tab) makes a wall of text most costly. Recast on
+        the same single axis answer_only uses — stakes govern what may not be
+        OMITTED, never how long the reply is — the warning is mandatory but
+        one line; an ordered procedure keeps its full length because a dropped
+        step IS an omission, and payload (code, commands, errors) was already
+        exempt as correctness, not stakes.
+        """
+        result = " ".join(
+            _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="ultra").split()
+        )
+        # The unbounded length licence is gone — including its echo in the
+        # required-formats bullet, which listed security warnings as a
+        # never-cut format ("regardless of brevity").
+        assert "Never compress for brevity" not in result
+        assert "URLs, security warnings" not in result
+        # The bounded, omission-focused form is in: the warning must APPEAR,
+        # and it is one line.
+        assert "Stakes change what you must not omit, never the length" in result
+        assert "always appear, each as one line naming the call, the risk" in result
+        assert "whether it can be undone" in result
+        assert "the mechanism and the failure modes are not required" in result
 
     def test_unknown_level_falls_back_to_empty(self):
         result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="bogus")
@@ -319,15 +368,22 @@ class TestAnswerOnlyBlock:
         assert "not brevity about it" in result
 
     def test_the_stakes_hatch_is_unique_to_answer_only(self):
-        """concise and ultra shorten explanation rather than removing it, so
-        they need no such override; asserting that keeps the levels distinct.
+        """All three levels now carry a stakes-govern-omission rule, each in
+        its own voice — what stays unique to answer_only is its framing: the
+        named failure mode (silence about a one-way door) and the
+        whole-warning cap sentence. The discriminators below are fragments
+        the other levels genuinely do not carry (their own rules differ by
+        more than case), which keeps the levels from converging into copies
+        of one block.
         """
         answer_only = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
         assert "High stakes change what you must NOT omit" in answer_only
+        assert "That single line is the whole warning" in answer_only
+        assert "The defect here is silence about a one-way door" in answer_only
         for level in ("concise", "ultra"):
-            assert "High stakes change what you must NOT omit" not in _resolve(
-                "{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity=level
-            )
+            result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity=level)
+            assert "That single line is the whole warning" not in result
+            assert "The defect here is silence about a one-way door" not in result
 
     def test_a_destructive_command_carries_its_undo_path(self):
         """Measured gap this closes: asked how to delete every local branch
