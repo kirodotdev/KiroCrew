@@ -14,11 +14,16 @@ See GATES (M6) and docs/system-specs/modules/workflows.md.
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
+from unittest.mock import AsyncMock
 
 import pytest
 
 import kiro_crew.llm_helpers as llm_helpers
+from kiro_crew.acp.runtime import AcpRequestTimeout
+from kiro_crew.config import KiroCrewConfig
+from kiro_crew.session import SessionManager
 from kiro_crew.workflows.library import WorkflowDefinitionLibrary
 from kiro_crew.workflows.service import WorkflowService
 from kiro_crew.workflows.store import WorkflowRunStore
@@ -44,7 +49,7 @@ class FakeSessions:
         self._scripted = scripted
         self.released: list[str] = []
         self.acquired: list[tuple[str, dict]] = []  # (key, kwargs) per get_or_create
-        self.cleaned: list[str] = []  # keys released with cleanup=True
+        self.destroyed: list[str] = []
 
     async def get_or_create(self, key, **kw):
         self.acquired.append((key, kw))
@@ -52,8 +57,33 @@ class FakeSessions:
 
     def release(self, key, *, cleanup=False):
         self.released.append(key)
-        if cleanup:
-            self.cleaned.append(key)
+
+    async def destroy(self, key):
+        self.destroyed.append(key)
+
+
+class StartupScriptedSessions(FakeSessions):
+    def __init__(self, failures: list[BaseException]) -> None:
+        super().__init__([])
+        self._failures = list(failures)
+        self.events: list[tuple[str, str]] = []
+
+    async def get_or_create(self, key, **kw):
+        self.events.append(("acquire", key))
+        self.acquired.append((key, kw))
+        if self._failures:
+            raise self._failures.pop(0)
+        return FakeProvider([]), True, False
+
+    async def destroy(self, key):
+        self.events.append(("destroy", key))
+        await super().destroy(key)
+
+
+class DestroyFailingSessions(FakeSessions):
+    async def destroy(self, key):
+        self.destroyed.append(key)
+        raise RuntimeError("destroy failed")
 
 
 class BlockingSourceStore:
@@ -122,23 +152,93 @@ async def test_author_returns_valid_script(monkeypatch) -> None:
     assert out["ok"] is True
 
 
-async def test_author_uses_isolated_torn_down_lite_session(monkeypatch) -> None:
-    """Separation of concerns: authoring runs in a FRESH, ISOLATED, ephemeral
-    session (never the shared _bg), on the tool-less kirocrew-lite agent, and tears
-    it down after — so a workflow's authoring never pollutes (or is polluted by)
-    chat/consolidation/other runs, while staying cheap (no MCP toolset load)."""
+async def test_author_uses_isolated_destroyed_lite_session(monkeypatch) -> None:
+    """Authoring destroys its production SessionManager session completely."""
     _patch_stream(monkeypatch, [GOOD_SCRIPT])
-    sessions = FakeSessions([])
+    config = KiroCrewConfig()
+    providers: list[AsyncMock] = []
+    agents: list[str] = []
+
+    def provider_factory(session_key=None, agent=None, channel_id=None, **kwargs):
+        provider = AsyncMock()
+        provider.start = AsyncMock()
+        provider.shutdown = AsyncMock()
+        provider.is_process_alive = lambda: True
+        provider.context_usage_pct = lambda: 0.0
+        provider.has_active_turn = lambda: False
+        provider.cwd = ""
+        providers.append(provider)
+        agents.append(agent or "")
+        return provider
+
+    sessions = SessionManager(config, provider_factory=provider_factory)
+    svc = WorkflowService(sessions=sessions, persist=False)
+    key = "wf-author:wf_000001:a1"
+    sessions._session_map.set(key, "stale-author-sid")
+    try:
+        out = await svc.author("do a tiny thing")
+
+        assert out["ok"] is True
+        assert agents == ["kirocrew-lite"]
+        assert providers[0].shutdown.await_count == 1
+        assert not sessions.has_session(key)
+        assert not sessions._session_map.has_hint(key)
+    finally:
+        sessions._session_map.set("dashboard:pending-close", "sid-pending-close")
+        flush_task = sessions._session_map._flush_task
+        assert flush_task is not None
+        await sessions.close_all()
+        assert flush_task.done()
+        assert sessions._session_map._flush_task is None
+
+
+async def test_author_success_survives_teardown_failure(monkeypatch, caplog) -> None:
+    _patch_stream(monkeypatch, [GOOD_SCRIPT])
+    sessions = DestroyFailingSessions([])
     svc = WorkflowService(sessions=sessions)
-    await svc.author("do a tiny thing")
-    assert len(sessions.acquired) == 1
-    key, kw = sessions.acquired[0]
-    # NOT the shared background session
-    assert key != "_bg" and key.startswith("wf-author:")
-    # tool-less lite agent
-    assert kw.get("agent") == "kirocrew-lite"
-    # torn down (cleanup=True) — nothing persists between runs
-    assert key in sessions.cleaned
+
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.workflows.service"):
+        out = await svc.author("x")
+
+    assert out["ok"] is True
+    assert sessions.destroyed == [sessions.acquired[0][0]]
+    records = [r for r in caplog.records if "workflow author teardown failed" in r.message]
+    assert len(records) == 1
+    assert records[0].exc_info is not None
+
+
+@pytest.mark.parametrize("primary_phase", ["generation", "validation"])
+async def test_author_primary_error_survives_teardown_failure(
+    monkeypatch, caplog, primary_phase
+) -> None:
+    import kiro_crew.workflows.service as svc_mod
+
+    primary = LookupError(f"{primary_phase} failed")
+
+    async def generate(provider, message, **kwargs):
+        if primary_phase == "generation":
+            raise primary
+        return GOOD_SCRIPT
+
+    monkeypatch.setattr(svc_mod, "stream_and_collect", generate)
+    if primary_phase == "validation":
+
+        def fail_validation(source):
+            raise primary
+
+        monkeypatch.setattr(svc_mod, "validate", fail_validation)
+
+    sessions = DestroyFailingSessions([])
+    svc = WorkflowService(sessions=sessions)
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.workflows.service"):
+        with pytest.raises(LookupError) as raised:
+            await svc.author("x")
+
+    assert raised.value is primary
+    assert sessions.destroyed == [sessions.acquired[0][0]]
+    records = [r for r in caplog.records if "workflow author teardown failed" in r.message]
+    assert len(records) == 1
+    assert records[0].exc_info is not None
 
 
 async def test_author_retries_then_succeeds(monkeypatch) -> None:
@@ -147,6 +247,74 @@ async def test_author_retries_then_succeeds(monkeypatch) -> None:
     svc = WorkflowService(sessions=FakeSessions([]))
     out = await svc.author("x")
     assert out["ok"] is True
+
+
+async def test_author_retries_transient_startup_with_fresh_session(monkeypatch) -> None:
+    _patch_stream(monkeypatch, [GOOD_SCRIPT])
+    import kiro_crew.workflows.service as svc_mod
+
+    monkeypatch.setattr(svc_mod, "_AUTHOR_STARTUP_BACKOFF_SECS", (0.0, 0.0))
+    sessions = StartupScriptedSessions([AcpRequestTimeout("initialize timed out")])
+    svc = WorkflowService(sessions=sessions)
+
+    out = await svc.author("x")
+
+    assert out["ok"] is True
+    assert len(sessions.acquired) == 2
+    assert sessions.acquired[0][0] != sessions.acquired[1][0]
+    assert sessions.destroyed == [key for key, _ in sessions.acquired]
+
+
+async def test_author_destroys_partial_session_before_startup_retry(monkeypatch) -> None:
+    _patch_stream(monkeypatch, [GOOD_SCRIPT])
+    import kiro_crew.workflows.service as svc_mod
+
+    monkeypatch.setattr(svc_mod, "_AUTHOR_STARTUP_BACKOFF_SECS", (0.0, 0.0))
+    sessions = StartupScriptedSessions([AcpRequestTimeout("session/new timed out")])
+    svc = WorkflowService(sessions=sessions)
+
+    out = await svc.author("x")
+
+    assert out["ok"] is True
+    first_key = sessions.acquired[0][0]
+    second_key = sessions.acquired[1][0]
+    assert sessions.events == [
+        ("acquire", first_key),
+        ("destroy", first_key),
+        ("acquire", second_key),
+        ("destroy", second_key),
+    ]
+
+
+async def test_author_does_not_retry_arbitrary_startup_failure(monkeypatch) -> None:
+    sessions = StartupScriptedSessions([ValueError("invalid configuration")])
+    svc = WorkflowService(sessions=sessions)
+
+    with pytest.raises(ValueError, match="invalid configuration"):
+        await svc.author("x")
+
+    assert len(sessions.acquired) == 1
+    assert sessions.destroyed == [sessions.acquired[0][0]]
+
+
+async def test_author_startup_retry_exhaustion_preserves_last_error(monkeypatch) -> None:
+    import kiro_crew.workflows.service as svc_mod
+
+    monkeypatch.setattr(svc_mod, "_AUTHOR_STARTUP_BACKOFF_SECS", (0.0, 0.0))
+    failures = [
+        AcpRequestTimeout("initialize timed out on attempt 1"),
+        AcpRequestTimeout("initialize timed out on attempt 2"),
+        AcpRequestTimeout("initialize timed out on attempt 3"),
+    ]
+    sessions = StartupScriptedSessions(failures)
+    svc = WorkflowService(sessions=sessions)
+
+    with pytest.raises(AcpRequestTimeout, match="attempt 3") as raised:
+        await svc.author("x")
+
+    assert raised.value is failures[-1]
+    assert len(sessions.acquired) == 3
+    assert sessions.destroyed == [key for key, _ in sessions.acquired]
 
 
 async def test_author_all_invalid_fails_clean(monkeypatch) -> None:

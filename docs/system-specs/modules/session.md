@@ -331,11 +331,15 @@ kiro-cli conversation history when a session is recycled.
 
 **Only long-lived conversational sessions are mapped.** Stateless sessions
 (cron, subagent, taskrunner, channel, secretary, side, heartbeat/background,
-`wf-pool:` warm workflow-pool workers) are excluded via `_STATELESS_PREFIXES`.
-The `wf-pool:` prefix keeps per-run pooled workers (workflows/agent_pool.py)
-from persisting a session_map entry or resuming a prior transcript — their
-hard-reset fallback must hand the next task a clean session, never a
-`session/load` replay of the previous task's conversation. The `side:` prefix is included so
+`wf-author:` workflow authoring, and `wf-pool:` warm workflow-pool workers) are
+excluded via `_STATELESS_PREFIXES`. A `wf-author:` session is also explicitly
+destroyed after each authoring attempt, which shuts down its provider, removes its
+registry entry, and deletes any stale map entry; stateless classification prevents
+resume lookup or persistence during acquisition. The `wf-pool:` prefix keeps
+per-run pooled workers (workflows/agent_pool.py) from persisting a session_map entry
+or resuming a prior transcript — their hard-reset fallback must hand the next task
+a clean session, never a `session/load` replay of the previous task's conversation.
+The `side:` prefix is included so
 `/side` conversations never resume across KiroCrew restarts — each cold-start
 triggers `is_first_turn=True` in `build_side_message` which re-seeds the
 parent snapshot + accumulated side history.
@@ -497,10 +501,12 @@ in a worker thread — the loop never pays the file write inline, and `_data`
 never crosses the thread boundary. Coalescing never drops a trailing mutation
 (the task loops until it observes a clean map), and a per-snapshot ticket keeps
 a slow in-flight write from landing an older map over a newer forced one.
-`SessionMap.flush()` (sync contexts) and `SessionMap.aflush()` (awaited, for
-loop-side shutdown paths — `SessionManager.close_all()` uses it) are the
-deterministic durability points; off the loop (CLI, tests, worker threads)
-every mutation still writes inline. Losing a pending
+`SessionMap.flush()` (sync contexts) and `SessionMap.aflush()` (awaited) are the
+deterministic durability points. `SessionMap.aclose()` is the shutdown boundary
+used by `SessionManager.close_all()`: it cancels and awaits the registered
+debounce task, preserves an unstarted or claimed-but-unwritten snapshot, lands
+it through `aflush()`, and returns only after the task registration is retired.
+Off the loop (CLI, tests, worker threads) every mutation still writes inline. Losing a pending
 flush on a crash leaves a well-formed older map, never a truncated file.
 
 **Auto-prune:** `SessionMap.get()` auto-removes entries whose `.json` file
@@ -1034,11 +1040,14 @@ see [security](security.md) § Conditional Python-interpreter env strip.
 | TaskRunner acceptance | `taskrunner:{task_id}:acceptance` | Seconds | Own kiro-cli |
 | Warm spare | _(in pool queue)_ | Until assigned | Pre-started kiro-cli |
 
-**Cold-start semaphore**: `_start_sem = Semaphore(2)` limits concurrent
-`provider.start()` calls to 2 for memory safety. This
-prevents resource exhaustion when multiple sessions cold-start simultaneously,
-while still allowing 3 parallel subagents to all run concurrently once started
-(they queue briefly during cold-start).
+**Cold-start admission**: `SessionManager._start_sem` bounds provider starts local
+to one manager. The narrower common runtime chokepoint adds a gateway-wide
+`AcpRuntime.spawn()` coordinator capped at 2 concurrent spawn + `initialize`
+handshakes, matching worker-pool `max_starting=min(workers, 2)`. Authoring,
+interactive, background, shared-runtime, and unpooled callers therefore share the
+same expensive-start bound even when they bypass this manager or a worker pool.
+Queued cancellation returns the permit, and runtime startup retains its existing
+subprocess cleanup on cancellation or failure.
 
 **Parallel step throttling**: TaskRunner limits concurrent step sessions
 to `max_parallel_steps` (default 2) via `asyncio.Semaphore`. Cold starts

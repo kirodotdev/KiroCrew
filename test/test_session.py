@@ -488,9 +488,14 @@ class TestWarmPool:
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         await mgr.start_pool()
         await mgr.get_or_create("chat-1")
+        mgr._session_map.set("dashboard:pending-close", "sid-pending-close")
+        flush_task = mgr._session_map._flush_task
+        assert flush_task is not None
 
         await mgr.close_all()
         assert mgr.count == 0
+        assert flush_task.done()
+        assert mgr._session_map._flush_task is None
 
     @pytest.mark.asyncio
     async def test_start_pool_idempotent(self, cfg):
