@@ -12,6 +12,29 @@ interface Manifest {
   contents: Record<string, number>
 }
 
+/**
+ * The message to show for a refused portability call.
+ *
+ * A 5xx from these endpoints answers with deliberately opaque boilerplate
+ * ("Export failed", "Import failed", "Preview failed") — English produced in
+ * Python that never passes through the i18n catalog, and that says no more than
+ * *fallback* already says in the reader's language. A 4xx carries the archive
+ * validator's own detail ("missing manifest.json"), which is the whole value of
+ * the message, so it is preserved.
+ *
+ * Gated on `code` as well as status: a refusal with no machine-readable
+ * identity may be from something other than these handlers, and there the prose
+ * can be the only detail available.
+ */
+export function refusalText(
+  status: number,
+  data: { error?: string; code?: string },
+  fallback: string,
+): string {
+  if (data.code && status >= 500) return fallback
+  return data.error || fallback
+}
+
 export default function PortabilityTab() {
   const [exportStatus, setExportStatus] = useState<{ type: 'idle' | 'loading' | 'ok' | 'error'; msg: string }>({ type: 'idle', msg: '' })
   const [importStatus, setImportStatus] = useState<{ type: 'idle' | 'loading' | 'ok' | 'error'; msg: string }>({ type: 'idle', msg: '' })
@@ -61,7 +84,7 @@ export default function PortabilityTab() {
       if (data.ok) {
         setPreview(data.manifest)
       } else {
-        setPreviewError(data.error || i18nT('pages.overview.portabilityTab.invalid_archive'))
+        setPreviewError(refusalText(resp.status, data, i18nT('pages.overview.portabilityTab.invalid_archive')))
       }
     } catch {
       setPreviewError(i18nT('pages.overview.portabilityTab.network_error_during_preview'))
@@ -83,7 +106,10 @@ export default function PortabilityTab() {
         const items = data.summary?.items || []
         setImportStatus({ type: 'ok', msg: `Import complete (${items.length} items). Restart gateway to apply all changes.` })
       } else {
-        setImportStatus({ type: 'error', msg: data.error || i18nT('pages.overview.portabilityTab.import_failed') })
+        setImportStatus({
+          type: 'error',
+          msg: refusalText(resp.status, data, i18nT('pages.overview.portabilityTab.import_failed')),
+        })
       }
     } catch (e: unknown) {
       setImportStatus({ type: 'error', msg: e instanceof Error ? e.message : i18nT('pages.overview.portabilityTab.network_error') })
