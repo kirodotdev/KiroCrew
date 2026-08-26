@@ -6443,6 +6443,7 @@
       "mark_as_read": "읽음으로 표시",
       "mark_as_unread": "읽지 않음으로 표시",
       "move_to_folder": "폴더로 이동…",
+      "open_in_new_tab": "세션 탭에서 열기",
       "pin": "고정",
       "pop_out_to_window": "별도 창으로 분리",
       "reload_blocked_running": "턴 진행 중",
@@ -7174,6 +7175,16 @@
       "setting_up": "휴대폰 액세스를 설정하는 중…",
       "setup_action": "설정하고 QR 표시",
       "setup_timeout": "휴대폰 액세스가 준비되지 않았습니다. 설정을 확인한 후 다시 시도하세요."
+    },
+    "sessionTabStrip": {
+      "close_tab_hint": "이 탭을 닫습니다. 세션은 사이드바에 남습니다.",
+      "close_tab_name": "{{name}} 탭 닫기",
+      "open_sessions": "열린 세션",
+      "status_permission": "권한 필요",
+      "status_question": "응답 대기 중",
+      "status_running": "작업 중",
+      "status_unread": "읽지 않음",
+      "tab_name_with_status": "{{name}} — {{status}}"
     }
   },
   "hooks": {

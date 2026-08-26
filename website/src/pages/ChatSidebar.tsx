@@ -18,7 +18,7 @@ import { ContextMenu, ContextMenuTrigger, ContextMenuContent } from '../componen
 import { offlineProps } from '../utils/offline'
 import { switchSlot, createSlot, deleteSlot, fetchHistory, resumeFromHistory, deleteHistorySession, clearSlotReveal } from '../store/chatSlice'
 import { sseSlotTitle, setSidebarOrder } from '../store/dashboardSlice'
-import { useDigitModifierHeld, jumpLabelFor } from '../hooks/useKeyboardShortcuts'
+import { useDigitModifierHeld, jumpLabelFor, IS_MAC } from '../hooks/useKeyboardShortcuts'
 import { api, SEARCH_MIN_CHARS } from '../api/client'
 import { computeReorderedFolders } from '../utils/reorderFolders'
 import { computeRecentRank, recencyTintShadow, clampTintCount } from '../utils/recencyTint'
@@ -1191,6 +1191,20 @@ interface ChatSidebarProps {
    *  When provided, this fires AFTER the switchSlot dispatch so consumers
    *  can react to user-driven selection (e.g. to navigate the URL). */
   onSelectSlot?: (key: string) => void
+  /** Open a session as a TAB on the host surface instead of switching to it,
+   *  bound to middle-click, modifier-click and the row menu's "Open in a session
+   *  tab".
+   *
+   *  `background` follows the pointer/menu split every browser and editor uses:
+   *  a middle-click or modifier-click QUEUES the session without moving the user
+   *  (that is what makes triaging three rows in a row useful), while the menu
+   *  item is a deliberate "take me there" and opens in the foreground.
+   *
+   *  Omitted on surfaces with no tab strip (the embed sessions list, a popped-out
+   *  window), and an omitted callback leaves the gestures unbound rather than
+   *  falling back to a plain switch — a middle-click that quietly navigated
+   *  would be indistinguishable from a misfire. */
+  onOpenSlotInNewTab?: (key: string, opts?: { background?: boolean }) => void
   /** Reveal a session's pull request / issue in the side panel instead of
    *  leaving for the provider's website.
    *
@@ -1322,7 +1336,7 @@ interface FilterDimension {
 
 function ChatSidebar({
   slots, activeSlot, unreadSlots, history, historyHasMore,
-  defaultAgent, installedAgents, mode, onWidthChange, onDragChange, onSelectSlot, onOpenSource, collapsible,
+  defaultAgent, installedAgents, mode, onWidthChange, onDragChange, onSelectSlot, onOpenSlotInNewTab, onOpenSource, collapsible,
   chatDropTarget, onDropSessionRef,
 }: ChatSidebarProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
@@ -3736,6 +3750,7 @@ function ChatSidebar({
       slotKey: s.key,
       mode,
       onRename: () => { const sl = slots.find(x => x.key === s.key); suppressMenuRestoreRef.current = true; setRenamingSlot(s.key); setRenameScope(scope); setRenameValue(sl?.title && sl.title !== sl.key ? sl.title : '') },
+      onOpenInNewTab: onOpenSlotInNewTab ? () => onOpenSlotInNewTab(s.key) : undefined,
     }
     return (
       <motion.div key={s.key} layout="position" layoutId={`slot-${layoutScope}-${s.key}`}
@@ -3799,6 +3814,23 @@ function ChatSidebar({
             onSelectSlot?.(s.key)
           }}
           onDragStart={!dndRow ? (e => { e.dataTransfer.setData('text/plain', s.key); e.dataTransfer.effectAllowed = 'move' }) : undefined}
+          // Chrome and Edge on Windows enter autoscroll on middle-button
+          // MOUSEDOWN, before `auxclick` fires — so cancelling it in the
+          // auxclick handler alone opens the tab AND leaves the pointer in
+          // autoscroll mode on a scrollable sidebar. This is the only place that
+          // can stop it. Middle button only: the primary button's mousedown
+          // belongs to dnd-kit's drag listeners, spread above.
+          onMouseDownCapture={onOpenSlotInNewTab ? (e => { if (e.button === 1) e.preventDefault() }) : undefined}
+          // Middle-click opens the session as a tab in the BACKGROUND, the way
+          // every browser and editor treats it — a user triaging by
+          // middle-clicking three rows means "queue these up", and yanking them
+          // to each one in turn defeats the gesture. Bound separately from
+          // onClick because a middle press produces no click event.
+          onAuxClick={onOpenSlotInNewTab ? (e => {
+            if (e.button !== 1 || !connected) return
+            e.preventDefault()
+            onOpenSlotInNewTab(s.key, { background: true })
+          }) : undefined}
           onClick={e => {
             if ((e.target as HTMLElement).closest?.('[data-fork]')) { sessionActions.duplicate(s.key); return }
             if ((e.target as HTMLElement).closest?.('[data-close]')) { sessionActions.close(s.key); return }
@@ -3814,6 +3846,15 @@ function ChatSidebar({
             // /forking still works — those are local ops (or short-circuit) that
             // don't depend on gateway state.
             if (!connected) return
+            // Modifier-click = open as a background tab, matching the
+            // editor/browser convention. The platform split is deliberate:
+            // Ctrl+click IS a right-click on macOS, so honouring it there would
+            // fire this and the context menu from one gesture.
+            if (onOpenSlotInNewTab && (IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey) && !e.shiftKey && !e.altKey) {
+              e.preventDefault()
+              onOpenSlotInNewTab(s.key, { background: true })
+              return
+            }
             dispatch(switchSlot(s.key))
             onSelectSlot?.(s.key)
           }}>

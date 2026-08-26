@@ -6647,6 +6647,7 @@
       "mark_as_read": "Segna come letto",
       "mark_as_unread": "Segna come non letto",
       "move_to_folder": "Sposta nella cartella…",
+      "open_in_new_tab": "Apri in una scheda di sessione",
       "pin": "Fissa",
       "pop_out_to_window": "Apri in una finestra",
       "reload_blocked_running": "turno in corso",
@@ -7382,6 +7383,16 @@
       "setting_up": "Configurazione dell’accesso dal telefono…",
       "setup_action": "Configura e mostra QR",
       "setup_timeout": "L’accesso dal telefono non è pronto. Controlla la configurazione e riprova."
+    },
+    "sessionTabStrip": {
+      "close_tab_hint": "Chiude questa scheda. La sessione resta nella barra laterale.",
+      "close_tab_name": "Chiudi la scheda {{name}}",
+      "open_sessions": "Sessioni aperte",
+      "status_permission": "richiede autorizzazione",
+      "status_question": "in attesa di te",
+      "status_running": "in corso",
+      "status_unread": "non letta",
+      "tab_name_with_status": "{{name}} — {{status}}"
     }
   },
   "hooks": {

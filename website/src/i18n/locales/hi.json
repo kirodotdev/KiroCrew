@@ -6545,6 +6545,7 @@
       "mark_as_read": "पढ़ा हुआ चिह्नित करें",
       "mark_as_unread": "अनपढ़ा चिह्नित करें",
       "move_to_folder": "फ़ोल्डर में ले जाएँ…",
+      "open_in_new_tab": "सत्र टैब में खोलें",
       "pin": "पिन करें",
       "pop_out_to_window": "अलग विंडो में खोलें",
       "reload_blocked_running": "टर्न चल रहा है",
@@ -7278,6 +7279,16 @@
       "setting_up": "फ़ोन एक्सेस सेट अप हो रहा है…",
       "setup_action": "सेट अप करें और QR दिखाएँ",
       "setup_timeout": "फ़ोन एक्सेस तैयार नहीं हुआ। सेटअप जाँचें और फिर कोशिश करें।"
+    },
+    "sessionTabStrip": {
+      "close_tab_hint": "यह टैब बंद करें. सत्र साइडबार में बना रहता है.",
+      "close_tab_name": "टैब {{name}} बंद करें",
+      "open_sessions": "खुले सत्र",
+      "status_permission": "अनुमति चाहिए",
+      "status_question": "जवाब की प्रतीक्षा",
+      "status_running": "काम चल रहा है",
+      "status_unread": "अपठित",
+      "tab_name_with_status": "{{name}} — {{status}}"
     }
   },
   "hooks": {

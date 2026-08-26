@@ -110,6 +110,8 @@ import ChatInput from '../components/ChatInput'
 import ErrorNotice from '../components/ErrorNotice'
 import ChatDropOverlay, { useChatFileDrop } from '../components/ChatDropOverlay'
 import SessionGridView from '../components/SessionGridView'
+import SessionTabStrip from '../components/SessionTabStrip'
+import { useSessionTabs } from '../hooks/useSessionTabs'
 import { anchorForSlot, loadLayout, sessionSlots } from '../hooks/splitLayoutStore'
 import { modelSupportsEffort } from '../lib/effort'
 import { isEmbeddedPane } from '../lib/embedded'
@@ -185,7 +187,7 @@ import { deriveFollowUpOptions } from '../app-sdk/protocol'
 import OverlayDrawer from '../components/OverlayDrawer'
 import { loadChatConfig, CONTENT_WIDTH, type ChatConfig } from './chat/ChatSettings'
 import SessionFlyout, { TOGGLE_RECT } from './chat/SessionFlyout'
-import { focusComposerAfter, revealComposer } from './chat/composerFocus'
+import { focusComposer, focusComposerAfter, revealComposer } from './chat/composerFocus'
 import { useHoverIntent } from '../hooks/useHoverIntent'
 import { useKnowledgeFetch, extractKnowledgeQuery, expandKnowledgeBlock } from './chat/useKnowledgeFetch'
 import { KnowledgePicker } from './chat/KnowledgePicker'
@@ -3529,6 +3531,69 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     }
   }, [activeSlot, slotStorageKey, filteredSlots])
   useEffect(() => () => { if (activeSlotRef.current && filteredSlotsRef.current.find(s => s.key === activeSlotRef.current)) safeSetItem(slotStorageKeyRef.current, activeSlotRef.current) }, [])
+
+  /* ── Session tabs (#4477) ────────────────────────────────────────────────
+   *  The working set drawn by SessionTabStrip. The hook keeps the active
+   *  session in the set, so a user who never opens a second tab holds a
+   *  one-element set and the strip renders nothing.
+   *
+   *  `ownsSessionTabs` is the ONE predicate deciding both who draws the strip
+   *  and who owns the persisted set. It has to be one predicate: ChatPage is
+   *  also mounted by embedded hosts — a popped-out window, the artifact
+   *  companion panel, Papyrus's co-author panel, the app-SDK chat panel — and
+   *  they share the dashboard's origin, therefore its `localStorage`. Two
+   *  separate conditions would let a host that cannot draw a strip still
+   *  reconcile the key, overwriting the dashboard's working set with a session
+   *  it never opened. `embedded` is exactly that line: every one of those hosts
+   *  passes it, and the routed /chat surface passes none of these flags.
+   *
+   *  Switching is dispatched HERE rather than inside the hook: `switchSlot` is
+   *  the surface's one session-entry path (URL sync, transcript hydration and
+   *  the composer all hang off it), and a second caller inside a layout hook
+   *  would be a second place that decides what "activate" means. */
+  const ownsSessionTabs = !embedded
+  // Read at click time, not captured: the callbacks below are memoized and the
+  // gateway can drop between renders.
+  const connectedRef = useRef(connected)
+  connectedRef.current = connected
+  const sessionTabs = useSessionTabs(mode, activeSlot, filteredSlots, ownsSessionTabs)
+  /**
+   * Every tab path that activates a session is gated on `connected`, for the
+   * reason the sidebar row's own click already documents: an offline
+   * `switchSlot` never resolves its fetch, `switchSlot.rejected` clears
+   * `messages` to `[]`, and the user is left looking at the WelcomeView where
+   * their transcript was. A tab is a second door onto the same action, so it
+   * needs the same lock — and the strip is marked aria-disabled so the click
+   * visibly refuses instead of silently doing nothing.
+   */
+  const openSlotInNewTab = useCallback((key: string, opts?: { background?: boolean }) => {
+    sessionTabs.openInNewTab(key)
+    // A BACKGROUND open (middle-click, modifier-click) queues the session and
+    // leaves the user where they are — the browser/editor meaning of the
+    // gesture, and the whole point of using it to triage several rows in a row.
+    // The row menu is a deliberate "take me there", so it opens in foreground.
+    if (opts?.background) return
+    if (!connectedRef.current) return
+    if (key !== activeSlotRef.current) dispatch(switchSlot(key))
+  }, [sessionTabs, dispatch])
+  const selectSessionTab = useCallback((key: string) => {
+    if (key === activeSlotRef.current || !connectedRef.current) return
+    dispatch(switchSlot(key))
+  }, [dispatch])
+  const closeSessionTab = useCallback((key: string) => {
+    const next = sessionTabs.closeTab(key)
+    // Only the ACTIVE tab's close moves the user; closing any other tab must
+    // leave the transcript they are reading alone (nextActiveAfterClose returns
+    // the unchanged active key in that case, so this compare is the whole gate).
+    // Closing a tab is local, so it still works offline — only the switch that
+    // would follow is withheld, leaving the user on the transcript they have.
+    if (next && next !== activeSlotRef.current && connectedRef.current) dispatch(switchSlot(next))
+    // Below two tabs the strip unmounts, so a keyboard close has no tab left to
+    // land on and the strip cannot hand focus off itself. Without this, focus
+    // falls to document.body and the user Tabs in from the top of the page.
+    // The composer is the surface's own default focus target.
+    if (sessionTabs.tabs.filter(k => k !== key).length < 2) focusComposer()
+  }, [sessionTabs, dispatch])
   // Handle ?sid= (or legacy ?slot=) query parameter — activate the given session
   // Capture initial ?sid= at mount time before any effect can overwrite it
   // noUrlSync also disables the sid-READ paths, not just the URL write. The host
@@ -6731,6 +6796,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           onDragChange={setSidebarDragging}
           collapsible={!isMobile}
           onSelectSlot={() => setSplitMode(false)}
+          onOpenSlotInNewTab={ownsSessionTabs ? openSlotInNewTab : undefined}
           onOpenSource={revealSourceLink}
           // Only offer the pane as a drop target when a composer exists to show
           // the chip — see canStageSessionRef for why this is a named predicate.
@@ -6800,6 +6866,32 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   control already shows it. */}
               <PanelLeftSolid size={18} />
             </button>
+          </div>
+        )}
+        {/* Open-sessions strip. ABOVE the session title row, not inside the
+            transcript column: the title row is an absolute overlay anchored to
+            that column, so a strip inserted inside it would be painted over.
+            Sitting here it pushes the whole column down instead, and the
+            transcript (flex: 1) gives up exactly the strip's height.
+
+            Renders nothing below two tabs (see SessionTabStrip), so a user who
+            never opens a second tab sees the surface unchanged. Suppressed in
+            split view, which does its own tiling and shows every open session
+            at once, and on every EMBEDDED host (`ownsSessionTabs`) — the same
+            predicate that stops those hosts owning the persisted set, so the
+            strip and the set can never disagree about whose surface this is. */}
+        {activeSlot && ownsSessionTabs && !(splitMode && splitFeatureEnabled) && (
+          // no-drag: on the desktop shell the top strip of the window is the
+          // titlebar drag region, and a tab you cannot click is worse than no tab.
+          <div style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+            <SessionTabStrip
+              tabs={sessionTabs.tabs}
+              activeKey={activeSlot}
+              cue={sessionTabs.cue}
+              connected={connected}
+              onSelect={selectSessionTab}
+              onClose={closeSessionTab}
+            />
           </div>
         )}
         {splitMode && splitFeatureEnabled ? (

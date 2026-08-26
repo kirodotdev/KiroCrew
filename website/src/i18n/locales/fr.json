@@ -6647,6 +6647,7 @@
       "mark_as_read": "Marquer comme lu",
       "mark_as_unread": "Marquer comme non lu",
       "move_to_folder": "Déplacer vers un dossier…",
+      "open_in_new_tab": "Ouvrir dans un onglet de session",
       "pin": "Épingler",
       "pop_out_to_window": "Détacher dans une fenêtre",
       "reload_blocked_running": "tour en cours",
@@ -7382,6 +7383,16 @@
       "setting_up": "Configuration de l’accès mobile…",
       "setup_action": "Configurer et afficher le QR",
       "setup_timeout": "L’accès mobile n’est pas prêt. Vérifiez la configuration, puis réessayez."
+    },
+    "sessionTabStrip": {
+      "close_tab_hint": "Ferme cet onglet. La session reste dans la barre latérale.",
+      "close_tab_name": "Fermer l'onglet {{name}}",
+      "open_sessions": "Sessions ouvertes",
+      "status_permission": "autorisation requise",
+      "status_question": "en attente de votre réponse",
+      "status_running": "en cours",
+      "status_unread": "non lu",
+      "tab_name_with_status": "{{name}} — {{status}}"
     }
   },
   "hooks": {

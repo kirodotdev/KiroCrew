@@ -6443,6 +6443,7 @@
       "mark_as_read": "标记为已读",
       "mark_as_unread": "标记为未读",
       "move_to_folder": "移动到文件夹…",
+      "open_in_new_tab": "在会话标签页中打开",
       "pin": "置顶",
       "pop_out_to_window": "弹出为独立窗口",
       "reload_blocked_running": "轮次进行中",
@@ -7174,6 +7175,16 @@
       "setting_up": "正在配置手机访问…",
       "setup_action": "一键设置并显示二维码",
       "setup_timeout": "手机访问未能进入就绪状态。请重新检查配置，然后再试一次。"
+    },
+    "sessionTabStrip": {
+      "close_tab_hint": "关闭此标签页。会话仍保留在侧边栏中。",
+      "close_tab_name": "关闭标签页 {{name}}",
+      "open_sessions": "已打开的会话",
+      "status_permission": "需要授权",
+      "status_question": "等待你回应",
+      "status_running": "正在处理",
+      "status_unread": "未读",
+      "tab_name_with_status": "{{name}} — {{status}}"
     }
   },
   "hooks": {

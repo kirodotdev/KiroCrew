@@ -6647,6 +6647,7 @@
       "mark_as_read": "Marcar como leída",
       "mark_as_unread": "Marcar como no leída",
       "move_to_folder": "Mover a la carpeta…",
+      "open_in_new_tab": "Abrir en una pestaña de sesión",
       "pin": "Fijar",
       "pop_out_to_window": "Abrir en una ventana aparte",
       "reload_blocked_running": "turno en curso",
@@ -7382,6 +7383,16 @@
       "setting_up": "Configurando el acceso desde el teléfono…",
       "setup_action": "Configurar y mostrar QR",
       "setup_timeout": "El acceso desde el teléfono no quedó listo. Comprueba la configuración e inténtalo de nuevo."
+    },
+    "sessionTabStrip": {
+      "close_tab_hint": "Cierra esta pestaña. La sesión permanece en la barra lateral.",
+      "close_tab_name": "Cerrar la pestaña {{name}}",
+      "open_sessions": "Sesiones abiertas",
+      "status_permission": "necesita permiso",
+      "status_question": "esperando tu respuesta",
+      "status_running": "trabajando",
+      "status_unread": "sin leer",
+      "tab_name_with_status": "{{name}} — {{status}}"
     }
   },
   "hooks": {

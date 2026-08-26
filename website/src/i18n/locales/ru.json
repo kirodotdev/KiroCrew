@@ -6749,6 +6749,7 @@
       "mark_as_read": "Отметить как прочитанное",
       "mark_as_unread": "Отметить как непрочитанное",
       "move_to_folder": "Переместить в папку…",
+      "open_in_new_tab": "Открыть во вкладке сессии",
       "pin": "Закрепить",
       "pop_out_to_window": "Открыть в отдельном окне",
       "reload_blocked_running": "ход выполняется",
@@ -7486,6 +7487,16 @@
       "setting_up": "Настраивается доступ с телефона…",
       "setup_action": "Настроить и показать QR",
       "setup_timeout": "Доступ с телефона не перешёл в состояние готовности. Проверьте настройку и повторите попытку."
+    },
+    "sessionTabStrip": {
+      "close_tab_hint": "Закрывает эту вкладку. Сессия останется на боковой панели.",
+      "close_tab_name": "Закрыть вкладку {{name}}",
+      "open_sessions": "Открытые сессии",
+      "status_permission": "нужно разрешение",
+      "status_question": "ждёт вашего ответа",
+      "status_running": "работает",
+      "status_unread": "не прочитано",
+      "tab_name_with_status": "{{name}} — {{status}}"
     }
   },
   "hooks": {

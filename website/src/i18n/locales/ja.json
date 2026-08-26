@@ -6443,6 +6443,7 @@
       "mark_as_read": "読了にマーク",
       "mark_as_unread": "未読にマーク",
       "move_to_folder": "フォルダーに移動…",
+      "open_in_new_tab": "セッションタブで開く",
       "pin": "ピン留め",
       "pop_out_to_window": "ウィンドウにポップアウト",
       "reload_blocked_running": "ターン実行中",
@@ -7174,6 +7175,16 @@
       "setting_up": "スマートフォンからのアクセスを設定中…",
       "setup_action": "設定して QR を表示",
       "setup_timeout": "スマートフォンアクセスの準備が完了しませんでした。設定を確認して、もう一度お試しください。"
+    },
+    "sessionTabStrip": {
+      "close_tab_hint": "このタブを閉じます。セッションはサイドバーに残ります。",
+      "close_tab_name": "タブ {{name}} を閉じる",
+      "open_sessions": "開いているセッション",
+      "status_permission": "許可が必要",
+      "status_question": "応答を待機中",
+      "status_running": "処理中",
+      "status_unread": "未読",
+      "tab_name_with_status": "{{name}} — {{status}}"
     }
   },
   "hooks": {

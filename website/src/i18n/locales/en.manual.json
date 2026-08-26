@@ -2081,6 +2081,7 @@
     "sessionActionsMenu": {
       "mark_as_read": "Mark as read",
       "mark_as_unread": "Mark as unread",
+      "open_in_new_tab": "Open in a session tab",
       "pin": "Pin",
       "reload_blocked_running": "turn running",
       "reload_blocked_subagents": "sub-agents working",
@@ -2451,6 +2452,16 @@
     "shortcutsModal": {
       "panel_toggles": "Panel toggles",
       "unset": "Not set"
+    },
+    "sessionTabStrip": {
+      "close_tab_hint": "Close this tab. The session stays in the sidebar.",
+      "close_tab_name": "Close tab {{name}}",
+      "open_sessions": "Open sessions",
+      "status_permission": "needs permission",
+      "status_question": "waiting on you",
+      "status_running": "working",
+      "status_unread": "unread",
+      "tab_name_with_status": "{{name}} — {{status}}"
     }
   },
   "hooks": {

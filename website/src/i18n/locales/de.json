@@ -6545,6 +6545,7 @@
       "mark_as_read": "Als gelesen markieren",
       "mark_as_unread": "Als ungelesen markieren",
       "move_to_folder": "In Ordner verschieben…",
+      "open_in_new_tab": "In einem Sitzungs-Tab öffnen",
       "pin": "Anpinnen",
       "pop_out_to_window": "In ein Fenster auskoppeln",
       "reload_blocked_running": "Zug läuft",
@@ -7278,6 +7279,16 @@
       "setting_up": "Telefonzugriff wird eingerichtet…",
       "setup_action": "Einrichten & QR-Code anzeigen",
       "setup_timeout": "Der Telefonzugriff wurde nicht bereit. Prüfe die Einrichtung und versuche es erneut."
+    },
+    "sessionTabStrip": {
+      "close_tab_hint": "Schließt diesen Tab. Die Sitzung bleibt in der Seitenleiste.",
+      "close_tab_name": "Tab {{name}} schließen",
+      "open_sessions": "Geöffnete Sitzungen",
+      "status_permission": "braucht Berechtigung",
+      "status_question": "wartet auf dich",
+      "status_running": "arbeitet",
+      "status_unread": "ungelesen",
+      "tab_name_with_status": "{{name}} — {{status}}"
     }
   },
   "hooks": {

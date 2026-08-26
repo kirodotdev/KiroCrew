@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Pencil, Circle, Pin, Zap, Locate, Link2, Tag as TagIcon, X, ExternalLink, Monitor, Undo2, RotateCw } from 'lucide-react'
+import { Pencil, Circle, Pin, Zap, Locate, Link2, Tag as TagIcon, X, ExternalLink, Monitor, Undo2, RotateCw, PanelTop } from 'lucide-react'
 import type { ChatFolder } from '../types'
 import FolderMoveSubmenu from './FolderMoveSubmenu'
 import SendToInstanceSubmenu from './SendToInstanceSubmenu'
@@ -36,6 +36,12 @@ export interface SessionActionsMenuProps {
   onReveal?: () => void
   /** Rename entry point — differs per surface (sidebar inline row-edit vs header title editor). */
   onRename?: () => void
+  /**
+   * Open this session as a tab on the calling surface. Present only where a tab
+   * strip exists (the dashboard chat surface), which is why it is a bubble prop
+   * and not internalised: there is no store-wide "tabs" the menu could reach.
+   */
+  onOpenInNewTab?: () => void
   /** Extra items rendered in the top "informational" group (header-only today:
    *  the MCP-servers submenu). Generic so the shared menu stays surface-agnostic. */
   infoSlots?: React.ReactNode[]
@@ -80,7 +86,7 @@ export function collapseGroups<T>(groups: (T | false | null | undefined)[][]): T
  *   [close]          Close session
  */
 export default function SessionActionsMenu({
-  variant, slotKey, mode, onReveal, onRename, infoSlots, onColorPicked,
+  variant, slotKey, mode, onReveal, onRename, onOpenInNewTab, infoSlots, onColorPicked,
 }: SessionActionsMenuProps) {
   const Item = variant === 'context' ? ContextMenuItem : DropdownMenuItem
   const Separator = variant === 'context' ? ContextMenuSeparator : DropdownMenuSeparator
@@ -161,6 +167,16 @@ export default function SessionActionsMenu({
       onReveal && (
         <Item key="reveal" onSelect={onReveal}>
           <Locate size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.reveal_in_sidebar')}
+        </Item>
+      ),
+      // Open as a session TAB on the surface this menu was opened from — the
+      // discoverable form of the middle-click/modifier-click gesture. Offered
+      // only where a caller passes the handler, because only the dashboard
+      // chat surface has a tab strip to open into; the popped-out window and
+      // the embed shell would have nowhere to put it.
+      onOpenInNewTab && (
+        <Item key="open-in-tab" onSelect={onOpenInNewTab}>
+          <PanelTop size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.open_in_new_tab')}
         </Item>
       ),
       // Pop out to a dedicated browser window — or, if already out, focus /

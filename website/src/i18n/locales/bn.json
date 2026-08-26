@@ -6545,6 +6545,7 @@
       "mark_as_read": "পড়া হিসেবে চিহ্নিত করো",
       "mark_as_unread": "অপঠিত হিসেবে চিহ্নিত করো",
       "move_to_folder": "ফোল্ডারে সরান…",
+      "open_in_new_tab": "সেশন ট্যাবে খুলুন",
       "pin": "পিন করো",
       "pop_out_to_window": "উইন্ডোতে পপ আউট করুন",
       "reload_blocked_running": "টার্ন চলছে",
@@ -7278,6 +7279,16 @@
       "setting_up": "ফোন অ্যাক্সেস সেট আপ করা হচ্ছে…",
       "setup_action": "সেট আপ করে QR দেখান",
       "setup_timeout": "ফোন অ্যাক্সেস প্রস্তুত হয়নি। সেটআপ পরীক্ষা করে আবার চেষ্টা করুন।"
+    },
+    "sessionTabStrip": {
+      "close_tab_hint": "এই ট্যাবটি বন্ধ করুন। সেশনটি সাইডবারে থেকে যায়।",
+      "close_tab_name": "{{name}} ট্যাব বন্ধ করুন",
+      "open_sessions": "খোলা সেশন",
+      "status_permission": "অনুমতি প্রয়োজন",
+      "status_question": "আপনার উত্তরের অপেক্ষায়",
+      "status_running": "কাজ চলছে",
+      "status_unread": "অপঠিত",
+      "tab_name_with_status": "{{name}} — {{status}}"
     }
   },
   "hooks": {
