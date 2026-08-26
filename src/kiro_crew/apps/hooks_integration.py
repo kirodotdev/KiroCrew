@@ -22,7 +22,7 @@ from kiro_crew.apps.bridges import (
     disarm_app_crons_for_execution,
     register_app_crons_with_service,
 )
-from kiro_crew.apps.context import build_app_context
+from kiro_crew.apps.context import AppContext, build_app_context
 from kiro_crew.apps.cron_sdk import CronSDK
 from kiro_crew.apps.execution import (
     app_execution_denied,
@@ -39,6 +39,40 @@ logger = logging.getLogger(__name__)
 # Module-level singletons (initialized at gateway startup)
 _route_registry: RouteRegistry | None = None
 _lifecycle_dispatcher: LifecycleDispatcher | None = None
+
+# Last hook-wiring health per app, for apps whose hooks did NOT come up clean.
+# ``AppHealthStatus`` lives on the AppContext, which both wiring paths drop as
+# soon as they finish, so the reason a hook failed had no reader on the startup
+# path -- an app that failed to load was indistinguishable from one that was
+# never installed. Published here so ``GET /api/apps`` can report it under the
+# same ``hooks.health_status`` spelling the enable response already uses.
+_hook_health: dict[str, dict[str, Any]] = {}
+
+
+def _publish_hook_health(app_name: str, ctx: AppContext) -> dict[str, Any] | None:
+    """Record (or clear) one app's hook-wiring health and return the snapshot.
+
+    Both wiring paths funnel through here so they cannot drift: whatever
+    ``register_app_routes`` and the lifecycle dispatcher marked on the context is
+    what an operator reads back. A healthy wire-up clears any earlier entry, so a
+    fixed app stops reporting a stale failure after a re-enable.
+    """
+    if ctx.health.status == "healthy":
+        _hook_health.pop(app_name, None)
+        return None
+    snapshot = ctx.health.to_dict()
+    _hook_health[app_name] = snapshot
+    return snapshot
+
+
+def clear_hook_health(app_name: str) -> None:
+    """Forget an app's recorded hook health (disable / teardown)."""
+    _hook_health.pop(app_name, None)
+
+
+def get_all_hook_health() -> dict[str, dict[str, Any]]:
+    """Return every recorded non-healthy hook-wiring snapshot, by app name."""
+    return {name: dict(snapshot) for name, snapshot in _hook_health.items()}
 
 
 def init_hooks_system(
@@ -212,8 +246,9 @@ async def on_app_enable(
         result["hooks_startup"] = "ok" if success else "failed"
 
     # Report health status
-    if ctx.health.status != "healthy":
-        result["health_status"] = ctx.health.to_dict()
+    health_snapshot = _publish_hook_health(app_name, ctx)
+    if health_snapshot:
+        result["health_status"] = health_snapshot
 
     sel().log_api_access(
         caller="gateway",
@@ -303,6 +338,10 @@ async def on_app_disable(
     # Deregister routes
     if _route_registry:
         _route_registry.deregister_app_routes(app_name)
+
+    # A disabled app has no live hooks, so a recorded failure would linger as a
+    # stale claim about an app that is no longer wired up at all.
+    clear_hook_health(app_name)
 
     # Clean up cron jobs owned by this app
     permissions = manifest.get("permissions", {})
@@ -432,6 +471,15 @@ async def on_gateway_startup(
             )
             if success:
                 logger.info("Startup hook invoked for: %s", name)
+
+        # Same publication as on_app_enable: the reason a hook failed must outlive
+        # the context, or boot is the one path where it is collected and dropped.
+        # No log line here on purpose: every site that marks the context degraded
+        # already logs at ERROR itself (route_registry.py:142,151,159 and
+        # lifecycle.py:352,396, plus the cancelled site via
+        # _mark_cancelled_startup_residual at lifecycle.py:66), so an aggregate
+        # would only re-log them, and only ever for this one caller.
+        _publish_hook_health(name, ctx)
 
 
 async def on_gateway_shutdown() -> None:

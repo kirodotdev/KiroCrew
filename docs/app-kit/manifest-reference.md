@@ -296,6 +296,24 @@ root (validated against `HooksConfig._HOOK_PATH_RE`).
 `on_app_enable`, also re-run at gateway startup via `on_gateway_startup`), so
 they go live without waiting for a Gateway restart.
 
+**Importing your own modules.** Hook entry files are loaded from their file path
+into a synthetic package named after the app, never via `sys.path`, so use a
+**relative** import to reach a sibling module:
+
+```python
+# backend/routes.py
+from . import config          # backend/config.py
+from .render import to_html   # backend/render.py
+```
+
+A relative import resolves inside the app's own directory tree and cannot walk
+above the app root (`from ... import x` is refused). It is not a sandbox: app
+Python already runs in the Gateway process with full filesystem access, so a
+symlinked sibling resolves wherever it points. Do not use a bare
+`import config`: `sys.modules["config"]` is process-global, so two apps each
+shipping a `config.py` would end up sharing one module. `from kiro_crew...`
+absolute imports are for built-in apps only.
+
 ## Permissions
 
 ### `permissions` — Declared Capabilities

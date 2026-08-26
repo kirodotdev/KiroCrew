@@ -53,6 +53,7 @@ from kiro_crew.apps.dependency_ledger import (
 from kiro_crew.apps.event_bus import build_broadcast_fn
 from kiro_crew.apps.execution import app_execution_denied
 from kiro_crew.apps.hooks_integration import (
+    get_all_hook_health,
     on_app_enable,
     stop_retained_startup_hooks,
 )
@@ -249,6 +250,16 @@ async def handle_list_apps(request: web.Request) -> web.Response:
     apps = await asyncio.to_thread(list_apps)
     # Enrich with backend process status
     procs = {p["app_name"]: p for p in list_app_processes()}
+    # ...and with in-process hook wiring health, which has no process to inspect:
+    # an app whose route hook failed to import has no route-table entry, so the
+    # dispatcher answers 404 exactly like an app that was never installed. This is
+    # the only place that failure becomes visible to an operator.
+    #
+    # Reported under the same "hooks" envelope and the same "health_status" key the
+    # enable response already uses, so one record has ONE public spelling rather
+    # than a second flat name to maintain. The envelope also keeps the subsystem
+    # explicit: this is hook-wiring health, not the subprocess backend_status.
+    hook_health = get_all_hook_health()
     for app in apps:
         proc = procs.get(app["name"])
         if proc:
@@ -258,6 +269,11 @@ async def handle_list_apps(request: web.Request) -> web.Response:
                 "healthy": proc["healthy"],
                 "pid": proc["pid"],
             }
+        health = hook_health.get(app["name"])
+        if health:
+            if health.get("issues"):
+                health["issues"] = [_redact_warning(i) for i in health["issues"]]
+            app["hooks"] = {"health_status": health}
     return web.json_response(apps)
 
 

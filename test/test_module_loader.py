@@ -299,13 +299,17 @@ class TestModuleUnload:
 
         assert is_app_module_loaded("test-app")
 
+        # Two leaf modules plus the synthetic packages that carry their dotted
+        # names: the app root, and "sub" for the nested module.
         count = unload_app_modules("test-app")
-        assert count == 2
+        assert count == 4
         assert not is_app_module_loaded("test-app")
 
         # Verify specific keys are gone
         assert "_kirocrew_app_test-app.mod_a" not in sys.modules
         assert "_kirocrew_app_test-app.sub.mod_b" not in sys.modules
+        assert "_kirocrew_app_test-app.sub" not in sys.modules
+        assert "_kirocrew_app_test-app" not in sys.modules
 
     def test_unload_does_not_affect_other_apps(self, tmp_path: Path) -> None:
         """Unloading app A does not remove app B's modules."""
@@ -358,6 +362,265 @@ class TestModuleUnload:
         assert func_v2(None) == "v2"
 
         unload_app_modules("test-app-reload")
+
+
+# ---------------------------------------------------------------------------
+# Issue #6078: a multi-module app backend must be able to import its own siblings
+# ---------------------------------------------------------------------------
+
+
+class TestRelativeImports:
+    """A hook entry file can reach its sibling modules with a relative import.
+
+    The sys.modules key is deliberately dotted so two apps cannot collide, which
+    makes the module's ``__package__`` name a synthetic parent. Unless every
+    ancestor of that name is registered, CPython raises ``ModuleNotFoundError``
+    for the top of the chain and the app silently gets no routes.
+    """
+
+    def test_nested_hook_module_imports_sibling(self, tmp_path: Path) -> None:
+        """``from . import config`` works from a ``backend.routes`` entry file."""
+        app_dir = tmp_path / "multi-file-app"
+        _create_app_module(app_dir, "backend.config:_", "TIMEOUT = 30\n")
+        _create_app_module(app_dir, "backend.routes:register", """
+from . import config
+
+
+def register(ctx):
+    return config.TIMEOUT
+""")
+
+        func = load_app_module("multi-file-app", app_dir, "backend.routes:register")
+        assert func(None) == 30
+
+        unload_app_modules("multi-file-app")
+
+    def test_root_level_hook_module_imports_sibling(self, tmp_path: Path) -> None:
+        """The same holds when the hook module sits at the app root."""
+        app_dir = tmp_path / "flat-app"
+        _create_app_module(app_dir, "config:_", "TIMEOUT = 5\n")
+        _create_app_module(app_dir, "routes:register", """
+from . import config
+
+
+def register(ctx):
+    return config.TIMEOUT
+""")
+
+        func = load_app_module("flat-app", app_dir, "routes:register")
+        assert func(None) == 5
+
+        unload_app_modules("flat-app")
+
+    def test_from_import_of_submodule_attribute(self, tmp_path: Path) -> None:
+        """``from .render import to_html`` — the other spelling authors reach for."""
+        app_dir = tmp_path / "render-app"
+        _create_app_module(
+            app_dir, "backend.render:_", "def to_html(v):\n    return f'<p>{v}</p>'\n"
+        )
+        _create_app_module(app_dir, "backend.routes:register", """
+from .render import to_html
+
+
+def register(ctx):
+    return to_html("hi")
+""")
+
+        func = load_app_module("render-app", app_dir, "backend.routes:register")
+        assert func(None) == "<p>hi</p>"
+
+        unload_app_modules("render-app")
+
+    def test_sibling_modules_stay_isolated_between_apps(self, tmp_path: Path) -> None:
+        """Two apps shipping the same sibling filename see their own copy.
+
+        This is the property the dotted namespace exists for, and the reason a
+        bare ``import config`` is not an acceptable workaround.
+        """
+        for name, value in (("iso-a", "1"), ("iso-b", "2")):
+            app_dir = tmp_path / name
+            _create_app_module(app_dir, "backend.config:_", f"VALUE = {value}\n")
+            _create_app_module(app_dir, "backend.routes:register", """
+from . import config
+
+
+def register(ctx):
+    return config.VALUE
+""")
+
+        func_a = load_app_module("iso-a", tmp_path / "iso-a", "backend.routes:register")
+        func_b = load_app_module("iso-b", tmp_path / "iso-b", "backend.routes:register")
+
+        assert func_a(None) == 1
+        assert func_b(None) == 2
+        assert (
+            sys.modules["_kirocrew_app_iso-a.backend.config"]
+            is not sys.modules["_kirocrew_app_iso-b.backend.config"]
+        )
+
+        unload_app_modules("iso-a")
+        unload_app_modules("iso-b")
+
+    def test_relative_import_cannot_escape_the_app_root(self, tmp_path: Path) -> None:
+        """A relative import that walks above the app root is refused.
+
+        The synthetic root's ``__path__`` is the app directory, so there is no
+        package above it to traverse into.
+        """
+        (tmp_path / "outside.py").write_text("SECRET = 'leaked'\n", encoding="utf-8")
+        app_dir = tmp_path / "escape-app"
+        _create_app_module(app_dir, "backend.routes:register", """
+from ... import outside
+
+
+def register(ctx):
+    return outside.SECRET
+""")
+
+        with pytest.raises(ImportError):
+            load_app_module("escape-app", app_dir, "backend.routes:register")
+
+        assert not is_app_module_loaded("escape-app")
+
+    def test_failed_load_leaves_no_synthetic_packages_behind(
+        self, tmp_path: Path
+    ) -> None:
+        """A module whose body raises leaves sys.modules exactly as it was."""
+        app_dir = tmp_path / "broken-app"
+        _create_app_module(app_dir, "backend.routes:register", """
+raise RuntimeError("boom")
+
+
+def register(ctx):
+    return None
+""")
+
+        with pytest.raises(ImportError):
+            load_app_module("broken-app", app_dir, "backend.routes:register")
+
+        assert "_kirocrew_app_broken-app" not in sys.modules
+        assert "_kirocrew_app_broken-app.backend" not in sys.modules
+        assert not is_app_module_loaded("broken-app")
+
+    def test_failed_load_keeps_an_earlier_successful_load(
+        self, tmp_path: Path
+    ) -> None:
+        """Rolling back a failed hook must not evict a hook that already loaded."""
+        app_dir = tmp_path / "mixed-app"
+        _create_app_module(app_dir, "backend.config:_", "VALUE = 11\n")
+        _create_app_module(app_dir, "backend.routes:register", """
+from . import config
+
+
+def register(ctx):
+    return config.VALUE
+""")
+        _create_app_module(app_dir, "backend.hooks:on_startup", """
+raise RuntimeError("startup module is broken")
+
+
+def on_startup(ctx):
+    return None
+""")
+
+        func = load_app_module("mixed-app", app_dir, "backend.routes:register")
+        assert func(None) == 11
+
+        with pytest.raises(ImportError):
+            load_app_module("mixed-app", app_dir, "backend.hooks:on_startup")
+
+        # The working hook and the sibling it imported are still usable.
+        assert "_kirocrew_app_mixed-app.backend.routes" in sys.modules
+        assert "_kirocrew_app_mixed-app.backend.config" in sys.modules
+        assert "_kirocrew_app_mixed-app.backend.hooks" not in sys.modules
+        assert func(None) == 11
+
+        unload_app_modules("mixed-app")
+
+    def test_rollback_clears_the_parent_attribute_of_a_dropped_sibling(
+        self, tmp_path: Path
+    ) -> None:
+        """A rolled-back sibling must not stay reachable as a parent attribute.
+
+        CPython binds a submodule on its parent package, so popping only the
+        ``sys.modules`` key leaves the module reachable as ``parent.sibling``.
+        That is invisible to ``unload_app_modules`` / ``is_app_module_loaded``,
+        and a later ``from . import sibling`` would find the attribute, skip the
+        import, and silently reuse the stale module instead of the file on disk.
+
+        The residue needs an earlier SUCCESSFUL load, so the parent package
+        pre-exists and survives the rollback.
+        """
+        app_dir = tmp_path / "residue-app"
+        _create_app_module(app_dir, "backend.config:_", "VALUE = 1\n")
+        _create_app_module(app_dir, "backend.render:_", "MARK = 'first'\n")
+        _create_app_module(app_dir, "backend.routes:register", """
+from . import config
+
+
+def register(ctx):
+    return config.VALUE
+""")
+        _create_app_module(app_dir, "backend.hooks:on_startup", """
+from . import render
+
+raise RuntimeError("boom after importing render")
+
+
+def on_startup(ctx):
+    return None
+""")
+
+        load_app_module("residue-app", app_dir, "backend.routes:register")
+        with pytest.raises(ImportError):
+            load_app_module("residue-app", app_dir, "backend.hooks:on_startup")
+
+        parent = sys.modules["_kirocrew_app_residue-app.backend"]
+        assert "_kirocrew_app_residue-app.backend.render" not in sys.modules
+        assert not hasattr(parent, "render"), (
+            "the rolled-back sibling is still reachable as a parent attribute, so a "
+            "later relative import would reuse it instead of re-reading the file"
+        )
+        # The earlier successful load and the sibling it imported are untouched.
+        assert hasattr(parent, "routes")
+        assert hasattr(parent, "config")
+
+        unload_app_modules("residue-app")
+
+    def test_failed_second_load_of_one_module_restores_the_first_object(
+        self, tmp_path: Path
+    ) -> None:
+        """Two hooks may name the SAME module file, so a load can overwrite a key
+        that is already present. If that second load fails, the entry must go back
+        to the object the first hook's registered handlers came from.
+
+        This is the documented ``on_startup`` / ``on_shutdown`` shape, not an
+        exotic case: both name one ``backend.hooks`` module.
+        """
+        app_dir = tmp_path / "two-hooks-app"
+        _create_app_module(app_dir, "backend.hooks:on_startup", """
+def on_startup(ctx):
+    return "started"
+""")
+
+        first = load_app_module("two-hooks-app", app_dir, "backend.hooks:on_startup")
+        key = "_kirocrew_app_two-hooks-app.backend.hooks"
+        first_module = sys.modules[key]
+        parent = sys.modules["_kirocrew_app_two-hooks-app.backend"]
+
+        # Same module, a callable it does not define: the load re-executes the
+        # file (replacing the sys.modules entry) and then fails the attr check.
+        with pytest.raises(ImportError):
+            load_app_module("two-hooks-app", app_dir, "backend.hooks:on_shutdown")
+
+        assert sys.modules[key] is first_module, (
+            "the failed second load left its own module object registered, so a "
+            "sibling import would see different state than the live handlers"
+        )
+        assert getattr(parent, "hooks") is first_module
+        assert first(None) == "started"
+
+        unload_app_modules("two-hooks-app")
 
 
 def test_deploy_skill_install_copy_fallback(tmp_path, monkeypatch):
