@@ -21,6 +21,7 @@ import { useAgents } from '../hooks/useAgents'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
 import { useAvailableModels } from '../hooks/useAvailableModels'
+import { usePlanActionMutation, isPlanAction } from '../hooks/usePlanActionMutation'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAppSelector, useAppDispatch, store } from '../store'
 import { PANE_HYDRATE_LIMIT, retireStatelessQuestion, captureStatelessCard, capturePendingAskId, confirmOptimisticSend, selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, cancelQueuedMessage, editQueuedMessage, setAgentSwitchNotice, pendingQuestionFor } from '../store/chatSlice'
@@ -149,7 +150,7 @@ export default function ChatPane({
   // for the same reason as ChatPage: both would offer the same choices, and
   // only the card can answer the blocked tool call.
   const pendingQuestion = useAppSelector((s) => pendingQuestionFor(s.chat.pendingQuestions, slotKey))
-  const { followUpOptions } = useMemo(
+  const { followUpOptions, followUpIsPlan, followUpSourceKey } = useMemo(
     () => deriveFollowUpOptions(allMessages, busy, !!pendingQuestion),
     [allMessages, busy, pendingQuestion],
   )
@@ -160,6 +161,12 @@ export default function ChatPane({
   // Read by the option handler instead of the state: two clicks landing before
   // a re-render would both see the same set and both take the append branch.
   const followUpPickedRef = useRef(followUpPicked); followUpPickedRef.current = followUpPicked
+  // Orchestrator plan dispatch (#5893) — same mutation ChatPage uses,
+  // targeting THIS pane's slot. The hook owns the latch acknowledgement,
+  // keyed on the derived options-row identity passed here; the ref lets the
+  // click handler see the in-flight state, not the render it closed over.
+  const planActionMutation = usePlanActionMutation(slotKey, followUpSourceKey)
+  const planActionMutationRef = useRef(planActionMutation); planActionMutationRef.current = planActionMutation
   const followUpOptionsKey = followUpOptions.join('\x00')
   useEffect(() => { setFollowUpPicked(new Set()) }, [followUpOptionsKey, slotKey])
   // Quick Send parity with ChatPage: same query key, so the cache is shared
@@ -730,13 +737,39 @@ export default function ChatPane({
           followUpPicked={followUpPicked}
           followUpLayout={chatConfig.followUpLayout}
           quickSend={dashCfg?.quick_send}
-          onFollowUpSelect={(o: string, e: React.MouseEvent) => {
-            // Mirrors ChatPage's toggle wiring, minus the plan-dispatch branch:
-            // panes have no orchestrator plan mutation, so plan options fall
-            // through to the composer like any other option (follow-up: #5870
-            // disposition names this delta). One-click Quick Send takes the
-            // same gate as ChatPage: enabled + no shift + not busy + not
-            // already in multi-select.
+          followUpSourceKey={followUpSourceKey}
+          onFollowUpSelect={(o: string, e: React.MouseEvent, sourceKeyAtClick?: string | null) => {
+            // Mirrors ChatPage's wiring, plan branch included (#5893). Plan
+            // options (Go / Go All / Cancel — the only labels the plan
+            // pipeline emits and the only actions the endpoint accepts)
+            // dispatch directly against THIS pane's slot — no input fill:
+            // the same chip must mean the same thing here as in the main
+            // chat. A plan-SHAPED message carrying non-protocol labels keeps
+            // the composer path — dispatching those would 400 server-side
+            // while also skipping the append, leaving a dead chip.
+            if (followUpIsPlan && isPlanAction(o)) {
+              // Slot record not yet delivered (the first WS slots snapshot
+              // can land after this pane hydrates its transcript from the
+              // detail fetch, e.g. on a reload with a restored grid): the
+              // mode is UNKNOWN, so neither dispatching nor appending is
+              // safe — appending would type an approval label into the
+              // composer, the reported bug. No-op until the record resolves.
+              if (!paneSlot) return
+              if (paneSlot.mode === 'orchestrator') {
+                // No isPending pre-check here: single-flight lives in the
+                // hook's per-slot latch, which drops a duplicate Go/Go All
+                // but must let Cancel through — a render-scoped isPending
+                // check would swallow the stop control while a Go settles.
+                // `sourceKeyAtClick` is the row the user actually clicked on
+                // (the chip debounces 220ms and the row can be replaced by a
+                // byte-identical footer inside that window without remounting
+                // the chip); the hook refuses it if it no longer matches.
+                planActionMutationRef.current.mutate({ slot: slotKey, action: o, clickedSourceKey: sourceKeyAtClick })
+                return
+              }
+            }
+            // One-click Quick Send takes the same gate as ChatPage: enabled +
+            // no shift + not busy + not already in multi-select.
             if (tryQuickSend(o, dashCfg?.quick_send, e.shiftKey, busy, followUpPickedRef.current.size, (t: string) => doSend(t))) return
             // Regular options: toggle. Click unpicked → append + mark; click
             // picked → try to remove the text + unmark (if the user edited the

@@ -9,12 +9,29 @@ export type FollowUpLayout = 'multiline' | 'scroll'
 interface FollowUpBarProps {
   options: string[]
   picked: ReadonlySet<string>
-  onSelect: (option: string, event: React.MouseEvent) => void
+  /**
+   * Third argument is `sourceKey` AS IT WAS AT CLICK TIME (see `sourceKey`
+   * below) — `undefined` when the caller does not supply one. Optional so
+   * every existing caller keeps typechecking and behaves exactly as before.
+   */
+  onSelect: (option: string, event: React.MouseEvent, sourceKeyAtClick?: string | null) => void
   /** Double-click sends with this option's text directly (bypasses setInput race). */
   onSend?: (text?: string) => void
   quickSend?: boolean
   /** 'multiline' (default) wraps onto multiple rows; 'scroll' is a single-line horizontally-scrollable view. */
   layout?: FollowUpLayout
+  /**
+   * Identity of the transcript row these chips were derived from, when the
+   * caller has one (hosts pass their `followUpSourceKey`). Handed BACK to
+   * `onSelect` as the click-time snapshot, because a single click is debounced
+   * (`FOLLOWUP_CHIP_DEBOUNCE_MS`) and the row can advance inside that window:
+   * a byte-identical replacement footer re-renders the same chips WITHOUT
+   * remounting them, so the pending timer survives and fires against a row the
+   * user never saw. A caller that acts on the click (e.g. the orchestrator
+   * plan dispatch) compares the snapshot with its current key and refuses the
+   * mismatch — see `usePlanActionMutation`.
+   */
+  sourceKey?: string | null
 }
 
 /**
@@ -195,13 +212,15 @@ interface ChipProps {
   isPicked: boolean
   picked: ReadonlySet<string>
   quickSend: boolean | undefined
-  onSelect: (option: string, event: React.MouseEvent) => void
+  onSelect: (option: string, event: React.MouseEvent, sourceKeyAtClick?: string | null) => void
   onSend?: (text?: string) => void
   className: string
   /** Position in the row, used for the entrance stagger. */
   index: number
   /** Whether this row is still playing its entrance (see `useChipEntrance`). */
   animating: boolean
+  /** Current source-row identity, snapshotted at click time (see FollowUpBarProps). */
+  sourceKey?: string | null
 }
 
 /**
@@ -213,7 +232,7 @@ interface ChipProps {
  *   double-click to fire `onSend(text)` directly without going through setInput (which would
  *   race with the React state update and cause send() to read a stale inputRef.current).
  */
-function Chip({ option, isPicked, picked, quickSend, onSelect, onSend, className, index, animating }: ChipProps) {
+function Chip({ option, isPicked, picked, quickSend, onSelect, onSend, className, index, animating, sourceKey }: ChipProps) {
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current) }, [])
 
@@ -236,6 +255,12 @@ function Chip({ option, isPicked, picked, quickSend, onSelect, onSend, className
       <button
         type="button"
         onMouseDown={(e) => e.preventDefault()}
+        // No third argument here on purpose: this path calls onSelect
+        // SYNCHRONOUSLY from the click, so there is no window in which the row
+        // could advance and nothing for the callee to compare against. Passing
+        // `undefined` (i.e. "no key supplied") keeps this path's behaviour
+        // exactly as it was — see `sourceKeyAtClick` in the debounced handler,
+        // which is where the race actually lives.
         onClick={(e) => onSelect(option, e)}
         className={`${className} ${entrance.className}`}
         style={entrance.style}
@@ -254,9 +279,17 @@ function Chip({ option, isPicked, picked, quickSend, onSelect, onSend, className
     // Capture the parts of the event that survive the timer (React pools events).
     const shiftKey = e.shiftKey
     const synth = { shiftKey, detail: 1 } as unknown as React.MouseEvent
+    // Same reason, one level up: the ROW these chips belong to can be replaced
+    // inside the debounce window, and a byte-identical replacement footer does
+    // not remount this chip — so the timer below outlives the row it was armed
+    // on. Snapshot the identity here, at click time, and hand it to onSelect so
+    // the callback can tell "the row the user acted on" from "whatever row is
+    // current now". Read through the render closure deliberately: a ref would
+    // be re-read when the timer fires, which is exactly the bug.
+    const sourceKeyAtClick = sourceKey
     timerRef.current = setTimeout(() => {
       timerRef.current = null
-      onSelect(option, synth)
+      onSelect(option, synth, sourceKeyAtClick)
     }, FOLLOWUP_CHIP_DEBOUNCE_MS)
   }
 
@@ -320,7 +353,7 @@ function Chip({ option, isPicked, picked, quickSend, onSelect, onSend, className
  *  layout switch cannot restart an entrance that already played. */
 type LayoutProps = Omit<FollowUpBarProps, 'layout'> & { animating: boolean }
 
-function ScrollLayout({ options, picked, onSelect, onSend, quickSend, animating }: LayoutProps) {
+function ScrollLayout({ options, picked, onSelect, onSend, quickSend, animating, sourceKey }: LayoutProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const [attachEdges, edges, remeasure] = useScrollEdges<HTMLDivElement>()
 
@@ -415,6 +448,7 @@ function ScrollLayout({ options, picked, onSelect, onSend, quickSend, animating 
               className={chipClassName(isPicked, { shrink0: true })}
               index={i}
               animating={animating}
+              sourceKey={sourceKey}
             />
           )
         })}
@@ -424,7 +458,7 @@ function ScrollLayout({ options, picked, onSelect, onSend, quickSend, animating 
   )
 }
 
-function MultilineLayout({ options, picked, onSelect, onSend, quickSend, animating }: LayoutProps) {
+function MultilineLayout({ options, picked, onSelect, onSend, quickSend, animating, sourceKey }: LayoutProps) {
   return (
     // Bottom-aligned for the same reason as the scroll layout: a two-line
     // clamped chip must not float its single-line neighbours onto its own
@@ -444,6 +478,7 @@ function MultilineLayout({ options, picked, onSelect, onSend, quickSend, animati
             className={chipClassName(isPicked)}
             index={i}
             animating={animating}
+            sourceKey={sourceKey}
           />
         )
       })}
@@ -451,16 +486,16 @@ function MultilineLayout({ options, picked, onSelect, onSend, quickSend, animati
   )
 }
 
-function FollowUpBar({ options, picked, onSelect, onSend, quickSend, layout = 'multiline' }: FollowUpBarProps) {
+function FollowUpBar({ options, picked, onSelect, onSend, quickSend, layout = 'multiline', sourceKey }: FollowUpBarProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   // Content-keyed, not identity-keyed: the caller rebuilds the array on every
   // render, so an identity comparison would restart the entrance constantly.
   // \u0000 cannot occur inside an option label.
   const animating = useChipEntrance(options.join('\u0000'))
   if (layout === 'scroll') {
-    return <ScrollLayout options={options} picked={picked} onSelect={onSelect} onSend={onSend} quickSend={quickSend} animating={animating} />
+    return <ScrollLayout options={options} picked={picked} onSelect={onSelect} onSend={onSend} quickSend={quickSend} animating={animating} sourceKey={sourceKey} />
   }
-  return <MultilineLayout options={options} picked={picked} onSelect={onSelect} onSend={onSend} quickSend={quickSend} animating={animating} />
+  return <MultilineLayout options={options} picked={picked} onSelect={onSelect} onSend={onSend} quickSend={quickSend} animating={animating} sourceKey={sourceKey} />
 }
 
 export default memo(FollowUpBar)

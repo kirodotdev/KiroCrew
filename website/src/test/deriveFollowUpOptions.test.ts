@@ -121,6 +121,26 @@ describe('deriveFollowUpOptions', () => {
       expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual(['Fix', 'Skip'])
     })
 
+    // A note row needs an identity for the same reason an assistant row does: the
+    // plan-dispatch latch and the bar's render key are gated on followUpSourceKey, and a
+    // null key would read as "no options on offer" while chips were on screen. Note rows
+    // reached this derivation only after the note-carried-options feature landed, so
+    // nothing pinned their key until now.
+    it('gives a note-carried options row a row identity, not null', () => {
+      const msgs = [user('go'), note('Triage complete [OPTIONS: Fix | Skip]')]
+      expect(deriveFollowUpOptions(msgs, false).followUpSourceKey).toBe('idx:1')
+    })
+
+    it('keys two byte-identical notes apart so the later one is not mistaken for the earlier', () => {
+      const body = 'Triage complete [OPTIONS: Fix | Skip]'
+      const first = deriveFollowUpOptions([user('go'), note(body)], false).followUpSourceKey
+      const second = deriveFollowUpOptions(
+        [user('go'), note(body), assistant('working'), note(body)],
+        false,
+      ).followUpSourceKey
+      expect(second).not.toBe(first)
+    })
+
     // THE load-bearing case: had the inject branch returned instead of continuing, an
     // option-less cron note would silently hide the buttons of the real turn it follows.
     it('keeps the ASSISTANT options when an option-less note follows the options turn', () => {
@@ -229,6 +249,62 @@ describe('deriveFollowUpOptions', () => {
       // Negative control: the real orchestrator plan still dispatches, so the assertion above
       // measures provenance rather than a guard that refuses everything.
       expect(dispatchesPlanAction(assistant(planText), 'orchestrator', 'slot-1')).toBe(true)
+    })
+  })
+
+  // The plan-dispatch latch is acknowledgement-gated on followUpSourceKey, so a row that
+  // re-keys WITHOUT actually changing frees the latch while the same chips are still on
+  // screen — and a stale second click then queues an unintended extra Go. The store keys
+  // virtual rows by `clientTs ?? ts` and deliberately carries `clientTs` onto the reloaded
+  // server copy (chatSlice.ts), so this derivation must follow the same order rather than
+  // invent a conflicting one.
+  describe('row identity stability across hydration', () => {
+    const withMeta = (content: string, meta: Record<string, unknown>): ChatMessage =>
+      ({ role: 'assistant', content, cls: 'msg msg-a', meta })
+
+    it('keeps one identity when a reconnect refresh ADDS a server mid to a client-stamped row', () => {
+      const before = deriveFollowUpOptions(
+        [user('go'), withMeta(OPTIONS_MSG, { clientTs: 'born-7' })],
+        false,
+      ).followUpSourceKey
+      // The SAME row after the refresh: clientTs survives, mid and ts arrive.
+      const after = deriveFollowUpOptions(
+        [
+          user('go'),
+          {
+            ...withMeta(OPTIONS_MSG, { clientTs: 'born-7', mid: 'srv-42' }),
+            ts: '2026-08-27T08:00:00Z',
+          },
+        ],
+        false,
+      ).followUpSourceKey
+      expect(after).toBe(before)
+      expect(after).toBe('born-7')
+    })
+
+    it('falls back to mid, then ts, for a row that never carried a client stamp', () => {
+      expect(
+        deriveFollowUpOptions([user('go'), withMeta(OPTIONS_MSG, { mid: 'srv-42' })], false)
+          .followUpSourceKey,
+      ).toBe('srv-42')
+      expect(
+        deriveFollowUpOptions(
+          [user('go'), { ...withMeta(OPTIONS_MSG, {}), ts: '2026-08-27T08:00:00Z' }],
+          false,
+        ).followUpSourceKey,
+      ).toBe('2026-08-27T08:00:00Z')
+    })
+
+    it('still keys two DIFFERENT client-stamped rows apart', () => {
+      const a = deriveFollowUpOptions(
+        [user('go'), withMeta(OPTIONS_MSG, { clientTs: 'born-7' })],
+        false,
+      ).followUpSourceKey
+      const b = deriveFollowUpOptions(
+        [user('go'), withMeta(OPTIONS_MSG, { clientTs: 'born-8' })],
+        false,
+      ).followUpSourceKey
+      expect(a).not.toBe(b)
     })
   })
 })

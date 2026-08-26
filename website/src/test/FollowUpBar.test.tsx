@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import FollowUpBar from '../components/FollowUpBar'
+import FollowUpBar, { FOLLOWUP_CHIP_DEBOUNCE_MS } from '../components/FollowUpBar'
 
 // jsdom polyfill: scroll-layout uses ResizeObserver to track when the chip
 // strip can scroll left/right.
@@ -109,7 +109,9 @@ describe('FollowUpBar', () => {
       expect(onSelect).toHaveBeenCalledTimes(0) // timer pending
       act(() => { vi.advanceTimersByTime(250) })
       expect(onSelect).toHaveBeenCalledTimes(1)
-      expect(onSelect).toHaveBeenCalledWith('Ship it', expect.any(Object))
+      // Third arg is the click-time `sourceKey` snapshot — `undefined` here
+      // because this caller supplies no `sourceKey` prop at all.
+      expect(onSelect).toHaveBeenCalledWith('Ship it', expect.any(Object), undefined)
       expect(onSend).not.toHaveBeenCalled()
     })
 
@@ -445,6 +447,53 @@ describe('FollowUpBar', () => {
       const chip = screen.getByRole('button', { name: 'Gamma' })
       expect(chip).toHaveAttribute('type', 'button')
       expect(fireEvent.mouseDown(chip)).toBe(false)
+    })
+  })
+
+  // ─── sourceKey is snapshotted at CLICK time, not at debounce-fire time ────
+  // The 220ms debounce means the transcript row these chips came from can be
+  // REPLACED while the timer is pending — and a byte-identical replacement
+  // footer (same labels, so the same chip keys) re-renders the chip WITHOUT
+  // remounting it, so the timer survives. A callee that acts on the click
+  // (the orchestrator plan dispatch) must therefore be told which row the
+  // user actually clicked, not whichever row happens to be current when the
+  // timer fires — otherwise one click on a stale footer approves the stage
+  // that replaced it.
+  describe('sourceKey (click-time row identity)', () => {
+    beforeEach(() => { vi.useFakeTimers() })
+    afterEach(() => { vi.useRealTimers() })
+
+    const PLAN = ['Go', 'Go All', 'Cancel']
+
+    it('hands onSelect the sourceKey from CLICK time after the row advances mid-debounce', () => {
+      const onSelect = vi.fn()
+      const bar = (sourceKey: string) => (
+        <FollowUpBar options={PLAN} picked={new Set()} onSelect={onSelect} onSend={() => {}} sourceKey={sourceKey} />
+      )
+      const { rerender } = render(bar('row-1'))
+      const go = screen.getByRole('button', { name: 'Go' })
+      fireEvent.click(go, { detail: 1 })
+      expect(onSelect).not.toHaveBeenCalled() // timer pending
+
+      // The replacement footer: identical options (so `key={o}` matches and the
+      // chip is REUSED, not recreated) but a new row identity.
+      rerender(bar('row-2'))
+      // Pin the no-remount premise the whole race rests on — if React replaced
+      // the element, the pending timer would have been cleaned up and this test
+      // would pass for the wrong reason.
+      expect(screen.getByRole('button', { name: 'Go' })).toBe(go)
+
+      act(() => { vi.advanceTimersByTime(FOLLOWUP_CHIP_DEBOUNCE_MS + 30) })
+      expect(onSelect).toHaveBeenCalledTimes(1)
+      expect(onSelect).toHaveBeenCalledWith('Go', expect.any(Object), 'row-1')
+    })
+
+    it('hands onSelect the current sourceKey when the row does not change', () => {
+      const onSelect = vi.fn()
+      render(<FollowUpBar options={PLAN} picked={new Set()} onSelect={onSelect} onSend={() => {}} sourceKey="row-1" />)
+      fireEvent.click(screen.getByRole('button', { name: 'Go All' }), { detail: 1 })
+      act(() => { vi.advanceTimersByTime(FOLLOWUP_CHIP_DEBOUNCE_MS + 30) })
+      expect(onSelect).toHaveBeenCalledWith('Go All', expect.any(Object), 'row-1')
     })
   })
 })

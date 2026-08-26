@@ -17,7 +17,8 @@
 import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
 import { serveDist } from './lib/serve-dist.mjs'
-import { logPageProblems, stubDashboardApi, json } from './lib/stub-dashboard-api.mjs'
+import { logPageProblems } from './lib/stub-dashboard-api.mjs'
+import { stubSplitPanes } from './lib/split-pane-fixture.mjs'
 
 const OUT = process.argv[2] || '../temp-screenshots/chatpane-followup-options'
 const PREFIX = process.argv[3] || 'after'
@@ -72,34 +73,11 @@ async function main() {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 })
   const page = await context.newPage()
 
-  await stubDashboardApi(page, {
-    folders: [], slots,
-    extra: async (path, route) => {
-      if (path === '/api/dashboard/config') {
-        // session_grid gates split view; the rest mirrors the shared default.
-        await json(route, {
-          restore_sessions: false, restore_window_minutes: 30,
-          merge_queued_messages: false, widget_density: 'more', session_grid: true,
-        })
-        return true
-      }
-      if (path === `/api/chat/slots/${LEFT}`) {
-        await json(route, { messages: leftMessages, has_more: false, total: leftMessages.length })
-        return true
-      }
-      if (path === `/api/chat/slots/${RIGHT}`) {
-        await json(route, { messages: rightMessages, has_more: false, total: rightMessages.length })
-        return true
-      }
-      if (path === '/api/sessions') { await json(route, { sessions: [], has_more: false }); return true }
-      if (path === '/api/chat/pins') { await json(route, { pins: [] }); return true }
-      return false
-    },
+  await stubSplitPanes(page, {
+    slots,
+    transcripts: { [LEFT]: leftMessages, [RIGHT]: rightMessages },
+    layout: LAYOUT,
   })
-  // Added after stubDashboardApi so it runs after that script's localStorage.clear().
-  await page.addInitScript(layout => {
-    localStorage.setItem('mc-split-layouts', JSON.stringify(layout))
-  }, LAYOUT)
   logPageProblems(page)
 
   await page.goto(`${base}/chat/${LEFT}`, { waitUntil: 'domcontentloaded' })

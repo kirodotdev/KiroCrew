@@ -18,6 +18,7 @@ import { shouldReplaceSessionUrl } from '../utils/sessionUrlHistory'
 import type { ResizeInfo } from '../utils/resizeImage'
 import { useAppSelector, useAppDispatch, store } from '../store'
 import { useConnected } from '../hooks/useConnected'
+import { usePlanActionMutation, isPlanAction } from '../hooks/usePlanActionMutation'
 import { useChatPopouts } from '../hooks/useChatPopouts'
 import {
   switchSlot, createSlot, deleteSlot, fetchHistory, loadOlderMessages, isSupersededPagingRejection,
@@ -1179,9 +1180,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // short-circuits `slot.model or agent_model` and would override a template or
   // global pin the user did configure.
   const [modelBtnRect, setModelBtnRect] = useState<DOMRect | null>(null)
-  const planActionMutation = useMutation({
-    mutationFn: ({ slot, action }: { slot: string; action: string }) => api.planAction(slot, action),
-  })
   // Mid-turn steer is a POST write, so it goes through useMutation for
   // consistent error/loading-state handling (fire-and-forget: no onSuccess).
   const steerMutation = useMutation({
@@ -3859,10 +3857,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Swapping chats (activeSlot change) → messages change → memo recomputes fresh.
   // A pending question card suppresses them: both would offer the same choices in
   // the same band, and only the card can answer the blocked tool call.
-  const { followUpOptions, followUpIsPlan } = useMemo(
+  const { followUpOptions, followUpIsPlan, followUpSourceKey } = useMemo(
     () => deriveFollowUpOptions(messages, isStreaming, !!pendingQuestion),
     [messages, isStreaming, pendingQuestion],
   )
+  // Orchestrator plan dispatch — the hook owns the latch acknowledgement,
+  // keyed on the derived options-row identity passed here.
+  const planActionMutation = usePlanActionMutation(activeSlot, followUpSourceKey)
   // Visual-only highlight state; text in the input is the source of truth for
   // what gets sent. Cleared whenever the options list changes (new assistant
   // message) or the active chat switches — both signal a fresh turn.
@@ -7608,11 +7609,20 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               followUpPicked={followUpPicked}
               quickSend={dashCfg?.quick_send}
               followUpLayout={chatConfig.followUpLayout}
-              onFollowUpSelect={(o: string, e: React.MouseEvent) => {
-                // Plan options (e.g. Stage-N-APPROVE) dispatch directly — no input fill.
-                if (followUpIsPlan && effectiveMode === 'orchestrator' && activeSlot) {
-                  if (planActionMutationRef.current.isPending) return
-                  planActionMutationRef.current.mutate({ slot: activeSlot, action: o })
+              followUpSourceKey={followUpSourceKey}
+              onFollowUpSelect={(o: string, e: React.MouseEvent, sourceKeyAtClick?: string | null) => {
+                // Plan options (Go / Go All / Cancel) dispatch directly — no input fill.
+                // Non-protocol labels on a plan-shaped message keep the composer path:
+                // the endpoint would 400 them while the append was already skipped.
+                if (followUpIsPlan && isPlanAction(o) && effectiveMode === 'orchestrator' && activeSlot) {
+                  // No isPending pre-check: single-flight lives in the hook's
+                  // per-slot latch, which drops a duplicate Go/Go All but lets
+                  // Cancel through — a render-scoped isPending check would
+                  // swallow the stop control while a Go settles.
+                  // `sourceKeyAtClick` is the row the click was made on (the
+                  // chip debounces 220ms and an identical replacement footer
+                  // does not remount it); the hook refuses a stale one.
+                  planActionMutationRef.current.mutate({ slot: activeSlot, action: o, clickedSourceKey: sourceKeyAtClick })
                   return
                 }
                 // One-click: enabled + no shift + not busy + not already in multi-select

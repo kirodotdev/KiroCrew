@@ -458,14 +458,20 @@ interface ChatInputProps {
   followUpOptions?: string[]
   /** Options the user has picked (visual highlight in FollowUpBar) */
   followUpPicked?: Set<string>
-  /** Select a follow-up option — handler toggles text in input (see ChatPage wiring) */
-  onFollowUpSelect?: (option: string, event: React.MouseEvent) => void
+  /** Select a follow-up option — handler toggles text in input (see ChatPage wiring).
+   *  Third arg is `followUpSourceKey` as it was when the chip was CLICKED (the
+   *  chip debounces, and the row can advance inside that window); `undefined`
+   *  when no `followUpSourceKey` is supplied. */
+  onFollowUpSelect?: (option: string, event: React.MouseEvent, sourceKeyAtClick?: string | null) => void
   /** Double-click a follow-up option — send with option text directly (bypasses setInput race) */
   onFollowUpSend?: (text?: string) => void
   /** Quick Send enabled — clicking sends immediately */
   quickSend?: boolean
   /** Layout mode for the follow-up bar: 'multiline' (default) or 'scroll' (original single-line). */
   followUpLayout?: 'multiline' | 'scroll'
+  /** Identity of the transcript row the follow-up options were derived from.
+   *  Forwarded to FollowUpBar so a chip click carries the row it acted on. */
+  followUpSourceKey?: string | null
   /** Collapsed paste blocks backing `⌜🗒 Pasted …⌟` tokens in `value`. */
   pasteBlocks?: PasteBlock[]
   /** Replace the current list of paste blocks (add/remove). */
@@ -784,6 +790,7 @@ function ChatInput({
   onFollowUpSend,
   quickSend,
   followUpLayout,
+  followUpSourceKey,
   pasteBlocks = [],
   onPasteBlocksChange,
   knowledgeChip,
@@ -2656,7 +2663,7 @@ function ChatInput({
 
       {/* Ghost follow-up bubbles floating above input */}
       {!showGhost && followUpOptions && followUpOptions.length > 0 && onFollowUpSelect && (
-          <FollowUpBar options={followUpOptions} picked={followUpPicked ?? new Set()} onSelect={onFollowUpSelect} onSend={sendFollowUp} quickSend={quickSend} layout={followUpLayout} />
+          <FollowUpBar options={followUpOptions} picked={followUpPicked ?? new Set()} onSelect={onFollowUpSelect} onSend={sendFollowUp} quickSend={quickSend} layout={followUpLayout} sourceKey={followUpSourceKey} />
       )}
 
       {/* Tip / folder-suggestion band — LAST above the composer so it always
