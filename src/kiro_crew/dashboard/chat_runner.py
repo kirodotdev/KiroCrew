@@ -79,7 +79,6 @@ from kiro_crew.dashboard.chat_utils import (
     _broadcast_compaction_result,
     _dequeue_next_message,
     _dequeue_next_system_message,
-    _extract_bash_command,
     _maybe_consolidate,
     _maybe_inject_persona,
     _normalize_model,
@@ -165,8 +164,6 @@ from kiro_crew.hooks import (
     TOOL_AUTO_APPROVE,
     TOOL_DENY,
     ToolHookResult,
-    _normalize_tool_name,
-    _tool_matches,
     fire_tool_hooks,
     safe_read_file,
     validate_file_path,
@@ -228,6 +225,14 @@ from kiro_crew.sel import sel
 from kiro_crew.session import SessionClosingError, SpeculativeResumeRefused
 from kiro_crew.slack.handler import post_linked_approval, resolve_linked_approval
 from kiro_crew.slack.outbound import PostedOptions
+from kiro_crew.trust_patterns import (
+    approval_command,
+)
+from kiro_crew.trust_patterns import extract_base_command as _extract_base_command
+from kiro_crew.trust_patterns import extract_bash_command as _extract_bash_command
+from kiro_crew.trust_patterns import extract_full_command as _extract_full_command
+from kiro_crew.trust_patterns import matches_trusted_pattern as _matches_trusted_pattern
+from kiro_crew.trust_patterns import split_command_segments as _split_command_segments
 from kiro_crew.validation import ValidationError, infer_use_case, validate_ask_user_question
 from kiro_crew.widget_artifacts import register_widgets_off_loop
 
@@ -1797,86 +1802,6 @@ def _tool_call_ws_payload(event: "LLMEvent") -> dict[str, str | bool]:
     }
 
 
-# Known redirect forms where & is NOT a command separator:
-# N>&M (e.g. 2>&1), &> file, &>> file, >&N
-_REDIRECT_PLACEHOLDER = "\x00REDIR\x00"
-_REDIRECT_RE = re.compile(r"[0-9]*>&[0-9]*|&>>?")
-# After redirects are masked, split on remaining separators.
-_CMD_SPLIT_RE = re.compile(r"\s*(?:\|\||&&|;|&|\n|\|)\s*")
-# Grant-safe variant: excludes bare & (background/arithmetic) and \n (display)
-# because this function serves the Trust dropdown (grant direction) where each
-# extra segment becomes one more binary offered for auto-approval.
-_CMD_GRANT_SPLIT_RE = re.compile(r"\s*(?:\|\||&&|;|\|)\s*")
-# Command substitution forms that split-then-fnmatch cannot safely reach:
-# $(...), backticks, and process substitution <(...)/>(...). Deny-by-default
-# when any are present — the pattern match would operate on the outer shell
-# syntax, not the embedded sub-command, giving a false sense of authorization.
-_CMD_SUBSTITUTION_RE = re.compile(r"\$\(|`|<\(|>\(")
-
-
-def _mask_quoted_separators(text: str, *, mask_escaped: bool = False) -> tuple[str, dict[str, str]]:
-    """Replace command separators that appear INSIDE quotes with placeholders.
-
-    The split regex (``_CMD_SPLIT_RE``) is quote-unaware, so a separator inside
-    a quoted string — e.g. the ``|`` in ``grep "a|b" file && wc -l`` — would be
-    treated as a command boundary, mis-segmenting a command the user trusted and
-    denying it (fail-closed but a real usability regression). We walk the string
-    tracking single/double quote state and swap any ``| & ; \\n`` that is quoted
-    for a unique placeholder, restoring it inside each segment before matching.
-    Returns ``(masked_text, restore_map)``.
-
-    Quote tracking MUST honor backslash escapes, because getting this wrong is a
-    segmentation bypass rather than a cosmetic error. ``type 'foo'\\'; cmd``
-    closes its quote at the second ``'``, so the ``\\'`` that follows is a literal
-    apostrophe OUTSIDE quotes and the ``;`` is a real separator the shell acts
-    on. Reading that ``\\'`` as an opening quote instead makes the rest of the
-    line look quoted, the ``;`` gets masked, the whole line reads as one segment,
-    and an appended command rides in behind whatever the first segment was
-    allowed to do.
-
-    A backslash escapes the next character everywhere EXCEPT inside single
-    quotes, where the shell treats it literally.
-    """
-    out: list[str] = []
-    restore: dict[str, str] = {}
-    quote: str | None = None
-    escaped = False
-    n = 0
-    for ch in text:
-        if escaped:
-            escaped = False
-            # When mask_escaped is True (grant path), an escaped separator
-            # (e.g. \|) is treated as a literal — mask it so the split regex
-            # skips it.  When False (deny path), escaped separators still
-            # segment because treating \; as a literal would let an attacker
-            # hide a second command behind an escape.
-            if mask_escaped and ch in "|&;\n":
-                ph = f"\x00SEP{n}\x00"
-                n += 1
-                restore[ph] = ch
-                out.append(ph)
-            else:
-                out.append(ch)
-            continue
-        if ch == "\\" and quote != "'":
-            escaped = True
-            out.append(ch)
-            continue
-        if quote:
-            if ch == quote:
-                quote = None
-            elif ch in "|&;\n":
-                ph = f"\x00SEP{n}\x00"
-                n += 1
-                restore[ph] = ch
-                out.append(ph)
-                continue
-        elif ch in ("'", '"'):
-            quote = ch
-        out.append(ch)
-    return "".join(out), restore
-
-
 # Native kiro-cli subagents (``use_subagent``) are surfaced in the Activity tab
 # via the ``_kiro.dev/subagent/list_update`` notification (one card per
 # sub-agent), handled by ``_native_subagent_sync`` below. The list_update gives
@@ -2262,146 +2187,6 @@ def _safe_native_crew_debug_title(title: str) -> str:
     safe, _ = redact_exfiltration_urls(title or "")
     safe, _ = redact_credentials(safe)
     return safe
-
-
-def _split_command_segments(
-    tool_title: str,
-    split_re: "re.Pattern[str] | None" = None,
-    mask_escaped: bool = False,
-) -> tuple[str, list[str]] | None:
-    """Split a shell tool title into its unquoted command segments.
-
-    Returns ``(normalized_title, segments)``. Returns ``None`` — which every
-    caller MUST treat as "deny" — when the command contains substitution
-    (``$(...)``, backticks, process substitution), because no amount of
-    per-segment matching can reach inside a sub-command, or when it contains a
-    NUL byte, which would forge one of this function's own placeholders.
-
-    Extracted so that every command-keyed approval path shares ONE splitter:
-    a second, independently written shell splitter is exactly how a bypass
-    gets introduced (quoted separators, masked redirects, backgrounding).
-
-    Pass ``split_re=_CMD_GRANT_SPLIT_RE`` for the grant path (Trust dropdown)
-    where bare ``&`` and ``\\n`` must NOT widen the offered set.
-    """
-    normalized = _normalize_tool_name(tool_title)
-    if _CMD_SUBSTITUTION_RE.search(normalized):
-        return None
-    # Both masking passes below key on NUL-delimited placeholders
-    # (``\x00REDIR\x00``, ``\x00SEP{n}\x00``), so the scheme is only
-    # unambiguous while the input carries no NUL of its own. A title that
-    # already contains one forges a placeholder: the redirect-restore loop
-    # then draws more placeholders than it masked and raises StopIteration
-    # (aborting the turn), and a forged ``\x00SEP{n}\x00`` restores to a
-    # separator the command never had. NUL is never legitimate here -- execve
-    # cannot carry it in an argument -- so deny by default rather than strip,
-    # which would match patterns against text that is not what would run.
-    if "\x00" in normalized:
-        return None
-    # First mask separators that live INSIDE quotes (a quoted "a|b" must not be
-    # split on its `|`), so _CMD_SPLIT_RE only ever cuts on real, unquoted
-    # command boundaries. The placeholders are restored in each segment below.
-    quote_masked, sep_restore = _mask_quoted_separators(normalized, mask_escaped=mask_escaped)
-    # Two-pass split: mask known redirect forms (2>&1, &>, &>>) so their &
-    # isn't mistaken for a background operator, then split on remaining &.
-    # Track masked positions to reconstruct original text in each segment.
-    redirects: list[str] = []
-
-    def _mask(m: "re.Match") -> str:
-        redirects.append(m.group())
-        return _REDIRECT_PLACEHOLDER
-
-    masked = _REDIRECT_RE.sub(_mask, quote_masked)
-    split_parts = (split_re or _CMD_SPLIT_RE).split(masked)
-    # Restore original redirect syntax in each segment for pattern matching.
-    redir_iter = iter(redirects)
-    segments = []
-    for part in split_parts:
-        if not part.strip():
-            continue
-        restored = part
-        while _REDIRECT_PLACEHOLDER in restored:
-            restored = restored.replace(_REDIRECT_PLACEHOLDER, next(redir_iter), 1)
-        # Restore any quoted separators masked before the split.
-        for ph, ch in sep_restore.items():
-            if ph in restored:
-                restored = restored.replace(ph, ch)
-        segments.append(restored)
-    return normalized, segments
-
-
-def _matches_trusted_pattern(tool_title: str, patterns: set[str]) -> str | None:
-    """Return the matched pattern if tool_title matches any trusted pattern.
-
-    For piped/chained commands, splits into segments and checks each
-    independently — ALL segments must match for the command to be trusted.
-    Returns comma-joined matched patterns for audit provenance.
-
-    Deny-by-default for commands containing command substitution ($(...),
-    backticks, process substitution) — fnmatch cannot reach sub-commands.
-    """
-    split = _split_command_segments(tool_title)
-    if split is None:
-        return None
-    normalized, segments = split
-    if len(segments) > 1:
-        matched_patterns = []
-        for seg in segments:
-            seg_matched = None
-            for pattern in patterns:
-                if _tool_matches(pattern, seg) or _tool_matches(pattern, f"Running: {seg}"):
-                    seg_matched = pattern
-                    break
-            if seg_matched is None:
-                return None
-            matched_patterns.append(seg_matched)
-        return ",".join(matched_patterns)
-    for pattern in patterns:
-        if _tool_matches(pattern, tool_title) or _tool_matches(pattern, normalized):
-            return pattern
-    return None
-
-
-def _extract_base_command(tool_title: str) -> str:
-    """Extract base binary name(s) for glob pattern generation.
-
-    Handles piped/chained commands split by |, &&, ;
-    "Running: ls /tmp" -> "ls"
-    "Running: cat /etc/hosts | wc -l" -> "cat,wc"
-    "Running: grep -r foo . && echo done" -> "grep,echo"
-    "Running: grep -E 'foo|bar' file.txt" -> "grep"
-    "SomeMcpTool" -> "SomeMcpTool"
-
-    Delegates to :func:`_split_command_segments` with
-    ``_CMD_GRANT_SPLIT_RE`` — the same shared splitter (quote masking,
-    redirect masking, substitution denial) but a narrower operator set that
-    excludes bare ``&`` and ``\\n``.  Those operators are correct for the
-    deny path (enforcement) where over-splitting fails closed, but wrong
-    for the grant path (Trust dropdown) where each extra segment becomes
-    one more binary offered for auto-approval.
-
-    When the command contains substitution, returns only the first token —
-    the enforcement path independently denies substitution commands.
-    """
-    split = _split_command_segments(tool_title, split_re=_CMD_GRANT_SPLIT_RE, mask_escaped=True)
-    if split is None:
-        # Command substitution — can't safely extract bases.  Return only
-        # the first token so the Trust dropdown doesn't offer junk patterns.
-        normalized = _normalize_tool_name(tool_title)
-        parts = normalized.strip().split(None, 1)
-        return parts[0] if parts else normalized
-    normalized, segments = split
-    bases = []
-    for seg in segments:
-        parts = seg.strip().split(None, 1)
-        if parts:
-            bases.append(parts[0])
-    return ",".join(dict.fromkeys(bases)) if bases else normalized
-
-
-def _extract_full_command(tool_title: str) -> str:
-    """Extract the full normalized command (strip display prefix)."""
-    return _normalize_tool_name(tool_title)
 
 
 def _session_principal(session_key: str) -> str:
@@ -6729,14 +6514,14 @@ async def _run_chat(
                 if slot._trusted_patterns and not _child_low_fidelity:
                     _tp_cmd = _extract_bash_command(event.tool_input) if event.tool_input else ""
                     if _tp_cmd:
-                        _tp_check_title = f"Running: {_tp_cmd}"
+                        _tp_command = _tp_cmd
                     elif not event.tool_input:
-                        _tp_check_title = event.title
+                        _tp_command = event.title
                     else:
-                        _tp_check_title = None
+                        _tp_command = None
                     matched = (
-                        _matches_trusted_pattern(_tp_check_title, slot._trusted_patterns)
-                        if _tp_check_title is not None
+                        _matches_trusted_pattern(_tp_command, slot._trusted_patterns)
+                        if _tp_command is not None
                         else None
                     )
                     if matched:
@@ -6962,21 +6747,31 @@ async def _run_chat(
                 cmd = _extract_bash_command(event.tool_input) if event.tool_input else ""
                 if cmd:
                     perm_meta["is_read_only"] = "1" if is_read_only_bash(cmd) else ""
-                # Pre-compute pattern fields for the TrustDropdown.
-                # NOTE: derived from the UN-annotated event.title — the
-                # _child_lf_warning prefix is applied to the DISPLAY text
-                # only, so learned trust patterns keep meaning tool identity.
+                # Pre-compute consent fields for the TrustDropdown.  The title
+                # is presentation text and can be model-authored; shell grant
+                # scope therefore comes only from the canonical command in
+                # ``tool_input``.  Redaction-changing values are displayed but
+                # are not grantable: a user cannot consent to hidden bytes.
                 _safe_title, _ = redact_exfiltration_urls(event.title)
                 _safe_title, _ = redact_credentials(_safe_title)
                 perm_meta["tool_title"] = _safe_title
-                _full = _extract_full_command(event.title)
-                _full, _ = redact_exfiltration_urls(_full)
-                _full, _ = redact_credentials(_full)
-                perm_meta["full_command"] = _full
-                _base = _extract_base_command(event.title)
-                _base, _ = redact_exfiltration_urls(_base)
-                _base, _ = redact_credentials(_base)
-                perm_meta["base_command"] = _base
+                perm_meta["is_shell"] = "1" if event.is_shell else ""
+                _canonical = approval_command(
+                    event.title, event.tool_input or "", is_shell=event.is_shell
+                )
+                _full = _extract_full_command(_canonical)
+                _safe_full, _ = redact_exfiltration_urls(_full)
+                _safe_full, _ = redact_credentials(_safe_full)
+                _command_grantable = bool(_full) and _safe_full == _full
+                if _command_grantable:
+                    perm_meta["full_command"] = _safe_full
+                    perm_meta["trust_command_grantable"] = "1"
+                _base = _extract_base_command(_canonical) if event.is_shell else ""
+                _safe_base, _ = redact_exfiltration_urls(_base)
+                _safe_base, _ = redact_credentials(_safe_base)
+                if _command_grantable and _base and _safe_base == _base:
+                    perm_meta["base_command"] = _safe_base
+                    perm_meta["trust_base_grantable"] = "1"
                 slot.append(
                     "permission",
                     f"{_child_lf_warning}{_safe_title}" if _child_lf_warning else _safe_title,

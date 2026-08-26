@@ -353,8 +353,8 @@ export function isRenderableChatRole(role: unknown): boolean {
  * (`/api/approvals/{id}` scans slot futures and broadcasts `approval_resolved`).
  *
  * `full_command` / `base_command` are carried through as well. The gateway
- * pre-computes them for the dashboard's scoped Trust menu (see chat_runner's
- * `_extract_full_command` / `_extract_base_command`), and they arrive on this
+ * pre-computes them for the dashboard's scoped Trust menu (see the shared
+ * `kiro_crew.trust_patterns` module), and they arrive on this
  * frame already redacted. Dropping them is what limited the pet to the single
  * BROADEST grant ("trust all tools") while the dashboard could scope a grant to
  * one command — a security-relevant gap, since the pet's one button silently did

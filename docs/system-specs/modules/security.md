@@ -1427,7 +1427,24 @@ When the dashboard presents a tool approval prompt, users can now choose from th
 | `trust_base` | Session-scoped | Base command glob (e.g., `ls *` — trusts `ls` with any arguments) |
 | `yolo` | Global | All tools across all slots (existing behavior, now time-limited) |
 
-Trust patterns are stored per-slot as session-scoped fnmatch globs (`slot._trusted_patterns`). Pattern matching uses the ACTUAL command from `tool_input` (not the LLM-controlled display text) for security. For non-shell MCP tools without `tool_input`, `event.title` is used as it IS the provider-controlled tool name. Multi-command titles (e.g., `cat,wc`) generate patterns for each binary.
+Trust patterns are stored per-slot as session-scoped fnmatch globs
+(`slot._trusted_patterns`). Both halves of the decision use the ACTUAL command
+from `tool_input`: the runner derives the pending grant scope from it, and later
+matching evaluates the next call against it. The LLM-controlled display title
+never supplies either scope. For non-shell tools, only a provider-controlled
+title with no structured `tool_input` is grantable.
+
+The `pattern` submitted by the dashboard is a consent proof, not authority: it
+must equal the server-derived field on the still-pending approval. Missing,
+underivable, redaction-changing, or stale/mismatched patterns return a typed 400
+without resolving the approval and are SEL-audited. Exact-command grants escape
+fnmatch metacharacters before storage, so trusting the literal command
+`rm *.tmp` does not also trust `rm secret.tmp`. Base grants are also derived
+server-side; assignment-prefixed bases such as `FOO=bar` are refused rather than
+becoming broad globs. Command parsing and matching live in the shared
+`trust_patterns.py` module so another approval surface consumes a command-shaped
+API instead of importing dashboard runner internals or fabricating a
+`Running: ...` title.
 
 ### SEL Audit Logging (`sel.py`)
 

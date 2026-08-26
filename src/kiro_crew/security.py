@@ -31,6 +31,7 @@ from urllib.parse import parse_qs, unquote, unquote_plus, urlparse
 
 from kiro_crew.executors import maintenance_executor
 from kiro_crew.sel import SecurityEvent, SecurityEventLog
+from kiro_crew.trust_patterns import ENV_ASSIGNMENT_RE
 from kiro_crew.vector_memory_constants import _contains_injection
 
 # NB: kiro_crew.vector_memory is imported lazily inside scan_memory() rather than
@@ -2817,8 +2818,6 @@ _DATA_CONSUMER_PROGRAMS = frozenset(
 # Control operators that end one command and begin another.  Used to find the
 # program in a run that ``shlex`` handed over as a single word.
 _CONTROL_OPERATOR_RE = re.compile(r"[;&|\n]+")
-# ``VAR=value`` prefixes a command rather than being the command.
-_ENV_ASSIGN_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*=")
 # An EMPTY substitution expands to nothing, so ``p$()kill`` runs ``pkill`` -- the
 # same glue-evasion as the empty-quote form (``ca""t`` -> ``cat``) that
 # ``normalize_shell_command`` already undoes, but spelled with a substitution and
@@ -3173,7 +3172,7 @@ def _argv_programs(tokens: "list[str]") -> "list[str]":
     current = ""
     expect_program = True
     for token in tokens:
-        if expect_program and token and not _ENV_ASSIGN_RE.match(token):
+        if expect_program and token and not ENV_ASSIGNMENT_RE.match(token):
             current = _program_basename(token)
             expect_program = False
         programs.append(current)

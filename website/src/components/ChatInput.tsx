@@ -843,8 +843,12 @@ function ChatInput({
   const approvalIsReadOnly = !!(approvalMeta?.is_read_only)
   const approvalFullCommand = (approvalMeta?.full_command as string) || ''
   const approvalBaseCommand = (approvalMeta?.base_command as string) || ''
-  const approvalToolTitle = (approvalMeta?.tool_title as string) || ''
-  const approvalIsShell = approvalToolTitle.startsWith('Running: ')
+  const approvalIsShell = approvalMeta?.is_shell === '1'
+  // Command-scoped trust is offered only when the gateway proved a canonical,
+  // unredacted scope.  The title/input preview are presentation data and must
+  // never be promoted into grant authority by a frontend fallback.
+  const approvalTrustCommandGrantable = approvalMeta?.trust_command_grantable === '1'
+  const approvalTrustBaseGrantable = approvalMeta?.trust_base_grantable === '1'
   /** Sources that run with no human attached to THIS conversation. Session
    *  trust means "auto-approve tools for this chat session", which is
    *  incoherent for an unattended job: the job is not this session, so the
@@ -2859,9 +2863,10 @@ function ChatInput({
                       {approvalIsReadOnly && !approvalIsUnattended && <button disabled={approvalSubmitting} className={approvalBtnClass} onClick={() => handleApprovalAction('trust_reads')}><BookOpen size={12} className="shrink-0" />{i18nT('components.chatInput.trust_reads')}</button>}
                       {!approvalIsUnattended && (
                         <TrustDropdown
-                            fullCommand={approvalFullCommand || approvalLabelRaw}
-                            baseCommand={approvalBaseCommand || approvalLabelRaw.split(/\s+/)[0] || ''}
-                            isShell={approvalIsShell}
+                            fullCommand={approvalFullCommand}
+                            baseCommand={approvalBaseCommand}
+                            isShell={approvalIsShell && approvalTrustBaseGrantable}
+                            hasCommand={approvalTrustCommandGrantable}
                             disabled={approvalSubmitting}
                             className={approvalBtnClass}
                             onAction={(action, pattern) => { handleApprovalAction(action, pattern) }}

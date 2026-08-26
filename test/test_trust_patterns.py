@@ -10,13 +10,15 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_crew.dashboard.chat_runner import (
-    _extract_base_command,
-    _extract_full_command,
-    _matches_trusted_pattern,
-)
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.history import ConversationLog
+from kiro_crew.trust_patterns import (
+    approval_command,
+    exact_trust_pattern,
+)
+from kiro_crew.trust_patterns import extract_base_command as _extract_base_command
+from kiro_crew.trust_patterns import extract_full_command as _extract_full_command
+from kiro_crew.trust_patterns import matches_trusted_pattern as _matches_trusted_pattern
 
 
 def _make_state(tmp_path):
@@ -48,6 +50,19 @@ def _make_app(state: DashboardState) -> web.Application:
     app["state"] = state
     app.router.add_post("/api/chat/slots/{slot}/approve", api_chat_slot_approve)
     return app
+
+
+def _trust_meta(request_id: str, full_command: str, base_command: str = "") -> str:
+    """Build the server-derived pending metadata used by trust handler tests."""
+    meta = {
+        "request_id": request_id,
+        "full_command": full_command,
+        "base_command": base_command,
+        "trust_command_grantable": "1",
+    }
+    if base_command:
+        meta["trust_base_grantable"] = "1"
+    return json.dumps(meta)
 
 
 # ── Pattern matching tests ──
@@ -118,6 +133,12 @@ class TestMatchesTrustedPattern:
             == "/home/user/file.txt"
         )
 
+    def test_escaped_exact_grant_has_no_glob_power(self):
+        pattern = exact_trust_pattern("rm *.tmp")
+        assert pattern == "rm [*].tmp"
+        assert _matches_trusted_pattern("rm *.tmp", {pattern}) == pattern
+        assert _matches_trusted_pattern("rm secret.tmp", {pattern}) is None
+
 
 # ── Extraction helpers tests ──
 
@@ -149,6 +170,31 @@ class TestExtractBaseCommand:
 
     def test_reading_prefix(self):
         assert _extract_base_command("Reading /home/user/file.txt") == "/home/user/file.txt"
+
+    def test_env_assignment_prefix_is_not_a_grantable_base(self):
+        assert _extract_base_command("FOO=bar python task.py") == ""
+
+
+class TestApprovalCommand:
+    def test_shell_scope_comes_from_tool_input_not_title(self):
+        assert (
+            approval_command(
+                "Running: harmless display",
+                '{"command": "rm *.tmp"}',
+                is_shell=True,
+            )
+            == "rm *.tmp"
+        )
+
+    def test_non_shell_structured_input_is_not_promoted_to_command_scope(self):
+        assert (
+            approval_command(
+                "Create scheduled task",
+                '{"command": "rm -rf /"}',
+                is_shell=False,
+            )
+            == ""
+        )
 
 
 class TestExtractFullCommand:
@@ -308,15 +354,13 @@ class TestPipedCommandTrust:
         base = _extract_base_command("""Running: echo "abcdefgh" | tr "'" " " | wc""")
         assert base == "echo,tr,wc"
 
-    def test_substitution_fallback_returns_first_token_only(self):
+    def test_substitution_is_not_grantable(self):
         base = _extract_base_command("Running: echo $(date),touch /tmp/pwned")
-        assert base == "echo"
-        assert "touch" not in base
+        assert base == ""
 
-    def test_backtick_substitution_fallback(self):
+    def test_backtick_substitution_is_not_grantable(self):
         base = _extract_base_command("Running: cat `which python` | head")
-        assert base == "cat"
-        assert "head" not in base
+        assert base == ""
 
     def test_background_ampersand_not_split(self):
         # Bare & (background) must NOT split in the grant path.
@@ -603,13 +647,7 @@ class TestApproveHandlerTrustCommand:
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[str] = loop.create_future()
         slot._approval_futures["req-100"] = fut
-        meta = json.dumps(
-            {
-                "request_id": "req-100",
-                "full_command": "ls /tmp",
-                "base_command": "ls",
-            }
-        )
+        meta = _trust_meta("req-100", "ls /tmp", "ls")
         slot.messages.append({"role": "permission", "content": "Running: ls /tmp", "cls": meta})
 
         app = _make_app(state)
@@ -623,20 +661,56 @@ class TestApproveHandlerTrustCommand:
         assert fut.result() == "approved"
 
     @pytest.mark.asyncio
-    async def test_trust_command_fallback_extracts_from_meta(self, tmp_path):
+    async def test_trust_command_rejects_stale_pattern_then_escapes_exact_grant(self, tmp_path):
+        state = _make_state(tmp_path)
+        slot = _ChatSlot(key="slot-1")
+        state._slots["slot-1"] = slot
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[str] = loop.create_future()
+        slot._approval_futures["req-wild"] = fut
+        meta = _trust_meta("req-wild", "rm *.tmp", "rm")
+        slot.messages.append({"role": "permission", "content": "Running: harmless", "cls": meta})
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            stale = await client.post(
+                "/api/chat/slots/slot-1/approve",
+                json={
+                    "action": "trust_command",
+                    "request_id": "req-wild",
+                    "pattern": "*",
+                },
+            )
+            assert stale.status == 400
+            assert (await stale.json())["code"] == "approval_superseded"
+            assert not fut.done()
+            assert not slot._trusted_patterns
+
+            accepted = await client.post(
+                "/api/chat/slots/slot-1/approve",
+                json={
+                    "action": "trust_command",
+                    "request_id": "req-wild",
+                    "pattern": "rm *.tmp",
+                },
+            )
+            assert accepted.status == 200
+
+        escaped = "rm [*].tmp"
+        assert slot._trusted_patterns == {escaped}
+        assert _matches_trusted_pattern("rm *.tmp", slot._trusted_patterns) == escaped
+        assert _matches_trusted_pattern("rm secret.tmp", slot._trusted_patterns) is None
+        assert fut.result() == "approved"
+
+    @pytest.mark.asyncio
+    async def test_trust_command_requires_client_consent_pattern(self, tmp_path):
         state = _make_state(tmp_path)
         slot = _ChatSlot(key="slot-1")
         state._slots["slot-1"] = slot
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[str] = loop.create_future()
         slot._approval_futures["req-200"] = fut
-        meta = json.dumps(
-            {
-                "request_id": "req-200",
-                "full_command": "grep -r foo .",
-                "base_command": "grep",
-            }
-        )
+        meta = _trust_meta("req-200", "grep -r foo .", "grep")
         slot.messages.append(
             {"role": "permission", "content": "Running: grep -r foo .", "cls": meta}
         )
@@ -647,8 +721,10 @@ class TestApproveHandlerTrustCommand:
                 "/api/chat/slots/slot-1/approve",
                 json={"action": "trust_command", "request_id": "req-200"},
             )
-            assert resp.status == 200
-        assert "grep -r foo ." in slot._trusted_patterns
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "pattern_required"
+        assert not slot._trusted_patterns
+        assert not fut.done()
 
     @pytest.mark.asyncio
     async def test_trust_base_adds_glob_and_bare(self, tmp_path):
@@ -658,13 +734,7 @@ class TestApproveHandlerTrustCommand:
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[str] = loop.create_future()
         slot._approval_futures["req-300"] = fut
-        meta = json.dumps(
-            {
-                "request_id": "req-300",
-                "full_command": "cat /etc/hosts",
-                "base_command": "cat",
-            }
-        )
+        meta = _trust_meta("req-300", "cat /etc/hosts", "cat")
         slot.messages.append(
             {"role": "permission", "content": "Running: cat /etc/hosts", "cls": meta}
         )
@@ -688,13 +758,7 @@ class TestApproveHandlerTrustCommand:
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[str] = loop.create_future()
         slot._approval_futures["req-400"] = fut
-        meta = json.dumps(
-            {
-                "request_id": "req-400",
-                "full_command": "cat /etc/hosts | wc -l",
-                "base_command": "cat,wc",
-            }
-        )
+        meta = _trust_meta("req-400", "cat /etc/hosts | wc -l", "cat,wc")
         slot.messages.append(
             {"role": "permission", "content": "Running: cat /etc/hosts | wc -l", "cls": meta}
         )
@@ -712,20 +776,14 @@ class TestApproveHandlerTrustCommand:
         assert "wc" in slot._trusted_patterns
 
     @pytest.mark.asyncio
-    async def test_trust_base_fallback_from_meta(self, tmp_path):
+    async def test_trust_base_requires_client_consent_pattern(self, tmp_path):
         state = _make_state(tmp_path)
         slot = _ChatSlot(key="slot-1")
         state._slots["slot-1"] = slot
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[str] = loop.create_future()
         slot._approval_futures["req-500"] = fut
-        meta = json.dumps(
-            {
-                "request_id": "req-500",
-                "full_command": "ls /tmp",
-                "base_command": "ls",
-            }
-        )
+        meta = _trust_meta("req-500", "ls /tmp", "ls")
         slot.messages.append({"role": "permission", "content": "Running: ls /tmp", "cls": meta})
 
         app = _make_app(state)
@@ -734,9 +792,10 @@ class TestApproveHandlerTrustCommand:
                 "/api/chat/slots/slot-1/approve",
                 json={"action": "trust_base", "request_id": "req-500"},
             )
-            assert resp.status == 200
-        assert "ls *" in slot._trusted_patterns
-        assert "ls" in slot._trusted_patterns
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "pattern_required"
+        assert not slot._trusted_patterns
+        assert not fut.done()
 
     @pytest.mark.asyncio
     async def test_trust_command_no_pending_returns_404(self, tmp_path):
@@ -753,7 +812,7 @@ class TestApproveHandlerTrustCommand:
             assert resp.status == 404
 
     @pytest.mark.asyncio
-    async def test_trust_command_empty_pattern_ignored(self, tmp_path):
+    async def test_trust_command_empty_pattern_is_refused(self, tmp_path):
         state = _make_state(tmp_path)
         slot = _ChatSlot(key="slot-1")
         state._slots["slot-1"] = slot
@@ -767,8 +826,10 @@ class TestApproveHandlerTrustCommand:
                 "/api/chat/slots/slot-1/approve",
                 json={"action": "trust_command", "request_id": "req-600", "pattern": ""},
             )
-            assert resp.status == 200
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "pattern_required"
         assert len(slot._trusted_patterns) == 0
+        assert not fut.done()
 
     @pytest.mark.asyncio
     async def test_existing_trust_action_still_works(self, tmp_path):
@@ -909,16 +970,18 @@ class TestApproveHandlerTrustCommand:
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[str] = loop.create_future()
         owner._approval_futures["req-820"] = fut
-        meta = json.dumps(
-            {"request_id": "req-820", "full_command": "ls /tmp", "base_command": "ls"}
-        )
+        meta = _trust_meta("req-820", "ls /tmp", "ls")
         owner.messages.append({"role": "permission", "content": "Running: ls /tmp", "cls": meta})
 
         app = _make_app(state)
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
                 "/api/chat/slots/slot-1/approve",
-                json={"action": "trust_command", "request_id": "req-820"},
+                json={
+                    "action": "trust_command",
+                    "request_id": "req-820",
+                    "pattern": "ls /tmp",
+                },
             )
             assert resp.status == 200
         assert "ls /tmp" in owner._trusted_patterns
@@ -1222,16 +1285,14 @@ class TestSplitterPlaceholderForgery:
     def test_bare_nul_anywhere_denies(self):
         assert _matches_trusted_pattern("Running: cat /etc/hosts\x00", {"cat *"}) is None
 
-    def test_grant_path_falls_back_to_first_token(self):
-        # The Trust dropdown must still offer something sane rather than
-        # propagating the crash: the substitution fallback (first token only).
-        assert _extract_base_command("Running: echo hi \x00REDIR\x00 there") == "echo"
-        assert _extract_base_command("Running: echo hi \x00SEP0\x00 there") == "echo"
+    def test_grant_path_denies_forged_placeholders(self):
+        assert _extract_base_command("Running: echo hi \x00REDIR\x00 there") == ""
+        assert _extract_base_command("Running: echo hi \x00SEP0\x00 there") == ""
 
     def test_grant_path_does_not_offer_forged_extra_segments(self):
         # A forged SEP placeholder must not restore into a separator that
         # widens the offered trust set beyond the first binary.
-        assert _extract_base_command("Running: echo ok\x00SEP0\x00 rm -rf /") == "echo"
+        assert _extract_base_command("Running: echo ok\x00SEP0\x00 rm -rf /") == ""
 
     def test_nul_free_commands_are_unaffected(self):
         # Guard against the deny becoming over-broad: normal commands, quoted

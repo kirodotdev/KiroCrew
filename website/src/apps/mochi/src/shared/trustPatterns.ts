@@ -13,7 +13,7 @@
  * `../shared/trustPatterns` import line untouched.
  *
  * The gateway supplies the inputs already computed and redacted (see
- * chat_runner's `_extract_full_command` / `_extract_base_command`); these
+ * the gateway's shared `trust_patterns` module); these
  * functions only shape them for the slot-approve endpoint's `pattern` field.
  */
 export { trustBasePattern, truncateCommandLabel } from '../../../../utils/trustPatterns'

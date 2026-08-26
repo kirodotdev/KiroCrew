@@ -8,7 +8,6 @@ import pytest
 
 import kiro_crew.dashboard.chat_utils as chat_utils
 from kiro_crew.dashboard.chat_utils import (
-    _extract_bash_command,
     _history_key_for,
     _normalize_model,
     _prepare_messages,
@@ -19,6 +18,7 @@ from kiro_crew.dashboard.chat_utils import (
     _validate_tool_name,
     is_deprecated_model,
 )
+from kiro_crew.trust_patterns import extract_bash_command
 
 
 class TestRedactDeep:
@@ -46,16 +46,16 @@ class TestRedactDeep:
 
 class TestExtractBashCommand:
     def test_json_input(self):
-        assert _extract_bash_command('{"command": "ls -la"}') == "ls -la"
+        assert extract_bash_command('{"command": "ls -la"}') == "ls -la"
 
     def test_raw_input(self):
-        assert _extract_bash_command("ls -la") == "ls -la"
+        assert extract_bash_command("ls -la") == "ls -la"
 
     def test_empty_json(self):
-        assert _extract_bash_command("{}") == ""
+        assert extract_bash_command("{}") == ""
 
     def test_invalid_json(self):
-        assert _extract_bash_command("not json {") == "not json {"
+        assert extract_bash_command("not json {") == "not json {"
 
 
 class TestNormalizeModel:
