@@ -15,6 +15,7 @@ import time
 from abc import ABC, abstractmethod
 from typing import Optional
 
+from kiro_crew import platform_compat
 from kiro_crew.config.paths import config_dir
 from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort
 from kiro_crew.sandbox import (
@@ -455,6 +456,21 @@ class CCWorker(Worker):
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            # Own process group, so the worker's descendants are reachable as a tree.
+            # `claude -p` forks helpers (see spine/agent_runner.py's _terminate_group),
+            # and without this the child lands in the gateway's OWN group -- which is
+            # the one case platform_compat.kill_and_reap deliberately skips its group
+            # kill for, so the reap below would degrade to a pid-scoped kill and
+            # re-parent those helpers to init.
+            #
+            # BOTH args, spelled out explicitly, per the recipe in platform_compat:
+            # on POSIX start_new_session calls setsid (so killpg reaps the group) and
+            # creationflags=0 is a no-op; on Windows start_new_session is silently
+            # ignored and CREATE_NEW_PROCESS_GROUP is what makes the child tree
+            # `taskkill /T`-reapable. Not **unpacked from a dict -- that defeats
+            # mypy's Popen overload resolution on the build fleet.
+            start_new_session=platform_compat.IS_POSIX,
+            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
         )
         self._event_queue = asyncio.Queue()
         self._reader_task = asyncio.create_task(self._stdout_reader())
@@ -527,8 +543,7 @@ class CCWorker(Worker):
             self._reader_task = None
         if self._proc is not None:
             try:
-                self._proc.kill()
-                await self._proc.wait()
+                await platform_compat.kill_and_reap(self._proc)
             except Exception:
                 logger.debug("CCWorker shutdown error", exc_info=True)
             self._proc = None
@@ -547,8 +562,7 @@ class CCWorker(Worker):
         await self._spawn()
         if old is not None and old is not self._proc:
             try:
-                old.kill()
-                await old.wait()
+                await platform_compat.kill_and_reap(old)
             except Exception:
                 logger.debug("CCWorker: stale process reap failed", exc_info=True)
         self.calls_since_reset = 0
