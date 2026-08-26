@@ -1216,6 +1216,26 @@ function tsEpoch(ts: string | undefined): number | null {
   return Number.isNaN(ms) ? null : ms
 }
 
+/** THE parser for a transcript `ts` that may be a numeric epoch-SECONDS string
+ *  or an ISO string. Returns epoch MILLISECONDS, or `null` when the value
+ *  cannot be read — the same "decline, not guess" contract `tsEpoch` follows.
+ *
+ *  This is the single spelling of "seconds-or-ISO"; callers that need another
+ *  unit or a non-null sort default convert at the call site rather than
+ *  re-parsing (three hand-rolled copies had already diverged on
+ *  numeric-seconds input — #6004). `tsEpoch` above stays deliberately
+ *  `Date.parse`-only: its prior/warm boundary callers have never accepted a
+ *  numeric-seconds guess, and widening them would change merge behavior.
+ *
+ *  Exported for the unit test that pins this contract. */
+export function transcriptTsMs(ts: string | undefined): number | null {
+  if (!ts) return null
+  const n = Number(ts)
+  if (Number.isFinite(n)) return n * 1000
+  const ms = Date.parse(ts)
+  return Number.isNaN(ms) ? null : ms
+}
+
 /** The ONE writer of a slot's pane transcript and its "has older history" marker.
  *
  *  The two must describe the SAME array. A `true` beside a complete transcript
@@ -1499,15 +1519,6 @@ function mergePreservedThinking<M extends { role: string; content: string; cls?:
     if (m.content) return [`txt:${m.role}:${m.content.trimEnd()}`]
     return []
   }
-  // Epoch ms for a transcript ts (numeric-seconds or ISO), or null = decline.
-  // Mirrors the refresh reducer's tsNum; used only by the no-overlap fallback.
-  const tsMs = (ts: string | undefined): number | null => {
-    if (!ts) return null
-    const n = Number(ts)
-    if (Number.isFinite(n)) return n * 1000
-    const p = Date.parse(ts)
-    return Number.isNaN(p) ? null : p
-  }
   const preserved: Array<{ msg: M; anchor: ThinkingAnchor | null; anchorIdx: number; confirmed: boolean }> = []
   for (let i = 0; i < existing.length; i++) {
     const m = existing[i]
@@ -1564,7 +1575,7 @@ function mergePreservedThinking<M extends { role: string; content: string; cls?:
   let oldestPageMs: number | null = null
   if (coveredIdx < 0 && coverageSource.length > 0) {
     for (const m of coverageSource) {
-      const ms = tsMs(m.ts)
+      const ms = transcriptTsMs(m.ts)
       if (ms === null) { oldestPageMs = null; break }
       if (oldestPageMs === null || ms < oldestPageMs) oldestPageMs = ms
     }
@@ -1607,7 +1618,7 @@ function mergePreservedThinking<M extends { role: string; content: string; cls?:
     if (used.has(p)) continue
     const { anchor, anchorIdx, confirmed } = preserved[p]
     const insideCoverage = anchorIdx >= 0 && anchorIdx <= coveredIdx
-    const anchorMs = anchorIdx >= 0 ? tsMs(existing[anchorIdx]?.ts) : null
+    const anchorMs = anchorIdx >= 0 ? transcriptTsMs(existing[anchorIdx]?.ts) : null
     const evicted = coveredIdx < 0 && oldestPageMs !== null && anchorMs !== null && anchorMs < oldestPageMs
     const droppable = anchor !== null && confirmed && (insideCoverage || evicted)
     if (!droppable) result.push({ ...preserved[p].msg })
@@ -4221,13 +4232,15 @@ const chatSlice = createSlice({
           const aid = m.meta?.approval_id as string | undefined
           if (aid && !statePerms.has(aid)) statePerms.set(aid, m)
         }
+        // Sort key from a transcript ts via the ONE shared parser (#6004).
+        // `?? 0` keeps unreadable/absent ts sorting first, as before. The
+        // comparator only needs a monotonic key, so the parser's native epoch
+        // ms works directly (the old local copy returned epoch seconds —
+        // scaling every readable key by 1000 preserves the order for every
+        // reachable timestamp).
         const tsNum = (v: unknown): number => {
           const s = v == null ? '' : String(v)
-          if (!s) return 0
-          const n = Number(s)
-          if (Number.isFinite(n)) return n  // numeric epoch
-          const p = Date.parse(s)
-          return Number.isFinite(p) ? p / 1000 : 0  // ISO → epoch seconds
+          return transcriptTsMs(s) ?? 0
         }
         const merged = [...messages.filter(m => m.role !== 'permission'), ...statePerms.values()]
         const mergedWithPastes = mergePreservedPastes(state.messages, merged)

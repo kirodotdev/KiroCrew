@@ -59,6 +59,7 @@ import chatReducer, {
   sseToolActivity,
   sseToolResult,
   switchSlot,
+  transcriptTsMs,
   truncateAfterIndex,
 } from '../store/chatSlice'
 import dashboardReducer, { addSlotOptimistic } from '../store/dashboardSlice'
@@ -139,6 +140,32 @@ beforeEach(() => {
   apiMock.setSlotColor.mockResolvedValue({})
   apiMock.chatSlotProject.mockResolvedValue({})
   apiMock.deleteChatSlot.mockResolvedValue({})
+})
+
+describe('transcriptTsMs — the ONE transcript seconds-or-ISO parser (#6004)', () => {
+  // chatSlice used to carry three hand-rolled ts parsers that disagreed on
+  // numeric-seconds input. This pins the single shared contract so a unit
+  // flip, a dropped numeric branch, or a guessed non-null default fails CI.
+  // (It cannot pin the ABSENCE of a future hand-rolled copy — reviewers own
+  // that; route new callers through transcriptTsMs.)
+  it('reads a numeric epoch-seconds string as epoch milliseconds', () => {
+    expect(transcriptTsMs('1724650000')).toBe(1724650000000)
+    expect(transcriptTsMs('1724650000.5')).toBe(1724650000500)
+  })
+
+  it('reads an ISO string as epoch milliseconds', () => {
+    expect(transcriptTsMs('2026-08-26T06:00:00Z')).toBe(Date.parse('2026-08-26T06:00:00Z'))
+    // Offset-aware and Z spellings of the same instant agree — the reason
+    // parse-before-order exists at all (raw strings order by text).
+    expect(transcriptTsMs('2026-08-26T15:00:00+09:00')).toBe(transcriptTsMs('2026-08-26T06:00:00Z'))
+  })
+
+  it('declines (null, never a guessed number) on undefined, empty, and malformed input', () => {
+    expect(transcriptTsMs(undefined)).toBeNull()
+    expect(transcriptTsMs('')).toBeNull()
+    expect(transcriptTsMs('not-a-date')).toBeNull()
+    expect(transcriptTsMs('Infinity')).toBeNull()
+  })
 })
 
 describe('chatSlice transcript equality on a repeat slot fetch', () => {
@@ -519,8 +546,8 @@ describe('chatSlice slot-detail refresh merges', () => {
     expect(perms.find(m => m.meta?.approval_id === 'ap-1')?.meta?.resolved).toBe('approved')
     // The server-only approval is adopted, not dropped.
     expect(perms.find(m => m.meta?.approval_id === 'ap-2')).toBeDefined()
-    // A row with no ts sorts to the front (epoch 0); the ISO row parses to the
-    // same second as ap-1 rather than to a millisecond value.
+    // A row with no ts sorts to the front (key 0); numeric-seconds and ISO
+    // rows both key as epoch ms via the shared transcriptTsMs parser (#6004).
     expect(s.messages[0].content).toBe('no stamp')
     expect(s.messages.map(m => m.content)).toContain('oldest')
   })
