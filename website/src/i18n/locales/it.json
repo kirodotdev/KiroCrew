@@ -11499,7 +11499,16 @@
         "you_are_on_the_latest_version": "Stai usando la versione più recente.",
         "you_re_on_the_latest_version": "Stai usando la versione più recente.",
         "checks_for_updates_with_timing": "{{name}} controlla automaticamente gli aggiornamenti. {{timing}} Puoi anche controllare ora.",
-        "last_checked_ago_next_check_in": "Ultimo controllo {{ago}}, prossimo controllo automatico {{next}}."
+        "last_checked_ago_next_check_in": "Ultimo controllo {{ago}}, prossimo controllo automatico {{next}}.",
+        "in_app_update_intro": "La nuova versione si installa accanto a quella attuale e il passaggio è atomico. Per applicarla basta un comando di approvazione sull'host del gateway.",
+        "or_update_manually": "Oppure riesegui manualmente l'installer",
+        "armed_run_on_host": "Approva e applica eseguendo questo comando sull'host del gateway.",
+        "armed_expires_in": "La finestra di approvazione si chiude tra {{time}}",
+        "armed_waiting_note": "In attesa di approvazione — una volta approvata, i progressi compaiono qui e il gateway si riavvia da solo.",
+        "applying_update": "Applicazione dell'aggiornamento…",
+        "applying_restart_note": "Il gateway si riavvia da solo quando la nuova versione è pronta; questa pagina si riconnette automaticamente.",
+        "approval_window_expired": "La finestra di approvazione è scaduta senza approvazione. Riarma l'aggiornamento quando vuoi.",
+        "try_again": "Riprova"
       },
       "botChannelPanel": {
         "allowed_user_ids": "ID utente consentiti",

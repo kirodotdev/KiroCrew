@@ -608,10 +608,12 @@ def available() -> bool:
 _STDERR_CAP = 2000
 
 
-# npm-specific credential shapes. MEASURED: the shared `redact_credentials` only
-# matches header-style secrets (`Authorization: Bearer ...`) and leaves every form
-# npm actually emits intact -- the registry query (`?_authToken=`), the .npmrc line
-# (`//host/:_authToken=`), an inline-credential proxy URL, and `*_TOKEN=` env echo.
+# npm-specific credential shapes. The shared `redact_credentials` matches
+# header-style secrets and (since the fetch-scheme widening) inline-credential
+# http(s)/ftp(s) URLs, but still leaves the npm-specific forms intact -- the
+# registry query (`?_authToken=`), the .npmrc line (`//host/:_authToken=`), and
+# `*_TOKEN=` env echo. The URL pattern below stays as a backstop for schemes
+# the shared alternation does not name.
 # Scoped here rather than added to the shared helper: this is the one surface that
 # emits npm output, and widening a security primitive every caller depends on is a
 # change that deserves its own review.

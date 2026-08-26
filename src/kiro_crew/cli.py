@@ -1642,6 +1642,12 @@ Examples:
 
     update_parser = cli_help.add_command(sub, "update")
     update_parser.add_argument(
+        "action",
+        nargs="?",
+        choices=["approve"],
+        help="approve: approve a pending in-app update armed from the dashboard",
+    )
+    update_parser.add_argument(
         "--force",
         action="store_true",
         help=(
@@ -2541,9 +2547,14 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
 
         _pod(args)
     elif args.command == "update":
-        from kiro_crew.cli_server import _update
+        if getattr(args, "action", None) == "approve":
+            from kiro_crew.cli_server import _update_approve
 
-        _update(force=args.force)
+            _update_approve()
+        else:
+            from kiro_crew.cli_server import _update
+
+            _update(force=args.force)
     elif args.command == "stop":
         from kiro_crew.cli_server import _stop
 

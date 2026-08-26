@@ -117,6 +117,11 @@ _update_info: dict[str, object] = {
     "error_code": None,
     "unavailable_reason": None,
     "remediation": None,
+    #: Can THIS install take the in-app arm+approve path? True only for the
+    #: cli.sh managed venv — the one shape whose shadow updater the gateway
+    #: can run on itself. Carried on the wire so the SPA never renders an Arm
+    #: button that the arm endpoint would 409.
+    "can_arm": False,
 }
 #: Bumped whenever the thing a check is computed AGAINST changes (today: a channel
 #: switch). A check already talking to the OLD channel's feed cannot be cancelled,
@@ -306,6 +311,10 @@ def status_update_fields() -> dict[str, object]:
         # in-memory (boot-frozen governance + the cached check result).
         "update_required": _effective_update_required(),
         "update_min_version": _effective_min_version(),
+        # Whether the in-app arm+approve path applies to this install. The SPA
+        # gates its Update button on this, never on managed_by alone — that
+        # value also covers bare source installs whose arm would 409.
+        "update_can_arm": bool(_update_info.get("can_arm")),
     }
 
 
@@ -481,6 +490,7 @@ def _set_update_info(**fields: object) -> None:
             "error_code": None,
             "unavailable_reason": None,
             "remediation": None,
+            "can_arm": False,
         }
     )
     _update_info.update(fields)
@@ -942,9 +952,18 @@ async def _check_release_feed(capability: UpdateCapability) -> None:
     # offered alongside it are read at different moments, and a switch landing in
     # between would otherwise publish one lane's name next to a command that moves
     # the install to the other.
+    #
+    # `can_arm` is probed here, with the verdict, rather than derived by the SPA:
+    # `managed_by == "kirocrew"` also covers bare source installs the arm
+    # endpoint refuses, so shipping the wider signal would render a dead button.
+    # Offloaded — the probe resolves venv paths on disk.
+    from kiro_crew.platform.wheel_engine import running_from_managed_venv
+
+    can_arm = await asyncio.to_thread(running_from_managed_venv)
     base: dict[str, object] = {
         **_capability_fields(capability.for_channel(channel)),
         "channel": channel,
+        "can_arm": can_arm,
     }
     url = f"{feed_base}/feed/{channel}/latest-cli.json"
 
@@ -1285,7 +1304,19 @@ async def _restart_gateway(state: DashboardState) -> bool:
     state._gateway_restart_in_progress = True
     try:
         state.push_update_progress("restarting", "Restarting server…")
-        exe = sys.executable
+        # Resolved through the managed-venv stable link rather than taken from
+        # ``sys.executable``: after a shadow-venv promotion the cached path
+        # names the superseded versioned tree, and exec'ing it would restart
+        # the OLD version right after the update reported success. For every
+        # other install shape the resolver answers ``sys.executable``.
+        # Offloaded: the resolver walks the venv's sibling directory, which is
+        # synchronous filesystem I/O this loop must not wait on.
+        # Imported here, not at module scope: this module loads on the gateway
+        # boot path, and the updater subsystems are needed only when an
+        # update/restart actually runs (no-new-work-on-gateway-boot-path).
+        from kiro_crew.platform.wheel_engine import respawn_executable
+
+        exe = await asyncio.to_thread(respawn_executable)
         if not os.path.isfile(exe) or not os.access(exe, os.X_OK):
             state.push_update_progress("error", "Cannot restart: invalid Python executable path")
             return False
@@ -1316,7 +1347,7 @@ async def _restart_gateway(state: DashboardState) -> bool:
         sys.stdout.flush()
         sys.stderr.flush()
         await asyncio.sleep(0.5)
-        reexec_python_module("kiro_crew", sys.argv[1:])
+        reexec_python_module("kiro_crew", sys.argv[1:], executable=exe)
         return True
     finally:
         state._gateway_restart_in_progress = False
@@ -2058,3 +2089,259 @@ async def api_gateway_restart(request: web.Request) -> web.Response:
 
     task.add_done_callback(_restart_done)
     return web.json_response({"ok": True, "status": "restarting"})
+
+
+# ── In-app wheel update: arm + host-local approve (RFC OQ7) ──
+
+
+def _loopback_peer(request: web.Request) -> bool:
+    """Did this request arrive from the host? Defence in depth, not authority.
+
+    The NONCE is the authority — it proves the caller read the gateway host's
+    filesystem. This check just refuses the obviously-remote shape early, and
+    is knowingly imperfect behind same-host proxies (issue #1762), which is
+    exactly why it is not the boundary.
+
+    Composed from the SHARED predicates rather than a bespoke IP list: an
+    AF_UNIX caller has an EMPTY ``request.remote`` (token_auth documents
+    this), so an IP-only test would 403 the CLI's PREFERRED transport — the
+    unix socket, whose SO_PEERCRED check is stronger host-locality evidence
+    than any IP. The auth middleware's ``internal_auth`` / ``peer_verified``
+    marks are honoured too, so a local-secret-authenticated caller passes
+    however it connected.
+    """
+    if request.get("internal_auth") or request.get("peer_verified"):
+        return True
+    from kiro_crew.dashboard.origin import request_is_unix_socket
+    from kiro_crew.dashboard.urls import is_loopback
+
+    if request_is_unix_socket(request):
+        return True
+    return is_loopback(request.remote or "")
+
+
+async def api_update_arm(request: web.Request) -> web.Response:
+    """POST /api/update/arm — arm a pending in-app update (SPA-callable).
+
+    Arming grants nothing: it records the request and writes the approval
+    nonce to a file only the host can read. The response NEVER carries the
+    nonce. Refused for every shape except the managed venv, and refused when
+    no update-available verdict is cached — an arm must name the version the
+    check reported, not whatever the feed happens to serve later (the apply
+    re-verifies against the signed manifest anyway).
+    """
+    # Function-local: boot-path rule, same as _restart_gateway's import.
+    from kiro_crew.platform import update_stepup
+    from kiro_crew.platform.wheel_engine import running_from_managed_venv
+
+    if not await asyncio.to_thread(running_from_managed_venv):
+        return web.json_response(
+            {
+                "error": "in-app update applies only to the cli.sh managed-venv install",
+                "code": "arm_wrong_shape",
+            },
+            status=409,
+        )
+    if resolve_provider() is not None:
+        return web.json_response(
+            {
+                "error": "updates on this host are managed by policy",
+                "code": "arm_policy_managed",
+            },
+            status=409,
+        )
+    available = _update_info.get("update_available")
+    version = str(_update_info.get("latest_version") or "")
+    channel = str(_update_info.get("channel") or "")
+    if available is not True or not version:
+        return web.json_response(
+            {
+                "error": "no update-available verdict — run a check first",
+                "code": "arm_no_verdict",
+            },
+            status=409,
+        )
+    try:
+        pending = await asyncio.to_thread(update_stepup.arm, version, channel, source="dashboard")
+    except update_stepup.StepUpError as exc:
+        return web.json_response({"error": str(exc), "code": "arm_failed"}, status=500)
+    return web.json_response({"ok": True, **update_stepup.public_view(pending)})
+
+
+async def api_update_arm_status(request: web.Request) -> web.Response:
+    """GET /api/update/arm — the armed request, SPA-safe projection."""
+    from kiro_crew.platform import update_stepup
+
+    pending = await asyncio.to_thread(update_stepup.read_pending)
+    if pending is None:
+        return web.json_response({"armed": False})
+    return web.json_response(update_stepup.public_view(pending))
+
+
+async def api_update_approve(request: web.Request) -> web.Response:
+    """POST /api/update/approve — consume the nonce and run the shadow apply.
+
+    Called by ``kirocrew update approve`` on the gateway host, which read the
+    nonce from the data home. On success the apply runs as a background task:
+    shadow build + verify + promote (all off-loop), then the shared gateway
+    restart, with progress on the same SSE feed the git apply uses.
+    """
+    if not _loopback_peer(request):
+        return web.json_response(
+            {
+                "error": "approval is accepted from the gateway host only",
+                "code": "approve_not_local",
+            },
+            status=403,
+        )
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if not isinstance(body, dict) or not isinstance(body.get("nonce"), str):
+        return web.json_response(
+            {"error": "nonce must be a string", "code": "invalid_nonce"}, status=400
+        )
+    # Function-local: boot-path rule, same as the other update handlers.
+    from kiro_crew.platform import update_stepup
+    from kiro_crew.platform.update_layout import cdn_bases as _cdn
+    from kiro_crew.platform.update_layout import cdn_bases_are_safe as _cdn_safe
+    from kiro_crew.platform.wheel_engine import WheelUpdateError, apply_wheel_update
+
+    # A policy-defined command provider OWNS updates on this host, and its
+    # commands never read the built-in mechanism this endpoint drives. Checked
+    # at APPROVE time, not just at arm: a provider installed in the window
+    # between the two must win — the armed request predates the policy, and a
+    # host approval is not authority to bypass it.
+    if resolve_provider() is not None:
+        return web.json_response(
+            {
+                "error": "updates on this host are managed by policy",
+                "code": "approve_policy_managed",
+                "governance": True,
+            },
+            status=409,
+        )
+    # Source pin BEFORE the nonce is consumed: a pinned fleet's policy decides
+    # where this host may take code from, and a host approval is not that
+    # authority (same seam the git apply and the CLI wheel path enforce).
+    # Checked pre-consume so a policy-refused attempt leaves the armed request
+    # intact rather than burning it on a request that could never proceed.
+    feed_base, artifact_base = _cdn()
+    blocked = update_blocked_reason(feed_base) or update_blocked_reason(artifact_base)
+    if blocked:
+        logger.warning("In-app update approval refused by source pin: %s", blocked)
+        return web.json_response(
+            {"error": blocked, "code": "approve_blocked_by_policy", "governance": True},
+            status=403,
+        )
+    if not _cdn_safe():
+        return web.json_response(
+            {"error": "CDN base URL contains disallowed characters", "code": "approve_bad_cdn"},
+            status=409,
+        )
+    # SEL-audited at every verdict: an approval is a code-install
+    # authorization, which is exactly the class of event the audit chain
+    # exists to reconstruct. `caller` is the transport identity — the nonce
+    # proves host-locality, not a person.
+    from kiro_crew.sel import sel as _sel
+
+    def _audit_sync(
+        outcome: str, error: str = "", resources: str = "", required: bool = False
+    ) -> None:
+        try:
+            _sel().log_api_access(
+                caller="host-cli" if request.get("internal_auth") else (request.remote or "unix"),
+                operation="update.approve",
+                outcome=outcome,
+                source="dashboard",
+                resources=resources,
+                error=error,
+                critical=True,
+            )
+        except Exception:
+            # A GRANTED verdict is a code-install authorization: if its audit
+            # record cannot be written, the install must not proceed — an
+            # unwritable SEL would otherwise let approvals happen unaudited
+            # (fail-open on the exact event the audit chain exists for).
+            # Denials stay best-effort: a failed denial audit still refuses.
+            if required:
+                raise
+            logger.debug("SEL audit for update.approve failed", exc_info=True)
+
+    async def _audit(
+        outcome: str, error: str = "", resources: str = "", required: bool = False
+    ) -> None:
+        # Offloaded: a CRITICAL SEL write flushes inline on the calling thread
+        # by design (fail-closed audit), and this handler's thread is the
+        # event loop (no-blocking-call-on-event-loop).
+        await asyncio.to_thread(_audit_sync, outcome, error, resources, required)
+
+    try:
+        pending = await asyncio.to_thread(update_stepup.consume, body["nonce"])
+    except update_stepup.StepUpError as exc:
+        await _audit("denied", error=str(exc))
+        return web.json_response({"error": str(exc), "code": "approve_refused"}, status=403)
+    try:
+        await _audit("granted", resources=f"v{pending.version} ({pending.channel})", required=True)
+    except Exception:
+        # The armed request is already consumed (single-use), so refusing here
+        # costs the operator a re-arm — the fail-closed direction: no code
+        # install proceeds without its audit record.
+        logger.error(
+            "update.approve audit could not be written; refusing unaudited install",
+            exc_info=True,
+        )
+        return web.json_response(
+            {
+                "error": "approval audit could not be recorded; the update was not started",
+                "code": "approve_audit_failed",
+            },
+            status=503,
+        )
+
+    state: DashboardState = request.app["state"]
+    loop = asyncio.get_running_loop()
+
+    def _progress(msg: str) -> None:
+        # Called from the executor thread; push on the serving loop.
+        loop.call_soon_threadsafe(state.push_update_progress, "building", msg)
+
+    async def _apply() -> None:
+        state.push_refresh("updating")
+        state.push_update_progress("pulling", f"Applying update to v{pending.version}…")
+        try:
+            await asyncio.to_thread(
+                apply_wheel_update,
+                channel=pending.channel,
+                feed_base=feed_base,
+                artifact_base=artifact_base,
+                expected_version=pending.version,
+                progress=_progress,
+            )
+        except WheelUpdateError as exc:
+            # Redacted BEFORE the log line as well as the progress push: the
+            # message can embed the CDN base (an operator override may carry
+            # basic-auth credentials in the URL), and the kiro_crew logger
+            # feeds the ring buffer that /api/logs streams to the dashboard —
+            # a raw log line is the same exposure as a raw progress push.
+            message, _ = redact_credentials(str(exc))
+            message, _ = redact_exfiltration_urls(message)
+            logger.warning("In-app wheel update failed: %s", message)
+            await _audit("failed", error=message, resources=f"v{pending.version}")
+            state.push_update_progress("failed", message)
+            state.push_refresh("update_failed")
+            return
+        except Exception:
+            logger.exception("In-app wheel update failed unexpectedly")
+            state.push_update_progress("failed", "Update failed — check logs")
+            state.push_refresh("update_failed")
+            return
+        logger.info("In-app wheel update to v%s promoted; restarting", pending.version)
+        await _audit("success", resources=f"v{pending.version} promoted")
+        await _restart_gateway(state)
+
+    task = asyncio.create_task(_apply())
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+    return web.json_response({"ok": True, "status": "applying", "version": pending.version})

@@ -358,6 +358,14 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # ``local_only=False`` deployment reclassifies strict paths as mixed.
         "/api/computer-use/frame",
         "/api/session-keepalive",
+        # In-app update approval (RFC OQ7 step-up). STRICT: its only legitimate
+        # caller is `kirocrew update approve` on the gateway host presenting the
+        # trust/-fenced nonce plus X-Local-Secret; no browser ever posts to it —
+        # the SPA can only ARM. Keeping it off the cookie fall-through means a
+        # dashboard bearer cannot even reach the handler whose refusal is the
+        # boundary, and the handler re-asserts host-locality itself because a
+        # local_only=False deployment reclassifies strict paths as mixed.
+        "/api/update/approve",
         "/api/session-tool-policy",
         # NOTE: "/api/hooks/agent" is deliberately NOT here. It is an inbound
         # webhook for EXTERNAL callers (CI runners, review bots) that hold no

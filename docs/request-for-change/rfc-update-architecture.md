@@ -30,6 +30,29 @@ superseded-by: []
 
 ## Implementation status (as of `8861f89e`)
 
+**Phase 2, CLI half — implemented** (`platform/wheel_engine.py`): the
+managed-venv shape (`cli.sh`'s non-pipx branch) now updates via versioned
+sibling trees behind a `crew-venv-current` stable symlink, per §3's invariants
+and first-migration protocol. `kirocrew update` builds
+`crew-venv-<version>` fresh (manifest signature verified against the
+cli.sh-pinned trust root, wheel SHA-256 against the signed digest), verifies
+the tree imports the promised version, promotes the stable link via sibling
+symlink + `os.replace`, repoints `~/.local/bin/kirocrew`, and deliberately does NOT
+prune old trees — deletion needs an ownership/liveness proof this engine
+cannot make yet, so superseded trees stay as manual recovery targets.
+`cli.sh` repoints the stable link at the legacy tree after its own installs,
+so the link always names the last-installed version whichever writer ran.
+Gateway restarts resolve their interpreter through the stable link
+(`respawn_executable`), which is the `updates.py` launch path from §3's list;
+the service-unit and macOS-launcher rewrites, the in-app Apply now ships WITH its OQ7 step-up: the SPA's
+Update button arms a pending request (`POST /api/update/arm`; single-use
+nonce, TTL 10 min, written owner-only to the data home and never returned to
+the SPA), and `kirocrew update approve` on the gateway host presents the
+nonce back (`POST /api/update/approve`, loopback + unix-socket preferred),
+upon which the gateway runs the shadow apply itself and restarts. The full
+drain lease (§5) and hash-pinned dependency constraints remain open. pipx
+installs keep the installer re-run.
+
 **Landed in PR #1734** — the tactical half of Phase 1, driven by a user-visible
 defect rather than the architecture: the dashboard told wheel installs "you're on
 the latest version" while they were two releases behind, because the check was

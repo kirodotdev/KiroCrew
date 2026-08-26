@@ -5453,6 +5453,7 @@ class DashboardState:
         update_check_interval_secs: int = 43200,
         update_required: bool = False,
         update_min_version: str = "",
+        update_can_arm: bool = False,
     ) -> dict[str, Any]:
         """Core status fields shared by /api/status, SSE, and WebSocket pushes."""
         uptime = int(time.time() - self.start_time)
@@ -5512,6 +5513,7 @@ class DashboardState:
             # tell the two apart. 0/0 on non-git layouts and before any check.
             "update_commits_ahead": update_commits_ahead,
             "update_commits_behind": update_commits_behind,
+            "update_can_arm": update_can_arm,
             "update_last_checked_at": update_last_checked_at,
             "update_check_interval_secs": update_check_interval_secs,
             # Mandatory-update verdict (enterprise governance pin OR the release

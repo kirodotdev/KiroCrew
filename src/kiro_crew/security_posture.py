@@ -105,6 +105,17 @@ class PostureControl:
 # Where a sink runs only ONE of the two scanners, its detail text says so.
 _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
+        "CLI wheel-update failures",
+        "cli_server.py",
+        "The failure text `kirocrew update` prints when a managed-venv shadow "
+        "update fails, plus the fallback installer one-liner printed next to it. "
+        "The engine's error quotes the URL it tried and the fallback command "
+        "embeds the artifact CDN base -- with a token-bearing "
+        "KIROCREW_CDN_BASE either would land credentials in terminal "
+        "scrollback and shell history, so both strings run the shared "
+        "credential + exfiltration-URL chain immediately before print.",
+    ),
+    (
         "AWS identity-probe failures",
         "aws_consent.py",
         "The stderr of a failed `aws sts get-caller-identity`, run to show the "

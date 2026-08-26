@@ -93,6 +93,7 @@ _SOURCES = (
     _SRC / "mcp_dashboard.py",
     _SRC / "mcp_computer.py",
     _SRC / "cli_commands.py",
+    _SRC / "cli_server.py",
     _SRC / "cron_script.py",
     _SRC / "cron_trigger.py",
     _SRC / "apps/builtins/code_review_sage/sage_lib/review_driver.py",
@@ -135,6 +136,17 @@ _KNOWN_UNRESOLVED = frozenset(
         "mcp_core.py:_delete",
         "mcp_dashboard.py:_get_rows",
         "cron_script.py:_post",
+        # The gateway liveness probe: its URL is assembled from a resolved port
+        # via a helper, and the endpoint (/api/ready) carries no auth by
+        # design — it answers before auth middleware exists so a starting
+        # gateway can be told apart from a dead one.
+        "cli_server.py:_probe_dashboard_health",
+        # NOT a gateway call at all: this fetches the public release feed
+        # (updates.crew.kiro.dev) over HTTPS to compare versions. There is no
+        # /api path to resolve because the peer is the CDN, and no secret is
+        # attached (the feed is unauthenticated display metadata; the signed
+        # manifest is verified by the wheel engine before anything installs).
+        "cli_server.py:_update_wheel",
         "review_driver.py:_api_request",
     }
 )
@@ -205,9 +217,7 @@ def _resolve(
     if isinstance(node, ast.FormattedValue):
         return _resolve(node.value, scopes, core)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        return _join(
-            _resolve(node.left, scopes, core), _resolve(node.right, scopes, core)
-        )
+        return _join(_resolve(node.left, scopes, core), _resolve(node.right, scopes, core))
     if isinstance(node, ast.Name):
         for scope in reversed(scopes):
             if node.id in scope:
@@ -280,8 +290,10 @@ def _function_locals(
                 )
             except _TooManyCandidates:
                 local[node.target.id] = [_UNKNOWN]
-    return {k: v[:_MAX_CANDIDATES] if len(v) <= _MAX_CANDIDATES else [_UNKNOWN]
-            for k, v in local.items()}
+    return {
+        k: v[:_MAX_CANDIDATES] if len(v) <= _MAX_CANDIDATES else [_UNKNOWN]
+        for k, v in local.items()
+    }
 
 
 def _sends_secret(text: str, tree: ast.Module) -> bool:
@@ -445,9 +457,7 @@ def _scan() -> tuple[dict[str, set[str]], set[str]]:
                                 (
                                     fn.name
                                     for fn in reversed(enclosing)
-                                    if isinstance(
-                                        fn, (ast.FunctionDef, ast.AsyncFunctionDef)
-                                    )
+                                    if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
                                     and fn.name in wrappers
                                 ),
                                 fname,
@@ -591,9 +601,9 @@ class TestMcpCallSiteAuthCoverage:
             "a keyword-passed path is invisible, so such a call would be "
             "skipped before detection and read green while unguarded"
         )
-        assert _resolve(expr, [{}], {}) == ["/api/kw-shape-probe"], (
-            "the keyword path expression did not resolve to its literal"
-        )
+        assert _resolve(expr, [{}], {}) == [
+            "/api/kw-shape-probe"
+        ], "the keyword path expression did not resolve to its literal"
         bare = ast.parse("_post()").body[0].value
         assert _path_expr(bare, 0) is None, (
             "a call carrying no path must yield no expression, so the walker "
@@ -635,34 +645,31 @@ class TestMcpCallSiteAuthCoverage:
         # Must still DEFINE the header constant, or the predicate returns early
         # at the empty-names guard and this passes without testing membership.
         other = (
-            'H = "X-Internal-Secret"\nOTHER = "x-unrelated"\n'
-            "def go(t):\n    return {OTHER: t}\n"
+            'H = "X-Internal-Secret"\nOTHER = "x-unrelated"\n' "def go(t):\n    return {OTHER: t}\n"
         )
-        assert not _sends_secret(other, ast.parse(other)), (
-            "an unrelated constant used as a dict key must not count as a sender"
-        )
+        assert not _sends_secret(
+            other, ast.parse(other)
+        ), "an unrelated constant used as a dict key must not count as a sender"
 
     def test_prefix_paths_are_distinguished_from_concrete_ones(self):
         """Guard the classifier: reading a prefix as concrete would false-FAIL,
         and reading a concrete path as a prefix would weaken a real check."""
-        assert _is_prefix_path("/api/apps/ops-mission-control{X}"), (
-            "a marker glued to a segment tail is a prefix, not a concrete path"
-        )
-        assert not _is_prefix_path("/api/artifacts/{X}/comments"), (
-            "a marker filling a whole segment is an opaque id, still concrete"
-        )
-        assert not _is_prefix_path("/api/spawn"), (
-            "a path with no marker at all is concrete"
-        )
+        assert _is_prefix_path(
+            "/api/apps/ops-mission-control{X}"
+        ), "a marker glued to a segment tail is a prefix, not a concrete path"
+        assert not _is_prefix_path(
+            "/api/artifacts/{X}/comments"
+        ), "a marker filling a whole segment is an opaque id, still concrete"
+        assert not _is_prefix_path("/api/spawn"), "a path with no marker at all is concrete"
 
     def test_reachability_mirror_matches_the_middleware(self):
         """Guard the mirror itself: a wrong mirror passes everything silently."""
         entry = next(iter(_STRICT_INTERNAL_API_PATHS))
         assert _is_allowlisted(entry), "exact match must be allowlisted"
         assert _is_allowlisted(entry + "/child"), "prefix + / must be allowlisted"
-        assert not _is_allowlisted(entry + "-sibling"), (
-            "a shared string prefix is not a shared path prefix -- the / matters"
-        )
+        assert not _is_allowlisted(
+            entry + "-sibling"
+        ), "a shared string prefix is not a shared path prefix -- the / matters"
 
     def test_no_secret_caller_is_unscanned(self):
         """Any module reaching the dashboard must be in ``_SOURCES``.
@@ -688,9 +695,7 @@ class TestMcpCallSiteAuthCoverage:
             aliases = {"mcp_core", "core"}
             imported: set[str] = set()
             for node in ast.walk(tree):
-                if isinstance(node, ast.ImportFrom) and (node.module or "").endswith(
-                    "mcp_core"
-                ):
+                if isinstance(node, ast.ImportFrom) and (node.module or "").endswith("mcp_core"):
                     for alias in node.names:
                         if alias.name in _TRANSPORT_HELPERS:
                             imported.add(alias.asname or alias.name)

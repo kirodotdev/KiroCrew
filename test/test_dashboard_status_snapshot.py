@@ -173,6 +173,7 @@ class TestAllStatusSnapshotCallersPassTheUpdateFields:
             "update_managed_by",
             "update_commits_ahead",
             "update_commits_behind",
+            "update_can_arm",
             "update_last_checked_at",
             "update_check_interval_secs",
             "update_required",

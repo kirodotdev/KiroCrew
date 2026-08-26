@@ -65,8 +65,13 @@ def _ensure_utf8_process_environment() -> None:
     os.environ.update(_UTF8_PROCESS_ENV)
 
 
-def reexec_python_module(module: str, args: Sequence[str]) -> None:
-    """Replace this process with ``sys.executable -m module``.
+def reexec_python_module(module: str, args: Sequence[str], executable: str | None = None) -> None:
+    """Replace this process with ``<executable> -m module``.
+
+    ``executable`` defaults to ``sys.executable``. A caller restarting after a
+    managed-venv promotion passes the STABLE-LINK interpreter instead: the
+    cached ``sys.executable`` resolves into the superseded versioned tree
+    (still on disk), so exec'ing it would silently resurrect the old version.
 
     Windows reconstructs an ``execv`` command line from ``argv`` and reparses
     it in the child.  A full ``argv[0]`` containing spaces is split before the
@@ -79,9 +84,9 @@ def reexec_python_module(module: str, args: Sequence[str]) -> None:
     # Windows ANSI stream or a hostile POSIX PYTHONIOENCODING and crashes on the
     # first emoji printed during boot.
     _ensure_utf8_process_environment()
-    executable = sys.executable
-    argv0 = ntpath.basename(executable) if IS_WINDOWS else executable
-    os.execv(executable, [argv0, "-m", module, *args])
+    resolved = executable or sys.executable
+    argv0 = ntpath.basename(resolved) if IS_WINDOWS else resolved
+    os.execv(resolved, [argv0, "-m", module, *args])
 
 
 # Python's os.rename() replaces an existing empty directory on POSIX. Directory

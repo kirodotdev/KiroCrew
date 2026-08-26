@@ -11499,7 +11499,16 @@
         "you_are_on_the_latest_version": "Você está na versão mais recente.",
         "you_re_on_the_latest_version": "Você está na versão mais recente.",
         "checks_for_updates_with_timing": "{{name}} verifica atualizações automaticamente. {{timing}} Você também pode verificar agora.",
-        "last_checked_ago_next_check_in": "Última verificação {{ago}}, próxima verificação automática {{next}}."
+        "last_checked_ago_next_check_in": "Última verificação {{ago}}, próxima verificação automática {{next}}.",
+        "in_app_update_intro": "A nova versão é instalada ao lado da atual e a troca é atômica. Aplicar exige um comando de aprovação no host do gateway.",
+        "or_update_manually": "Ou execute o instalador manualmente de novo",
+        "armed_run_on_host": "Aprove e aplique executando este comando no host do gateway.",
+        "armed_expires_in": "A janela de aprovação fecha em {{time}}",
+        "armed_waiting_note": "Aguardando aprovação — depois de aprovada, o progresso aparece aqui e o gateway reinicia sozinho.",
+        "applying_update": "Aplicando a atualização…",
+        "applying_restart_note": "O gateway reinicia sozinho quando a nova versão está pronta; esta página reconecta automaticamente.",
+        "approval_window_expired": "A janela de aprovação expirou sem aprovação. Rearme a atualização quando quiser.",
+        "try_again": "Tentar de novo"
       },
       "botChannelPanel": {
         "allowed_user_ids": "IDs de usuário permitidos",

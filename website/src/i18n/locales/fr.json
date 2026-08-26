@@ -11500,7 +11500,16 @@
         "you_are_on_the_latest_version": "Vous utilisez la dernière version.",
         "you_re_on_the_latest_version": "Vous utilisez la dernière version.",
         "checks_for_updates_with_timing": "{{name}} recherche automatiquement les mises à jour. {{timing}} Tu peux aussi vérifier maintenant.",
-        "last_checked_ago_next_check_in": "Dernière vérification {{ago}}, prochaine vérification automatique {{next}}."
+        "last_checked_ago_next_check_in": "Dernière vérification {{ago}}, prochaine vérification automatique {{next}}.",
+        "in_app_update_intro": "La nouvelle version s'installe à côté de l'actuelle et bascule de façon atomique. L'application nécessite une commande d'approbation sur l'hôte de la passerelle.",
+        "or_update_manually": "Ou relancez l'installateur manuellement",
+        "armed_run_on_host": "Approuvez et appliquez en exécutant cette commande sur l'hôte de la passerelle.",
+        "armed_expires_in": "La fenêtre d'approbation se ferme dans {{time}}",
+        "armed_waiting_note": "En attente d'approbation — une fois approuvée, la progression s'affiche ici et la passerelle redémarre d'elle-même.",
+        "applying_update": "Application de la mise à jour…",
+        "applying_restart_note": "La passerelle redémarre d'elle-même quand la nouvelle version est prête ; cette page se reconnecte automatiquement.",
+        "approval_window_expired": "La fenêtre d'approbation a expiré sans approbation. Réarmez la mise à jour quand vous êtes prêt.",
+        "try_again": "Réessayer"
       },
       "botChannelPanel": {
         "allowed_user_ids": "ID d'utilisateurs autorisés",

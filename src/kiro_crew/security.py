@@ -9099,13 +9099,23 @@ _CREDENTIAL_PATTERNS = re.compile(
     r"|pypi-[A-Za-z0-9_-]{16,}"  # PyPI API token
     r"|do[opr]_v1_[A-Za-z0-9]{40,}"  # DigitalOcean PAT/OAuth/refresh
     r"|GOCSPX-[A-Za-z0-9_-]{20,}"  # Google OAuth client secret
-    # DB connection URIs with embedded credentials — redact the
-    # ``scheme://user:pass@`` prefix (the password lives here).
-    r"|(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis(?:s)?|amqp(?:s)?)"
+    # Connection/fetch URIs with embedded credentials — redact the
+    # ``scheme://user:pass@`` prefix (the password lives here). http(s)/ftp(s)
+    # are included because URL userinfo is a credential wherever it appears
+    # (e.g. a token-bearing artifact CDN base quoted by an update-failure
+    # message); the user:pass@ shape cannot false-positive on a bare URL — a
+    # port (``:8080``) is never followed by ``@`` within the authority.
+    r"|(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis(?:s)?|amqp(?:s)?"
+    r"|https?|ftps?)"
     # User portion is `*` (not `+`): empty-user connection strings (e.g. MongoDB
     # Atlas IAM `mongodb+srv://:secret@…`) still redact the password (ported
     # from the upstream project).
-    r"://[^\s:/@]*:[^\s/@]+@"
+    # Password segment allows ``@`` (``[^\s/]`` not ``[^\s/@]``): an unencoded
+    # ``@`` inside a password is common, and stopping the match at the FIRST
+    # ``@`` would redact only the head and leak the rest (``…ss@host``) to
+    # logs. ``/`` still bounds the authority, so greedy ``+`` consumes through
+    # the FINAL ``@`` — the real userinfo/host separator — and never past it.
+    r"://[^\s:/@]*:[^\s/]+@"
     # ── JWT / JWE / OAuth Bearer tokens ──
     # `eyJ` is the base64url encoding of every JWT header's `{"` prefix; a signed
     # JWT (JWS) is three `.`-separated base64url segments (header.payload.sig), an

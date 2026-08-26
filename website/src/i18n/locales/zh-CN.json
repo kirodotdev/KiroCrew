@@ -11167,7 +11167,16 @@
         "you_are_on_the_latest_version": "你已使用最新版本。",
         "you_re_on_the_latest_version": "你已使用最新版本。",
         "checks_for_updates_with_timing": "{{name}} 会自动检查更新。{{timing}}你也可以立即检查。",
-        "last_checked_ago_next_check_in": "上次检查 {{ago}},下次自动检查 {{next}}。"
+        "last_checked_ago_next_check_in": "上次检查 {{ago}},下次自动检查 {{next}}。",
+        "in_app_update_intro": "新版本会安装在当前版本旁边并原子切换。应用更新只需在网关主机上运行一条批准命令。",
+        "or_update_manually": "或手动重新运行安装脚本",
+        "armed_run_on_host": "在网关主机上运行此命令即可批准并应用更新。",
+        "armed_expires_in": "批准窗口将在 {{time}} 后关闭",
+        "armed_waiting_note": "等待批准中 — 批准后进度会显示在这里，网关将自动重启。",
+        "applying_update": "正在应用更新…",
+        "applying_restart_note": "新版本就绪后网关会自动重启，本页面将自动重新连接。",
+        "approval_window_expired": "批准窗口已过期且未获批准。准备好后可重新发起更新。",
+        "try_again": "重试"
       },
       "botChannelPanel": {
         "allowed_user_ids": "允许的用户 ID",

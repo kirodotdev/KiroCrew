@@ -199,6 +199,24 @@ PREEXEC_EXEMPT: frozenset[str] = frozenset(
 BENIGN_SPAWNS: frozenset[str] = frozenset(
     {
         "acp/runtime.py::_get_rss_mb",
+        # The shadow-venv update engine's four spawns. None is agent-influenced
+        # and none can route through sandboxed_spawn_argv, because the engine's
+        # whole job is to build the NEXT gateway install outside the agent
+        # sandbox: (1) _verify_signature runs the openssl binary resolved via
+        # trusted_system_bin (never PATH) over files it just wrote into its own
+        # mkstemp workdir; (2) _run spawns `sys.executable -m venv <tree>` and
+        # `<shadow python> -m pip install <wheel>` where the tree name is
+        # composed from the SIGNED manifest's validated version string and the
+        # wheel path from the same workdir; (3) build_shadow_venv's best-effort
+        # pip self-upgrade in the shadow tree; (4) verify_shadow_venv's `-I`
+        # isolated import probe against the shadow interpreter. The update flow
+        # is reachable only from the CLI on the operator's terminal or the
+        # gateway's approve endpoint behind the OQ7 host-local step-up — the
+        # agent's own bash path is closed by the self-update denied rule.
+        "platform/wheel_engine.py::_run",
+        "platform/wheel_engine.py::_verify_signature",
+        "platform/wheel_engine.py::build_shadow_venv",
+        "platform/wheel_engine.py::verify_shadow_venv",
         # The userns probe child: ONE fixed argv, `sys.executable -I -S -c <shim>`,
         # no shell, no cwd, stdin/stdout are the two handshake pipes. Nothing is
         # agent-influenced -- the shim is a module-level string constant and takes

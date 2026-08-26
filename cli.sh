@@ -555,6 +555,41 @@ else
   "$PY" -m venv "$VENV"
   "$VENV/bin/pip" install --quiet --upgrade pip >/dev/null 2>&1 || true
   "$VENV/bin/pip" install --quiet "$WHL"
+  # Keep the stable launch path (`${VENV}-current`) naming the tree that holds
+  # the LAST-INSTALLED version. The gateway's shadow-venv updater
+  # (kiro_crew/platform/wheel_engine.py) promotes this same symlink to a fresh
+  # versioned tree; a later re-run of this installer writes into the fixed
+  # $VENV again, so without this repoint the stable link would keep naming the
+  # older versioned tree and a gateway restart would resurrect it. Replaced
+  # atomically (sibling symlink + rename) via the interpreter because POSIX
+  # `mv` onto a symlink-to-directory moves INTO the target and `ln -sfn` has
+  # an unlink/create window. A real directory at the stable name is corrupt
+  # state and is left alone — the updater refuses it too, so nothing consumes
+  # it. Failure is non-fatal: the stable link is an optimization layer, and
+  # the direct launcher symlink below keeps working without it.
+  _VENV_CURRENT="${VENV%/}-current"
+  if [ -L "$_VENV_CURRENT" ] || [ ! -e "$_VENV_CURRENT" ]; then
+    "$PY" -c 'import os,sys
+target, link = os.path.abspath(sys.argv[1]), sys.argv[2]
+tmp = f"{link}.{os.getpid()}.new"
+try:
+    # PID reuse can leave a stale tmp from a killed installer at this exact
+    # name; without removing it first os.symlink raises EEXIST, os.replace is
+    # skipped, and the restart stays pinned to the old version. Mirrors the
+    # pre-unlink the wheel-engine promote/launcher paths already do.
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    os.symlink(target, tmp)
+    os.replace(tmp, link)
+except OSError:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+' "$VENV" "$_VENV_CURRENT" || echo "WARNING: could not update $_VENV_CURRENT; continuing." >&2
+  fi
   mkdir -p "$HOME/.local/bin"
   ln -sf "$VENV/bin/kirocrew" "$HOME/.local/bin/kirocrew"
   BIN="$HOME/.local/bin"

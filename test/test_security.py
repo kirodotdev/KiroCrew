@@ -312,6 +312,14 @@ class TestRedactCredentials:
             "mongodb+srv://user:pw@cluster0.example.com",
             "mysql://root:toor@localhost:3306/db",
             "redis://default:secret@redis.example.com:6379",
+            # URL userinfo is a credential on fetch schemes too (a
+            # token-bearing artifact CDN base quoted by update-failure text).
+            "https://user:tok-SECRET99@cdn.example.com/w.whl",
+            "ftp://anon:pw@mirror.example.com/f",
+            # A password containing an unencoded @ must redact through the
+            # FINAL authority separator, not stop at the first @.
+            "https://user:p@ss@cdn.example.com/w.whl",
+            "redis://default:se@cret@redis.example.com:6379",
         ],
     )
     def test_redacts_various_db_uris(self, mongo: str) -> None:
@@ -324,6 +332,8 @@ class TestRedactCredentials:
             "npm_config_cache=/home/u/.npm",  # npm_ env var, too short + underscores
             "git sha 1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b",  # 40-hex git SHA
             "postgresql://localhost:5432/db",  # no user:pass@
+            "https://example.com:8080/path",  # port is not userinfo
+            "https://example.com/a@b",  # @ in the path, not the authority
             "SG.short.x",  # segments too short
             "the ghp_ prefix on its own",  # no token body
         ]:

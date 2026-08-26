@@ -243,9 +243,7 @@ class TestStopOnWindows:
 
     def test_tree_kill_reports_terminated(self, monkeypatch, sel_rec, capsys) -> None:
         seen: list[int] = []
-        monkeypatch.setattr(
-            platform_compat, "kill_process_tree", lambda pid, sig: seen.append(pid)
-        )
+        monkeypatch.setattr(platform_compat, "kill_process_tree", lambda pid, sig: seen.append(pid))
         cli_server._stop(None)
         out = capsys.readouterr().out
         assert seen == [4242]
@@ -288,9 +286,7 @@ class TestStopOnWindows:
         assert exc.value.code == 1
         assert "No permission to stop pid 4242" in capsys.readouterr().out
 
-    def test_generic_taskkill_failure_on_dead_pid_is_not_denied(
-        self, monkeypatch, capsys
-    ) -> None:
+    def test_generic_taskkill_failure_on_dead_pid_is_not_denied(self, monkeypatch, capsys) -> None:
         def oserr(pid, sig):
             raise OSError("taskkill exit 1")
 
@@ -320,9 +316,7 @@ class TestServiceCmd:
             ("status", "service_status", "service_status"),
         ],
     )
-    def test_action_forwards_and_audits(
-        self, monkeypatch, sel_rec, action, fn, operation
-    ) -> None:
+    def test_action_forwards_and_audits(self, monkeypatch, sel_rec, action, fn, operation) -> None:
         monkeypatch.setattr(cli_server.service_controller, fn, lambda: 0)
         rc = cli_server._service_cmd(argparse.Namespace(service_action=action))
         assert rc == 0
@@ -376,9 +370,7 @@ class TestSandboxCmd:
         assert sel_rec.operations == ["sandbox_profile_remove"]
 
     def test_status_is_not_audited(self, monkeypatch, sel_rec) -> None:
-        monkeypatch.setattr(
-            cli_server.service_controller, "sandbox_profile_status", lambda p: 7
-        )
+        monkeypatch.setattr(cli_server.service_controller, "sandbox_profile_status", lambda p: 7)
         rc = cli_server._sandbox_cmd(argparse.Namespace(sandbox_action="status", path=None))
         assert rc == 7
         assert sel_rec.calls == []
@@ -842,15 +834,11 @@ class TestRunTask:
         monkeypatch.setattr(cli_server, "SkillsLoader", _BrokenLoader)
         taskrunner_env["install_runner"](_Result("completed"))
         spec = _spec(tmp_path)
-        args = argparse.Namespace(
-            spec=str(spec), no_test=True, fresh=False, timeout=90, name=""
-        )
+        args = argparse.Namespace(spec=str(spec), no_test=True, fresh=False, timeout=90, name="")
         asyncio.run(cli_server._run_task(args))  # must not raise
         assert taskrunner_env["ran"] == (spec.resolve(), "")
 
-    def test_fresh_flag_is_forwarded_and_announced(
-        self, taskrunner_env, tmp_path, capsys
-    ) -> None:
+    def test_fresh_flag_is_forwarded_and_announced(self, taskrunner_env, tmp_path, capsys) -> None:
         taskrunner_env["install_runner"](_Result("completed"))
         args = argparse.Namespace(
             spec=str(_spec(tmp_path)), no_test=False, fresh=True, timeout=0, name=""
@@ -860,9 +848,7 @@ class TestRunTask:
         assert taskrunner_env["runner_kwargs"]["auto_test"] is True
         assert "Running spec (fresh)" in capsys.readouterr().out
 
-    def test_failed_task_exits_one_with_the_error(
-        self, taskrunner_env, tmp_path, capsys
-    ) -> None:
+    def test_failed_task_exits_one_with_the_error(self, taskrunner_env, tmp_path, capsys) -> None:
         taskrunner_env["install_runner"](_Result("failed", error="step 2 blew up"))
         args = argparse.Namespace(
             spec=str(_spec(tmp_path)), no_test=False, fresh=False, timeout=0, name=""
@@ -1013,9 +999,7 @@ class _GitStub:
         if "pip" in argv:
             # BYTES, like the real call: the install captures without text=True so
             # a non-UTF-8 console cannot make pip's own error message undecodable.
-            return subprocess.CompletedProcess(
-                argv, self.rc.get("pip", 0), b"", b"wheel error"
-            )
+            return subprocess.CompletedProcess(argv, self.rc.get("pip", 0), b"", b"wheel error")
         return subprocess.CompletedProcess(argv, self.rc.get("setup", 0), "", "")
 
 
@@ -1140,9 +1124,7 @@ class TestUpdateGitPath:
         assert "kirocrew update --force" in out
         assert not any(c[:2] == ["git", "reset"] for c in stub.calls)
 
-    def test_diverged_checkout_resets_under_force(
-        self, monkeypatch, git_checkout, capsys
-    ) -> None:
+    def test_diverged_checkout_resets_under_force(self, monkeypatch, git_checkout, capsys) -> None:
         stub = _GitStub()
         stub.rev_list_out = "3\t2\n"  # 3 ahead, 2 behind — diverged
         monkeypatch.setattr(subprocess, "run", stub)
@@ -1253,9 +1235,7 @@ class TestUpdateSubprocessHardening:
 
         return _run
 
-    def test_all_six_calls_pass_stdin_devnull(
-        self, monkeypatch, git_checkout, capsys
-    ) -> None:
+    def test_all_six_calls_pass_stdin_devnull(self, monkeypatch, git_checkout, capsys) -> None:
         """Gap class (a): assert on the kwargs actually passed to subprocess.run."""
         stub = _GitStub()
         recorded: list[tuple[list[str], dict]] = []
@@ -1282,9 +1262,7 @@ class TestUpdateSubprocessHardening:
             matching = [kw for argv, kw in recorded if argv[: len(prefix)] == prefix]
             assert matching, f"call {prefix} never ran"
             for kw in matching:
-                assert (
-                    kw.get("stdin") is subprocess.DEVNULL
-                ), f"{prefix} ran without stdin=DEVNULL"
+                assert kw.get("stdin") is subprocess.DEVNULL, f"{prefix} ran without stdin=DEVNULL"
 
     def test_fetch_timeout_takes_the_existing_failure_branch(
         self, monkeypatch, git_checkout, capsys
@@ -1295,9 +1273,7 @@ class TestUpdateSubprocessHardening:
         through ``kirocrew update`` instead of the SystemExit(1) the fetch
         failure path already defines.
         """
-        monkeypatch.setattr(
-            subprocess, "run", self._timeout_on(["git", "fetch"], _GitStub())
-        )
+        monkeypatch.setattr(subprocess, "run", self._timeout_on(["git", "fetch"], _GitStub()))
         with pytest.raises(SystemExit) as exc:
             cli_server._update()
         assert exc.value.code == 1
@@ -1318,9 +1294,7 @@ class TestUpdateSubprocessHardening:
         assert "Kiro Crew updated!" in out
         assert any(c[:2] == ["git", "reset"] for c in stub.calls)
 
-    def test_status_timeout_refuses_the_reset(
-        self, monkeypatch, git_checkout, capsys
-    ) -> None:
+    def test_status_timeout_refuses_the_reset(self, monkeypatch, git_checkout, capsys) -> None:
         """The status call guards the hard reset's data discard: an unreadable
         answer fails closed, mirroring the unreadable-divergence guard."""
         stub = _GitStub()
@@ -1337,9 +1311,7 @@ class TestUpdateSubprocessHardening:
         """The backend update's result is not inspected today, so its timeout
         warns and the update continues — the #5637 handler shape."""
         stub = _GitStub()
-        monkeypatch.setattr(
-            subprocess, "run", self._timeout_on(["kiro-cli", "update"], stub)
-        )
+        monkeypatch.setattr(subprocess, "run", self._timeout_on(["kiro-cli", "update"], stub))
         monkeypatch.setattr(cli_server.shutil, "which", lambda name: "/usr/bin/kiro-cli")
         cli_server._update()
         out = capsys.readouterr().out
@@ -1544,6 +1516,67 @@ class TestUpdateWheelInstaller:
         assert exc.value.code == 1
         assert "exited with code 17" in capsys.readouterr().out
 
+    def test_shadow_failure_redacts_credentialed_urls(self, monkeypatch, capsys) -> None:
+        """A failed shadow update must not print URL credentials.
+
+        The failure text quotes the URL the engine tried, and the fallback
+        installer command embeds the CDN base — with a token-bearing
+        KIROCREW_CDN_BASE either would land credentials in terminal history.
+        """
+        from kiro_crew.platform import wheel_engine
+        from kiro_crew.platform.wheel_engine import WheelUpdateError
+
+        # _update_wheel imports these from wheel_engine lazily (kept off the
+        # gateway boot path), so patch the SOURCE module, not cli_server —
+        # the function-local `from wheel_engine import ...` resolves to the
+        # patched value.
+        monkeypatch.setattr(wheel_engine, "running_from_managed_venv", lambda: True)
+
+        def _boom(**kw):
+            raise WheelUpdateError(
+                "could not fetch https://user:tok-SECRET99@cdn.example.com/w.whl: boom"
+            )
+
+        monkeypatch.setattr(wheel_engine, "apply_wheel_update", _boom)
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_layout.wheel_update_command",
+            lambda channel=None: (
+                "curl -fsSL https://user:tok-SECRET99@cdn.example.com/cli.sh | sh"
+            ),
+        )
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update_wheel(_LAYOUT)
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "tok-SECRET99" not in out
+        assert "was not modified" in out
+
+    def test_shadow_oserror_takes_the_failure_path_not_a_traceback(
+        self, monkeypatch, capsys
+    ) -> None:
+        """A raw OSError from the staging filesystem must not escape as a traceback.
+
+        The engine wraps its own I/O failures in WheelUpdateError, but a full
+        or unwritable disk at mkdir/tempdir time raises OSError outside those
+        conversion sites — the CLI must route it through the same
+        operator-facing failure path (redacted message + fallback command +
+        exit 1).
+        """
+        from kiro_crew.platform import wheel_engine
+
+        monkeypatch.setattr(wheel_engine, "running_from_managed_venv", lambda: True)
+
+        def _boom(**kw):
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(wheel_engine, "apply_wheel_update", _boom)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update_wheel(_LAYOUT)
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "No space left on device" in out
+        assert "was not modified" in out
+
     def test_success_reports_the_new_version_and_restart_hint(self, monkeypatch, capsys) -> None:
         seen: list[list[str]] = []
 
@@ -1566,9 +1599,7 @@ class TestUpdateWheelInstaller:
             b'{"schema": "kirocrew-cli-artifact-manifest-v1", '
             b'"channel": "stable", "version": "not-a-version"}'
         )
-        monkeypatch.setattr(
-            subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a[0], 0)
-        )
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a[0], 0))
         cli_server._update_wheel(_LAYOUT)
         out = capsys.readouterr().out
         assert "Could not compare versions" in out

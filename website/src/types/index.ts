@@ -46,6 +46,7 @@ export interface StatusData {
    */
   update_channel?: string
   update_managed_by?: string
+  update_can_arm?: boolean
   /**
    * Commit distance from a git checkout's upstream, both directions. Diverged
    * (both > 0) reports `update_available: false` exactly like a current

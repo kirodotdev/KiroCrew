@@ -723,8 +723,11 @@ class TestFailureDetailIsRedactedAtTheSource:
         step = mod._step("npm-install-global", ["npm", "install"], 1.0)
 
         # Extract the actual secret value (the part after = or between : and @)
-        # and confirm it does not survive.
-        assert "[REDACTED]" in step["stderr"]
+        # and confirm it does not survive. The inline-credential URL shape is
+        # now caught by the SHARED pass (whose marker is "[REDACTED:
+        # credential]") before the npm-specific patterns run, so accept either
+        # redaction marker -- what matters is that the secret is gone.
+        assert "[REDACTED" in step["stderr"]
         # None of the raw secret portions should appear.
         for fragment in (
             "npm_abc123secretXYZ",
