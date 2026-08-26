@@ -80,6 +80,7 @@ class Observation:
     key: str            # dedupe identity within an epoch
     severity: Severity
     brief: str = ""     # operator-facing text if this wakes
+    epoch_scoped: bool = True   # False: identity does NOT depend on the epoch
 
 @dataclass
 class Tick:
@@ -109,6 +110,31 @@ valid; the kernel converts that to `Done`, because a malformed parameter cannot
 self-heal and retrying it forever is a crash loop with extra steps. It is called
 exactly once per tick, so the message is parsed once and every parse failure is
 inside that conversion.
+
+### Two dedupe key spaces
+
+`epoch` names what the subject IS this tick, and when it changes the kernel
+wipes dedupe memory — the anomalies it held were observations of something that
+no longer exists. That is right for anything the epoch is a property of, which
+is the default.
+
+It is wrong for a signal a probe observes through the same tick that the epoch is
+NOT a property of. A comment on a pull request belongs to the conversation, not
+to the commit under review, and has not stopped having happened because the head
+moved: left epoch scoped, pushing a fix minutes after a reviewer commented would
+replay that comment as though it had just arrived. `epoch_scoped=False` keeps
+such a key across the reset.
+
+The kernel prefixes every stored key with a sentinel identifying its space, so
+the two can never be confused and a reset can filter without inspecting probe
+text. Two consequences worth knowing:
+
+- The same probe key in both spaces is two independent signals, not one.
+- Epoch-scoped keys are bounded by the reset that wipes them; sticky keys are
+  not, so the kernel drops them once they pass `realert_secs`. A probe that must
+  never re-report such a signal has to age it out on its own side — which is why
+  the pull-request probe ignores comments older than its horizon, and why that
+  horizon has to stay under `realert_secs`.
 
 ## 4. Coalescing
 
@@ -292,10 +318,12 @@ that makes every tick raise.
 
 - **Not a scheduler.** Cadence, retries and job lifecycle stay with the cron
   service. This module runs one tick.
-- **Does not read discussion.** The first probe deliberately does not parse
-  reviewer comment bodies. Detecting "something changed and looks wrong" is the
-  top half's job; reading carefully is the bottom half's, and a watcher that
-  parsed prose would need the judgment this design exists to avoid paying for.
+- **Does not read discussion.** A probe may observe THAT discussion happened --
+  the first one reports new comments and submitted reviews by identity and
+  timestamp -- but nothing in the top half parses prose. Noticing "something was
+  said" is the top half's job; reading it carefully is the bottom half's, and a
+  watcher that interpreted verdict text would need the judgment this design
+  exists to avoid paying for on every quiet tick.
 - **Migrating the other pollers is blocked on version control, not on this
   module.** Roughly fifteen script crons live only in the operator's data home
   because their skills instruct an agent to hand-write them, rather than

@@ -45,14 +45,12 @@ Message format (``ctx.message``): JSON
    "coalesce_secs": 240,                              # optional, 0 disables
    "note": "context line echoed into the wake brief"}  # optional
 
-Arm it FROM the dashboard session that owns the babysit (the cron captures
-that session as its wake target). Cron scripts must live under
-``<config_dir>/crons/``, so copy the synced skill asset there first, then
-register::
-
-  cp ~/.kiro/crew/skills/kirocrew-dev/babysit/scripts/pr_watch.py \\
-     ~/.kiro/crew/crons/pr_watch.py
-  cron_add(script="~/.kiro/crew/crons/pr_watch.py:watch", ...)
+Arm it FROM the dashboard session that owns the babysit -- the cron captures that
+session as its wake target. The copy-then-register recipe lives in ONE place, the
+babysit skill's SKILL.md ("Watch mode"), and is deliberately not repeated here: it
+was written out twice, the two spellings diverged, and only one of them resolved
+``KIROCREW_HOME`` -- so the copy a reader happened to follow decided whether the
+command worked.
 """
 
 from __future__ import annotations
@@ -61,11 +59,13 @@ import json
 import math
 import re
 import sys
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 from kiro_crew.github_runner import resolve_gh, run_gh
 from kiro_crew.irq import (
     DEFAULT_COALESCE_SECS,
+    DEFAULT_REALERT_SECS,
     Observation,
     Probe,
     Severity,
@@ -78,6 +78,38 @@ from kiro_crew.irq import (
 _AUDIT_CALLER = "core:babysit-pr-watch"
 
 _GH_TIMEOUT_SECS = 25
+
+#: How far back a conversation signal still counts as new.
+#:
+#: The probe has no memory of its own -- the kernel owns dedupe state and a
+#: probe only returns a Tick -- so it cannot record "these comments already
+#: existed when I was armed". Without a horizon, arming a watch on a PR with
+#: forty comments would report all forty on the first tick.
+#:
+#: The two ends of this number are NOT symmetric, which is what sets the value.
+#: Too large costs arm-time replay: bounded, coalesced into ONE brief naming N
+#: events, and deduped forever after. Too small costs a MISS: a watch that stops
+#: ticking for longer than this -- laptop asleep, gateway down, cron auto-paused
+#: -- never sees conversation posted in the gap, silently and permanently, and
+#: this feature retires the nudge loop that would otherwise have read it
+#: eventually. One annoying wake is not the same price as a lost signal, so the
+#: value is pushed as high as the kernel allows rather than kept small.
+#:
+#: MUST stay below the kernel's ``realert_secs``: the kernel drops sticky dedupe
+#: keys once they pass that window, and what stops a dropped key from being
+#: re-reported is this filter having aged the signal out first. Asserted below
+#: rather than merely documented -- three doc comments claiming an invariant that
+#: nothing checked is what let it drift this far.
+#:
+#: A constant rather than a cron parameter: as a parameter it had no caller, and
+#: its only distinct capability was misconfiguring the watch into re-waking for
+#: the same comment every re-alert window.
+DEFAULT_COMMENT_HORIZON_SECS = 5 * 3600.0
+
+assert DEFAULT_COMMENT_HORIZON_SECS < DEFAULT_REALERT_SECS, (
+    "the comment horizon must age a signal out before the kernel drops its sticky "
+    "dedupe key, or every comment inside the gap re-wakes once per re-alert window"
+)
 
 #: Failing conclusions/states across CheckRun and StatusContext shapes.
 _FAILING = {"FAILURE", "ERROR", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"}
@@ -213,6 +245,28 @@ def _run_gh(args: list[str]) -> tuple[int, str]:
         return 1, ""
 
 
+def _age_secs(raw: object) -> float | None:
+    """Seconds since an ISO-8601 GitHub timestamp, or None if unusable.
+
+    Returns None rather than 0 for anything unparseable, and the caller treats
+    None as "cannot tell how old this is" by IGNORING the signal. That is the
+    safe direction here: a signal of unknown age that is assumed fresh would be
+    re-reported on the tick after every dedupe drop, and a watch that cries wolf
+    is turned off. Genuinely new comments always carry a valid timestamp.
+    """
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        # GitHub spells UTC as a trailing Z, which fromisoformat rejects before
+        # Python 3.11 -- normalize rather than depend on the interpreter version.
+        stamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - stamp).total_seconds()
+
+
 class PrWatchProbe(Probe):
     """Observes one GitHub pull request through ``gh pr view``."""
 
@@ -251,18 +305,15 @@ class PrWatchProbe(Probe):
         raw_reds = params.get("known_reds")
         if raw_reds is not None and not isinstance(raw_reds, list):
             raise ValueError("pr_watch known_reds must be a list of check names")
+        # json.loads yields three separately hostile shapes for this one field and
+        # each kills the cron the same way -- by raising on every tick, which
+        # auto-pauses the job, so the watch dies silently from a config typo:
+        # 1e309 -> inf; a 401-digit int -> float() OverflowError; NaN -> poisons
+        # every comparison it reaches. None can ever become valid, so all are
+        # terminal (ValueError -> Done) rather than retried.
         raw_coalesce = params.get("coalesce_secs", DEFAULT_COALESCE_SECS)
         if not isinstance(raw_coalesce, (int, float)) or isinstance(raw_coalesce, bool):
             raise ValueError("pr_watch coalesce_secs must be a number")
-        # Convert INSIDE the guard, because json.loads yields three separately
-        # hostile shapes for one field and each kills the cron the same way --
-        # by raising on every tick, which auto-pauses the job, so the watch dies
-        # silently from a config typo:
-        #   1e309            -> float('inf')            -> int(inf) OverflowError
-        #   <401-digit int>  -> arbitrary-precision int  -> float() OverflowError
-        #   NaN              -> float('nan')             -> poisons comparisons
-        # An unrepresentable number can never become valid, so all three are
-        # terminal rather than retried.
         try:
             coalesce = float(raw_coalesce)
         except OverflowError as exc:
@@ -283,6 +334,93 @@ class PrWatchProbe(Probe):
     def tuning(self) -> dict[str, float]:
         """The window this watch was armed with, from its cron message."""
         return {"coalesce_secs": self.coalesce_secs}
+
+    def _conversation(self, data: dict) -> list[Observation]:
+        """Observations for things said about the PR rather than run on it.
+
+        These carry ``epoch_scoped=False``: a comment belongs to the pull
+        request, not to the commit under review, so it must survive the epoch
+        reset a force-push triggers. Left epoch scoped, pushing a fix five
+        minutes after a reviewer commented would replay that comment.
+
+        The brief names WHO and WHEN and never quotes the body. That boundary is
+        the whole point of the split: the probe is the detector, so it reports
+        that something was said; reading it, judging whether it is a real
+        finding, and deciding what to do are the woken agent's job, done with
+        this session's trust rather than a cron script's.
+        """
+        out: list[Observation] = []
+        horizon = DEFAULT_COMMENT_HORIZON_SECS
+
+        def fresh(stamp: object) -> bool:
+            age = _age_secs(stamp)
+            return age is not None and age <= horizon
+
+        # Chronological ascending, so the tail is the recent end. Bounded because
+        # a PR that ran twenty review rounds carries hundreds of comments and
+        # every one older than the horizon is discarded anyway.
+        for item in data.get("comments") or []:
+            if not isinstance(item, dict):
+                continue
+            # Our OWN disposition comments. Without this the watch is a feedback
+            # loop: the woken agent posts a disposition, the next tick sees a new
+            # comment and wakes it again to read what it just wrote.
+            if item.get("viewerDidAuthor"):
+                continue
+            ident = str(item.get("id") or "")
+            if not ident or not fresh(item.get("createdAt")):
+                continue
+            who = sanitize_label((item.get("author") or {}).get("login")) or "someone"
+            out.append(
+                Observation(
+                    f"comment:{ident}",
+                    Severity.WAKE,
+                    self._brief(
+                        "",
+                        "new comment",
+                        f"{who} commented at {item.get('createdAt')}. A comment "
+                        "moves no check, so nothing else here will tell you it "
+                        "arrived. Read it and reply -- a reviewer verdict can "
+                        "sit in a comment body while its check reports success.",
+                    ),
+                    epoch_scoped=False,
+                )
+            )
+
+        for item in data.get("reviews") or []:
+            if not isinstance(item, dict):
+                continue
+            ident = str(item.get("id") or "")
+            if not ident or not fresh(item.get("submittedAt")):
+                continue
+            who = sanitize_label((item.get("author") or {}).get("login")) or "someone"
+            verdict = sanitize_label(item.get("state")) or "REVIEW"
+            out.append(
+                Observation(
+                    f"review:{ident}",
+                    Severity.WAKE,
+                    self._brief(
+                        "",
+                        "new review",
+                        f"{who} submitted a {verdict} review at "
+                        f"{item.get('submittedAt')}. Read it and disposition "
+                        "every point before calling the PR ready.",
+                    ),
+                    epoch_scoped=False,
+                )
+            )
+
+        # A review DECISION is deliberately NOT observed. It carries no
+        # timestamp, so it cannot be aged against the horizon: arming a watch on
+        # a PR that has sat in CHANGES_REQUESTED for a week would wake once
+        # immediately for news the operator already has, which is the exact
+        # arm-time replay the horizon exists to prevent. It is also near-
+        # redundant, because the decision is computed FROM reviews and a review
+        # that changes it already emits its own timestamped observation above.
+        # The residue is a decision that moves with no new review (a dismissal,
+        # or approvals invalidated by a push): real, but it carries nothing to
+        # act on urgently and cannot be dated from this payload.
+        return out
 
     def observe(self, ctx: object) -> Tick:
         data = self._fetch()
@@ -380,6 +518,14 @@ class PrWatchProbe(Probe):
                 )
             )
 
+        # Appended AFTER the check-derived observations and deliberately outside
+        # the all-green condition above: a comment is not evidence about CI, so
+        # it must neither suppress "review-ready" nor be suppressed by it. It
+        # also contributes nothing to ``pending`` -- a conversation never
+        # "settles", and counting it would hold the coalescing window open until
+        # the hard cap on every talkative PR.
+        observations.extend(self._conversation(data))
+
         return Tick(
             epoch=head,
             observations=observations,
@@ -397,7 +543,8 @@ class PrWatchProbe(Probe):
                 "--repo",
                 self.repo,
                 "--json",
-                "state,mergedAt,mergeable,mergeStateStatus,headRefOid,statusCheckRollup",
+                "state,mergedAt,mergeable,mergeStateStatus,headRefOid,"
+                "statusCheckRollup,comments,reviews",
             ]
         )
         if rc != 0:
@@ -413,8 +560,14 @@ class PrWatchProbe(Probe):
         return data if isinstance(data, dict) else None
 
     def _brief(self, head: str, reason: str, detail: str) -> str:
+        # A conversation signal has no head -- it is about the pull request, not
+        # about a commit -- and passes "" so the parenthetical is dropped rather
+        # than rendered empty.
+        subject = f"{self.repo}#{self.pr}"
+        if head:
+            subject += f" (head {head[:9]})"
         lines = [
-            f"PR watch signal on {self.repo}#{self.pr} (head {head[:9]}): {reason}",
+            f"PR watch signal on {subject}: {reason}",
             detail,
         ]
         if self.note:

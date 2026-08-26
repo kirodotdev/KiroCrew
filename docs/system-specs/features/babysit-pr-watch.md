@@ -43,12 +43,13 @@ probe never raises `Skip` / `Report` / `Done`; it returns a `Tick` of
 
 ## 3. Wake predicates
 
-Each fires once per head SHA per dedupe window (a force-push resets the
-memory immediately; while a condition persists on the same head, the alert
+Each fires once per dedupe window (while a condition persists, the alert
 re-arms after a few hours — the script cannot observe delivery, so dedupe is
 time-bounded rather than a permanent acknowledgement, and a delivery lost to
 a gateway failure costs a bounded delay, never a permanently suppressed
-signal):
+signal). Check-derived predicates are additionally scoped **per head SHA**, so
+a force-push resets their memory immediately; conversation predicates are not,
+because a comment is not a property of the commit (see below):
 
 | Reason | Trigger | Why it needs a brain |
 |---|---|---|
@@ -82,12 +83,67 @@ coming, and both would have been serviced by the same edit and the same push.
 Notably a full read of the same file concluded it had no defects — the fault is
 a property of real CI timing, not of the code, and only running it exposed it.
 
-Deliberately not watched: reviewer comment bodies, marker freshness, human
-discussion. Parsing those requires the judgment this design exists to stop
-paying for per-cycle; the woken agent does that reading, exactly as in a
-manual cycle. CANCELLED check runs are classified as noise (force-push twins
-and re-run leftovers dominate); the rare real one surfaces through the checks
-it cancelled around.
+The conversation IS watched -- comments and submitted reviews -- but only as
+*events*. The probe reports that something was
+said, naming the author and the timestamp, and never quotes the body. Reading
+the text, deciding whether a verdict is real, checking marker freshness and
+composing a rebuttal remain the woken agent's job, done with the session's own
+trust rather than a cron script's. That boundary is what keeps the judgment this
+design exists to stop paying for per-cycle out of the script, while still
+closing the gap that made the watch insufficient on its own: a comment moves no
+check, and a reviewer lane on this repository can report success while its
+comment body carries findings, so a rollup-only watch sits quiet on a green PR
+nobody has read.
+
+Two consequences of watching a conversation rather than a commit:
+
+- Conversation dedupe keys are **epoch-independent** (`epoch_scoped=False`) and
+  survive the force-push reset. A comment belongs to the pull request, not to
+  the commit under review, so pushing a fix minutes after a review must not
+  replay that review.
+- Comments the watcher's own account authored are ignored (`viewerDidAuthor`).
+  Without that the watch is a feedback loop: the woken agent posts a
+  disposition, the next tick sees a new comment and wakes it to read what it
+  just wrote.
+- A signal older than five hours is never new (`DEFAULT_COMMENT_HORIZON_SECS`, a
+  constant rather than a cron parameter -- as a knob it had no caller, so it
+  offered only a misconfiguration path; its one constraint is now asserted at
+  import against the kernel's own `DEFAULT_REALERT_SECS` rather than merely
+  documented). The probe holds no state of its own, so the horizon is
+  what stops arming a watch on a long-discussed PR from reporting its whole
+  history on the first tick.
+
+  ASYMMETRY, and it is what sets the value. The two ends of this number do NOT
+  cost the same. Too large costs arm-time replay: bounded, folded into ONE
+  coalesced brief naming N events, deduped forever after. Too small costs a MISS
+  -- a watch that stops ticking for longer than the horizon (machine asleep,
+  gateway down, cron auto-paused) never sees conversation posted in the gap, and
+  unlike the `blind` backstop it leaves no trace. This feature also retires the
+  nudge loop that would otherwise have read that comment eventually, so it removes
+  the backstop at the same time as it opens the window. One annoying wake is not
+  the price of a lost signal, so the horizon is pushed as close to `realert_secs`
+  as the kernel permits (five hours against six) rather than kept small, and the
+  relationship is asserted in code rather than only documented.
+
+  An earlier revision of this spec claimed raising the horizon "trades the loss
+  window for arm-time replay in equal measure, the same knob read from opposite
+  ends". That was wrong and is recorded here because the wrong version was the
+  stated reason for keeping the value low. The residual gap is now bounded by
+  five hours rather than one; closing it entirely still needs the probe-owned
+  state channel below, which lets a probe record its own baseline instead of
+  inferring one from wall-clock age.
+- The overall `reviewDecision` is deliberately NOT observed. It carries no
+  timestamp, so it cannot be aged against the horizon, and a PR that has sat in
+  `CHANGES_REQUESTED` for a week would wake once the moment a watch is armed --
+  the exact arm-time replay the horizon exists to prevent. It is also
+  near-redundant, since the decision is computed from reviews and a review that
+  moves it emits its own timestamped observation. The residue is a decision that
+  changes with no new review (a dismissal, or approvals invalidated by a push):
+  real, but nothing to act on urgently and undatable from this payload.
+
+CANCELLED check runs are classified as noise (force-push twins and re-run
+leftovers dominate); the rare real one surfaces through the checks it cancelled
+around.
 
 ## 4. Mechanics
 
@@ -142,10 +198,15 @@ it cancelled around.
 
 ## 5. Non-goals
 
-- **Replacing `monitor_start`.** Active-fix phases — where the agent pushes,
-  re-runs gates, and answers reviewers most cycles — keep the nudge loop.
-  Watch mode is for the waiting between them.
-- **Reviewer-verdict parsing in the watcher.** See §3.
+- **Replacing `monitor_start` entirely.** Watch mode now covers the whole
+  waiting phase, conversation included, so a PR babysit no longer needs a nudge
+  loop merely to notice a comment. Two things still keep `monitor_start`: an
+  active-fix phase, where the next step is driven by the agent's own unfinished
+  work rather than by anything observable on the PR, and watching subjects that
+  are not pull requests at all (a deployment, a ticket, someone else's CI run).
+  Retiring it for those needs a probe each, which is not this feature.
+- **Parsing verdict text in the watcher.** See §3: the probe reports that a
+  comment or review exists, never what it says.
 - **Multi-PR watches.** One cron per PR; the state file and the wake brief
   are per-PR, and `cron_list` stays legible.
 - **A new wake primitive.** The script-cron `Report` delivery path already
