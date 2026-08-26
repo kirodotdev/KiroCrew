@@ -662,15 +662,16 @@ async def _resolve_folder_ref_off_loop(ref: Any, *, create_missing: bool) -> tup
 
     When ``create_missing`` is True the resolver may persist new folders
     (``_save()`` → ``os.fsync``/``os.replace``), which is blocking filesystem
-    IO — run it in the shared executor so it never blocks the event loop.
-    ``create_missing=False`` is a pure in-memory walk, so it runs inline.
+    IO. ``create_missing=False`` walks the tree in memory and writes nothing,
+    but it still takes ``ArtifactFolderStore._lock`` — the same lock every
+    mutating call holds ACROSS its ``_save()``. Those mutations run in the
+    executor, so a read left inline blocks the gateway loop for the length of
+    somebody else's folder write. Both modes go to the executor.
     """
-    if not create_missing:
-        return _resolve_folder_ref(ref, create_missing=False)
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
         subprocess_executor(),
-        lambda: _resolve_folder_ref(ref, create_missing=True),
+        lambda: _resolve_folder_ref(ref, create_missing=create_missing),
     )
 
 
@@ -2764,13 +2765,21 @@ async def api_artifact_folders(request: web.Request) -> web.Response:
     try:
         # list_with_counts walks every artifact's meta.json (O(N) filesystem
         # scan). Offload it so the dashboard event loop stays responsive —
-        # same pattern as api_chat_folders.
+        # same pattern as api_chat_folders. breadcrumb() rides along in the
+        # same executor call: it takes the folder-store lock once per folder,
+        # so leaving it inline would put O(folders) lock acquisitions back on
+        # the loop and cost a round trip each.
+        def _list_serialized() -> list[dict[str, Any]]:
+            return [
+                _serialize_folder(f, path=fstore.breadcrumb(f["id"]))
+                for f in fstore.list_with_counts(store)
+            ]
+
         loop = asyncio.get_running_loop()
-        folders = await loop.run_in_executor(subprocess_executor(), fstore.list_with_counts, store)
+        out = await loop.run_in_executor(subprocess_executor(), _list_serialized)
     except (ArtifactError, OSError) as exc:
         logger.warning("artifact folder list failed: %s", exc)
         return _err(str(exc), status=500)
-    out = [_serialize_folder(f, path=fstore.breadcrumb(f["id"])) for f in folders]
     return _json_response({"folders": out})
 
 
@@ -2788,8 +2797,12 @@ def _spawn_artifact_folder_icon_task(request: web.Request, folder_id: str, name:
             if not icon:
                 return
             fstore = get_default_folder_store()
-            if fstore.exists(folder_id):
-                await _run_off_loop(lambda: fstore.set_icon(folder_id, icon))
+
+            def _set_icon_if_present() -> None:
+                if fstore.exists(folder_id):
+                    fstore.set_icon(folder_id, icon)
+
+            await _run_off_loop(_set_icon_if_present)
         except Exception:  # noqa: BLE001 — best-effort background task
             logger.debug("artifact folder icon generation failed for %s", folder_id, exc_info=True)
 
@@ -2828,7 +2841,9 @@ async def api_artifact_folder_create(request: web.Request) -> web.Response:
             body.get("parent"), create_missing=True
         )
     else:
-        parent_id, ferr = _resolve_folder_ref(body.get("parent_id"), create_missing=False)
+        parent_id, ferr = await _resolve_folder_ref_off_loop(
+            body.get("parent_id"), create_missing=False
+        )
     if ferr:
         _audit(tool="artifact_folder_create", request=request, outcome="denied", error=ferr)
         return _err(ferr)
@@ -2850,9 +2865,8 @@ async def api_artifact_folder_create(request: web.Request) -> web.Response:
         outcome="success",
         extra={"folder_id": folder["id"]},
     )
-    return _json_response(
-        _serialize_folder(folder, path=fstore.breadcrumb(folder["id"])), status=201
-    )
+    path = await _run_off_loop(lambda: fstore.breadcrumb(folder["id"]))
+    return _json_response(_serialize_folder(folder, path=path), status=201)
 
 
 async def api_artifact_folder_update(request: web.Request) -> web.Response:
@@ -2869,13 +2883,13 @@ async def api_artifact_folder_update(request: web.Request) -> web.Response:
         return _err("restricted session cannot update folders", status=403)
     fid = request.match_info.get("id", "")
     fstore = get_default_folder_store()
-    if not fstore.exists(fid):
+    if not await _run_off_loop(lambda: fstore.exists(fid)):
         return _err("folder not found", status=404)
     try:
         body = await _read_json_body(request)
     except ArtifactValidationError as exc:
         return _err(str(exc))
-    folder = fstore.get(fid)
+    folder = await _run_off_loop(lambda: fstore.get(fid))
     if folder is None:  # exists() checked above; guards against a concurrent delete
         return _err("folder not found", status=404)
 
@@ -2929,7 +2943,8 @@ async def api_artifact_folder_update(request: web.Request) -> web.Response:
     # parity) — unless this same request set an explicit icon, which wins.
     if "name" in body and "icon" not in body:
         _spawn_artifact_folder_icon_task(request, fid, str(body["name"]))
-    return _json_response(_serialize_folder(updated, path=fstore.breadcrumb(fid)))
+    path = await _run_off_loop(lambda: fstore.breadcrumb(fid))
+    return _json_response(_serialize_folder(updated, path=path))
 
 
 async def api_artifact_folder_delete(request: web.Request) -> web.Response:
@@ -2952,7 +2967,7 @@ async def api_artifact_folder_delete(request: web.Request) -> web.Response:
         return _err("restricted session cannot delete folders", status=403)
     fid = request.match_info.get("id", "")
     fstore = get_default_folder_store()
-    if not fstore.exists(fid):
+    if not await _run_off_loop(lambda: fstore.exists(fid)):
         return _err("folder not found", status=404)
     raw = (request.query.get("delete_contents") or "").strip().lower()
     delete_contents = raw in ("1", "true", "yes")
@@ -3016,7 +3031,9 @@ async def api_artifact_set_folder(request: web.Request) -> web.Response:
             body.get("folder"), create_missing=True
         )
     else:
-        folder_id, ferr = _resolve_folder_ref(body.get("folder_id"), create_missing=False)
+        folder_id, ferr = await _resolve_folder_ref_off_loop(
+            body.get("folder_id"), create_missing=False
+        )
     if ferr:
         _audit(
             tool="artifact_set_folder",
@@ -3027,7 +3044,8 @@ async def api_artifact_set_folder(request: web.Request) -> web.Response:
         )
         return _err(ferr)
     # A non-empty id passed directly must reference a real folder.
-    if folder_id and not get_default_folder_store().exists(folder_id):
+    fstore = get_default_folder_store()
+    if folder_id and not await _run_off_loop(lambda: fstore.exists(folder_id)):
         _audit(
             tool="artifact_set_folder",
             request=request,
