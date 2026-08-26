@@ -1001,7 +1001,7 @@ async def api_terminal_create(request: web.Request) -> web.Response:
             resources=f"max_sessions={max_sessions}",
         )
         return web.json_response(
-            {"error": f"Max {max_sessions} sessions"},
+            {"error": f"Max {max_sessions} sessions", "code": "terminal_max_sessions"},
             status=429,
         )
 
@@ -1072,9 +1072,15 @@ async def api_terminal_redact(request: web.Request) -> web.Response:
         if not isinstance(text, str):
             raise TypeError
     except Exception:
-        return web.json_response({"error": "expected JSON body {text: string}"}, status=400)
+        return web.json_response(
+            {"error": "expected JSON body {text: string}", "code": "terminal_invalid_body"},
+            status=400,
+        )
     if len(text.encode("utf-8", errors="replace")) > _REDACT_MAX_BYTES:
-        return web.json_response({"error": "selection too large"}, status=413)
+        return web.json_response(
+            {"error": "selection too large", "code": "terminal_selection_too_large"},
+            status=413,
+        )
     # This is the ONLY credential scan on the path from PTY output to a model,
     # so it runs unconditionally and there is no configuration that skips it.
     # A contiguous selection is also the only input the redactors can be
@@ -1093,7 +1099,10 @@ async def api_terminal_redact(request: web.Request) -> web.Response:
     except Exception:
         # Fail closed: the caller gets no text to insert.
         logger.exception("terminal: selection redaction failed")
-        return web.json_response({"error": "redaction failed"}, status=500)
+        return web.json_response(
+            {"error": "redaction failed", "code": "terminal_redaction_failed"},
+            status=500,
+        )
     return web.json_response({"text": redacted})
 
 
@@ -1446,19 +1455,27 @@ async def api_terminal_complete(request: web.Request) -> web.Response:
     except Exception:
         _log_complete(caller, "denied", "invalid_body")
         return web.json_response(
-            {"error": "expected JSON body "
-                      "{session_id: string, token?: string, folders_only?: boolean, "
-                      "argv?: string[]}"},
+            {
+                "error": "expected JSON body "
+                         "{session_id: string, token?: string, folders_only?: boolean, "
+                         "argv?: string[]}",
+                "code": "terminal_invalid_body",
+            },
             status=400,
         )
     if len(token) > _COMPLETE_TOKEN_MAX:
         _log_complete(caller, "denied", "token_too_long")
-        return web.json_response({"error": "token too long"}, status=413)
+        return web.json_response(
+            {"error": "token too long", "code": "terminal_token_too_long"}, status=413
+        )
 
     sess = _get_registry(request).get(session_id)
     if sess is None:
         _log_complete(caller, "denied", "unknown_session")
-        return web.json_response({"error": "Unknown terminal session"}, status=404)
+        return web.json_response(
+            {"error": "Unknown terminal session", "code": "terminal_unknown_session"},
+            status=404,
+        )
 
     cwd = await _session_cwd_cached(sess)
     dir_part, prefix = _split_path_token(token)

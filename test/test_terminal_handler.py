@@ -3280,3 +3280,110 @@ class TestPollTerminalTitles:
              patch("asyncio.sleep", side_effect=[None, asyncio.CancelledError]):
             await terminal.poll_terminal_titles(self._app(sess))  # must not raise
         ws.send_str.assert_not_awaited()
+
+
+class TestTerminalRefusalCodes:
+    """Every JSON refusal from the terminal routes carries a machine-readable
+    ``code`` (contract gate: ``test/test_error_code_contract.py``).
+
+    Only the JSON routes are in scope. ``api_terminal_ws``, create's auth/enable
+    guards, and delete answer ``web.Response(text=...)`` — a plain-text contract
+    that carries no envelope to put a code in, and giving them one would change
+    their content type rather than complete this one.
+    """
+
+    @staticmethod
+    def _body(resp):
+        return json.loads(resp.body)
+
+    @pytest.mark.asyncio
+    async def test_create_refuses_over_the_session_cap_with_a_code(self):
+        registry = {"s1": _make_session(), "s2": _make_session()}
+        req = _make_request(registry=registry)
+        with patch.object(
+            terminal, "_get_config", return_value={"enabled": True, "max_sessions": 2}
+        ), patch.object(terminal, "_sel") as mock_sel:
+            mock_sel.return_value.log_api_access = MagicMock()
+            resp = await terminal.api_terminal_create(req)
+        assert resp.status == 429
+        assert self._body(resp)["code"] == "terminal_max_sessions"
+
+    @pytest.mark.asyncio
+    async def test_redact_refusals_are_coded(self):
+        cases = [
+            ({"text": 42}, 400, "terminal_invalid_body"),
+            ({"text": "x" * (terminal._REDACT_MAX_BYTES + 1)}, 413,
+             "terminal_selection_too_large"),
+        ]
+        for body, status, code in cases:
+            req = _make_request()
+            req.json = AsyncMock(return_value=body)
+            with patch.object(terminal, "_is_enabled", return_value=True):
+                resp = await terminal.api_terminal_redact(req)
+            assert resp.status == status, body
+            assert self._body(resp)["code"] == code, body
+
+    @pytest.mark.asyncio
+    async def test_a_failed_redaction_is_coded_and_still_fails_closed(self):
+        """The 500 must name the operation without carrying the selection: this
+        route exists to keep a credential out of the model's input, so its own
+        failure must not put the text back in the response."""
+        secret = "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        req = _make_request()
+        req.json = AsyncMock(return_value={"text": secret})
+        with patch.object(terminal, "_is_enabled", return_value=True), \
+             patch.object(terminal, "redact_exfiltration_urls", side_effect=RuntimeError):
+            resp = await terminal.api_terminal_redact(req)
+        assert resp.status == 500
+        assert self._body(resp)["code"] == "terminal_redaction_failed"
+        assert "wJalrXUtnFEMI" not in resp.text
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("body", "status", "reason"),
+        [
+            ({"session_id": 42}, 400, "invalid_body"),
+            ({"session_id": "s1", "token": "x" * (4096 + 1)}, 413, "token_too_long"),
+            ({"session_id": "missing"}, 404, "unknown_session"),
+        ],
+    )
+    async def test_complete_refusal_code_is_the_audited_reason(
+        self, body: dict, status: int, reason: str
+    ) -> None:
+        """`_log_complete` already records a fixed reason word for every refusal
+        and the response then dropped it. The code is that word, so the audit
+        trail and the API cannot drift apart."""
+        req = _make_request(registry={})
+        req.json = AsyncMock(return_value=body)
+        with patch.object(terminal, "_is_enabled", return_value=True), \
+             patch.object(terminal, "_sel") as mock_sel:
+            log = MagicMock()
+            mock_sel.return_value.log_api_access = log
+            resp = await terminal.api_terminal_complete(req)
+
+        assert resp.status == status
+        assert self._body(resp)["code"] == f"terminal_{reason}"
+        assert log.call_args.kwargs["resources"] == reason
+
+    @pytest.mark.asyncio
+    async def test_every_json_refusal_carries_a_code_and_its_prose(self):
+        """Per-file ratchet: no JSON refusal may regress to prose-only."""
+        collected = []
+
+        req = _make_request()
+        req.json = AsyncMock(return_value={"text": 42})
+        with patch.object(terminal, "_is_enabled", return_value=True):
+            collected.append(await terminal.api_terminal_redact(req))
+
+        req = _make_request(registry={})
+        req.json = AsyncMock(return_value={"session_id": "missing"})
+        with patch.object(terminal, "_is_enabled", return_value=True), \
+             patch.object(terminal, "_sel") as mock_sel:
+            mock_sel.return_value.log_api_access = MagicMock()
+            collected.append(await terminal.api_terminal_complete(req))
+
+        for resp in collected:
+            body = self._body(resp)
+            assert resp.status >= 400, body
+            assert isinstance(body.get("code"), str) and body["code"], body
+            assert isinstance(body.get("error"), str) and body["error"], body
