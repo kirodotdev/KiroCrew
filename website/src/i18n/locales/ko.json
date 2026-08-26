@@ -5073,7 +5073,7 @@
         "revocable": "설정 → 보안 → 신뢰된 서드파티 앱에서 언제든지 취소할 수 있습니다. 취소하면 해당 앱은 동작을 멈춥니다.",
         "scope": "이는 {{app}}에만 적용됩니다. 다른 모든 서드파티 앱은 계속 차단됩니다.",
         "source": "게시처",
-        "title": "{{app}}이(가) 자체 코드를 실행하도록 신뢰하시겠습니까?",
+        "title": "‘{{app}}’이(가) 자체 코드를 실행하도록 신뢰하시겠습니까?",
         "working": "신뢰하고 활성화하는 중…"
       },
       "types": {
@@ -9364,8 +9364,8 @@
       "worktrees_count": "워크트리({{count}})",
       "worktrees_created_under_a_previous_repository_na": "이전 저장소 이름으로 생성된 워크트리입니다. 기본적으로 숨겨지며, 병합된 항목 정리 대상에는 포함됩니다.",
       "cancel_staged_cutover": "준비된 전환 취소",
-      "keeps_name_the_live_target_and_discards_the_stag": "{{name}}이(가) 라이브 대상으로 유지되고 {{staged}}(으)로 준비된 전환은 취소됩니다. 아무것도 재시작되지 않습니다 — 게이트웨이는 현재 코드로 계속 실행됩니다.",
-      "keeps_this_checkout_the_live_target_and_discards": "이 체크아웃이 라이브 대상으로 유지되고 {{staged}}(으)로 준비된 전환은 취소됩니다(아무것도 재시작되지 않음)",
+      "keeps_name_the_live_target_and_discards_the_stag": "‘{{name}}’이(가) 라이브 대상으로 유지되고 ‘{{staged}}’(으)로 준비된 전환은 취소됩니다. 아무것도 재시작되지 않습니다 — 게이트웨이는 현재 코드로 계속 실행됩니다.",
+      "keeps_this_checkout_the_live_target_and_discards": "이 체크아웃이 라이브 대상으로 유지되고 ‘{{staged}}’(으)로 준비된 전환은 취소됩니다(아무것도 재시작되지 않음)",
       "cancel_staged_cutover_2": "준비된 전환을 취소할까요?",
       "keep_cutover": "전환 유지",
       "cutover_staged_run_cmd_to_finish_or_cancel": "전환 준비 완료: 게이트웨이가 다음에 시작될 때 이 워크트리가 라이브로 전환됩니다. 마무리하려면 `{{cmd}}`을(를) 실행하고, 되돌리려면 이 행의 메뉴 → 준비된 전환 취소를 사용하세요. 그전까지 게이트웨이는 이전 체크아웃으로 계속 실행됩니다.",

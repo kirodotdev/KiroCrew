@@ -660,7 +660,7 @@ describe('DevFleetPage', () => {
     const item = within(await screen.findByRole('menu')).getByText('Make live')
     fireEvent.click(item)
     await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
-    expect(screen.getByText('Make "feature-x" live?')).toBeInTheDocument()
+    expect(screen.getByText('Make “feature-x” live?')).toBeInTheDocument()
   })
 
   it('hides "Make live" for the worktree that is already live', async () => {
@@ -831,7 +831,7 @@ describe('DevFleetPage', () => {
     expect(btn).toBeInTheDocument()
     fireEvent.click(btn)
     await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
-    expect(screen.getByText('Make "main" live?')).toBeInTheDocument()
+    expect(screen.getByText('Make “main” live?')).toBeInTheDocument()
   })
 
   it('hides "Make live" on the MAIN row when main IS live', async () => {
@@ -960,7 +960,7 @@ describe('DevFleetPage', () => {
     fireEvent.click(screen.getByLabelText('More actions'))
     fireEvent.click(within(await screen.findByRole('menu')).getByText('Make live'))
     await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
-    expect(screen.getByText('Make "feature-x" live?')).toBeInTheDocument()
+    expect(screen.getByText('Make “feature-x” live?')).toBeInTheDocument()
   })
 
   it('outside-click closes the portaled row-actions menu', async () => {

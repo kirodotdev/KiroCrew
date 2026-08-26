@@ -5062,7 +5062,7 @@
         "kirocrew_registry": "{{productName}} レジストリ"
       },
       "trustAppModal": {
-        "title": "{{app}} に独自のコードの実行を許可しますか？",
+        "title": "「{{app}}」に独自のコードの実行を許可しますか？",
         "scope": "これは {{app}} にのみ適用されます。その他のサードパーティーアプリはブロックされたままです。",
         "on_cancel": "キャンセルしても何も変わりません：{{app}} はインストールされたままオフの状態で、後からオンにできます。",
         "intro": "{{app}} を信頼すると、{{productName}} は以下のすべてを許可します。",
@@ -9364,8 +9364,8 @@
       "worktrees_count": "ワークツリー（{{count}}）",
       "worktrees_created_under_a_previous_repository_na": "以前のリポジトリ名の下で作成されたワークツリー。デフォルトでは非表示。マージ済み削除の対象です。",
       "cancel_staged_cutover": "準備済みの切り替えをキャンセル",
-      "keeps_name_the_live_target_and_discards_the_stag": "{{name}} がライブ対象のままとなり、{{staged}} への準備済みの切り替えは破棄されます。何も再起動されません — ゲートウェイは現在のコードで動作し続けます。",
-      "keeps_this_checkout_the_live_target_and_discards": "このチェックアウトがライブ対象のままとなり、{{staged}} への準備済みの切り替えは破棄されます（何も再起動されません）",
+      "keeps_name_the_live_target_and_discards_the_stag": "「{{name}}」 がライブ対象のままとなり、「{{staged}}」 への準備済みの切り替えは破棄されます。何も再起動されません — ゲートウェイは現在のコードで動作し続けます。",
+      "keeps_this_checkout_the_live_target_and_discards": "このチェックアウトがライブ対象のままとなり、「{{staged}}」 への準備済みの切り替えは破棄されます（何も再起動されません）",
       "cancel_staged_cutover_2": "準備済みの切り替えをキャンセルしますか？",
       "keep_cutover": "切り替えを維持",
       "cutover_staged_run_cmd_to_finish_or_cancel": "切り替え準備完了：ゲートウェイの次回起動時にこのワークツリーがライブになります。完了するには `{{cmd}}` を実行するか、この行のメニュー → 準備済みの切り替えをキャンセル で取り消せます。それまでゲートウェイは以前のチェックアウトで動作し続けます。",

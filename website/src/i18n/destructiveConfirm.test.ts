@@ -165,11 +165,15 @@ describe('destructive confirmations are translated', () => {
  * `CONFIRM_OPERAND_KEY_EXEMPTIONS`, or have only placeholder-name-exempt
  * interpolations. This list is then the per-locale glyph pin. When adding a
  * destructive confirm that interpolates a user-supplied name, add it here.
+ * NOTE: the sweep only sees keys matching `/confirm/i` — a confirm prompt
+ * named `…_title` / `delete_x` / `make_x_live` is invisible to it and must
+ * be pinned here by hand (#5725; several entries below are exactly that).
  */
 export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'apps.awsControl.console.delete_confirm', // filename operand, quoted per locale
   'apps.codeReviewSage.components.learningRail.confirm_delete', // quoted since #4653
   'apps.crewCompanion.gallery.deleteConfirm', // ASCII quotes → locale pair #4821
+  'apps.mdNotebook.row.deleteTitle', // already quoted; pin + fr NNBSP fix #5725
   'apps.meetings.list.deleteConfirm', // already quoted; pin + fr/it glyph fix #4821
   'apps.mochi.gallery.delete_confirm', // ASCII quotes → locale pair #4821
   'apps.mochi.reset.title', // quoted by #4677
@@ -178,15 +182,23 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'apps.papyrus.workspace.co_author_conflict_discard_confirm', // #4676
   'apps.papyrus.workspace.delete_file_confirm', // quoted by #4677
   'autoImprovement.commitConfirm', // bare {{branch}} #4821
+  'components.appstore.trustAppModal.title', // bare {{app}} on the code-execution grant #5725
+  'components.artifactFolderDeleteDialog.delete_folder', // already quoted; pin #5725
   'pages.artifactDeployPage.destroy_confirm',
   'pages.artifactDeployPage.recall_confirm',
   'pages.artifactDeployPage.remove_profile_confirm',
   'pages.artifactsPage.remove_artifact_confirm',
   'pages.chatSidebar.delete_folder_confirm',
+  'pages.devFleetPage.keeps_name_the_live_target_and_discards_the_stag', // cancel-branch body, bare {{name}}/{{staged}} #5725
+  'pages.devFleetPage.keeps_this_checkout_the_live_target_and_discards', // cancel-branch body, bare {{staged}} #5725
+  'pages.devFleetPage.make_name_live', // ASCII quotes → locale pair #5725
+  'pages.devFleetPage.rebase_name', // ASCII quotes → locale pair #5725
+  'pages.devFleetPage.remove_name', // ASCII quotes → locale pair #5725
   'pages.overview.skillsTab.delete_confirm',
   'pages.overview.skillsTab.dismiss_confirm',
   'pages.overview.steeringTab.delete_confirm',
   'pages.schedulePage.cronFolders.confirm_delete_folder',
+  'pages.schedulePage.delete_named_job', // ASCII quotes → locale pair #5725
   'pages.settings.remoteCrewPanel.confirm_delete_of', // was fully bare #4821
   'pages.settings.securityPanel.trustedApps.revoke_confirm_title',
   'pages.settings.securityPanel.trustedApps.revoke_confirm_body',
@@ -225,6 +237,9 @@ export const EXEMPT_CONFIRM_PLACEHOLDER_NAMES = new Set([
  * kind-word form and record that decision.
  */
 export const CONFIRM_OPERAND_KEY_EXEMPTIONS: Record<string, string> = {
+  'apps.mochi.approval.inline_ask':
+    'the {{tool}} operand renders as a styled <code> chip via renderAroundTool, '
+    + 'so glyph quotes would double-decorate it (#5725)',
   'pages.agentsPage.delete_the_template_named_confirm':
     'kind word "template" sits next to the operand (#4657)',
   'pages.kiroCrewAgentsPage.delete_crew_named_confirm':

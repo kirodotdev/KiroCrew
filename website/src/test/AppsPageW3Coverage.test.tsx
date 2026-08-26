@@ -283,7 +283,7 @@ describe('AppsPage — enable path', () => {
     await catalogReady()
     const row = await browseRow('Pets')
     fireEvent.click(within(row).getByRole('button', { name: /^Enable/ }))
-    expect(await screen.findByText('Trust Pets to run its own code?')).toBeInTheDocument()
+    expect(await screen.findByText('Trust “Pets” to run its own code?')).toBeInTheDocument()
     // A consent prompt is not an error — the error card must stay away.
     expect(screen.queryByText(/Failed to enable/)).toBeNull()
   })
@@ -295,7 +295,7 @@ describe('AppsPage — enable path', () => {
     const row = await browseRow('Pets')
     fireEvent.click(within(row).getByRole('button', { name: /^Enable/ }))
     expect(await screen.findByText('gateway is busy')).toBeInTheDocument()
-    expect(screen.queryByText('Trust Pets to run its own code?')).toBeNull()
+    expect(screen.queryByText('Trust “Pets” to run its own code?')).toBeNull()
   })
 
   it('falls back to the generic enable message when the failure carries no text', async () => {
@@ -702,9 +702,6 @@ describe('AppsPage — Library enable and update', () => {
   it('opens consent from the Library using the installed record when the catalog has no row', async () => {
     // origin `local` and absent from the registry, so `trustTarget` has to fall
     // back to the installed record for the name shown in the consent dialog.
-    // Its manifest `repo` is author-supplied display metadata, not clone
-    // provenance: a genuinely local install remains repositoryless rather than
-    // turning that alias into consent authority.
     listApps.mockResolvedValue([{
       ...SECRETARY, name: 'localapp', displayName: 'Local App', enabled: false, origin: 'local',
     }])
@@ -714,7 +711,7 @@ describe('AppsPage — Library enable and update', () => {
     await screen.findByText('No apps available')
     goLibrary()
     fireEvent.click(await screen.findByRole('button', { name: 'Enable' }))
-    expect(await screen.findByText('Trust Local App to run its own code?')).toBeInTheDocument()
+    expect(await screen.findByText('Trust “Local App” to run its own code?')).toBeInTheDocument()
     expect(screen.queryByText('https://github.com/z/secretary')).toBeNull()
   })
 })

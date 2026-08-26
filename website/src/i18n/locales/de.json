@@ -5169,7 +5169,7 @@
         "kirocrew_registry": "{{productName}}-Registry"
       },
       "trustAppModal": {
-        "title": "{{app}} vertrauen und eigenen Code ausführen lassen?",
+        "title": "„{{app}}“ vertrauen und eigenen Code ausführen lassen?",
         "scope": "Das gilt nur für {{app}}. Alle anderen Apps von Drittanbietern bleiben blockiert.",
         "on_cancel": "Abbrechen ändert nichts: {{app}} bleibt installiert, aber ausgeschaltet, und du kannst sie später einschalten.",
         "intro": "Wenn du {{app}} vertraust, erlaubt {{productName}} der App alles Folgende.",
@@ -9513,8 +9513,8 @@
       "worktrees_count": "Worktrees ({{count}})",
       "worktrees_created_under_a_previous_repository_na": "Worktrees, die unter einem früheren Repository-Namen erstellt wurden. Standardmäßig ausgeblendet; werden weiterhin von „Zusammengeführte bereinigen“ abgedeckt.",
       "cancel_staged_cutover": "Vorgemerkte Umschaltung abbrechen",
-      "keeps_name_the_live_target_and_discards_the_stag": "{{name}} bleibt das Live-Ziel, die vorgemerkte Umschaltung auf {{staged}} wird verworfen. Nichts wird neu gestartet — das Gateway führt weiterhin den aktuellen Code aus.",
-      "keeps_this_checkout_the_live_target_and_discards": "Dieser Checkout bleibt das Live-Ziel, die vorgemerkte Umschaltung auf {{staged}} wird verworfen (nichts wird neu gestartet)",
+      "keeps_name_the_live_target_and_discards_the_stag": "„{{name}}“ bleibt das Live-Ziel, die vorgemerkte Umschaltung auf „{{staged}}“ wird verworfen. Nichts wird neu gestartet — das Gateway führt weiterhin den aktuellen Code aus.",
+      "keeps_this_checkout_the_live_target_and_discards": "Dieser Checkout bleibt das Live-Ziel, die vorgemerkte Umschaltung auf „{{staged}}“ wird verworfen (nichts wird neu gestartet)",
       "cancel_staged_cutover_2": "Vorgemerkte Umschaltung abbrechen?",
       "keep_cutover": "Umschaltung behalten",
       "cutover_staged_run_cmd_to_finish_or_cancel": "Umschaltung vorgemerkt: dieser Worktree wird beim nächsten Start des Gateways live. Führen Sie `{{cmd}}` aus, um sie abzuschließen, oder nutzen Sie das Menü dieser Zeile → Vorgemerkte Umschaltung abbrechen, um sie zurückzunehmen. Bis dahin führt das Gateway weiterhin den vorherigen Checkout aus.",
