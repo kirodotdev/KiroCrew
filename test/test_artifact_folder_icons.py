@@ -498,10 +498,14 @@ class TestIconRacesThroughHandlers:
             async def _hooked(fn):  # type: ignore[no-untyped-def]
                 out = await real_off_loop(fn)
                 # Land a manual pick the instant _apply_updates has committed,
-                # i.e. inside the arming window.
+                # i.e. inside the arming window. The handler offloads several
+                # reads before the commit, so key off the rename having landed
+                # rather than off which call this is.
                 if not fired["done"]:
-                    fired["done"] = True
-                    folders.set_icon(fid, "🧪")
+                    current = folders.get(fid)
+                    if current is not None and current["name"] == "Chemistry":
+                        fired["done"] = True
+                        folders.set_icon(fid, "🧪")
                 return out
 
             monkeypatch.setattr(art_handlers, "_run_off_loop", _hooked)
