@@ -223,6 +223,11 @@ async def _monitor_start(state: Any, session_key: str, args: dict[str, Any]) -> 
         max_cycles=max_cycles,
         stop_sentinel_path="",
         max_runtime_secs=max_runtime_secs,
+        # Every kwarg here is named explicitly -- there is no ``**args`` splat --
+        # so a field the tool accepts but this call omits is silently dropped
+        # rather than erroring. The authorizer owns the cap and both redaction
+        # passes, so nothing is validated twice by routing through it.
+        banner=str(args.get("banner") or ""),
         source="mcp-directive",
         caller="session-directive",
     )
@@ -344,6 +349,10 @@ async def _monitor_update(session_key: str, args: dict[str, Any]) -> str:
         max_cycles=patch.get("max_cycles"),
         active=patch.get("active"),
         max_runtime_secs=patch.get("max_runtime_secs"),
+        # ``.get`` returns None when the key is absent, which the authorizer reads
+        # as "leave unchanged", while an explicit "" reaches it as a clear -- the
+        # distinction the handler preserved by keeping a blank banner in the patch.
+        banner=patch.get("banner"),
         source="mcp-directive",
         caller="session-directive",
     )

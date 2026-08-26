@@ -987,8 +987,16 @@ deadline, and terminal outcome. Load reconstructs the typed record; a terminal
 current-version record with a contradictory active loop is deactivated. An
 AutoNudge dashboard response recursively passes every string in the structured
 monitor mapping through `redact_via_context`, including provider-controlled
-observation keys and values, before it leaves the backend. Legacy loop fields
-retain their existing response shape. An
+observation keys and values, before it leaves the backend. Legacy loop fields are
+scrubbed through that same projection rather than retaining their prior response
+shape, and a loop whose `message` the scrub changed carries `message_redacted`, while
+a write whose `message` the backend declined to store carries `message_ignored`. An
+optional, length-capped `banner` is accepted on POST and PATCH, and an unvetted store
+answers both authorizers with 503 rather than persisting. Rows whose addressing fields
+fail vetting are held aside in a separate persisted `autonudge.quarantine.json`
+sidecar, written additively before the main store lands and compacted only once it
+has; an unreadable sidecar refuses every write in that process and is moved aside
+under a `.corrupt-<ts>` name, so recovery is a restart rather than a hand repair. An
 unsupported monitor version is marked blocked in its compatibility view and
 retained for inspection rather than executed under an older policy; its raw
 future payload and outer active intent survive an unrelated store rewrite

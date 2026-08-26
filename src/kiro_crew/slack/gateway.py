@@ -115,7 +115,11 @@ from kiro_crew.dashboard.cron_inject import (
     prefetch_cron_history,
 )
 from kiro_crew.dashboard.handlers import MAX_PROMPT_BYTES
-from kiro_crew.dashboard.handlers.autonudge import compose_nudge_body
+from kiro_crew.dashboard.handlers.autonudge import (
+    compose_nudge_body,
+    render_nudge_message,
+    scrub_loop_text,
+)
 from kiro_crew.dashboard.handlers.updates import remediation_command as _remediation_command
 from kiro_crew.dashboard.handlers.usage import (
     persist_token_record_async,
@@ -5775,6 +5779,91 @@ class GatewayOrchestrator:
             )
         msg = await compose_nudge_body(loop.message, loop.stop_sentinel_path, loop.slot_key)
         tagged = f"[auto-nudge cycle {loop.cycle_count + 1}]\n{msg}"
+        # ONE STRING, TWO CONSUMERS, and only an opt-in ``banner`` splits them.
+        # ``tagged`` is the PROMPT and is never shortened — re-delivering the
+        # whole instruction every cycle is the guarantee the nudge exists to
+        # provide. ``visible`` is the transcript row, which a reader consults
+        # only to learn that a cycle happened. Without a banner it is built from
+        # the same string, so a loop whose ``message`` was already scrubbed on the
+        # way in appends a byte-identical row. It is a redacted COPY, not the same
+        # object: the sink scrub below rewrites a stored ``message`` nothing ever
+        # scanned, and for that producer the row differs from ``tagged``.
+        #
+        # A banner deliberately skips ``compose_nudge_body``: that composer
+        # prefixes the work-ledger snapshot, which the model wants and a display
+        # line does not. ``render_nudge_message`` still applies, so
+        # ``{{STOP_FILE}}`` resolves in a banner as it does in a message.
+        #
+        # ``isinstance`` rather than a bare falsiness test, and independently of
+        # the authorizer's own strip — the two cover different producers, so this
+        # is not a duplicated guard. The authorizer normalizes REST/workflow
+        # input; this covers a loop that reached the store another way
+        # (hand-edited ``autonudge.json``, an internal ``svc.add``). Two distinct
+        # inputs land here, and both must fall through to ``tagged``:
+        #
+        # * A whitespace-only banner is TRUTHY, and the resulting BLANK row is
+        #   worse than the verbose one: it hides the cycle body and puts nothing
+        #   in its place.
+        # * A NON-STRING banner is truthy too. ``banner: str`` is a plain
+        #   dataclass annotation, unenforced at runtime, and ``_load`` builds a
+        #   loop straight from parsed JSON — so a store carrying ``"banner": 5``
+        #   yields ``loop.banner == 5``, and calling ``.strip()`` on it raises
+        #   ``AttributeError``. That kills the fire, and because the service
+        #   re-arms an undelivered cycle with backoff, the loop then rearms
+        #   forever without ever delivering. A type that cannot render a display
+        #   line is absent, exactly like whitespace.
+        banner = loop.banner.strip() if isinstance(loop.banner, str) else ""
+        if banner:
+            shown = render_nudge_message(banner, loop.stop_sentinel_path)
+            # REDACT AT THE SINK, not only at the door. Both authorizer paths
+            # scrub a banner on the way IN, but a banner that reached the store
+            # another way — the same hand-edited ``autonudge.json`` / internal
+            # ``svc.add`` producers the strip above exists for — was never
+            # scrubbed, and ``_load`` replays it verbatim into this row, which is
+            # persisted and broadcast to every connected dashboard client. An
+            # input-side control does not discharge an output sink.
+            #
+            # ``_fire_slack_nudge`` already does exactly this before persisting
+            # its own replay row, so this brings the dashboard path onto the
+            # sibling's contract rather than inventing a rule.
+            #
+            # Applied AFTER ``render_nudge_message`` so the scanned string is the
+            # one that actually reaches the sink, substitution included.
+            #
+            # Through the platform policy, matching the banner arm below and the
+            # display sites elsewhere in this module: a composed host's own
+            # credential patterns must reach a row we persist and broadcast.
+            shown = redact_via_context(shown)
+            visible = f"[auto-nudge cycle {loop.cycle_count + 1}]\n{shown}"
+        else:
+            # The banner arm's sink-side scrub, applied to the row built from
+            # ``message``. Same threat, same surface: this row is persisted and
+            # broadcast to every connected dashboard client.
+            #
+            # A NO-OP under the DEFAULT policy, which is why byte-identity survives
+            # where it matters. ``authorize_autonudge_write`` already redacts
+            # ``message`` on the way in for REST and MCP, and redaction is
+            # idempotent, so a loop written through either produces a row
+            # identical to today's. It bites for the producers the banner
+            # arm above exists for — a hand-edited ``autonudge.json`` or an
+            # internal ``svc.add`` — whose ``message`` nothing has ever scanned
+            # and which ``_load`` replays verbatim into this row.
+            #
+            # A COMPOSED host policy is the deliberate exception: its own credential
+            # patterns apply here too, so such a host's authorized ``message`` CAN be
+            # altered, exactly as the banner arm above intends.
+            #
+            # ``_fire_slack_nudge`` already scrubs the whole ``tagged`` before
+            # persisting its own replay row, so this puts the dashboard path on
+            # the sibling's contract rather than inventing a rule.
+            #
+            # ``tagged`` itself is deliberately NOT scrubbed: it is the PROMPT,
+            # and rewriting the instruction the model receives would corrupt the
+            # one guarantee the nudge exists to provide.
+            #
+            # Through the platform policy for the same reason as the sibling arm
+            # above: this row is persisted and broadcast, so it is an egress site.
+            visible = redact_via_context(tagged)
         from kiro_crew.dashboard.chat import (
             _run_chat,  # circular import: gateway -> dashboard.chat -> gateway (chat dispatch references GatewayOrchestrator)
         )
@@ -5797,20 +5886,17 @@ class GatewayOrchestrator:
         # Show nudge as a distinct "nudge" role message in the slot history.
         # The structured meta lets the dashboard render a compact cycle chip
         # instead of echoing the whole instruction payload as a chat bubble.
-        # The tag stays in ``content`` because that is what the model reads,
-        # and the body is deliberately NOT duplicated into meta — the client
-        # derives it from content, so a multi-KB payload is stored and
-        # broadcast once rather than twice.
+        # The tag stays in ``content`` because the client derives the rendered
+        # body from it, and the body is deliberately NOT duplicated into meta —
+        # so a multi-KB payload is stored and broadcast once rather than twice.
+        # ``visible`` rather than ``tagged``: identical unless the loop opted
+        # into a ``banner``, in which case this row is the only thing shortened
+        # and ``_run_chat`` below still receives the full message.
         slot.append(
             "nudge",
-            tagged,
+            visible,
             "msg msg-nudge",
-            meta={
-                "nudge": {
-                    "cycle": loop.cycle_count + 1,
-                    "loop_id": loop.id,
-                }
-            },
+            meta={"nudge": {"cycle": loop.cycle_count + 1, "loop_id": loop.id}},
         )
         # FIX 2: an unattended app-owned nudge turn runs under the background
         # concurrency cap. This is the fleet's hot path — N armed loops fire
@@ -5916,6 +6002,25 @@ class GatewayOrchestrator:
             if event == "expired" and loop is not None:
                 self._notify_nudge_expired(loop)
             if self.dashboard_state and loop is not None:
+                # SCRUB BEFORE THE BROADCAST. ``message`` is the only free-text
+                # field in this payload and it reaches every connected dashboard
+                # client over ``autonudge_state``, rendered raw by
+                # ``AutoNudgePopover``. The REST serializer already scrubs it, so
+                # leaving this path bare left one autonudge egress uncovered: a
+                # credential arriving through a producer that bypasses the
+                # authorizer -- the goal loop, auto-research, issue-radar -- or a
+                # hand-edited store still went out here verbatim.
+                #
+                # Same rule as the REST serializer, and literally the same
+                # FUNCTION, so the two surfaces cannot disagree about what counts
+                # as credential-shaped -- including for a non-string ``message``,
+                # which a hand-edited store or a direct ``svc.add`` can supply
+                # since the dataclass annotation is not enforced on
+                # ``NudgeLoop(**raw)``. The remaining fields are addressing
+                # (``id``/``slot_key``, which ``_load`` refuses outright if
+                # credential-shaped or non-string) or numeric and boolean, so
+                # none of them can carry text.
+                safe_message = scrub_loop_text(loop.message, field="message")
                 self.dashboard_state.broadcast_ws(
                     "autonudge_state",
                     {
@@ -5924,7 +6029,11 @@ class GatewayOrchestrator:
                         "loop": {
                             "id": loop.id,
                             "slot_key": loop.slot_key,
-                            "message": loop.message,
+                            "message": safe_message,
+                            # Same derivation as the REST projection. This frame REPLACES
+                            # the REST-fetched loop in the client, so omitting the flag
+                            # disarmed the popover's overwrite guard.
+                            "message_redacted": safe_message != loop.message,
                             "idle_secs": loop.idle_secs,
                             "max_cycles": loop.max_cycles,
                             "max_runtime_secs": loop.max_runtime_secs,

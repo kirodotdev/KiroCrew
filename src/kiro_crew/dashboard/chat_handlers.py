@@ -3563,6 +3563,14 @@ async def _restore_slot_nudge_loop(
             max_cycles=cycles_left,
             stop_sentinel_path=loop.stop_sentinel_path,
             max_runtime_secs=runtime_left,
+            # Configuration, so it is replayed WHOLE — unlike the two budgets
+            # above, which are deliberately reduced. Omitting it fails silently:
+            # ``add()`` defaults it to "", the loop keeps running, and only the
+            # transcript rows change — back to the full multi-KB message every
+            # cycle, which is the harm the banner exists to remove. The blank is
+            # then persisted, so one failed close would discard the setting for
+            # good.
+            banner=loop.banner,
             admission_check=admission_check,
         )
     except Exception:

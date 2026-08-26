@@ -314,6 +314,21 @@ def schemas() -> list[dict[str, Any]]:
                             "loop deactivates and the user is notified"
                         ),
                     },
+                    "banner": {
+                        "type": "string",
+                        "description": (
+                            "Optional SHORT line shown in the transcript row "
+                            "instead of the full message (max 500 chars). The "
+                            "model still receives `message` whole every cycle — "
+                            "this changes only what is stored and displayed. Set "
+                            "it whenever `message` is long: a multi-KB "
+                            "instruction is otherwise re-stored and re-broadcast "
+                            "as a transcript row on every single cycle, which "
+                            "measured 51.8% of one long-running session's file. "
+                            "Something like \"watching PR #123 for CI\" is "
+                            "enough. Omit it for a short message"
+                        ),
+                    },
                 },
                 "required": ["message"],
             },
@@ -362,6 +377,15 @@ def schemas() -> list[dict[str, Any]]:
                             "New wall-clock budget in seconds, measured from "
                             "when the loop was first armed (0 = unlimited, max "
                             "604800 = 7 days). Omit to leave unchanged"
+                        ),
+                    },
+                    "banner": {
+                        "type": "string",
+                        "description": (
+                            "Replacement SHORT transcript row for future cycles "
+                            "(max 500 chars); the model still receives `message` "
+                            "whole. Pass \"\" to CLEAR it and go back to showing "
+                            "the full message. Omit to leave it unchanged"
                         ),
                     },
                 },
@@ -892,14 +916,22 @@ def monitor_start(name: str, args: dict[str, Any]) -> str:
     # the runaway backstop; the runtime budget is for callers that need a
     # hard TIME bound (e.g. "babysit this for at most 2 hours").
     max_runtime_secs = int(args.get("max_runtime_secs") or 0)
+    # CONDITIONAL, unlike the four above: a caller that sets no banner must see
+    # the payload shape it saw before, because the tool's contract test asserts
+    # this dict by EXACT equality. The applier reads it with ``.get``, so absent
+    # and empty mean the same thing there.
+    banner = str(args.get("banner") or "").strip()
+    payload: dict[str, Any] = {
+        "message": message,
+        "idle_secs": interval_secs,
+        "max_cycles": max_cycles,
+        "max_runtime_secs": max_runtime_secs,
+    }
+    if banner:
+        payload["banner"] = banner
     return _emit_directive(
         "monitor_start",
-        {
-            "message": message,
-            "idle_secs": interval_secs,
-            "max_cycles": max_cycles,
-            "max_runtime_secs": max_runtime_secs,
-        },
+        payload,
         (
             "Monitor loop requested on this session: the message will "
             f"re-inject every {interval_secs}s (user messages defer a due "
@@ -950,6 +982,13 @@ def monitor_update(name: str, args: dict[str, Any]) -> str:
         patch["max_cycles"] = int(args["max_cycles"])
     if args.get("max_runtime_secs") is not None:
         patch["max_runtime_secs"] = int(args["max_runtime_secs"])
+    # Blank is KEPT here, unlike ``message`` above which rejects it: a loop with
+    # no instruction cannot fire, but a loop with no banner is the default state,
+    # so "" has to round-trip as a request to CLEAR. Dropping it as "unchanged"
+    # would make a banner set once impossible to remove without tearing the loop
+    # down and losing its cycle count.
+    if args.get("banner") is not None:
+        patch["banner"] = str(args["banner"]).strip()
     if not patch:
         mcp_core.sel().log_tool_invocation(
             session_key=sk, source="mcp", tool_name="monitor_update", outcome="noop"
