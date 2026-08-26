@@ -37,6 +37,7 @@ from kiro_crew import agent_scratch, model_registry, platform_compat
 from kiro_crew.acp._dispatch import (
     _kiro_mcp_server_name,
     _kiro_tool_name,
+    build_permission_event,
     derive_edit_diff,
     extract_tool_purpose,
     make_unified_diff,
@@ -63,7 +64,6 @@ from kiro_crew.acp.types import (
     EVENT_MCP_OAUTH_REQUEST,
     EVENT_MCP_SERVER_INIT_FAILURE,
     EVENT_MCP_SERVER_INITIALIZED,
-    EVENT_PERMISSION_REQUEST,
     EVENT_SUBAGENT_ACTIVITY,
     EVENT_SUBAGENT_LIST,
     EVENT_TEXT_CHUNK,
@@ -886,17 +886,6 @@ _WAIT_RESPONSE_MAX_TIMEOUT = 600.0  # 10 min absolute ceiling
 # and must never gate tool dispatch, so a wedged SEL backend is abandoned (the
 # worker thread may leak, which is survivable) after this timeout.
 _SEL_AUDIT_TIMEOUT_SECONDS = 5.0
-# Legacy kiro permission options omit the spec-mandated `kind` field. Only
-# synthesize a kind for these well-known literals — unknown ids stay empty
-# so we don't fabricate intent the agent didn't express.
-_LEGACY_OPTION_KIND: dict[str, str] = {
-    OPTION_ALLOW_ONCE: "allow_once",
-    "allow": "allow_once",
-    OPTION_ALLOW_ALWAYS: "allow_always",
-    "reject_once": "reject_once",
-    "reject_always": "reject_always",
-}
-
 # Canonical ACP tool-kind value for shell/exec tools. kiro-cli and
 # claude-agent-acp both report shell commands with kind="execute". This is the
 # ONE place the ACP shell literal lives — _is_shell_kind() maps it to the
@@ -5578,174 +5567,35 @@ class AcpClient:
         return results
 
     def _build_permission_event(self, msg: JsonRpcMessage) -> AcpEvent:
-        request_id = msg.id if msg.id is not None else ""
-        params = msg.params or {}
-        # The permission payload comes straight from the agent process. A
-        # malformed toolCall (null/list/string) or options (null/dict/string,
-        # or non-dict entries) would raise AttributeError/TypeError here — and
-        # this runs inside the prompt-turn event generator, so the crash tears
-        # down the whole turn instead of degrading to the default options.
-        tool_call = params.get("toolCall", {})
-        if not isinstance(tool_call, dict):
-            tool_call = {}
-        title = tool_call.get("title", "unknown")
-        # The ACP toolCall carries a `kind` ("execute" for Bash, "read"/"edit"/
-        # …). Carry it onto the event as display/telemetry metadata. NOTE: the
-        # tool-name length-cap exemption does NOT key off this value — it uses
-        # the is_shell flag resolved below from the trusted tool_call cache, not
-        # the agent-influenced permission payload. Missing/empty stays "".
-        tool_kind = tool_call.get("kind", "")
-        # ACP spec uses optionId/name + kind ("allow_once"|"allow_always"|
-        # "reject_once"|"reject_always"); kiro-cli uses id/label
-        # with id values "allow_once"/"allow_always". Accept both shapes and
-        # remember the actual optionIds keyed by kind so approve_tool/
-        # reject_tool can echo the exact id the agent advertised.
-        options: list[dict[str, str]] = []
-        kind_to_id: dict[str, str] = {}
-        raw_options = params.get("options", [])
-        if not isinstance(raw_options, list):
-            raw_options = []
-        for o in raw_options:
-            if not isinstance(o, dict):
-                continue
-            opt_id = o.get("optionId") or o.get("id") or ""
-            opt_label = o.get("name") or o.get("label") or ""
-            opt_kind = o.get("kind") or ""
-            # A non-string id would crash opt_id.lower() below (and non-string
-            # label/kind would leak into the typed options list) — skip them.
-            if not isinstance(opt_id, str) or not opt_id:
-                continue
-            if not isinstance(opt_label, str):
-                opt_label = ""
-            if not isinstance(opt_kind, str):
-                opt_kind = ""
-            options.append({"id": opt_id, "label": opt_label})
-            if not opt_kind:
-                # Only synthesize a kind for well-known literals; unknown ids
-                # leave kind empty so we don't mis-classify agent intent.
-                opt_kind = _LEGACY_OPTION_KIND.get(opt_id.lower(), "")
-            if opt_kind:
-                kind_to_id.setdefault(opt_kind, opt_id)
-        if not options:
-            options = [
-                {"id": OPTION_ALLOW_ONCE, "label": "Allow once"},
-                {"id": OPTION_ALLOW_ALWAYS, "label": "Allow always"},
-            ]
-            kind_to_id = {"allow_once": OPTION_ALLOW_ONCE, "allow_always": OPTION_ALLOW_ALWAYS}
-        # Record optionIds the agent advertised so approve_tool / reject_tool
-        # can echo the exact ids. We record when EITHER an allow option (for
-        # approve) OR a reject option (for a clean reject) was advertised.
-        # Both backends advertise a reject option — claude-agent-acp as
-        # {kind:"reject_once", optionId:"reject"}, kiro-cli as
-        # {kind:"reject_once", optionId:"reject_once"} — and sending it is far
-        # better than a "cancelled" outcome: kiro-cli resolves a clean reject to
-        # a FAILED tool call and lets the turn continue to a model-inference
-        # boundary, whereas "cancelled" ends the turn outright with
-        # stopReason:"refusal" (and the claude adapter turns it into the cryptic
-        # "Tool use aborted"). reject_tool falls back to "cancelled" only for a
-        # backend that advertised no reject option at all.
-        any_allow = kind_to_id.get("allow_once") or kind_to_id.get("allow_always")
-        any_reject = kind_to_id.get("reject_once") or kind_to_id.get("reject_always")
-        if request_id != "" and (any_allow is not None or any_reject is not None):
-            recorded: dict[str, str] = {}
-            if any_allow is not None:
-                recorded["once"] = kind_to_id.get("allow_once") or any_allow
-                recorded["always"] = kind_to_id.get("allow_always") or any_allow
-            if any_reject is not None:
-                recorded["reject"] = any_reject
-            self._permission_options[request_id] = recorded
+        """Build one permission event through the transport-shared parser.
 
-        # Resolve full tool input — the preceding ToolCall session/notification
-        # carries the complete params that we cache by toolCallId.  The
-        # request_permission message only has a truncated human-readable title.
-        tool_input = ""
-        tool_call_id = tool_call.get("toolCallId", "")
-
-        # 1. Look up cached input from the ToolCall notification
-        if tool_call_id and tool_call_id in self._tool_call_inputs:
-            tool_input = self._tool_call_inputs.pop(tool_call_id)
-
-        # Recover the STRUCTURED raw params cached at the ToolCall notification
-        # (or carried inline on this permission message) so the governance gate
-        # can evaluate the filesystem.write (edit path) / network.egress (fetch
-        # url) scopes — the title alone cannot carry these.
-        raw_params: dict | None = None
-        if tool_call_id and tool_call_id in self._tool_call_params:
-            raw_params = self._tool_call_params.pop(tool_call_id)
-
-        # 2. Fallback: check if toolCall itself carries input/params
-        if not tool_input:
-            raw_input = tool_call.get("input") or tool_call.get("params")
-            if raw_input:
-                tool_input = (
-                    json.dumps(raw_input, indent=2)
-                    if isinstance(raw_input, (dict, list))
-                    else str(raw_input)
-                )
-                if raw_params is None and isinstance(raw_input, dict):
-                    raw_params = raw_input
-        elif raw_params is None:
-            # tool_input came from the cache; the permission message may still
-            # carry an inline params dict the gate can use.
-            inline = tool_call.get("input") or tool_call.get("params")
-            if isinstance(inline, dict):
-                raw_params = inline
-
-        # Resolve the canonical shell signal. SECURITY (deny-by-default): the
-        # ONLY trusted source is the value cached from the preceding tool_call
-        # notification (keyed by toolCallId). We deliberately do NOT fall back
-        # to the permission payload's own `kind`: that field is agent/LLM-
-        # influenced, and trusting it to waive the tool-name length cap on the
-        # very name being validated would let a malicious agent set
-        # kind="execute" on the permission payload to bypass the check. On a
-        # cache miss is_shell stays False and the length cap is enforced.
-        #
-        # Use .get() (not .pop()): a later tool_call_update refinement for the
-        # same toolCallId reads this same cache, so popping here would make that
-        # refinement wrongly report is_shell=False if it arrives after the
-        # permission event. The per-turn dispatch-loop .clear() handles cleanup.
-        cached_shell = self._tool_call_is_shell.get(tool_call_id) if tool_call_id else None
-        is_shell = bool(cached_shell)
-        if cached_shell is None and tool_input:
-            # Input resolved but the shell signal did not — the cache invariant
-            # (tool_call precedes permission) did not hold. Surface it so the
-            # miss is observable rather than silently enforcing the length cap.
-            logger.info(
-                "Permission event resolved tool_input but missed is_shell cache "
-                "(req=%s tool_call_id=%s)",
-                request_id,
-                tool_call_id,
-            )
-
-        logger.info("Permission requested for tool: %s (req=%s)", title, request_id)
-        if logger.isEnabledFor(logging.DEBUG):
-            _tc_redacted = repr(tool_call)
-            _tc_redacted, _ = redact_exfiltration_urls(_tc_redacted)
-            _tc_redacted, _ = redact_credentials(_tc_redacted)
-            logger.debug("Permission toolCall payload: %s", _tc_redacted)
-        return AcpEvent(
-            kind=EVENT_PERMISSION_REQUEST,
-            request_id=request_id,
-            title=title,
-            tool_kind=tool_kind,
-            options=options,
-            tool_input=tool_input,
-            tool_call_id=tool_call_id,
-            raw_tool_params=raw_params,
-            is_shell=is_shell,
-            # Trusted MCP server identity recovered from the preceding tool_call
-            # (the permission payload has no _meta). .get() mirrors the is_shell
-            # cache-read; empty on a miss (fail-closed for app-own auto-approve).
-            mcp_server_name=(
-                self._tool_call_mcp_server.get(tool_call_id, "") if tool_call_id else ""
-            ),
-            # Trusted tool name recovered from the preceding tool_call, mirroring
-            # mcp_server_name — lets the app-own-server auto-approve govern the
-            # canonical mcp__<server>__<tool> on this permission path.
-            tool_name=(
-                self._tool_call_tool_name.get(tool_call_id, "") if tool_call_id else ""
-            ),
+        The legacy direct client owns the same provenance caches as the shared
+        runtime. Routing them through one parser keeps a cached ``False`` shell
+        classification distinguishable from a cache miss and preserves cached
+        raw parameters across repeated permission frames for the same tool call.
+        """
+        event, recorded = build_permission_event(
+            msg,
+            tool_input_cache=self._tool_call_inputs,
+            shell_cache=self._tool_call_is_shell,
+            raw_params_cache=self._tool_call_params,
+            mcp_server_name_cache=self._tool_call_mcp_server,
+            tool_name_cache=self._tool_call_tool_name,
         )
+        if recorded is not None:
+            self._permission_options[event.request_id] = recorded
+        logger.info(
+            "Permission requested for tool: %s (req=%s)", event.title, event.request_id
+        )
+        if logger.isEnabledFor(logging.DEBUG):
+            params = msg.params if isinstance(msg.params, dict) else {}
+            tool_call = params.get("toolCall", {})
+            tool_call = tool_call if isinstance(tool_call, dict) else {}
+            redacted_payload = repr(tool_call)
+            redacted_payload, _ = redact_exfiltration_urls(redacted_payload)
+            redacted_payload, _ = redact_credentials(redacted_payload)
+            logger.debug("Permission toolCall payload: %s", redacted_payload)
+        return event
 
     def _backfill_context_window(self, pct: float) -> None:
         """Derive window/used tokens from a percentage-only reading.
