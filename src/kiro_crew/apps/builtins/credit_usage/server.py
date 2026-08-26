@@ -70,6 +70,121 @@ def _tokens_dir() -> Path:
     return data_home() / "usage" / "tokens"
 
 
+def _sessions_dir() -> Path:
+    """The chat-session transcript directory (one <safe_key>.jsonl per session)."""
+    return data_home() / "sessions"
+
+
+# ---------------------------------------------------------------------------
+# Session-title resolution (slot -> human-readable name)
+# ---------------------------------------------------------------------------
+#
+# Usage rows key spend by ``slot`` (e.g. "chat-12-...", "dashboard:chat-12-...",
+# "subagent:5e240c42"). The human title lives in the session transcript's first
+# line: {"_type": "metadata", "title": ...}. When no explicit title is set the
+# first user message (truncated) is the fallback, mirroring
+# history.ConversationLog.list_sessions. subagent:* slots have no transcript, so
+# they keep their slot as the label.
+
+_title_sig: tuple | None = None
+_title_map: dict[str, str] = {}
+
+
+def _sessions_signature(sdir: Path) -> tuple:
+    sig: list[tuple[str, int]] = []
+    try:
+        for p in sdir.glob("*.jsonl"):
+            try:
+                st = p.stat()
+            except OSError:
+                continue
+            sig.append((p.name, int(st.st_mtime)))
+    except OSError:
+        pass
+    return tuple(sig)
+
+
+def _title_from_file(path: Path) -> str | None:
+    """Extract a title: explicit metadata title, else first user message (<=80c)."""
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            lines = []
+            for i, ln in enumerate(f):
+                if i > 20:
+                    break
+                lines.append(ln.strip())
+    except OSError:
+        return None
+    if not lines:
+        return None
+    # Line 1 may be a metadata record carrying an explicit title.
+    try:
+        first = json.loads(lines[0]) if lines[0] else {}
+    except ValueError:
+        first = {}
+    if isinstance(first, dict) and first.get("_type") == "metadata" and first.get("title"):
+        return str(first["title"])[:120]
+    # Fallback: first user message anywhere in the scanned window (INCLUDING
+    # line 1 — a transcript with no metadata header starts with the user turn).
+    for ln in lines:
+        if not ln:
+            continue
+        try:
+            d = json.loads(ln)
+        except ValueError:
+            continue
+        if isinstance(d, dict) and d.get("role") == "user" and d.get("content"):
+            return str(d["content"])[:80]
+    return None
+
+
+def _normalize_slot(slot: str) -> str:
+    """Reduce a usage slot to the session-key core used to match a transcript.
+
+    Strips the ``dashboard:`` prefix (usage normalizes bare dashboard slots to
+    ``dashboard:chat-...``) and the ``dashboard_`` filename prefix so both forms
+    of the same conversation collapse to one lookup key.
+    """
+    s = slot.split(":", 1)[1] if ":" in slot and not slot.startswith("subagent:") else slot
+    if s.startswith("dashboard_"):
+        s = s[len("dashboard_") :]
+    return s
+
+
+def _load_title_map() -> dict[str, str]:
+    """Build {normalized-session-key: title}, memoized by the sessions-dir signature."""
+    global _title_sig, _title_map
+    sdir = _sessions_dir()
+    sig = _sessions_signature(sdir)
+    if sig == _title_sig and _title_map:
+        return _title_map
+    out: dict[str, str] = {}
+    try:
+        for p in sdir.glob("*.jsonl"):
+            if p.is_symlink():
+                continue
+            key = p.stem  # e.g. "dashboard_chat-12-1787734279"
+            title = _title_from_file(p)
+            if not title:
+                continue
+            norm = _normalize_slot(key)
+            # Prefer the first non-empty title seen; dedupe of stacked prefixes
+            # is not critical for a label.
+            out.setdefault(norm, title)
+    except OSError:
+        pass
+    _title_sig = sig
+    _title_map = out
+    return out
+
+
+def _title_for_slot(slot: str) -> str:
+    """Human label for a slot: session title if known, else the slot itself."""
+    if slot.startswith("subagent:"):
+        return slot  # subagents have no transcript/title
+    return _load_title_map().get(_normalize_slot(slot), slot)
+
+
 # ---------------------------------------------------------------------------
 # Reading + caching
 # ---------------------------------------------------------------------------
@@ -269,6 +384,7 @@ def _summary(rows: list[dict[str, Any]], days: int, tz_offset_min: int) -> dict[
     top_sessions: list[dict[str, Any]] = [
         {
             "slot": v["slot"],
+            "title": _title_for_slot(str(v["slot"])),
             "credits": round(float(v["credits"]), 4),
             "turns": int(v["turns"]),
             "surface": v["surface"],
@@ -305,10 +421,12 @@ def _recent(rows: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
     tail = rows[-limit:]
     out = []
     for row in reversed(tail):  # newest first
+        slot = str(row.get("slot", "") or "unknown")
         out.append(
             {
                 "ts": str(row.get("ts", "")),
-                "slot": str(row.get("slot", "") or "unknown"),
+                "slot": slot,
+                "title": _title_for_slot(slot),
                 "model": _model_label(row),
                 "surface": _surface_label(row),
                 "agent": _agent_label(row),

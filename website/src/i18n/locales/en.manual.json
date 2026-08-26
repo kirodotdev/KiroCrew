@@ -4517,6 +4517,9 @@
     "agoSeconds": "{{n}}s ago",
     "agoMinutes": "{{n}}m ago",
     "agoHours": "{{n}}h ago",
-    "agoDays": "{{n}}d ago"
+    "agoDays": "{{n}}d ago",
+    "updatedNow": "updated just now",
+    "pollNote": "Auto-refreshes every few seconds; credits land when each turn finishes.",
+    "refresh": "Refresh"
   }
 }

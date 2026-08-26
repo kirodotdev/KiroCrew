@@ -4163,7 +4163,10 @@
     "agoSeconds": "{{n}} 秒前",
     "agoMinutes": "{{n}} 分前",
     "agoHours": "{{n}} 時間前",
-    "agoDays": "{{n}} 日前"
+    "agoDays": "{{n}} 日前",
+    "updatedNow": "たった今更新",
+    "pollNote": "数秒ごとに自動更新。クレジットは各ターン完了時に反映されます。",
+    "refresh": "更新"
   },
   "components": {
     "agentDropdownList": {

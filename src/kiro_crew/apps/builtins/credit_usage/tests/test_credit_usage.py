@@ -104,3 +104,37 @@ def test_empty_history_is_safe() -> None:
     assert len(s["trend"]) == 30
     assert s["topSessions"] == []
     assert _server._recent([], limit=10) == []
+
+
+def test_normalize_slot_strips_prefixes() -> None:
+    assert _server._normalize_slot("dashboard:chat-12-999") == "chat-12-999"
+    assert _server._normalize_slot("dashboard_chat-12-999") == "chat-12-999"
+    assert _server._normalize_slot("chat-12-999") == "chat-12-999"
+    # subagent slots are left intact (no transcript to match)
+    assert _server._normalize_slot("subagent:abcd1234") == "subagent:abcd1234"
+
+
+def test_title_resolution_from_sessions_dir(tmp_path, monkeypatch) -> None:
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    # explicit metadata title
+    (sdir / "dashboard_chat-12-999.jsonl").write_text(
+        json.dumps({"_type": "metadata", "title": "Credit dashboard work"}) + "\n",
+        encoding="utf-8",
+    )
+    # no metadata title -> first user message fallback
+    (sdir / "dashboard_chat-7-111.jsonl").write_text(
+        json.dumps({"role": "user", "content": "help me fix the build"}) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(_server, "_sessions_dir", lambda: sdir)
+    _server._title_sig = None  # bust the module cache
+    _server._title_map = {}
+
+    assert _server._title_for_slot("chat-12-999") == "Credit dashboard work"
+    assert _server._title_for_slot("dashboard:chat-12-999") == "Credit dashboard work"
+    assert _server._title_for_slot("chat-7-111") == "help me fix the build"
+    # unknown slot falls back to the slot itself
+    assert _server._title_for_slot("chat-99-000") == "chat-99-000"
+    # subagent slots keep their slot label
+    assert _server._title_for_slot("subagent:abcd1234") == "subagent:abcd1234"

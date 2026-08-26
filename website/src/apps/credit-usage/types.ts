@@ -27,6 +27,7 @@ export interface BreakdownRow {
 
 export interface TopSession {
   slot: string
+  title: string
   credits: number
   turns: number
   surface: string
@@ -49,6 +50,7 @@ export interface SummaryResponse {
 export interface RecentRow {
   ts: string
   slot: string
+  title: string
   model: string
   surface: string
   agent: string

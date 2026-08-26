@@ -4163,7 +4163,10 @@
     "agoSeconds": "{{n}} 秒前",
     "agoMinutes": "{{n}} 分钟前",
     "agoHours": "{{n}} 小时前",
-    "agoDays": "{{n}} 天前"
+    "agoDays": "{{n}} 天前",
+    "updatedNow": "刚刚更新",
+    "pollNote": "每几秒自动刷新；每轮结束时才计入 credit。",
+    "refresh": "刷新"
   },
   "components": {
     "kiroAccountModal": {

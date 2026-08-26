@@ -4163,7 +4163,10 @@
     "agoSeconds": "{{n}}초 전",
     "agoMinutes": "{{n}}분 전",
     "agoHours": "{{n}}시간 전",
-    "agoDays": "{{n}}일 전"
+    "agoDays": "{{n}}일 전",
+    "updatedNow": "방금 업데이트",
+    "pollNote": "몇 초마다 자동 새로고침됩니다. 크레딧은 각 턴이 끝날 때 반영됩니다.",
+    "refresh": "새로고침"
   },
   "components": {
     "agentDropdownList": {

@@ -8,7 +8,7 @@
 // free). Credits are provider-reported, not derived from tokens, so everything
 // here is a straight sum of the `credits` field.
 import { useEffect, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Coins, Cpu, Layers, RefreshCw, Users } from 'lucide-react'
 
 import { Badge, Card, CardTitle, StatCard } from '../../components/ui'
@@ -202,8 +202,15 @@ function TopSessionsTable({ rows }: { rows: TopSession[] }) {
         <tbody>
           {rows.map((r) => (
             <tr key={r.slot} style={{ borderTop: '1px solid var(--border, rgba(127,127,127,0.2))' }}>
-              <td style={{ padding: '6px 8px', fontFamily: 'var(--font-mono, monospace)' }} title={r.slot}>
-                {shortSlot(r.slot)}
+              <td style={{ padding: '6px 8px' }} title={r.slot}>
+                <div style={{ fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 340 }}>
+                  {r.title && r.title !== r.slot ? r.title : shortSlot(r.slot)}
+                </div>
+                {r.title && r.title !== r.slot && (
+                  <div style={{ fontSize: 11, color: 'var(--text-muted, #888)', fontFamily: 'var(--font-mono, monospace)' }}>
+                    {shortSlot(r.slot)}
+                  </div>
+                )}
               </td>
               <td style={{ padding: '6px 8px' }}>
                 <Badge variant={surfaceVariant(r.surface)}>{r.surface}</Badge>
@@ -242,8 +249,11 @@ function RecentFeed({ rows }: { rows: RecentRow[] }) {
             }}
           >
             <Badge variant={surfaceVariant(r.surface)}>{r.surface}</Badge>
-            <span style={{ fontFamily: 'var(--font-mono, monospace)', minWidth: 90 }} title={r.slot}>
-              {shortSlot(r.slot)}
+            <span
+              style={{ minWidth: 90, maxWidth: 260, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+              title={r.slot}
+            >
+              {r.title && r.title !== r.slot ? r.title : shortSlot(r.slot)}
             </span>
             <span style={{ color: 'var(--text-muted, #888)' }}>{r.model}</span>
             <span style={{ flex: 1 }} />
@@ -285,10 +295,18 @@ export default function CreditUsagePage() {
     }
   }, [days])
 
+  // Tick once a second so the "updated Ns ago" label counts up between polls.
+  const [, setNowTick] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => setNowTick((n) => n + 1), 1000)
+    return () => clearInterval(id)
+  }, [])
+
   const summaryQ = useQuery({
     queryKey: ['credit-usage', 'summary', days],
     queryFn: () => creditUsageApi.summary(days),
     refetchInterval: POLL_MS,
+    refetchIntervalInBackground: true,
     refetchOnWindowFocus: true,
   })
 
@@ -296,12 +314,18 @@ export default function CreditUsagePage() {
     queryKey: ['credit-usage', 'recent'],
     queryFn: () => creditUsageApi.recent(RECENT_LIMIT),
     refetchInterval: POLL_MS,
+    refetchIntervalInBackground: true,
     refetchOnWindowFocus: true,
   })
 
   const s = summaryQ.data
   const totals = s?.totals
   const windowTotal = totals?.windowCredits ?? 0
+
+  const qc = useQueryClient()
+  const refreshNow = () => {
+    void qc.invalidateQueries({ queryKey: ['credit-usage'] })
+  }
 
   return (
     <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 1100, margin: '0 auto' }}>
@@ -310,9 +334,34 @@ export default function CreditUsagePage() {
         <Coins size={22} />
         <h2 style={{ margin: 0, fontSize: 20 }}>{i18nT('creditUsage.title')}</h2>
         <span style={{ flex: 1 }} />
+        <span style={{ fontSize: 12, color: 'var(--text-muted, #888)' }} title={i18nT('creditUsage.pollNote')}>
+          {relTime(new Date(summaryQ.dataUpdatedAt || Date.now()).toISOString()) || i18nT('creditUsage.updatedNow')}
+        </span>
         {(summaryQ.isFetching || recentQ.isFetching) && (
           <RefreshCw size={14} className="animate-spin" style={{ opacity: 0.6 }} />
         )}
+        <button
+          type="button"
+          onClick={refreshNow}
+          disabled={summaryQ.isFetching || recentQ.isFetching}
+          title={i18nT('creditUsage.refresh')}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '4px 10px',
+            borderRadius: 6,
+            border: '1px solid var(--border, rgba(127,127,127,0.3))',
+            background: 'transparent',
+            color: 'inherit',
+            cursor: summaryQ.isFetching || recentQ.isFetching ? 'default' : 'pointer',
+            fontSize: 12,
+            opacity: summaryQ.isFetching || recentQ.isFetching ? 0.6 : 1,
+          }}
+        >
+          <RefreshCw size={13} />
+          {i18nT('creditUsage.refresh')}
+        </button>
         <div style={{ display: 'flex', gap: 4 }}>
           {WINDOW_CHOICES.map((c) => (
             <button

@@ -4227,7 +4227,10 @@
     "agoSeconds": "{{n}} সেকেন্ড আগে",
     "agoMinutes": "{{n}} মিনিট আগে",
     "agoHours": "{{n}} ঘণ্টা আগে",
-    "agoDays": "{{n}} দিন আগে"
+    "agoDays": "{{n}} দিন আগে",
+    "updatedNow": "এইমাত্র আপডেট",
+    "pollNote": "প্রতি কয়েক সেকেন্ডে স্বয়ংক্রিয় রিফ্রেশ; প্রতিটি টার্ন শেষ হলে ক্রেডিট যোগ হয়।",
+    "refresh": "রিফ্রেশ"
   },
   "components": {
     "kiroAccountModal": {

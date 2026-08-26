@@ -4291,7 +4291,10 @@
     "agoSeconds": "há {{n}} s",
     "agoMinutes": "há {{n}} min",
     "agoHours": "há {{n}} h",
-    "agoDays": "há {{n}} d"
+    "agoDays": "há {{n}} d",
+    "updatedNow": "atualizado agora",
+    "pollNote": "Atualiza a cada poucos segundos; os créditos entram quando cada turno termina.",
+    "refresh": "Atualizar"
   },
   "components": {
     "kiroAccountModal": {

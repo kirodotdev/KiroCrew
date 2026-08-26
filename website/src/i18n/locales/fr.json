@@ -4291,7 +4291,10 @@
     "agoSeconds": "il y a {{n}} s",
     "agoMinutes": "il y a {{n}} min",
     "agoHours": "il y a {{n}} h",
-    "agoDays": "il y a {{n}} j"
+    "agoDays": "il y a {{n}} j",
+    "updatedNow": "mis à jour à l’instant",
+    "pollNote": "Rafraîchissement automatique toutes les quelques secondes ; les crédits arrivent à la fin de chaque tour.",
+    "refresh": "Actualiser"
   },
   "components": {
     "kiroAccountModal": {
