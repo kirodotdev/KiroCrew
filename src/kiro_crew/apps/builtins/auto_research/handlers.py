@@ -600,6 +600,80 @@ def _campaign_dir(campaign_id: str) -> Path:
     return d
 
 
+def _read_text_or_missing(path: Path) -> str | None:
+    """Read *path*, or return ``None`` when it does not exist.
+
+    Blocking; call through ``asyncio.to_thread``. The existence check rides
+    with the read so the pair costs one worker hop and a file removed between
+    them reads as missing rather than raising. Any OTHER ``OSError`` still
+    propagates, so an unreadable file keeps its 500 rather than being
+    downgraded to "no findings yet".
+    """
+    try:
+        return path.read_text()
+    except FileNotFoundError:
+        return None
+
+
+def _read_json_or_missing(path: Path) -> Any:
+    """Parse a JSON file, or return ``None`` when it is missing or unusable.
+
+    Blocking; call through ``asyncio.to_thread``. Both callers already treated
+    a corrupt file as "no data", so the parse error is folded in here.
+    """
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def _write_text(path: Path, text: str) -> None:
+    """Write *text* to *path*. Blocking; call off-loop.
+
+    Deliberately does NOT create missing parents: both callers wrote into an
+    existing campaign directory before the off-loop move, so a concurrent
+    campaign deletion must keep winning (recreating the directory here would
+    resurrect a deleted campaign's data).
+    """
+    path.write_text(text)
+
+
+def _write_new_cycle_files(pending: list[tuple[Path, str]]) -> bool:
+    """Write each cycle file that does not exist yet. Blocking; call off-loop.
+
+    The "already written by an earlier poll" check stays with the write it
+    guards, so idempotence costs no per-cycle stat on the event loop. Returns
+    whether anything was written.
+    """
+    wrote = False
+    for fpath, text in pending:
+        if fpath.exists():
+            continue
+        fpath.parent.mkdir(parents=True, exist_ok=True)
+        fpath.write_text(text)
+        wrote = True
+    return wrote
+
+
+def _copy_parent_findings(src: Path, dst: Path) -> None:
+    """Seed a forked campaign with its parent's findings. Blocking; call off-loop."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        content = src.read_text()
+    except FileNotFoundError:
+        return
+    dst.write_text(content)
+
+
+def _unlink_if_present(path: Path) -> bool:
+    """Remove *path*, reporting whether it was there. Blocking; call off-loop."""
+    try:
+        path.unlink()
+        return True
+    except FileNotFoundError:
+        return False
+
+
 def _questions_path(campaign_id: str) -> Path | None:
     """Path to the agent's pending clarification question (if any)."""
     d = _safe_campaign_dir(campaign_id)
@@ -878,6 +952,33 @@ def _campaign_transition_lock(campaign_id: str) -> asyncio.Lock:
         lock = asyncio.Lock()
         locks[campaign_id] = lock
     return lock
+
+
+async def _settle_before_cancellation(task: "asyncio.Task[Any]") -> Any:
+    """Await *task* and guarantee it SETTLES before cancellation propagates
+    out of this coroutine.
+
+    ``asyncio.to_thread`` keeps running after its awaiting task is cancelled,
+    so a caller holding the campaign transition lock would release it while
+    the filesystem mutation is still in flight — letting a lock-serialized
+    DELETE interleave and have its directory resurrected by the worker's
+    ``mkdir``. Mirrors the shield-and-settle discipline of the terminal
+    settlement in the watchdog path.
+    """
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError as cancelled:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                # Repeated shutdown cancellation must not cancel the worker
+                # wait; the thread finishes regardless, so keep settling.
+                continue
+            except Exception:
+                # The worker failed; the cancellation below still wins.
+                break
+        raise cancelled
 
 
 def _guarded_txn(
@@ -2305,9 +2406,11 @@ async def _poll_workflow_campaign(
             # progress, mark it FAILED rather than let it sit zombie forever.
             d = _safe_campaign_dir(campaign_id)
             run_file = (d / _WORKFLOW_RUN_FILE) if d else None
-            if run_file and run_file.exists():
+            run_meta = (
+                await asyncio.to_thread(_read_json_or_missing, run_file) if run_file else None
+            )
+            if isinstance(run_meta, dict):
                 try:
-                    run_meta = json.loads(run_file.read_text())
                     started_ts = float(run_meta.get("ts", 0))
                     if started_ts and (time.time() - started_ts) > 3600:
                         await _guarded_transition(
@@ -2358,11 +2461,10 @@ async def _poll_workflow_campaign(
             # per-investigation progress, and total_cycles is a UI counter, not the
             # DW round count. The DW script's max_rounds caps exploration rounds;
             # per_round is already bounded by parallel_workers to limit fan-out).
+            pending: list[tuple[Path, str]] = []
             for i in range(len(investigate)):
                 cycle_no = cycle_offset + i + 1
                 fpath = d.joinpath("findings", "cycle_%03d.json" % cycle_no)
-                if fpath.exists():
-                    continue  # already written by an earlier poll (idempotent)
                 meta, fin = investigate[i]
                 label = str(meta.get("label", ""))
                 insight = label[len("investigate: ") :] if label.startswith("investigate: ") else label
@@ -2375,13 +2477,21 @@ async def _poll_workflow_campaign(
                     "new_findings_count": 1,
                     "evidence_strength": "moderate",
                 }
-                fpath.parent.mkdir(parents=True, exist_ok=True)
-                fpath.write_text(json.dumps(finding, indent=2))
-                wrote = True
-            if wrote:
-                count = len(_list_cycle_files(campaign_id))
+                pending.append((fpath, json.dumps(finding, indent=2)))
+            if pending:
 
-                def _persist_cycle_count() -> None:
+                def _write_and_persist_cycles() -> bool:
+                    """Write new cycle files AND persist the count in ONE worker.
+
+                    The bookkeeping rides in the same worker as the mutation so a
+                    task cancellation delivered at an await cannot land between
+                    them — the thread finishes both or neither, mirroring
+                    ``_txn_and_notify``'s commit-then-notify discipline. Blocking;
+                    call off-loop.
+                    """
+                    if not _write_new_cycle_files(pending):
+                        return False
+                    count = len(_list_cycle_files(campaign_id))
                     db = _get_db()
                     try:
                         db.execute("BEGIN")
@@ -2396,8 +2506,17 @@ async def _poll_workflow_campaign(
                         db.commit()
                     finally:
                         db.close()
+                    return True
 
-                await asyncio.to_thread(_persist_cycle_count)
+                # One worker hop for the whole batch, bookkeeping included.
+                # Settled before cancellation can release the transition lock
+                # (see _settle_before_cancellation).
+                wrote = bool(
+                    await _settle_before_cancellation(
+                        asyncio.create_task(asyncio.to_thread(_write_and_persist_cycles))
+                    )
+                )
+            if wrote:
                 _emit_sse(
                     {
                         "type": "new_finding",
@@ -2412,7 +2531,11 @@ async def _poll_workflow_campaign(
                 if not report:
                     fs = (result or {}).get("findings") or []
                     report = "\n\n".join(str(x) for x in fs) if isinstance(fs, list) else ""
-                d.joinpath("FINDINGS.md").write_text(_redact_llm(report) or "(no findings gathered)")
+                await asyncio.to_thread(
+                    _write_text,
+                    d.joinpath("FINDINGS.md"),
+                    _redact_llm(report) or "(no findings gathered)",
+                )
 
                 def _complete_and_notify() -> dict | None:
                     r = _guarded_txn(
@@ -2797,10 +2920,11 @@ async def _handle_action(request: web.Request) -> web.Response:
         fork_dir = _safe_campaign_dir(result["id"])
         if parent_dir is None or fork_dir is None:
             return web.json_response({"error": "Invalid campaign ID"}, status=400)
-        fork_dir.mkdir(parents=True, exist_ok=True)
-        parent_findings = parent_dir / "FINDINGS.md"
-        if parent_findings.exists():
-            (fork_dir / "parent_findings.md").write_text(parent_findings.read_text())
+        # One hop: the copy reads the parent's findings (unbounded LLM output)
+        # and writes them into the fork, neither of which belongs on the loop.
+        await asyncio.to_thread(
+            _copy_parent_findings, parent_dir / "FINDINGS.md", fork_dir / "parent_findings.md"
+        )
         _audit("campaign_forked", result["id"], parent=cid)
         return web.json_response(result, status=201)
 
@@ -2915,8 +3039,8 @@ async def _handle_nudge(request: web.Request) -> web.Response:
     # Guarded: a Stop/Pause that committed while this handler ran must win —
     # restoring RUNNING over it would resurrect a campaign with no worker.
     qp = _questions_path(cid)
-    if qp and qp.exists():
-        qp.unlink()
+    cleared = await asyncio.to_thread(_unlink_if_present, qp) if qp is not None else False
+    if cleared:
         await _guarded_transition(
             cid, CampaignStatus.RUNNING, allowed_current=(CampaignStatus.NEEDS_INPUT,)
         )
@@ -3020,7 +3144,7 @@ async def _handle_to_artifact(request: web.Request) -> web.Response:
     if d is None:
         return web.json_response({"error": "Invalid campaign ID"}, status=400)
     findings_path = d / "FINDINGS.md"
-    if not findings_path.exists():
+    if not await asyncio.to_thread(findings_path.exists):
         return web.json_response({"error": "No findings yet"}, status=404)
 
     def _read_export_row() -> sqlite3.Row | None:
@@ -3038,7 +3162,9 @@ async def _handle_to_artifact(request: web.Request) -> web.Response:
     if row is None:
         return web.json_response({"error": "Not found"}, status=404)
     question = row["question"]
-    findings_md = findings_path.read_text()
+    findings_md = await asyncio.to_thread(_read_text_or_missing, findings_path)
+    if findings_md is None:
+        return web.json_response({"error": "No findings yet", "code": "findings_missing"}, status=404)
     subs = json.loads(row["sub_questions"] or "[]")
 
     # Prefer an LLM-authored report (synthesized + nicely formatted). Cap the
@@ -3203,7 +3329,7 @@ async def _handle_to_knowledge(request: web.Request) -> web.Response:
     if d is None:
         return web.json_response({"error": "Invalid campaign ID"}, status=400)
     findings_path = d / "FINDINGS.md"
-    if not findings_path.exists():
+    if not await asyncio.to_thread(findings_path.exists):
         return web.json_response({"error": "No findings yet"}, status=404)
     # Access knowledge store and pipeline from app state
     state = request.app.get("state")
@@ -3213,13 +3339,16 @@ async def _handle_to_knowledge(request: web.Request) -> web.Response:
     pipeline = request.app.get("knowledge_pipeline")
     if pipeline is None:
         return web.json_response({"error": "Knowledge pipeline unavailable"}, status=503)
+    raw_findings = await asyncio.to_thread(_read_text_or_missing, findings_path)
+    if raw_findings is None:
+        return web.json_response({"error": "No findings yet", "code": "findings_missing"}, status=404)
     # The Knowledge Library is an external surface (content surfaces to users and
     # agents via RAG/search), so redact credentials + exfil URLs before ingestion.
     # The agent may have encountered secrets mid-research; ingesting raw would
     # leak them. Write a sanitized copy and ingest THAT, never the raw file.
-    redacted = _redact_finding({"v": findings_path.read_text()})["v"]
+    redacted = _redact_finding({"v": raw_findings})["v"]
     sanitized_path = d / "findings_for_knowledge.md"
-    sanitized_path.write_text(redacted)
+    await asyncio.to_thread(_write_text, sanitized_path, redacted)
     uri = str(sanitized_path.resolve())
     # Dedup check
     existing = await asyncio.to_thread(store.get_source_by_uri, uri)
@@ -3408,12 +3537,9 @@ async def _handle_grill_tree(request: web.Request) -> web.Response:
     if d is None:
         return web.json_response({"error": "Invalid campaign ID"}, status=400)
     tree_path = d / "grill_tree.json"
-    if not tree_path.exists():
+    tree = await asyncio.to_thread(_read_json_or_missing, tree_path)
+    if tree is None:
         return web.json_response({"tree": []})
-    try:
-        tree = json.loads(tree_path.read_text())
-    except (json.JSONDecodeError, OSError):
-        tree = []
     # Never trust LLM output: node text/recommended fields are model-generated,
     # so redact credentials + exfiltration URLs before serving to the dashboard
     # (same treatment as cycle findings via _redact_finding).
