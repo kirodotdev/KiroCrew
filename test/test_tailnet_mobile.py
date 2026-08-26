@@ -36,6 +36,8 @@ the wrong thing would be destructive rather than merely unhelpful.
 from __future__ import annotations
 
 import asyncio
+import json
+import time
 from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import get_args
@@ -46,9 +48,20 @@ import pytest
 from kiro_crew.dashboard import tailnet
 from kiro_crew.dashboard.handlers import tailnet_mobile
 from kiro_crew.dashboard.tailnet import DaemonProbe
+from kiro_crew.dashboard.token_auth import (
+    LINK_WINDOW_SECS,
+    MAX_SESSION_TTL_SECS,
+    _b64url_encode,
+    generate_token,
+)
 
 _PORT = 5476
 _HOST = "desk.tail-abc.ts.net"
+
+
+def _owner_session_token(*, ttl_seconds: int = MAX_SESSION_TTL_SECS, **extra: str) -> str:
+    """A real caller credential, as the auth middleware would have validated it."""
+    return generate_token(_OWNER, ttl_seconds=ttl_seconds, extra=extra or None)
 
 
 def _probe(
@@ -344,6 +357,8 @@ def _request(
     app_identity: str | None = "",
     user: str | None = _OWNER,
     tailnet_host: str = "",
+    query_token: str = "",
+    cookie_token: str = "",
 ):
     """Minimal stand-in for the aiohttp request these handlers actually touch.
 
@@ -360,6 +375,9 @@ def _request(
     ``tailnet_host`` models the name the RUNNING server trusted at startup. Empty
     (the default) means the fixed allowlist does not carry the resolvable name,
     so ``_derive_step`` reports ``restart_gateway``. Ready paths must set it.
+    ``query_token`` / ``cookie_token`` model the credential the middleware
+    authenticated with, which the QR mint reads its caller bounds from. Both
+    empty (the default) exercises the fail-closed no-readable-token path.
     """
 
     class _Req:
@@ -372,6 +390,10 @@ def _request(
             }
             self.remote = "127.0.0.1"
             self.headers: dict[str, str] = {}
+            self.query: dict[str, str] = {"token": query_token} if query_token else {}
+            self.cookies: dict[str, str] = (
+                {f"mc_token_{port}": cookie_token} if cookie_token else {}
+            )
             self._items: dict[str, object] = {}
             if app_identity is not None:
                 self._items["app"] = app_identity
@@ -569,7 +591,9 @@ class TestQrRefusals:
                     tailnet_mobile, "render_qr_data_uri", return_value="data:image/png;base64,x"
                 ),
             ):
-                resp = await tailnet_mobile.api_tailnet_mobile_qr(_request(tailnet_host=_HOST))
+                resp = await tailnet_mobile.api_tailnet_mobile_qr(
+                    _request(tailnet_host=_HOST, cookie_token=_owner_session_token())
+                )
         assert resp.status == 200
         assert captured["extra"] == {"boot": current_boot_id()}
         assert "no_refresh" not in (captured["extra"] or {})
@@ -594,7 +618,9 @@ class TestQrRefusals:
                     tailnet_mobile, "render_qr_data_uri", return_value="data:image/png;base64,x"
                 ),
             ):
-                resp = await tailnet_mobile.api_tailnet_mobile_qr(_request(tailnet_host=_HOST))
+                resp = await tailnet_mobile.api_tailnet_mobile_qr(
+                    _request(tailnet_host=_HOST, cookie_token=_owner_session_token())
+                )
         assert resp.status == 200
         assert captured["extra"] == {"no_refresh": "1"}
         assert "boot" not in (captured["extra"] or {})
@@ -647,7 +673,9 @@ class TestQrRefusals:
                     tailnet_mobile, "render_qr_data_uri", return_value="data:image/png;base64,x"
                 ),
             ):
-                resp = await tailnet_mobile.api_tailnet_mobile_qr(_request(tailnet_host=_HOST))
+                resp = await tailnet_mobile.api_tailnet_mobile_qr(
+                    _request(tailnet_host=_HOST, cookie_token=_owner_session_token())
+                )
         assert resp.status == 200
         assert loads["n"] >= 2, "the handler must do its own read, not reuse _live_state's"
         assert captured["extra"] == {"boot": current_boot_id()}
@@ -696,6 +724,179 @@ class TestQrRefusals:
         assert resp.status == 200
         for call in audit.call_args_list:
             assert "SECRET-TOKEN-VALUE" not in " ".join(str(a) for a in call.args)
+
+
+class TestQrCallerBounds:
+    """The QR-minted token never out-scopes the session that authorized it.
+
+    Mirrors the coverage of the sibling mobile-link mint
+    (``test_mobile_login_link.py``): the mint reads the CALLER's own token
+    bounds through the shared ``_caller_bounds`` helper and carries them into
+    the credential. Behind ``tailscale serve`` every request reaches the
+    gateway from 127.0.0.1, so the token cannot be device-pinned — its own
+    bounds are the only limit that holds, which is what made this surface the
+    laundering path: one POST from a deliberately bounded owner session used to
+    mint a boot-bound, refresh-chained credential that outlived it.
+    """
+
+    @staticmethod
+    def _capture(captured: dict):
+        def _fake_mint(_sub, ttl_seconds=0, **kw):
+            captured["ttl"] = ttl_seconds
+            captured["extra"] = kw.get("extra")
+            return "tok"
+
+        return _fake_mint
+
+    async def _mint(self, captured: dict, **request_kw):
+        with _machine():
+            with (
+                patch.object(tailnet_mobile, "generate_token", side_effect=self._capture(captured)),
+                patch.object(
+                    tailnet_mobile, "render_qr_data_uri", return_value="data:image/png;base64,x"
+                ),
+            ):
+                return await tailnet_mobile.api_tailnet_mobile_qr(
+                    _request(tailnet_host=_HOST, **request_kw)
+                )
+
+    @pytest.mark.asyncio
+    async def test_a_no_refresh_caller_mints_a_no_refresh_credential(
+        self, _unrestricted, _quiet_audit
+    ) -> None:
+        """A caller whose session never grows a refresh chain must not mint a
+        credential that does — that is the laundering this gate closes."""
+        captured: dict[str, object] = {}
+        resp = await self._mint(
+            captured, cookie_token=_owner_session_token(ttl_seconds=600, no_refresh="1")
+        )
+        assert resp.status == 200
+        extra = captured["extra"]
+        assert isinstance(extra, dict) and extra["no_refresh"] == "1"
+
+    @pytest.mark.asyncio
+    async def test_a_short_lived_caller_caps_the_qr_ttl(self, _unrestricted, _quiet_audit) -> None:
+        """The default QR TTL is above this caller's remaining lifetime, so the
+        remaining lifetime wins — a short-lived session cannot lend more time
+        than it has."""
+        captured: dict[str, object] = {}
+        resp = await self._mint(captured, cookie_token=_owner_session_token(ttl_seconds=600))
+        assert resp.status == 200
+        assert isinstance(captured["ttl"], int)
+        assert 0 < captured["ttl"] <= 600 < tailnet_mobile.DEFAULT_QR_TTL_SECS
+
+    @pytest.mark.asyncio
+    async def test_the_reported_link_window_never_exceeds_the_lent_ttl(
+        self, _unrestricted, _quiet_audit
+    ) -> None:
+        """``link_window_secs`` reports the clamped click window, not the
+        constant — generate_token clamps the link-click ``exp`` to the session
+        TTL, so a caller lending less than the nominal window mints a QR whose
+        link dies with the ttl it lent, and the UI countdown must say so."""
+        captured: dict[str, object] = {}
+        resp = await self._mint(captured, cookie_token=_owner_session_token(ttl_seconds=120))
+        assert resp.status == 200
+        payload = json.loads(resp.body)
+        assert 0 < payload["link_window_secs"] <= 120
+        assert payload["link_window_secs"] == min(payload["ttl_secs"], LINK_WINDOW_SECS)
+
+    @pytest.mark.asyncio
+    async def test_a_caller_with_nothing_left_is_refused(self, _unrestricted, _quiet_audit) -> None:
+        """An exhausted remaining lifetime refuses BEFORE minting, never rounds
+        up — a floor of one second would let a dead session walk its expiry
+        forward indefinitely, one mint at a time."""
+        expired = _b64url_encode(json.dumps({"session_exp": time.time() - 100}).encode()) + ".sig"
+        with _machine():
+            with patch.object(tailnet_mobile, "generate_token") as mint:
+                resp = await tailnet_mobile.api_tailnet_mobile_qr(
+                    _request(tailnet_host=_HOST, cookie_token=expired)
+                )
+        assert resp.status == 403
+        assert b"caller_session_expired" in resp.body
+        mint.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_caller_expiring_during_a_slow_body_read_is_refused(
+        self, _unrestricted, _quiet_audit
+    ) -> None:
+        """The bounds are read AFTER every awaited step, so a stale snapshot
+        cannot authorize the mint. A client controls how long ``request.json()``
+        takes (it can trickle the body byte by byte), so a remaining-lifetime
+        snapshot taken before that await would let a session in its last
+        seconds stretch the mint past its own expiry — the wall clock moves
+        while the handler waits, the snapshot does not."""
+        caller = _owner_session_token(ttl_seconds=60)
+        req = _request(tailnet_host=_HOST, cookie_token=caller)
+        clock = patch(
+            "kiro_crew.dashboard.handlers._shared.time.time",
+            return_value=time.time() + 120,
+        )
+
+        async def _slow_body():
+            # The caller's session expires while the body trickles in: from
+            # here on, the shared helper's clock reads past ``session_exp``.
+            clock.start()
+            return {}
+
+        req.json = _slow_body
+        try:
+            with _machine():
+                with patch.object(tailnet_mobile, "generate_token") as mint:
+                    resp = await tailnet_mobile.api_tailnet_mobile_qr(req)
+        finally:
+            clock.stop()
+        assert resp.status == 403
+        assert b"caller_session_expired" in resp.body
+        mint.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_unbounded_owner_session_is_unaffected(
+        self, _unrestricted, _quiet_audit
+    ) -> None:
+        """The ordinary case must not regress: a full-length owner session mints
+        the configured default shape at the default TTL."""
+        from kiro_crew.dashboard.boot_id import current_boot_id
+
+        captured: dict[str, object] = {}
+        resp = await self._mint(captured, cookie_token=_owner_session_token())
+        assert resp.status == 200
+        assert captured["extra"] == {"boot": current_boot_id()}
+        assert captured["ttl"] == tailnet_mobile.DEFAULT_QR_TTL_SECS
+
+    @pytest.mark.asyncio
+    async def test_a_callers_boot_claim_is_carried_verbatim(
+        self, _unrestricted, _quiet_audit
+    ) -> None:
+        """Carried, never re-derived — the same rule the link→session exchange
+        follows, so a bound is copied from the credential that authorized the
+        mint rather than re-invented from process state."""
+        captured: dict[str, object] = {}
+        resp = await self._mint(
+            captured, cookie_token=_owner_session_token(boot="boot-from-caller")
+        )
+        assert resp.status == 200
+        extra = captured["extra"]
+        assert isinstance(extra, dict) and extra["boot"] == "boot-from-caller"
+
+    @pytest.mark.asyncio
+    async def test_bounds_come_from_the_query_token_not_a_stray_cookie(
+        self, _unrestricted, _quiet_audit
+    ) -> None:
+        """Bounds must be read from the credential the middleware validated. It
+        prefers ``?token=`` over the cookie, so a bounded query token beside a
+        permissive (unverified, attacker-settable) cookie must still bound the
+        mint — reading the cookie first would drop ``no_refresh`` and raise the
+        TTL ceiling back to the maximum."""
+        captured: dict[str, object] = {}
+        resp = await self._mint(
+            captured,
+            query_token=_owner_session_token(ttl_seconds=600, no_refresh="1"),
+            cookie_token=_owner_session_token(),
+        )
+        assert resp.status == 200
+        extra = captured["extra"]
+        assert isinstance(extra, dict) and extra["no_refresh"] == "1"
+        assert isinstance(captured["ttl"], int) and captured["ttl"] <= 600
 
 
 class TestRestrictedSessionRefused:

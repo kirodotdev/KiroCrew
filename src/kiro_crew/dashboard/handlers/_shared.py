@@ -6,6 +6,7 @@ import fnmatch
 import json
 import logging
 import os
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterable
 
@@ -20,6 +21,11 @@ from kiro_crew.agent_discovery import (
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.dashboard.state import VALID_MEMORY_MODES, DashboardState
+from kiro_crew.dashboard.token_auth import (
+    MAX_SESSION_TTL_SECS,
+    _b64url_decode,
+    _cookie_port_from_host,
+)
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.messaging.privacy_mode import hydrate as _hydrate_conv_flags
 from kiro_crew.messaging.privacy_mode import is_incognito as is_thread_incognito
@@ -1496,6 +1502,68 @@ def _read_session_key(request: "Any") -> str:
     slot lookup (CWE-178/180 — inconsistent normalization in an auth context).
     """
     return request.headers.get("X-Session-Key", "").strip()
+
+
+def _caller_bounds(request: web.Request) -> tuple[dict[str, str], int]:
+    """Read the caller's own session bounds from the token that authenticated it.
+
+    Shared by every handler that mints a NEW credential on the authority of an
+    existing dashboard session (the mobile login link and the tailnet QR mint),
+    so the two mint surfaces cannot drift apart on the invariant: the minted
+    credential must never out-scope the session authorizing it.
+
+    Returns ``(carried_claims, ttl_ceiling_seconds)``. ``ttl_ceiling`` is ``0``
+    when the caller has no lifetime left to lend, which the handler refuses
+    rather than minting against. Claims are carried, never re-derived: ``boot``
+    copied verbatim (same rule as the link→session exchange in ``token_auth``),
+    ``no_refresh`` copied so the recipient session never grows a refresh chain,
+    and the remaining ``session_exp`` becomes the TTL ceiling so a short-lived
+    caller cannot mint a longer-lived credential. Fail-closed on an unreadable
+    payload: a caller whose bounds cannot be established gets a bounded
+    (no-refresh, default-TTL-capped) link rather than an unbounded one.
+
+    **Extraction order must mirror the middleware's, query param before cookie.**
+    Only the credential the middleware actually validated has a verified
+    signature; the other one was never checked. The middleware prefers
+    ``?token=`` (``token_auth`` middleware and ``_extract_and_validate``, both
+    ``request.query.get("token") or request.cookies.get(...)``), so reading the
+    cookie first would let a request that authenticated with a bounded query
+    token have its bounds read from an unverified, attacker-settable cookie —
+    dropping ``no_refresh`` and raising the TTL ceiling to the full maximum,
+    which is precisely the ceiling-escape this function exists to prevent.
+
+    **A non-positive remaining lifetime is never rounded up.** Clamping it to a
+    floor of one second would let a caller whose own session has just run out
+    mint a link that outlives it, and the exchange the recipient performs starts
+    a fresh window — so repeating the mint would walk the expiry forward
+    indefinitely from a session that should already be dead. Report ``0`` and
+    let the caller be refused.
+    """
+    port = request.app.get("port", 7777)
+    cookie_name = f"mc_token_{_cookie_port_from_host(request, port)}"
+    token = request.query.get("token", "") or request.cookies.get(cookie_name, "")
+    carried: dict[str, str] = {}
+    ttl_ceiling = MAX_SESSION_TTL_SECS
+    if not token:
+        # Authenticated without a readable token (unexpected on this surface):
+        # fail closed by bounding the mint rather than trusting it.
+        return {"no_refresh": "1"}, ttl_ceiling
+    try:
+        data = json.loads(_b64url_decode(token.split(".", 1)[0]))
+        boot = str(data.get("boot", ""))
+        if boot:
+            carried["boot"] = boot
+        if str(data.get("no_refresh", "")) == "1":
+            carried["no_refresh"] = "1"
+        session_exp = float(data.get("session_exp", 0.0))
+        if session_exp:
+            remaining = int(session_exp - time.time())
+            if remaining <= 0:
+                return carried, 0
+            ttl_ceiling = min(ttl_ceiling, remaining)
+    except Exception:
+        return {"no_refresh": "1"}, ttl_ceiling
+    return carried, ttl_ceiling
 
 
 def _is_restricted_session(state: DashboardState, request: "Any") -> bool:

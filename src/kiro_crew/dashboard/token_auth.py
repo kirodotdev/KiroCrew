@@ -752,7 +752,9 @@ def generate_token(
     """Return ``base64url(payload).base64url(signature)``.
 
     The token carries two expiry times:
-    - ``exp``: link click window (5 minutes) — URL must be opened before this
+    - ``exp``: link click window (5 minutes, clamped to the session TTL so the
+      link never authenticates past the session it grants) — URL must be
+      opened before this
     - ``session_exp``: cookie session TTL (capped at 20 hours)
 
     When *app* is provided, the token payload includes ``"app": app`` so
@@ -797,7 +799,14 @@ def generate_token(
 
     payload_dict: dict[str, object] = {
         "sub": user_id,
-        "exp": now + LINK_WINDOW_SECS,
+        # The link-click window never extends past the session the link
+        # grants. The query-param path validates against ``exp`` alone (the
+        # nonce set is membership-only), so an uncapped window would let the
+        # raw link keep authenticating requests after ``session_exp`` passed —
+        # a token whose session lifetime was capped by its caller's own bounds
+        # (the mobile-link and tailnet-QR mints) would outlive the session
+        # that authorized it by up to the full window.
+        "exp": now + min(LINK_WINDOW_SECS, session_ttl),
         "session_exp": now + session_ttl,
         "iat": now,
         "nonce": nonce,

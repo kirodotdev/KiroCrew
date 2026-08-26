@@ -204,6 +204,41 @@ def test_session_exp_still_valid_after_link_window() -> None:
     assert uid == "user6b"
 
 
+def test_link_window_never_outlives_a_short_session() -> None:
+    """The link-click window clamps to the session TTL, never exceeds it.
+
+    The query-param path validates against ``exp`` alone (the nonce set is
+    membership-only), so an uncapped 5-minute window would let the raw link
+    keep authenticating after ``session_exp`` passed. A token whose session
+    lifetime was capped by its caller's own bounds (the mobile-link and
+    tailnet-QR mints lend the caller's remaining lifetime) would then outlive
+    the session that authorized it by up to the full window — the residual
+    half of the laundering those mints exist to prevent.
+    """
+    with patch("kiro_crew.dashboard.token_auth.time") as mock_time:
+        mock_time.time.return_value = 1000.0
+        token = generate_token("user6c", ttl_seconds=60)
+    # Past the short session but still inside the nominal 5-minute window:
+    # the LINK path must refuse too, not just the cookie path.
+    with patch("kiro_crew.dashboard.token_auth.time") as mock_time:
+        mock_time.time.return_value = 1000.0 + 61
+        link_valid, _, link_reason = validate_token(token)
+        cookie_valid, _, _ = validate_token(token, use_session_exp=True)
+    assert link_valid is False
+    assert "expired" in link_reason
+    assert cookie_valid is False
+    # A full-length session keeps the whole window: the clamp only ever
+    # tightens, so ordinary links are unaffected.
+    with patch("kiro_crew.dashboard.token_auth.time") as mock_time:
+        mock_time.time.return_value = 1000.0
+        long_token = generate_token("user6d", ttl_seconds=3600)
+    with patch("kiro_crew.dashboard.token_auth.time") as mock_time:
+        mock_time.time.return_value = 1000.0 + 299
+        valid, uid, _ = validate_token(long_token)
+    assert valid is True
+    assert uid == "user6d"
+
+
 def test_tampered_token_rejected() -> None:
     token = generate_token("user7")
     tampered = token[:-1] + ("A" if token[-1] != "A" else "B")

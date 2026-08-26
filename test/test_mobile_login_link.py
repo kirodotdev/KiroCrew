@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 from aiohttp import web
 
-from kiro_crew.dashboard.handlers import auth_mobile
+from kiro_crew.dashboard.handlers import _shared, auth_mobile
 from kiro_crew.dashboard.token_auth import (
     LINK_WINDOW_SECS,
     MAX_SESSION_TTL_SECS,
@@ -145,6 +145,25 @@ def test_mobile_link_caps_ttl_at_the_callers_remaining_session():
     assert remaining > 0
 
 
+def test_mobile_link_reports_the_live_window_for_a_short_caller():
+    """``expires_in`` reports the clamped click window, not the constant.
+
+    generate_token clamps the link-click ``exp`` to the session TTL, so a
+    caller lending less than the nominal window mints a link that dies with
+    its remaining lifetime. Reporting the constant would make the UI
+    countdown promise minutes the link does not have.
+    """
+    short = generate_token("alice", ttl_seconds=120)
+    response = _call(_request(dashboard_url="https://dashboard.example", cookie_token=short))
+
+    assert response.status == 200
+    payload = json.loads(response.text)
+    assert 0 < payload["expires_in"] <= 120 < LINK_WINDOW_SECS
+    # The reported window matches the minted token's actual exp.
+    claims = _minted_claims(payload)
+    assert claims["exp"] <= time.time() + payload["expires_in"] + 5
+
+
 def test_mobile_link_fails_closed_on_an_unreadable_caller_token():
     """Bounds that cannot be established yield a bounded (no-refresh) link."""
     response = _call(
@@ -197,7 +216,7 @@ def test_mobile_link_refuses_a_caller_with_no_lifetime_left():
     indefinitely from a session that should already be dead.
     """
     expired = generate_token("alice", ttl_seconds=MAX_SESSION_TTL_SECS)
-    with patch.object(auth_mobile.time, "time", return_value=time.time() + 10**7):
+    with patch.object(_shared.time, "time", return_value=time.time() + 10**7):
         response = _call(_request(dashboard_url="https://dashboard.example", cookie_token=expired))
 
     assert response.status == 403
