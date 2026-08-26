@@ -13,6 +13,7 @@
 # happens not to contain a NUL byte. Git's heuristic otherwise renders some PNGs
 # as text and applies whitespace/newline checks to compressed image bytes.
 *.png binary
+*.gif binary
 
 # Shell scripts and the data files they parse must keep LF on every checkout.
 # `core.autocrlf=true` is the Git-for-Windows default, so without this a Windows

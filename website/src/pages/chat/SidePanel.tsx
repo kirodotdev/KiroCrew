@@ -866,7 +866,7 @@ function FileTabBody({ tab, projectDir, scrollMemoryKey, onContentChange, onDisk
   onSubmitComments?: (m: string) => void
   onRevealConsumed: () => void
 }) {
-  const [railOpen, setRailOpen] = usePersistedBool('mc-files-rail-open', true)
+  const [railOpen, setRailOpen] = usePersistedBool('mc-files-rail-open', false)
   const treeAvailable = useTreeAvailable(projectDir)
   const railUsable = treeAvailable && !!projectDir && !!onFileOpen
   // The rail re-targets this tab in place, so the panel's own dirty guard has to
@@ -969,8 +969,10 @@ function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDi
     return (
       <FolderPanel
         path={tab.path || ''}
+        projectDir={projectDir}
         onClose={onClose}
         onFileOpen={onFileOpen}
+        onAddToContext={onAddToContext}
         onPathChange={onPathChange}
       />
     )

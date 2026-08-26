@@ -85,6 +85,21 @@ api.browseFiles = (async (p?: string) => ({
   ],
 })) as typeof api.browseFiles
 
+// A project-root folder tab uses the same real Pierre tree as the dashboard.
+// Only the transport is stubbed; expand/collapse and row rendering stay real.
+api.projectTree = (async () => ({
+  root: PROJECT,
+  paths: [
+    'README.md',
+    'docs/getting-started.md',
+    'src/overview.md',
+    'src/components/Header.tsx',
+    'website/package.json',
+  ],
+  repo: false,
+})) as typeof api.projectTree
+api.projectGitStatus = (async () => ({ repo: false, files: [] })) as typeof api.projectGitStatus
+
 // The reveal scene mounts the real MarkdownPanel, which asks whether this path is
 // already tracked as an artifact. Answer "no" rather than let it hit the dev
 // server and render an error state over the editor we are trying to photograph.
@@ -203,7 +218,59 @@ function MarkdownLinkScene() {
   )
 }
 
+function FolderFlowScene() {
+  const [active, setActive] = useState<'tree' | 'file'>('tree')
+  const [opened, setOpened] = useState<string | null>(null)
+  const openFile = (path: string) => {
+    setOpened(path)
+    setActive('file')
+  }
+  return (
+    <div data-capture-root style={{ width: 720, height: 420 }} className="flex flex-col bg-bg">
+      <div className="flex items-center gap-1 h-[38px] px-2 shrink-0 border-b border-border" role="tablist">
+        <button
+          role="tab"
+          aria-selected={active === 'tree'}
+          onClick={() => setActive('tree')}
+          className={`h-7 px-2 rounded-md text-[12px] border-none cursor-pointer ${active === 'tree' ? 'bg-border text-accent' : 'bg-transparent text-muted'}`}
+        >Project tree</button>
+        {opened && (
+          <button
+            role="tab"
+            aria-selected={active === 'file'}
+            onClick={() => setActive('file')}
+            className={`h-7 px-2 rounded-md text-[12px] border-none cursor-pointer ${active === 'file' ? 'bg-border text-accent' : 'bg-transparent text-muted'}`}
+          >{opened.split('/').pop()}</button>
+        )}
+      </div>
+      <div className="relative flex-1 min-h-0">
+        <div className="absolute inset-0" style={{ display: active === 'tree' ? 'block' : 'none' }}>
+          <FolderPanel
+            path={PROJECT}
+            projectDir={PROJECT}
+            onClose={() => {}}
+            onFileOpen={openFile}
+          />
+        </div>
+        {opened && (
+          <div className="absolute inset-0" style={{ display: active === 'file' ? 'block' : 'none' }}>
+            <MarkdownPanel
+              embedded
+              filePath={opened}
+              content={'# Project overview\n\nThis file opened in a separate tab. The Project tree stays intact.'}
+              onContentChange={() => {}}
+              onSave={async () => {}}
+              onClose={() => setActive('tree')}
+            />
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function Scene() {
+  if (scene === 'folder-flow') return <FolderFlowScene />
   if (scene === 'markdown-link') return <MarkdownLinkScene />
   if (scene === 'range') return <RangeScene />
   if (scene === 'reveal') {
@@ -230,6 +297,7 @@ function Scene() {
       <div data-capture-root style={{ width: 420, height: 340 }} className="bg-bg">
         <FolderPanel
           path={PROJECT}
+          projectDir={PROJECT}
           onClose={() => {}}
           onFileOpen={() => {}}
         />

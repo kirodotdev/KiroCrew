@@ -179,7 +179,7 @@ describe('usePanelTabs', () => {
     expect(result.current.activeTab?.modified).toBe('mod-2')
   })
 
-  it('openFolder keys on folder: so a directory never collides with a file tab', () => {
+  it('keeps a folder tab while files open in separate de-duplicated tabs', () => {
     const { result } = renderHook(() => usePanelTabs())
     act(() => result.current.openFolder('/Users/me/workspace/KiroCrew', 'chat-a'))
     expect(result.current.activeTab).toMatchObject({
@@ -188,12 +188,19 @@ describe('usePanelTabs', () => {
     // Re-opening the same directory focuses the existing tab, not a duplicate.
     act(() => result.current.openFolder('/Users/me/workspace/KiroCrew'))
     expect(result.current.tabs).toHaveLength(1)
-    // A same-named FILE is a separate tab — the id prefixes keep them apart.
-    act(() => result.current.openFile('/Users/me/workspace/KiroCrew', 'x'))
+
+    // A file opens beside the tree instead of replacing it, and becomes active.
+    act(() => result.current.openFile('/Users/me/workspace/KiroCrew/README.md', 'v1'))
     expect(result.current.tabs.map(t => t.id)).toEqual([
       'folder:/Users/me/workspace/KiroCrew',
-      'file:/Users/me/workspace/KiroCrew',
+      'file:/Users/me/workspace/KiroCrew/README.md',
     ])
+    expect(result.current.activeId).toBe('file:/Users/me/workspace/KiroCrew/README.md')
+
+    // Opening the same path again activates and refreshes the existing tab.
+    act(() => result.current.openFile('/Users/me/workspace/KiroCrew/README.md', 'v2'))
+    expect(result.current.tabs).toHaveLength(2)
+    expect(result.current.activeTab?.content).toBe('v2')
   })
 
   it('titles a folder tab by its own name even with a trailing slash', () => {

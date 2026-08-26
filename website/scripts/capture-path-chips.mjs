@@ -74,9 +74,22 @@ const SCENES = [
   // The marker only proves SOME line was painted; the assertion block below counts
   // the painted lines, which is what would catch a first-line-only reveal.
   { scene: 'range', marker: '.mc-line-reveal', note: 'panel revealed the whole 10-16 span' },
-  { scene: 'folder', marker: 'text=website', note: 'folder tab body lists dirs then files' },
+  { scene: 'folder', marker: '[role="treeitem"]', note: 'project folder tab renders the shared workspace tree' },
+  { scene: 'folder-flow', marker: '[role="tablist"]', note: 'tree opens a separate file tab and preserves expansion' },
   { scene: 'markdown-link', marker: 'a[href*="release-notes.md"]', note: 'Markdown file link opened the file panel' },
 ]
+
+const requestedScenes = new Set(
+  (process.env.CAPTURE_SCENES || '').split(',').map(s => s.trim()).filter(Boolean),
+)
+const selectedScenes = requestedScenes.size
+  ? SCENES.filter(({ scene }) => requestedScenes.has(scene))
+  : SCENES
+if (requestedScenes.size && selectedScenes.length !== requestedScenes.size) {
+  const known = new Set(SCENES.map(({ scene }) => scene))
+  const unknown = [...requestedScenes].filter(scene => !known.has(scene))
+  throw new Error(`Unknown CAPTURE_SCENES: ${unknown.join(', ')}`)
+}
 
 const run = async () => {
   const browser = await chromium.launch(
@@ -86,7 +99,7 @@ const run = async () => {
   )
   let failed = 0
   for (const theme of ['dark', 'light']) {
-    for (const { scene, marker, note } of SCENES) {
+    for (const { scene, marker, note } of selectedScenes) {
       const ctx = await browser.newContext({
         viewport: { width: 900, height: 500 },
         deviceScaleFactor: 2,
@@ -149,8 +162,46 @@ const run = async () => {
         }
       }
       const target = await page.$('[data-capture-root]')
-      await target.screenshot({ path: `${OUT}/${theme}-${scene}.png` })
-      console.log(`  ${theme}/${scene} -> ${note}`)
+      if (scene === 'folder') {
+        const src = page.getByRole('treeitem', { name: 'src' })
+        await src.waitFor()
+        await page.getByText('Parent folder').waitFor()
+        await target.screenshot({ path: `${OUT}/${theme}-${scene}-collapsed.png` })
+        await src.click()
+        await page.getByRole('treeitem', { name: 'overview.md' }).waitFor()
+        await target.screenshot({ path: `${OUT}/${theme}-${scene}-expanded.png` })
+        const search = page.getByLabel('Search files')
+        await search.fill('head')
+        await page.getByText('includes subfolders').waitFor()
+        await target.screenshot({ path: `${OUT}/${theme}-${scene}-search.png` })
+        await search.fill('')
+        console.log(`  ${theme}/${scene} -> ${note}; collapsed + expanded + search` )
+      } else if (scene === 'folder-flow') {
+        const src = page.getByRole('treeitem', { name: 'src' })
+        await src.waitFor()
+        await page.getByText('Parent folder').waitFor()
+        await target.screenshot({ path: `${OUT}/${theme}-${scene}-initial.png` })
+        await src.click()
+        const overview = page.getByRole('treeitem', { name: 'overview.md' })
+        await overview.waitFor()
+        await target.screenshot({ path: `${OUT}/${theme}-${scene}-expanded.png` })
+        await overview.click()
+        await page.getByRole('tab', { name: 'overview.md' }).waitFor()
+        await page.getByText('This file opened in a separate tab.').waitFor()
+        await target.screenshot({ path: `${OUT}/${theme}-${scene}-file-tab.png` })
+        await page.getByRole('tab', { name: 'Project tree' }).click()
+        if (await src.getAttribute('aria-expanded') !== 'true') {
+          console.error(`  FAIL ${theme}/${scene}: tree expansion state was not preserved`)
+          failed += 1
+          await ctx.close()
+          continue
+        }
+        await target.screenshot({ path: `${OUT}/${theme}-${scene}-returned.png` })
+        console.log(`  ${theme}/${scene} -> ${note}; file tab + returned tree`)
+      } else {
+        await target.screenshot({ path: `${OUT}/${theme}-${scene}.png` })
+        console.log(`  ${theme}/${scene} -> ${note}`)
+      }
       await ctx.close()
     }
   }
