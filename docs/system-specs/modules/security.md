@@ -819,9 +819,9 @@ auto-approves only when `command` is present and
 `dashboard.state.is_read_only_bash(command)` is True (deny-by-default: rejects
 output redirects, substitution, and backgrounding; input redirects/comments are
 refused for the position- or mode-sensitive verbs where a shell-elided word can
-change the verdict). A two-token `<program> --help` / `--version` probe is admitted
-only when `program` is in the code-owned usage-probe allowlist; a bare name chosen
-by the agent is not enough to manufacture read-only authority. For a non-shell tool when
+change the verdict). Help/version syntax does not create read-only authority:
+the command must already match the explicit read-only command table, otherwise it
+falls through to human approval. A non-shell tool is auto-approved when
 `tool_kind in {"read", "fetch"}` or `slack.gateway._is_read_only_tool(tool_name)`
 is True. Both classifiers are imported function-locally to avoid an import cycle.
 

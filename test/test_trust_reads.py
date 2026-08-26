@@ -131,13 +131,6 @@ class TestIsReadOnlyBash:
         assert is_read_only_bash("ruby -e 'system(\"id\")' --help") is False
         assert is_read_only_bash("perl -e 'exec(\"id\")' --help") is False
 
-    def test_help_probe_allows_one_bare_subcommand(self):
-        """`<program> <subcommand> --help` is still a usage probe."""
-        assert is_read_only_bash("git log --help") is True
-        assert is_read_only_bash("git rev-parse --help") is True
-        assert is_read_only_bash("terraform plan --help") is True
-        assert is_read_only_bash("cargo --version") is True
-
     def test_help_suffix_does_not_auto_approve_an_arbitrary_command(self):
         """A trailing `--help` must not vouch for the command in front of it.
 
@@ -240,53 +233,45 @@ class TestIsReadOnlyBash:
         assert is_read_only_bash("pnpm build --help") is False
         assert is_read_only_bash("npx payload --help") is False
 
-    def test_help_probe_still_vouches_for_an_ordinary_probe(self):
-        """The positive rule must not cost the cases the classifier exists for.
+    def test_help_syntax_does_not_create_read_only_authority(self):
+        """A known basename is not authority to execute a PATH-resolved file.
 
-        Code-owned program names and existing read-only verbs keep their ordinary
-        help probes without admitting a name invented by the agent.
+        An agent can plant ``git`` or ``cargo`` in a writable PATH directory just
+        as easily as it can plant an invented name. Help/version syntax therefore
+        falls through to approval unless the complete command already matches the
+        explicit read-only command table.
         """
-        assert is_read_only_bash("git --help") is True
+        assert is_read_only_bash("git --help") is False
+        assert is_read_only_bash("cargo --version") is False
+        assert is_read_only_bash("terraform plan --help") is False
+        assert is_read_only_bash("apt-get --help") is False
+        # These match existing read-only command entries independently of their
+        # trailing help flag; no generic usage-probe rule grants them authority.
         assert is_read_only_bash("git status --help") is True
         assert is_read_only_bash("ls --help") is True
-        assert is_read_only_bash("cargo build --help") is True
+        assert is_read_only_bash("git log --help") is True
         assert is_read_only_bash("python3.12 --help") is False
-        assert is_read_only_bash("apt-get --help") is True
         assert is_read_only_bash("g++ --help") is False
         assert is_read_only_bash("tidyup --help") is False
 
-    def test_help_probe_allowlists_the_subcommand_form(self):
-        """The three-token form is the dangerous one, so it is allowlisted.
-
-        There the middle token is indistinguishable from an operand, so a program
-        that treats it as a script RUNS it. The denied-program table cannot answer
-        that: it matches EXACTLY, and the spellings a real system installs
-        (`python3.12`, `perl5.36`, `node20`, `sh.exe`, `g++-13`) are unbounded, so
-        no list of rejects closes it.
-        """
+    def test_help_subcommand_form_requires_an_explicit_read_only_entry(self):
+        """A middle token may be an executable operand, not a subcommand."""
         assert is_read_only_bash("python3.12 payload --help") is False
         assert is_read_only_bash("python2.7 payload --help") is False
         assert is_read_only_bash("perl5.36 payload --help") is False
         assert is_read_only_bash("node20 payload --help") is False
         assert is_read_only_bash("sh.exe payload --help") is False
         assert is_read_only_bash("g++-13 payload --help") is False
-        # A program not on the allowlist asks for a human in both forms.
+        # A generic basename asks for a human in both forms.
         assert is_read_only_bash("python3.12 --help") is False
         assert is_read_only_bash("g++ --help") is False
-        # The allowlisted programs keep their subcommand probe.
+        # Only commands independently listed as read-only keep their verdict.
         assert is_read_only_bash("git log --help") is True
-        assert is_read_only_bash("cargo build --help") is True
-        assert is_read_only_bash("terraform plan --help") is True
+        assert is_read_only_bash("cargo build --help") is False
+        assert is_read_only_bash("terraform plan --help") is False
 
-    def test_help_probe_allowlist_excludes_operand_acting_programs(self):
-        """Membership means "an unknown subcommand is an ERROR", not "a file".
-
-        For an archiver the middle token is a mode letter and the operands are
-        files it reads or writes, so the three-token form is not a usage probe:
-        `tar xf …` extracts and `zip …` creates. `openssl <cmd>` reads a key the
-        same way. Their two-token probe also requires a human because the program
-        is not in the usage-probe allowlist.
-        """
+    def test_help_syntax_does_not_authorize_operand_acting_programs(self):
+        """An apparent subcommand may be an operand that makes the program act."""
         assert is_read_only_bash("tar xf --help") is False
         assert is_read_only_bash("tar cf --help") is False
         assert is_read_only_bash("zip -r --help") is False
