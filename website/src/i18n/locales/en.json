@@ -5633,9 +5633,12 @@
       "collapsibleToolGroup": {
         "approval_needed": "Approval needed",
         "approvals_pending": "approvals pending",
+        "batch_preview_note": "Showing the most recent of {{count}} pending calls; all will be resolved together.",
         "approve": "Approve",
+        "approve_all": "Approve all {{count}}",
         "approved": "Approved",
         "reject": "Reject",
+        "reject_all": "Reject all {{count}}",
         "rejected": "Rejected",
         "resolved": "Resolved",
         "running": "Running",

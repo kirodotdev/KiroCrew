@@ -99,3 +99,56 @@ describe('CollapsibleToolGroup approval row across disclosure states (#5487)', (
     expect(screen.queryByText('zzq --run')).not.toBeInTheDocument()
   })
 })
+
+describe('CollapsibleToolGroup batch multi-select (Req 4.1-4.4)', () => {
+  it('shows "approve/reject all N" labels and routes ONE click to onApproveBatch when >1 pending', async () => {
+    const onApprove = vi.fn(() => Promise.resolve())
+    const onApproveBatch = vi.fn(() => Promise.resolve())
+    renderWithProviders(
+      <CollapsibleToolGroup count={3} hasPermission autoExpand isRunning pendingPermCount={3}
+        permissionMeta={{ tool_input: 'zzq --run' }} onApprove={onApprove} onApproveBatch={onApproveBatch}>
+        <div>zzq-child</div>
+      </CollapsibleToolGroup>,
+    )
+    // Buttons advertise the batch scope with the pending count.
+    const approveAll = screen.getByText(T('approve_all', { count: 3 }))
+    expect(approveAll).toBeInTheDocument()
+    expect(screen.getByText(T('reject_all', { count: 3 }))).toBeInTheDocument()
+    // One click resolves the whole batch via onApproveBatch, NOT the single path.
+    fireEvent.click(approveAll)
+    await waitFor(() => expect(onApproveBatch).toHaveBeenCalledWith('approved'))
+    expect(onApprove).not.toHaveBeenCalled()
+    // Optimistic resolution collapses the row into the resolved header.
+    expect(header().textContent).toContain(T('approved'))
+  })
+
+  it('uses the id-scoped onApprove path (NOT batch) when only one approval is pending', async () => {
+    const onApprove = vi.fn(() => Promise.resolve())
+    const onApproveBatch = vi.fn(() => Promise.resolve())
+    renderWithProviders(
+      <CollapsibleToolGroup count={1} hasPermission autoExpand isRunning pendingPermCount={1}
+        permissionMeta={{ tool_input: 'zzq --run' }} onApprove={onApprove} onApproveBatch={onApproveBatch}>
+        <div>zzq-child</div>
+      </CollapsibleToolGroup>,
+    )
+    // Single pending -> plain labels, single-approve routing preserved (T3 untouched).
+    fireEvent.click(screen.getByText(T('approve')))
+    await waitFor(() => expect(onApprove).toHaveBeenCalledWith('approved'))
+    expect(onApproveBatch).not.toHaveBeenCalled()
+  })
+
+  it('rolls the row back to actionable when a batch decision fails', async () => {
+    const onApproveBatch = vi.fn(() => Promise.reject(new Error('boom')))
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    renderWithProviders(
+      <CollapsibleToolGroup count={2} hasPermission autoExpand isRunning pendingPermCount={2}
+        permissionMeta={{ tool_input: 'zzq --run' }} onApproveBatch={onApproveBatch}>
+        <div>zzq-child</div>
+      </CollapsibleToolGroup>,
+    )
+    fireEvent.click(screen.getByText(T('reject_all', { count: 2 })))
+    await waitFor(() => expect(onApproveBatch).toHaveBeenCalledWith('rejected'))
+    // Failure restores the buttons so the user can retry the decision.
+    await waitFor(() => expect(screen.getByText(T('reject_all', { count: 2 }))).toBeInTheDocument())
+  })
+})
