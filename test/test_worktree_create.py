@@ -1086,6 +1086,14 @@ class TestLauncherAdvisoryIsNotARefusal:
         "/tmp; scan incomplete (control degrades open)"
     )
     _FATAL = "sandbox: unshare(NEWNS) failed: errno 1"
+    #: The launcher's other fatal spelling: the host-trust pre-read that FAILS CLOSED.
+    #: Hand-typed like ``_WARNING`` above, and ratcheted by the same test below. The
+    #: path is illustrative; the severity word and the prefix are what classify it.
+    _FATAL_PRE_READ = (
+        "sandbox: FATAL — cannot read /home/u/hosts-file ([Errno 13] Permission "
+        "denied). Refusing to continue: proceeding without it would leave host-key "
+        "verification accepting any new key."
+    )
 
     @pytest.fixture(autouse=True)
     def _spawn_passthrough(self, monkeypatch):
@@ -1158,12 +1166,45 @@ class TestLauncherAdvisoryIsNotARefusal:
             for token in re.findall(r"sandbox: ([^'\"%\\\n]+)", _build_launcher_script("strict"))
         }
 
-        assert severities == {"unshare(NEWUSER)", "unshare(NEWNS)", "BLOCKED", "WARNING"}
+        assert severities == {
+            "unshare(NEWUSER)",
+            "unshare(NEWNS)",
+            "BLOCKED",
+            "WARNING",
+            "FATAL",
+        }
         # And the one advisory is spelled the way the classifier looks for it.
         assert self._WARNING.startswith(wt_mod._SANDBOX_LAUNCHER_WARNING_PREFIX)
         assert wt_mod._SANDBOX_LAUNCHER_WARNING_PREFIX.startswith(
             wt_mod._SANDBOX_LAUNCHER_PREFIX
         ), "the advisory prefix must be a refinement of the launcher prefix, not a rival"
+        # FATAL is on the REFUSAL side, and deliberately so: the host-trust pre-read
+        # it reports from re-raises, so setup really does abort. Both halves are
+        # pinned, because each fails a different way -- without the launcher prefix
+        # the classifier would not see the line at all and the abort would surface as
+        # a bare git failure; with the ADVISORY prefix it would be downgraded to a
+        # warning and the caller would run on with host verification disarmed.
+        assert self._FATAL_PRE_READ.startswith(wt_mod._SANDBOX_LAUNCHER_PREFIX)
+        assert not self._FATAL_PRE_READ.startswith(wt_mod._SANDBOX_LAUNCHER_WARNING_PREFIX)
+
+    def test_the_fail_closed_pre_read_line_still_refuses(self, tmp_path, monkeypatch):
+        """The OTHER fatal spelling must refuse too, not come back as data.
+
+        ``_FATAL`` above is an ``unshare`` failure, so it shares no wording with this
+        one; a classifier keyed on anything narrower than the prefix pair would pass
+        that test and fail this one. Refusing is right because the pre-read re-raises:
+        the sandbox never came up, so running the git command bare would silently drop
+        the isolation the caller asked for.
+        """
+        from kiro_crew.dashboard.handlers import worktree as wt
+
+        stderr = self._FATAL_PRE_READ + "\n"
+        monkeypatch.setattr(wt, "run_limited", lambda *a, **k: self._completed(1, stderr))
+
+        with pytest.raises(SandboxUnavailable) as excinfo:
+            _run_git(["rev-parse", "HEAD"], str(tmp_path))
+
+        assert str(excinfo.value) == self._FATAL_PRE_READ
 
     def test_gits_own_error_is_never_mistaken_for_a_refusal(self, tmp_path, monkeypatch):
         from kiro_crew.dashboard.handlers import worktree as wt
