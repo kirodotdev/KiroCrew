@@ -112,6 +112,26 @@ def _rewrite_heartbeat_locked(
             return len(appended)
 
 
+def _ensure_heartbeat_file(path: Path) -> None:
+    """Create the workspace dir and seed HEARTBEAT.md. Blocking; call off-loop."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        path.write_text(_HEADER, encoding="utf-8")
+
+
+def _read_heartbeat_file(path: Path) -> str | None:
+    """Return HEARTBEAT.md's stripped content, or ``None`` if it is absent.
+
+    Blocking; call off-loop. The existence check rides with the read so a file
+    removed between them cannot turn a missing file into a raised
+    ``FileNotFoundError``, and so the pair costs one worker hop rather than two.
+    """
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return None
+
+
 class HeartbeatService:
     """Periodic wake-up that runs background maintenance tasks."""
 
@@ -141,10 +161,11 @@ class HeartbeatService:
         self._file_lock = asyncio.Lock()
 
     async def start(self) -> None:
-        path = heartbeat_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if not path.exists():
-            path.write_text(_HEADER, encoding="utf-8")
+        # Off the loop: start() is awaited on the gateway boot path, before
+        # KIROCREW_READY, and workspace_dir() may sit on a network or synced
+        # volume where mkdir + write_text block (AUTOSDE
+        # no-blocking-call-on-event-loop, no-new-work-on-gateway-boot-path).
+        await asyncio.to_thread(_ensure_heartbeat_file, heartbeat_path())
         self._task = asyncio.create_task(self._loop())
         logger.info("Heartbeat started (interval=%ds)", self._interval)
 
@@ -226,9 +247,12 @@ class HeartbeatService:
         # Hold the file lock across the whole read→process→rewrite window so a
         # concurrent cycle can't rewrite the file from a stale snapshot.
         async with self._file_lock:
-            if not path.exists():
+            # Off the loop, like the rewrite that closes this same lock window
+            # below: this runs every tick for the life of the process, and the
+            # file lives under workspace_dir().
+            content = await asyncio.to_thread(_read_heartbeat_file, path)
+            if content is None:
                 return
-            content = path.read_text(encoding="utf-8").strip()
             tasks = _extract_tasks(content)
             if not tasks or not self._on_task:
                 return
