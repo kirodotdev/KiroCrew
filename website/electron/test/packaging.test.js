@@ -243,10 +243,50 @@ describe("first-download installer design contract", () => {
       "customFinishPage must retain electron-builder's locked StartApp contract"
     );
     assert.match(buildWorkflow, /test-windows-installer\.ps1/);
-    assert.match(runtimeScript, /^\$MaxInstallSeconds = 300$/m);
+    assert.match(runtimeScript, /^\$MaxInstallSeconds = 120$/m);
+    assert.match(runtimeScript, /^\$MaxGatewayReadySeconds = 30$/m);
     assert.match(runtimeScript, /silent-install-seconds=/);
+    assert.match(runtimeScript, /gateway-ready-seconds=/);
+    assert.match(runtimeScript, /startupPycCount -lt 1000/);
+    assert.match(runtimeScript, /\/api\/ready/);
+    assert.match(
+      runtimeScript,
+      /\$env:KIRO_HOME = Join-Path \$gatewayHome "kiro"/
+    );
     assert.match(runtimeScript, /WaitForExit\(\$MaxInstallSeconds \* 1000\)/);
     assert.match(runtimeScript, /native-install-mode\.png/);
+  });
+
+  it("publishes the staged Windows payload without a second small-file copy pass", () => {
+    const patchScript = fs.readFileSync(
+      path.join(ROOT, "scripts", "patch-nsis-template.js"),
+      "utf8"
+    );
+    assert.equal(pkg.scripts.postinstall, "node scripts/patch-nsis-template.js");
+    assert.match(patchScript, /EXPECTED_APP_BUILDER_VERSION = "26\.15\.3"/);
+    assert.match(patchScript, /!ifmacrodef customPublishAppPackage/);
+    assert.match(
+      installer,
+      /!macro customPublishAppPackage SOURCE DESTINATION[\s\S]*?Rename "\$\{SOURCE\}\\resources" "\$\{DESTINATION\}\\resources"[\s\S]*?Rename "\$\{SOURCE\}\\locales" "\$\{DESTINATION\}\\locales"[\s\S]*?CopyFiles \/SILENT "\$\{SOURCE\}\\\*" "\$\{DESTINATION\}"/
+    );
+  });
+
+  it("ships the Windows startup caches generated after the platform prune", () => {
+    const backendResource = pkg.build.extraResources.find(
+      resource => resource.from === "backend-dist"
+    );
+    const buildScript = fs.readFileSync(
+      path.join(REPO_ROOT, "packaging", "build-desktop.sh"),
+      "utf8"
+    );
+    assert.deepEqual(backendResource.filter, ["**/*"]);
+    assert.match(buildScript, /rm -rf[\s\S]*?include libs tcl/);
+    assert.match(buildScript, /llama_cpp_libs\/linux_aarch64/);
+    assert.match(buildScript, /DLLs\/_tkinter\.pyd DLLs\/tcl\*\.dll DLLs\/tk\*\.dll/);
+    assert.match(
+      buildScript,
+      /precompile_windows\.py" \\\r?\n\s*--root "\$out" --module kiro_crew\.cli_server/
+    );
   });
 
   it("keeps install-root ownership and legacy startup cleanup without custom pages", () => {

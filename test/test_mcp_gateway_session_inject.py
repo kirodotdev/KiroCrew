@@ -188,15 +188,36 @@ def test_non_dict_server_entry_is_skipped(tmp_path):
 
 REAL_CLI = shutil.which("kiro-cli")
 
-#: A probe MCP server that records that it launched and then lingers, in place
-#: of ``sh -c "touch X; sleep 20"``. The interpreter is portable where a POSIX
-#: shell is not, and the marker path arrives as ``argv`` so a Windows path's
-#: backslashes never pass through a string literal.
-_PROBE_SNIPPET = (
-    "import pathlib,sys,time;"
-    "pathlib.Path(sys.argv[1]).write_text('x');"
-    "time.sleep(20)"
-)
+#: A tiny, portable MCP server that records that it launched. Older kiro-cli
+#: versions tolerated a process that merely slept after creating the marker;
+#: current versions require the initialize handshake to complete before they
+#: retain the server. Keeping the probe protocol-valid makes this test about
+#: session-injection precedence, not a particular release's failure timing.
+#: The marker path arrives as ``argv`` so Windows backslashes never pass through
+#: a generated string literal.
+_PROBE_SCRIPT = r"""
+import json
+import pathlib
+import sys
+
+pathlib.Path(sys.argv[1]).write_text("x", encoding="utf-8")
+for line in sys.stdin:
+    request = json.loads(line)
+    if "id" not in request:
+        continue
+    if request.get("method") == "initialize":
+        params = request.get("params") or {}
+        result = {
+            "protocolVersion": params.get("protocolVersion", "2024-11-05"),
+            "capabilities": {},
+            "serverInfo": {"name": "kirocrew-precedence-probe", "version": "1"},
+        }
+    elif request.get("method") == "tools/list":
+        result = {"tools": []}
+    else:
+        result = {}
+    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
+"""
 
 _DRIVER = r"""
 import json, os, subprocess, sys, threading, time
@@ -250,7 +271,7 @@ if not _line:
 send({"jsonrpc": "2.0", "id": 2, "method": "session/new",
       "params": {"cwd": w + "/proj", "mcpServers": [
           {"name": "shared", "command": sys.executable,
-           "args": ["-c", sys.argv[2], w + "/marks/INJECTED"], "env": []}]}})
+           "args": [sys.argv[2], w + "/marks/INJECTED"], "env": []}]}})
 # Poll for the marker the injected server writes, with a deadline generous
 # enough for a cold CLI. The old 8s sleep was paid in full on every run.
 deadline = time.time() + 20
@@ -292,6 +313,8 @@ def test_real_kiro_cli_prefers_session_injected_server():
         (root / "khome" / "agents").mkdir(parents=True)
         (root / "proj").mkdir()
         (root / "marks").mkdir()
+        probe = root / "probe.py"
+        probe.write_text(_PROBE_SCRIPT, encoding="utf-8")
         (root / "khome" / "agents" / "pooltest.json").write_text(json.dumps({
             "name": "pooltest",
             "description": "precedence probe",
@@ -300,19 +323,28 @@ def test_real_kiro_cli_prefers_session_injected_server():
             "prompt": "probe",
             "mcpServers": {"shared": {
                 "command": sys.executable,
-                "args": ["-c", _PROBE_SNIPPET, str(root / "marks" / "FROM_SPEC")],
+                "args": [str(probe), str(root / "marks" / "FROM_SPEC")],
             }},
         }), encoding="utf-8")
         driver = root / "drive.py"
         driver.write_text(_DRIVER, encoding="utf-8")
-        subprocess.run([sys.executable, str(driver), str(root), _PROBE_SNIPPET],
-                       capture_output=True, timeout=180, check=False)
+        result = subprocess.run(
+            [sys.executable, str(driver), str(root), str(probe)],
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=180,
+            check=False,
+        )
         deadline = time.time() + 5
         while time.time() < deadline and not (root / "marks" / "INJECTED").exists():
             time.sleep(0.2)
         assert (root / "marks" / "INJECTED").exists(), (
             "session/new-injected server never launched — ACP injection is not "
-            "taking effect at all; pooling cannot work through this channel"
+            "taking effect at all; pooling cannot work through this channel\n"
+            f"driver exit: {result.returncode}\n"
+            f"driver stdout: {result.stdout[-2000:]}\n"
+            f"driver stderr: {result.stderr[-2000:]}"
         )
         assert not (root / "marks" / "FROM_SPEC").exists(), (
             "the agent spec's same-named server ALSO launched: session/new "

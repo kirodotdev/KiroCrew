@@ -95,6 +95,15 @@ Notes:
 - The result is an assisted (non-one-click, per-user) NSIS installer,
   `KiroCrew Setup <version>.exe` (nightly builds:
   `KiroCrew Nightly Setup <version>.exe`), in `website/electron/dist/`.
+- The pinned electron-builder NSIS template is patched during `npm install` to
+  expose Kiro Crew's staged-payload publish hook. On a normal same-volume
+  per-user install it renames the large `resources` / `locales` trees into place
+  and copies only the small root remainder; per-machine installs keep the
+  upstream copy path so files inherit the Program Files ACL. Cross-volume or
+  occupied destinations also retain the upstream copy-and-retry fallback. The
+  Windows backend ships checked-hash
+  bytecode for the measured gateway import closure, so first launch consumes
+  build-time caches rather than generating thousands of files under Defender.
 - The native welcome/finish sidebar and the header used on intermediate pages
   carry the Kiro Crew logo and ghost artwork. The standard NSIS controls and
   localized instructions remain native. Page boundaries use a short Win32

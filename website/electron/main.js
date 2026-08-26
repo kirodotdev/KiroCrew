@@ -7,7 +7,7 @@ const path = require("path");
 const http = require("http");
 
 const { findKirocrewBin } = require("./find-bin");
-const { buildGatewayEnvironment } = require("./gateway-env");
+const { buildGatewayEnvironment, gatewayBytecodeEnvironment } = require("./gateway-env");
 const { resolveGatewayPath } = require("./mac-env");
 const {
   findMissingBundleParts,
@@ -998,17 +998,16 @@ function spawnGateway(resolve) {
             // (two levels up from electron/), so resolve by markers there.
             // macOS/Linux keep the original one-level-up path unchanged.
             KIROCREW_PROJECT_DIR: IS_WIN ? resolveProjectDir() : path.resolve(__dirname, ".."),
-            // Keep CPython bytecode caches OUT of the signed app bundle.
-            // Without this, the embedded interpreter writes __pycache__/*.pyc
-            // next to the bundled sources on first import, breaking the
-            // codesign seal ("a sealed resource is missing or invalid") --
-            // Gatekeeper then fails the installed app, and Squirrel's
-            // installer can trip over the corrupted target during updates.
-            // CPython creates the directory tree on demand (PEP 3147 /
-            // sys.pycache_prefix). Inherited by every Python child the
-            // gateway spawns (app servers run on the same interpreter), so
-            // the whole process tree stays out of the bundle.
-            PYTHONPYCACHEPREFIX: path.join(kirocrewDir, "cache", "pycache"),
+            // macOS code signing seals the app tree and Linux packages may be
+            // read-only, so those platforms redirect runtime bytecode. Windows
+            // consumes checked-hash pycs generated during packaging instead;
+            // avoiding the redirected-cache population is the main cold-start
+            // win on a freshly installed, Defender-scanned bundle.
+            ...gatewayBytecodeEnvironment(
+              process.platform,
+              path.join(kirocrewDir, "cache", "pycache"),
+              app.isPackaged,
+            ),
           }),
         });
         gatewayProcess = child;

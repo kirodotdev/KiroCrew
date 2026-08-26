@@ -1729,7 +1729,7 @@ class TestVenvDepsProbe:
         assert cli_doctor._venv_deps_ok(Path("/v/bin/python")) is True
         assert seen["code"] == "import websockets, slack_sdk, aiohttp"
         assert seen["target"] == Path("/v/bin/python")
-        assert seen["timeout"] == 5
+        assert seen["timeout"] == 15
 
     def test_the_probe_is_wired_into_the_doctor_run(self) -> None:
         """Guards the call site: every other test drives the helper directly,

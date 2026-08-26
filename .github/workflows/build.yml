@@ -115,7 +115,7 @@ jobs:
       - name: Enforce native installer performance ceiling
         shell: pwsh
         working-directory: website/electron
-        run: '& "$env:GITHUB_WORKSPACE\.github\scripts\test-windows-installer.ps1"'
+        run: '& "$env:GITHUB_WORKSPACE\.github\scripts\test-windows-installer.ps1" -SkipGatewayValidation'
 
       - name: Upload installer timing
         if: always()

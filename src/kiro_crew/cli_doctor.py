@@ -2023,8 +2023,12 @@ def _venv_deps_ok(venv_py: Path) -> bool:
     the diagnostic whose job is to catch exactly that install.
     """
     try:
+        # Windows process creation and first-time Defender scans can consume
+        # most of a five-second budget when the host is busy (including during
+        # the parallel test suite). Keep the probe bounded, but allow enough
+        # time for a healthy interpreter to start and import its dependencies.
         proc = dep_sync._probe_interpreter(
-            venv_py, "import websockets, slack_sdk, aiohttp", timeout=5
+            venv_py, "import websockets, slack_sdk, aiohttp", timeout=15
         )
     except Exception:
         return False

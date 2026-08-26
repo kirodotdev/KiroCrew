@@ -63,7 +63,19 @@ Current status:
   Windows' client-area animation setting. The fade contains no timer-driven
   bitmap swap or UI-thread sleep, so extraction keeps the native progress path;
   CI performs a real silent install, records its duration, and fails if it
-  exceeds 5 minutes.
+  exceeds 2 minutes.
+- **Single-pass payload publication** — the differential-aware updater still
+  verifies and fully extracts its 7z payload into a staging directory before it
+  changes the installation. On the normal same-volume per-user Windows layout,
+  the installer then renames Electron's large `resources` and `locales`
+  directories into place instead of asking Defender and the filesystem to
+  process thousands of Python files in a second copy pass. Per-machine installs
+  retain electron-builder's original `CopyFiles` path so the payload inherits
+  the Program Files ACL. A cross-volume temporary directory, occupied
+  destination, or failed rename also falls back to that copy path and its
+  bounded retry prompts. The build-time patch is
+  pinned to the installed app-builder-lib version and fails closed if its NSIS
+  template changes, so an upgrade cannot silently remove that fallback.
 - **Uninstall removes the app and its caches, and keeps your data.** Removed:
   the install directory, the Start Menu shortcut, the uninstall registry key,
   and any “start with Windows” Run entry left by an earlier custom installer,
@@ -92,10 +104,17 @@ Current status:
   open the existing native Electron menus from the left of that row, the command
   palette remains centered on the window, and native minimize/maximize/close
   controls remain on the right.
-- **Cold-start-aware gateway handoff** — a live bundled backend keeps the loading
-  screen and progress updates through the longer Windows import window instead of
-  presenting a false failure that succeeds on Retry. A child exit or spawn error
-  still fails immediately and includes the launch-log cause.
+- **Precompiled Windows gateway startup** — packaging traces the real
+  `kiro_crew.cli_server` import after pruning and ships checked-hash bytecode for
+  that import closure beside its sources. Windows consumes those caches directly,
+  avoiding the thousand-file cache-population burst that otherwise overlaps
+  Defender's post-install scanning. macOS and Linux still redirect bytecode out
+  of the signed/read-only app tree. The loading screen retains its extended
+  Windows handoff window as a slow-machine fallback; a child exit or spawn error
+  still fails immediately and includes the launch-log cause. CI starts the
+  just-installed bundled interpreter against an isolated data home and requires
+  `/api/ready` within 30 seconds, so both the packaged caches and the full gateway
+  handoff are covered rather than only a synthetic import benchmark.
 
 The source install below remains the fully supported path.
 

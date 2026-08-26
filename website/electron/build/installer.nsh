@@ -244,6 +244,31 @@ FunctionEnd
   !insertmacro MUI_PAGE_FINISH
 !macroend
 
+; app-builder-lib stages the complete differential-aware 7z under $PLUGINSDIR,
+; then normally copies every file into $INSTDIR. The bundled Python runtime is
+; almost entirely under resources, so on the normal same-volume install path a
+; directory rename publishes those thousands of files in one filesystem
+; operation. Rename is attempted only for the two stable Electron directories
+; in per-user installs. Per-machine installs deliberately use CopyFiles so the
+; payload inherits the Program Files ACL instead of retaining the staging
+; user's temporary-directory ACL. CopyFiles also handles root files, future
+; directories, cross-volume TEMP layouts, occupied destinations and retries
+; exactly as upstream does.
+!macro customPublishAppPackage SOURCE DESTINATION
+  ${If} $installMode != "all"
+    ClearErrors
+    Rename "${SOURCE}\resources" "${DESTINATION}\resources"
+    ${If} ${Errors}
+      ClearErrors
+    ${EndIf}
+    Rename "${SOURCE}\locales" "${DESTINATION}\locales"
+    ${If} ${Errors}
+      ClearErrors
+    ${EndIf}
+  ${EndIf}
+  CopyFiles /SILENT "${SOURCE}\*" "${DESTINATION}"
+!macroend
+
 ; Preserve only the install-root ownership guard from the former custom UI.
 ; This runs for silent installs too and does not replace or restyle any page.
 !macro customInit

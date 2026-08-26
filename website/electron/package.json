@@ -8,6 +8,7 @@
   "scripts": {
     "start": "electron .",
     "test": "node --test test/*.test.js mochi/test/*.test.js crew-companion/test/*.test.js",
+    "postinstall": "node scripts/patch-nsis-template.js",
     "dist": "electron-builder",
     "dist:mac": "electron-builder --mac",
     "dist:linux": "electron-builder --linux"
@@ -215,9 +216,7 @@
         "from": "backend-dist",
         "to": "backend-dist",
         "filter": [
-          "**/*",
-          "!**/__pycache__/**",
-          "!**/*.pyc"
+          "**/*"
         ]
       }
     ],

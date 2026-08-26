@@ -365,10 +365,26 @@ build_backend_windows() {
   ( cd "$out"
     find . -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
     find Lib/site-packages -type d \( -name tests -o -name test \) -prune -exec rm -rf {} + 2>/dev/null || true
-    rm -rf Lib/test Lib/idlelib Lib/tkinter Lib/turtledemo Lib/ensurepip Lib/lib2to3 2>/dev/null || true )
+    rm -rf Lib/test Lib/idlelib Lib/tkinter Lib/turtledemo Lib/ensurepip Lib/lib2to3 \
+           include libs tcl \
+           Lib/site-packages/kiro_crew/_vendor/llama_cpp_libs/linux_aarch64 \
+           Lib/site-packages/kiro_crew/_vendor/llama_cpp_libs/linux_x86_64 \
+           Lib/site-packages/kiro_crew/_vendor/llama_cpp_libs/macos_arm64 \
+           Lib/site-packages/kiro_crew/_vendor/llama_cpp_libs/macos_x86_64 \
+           2>/dev/null || true
+    rm -f DLLs/_tkinter.pyd DLLs/tcl*.dll DLLs/tk*.dll 2>/dev/null || true )
 
   # After pruning, so it validates what actually ships.
   stdlib_probe_gate "$out"
+
+  # Trace the real gateway import after the final prune and ship checked-hash
+  # pycs for exactly that closure. Windows can consume these beside the source
+  # without invalidating an Authenticode signature, avoiding the first launch's
+  # thousand-file cache write while keeping unrelated modules out of the bundle.
+  log "Precompiling Windows gateway startup modules ($(basename "$out"))…"
+  env PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1 PYTHONPATH= \
+    "$out/python.exe" -s "$ROOT/packaging/precompile_windows.py" \
+    --root "$out" --module kiro_crew.cli_server
 
   echo "    $(basename "$out") size: $(du -sh "$out" 2>/dev/null | cut -f1)"
 }

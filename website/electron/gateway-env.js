@@ -37,4 +37,26 @@ function buildGatewayEnvironment(baseEnv) {
   };
 }
 
-module.exports = { buildGatewayEnvironment, GATEWAY_UTF8_ENV };
+/**
+ * Keep runtime bytecode outside signed/read-only POSIX app bundles.
+ *
+ * The Windows bundle instead ships checked-hash pycs beside its sources. PE
+ * Authenticode does not seal resource trees the way macOS code signing does,
+ * and using those build-time caches avoids a thousand-file first-launch write
+ * burst. A per-machine install may be read-only to the user; Python can still
+ * consume the shipped caches without needing to update them.
+ */
+function gatewayBytecodeEnvironment(platform, cachePath, isPackaged) {
+  if (platform === "win32" && isPackaged) {
+    // An empty value makes CPython use adjacent __pycache__ files and, unlike
+    // omitting the key, overrides a hostile/inherited cache prefix.
+    return { PYTHONPYCACHEPREFIX: "" };
+  }
+  return { PYTHONPYCACHEPREFIX: cachePath };
+}
+
+module.exports = {
+  buildGatewayEnvironment,
+  gatewayBytecodeEnvironment,
+  GATEWAY_UTF8_ENV,
+};
