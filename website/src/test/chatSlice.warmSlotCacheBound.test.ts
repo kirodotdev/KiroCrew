@@ -883,9 +883,13 @@ describe('switching away from a pane whose own fetch has not landed', () => {
     expect(held.map(m => m.content)).toEqual(['older history', 'first tool', 'answer', 'live reasoning'])
   })
 
-  // Unanchored, so the helper tail-appends it. #4218's re-append loop cannot form:
-  // the upgrade clears the marker, so a later hydrate returns at boundedLen undefined.
-  it('keeps an unanchored block from the replaced region, and cannot re-append it', () => {
+  // The block's scan hit a turn-boundary user row — its turn is over — and the
+  // unbounded upgrade page covers that row, so the server's full account of the
+  // finished turn holds no position for it: dropped (#5815), not tail-appended
+  // where it would strand below newer turns. #4218's re-append loop cannot
+  // form either way: the upgrade clears the marker, so a later hydrate returns
+  // at boundedLen undefined.
+  it('drops a stopped-turn orphan from the replaced region once its boundary is covered (#5815)', () => {
     const thinking = { role: 'thinking', content: 'orphan reasoning', cls: '', ts: '2026-08-13T08:00:00Z' }
     const turn = { role: 'user', content: 'do it', cls: '', ts: '2026-08-13T08:30:00Z', meta: { mid: 'm-u' } }
     const answer = msg('answer', '2026-08-13T09:00:00Z', 'm-2')
@@ -900,8 +904,8 @@ describe('switching away from a pane whose own fetch has not landed', () => {
       slot: 'bg-slot', messages: [older, turn, answer] as never, hasMore: false, bounded: false, total: 3, running: false,
     }))
     const held = store.getState().chat.slotMessages['bg-slot']
-    expect(held.filter(m => m.role === 'thinking')).toHaveLength(1)
-    expect(held[held.length - 1].content).toBe('orphan reasoning')
+    expect(held.filter(m => m.role === 'thinking')).toHaveLength(0)
+    expect(held.map(m => m.content)).toEqual(['older history', 'do it', 'answer'])
     expect(store.getState().chat.slotPaneBounded['bg-slot']).toBeUndefined()
   })
 

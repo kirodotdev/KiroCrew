@@ -27,6 +27,7 @@ import { configureStore } from '@reduxjs/toolkit'
 
 import chatReducer, {
   appendSlotMessage,
+  appendQueuedMessage,
   clearFocusToolCallId,
   clearPendingPermissions,
   createSlot,
@@ -267,11 +268,14 @@ describe('chatSlice transcript equality on a repeat slot fetch', () => {
 })
 
 describe('chatSlice slot-detail refresh merges', () => {
-  it('re-inserts a reasoning block above its answer and keeps an unanchored one', () => {
+  it('re-inserts a reasoning block above its answer and drops a stopped-turn orphan once its boundary is covered (#5815)', () => {
     // Reasoning is never persisted server-side, so the refresh fired on
     // chat_done would drop it without this merge. The second block's scan hits
-    // a `user` row before any answer, so it has NO anchor — the tail is its
-    // position and it must still survive rather than being silently dropped.
+    // a `user` row before any answer — its turn is OVER (stopped
+    // mid-reasoning), and the page covers that boundary row, so the server's
+    // full account of the finished turn is known to hold no position for it.
+    // Keeping it teleported the chip to the transcript tail below the newer
+    // turn and re-appended it there on every later refresh.
     let s = chatReducer(initial, setActiveSlot('A'))
     s = chatReducer(s, replaceMessages([
       msg({ role: 'thinking', content: 'because…' }),
@@ -284,9 +288,8 @@ describe('chatSlice slot-detail refresh merges', () => {
       msg({ role: 'user', content: 'next question', ts: '3' }),
     ])))
     const roles = s.messages.map(m => m.role)
-    expect(roles).toEqual(['thinking', 'assistant', 'user', 'thinking'])
+    expect(roles).toEqual(['thinking', 'assistant', 'user'])
     expect(s.messages[0].content).toBe('because…')
-    expect(s.messages[3].content).toBe('orphan reasoning')
   })
 
   it('drops an anchored block whose anchor row is missing from the reloaded page (#5798)', () => {
@@ -335,6 +338,265 @@ describe('chatSlice slot-detail refresh merges', () => {
     s = chatReducer(s, lifecycle('chat/refreshSlot/fulfilled', 'A', detail('A', page)))
     s = chatReducer(s, lifecycle('chat/refreshSlot/fulfilled', 'A', detail('A', page)))
     expect(s.messages.map(m => m.content)).toEqual(['in window', 'answer'])
+  })
+
+  it('keeps stopped-turn chips bounded: covered boundaries drop, the live tail survives (#5815)', () => {
+    // Two turns were stopped mid-reasoning (each thinking block's scan hits
+    // the NEXT turn's user row — a finished turn with no tool call and no
+    // answer text), and a third block is the live turn's in-flight reasoning
+    // (nothing follows it at all). The page covers both boundary rows: both
+    // stopped-turn chips are dropped — before #5815 each was teleported to
+    // the tail and stranded there permanently, one chip per stopped turn —
+    // while the truly anchorless live block keeps the tail. A later refresh
+    // over the same window must not resurrect anything.
+    let s = chatReducer(initial, setActiveSlot('A'))
+    s = chatReducer(s, replaceMessages([
+      msg({ role: 'user', content: 'first question', ts: '1' }),
+      msg({ role: 'thinking', content: 'stopped reasoning one' }),
+      msg({ role: 'user', content: 'second question', ts: '2' }),
+      msg({ role: 'thinking', content: 'stopped reasoning two' }),
+      msg({ role: 'user', content: 'third question', ts: '3' }),
+      msg({ role: 'thinking', content: 'live reasoning' }),
+    ]))
+    const page = [
+      msg({ role: 'user', content: 'first question', ts: '1' }),
+      msg({ role: 'user', content: 'second question', ts: '2' }),
+      msg({ role: 'user', content: 'third question', ts: '3' }),
+    ]
+    s = chatReducer(s, lifecycle('chat/refreshSlot/fulfilled', 'A', detail('A', page, { running: true })))
+    s = chatReducer(s, lifecycle('chat/refreshSlot/fulfilled', 'A', detail('A', page, { running: true })))
+    const thinking = s.messages.filter(m => m.role === 'thinking').map(m => m.content)
+    expect(thinking).toEqual(['live reasoning'])
+    expect(s.messages[s.messages.length - 1].content).toBe('live reasoning')
+  })
+
+  it('drops a reasoning-only turn once the next turn boundary is covered (#5815)', () => {
+    // A turn can finish emitting ONLY reasoning — no tool call, no answer text
+    // (the backend flushes no assistant row). The block's scan hits the next
+    // user row: turn over, and the page covering that row proves the server's
+    // account of the finished turn holds no position for the block. Same
+    // disposition as a covered anchored miss: drop, matching a page reload.
+    let s = chatReducer(initial, setActiveSlot('A'))
+    s = chatReducer(s, replaceMessages([
+      msg({ role: 'thinking', content: 'reasoning with no output' }),
+      msg({ role: 'user', content: 'follow-up', ts: '5' }),
+      msg({ role: 'assistant', content: 'follow-up answer', ts: '6' }),
+    ]))
+    s = chatReducer(s, lifecycle('chat/refreshSlot/fulfilled', 'A', detail('A', [
+      msg({ role: 'user', content: 'follow-up', ts: '5' }),
+      msg({ role: 'assistant', content: 'follow-up answer', ts: '6' }),
+    ])))
+    expect(s.messages.filter(m => m.role === 'thinking')).toHaveLength(0)
+  })
+
+  it('keeps a stopped-turn block whose boundary row landed after the refresh snapshot (#5815)', () => {
+    // The boundary-row variant of the mid-turn race: refreshSlot snapshots the
+    // server, THEN the user stops the turn and sends the next message, THEN
+    // the fetch fulfills. The boundary user row sits PAST everything the
+    // snapshot contains — the snapshot is old, not the block. Dropping here
+    // would delete reasoning the user can still be looking at, before any
+    // snapshot has actually covered its turn.
+    let s = chatReducer(initial, setActiveSlot('A'))
+    s = chatReducer(s, replaceMessages([
+      msg({ role: 'user', content: 'question', ts: '1' }),
+      msg({ role: 'thinking', content: 'stopped reasoning' }),
+      msg({ role: 'user', content: 'sent after the snapshot', meta: { clientTs: 'u-2' } }),
+    ]))
+    // Snapshot predates the stop and the next message.
+    s = chatReducer(s, lifecycle('chat/refreshSlot/fulfilled', 'A', detail('A', [
+      msg({ role: 'user', content: 'question', ts: '1' }),
+    ], { running: true })))
+    expect(s.messages.some(m => m.role === 'thinking' && m.content === 'stopped reasoning')).toBe(true)
+  })
+
+  it('drops an evicted stopped-turn block when the page shares no identity but is provably newer (#5815)', () => {
+    // The no-overlap fallback, boundary shape: a long-disconnected session
+    // advanced past the bounded page, so the fresh page shares NO row with the
+    // stale cache. The stopped turn's boundary user row carries a server ts
+    // (proven by its server-minted `mid`) older than the page's oldest row —
+    // evicted history — so the block is dropped exactly like an evicted
+    // confirmed anchor; keeping it would strand it permanently below turns
+    // that happened hours later.
+    let s = chatReducer(initial, setActiveSlot('A'))
+    s = chatReducer(s, replaceMessages([
+      msg({ role: 'thinking', content: 'ancient stopped reasoning' }),
+      msg({ role: 'user', content: 'ancient next question', ts: '100', meta: { mid: 'm-ancient' } }),
+      msg({ role: 'thinking', content: 'live reasoning' }),
+    ]))
+    s = chatReducer(s, lifecycle('chat/refreshSlot/fulfilled', 'A', detail('A', [
+      msg({ role: 'user', content: 'much later question', ts: '5000' }),
+      msg({ role: 'assistant', content: 'much later answer', ts: '5001' }),
+    ], { running: true })))
+    const thinking = s.messages.filter(m => m.role === 'thinking').map(m => m.content)
+    expect(thinking).toEqual(['live reasoning'])
+  })
+
+  it('does not let a PLAIN optimistic send authorize dropping live reasoning (#5815)', () => {
+    // The stale-idle race: the client believed the slot was idle, so the
+    // composer appended its optimistic bubble — a plain `user` row, no
+    // `steer`, stamped `optimistic` from its `sendId`. The server disagreed
+    // and took the QUEUE path, so no `user` row is ever persisted for that
+    // text; meanwhile the turn keeps working and emits a tool frame. A refresh
+    // covering that tool row would put the unpersisted bubble inside the
+    // covered region, and reading it as a finished-turn boundary would drop
+    // the LIVE turn's reasoning above it. Only a server-CONFIRMED bubble (echo
+    // reconciled, flag deleted) may be a boundary.
+    let s = chatReducer(initial, setActiveSlot('A'))
+    s = chatReducer(s, replaceMessages([
+      msg({ role: 'user', content: 'question', ts: '1', meta: { mid: 'm-q' } }),
+      msg({ role: 'thinking', content: 'live reasoning' }),
+      msg({ role: 'user', content: 'and then deploy', ts: '2', meta: { sendId: 's-1', optimistic: true } }),
+      msg({ role: 'tool', content: '🔧 bash', ts: '3', meta: { tool_call_id: 'tc-live' } }),
+    ]))
+    s = chatReducer(s, lifecycle('chat/refreshSlot/fulfilled', 'A', detail('A', [
+      msg({ role: 'user', content: 'question', ts: '1', meta: { mid: 'm-q' } }),
+      msg({ role: 'tool', content: '🔧 bash', ts: '3', meta: { tool_call_id: 'tc-live' } }),
+    ], { running: true })))
+    const thinking = s.messages.filter(m => m.role === 'thinking').map(m => m.content)
+    expect(thinking).toEqual(['live reasoning'])
+  })
+
+  it('does not read a mid-turn QUEUED message as a turn boundary (#5815)', () => {
+    // A message sent while the slot is running is NOT persisted as a `user`
+    // row: the backend only enqueues it (queue_append touches the queue alone)
+    // and broadcasts `queue_push`, which this reducer renders as a `queued`
+    // row; the real `user` row appears later, when the drain starts the next
+    // turn. Driven through the actual producer action so the invariant is
+    // pinned at the source. If a queued message ever became a `user` row, the
+    // scan would break there instead of reaching the tool call that really
+    // anchors this block — and because the page covers that later tool row,
+    // the boundary would sit INSIDE the covered region and authorize dropping
+    // the LIVE turn's reasoning.
+    let s = chatReducer(initial, setActiveSlot('A'))
+    s = chatReducer(s, replaceMessages([
+      msg({ role: 'user', content: 'question', ts: '1', meta: { mid: 'm-q' } }),
+      msg({ role: 'thinking', content: 'live reasoning' }),
+    ]))
+    s = chatReducer(s, appendQueuedMessage({ slot: 'A', content: 'and then deploy', ts: '2', queue_id: 'q-1' }))
+    // The turn keeps working after the queued entry lands.
+    s = chatReducer(s, appendSlotMessage({ slot: 'A', message: msg({ role: 'tool', content: '🔧 bash', ts: '3', meta: { tool_call_id: 'tc-live' } }) }))
+    s = chatReducer(s, lifecycle('chat/refreshSlot/fulfilled', 'A', detail('A', [
+      msg({ role: 'user', content: 'question', ts: '1', meta: { mid: 'm-q' } }),
+      msg({ role: 'tool', content: '🔧 bash', ts: '3', meta: { tool_call_id: 'tc-live' } }),
+    ], { running: true })))
+    const roles = s.messages.map(m => m.role)
+    expect(roles.filter(r => r === 'thinking')).toHaveLength(1)
+    // Re-anchored above its tool call, not stranded at the tail.
+    expect(roles.indexOf('thinking')).toBeLessThan(roles.indexOf('tool'))
+  })
+
+  it('never evicts on a boundary whose ts is client-minted, however skewed the clock (#5815)', () => {
+    // Same no-overlap shape, but the boundary row is the composer's OPTIMISTIC
+    // bubble: appended locally with `new Date().toISOString()` and only a
+    // client `sendId`, no server-minted `mid`. A browser clock running behind
+    // the server makes that bubble read as older than every page row, which
+    // would evict the block above it — and here that block is LIVE reasoning
+    // of the turn the bubble just started. The eviction fallback must refuse a
+    // client timestamp: keeping is the safe direction.
+    let s = chatReducer(initial, setActiveSlot('A'))
+    s = chatReducer(s, replaceMessages([
+      msg({ role: 'thinking', content: 'live reasoning' }),
+      // Skewed client ts: numerically older than the page's oldest row.
+      msg({ role: 'user', content: 'next question', ts: '100', meta: { sendId: 's-local' } }),
+    ]))
+    s = chatReducer(s, lifecycle('chat/refreshSlot/fulfilled', 'A', detail('A', [
+      msg({ role: 'user', content: 'unrelated racing page row', ts: '5000' }),
+      msg({ role: 'assistant', content: 'unrelated answer', ts: '5001' }),
+    ], { running: true })))
+    const thinking = s.messages.filter(m => m.role === 'thinking').map(m => m.content)
+    expect(thinking).toEqual(['live reasoning'])
+  })
+
+  it('does not let an unreconciled optimistic steer authorize dropping pre-steer reasoning (#5815)', () => {
+    // A steer accepted into the RUNNING turn is echoed back as `steer_push`,
+    // which clears the bubble's optimistic flag — but the turn keeps emitting
+    // persisted rows before that echo reconciles. The pre-steer block's scan
+    // breaks at the optimistic bubble (it might be a new turn — reading past
+    // it could splice content), yet the bubble is ambiguous, NOT proof the
+    // turn ended: a refresh covering the tool row that landed after the steer
+    // must not read the bubble as a covered boundary and drop reasoning whose
+    // real anchor is that very tool row, one reconciliation away.
+    let s = chatReducer(initial, setActiveSlot('A'))
+    s = chatReducer(s, replaceMessages([
+      msg({ role: 'user', content: 'question', ts: '1' }),
+      msg({ role: 'thinking', content: 'pre-steer reasoning' }),
+      msg({ role: 'user', content: 'also check the logs', ts: '2026-08-26T06:00:00.000Z', meta: { steer: true, optimistic: true } }),
+      msg({ role: 'tool', content: '🔧 grep logs', ts: '3', meta: { tool_call_id: 'tc-post-steer' } }),
+    ]))
+    // The refresh covers the post-steer tool row; the steer echo has not
+    // reconciled, so the server page has no row for the bubble itself.
+    s = chatReducer(s, lifecycle('chat/refreshSlot/fulfilled', 'A', detail('A', [
+      msg({ role: 'user', content: 'question', ts: '1' }),
+      msg({ role: 'tool', content: '🔧 grep logs', ts: '3', meta: { tool_call_id: 'tc-post-steer' } }),
+    ], { running: true })))
+    expect(s.messages.some(m => m.role === 'thinking' && m.content === 'pre-steer reasoning')).toBe(true)
+  })
+
+  it('never drops on an optimistic steer bubble, even when the page holds a plain copy of its text (#5815)', () => {
+    // An optimistic steer bubble is ambiguous: an accepted steer whose
+    // steer_push echo has not reconciled, or a message that raced chat_done
+    // onto the new-turn path (persisted as a PLAIN user row, no echo ever).
+    // Resolving that ambiguity from text identity was attempted and retired:
+    // every variant carried a real over-drop hole (duplicate-text turns,
+    // missed echoes, pages reaching past the bounded cache window). The
+    // contract is now: the bubble breaks the scan but NEVER authorizes a
+    // drop — over-keep, not over-drop. The new-turn residual (this chip can
+    // strand until reload) is tracked as issue #6075.
+    let s = chatReducer(initial, setActiveSlot('A'))
+    s = chatReducer(s, replaceMessages([
+      msg({ role: 'user', content: 'question', ts: '1' }),
+      msg({ role: 'thinking', content: 'stopped reasoning' }),
+      msg({ role: 'user', content: 'do the next thing', ts: '2026-08-26T06:00:00.000Z', meta: { steer: true, optimistic: true } }),
+    ]))
+    // The page holds a persisted plain copy of the bubble's text — under the
+    // retired vouch mechanism this dropped the block; it must be kept.
+    s = chatReducer(s, lifecycle('chat/refreshSlot/fulfilled', 'A', detail('A', [
+      msg({ role: 'user', content: 'question', ts: '1' }),
+      msg({ role: 'user', content: 'do the next thing', ts: '5' }),
+    ], { running: true })))
+    expect(s.messages.some(m => m.role === 'thinking' && m.content === 'stopped reasoning')).toBe(true)
+  })
+
+  it('does not let an older duplicate-text user row vouch for an unresolved steer bubble (#5815)', () => {
+    // The bubble's text can repeat an EARLIER persisted user message ("do it")
+    // that appears in both lists. Under the never-drop contract the bubble is
+    // simply unresolved and the pre-steer block is kept; this pins that a
+    // duplicate-text page row can never be read as evidence against it.
+    let s = chatReducer(initial, setActiveSlot('A'))
+    s = chatReducer(s, replaceMessages([
+      msg({ role: 'user', content: 'do it', ts: '1' }),
+      msg({ role: 'thinking', content: 'pre-steer reasoning' }),
+      msg({ role: 'user', content: 'do it', ts: '2026-08-26T06:00:00.000Z', meta: { steer: true, optimistic: true } }),
+    ]))
+    s = chatReducer(s, lifecycle('chat/refreshSlot/fulfilled', 'A', detail('A', [
+      msg({ role: 'user', content: 'do it', ts: '1' }),
+    ], { running: true })))
+    expect(s.messages.some(m => m.role === 'thinking' && m.content === 'pre-steer reasoning')).toBe(true)
+  })
+
+  it('keeps accepted-steer reasoning when a later plain turn reused the steer text (#5815)', () => {
+    // A steer accepted into the running turn whose steer_push echo was MISSED
+    // (WS drop) leaves the bubble optimistic forever on this client. Later
+    // the user sends a plain new-turn message with byte-identical text, so
+    // the page holds BOTH a persisted STEER row and a plain row for that
+    // text. This very refresh replaces the bubble with the persisted steer
+    // row, re-anchoring the block through the confirmed-steer scan path — so
+    // the block must not be deleted one refresh early. This case is why
+    // text-identity resolution of the bubble was retired (see issue #6075):
+    // the plain row belongs to the LATER turn, not to the bubble.
+    let s = chatReducer(initial, setActiveSlot('A'))
+    s = chatReducer(s, replaceMessages([
+      msg({ role: 'user', content: 'question', ts: '1' }),
+      msg({ role: 'thinking', content: 'pre-steer reasoning' }),
+      msg({ role: 'user', content: 'check the logs', ts: '2026-08-26T06:00:00.000Z', meta: { steer: true, optimistic: true } }),
+    ]))
+    s = chatReducer(s, lifecycle('chat/refreshSlot/fulfilled', 'A', detail('A', [
+      msg({ role: 'user', content: 'question', ts: '1' }),
+      msg({ role: 'user', content: 'check the logs', ts: '3', meta: { steer: true } }),
+      msg({ role: 'assistant', content: 'steered answer', ts: '4' }),
+      msg({ role: 'user', content: 'check the logs', ts: '5' }),
+    ], { running: true })))
+    expect(s.messages.some(m => m.role === 'thinking' && m.content === 'pre-steer reasoning')).toBe(true)
   })
 
   it('keeps a block anchored to unconfirmed text through a racing mid-turn refresh', () => {
