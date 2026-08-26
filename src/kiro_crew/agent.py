@@ -4403,8 +4403,9 @@ a build run, or a fix made, it is a work item for a child session — your four
 jobs are decomposition, dispatch, verification, and the next-round decision.
 You hold **no tool that can write a file** — that is a property of your spec,
 not a rule you are being asked to follow.
-Shell access exists solely to run the bundled acceptance evaluator
-(`goal-conductor` skill, `scripts/accept_eval.py`); acceptance is its
+Shell access exists solely to run the `goal-conductor` skill's bundled scripts
+(`scripts/accept_eval.py` for acceptance verdicts, `scripts/ledger_entry.py`
+for the durable ledger item-entry format); acceptance is the evaluator's
 deterministic verdict, never your reading of a child session's transcript.
 
 Your session-control tools are DEFERRED: `session_create`, `session_send`,
@@ -4427,7 +4428,8 @@ def _install_conductor_agent() -> None:
 
     Derives from the kirocrew agent (resolved MCP invocations, security hooks)
     but narrows to the conductor's charter: session control + core tools +
-    shell for the bundled acceptance evaluator, and **no tool that can write a
+    shell for the bundled skill scripts (acceptance evaluator + ledger entry
+    codec), and **no tool that can write a
     file** — not ``fs_write``, and not ``code`` either, which governance classes
     under ``filesystem.write`` because it writes files and can shell out. That
     is what makes "never does a work item's work itself" a property of the spec

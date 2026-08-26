@@ -16,10 +16,11 @@ Your four jobs, none of which can be delegated to a work item:
 
 Everything else belongs in a work item. This spec has **no `fs_write`** — that
 is deliberate. If a task needs a file written, it is a work item, not something
-you do. `execute_bash` IS granted, for exactly one purpose: running the bundled
-acceptance evaluator (`scripts/accept_eval.py`). It is deliberately kept out of
-`allowedTools`, so every call prompts for approval — see "Known limits" for what
-that costs per patrol cycle.
+you do. `execute_bash` IS granted, for exactly one purpose: running this
+skill's bundled scripts — the acceptance evaluator (`scripts/accept_eval.py`)
+and the ledger entry codec (`scripts/ledger_entry.py`). Both are deliberately
+kept out of `allowedTools`, so every call prompts for approval — see "Known
+limits" for what that costs per patrol cycle.
 
 ## What is a work item
 
@@ -97,10 +98,16 @@ For each item in the round:
    acceptance condition, and where to report. The seed is the item's whole
    contract: the child session gets no other context from you.
 5. `session_ledger_record` the item: its goal text, the round number, and — in
-   `artifacts`, under an `item-<n>` key, as a JSON-serialized STRING — the durable
-   item entry carrying its acceptance spec, session key, round, status and read
-   cursor (see "What goes where" below for the encoding, its string requirement,
-   and its bounds). That entry is the ONLY place the acceptance spec survives
+   `artifacts`, under an `item-<n>` key — the durable item entry carrying its
+   acceptance spec, session key, round, status and read cursor. **Never
+   hand-write the entry value: encode it with the bundled codec**
+   (`scripts/ledger_entry.py`, same directory as the evaluator — see "The
+   ledger item-entry codec" below). **Before any dispatch write that would
+   push the map past the entry cap, `rotate` the combined current-plus-new
+   map and write THAT back** — the ledger's own cap handling blindly ages out
+   the oldest entry, active or not, so the codec must be the thing that
+   decides what drops (and a `cap_exceeded_all_active` error means do not
+   dispatch). That entry is the ONLY place the acceptance spec survives
    compaction; `next` carries the resumable intent.
 
 Send the seed BEFORE recording the ledger row as dispatched — a ledger row that
@@ -131,9 +138,10 @@ Each cycle:
    skills root, so on such an install that path does not exist and every
    evaluator call would fail before patrol ever ran.
 
-   Build the items JSON from the `item-*` entries in your ledger's `artifacts`,
-   and evaluate **every open item in ONE call** — each invocation costs one
-   approval prompt.
+   Build the items JSON from the `item-*` entries in your ledger's `artifacts`
+   — decode each stored value with the codec (`ledger_entry.py decode`), never
+   by eyeballing the string — and evaluate **every open item in ONE call** —
+   each invocation costs one approval prompt.
 
    Verdicts: `pass` / `fail` are final for this cycle. `pending` means keep
    waiting. `refused` means the spec asked for something the evaluator will not
@@ -158,18 +166,20 @@ Each cycle:
 3. For items still running, `session_read_message` with the `since` cursor you
    stored last cycle — this answers "is it moving / did it ask a question",
    never "did it succeed". Store the returned `next_since` back into that item's
-   `artifacts` entry — held only in context it is lost on compaction, and the
-   next cycle then re-reads the transcript from the top.
+   `artifacts` entry (a fresh `ledger_entry.py encode` with the new cursor) —
+   held only in context it is lost on compaction, and the next cycle then
+   re-reads the transcript from the top.
 4. `session_ledger_record` only what changed — but an item's `artifacts` entry is
    rewritten whole, so include the fields you are not changing.
 5. **Say nothing unless there is a real signal.** An item passing acceptance,
    failing it, asking a question, or stalling. Never post "nothing changed".
 
-**Shell exists for the evaluator, not for work.** `execute_bash` is granted so
-this patrol step can run `accept_eval.py`. Running a work item's build, test,
-or fix yourself through it is the boundary violation this skill exists to
-prevent — if you need a command run to MAKE something true, that is a work
-item; the evaluator only CHECKS what is already true.
+**Shell exists for the bundled scripts, not for work.** `execute_bash` is
+granted so patrol can run `accept_eval.py` and `ledger_entry.py`. Running a
+work item's build, test, or fix yourself through it is the boundary violation
+this skill exists to prevent — if you need a command run to MAKE something
+true, that is a work item; the bundled scripts only CHECK and ENCODE what is
+already true.
 
 ### Close the round
 
@@ -231,36 +241,77 @@ What goes where:
 - `next` — a resumable intent, not a status. "round 2: A awaiting acceptance,
   B still running" beats "monitoring".
 - `artifacts` — **the durable home for every active work item.** One entry per
-  item, and the entry must carry everything patrol needs to run a cycle without
-  the conversation: the acceptance spec, the session key, the round, the status,
-  and the read cursor. Nothing else is durable — the transcript is gone after
-  compaction, and judging an item from its transcript is forbidden anyway — so an
-  acceptance spec that lives only in your context is a spec patrol cannot rebuild.
+  item, keyed `item-<n>`, and the entry must carry everything patrol needs to
+  run a cycle without the conversation: the acceptance spec, the session key,
+  the round, the status, and the read cursor. Nothing else is durable — the
+  transcript is gone after compaction, and judging an item from its transcript
+  is forbidden anyway — so an acceptance spec that lives only in your context is
+  a spec patrol cannot rebuild.
 
-  **`artifacts` is a map of string to STRING.** The value must be a
-  JSON-*serialized* string, not a nested object: a non-string value is rejected
-  outright with `artifacts_not_string_map` (HTTP 400), so an entry sent as a real
-  object does not persist at all — which loses exactly the state this entry
-  exists to keep. Key it `item-<n>`, and serialize the object into one line:
-
-  ```
-  item-1 -> "{\"accept\":{\"kind\":\"pr_checks\",\"pr\":123,\"repo\":\"o/r\"},\"session\":\"<session key>\",\"round\":2,\"status\":\"running\",\"since\":\"<next_since cursor>\"}"
-  ```
-
-  Parse it back with a JSON decode when you read the ledger, and treat a value
-  that fails to decode as a lost item — re-derive it from the child session
-  rather than guessing.
-
-  The field's real bounds make this fit and also bound it: **32 entries, key
-  ≤128 chars, value ≤2000 chars** — ample for one item's serialized spec, far too
-  small for prose or a transcript excerpt. So keep values to this encoding, and
-  **rotate**: when an item reaches a terminal verdict, collapse its entry to a
-  one-line outcome (`"{\"status\":\"pass\",\"round\":2}"`) or drop it, so a long
-  goal's finished items cannot age an ACTIVE item out of the 32-entry cap. Record
-  the entry in the same `session_ledger_record` call that marks the item
-  dispatched, and rewrite it whenever the spec concretizes (the two-phase TBD
-  case) or the cursor advances.
+  **The entry format is owned by the bundled codec, `scripts/ledger_entry.py`
+  — never hand-write or hand-parse a value.** See "The ledger item-entry
+  codec" below for the four operations. Record the entry in the same
+  `session_ledger_record` call that marks the item dispatched, and rewrite it
+  (a fresh `encode`) whenever the spec concretizes (the two-phase TBD case) or
+  the cursor advances — an entry is rewritten whole, never patched.
 - `tried` — approaches you rejected and why, so a later round does not repeat them.
+
+## The ledger item-entry codec
+
+`scripts/ledger_entry.py` (same directory as the evaluator — resolve it the
+same way) is the single owner of the item-entry format. It exists because the
+two failure modes it prevents are silent: the ledger's `artifacts` field is a
+map of string to STRING — a nested object is rejected with
+`artifacts_not_string_map` and **nothing persists** — and an oversized value is
+silently TRUNCATED at the ledger's cap, corrupting the stored JSON. The codec
+knows the ledger's real bounds and refuses before the write instead.
+
+Every mode reads JSON on stdin and writes JSON on stdout; domain problems come
+back as `{"ok": false, "error": {...}}`, never a crash:
+
+- **encode** — fields in, the single-line string value out:
+
+  ```bash
+  printf '%s' '{"accept":{"kind":"pr_checks","pr":123,"repo":"o/r"},"session":"<session key>","round":2,"status":"running","since":"<next_since cursor>"}' \
+    | python3 <this skill's dir>/scripts/ledger_entry.py encode
+  ```
+
+  Put the returned `value` under the `item-<n>` key. `since` is optional.
+  `status` must be one of `running`, `waiting`, `pass`, `fail` — the codec
+  rejects anything else. **A failed acceptance CHECK is not `fail`:** your
+  stop condition allows three failures, so on a failed check re-encode with
+  `status` still `running` and the optional `fails` counter incremented (that
+  count is what survives compaction and feeds the three-strikes stop). Write
+  `fail` only when the item is finally given up — `pass` and `fail` are the
+  terminal statuses rotation collapses.
+- **decode** — a stored value in, structured fields out, plus `terminal` and
+  `complete` flags. A failed decode means a lost item: re-derive it from the
+  child session rather than guessing.
+- **validate** — the whole artifacts map you are about to write in, violations
+  out. Run it before `session_ledger_record` when in doubt; a violation the
+  ledger would enforce silently (truncation, age-out, whole-write rejection)
+  comes back as a named violation instead.
+- **rotate** — the artifacts map in, a rotated map out: terminal entries are
+  collapsed to their one-line outcome, then dropped oldest-first ONLY if the
+  map still exceeds the entry cap. An active item is never dropped; when the
+  cap cannot be met without dropping one, you get a structured error to
+  surface. Run it at BOTH trigger points: when an item reaches a terminal
+  verdict, and **before any dispatch write that would push the map past the
+  entry cap — on the combined current-plus-new map, including the entries you
+  are about to add**. Rotate trims down TO the cap, never below it, so a map
+  at the cap plus a new item would otherwise be capped by the LEDGER, whose
+  age-out is blind to status and evicts the oldest entry even when it is an
+  active item's only surviving state. A `cap_exceeded_all_active` error at
+  dispatch time means the goal has no capacity: do not dispatch.
+  **Write the returned map back WHOLE, in one `session_ledger_record` call.**
+  The ledger merges rather than replaces — an omitted key is not deleted, and
+  every key you send becomes newest — so a partial write-back would leave the
+  untouched active entries oldest in the age-out order and make `dropped`
+  meaningless. This is the one place "write only deltas" does not apply.
+
+Batch your codec calls like evaluator calls — each invocation costs one
+approval prompt, so one `rotate` (or one `validate` of the whole map) per
+cycle beats one call per item.
 
 ## Cost discipline
 
@@ -278,16 +329,17 @@ watches, and that cost grows with the loop's own history.
   defaults to OFF and fails closed — every session tool answers
   `session_control_disabled` until the user sets it to `true` in config.json.
   If you see that error, say which switch to flip; do not retry.
-- **Every dashboard tool call prompts for approval, and so does every evaluator
-  run.** That is deliberate: both `@kirocrew-dashboard` and `execute_bash` are
-  withheld from auto-approve so their calls still pass through the tool-call hook
-  where the deny floor and governance ceiling apply. The steady-state cost is
+- **Every dashboard tool call prompts for approval, and so does every bundled
+  script run.** That is deliberate: both `@kirocrew-dashboard` and `execute_bash`
+  are withheld from auto-approve so their calls still pass through the tool-call
+  hook where the deny floor and governance ceiling apply. The steady-state cost is
   concrete and worth planning for: **each patrol cycle blocks on one approval for
-  the `accept_eval.py` invocation**, plus one per session-control call in a
-  dispatch round. Patrol is therefore attended-unattended — the loop wakes itself,
-  but a cycle that finds nobody at the keyboard waits rather than proceeding. Size
-  the nudge interval for that, and prefer one evaluator call per cycle carrying
-  every open item over one call per item.
+  the `accept_eval.py` invocation** plus one per codec call, and one per
+  session-control call in a dispatch round. Patrol is therefore
+  attended-unattended — the loop wakes itself, but a cycle that finds nobody at
+  the keyboard waits rather than proceeding. Size the nudge interval for that,
+  and prefer batched calls — one evaluator call per cycle carrying every open
+  item, one codec call per map-wide operation — over one call per item.
 - **`session_send` reports delivery, not completion.** `started: true` means the
   target began a turn on your message; `started: false` means it queued. Neither
   says the work succeeded — acceptance is still the domain assertion's job.
@@ -295,15 +347,17 @@ watches, and that cost grows with the loop's own history.
   app-scoped sessions, channel-linked or mirrored sessions, crew-mode sessions,
   and sessions in another workspace are all refused by the shared guard. Plan
   work items onto plain persistent dashboard sessions only.
-- **Shell is for the evaluator only, and the evaluator runs no command you
-  name.** `execute_bash` exists so patrol can run `accept_eval.py`; every call is
-  audit-logged and every call prompts. The evaluator accepts **no command,
-  argv array, or shell string from a spec** — it builds every argv it runs from a
-  fixed template, so `pr_checks` becomes `gh pr checks <n>` and nothing else
-  executes. That is deliberate and load-bearing: this script is invoked as an
-  approved wrapper, so a spec that could name a command would turn it into a
-  general way to run one, and Kiro Crew's denied-command floor cannot see inside
-  it (the floor reads the `execute_bash` string, which says `python3
-  accept_eval.py`). Widening happens by adding a purpose-built kind that
-  constructs its own argv — never by accepting one. A `refused` verdict is a
-  spec to re-express, never a list to route around.
+- **Shell is for the bundled scripts only, and the evaluator runs no command
+  you name.** `execute_bash` exists so patrol can run `accept_eval.py` and
+  `ledger_entry.py` (the codec runs no subprocess at all — it only transforms
+  JSON); every call is audit-logged and every call prompts. The evaluator
+  accepts **no command, argv array, or shell string from a spec** — it builds
+  every argv it runs from a fixed template, so `pr_checks` becomes `gh pr
+  checks <n>` and nothing else executes. That is deliberate and load-bearing:
+  this script is invoked as an approved wrapper, so a spec that could name a
+  command would turn it into a general way to run one, and Kiro Crew's
+  denied-command floor cannot see inside it (the floor reads the
+  `execute_bash` string, which says `python3 accept_eval.py`). Widening
+  happens by adding a purpose-built kind that constructs its own argv — never
+  by accepting one. A `refused` verdict is a spec to re-express, never a list
+  to route around.

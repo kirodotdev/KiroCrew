@@ -11,11 +11,12 @@ bare interpreters are NOT on the evaluator's allowlist (a spec could otherwise
 name ``python -c <payload>``), and pinning that is one of the tests below.
 """
 
-import importlib.util
 import json
 import subprocess
 import sys
 from pathlib import Path
+
+from skill_script_helpers import load_skill_script
 
 from kiro_crew import agent
 from kiro_crew.agent_files import CONDUCTOR_AGENT_FILENAME, OWNED_KIRO_AGENT_FILES
@@ -234,13 +235,22 @@ class TestConductorInstaller:
         conductor to send a nested object would lose every dispatched item's
         state — the exact durability this entry exists to provide. Pinned as a
         doc ratchet because the instruction, not the code, is what would drift.
+
+        The format is owned by ``scripts/ledger_entry.py`` (issue #5912), so
+        the skill must route encoding through the codec rather than carrying a
+        hand-written byte-format example for models to re-derive — the worked
+        example was the specification once, and produced real defects on
+        PR #5652.
         """
         text = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
         assert "artifacts_not_string_map" in text
         assert "map of string to STRING" in text
-        # The worked example must show an escaped-quote string value, never a
-        # bare `item-1 -> {` object literal.
-        assert 'item-1 -> "{\\"accept\\"' in text
+        # The codec is the format's one code owner: the skill must direct the
+        # conductor to it for encode/decode/validate/rotate...
+        assert "scripts/ledger_entry.py" in text
+        assert "ledger_entry.py encode" in text
+        # ...and must never show a bare `item-1 -> {` object literal, which is
+        # exactly the value shape the ledger rejects.
         assert "item-1 -> {" not in text
 
     def test_spec_is_registered_as_kirocrew_owned(self):
@@ -268,17 +278,15 @@ class TestConductorInstaller:
 
 
 def _load_evaluator():
-    """Import the bundled script as a module so its internals are addressable.
+    """Load accept_eval.py by file location, via the shared no-bytecode helper.
 
-    It ships inside a skill directory rather than the package, so there is no
-    import path to it; loading it by file location is what lets a test assert the
-    argv a handler BUILDS without executing anything.
+    The script lives inside the checked-in skill dir (no package import path);
+    loading it by file location is what lets a test assert on its internals.
+    ``load_skill_script`` is the residue-guarded loader — a hand-rolled
+    ``exec_module`` here would drop ``__pycache__`` beside the checked-in
+    script, the exact side effect ``no-test-side-effects`` forbids.
     """
-    spec = importlib.util.spec_from_file_location("_accept_eval_under_test", SCRIPT)
-    assert spec and spec.loader
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    return load_skill_script("_accept_eval_under_test", SCRIPT)
 
 
 class TestAcceptEvaluatorInvariant:
