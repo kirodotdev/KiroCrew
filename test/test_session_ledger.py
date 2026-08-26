@@ -12,6 +12,7 @@ purge.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -243,6 +244,130 @@ def test_coerce_preserves_unknown_fields():
     assert state["goal"] == "g"
     assert state["future_field"] == {"a": 1}
     assert state["tried"] == []
+
+
+# -- Coercion reports what it discards -------------------------------------
+
+
+class TestCoercionIsLoudAboutLoss:
+    """Every cap in ``_coerce_state`` discards caller data.
+
+    ``record`` reads, mutates and writes the coerced record back, so a value
+    that overflowed once is gone from disk for good. The reader already WARNs
+    when it discards a whole file over ``_MAX_STATE_BYTES``; these pin that a
+    PARTIAL discard is reported the same way, that a clean read stays silent,
+    and — the part that matters most — that reporting the loss does not change
+    what is kept.
+    """
+
+    def _warnings(self, caplog: pytest.LogCaptureFixture) -> list[str]:
+        return [
+            r.getMessage()
+            for r in caplog.records
+            if r.levelno >= logging.WARNING and "coerced with data loss" in r.getMessage()
+        ]
+
+    def test_a_clean_record_logs_nothing(self, caplog: pytest.LogCaptureFixture) -> None:
+        """The control that makes this safe to ship: no loss, no line. Without
+        it a WARNING on every ledger read would be pure noise."""
+        raw = {
+            "goal": "g",
+            "tried": [{"approach": "a", "rejected_because": "b", "at": "t"}],
+            "artifacts": {"k": "v"},
+            "events": [{"ts": "t", "kind": "k", "text": "x"}],
+        }
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session_ledger"):
+            sl._coerce_state(raw)
+        assert self._warnings(caplog) == []
+
+    def test_an_oversized_field_is_named(self, caplog: pytest.LogCaptureFixture) -> None:
+        raw = {"goal": "g" * (sl._MAX_TEXT + 1)}
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session_ledger"):
+            state = sl._coerce_state(raw)
+        found = self._warnings(caplog)
+        assert len(found) == 1, f"the discard was silent (warnings: {found})"
+        msg = found[0]
+        assert "goal truncated" in msg
+        # The value is still trimmed exactly as before — this is observability.
+        assert len(state["goal"]) == sl._MAX_TEXT
+
+    def test_aged_out_entries_are_counted(self, caplog: pytest.LogCaptureFixture) -> None:
+        over = 7
+        raw = {
+            "tried": [{"approach": f"a{i}"} for i in range(sl._MAX_TRIED + over)],
+            "events": [{"text": f"e{i}"} for i in range(sl._MAX_EVENTS + over)],
+        }
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session_ledger"):
+            state = sl._coerce_state(raw)
+        found = self._warnings(caplog)
+        assert len(found) == 1, f"the discard was silent (warnings: {found})"
+        msg = found[0]
+        assert f"oldest tried[] aged out (cap {sl._MAX_TRIED}) x{over}" in msg
+        assert f"oldest events[] aged out (cap {sl._MAX_EVENTS}) x{over}" in msg
+        assert len(state["tried"]) == sl._MAX_TRIED
+        assert len(state["events"]) == sl._MAX_EVENTS
+
+    def test_dropped_artifacts_are_counted(self, caplog: pytest.LogCaptureFixture) -> None:
+        over = 5
+        raw = {"artifacts": {f"k{i}": "v" for i in range(sl._MAX_ARTIFACTS + over)}}
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session_ledger"):
+            state = sl._coerce_state(raw)
+        found = self._warnings(caplog)
+        assert len(found) == 1, f"the discard was silent (warnings: {found})"
+        msg = found[0]
+        assert f"artifacts dropped (cap {sl._MAX_ARTIFACTS}) x{over}" in msg
+        assert len(state["artifacts"]) == sl._MAX_ARTIFACTS
+
+    def test_a_wrong_typed_value_is_not_reported_as_loss(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Resetting a wrong-typed field to its default is the documented
+        coercion contract, not a discard — reporting it would drown the real
+        losses in noise from a forward-compatible writer."""
+        raw = {"goal": {"not": "a string"}, "tried": "wrong-type", "artifacts": {"k": 7}}
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session_ledger"):
+            state = sl._coerce_state(raw)
+        assert self._warnings(caplog) == []
+        assert state["goal"] == ""
+        assert state["tried"] == []
+        assert state["artifacts"] == {}
+
+    def test_one_line_per_read_not_one_per_field(self, caplog: pytest.LogCaptureFixture) -> None:
+        raw = {
+            "goal": "g" * (sl._MAX_TEXT + 1),
+            "next": "n" * (sl._MAX_TEXT + 1),
+            "events": [{"text": "e" * (sl._MAX_TEXT + 1)} for _ in range(3)],
+        }
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session_ledger"):
+            sl._coerce_state(raw)
+        found = self._warnings(caplog)
+        assert len(found) == 1, f"the discard was silent (warnings: {found})"
+        msg = found[0]
+        assert "events[].text truncated x3" in msg
+
+    def test_the_report_is_self_limiting_across_a_record_cycle(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The answer to "won't this warn forever?".
+
+        ``record`` writes the coerced state back, so the overflow is gone from
+        disk after the first cycle and the next read finds nothing to trim.
+        """
+        key = "chat-77-abc"
+        sl.record(key, goal="seed")
+        path = sl.ledger_dir(key) / sl._STATE_FILE
+        blob = json.loads(path.read_text(encoding="utf-8"))
+        blob["goal"] = "g" * (sl._MAX_TEXT + 500)
+        path.write_text(json.dumps(blob), encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session_ledger"):
+            sl.record(key, next_step="advance")
+        assert len(self._warnings(caplog)) == 1, "the overflow read must be reported once"
+
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session_ledger"):
+            sl.record(key, next_step="again")
+        assert self._warnings(caplog) == [], "the write-back removed the overflow"
 
 
 def test_purge_removes_dir_and_tolerates_bad_keys():
