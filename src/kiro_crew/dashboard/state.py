@@ -2682,6 +2682,7 @@ class _ChatSlot:
         "_dirty_flag",
         "_dirty_gen",
         "_orch_tracker",
+        "_plan_cancelled",
         "_auto_run",
         "_in_stage_execution",
         "_last_turn_auth_required",
@@ -2951,6 +2952,16 @@ class _ChatSlot:
         # "the True I started this save under" from "a NEW True set during it".
         self._dirty_gen: int = 0
         self._orch_tracker: Any = None  # OrchestrationTracker, set by gateway
+        # Plan-cancel latch closing the cancel/Go race (#6046): the Cancel
+        # handler can only stop a tracker that exists, but _stage_loop creates
+        # the tracker lazily, so a cancel processed between a Go POST being
+        # accepted and its _stage_loop coroutine starting would no-op on the
+        # tracker and the plan would advance anyway. The handler sets this flag
+        # unconditionally; _stage_loop checks it before creating a tracker and
+        # exits without advancing. Cleared ONLY when a new plan is armed
+        # (_reset_auto_run_for_new_plan) — never on Go, so a Go on a cancelled
+        # plan cannot resurrect it (that would just invert the race).
+        self._plan_cancelled: bool = False
         self._auto_run: bool = False  # "Go All" — skip stage gates
         # True only while _stage_loop is driving a stage-execution turn. Gates
         # the end-of-turn plan detector so a stage turn whose output happens to

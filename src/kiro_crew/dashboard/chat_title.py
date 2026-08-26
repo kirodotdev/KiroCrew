@@ -622,6 +622,11 @@ def _reset_auto_run_for_new_plan(slot: "_ChatSlot") -> None:
                 pass
     slot._orch_tracker = None
     slot._auto_run = False
+    # A freshly armed plan starts un-cancelled. This is the ONLY clear site for
+    # the latch — deliberately not Go (api_chat_plan_action): clearing on Go
+    # would let a Go racing a Cancel resurrect the cancelled plan, which is the
+    # same race (#6046) inverted.
+    slot._plan_cancelled = False
 
 
 def _extract_and_redact_plan_metadata(text: str) -> tuple[list[str], str, list[list[str]]]:

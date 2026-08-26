@@ -6386,6 +6386,16 @@ class GatewayOrchestrator:
                         OrchestrationTracker,
                     )
 
+                    # Deliberately NOT latch-based (slot._plan_cancelled):
+                    # the latch outlives the cancelled plan into the NEXT
+                    # planning turn (it clears only when the new plan is
+                    # armed), so a latch-based drop here would silently
+                    # discard subagent completions belonging to that new
+                    # turn — data loss. tracker.stopped scopes the drop to
+                    # a live-but-stopped orchestration; a stale completion
+                    # landing on a cancelled slot whose tracker is absent
+                    # is bounded accounting noise (the stage loop itself
+                    # stays latched and cannot advance).
                     if not getattr(_slot, "_orch_tracker", None):
                         _slot._orch_tracker = OrchestrationTracker()
                     tracker = _slot._orch_tracker

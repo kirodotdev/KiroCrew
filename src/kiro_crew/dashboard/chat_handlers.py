@@ -561,6 +561,12 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         and message.strip().lower().split()[0] in _stop_words
     ):
         tracker.stop()
+        # Same latch as the plan-action Cancel handler (#6046): tracker.stopped
+        # alone does not survive the Slack gateway lazily re-creating a fresh
+        # unstopped tracker on this slot, so without the latch a later Go could
+        # resurrect a plan the user stopped by word. One revocation semantics
+        # across both cancel surfaces (Design review finding).
+        slot._plan_cancelled = True
         slot._auto_run = False
         # Cancel running agents for this slot
         if state.subagents:
