@@ -379,7 +379,11 @@ async def api_voice_voices(request: web.Request) -> web.Response:
     except asyncio.TimeoutError:
         with contextlib.suppress(ProcessLookupError):
             proc.kill()
-        await proc.wait()
+        # Reap via communicate(), not wait(): wait_for cancelled the pipe
+        # readers before the kill landed, so a child blocked writing to a
+        # full stderr PIPE is never drained and wait() can hang the request
+        # handler indefinitely (#5975, same class as #5834).
+        await proc.communicate()
         return web.json_response({"error": "timeout"}, status=504)
     except FileNotFoundError:
         # Defense-in-depth behind the which() guard above: exec can still
