@@ -580,9 +580,31 @@ class TestInstanceBinding:
         """
         project = _real_dir(tmp_path, "project")
         skill_trust.grant_project_trust(project)
+
+        # The identity the grant actually bound, captured before the delete.
+        granted_st = os.stat(project)
+        granted_instance = (granted_st.st_dev, granted_st.st_ino)
+
+        # Replace the directory the same way
+        # ``test_a_different_directory_at_the_same_path_is_not_trusted`` does,
+        # and for the same reason: on Linux ``_instance_identity`` is ``dev:ino``
+        # alone (no birth time), so recreating after the delete leaves the
+        # distinctness to the allocator, which is free to hand the just-freed
+        # inode straight back -- and then the untrusted pre-state this rebind is
+        # measured against never holds. Creating the replacement WHILE the
+        # granted directory still exists forces distinct inodes (two live
+        # directories on one device cannot share one), and the rename preserves
+        # the replacement's inode while giving it the granted path.
+        replacement = _real_dir(tmp_path, "replacement-instance")
         os.rmdir(project)
-        _real_dir(tmp_path, "an-intervening-inode")
-        _real_dir(tmp_path, "project")
+        os.rename(replacement, project)
+
+        replacement_st = os.stat(project)
+        assert (replacement_st.st_dev, replacement_st.st_ino) != granted_instance, (
+            "precondition: inode reuse -- the replacement directory was handed "
+            "the granted directory's own (st_dev, st_ino) back, so the untrusted "
+            "pre-state the re-grant below is measured against would not hold"
+        )
         skill_trust.reset_cache_for_tests()
         assert skill_trust.is_project_trusted(project) is False
 
