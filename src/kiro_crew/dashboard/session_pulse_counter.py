@@ -2,9 +2,12 @@
 
 Gates the session-pulse survey's "new user" window: the survey must not appear
 until this install has started at least ``NEW_USER_SESSION_THRESHOLD`` genuine
-user chats (``SlotOrigin.USER``). Counting only user-origin sessions -- not
-cron, app, system, or restored-untagged slots -- keeps the gate a measure of
-real human engagement, matching the only surface the survey ever shows on.
+user chats (``SlotOrigin.USER``). Counting only user-origin sessions whose
+creation path opts in via ``count_user_session`` -- not cron, app, system,
+restored-untagged slots, or agent-driven session-control creates (which mint
+USER-origin slots for privacy semantics but are not a person chatting, #6139)
+-- keeps the gate a measure of real human engagement, matching the only
+surface the survey ever shows on.
 
 The count is persisted next to the other dashboard state files via
 ``config_dir()`` so it honors ``KIROCREW_HOME`` and survives restarts. The
@@ -106,8 +109,8 @@ def increment_user_session_count_off_loop() -> None:
     """Count one user session without doing its disk I/O on the event loop.
 
     ``get_or_create_slot`` is synchronous and runs on the gateway loop for every
-    request-layer slot birth -- a new chat tab, a fork, and the session-control
-    create verb all reach it -- so doing this module's read, ``mkdir``, tempfile
+    request-layer slot birth -- the chat-send auto-create, a new chat tab, and a
+    fork all reach it -- so doing this module's read, ``mkdir``, tempfile
     write and ``os.replace`` inline stalls the whole loop on slow or contended
     storage.
 

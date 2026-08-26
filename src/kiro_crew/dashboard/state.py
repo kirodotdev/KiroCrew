@@ -6732,6 +6732,19 @@ class DashboardState:
         linked_session_key: str = "",
         channel_origin: bool = False,
         origin: str | None = None,
+        *,
+        # Opt-in for the survey's "new user" session counter, DISTINCT from the
+        # origin tag: ``SlotOrigin.USER`` carries the ``slots:user`` privacy
+        # semantics and is deliberately set by non-human paths too (the
+        # session-control create verb mints USER slots so agent-created
+        # sessions stay app-invisible), so origin alone cannot mean "a person
+        # started this chat". Only the human request-layer paths (chat-send
+        # auto-create, new-chat tab, fork) pass True. Default False is the
+        # chosen fail direction, matching
+        # the counter's own philosophy below: a future missed opt-in only
+        # delays the survey (lost signal); defaulting to count would let
+        # unattended agent activity satisfy the gate (corrupted signal).
+        count_user_session: bool = False,
     ) -> _ChatSlot:
         """Return existing slot or create a new one.
 
@@ -6814,12 +6827,18 @@ class DashboardState:
         # SlotOrigin.USER), so a caller that forgets to declare loses
         # visibility instead of leaking — the direction this has to fail in.
         slot._origin = origin or (SlotOrigin.APP if app else "")
-        if minted_new and slot._origin == SlotOrigin.USER:
+        if minted_new and count_user_session and slot._origin == SlotOrigin.USER:
             # Count only genuine, newly-minted user chats toward the survey's
             # "new user" window (session_pulse_counter). `minted_new` excludes
             # restore/rehydrate (which passes the persisted key as name) and
-            # get-existing, so a restart never re-counts already-seen sessions;
-            # only the request layer ever supplies origin=USER. Best-effort:
+            # get-existing, so a restart never re-counts already-seen sessions.
+            # `count_user_session` carries the human-started signal: only the
+            # request-layer paths a person actually drives (chat-send
+            # auto-create, new-chat tab, fork) opt in, so agent-minted USER
+            # slots (the session-control create verb) do not satisfy the
+            # survey gate on their own (#6139). The
+            # origin conjunct stays as the invariant floor: a caller can never
+            # count a non-USER slot, flag or not. Best-effort:
             # the helper swallows its own I/O errors and never raises into
             # slot creation.
             #

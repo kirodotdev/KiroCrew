@@ -243,6 +243,9 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             origin=request_slot_origin(request.get("app", "")),
             mode=requested_mode,
             memory_mode=requested_memory_mode,
+            # Human request-layer path: a person sending a chat message. The
+            # origin conjunct in state.py still excludes app-token callers.
+            count_user_session=True,
         )
     except ValueError as exc:
         sel().log_api_access(
@@ -1863,6 +1866,9 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 ephemeral=body.get("ephemeral"),
                 app=request.get("app", ""),
                 origin=request_slot_origin(request.get("app", "")),
+                # Human request-layer path: the dashboard new-chat tab. The
+                # origin conjunct in state.py still excludes app-token callers.
+                count_user_session=True,
             )
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=409)

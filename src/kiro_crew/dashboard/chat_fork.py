@@ -545,6 +545,9 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
         mode=mode_override if mode_override is not None else slot.mode,
         app=request_app,
         origin=request_slot_origin(request_app),
+        # Human request-layer path: a person forking a conversation. The
+        # origin conjunct in state.py still excludes app-token callers.
+        count_user_session=True,
     )
     new_slot.forked_from = effective_session_key(slot)
     new_slot.reasoning_effort = slot.reasoning_effort
