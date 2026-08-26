@@ -2850,61 +2850,99 @@ class AcpClient:
         _spawn_label = (
             "claude-agent-acp" if self._is_claude else f"{KIRO_CLI_BIN} {KIRO_CLI_SUBCMD}"
         )
-        # Windows resource ceiling, applied while the child is still SUSPENDED,
-        # then resumed. No-op on POSIX (CREATE_SUSPENDED is 0 there). OFFLOADED
-        # because the Windows path reads the config file and walks the process
-        # and thread tables (see the note on finish_suspended_spawn); the child
-        # is frozen until it returns, so this is the one await the spawn cannot
-        # skip.
-        await asyncio.get_running_loop().run_in_executor(
-            subprocess_executor(),
-            functools.partial(finish_suspended_spawn, self._process, self._pid, label=_spawn_label),
-        )
-        self._start_time = await asyncio.get_running_loop().run_in_executor(
-            subprocess_executor(), _get_start_time, self._pid
-        )
-        if self._scratch_dir is not None:
-            # Liveness anchor for the scratch sweeps -- see acp/runtime.py's
-            # twin block. Off-loop, fail-open.
+        # Everything from here to the end of _spawn runs with a LIVE subprocess
+        # that nothing has recorded yet, so every step must be guarded. Without
+        # this, any exception in the window — finish_suspended_spawn, the
+        # start-time read, the two PID-file appends, the descendant scan — unwinds
+        # out of _spawn leaving that process running and absent from both PID
+        # files. It is then unreachable by every agent-runtime reaper (they all
+        # read those files, and the /proc orphan scan declines managed agent
+        # runtimes on purpose), so it leaks until the host reboots.
+        #
+        # ensure_ready()'s retry loop cannot substitute for this: it only catches
+        # AcpTimeoutError / AcpError, and nothing raised in this window is either
+        # of those — an OSError from the executor or a wedged file lock sails
+        # straight past it and its `finally` records metrics only.
+        #
+        # BaseException so a CancelledError mid-window cleans up too. Mirrors the
+        # twin guard in acp/runtime.py around reader startup + handshake.
+        try:
+            # Windows resource ceiling, applied while the child is still SUSPENDED,
+            # then resumed. No-op on POSIX (CREATE_SUSPENDED is 0 there). OFFLOADED
+            # because the Windows path reads the config file and walks the process
+            # and thread tables (see the note on finish_suspended_spawn); the child
+            # is frozen until it returns, so this is the one await the spawn cannot
+            # skip.
             await asyncio.get_running_loop().run_in_executor(
                 subprocess_executor(),
-                functools.partial(agent_scratch.record_owner, self._scratch_dir, self._pid),
+                functools.partial(
+                    finish_suspended_spawn, self._process, self._pid, label=_spawn_label
+                ),
             )
-        logger.info("Spawned %s (PID %d)", _spawn_label, self._pid)
-        # Track root PID and do an early descendant scan.  kiro-cli forks
-        # child processes quickly after launch.  Recording them here means
-        # _kill_process() can clean up even if _initialize_session() fails.
-        from kiro_crew.session import (  # circular: session -> config.loader -> providers.acp -> acp.client
-            _track_child_pids,
-            _track_pid,
-            _track_session_pid,
-        )
+            self._start_time = await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), _get_start_time, self._pid
+            )
+            if self._scratch_dir is not None:
+                # Liveness anchor for the scratch sweeps -- see acp/runtime.py's
+                # twin block. Off-loop, fail-open.
+                await asyncio.get_running_loop().run_in_executor(
+                    subprocess_executor(),
+                    functools.partial(agent_scratch.record_owner, self._scratch_dir, self._pid),
+                )
+            logger.info("Spawned %s (PID %d)", _spawn_label, self._pid)
+            # Track root PID and do an early descendant scan.  kiro-cli forks
+            # child processes quickly after launch.  Recording them here means
+            # _kill_process() can clean up even if _initialize_session() fails.
+            from kiro_crew.session import (  # circular: session -> config.loader -> providers.acp -> acp.client
+                _track_child_pids,
+                _track_pid,
+                _track_session_pid,
+            )
 
-        # The PID-file trackers each take an exclusive file lock and do a
-        # read-modify-append under it — blocking syscalls that must not run
-        # on the event loop: ensure_ready() awaits _spawn() from the loop on
-        # every cold start, so a contended or wedged lock holder here would
-        # stall every task including the liveness heartbeat. Ride the same
-        # executor as the descendant scans below.
-        _loop = asyncio.get_running_loop()
-        await _loop.run_in_executor(subprocess_executor(), _track_pid, self._pid)
-        # Separate file for startup cleanup.
-        await _loop.run_in_executor(subprocess_executor(), _track_session_pid, self._pid)
-        await asyncio.sleep(0.3)
-        early_descendants = await _loop.run_in_executor(
-            subprocess_executor(), _get_child_pids, self._pid
-        )
-        if early_descendants:
-            self._child_pids = await _loop.run_in_executor(
-                subprocess_executor(), _capture_child_records, early_descendants
+            # The PID-file trackers each take an exclusive file lock and do a
+            # read-modify-append under it — blocking syscalls that must not run
+            # on the event loop: ensure_ready() awaits _spawn() from the loop on
+            # every cold start, so a contended or wedged lock holder here would
+            # stall every task including the liveness heartbeat. Ride the same
+            # executor as the descendant scans below.
+            _loop = asyncio.get_running_loop()
+            await _loop.run_in_executor(subprocess_executor(), _track_pid, self._pid)
+            # Separate file for startup cleanup.
+            await _loop.run_in_executor(subprocess_executor(), _track_session_pid, self._pid)
+            await asyncio.sleep(0.3)
+            early_descendants = await _loop.run_in_executor(
+                subprocess_executor(), _get_child_pids, self._pid
             )
-            await _loop.run_in_executor(
-                subprocess_executor(), _track_child_pids, self._child_pids, self._pid or 0
-            )
-            logger.info("Early tracking %d descendants of PID %d", len(self._child_pids), self._pid)
+            if early_descendants:
+                self._child_pids = await _loop.run_in_executor(
+                    subprocess_executor(), _capture_child_records, early_descendants
+                )
+                await _loop.run_in_executor(
+                    subprocess_executor(), _track_child_pids, self._child_pids, self._pid or 0
+                )
+                logger.info(
+                    "Early tracking %d descendants of PID %d", len(self._child_pids), self._pid
+                )
 
-        if self._process.stderr:
-            self._stderr_task = asyncio.ensure_future(self._drain_stderr(self._process.stderr))
+            if self._process.stderr:
+                self._stderr_task = asyncio.ensure_future(self._drain_stderr(self._process.stderr))
+        except BaseException:
+            logger.error(
+                "Spawn of %s (PID %s) failed after the process was live; killing it so it "
+                "cannot leak untracked",
+                _spawn_label,
+                self._pid,
+                exc_info=True,
+            )
+            try:
+                await self._kill_process(force=True)
+            except Exception:
+                logger.warning(
+                    "Cleanup kill after a failed spawn did not complete for PID %s",
+                    self._pid,
+                    exc_info=True,
+                )
+            raise
 
     async def _drain_stderr(self, stderr: asyncio.StreamReader) -> None:
         # Count of suppressed high-frequency marker lines (see

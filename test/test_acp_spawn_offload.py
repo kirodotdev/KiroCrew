@@ -388,3 +388,248 @@ class TestSpawnCancellationSandboxCleanup:
 
         assert not Path(sandbox_file).exists(), "cancelled spawn orphaned the sandbox file"
         assert runtime._sandbox_cleanup is None
+
+
+class TestSpawnFailureCannotLeaveAnUntrackedProcess:
+    """A LIVE subprocess that is absent from both PID files is unreachable by
+    every agent-runtime reaper — ``cleanup_orphaned_sessions``,
+    ``_periodic_pid_sweep`` and ``cleanup_orphaned_session_roots`` all read
+    those files, and the ``/proc`` orphan scan declines managed agent runtimes
+    on purpose (``_MANAGED_AGENT_MARKERS`` is a negative gate). So it holds its
+    hundreds of MB until the host reboots.
+
+    ``AcpClient._spawn`` reaches that state whenever anything in the window
+    between the subprocess existing and the tracking appends completing raises:
+    the exception unwinds out of ``_spawn`` with the process still running.
+    ``ensure_ready``'s retry loop does not save it — that only catches
+    ``AcpTimeoutError`` / ``AcpError``, and an ``OSError`` from one of these
+    executor hops is neither.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "raise_in",
+        ["finish_suspended_spawn", "track_pid", "track_session_pid", "child_scan"],
+    )
+    async def test_client_spawn_kills_the_process_when_the_window_raises(
+        self, tmp_path, raise_in
+    ) -> None:
+        client = AcpClient(work_dir=tmp_path / "workspace", session_key="k")
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 4242
+        mock_proc.returncode = None
+        mock_proc.stderr = None
+
+        boom = OSError("no space left on device")
+
+        def _raise_if(name):
+            def _inner(*_a, **_kw):
+                if raise_in == name:
+                    raise boom
+
+            return _inner
+
+        killed = AsyncMock()
+
+        with (
+            patch("kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"),
+            patch.object(client_mod, "ensure_agent_materialized"),
+            patch(
+                "kiro_crew.acp.client.wrap_argv",
+                return_value=(["/usr/bin/kiro-cli", "acp"], None),
+            ),
+            patch(
+                "asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+                return_value=mock_proc,
+            ),
+            patch.object(
+                client_mod,
+                "finish_suspended_spawn",
+                side_effect=_raise_if("finish_suspended_spawn"),
+            ),
+            patch.object(client_mod, "_get_start_time", return_value=1.0),
+            patch("kiro_crew.session._track_pid", side_effect=_raise_if("track_pid")),
+            patch(
+                "kiro_crew.session._track_session_pid",
+                side_effect=_raise_if("track_session_pid"),
+            ),
+            patch.object(client_mod, "_get_child_pids", side_effect=_raise_if("child_scan")),
+            patch.object(client, "_kill_process", killed),
+            pytest.raises(OSError),
+        ):
+            await client._spawn()
+
+        await _stop_stderr_drain(client)
+
+        # The process was live when the failure landed, so the ONLY correct
+        # outcome is that _spawn reaps it before re-raising. Anything else is a
+        # permanent leak with no log line and no reaper that can reach it.
+        killed.assert_awaited_once_with(force=True)
+
+    @pytest.mark.asyncio
+    async def test_client_spawn_reports_the_failure_at_error(self, tmp_path, caplog) -> None:
+        """The kill is silent to the user otherwise: nothing downstream sees a
+        spawn that died after the process existed."""
+        client = AcpClient(work_dir=tmp_path / "workspace", session_key="k")
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 4243
+        mock_proc.returncode = None
+        mock_proc.stderr = None
+
+        with (
+            caplog.at_level("ERROR"),
+            patch("kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"),
+            patch.object(client_mod, "ensure_agent_materialized"),
+            patch(
+                "kiro_crew.acp.client.wrap_argv",
+                return_value=(["/usr/bin/kiro-cli", "acp"], None),
+            ),
+            patch(
+                "asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+                return_value=mock_proc,
+            ),
+            patch.object(client_mod, "finish_suspended_spawn"),
+            patch.object(client_mod, "_get_start_time", return_value=1.0),
+            patch("kiro_crew.session._track_pid"),
+            patch(
+                "kiro_crew.session._track_session_pid",
+                side_effect=OSError("no space left on device"),
+            ),
+            patch.object(client_mod, "_get_child_pids", return_value=[]),
+            patch.object(client, "_kill_process", AsyncMock()),
+            pytest.raises(OSError),
+        ):
+            await client._spawn()
+
+        await _stop_stderr_drain(client)
+        assert any(
+            r.levelname == "ERROR" and "4243" in r.getMessage() for r in caplog.records
+        ), "a spawn that failed with a live process must say so at ERROR"
+
+
+class TestRuntimeShieldSurvivesAFailedAppend:
+    """``AcpRuntime.spawn`` shields its PID from the periodic orphan sweep with
+    ``register_protected_pid`` — an in-memory set insert with no IO. Behind the
+    two PID-file appends it was reachable only when BOTH succeeded, so a single
+    failed append (ENOSPC, a wedged file lock) escalated into a LIVE runtime
+    losing its shield and being SIGKILLed mid-use by the sweep the call exists
+    to hide it from.
+
+    The shield must therefore be registered BEFORE the appends, and a failed
+    append must be reported at ERROR rather than swallowed at debug — that log
+    line is the only signal the resulting leak will ever produce.
+    """
+
+    @staticmethod
+    def _patch_prelude(monkeypatch, tmp_path, mock_proc):
+        async def resolve_bin() -> str:
+            return "/usr/bin/kiro-cli"
+
+        monkeypatch.setattr(runtime_mod, "_resolve_kiro_bin_for_spawn", resolve_bin)
+        monkeypatch.setattr(runtime_mod, "ensure_agent_materialized", lambda agent: None)
+        monkeypatch.setattr(runtime_mod, "wrap_argv", lambda argv, mode, **kw: (list(argv), None))
+        monkeypatch.setattr(runtime_mod, "cgroup_scope_argv", lambda argv: list(argv))
+        monkeypatch.setattr(runtime_mod, "resolve_krb5_ccname", lambda env: None)
+        monkeypatch.setattr(runtime_mod, "inject_xdist_auto_cap", lambda env: None)
+        monkeypatch.setattr(runtime_mod, "_get_start_time", lambda pid: 1.0)
+
+        async def fake_spawn(*_a, **_kw):
+            return mock_proc
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("raise_in", ["finish_suspended_spawn", "get_start_time"])
+    async def test_runtime_spawn_reaps_the_process_when_the_window_raises(
+        self, tmp_path, monkeypatch, raise_in
+    ) -> None:
+        """The sibling of the client-side window. ``finish_suspended_spawn``
+        documents its own resume failure as FATAL and ``_get_start_time`` can
+        raise, and every ``runtime.spawn()`` caller catches only
+        ``AcpRuntimeError`` / ``AcpRuntimeDead`` -- so an ``OSError`` here used to
+        propagate with a live, unrecorded process behind it."""
+        mock_proc = MagicMock()
+        mock_proc.pid = 5151
+        mock_proc.returncode = None
+        mock_proc.stderr = None
+        mock_proc.stdout = None
+        self._patch_prelude(monkeypatch, tmp_path, mock_proc)
+
+        boom = OSError("resume failed")
+
+        if raise_in == "finish_suspended_spawn":
+            monkeypatch.setattr(
+                runtime_mod,
+                "finish_suspended_spawn",
+                lambda *a, **kw: (_ for _ in ()).throw(boom),
+            )
+        else:
+            monkeypatch.setattr(
+                runtime_mod, "_get_start_time", lambda pid: (_ for _ in ()).throw(boom)
+            )
+
+        monkeypatch.setattr(runtime_mod, "register_protected_pid", lambda pid: None)
+        monkeypatch.setattr(runtime_mod, "_track_pid", lambda pid: None)
+        monkeypatch.setattr(runtime_mod, "_track_session_pid", lambda pid: None)
+
+        reaped = AsyncMock()
+        monkeypatch.setattr(AcpRuntime, "kill", reaped, raising=True)
+
+        runtime = AcpRuntime(work_dir=tmp_path / "workspace")
+        with pytest.raises(OSError):
+            await runtime.spawn()
+
+        reaped.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_shield_is_registered_even_when_the_append_fails(
+        self, tmp_path, monkeypatch, caplog
+    ) -> None:
+        class _StopSpawn(Exception):
+            pass
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 5150
+        mock_proc.returncode = None
+        mock_proc.stderr = None
+        mock_proc.stdout = None
+        self._patch_prelude(monkeypatch, tmp_path, mock_proc)
+
+        protected: list[int] = []
+        monkeypatch.setattr(runtime_mod, "register_protected_pid", protected.append)
+        monkeypatch.setattr(
+            runtime_mod,
+            "_track_pid",
+            lambda pid: (_ for _ in ()).throw(OSError("no space left on device")),
+        )
+        monkeypatch.setattr(runtime_mod, "_track_session_pid", lambda pid: None)
+
+        runtime = AcpRuntime(work_dir=tmp_path / "workspace")
+
+        # The reader loop asserts on a real stdout; this test is not about it,
+        # and an unretrieved task exception would surface against an unrelated
+        # test at collection.
+        async def _no_reader(_self) -> None:
+            return None
+
+        monkeypatch.setattr(AcpRuntime, "_reader_loop", _no_reader, raising=True)
+        # Stop at the handshake: everything under test has already run by then.
+        monkeypatch.setattr(
+            AcpRuntime, "_send_and_await", AsyncMock(side_effect=_StopSpawn()), raising=True
+        )
+        monkeypatch.setattr(AcpRuntime, "kill", AsyncMock(), raising=True)
+
+        with caplog.at_level("ERROR"), pytest.raises(_StopSpawn):
+            await runtime.spawn()
+
+        assert protected == [5150], (
+            "a failed PID-file append must not cost the live runtime its "
+            "sweep shield — register_protected_pid has to run first"
+        )
+        assert any(
+            r.levelname == "ERROR" and "5150" in r.getMessage() for r in caplog.records
+        ), "a runtime that could not be recorded leaks silently unless this is an ERROR"
