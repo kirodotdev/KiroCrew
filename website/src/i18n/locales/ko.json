@@ -8670,6 +8670,7 @@
       "all_sessions": "모든 세션",
       "also_show_sessions_that_have_no_tags_at_all": "태그가 전혀 없는 세션도 표시",
       "also_shows_untagged_sessions": "태그 없는 세션도 표시합니다",
+      "answered_by": "{{agent}}이(가) 응답",
       "archive_failed": "아카이브 실패",
       "archive_session_other": "세션 {{count}}개 아카이브",
       "archive_sessions_with_no_activity_in_the_last": "다음 기간 동안 활동이 없는 세션 아카이브:",

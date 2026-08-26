@@ -686,6 +686,12 @@ export interface ConfiguredChannelTarget {
 }
 
 export interface ChatSlot {
+  /** The agent that will actually answer, when it is NOT the requested `agent`;
+   *  "" / absent means nothing to report. The backend stores `agent` verbatim
+   *  (the user's intent) and reports the divergence here instead of rewriting it,
+   *  and it reports "" rather than guessing whenever resolution is unsettled — so
+   *  a consumer must treat absent as "no news", never as a mismatch. */
+  effective_agent?: string
   key: string; title?: string; messages: number; running: boolean; stopping?: boolean; pending_approval?: boolean; created?: string; last_ts?: string; last_turn_ts?: string; last_message?: string; agent?: string; model?: string; reasoning_effort?: string; mode?: string; surface?: string; workspace?: string; trust?: boolean; trust_reads?: boolean; folder_id?: string; pinned?: boolean; tags?: string[]; links?: SessionLink[]; slack_linked?: boolean; slack_channel?: string; slack_thread_ts?: string; color_index?: number | null; color_hex?: string | null; memory_mode?: 'persistent' | 'incognito' | 'temporary'; clean_mode?: boolean; project?: string; forked_from?: string | null; source_links?: { provider: 'github' | 'gitlab' | 'jira'; number: number; url: string; repo?: string; ci?: 'running' | 'passed' | 'failed' | null; state?: 'open' | 'draft' | 'merged' | 'closed'; mergeable?: string; mergeStateStatus?: string; kind?: 'change' | 'issue' }[]; source_links_total?: number
   /** Provenance bucket from the backend `SlotOrigin` ("user" | "app" | "cron"
    * | "system"; absent/"" for untagged background slots). The session-pulse

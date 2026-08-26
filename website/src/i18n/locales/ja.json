@@ -8670,6 +8670,7 @@
       "all_sessions": "すべてのセッション",
       "also_show_sessions_that_have_no_tags_at_all": "タグがまったくないセッションも表示",
       "also_shows_untagged_sessions": "タグなしのセッションも表示します",
+      "answered_by": "{{agent}} が応答",
       "archive_failed": "アーカイブに失敗しました",
       "archive_session_other": "{{count}} セッションをアーカイブ",
       "archive_sessions_with_no_activity_in_the_last": "次の期間にアクティビティがないセッションをアーカイブ:",

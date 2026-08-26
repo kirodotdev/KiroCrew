@@ -6868,6 +6868,19 @@ class KiroCrewConfig:
             # A publish failure must never make the config unloadable; the
             # search path simply keeps its previous (or empty) contribution.
             logger.warning("Publishing mcp.extra_path_dirs failed: %s", e)
+        # Publish the alias table for the same reason and in the same place: the
+        # display-side resolver (:func:`resolve_effective_agent`) runs on the
+        # event loop for every slots frame, so it must never reach for
+        # config.json itself. Here rather than in _load_resolved so EVERY return
+        # path publishes -- including the degraded-defaults path, which must
+        # overwrite a richer previous snapshot rather than leave the resolver
+        # honoring aliases that no longer load.
+        try:
+            publish_agent_alias_snapshot(cfg)
+        except Exception as e:  # pragma: no cover - defensive
+            # A publish failure must never make the config unloadable; the
+            # resolver simply keeps reporting no divergence.
+            logger.warning("Publishing agent alias snapshot failed: %s", e)
         return cfg
 
     @classmethod
@@ -8790,6 +8803,128 @@ def _materialized_kiro_agent(agent_name: str | None, project_dir: str | None = N
     if project_dir and _project_declares_agent(agent_name, project_dir):
         return agent_name
     return ""
+
+
+# Snapshot of the Kiro Crew agent ALIAS table as ONE immutable
+# ``(aliases, default_alias, ready)`` triple — the keys of ``config.agents``, the
+# alias a request falls back to, and whether a load has published yet. Refreshed
+# by every successful :meth:`KiroCrewConfig.load`, exactly like
+# ``_MATERIALIZED_AGENTS`` is refreshed by every scan, and for the same reason:
+# the read path (:func:`resolve_effective_agent`, reached from
+# ``_ChatSlot.to_dict`` for every slot of every slots frame) must do ZERO
+# filesystem work, and ``config.agents`` is otherwise only reachable by
+# re-reading and re-validating ``config.json``.
+#
+# One tuple rather than three globals, and no lock, deliberately: publishing is a
+# single rebind of a single name, so a reader either sees the whole previous
+# triple or the whole new one. Three separate globals would need a lock to stop a
+# reader pairing the new alias set with the old fallback name, and that lock would
+# then be acquired once per slot per frame on the event loop. Immutability is what
+# removes the need for it — never mutate the tuple or the frozenset in place.
+#
+# ``ready=False`` reads as "no opinion", not "nothing configured": the resolver
+# reports no divergence rather than guessing, because a wrong "your agent was
+# substituted" marker is worse than none at all.
+_CONFIG_AGENT_ALIAS_SNAPSHOT: tuple[frozenset[str], str, bool] = (frozenset(), "", False)
+
+
+def publish_agent_alias_snapshot(config: "KiroCrewConfig") -> None:
+    """Publish *config*'s alias table for the filesystem-free display resolver.
+
+    Pure in-memory rebind — safe from anywhere, including the event loop. Called
+    from :meth:`KiroCrewConfig.load` so every successful load refreshes it,
+    including the degraded-defaults path (which must OVERWRITE a richer previous
+    snapshot rather than leave a resolver claiming aliases that no longer load).
+    """
+    global _CONFIG_AGENT_ALIAS_SNAPSHOT
+    aliases = frozenset(str(n) for n in config.agents if isinstance(n, str) and n)
+    default_alias = config.default_agent if config.default_agent in config.agents else ""
+    if not default_alias and aliases:
+        # Mirrors resolve_agent_bindings' defensive branch: an unusable
+        # ``default_agent`` is answered by the first configured alias.
+        default_alias = next(iter(config.agents))
+    _CONFIG_AGENT_ALIAS_SNAPSHOT = (aliases, default_alias, True)
+
+
+def agent_alias_snapshot() -> tuple[frozenset[str], str, bool]:
+    """The published alias table as ``(aliases, default_alias, ready)``."""
+    return _CONFIG_AGENT_ALIAS_SNAPSHOT
+
+
+def resolve_effective_agent(agent_name: str | None, project_dir: str | None = None) -> str:
+    """Name the agent that will actually answer *agent_name*, or ``""``.
+
+    A DISPLAY-side companion to :func:`resolve_agent_bindings`, and deliberately
+    narrower than it. The empty string means **"nothing to report"** — either the
+    requested name is honored, or resolution cannot be settled without touching
+    the filesystem. A non-empty return is a positive claim that a DIFFERENT agent
+    answers this session, which is what the UI renders as a divergence marker.
+
+    Three properties make it safe to call from ``_ChatSlot.to_dict``, which runs
+    on the event loop for every slots frame:
+
+    * **No filesystem access, and no lock.** Only the two in-memory snapshots are
+      read (:func:`agent_alias_snapshot` and ``_MATERIALIZED_AGENTS``) plus the
+      syscall-free project cache. It never scans, stats, or re-reads
+      ``config.json``, so it cannot become a per-frame gateway stall — and because
+      the alias snapshot is one immutable tuple, reading it is a single atomic
+      name load rather than a mutex acquired once per slot per frame.
+    * **Fails closed to "no claim".** A cold alias snapshot, a cold materialized
+      snapshot, or a cold project cache all return ``""``. A false
+      "your agent was substituted" marker is worse than no marker: the user would
+      chase a substitution that never happened, and the honest answer during a
+      boot window is silence.
+    * **Reads nothing back.** The requested name is never rewritten — see the
+      note in ``chat_handlers`` on why storing the resolved name was destructive.
+      This function only describes; the stored binding stays verbatim.
+
+    *project_dir* widens the "honored" set to the session's own ``.kiro`` scope
+    via the cache-only reader, so a project-declared agent is not mislabelled as
+    substituted. A cold cache for that project yields ``""``.
+    """
+    if not agent_name:
+        return ""
+    aliases, default_alias, ready = agent_alias_snapshot()
+    if not ready or not default_alias:
+        return ""
+    if agent_name in aliases:
+        # A Kiro Crew alias resolves to itself (step 1 of resolve_agent_bindings).
+        return ""
+    if not _MATERIALIZED_AGENTS_READY:
+        # Cold snapshot: a materialized kiro agent may well declare this name and
+        # we simply cannot see it yet. Claim nothing.
+        return ""
+    if agent_name in _MATERIALIZED_AGENTS:
+        return ""
+    if project_dir and not _project_scope_excludes(agent_name, project_dir):
+        return ""
+    if default_alias == agent_name:
+        return ""
+    return default_alias
+
+
+def _project_scope_excludes(agent_name: str, project_dir: str) -> bool:
+    """Whether *project_dir* is KNOWN not to declare *agent_name*.
+
+    The conservative half of :func:`_project_declares_agent`: it answers ``True``
+    only from a WARM cache, and makes no syscalls even off the event loop. An
+    uncached project is not evidence of absence, so it answers ``False`` and the
+    caller reports no divergence.
+    """
+    try:
+        # circular import: agent_discovery imports kiro_crew.hooks (the hardened
+        # file-read gate), whose import closure reaches back into
+        # kiro_crew.config.loader — the same cycle documented at length on
+        # :func:`_project_declares_agent`, which defers this identical import for
+        # this identical reason. A module-scope import here would be that cycle.
+        from kiro_crew.agent_discovery import cached_project_agent_names
+
+        names = cached_project_agent_names(project_dir)
+    except Exception:  # noqa: BLE001 — a lookup failure is "no evidence"
+        return False
+    if names is None:
+        return False
+    return agent_name not in names
 
 
 def _read_hardened_agent_spec(path: Path) -> dict | None:

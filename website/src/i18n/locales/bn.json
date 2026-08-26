@@ -8800,6 +8800,7 @@
       "all_sessions": "সব সেশন",
       "also_show_sessions_that_have_no_tags_at_all": "যেসব সেশনে কোনো ট্যাগই নেই সেগুলোও দেখান",
       "also_shows_untagged_sessions": "ট্যাগবিহীন সেশনগুলোও দেখায়",
+      "answered_by": "{{agent}} দ্বারা উত্তরিত",
       "archive_failed": "আর্কাইভ ব্যর্থ",
       "archive_session_one": "{{count}}টি সেশন আর্কাইভ করুন",
       "archive_session_other": "{{count}}টি সেশন আর্কাইভ করুন",

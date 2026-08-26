@@ -9060,6 +9060,7 @@
       "all_sessions": "Все сессии",
       "also_show_sessions_that_have_no_tags_at_all": "Также показывать сессии вообще без тегов",
       "also_shows_untagged_sessions": "Также показывает сессии без тегов",
+      "answered_by": "отвечает {{agent}}",
       "archive_failed": "Не удалось архивировать",
       "archive_session_few": "Архивировать {{count}} сессии",
       "archive_session_many": "Архивировать {{count}} сессий",

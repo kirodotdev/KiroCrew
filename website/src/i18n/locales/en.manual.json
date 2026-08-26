@@ -3162,6 +3162,7 @@
       "send_failed_with_error": "Send failed: {{error}}"
     },
     "chatSidebar": {
+      "answered_by": "answered by {{agent}}",
       "archive_session_one": "Archive {{count}} session",
       "archive_session_other": "Archive {{count}} sessions",
       "default_agent": "Default agent: {{name}}",

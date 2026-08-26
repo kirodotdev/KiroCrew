@@ -8800,6 +8800,7 @@
       "all_sessions": "Alle Sitzungen",
       "also_show_sessions_that_have_no_tags_at_all": "Auch Sitzungen anzeigen, die überhaupt keine Tags haben",
       "also_shows_untagged_sessions": "Zeigt auch Sitzungen ohne Tags",
+      "answered_by": "beantwortet von {{agent}}",
       "archive_failed": "Archivieren fehlgeschlagen",
       "archive_session_one": "{{count}} Sitzung archivieren",
       "archive_session_other": "{{count}} Sitzungen archivieren",

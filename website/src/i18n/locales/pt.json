@@ -8930,6 +8930,7 @@
       "all_sessions": "Todas as sessões",
       "also_show_sessions_that_have_no_tags_at_all": "Mostrar também sessões que não têm nenhuma etiqueta",
       "also_shows_untagged_sessions": "Também mostra sessões sem etiquetas",
+      "answered_by": "respondido por {{agent}}",
       "archive_failed": "Falha ao arquivar",
       "archive_session_many": "Arquivar {{count}} sessões",
       "archive_session_one": "Arquivar {{count}} sessão",

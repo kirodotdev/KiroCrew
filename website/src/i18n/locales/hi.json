@@ -8800,6 +8800,7 @@
       "all_sessions": "सभी सेशन",
       "also_show_sessions_that_have_no_tags_at_all": "वे सत्र भी दिखाएँ जिन पर कोई टैग नहीं है",
       "also_shows_untagged_sessions": "बिना टैग वाले सत्र भी दिखाता है",
+      "answered_by": "{{agent}} द्वारा उत्तरित",
       "archive_failed": "आर्काइव विफल",
       "archive_session_one": "{{count}} सत्र आर्काइव करें",
       "archive_session_other": "{{count}} सत्र आर्काइव करें",

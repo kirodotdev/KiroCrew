@@ -8670,6 +8670,7 @@
       "all_sessions": "全部会话",
       "also_show_sessions_that_have_no_tags_at_all": "同时显示完全没有标签的会话",
       "also_shows_untagged_sessions": "同时显示无标签的会话",
+      "answered_by": "由 {{agent}} 应答",
       "archive_failed": "归档失败",
       "archive_session_other": "归档 {{count}} 个会话",
       "archive_sessions_with_no_activity_in_the_last": "归档在以下时间内没有活动的会话：",

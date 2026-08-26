@@ -26,7 +26,12 @@ from aiohttp import web
 
 from kiro_crew.acp.types import STOP_REASON_CANCELLED
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.config.loader import DASHBOARD_PORT, _raw_config, config_dir
+from kiro_crew.config.loader import (
+    DASHBOARD_PORT,
+    _raw_config,
+    config_dir,
+    resolve_effective_agent,
+)
 from kiro_crew.constants import (
     OPTIONS_RE_LINE,
     SUBAGENT_BATCH_COMPLETION_PREFIX,
@@ -4587,6 +4592,19 @@ class _ChatSlot:
             "key": self.key,
             "title": _redact(self.display_title),
             "agent": self.agent,
+            # The REQUESTED binding, verbatim and never rewritten — see the note
+            # in `chat_handlers` on why normalizing it on disk was destructive.
+            #
+            # `effective_agent` is the non-destructive other half of that
+            # decision: the name that will actually answer, and ONLY when it
+            # differs from the request. "" means nothing to report — either the
+            # request is honored, or resolution is not settled (a cold snapshot
+            # during boot). A false "your agent was substituted" marker is worse
+            # than no marker, so the resolver fails closed to "" rather than
+            # guessing, and it reads only in-memory snapshots so this stays free
+            # of filesystem work on the event loop. See
+            # `config.loader.resolve_effective_agent`.
+            "effective_agent": resolve_effective_agent(self.agent, self.project or None),
             "model": self.model,
             "reasoning_effort": self.reasoning_effort,
             "mode": self.mode,
