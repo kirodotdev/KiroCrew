@@ -71,6 +71,18 @@ _history_write_lock = LoopBoundLock()
 _MODEL_LOAD_TIMEOUT_SECS = 600.0
 
 
+def _write_today_history(mem, content: str) -> None:
+    """Resolve today's history file, ensure its parent, and commit *content*.
+
+    One worker hop for the whole sequence: the ``mkdir`` is synchronous file
+    I/O just as much as the write it precedes, so leaving it on the loop would
+    keep exactly the stall the offload exists to remove.
+    """
+    today_path = mem._today_history_file()
+    today_path.parent.mkdir(parents=True, exist_ok=True)
+    mem._atomic_write_text(today_path, content)
+
+
 def _sel():
     """Late-binding sel() for test monkeypatch compatibility."""
     import kiro_crew.dashboard.handlers as _pkg  # noqa: F811
@@ -100,7 +112,9 @@ async def api_memory_preferences(request: web.Request) -> web.Response:
         async with _prefs_write_lock:
             await asyncio.to_thread(mem.write_preferences, content)
         return web.json_response({"ok": True})
-    return web.json_response({"content": mem.read_preferences()})
+    # The GET half reads the same file the PUT half writes — ``exists()`` plus
+    # ``read_text()`` is the same synchronous I/O, so it is offloaded too.
+    return web.json_response({"content": await asyncio.to_thread(mem.read_preferences)})
 
 
 async def api_memory_projects(request: web.Request) -> web.Response:
@@ -117,7 +131,8 @@ async def api_memory_projects(request: web.Request) -> web.Response:
         async with _projects_write_lock:
             await asyncio.to_thread(mem.write_projects, content)
         return web.json_response({"ok": True})
-    return web.json_response({"content": mem.read_projects()})
+    # Offloaded for the same reason as the GET half of api_memory_preferences.
+    return web.json_response({"content": await asyncio.to_thread(mem.read_projects)})
 
 
 async def api_memory_history(request: web.Request) -> web.Response:
@@ -136,12 +151,12 @@ async def api_memory_history(request: web.Request) -> web.Response:
         # write_text would follow a planted symlink at the dated name and
         # tear under concurrent PUTs; the atomic replace commits whole
         # versions and never traverses a link at the temp path.
-        today_path = mem._today_history_file()
-        today_path.parent.mkdir(parents=True, exist_ok=True)
         async with _history_write_lock:
-            await asyncio.to_thread(mem._atomic_write_text, today_path, content)
+            await asyncio.to_thread(_write_today_history, mem, content)
         return web.json_response({"ok": True})
-    return web.json_response({"content": mem.read_recent_history()})
+    # ``read_recent_history`` is TTL-cached, but a miss "stats + reads up to 181
+    # files synchronously" (its own docstring) — far too much to do on the loop.
+    return web.json_response({"content": await asyncio.to_thread(mem.read_recent_history)})
 
 
 async def api_memory_settings(request: web.Request) -> web.Response:
@@ -712,7 +727,9 @@ async def api_memory_embedding_model(request: web.Request) -> web.Response:
                 {"ok": False, "error": error, "code": code}, status=400
             )
         try:
-            size_bytes = path.stat().st_size
+            # ``path`` is operator-supplied and may live on a removable or
+            # network volume, where a stat blocks for the mount's timeout.
+            size_bytes = (await asyncio.to_thread(path.stat)).st_size
         except OSError:
             size_bytes = 0
     if validate_only:

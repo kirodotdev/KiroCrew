@@ -253,6 +253,90 @@ class TestPreferencesProjectsHistory:
         assert target.read_text(encoding="utf-8") == "entry"
 
     @pytest.mark.asyncio
+    async def test_preferences_get_read_runs_off_the_event_loop_thread(self) -> None:
+        """The GET half reads the same file the PUT half writes.
+
+        ``read_preferences`` is ``exists()`` + ``read_text()`` — the same
+        synchronous file I/O the PUT test above pins off the loop. Offloading
+        only the write leaves the read stalling every other gateway task on a
+        slow or network-backed filesystem.
+        """
+        loop_thread = threading.get_ident()
+        read_threads: list[int] = []
+        mem = MagicMock()
+
+        def _read() -> str:
+            read_threads.append(threading.get_ident())
+            return "- dark mode"
+
+        mem.read_preferences.side_effect = _read
+        state = _make_state(memory=mem)
+        resp = await mem_mod.api_memory_preferences(_make_request(state))
+        assert _body(resp) == {"content": "- dark mode"}
+        assert read_threads and read_threads[0] != loop_thread
+
+    @pytest.mark.asyncio
+    async def test_projects_get_read_runs_off_the_event_loop_thread(self) -> None:
+        loop_thread = threading.get_ident()
+        read_threads: list[int] = []
+        mem = MagicMock()
+
+        def _read() -> str:
+            read_threads.append(threading.get_ident())
+            return "## Proj"
+
+        mem.read_projects.side_effect = _read
+        state = _make_state(memory=mem)
+        resp = await mem_mod.api_memory_projects(_make_request(state))
+        assert _body(resp) == {"content": "## Proj"}
+        assert read_threads and read_threads[0] != loop_thread
+
+    @pytest.mark.asyncio
+    async def test_history_get_read_runs_off_the_event_loop_thread(self) -> None:
+        """``read_recent_history`` is TTL-cached, but a miss "stats + reads up
+        to 181 files synchronously" (its own docstring) — the worst of the
+        three to leave on the loop."""
+        loop_thread = threading.get_ident()
+        read_threads: list[int] = []
+        mem = MagicMock()
+
+        def _read() -> str:
+            read_threads.append(threading.get_ident())
+            return "# 2026-01-01"
+
+        mem.read_recent_history.side_effect = _read
+        state = _make_state(memory=mem)
+        resp = await mem_mod.api_memory_history(_make_request(state))
+        assert _body(resp) == {"content": "# 2026-01-01"}
+        assert read_threads and read_threads[0] != loop_thread
+
+    @pytest.mark.asyncio
+    async def test_history_put_parent_mkdir_runs_off_the_event_loop_thread(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """``mkdir`` is file I/O too, and it sat outside the offload the write
+        already had — so the PUT still touched the filesystem on the loop."""
+        loop_thread = threading.get_ident()
+        mkdir_threads: list[int] = []
+        target = tmp_path / "history" / "2026-01-01.md"
+        real_mkdir = Path.mkdir
+
+        def _spy_mkdir(self: Path, *args: Any, **kwargs: Any) -> Any:
+            if self == target.parent:
+                mkdir_threads.append(threading.get_ident())
+            return real_mkdir(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "mkdir", _spy_mkdir)
+        mem = MagicMock()
+        mem._today_history_file.return_value = target
+        mem._atomic_write_text.side_effect = lambda p, c: p.write_text(c, encoding="utf-8")
+        state = _make_state(memory=mem)
+        req = _make_request(state, method="PUT", json_body={"content": "entry"})
+        assert (await mem_mod.api_memory_history(req)).status == 200
+        assert target.read_text(encoding="utf-8") == "entry"
+        assert mkdir_threads and all(t != loop_thread for t in mkdir_threads)
+
+    @pytest.mark.asyncio
     async def test_history_put_rejects_invalid_json(self, tmp_path: Path) -> None:
         mem = MagicMock()
         mem._today_history_file.return_value = tmp_path / "h.md"
@@ -261,6 +345,39 @@ class TestPreferencesProjectsHistory:
         resp = await mem_mod.api_memory_history(req)
         assert resp.status == 400
         assert not (tmp_path / "h.md").exists()
+
+
+# ---------------------------------------------------------------------------
+# embedding model — validation stat
+# ---------------------------------------------------------------------------
+
+
+class TestEmbeddingModelValidationStat:
+    @pytest.mark.asyncio
+    async def test_size_stat_runs_off_the_event_loop_thread(self, monkeypatch) -> None:
+        """The model path is operator-supplied and may sit on a removable or
+        network volume, where ``stat`` blocks for the mount's timeout."""
+        loop_thread = threading.get_ident()
+        stat_threads: list[int] = []
+
+        class _Path:
+            def stat(self) -> Any:
+                stat_threads.append(threading.get_ident())
+                return SimpleNamespace(st_size=4096)
+
+        monkeypatch.setattr(
+            mem_mod, "validate_custom_model_path", lambda _raw, _label: (_Path(), None, None)
+        )
+        state = _make_state()
+        req = _make_request(
+            state,
+            method="POST",
+            json_body={"path": "/mnt/models/custom.gguf", "validate_only": True},
+        )
+        resp = await mem_mod.api_memory_embedding_model(req)
+        assert resp.status == 200
+        assert _body(resp) == {"ok": True, "size_bytes": 4096}
+        assert stat_threads and stat_threads[0] != loop_thread
 
 
 # ---------------------------------------------------------------------------
