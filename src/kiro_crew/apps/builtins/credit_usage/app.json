@@ -1,0 +1,43 @@
+{
+  "name": "credit-usage",
+  "version": "1.0.0",
+  "displayName": "Credit Usage",
+  "description": "A real-time dashboard for the credits your Kiro Crew agents consume. It reads the per-turn usage log the gateway already writes and rolls it up live: total credits with today / this-week / this-month figures, a daily consumption trend, a breakdown by model, surface (dashboard, cron, subagent, webhook) and agent, the sessions that spent the most, and a rolling feed of the most recent turns as they land. Read-only by design — it only reads the local usage log, and shows no token counts you didn't already generate.",
+  "author": "kirocrew",
+  "tags": [
+    "credits",
+    "usage",
+    "cost",
+    "dashboard",
+    "analytics",
+    "observability"
+  ],
+  "highlights": [
+    "Live credit total with today / this-week / this-month rollups, polled every few seconds",
+    "Daily consumption trend so you can see spend accelerate or settle",
+    "Breakdown by model, by surface (dashboard / cron / subagent / webhook) and by agent",
+    "Top-spending sessions ranked, with per-session credits and turn counts",
+    "Rolling feed of the most recent turns as they complete",
+    "Read-only: reads the local per-turn usage log only, never writes or bills anything"
+  ],
+  "defaultEnabled": false,
+  "permissions": {
+    "api": [
+      "/apps/credit-usage/api"
+    ]
+  },
+  "ui": {
+    "pages": [
+      {
+        "route": "/credit-usage",
+        "label": "Credits",
+        "icon": "Coins"
+      }
+    ]
+  },
+  "backend": {
+    "entryPoint": "kiro_crew.apps.builtins.credit_usage.server",
+    "port": "auto",
+    "healthCheck": "/health"
+  }
+}
