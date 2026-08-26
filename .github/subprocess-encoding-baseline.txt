@@ -1,0 +1,133 @@
+# Text-mode subprocess calls without an explicit encoding, as `<count> <path>`.
+# Each one decodes with the locale's code page -- mojibake on Windows (#5249).
+# The gate requires every OTHER file to be clean and none of these counts to
+# grow, so this list can only shrink.
+#
+# Do NOT add or raise a line to make a red gate green: a new offender needs
+# `encoding="utf-8"` / `**UTF8_TEXT` (see src/kiro_crew/subprocess_utf8.py), or
+# the `# subprocess-encoding: locale` marker if locale decoding is deliberate.
+# The refresh command below only lowers counts and deletes lines.
+#
+# Refresh (after fixing something listed here):
+#   python3 scripts/check_subprocess_encoding.py --update-baseline
+1 conftest.py
+1 src/kiro_crew/acp/client.py
+3 src/kiro_crew/apple_speech/__init__.py
+1 src/kiro_crew/apps/builtins/auto_improvement/backend/deps.py
+1 src/kiro_crew/apps/builtins/auto_improvement/profiles/github_repo/profile.py
+1 src/kiro_crew/apps/builtins/auto_improvement/spine/agent_runner.py
+29 src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings.py
+9 src/kiro_crew/apps/builtins/auto_improvement/tests/test_pr_recipe.py
+1 src/kiro_crew/apps/builtins/auto_improvement/tests/test_pr_watchers.py
+1 src/kiro_crew/apps/builtins/auto_improvement/tests/test_runner.py
+2 src/kiro_crew/apps/builtins/design_tweak/backend/server.py
+1 src/kiro_crew/apps/builtins/dev_fleet/server.py
+1 src/kiro_crew/apps/builtins/dev_fleet/skills/feature-demo-recording/references/deps.py
+3 src/kiro_crew/apps/builtins/dev_fleet/skills/feature-demo-recording/references/narrate.py
+1 src/kiro_crew/apps/builtins/dev_fleet/skills/feature-demo-recording/references/record_template.py
+3 src/kiro_crew/apps/builtins/dev_fleet/skills/feature-demo-recording/references/verify_align.py
+3 src/kiro_crew/apps/builtins/file_explorer/server.py
+1 src/kiro_crew/apps/builtins/issue_radar/backend/azure_client.py
+3 src/kiro_crew/apps/builtins/md_notebook/server.py
+1 src/kiro_crew/apps/builtins/pptx_maker/backend/engine.py
+1 src/kiro_crew/apps/builtins/pptx_maker/backend/provision.py
+1 src/kiro_crew/browser_cli/install.py
+1 src/kiro_crew/builtin_skills/browser-recording/scripts/record_browser.py
+2 src/kiro_crew/builtin_skills/ios-simulator-preview/scripts/sim_mirror.py
+1 src/kiro_crew/cli.py
+5 src/kiro_crew/cli_doctor.py
+1 src/kiro_crew/cli_perf.py
+2 src/kiro_crew/cli_setup.py
+1 src/kiro_crew/cloud/aws.py
+4 src/kiro_crew/cron_script.py
+1 src/kiro_crew/dashboard/handlers/core.py
+1 src/kiro_crew/dashboard/handlers/knowledge.py
+1 src/kiro_crew/dashboard/handlers/terminal.py
+1 src/kiro_crew/dashboard/handlers_system.py
+1 src/kiro_crew/dashboard/port_reclaim.py
+1 src/kiro_crew/dashboard/tailnet.py
+1 src/kiro_crew/dashboard/tailnet_serve.py
+1 src/kiro_crew/deploy/engine.py
+1 src/kiro_crew/deploy/skills/artifact-deploy/scripts/attach_backend.py
+1 src/kiro_crew/deploy/skills/artifact-deploy/scripts/detach_backend.py
+1 src/kiro_crew/diagnostics.py
+1 src/kiro_crew/env.py
+1 src/kiro_crew/mcp_core.py
+1 src/kiro_crew/mcp_shared.py
+4 src/kiro_crew/platform_compat.py
+1 src/kiro_crew/pod/launchd.py
+2 src/kiro_crew/pod/runtime.py
+2 src/kiro_crew/sandbox.py
+2 src/kiro_crew/service/apparmor.py
+4 src/kiro_crew/service/linux.py
+1 src/kiro_crew/service/macos.py
+1 test/installer_test_helpers.py
+2 test/test_acp_backend_kas.py
+1 test/test_agent_home_isolation.py
+1 test/test_agent_import_hoist.py
+4 test/test_ai_review_workflows.py
+1 test/test_beacon.py
+1 test/test_bench_cli.py
+3 test/test_brand_name_gate.py
+2 test/test_browser_recording_skill.py
+1 test/test_build_desktop_launcher_symlink.py
+1 test/test_build_desktop_rm_resilient.py
+1 test/test_ci_surface_tests.py
+1 test/test_cli.py
+2 test/test_cli_lazy_imports.py
+2 test/test_cli_manifest_signature.py
+2 test/test_config_baseline.py
+1 test/test_config_paths.py
+3 test/test_connections_mint.py
+1 test/test_connections_tool_aliases.py
+2 test/test_crew_chat.py
+1 test/test_deploy_round16_fixes.py
+1 test/test_deploy_round1_fixes.py
+1 test/test_deploy_round29_fixes.py
+2 test/test_deploy_round2_fixes.py
+1 test/test_deploy_web_profiles.py
+2 test/test_dev_fleet_app.py
+1 test/test_docker_entrypoint.py
+2 test/test_ensure_python_symlink.py
+1 test/test_flock_compat.py
+2 test/test_harness_parity.py
+1 test/test_host_service_guard.py
+2 test/test_installer_node_floor.py
+2 test/test_instances.py
+6 test/test_ios_simulator_preview_skill.py
+1 test/test_issue_summary_workflow.py
+2 test/test_issue_triage_workflow.py
+2 test/test_kiro_prerequisite.py
+1 test/test_mcp_api_port_resolution.py
+1 test/test_md_notebook.py
+2 test/test_memory_benchmark_workflow.py
+5 test/test_papyrus_gitops.py
+1 test/test_per_file_coverage_gate.py
+1 test/test_perf_boot_path.py
+3 test/test_playwright_cli_installer.py
+1 test/test_playwright_e2e.py
+3 test/test_pod_e2e_harness_paths.py
+1 test/test_pptx_maker_preview_tools.py
+1 test/test_pr_quality_gates.py
+1 test/test_pr_readiness_evaluate.py
+1 test/test_pr_readiness_publish.py
+2 test/test_pr_readiness_sweep.py
+4 test/test_prepare_pr_local_review.py
+1 test/test_prepare_pr_profiles.py
+2 test/test_prepare_pr_prove.py
+2 test/test_project_git.py
+3 test/test_push_guard.py
+1 test/test_release_macos_fail_closed.py
+6 test/test_sandbox_argv.py
+1 test/test_sandbox_probe.py
+9 test/test_security.py
+1 test/test_seed.py
+1 test/test_ship_report_issues.py
+2 test/test_source_launcher.py
+3 test/test_spawn_exec_shim.py
+2 test/test_stable_release_gate.py
+1 test/test_stt_stream.py
+1 test/test_tailnet_e2e.py
+3 test/test_windows_job_limits.py
+1 test/test_worktree_create.py
+1 test/test_xdist_host_budget.py

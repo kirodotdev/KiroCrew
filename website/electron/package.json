@@ -1,0 +1,255 @@
+{
+  "name": "kirocrew-desktop",
+  "version": "0.5.0",
+  "description": "Kiro Crew \u2014 AI agent desktop app",
+  "homepage": "https://github.com/kirodotdev/KiroCrew",
+  "desktopName": "kirocrew-desktop.desktop",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.js mochi/test/*.test.js crew-companion/test/*.test.js",
+    "postinstall": "node scripts/patch-nsis-template.js",
+    "dist": "electron-builder",
+    "dist:mac": "electron-builder --mac",
+    "dist:linux": "electron-builder --linux"
+  },
+  "dependencies": {
+    "electron-store": "^8.2.0",
+    "electron-updater": "^6.8.9"
+  },
+  "devDependencies": {
+    "@electron/notarize": "^3.1.1",
+    "electron": "^43.2.0",
+    "electron-builder": "26.15.3"
+  },
+  "overrides": {
+    "fast-uri": "3.1.5",
+    "js-yaml": "4.3.1"
+  },
+  "build": {
+    "appId": "com.amazon.kiro.crew",
+    "productName": "KiroCrew",
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "icon.icns",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "notarize": false,
+      "x64ArchFiles": "{**/backend-dist/**,**/backend-dist/**/.*/**}",
+      "extendInfo": {
+        "CFBundleDisplayName": "Kiro Crew",
+        "NSMicrophoneUsageDescription": "Kiro Crew uses the microphone for voice input and dictation in chat. Audio is captured only while you hold or toggle the mic button.",
+        "NSLocalNetworkUsageDescription": "Kiro Crew connects to devices on your local network so agent commands can reach your own servers, NAS, containers, and dev machines. Only the addresses a command names are contacted."
+      }
+    },
+    "afterSign": "scripts/notarize.js",
+    "linux": {
+      "category": "Development",
+      "icon": "build/icons",
+      "executableName": "kirocrew-desktop",
+      "maintainer": "Kiro Crew Maintainers <maintainers@crew.kiro.dev>",
+      "synopsis": "Persistent AI agent workspace with memory, schedules, and unattended work",
+      "syncDesktopName": true,
+      "target": [
+        "AppImage",
+        "deb",
+        "rpm"
+      ],
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "deb": {
+      "packageName": "kirocrew",
+      "packageCategory": "devel",
+      "priority": "optional",
+      "publish": [
+        {
+          "provider": "generic",
+          "url": "https://updates.crew.kiro.dev/feed/stable/deb"
+        }
+      ],
+      "depends": [
+        "libgtk-3-0 | libgtk-3-0t64",
+        "libnotify4 | libnotify4t64",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0 | libatspi2.0-0t64",
+        "libuuid1",
+        "libsecret-1-0",
+        "libasound2 | libasound2t64"
+      ]
+    },
+    "rpm": {
+      "packageName": "kirocrew",
+      "packageCategory": "Development/Tools",
+      "publish": [
+        {
+          "provider": "generic",
+          "url": "https://updates.crew.kiro.dev/feed/stable/rpm"
+        }
+      ],
+      "depends": [
+        "gtk3",
+        "libnotify",
+        "nss",
+        "libXScrnSaver",
+        "libXtst",
+        "xdg-utils",
+        "at-spi2-core",
+        "libuuid",
+        "libsecret",
+        "alsa-lib"
+      ]
+    },
+    "dmg": {
+      "background": "../../packaging/installer-assets/dmg-background.tiff",
+      "iconSize": 96,
+      "iconTextSize": 13,
+      "title": "${productName}",
+      "filesystem": "HFS+",
+      "contents": [
+        {
+          "x": 170,
+          "y": 246,
+          "type": "file"
+        },
+        {
+          "x": 490,
+          "y": 246,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ],
+      "writeUpdateInfo": false
+    },
+    "files": [
+      "main.js",
+      "app-menu.js",
+      "windows-menu-model.js",
+      "windows-titlebar.js",
+      "badge.js",
+      "native-theme.js",
+      "zoom.js",
+      "instance-guard.js",
+      "context-menu.js",
+      "find-bin.js",
+      "gateway-env.js",
+      "mac-env.js",
+      "bundle-integrity.js",
+      "data-home.js",
+      "auto-update.js",
+      "update-logger.js",
+      "bundle-location.js",
+      "gateway-auth-hint.js",
+      "blocking-prompt.js",
+      "splash-history.js",
+      "hide-to-tray.js",
+      "html-fullscreen.js",
+      "gateway-stop.js",
+      "gateway-wait.js",
+      "sandbox-profile.js",
+      "windows-port.js",
+      "home-dir.js",
+      "local-token.js",
+      "local-gateway.js",
+      "mochi-session-token.js",
+      "window-state.js",
+      "linux-frame.js",
+      "global-hotkey.js",
+      "gateway-liveness.js",
+      "gateway-recovery.js",
+      "renderer-recovery.js",
+    "pierre-perf-log.js",
+      "pyspy-dump.js",
+      "perf-metrics.js",
+      "host-config.js",
+      "store-rename.js",
+      "remote-token.js",
+      "token-acquire.js",
+      "token-retry.js",
+      "display-media.js",
+      "focus-chrome.js",
+      "permission-handler.js",
+      "browser-view.js",
+      "browser-control.js",
+      "browser-ops.js",
+      "browser-agent-channel.js",
+      "external-scheme.js",
+      "validation.js",
+      "context-menu.js",
+      "preload.js",
+      "mochi/index.js",
+      "mochi/petOverlays.js",
+      "mochi/pet-preload.js",
+      "mochi/panelWindow.js",
+      "mochi/avatarWindow.js",
+      "mochi/settingsWindow.js",
+      "mochi/snipWindow.js",
+      "mochi/shortcuts.js",
+      "mochi/pageUrl.js",
+      "mochi/instanceGate.js",
+      "mochi/machineStore.js",
+      "crew-companion/index.js",
+      "crew-companion/petOverlay.js",
+      "crew-companion/pageUrl.js",
+      "crew-companion/pet-preload.js",
+      "crew-companion/panelWindow.js",
+      "crew-companion/panelPlacement.js",
+      "crew-companion/galleryWindow.js",
+      "anime.global.js",
+      "loading.html",
+      "token-prompt.html",
+      "icon.png",
+      "icon-nightly.png",
+      "trayTemplate.png",
+      "trayTemplate@2x.png"
+    ],
+    "extraResources": [
+      {
+        "from": "backend-dist",
+        "to": "backend-dist",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://updates.crew.kiro.dev/feed/stable/"
+      }
+    ],
+    "win": {
+      "icon": "icon.png",
+      "target": [
+        "nsis"
+      ],
+      "signtoolOptions": {
+        "sign": "./scripts/sign-windows.js",
+        "signingHashAlgorithms": [
+          "sha256"
+        ],
+        "publisherName": [
+          "Amazon Web Services, Inc."
+        ]
+      }
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false,
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true,
+      "installerSidebar": "../../packaging/installer-assets/windows-installer-sidebar.bmp",
+      "installerHeader": "../../packaging/installer-assets/windows-installer-header.bmp"
+    }
+  },
+  "author": "Kiro Crew"
+}

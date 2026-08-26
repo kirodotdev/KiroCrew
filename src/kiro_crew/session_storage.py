@@ -1,0 +1,2037 @@
+"""Measure the disk a session costs, and reclaim it under user control.
+
+A session is presented as ONE thing with ONE size, because that is what it is to
+the person looking at it. Underneath, its bytes are split across two stores that
+Kiro Crew and kiro-cli each own:
+
+* ``<data home>/sessions/<stem>.jsonl`` plus its rotated
+  ``sessions/archive/<stem>__<stamp>.jsonl`` segments — the transcript, read by
+  dashboard history, search and memory consolidation.
+* ``<kiro home>/sessions/cli/<sid>.json`` + ``<sid>.jsonl`` — kiro-cli's replay
+  log, read to resume the session.
+
+That split is an implementation detail and never surfaces in a report: callers get
+one total and one session count.
+
+The split does, however, dictate the deletion rule. **A session's halves are
+always reclaimed together.** Removing only one leaves a broken session rather than
+a freed one: drop the replay log and the transcript still lists a session that can
+no longer resume; drop the transcript and a resumable session has no history or
+search. Either way the user is left with something worse than both extremes.
+:func:`_unit_paths` is therefore the single place that answers "what files is this
+session made of", and every move, restore and delete goes through it.
+
+Not every session has both halves, and that is normal rather than an error — a
+subagent run leaves only a replay log, and a session whose mapping was pruned
+leaves only a transcript. The rule is that whatever halves exist move together.
+
+Reclaiming moves files into ``<data home>/trash/sessions/<batch>/`` rather than
+unlinking them. On a default install both stores sit under ``~/.kiro``, so the
+move is a same-filesystem :func:`os.rename`: instant regardless of size, and
+instantly reversible. Space is **not** returned to the filesystem until the trash
+is emptied; :attr:`StorageReport.trash_bytes` exists so callers can say so plainly
+instead of reporting a reclaim that leaves ``df`` unchanged.
+
+Every batch carries an append-only manifest recording each file's original
+absolute path, so a restore puts files back where they came from instead of
+inferring it from the layout. A batch can span six figures of sessions, so a
+whole-document manifest rewritten per move would cost quadratic bytes; appending
+also leaves a partial batch fully restorable after an interruption.
+
+Reading is cached; reclaiming never is
+--------------------------------------
+Enumerating the stores is the entire cost of a read here — half a million replay
+files on the measured machine — so a pass is kept briefly and shared between the
+row list, the totals and each row's detail. Only the FILESYSTEM half is cached:
+which sessions are in use is recomputed from the caller's index every call, and
+every mutation re-enumerates and re-reads the index inside the lock. So no
+refusal is ever answered from a snapshot, and a stale cache can only make the
+report slightly old, never make a reclaim take something it should not.
+
+Sessions this instance does not own
+-----------------------------------
+The replay store can be shared. A pod now gets its own (``pod/runtime.py`` exports
+``KIRO_HOME`` inside the pod home), so a current pod is not a co-tenant — but a
+directory left by a pod from before that export may still own sessions in the
+machine-wide store. Those maps are files at a known host-side path, so
+:func:`cotenant_sids` reads them and protects the sessions they name individually,
+exactly like this instance's own. A blanket refusal is kept only where ownership
+genuinely cannot be established: a co-tenant whose map is unreadable, or a data
+home isolated from the store it reads (see :func:`reclaim_block_reason`).
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import re
+import shutil
+import threading
+import time
+import uuid
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager, suppress
+from dataclasses import dataclass, field
+from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import IO, Any
+
+from kiro_crew import hooks, platform_compat
+from kiro_crew.config.paths import (
+    CONFIG_DIR_LEAF,
+    KIRO_BASE_DIR_NAME,
+    data_home,
+    kiro_home,
+    kiro_sessions_dir,
+    legacy_home,
+)
+from kiro_crew.history import ARCHIVE_DIR_NAME, ARCHIVE_SEGMENT_DELIMITER, SESSIONS_DIR_NAME
+from kiro_crew.session_map import SESSION_MAP_FILENAME
+
+logger = logging.getLogger(__name__)
+
+# Trash lives under the data home (not beside kiro-cli's store) because it holds
+# Kiro Crew's own staged deletions: it must survive a kiro-cli upgrade, and
+# kiro-cli must not mistake a staged file for a session it can resume.
+TRASH_DIR_NAME = "trash"
+TRASH_SESSIONS_LEAF = "sessions"
+
+# Staged files keep their origin store in the path. Two halves can share a
+# filename, and a flat batch directory would let one silently overwrite the other
+# — turning a reversible move into data loss.
+STAGE_CLI_LEAF = "cli"
+STAGE_CREW_LEAF = "crew"
+
+MANIFEST_NAME = "manifest.jsonl"
+MANIFEST_SCHEMA = 1
+
+# Age buckets (in days) the report splits reclaimable sessions into. The
+# boundaries are what make a threshold choice legible: the reclaimable total is
+# dominated by the youngest band, so a user picking the most conservative
+# threshold needs to see that it frees almost nothing before they pick it.
+BUCKET_DAYS: tuple[int, ...] = (7, 30, 90)
+
+# No session touched this recently is ever reclaimable, whatever threshold the
+# caller passes. The session map is NOT a complete registry of live sessions —
+# a subagent run creates a kiro-cli session that was never mapped, so mapping
+# alone would let a threshold of 0 reclaim a conversation that is running right
+# now and break its resume. Freshness is the one signal that does not depend on
+# which subsystem owns a session: a live session is being appended to. A day is
+# far longer than any in-tree conversation retention, and the shortest threshold
+# the product offers is a week, so the floor costs nothing real.
+MIN_RECLAIM_AGE_DAYS = 1.0
+
+# Serializes the operations that move files. Two concurrent reclaims can select
+# the same session and interleave their moves, landing its halves in different
+# batches — after which neither batch can restore it. The lock is a FILE lock,
+# not a thread lock, because more than one instance can share the same kiro-cli
+# store (a pod and the live gateway both read ``~/.kiro/sessions/cli``), so
+# in-process mutual exclusion would not actually exclude.
+MUTATION_LOCK_NAME = "session-storage.lock"
+
+# A unit id is either a kiro-cli session id (a UUID) or a transcript stem (a
+# sanitized session key, so word characters, dot and dash). Both are joined onto
+# a directory, so a separator or a parent reference would address a file outside
+# the stores; the shape is enforced rather than trusted.
+_UNIT_ID_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,199}$")
+
+# The two files a kiro-cli session is made of: metadata and event log. The
+# metadata file is also kiro-cli's index entry, so moving it is what makes the
+# session leave kiro-cli's session list — no separate index update is needed.
+_CLI_SUFFIXES = (".json", ".jsonl")
+
+_TRANSCRIPT_SUFFIX = ".jsonl"
+_SECONDS_PER_DAY = 86400.0
+
+
+class SessionStorageError(Exception):
+    """A storage operation was refused. The message is safe to show a user."""
+
+
+@dataclass(frozen=True)
+class SessionIndex:
+    """What the caller knows about sessions that are still wired up.
+
+    Supplied by the caller rather than read here, so the exclusion set is explicit
+    at the call site and a test can pin it.
+
+    *stem_to_sid* maps a transcript filename stem to the kiro-cli session id it
+    shares a session with. The direction is deliberate: one session can own more
+    than one stem, because a Slack thread predating the canonical session key still
+    logs under its bare ``thread_ts`` name. Build it with
+    :func:`kiro_crew.history.transcript_stems`, never by re-deriving the naming
+    rules — a missed stem is read as "belongs to no session", which makes a live
+    session's history reclaimable.
+    """
+
+    stem_to_sid: Mapping[str, str] = field(default_factory=dict)
+    active_sids: frozenset[str] = frozenset()
+    # Sessions with a turn in flight RIGHT NOW, which is a strictly narrower set
+    # than *active_sids*. Kept separate rather than folded in: a reclaim is
+    # refused for everything in ``active_sids`` either way, so this exists to let
+    # a caller say WHY — "in use at this instant" and "idle but still resumable"
+    # are different facts and only the first is a hazard. Nothing here loosens a
+    # refusal; an empty set means "no running-state signal available", which the
+    # reporting path must read as unknown rather than as idle.
+    live_sids: frozenset[str] = frozenset()
+
+    @property
+    def active_stems(self) -> frozenset[str]:
+        """Transcript stems belonging to a session that is still resumable."""
+        return frozenset(stem for stem, sid in self.stem_to_sid.items() if sid in self.active_sids)
+
+    @property
+    def live_stems(self) -> frozenset[str]:
+        """Transcript stems belonging to a session running right now."""
+        return frozenset(stem for stem, sid in self.stem_to_sid.items() if sid in self.live_sids)
+
+    def stems_for(self, sid: str) -> tuple[str, ...]:
+        return tuple(stem for stem, owner in self.stem_to_sid.items() if owner == sid)
+
+
+@dataclass(frozen=True)
+class SessionUnit:
+    """One session's total on-disk cost, whichever halves it has."""
+
+    uid: str
+    sid: str
+    stems: tuple[str, ...]
+    bytes: int
+    mtime: float
+    active: bool
+    # True only while a turn is in flight. A subset of *active*: everything live is
+    # also active, so no refusal depends on this field — it exists so a screen can
+    # tell "in use right now" apart from "idle but the product could resume it",
+    # which is the difference between a hazard and a preference.
+    live: bool = False
+
+    def age_days(self, now: float) -> float:
+        return max(0.0, (now - self.mtime) / _SECONDS_PER_DAY)
+
+
+@dataclass(frozen=True)
+class _RawUnit:
+    """One session as the FILESYSTEM sees it: its files, their total, their age.
+
+    Everything here is derived from the two stores plus the transcript-to-replay
+    pairing, and nothing from which sessions are in use — which is exactly why a
+    pass of these can be cached and reused while the in-use flags are recomputed
+    per call. Keeping the two apart is what stops a cache from ever answering
+    "may this be reclaimed" off stale state.
+    """
+
+    uid: str
+    sid: str
+    stems: tuple[str, ...]
+    bytes: int
+    mtime: float
+
+
+@dataclass(frozen=True)
+class StorageBucket:
+    """Reclaimable sessions grouped by how long ago they were last touched."""
+
+    label: str
+    sessions: int
+    bytes: int
+
+
+@dataclass(frozen=True)
+class TrashBatch:
+    """One user-initiated move: the unit a restore undoes."""
+
+    batch_id: str
+    created_at: float
+    reason: str
+    sessions: int
+    bytes: int
+
+
+@dataclass(frozen=True)
+class StorageReport:
+    """What sessions cost, and what is safe to reclaim.
+
+    Deliberately carries no per-store breakdown: a session is one thing with one
+    size, and splitting the number would expose an implementation detail the
+    reader cannot act on.
+    """
+
+    total_bytes: int
+    total_sessions: int
+    active_sessions: int
+    active_bytes: int
+    buckets: tuple[StorageBucket, ...]
+    reclaimable_sessions: int
+    reclaimable_bytes: int
+    trash_bytes: int
+    trash_batches: int
+    trash_same_filesystem: bool
+    reclaim_blocked_reason: str = ""
+
+
+def trash_root() -> Path:
+    """Where staged deletions live: ``<data home>/trash/sessions``."""
+    return data_home() / TRASH_DIR_NAME / TRASH_SESSIONS_LEAF
+
+
+def _crew_sessions_dir() -> Path:
+    """Kiro Crew's own transcript directory."""
+    return data_home() / SESSIONS_DIR_NAME
+
+
+def _crew_archive_dir() -> Path:
+    return _crew_sessions_dir() / ARCHIVE_DIR_NAME
+
+
+def _validate_unit_id(uid: str) -> str:
+    """Return *uid* unchanged, or raise if it could address a file outside the stores."""
+    if not _UNIT_ID_RE.match(uid):
+        raise SessionStorageError(f"not a valid session id: {uid!r}")
+    return uid
+
+
+def _archive_index() -> dict[str, list[tuple[Path, int, float]]]:
+    """Group rotated archive segments by the transcript stem they belong to.
+
+    Built once per operation: resolving a stem's segments by scanning the archive
+    directory per session would be quadratic across a bulk reclaim.
+    """
+    index: dict[str, list[tuple[Path, int, float]]] = {}
+    try:
+        with os.scandir(_crew_archive_dir()) as it:
+            for entry in it:
+                if not entry.name.endswith(_TRANSCRIPT_SUFFIX):
+                    continue
+                try:
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                    st = entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                stem = entry.name.rsplit(ARCHIVE_SEGMENT_DELIMITER, 1)[0]
+                if stem == entry.name:  # not a segment, so not attributable
+                    continue
+                index.setdefault(stem, []).append((Path(entry.path), st.st_size, st.st_mtime))
+    except OSError:
+        pass
+    return index
+
+
+# ------------------------------------------------------------------ scan cache
+#
+# Enumerating both stores is the whole cost of every read on this surface. The
+# measured motivating machine holds ~470,000 replay files, which is ~2s of
+# stat() per pass — and one open of the inventory screen needs the same
+# enumeration for the row list, again for the totals printed beside it, and again
+# for every row the user expands. That is seconds of disk per interaction for an
+# answer that cannot meaningfully change between them.
+#
+# So a pass is kept for a few seconds and shared. Two properties make that safe
+# rather than merely faster:
+#
+# * Only the filesystem half is cached. Which sessions are active or live is
+#   applied over it from the caller's index on every call, so no refusal is ever
+#   decided from a snapshot.
+# * Only READ paths opt in. A reclaim re-enumerates, and additionally re-reads
+#   the index inside the mutation lock, so the selection it acts on is current.
+#
+# A mutation invalidates the entry outright, so a screen refetching after a move
+# does not show what it just deleted.
+_SCAN_CACHE_TTL = 30.0
+
+_scan_cache_lock = threading.Lock()
+# (expires_at, cache key, units)
+_scan_cache: tuple[float, tuple[object, ...], list[_RawUnit]] | None = None
+
+
+def _scan_key(sid_for_stem: Mapping[str, str]) -> tuple[object, ...]:
+    """Everything a cached pass depends on besides the contents of the stores.
+
+    The store LOCATIONS are part of it. Both are resolved per call by design — a
+    pod overrides the data home, and an unmigrated install resolves the legacy one
+    — so a process can legitimately enumerate different stores over its lifetime,
+    and a key without them would answer a question about one store with a pass over
+    another. This was not hypothetical: it showed up immediately as one test's
+    totals being served to the next.
+
+    Pairing is the rest of it: it decides which unit a transcript belongs to, so a
+    session that gained or lost its mapping must not be answered from an older
+    pass. Compared by value rather than hashed — a hash collision here would serve
+    a pass built under different assumptions, and the whole point of the key is
+    that it cannot.
+    """
+    return (
+        str(kiro_sessions_dir()),
+        str(_crew_sessions_dir()),
+        tuple(sorted(sid_for_stem.items())),
+    )
+
+
+def _cached_scan(sid_for_stem: Mapping[str, str]) -> list[_RawUnit] | None:
+    with _scan_cache_lock:
+        if _scan_cache is None:
+            return None
+        expires, key, units = _scan_cache
+        if time.monotonic() >= expires or key != _scan_key(sid_for_stem):
+            return None
+        return units
+
+
+def _store_scan(sid_for_stem: Mapping[str, str], units: list[_RawUnit]) -> None:
+    global _scan_cache
+    with _scan_cache_lock:
+        _scan_cache = (time.monotonic() + _SCAN_CACHE_TTL, _scan_key(sid_for_stem), units)
+
+
+def invalidate_scan_cache() -> None:
+    """Drop any cached filesystem pass. Called after anything moves or is deleted.
+
+    Public rather than private because a test needs to start from a known state:
+    the cache is process-wide and its key covers the store paths and the pairing,
+    not the CONTENTS of the stores, so a test that writes more files and re-reads
+    inside the TTL would otherwise be answered from its own earlier pass.
+    """
+    global _scan_cache
+    with _scan_cache_lock:
+        _scan_cache = None
+
+
+def _scan_units(index: SessionIndex, *, cached: bool = False) -> list[SessionUnit]:
+    """Enumerate sessions across both stores, one entry per session.
+
+    Two halves of the answer, deliberately separated. :func:`_scan_raw` does the
+    filesystem work and knows nothing about which sessions are in use; this
+    applies the caller's index over that result. So the expensive half can be
+    reused (see *cached*) while the answer to "may this be reclaimed" is always
+    computed from the index the caller passed in this call.
+
+    *cached* permits a recent filesystem pass to be reused. It is for READ paths
+    only: no refusal is derived from the cached half, but a reclaim must not
+    select against a snapshot at all, so every mutation path leaves it False.
+    """
+    raw = _scan_raw(index.stem_to_sid, cached=cached)
+    active_stems = index.active_stems
+    live_stems = index.live_stems
+    # Sessions another instance sharing this replay store can still resume. Marked
+    # active HERE rather than folded into the caller's index, because this is the
+    # one place every read and every reclaim passes through — measure, the row
+    # list, the pre-classification and move_to_trash all derive `active` from it,
+    # so one assignment protects all of them. A caller cannot forget to ask.
+    cotenant, _unreadable = cotenant_sids()
+    units = []
+    for entry in raw:
+        active = (
+            entry.sid in index.active_sids
+            or entry.sid in cotenant
+            or any(stem in active_stems for stem in entry.stems)
+        )
+        live = entry.sid in index.live_sids or any(stem in live_stems for stem in entry.stems)
+        units.append(
+            SessionUnit(
+                uid=entry.uid,
+                sid=entry.sid,
+                stems=entry.stems,
+                bytes=entry.bytes,
+                mtime=entry.mtime,
+                active=active,
+                live=live,
+            )
+        )
+    return units
+
+
+def _scan_raw(sid_for_stem: Mapping[str, str], *, cached: bool = False) -> list[_RawUnit]:
+    """Enumerate both stores: what each session is made of and what it costs.
+
+    A session's age is the NEWEST mtime across every file it owns: a transcript is
+    appended to while the session runs, so an older metadata file or a long-since
+    rotated archive segment would make a live session look stale.
+
+    Carries no in-use flags. That is what makes the result cacheable: it depends
+    on the filesystem and on the transcript-to-replay-log pairing, neither of
+    which can turn a retired session back into a resumable one.
+    """
+    if cached:
+        hit = _cached_scan(sid_for_stem)
+        if hit is not None:
+            return hit
+    result = _scan_raw_uncached(sid_for_stem)
+    if cached:
+        _store_scan(sid_for_stem, result)
+    return result
+
+
+def _scan_raw_uncached(sid_for_stem: Mapping[str, str]) -> list[_RawUnit]:
+    sizes: dict[str, int] = {}
+    mtimes: dict[str, float] = {}
+    sids: dict[str, str] = {}
+    stems: dict[str, list[str]] = {}
+    sid_for_stem = dict(sid_for_stem)
+
+    def record(uid: str, size: int, mtime: float) -> None:
+        sizes[uid] = sizes.get(uid, 0) + size
+        mtimes[uid] = max(mtimes.get(uid, 0.0), mtime)
+
+    def add_stem(uid: str, stem: str) -> None:
+        owned = stems.setdefault(uid, [])
+        if stem and stem not in owned:
+            owned.append(stem)
+
+    # kiro-cli half. A paired session is keyed on its sid so both halves land on
+    # the same unit.
+    try:
+        with os.scandir(kiro_sessions_dir()) as it:
+            for entry in it:
+                if not entry.name.endswith(_CLI_SUFFIXES):
+                    continue
+                try:
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                    st = entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                sid = entry.name.rsplit(".", 1)[0]
+                if not _UNIT_ID_RE.match(sid):
+                    continue
+                sids[sid] = sid
+                stems.setdefault(sid, [])
+                record(sid, st.st_size, st.st_mtime)
+    except OSError:
+        logger.debug("kiro-cli session store unreadable", exc_info=True)
+
+    archives = _archive_index()
+
+    def attribute(stem: str) -> str:
+        """The unit a transcript stem belongs to: its paired sid, else itself."""
+        paired = sid_for_stem.get(stem, "")
+        return paired if paired in sids else stem
+
+    # Transcript half, plus any rotated segments.
+    try:
+        with os.scandir(_crew_sessions_dir()) as it:
+            for entry in it:
+                if not entry.name.endswith(_TRANSCRIPT_SUFFIX):
+                    continue
+                try:
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                    st = entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                stem = entry.name[: -len(_TRANSCRIPT_SUFFIX)]
+                if not _UNIT_ID_RE.match(stem):
+                    continue
+                uid = attribute(stem)
+                add_stem(uid, stem)
+                sids.setdefault(uid, sid_for_stem.get(stem, "") if uid != stem else "")
+                record(uid, st.st_size, st.st_mtime)
+    except OSError:
+        logger.debug("transcript store unreadable", exc_info=True)
+
+    for stem, segments in archives.items():
+        uid = attribute(stem)
+        if uid not in sizes and uid not in stems:
+            # Segments outliving their transcript still cost space and still
+            # belong to a session, so they form a unit of their own.
+            sids.setdefault(uid, "")
+        add_stem(uid, stem)
+        for _path, size, mtime in segments:
+            record(uid, size, mtime)
+
+    return [
+        _RawUnit(
+            uid=uid,
+            sid=sids.get(uid, ""),
+            stems=tuple(stems.get(uid, [])),
+            bytes=size,
+            mtime=mtimes.get(uid, 0.0),
+        )
+        for uid, size in sizes.items()
+    ]
+
+
+def _cli_index() -> dict[str, list[Path]]:
+    """Group every file in the kiro-cli store by the session id it belongs to.
+
+    Enumerated rather than assumed. A session is *identified* by its ``.json`` /
+    ``.jsonl`` pair, but reclaiming it must take whatever else kiro-cli has
+    written alongside — a lock file today, a sidecar a future version adds. If
+    reclaiming moved only the two suffixes it knows, an unrecognised sidecar would
+    be left behind, which is exactly the partial-session removal this module
+    exists to prevent.
+
+    Built once per operation: globbing per session would be quadratic across a
+    store that reaches six figures of files.
+    """
+    index: dict[str, list[Path]] = {}
+    try:
+        with os.scandir(kiro_sessions_dir()) as it:
+            for entry in it:
+                try:
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                except OSError:
+                    continue
+                sid = entry.name.rsplit(".", 1)[0]
+                if not _UNIT_ID_RE.match(sid):
+                    continue
+                index.setdefault(sid, []).append(Path(entry.path))
+    except OSError:
+        pass
+    return index
+
+
+def _unit_paths(
+    sid: str,
+    stems: tuple[str, ...],
+    archives: dict[str, list[tuple[Path, int, float]]] | None = None,
+    cli_files: dict[str, list[Path]] | None = None,
+) -> list[tuple[Path, str]]:
+    """Every file a session owns, as (absolute path, staged relative path).
+
+    The single answer to "what is this session made of". Move, restore and delete
+    all resolve through here so none of them can operate on half a session.
+    """
+    found: list[tuple[Path, str]] = []
+    if sid:
+        owned = cli_files.get(sid, []) if cli_files is not None else _cli_index().get(sid, [])
+        for path in owned:
+            found.append((path, f"{STAGE_CLI_LEAF}/{path.name}"))
+    for stem in stems:
+        transcript = _crew_sessions_dir() / f"{stem}{_TRANSCRIPT_SUFFIX}"
+        if transcript.is_file():
+            found.append((transcript, f"{STAGE_CREW_LEAF}/{transcript.name}"))
+        segments = (
+            archives.get(stem, []) if archives is not None else _archive_index().get(stem, [])
+        )
+        for path, _size, _mtime in segments:
+            found.append((path, f"{STAGE_CREW_LEAF}/{ARCHIVE_DIR_NAME}/{path.name}"))
+    return found
+
+
+def _bucketize(reclaimable: list[SessionUnit], now: float) -> tuple[StorageBucket, ...]:
+    """Split reclaimable sessions into the age bands the UI offers as thresholds."""
+    edges = list(BUCKET_DAYS)
+    labels = [f"under_{edges[0]}d"]
+    labels += [f"{edges[i]}_{edges[i + 1]}d" for i in range(len(edges) - 1)]
+    labels.append(f"over_{edges[-1]}d")
+    counts = [0] * len(labels)
+    byte_totals = [0] * len(labels)
+    for unit in reclaimable:
+        age = unit.age_days(now)
+        position = len(edges)
+        for i, edge in enumerate(edges):
+            if age < edge:
+                position = i
+                break
+        counts[position] += 1
+        byte_totals[position] += unit.bytes
+    return tuple(
+        StorageBucket(label=label, sessions=counts[i], bytes=byte_totals[i])
+        for i, label in enumerate(labels)
+    )
+
+
+def _same_filesystem(a: Path, b: Path) -> bool:
+    """Whether a rename between *a* and *b* can avoid a copy.
+
+    Walks up to each path's nearest existing ancestor, because the trash root does
+    not exist before the first reclaim.
+    """
+
+    def device(path: Path) -> int | None:
+        for candidate in (path, *path.parents):
+            try:
+                return candidate.stat().st_dev
+            except OSError:
+                continue
+        return None
+
+    dev_a = device(a)
+    dev_b = device(b)
+    return dev_a is not None and dev_a == dev_b
+
+
+def measure(
+    index: SessionIndex,
+    *,
+    now: float | None = None,
+    units: list[SessionUnit] | None = None,
+) -> StorageReport:
+    """Measure session storage and report what is reclaimable.
+
+    *units* lets a caller that already enumerated the stores hand that result over
+    rather than paying for a second pass. The inventory screen needs both the rows
+    and these totals, and they must describe the same instant anyway — computing
+    them from one pass makes agreement structural instead of coincidental.
+    """
+    clock = time.time() if now is None else now
+    units = _scan_units(index, cached=True) if units is None else units
+    active = [u for u in units if u.active]
+    # Sub-floor sessions are neither active nor offered: reporting them as
+    # reclaimable would promise bytes no threshold can actually move.
+    reclaimable = [u for u in units if not u.active and u.age_days(clock) >= MIN_RECLAIM_AGE_DAYS]
+    batches = list_trash()
+    report = StorageReport(
+        total_bytes=sum(u.bytes for u in units),
+        total_sessions=len(units),
+        active_sessions=len(active),
+        active_bytes=sum(u.bytes for u in active),
+        buckets=_bucketize(reclaimable, clock),
+        reclaimable_sessions=len(reclaimable),
+        reclaimable_bytes=sum(u.bytes for u in reclaimable),
+        trash_bytes=sum(b.bytes for b in batches),
+        trash_batches=len(batches),
+        trash_same_filesystem=_same_filesystem(kiro_sessions_dir(), trash_root()),
+        reclaim_blocked_reason=reclaim_block_reason(),
+    )
+    # The per-store split stays out of the report but is the first thing worth
+    # knowing when a total looks wrong.
+    logger.debug(
+        "session storage: %d sessions, %d paired, %d replay-only, %d transcript-only",
+        len(units),
+        sum(1 for u in units if u.sid and u.stems),
+        sum(1 for u in units if u.sid and not u.stems),
+        sum(1 for u in units if u.stems and not u.sid),
+    )
+    return report
+
+
+def list_units(index: SessionIndex) -> list[SessionUnit]:
+    """Every session on disk as one unit each, with its total size and age.
+
+    The inventory screen's row source. Exposed separately from :func:`measure`
+    because that answers "how much in total" and deliberately collapses to
+    aggregates, while a list needs the individual sessions back.
+
+    A filesystem scan only — no file CONTENT is read, so this stays usable on a
+    six-figure store. Anything requiring a read (a title's metadata line, a first
+    message, a turn or image count) is fetched per row instead.
+
+    A recent scan is reused when there is one: this is a read, and the in-use
+    flags are recomputed from *index* on every call regardless.
+    """
+    return _scan_units(index, cached=True)
+
+
+def select_reclaimable(
+    index: SessionIndex,
+    older_than_days: float,
+    *,
+    now: float | None = None,
+) -> list[SessionUnit]:
+    """The sessions a reclaim at *older_than_days* would move.
+
+    Separate from :func:`move_to_trash` so a caller can show the exact count and
+    size before anything moves, and so the selection is re-derived at the moment
+    of the move rather than trusted from a stale UI.
+    """
+    if older_than_days < 0:
+        raise SessionStorageError("older_than_days must not be negative")
+    clock = time.time() if now is None else now
+    # The caller's threshold can only be MORE conservative than the floor.
+    cutoff = max(float(older_than_days), MIN_RECLAIM_AGE_DAYS)
+    return [u for u in _scan_units(index) if not u.active and u.age_days(clock) >= cutoff]
+
+
+def _pod_root() -> Path:
+    raw = os.environ.get("KIROCREW_POD_ROOT")
+    return Path(raw).expanduser() if raw else Path.home() / ".kirocrew-pods"
+
+
+def _replay_store_cotenants() -> list[str]:
+    """Names of pod instances that may read the same kiro-cli replay store.
+
+    A pod now gets its OWN store (``pod/runtime.py`` exports ``KIRO_HOME`` inside
+    the pod home), so a current pod is not a co-tenant at all — its sessions never
+    enter the machine-wide store. What remains is a pod directory left by a build
+    from before that export existed: those pods did share the store, and a
+    surviving map still names sessions in it.
+
+    So this returns CANDIDATES, and :func:`cotenant_sids` decides by reading each
+    one's map. The pod root is host-side state at a known location, which is what
+    makes even that much discoverable. A dev gateway pointed at some other
+    ``KIROCREW_HOME`` cannot be, and stays a documented limitation.
+    """
+    try:
+        entries = list(_pod_root().iterdir())
+    except OSError:
+        return []
+    return sorted(
+        entry.name for entry in entries if entry.is_dir() and not entry.name.startswith(".")
+    )
+
+
+def cotenant_sids() -> tuple[frozenset[str], tuple[tuple[str, str], ...]]:
+    """Replay-store sessions a co-tenant instance can still resume.
+
+    Returns ``(sids, refusals)``. The sids are protected exactly like this
+    instance's own mapped sessions. *refusals* names the instances that make a
+    reclaim unsafe at all, as ``(instance, why)`` — the cases per-session
+    protection cannot cover.
+
+    A co-tenant's mapping is not a mystery: it is a file at a known host-side
+    path, and reading it turns "some other instance may still want these" into the
+    specific list of sessions it wants. The blanket refusal this replaces keyed on
+    a pod DIRECTORY existing, which was wrong twice over on a machine that has run
+    pods — a current pod keeps its own replay store and so cannot be harmed by a
+    reclaim here at all, and a torn-down pod's leftover directory owns nothing.
+
+    Three outcomes, because they need different treatment:
+
+    * **Its own replay store** (``<pod home>/kiro`` exists). It cannot own anything
+      in this store, so its sids are recorded but it constrains nothing. This is
+      what a pod provisioned by current code looks like.
+    * **No own store but a map naming sids** — a genuine shared-store instance.
+      Per-session protection is NOT enough for these: they can seed and resume a
+      session at any moment, including part-way through a move loop that runs for
+      six figures of sessions, so the snapshot this function returns can go stale
+      mid-move. Those force a refusal.
+    * **Unreadable or malformed map.** Ownership cannot be established, so also a
+      refusal.
+
+    A co-tenant with no session map has mapped nothing and protects nothing; that
+    is an ordinary state (a pod torn down mid-provision leaves its audit log and
+    little else), not a failure to read.
+
+    Liveness is deliberately not the test anywhere here. A stopped instance's map
+    still names sessions it would resume if restarted, so ownership — not whether a
+    process is running this second — is what protects them.
+    """
+    protected: set[str] = set()
+    refusals: list[tuple[str, str]] = []
+    root = _pod_root()
+    for name in _replay_store_cotenants():
+        home = root / name
+        path = home / SESSION_MAP_FILENAME
+        try:
+            # Through the centralized gate, never a bare read: the pod root is
+            # writable, so a session_map.json replaced with a symlink would
+            # otherwise make the gateway read whatever it points at.
+            # ``safe_read_file`` resolves the link, re-checks the RESOLVED target
+            # against ``is_sensitive_path``, and opens with ``O_NOFOLLOW``.
+            raw = hooks.safe_read_file(str(path))
+        except FileNotFoundError:
+            continue
+        except (PermissionError, OSError, UnicodeDecodeError):
+            # Refused as sensitive, lost a symlink race, genuinely unreadable, or
+            # not valid UTF-8 — ``safe_read_file`` decodes, and
+            # ``UnicodeDecodeError`` is a ``ValueError``, so it would otherwise
+            # escape past the parse guard below and reach the caller. All four
+            # mean the same thing here — which sessions this instance claims
+            # cannot be established — so fail closed on it.
+            logger.warning("co-tenant %s has an unreadable session map", name, exc_info=True)
+            refusals.append((name, "its session map could not be read"))
+            continue
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            logger.warning("co-tenant %s has a malformed session map", name)
+            refusals.append((name, "its session map could not be parsed"))
+            continue
+        if not isinstance(data, dict):
+            refusals.append((name, "its session map is not an object"))
+            continue
+
+        claimed: set[str] = set()
+        for entry in data.values():
+            # A plain string is the LEGACY entry format, and
+            # ``SessionMap._load`` still migrates it to ``{"sid": ...}`` on read.
+            # Skipping it would fail OPEN on exactly the population this function
+            # exists for — a co-tenant old enough to predate the pod store split
+            # is also old enough to have been written in that format.
+            if isinstance(entry, str):
+                if entry and _UNIT_ID_RE.match(entry):
+                    claimed.add(entry)
+                continue
+            if not isinstance(entry, dict):
+                continue
+            # Both the live sid and a discarded one. A discarded sid is a session
+            # the co-tenant has stopped resuming but still remembers, and taking
+            # its files is not this module's decision to make on another
+            # instance's behalf.
+            for field_name in ("sid", "discarded_sid"):
+                value = entry.get(field_name)
+                if isinstance(value, str) and value and _UNIT_ID_RE.match(value):
+                    claimed.add(value)
+
+        protected |= claimed
+        if claimed and not _has_own_replay_store(home):
+            refusals.append(
+                (name, "it shares this replay store and can resume sessions at any time")
+            )
+    return frozenset(protected), tuple(refusals)
+
+
+def _has_own_replay_store(pod_home: Path) -> bool:
+    """Whether a co-tenant reads its own replay store rather than this one.
+
+    Current pods export ``KIRO_HOME`` into the pod home, so their replay logs never
+    enter the machine-wide store. The directory is the only observable proxy for
+    that from outside the process, and it is read in the fail-CLOSED direction: an
+    instance we cannot show to be self-contained is treated as sharing this store,
+    which refuses rather than reclaims.
+    """
+    return (pod_home / KIRO_BASE_DIR_NAME.lstrip(".")).is_dir() or (pod_home / "kiro").is_dir()
+
+
+def reclaim_block_reason() -> str:
+    """Why this instance must not reclaim, or ``""`` when it may.
+
+    The exclusion set is built from THIS instance's session map, but the kiro-cli
+    replay store can be shared by several instances. An instance with its own data
+    home reading the machine-wide store cannot see the default instance's
+    mappings, so a resumable conversation reads as retired and could be staged and
+    then emptied out from under a gateway this process cannot see.
+
+    Decided on RESOLVED paths, never on whether the environment variables are set,
+    and by requiring the store to be CONTAINED in this instance's data home rather
+    than by testing it against the default location. Both overrides are validated
+    and silently fall back to the default when they name an unsafe target, so
+    ``KIRO_HOME=/etc`` alongside an isolated ``KIROCREW_HOME`` leaves this process
+    reading the shared store while an env-presence test would report it isolated —
+    the exact hazard, reached through a rejected override. Containment also covers
+    a store that is shared without being the default one: two isolated instances
+    pointed at the same custom ``KIRO_HOME`` see neither the default store nor each
+    other's maps.
+
+    The freshness floor narrows the window but does not close it — a session idle
+    for a day is still resumable — so the operation is refused rather than
+    attempted. Isolating both homes together, or neither, is safe.
+
+    Pods are handled per session rather than per instance, because their mappings
+    ARE discoverable: see :func:`cotenant_sids`. Only a pod whose map cannot be
+    read still costs the whole instance its ability to reclaim.
+    """
+
+    def _norm(path: Path) -> Path:
+        # A symlinked HOME would otherwise make the default home compare unequal to
+        # itself and report every instance as isolated.
+        try:
+            return path.resolve()
+        except OSError:  # pragma: no cover - defensive
+            return path
+
+    home = _norm(Path.home())
+    # BOTH of these are defaults, not isolation: an install that has not yet
+    # migrated legitimately reports the legacy home, and treating that as an
+    # isolated instance would refuse every pre-migration install.
+    defaults = {home / KIRO_BASE_DIR_NAME / CONFIG_DIR_LEAF, _norm(legacy_home())}
+    data = _norm(data_home())
+    if data in defaults:
+        # The mirror of the isolated-instance case, and just as destructive: a pod
+        # shares this store while keeping its own map, so ITS sessions read as
+        # retired from here. Only checked when the store is the default one, since
+        # that is the only store a pod reads.
+        if _norm(kiro_home()) == home / KIRO_BASE_DIR_NAME:
+            _protected, refusals = cotenant_sids()
+            if refusals:
+                listed = "; ".join(f"{name} — {why}" for name, why in refusals[:3])
+                return (
+                    f"{len(refusals)} other instance(s) sharing this kiro-cli session "
+                    f"store make reclaiming unsafe ({listed}). Evict them with "
+                    "`kirocrew pod down <name>` to reclaim from here."
+                )
+        return ""
+    # An isolated instance may reclaim only when its replay store is provably its
+    # own. Testing against the DEFAULT store location would miss the sharing that
+    # matters most: two isolated instances pointed at one custom KIRO_HOME see
+    # neither the default store nor each other's maps. Requiring the store to live
+    # inside this instance's data home fails closed on every such arrangement.
+    store = _norm(kiro_home())
+    if store == data or data in store.parents:
+        return ""
+    return (
+        "This instance has its own data home but its kiro-cli session store sits "
+        "outside it, so the store may be shared with instances whose sessions this "
+        "one cannot see. Point KIRO_HOME inside KIROCREW_HOME to reclaim from here."
+    )
+
+
+@contextmanager
+def _mutation_lock() -> Iterator[None]:
+    """Serialize every operation that moves or deletes staged files.
+
+    Two concurrent reclaims can select the same session and interleave their
+    moves, landing one half in each batch — after which neither batch can restore
+    it, and emptying either destroys half a session. A file lock rather than a
+    thread lock because instances share the kiro-cli store: a pod and the live
+    gateway both read ``~/.kiro/sessions/cli``, so in-process exclusion excludes
+    nothing.
+
+    :func:`platform_compat.file_lock` fails closed, so a lock that cannot be taken
+    raises instead of entering the section unserialized.
+    """
+    lock_path = trash_root().parent / MUTATION_LOCK_NAME
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        with platform_compat.file_lock(fd, exclusive=True, required=True):
+            yield
+    finally:
+        os.close(fd)
+
+
+def _batch_dir(batch_id: str) -> Path:
+    """Resolve a batch id to its directory, refusing anything that is not one.
+
+    The id itself cannot traverse — it is pattern-checked — but a **link** planted
+    under the trash root can, and its name would pass that check. Following one
+    would let a crafted manifest drive moves into or out of paths this module does
+    not own, in either direction. A batch is a real directory inside the trash root
+    or it is not a batch, so both the link check and the containment check happen
+    here, at the one place every caller resolves an id through.
+
+    The link test goes through :func:`platform_compat.is_link_or_junction` because
+    ``is_symlink()`` reports False for an NTFS **junction**: on Windows a junction
+    named as a valid batch id would read as a real directory, and the delete would
+    resolve through it to whatever batch it points at.
+
+    Containment is anchored to the DATA HOME, not to the trash root alone. The trash
+    root lives under a directory the agent can write, so it could itself be replaced
+    with a link: resolving relative to it would then accept batches under whatever it
+    points at, and "empty everything" would recurse into directories this module
+    does not own.
+
+    The root must also not BE a link. Anchoring alone is not enough, because a link
+    can point at another directory *inside* the data home — the live sessions or
+    archive tree — which satisfies both the anchor and containment while making
+    `empty` delete real session data.
+    """
+    if not _UNIT_ID_RE.match(batch_id):
+        raise SessionStorageError(f"not a valid batch id: {batch_id!r}")
+    root = trash_root()
+    if platform_compat.is_link_or_junction(root):
+        raise SessionStorageError(f"the trash root is a link: {root}")
+    path = root / batch_id
+    if platform_compat.is_link_or_junction(path):
+        raise SessionStorageError(f"not a valid batch id: {batch_id!r}")
+    try:
+        resolved_root = root.resolve()
+        resolved = path.resolve()
+        home = data_home().resolve()
+    except OSError as exc:  # pragma: no cover - defensive
+        raise SessionStorageError(f"not a valid batch id: {batch_id!r}") from exc
+    if home not in resolved_root.parents:
+        raise SessionStorageError(f"the trash root does not live under the data home: {root}")
+    if resolved_root not in resolved.parents:
+        raise SessionStorageError(f"not a valid batch id: {batch_id!r}")
+    return path
+
+
+def _move_file_exclusive(src: Path, dst: Path) -> bool:
+    """Move *src* to *dst*, never replacing an existing *dst*. False if occupied.
+
+    Restore's preflight checks that the origin is free, but the session can be
+    recreated in the interval before the move — and ``os.rename`` replaces the
+    destination silently, so undoing a deletion would destroy the newer data it was
+    meant to protect. Creating the destination exclusively makes the check and the
+    write one atomic step, so a lost race is reported rather than acted on.
+    """
+    try:
+        os.link(src, dst)
+    except FileExistsError:
+        return False
+    except OSError:
+        # A different filesystem, or one without hard links: copy into a file that
+        # must not already exist, which keeps the no-clobber guarantee.
+        try:
+            fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            return False
+        try:
+            with os.fdopen(fd, "wb") as out, open(src, "rb") as handle:
+                shutil.copyfileobj(handle, out)
+            shutil.copystat(src, dst)
+        except OSError:
+            with suppress(OSError):
+                dst.unlink()
+            raise
+        src.unlink()
+        return True
+    src.unlink()
+    return True
+
+
+def _move_file(src: Path, dst: Path) -> None:
+    """Move one file, preferring a rename and falling back to a copy.
+
+    A rename is atomic and instant, which is what makes a trash usable at tens of
+    gigabytes. It only works within one filesystem, so a data home mounted apart
+    from the kiro-cli store falls back to :func:`shutil.move` — correct, but it
+    copies, so it is slow and needs the space twice while it runs.
+    """
+    try:
+        os.rename(src, dst)
+    except OSError as exc:
+        if getattr(exc, "errno", None) != getattr(os, "EXDEV", 18):
+            raise
+        shutil.move(str(src), str(dst))
+
+
+def _file_size(path: Path) -> int:
+    """The size recorded for a staged file. Raises ``OSError`` when unreadable.
+
+    A named operation rather than an inline ``stat`` because its failure is
+    load-bearing: a file whose size cannot be read cannot be recorded, and an
+    unrecorded file is one restore cannot put back.
+    """
+    return path.stat().st_size
+
+
+def _rollback(moved: list[tuple[Path, Path]]) -> None:
+    """Undo a partial session move, best effort.
+
+    Each pair is (where it landed, where it came from). A rollback that itself
+    fails is logged and nothing more: the alternative is raising over a caller
+    already handling a failure, which would abandon the rest of the batch too.
+
+    The move is EXCLUSIVE. A rollback runs after something already went wrong, so
+    the origin may have been recreated in the meantime — and a plain rename would
+    replace that newer session data with the copy being put back, turning a handled
+    failure into data loss. An occupied origin leaves the file where it is staged,
+    which keeps it recoverable.
+    """
+    for landed, origin in reversed(moved):
+        try:
+            if not _move_file_exclusive(landed, origin):
+                logger.warning(
+                    "not rolling %s back: %s was recreated and is newer",
+                    landed,
+                    origin,
+                )
+        except OSError:
+            logger.warning("could not roll %s back to %s", landed, origin, exc_info=True)
+
+
+def _staged_path(batch: Path, rel: str) -> Path | None:
+    """Resolve a manifest ``rel`` inside *batch*, or ``None`` if it escapes.
+
+    ``Path("/a/b") / "/etc/passwd"`` is ``/etc/passwd`` — joining an absolute
+    string discards the base entirely. The manifest lives under the data home,
+    which is agent-writable, so a tampered or corrupted ``rel`` would otherwise
+    let restore pick up any file on the host and relocate it. Both the absolute
+    form and ``..`` traversal are refused.
+    """
+    if not rel or Path(rel).is_absolute():
+        return None
+    candidate = batch / rel
+    try:
+        resolved = candidate.resolve()
+        root = batch.resolve()
+    except OSError:
+        return None
+    if resolved == root or not resolved.is_relative_to(root):
+        return None
+    return candidate
+
+
+def _canonical_origin(rel: str) -> Path | None:
+    """Where a staged file must have come from, DERIVED from its staged path.
+
+    The staged path already encodes the store and the filename, and the filename
+    is the session's identity — a replay log is ``<sid>.jsonl`` and a transcript is
+    ``<stem>.jsonl``. So the origin is not information the manifest needs to
+    supply, and accepting it would let a tampered in-store origin relocate one
+    session's file under another session's name: both paths pass a
+    "inside a session store" test, and the result is a corrupted session with no
+    error a user could connect to a restore.
+
+    Deriving removes the choice. The recorded origin is then only checked for
+    agreement, so a disagreement is refused instead of followed.
+    """
+    parts = PurePosixPath(rel).parts
+    if not parts:
+        return None
+    name = parts[-1]
+    if not name or name != Path(name).name or name in (os.curdir, os.pardir):
+        return None
+    if parts[0] == STAGE_CLI_LEAF and len(parts) == 2:
+        return kiro_sessions_dir() / name
+    if parts[0] == STAGE_CREW_LEAF:
+        if len(parts) == 2:
+            return _crew_sessions_dir() / name
+        if len(parts) == 3 and parts[1] == ARCHIVE_DIR_NAME:
+            return _crew_archive_dir() / name
+    return None
+
+
+def _origin_path(origin: str) -> Path | None:
+    """Accept an *origin* only if it names a file inside a session store.
+
+    Restore writes to this path, so an unconstrained origin from a tampered
+    manifest is an arbitrary-write primitive. Only the two directories this module
+    ever reclaims from are permitted; anything else — a credential file, a config,
+    a path outside the homes entirely — is refused.
+    """
+    if not origin:
+        return None
+    candidate = Path(origin)
+    if not candidate.is_absolute():
+        return None
+    try:
+        resolved = candidate.resolve()
+        allowed = [
+            kiro_sessions_dir().resolve(),
+            _crew_sessions_dir().resolve(),
+            _crew_archive_dir().resolve(),
+        ]
+    except OSError:
+        return None
+    if not any(resolved.is_relative_to(root) for root in allowed):
+        return None
+    return candidate
+
+
+def _unlisted_files(batch: Path) -> list[Path]:
+    """Staged files no manifest entry names.
+
+    A process exit between moving a file into a batch and appending its manifest
+    line leaves a file nothing points at. It is still the ONLY copy of that
+    session's data, and the user was never shown it — the batch may even list zero
+    sessions — so no cleanup path may remove it.
+
+    An unreadable manifest yields every file, which is the safe direction: without
+    the manifest nothing in the batch is accounted for.
+
+    A scan that cannot be completed RAISES rather than returning a short list. This
+    function exists to block deletions, so an empty result must mean "there is
+    nothing unaccounted for", never "the walk gave up early" — ``rglob`` skips
+    unreadable directories silently, which would turn a transient error into
+    permission to delete a file that is the only copy of a session.
+    """
+    # An unreadable manifest yields no listed names, so every file below counts as
+    # unlisted — the safe direction this docstring describes.
+    listed: set[str] = set(_manifest_rels(batch))
+    failures: list[OSError] = []
+    unlisted = []
+    for root, _dirs, names in os.walk(batch, onerror=failures.append):
+        for name in names:
+            path = Path(root) / name
+            if name == MANIFEST_NAME:
+                continue
+            try:
+                if not path.is_file():
+                    continue
+            except OSError as exc:
+                failures.append(exc)
+                continue
+            if path.relative_to(batch).as_posix() not in listed:
+                unlisted.append(path)
+    if failures:
+        raise SessionStorageError(
+            f"could not read all of {batch.name}, so it is not known whether it "
+            f"holds files nothing lists: {failures[0]}"
+        )
+    return unlisted
+
+
+def _discard_restored_batch(batch: Path, header: dict[str, Any]) -> None:
+    """Remove a fully-restored batch, unless it holds files nothing listed.
+
+    Deleting the directory wholesale would destroy an interrupted move's staged
+    files — on the one path that exists to be safe. Those keep the batch alive
+    instead, so a user can still see it and decide.
+    """
+    try:
+        leftovers = _unlisted_files(batch)
+    except SessionStorageError as exc:
+        # Not knowing is treated exactly like finding leftovers: keep the batch.
+        logger.warning("keeping trash batch %s: %s", batch.name, exc)
+        _rewrite_manifest(batch, header, [])
+        return
+    if leftovers:
+        logger.warning(
+            "keeping trash batch %s: %d staged file(s) are absent from its manifest, "
+            "so removing it would delete the only copy",
+            batch.name,
+            len(leftovers),
+        )
+        _rewrite_manifest(batch, header, [])
+        return
+    shutil.rmtree(batch, ignore_errors=True)
+
+
+def _write_header(handle: IO[str], batch_id: str, created_at: float, reason: str) -> None:
+    header = {
+        "schema": MANIFEST_SCHEMA,
+        "batch_id": batch_id,
+        "created_at": created_at,
+        "reason": reason,
+    }
+    handle.write(json.dumps(header) + "\n")
+    handle.flush()
+
+
+def _append_entry(handle: IO[str], entry: dict[str, Any]) -> None:
+    """Record one moved session and flush, so an interruption loses at most the
+    session currently in flight."""
+    handle.write(json.dumps(entry) + "\n")
+    handle.flush()
+
+
+def _read_manifest(batch: Path) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+    """Parse a batch manifest into its header and session entries.
+
+    A trailing partial line (a crash mid-append) is skipped rather than failing
+    the whole batch: every complete line before it describes real moved files that
+    must stay restorable.
+    """
+    try:
+        raw = (batch / MANIFEST_NAME).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    header: dict[str, Any] | None = None
+    entries: list[dict[str, Any]] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        if header is None:
+            header = record
+            continue
+        entries.append(record)
+    if header is None or header.get("schema") != MANIFEST_SCHEMA:
+        return None
+    return header, entries
+
+
+def _rewrite_manifest(batch: Path, header: dict[str, Any], entries: list[dict[str, Any]]) -> None:
+    """Replace a manifest atomically after a partial restore."""
+    tmp = batch / f"{MANIFEST_NAME}.tmp"
+    with tmp.open("w", encoding="utf-8") as handle:
+        handle.write(json.dumps(header) + "\n")
+        for entry in entries:
+            handle.write(json.dumps(entry) + "\n")
+    os.replace(tmp, batch / MANIFEST_NAME)
+
+
+def _entry_bytes(entry: dict[str, Any]) -> int:
+    files = entry.get("files")
+    if not isinstance(files, list):
+        return 0
+    total = 0
+    for record in files:
+        if isinstance(record, dict):
+            size = record.get("bytes")
+            if isinstance(size, int):
+                total += size
+    return total
+
+
+def move_to_trash(
+    uids: list[str],
+    *,
+    reason: str,
+    index: SessionIndex,
+    now: float | None = None,
+    refresh: Callable[[], SessionIndex] | None = None,
+) -> TrashBatch:
+    """Stage whole sessions for deletion and return the batch that can undo it.
+
+    Every half of each session moves together — replay log, transcript and rotated
+    archive segments. Leaving one behind would produce a session that lists but
+    cannot resume, or resumes with no history.
+
+    Refuses a session that is still mapped, and one touched within
+    :data:`MIN_RECLAIM_AGE_DAYS`: a mapped session is resumable, and a fresh one
+    may be running under a subsystem that never registered it.
+
+    *refresh* re-reads the caller's index INSIDE the lock, immediately before
+    anything moves. Scanning a large store takes long enough that a session can be
+    resumed and mapped while the selection is being computed, and the stale index
+    would then treat it as retired. The two active sets are UNIONED, never
+    replaced, so a re-read can only ever add protection.
+
+    Serialized against other mutations, because two interleaved reclaims can put
+    one half of a session in each batch and leave neither able to restore it.
+    """
+    with _mutation_lock():
+        try:
+            return _move_to_trash_locked(uids, reason=reason, index=index, now=now, refresh=refresh)
+        finally:
+            # In a finally, not after a success: a partially-completed batch has
+            # already moved files, so a raised refusal still leaves any cached
+            # pass describing sessions that are no longer where it says.
+            invalidate_scan_cache()
+
+
+def _move_to_trash_locked(
+    uids: list[str],
+    *,
+    reason: str,
+    index: SessionIndex,
+    now: float | None = None,
+    refresh: Callable[[], SessionIndex] | None = None,
+) -> TrashBatch:
+    """Stage whole sessions for deletion and return the batch that can undo it.
+
+    Every half of each session moves together — replay log, transcript and rotated
+    archive segments. Leaving one behind would produce a session that lists but
+    cannot resume, or resumes with no history.
+
+    Refuses any session that is still mapped: it is one the product can resume,
+    and moving its files out from under a live slot breaks it with no error a user
+    would connect to this action.
+
+    Each session is recorded as it lands, so an interruption leaves a manifest
+    describing exactly what moved — a partial batch stays restorable instead of
+    becoming orphaned files nothing points at.
+    """
+    clock = time.time() if now is None else now
+    blocked_reason = reclaim_block_reason()
+    if blocked_reason:
+        raise SessionStorageError(blocked_reason)
+    requested = [_validate_unit_id(uid) for uid in uids]
+    if not requested:
+        raise SessionStorageError("no sessions selected")
+
+    by_uid = {u.uid: u for u in _scan_units(index)}
+
+    # The authority check runs AFTER the scan, not before it. Enumerating a
+    # six-figure store is the slow part of this function, so an index read before
+    # it is already stale by the time anything moves — a session continued in that
+    # interval would look retired. Re-reading here makes the last thing before the
+    # move loop the freshest view available, and the sets are UNIONED so a re-read
+    # can only ever add protection.
+    if refresh is not None:
+        try:
+            latest = refresh()
+        except Exception:
+            logger.warning("could not re-read the session index", exc_info=True)
+            raise SessionStorageError(
+                "could not confirm which sessions are live; nothing was moved"
+            )
+        live_sids = index.active_sids | latest.active_sids
+        live_stems = index.active_stems | latest.active_stems
+    else:
+        live_sids = index.active_sids
+        live_stems = index.active_stems
+
+    # Co-tenant ownership is re-read here for exactly the reason *refresh* exists,
+    # and must not be left out of it: the scan above is the slow part, so the
+    # co-tenant view taken during it is seconds stale by the time anything moves.
+    # Refreshing only the local map would leave a co-tenant that adopted a
+    # PRE-EXISTING replay log in that window unprotected — and the freshness floor
+    # does not cover that case, because the session it adopted is old.
+    #
+    # An instance that genuinely shares this store refuses the move outright rather
+    # than being handled per session: it can seed and resume a session at any
+    # moment, including part-way through the loop below, which a snapshot taken
+    # here cannot cover however fresh it is.
+    cotenant_now, refusals = cotenant_sids()
+    if refusals:
+        name, why = refusals[0]
+        raise SessionStorageError(
+            f"{len(refusals)} instance(s) sharing this session store make reclaiming "
+            f"unsafe ({name} — {why}); nothing was moved"
+        )
+    live_sids = live_sids | cotenant_now
+
+    def is_live(uid: str) -> bool:
+        unit = by_uid.get(uid)
+        if unit is None:
+            return False
+        if unit.active or (unit.sid and unit.sid in live_sids):
+            return True
+        return any(stem in live_stems for stem in unit.stems)
+
+    blocked = [uid for uid in requested if is_live(uid)]
+    if blocked:
+        raise SessionStorageError(
+            f"refusing to move {len(blocked)} session(s) still in use: {blocked[0]}"
+        )
+    # Freshness is checked HERE, not only in the selection helper, because this is
+    # the chokepoint: a caller passing ids directly would otherwise bypass the
+    # floor and take a session that is running right now but was never mapped.
+    fresh = [
+        uid
+        for uid in requested
+        if uid in by_uid and by_uid[uid].age_days(clock) < MIN_RECLAIM_AGE_DAYS
+    ]
+    if fresh:
+        raise SessionStorageError(
+            f"refusing to move {len(fresh)} session(s) touched in the last "
+            f"{MIN_RECLAIM_AGE_DAYS:g} day(s): {fresh[0]}"
+        )
+
+    stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime(clock))
+    batch_id = f"{stamp}-{uuid.uuid4().hex[:8]}"
+    target = _batch_dir(batch_id)
+    target.mkdir(parents=True, exist_ok=False)
+    archives = _archive_index()
+
+    moved_bytes = 0
+    moved_sessions = 0
+    staged_dirs: set[Path] = set()
+    cli_files = _cli_index()
+    with (target / MANIFEST_NAME).open("w", encoding="utf-8") as manifest:
+        _write_header(manifest, batch_id, clock, reason)
+        for uid in requested:
+            unit = by_uid.get(uid)
+            if unit is None:
+                continue
+            files: list[dict[str, Any]] = []
+            done: list[tuple[Path, Path]] = []
+            failed = False
+            for src, rel in _unit_paths(unit.sid, unit.stems, archives, cli_files):
+                try:
+                    size = _file_size(src)
+                except OSError:
+                    # A file that cannot be sized cannot be recorded, and a file
+                    # the manifest does not record is one restore cannot put back.
+                    # Skipping it here while moving the rest is precisely the split
+                    # this loop's rollback exists to prevent, so it is a failure.
+                    logger.warning("could not stat %s for staging", src, exc_info=True)
+                    failed = True
+                    break
+                dst = target / rel
+                if dst.parent not in staged_dirs:
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    staged_dirs.add(dst.parent)
+                try:
+                    _move_file(src, dst)
+                except OSError:
+                    logger.warning("could not move %s into the trash", src, exc_info=True)
+                    failed = True
+                    break
+                done.append((dst, src))
+                files.append({"rel": rel, "origin": str(src), "bytes": size})
+            if failed:
+                # A session that moved only partly is the broken state this module
+                # exists to prevent, and it would be invisible: the manifest would
+                # list the staged half while the rest stayed in place, so emptying
+                # the trash would destroy one half of a session nobody knew was
+                # split. Put back whatever moved and leave the session alone.
+                _rollback(done)
+                continue
+            if files:
+                # The manifest is what makes a move reversible, so a session that
+                # moved but could not be recorded is worse than one that never
+                # moved: its files are gone from live storage and no entry names
+                # them, so they can neither be restored nor resumed. Rewind the
+                # partial line and put the files back.
+                mark = manifest.tell()
+                try:
+                    _append_entry(manifest, {"uid": uid, "files": files})
+                except OSError:
+                    logger.warning("could not record session %s in the manifest; rolling back", uid)
+                    try:
+                        manifest.truncate(mark)
+                        manifest.seek(mark)
+                    except OSError:
+                        logger.warning("could not rewind the manifest", exc_info=True)
+                    _rollback(done)
+                    continue
+                moved_sessions += 1
+                moved_bytes += sum(int(record["bytes"]) for record in files)
+
+    if not moved_sessions:
+        # Leave no empty batch behind — but a rollback that itself failed can have
+        # left staged files here, and those are the only copy.
+        if _unlisted_files(target):
+            raise SessionStorageError(
+                "no sessions were staged, and some files could not be put back; " f"see {target}"
+            )
+        shutil.rmtree(target, ignore_errors=True)
+        raise SessionStorageError("none of the selected sessions were found on disk")
+
+    return TrashBatch(
+        batch_id=batch_id,
+        created_at=clock,
+        reason=reason,
+        sessions=moved_sessions,
+        bytes=moved_bytes,
+    )
+
+
+def list_trash() -> list[TrashBatch]:
+    """Every staged batch, newest first.
+
+    A batch with no readable manifest is omitted: without one its files could not
+    be put back, so presenting it as restorable would be a false promise.
+    """
+    batches: list[TrashBatch] = []
+    root = trash_root()
+    try:
+        # Same two rules as _batch_dir: a trash root that has been replaced with a
+        # link would otherwise have foreign directories enumerated AS batches, which
+        # is what makes them reachable by "empty everything". The anchor alone is not
+        # enough — a link can point INSIDE the data home, at the live sessions tree.
+        if platform_compat.is_link_or_junction(root):
+            logger.warning("trash root %s is a link; not offering any batches", root)
+            return []
+        if data_home().resolve() not in root.resolve().parents:
+            logger.warning("trash root %s does not live under the data home", root)
+            return []
+        candidates = list(root.iterdir())
+    except OSError:
+        return []
+    for candidate in candidates:
+        # A link is not a batch. Skipping it here (rather than raising) keeps a
+        # planted link from wedging "empty everything" forever, while an explicit
+        # request naming that id is still refused loudly by _batch_dir. Junctions
+        # count: is_symlink() reports False for one, so a Windows junction would be
+        # listed as a real batch and the sweep would delete through it.
+        if platform_compat.is_link_or_junction(candidate) or not candidate.is_dir():
+            continue
+        parsed = _read_manifest(candidate)
+        if parsed is None:
+            logger.debug("trash batch %s has no readable manifest", candidate.name)
+            continue
+        header, entries = parsed
+        # The DIRECTORY is the batch's identity. A header that names a different
+        # batch would make a targeted empty delete the batch it named instead of
+        # the one it came from, so a disagreement is treated as corruption rather
+        # than resolved in the header's favour.
+        claimed = header.get("batch_id")
+        if isinstance(claimed, str) and claimed and claimed != candidate.name:
+            logger.warning(
+                "trash batch %s has a manifest claiming batch id %r; not offering it",
+                candidate.name,
+                claimed,
+            )
+            continue
+        created = header.get("created_at")
+        batches.append(
+            TrashBatch(
+                batch_id=candidate.name,
+                created_at=float(created) if isinstance(created, (int, float)) else 0.0,
+                reason=str(header.get("reason") or ""),
+                sessions=len(entries),
+                bytes=sum(_entry_bytes(e) for e in entries),
+            )
+        )
+    batches.sort(key=lambda b: b.created_at, reverse=True)
+    return batches
+
+
+def restore(batch_id: str, uids: list[str] | None = None) -> int:
+    """Put staged sessions back where they came from; return sessions restored.
+
+    Serialized against other mutations so a concurrent reclaim cannot move a
+    session's other half while this one is putting it back.
+    """
+    with _mutation_lock():
+        try:
+            return _restore_locked(batch_id, uids)
+        finally:
+            invalidate_scan_cache()
+
+
+def _restore_locked(batch_id: str, uids: list[str] | None = None) -> int:
+    """Put staged sessions back where they came from; return sessions restored.
+
+    *uids* restores only those sessions, which is what makes a large
+    policy-driven batch usable: a user remembers the one conversation they want,
+    not the batch it happened to land in.
+
+    A session is restored only when EVERY one of its files can go back. Restoring
+    part of one would recreate the half-session this module exists to avoid, so a
+    blocked file leaves the whole session staged.
+    """
+    batch = _batch_dir(batch_id)
+    parsed = _read_manifest(batch)
+    if parsed is None:
+        raise SessionStorageError(f"no restorable batch {batch_id!r}")
+    header, entries = parsed
+    wanted = None if uids is None else {_validate_unit_id(uid) for uid in uids}
+
+    remaining: list[dict[str, Any]] = []
+    restored = 0
+    for entry in entries:
+        uid = str(entry.get("uid") or "")
+        if wanted is not None and uid not in wanted:
+            remaining.append(entry)
+            continue
+        files = entry.get("files")
+        files = files if isinstance(files, list) else []
+        planned: list[tuple[Path, Path]] = []
+        blocked = False
+        for record in files:
+            if not isinstance(record, dict):
+                # A record we cannot read is a file we cannot place. Restoring the
+                # rest would leave the session split with that file staged and
+                # unreferenced, so the whole session stays put.
+                logger.warning("manifest record for %s is not an object", uid)
+                blocked = True
+                break
+            rel = str(record.get("rel") or "")
+            src = _staged_path(batch, rel)
+            recorded = _origin_path(str(record.get("origin") or ""))
+            origin = _canonical_origin(rel)
+            if src is None or origin is None or recorded is None:
+                logger.warning("refusing a manifest record outside the session stores")
+                blocked = True
+                break
+            if recorded.resolve() != origin.resolve():
+                # Both are inside a session store, so neither check alone catches
+                # this: the recorded origin names a DIFFERENT session's file.
+                logger.warning(
+                    "refusing a manifest record whose origin does not match its " "staged path"
+                )
+                blocked = True
+                break
+            # An occupied origin means the session came back on its own; the
+            # occupant is newer, and undoing a deletion must not cause one.
+            # is_file() FOLLOWS links, so a staged symlink would pass as a file and
+            # restore would put the link back where the session's data belongs.
+            if platform_compat.is_link_or_junction(src) or not src.is_file() or origin.exists():
+                blocked = True
+                break
+            planned.append((src, origin))
+        if blocked or not planned:
+            remaining.append(entry)
+            continue
+        done: list[tuple[Path, Path]] = []
+        try:
+            lost_race = False
+            for src, origin in planned:
+                origin.parent.mkdir(parents=True, exist_ok=True)
+                if not _move_file_exclusive(src, origin):
+                    # The session came back between the preflight and now. The
+                    # occupant is newer, so the whole session is put back and the
+                    # entry retained — restoring the rest would splice two
+                    # generations of one session together.
+                    logger.warning(
+                        "session %s was recreated while being restored; leaving it " "staged",
+                        uid,
+                    )
+                    lost_race = True
+                    break
+                done.append((origin, src))
+            if lost_race:
+                _rollback(done)
+                remaining.append(entry)
+                continue
+        except OSError:
+            logger.warning("could not fully restore session %s", uid, exc_info=True)
+            # Without this the session is split *and* wedged: the files that did
+            # move are gone from the batch while the manifest still lists them, so
+            # every later retry fails its own "staged file present" check and the
+            # session can never be restored or cleanly emptied again.
+            _rollback(done)
+            remaining.append(entry)
+            continue
+        restored += 1
+
+    if remaining:
+        _rewrite_manifest(batch, header, remaining)
+    else:
+        _discard_restored_batch(batch, header)
+    return restored
+
+
+# Called with the running total of bytes freed by an empty. See :func:`empty_trash`.
+EmptyProgress = Callable[[int], None]
+
+#: Called with a reason code when a batch is kept instead of deleted. See
+#: :func:`empty_trash`.
+EmptySkip = Callable[[str], None]
+
+#: Why a batch was kept. Codes, not prose: the caller that shows them to a person
+#: has to translate them, and a log line cannot be translated.
+SKIP_OUTSIDE_ROOT = "outside_trash_root"
+SKIP_UNREADABLE = "unreadable_batch"
+SKIP_UNLISTED_FILES = "unlisted_files"
+#: The delete ran but the batch is still on disk, so it is still on the user's screen.
+SKIP_INCOMPLETE = "incomplete"
+
+
+def _manifest_rels(batch: Path) -> list[str]:
+    """Every staged file the batch's manifest names, as batch-relative paths."""
+    parsed = _read_manifest(batch)
+    if parsed is None:
+        return []
+    rels: list[str] = []
+    for entry in parsed[1]:
+        files = entry.get("files")
+        if not isinstance(files, list):
+            continue
+        for record in files:
+            if isinstance(record, dict) and isinstance(record.get("rel"), str):
+                rels.append(record["rel"])
+    return rels
+
+
+def _plain_parts(rel: str) -> tuple[str, ...] | None:
+    """The components of *rel*, or None if it is not a plain path under a batch.
+
+    A manifest is a file on disk: a tampered or corrupted one can name an absolute
+    path or walk out with ``..``. Every consumer of a manifest entry goes through
+    here first, so "is this name usable" is answered in ONE place rather than at each
+    call site - the size read below skipped this check when it was written inline in
+    the delete, and stat'd whatever the manifest said.
+
+    Absoluteness is asked of the PATH rather than of any spelling of a separator.
+    Enumerating those was the earlier bug: ``PurePosixPath("//tmp/victim").parts`` is
+    ``("//", "tmp", "victim")`` - a POSIX root of two slashes, which a check against
+    ``"/"`` misses - and an absolute path passed to ``os.open`` ignores ``dir_fd``
+    entirely, so the open leaves the batch. Both flavours are consulted because the
+    coarse path joins these names with the local ``Path``: on Windows ``..\\x`` is a
+    parent reference and ``C:\\x`` is absolute, neither of which POSIX parsing sees.
+
+    A DRIVE is rejected whether or not the path is absolute, which is not the same
+    question. ``C:.ssh/id_rsa`` is drive-RELATIVE - ``is_absolute()`` is False - yet
+    joining it onto the batch on Windows replaces the anchor, because pathlib lets a
+    right-hand side that carries a drive take over, and it then resolves against that
+    drive's working directory. So the size read would stat a path outside the batch and
+    report its existence and size. Asking for ``.drive`` covers every spelling of that,
+    including ``c:y``, which a check for a component ending in a colon does not see.
+
+    That also refuses a POSIX file legitimately named ``a:b``, since Windows parsing
+    reads the same two characters as a drive. Accepted deliberately: this store names
+    its own files, so nothing it writes looks like that, and the cost of being wrong is
+    one batch reported incomplete and kept rather than a path escaping the batch.
+
+    An embedded NUL is refused with no such trade, because no file name can contain one:
+    a JSON manifest CAN carry it (``"\\u0000"``), and every ``os`` call then raises
+    ``ValueError``, which is not ``OSError`` and so was not caught where a bad name is
+    meant to be skipped - it escaped mid-loop and left the batch half-deleted.
+    """
+    if PurePosixPath(rel).is_absolute() or PureWindowsPath(rel).is_absolute():
+        logger.warning("refusing a staged path that is absolute")
+        return None
+    if PureWindowsPath(rel).drive:
+        logger.warning("refusing a staged path that names a drive")
+        return None
+    parts = PurePosixPath(rel).parts
+    if not parts or any(
+        part in ("", ".", "..") or "\\" in part or "\x00" in part for part in parts
+    ):
+        logger.warning("refusing a staged path that is not a plain name")
+        return None
+    return parts
+
+
+def _listed_bytes(batch: Path, rels: list[str]) -> int:
+    """Best-effort size of the manifest's files plus the manifest itself.
+
+    Statting the named files rather than walking the tree, for the same reason the
+    delete does not walk it - and only names that pass :func:`_plain_parts`, so a
+    tampered entry cannot make this measure a file outside the batch.
+    """
+    total = 0
+    for rel in rels:
+        parts = _plain_parts(rel)
+        if parts is None:
+            continue
+        try:
+            total += batch.joinpath(*parts).lstat().st_size
+        # ValueError as well as OSError: a name the validator somehow still admits must
+        # cost this ONE file, never the whole read. `os` raises ValueError, not OSError,
+        # for a name it cannot even pass to the kernel.
+        except (OSError, ValueError):
+            continue
+    try:
+        total += (batch / MANIFEST_NAME).lstat().st_size
+    except OSError:
+        pass
+    return total
+
+
+def _delete_listed_files(
+    batch: Path,
+    on_progress: EmptyProgress | None,
+    base_bytes: int,
+) -> tuple[int, str | None]:
+    """Delete one staged batch, reporting the bytes it freed.
+
+    Returns ``(bytes freed, skip code or None)``. A skip code means the batch is still
+    there and the caller must say so: reporting bytes alone left a batch that survived
+    looking exactly like an empty one - "0 bytes freed, success" - which is the silent
+    refusal this module's skip codes exist to remove.
+
+    The removal itself is ``shutil.rmtree``, deliberately. Hardening it against an
+    ancestor swapped mid-delete needs a descriptor walk, which is a security change
+    with its own reasoning and its own review - it is tracked separately rather than
+    folded into a progress fix. What this function adds over a bare ``rmtree`` is only
+    reporting: a byte figure that is measured rather than assumed, and a post-condition
+    that says whether the batch actually went away.
+
+    The bytes are read from the MANIFEST rather than by walking the tree, which is both
+    cheaper and safer: callers reach here only after :func:`_unlisted_files` has
+    confirmed the batch holds nothing the manifest omits, so the manifest's own sums
+    describe the whole batch, and no directory entry is ever consulted - on Windows a
+    junction is not a symlink, so ``os.walk`` descends into one and a walk-based
+    measurement would follow it outside the trash.
+
+    ``base_bytes`` is what earlier batches in the same call already freed, so the
+    number handed to ``on_progress`` is always the total for the whole operation and
+    never a figure that restarts per batch.
+    """
+    rels = _manifest_rels(batch)
+    before = _listed_bytes(batch, rels)
+    shutil.rmtree(batch, ignore_errors=True)
+    # Measured again, not assumed: `ignore_errors` means a locked or undeletable file
+    # leaves the batch standing while rmtree returns quietly. The up-front figure would
+    # then be reported as freed with the bytes still on disk, which is the same "told
+    # something that is not true about an irreversible operation" this screen exists to
+    # fix. What survived is subtracted instead.
+    freed = before - _listed_bytes(batch, rels)
+    if on_progress is not None:
+        on_progress(base_bytes + freed)
+    return freed, _incomplete_if_present(batch)
+
+
+def _incomplete_if_present(batch: Path) -> str | None:
+    """``SKIP_INCOMPLETE`` if the batch survived its own delete, else None.
+
+    The removal calls ``rmtree(ignore_errors=True)``, which reports nothing, so a tree
+    it could not
+    remove - a file held open by another process, a permission it does not have - left
+    the batch on screen while the job said it had succeeded. Whether the directory is
+    actually gone is the one question that distinguishes those, and it costs a stat.
+    """
+    try:
+        if batch.exists():
+            logger.warning("emptying %s did not remove it", batch.name)
+            return SKIP_INCOMPLETE
+    except OSError:
+        return SKIP_INCOMPLETE
+    return None
+
+
+def staged_targets(batch_ids: list[str] | None = None) -> tuple[list[str], int]:
+    """Which staged batches an empty would destroy, and what they hold.
+
+    Taken under the mutation lock, which is the whole point of it being here rather
+    than a list comprehension at the caller. ``move_to_trash`` holds that lock for
+    the length of a staging run, and :func:`list_trash` does not take it - so an
+    unlocked read can see a batch whose directory and manifest header exist while its
+    sessions are still being moved in. Selecting that id then makes the delete wait
+    for staging to finish and destroy the FINISHED batch, including sessions appended
+    after the user clicked. Under the lock a batch is either fully staged or not
+    visible, so the set returned is one a user could actually have seen.
+
+    Returns explicit ids even for "everything", because the caller must be able to
+    hand the worker a fixed set: ``empty_trash(None)`` re-enumerates when it runs,
+    which is later, and a staged batch is the only copy of its sessions.
+
+    The set is names, not object identities. A directory swapped into an approved name
+    during the handoff would be deleted on consent given for a different one; closing
+    that needs the batch to be re-checked against a descriptor at delete time, which
+    belongs with the descriptor-walk removal rather than in a progress fix, and is
+    tracked separately.
+    """
+    with _mutation_lock():
+        # Explicit ids go through the SAME resolver every other caller uses, before
+        # anything is filtered. Filtering alone silently dropped an id that is not a
+        # batch - a typo, or one already emptied - so the worker received an empty
+        # list and reported success for a delete the user asked for and did not get.
+        # This keeps the guard `empty_trash` has always applied through `_batch_dir`,
+        # which the filter had quietly taken over from.
+        for batch_id in batch_ids or []:
+            _batch_dir(batch_id)
+        wanted = None if batch_ids is None else set(batch_ids)
+        chosen = [batch for batch in list_trash() if wanted is None or batch.batch_id in wanted]
+        if wanted is not None:
+            # A well-formed id whose batch is not staged - already emptied, or never
+            # existed - passes `_batch_dir`, which does not require the directory to
+            # exist. Filtering it out silently turned "destroy this" into a zero-byte
+            # success. It is a refusal: the caller named something that is not there,
+            # and on the pre-snapshot path the batch would at least have reported an
+            # unreadable-batch skip once it reached the delete.
+            missing = wanted - {batch.batch_id for batch in chosen}
+            if missing:
+                raise SessionStorageError(
+                    f"{len(missing)} of the batches named are no longer staged"
+                )
+        return [batch.batch_id for batch in chosen], sum(batch.bytes for batch in chosen)
+
+
+def empty_trash(
+    batch_ids: list[str] | None = None,
+    on_progress: EmptyProgress | None = None,
+    on_skip: EmptySkip | None = None,
+) -> int:
+    """Delete staged batches for good; return the bytes freed.
+
+    Serialized against other mutations, so a batch cannot be destroyed while a
+    restore is mid-way through putting its files back.
+
+    ``on_progress`` is called with the running total of bytes freed and ``on_skip``
+    with a ``SKIP_*`` code for each batch kept rather than deleted, both from the
+    calling thread. They are advisory: a caller that passes neither gets exactly the
+    behaviour it always had, and nothing here waits on or trusts a callback.
+
+    ``on_skip`` exists because keeping a batch is a REFUSAL a person needs told.
+    Returning only the bytes freed made a batch that was deliberately kept
+    indistinguishable from an empty one — "0 bytes freed, success" — with the reason
+    reaching a log the user cannot read.
+    """
+    with _mutation_lock():
+        try:
+            return _empty_trash_locked(batch_ids, on_progress, on_skip)
+        finally:
+            invalidate_scan_cache()
+
+
+def _empty_trash_locked(
+    batch_ids: list[str] | None = None,
+    on_progress: EmptyProgress | None = None,
+    on_skip: EmptySkip | None = None,
+) -> int:
+    """Delete staged batches for real; return the bytes freed.
+
+    This is the only call here that destroys data, and the only one that changes
+    free space. Every path is resolved and confirmed to be inside the trash root
+    first, so a tampered manifest or a symlinked batch directory cannot direct the
+    delete outside it.
+    """
+
+    def _skipped(code: str) -> None:
+        if on_skip is not None:
+            on_skip(code)
+
+    try:
+        root = trash_root().resolve()
+    except OSError:
+        return 0
+    if batch_ids is None:
+        targets = [_batch_dir(b.batch_id) for b in list_trash()]
+    else:
+        targets = [_batch_dir(batch_id) for batch_id in batch_ids]
+
+    freed = 0
+    for target in targets:
+        try:
+            resolved = target.resolve()
+        except OSError:
+            continue
+        if resolved == root or not resolved.is_relative_to(root):
+            logger.warning("refusing to empty %s: outside the trash root", target)
+            _skipped(SKIP_OUTSIDE_ROOT)
+            continue
+        # A batch can hold files no manifest line mentions, left by an interruption
+        # between the move and the append. The user was never shown them — the
+        # batch may even list zero sessions — so "empty this batch" is not informed
+        # consent for destroying them, and they are the only copy.
+        try:
+            leftovers = _unlisted_files(resolved)
+        except SessionStorageError as exc:
+            # Skip, not abort: one unreadable batch must not make the whole trash
+            # un-emptyable. Skipping deletes nothing, which is the safe direction.
+            logger.warning("refusing to empty %s: %s", target.name, exc)
+            _skipped(SKIP_UNREADABLE)
+            continue
+        if leftovers:
+            logger.warning(
+                "refusing to empty %s: %d staged file(s) are absent from its "
+                "manifest, so this would delete the only copy",
+                target.name,
+                len(leftovers),
+            )
+            _skipped(SKIP_UNLISTED_FILES)
+            continue
+        deleted, skip = _delete_listed_files(resolved, on_progress, freed)
+        freed += deleted
+        if skip is not None:
+            _skipped(skip)
+    return freed

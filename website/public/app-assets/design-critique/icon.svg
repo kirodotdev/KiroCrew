@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+  <!-- Ruler / straightedge on one diagonal -->
+  <g transform="rotate(-45 12 12)">
+    <rect x="1.5" y="9.5" width="21" height="5" rx="1.2" fill="var(--ico-a, currentColor)" fill-opacity="0.16" stroke="var(--ico-a, currentColor)" stroke-width="1.4"/>
+    <line x1="5.5" y1="9.5" x2="5.5" y2="12" stroke="var(--ico-a, currentColor)" stroke-width="1.1"/>
+    <line x1="9" y1="9.5" x2="9" y2="12.6" stroke="var(--ico-a, currentColor)" stroke-width="1.1"/>
+    <line x1="12.5" y1="9.5" x2="12.5" y2="12" stroke="var(--ico-a, currentColor)" stroke-width="1.1"/>
+    <line x1="16" y1="9.5" x2="16" y2="12.6" stroke="var(--ico-a, currentColor)" stroke-width="1.1"/>
+    <line x1="19.5" y1="9.5" x2="19.5" y2="12" stroke="var(--ico-a, currentColor)" stroke-width="1.1"/>
+  </g>
+  <!-- Pencil on the crossing diagonal -->
+  <g transform="rotate(-45 12 12)">
+    <rect x="9.5" y="2.5" width="5" height="12" rx="1" fill="var(--ico-b, currentColor)" fill-opacity="0.3" stroke="var(--ico-b, currentColor)" stroke-width="1.4"/>
+    <line x1="9.5" y1="6" x2="14.5" y2="6" stroke="var(--ico-b, currentColor)" stroke-width="1.1"/>
+    <path d="M9.5,14.5 L12,19 L14.5,14.5 Z" fill="var(--ico-b, currentColor)" stroke="var(--ico-b, currentColor)" stroke-width="1.2" stroke-linejoin="round"/>
+  </g>
+</svg>

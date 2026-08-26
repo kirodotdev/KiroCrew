@@ -1,0 +1,1719 @@
+"""Auto-nudge service — reactive same-session self-prompting loop.
+
+Each active loop is bound to a dashboard chat slot. When the slot's turn
+completes (``HOOK_EVENT_STOP``), we arm a timer toward the loop's persistent
+deadline (``next_due_ts``). If the deadline elapses with no new user input,
+we inject the configured nudge message as the next turn into the same slot.
+
+The countdown is DEADLINE-PRESERVING: a user message cancels the pending fire
+(a nudge must never race a human turn) but does not push the deadline back —
+when the user's turn ends, the timer resumes toward the same ``next_due_ts``,
+firing shortly after the turn if the deadline already passed. Only the loop's
+own delivered cycles start a fresh full interval (measured from the nudge
+turn's end). Without this, a session chatted in more often than ``idle_secs``
+starves its loop forever: every message restarted the full interval, so a
+30-minute babysit loop in an active conversation never fired at all.
+
+State is persisted to ``~/.kiro/crew/autonudge.json`` (fcntl-locked, atomic
+write). On gateway restart, active loops are reloaded and timers re-armed.
+
+The browser observes the loop through the normal chat stream path — nudges
+appear as user-style messages tagged ``[auto-nudge cycle N]`` so they are
+visually distinct from human input.
+
+Feature-flagged via env ``KIROCREW_AUTONUDGE`` (on by default; set to ``0`` to disable).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import logging
+import math
+import os
+import tempfile
+import time
+import uuid
+from contextlib import asynccontextmanager, contextmanager
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any, AsyncIterator, Awaitable, Callable, Iterator
+
+from kiro_crew import platform_compat, shutdown_event
+from kiro_crew.atomic_write import replace_with_retry
+from kiro_crew.config.loader import config_dir, data_home
+from kiro_crew.config.paths import legacy_home
+from kiro_crew.security import is_sensitive_path
+
+logger = logging.getLogger(__name__)
+
+_NUDGES_FILE = "autonudge.json"
+_STORE_VERSION = 1
+_MIN_IDLE_SECS = 15
+_MAX_IDLE_SECS = 86400  # 24h
+# Re-arm delay after a skipped/failed fire so a busy slot or a transient fire
+# error can't silently orphan the loop. The delay escalates exponentially per
+# consecutive failure (base << streak) up to _REARM_MAX_BACKOFF_SECS, and is
+# always capped by the loop's idle_secs, so a permanently-wedged callback backs
+# off to a slow poll instead of hammering every base interval.
+_REARM_BACKOFF_SECS = 15
+_REARM_MAX_BACKOFF_SECS = 300  # 5m ceiling for the escalated re-arm delay
+_REARM_BACKOFF_MAX_SHIFT = 16  # clamp the 2**shift exponent
+
+# Re-arm delay when a loop's deadline has already passed while a user turn was
+# in flight. Small but non-zero: firing the instant the user's turn ends would
+# race their follow-up message; a short beat leaves room for notify_user_input
+# to cancel the pending fire again if they are still actively conversing.
+_OVERDUE_REARM_SECS = 10
+
+# Sentinel file per loop: creating it halts the loop on next cycle.
+STOP_SENTINEL = "STOP"
+
+# Persisted source category for a deliberate ``autonudge_stop`` directive.
+# The caller's free-form explanation is intentionally not stored: it is
+# model-authored text and the watchdog only needs the deterministic source.
+AUTONUDGE_STOP_REASON = "autonudge_stop"
+
+# Persisted reason for a loop stopped because one of its cycles could not obtain
+# tool approval. Named separately from the other bounds because its remedy is
+# different in kind: the cap and the budget are raised, this one needs an
+# authorization the loop cannot grant itself.
+APPROVAL_STALL_REASON = "approval_stalled"
+
+
+class NudgeAdmissionRefused(RuntimeError):
+    """The session authorized for an arm disappeared before its commit point."""
+
+
+_TERMINAL_BOUND_REASONS = frozenset({"cycle_cap", "runtime_budget", APPROVAL_STALL_REASON})
+
+# Namespaced session-key prefixes that identify messaging-channel sessions
+# (as opposed to bare dashboard chat-slot keys). Channel-bound loops have no
+# dashboard turn-lifecycle hooks (notify_turn_complete / notify_user_input),
+# so they run on a fixed interval instead of an idle timer: the timer re-arms
+# itself right after every delivered fire.
+#
+# This mirrors ``messaging.link.CHANNEL_SESSION_NAMESPACES``, spelled out here
+# rather than derived from it, for two independent reasons:
+#
+# 1. IMPORT WEIGHT. ``autonudge`` is imported at module scope by ``mcp_core``
+#    (i.e. by every MCP server process) and by the dashboard chat layer, and it
+#    depends only on config/security/platform_compat today. Naming
+#    ``kiro_crew.messaging.link`` runs ``messaging/__init__``, which pulls the
+#    driver/renderer/transport layer and, transitively, the ACP client, agent,
+#    hooks, artifacts, metrics and sqlite — measured at 48 additional
+#    ``kiro_crew`` modules to obtain one tuple of string literals.
+# 2. THIS IS A KEY-SHAPE QUESTION, NOT A LIVE-CAPABILITY ONE. ``is_channel_key``
+#    selects the RE-ARM STRATEGY and the expiry-notification metadata, so it has
+#    to answer identically whether or not the transport happens to be registered
+#    at this instant. Deriving it from a runtime ``supports_proactive_send``
+#    lookup fails toward the WRONG branch: a loop whose transport is momentarily
+#    absent would read as a dashboard slot, so ``_run_fire_cycle`` would stop
+#    self-re-arming it — and nothing else ever will, since
+#    ``notify_turn_complete`` never fires for a channel key — while the expiry
+#    notice would synthesize a ``dashboard:<namespace>:<id>`` jump link pointing
+#    at no slot.
+#
+# Membership therefore does NOT assert deliverability; it asserts "this key names
+# a conversation rather than a chat slot". Whether a nudge can actually be
+# delivered stays with the fail-closed ladder in ``dashboard/chat_runner.py``
+# (``_resolve_channel_target``: governance, then a REGISTERED transport, then
+# ``supports_proactive_send``), which logs its reason and degrades to a no-op.
+# So a namespace is listed even when nothing can currently be delivered to it,
+# and the two clearest cases are both here: ``whatsapp`` has no transport package
+# in this fork at all, and ``feishu`` ships one that declares
+# ``supports_proactive_send=False`` (its renderer only replies to an inbound
+# message id, so a nudge cycle has nowhere to put the answer). Both still classify
+# as channel keys, because the alternative is worse than a refusal: an unlisted key
+# is read as a dashboard slot and silently stops being re-armed, whereas a listed
+# one reaches the ladder and is refused with a logged reason. Being listed is
+# likewise not an arming permission — that is ``binding_key_for``, which is
+# narrower still and gated on an ownership check and a fire route.
+_CHANNEL_KEY_PREFIXES = (
+    "slack:",
+    "discord:",
+    "telegram:",
+    "wecom:",
+    "whatsapp:",
+    "webex:",
+    "teams:",
+    "weixin:",
+    "imessage:",
+    "feishu:",
+    "unified:",
+)
+
+
+def is_channel_key(key: str) -> bool:
+    """True when *key* names a messaging-channel session (``slack:<ts>``,
+    ``discord:{agent}:direct:{user}`` ...) rather than a dashboard chat slot.
+
+    A CLASSIFICATION, not a permission: see :data:`_CHANNEL_KEY_PREFIXES` for why
+    the set is spelled out, and why membership says nothing about whether a nudge
+    can be delivered. Callers asking "may this session be armed?" want
+    :func:`binding_key_for` instead.
+    """
+    return key.startswith(_CHANNEL_KEY_PREFIXES)
+
+
+def binding_key_for(session_key: str) -> str | None:
+    """Map a session key to its AutoNudge binding (slot) key, or ``None`` if the
+    session is not nudge-able.
+
+    ``dashboard:chat-N-TS`` → bare slot key ``chat-N-TS`` (the autonudge layer
+    keys dashboard loops on the bare slot key); ``slack:``/``discord:``/``webex:``
+    session keys pass through unchanged (channel-bound loops). Anything else
+    (``cron:``, ``hook:``, ``subagent:`` ...) is not a nudge-able session.
+
+    Single source of truth shared by the ``monitor_start`` MCP tool and the
+    workflow ``ctx.nudge`` port so both agree on what "nudge-able" means.
+
+    NARROWER THAN :data:`_CHANNEL_KEY_PREFIXES` ON PURPOSE, and for a different
+    reason than that tuple's own exclusions. ``is_channel_key`` classifies a key's
+    SHAPE; this function answers whether an arm request can be honoured, which
+    additionally requires an ownership check in ``autonudge_authz`` and a fire
+    route in the gateway's ``_fire`` dispatcher — implemented for ``slack:``,
+    ``discord:`` and ``webex:`` only. Passing a namespace through ahead of those two would
+    arm a loop that is denied at the chokepoint (or removed on its first fire
+    with "unsupported channel key"), which is strictly worse than refusing it
+    here: a clean "not supported from this session type" instead of a loop that
+    appears to exist and then dies. Widen this set only together with the
+    matching ownership check and fire route.
+    """
+    if not session_key:
+        return None
+    if session_key.startswith("dashboard:"):
+        return session_key.split(":", 1)[1]
+    if session_key.startswith(("slack:", "discord:", "webex:")):
+        return session_key
+    return None
+
+
+def enabled() -> bool:
+    """Feature flag — on by default. Set ``KIROCREW_AUTONUDGE=0`` to disable."""
+    return os.environ.get("KIROCREW_AUTONUDGE", "1").lower() not in ("0", "false", "no")
+
+
+def repair_sentinel_path(raw: str) -> str:
+    """Re-home a persisted ``stop_sentinel_path`` onto the CURRENT data home.
+
+    The kill-switch path is resolved once at arm time (``resolve_stop_sentinel``,
+    which builds it under ``workspace_dir_for(...)`` → normally
+    ``config_dir()/workspace``) and then persisted verbatim in the loop store.
+    That store survives the one-time ``~/.kirocrew`` → ``~/.kiro/crew`` data-home
+    migration (``config/paths.py``) and is re-armed on the next ``start()``, so a
+    loop armed BEFORE the move comes back pointing at a directory that no longer
+    exists. ``_timer`` only ever tests ``Path(stop_sentinel_path).exists()``, so
+    such a loop has a DEAD kill switch: a sentinel written at the freshly
+    resolved (current-home) path is never seen, and the only remaining stops are
+    ``max_cycles`` and an explicit remove.
+
+    Three transformations, in order:
+
+    1. **Pass through a path already under the CURRENT home.** Checked FIRST,
+       because ``KIROCREW_HOME`` may legally point *inside* the legacy root
+       (e.g. ``~/.kirocrew/dev``). Such a path is lexically under
+       ``~/.kirocrew`` yet already live and correct; re-homing it would produce
+       ``~/.kirocrew/dev/dev/workspace/…``, persist that, and — since the
+       rewrite is not idempotent — append another segment every boot, disabling
+       a WORKING kill switch with the very code meant to repair dead ones.
+    2. **Re-home a STRANDED legacy-rooted path.** A path under ``~/.kirocrew``
+       is rewritten onto the resolved current home. The migration relocated the
+       whole tree wholesale, so the tail after the home prefix is still correct.
+       Gated on the sentinel's directory no longer existing: an absolute
+       ``workspaces.<name>.dir`` may legitimately live inside that tree (and the
+       legacy root can survive as debris), and rewriting a live path would move
+       a working kill switch outside its configured workspace and persist that.
+       Skipped when the current home IS the legacy home (``KIROCREW_HOME``
+       pointing there, or the migration's fall-back-to-legacy path) — there the
+       persisted path is already live. Both sides are normalized LEXICALLY
+       (``os.path.normpath``, no filesystem access) before the containment
+       test, so an unnormalized value like ``~/.kirocrew/../workspace/STOP``
+       is not mistaken for a legacy-contained path and rewritten elsewhere.
+    3. **Re-apply the arm-time sensitivity refusal.** ``authorize_and_add_nudge``
+       refuses a sensitive ``stop_sentinel_path`` at arm time, but the denylist
+       can widen between releases and the persisted value outlives the original
+       check. A path that is sensitive NOW is dropped to ``""`` (no sentinel)
+       rather than kept, so the service never stats an attacker- or
+       credential-adjacent location on a timer. The check itself FAILS CLOSED:
+       if ``is_sensitive_path`` raises, the path is dropped rather than trusted,
+       because an unvalidated path is exactly what this step exists to reject.
+
+    Returns the (possibly rewritten) path, or ``""`` to mean "no sentinel".
+    Non-``str`` input (a malformed store where ``stop_sentinel_path`` is a
+    number or list) yields ``""`` instead of raising — this runs inside
+    ``_load()`` during ``start()``, so an exception here would abort gateway
+    startup entirely.
+
+    Deliberately does NOT require the path to live under the data home: an
+    absolute ``workspaces.<name>.dir`` is a legitimate configuration, and
+    clearing those would break working kill switches.
+
+    BLOCKING: performs no filesystem I/O itself, but ``is_sensitive_path``
+    resolves realpaths, which can block on an unavailable network mount.
+    ``start()`` therefore runs the whole load+repair phase in an executor.
+    """
+    if not isinstance(raw, str) or not raw.strip():
+        return ""
+    path = raw.strip()
+    try:
+        legacy = legacy_home()
+        current = config_dir()
+        candidate = Path(path).expanduser()
+        # Lexical normalization only — never touch the filesystem here.
+        norm_candidate = Path(os.path.normpath(str(candidate)))
+        norm_legacy = Path(os.path.normpath(str(legacy)))
+        norm_current = Path(os.path.normpath(str(current)))
+        if norm_candidate.is_relative_to(norm_current):
+            # Already live under the current home (including a nested
+            # KIROCREW_HOME inside the legacy root) — nothing to re-home.
+            pass
+        elif norm_current != norm_legacy and norm_candidate.is_relative_to(norm_legacy):
+            # Re-home ONLY when the legacy directory the sentinel lives in is
+            # gone. A path under ``~/.kirocrew`` is not necessarily a migration
+            # casualty: ``workspaces.<name>.dir`` may legitimately be configured
+            # as an absolute path inside that tree (and the legacy root can
+            # survive the migration as debris, which `kirocrew doctor` reports).
+            # Rewriting a still-existing directory's sentinel would move a
+            # WORKING kill switch outside its configured workspace and persist
+            # that. The migration deletes the tree it moved, so "parent no
+            # longer exists" is what distinguishes a stranded path from a live
+            # one. A dead path stays dead either way, so the existence probe
+            # only ever prevents damage.
+            if norm_candidate.parent.exists():
+                logger.debug(
+                    "AutoNudge: keeping legacy-rooted sentinel %s — its directory "
+                    "still exists, so it is a live configured path, not a "
+                    "migration leftover",
+                    path,
+                )
+            else:
+                rehomed = norm_current / norm_candidate.relative_to(norm_legacy)
+                logger.info(
+                    "AutoNudge: re-homed stop sentinel from legacy data home: %s → %s",
+                    path,
+                    rehomed,
+                )
+                path = str(rehomed)
+    except Exception:  # noqa: BLE001 - a repair failure must never block startup
+        logger.warning("AutoNudge: could not re-home sentinel %r", raw, exc_info=True)
+    try:
+        sensitive = is_sensitive_path(path)
+    except Exception:  # noqa: BLE001 - fail closed: unvalidated ⇒ untrusted
+        logger.warning(
+            "AutoNudge: sensitivity re-check failed for %r — dropping the sentinel",
+            path,
+            exc_info=True,
+        )
+        return ""
+    if sensitive:
+        logger.warning(
+            "AutoNudge: dropping stop sentinel %r — path is now sensitive; "
+            "the loop will be deactivated rather than left unstoppable by file",
+            path,
+        )
+        return ""
+    return path
+
+
+# Module-level singleton so hooks in chat.py / messaging.py can notify the
+# service without needing a reference to the gateway. Set by AutoNudgeService
+# on start(); cleared on stop().
+_INSTANCE: "AutoNudgeService | None" = None
+_MAINTENANCE_LOCKS: dict[tuple[asyncio.AbstractEventLoop, str], asyncio.Lock] = {}
+
+
+def _maintenance_lock(base_dir: Path) -> asyncio.Lock:
+    """Per-event-loop lock serializing store maintenance with service startup."""
+    loop = asyncio.get_running_loop()
+    path_key = os.path.normcase(os.path.abspath(str(base_dir)))
+    return _MAINTENANCE_LOCKS.setdefault((loop, path_key), asyncio.Lock())
+
+
+async def _cancel_and_drain_tasks(*tasks: asyncio.Task[Any]) -> bool:
+    """Cancel child tasks without letting repeated cancellation abort cleanup."""
+    for task in tasks:
+        task.cancel()
+    drain = asyncio.ensure_future(asyncio.gather(*tasks, return_exceptions=True))
+    interrupted = False
+    while not drain.done():
+        try:
+            await asyncio.shield(drain)
+        except asyncio.CancelledError:
+            interrupted = True
+    drain.result()
+    return interrupted
+
+
+def get_instance() -> "AutoNudgeService | None":
+    return _INSTANCE
+
+
+def _current_task_or_none() -> "asyncio.Task[Any] | None":
+    """:func:`asyncio.current_task`, or ``None`` when no loop is running.
+
+    ``current_task`` raises ``RuntimeError: no running event loop`` outside a loop, and
+    ``stop()`` is reached from SYNCHRONOUS callers — the gateway's shutdown path and test
+    teardown — where nothing is running. There, no task can be "the current" one, which is
+    the answer this returns rather than an exception the caller would have to know about.
+    """
+    try:
+        return asyncio.current_task()
+    except RuntimeError:
+        return None
+
+
+@dataclass
+class NudgeLoop:
+    """A single auto-nudge loop bound to one session.
+
+    ``slot_key`` is the binding key: either a bare dashboard chat-slot key
+    (e.g. ``chat-1-1721...``, idle-timer driven via notify_turn_complete) or a
+    namespaced messaging-channel session key (e.g. ``slack:<thread_ts>``,
+    ``discord:{agent}:direct:{user_id}``), which runs on a fixed interval.
+    The field keeps its historical name for store/REST/WS compatibility.
+    """
+
+    id: str
+    slot_key: str
+    message: str
+    idle_secs: int = 60
+    max_cycles: int = 0  # 0 = unlimited
+    cycle_count: int = 0
+    active: bool = True
+    last_fire_ts: float = 0.0
+    created_ts: float = 0.0
+    stop_sentinel_path: str = ""  # optional absolute path; if present loop halts
+    # Wall-clock budget in seconds, measured from ``created_ts`` (0 = unlimited).
+    # A cycle cap alone cannot bound COST: a loop whose turns are slow or whose
+    # idle gap is long can run for days within its cycle budget. Anchoring on
+    # the persisted ``created_ts`` (not arm time) makes the budget restart-proof
+    # — a gateway restart re-arms the loop but never resets its clock.
+    max_runtime_secs: int = 0
+    # WHY the loop was last deactivated: "" (active / never stopped),
+    # "manual" (user pause / any caller that didn't say otherwise),
+    # "autonudge_stop" (deliberate directive), "cycle_cap",
+    # "runtime_budget", or "approval_stalled" (set by _timer's terminal
+    # bounds).
+    # Persisted so revival logic can distinguish a manual pause from a bound
+    # expiry — elapsed wall-clock keeps growing after a manual pause, so
+    # WITHOUT this record a paused loop whose budget has since elapsed is
+    # indistinguishable from a budget-stopped one, and a budget raise would
+    # resume unattended execution against the user's explicit pause.
+    stopped_reason: str = ""
+    # Evidence that a cycle in this loop's session asked for tool approval and
+    # nobody answered within the window. Set by ``notify_approval_stalled`` and
+    # consumed by ``_timer`` as a terminal condition on the NEXT wake, which is
+    # the whole point: the loop stops on proof that it could not act, never on a
+    # prediction that it might not be able to. A loop whose turns only touch
+    # auto-approved tools never reaches an interactive wait, so it can never be
+    # flagged here — that is what keeps a working read-only loop running instead
+    # of needing a "does this loop need approval?" guess.
+    # Persisted, because the condition that produced it (a lapsed grant) usually
+    # outlives a restart; cleared on every revival so a re-granted loop is not
+    # stopped by stale evidence.
+    approval_stalled: bool = False
+    # Absolute wall-clock deadline for the next fire (0 = unset: the next arm
+    # starts a fresh full countdown). This is what makes the countdown
+    # deadline-preserving — user turns cancel the pending timer TASK but never
+    # touch this field, so the schedule survives an active conversation.
+    # Cleared on every delivered fire (the next cycle is measured from the
+    # nudge turn's END, whose timestamp is only known at notify_turn_complete).
+    # Every assignment is persisted: add/update/fire bookkeeping write it
+    # inline, and turn-lifecycle arms schedule a supervised background write,
+    # so a restart resumes the countdown. A lost background write degrades to
+    # a fresh full countdown after restart, never a lost or premature fire.
+    next_due_ts: float = 0.0
+
+
+def _repair_number(
+    value: Any, *, lo: float, fallback: float, hi: float | None = None
+) -> tuple[float, bool]:
+    """Coerce a persisted numeric field to a FINITE value within [lo, hi].
+
+    Returns ``(repaired_value, was_repaired)``. Non-numeric, non-finite
+    (``1e309`` parses to ``inf``, which json.dump would emit as invalid
+    ``Infinity``), and out-of-range inputs all repair rather than raise, so a
+    corrupt store entry can never abort gateway startup or poison the JSON
+    the REST/WS surface emits.
+    """
+    try:
+        num = float(value)
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: JSON integers are arbitrary-precision, so a persisted
+        # 10**400 converts to float by raising rather than returning inf —
+        # without this arm the error would escape to _load()'s per-entry
+        # handler, which SKIPS the loop and lets the next persist delete it.
+        return fallback, True
+    if math.isnan(num) or math.isinf(num):
+        return fallback, True
+    clamped = max(lo, num) if hi is None else max(lo, min(hi, num))
+    return clamped, clamped != num
+
+
+def runtime_budget_exceeded(loop: "NudgeLoop", now: float | None = None) -> bool:
+    """True when *loop* has a wall-clock budget and it is spent.
+
+    Single source of truth shared by ``_timer`` (enforcement) and the expiry
+    notifier (wording), so the two can never disagree on WHY a loop stopped.
+    A loop with no ``created_ts`` (a malformed/legacy store entry) never
+    trips the budget — there is no anchor to measure from, and guessing one
+    could kill a healthy loop on its first cycle after an upgrade.
+    """
+    if not loop.max_runtime_secs or not loop.created_ts:
+        return False
+    return (now if now is not None else time.time()) - loop.created_ts >= loop.max_runtime_secs
+
+
+@contextmanager
+def _locked_file(path: Path, mode: str) -> Iterator[Any]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if "r" in mode and not path.exists():
+        path.write_text(json.dumps({"version": _STORE_VERSION, "loops": []}))
+    # "r" -> "r+": Windows msvcrt.locking requires WRITE access on the fd — a
+    # read-only handle fails with EACCES, which platform_compat.file_lock
+    # swallows (best-effort), silently degrading the reader's lock to a no-op
+    # and letting a concurrent _save race the read (same fix as
+    # apps/bridges.py:_mcp_lock). The shared/exclusive decision keys off the
+    # ORIGINAL mode so a reader still requests a shared lock.
+    exclusive = "w" in mode or "+" in mode
+    if mode == "r":
+        mode = "r+"
+    with open(path, mode, encoding="utf-8") as fh:
+        with platform_compat.file_lock(fh.fileno(), exclusive=exclusive):
+            yield fh
+
+
+class AutoNudgeService:
+    """Manages reactive per-slot nudge loops with restart-survival."""
+
+    def __init__(
+        self,
+        base_dir: Path | None = None,
+        on_fire: Callable[[NudgeLoop], Awaitable[bool]] | None = None,
+    ) -> None:
+        self._base_dir = base_dir or config_dir()
+        self._path = self._base_dir / _NUDGES_FILE
+        self._on_fire = on_fire
+        self._loops: dict[str, NudgeLoop] = {}
+        self._timers: dict[str, asyncio.Task] = {}
+        # Loop ids whose re-arm was requested while their fire window was open.
+        # Applied when the window closes (see _timer): a dashboard turn can
+        # complete while the firing task is still persisting, and honouring the
+        # hook immediately would cancel that task mid-persist.
+        self._rearm_pending: set[str] = set()
+        # Loop ids removed from memory whose durable state write has not yet
+        # succeeded. A caller may retry remove(id) after the first write fails;
+        # an arbitrary unknown id remains a no-op.
+        self._pending_removals: set[str] = set()
+        # Loop ids whose timer task is CURRENTLY inside its ``_on_fire`` await.
+        # ``update()`` must not cancel such a timer: for channel-bound loops the
+        # fire callback runs the unattended turn INLINE, so cancelling it kills
+        # the in-flight turn and loses its transcript and cycle bookkeeping.
+        self._firing: set[str] = set()
+        # Loop ids owned by an administrative cleanup. Public mutations on the
+        # same firing loop must not wait for the maintenance mutex: the cleanup
+        # is waiting for that timer to finish, so waiting would invert the lock.
+        # They instead observe a missing/no-op mutation while cleanup retains
+        # the durable row until the dependent worker has been archived.
+        self._maintenance_quiescing: set[str] = set()
+        self._maintenance_quiesce_events: dict[str, asyncio.Event] = {}
+        # Set by _load() when a persisted loop was repaired in memory (currently
+        # a re-homed/dropped stop_sentinel_path) so start() can flush the
+        # correction back to disk ONCE instead of re-deriving it every boot.
+        self._store_dirty = False
+        # Consecutive non-delivery count per loop (drives escalating re-arm
+        # backoff + once-per-streak failure logging). Not persisted; resets on
+        # a delivered fire, on removal, and on restart.
+        self._rearm_fail_count: dict[str, int] = {}
+        # Strong refs to in-flight shielded add() tasks: keeps a detached
+        # mutation supervised (no GC, failures logged) even when every awaiting
+        # caller was cancelled. Discarded on completion.
+        self._inflight_adds: set = set()
+        self._observers: list[Callable[[str, NudgeLoop | None], None]] = []
+        self._lock = asyncio.Lock()
+
+    # ── Persistence ──
+
+    def _load(self) -> None:
+        """Read the store and repair each entry. BLOCKING — see ``start()``.
+
+        Does file I/O (locked read) and, via ``repair_sentinel_path``, realpath
+        resolution that can stall on an unavailable network mount, so callers on
+        the event loop MUST offload this (``no-blocking-call-on-event-loop``).
+        """
+        with _locked_file(self._path, "r") as fh:
+            data = json.load(fh)
+        for raw in data.get("loops", []):
+            try:
+                loop = NudgeLoop(**{k: raw[k] for k in raw if k in NudgeLoop.__dataclass_fields__})
+                # Re-home / re-validate the persisted kill-switch path. A loop
+                # armed before the data-home move would otherwise be re-armed
+                # with a sentinel path nothing can ever create (see
+                # repair_sentinel_path). INSIDE the per-entry try: a malformed
+                # store entry must be skipped, never abort start() and take the
+                # gateway offline.
+                repaired = repair_sentinel_path(loop.stop_sentinel_path)
+                # Same fail-open posture for the numeric timer fields: they
+                # drive arithmetic at arm time (``start()`` →
+                # ``_arm_from_deadline``) and are emitted as JSON by the
+                # REST/WS surface, so both must be finite and in range. A
+                # hand-edited or foreign-written store degrades per-field —
+                # never a startup abort (TypeError on a string interval) and
+                # never non-standard JSON output (a 1e309 deadline parses to
+                # ``inf``, which json.dump emits as invalid ``Infinity``).
+                loop.next_due_ts, due_repaired = _repair_number(
+                    loop.next_due_ts, lo=0.0, fallback=0.0
+                )
+                idle_num, idle_repaired = _repair_number(
+                    loop.idle_secs,
+                    lo=float(_MIN_IDLE_SECS),
+                    hi=float(_MAX_IDLE_SECS),
+                    fallback=float(_MIN_IDLE_SECS),
+                )
+                loop.idle_secs = int(idle_num)
+                if due_repaired or idle_repaired:
+                    self._store_dirty = True
+            except Exception:
+                logger.warning("AutoNudge: skipping malformed loop entry: %r", raw, exc_info=True)
+                continue
+            self._loops[loop.id] = loop
+            if repaired != loop.stop_sentinel_path:
+                dropped = bool(loop.stop_sentinel_path) and not repaired
+                loop.stop_sentinel_path = repaired
+                if dropped:
+                    # FAIL CLOSED, matching the arm-time contract:
+                    # authorize_and_add_nudge REFUSES to arm a loop whose
+                    # sentinel is sensitive, so a persisted loop whose sentinel
+                    # has become sensitive must not be re-armed with no kill
+                    # switch at all. Deactivating leaves it inspectable and
+                    # restartable rather than silently unstoppable-by-file.
+                    logger.warning(
+                        "AutoNudge: deactivating loop %s — its stop sentinel was dropped",
+                        loop.id,
+                    )
+                    loop.active = False
+                self._store_dirty = True
+        logger.info("AutoNudge: loaded %d loops", len(self._loops))
+
+    @classmethod
+    async def load_for_maintenance(cls, base_dir: Path | None = None) -> "AutoNudgeService":
+        """Load the durable store without arming timers or publishing a singleton.
+
+        Administrative cleanup still needs to see old loops when AutoNudge is
+        disabled.  Reusing the service's locked parser keeps that recovery on
+        the same schema and persistence protocol as normal startup, while the
+        absence of ``start()`` guarantees that reading the store cannot fire a
+        loop as a side effect.
+        """
+        service = cls(base_dir=base_dir)
+        await asyncio.get_running_loop().run_in_executor(None, service._load)
+        return service
+
+    @classmethod
+    @asynccontextmanager
+    async def maintenance_service(
+        cls, base_dir: Path | None = None
+    ) -> AsyncIterator["_AutoNudgeMaintenanceView"]:
+        """Yield one authoritative store view, serialized with startup and peers."""
+        selected_dir = base_dir or data_home()
+        async with _maintenance_lock(selected_dir):
+            live = _INSTANCE
+            if live is not None and live._base_dir == selected_dir:
+                view = _AutoNudgeMaintenanceView(live)
+                try:
+                    yield view
+                finally:
+                    view._release()
+                return
+            offline = await cls.load_for_maintenance(base_dir=selected_dir)
+            view = _AutoNudgeMaintenanceView(offline)
+            try:
+                yield view
+            finally:
+                view._release()
+
+    def _serialize_state(self) -> dict:
+        """Snapshot the store payload ON THE CALLER'S THREAD.
+
+        Loop state is mutated only under the service lock on the event loop, so
+        the serialization must happen there too — a worker thread iterating
+        ``self._loops`` concurrently with a mutation would race. The returned
+        payload is immutable-by-convention and safe to hand to an executor.
+        """
+        return {
+            "version": _STORE_VERSION,
+            "loops": [asdict(lp) for lp in self._loops.values()],
+        }
+
+    def _write_state(self, payload: dict) -> None:
+        # Atomic write: serialize to a temp file in the same dir, fsync, then
+        # replace onto the target path. Eliminates the truncate-before-
+        # flock race that plain open(path, "w") has — readers always see either
+        # the old complete file or the new complete file, never a partial one.
+        # The rename goes through replace_with_retry because on Windows it can
+        # fail with PermissionError while another handle is transiently open on
+        # the fresh temp file (indexer / AV), which loses the write (issue #1105).
+        # Blocking (fsync) — async callers offload this to an executor.
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(dir=self._path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, indent=2)
+                fh.flush()
+                os.fsync(fh.fileno())
+            replace_with_retry(tmp_path, self._path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+            raise
+
+    def _save(self) -> None:
+        self._write_state(self._serialize_state())
+
+    # ── Observer hook (for WS broadcasts) ──
+
+    def subscribe(self, cb: Callable[[str, NudgeLoop | None], None]) -> None:
+        self._observers.append(cb)
+
+    def _emit(self, event: str, loop: NudgeLoop | None) -> None:
+        for cb in self._observers:
+            try:
+                cb(event, loop)
+            except Exception:
+                logger.warning("AutoNudge observer failed", exc_info=True)
+
+    # ── Lifecycle ──
+
+    async def start(self) -> None:
+        if not enabled():
+            logger.info("AutoNudge disabled (KIROCREW_AUTONUDGE not set)")
+            return
+        # This lock spans load, repair, timer arming and singleton publication.
+        # Disabled-mode maintenance that got here first finishes its whole
+        # read/modify/write transaction before startup loads; maintenance that
+        # arrives later sees this live service rather than a stale private copy.
+        async with _maintenance_lock(self._base_dir):
+            # Load + repair OFF the event loop: the locked read is file I/O and
+            # repair_sentinel_path's sensitivity check resolves realpaths.
+            await asyncio.get_running_loop().run_in_executor(None, self._load)
+            if self._store_dirty:
+                try:
+                    await self._persist_locked()
+                    self._store_dirty = False
+                except Exception:  # noqa: BLE001 - in-memory repair still applies
+                    logger.warning("AutoNudge: could not persist sentinel repair", exc_info=True)
+            for loop in self._loops.values():
+                if loop.active:
+                    self._arm_from_deadline(loop)
+            global _INSTANCE
+            _INSTANCE = self
+        logger.info("AutoNudge started")
+
+    def stop(self) -> None:
+        # Through _cancel_timer, not a bare t.cancel() loop: shutdown is the likeliest
+        # moment for a timer's loop to be closing already, and one cancellation policy
+        # means this path inherits both of its guards instead of restating neither.
+        # It pops as it goes, so iterate over a snapshot of the keys.
+        for loop_id in list(self._timers):
+            self._cancel_timer(loop_id)
+        self._timers.clear()
+        self._maintenance_quiescing.clear()
+        self._maintenance_quiesce_events.clear()
+        global _INSTANCE
+        if _INSTANCE is self:
+            _INSTANCE = None
+
+    # ── Loop CRUD ──
+
+    def _begin_maintenance_quiesce(self, loop_id: str) -> None:
+        self._maintenance_quiescing.add(loop_id)
+        self._maintenance_quiesce_events.setdefault(loop_id, asyncio.Event()).set()
+
+    def _end_maintenance_quiesce(self, loop_id: str) -> None:
+        self._maintenance_quiescing.discard(loop_id)
+        self._maintenance_quiesce_events.pop(loop_id, None)
+
+    async def _acquire_mutation_lock(self, loop_id: str) -> asyncio.Lock | None:
+        """Acquire the store mutex unless cleanup claims this loop first."""
+        if loop_id in self._maintenance_quiescing:
+            return None
+        lock = _maintenance_lock(self._base_dir)
+        event = self._maintenance_quiesce_events.setdefault(loop_id, asyncio.Event())
+        acquire_task = asyncio.create_task(lock.acquire())
+        quiesce_task = asyncio.create_task(event.wait())
+        try:
+            done, _pending = await asyncio.wait(
+                {acquire_task, quiesce_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+        except BaseException:
+            await _cancel_and_drain_tasks(acquire_task, quiesce_task)
+            if acquire_task.done() and not acquire_task.cancelled():
+                lock.release()
+            raise
+        if acquire_task in done:
+            interrupted = await _cancel_and_drain_tasks(quiesce_task)
+            if interrupted:
+                lock.release()
+                raise asyncio.CancelledError()
+            if loop_id not in self._maintenance_quiescing:
+                return lock
+            lock.release()
+            return None
+        interrupted = await _cancel_and_drain_tasks(acquire_task)
+        if acquire_task.done() and not acquire_task.cancelled():
+            lock.release()
+        if interrupted:
+            raise asyncio.CancelledError()
+        return None
+
+    async def add(
+        self,
+        slot_key: str,
+        message: str,
+        idle_secs: int = 60,
+        max_cycles: int = 0,
+        stop_sentinel_path: str = "",
+        max_runtime_secs: int = 0,
+        admission_check: Callable[[], bool] | None = None,
+    ) -> NudgeLoop:
+        # CANCELLATION SAFETY: the mutate+persist runs as a SHIELDED task. If
+        # the awaiting caller is cancelled mid-write, a bare await would release
+        # ``_lock`` while the executor write is still running — a subsequent
+        # add/update could persist newer state first and then be clobbered by
+        # this operation's stale snapshot (lost update after restart). Shielding
+        # keeps the inner task (and the lock) alive until the write completes,
+        # so writes remain strictly serialized; the cancelled caller still sees
+        # CancelledError, with the arm possibly landed (same "mutation may have
+        # already landed" semantics as other cancellation-uncertain mutations).
+        # The inner task is retained in ``_inflight_adds`` (discarded when done)
+        # so it stays SUPERVISED — strongly referenced and completion-logged —
+        # even if every awaiting caller has been cancelled.
+        inner: "asyncio.Task[NudgeLoop]" = asyncio.ensure_future(
+            self._add_locked(
+                slot_key,
+                message,
+                idle_secs=idle_secs,
+                max_cycles=max_cycles,
+                stop_sentinel_path=stop_sentinel_path,
+                max_runtime_secs=max_runtime_secs,
+                admission_check=admission_check,
+            )
+        )
+        self._inflight_adds.add(inner)
+
+        def _finish(t: "asyncio.Task[NudgeLoop]") -> None:
+            self._inflight_adds.discard(t)
+            if not t.cancelled() and t.exception() is not None:
+                logger.warning("AutoNudge: detached add() failed", exc_info=t.exception())
+
+        inner.add_done_callback(_finish)
+        return await asyncio.shield(inner)
+
+    async def _add_locked(
+        self,
+        slot_key: str,
+        message: str,
+        *,
+        idle_secs: int,
+        max_cycles: int,
+        stop_sentinel_path: str,
+        max_runtime_secs: int = 0,
+        admission_check: Callable[[], bool] | None = None,
+    ) -> NudgeLoop:
+        async with _maintenance_lock(self._base_dir):
+            return await self._add_unserialized(
+                slot_key,
+                message,
+                idle_secs=idle_secs,
+                max_cycles=max_cycles,
+                stop_sentinel_path=stop_sentinel_path,
+                max_runtime_secs=max_runtime_secs,
+                admission_check=admission_check,
+            )
+
+    async def _add_unserialized(
+        self,
+        slot_key: str,
+        message: str,
+        *,
+        idle_secs: int,
+        max_cycles: int,
+        stop_sentinel_path: str,
+        max_runtime_secs: int = 0,
+        admission_check: Callable[[], bool] | None = None,
+    ) -> NudgeLoop:
+        idle_secs = max(_MIN_IDLE_SECS, min(_MAX_IDLE_SECS, int(idle_secs)))
+        async with self._lock:
+            if admission_check is not None and not admission_check():
+                raise NudgeAdmissionRefused("session changed before nudge arm committed")
+            # One loop per slot — replace any existing loop on this slot.
+            # persist=False: the offloaded write below persists the combined
+            # removal+add atomically, avoiding a duplicate blocking save here.
+            existing = self._find_by_slot(slot_key)
+            if existing:
+                self.remove_sync(existing.id, persist=False, emit=False)
+            now = time.time()
+            loop = NudgeLoop(
+                id=uuid.uuid4().hex[:8],
+                slot_key=slot_key,
+                message=message,
+                idle_secs=idle_secs,
+                max_cycles=max(0, int(max_cycles)),
+                created_ts=now,
+                stop_sentinel_path=stop_sentinel_path,
+                max_runtime_secs=max(0, int(max_runtime_secs)),
+                # Anchor the first deadline at arm time (set BEFORE the
+                # snapshot below so it persists): the countdown starts the
+                # moment the loop is armed, and user turns from here on only
+                # defer delivery, never restart it.
+                next_due_ts=now + idle_secs,
+            )
+            self._loops[loop.id] = loop
+            # Persist WITHOUT blocking the event loop (no-blocking-call rule:
+            # _write_state fsyncs, and a wedged disk must not freeze the
+            # gateway). Snapshot under the lock (mutation safety), write on a
+            # worker thread, and await it so a persistence failure still
+            # propagates to the caller before the loop is reported armed.
+            payload = self._serialize_state()
+            try:
+                await asyncio.get_running_loop().run_in_executor(None, self._write_state, payload)
+            except BaseException:
+                self._loops.pop(loop.id, None)
+                if existing is not None:
+                    self._loops[existing.id] = existing
+                    if existing.active:
+                        self._arm_from_deadline(existing)
+                raise
+            self._arm_from_deadline(loop)
+            if existing is not None:
+                self._emit("removed", existing)
+        self._emit("added", loop)
+        logger.info("AutoNudge: added loop %s on slot %s (idle=%ds)", loop.id, slot_key, idle_secs)
+        return loop
+
+    async def _persist_locked(self) -> None:
+        """Snapshot under the service lock and write on a worker thread.
+
+        The SINGLE async persistence path for post-arm mutations. Two properties
+        matter and both were violated before:
+
+        * **Serialization.** Every writer must snapshot while holding
+          ``_lock``; otherwise a writer that snapshots, releases, and then
+          writes can land a STALE payload on top of a newer one (e.g. a
+          concurrent ``update()`` overwriting the post-fire ``cycle_count`` /
+          ``active`` bookkeeping, which then resurrects obsolete state after a
+          restart).
+        * **Non-blocking.** ``_write_state`` fsyncs, so it must never run on the
+          event loop.
+        """
+        async with self._lock:
+            payload = self._serialize_state()
+            await asyncio.get_running_loop().run_in_executor(None, self._write_state, payload)
+
+    async def update(
+        self,
+        loop_id: str,
+        *,
+        message: str | None = None,
+        idle_secs: int | None = None,
+        max_cycles: int | None = None,
+        active: bool | None = None,
+        max_runtime_secs: int | None = None,
+        stopped_reason: str | None = None,
+    ) -> NudgeLoop | None:
+        # CANCELLATION SAFETY: same contract as add(). The mutate+persist runs
+        # as a SHIELDED, supervised task so a caller cancelled mid-write cannot
+        # release ``_lock`` while the executor write is still in flight — which
+        # would let a later write land first and then be clobbered by this
+        # operation's stale snapshot (lost update after restart).
+        inner: "asyncio.Task[NudgeLoop | None]" = asyncio.ensure_future(
+            self._update_locked(
+                loop_id,
+                message=message,
+                idle_secs=idle_secs,
+                max_cycles=max_cycles,
+                active=active,
+                max_runtime_secs=max_runtime_secs,
+                stopped_reason=stopped_reason,
+            )
+        )
+        self._inflight_adds.add(inner)
+
+        def _finish(t: "asyncio.Task[NudgeLoop | None]") -> None:
+            self._inflight_adds.discard(t)
+            if not t.cancelled() and t.exception() is not None:
+                logger.warning("AutoNudge: detached update() failed", exc_info=t.exception())
+
+        inner.add_done_callback(_finish)
+        return await asyncio.shield(inner)
+
+    async def deactivate_and_wait(self, loop_id: str) -> bool:
+        """Persistently pause a loop and wait for its current timer to quiesce.
+
+        ``update(active=False)`` deliberately does not cancel a timer already
+        inside its fire callback because channel turns run inline there.  A
+        cleanup caller has a different need: it must know that a dashboard fire
+        can no longer materialize a slot after the caller takes its snapshot.
+        The loop remains durably present and inactive until the caller removes
+        it, so a timeout or process exit leaves a restart-visible recovery
+        marker instead of losing the orphan's only identity.
+        """
+        timer_before = self._timers.get(loop_id)
+        loop = await self.update(loop_id, active=False)
+        if loop is None:
+            return False
+        # A turn-complete notification can replace the timer while update()
+        # waits to acquire and persist the inactive state. Once update returns,
+        # active=False prevents any further replacement, so both tasks close
+        # the final slot-publication window.
+        timer_after = self._timers.get(loop_id)
+        current = asyncio.current_task()
+        for timer in {timer_before, timer_after}:
+            if timer is not None and timer is not current and not timer.done():
+                await asyncio.shield(timer)
+        return True
+
+    async def _deactivate_and_wait_unserialized(self, loop_id: str) -> bool:
+        """Quiesce a loop while the caller owns the maintenance transaction."""
+        self._begin_maintenance_quiesce(loop_id)
+        timer_before = self._timers.get(loop_id)
+        inner = asyncio.create_task(self._update_unserialized(loop_id, active=False))
+        try:
+            loop = await asyncio.shield(inner)
+        except asyncio.CancelledError:
+            # maintenance_service() must not release its transaction while the
+            # executor-backed write can still commit a stale snapshot.
+            while not inner.done():
+                try:
+                    await asyncio.shield(inner)
+                except asyncio.CancelledError:
+                    continue
+            inner.result()
+            raise
+        if loop is None:
+            return False
+        timer_after = self._timers.get(loop_id)
+        current = asyncio.current_task()
+        for timer in {timer_before, timer_after}:
+            if timer is not None and timer is not current and not timer.done():
+                await asyncio.shield(timer)
+        return True
+
+    async def _update_locked(
+        self,
+        loop_id: str,
+        *,
+        message: str | None = None,
+        idle_secs: int | None = None,
+        max_cycles: int | None = None,
+        active: bool | None = None,
+        max_runtime_secs: int | None = None,
+        stopped_reason: str | None = None,
+    ) -> NudgeLoop | None:
+        lock = await self._acquire_mutation_lock(loop_id)
+        if lock is None:
+            return None
+        try:
+            return await self._update_unserialized(
+                loop_id,
+                message=message,
+                idle_secs=idle_secs,
+                max_cycles=max_cycles,
+                active=active,
+                max_runtime_secs=max_runtime_secs,
+                stopped_reason=stopped_reason,
+            )
+        finally:
+            lock.release()
+
+    async def _update_unserialized(
+        self,
+        loop_id: str,
+        *,
+        message: str | None = None,
+        idle_secs: int | None = None,
+        max_cycles: int | None = None,
+        active: bool | None = None,
+        max_runtime_secs: int | None = None,
+        stopped_reason: str | None = None,
+    ) -> NudgeLoop | None:
+        async with self._lock:
+            loop = self._loops.get(loop_id)
+            if not loop:
+                return None
+            previous = asdict(loop)
+            was_active = loop.active
+            if message is not None:
+                loop.message = message
+            interval_changed = False
+            if idle_secs is not None:
+                new_idle = max(_MIN_IDLE_SECS, min(_MAX_IDLE_SECS, int(idle_secs)))
+                interval_changed = new_idle != loop.idle_secs
+                loop.idle_secs = new_idle
+            if max_cycles is not None:
+                loop.max_cycles = max(0, int(max_cycles))
+            if max_runtime_secs is not None:
+                loop.max_runtime_secs = max(0, int(max_runtime_secs))
+            if active is not None:
+                # TERMINAL-TRANSITION ATOMICITY: a bound-tagged deactivation
+                # (stopped_reason supplied — the _timer's cycle_cap /
+                # runtime_budget paths) must never OVERWRITE a deactivation
+                # that landed first. The race: user pauses right after the
+                # timer detects expiry — the pause persists "manual" and
+                # cancels the timer, but the timer's already-inflight shielded
+                # update would stamp "runtime_budget" over it, making the loop
+                # budget-revivable against an explicit pause. Both transitions
+                # serialize on _lock, so re-checking here closes the race: the
+                # bound's deactivation degrades to a no-op when the loop is
+                # already inactive. The reverse order is already safe — a
+                # manual pause overwriting a bound tag only ever NARROWS
+                # revivability ("manual" never auto-revives).
+                if (
+                    not active
+                    and stopped_reason is None
+                    and loop.stopped_reason == AUTONUDGE_STOP_REASON
+                ):
+                    # A reasonless repeat of an already-inactive state is not a
+                    # new stop transition. Preserve source-owned completion
+                    # evidence until its Research Lab watchdog consumes it;
+                    # dashboard retries and unrelated patches must not turn a
+                    # deliberate stop into a revivable manual pause.
+                    logger.info(
+                        "AutoNudge: loop %s retains its source stop reason on "
+                        "reasonless inactive update",
+                        loop.id,
+                    )
+                elif stopped_reason in _TERMINAL_BOUND_REASONS and not active and not loop.active:
+                    logger.info(
+                        "AutoNudge: loop %s already deactivated (%s) — %s bound "
+                        "not overwriting it",
+                        loop.id,
+                        loop.stopped_reason or "manual",
+                        stopped_reason,
+                    )
+                else:
+                    loop.active = bool(active)
+                    # Record WHY on every deactivation and clear it on every
+                    # revival, so the store always reflects the LAST transition.
+                    # ``stopped_reason`` is an internal caller parameter (_timer's
+                    # terminal bounds pass "cycle_cap"/"runtime_budget"); external
+                    # deactivations (REST pause, deactivate-mid-fire) default to
+                    # "manual", which the revive logic never auto-resumes.
+                    if loop.active:
+                        loop.stopped_reason = ""
+                        # Spent only by an actual REVIVAL, hence ``not
+                        # was_active``. A still-active loop also receives
+                        # ``active=True`` from an ordinary settings save (the
+                        # goal popover sends it on every edit), and treating
+                        # that as an answer would erase evidence recorded
+                        # moments earlier and let one more doomed cycle fire.
+                        # Keeping it costs at most a resumable stop the operator
+                        # can undo; dropping it costs a wasted cycle and the
+                        # silence this stop exists to end.
+                        if not was_active:
+                            loop.approval_stalled = False
+                    else:
+                        loop.stopped_reason = stopped_reason or "manual"
+            revived = loop.active and not was_active
+            # Deadline bookkeeping (BEFORE the snapshot below so it persists):
+            # an interval change restarts an EXISTING countdown at the new
+            # interval — the old deadline encodes the old cadence and honouring
+            # it would make the new setting take a full stale cycle to apply.
+            # Any other patch (message edit, cap raise) keeps the deadline, so
+            # a monitor_update refining the instruction never delays the next
+            # check. Deactivation clears it — a paused loop holds no schedule.
+            # A deadline that is ALREADY cleared (a delivered fire whose turn
+            # is still running — nudge turns commonly call monitor_update)
+            # stays cleared: the turn's END anchors the next full countdown
+            # via notify_turn_complete, and assigning here would start the
+            # interval mid-turn, so a turn longer than the interval would be
+            # followed by a spurious overdue fire instead of a full cycle.
+            if not loop.active:
+                loop.next_due_ts = 0.0
+            elif interval_changed and loop.next_due_ts > 0:
+                loop.next_due_ts = time.time() + loop.idle_secs
+            # Persist WITHOUT blocking the event loop — _write_state fsyncs, and
+            # a wedged disk must not freeze chat/heartbeat/liveness. Snapshot
+            # under THIS lock hold (mutation safety + serialization vs the
+            # post-fire write) and await the offloaded write so a persistence
+            # failure still reaches the caller. Same contract as _add_locked.
+            payload = self._serialize_state()
+            try:
+                await asyncio.get_running_loop().run_in_executor(None, self._write_state, payload)
+            except BaseException:
+                for field_name, value in previous.items():
+                    setattr(loop, field_name, value)
+                raise
+            # Re-arm the timer with the new settings — but NEVER while its
+            # callback is mid-fire. Cancelling a firing timer cancels the
+            # in-flight turn itself (channel loops run the turn inline in
+            # _on_fire), destroying the response and the cycle accounting. A
+            # firing timer re-arms itself on every exit path anyway (backoff
+            # re-arm when undelivered, self-re-arm for channel keys,
+            # notify_turn_complete for dashboard slots), and each of those reads
+            # the freshly-updated idle_secs/active, so the new settings still
+            # take effect on the next cycle.
+            if loop.id in self._firing:
+                logger.info(
+                    "AutoNudge: loop %s updated mid-fire — deferring re-arm to the "
+                    "running timer so the in-flight turn is not cancelled",
+                    loop.id,
+                )
+            else:
+                self._cancel_timer(loop_id)
+                # Arm only when a schedule exists (deadline set) or this update
+                # REVIVED the loop (fresh full countdown for a paused loop —
+                # nothing else will arm it). An active loop with a cleared
+                # deadline is a delivered fire whose turn is still running;
+                # notify_turn_complete owns its next arm (see the deadline
+                # bookkeeping above), so arming here would anchor the interval
+                # mid-turn.
+                if loop.active and (loop.next_due_ts > 0 or revived):
+                    self._arm_from_deadline(loop)
+        self._emit("updated", loop)
+        return loop
+
+    def remove_sync(
+        self, loop_id: str, *, persist: bool = True, emit: bool = True
+    ) -> NudgeLoop | None:
+        """Remove a loop. ``persist=False`` skips the blocking save — used by
+        async callers that snapshot+offload the write themselves right after."""
+        loop = self._loops.pop(loop_id, None)
+        if loop is None:
+            return None
+        self._cancel_timer(loop_id)
+        self._rearm_fail_count.pop(loop_id, None)
+        self._rearm_pending.discard(loop_id)
+        if persist:
+            self._save()
+        if emit:
+            self._emit("removed", loop)
+        return loop
+
+    async def remove(self, loop_id: str) -> None:
+        lock = await self._acquire_mutation_lock(loop_id)
+        if lock is None:
+            return
+        try:
+            await self._remove_unserialized(loop_id)
+        finally:
+            lock.release()
+
+    async def remove_by_slot(self, slot_key: str) -> NudgeLoop | None:
+        """Remove the current slot generation inside one maintenance transaction."""
+        async with _maintenance_lock(self._base_dir):
+            loop = self._find_by_slot(slot_key)
+            if loop is None:
+                return None
+            await self._remove_unserialized(loop.id)
+            return loop
+
+    async def _remove_unserialized(self, loop_id: str) -> None:
+        async with self._lock:
+            existed = loop_id in self._loops
+            if not existed and loop_id not in self._pending_removals:
+                return
+            # Remove in-memory but SKIP the blocking save: _save() -> _write_state
+            # fsyncs, and a wedged disk must not freeze the event loop. Snapshot
+            # under THIS lock hold (serialization vs the post-fire write). Keep
+            # the removal INLINE (not a separate task) so _cancel_timer's
+            # "never cancel the current task" self-guard still applies when
+            # _timer removes its own loop.
+            removed_loop: NudgeLoop | None = None
+            if existed:
+                removed_loop = self.remove_sync(loop_id, persist=False, emit=False)
+                self._pending_removals.add(loop_id)
+            payload = self._serialize_state()
+            fut = asyncio.get_running_loop().run_in_executor(None, self._write_state, payload)
+
+            def _restore_failed_removal() -> None:
+                self._pending_removals.discard(loop_id)
+                if removed_loop is None:
+                    return
+                self._loops[loop_id] = removed_loop
+                if removed_loop.active:
+                    self._arm_from_deadline(removed_loop)
+
+            try:
+                await asyncio.shield(fut)
+            except asyncio.CancelledError:
+                # Caller cancelled mid-write: the executor thread can't be
+                # cancelled and is still fsyncing. shield re-raised on us
+                # immediately, so DRAIN the write to completion before this
+                # `async with` exits and releases _lock — otherwise a waiter
+                # (add()/update()/_persist_locked) could acquire the lock and
+                # race a second os.replace(), clobbering newer state with this
+                # stale removal snapshot ("lost update after restart"). Then
+                # propagate the cancellation.
+                while not fut.done():
+                    try:
+                        await asyncio.shield(fut)
+                    except asyncio.CancelledError:
+                        continue
+                try:
+                    fut.result()
+                except Exception:
+                    _restore_failed_removal()
+                    raise
+                self._pending_removals.discard(loop_id)
+                if removed_loop is not None:
+                    self._emit("removed", removed_loop)
+                raise
+            except Exception:
+                # Persistence is the commit point. Restore the live row (and
+                # its timer when it was active) so an immediate retry can still
+                # see the same loop the durable store retained.
+                _restore_failed_removal()
+                raise
+            else:
+                self._pending_removals.discard(loop_id)
+                if removed_loop is not None:
+                    self._emit("removed", removed_loop)
+
+    def get_by_slot(self, slot_key: str) -> NudgeLoop | None:
+        return self._find_by_slot(slot_key)
+
+    def list_all(self) -> list[NudgeLoop]:
+        return list(self._loops.values())
+
+    def _find_by_slot(self, slot_key: str) -> NudgeLoop | None:
+        """The loop bound to *slot_key*, which may be a binding key OR a tab name.
+
+        A channel-born conversation is bound under its channel session key
+        (``slack:<ts>``) — the fire path needs that key to route the turn — but
+        its dashboard tab knows itself only by slot NAME
+        (``slack_<ts>``: the same key folded to the filename charset). The
+        turn-lifecycle hooks and the tab's own loop lookups pass that name, so
+        matching it here is what keeps one loop addressable from both sides
+        instead of invisible from the dashboard.
+
+        Exact match wins; the fold is a fallback, and is computed with the
+        dashboard's own normalizer so no second derivation of the name exists.
+        """
+        for lp in self._loops.values():
+            if lp.slot_key == slot_key:
+                return lp
+        if not slot_key or is_channel_key(slot_key):
+            return None
+        # Lazy: autonudge is imported BY the dashboard chat layer.
+        from kiro_crew.dashboard.state import _normalize_slot_key
+
+        for lp in self._loops.values():
+            if is_channel_key(lp.slot_key) and _normalize_slot_key(lp.slot_key) == slot_key:
+                return lp
+        return None
+
+    # ── Reactive arming ──
+
+    def notify_approval_stalled(self, slot_key: str) -> None:
+        """Record that a tool approval in *slot_key* went unanswered.
+
+        Called from the approval path when a prompt times out with no decision.
+        That is the only evidence available that an unattended loop can no longer
+        act, and it is evidence rather than inference: an auto-approved tool
+        never reaches the interactive wait, so this is unreachable for a loop
+        whose cycles only touch read-only tools.
+
+        Records the fact and returns. The STOP is left to ``_timer``, which
+        already owns every terminal decision and evaluates them serialized before
+        a fire — stopping from here would mean cancelling a timer that may be
+        mid-fire (the one thing the fire-window contracts forbid, since it kills
+        the in-flight turn) and racing the very turn that produced the evidence.
+        Deferring costs the cycle already in flight and saves every later one.
+
+        The evidence is slot-level, not cycle-level: an unanswered prompt in an
+        attended tab counts too. That is the conservative direction — the loop
+        deactivates inspectable and restartable with a notice naming the remedy,
+        and a person who was merely away resumes it — whereas the alternative
+        needs a reliable "is this turn a nudge cycle?" test, which the fire
+        window does not provide for dashboard slots (their turn outlives it).
+        """
+        loop = self._find_by_slot(slot_key)
+        if not loop or not loop.active or loop.approval_stalled:
+            return
+        loop.approval_stalled = True
+        logger.warning(
+            "AutoNudge: a tool approval went unanswered in loop %s's session — "
+            "it will stop instead of firing another cycle",
+            loop.id,
+        )
+        self._persist_soon()
+
+    def notify_turn_complete(self, slot_key: str) -> None:
+        """Called by gateway after HOOK_EVENT_STOP — resume the countdown for this slot.
+
+        Re-arms toward the loop's persistent deadline (``_arm_from_deadline``),
+        NOT with a fresh full interval: after a user turn the timer picks up
+        the remaining time (or fires shortly after, if the deadline passed
+        mid-turn), while the first turn-complete after a delivered fire — the
+        nudge turn's own end — finds the deadline cleared and starts the next
+        full cycle. DEFERS while the loop's own timer task is mid-fire:
+        ``_arm_timer`` cancels the existing task, and during the fire window
+        that task may be parked on ``_persist_locked()`` writing the delivered
+        cycle. Cancelling it there loses the ``cycle_count`` bump and lets the
+        loop run extra cycles after a restart. The deferred re-arm is applied
+        when the window closes.
+        """
+        loop = self._find_by_slot(slot_key)
+        if not loop or not loop.active:
+            return
+        if loop.id in self._firing:
+            self._rearm_pending.add(loop.id)
+            return
+        self._arm_from_deadline(loop)
+
+    def notify_user_input(self, slot_key: str) -> None:
+        """Called when user sends a message — cancel the pending nudge task.
+
+        Cancelling the TASK defers delivery until the user's turn ends (a
+        nudge must never race a human turn); the loop's ``next_due_ts`` is
+        untouched, so the schedule itself survives — ``notify_turn_complete``
+        resumes the same countdown rather than restarting the full interval.
+
+        While the loop is mid-fire this must NOT cancel the timer: that task may
+        be parked on ``_persist_locked()`` writing the delivered cycle, and
+        cancelling it there abandons an in-flight executor write whose stale
+        payload can later overwrite a newer update/delete (state resurrected
+        after a restart). User priority is still honoured — the deferred re-arm
+        is dropped, so no further nudge is scheduled from this cycle.
+        """
+        loop = self._find_by_slot(slot_key)
+        if not loop:
+            return
+        if loop.id in self._firing:
+            self._rearm_pending.discard(loop.id)
+            logger.info(
+                "AutoNudge: user input during loop %s's fire window — dropped the "
+                "deferred re-arm instead of cancelling mid-persist",
+                loop.id,
+            )
+            return
+        self._cancel_timer(loop.id)
+
+    def _cancel_timer(self, loop_id: str) -> None:
+        """Retire one loop's timer task. The single cancellation policy.
+
+        Two conditions make a cancel wrong rather than merely redundant, and both are
+        stated here so no caller has to remember either:
+
+        * **The currently running timer task** (a self-re-arm from inside ``_timer``) is
+          about to return on its own, and cancelling it would inject a spurious
+          ``CancelledError`` into the finishing task.
+        * **A task whose event loop has already closed.** ``Task.cancel`` schedules the
+          cancellation through ``loop.call_soon``, which raises ``RuntimeError: Event loop
+          is closed`` — so this raises out of ``remove``/``remove_sync`` and the dashboard
+          handler above it answers 500. The service is a process-global singleton, so its
+          ``_timers`` outlive the loop that created them whenever one loop is replaced by
+          another: the gateway's own shutdown, and every test that drives a handler after
+          an earlier test's loop closed. Asked positively (``get_loop().is_closed()``)
+          rather than by catching the ``RuntimeError``, because a closed loop is the one
+          state where cancelling is a NO-OP by definition — the task can never run again —
+          and catching would also swallow a genuine scheduling fault.
+
+        The closed-loop question is asked FIRST because it needs no running loop of its
+        own, and ``stop()`` reaches here from synchronous callers (gateway shutdown, test
+        teardown) where ``asyncio.current_task()`` would raise instead of answering — hence
+        :func:`_current_task_or_none`.
+        """
+        t = self._timers.pop(loop_id, None)
+        if t is None or t.done():
+            return
+        # Closed-loop check FIRST: it needs no running loop of its own, so a dead timer is
+        # retired even from a synchronous caller.
+        if t.get_loop().is_closed():
+            logger.debug(
+                "AutoNudge: dropped loop %s's timer without cancelling — its event loop "
+                "has closed, so the task can no longer run",
+                loop_id,
+            )
+            return
+        if t is _current_task_or_none():
+            return
+        t.cancel()
+
+    def _arm_timer(self, loop: NudgeLoop, delay: float | None = None) -> None:
+        self._cancel_timer(loop.id)
+        self._timers[loop.id] = asyncio.create_task(self._timer(loop, delay))
+
+    def _arm_from_deadline(self, loop: NudgeLoop) -> None:
+        """(Re)arm the timer toward the loop's persistent deadline.
+
+        The countdown anchors on ``next_due_ts`` instead of restarting at the
+        full interval on every arm, so user turns in the bound session defer a
+        pending fire without pushing the schedule back. An unset deadline (0 —
+        a just-delivered fire, a legacy store entry) starts a fresh full
+        countdown from now, and the assignment is persisted through a
+        supervised background write so a restart resumes this countdown
+        rather than restarting the interval. A deadline still in the future
+        resumes with exactly the remaining time; only one already in the past
+        fires after a short beat (``_OVERDUE_REARM_SECS``) rather than
+        instantly, so a user mid-conversation keeps deferring it simply by
+        sending another message. The delay is capped at ``idle_secs`` so a
+        clock jump can never park the timer beyond one full interval.
+        """
+        now = time.time()
+        if loop.next_due_ts <= 0:
+            loop.next_due_ts = now + loop.idle_secs
+            self._persist_soon()
+        remaining = loop.next_due_ts - now
+        if remaining <= 0:
+            delay = float(_OVERDUE_REARM_SECS)
+        else:
+            delay = min(remaining, float(loop.idle_secs))
+        self._arm_timer(loop, delay=delay)
+
+    def _persist_soon(self) -> None:
+        """Schedule a supervised background persist of loop state.
+
+        For sync callers (the turn-lifecycle hooks) that assign a fresh
+        deadline and cannot await ``_persist_locked`` themselves. Detached but
+        supervised — strong ref in ``_inflight_adds`` plus failure logging —
+        so the assignment reaches the store and a restart resumes the
+        countdown. A lost write degrades to a fresh full countdown after
+        restart, never a premature or dropped fire.
+        """
+        task = asyncio.create_task(self._persist_locked())
+        self._inflight_adds.add(task)
+
+        def _finish(t: "asyncio.Task[None]") -> None:
+            self._inflight_adds.discard(t)
+            if not t.cancelled() and t.exception() is not None:
+                logger.warning("AutoNudge: deadline persist failed", exc_info=t.exception())
+
+        task.add_done_callback(_finish)
+
+    async def _timer(self, loop: NudgeLoop, delay: float | None = None) -> None:
+        try:
+            await asyncio.sleep(loop.idle_secs if delay is None else delay)
+        except asyncio.CancelledError:
+            return
+        if shutdown_event.is_set():
+            return
+        # Kill switch: sentinel file present?
+        if loop.stop_sentinel_path and Path(loop.stop_sentinel_path).exists():
+            logger.info("AutoNudge: stop sentinel found for %s — removing loop", loop.id)
+            await self.remove(loop.id)
+            return
+        # Cycle cap reached?
+        if loop.max_cycles and loop.cycle_count >= loop.max_cycles:
+            logger.info("AutoNudge: loop %s reached max_cycles — deactivating", loop.id)
+            await self.update(loop.id, active=False, stopped_reason="cycle_cap")
+            # Signal the cap. Reaching max_cycles is NOT a successful finish —
+            # the loop ran out of cycles with its goal possibly unmet — yet the
+            # only trace used to be this log line plus an ``updated`` event
+            # indistinguishable from a user pressing Stop. A capped-out babysit
+            # was therefore impossible to tell apart from the agent stopping on
+            # its own. ``expired`` is emitted so an observer can raise a
+            # notification the user actually sees.
+            #
+            # Emitted AFTER update() (which already persisted active=False and
+            # emitted ``updated``), so a subscriber handling ``expired`` always
+            # observes the loop in its final deactivated state. Deliberately a
+            # NEW event kind rather than overloading ``updated``: the many
+            # benign updates (message edits, manual pause) must not notify.
+            self._emit("expired", loop)
+            return
+        # Wall-clock budget spent? Checked AFTER the cycle cap (both exhausted
+        # → the cap wins, keeping historical wording) and BEFORE the fire, so
+        # a spent budget never buys one more unattended turn. Same terminal
+        # treatment as the cap: deactivate (inspectable/restartable, not
+        # removed) and emit ``expired`` so the existing observer raises a
+        # user-visible notification — a budget that stops a loop silently
+        # would be indistinguishable from the agent stopping on its own.
+        if runtime_budget_exceeded(loop):
+            logger.info(
+                "AutoNudge: loop %s exceeded max_runtime_secs=%d — deactivating",
+                loop.id,
+                loop.max_runtime_secs,
+            )
+            await self.update(loop.id, active=False, stopped_reason="runtime_budget")
+            self._emit("expired", loop)
+            return
+        # Proved unable to act? Checked LAST, so a loop that is also out of
+        # cycles or budget still reports the bound it historically would have. This one is reactive by construction: it fires only on recorded
+        # evidence that a cycle's approval went unanswered (see
+        # ``notify_approval_stalled``), never on a reading of whether a grant
+        # happens to be in force — a loop that only ever calls auto-approved
+        # tools needs no grant, and stopping it would turn a working
+        # configuration into a stopped one.
+        #
+        # Same terminal treatment as the other bounds: deactivate rather than
+        # remove, so the loop stays inspectable and can be resumed once the
+        # operator restores the authorization it cannot obtain for itself, and
+        # emit ``expired`` so the notifier tells them it stopped rather than
+        # finished. Without this the loop keeps waking, dispatching, being
+        # declined and spending its cap on cycles that were never able to work.
+        if loop.approval_stalled:
+            logger.info(
+                "AutoNudge: loop %s cannot obtain tool approval — deactivating "
+                "instead of firing cycle %d",
+                loop.id,
+                loop.cycle_count + 1,
+            )
+            await self.update(loop.id, active=False, stopped_reason=APPROVAL_STALL_REASON)
+            self._emit("expired", loop)
+            return
+        # Fire. Update state only if the callback reports actual delivery —
+        # otherwise skipped nudges (e.g. slot mid-turn) inflate cycle_count and
+        # prematurely trip max_cycles. Missing callback → nothing to deliver.
+        if self._on_fire is None:
+            return
+        self._firing.add(loop.id)
+        try:
+            await self._run_fire_cycle(loop)
+        finally:
+            self._firing.discard(loop.id)
+            # A re-arm requested DURING the fire window (a dashboard turn that
+            # completed while we were still persisting) was deferred rather than
+            # applied, because applying it would have cancelled this very task
+            # mid-persist. Apply it now that the window is closed — dropping it
+            # would leave a dashboard loop with no armed timer at all, since the
+            # delivered path relies on notify_turn_complete for those slots.
+            if loop.id in self._rearm_pending:
+                self._rearm_pending.discard(loop.id)
+                if loop.active and loop.id in self._loops:
+                    self._arm_from_deadline(loop)
+
+    async def _run_fire_cycle(self, loop: NudgeLoop) -> None:
+        """Fire once, then persist bookkeeping and decide the re-arm.
+
+        Runs entirely inside the caller's ``_firing`` window so a concurrent
+        ``update()`` never cancels this task between delivery and persistence.
+        """
+        if self._on_fire is None:
+            return
+        # Mark the fire window so a concurrent update() defers its re-arm
+        # instead of cancelling this task mid-turn (see update()). The window
+        # stays open through the post-delivery bookkeeping and the re-arm
+        # decision, NOT just the callback: clearing it the moment _on_fire
+        # returned let a waiting update() cancel this task while it was parked
+        # on _persist_locked(), so the delivered cycle was never written and the
+        # loop could run extra cycles after a restart. _run_fire_cycle owns the
+        # window; this method is the body.
+        try:
+            delivered = await self._on_fire(loop)
+        except Exception:
+            delivered = False
+            # Full traceback only on the first failure of a streak; subsequent
+            # failures stay at debug so a permanently-wedged callback can't spam
+            # a traceback every re-arm.
+            if self._rearm_fail_count.get(loop.id, 0) == 0:
+                logger.exception("AutoNudge fire callback failed for %s", loop.id)
+            else:
+                logger.debug(
+                    "AutoNudge fire still failing for %s (streak=%d)",
+                    loop.id,
+                    self._rearm_fail_count.get(loop.id, 0) + 1,
+                )
+        if not delivered:
+            # If the fire path already removed the loop (e.g. slot missing →
+            # remove()), do NOT resurrect it with a fresh timer — that would
+            # orphan-poll forever. Clear the streak and stop.
+            if loop.id not in self._loops:
+                self._rearm_fail_count.pop(loop.id, None)
+                return
+            # A concurrent update() may have DEACTIVATED this loop while the
+            # callback was in flight; that update deliberately deferred the
+            # cancel to avoid killing the turn, so the failure path must honour
+            # the pause instead of re-arming. Otherwise "stop the loop" during a
+            # cycle whose delivery then fails silently resumes unattended tool
+            # execution.
+            if not loop.active:
+                logger.info(
+                    "AutoNudge: loop %s was deactivated mid-fire — not re-arming",
+                    loop.id,
+                )
+                self._rearm_fail_count.pop(loop.id, None)
+                return
+            # Slot was busy mid-turn, or the fire callback errored. Do NOT end
+            # the loop — re-arm so it self-heals and never depends solely on the
+            # external notify_turn_complete hook (skipped on a slot's error/
+            # timeout/cancel exit paths). Escalate the delay per consecutive
+            # failure so a never-delivering loop backs off to a slow poll
+            # instead of hammering, capped by idle_secs and _REARM_MAX_BACKOFF.
+            n = self._rearm_fail_count.get(loop.id, 0) + 1
+            self._rearm_fail_count[loop.id] = n
+            shift = min(n - 1, _REARM_BACKOFF_MAX_SHIFT)
+            backoff = min(
+                _REARM_BACKOFF_SECS * (2**shift),
+                _REARM_MAX_BACKOFF_SECS,
+                loop.idle_secs,
+            )
+            self._arm_timer(loop, delay=backoff)
+            return
+        # Delivered — clear any failure streak so the next skip starts fresh.
+        self._rearm_fail_count.pop(loop.id, None)
+        loop.cycle_count += 1
+        loop.last_fire_ts = time.time()
+        # Clear the deadline: the next cycle is measured from the nudge TURN'S
+        # end (notify_turn_complete for dashboard slots, the self-re-arm below
+        # for channel loops), so whichever re-arm comes next must start a
+        # fresh full countdown rather than resume a spent one.
+        loop.next_due_ts = 0.0
+        # Persist through the shared locked+offloaded path so this bookkeeping
+        # cannot be clobbered by a concurrent update()'s snapshot (and so the
+        # fsync stays off the event loop).
+        await self._persist_locked()
+        self._emit("fired", loop)
+        # POST-DELIVERY budget check: the budget gates when turns START, so a
+        # slow in-flight turn can overshoot it (bounded by the transport's
+        # per-turn ceiling, constants.CHAT_TURN_TIMEOUT — this service must
+        # not cancel a running turn; see the mid-fire contracts above). But
+        # once the turn HAS finished, a spent budget must take effect NOW —
+        # deactivating here instead of on the next idle timer closes the
+        # window where notify_turn_complete arms another full idle cycle for
+        # a loop that is already over budget.
+        if runtime_budget_exceeded(loop) and loop.active and loop.id in self._loops:
+            logger.info(
+                "AutoNudge: loop %s exceeded max_runtime_secs=%d during its turn "
+                "— deactivating post-delivery",
+                loop.id,
+                loop.max_runtime_secs,
+            )
+            await self._update_unserialized(loop.id, active=False, stopped_reason="runtime_budget")
+            self._emit("expired", loop)
+            return
+        # Channel-bound loops (Slack/Discord/...) have no dashboard
+        # turn-lifecycle hook to re-arm them (notify_turn_complete never fires
+        # for these keys), so they self-re-arm on a fixed interval. The fire
+        # callback runs the turn inline, so the next fire lands idle_secs
+        # after the previous turn finished; the busy-skip + backoff above
+        # handles any overlap.
+        if is_channel_key(loop.slot_key) and loop.active and loop.id in self._loops:
+            self._arm_from_deadline(loop)
+
+
+class _AutoNudgeMaintenanceView:
+    """Store operations that are safe inside ``maintenance_service``'s lock."""
+
+    def __init__(self, service: AutoNudgeService) -> None:
+        self._service = service
+        self._quiescing: set[str] = set()
+
+    def _release(self) -> None:
+        for loop_id in self._quiescing:
+            self._service._end_maintenance_quiesce(loop_id)
+        self._quiescing.clear()
+
+    def list_all(self) -> list[NudgeLoop]:
+        return self._service.list_all()
+
+    def get_by_slot(self, slot_key: str) -> NudgeLoop | None:
+        return self._service.get_by_slot(slot_key)
+
+    async def deactivate_and_wait(self, loop_id: str) -> bool:
+        self._quiescing.add(loop_id)
+        quiesced = await self._service._deactivate_and_wait_unserialized(loop_id)
+        if quiesced:
+            return True
+        else:
+            self._service._end_maintenance_quiesce(loop_id)
+            self._quiescing.discard(loop_id)
+            return False
+
+    async def remove(self, loop_id: str) -> None:
+        await self._service._remove_unserialized(loop_id)
+        self._service._end_maintenance_quiesce(loop_id)
+        self._quiescing.discard(loop_id)

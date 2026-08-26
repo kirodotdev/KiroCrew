@@ -1,0 +1,48 @@
+{
+  "name": "auto-triage-pipeline",
+  "version": "0.1.0",
+  "displayName": "Kiro Crew Auto Triage Pipeline",
+  "description": "A read-only, three-level view of Kiro Crew's own auto-triage pipeline: the six steps and their throughput, the issues inside a step, and what each issue's agent sessions cost.",
+  "author": "kirocrew",
+  "iconUrl": "/app-assets/auto-triage-pipeline/icon.svg",
+  "tags": [
+    "pipeline",
+    "crews",
+    "triage",
+    "developer-tools"
+  ],
+  "highlights": [],
+  "defaultEnabled": false,
+  "permissions": {
+    "api": [
+      "/api/apps/issue-radar/crew/fabric",
+      "/api/apps/auto-triage-pipeline/overview",
+      "/api/apps/auto-triage-pipeline/step",
+      "/api/apps/auto-triage-pipeline/item/sessions"
+    ],
+    "network": false,
+    "storage": false
+  },
+  "ui": {
+    "pages": [
+      {
+        "route": "/auto-triage-pipeline",
+        "label": "Auto Triage Pipeline",
+        "icon": "Activity"
+      }
+    ]
+  },
+  "useCases": [
+    "See where Issue Radar crew work is accumulating, reopening, or waiting across the full delivery pipeline."
+  ],
+  "configuration": [
+    "Connect a repository in Issue Radar and let its crew ledger collect phase events, then enable this app and choose that repository from the picker."
+  ],
+  "screenshots": [
+    "/app-assets/auto-triage-pipeline/screenshot-main.png"
+  ],
+  "heroImage": "/app-assets/auto-triage-pipeline/hero-light.svg",
+  "heroImageDark": "/app-assets/auto-triage-pipeline/hero-dark.svg",
+  "heroImageDetail": "/app-assets/auto-triage-pipeline/hero-detail-light.svg",
+  "heroImageDetailDark": "/app-assets/auto-triage-pipeline/hero-detail-dark.svg"
+}

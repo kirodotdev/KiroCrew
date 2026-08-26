@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- Without this, mobile emulation lays the page out at a 980px layout
+         viewport and scales it down: every measurement is then a desktop layout
+         squeezed to fit, and `useIsMobile()` (max-width 767px) reads false. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>hold-to-talk capture (#5700)</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/capture/hold-to-talk.tsx"></script>
+  </body>
+</html>

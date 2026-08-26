@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mochi</title>
+    <style>
+      /*
+       * Full-screen transparent CLICK-THROUGH overlay. The background MUST stay
+       * transparent — an opaque surface would paint a rectangle over the whole
+       * display and defeat the Electron window's transparency. overflow:hidden
+       * keeps a pet near a screen edge from spawning scrollbars, and
+       * user-select:none stops a drag from selecting text. #root is
+       * position:relative so the absolutely-positioned pet lays out against it.
+       *
+       * Deliberately NOT copied from the original pet entry: nothing opaque
+       * (it is already transparent, matching the original), the original's
+       * 100vw/100vh sizing — this entry keeps its own height:100% sizing per
+       * the no-homogenise rule — and no scrollbar rules (the original pet entry
+       * has none either; overflow is hidden so nothing scrolls).
+       */
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        background: transparent;
+        overflow: hidden;
+        user-select: none;
+        -webkit-user-select: none;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        color: #e0e0e0;
+        height: 100%;
+      }
+      #root {
+        width: 100%;
+        height: 100%;
+        position: relative;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/apps/mochi/pet/main.tsx"></script>
+  </body>
+</html>

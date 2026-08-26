@@ -1,0 +1,77 @@
+{
+  "name": "context_accumulation",
+  "description": "Seed a user profile, build up context across 3 sessions, and verify the agent integrates seeded + taught information in the final session.\n",
+  "dimensions": [
+    "context_accumulation",
+    "memory_recall"
+  ],
+  "judge_criteria": "Agent should integrate seeded profile and taught facts into a coherent summary.",
+  "seed": {
+    "preferences": "# User Preferences\n- Prefers concise answers\n- Uses vim keybindings\n",
+    "projects": "# Active Projects\nWorking on the Starfish distributed cache.\n"
+  },
+  "sessions": [
+    {
+      "name": "session_1_tech_stack",
+      "turns": [
+        {
+          "user": "For the Starfish project, we decided to use Go and Redis.",
+          "assertions": [
+            {
+              "type": "regex",
+              "value": "\\bGo\\b|Golang"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "session_2_timeline",
+      "turns": [
+        {
+          "user": "Starfish launch date is June 15.",
+          "assertions": [
+            {
+              "type": "regex",
+              "value": "june|Jun"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "session_3_verify_all",
+      "turns": [
+        {
+          "user": "Summarize what you know about my Starfish project.",
+          "assertions": [
+            {
+              "type": "contains",
+              "value": "starfish"
+            },
+            {
+              "type": "contains",
+              "value": "cache"
+            },
+            {
+              "type": "regex",
+              "value": "\\bGo\\b|Golang"
+            },
+            {
+              "type": "regex",
+              "value": "redis|Redis"
+            },
+            {
+              "type": "regex",
+              "value": "june|Jun"
+            },
+            {
+              "type": "judge",
+              "value": "Agent should summarize Starfish as a distributed cache using Go and Redis with a June 15 launch date."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

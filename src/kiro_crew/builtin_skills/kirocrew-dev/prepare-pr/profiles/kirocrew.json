@@ -1,0 +1,70 @@
+{
+  "name": "kirocrew",
+  "base_branch": "main",
+  "single_commit": true,
+  "gates": [
+    "python3 scripts/run_scoped_tests.py --test",
+    "BASE=\"$(git merge-base HEAD origin/main)\" && SCOPED_TESTS_BASE_REF=\"$BASE\" python3 scripts/run_scoped_tests.py --surface backend",
+    "python3 scripts/check_black_formatting.py",
+    "python3 scripts/check_subprocess_encoding.py --test",
+    "python3 scripts/check_subprocess_encoding.py",
+    "python3 scripts/check_lockdown_before_publish.py",
+    "isort --check-only src/kiro_crew test",
+    "flake8 src/kiro_crew test",
+    "mypy src/kiro_crew/",
+    "python3 scripts/check_brand_name.py --test",
+    "BASE=\"$(git merge-base HEAD origin/main)\" && BRAND_BASE_REF=\"$BASE\" python3 scripts/check_brand_name.py",
+    "python3 scripts/check_harness_parity.py --test",
+    "BASE=\"$(git merge-base HEAD origin/main)\" && HARNESS_BASE_REF=\"$BASE\" python3 scripts/check_harness_parity.py",
+    "python3 scripts/check_loop_bound_locks.py --test",
+    "python3 scripts/check_loop_bound_locks.py",
+    "python3 scripts/check_changelog_history.py --test",
+    "BASE=\"$(git merge-base HEAD origin/main)\" && CHANGELOG_BASE_REF=\"$BASE\" python3 scripts/check_changelog_history.py",
+    "python3 scripts/check_focus_cue.py --test",
+    "BASE=\"$(git merge-base HEAD origin/main)\" && FOCUS_CUE_BASE_REF=\"$BASE\" python3 scripts/check_focus_cue.py",
+    "python3 scripts/docs_lint.py --test",
+    "./scripts/docs-lint.sh",
+    "python3 scripts/check_per_file_coverage.py --test",
+    "python3 scripts/verify_vendor_manifest.py",
+    "./scripts/scrub-lint.sh --no-history",
+    "uv tool run --quiet --from \"cfn-lint==1.22.3\" cfn-lint src/kiro_crew/deploy/skills/artifact-deploy/templates/*.yaml",
+    "npm --prefix website run build",
+    "(cd website && npx tsc -b)",
+    "MW=\"$(grep -oE 'npx eslint src/ --max-warnings [0-9]+' .github/workflows/ci.yml | grep -oE '[0-9]+$')\" && [ -n \"$MW\" ] && (cd website && npx eslint src/ --max-warnings \"$MW\")",
+    "BASE=\"$(git merge-base HEAD origin/main)\" && I18N_BASE_REF=\"$BASE\" npm --prefix website run i18n:check",
+    "npm --prefix website run lint:phantom-classes -- --test",
+    "BASE=\"$(git merge-base HEAD origin/main)\" && PHANTOM_BASE_REF=\"$BASE\" npm --prefix website run lint:phantom-classes",
+    "(cd website && npx playwright install chromium)",
+    "BASE=\"$(git merge-base HEAD origin/main)\" && I18N_BASE_REF=\"$BASE\" npm --prefix website run i18n:render",
+    "BASE=\"$(git merge-base HEAD origin/main)\" && I18N_BASE_REF=\"$BASE\" SCOPED_TESTS_BASE_REF=\"$BASE\" python3 scripts/run_scoped_tests.py --surface frontend",
+    "npm --prefix website run jscpd",
+    "npm --prefix website run test:electron",
+    "(cd website && node --max-old-space-size=6144 ./node_modules/vite/bin/vite.js build --mode analyze && node scripts/check-bundle-size.mjs)"
+  ],
+  "rule_files": [
+    "AUTOSDE.yaml",
+    "website/AUTOSDE.yaml",
+    "AGENTS.md",
+    "website/AGENTS.md"
+  ],
+  "reviewers": [
+    {
+      "name": "gpt",
+      "model": "gpt-5.6-sol",
+      "model_tier": "gpt-5.x",
+      "contract": ".github/workflows/codex-review.yml",
+      "rubric": null
+    },
+    {
+      "name": "opus",
+      "model": "claude-opus-4.8",
+      "model_tier": "claude-opus-4.7",
+      "contract": ".github/workflows/claude-review.yml",
+      "rubric": null
+    }
+  ],
+  "readiness": {
+    "status_context": "PR Readiness",
+    "defer_label": null
+  }
+}

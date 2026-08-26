@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Crew Companion</title>
+    <!--
+      The window is TRANSPARENT with a gutter around the card, so the card can draw
+      its own shadow. Every default background has to be cleared explicitly:
+      transparency only shows through where nothing paints, and one stylesheet
+      setting `body { background: … }` would turn the gutter into a visible box.
+
+      The #root padding MUST stay in step with PANEL_PAD in panelPlacement.js — the
+      window is sized as card + padding on each side, so a mismatch offsets the card
+      inside its own window.
+    -->
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        background: transparent !important;
+        overflow: hidden;
+        -webkit-user-select: none;
+        user-select: none;
+      }
+      #root {
+        /* = PANEL_PAD */
+        padding: 32px;
+        box-sizing: border-box;
+        width: 100%;
+        height: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./panel.tsx"></script>
+  </body>
+</html>

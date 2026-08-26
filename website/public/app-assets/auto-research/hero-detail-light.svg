@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 288" width="1200" height="288">
+  <defs>
+    <linearGradient id="bg-detail" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4a1a8a"/>
+      <stop offset="100%" stop-color="#3b0764"/>
+    </linearGradient>
+    <linearGradient id="fl-detail" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#e9d5ff" stop-opacity=".3"/>
+      <stop offset="100%" stop-color="#c4b5fd" stop-opacity=".15"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Full-bleed background -->
+  <rect width="1200" height="288" fill="url(#bg-detail)"/>
+
+  <!-- Soft glows behind subject -->
+  <ellipse cx="600" cy="150" rx="150" ry="95" fill="#a78bfa" opacity=".12"/>
+  <ellipse cx="600" cy="248" rx="120" ry="12" fill="#a78bfa" opacity=".15"/>
+
+  <!-- Floating research cards spread across the full width -->
+  <!-- yellow, upper-left -->
+  <g>
+    <rect x="112" y="70" width="55" height="36" rx="6" fill="#fefce8" opacity=".1" stroke="#fbbf24" stroke-width=".8"/>
+    <rect x="118" y="78" width="28" height="3" rx="1" fill="#fbbf24" opacity=".5"/>
+    <rect x="118" y="85" width="40" height="2" rx="1" fill="#fde68a" opacity=".3"/>
+    <rect x="118" y="90" width="34" height="2" rx="1" fill="#fde68a" opacity=".25"/>
+  </g>
+  <!-- blue, lower-left -->
+  <g>
+    <rect x="176" y="184" width="50" height="32" rx="6" fill="#eff6ff" opacity=".1" stroke="#60a5fa" stroke-width=".8"/>
+    <rect x="182" y="192" width="24" height="3" rx="1" fill="#60a5fa" opacity=".5"/>
+    <rect x="182" y="199" width="36" height="2" rx="1" fill="#bfdbfe" opacity=".3"/>
+  </g>
+  <!-- cyan, mid-left -->
+  <g>
+    <rect x="322" y="128" width="46" height="30" rx="6" fill="#ecfeff" opacity=".1" stroke="#22d3ee" stroke-width=".8"/>
+    <rect x="328" y="135" width="22" height="3" rx="1" fill="#22d3ee" opacity=".5"/>
+    <rect x="328" y="142" width="32" height="2" rx="1" fill="#a5f3fc" opacity=".3"/>
+  </g>
+  <!-- pink, mid-right -->
+  <g>
+    <rect x="838" y="122" width="46" height="30" rx="6" fill="#fdf4ff" opacity=".1" stroke="#e879f9" stroke-width=".8"/>
+    <rect x="844" y="129" width="22" height="3" rx="1" fill="#e879f9" opacity=".5"/>
+    <rect x="844" y="136" width="32" height="2" rx="1" fill="#f5d0fe" opacity=".3"/>
+  </g>
+  <!-- green, upper-right -->
+  <g>
+    <rect x="982" y="72" width="55" height="36" rx="6" fill="#ecfdf5" opacity=".1" stroke="#34d399" stroke-width=".8"/>
+    <rect x="988" y="80" width="28" height="3" rx="1" fill="#34d399" opacity=".5"/>
+    <rect x="988" y="87" width="40" height="2" rx="1" fill="#6ee7b7" opacity=".3"/>
+    <rect x="988" y="92" width="34" height="2" rx="1" fill="#6ee7b7" opacity=".25"/>
+  </g>
+  <!-- magenta, lower-right -->
+  <g>
+    <rect x="1006" y="184" width="50" height="32" rx="6" fill="#fdf4ff" opacity=".1" stroke="#e879f9" stroke-width=".8"/>
+    <rect x="1012" y="192" width="24" height="3" rx="1" fill="#e879f9" opacity=".5"/>
+    <rect x="1012" y="199" width="36" height="2" rx="1" fill="#f5d0fe" opacity=".3"/>
+  </g>
+
+  <!-- Central subject: research flask (translated to canvas centre) -->
+  <g transform="translate(360,4)">
+    <!-- steam -->
+    <path d="M230 62Q225 48 230 36Q235 24 230 12" fill="none" stroke="#e9d5ff" stroke-width="1.5" opacity=".35" stroke-linecap="round"/>
+    <path d="M248 60Q253 44 248 30Q243 18 248 6" fill="none" stroke="#e9d5ff" stroke-width="1.2" opacity=".25" stroke-linecap="round"/>
+    <!-- flask body -->
+    <path d="M212 90v70q0 10-15 25l-15 15q-10 12 0 25v5q0 15 15 15h86q15 0 15-15v-5q10-13 0-25l-15-15q-15-15-15-25V90" fill="url(#fl-detail)" stroke="#c4b5fd" stroke-width="1.5"/>
+    <!-- neck + cap -->
+    <rect x="216" y="72" width="48" height="20" rx="4" fill="url(#fl-detail)" stroke="#c4b5fd" stroke-width="1.5"/>
+    <rect x="210" y="66" width="60" height="8" rx="4" fill="#ddd6fe" opacity=".4"/>
+    <!-- inner glow -->
+    <ellipse cx="240" cy="196" rx="45" ry="35" fill="#a78bfa" opacity=".12"/>
+    <!-- reaction bubbles -->
+    <circle cx="235" cy="206" r="8" fill="#f97316" opacity=".8"/>
+    <circle cx="255" cy="191" r="6" fill="#22d3ee" opacity=".8"/>
+    <circle cx="225" cy="179" r="5" fill="#4ade80" opacity=".7"/>
+    <circle cx="260" cy="216" r="7" fill="#f472b6" opacity=".75"/>
+    <circle cx="245" cy="164" r="4" fill="#22d3ee" opacity=".6"/>
+    <circle cx="232" cy="222" r="5" fill="#4ade80" opacity=".65"/>
+  </g>
+
+  <!-- Accent dots scattered across the full width -->
+  <circle cx="70" cy="58" r="3" fill="#fbbf24" opacity=".4"/>
+  <circle cx="256" cy="70" r="2" fill="#34d399" opacity=".35"/>
+  <circle cx="240" cy="238" r="2.5" fill="#f472b6" opacity=".3"/>
+  <circle cx="430" cy="96" r="2.5" fill="#22d3ee" opacity=".35"/>
+  <circle cx="452" cy="214" r="2" fill="#fbbf24" opacity=".3"/>
+  <circle cx="700" cy="212" r="3" fill="#4ade80" opacity=".3"/>
+  <circle cx="748" cy="72" r="2" fill="#f472b6" opacity=".35"/>
+  <circle cx="928" cy="216" r="2.5" fill="#22d3ee" opacity=".3"/>
+  <circle cx="1108" cy="118" r="3" fill="#fbbf24" opacity=".35"/>
+  <circle cx="1140" cy="204" r="2" fill="#34d399" opacity=".3"/>
+  <circle cx="60" cy="176" r="2" fill="#f472b6" opacity=".3"/>
+  <circle cx="1080" cy="60" r="2.5" fill="#fbbf24" opacity=".3"/>
+</svg>

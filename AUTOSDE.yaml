@@ -1,0 +1,434 @@
+# KiroCrew Backend AutoSDE Rules
+#
+# Backend (Python) counterpart to website/AUTOSDE.yaml (React/TypeScript
+# frontend rules). Rules here govern the Python package under src/kiro_crew/.
+# Both files are enforced by the Claude and Codex PR reviewers.
+#
+# De-Amazoned from the internal package rule set (internal links removed).
+# Blocking rules are backed by real vulnerabilities/incidents in this codebase.
+
+custom-rules:
+  - id: backend-security-controls
+    blocking: true
+    file-patterns:
+      - "src/kiro_crew/**/*.py"
+    rule: |
+      Enforce KiroCrew backend security controls, based on real vulnerabilities
+      found and fixed in this codebase.
+
+      - Never read sensitive credential paths (~/.aws, ~/.ssh, ~/.gnupg,
+        ~/.docker, ~/.kube, ~/.npmrc, ~/.pypirc, ~/.netrc, ~/.git-credentials,
+        ~/.kiro/crew/.env and the pre-move ~/.kirocrew/.env). File reads of
+        user- or LLM-influenced paths MUST go
+        through hooks.py, which enforces is_sensitive_path(); trusted
+        fixed-path internal config/package reads are exempt. Never weaken that
+        keystone.
+      - Never trust LLM output. Scan with redact_exfiltration_urls() AND
+        redact_credentials() before posting to Slack, the dashboard, or any
+        external surface. redact_credentials() catches raw credential patterns
+        (AKIA*, SecretAccessKey=, private-key headers) and base64 variants.
+      - Validate all MCP tool inputs via validation.py schemas. Never pass raw
+        LLM input to the filesystem, a subprocess, or a database.
+      - Authorization must be deny-by-default: reject unless positively
+        confirmed. Never write `if x and y and z` guards where a falsy value
+        silently skips the check (the fail-open bug class this rule guards).
+      - All agent subprocesses must go through AcpClient._spawn() (or the
+        provider spawn helpers), which apply an OS-level sandbox via wrap_argv().
+      - The dashboard binds to 127.0.0.1 by default (local-only). Binding to
+        0.0.0.0 is permitted ONLY when token-auth middleware is active. Never
+        bind to 0.0.0.0 without token auth — see origin.py:is_local_only() and
+        token_auth.py:token_auth_middleware().
+      - All tool invocations and permission decisions MUST emit a SEL audit
+        event via sel.py.
+      - Never hardcode secrets. Store them in ~/.kiro/crew/.env with chmod 600,
+        enforced at load time (log a warning if the chmod fails).
+      - Auto-approve / YOLO mode: an AD-HOC activation (Slack command, dashboard
+        picker, API) MUST auto-expire — either on a timed TTL capped at the
+        SafetyOverride 24h ceiling, or, when the operator selects the
+        `until_shutdown` duration, when the process stops. Never persist an
+        ad-hoc grant across a restart. A grant the operator DECLARED in
+        owner-only config (`agent.dangerously_skip_permissions`; the camelCase and legacy `yolo` spellings are also read) MAY
+        persist without expiry and IS re-established at each startup: it is a
+        standing instruction, is held in memory only (never written to disk), is
+        cleared when another approval mode is selected, and MUST remain deniable
+        by the enterprise governance ceiling (the `yolo_duration` scope's
+        `permanent` and `until_shutdown` members, evaluated fail-closed against
+        the HOST profile). There is deliberately NO dashboard toggle for the
+        declared grant. Every activation still routes through the SafetyOverride
+        singleton (safety_override.py) and emits a SEL event. Never set the mode
+        globals directly.
+      - Mermaid securityLevel must be 'strict' (iframe sandbox), never 'loose'
+        (which allows JS execution from diagram payloads).
+
+  - id: no-blocking-call-on-event-loop
+    blocking: true
+    file-patterns:
+      - "src/kiro_crew/**/*.py"
+    rule: |
+      Do NOT add a blocking syscall that runs on the asyncio event loop. The
+      gateway runs everything on one loop; a single blocking call there freezes
+      every task — the user's chat turn AND the liveness heartbeat — until the
+      watchdog kills the process and the supervisor respawns into the same
+      condition (a crash loop). This has caused multiple production wedges.
+
+      Calls that block in the kernel and MUST NOT run on the loop:
+      - subprocess.run / call / check_output / check_call / Popen(...).communicate()
+      - os.close() on a file descriptor (PTY master, socket) — can block on a
+        wedged peer
+      - os.waitpid / os.system / os.popen
+      - time.sleep (use `await asyncio.sleep`)
+      - synchronous network or DNS (requests.*, blocking socket.*, getaddrinfo)
+      - large synchronous file IO or filesystem walks
+
+      If such a call is reachable from the event loop (in an `async def`, or in
+      a sync helper called transitively from an async handler, a periodic task,
+      or a cron tick), offload it:
+
+          await asyncio.get_running_loop().run_in_executor(
+              subprocess_executor(), blocking_fn, *args)
+
+      or rewrite it with an async API (asyncio.create_subprocess_exec,
+      asyncio.sleep, aiohttp).
+
+      Allowed (do NOT flag):
+      - the call is already inside run_in_executor(...) or handed to a thread
+      - one-shot CLI / setup / packaging paths that run before the loop starts
+      - test code
+
+      When in doubt, offload — a leaked worker thread is survivable; a frozen
+      loop is not.
+
+  - id: no-new-work-on-gateway-boot-path
+    blocking: true
+    file-patterns:
+      - "src/kiro_crew/slack/gateway.py"
+      - "src/kiro_crew/dashboard/server.py"
+      - "src/kiro_crew/dashboard/handlers/**/*.py"
+      - "src/kiro_crew/cli.py"
+    rule: |
+      Do NOT add work to the gateway boot path. Everything between process
+      start and the moment the dashboard socket accepts requests runs once, in
+      order, on one thread — so every statement added there is paid by every
+      user on every launch, and it delays the point at which the app is usable.
+      A slow boot also compounds: the longer startup holds the event loop, the
+      more likely the loop-stall watchdog kills the process and the supervisor
+      respawns into the same startup, turning a latency bug into a crash loop.
+
+      The boot path means, specifically:
+      - `GatewayOrchestrator.run()` up to the `KIROCREW_READY` print
+      - `start_dashboard()` up to `await _start_site(site, port)`
+      - any `_init_*()` or `setup_*_routes()` reached from those
+      - `cli.py`'s gateway command before `asyncio.run()`
+
+      Reject a diff that puts any of these on that path:
+
+      1. A new awaited or synchronous step before the socket binds. Adding one
+         is a product decision about startup latency, not a detail.
+      2. Subsystem construction as a side effect of route registration. A
+         `setup_*_routes()` function must only register routes
+         (`app.router.add_*`). Building a pipeline, opening a store, or
+         constructing a client there drags that subsystem's whole init onto the
+         boot path, where nobody looking at the route file will find it.
+      3. Work whose cost scales with user data — row counts, corpus size,
+         file counts, session history. This is forbidden on the boot path at
+         any measured speed, because the measurement was taken on an empty
+         profile and the growth is unbounded.
+      4. Unconditional maintenance: orphan sweeps, integrity scans, vacuum,
+         reindex, or a migration that scans rather than checks a version. Boot
+         is not a maintenance window. Work that finds nothing on a healthy
+         install still costs every user every launch.
+      5. Eager import or instantiation of a subsystem that is optional,
+         disabled, or feature-flagged off. Gate the import, not just the
+         handler — an import the enabled-check happens after is not gated.
+      6. Touching a lazily-initialized accessor from boot code. A `@property`
+         documented as lazy-init is a contract; reading it at startup breaks
+         that contract silently and moves the cost to a place its author did
+         not intend.
+
+      Instead, defer it:
+      - a first-use accessor that constructs once and memoizes on the app
+      - `asyncio.create_task(...)` for work that may finish after readiness
+      - `await asyncio.to_thread(...)` when init genuinely must happen at boot
+        and genuinely blocks, so it does not hold the loop
+      - let dependent routes return 503 until the subsystem is ready, rather
+        than making every launch wait for a subsystem most launches never use
+
+      Allowed: route registration itself, in-memory wiring, O(1) config reads,
+      and bounded fail-closed safety checks that must precede serving traffic
+      (those still belong off the loop).
+
+      If a step genuinely must run at boot, the PR must say why it cannot be
+      deferred and state its worst-case bound on a large profile — not on the
+      author's machine.
+
+  - id: no-test-side-effects
+    blocking: true
+    file-patterns:
+      - "test/**/*.py"
+      - "tests/**/*.py"
+      - "src/kiro_crew/apps/builtins/**/tests/**/*.py"
+    rule: |
+      A test must have no side effects outside its own tmp dir. Never register a
+      real cron job, write into the operator's real ~/.kiro/crew or HOME, start
+      or reconfigure a gateway/service, or create files or directories in the
+      repo or anywhere else that outlive the run. These shapes have already
+      bitten us: a unit test registered a live cron job, test runs accumulated
+      stray directories under the developer's home, and an empty file a test
+      left at the repository root was committed and shipped to main.
+
+      A CHILD PROCESS INHERITS THE CWD, and pytest's CWD is the repository root.
+      A test that spawns one MUST pass `cwd=` pointing inside its own tmp dir,
+      or anything the child writes with a relative path lands in the repo. This
+      is the shape the paragraph above does not catch by reading the test: no
+      line says `touch` or `open(...,"w")`, the write happens in a grandchild
+      process, and the test can assert against its tmp dir and still pass while
+      the artifact sits at the repo root. So for any test that runs a child:
+      - pass `cwd=<a directory under tmp_path>` to any child that MAY CREATE a
+        file, and to every helper that spawns one. A read-only query is exempt
+        and sometimes has to be: `git check-ignore` run against the checkout is
+        answering a question about the checkout, and pointing it at a tmp dir
+        would test nothing.
+      - scope an assertion about a file the child MIGHT create to where that
+        child's CWD actually is, not to where you hope it wrote. An assertion
+        over `tmp_path` proves nothing about a child that ran somewhere else,
+        and a security test whose payload escapes its own assertion is worse
+        than no test, because it reports the guarantee it failed to check.
+
+      THE PROCESS WORKING DIRECTORY IS SHARED STATE. It is per-PROCESS, so under
+      xdist one test's `os.chdir` becomes every later test's starting directory on
+      that worker. FLAG a bare `os.chdir` in a test; `monkeypatch.chdir` reverts on
+      its own. This is not untidiness: a passing test's `tmp_path` is removed at that
+      test's teardown, so a test that chdirs into `tmp_path` and does not come back
+      leaves the worker in a DELETED directory, and `Path.cwd()` then raises
+      FileNotFoundError in every later test that reaches it — including from inside
+      production code (`taskrunner.TaskRunner.__init__` does `work_dir or Path.cwd()`).
+      Measured instance and its numbers: testing-conventions.md § Rules. The shape to
+      recognise in review is that it reads as "the suite is flaky" -- many files, each
+      passing in isolation -- rather than as one test missing one line.
+
+      A BACKGROUND WORKER BEATS EVERY FILESYSTEM CLEANUP, and this is the shape
+      neither paragraph above catches. A process singleton whose writer is a daemon
+      thread binds its directory ONCE, from whatever the first caller resolved. The
+      thread then outlives that test and re-creates the directory on its next flush —
+      AFTER the test's own tearDown removed it. `sel.py` is the worked case:
+      `SecurityEventLog._init_locked` captures `_default_dir()` and `_flush_batch`
+      opens with `mkdir(parents=True, exist_ok=True)`, which left one stray directory
+      behind on every run of a suite whose tests all cleaned up correctly. FLAG a test
+      that hands a PER-TEST directory to a subsystem with a background thread, task or
+      timer; the fix is a session-scoped directory that belongs to no individual test,
+      never tidier cleanup. Same family: a bare `MagicMock` config reads TRUTHY, so
+      patching `KiroCrewConfig.load` with one starts whatever subsystem is gated on
+      `cfg.<x>.enabled` and resolves `Path(cfg.local_dir)` to a RELATIVE path in the
+      repo; and a sleeper child (`python -c "import time; time.sleep(30)"`) whose
+      kill/wait sits on the happy path instead of in a `finally` or `addCleanup`.
+
+      A SECURITY ANCHOR IS NOT A DATA PATH. Some module-level values are built FROM
+      the real home precisely so they can refuse access to it — `security`'s
+      extract-into-trust-root pattern, `kiro_usage_api`'s credential-store paths.
+      Redirecting one to a tmp dir so a test can be isolated makes that test assert
+      against a pattern that no longer matches the thing it protects. FLAG it: stub
+      the READER, never move the anchor. The mirror-image defect is equally real —
+      handing a runtime-resolved path to a home-anchored matcher, which passes only
+      while the suite is reading the operator's REAL home and reports a guarantee it
+      never checked.
+
+      Know which floor you are standing on — it is NOT the same everywhere:
+      - The ROOTDIR `conftest.py` is the HOST-MUTATION FLOOR and applies to both
+        testpaths. It pins $XDG_CONFIG_HOME and the launchd paths, blocks
+        host service mutation, pins KIROCREW_HOME per test (with
+        `config.paths._resolved_home` reset, since resolving the home CREATES it
+        and can run the legacy migration), pins the import-time `~/.kiro`
+        bindings via `_isolate_shared_kiro_paths`, pins the SEL default dir
+        session-wide, redirects `tempfile`'s base with residue reported, and
+        fails the run on residue at the repository root.
+      - `test/conftest.py` adds ~20 MORE autouse fixtures, and it applies ONLY to
+        `test/`. Tests under `src/kiro_crew/apps/builtins/*/tests/` see the
+        rootdir conftest plus that app's own
+        `tests/conftest.py` where one exists (`auto_improvement`,
+        `code_review_sage`, `spec_builder` have one; the other five apps do not).
+        So a test there gets the host floor -- which now includes the data home,
+        the import-time `~/.kiro` bindings, the SEL dir, the subagent registry,
+        the model-download block and the agent-state sidecar -- but NOT the
+        suite-specific isolation (the Slack thread-state reset, the model-window
+        cache, the platform-context reset, the reasoning-effort globals, the
+        OPTIONS registries, …). FLAG a test in those trees that relies on one of
+        THOSE without arranging it itself.
+      - `~/.kiro` is a SEPARATE isolation axis from the data home: it is
+        kiro-cli's own machine-wide home, shared with the real installed agent,
+        so `~/.kiro/settings/mcp.json` is the LIVE agent's MCP server list. A new
+        module-level `Path.home()` binding in `src/kiro_crew` must be added to
+        `_SHARED_KIRO_PATHS` or excluded with a reason —
+        `test/test_host_isolation_floor.py` fails otherwise. That ratchet covers the
+        IMPORT-TIME shape only: a lazy resolver such as `config.paths.kiro_home()`
+        still names the operator's real `~/.kiro`, because the floor pins neither
+        `Path.home()` nor `$HOME`, so a test reaching one of those must isolate it
+        itself.
+
+      Assert against the tmp dir, not the real one, and clean up anything you
+      create. If a test genuinely needs a host-level effect, it must be opt-in
+      and named in the corresponding conftest allowlist with a comment saying
+      why.
+
+      NEVER use bare `tempfile.mkdtemp()` or `tempfile.TemporaryDirectory()`
+      without cleanup. These create directories that survive the test run and
+      accumulate across runs, exhausting inodes — and inode exhaustion returns
+      ENOSPC to every other process on the machine while 90% of the BYTES are
+      still free, so it does not look like a disk problem. Use pytest's
+      `tmp_path` fixture, or pair every `mkdtemp()` with
+      `self.addCleanup(shutil.rmtree, path, ignore_errors=True)` ON THE LINE
+      AFTER IT. An `rmtree` in `tearDown` is NOT equivalent and is the shape that
+      actually leaks: `unittest` skips `tearDown` entirely when `setUp` raises,
+      so it leaks on every setUp failure — the failing run nobody is watching
+      closely. The rule is: if you create it, you must register its destruction
+      in the same scope. `ignore_errors=True` also SWALLOWS a cleanup that could
+      not finish, so it is not evidence the directory is gone.
+
+      NEVER use relative `Path("src/...")` or bare string paths to read source
+      files from a test. Under pytest-xdist, workers may change CWD, making
+      relative paths non-deterministic. Always anchor to the repo root via
+      `_REPO_ROOT = Path(__file__).resolve().parents[1]` (for test/ files) or
+      the equivalent number of parent hops for deeper test directories, then
+      use `_REPO_ROOT / "src/kiro_crew/..."`. This pattern is already
+      established in test_builtin_app_assets.py, test_platform_compat.py, and
+      test_skill_home_paths.py.
+
+  - id: top-level-imports
+    blocking: false
+    file-patterns:
+      - "src/kiro_crew/**/*.py"
+    rule: |
+      All imports must be at the top of the file, not inside functions or
+      methods. In-method imports make dependencies hard to trace, break IDE
+      navigation, hide circular-import issues until runtime, and can make test
+      mock patches target the wrong module namespace.
+
+      Exceptions:
+      - TYPE_CHECKING blocks: `if TYPE_CHECKING: from ...` (zero runtime cost).
+      - Genuine circular-import avoidance — add a `# circular import` comment
+        explaining why.
+      - Optional dependencies: `try: import foo except ImportError: foo = None`
+
+  - id: harness-parity
+    blocking: true
+    file-patterns:
+      - "src/kiro_crew/acp/**/*.py"
+      - "src/kiro_crew/providers/**/*.py"
+      - "src/kiro_crew/platform/**/*.py"
+      - "src/kiro_crew/config/loader.py"
+      - "src/kiro_crew/session.py"
+      - "src/kiro_crew/subagent.py"
+      - "src/kiro_crew/sandbox.py"
+    rule: |
+      Kiro Crew drives ONE first-class agent harness — kiro-cli
+      (ACP_BACKEND_KIRO, spelled "") — and ADAPTS the others (the dormant
+      ACP_BACKEND_CLAUDE seam, KAS, and any bring-your-own harness). An added
+      harness may only adapt itself to the seams the Kiro harness already runs
+      through. It may not move, widen, generalize, or add a branch to them. The
+      invariant ids below are defined in
+      docs/system-specs/modules/harness-parity.md; cite the id in the finding.
+
+      The mechanical shapes are already gated on added lines by
+      scripts/check_harness_parity.py, so do NOT re-report them. Report only
+      what a regex cannot see:
+
+      - H13 — additive at the seam. Registering a harness must be a v1 addition
+        at platform/interfaces.py:ProviderRegistry with no CONTRACT_VERSION
+        bump. FLAG a change that puts a new conditional, a new required
+        argument, a new awaited step, or a new failure mode on the KIRO
+        construction path in service of an adapter — including one that reads
+        as harmless refactoring (hoisting a kiro-specific step into a shared
+        helper, replacing an explicit kiro branch with a table lookup, or
+        making a kiro-only default parameter mandatory). The test is not "does
+        it still work for kiro", it is "did the kiro path change at all".
+      - H14 — the ABC is the contract. A capability the session layer reads off
+        a provider must be declared on providers/base.py:LLMProvider with a
+        safe default. FLAG a change that adds a hasattr/getattr probe on the
+        kiro path to accommodate an adapter, or that leaves a new capability
+        reachable only on AcpProvider so a missing attribute silently reads as
+        False for the adapter.
+      - H9/H10 — no lowest-common-denominator. FLAG a change that collapses a
+        per-harness literal (spawn argv construction, PROTOCOL_VERSION, client
+        capabilities, the pre-spawn agent materialization, the --model pin) into
+        one form every harness accepts. Downgrading the kiro session to make an
+        adapter fit is the defect, even when every existing test still passes.
+      - H1/H3 — Kiro is the floor. FLAG a change that makes the kiro harness
+        conditional on an edition, a feature flag, an env var, or a registry
+        lookup, or that makes an unusable persisted acp_backend raise instead of
+        degrading to kiro with a logged reason.
+      - H6/H7 — capability grants. A new capability predicate must be membership
+        in a named ACP_BACKENDS_* set in acp/types.py, and every existing
+        harness's membership must be an explicit decision in the diff. FLAG a
+        new predicate that grants a capability to a harness the PR never
+        mentions. For is_kiro_cli specifically the failure is OPEN — it makes
+        sandbox.wrap_argv SKIP Kiro Crew's own seatbelt in favour of the
+        harness's internal one — so treat a grant to any non-kiro harness as a
+        security finding.
+
+      Allowed (do NOT flag):
+      - The dormant ACP_BACKEND_CLAUDE / _is_claude seam and its existing
+        negative call sites. They predate this rule, the whole-tree backlog is a
+        non-failing report by design, and converting them is a separate change.
+      - A pre-existing negative test on a line the PR merely moved or reindented.
+      - An adapter-only module (acp/kas_*.py and equivalents) that is entirely
+        additive and reachable only when its harness is selected.
+      - Widening the acp_backend config enum to admit a preview harness: the
+        enum is the value-SURVIVAL domain and selectability is gated separately
+        (H4). Omitting it there is the bug, not including it.
+
+  - id: changelog-is-written-at-version-bump-only
+    blocking: true
+    file-patterns:
+      - "CHANGELOG.md"
+    rule: |
+      CHANGELOG.md is written ONLY when a version is bumped, and released
+      history in it is immutable. The spec for the section itself is
+      AGENTS.md -> "Release Changelog".
+
+      This rule exists because the file has already been destroyed once: a
+      docs commit on a release branch replaced CHANGELOG.md instead of
+      prepending to it, deleting the entire [0.2.0], [0.1.3] and [0.1.2]
+      sections (322 lines) and leaving one machine-generated section behind.
+      Nothing failed, no test covered it, and the loss was noticed only when a
+      user asked why the dashboard's Releases page had gone empty. A changelog
+      is append-only shipped history; a deletion in it is unrecoverable from
+      the artifact a user has installed.
+
+      - FLAG any change to CHANGELOG.md in a PR that is not a version bump or a
+        release cut. A feature, fix, refactor, test, or docs PR MUST NOT touch
+        this file — the release PR writes the section for everything that
+        shipped. If a PR author wants their change remembered, the commit
+        subject is the record.
+      - FLAG any diff that DELETES or MODIFIES a line inside an existing
+        released `## [X.Y.Z]` section. A release PR adds exactly one new
+        section at the top and leaves every pre-existing section
+        byte-identical. Treat a removed `## [` heading as a blocking finding on
+        its own, whatever the stated reason (merge-conflict resolution,
+        regeneration, "cleanup", branch divergence).
+      - FLAG a new `## [Unreleased]` section. There is no Unreleased section:
+        unshipped changes live in the commit log until a bump names them. Use
+        `git log --oneline <last-tag>..HEAD` to see what is pending.
+        `scripts/check_changelog_history.py` also refuses this mechanically, so
+        spend your attention on the section's CONTENT rather than re-deriving
+        this; report it only if the gate somehow did not.
+      - FLAG a section assembled from a commit dump — a bare list of commit
+        subjects, a "Bug Fixes (N total)" count, or a trailing "and N more
+        (see commit log)". That is not a changelog entry; it is the thing a
+        changelog entry exists to replace, and nobody reads it. A curated
+        `### Notable fixes` list of individually-named user-observable outcomes
+        is NOT a dump and is allowed — see AGENTS.md for the line between them.
+      - FLAG a heading that is not a plain release: `## [0.3.0-insider.9]`,
+        `## [0.3.0-rc.2]` and similar prerelease spellings must not appear.
+        A prerelease is a draft of its base version and is folded onto it by
+        src/kiro_crew/changelog.py; giving it its own heading puts a build
+        stamp in the reader's version archive. Mechanically refused by
+        `scripts/check_changelog_history.py` as well; a release branch writes
+        its section once, under the release's final heading.
+
+      Allowed (do NOT flag):
+      - A release PR that prepends one new `## [X.Y.Z] — YYYY-MM-DD` section
+        and, in the same commit, bumps src/kiro_crew/__init__.py.
+      - Correcting a genuine factual error inside an already-shipped section,
+        when the PR body says that is what it is doing. Say it out loud; an
+        unexplained edit to shipped history is the defect this rule exists for.
+      - Porting an already-written section verbatim between main and a release
+        branch, where the diff adds a section and removes nothing.

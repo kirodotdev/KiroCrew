@@ -1,0 +1,2788 @@
+"""Dashboard token authentication.
+
+HMAC-SHA256 token generation, validation, IP binding, consumption
+tracking, and aiohttp middleware for Slack-gated dashboard access.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import hashlib
+import hmac
+import json
+import logging
+import os
+import re
+import threading
+import time
+from collections import OrderedDict
+from collections.abc import Callable, Iterable
+from functools import partial
+from pathlib import Path
+from typing import Any, cast
+
+from aiohttp import web
+
+from kiro_crew import platform_compat
+from kiro_crew.dashboard.boot_id import current_boot_id
+from kiro_crew.dashboard.origin import (
+    is_https_request,
+    is_loopback,
+    is_proxied_request,
+    request_is_unix_socket,
+)
+from kiro_crew.dashboard.refresh_tokens import (
+    MAX_REFRESH_TTL_SECS,
+    REFRESH_COOKIE_PATH,
+    cookie_jar_needs_pruning,
+    foreign_port_cookies,
+    generate_refresh_token,
+    refresh_cookie_name,
+)
+
+# Canonical revocation-generation definitions live in revocation_gen so the
+# refresh-token module can consult the counter without recreating the
+# token_auth <-> refresh_tokens import cycle (same pattern as token_secret
+# below). Re-exported here for backwards compatibility. Both validators read
+# the LIVE value via current_revocation_gen() — never an import-time copy —
+# so a bump is visible to every subsequent validation in-process.
+from kiro_crew.dashboard.revocation_gen import (  # noqa: F401  # re-exports
+    _REVOCATION_FILE,
+    _load_revocation_gen,
+    bump_revocation_gen,
+    current_revocation_gen,
+    current_revocation_gen_or_none,
+)
+from kiro_crew.dashboard.tailnet import (
+    ForwardedPeer,
+    TailnetTrust,
+    login_allowed,
+    peer_pin_key,
+    resolve_forwarded_peer,
+)
+
+# Canonical HMAC-secret definitions live in token_secret to break the import
+# cycle between token_auth and refresh_tokens. Re-exported here for backwards
+# compatibility — callers elsewhere import these names from token_auth. The
+# fork keeps the LAZY _get_secret() (NOT an eager module-level _SECRET =
+# _load_or_create_secret()) so that merely importing this module never writes
+# token_signing.key into $KIROCREW_HOME (the CLI imports token_auth for every
+# kirocrew subcommand; an import-time write would break gateway --seed and
+# pollute the home for read-only commands).
+from kiro_crew.dashboard.token_secret import (  # noqa: F401  # re-exports
+    _SECRET_KEY_FILE,
+    _get_secret,
+    _load_or_create_secret,
+)
+from kiro_crew.executors import subprocess_executor
+from kiro_crew.mcp_gateway.socketsec import PeerCredResult, check_peer_is_self, get_peer_pid
+from kiro_crew.peer_resolve import resolve_peer_identity
+from kiro_crew.sel import sel as _sel_fn
+
+logger = logging.getLogger(__name__)
+
+# Alias of bump_revocation_gen: callers elsewhere import the private name
+# from this module.
+_bump_revocation_gen = bump_revocation_gen
+
+
+# -- Per-session access-cookie revocation -------------------------------------
+
+_REVOKED_NONCES_FILE = "token_revoked_nonces.json"
+
+
+class RevokedNonceStore:
+    """Persisted denylist of explicitly-revoked access-cookie nonces.
+
+    Enables PER-SESSION logout (CWE-613). The access cookie is a self-contained
+    HMAC-signed token, so clearing it client-side (``Set-Cookie max_age=0``)
+    does NOT stop a saved copy being replayed until its ``session_exp`` (up to
+    20h). ``POST /api/auth/logout`` records the caller's access-cookie ``nonce``
+    here; :func:`validate_token` (cookie path) then rejects any token whose
+    nonce is listed — killing exactly that one session WITHOUT bumping the
+    global generation counter (``revoke_all_sessions``), which would log out
+    every other user too.
+
+    Persisted to disk (mode ``0600``) so a revoked cookie stays dead across a
+    gateway restart — unlike the in-memory link-nonce set in
+    :class:`TokenStateManager`, which is restart-cleared and intentionally NOT
+    consulted for cookies. Each entry stores the token's own ``session_exp`` as
+    an eviction floor: once that passes, the expiry check rejects the token
+    anyway, so the record is dropped and the file cannot grow without bound.
+    """
+
+    def __init__(self, state_path: Path | None = None) -> None:
+        self._lock = threading.Lock()
+        self._revoked: dict[str, float] = {}  # nonce -> session_exp (eviction floor)
+        self._state_path = state_path
+        self._load()
+
+    def revoke(self, nonce: str, session_exp: float) -> None:
+        """Record *nonce* as revoked until *session_exp*, evicting expired entries."""
+        now = time.time()
+        with self._lock:
+            self._revoked[nonce] = session_exp
+            # Opportunistic eviction so a stream of logouts cannot grow the file.
+            expired = [n for n, exp in self._revoked.items() if exp < now]
+            for n in expired:
+                self._revoked.pop(n, None)
+        self._persist()
+
+    def is_revoked(self, nonce: str) -> bool:
+        """Return True if *nonce* is on the denylist and not yet past its floor."""
+        now = time.time()
+        with self._lock:
+            exp = self._revoked.get(nonce)
+            if exp is None:
+                return False
+            if exp < now:
+                # Stale entry — the token is already rejected by the expiry
+                # check, so drop it lazily (no persist on this hot read path).
+                self._revoked.pop(nonce, None)
+                return False
+            return True
+
+    def clear_all(self) -> None:
+        """Wipe all revoked-nonce records (used by tests)."""
+        with self._lock:
+            self._revoked.clear()
+        self._persist()
+
+    def _load(self) -> None:
+        if self._state_path is None or not self._state_path.exists():
+            return
+        try:
+            data = json.loads(self._state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            logger.warning("could not read revoked-nonce store; starting empty", exc_info=True)
+            return
+        now = time.time()
+        with self._lock:
+            for entry in data.get("revoked_nonces", []):
+                if isinstance(entry, dict) and "nonce" in entry and "exp" in entry:
+                    try:
+                        exp = float(entry["exp"])
+                    except (TypeError, ValueError):
+                        continue
+                    if exp >= now:  # skip already-expired records on load
+                        self._revoked[str(entry["nonce"])] = exp
+
+    def _persist(self) -> None:
+        if self._state_path is None:
+            return
+        with self._lock:
+            data = {
+                "revoked_nonces": [{"nonce": n, "exp": exp} for n, exp in self._revoked.items()]
+            }
+            try:
+                self._state_path.parent.mkdir(parents=True, exist_ok=True)
+                tmp = self._state_path.with_suffix(self._state_path.suffix + ".tmp")
+                # Create the temp file EMPTY, lock it down, and only then write
+                # the nonces. On Windows restrict_to_owner shells out to icacls,
+                # so writing first would leave the denylist under the
+                # parent-inherited DACL for the length of that call. O_TRUNC also
+                # empties a stale temp file an earlier crash left behind, so the
+                # lockdown never applies on top of someone else's contents.
+                os.close(os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600))
+                try:
+                    # restrict_to_owner (fail-loud), NOT a raw chmod: on Windows
+                    # os.chmod only toggles the read-only attribute and leaves the
+                    # inherited DACL intact, so the nonces stay readable by other
+                    # local accounts — and because that chmod SUCCEEDS, the
+                    # warning below never fires. Matches token_secret.py and the
+                    # app-token secret written further down this module.
+                    platform_compat.restrict_to_owner(tmp)
+                except OSError:
+                    # Security-sensitive state (revoked session nonces). A
+                    # lockdown failure must be observable, matching token_secret.py.
+                    logger.warning(
+                        "could not restrict revoked-nonce store %s to its owner; "
+                        "file may be readable by other users",
+                        tmp,
+                        exc_info=True,
+                    )
+                tmp.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
+                os.replace(tmp, self._state_path)
+            except OSError:
+                logger.warning("could not persist revoked-nonce store", exc_info=True)
+
+
+_revoked_store_singleton: RevokedNonceStore | None = None
+_revoked_store_lock = threading.Lock()
+
+
+def _get_revoked_store() -> RevokedNonceStore:
+    """Return the lazily-initialized revoked-nonce store singleton.
+
+    Lazy (not module-level) so merely importing token_auth never touches the
+    filesystem — the CLI imports this module for every subcommand.
+    """
+    global _revoked_store_singleton
+    if _revoked_store_singleton is None:
+        with _revoked_store_lock:
+            if _revoked_store_singleton is None:
+                from kiro_crew.config.loader import config_dir
+
+                _revoked_store_singleton = RevokedNonceStore(
+                    state_path=config_dir() / _REVOKED_NONCES_FILE
+                )
+    return _revoked_store_singleton
+
+
+class TokenStateManager:
+    """Thread-safe manager for token authentication state.
+
+    Encapsulates all mutable token state (nonces, IP bindings, consumption)
+    with consistent locking. Uses OrderedDict for O(1) nonce eviction.
+
+    Threading model: This class uses threading.Lock (not asyncio.Lock) because
+    token operations are called from both async contexts (aiohttp middleware)
+    and sync contexts (CLI commands like `kirocrew token`). The lock hold time
+    is minimal (dict operations only), so blocking the event loop is negligible.
+    """
+
+    def __init__(self, max_concurrent_nonces: int = 50) -> None:
+        self._lock = threading.Lock()
+        self._max_nonces = max_concurrent_nonces
+        # OrderedDict maintains insertion order for O(1) oldest eviction
+        self._nonces: OrderedDict[str, float] = OrderedDict()
+        # Observation latches for the Security Posture surface only — never read
+        # by an auth decision. See bind_peer() / proxied_pin_observed().
+        # token → (peer key, exp, proxied). The peer key is "ip:<addr>" for the
+        # default address pin and "ts:node:<login>@<node>" / "ts:login:<login>" for a
+        # daemon-verified tailnet peer (RFC §3) — in-memory only, regenerated on restart.
+        self._peer_bindings: dict[str, tuple[str, float, bool]] = {}
+        self._consumed: dict[str, float] = {}  # token → exp
+
+    def register_nonce(self, nonce: str, expiry: float) -> str | None:
+        """Register a nonce with its expiry time, evicting oldest if over limit."""
+        with self._lock:
+            self._nonces[nonce] = expiry
+            self._nonces.move_to_end(nonce)  # Most recent at end
+            if len(self._nonces) > self._max_nonces:
+                evicted, _ = self._nonces.popitem(last=False)
+                return evicted
+            return None
+
+    def is_nonce_valid(self, nonce: str) -> tuple[bool, str]:
+        """Check if nonce is valid. Returns (valid, reason).
+
+        Deny-by-default: rejects if no nonces registered or nonce not in set.
+        Refreshes the nonce's eviction position on each successful check so
+        that actively-used sessions are not evicted by newer token grants.
+        """
+        with self._lock:
+            if not self._nonces:
+                return False, "no active sessions"
+            if nonce not in self._nonces:
+                return False, "token superseded"
+            self._nonces.move_to_end(nonce)
+            return True, ""
+
+    def bind_peer(
+        self, token: str, peer_key: str, session_exp: float, proxied: bool = False
+    ) -> None:
+        """Bind a token to a peer key (``ip:<addr>`` or a ``ts:``-prefixed identity).
+
+        ``proxied`` records that the pin is a same-host proxy's address rather
+        than a client identity, which means this binding pins the token to the
+        proxy and is therefore shared by every client behind it. A session
+        pinned to a daemon-verified tailnet peer key is per-client, NOT shared
+        — callers pass ``proxied=False`` for it. It is an observation for the
+        Security Posture surface only — it does not change the binding or how
+        :meth:`check_peer` compares it.
+        """
+        with self._lock:
+            self._peer_bindings[token] = (peer_key, session_exp, proxied)
+
+    def proxied_pin_observed(self, now: float) -> bool | None:
+        """Report the pin scope of the sessions that are LIVE at *now*.
+
+        ``None`` = no session is currently pinned, so there is no scope to
+        report — which is NOT the same as "pins are effective" and must not be
+        rendered as if it were. ``True`` = at least one live session is pinned to
+        a same-host proxy's address and is therefore shared by every client
+        behind it. ``False`` = live sessions are pinned per client (to a client
+        address, or to a daemon-verified tailnet identity).
+
+        Derived from the bindings rather than from a latch, deliberately. A latch
+        would outlive the sessions it describes: one tunnelled login would report
+        SHARED until the gateway restarted, even after that session expired and
+        the user went back to direct access — the same class of stale claim this
+        reporting exists to remove.
+
+        Filters on ``exp`` rather than trusting :meth:`evict_expired` to have
+        run, so the answer never depends on when eviction last happened.
+        """
+        with self._lock:
+            live_proxied = [p for _, exp, p in self._peer_bindings.values() if exp > now]
+            if not live_proxied:
+                return None
+            return any(live_proxied)
+
+    def check_peer(self, token: str, peer_key: str) -> tuple[bool, str]:
+        """Check *token* against its bound peer key (or unbound).
+
+        Returns ``(ok, mismatch_reason)``. The reason names what the STORED pin
+        was bound to, because that is what the user must fix: a node-scoped
+        tailnet pin that stops matching means the device's identity changed
+        (Tailscale re-enroll), and reporting it as "IP mismatch" would send
+        them chasing the wrong thing.
+        """
+        with self._lock:
+            entry = self._peer_bindings.get(token)
+        if entry is None or entry[0] == peer_key:
+            return True, ""
+        stored = entry[0]
+        if stored.startswith("ts:node:"):
+            return False, "device identity mismatch"
+        if stored.startswith("ts:"):
+            return False, "peer identity mismatch"
+        return False, "IP mismatch"
+
+    def has_binding(self, token: str) -> bool:
+        """Whether *token* currently has a peer binding (live or not)."""
+        with self._lock:
+            return token in self._peer_bindings
+
+    def mark_consumed(self, token: str, session_exp: float) -> None:
+        """Mark a token as consumed (used for one-time token patterns)."""
+        with self._lock:
+            self._consumed[token] = session_exp
+
+    def is_consumed(self, token: str) -> bool:
+        """Check if a token has been consumed."""
+        with self._lock:
+            return token in self._consumed
+
+    def try_consume(self, token: str, session_exp: float) -> bool:
+        """Atomically mark token consumed if not already.
+
+        Returns True if this call consumed it, False if already consumed.
+        """
+        with self._lock:
+            if token in self._consumed:
+                return False
+            self._consumed[token] = session_exp
+            return True
+
+    def evict_expired(self, now: float) -> None:
+        """Remove all expired entries from all state stores."""
+        with self._lock:
+            # Evict expired peer bindings
+            expired_tokens = [t for t, (_, exp, _p) in self._peer_bindings.items() if exp < now]
+            for t in expired_tokens:
+                self._peer_bindings.pop(t, None)
+            # Evict consumed tokens independently using their own expiry
+            expired_consumed = [t for t, exp in self._consumed.items() if exp < now]
+            for t in expired_consumed:
+                self._consumed.pop(t, None)
+            # Evict expired nonces
+            expired_nonces = [n for n, exp in self._nonces.items() if exp < now]
+            for n in expired_nonces:
+                self._nonces.pop(n, None)
+
+    def clear_all(self) -> None:
+        """Clear all token state (nonces, peer bindings, consumed tokens)."""
+        with self._lock:
+            self._nonces.clear()
+            self._peer_bindings.clear()
+            self._consumed.clear()
+
+
+# Maximum concurrent valid tokens before oldest is evicted.
+# Raised from 5 to 50 so pending Slack challenge links aren't evicted
+# by other token minting activity (crons, dashboard links, etc.).
+MAX_CONCURRENT_NONCES = 50
+
+# Module-level singleton instance
+_state: TokenStateManager = TokenStateManager(max_concurrent_nonces=MAX_CONCURRENT_NONCES)
+
+# Public static-asset prefixes exempt from token auth (GET of non-secret files
+# the dashboard HTML references before the auth cookie is established).
+# /fonts/ holds the self-hosted AWS Diatype woff2 files (public.html @font-face
+# url('/fonts/...')); without the exemption the auth middleware 403s each font
+# request and the browser, parsing the 403 HTML body as a font, logs
+# "invalid sfntVersion" and falls back to a default typeface.
+# /artifact-app/ is the webapp-artifact local preview channel: auth is the
+# HMAC path token minted by the authed /api/artifacts/{slug}/app-preview
+# endpoint (sandboxed preview iframes carry no cookies). See
+# dashboard/handlers/webapp_preview.py for the full security model.
+# /vendor/ holds same-origin vendored JS (the Tailwind v4 browser runtime at
+# /vendor/tailwindcss-browser.js plus app import-map shims) that sandboxed
+# widget/artifact iframes load via <script src>. Those iframes are null-origin
+# srcdoc sandboxes (widgetSrcdoc.ts), so the request carries no auth cookie;
+# without the exemption the middleware 403s the runtime and every <mcwidget>
+# renders unstyled (Tailwind classes silently ignored, inline styles only).
+# Same exposure class as /assets/: static non-secret files.
+# /sandbox-doc/ is the model-authored-HTML document channel: auth is the HMAC
+# path token minted by the authed POST /api/sandbox-doc endpoint. It exists
+# because a blob: URL is refused outright by some WebKit-based in-app browsers,
+# so artifact and widget frames load a real document instead. See
+# dashboard/handlers/sandbox_doc.py for the full security model.
+# Same exposure class as /assets/: static non-secret files.
+_BYPASS_PREFIXES = (
+    "/assets/",
+    "/static/",
+    "/fonts/",
+    "/vendor/",
+    "/artifact-app/",
+    "/sandbox-doc/",
+)
+_BYPASS_EXACT = {
+    "/logo.png",
+    "/manifest.json",
+    "/sw.js",
+    "/pcm-worklet.js",
+    "/api/token/local",
+    "/api/shutdown",
+    # `kirocrew logout` (CLI) authenticates with loopback + the local secret via
+    # an X-Local-Secret header, exactly like /api/token/local and /api/shutdown
+    # above — api_logout re-checks BOTH itself before revoking anything. It must
+    # bypass the cookie/token gate for the same reason they do: the CLI holds no
+    # dashboard token, and the middleware only honors X-Internal-Secret, so
+    # without this entry every `kirocrew logout` is denied 403 by the middleware
+    # before the handler (and its audit events) ever run.
+    "/api/logout",
+    "/api/theme/boot",
+    # Liveness/readiness probes (rec #6): orchestrators / load balancers carry
+    # no auth cookie, so these must be reachable without a token. Each exposes
+    # only liveness + coarse readiness booleans + the build version — no
+    # secrets, paths, ids, or user/session content.
+    "/api/health",
+    "/api/live",
+    "/api/ready",
+}
+
+# Exact-path bypasses that apply to SOME methods only, path -> allowed methods.
+#
+# A path-only bypass is unsound whenever another route pattern also matches the
+# same literal path under a different method: the entry opens every one of those
+# methods, not just the self-authenticating one it was written for. Scoping the
+# entry to the method whose handler does its own auth leaves the rest on the
+# ordinary token gate. Every self-authenticating webhook belongs here rather than
+# in the path-only set above, whether or not another route currently collides —
+# the collision is a property of the route table, which moves.
+#
+# ``POST /api/hooks/agent`` is the inbound agent webhook: external systems (CI
+# runners, code-review bots, deploy pipelines) post here holding a webhook token
+# and nothing else — no dashboard cookie, no gateway IPC secret. The handler does
+# its OWN auth (api_hooks_agent -> _verify_hook_token compares the bearer against
+# the sha256 of every stored token entry with hmac.compare_digest and refuses
+# with 401 when none match, including when no token exists at all, so the
+# endpoint is closed by default on a fresh install). It is a deliberate exposure
+# decision: a valid token authorizes a real agent turn with full tool access, so
+# the handler also rate-limits repeated failures per source
+# (webhooks.auth_throttle) and records every 401 in the run history.
+#
+# For that entry the method scope is load-bearing, not tidiness. The literal
+# string ``agent`` also matches the ``{hook_id}`` wildcard of the dashboard's own
+# hook CRUD routes — PUT and DELETE ``/api/hooks/{hook_id}`` — whose handler
+# (api_hook_detail) authenticates via the dashboard token alone. Unscoped, both
+# reach it with no credential of any kind.
+#
+# ``POST /api/messaging/teams`` is the Microsoft Teams inbound webhook: Bot
+# Framework (Microsoft's servers, no dashboard cookie) posts activities there and
+# the handler does its OWN auth, validating the Bot Framework JWT (issuer +
+# App-ID audience + signature) before processing. Only POST is routed today, so
+# the scope closes nothing yet — it is here so the shape a future entry gets
+# copied from is the safe one.
+
+#: The Bot Framework inbound webhook route. Named once because TWO independent
+#: middleware exemptions target it (the token gate below and the CSRF Origin
+#: check in ``server``), and a hand-copied second spelling is how one control
+#: ends up pointed at a route the other is not.
+TEAMS_WEBHOOK_PATH = "/api/messaging/teams"
+
+#: The inbound agent webhook route, named once for exactly the same reason
+#: :data:`TEAMS_WEBHOOK_PATH` is: the same two independent middleware exemptions
+#: target it, and one of them keying off a re-typed literal is how a route ends
+#: up exempt from one control and not the other.
+AGENT_HOOK_PATH = "/api/hooks/agent"
+
+#: Method scope shared by every self-authenticating external webhook entry: POST
+#: is the only method whose handler carries its own credential check.
+_SELF_AUTH_WEBHOOK_METHODS = frozenset({"POST"})
+
+_BYPASS_EXACT_METHODS: dict[str, frozenset[str]] = {
+    AGENT_HOOK_PATH: _SELF_AUTH_WEBHOOK_METHODS,
+    TEAMS_WEBHOOK_PATH: _SELF_AUTH_WEBHOOK_METHODS,
+}
+
+# Exact-path exemptions from the CSRF **Origin** check, path -> allowed methods.
+# A separate map from the token-auth bypass above, deliberately: skipping the
+# cookie gate and skipping the Origin check are two different grants, and a route
+# may need one without the other.
+#
+# ONE entry, and adding a second is a security review rather than a copy of this
+# line. `/api/hooks/agent` shares the shape -- self-authenticating, cookie-less,
+# server-to-server -- and is in the token-auth bypass above, but it is NOT here:
+# no reported failure named it, its own proxy topologies already work, and a
+# perimeter exemption is far harder to withdraw once a caller depends on it than
+# it is to add later with its own cause.
+#
+# WHY dropping the Origin check is sound for the Teams route: CSRF exists to stop
+# a BROWSER making a cross-origin state-changing request that the browser then
+# decorates with the victim's cookies. ``api_teams_activity`` reads no cookie at
+# all, so there is nothing for a cross-origin page to ride; it authenticates the
+# Bot Framework JWT instead (issuer, App-ID audience, RS256 signature over the
+# Bot Framework JWKS, expiry). A cross-origin page can neither obtain nor forge
+# one, so an Origin the check would have rejected buys an attacker nothing.
+#
+# WHY the exemption is REQUIRED and not a convenience: the Connector is
+# server-to-server and sends neither ``Origin`` nor ``Referer``.
+# ``origin.check_origin`` trusts a header-less request only from a loopback peer
+# or the dashboard's unix socket, so such a POST arriving straight at the gateway
+# is refused 403 before the credential is ever examined -- which is the "public
+# hostname on a VM/App Service" topology in ``docs/teams-integration.md``.
+# Nothing an operator can configure widens it: unlike the Host allowlist, which
+# ``dashboard.url`` feeds, there is no setting that admits an Origin-less
+# non-loopback POST.
+#
+# The METHOD scope is load-bearing: only POST is exempt, so the ``PUT``/``DELETE``
+# ``/api/hooks/{hook_id}`` CRUD routes -- whose handler authenticates by dashboard
+# token alone -- keep their Origin check even though the literal ``agent`` matches
+# their wildcard.
+CSRF_EXEMPT_EXACT_METHODS: dict[str, frozenset[str]] = {
+    TEAMS_WEBHOOK_PATH: _SELF_AUTH_WEBHOOK_METHODS,
+}
+
+
+def is_csrf_exempt(path: str, method: str) -> bool:
+    """Whether *path* + *method* is a webhook exempt from the CSRF Origin check.
+
+    The single read point for :data:`CSRF_EXEMPT_EXACT_METHODS`, so both dashboard
+    middleware chains share one exemption rather than a literal list each.
+    """
+    return method in CSRF_EXEMPT_EXACT_METHODS.get(path, frozenset())
+
+
+# Anchored bypass for installed-app static UI bundles only (federated-app
+# design). Matches /apps/{name}/ui/<anything>, where {name} is the
+# canonical app-name pattern. Must NOT match /apps/{name}/api/... — that
+# path is the gateway-authenticated reverse proxy to the app backend
+# (handle_app_api_proxy in kiro_crew/apps/routes.py) and continues to
+# require a valid token. The bounded character class prevents ReDoS.
+_APPS_UI_BYPASS_RE = re.compile(r"^/apps/[a-z0-9][a-z0-9_-]*/ui/")
+
+# Single source of truth for "paths that are NEVER the SPA (Single-Page
+# Application) shell." One list, read by BOTH consumers below so they cannot
+# drift:
+#   1. the auth middleware — never serves these the shell on a cold start
+#   2. server.py's SPA fallback — never serves these index.html on a 404
+# Each entry owns its own response: gated JSON (/api/), the OpenAI-compat
+# data API (/v1/), and static bundles. Any GET/HEAD path NOT under one of
+# these is a client-side SPA navigation the server answers with index.html.
+#
+# NOTE: /apps/ is intentionally NOT in this tuple. /apps/ path handling is
+# governed solely by _APPS_SPA_EXCLUDED_RE in _is_spa_shell_request:
+#   - bare /apps/{name}              → SPA shell (browser refresh must work)
+#   - /apps/{name}/api|ui/...        → real server handler (proxy / static)
+#   - any other /apps/ path          → SPA shell (React Router owns it, e.g.
+#                                      /apps/detail/{name}, /apps/migrate/{name})
+# test_no_get_route_outside_shell_exclusions validates /apps/ routes against
+# _APPS_SPA_EXCLUDED_RE directly, not this tuple.
+SPA_FALLBACK_EXCLUDED_PREFIXES = (
+    "/api/",
+    "/v1/",
+    "/assets/",
+    "/static/",
+    "/sprites/",
+    "/vendor/",
+    "/fonts/",
+    "/app-assets/",
+    "/artifact-app/",
+    "/sandbox-doc/",
+)
+
+# App window entries (`/app-windows/<app>/<name>.html`) are their own Vite bundles, served
+# from this origin and authenticated by the same session cookie as the
+# dashboard. Without an exclusion they land in the SPA-shell fallback, which
+# answers UNAUTHENTICATED GETs so the token bootstrap can load — meaning the
+# shell would be handed out for these paths with no session at all. The set is
+# registered at startup by dashboard/server.py from the SAME filesystem
+# discovery that registers the routes, so route and exclusion cannot drift:
+# a served window entry is excluded by construction.
+_APP_WINDOW_EXCLUDED_PATHS: frozenset[str] = frozenset()
+
+
+def register_app_window_paths(paths: Iterable[str]) -> None:
+    """Exclude app window-entry paths from the SPA-shell fallback.
+
+    Called once at startup with the concrete route paths server.py registered
+    (e.g. every discovered ``/app-windows/<app>/<name>.html``). Exact-path matching, not
+    prefixes: the routes are enumerated files, so the full set is known.
+    """
+    global _APP_WINDOW_EXCLUDED_PATHS
+    _APP_WINDOW_EXCLUDED_PATHS = frozenset(paths)
+
+
+# Regex that matches /apps/ paths with real server-side handlers, which must NOT
+# be shadowed by the SPA shell. apps/routes.py registers exactly two
+# sub-namespaces under /apps/{name}: /ui/ (the app's static bundle) and /api/
+# (the gateway-authenticated reverse proxy to the app backend). Every other
+# /apps/ path is a client-side React Router entry and needs the shell.
+#
+# Naming those two sub-namespaces is load-bearing. Matching any sub-path (the
+# earlier `^/apps/[a-z0-9][a-z0-9_-]*/`) read the FIRST segment as the app name,
+# so the router's own /apps/detail/{name} and /apps/migrate/{name} entries were
+# treated as server routes and returned 404 on direct navigation or refresh.
+# test_apps_router_subpaths_are_spa_shell locks that in, and
+# test_apps_server_routes_are_excluded_from_shell guards the other direction by
+# reading the live route literals out of apps/routes.py.
+#
+# The trailing slash is also load-bearing. Both handlers are registered with a
+# path segment after the sub-namespace (`/apps/{name}/ui/{path:.*}` and
+# `/apps/{name}/api/{path:.*}`), and no bare `/apps/{name}/ui` or
+# `/apps/{name}/api` route exists. An earlier `(?:/|$)` therefore excluded two
+# paths that no handler serves, and since the app name occupies the same segment
+# position as the router's `detail`/`migrate` verbs, an app named literally
+# "api" or "ui" got a 404 on /apps/detail/api. Requiring the slash costs no
+# real server route and resolves that collision toward the client route.
+_APPS_SPA_EXCLUDED_RE = re.compile(r"^/apps/[a-z0-9][a-z0-9_-]*/(?:api|ui)/")
+
+
+def _is_spa_shell_request(request: web.Request) -> bool:
+    """True if this GET/HEAD request should be answered with the SPA shell.
+
+    Why: lets the React app boot on a cold start (token expired) so it can run
+    its own ``/api/auth/me`` -> ``/api/auth/refresh`` recovery, instead of a
+    dead-end 403 whose recovery JS never loads. Safe because the shell is
+    static and secret-free and every data namespace is excluded.
+
+    Special case for ``/apps/``: only ``/apps/{name}/api/...`` and
+    ``/apps/{name}/ui/...`` have server-side handlers. Every other ``/apps/``
+    path is a React Router navigation entry with no server route -- bare
+    ``/apps/{name}``, plus ``/apps/detail/{name}`` and ``/apps/migrate/{name}``
+    -- so those must fall through to the SPA shell.
+    """
+    if request.method not in ("GET", "HEAD"):
+        return False
+    path = request.path
+    # Fast-path: most paths don't start with /apps/
+    if not path.startswith("/apps/"):
+        if path in _APP_WINDOW_EXCLUDED_PATHS:
+            return False
+        return not path.startswith(SPA_FALLBACK_EXCLUDED_PREFIXES)
+    # /apps/ sub-namespace: exclude only the paths apps/routes.py actually
+    # serves (/apps/{name}/api/... and /apps/{name}/ui/...). Everything else
+    # under /apps/ belongs to React Router — bare /apps/{name} as well as
+    # /apps/detail/{name} and /apps/migrate/{name} — and gets the shell.
+    return not _APPS_SPA_EXCLUDED_RE.match(path)
+
+
+# Link click window — URL must be opened within this time
+LINK_WINDOW_SECS = 300  # 5 minutes
+# Maximum session TTL — cookie cannot exceed this
+MAX_SESSION_TTL_SECS = 20 * 3600  # 20 hours
+
+_403_HTML = (
+    "<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' "
+    "content='width=device-width,initial-scale=1'><title>Access Denied</title>"
+    "<style>"
+    "*{{margin:0;padding:0;box-sizing:border-box}}"
+    "body{{font-family:system-ui,-apple-system,sans-serif;display:flex;"
+    "align-items:center;justify-content:center;height:100vh;"
+    "background:#f8fafc;color:#1e293b}}"
+    ".c{{text-align:center;max-width:420px;padding:24px}}"
+    ".logo{{font-size:48px;margin-bottom:16px}}"
+    "h1{{font-size:20px;margin-bottom:8px}}"
+    "p{{color:#64748b;font-size:13px;line-height:1.6;margin-bottom:16px}}"
+    "code{{background:#e2e8f0;padding:2px 6px;border-radius:4px;color:#c2410c;"
+    "font-size:13px}}"
+    "input{{width:100%;padding:10px 12px;border-radius:8px;border:1px solid #cbd5e1;"
+    "background:#fff;color:#1e293b;font-size:14px;margin-bottom:10px;outline:none}}"
+    "input:focus{{border-color:#f97316}}"
+    "button{{padding:8px 24px;border-radius:8px;border:none;cursor:pointer;"
+    "background:#f97316;color:#fff;font-size:14px;font-weight:600}}"
+    "button:hover{{background:#ea580c}}"
+    ".err{{color:#dc2626;font-size:12px;margin-top:8px;display:none}}"
+    "@media(prefers-color-scheme:dark){{body{{background:#0f1117;color:#e2e8f0}}"
+    "p{{color:#94a3b8}}code{{background:#1e293b;color:#f97316}}"
+    "input{{border-color:#334155;background:#1e293b;color:#e2e8f0}}"
+    ".err{{color:#ef4444}}}}"
+    "</style></head><body>"
+    "<div class='c'>"
+    "<div class='logo'>👻</div>"
+    "<h1>403 — {reason}</h1>"
+    "<p>Run <code>kirocrew token</code> in your terminal, then paste the URL below.</p>"
+    "<input id='u' type='text' placeholder='Paste token URL or raw token…' autofocus>"
+    "<button onclick='go()'>Connect</button>"
+    "<div class='err' id='e'>Invalid URL</div>"
+    "</div>"
+    "<script>"
+    "function go(){{var v=document.getElementById('u').value.trim();if(!v)return;"
+    "var t;try{{var u=new URL(v);t=u.searchParams.get('token')}}"
+    "catch(_){{t=v}}if(t){{window.location.href="
+    "window.location.protocol+'//'+window.location.host+'?token='+encodeURIComponent(t)}}"
+    "else{{document.getElementById('e').style.display='block'}}}}"
+    "document.getElementById('u').addEventListener('keydown',"
+    "function(e){{if(e.key==='Enter')go()}});"
+    "</script>"
+    "</body></html>"
+)
+
+
+def _b64url_encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def _b64url_decode(s: str) -> bytes:
+    padding = 4 - len(s) % 4
+    return base64.urlsafe_b64decode(s + "=" * (padding % 4))
+
+
+def _sign(payload: bytes) -> str:
+    return _b64url_encode(hmac.new(_get_secret(), payload, hashlib.sha256).digest())
+
+
+def generate_token(
+    user_id: str,
+    ttl_seconds: int = 3600,
+    *,
+    app: str = "",
+    prompt: str = "",
+    extra: dict[str, str] | None = None,
+    register_nonce: bool = True,
+) -> str:
+    """Return ``base64url(payload).base64url(signature)``.
+
+    The token carries two expiry times:
+    - ``exp``: link click window (5 minutes) — URL must be opened before this
+    - ``session_exp``: cookie session TTL (capped at 20 hours)
+
+    When *app* is provided, the token payload includes ``"app": app`` so
+    downstream middleware can extract the verified app identity.
+
+    When *prompt* is provided, it is included in the signed payload so the
+    dashboard can auto-submit the user's original Slack message. The prompt
+    is covered by the HMAC signature to prevent tampering.
+
+    *extra* adds further string claims to the signed payload — used by the
+    Slack challenge-and-redirect flow to carry ``channel``, ``thread_ts`` and
+    an existing linked ``session_key`` so the dashboard can reconnect to (or
+    auto-link) the correct Slack-linked session instead of always spawning a
+    fresh, disconnected one. Reserved keys (sub/exp/session_exp/iat/nonce/app/
+    prompt) cannot be overridden.
+
+    Up to ``_MAX_CONCURRENT_NONCES`` tokens can be valid concurrently.
+    When the limit is exceeded, the oldest nonce is evicted (O(1) via OrderedDict).
+    """
+    _evict_expired()
+    now = time.time()
+    nonce = os.urandom(8).hex()
+    session_ttl = min(ttl_seconds, MAX_SESSION_TTL_SECS)
+
+    # register_nonce=False: the token will only ever be validated on the COOKIE
+    # path (use_session_exp=True), which does not consult the link-nonce set.
+    # Skipping registration keeps the exchanged session token OUT of the bounded
+    # (50-slot) set so high-frequency link→session exchanges (self-nudge polling,
+    # instance-iframe re-navigation) don't churn/evict pending one-time link
+    # nonces (e.g. Slack challenge links). The nonce is still embedded in the
+    # payload so the token remains individually revocable (RevokedNonceStore).
+    if register_nonce:
+        evicted = _state.register_nonce(nonce, now + session_ttl)
+        if evicted:
+            _sel_fn().log_api_access(
+                caller=user_id,
+                operation="nonce_evicted",
+                outcome="ok",
+                source="token_auth",
+                resources=f"evicted_nonce={evicted}",
+            )
+
+    payload_dict: dict[str, object] = {
+        "sub": user_id,
+        "exp": now + LINK_WINDOW_SECS,
+        "session_exp": now + session_ttl,
+        "iat": now,
+        "nonce": nonce,
+        # Revocation generation: validate_token rejects a token whose gen is
+        # below the current persisted value, so revoke_all_sessions() kills
+        # established cookies (not just the per-process nonce store).
+        "gen": current_revocation_gen(),
+    }
+    if app:
+        payload_dict["app"] = app
+    if prompt:
+        payload_dict["prompt"] = prompt
+    if extra:
+        _reserved = {"sub", "exp", "session_exp", "iat", "nonce", "gen", "app", "prompt"}
+        for k, v in extra.items():
+            if k not in _reserved and isinstance(v, str) and v:
+                payload_dict[k] = v
+    payload = json.dumps(payload_dict, separators=(",", ":")).encode()
+    encoded_payload = _b64url_encode(payload)
+    signature = _sign(payload)
+    return f"{encoded_payload}.{signature}"
+
+
+def validate_token(token: str, *, use_session_exp: bool = False) -> tuple[bool, str, str]:
+    """Return ``(valid, user_id, reason)``.
+
+    When *use_session_exp* is ``True`` (cookie-based access), validates
+    against ``session_exp`` instead of ``exp`` (link click window).
+    """
+    parts = token.split(".", 1)
+    if len(parts) != 2:
+        return False, "", "malformed token"
+    encoded_payload, sig = parts
+    try:
+        payload_bytes = _b64url_decode(encoded_payload)
+    except Exception:
+        return False, "", "invalid encoding"
+    expected = _sign(payload_bytes)
+    if not hmac.compare_digest(sig, expected):
+        return False, "", "invalid signature"
+    try:
+        data = json.loads(payload_bytes)
+    except Exception:
+        return False, "", "invalid payload"
+    exp_field = "session_exp" if use_session_exp else "exp"
+    if time.time() > data.get(exp_field, data.get("exp", 0)):
+        return False, "", "token expired"
+    # Revocation generation: an explicit revoke_all_sessions() (e.g. kirocrew
+    # logout) bumps the persisted counter. A token minted before that — link OR
+    # cookie — carries a lower gen and is rejected. This is the ONLY check that
+    # invalidates an established cookie (the nonce store is per-process and
+    # restart-cleared; the HMAC secret is persisted, not rotated), so it is what
+    # makes "revoke all sessions" actually revoke cookie sessions. Refresh-token
+    # validation applies the same check, so the counter is authoritative over
+    # BOTH cookie types. Tokens minted before this field existed default to
+    # gen 0, matching the initial counter. Fail-closed: when the persisted
+    # counter cannot be read, the token cannot be proven un-revoked, so it is
+    # rejected (the next validation retries the read).
+    current_gen = current_revocation_gen_or_none()
+    if current_gen is None:
+        return False, "", "revocation state unavailable"
+    if int(data.get("gen", 0)) < current_gen:
+        return False, "", "session revoked"
+    # Boot binding: a token minted with a ``boot`` claim is scoped to the
+    # gateway PROCESS that issued it, so a restart ends it. This is what makes
+    # an opt-in "the phone stays signed in until the gateway restarts" session
+    # honest — the alternative, a long wall-clock TTL, keeps working after a
+    # restart and after the operator has stopped thinking about that device.
+    #
+    # CLAIM-GATED on purpose: a token without the claim is not checked at all,
+    # so this cannot log out an existing session or change any default. The
+    # check is also deliberately unconditional in the other direction — it
+    # applies to the LINK path and the COOKIE path alike, because a boot-bound
+    # link that survived a restart in someone's history must not be redeemable
+    # either.
+    token_boot = str(data.get("boot", ""))
+    if token_boot and token_boot != current_boot_id():
+        return False, "", "session ended at gateway restart"
+    # Nonce is a single-use guard for the one-time LINK click only. For an
+    # established session cookie (use_session_exp=True), a valid HMAC signature
+    # plus an unexpired session_exp is sufficient — requiring the in-memory
+    # nonce there would invalidate every live cookie on each gateway restart
+    # (the nonce store is per-process), locking users out for no security gain.
+    # Cookie revocation is handled by the gen check above, not the nonce.
+    token_nonce = data.get("nonce", "")
+    if use_session_exp:
+        # Per-session logout (CWE-613): POST /api/auth/logout adds THIS cookie's
+        # nonce to a persisted server-side denylist. Deny-by-default: a cookie
+        # with no nonce cannot be checked against the denylist, so it is
+        # rejected outright rather than silently skipping the revocation check.
+        # Every token minted by generate_token carries a nonce, so this rejects
+        # only malformed/forged cookies — without the nuclear
+        # revoke_all_sessions() gen bump that kills every other session. (The
+        # in-memory nonce *set* is still not consulted here — that would break
+        # all live cookies on restart; only the explicit denylist is.)
+        if not token_nonce:
+            return False, "", "missing nonce"
+        if _get_revoked_store().is_revoked(token_nonce):
+            return False, "", "session revoked"
+    else:
+        valid, reason = _state.is_nonce_valid(token_nonce)
+        if not valid:
+            return False, "", reason
+    return True, data.get("sub", ""), ""
+
+
+def token_embed_parent_port(token: str) -> int | None:
+    """Return the ``embed_parent_port`` claim from a validly-signed token, or None.
+
+    Drives the CSP ``frame-ancestors`` allowlist for the multi-instance embed: the
+    parent dashboard's port (the embedding desktop app's ``KIROCREW_PORT``) is
+    carried as a signed claim minted at connect time, so the embedded remote can
+    authorize exactly that loopback parent origin to frame it — no hardcoded port,
+    no wildcard. Verifies HMAC signature + session expiry + revocation gen (a
+    forged/revoked token yields None). The single-use link-nonce is intentionally
+    NOT required: the claim is read on every framed document load for the life of
+    the session, so it is validated on the cookie/session path.
+    """
+    if not token:
+        return None
+    valid, _uid, _reason = validate_token(token, use_session_exp=True)
+    if not valid:
+        return None
+    try:
+        data = json.loads(_b64url_decode(token.split(".", 1)[0]))
+    except Exception:
+        return None
+    raw = data.get("embed_parent_port")
+    if not isinstance(raw, str) or not raw.isdigit():
+        return None
+    port = int(raw)
+    return port if 1 <= port <= 65535 else None
+
+
+def validate_token_with_app(
+    token: str, *, use_session_exp: bool = False
+) -> tuple[bool, str, str, str]:
+    """Return ``(valid, user_id, reason, app_name)``.
+
+    Extends :func:`validate_token` by also extracting the ``app`` field
+    from the token payload.  This avoids changing the existing
+    ``validate_token`` signature.
+    """
+    valid, user_id, reason = validate_token(token, use_session_exp=use_session_exp)
+    if not valid:
+        return False, user_id, reason, ""
+    # Extract app from payload
+    app_name = ""
+    try:
+        payload_bytes = _b64url_decode(token.split(".")[0])
+        data = json.loads(payload_bytes)
+        app_name = data.get("app", "")
+    except Exception:
+        pass
+    return valid, user_id, reason, app_name
+
+
+def extract_prompt_from_token(token: str) -> str:
+    """Extract the ``prompt`` field from a validated token payload.
+
+    Validates the token first (deny-by-default). Returns the prompt
+    string if valid and present, empty string otherwise.
+    """
+    valid, _user_id, _reason = validate_token(token)
+    if not valid:
+        return ""
+    try:
+        payload_bytes = _b64url_decode(token.split(".")[0])
+        data = json.loads(payload_bytes)
+        return data.get("prompt", "")
+    except Exception as exc:
+        logger.warning(
+            "extract_prompt_from_token: post-validation decode failed (%s)", type(exc).__name__
+        )
+        return ""
+
+
+def extract_claims_from_token(token: str, keys: tuple[str, ...]) -> dict[str, str]:
+    """Extract selected string claims from a validated token payload.
+
+    Validates the token first (deny-by-default). Returns a dict containing
+    only the requested *keys* that are present and string-typed; returns an
+    empty dict if the token is invalid. Used by the Slack challenge-redirect
+    frontend to recover ``channel``/``thread_ts``/``session_key`` so it can
+    reconnect to (or auto-link) the correct Slack-linked session.
+
+    Validates against ``session_exp`` (use_session_exp=True), NOT the 5-minute
+    link window: claim recovery happens after the user has clicked through and
+    established a session, so binding it to the link ``exp`` would lose the
+    thread context (channel/thread_ts/session_key) the moment the click window
+    closed, breaking auto-link/reconnect for the rest of the session.
+    """
+    valid, _user_id, _reason = validate_token(token, use_session_exp=True)
+    if not valid:
+        return {}
+    try:
+        data = json.loads(_b64url_decode(token.split(".")[0]))
+    except Exception as exc:
+        logger.warning(
+            "extract_claims_from_token: post-validation decode failed (%s)", type(exc).__name__
+        )
+        return {}
+    out: dict[str, str] = {}
+    for k in keys:
+        v = data.get(k)
+        if isinstance(v, str) and v:
+            out[k] = v
+    return out
+
+
+def extract_numeric_claim(token: str, key: str) -> float | None:
+    """Extract a single numeric (int/float) claim from a validated token.
+
+    ``extract_claims_from_token`` intentionally returns only STRING claims (it
+    serves the Slack-redirect channel/thread_ts recovery path), so it silently
+    drops numeric claims like ``session_exp``. Callers that need a numeric claim
+    (e.g. ``api_auth_me`` reporting the cookie's ``session_exp`` so the frontend
+    can schedule its proactive refresh) must use this instead. Validates the
+    token first (deny-by-default); returns ``None`` if the token is invalid, the
+    claim is absent, or it is not a real number (bool is rejected).
+
+    Validates against ``session_exp`` (use_session_exp=True), NOT the 5-minute
+    link window — matching ``extract_claims_from_token``: the cookies this reads
+    outlive the link window, survive restarts, and are minted with
+    ``register_nonce=False`` by both the middleware link->session exchange and
+    ``api_auth_refresh``, so link-path validation would return ``None`` for all
+    of them and the fix would be a runtime no-op.
+    """
+    valid, _user_id, _reason = validate_token(token, use_session_exp=True)
+    if not valid:
+        return None
+    try:
+        data = json.loads(_b64url_decode(token.split(".")[0]))
+    except Exception as exc:
+        logger.warning(
+            "extract_numeric_claim: post-validation decode failed (%s)", type(exc).__name__
+        )
+        return None
+    v = data.get(key)
+    if isinstance(v, bool):  # bool is an int subclass — reject explicitly
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    return None
+
+
+def generate_app_secret() -> str:
+    """Generate a random 64-char hex secret for app authentication."""
+    return os.urandom(32).hex()
+
+
+def validate_app_secret(app_name: str, provided_secret: str) -> bool:
+    """Validate an app secret against the stored secret on disk.
+
+    Reads ``~/.kiro/crew/apps/{app_name}/.app_secret`` and performs
+    constant-time comparison via :func:`hmac.compare_digest`.
+    Returns ``False`` if the file doesn't exist or doesn't match.
+    """
+    from kiro_crew.config.loader import config_dir
+
+    secret_path = config_dir() / "apps" / app_name / ".app_secret"
+    try:
+        stored = secret_path.read_text(encoding="utf-8").strip()
+    except (OSError, FileNotFoundError):
+        return False
+    if not stored or not provided_secret:
+        return False
+    return hmac.compare_digest(stored, provided_secret)
+
+
+def write_app_secret(app_name: str, secret: str) -> None:
+    """Write an app secret to ``~/.kiro/crew/apps/{app_name}/.app_secret``.
+
+    Creates the directory if needed and sets file mode to 0o600.
+    """
+    from kiro_crew.config.loader import config_dir
+
+    secret_dir = config_dir() / "apps" / app_name
+    secret_dir.mkdir(parents=True, exist_ok=True)
+    secret_path = secret_dir / ".app_secret"
+    # os.O_TRUNC truncates any pre-existing file BEFORE the DACL tightens,
+    # then restrict_to_owner locks it down while it is still empty, then we
+    # write the secret bytes. This ordering matters on Windows because
+    # restrict_to_owner shells out to icacls (subprocess) — if we wrote first
+    # the secret would sit under the parent-inherited DACL during the icacls
+    # window. On failure we unlink the just-created empty file (mirroring
+    # dashboard/server.py:_write_secret_file) so we don't leave a zero-byte
+    # .app_secret under the default DACL that a later successful write
+    # (which does not re-inherit on O_TRUNC) could then populate.
+    fd = os.open(str(secret_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        # restrict_to_owner (fail-loud), NOT fchmod_safe: fchmod_safe swallows
+        # OSError, which would defeat the cleanup-and-reraise below for this
+        # app secret. On POSIX applies chmod 0o600 by path; on
+        # Windows an owner-only DACL via icacls (fchmod doesn't exist on
+        # Windows, where an IS_POSIX no-op would let per-app secrets
+        # land readable by other local users).
+        platform_compat.restrict_to_owner(secret_path)
+        with os.fdopen(fd, "w") as f:
+            fd = -1  # fdopen took ownership; skip the redundant close below
+            f.write(secret)
+    except Exception:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        try:
+            secret_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+def _evict_expired() -> None:
+    """Remove token state entries whose session has expired."""
+    _state.evict_expired(time.time())
+
+
+def bind_token_peer(
+    token: str, peer_key: str, session_exp: float = 0.0, proxied: bool = False
+) -> None:
+    """Bind a token to a peer key for session validation (RFC §3).
+
+    *peer_key* is ``ip:<addr>`` for the default address pin — byte-for-byte
+    today's behaviour for every non-Tailscale path — or ``ts:node:<login>@<node>`` / ``ts:login:<login>``
+    for a daemon-verified tailnet peer. ``proxied`` is an observation only (see
+    ``TokenStateManager.bind_peer``): it records that the pin is a same-host
+    proxy's address and therefore shared, so the Security Posture surface can
+    report it. It never changes the binding or the comparison.
+    """
+    _state.bind_peer(token, peer_key, session_exp or time.time() + MAX_SESSION_TTL_SECS, proxied)
+
+
+def bind_token_ip(token: str, ip: str, session_exp: float = 0.0, proxied: bool = False) -> None:
+    """Thin compat wrapper over :func:`bind_token_peer` for address pins."""
+    bind_token_peer(token, f"ip:{ip}", session_exp, proxied)
+
+
+def proxied_pin_observed() -> bool | None:
+    """Report the pin scope of the sessions live right now.
+
+    ``None`` = nothing is currently pinned (no scope to report), ``True`` = at
+    least one live session is pinned to a same-host proxy address and is
+    therefore shared by every client behind it, ``False`` = live sessions are
+    pinned per client (client address or daemon-verified tailnet identity).
+    Recovers on its own once proxied sessions expire — no gateway restart
+    needed.
+    """
+    return _state.proxied_pin_observed(time.time())
+
+
+def check_token_peer(token: str, peer_key: str) -> tuple[bool, str]:
+    """Check *token* against its bound peer key. ``(ok, mismatch_reason)``."""
+    return _state.check_peer(token, peer_key)
+
+
+def check_token_ip(token: str, ip: str) -> bool:
+    """Thin compat wrapper over :func:`check_token_peer` for address pins."""
+    return _state.check_peer(token, f"ip:{ip}")[0]
+
+
+def mark_consumed(token: str, session_exp: float = 0.0) -> None:
+    """Mark a token as consumed."""
+    _state.mark_consumed(token, session_exp or time.time() + MAX_SESSION_TTL_SECS)
+
+
+def is_consumed(token: str) -> bool:
+    """Check if a token has been consumed."""
+    return _state.is_consumed(token)
+
+
+def try_consume(token: str, session_exp: float = 0.0) -> bool:
+    """Atomically consume a token if not already consumed.
+
+    Returns True if this call consumed it, False if already consumed.
+    """
+    return _state.try_consume(token, session_exp or time.time() + MAX_SESSION_TTL_SECS)
+
+
+def revoke_access_cookie(token: str) -> bool:
+    """Revoke a SINGLE access cookie by adding its nonce to the denylist.
+
+    Validates the token (signature + session_exp + gen) first — deny-by-default,
+    so attacker-controlled junk is never written into the persisted store. Then
+    extracts the per-token ``nonce`` and ``session_exp`` and records the nonce
+    as revoked until that expiry. Returns True if a nonce was revoked, False
+    otherwise (malformed / already-expired / nonce-less token — nothing to do).
+
+    This is the per-session counterpart to :func:`revoke_all_sessions`: logout
+    calls it so the caller's own cookie is rejected immediately, without the
+    global generation bump that would terminate every other active session.
+    """
+    valid, _uid, _reason = validate_token(token, use_session_exp=True)
+    if not valid:
+        return False
+    try:
+        data = json.loads(_b64url_decode(token.split(".")[0]))
+    except Exception:
+        return False
+    nonce = data.get("nonce", "")
+    if not nonce:
+        return False
+    try:
+        session_exp = float(data.get("session_exp", 0.0))
+    except (TypeError, ValueError):
+        return False
+    if session_exp <= time.time():
+        return False
+    _get_revoked_store().revoke(nonce, session_exp)
+    return True
+
+
+def revoke_all_sessions() -> None:
+    """Revoke all active dashboard sessions (also used for test isolation).
+
+    Emits a SEL audit event before clearing state so the revocation is recorded.
+    Raises ``OSError`` (fail-closed) when the persisted revocation counter
+    cannot be read or the bumped value cannot be written — see
+    ``bump_revocation_gen``. On failure the generation is unchanged (in memory
+    and on disk) so no token is ever minted with an unpersisted generation;
+    the in-memory link/IP/consumed state has still been cleared.
+    """
+    _sel_fn().log_api_access(
+        caller="system",
+        operation="dashboard_sessions_revoked",
+        outcome="ok",
+        source="token_auth",
+        resources="action=revoke_all",
+    )
+    _state.clear_all()
+    # Bump the persisted revocation generation so already-issued cookies (which
+    # the cleared per-process nonce store cannot touch) are rejected on their
+    # next request. Both access-cookie and refresh-token validation check the
+    # gen, so this ends established browser sessions AND their refresh chains.
+    bump_revocation_gen()
+
+
+def parse_duration(s: str) -> int | None:
+    """Parse ``'<int>h'`` or ``'<int>m'`` into seconds, or *None*.
+
+    Returns *None* for invalid input. Caps at ``MAX_SESSION_TTL_SECS``.
+    """
+    m = re.fullmatch(r"(\d+)(h|m)", s)
+    if not m:
+        return None
+    value, unit = int(m.group(1)), m.group(2)
+    secs = value * 3600 if unit == "h" else value * 60
+    return min(secs, MAX_SESSION_TTL_SECS)
+
+
+def _cookie_port_from_host(request: web.Request, fallback: int) -> str:
+    """Return the port the browser connects to (Host header), else *fallback*.
+
+    The dashboard cookie is named ``mc_token_<port>``. Keying it by the server's
+    own listen port breaks under SSH tunnels: two Cloud Desktops both serving on
+    7777 but tunneled to distinct local ports would collide on a single
+    ``mc_token_7777`` because browser cookies are not isolated by port (RFC 6265
+    scopes by host only). The browser-facing port is unique per dashboard, so it
+    is the correct key. Falls back to the server port when the Host header
+    carries no port, preserving behavior for direct (non-tunnel) access.
+    """
+    host = request.headers.get("Host", "")
+    if ":" in host:
+        candidate = host.rsplit(":", 1)[-1].strip()
+        if candidate.isdigit():
+            return candidate
+    return str(fallback)
+
+
+# -- App-token scope enforcement (CWE-269, least privilege) -------------------
+#
+# An app token (payload carries a non-empty ``app`` claim, minted by the
+# X-App-Secret exchange at /api/apps/<name>/token) must NOT have the same
+# reach as a dashboard-user token. Deny-by-default: an app token may only
+# access (1) its own app namespace and (2) the API path prefixes the app
+# declared in its manifest ``permissions.api`` allowlist. Everything else is
+# rejected. Dashboard-user tokens (empty ``app`` claim) are never subject to
+# this — the gate is a no-op for them.
+
+# Short-TTL cache of each app's declared ``permissions.api`` allowlist so the
+# hot auth path doesn't read app.json on every request. Permissions change
+# rarely; a 30s TTL self-heals after enable/disable/update without any
+# invalidation wiring.
+_APP_PERMS_TTL = 30.0
+_app_perms_cache: dict[str, tuple[float, tuple[str, ...]]] = {}
+_app_perms_lock = threading.Lock()
+
+
+def _app_api_allowlist(app_name: str) -> tuple[str, ...]:
+    """Return the app's declared ``permissions.api`` prefixes (cached, deny-safe).
+
+    On any failure (app not installed, manifest unreadable) returns an empty
+    tuple — i.e. deny-by-default: the app is confined to its own namespace only.
+    """
+    now = time.time()
+    with _app_perms_lock:
+        entry = _app_perms_cache.get(app_name)
+        if entry is not None and now - entry[0] < _APP_PERMS_TTL:
+            return entry[1]
+    allow: tuple[str, ...] = ()
+    try:
+        # circular import: apps.manager imports generate_app_secret/
+        # write_app_secret from this module (token_auth), so a top-level
+        # `import` here would form a cycle. Kept function-local deliberately.
+        from kiro_crew.apps.manager import get_app_manifest
+
+        manifest = get_app_manifest(app_name)
+        if manifest is not None:
+            allow = tuple(p for p in manifest.permissions.api if p)
+    except Exception:
+        logger.warning(
+            "app scope: could not load permissions for %r; denying by default",
+            app_name,
+            exc_info=True,
+        )
+        allow = ()
+    with _app_perms_lock:
+        _app_perms_cache[app_name] = (now, allow)
+    return allow
+
+
+def _app_owns_path(app_name: str, path: str) -> bool:
+    """True if *path* is within *app_name*'s own namespace.
+
+    Covers the reverse-proxy + UI surface (``/apps/<name>/...``) and the
+    per-app management/config surface (``/api/apps/<name>/...``). Membership is
+    a path-boundary match so app ``foo`` cannot reach app ``foo-bar``.
+    """
+    for base in (f"/apps/{app_name}", f"/api/apps/{app_name}"):
+        if path == base or path.startswith(base + "/"):
+            return True
+    return False
+
+
+def _api_pattern_matches(pattern: str, path: str) -> bool:
+    """Match a ``permissions.api`` entry against a request path.
+
+    Supports trailing ``/*`` and ``*`` wildcards; a bare prefix matches the
+    exact path or any child under a path boundary (``/api/chat`` matches
+    ``/api/chat`` and ``/api/chat/slots`` but NOT ``/api/chatx``).
+    """
+    pattern = pattern.strip()
+    if not pattern:
+        return False
+    if pattern.endswith("/*"):
+        base = pattern[:-2]
+        return path == base or path.startswith(base + "/")
+    if pattern.endswith("*"):
+        return path.startswith(pattern[:-1])
+    return path == pattern or path.startswith(pattern + "/")
+
+
+# Protocol-layer paths every app token implicitly needs — connection
+# infrastructure, not feature-level permissions. Requiring each app to declare
+# them in ``permissions.api`` adds no security value and produces silent 403
+# regressions whenever a new app forgets to list them.
+#
+# ``/api/ws`` is safe to allow implicitly ONLY because the WS layer now applies
+# per-app event scope filtering (``ws_event_scope.py``): a connected app token
+# receives just the events matching its ``permissions.events`` declarations, so
+# connecting no longer grants the full event stream. Contrast with functional
+# paths like /api/chat/* or /api/spawn/* — those grant real capabilities and
+# MUST stay explicitly declared.
+#
+# ``/api/status`` is deliberately NOT here. It has no response-level filter to
+# match what event scoping does for ``/api/ws``, and ``api_status`` returns far
+# more than liveness: ``owner_id_hash``, host specs (os/arch/cpu/memory), cron
+# and usage stats, and the live safety-override (``yolo_*``) state. The
+# connect/reconnect poll that needs it is the DASHBOARD SPA
+# (``useDashboardHealthProbe``), which runs on a dashboard-user token and never
+# reaches this list. An app that genuinely wants it declares it in
+# ``permissions.api`` — the shipped ``design_critique`` manifest does.
+_APP_TOKEN_IMPLICIT_ALLOW: frozenset[str] = frozenset(
+    {
+        # Connecting grants no events by itself: the socket records the caller's
+        # manifest declarations and every frame is filtered per socket, payload AND
+        # envelope, in ws_event_scope.py / DashboardState._serialize_for_client.
+        "/api/ws",
+    }
+)
+
+
+def app_token_path_allowed(app_name: str, path: str) -> bool:
+    """Return True if an app token for *app_name* may access *path*.
+
+    Deny-by-default (CWE-269). Only call this for app tokens (non-empty
+    ``app_name``); dashboard-user tokens must bypass it entirely.
+    """
+    if not app_name:
+        # Defensive: a caller should never pass an empty app_name here, but if
+        # it does, do NOT silently grant — that would turn the gate into a
+        # no-op allow. Return False; the caller's non-empty guard is primary.
+        return False
+    if path in _APP_TOKEN_IMPLICIT_ALLOW:
+        # Audit implicit grants so every app-token path decision is in the trail.
+        try:
+            _sel_fn().log_api_access(
+                caller=app_name,
+                operation="app_scope_check",
+                outcome="granted_implicit",
+                source="token_auth",
+                resources=path,
+            )
+        except Exception as exc:
+            # Security-relevant audit path (CWE-269 implicit grant); a persistent
+            # SEL misconfiguration must be observable, so log rather than pass.
+            logger.debug(
+                # Message deliberately avoids the module-name prefix: Semgrep's
+                # logger-credential-disclosure heuristic fires on the substring
+                # alone. The logged values are an app name, a path, and an
+                # exception -- no secret material.
+                "SEL audit for implicit app-scope allow %s -> %s failed: %s",
+                app_name,
+                path,
+                exc,
+            )
+        return True
+    if _app_owns_path(app_name, path):
+        return True
+    # Notification push (RFC local notification bus, Phase 2): every app may
+    # reach this single push-only endpoint — the handler independently
+    # enforces app identity (from the verified token), manifest-declared
+    # channels, and per-app rate limits, so the grant confers no cross-app
+    # authority. Deliberately NOT /api/notifications: that path also serves
+    # GET (read history) and DELETE, which app tokens must not reach.
+    if path == "/api/notifications/push":
+        return True
+    return any(_api_pattern_matches(p, path) for p in _app_api_allowlist(app_name))
+
+
+def _enforce_app_scope(request: web.Request, app_name: str, path: str) -> web.Response | None:
+    """Return a 403 response if an app token is out of scope, else None.
+
+    No-op for dashboard-user tokens (empty *app_name*).
+    """
+    if not app_name:
+        return None
+    if app_token_path_allowed(app_name, path):
+        return None
+    # SEL audit for the permission decision (matches the sibling deny paths in
+    # the middleware, which log_api_access in addition to _log_auth).
+    _sel_fn().log_api_access(
+        caller=app_name,
+        operation="app_scope_check",
+        outcome="denied",
+        source="token_auth",
+        resources=path,
+        error="app token out of scope",
+    )
+    _log_auth(request, app_name, "denied", f"app token out of scope: {path}")
+    return _deny(request, "app token not permitted for this endpoint")
+
+
+async def warm_auth_singletons() -> None:
+    """Prime the signing-secret and revoked-nonce singletons OFF the event loop.
+
+    Both ``_get_secret()`` and ``_get_revoked_store()`` do blocking file I/O on
+    first use (read/create ``token_signing.key`` + read the persisted nonce
+    denylist; on Windows an ``icacls`` subprocess to lock the key file's DACL).
+    Calling them lazily from the request path — or synchronously inside the
+    ``token_auth_middleware()`` factory, which runs on the loop via the async
+    ``start_dashboard()`` / ``start_api_server()`` — would land that I/O on the
+    event loop (no-blocking-call-on-event-loop).
+
+    The async startup paths ``await`` this exactly once, BEFORE constructing
+    the middleware chain and before the server begins accepting connections, so
+    the first auth op hits the already-built singletons with no blocking I/O on
+    the loop. Idempotent: both callees memoize under a lock.
+    """
+    await asyncio.to_thread(_get_secret)
+    await asyncio.to_thread(_get_revoked_store)
+    # The revocation generation is lazy-loaded from disk on first use; prime it
+    # here too so the first token validation never does file I/O on the loop.
+    await asyncio.to_thread(current_revocation_gen)
+
+
+def _unix_request_socket(request: web.Request) -> Any:
+    """Return the request's underlying socket iff it is ``AF_UNIX``.
+
+    Thin socket-returning wrapper over the shared
+    :func:`~kiro_crew.dashboard.origin.request_is_unix_socket` discriminator
+    (one definition of "arrived on the dashboard's unix socket" for the CSRF
+    and token-auth layers). The peer-verification branch needs the SOCKET (to
+    read kernel peer credentials), not just the boolean. Returns ``None`` for
+    TCP requests, mocked/absent transports, platforms without ``AF_UNIX``,
+    and any error — never raises.
+    """
+    if not request_is_unix_socket(request):
+        return None
+    transport = getattr(request, "transport", None)
+    if transport is None:  # pragma: no cover — excluded by the check above
+        return None
+    try:
+        return transport.get_extra_info("socket")
+    except Exception:
+        return None
+
+
+async def _verify_unix_peer(
+    request: web.Request, sock: Any, path: str
+) -> web.StreamResponse | None:
+    """Kernel-verify the declared ``X-Session-Key`` of an AF_UNIX peer.
+
+    Verify-when-resolvable, deny-on-mismatch, degrade-to-status-quo when
+    unresolvable — strictly monotonic hardening over the TCP-era behavior
+    (where the header was accepted entirely on the caller's word):
+
+    * peer uid positively ≠ ours (``MISMATCH``) → deny. Cannot normally
+      happen (the socket sits in the 0700 data home), so a hit means the
+      directory gate failed — exactly when denying matters most.
+    * peer resolved to a session key that DIFFERS from the declared header →
+      deny 403 + SEL ``dashboard.peer-identity-mismatch`` (the impersonation
+      this check exists to close: a same-uid process declaring another
+      session's identity).
+    * peer resolved to the SAME key → proceed with
+      ``request["peer_verified"] = True``.
+    * anything unresolvable (no peer pid mechanism, no ``session_pid_<pid>``
+      file in the ancestry — warm-pool runtimes before claim, cron scripts,
+      pooled MCP backends) → proceed under today's semantics: no new denial.
+
+    Returns a deny response, or ``None`` to proceed. The /proc ancestry walk
+    is blocking I/O and runs on the subprocess executor (mirroring gatewayd's
+    register-path offload).
+    """
+    declared = request.headers.get("X-Session-Key", "")
+    if not declared:
+        # Nothing session-scoped is being claimed — nothing to verify.
+        return None
+    verdict = check_peer_is_self(sock)
+    if verdict is not PeerCredResult.MATCH:
+        # Deny-by-default, mirroring gatewayd's register-path policy: a peer
+        # whose principal cannot be POSITIVELY confirmed as ours is refused.
+        # On the supported POSIX platforms (Linux SO_PEERCRED, macOS
+        # LOCAL_PEERCRED) an accepted AF_UNIX connection always yields peer
+        # credentials, so UNVERIFIABLE here means the mechanism itself failed
+        # — exactly when trusting the claim is least justified. TCP callers
+        # are unaffected (this branch is AF_UNIX-only) and the client falls
+        # back to TCP transparently if the socket ever refuses connects.
+        _reason = (
+            "unix peer uid differs from server uid"
+            if verdict is PeerCredResult.MISMATCH
+            else "unix peer credentials unverifiable"
+        )
+        _sel_fn().log_api_access(
+            caller="unknown",
+            operation="dashboard.peer-identity-mismatch",
+            outcome="denied",
+            source="token_auth",
+            resources=path,
+            error=_reason,
+        )
+        _log_auth(request, "internal", "denied", _reason)
+        return _deny(request, "Forbidden")
+    peer_pid = get_peer_pid(sock)
+    if peer_pid is None:
+        return None
+    try:
+        # signed_only: authorization decisions must not trust the bare
+        # same-uid-writable .txt mapping — require the HMAC sidecar (pid
+        # bound into the MAC, keyed by the agent-unreadable SEL trust root),
+        # or the walk yields "" and this check degrades to status quo.
+        peer_key, _chain = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(),
+            partial(resolve_peer_identity, peer_pid, signed_only=True),
+        )
+    except Exception:
+        # Resolution machinery failing is an "unresolvable" outcome, not a
+        # denial — the change must never be weaker OR stricter than intended.
+        logger.debug("unix peer identity resolution failed", exc_info=True)
+        return None
+    if not peer_key:
+        return None
+    if peer_key != declared:
+        _sel_fn().log_api_access(
+            caller=declared,
+            operation="dashboard.peer-identity-mismatch",
+            outcome="denied",
+            source="token_auth",
+            resources=path,
+            error=f"peer_pid={peer_pid} resolved session differs from declared X-Session-Key",
+        )
+        _log_auth(
+            request,
+            "internal",
+            "denied",
+            f"peer identity mismatch (peer_pid={peer_pid})",
+        )
+        return _deny(request, "Forbidden")
+    # Positive kernel attestation. Debug-level on purpose — this fires on
+    # every internal call from a claimed session; the SEL trail records the
+    # deny arm, which is the permission decision that changes anything.
+    logger.debug("unix peer identity verified for %s (peer_pid=%d)", path, peer_pid)
+    request["peer_verified"] = True
+    return None
+
+
+def derive_caller_app(
+    slots: object, session_key: str, jobs: object = None, subagents: object = None
+) -> str:
+    """The app that owns the CALLING session, or ``""`` for the dashboard user.
+
+    **Why this exists.** App-ownership checks gate on ``request["app"]``, which
+    the app-token branch publishes. The internal-secret branch (the managed MCP
+    set) carries no app claim at all: the secret proves the call came from
+    inside, not who made it. Every ownership check therefore became a no-op on
+    that transport, and an app agent granted ``@kirocrew-dashboard`` arrived
+    indistinguishable from the dashboard user (issue #3690).
+
+    The identity comes from the authenticated CALLING SESSION, resolved against
+    server-side registries in four steps -- one per way a session can be owned:
+    the slot the key names, the slot RUNNING under that key
+    (``linked_session_key``), for a cron key the job's ``created_by`` owner tag,
+    and for a subagent key the child record's spawning ``app``. The agent cannot
+    forge the key — it does not build the request; the in-process MCP broker sets
+    it from the calling session's own context and never from tool arguments
+    (``mcp_core`` ``_resolve_session_key_strict``), and on an AF_UNIX transport
+    ``_verify_unix_peer`` has already kernel-attested it against ``/proc``
+    ancestry before this runs.
+
+    ``""`` means "no app owns this caller" and is returned both when the person
+    is the caller and when the caller cannot be placed at all. The two are not
+    distinguished because no site acts differently on them; the one route that
+    needs the difference for a ``dashboard:`` key asks
+    :func:`caller_names_a_missing_slot` instead.
+
+    Deliberately PURE — every parameter is a server-side registry or the
+    caller's own key, never a request — so the middleware and the one route that
+    also re-derives for defense-in-depth share a single implementation that
+    cannot drift. Never derive from a request BODY or from tool arguments: a
+    caller that could name its own scope could name someone else's.
+    """
+    sk = (session_key or "").strip()
+    # No key at all: the gateway's own internal calls, the CLI, a loopback
+    # curl. Nothing to place and no app could have been attached — unscoped,
+    # exactly as before this derivation existed.
+    if not sk or sk == "dashboard:ui":
+        return ""
+    # Each registry below answers only "yes, THIS app owns the caller". An
+    # ownerless answer FALLS THROUGH to the next one rather than ending the
+    # search, because a session can be recorded in more than one place and only
+    # some of those records carry the owner. The case that forces this: an
+    # app-created cron with a cron-born tab is present in the slot registry with
+    # no ``_app`` (a channel/cron-born slot is created without one) AND in the
+    # cron registry WITH its ``created_by`` owner -- so short-circuiting on the
+    # slot would hand an app the dashboard user's reach. Returning "" only after
+    # every registry has been asked also makes the search monotonic: adding a
+    # registry can find an owner that was missed, never lose one.
+    lookup = getattr(slots, "get", None) if slots is not None else None
+    if lookup is not None:
+        slot = lookup(sk.split(":", 1)[-1] if ":" in sk else sk)
+        owner = str(getattr(slot, "_app", "") or "") if slot is not None else ""
+        if owner:
+            return owner
+        # Second lookup, by LINKED key. A slot bound to a channel or cron
+        # session runs its turns under ``linked_session_key`` rather than under
+        # its own name ("when set, _run_chat uses this as session key" --
+        # ``DashboardState``), so the caller presents that key and the lookup
+        # above cannot find it. Without this the slot's ``_app`` is invisible
+        # and the caller reads as the person: the very shape this fix exists to
+        # end, since the slot IS there and may carry an owner.
+        linked = _slot_by_linked_key(slots, sk)
+        owner = str(getattr(linked, "_app", "") or "") if linked is not None else ""
+        if owner:
+            return owner
+    # Third lookup, for a cron key, in the CRON registry. A cron created by an
+    # app is tagged ``created_by="app:<name>"`` (``CronSDK``), so the owner is a
+    # matter of record rather than a guess -- and a cron often has no dashboard
+    # slot at all, which is why the lookups above cannot see it. Resolving it
+    # POSITIVELY is what lets an app-owned cron be confined while the person's
+    # own crons keep working; refusing every unplaceable delegated caller
+    # instead would take cron and subagent tools from the person too.
+    if sk.startswith("cron:"):
+        owner = _cron_job_owner(jobs, _key_segment(sk))
+        if owner:
+            return owner
+    # Fourth lookup, for a subagent key, in the SUBAGENT registry. A child
+    # spawned by an app carries it in ``SubagentInfo.app``, persisted for exactly
+    # this purpose -- the field's own note says it is kept so "the child's
+    # per-tool-call gate can resolve the app's Level-2 profile", because
+    # otherwise "the child's ongoing tool calls run unconstrained by the app
+    # scope". A tool call arriving here IS one of those ongoing calls.
+    if sk.startswith("subagent:"):
+        owner = _subagent_owner(subagents, _key_segment(sk))
+        if owner:
+            return owner
+    # Every registry asked, none names an owner: the person, or a Slack thread
+    # or channel session that never had an app.
+    return ""
+
+
+def _key_segment(session_key: str) -> str:
+    """The id segment of a delegated caller key, ignoring anything after it.
+
+    A cron session key has TWO forms -- ``cron:<job_id>`` for a persistent job
+    and ``cron:<job_id>:<run_id>`` for a stateless one (``cron._build_prompt``).
+    Taking the whole remainder after the first colon yields ``<job_id>:<run_id>``
+    for the stateless form, which matches no job, so an app-owned stateless cron
+    would resolve to no owner and be handed the dashboard user's reach.
+    """
+    parts = session_key.split(":")
+    return parts[1] if len(parts) > 1 else ""
+
+
+def _subagent_owner(subagents: object, agent_id: str) -> str:
+    """The app that spawned a subagent, or ``""`` (person-spawned, or no record).
+
+    Reads the live registry mapping directly, which is a plain dict lookup -- no
+    lock and no I/O, so it is safe on the event loop for the same reason the slot
+    lookup is.
+    """
+    if subagents is None or not agent_id:
+        # An empty id identifies nothing (see ``_cron_job_owner``).
+        return ""
+    lookup = getattr(subagents, "get", None)
+    if lookup is None:
+        return ""
+    try:
+        info = lookup(agent_id)
+    except Exception:  # noqa: BLE001 - an auth path must never 500 on this
+        return ""
+    return str(getattr(info, "app", "") or "") if info is not None else ""
+
+
+def caller_record_is_missing(
+    session_key: str, jobs: object = None, subagents: object = None
+) -> bool:
+    """True when a DELEGATED key's own registry is present but holds no record.
+
+    A ``cron:`` or ``subagent:`` key is not like a Slack thread: the work it names
+    is recorded, and that record is where its owner lives. So absence here is not
+    "nothing to confine" -- it is "the record that would have told me who this
+    runs for is gone", which is the same thing
+    :func:`caller_names_a_missing_slot` says about a ``dashboard:`` key.
+
+    Reachable, and narrowly: a live subagent is always in the registry (only
+    ``done`` records are ever evicted, by ``evict_completed_agents``), and a cron
+    job stays until it is removed -- so this fires when a job is DELETED while its
+    run is still making calls, and the deleted job's app reach must not survive it.
+
+    Requires the registry to be PRESENT. A surface wired without one (the
+    ``--slack-only`` API server) must not have every delegated caller refused
+    because of a missing dependency, so an absent registry answers False.
+    """
+    sk = (session_key or "").strip()
+    if sk.startswith("cron:"):
+        registry: object = jobs
+    elif sk.startswith("subagent:"):
+        registry = subagents
+    else:
+        return False
+    if registry is None:
+        return False
+    ident = _key_segment(sk)
+    if not ident:
+        # A key with no id names nothing; it cannot be confirmed against a
+        # record either, so treat it as unresolvable rather than as present.
+        return True
+    if sk.startswith("cron:"):
+        return not _cron_job_exists(registry, ident)
+    return not _subagent_record_exists(registry, ident)
+
+
+def _cron_job_exists(jobs: object, job_id: str) -> bool:
+    """Whether a cron job id is in the registry (cache-only read, see ``_cron_job_owner``).
+
+    Fails CLOSED: an unreadable/erroring registry returns ``False`` ("does not
+    exist") so the ``_internal_caller_record_missing`` DENY branch fires and the
+    delegated caller is refused rather than admitted as the unscoped dashboard
+    user. Per SAX-04 outcome_3, an auth decision must fail closed when the source
+    it depends on is unavailable; the in-memory registry makes this rare, but the
+    branch must not silently escalate a delegated caller on a torn read.
+    """
+    try:
+        snapshot = list(cast("Iterable[Any]", jobs))
+    except Exception:  # noqa: BLE001 - an auth path must never 500 on this
+        return False
+    return any(str(getattr(j, "id", "") or "") == job_id for j in snapshot)
+
+
+def _subagent_record_exists(subagents: object, agent_id: str) -> bool:
+    """Whether a subagent id is in the registry (plain dict lookup).
+
+    Fails CLOSED on an unreadable registry (no ``get`` / lookup raises): returns
+    ``False`` so the delegated caller is denied rather than escalated. See
+    ``_cron_job_exists`` for the SAX-04 fail-closed rationale.
+    """
+    lookup = getattr(subagents, "get", None)
+    if lookup is None:
+        return False  # unreadable registry: fail closed, see ``_cron_job_exists``
+    try:
+        return lookup(agent_id) is not None
+    except Exception:  # noqa: BLE001 - an auth path must never 500 on this
+        return False
+
+
+def caller_names_a_missing_slot(slots: object, session_key: str) -> bool:
+    """True when the key NAMES a dashboard slot that is not in the registry.
+
+    Distinct from "no app owns this caller" (:func:`derive_caller_app` returning
+    ``""``), which covers callers that never had a slot at all -- a Slack thread,
+    a channel session, the CLI. A ``dashboard:`` key is different in kind: it
+    names a specific slot, so absence is not "nothing to confine" but "the slot
+    I would have been confined against is gone". That happens when a tab is
+    closed while one of its calls is still in flight (the slot is popped
+    synchronously, without draining in-flight MCP calls) or when the key is
+    simply wrong.
+
+    An app-owned session going through that race would otherwise reach a route
+    that refuses apps and be admitted, because the app it should have been
+    confined to is exactly what got popped. ``mcp_dashboard._caller_app_scope``
+    already refuses this class for its own tool set on that reasoning; this
+    predicate lets a route outside that set apply the same rule.
+
+    Deliberately NOT applied in the middleware: a popped slot no longer says
+    whose tab it was, so refusing there would also refuse the person's own
+    in-flight calls, on every internal route at once. Each route that publishes
+    something it could not attribute decides for itself.
+    """
+    sk = (session_key or "").strip()
+    if not sk.startswith("dashboard:") or sk == "dashboard:ui":
+        return False
+    lookup = getattr(slots, "get", None) if slots is not None else None
+    if lookup is None:
+        return False
+    if lookup(sk.split(":", 1)[1]) is not None:
+        return False
+    return _slot_by_linked_key(slots, sk) is None
+
+
+def _cron_job_owner(jobs: object, job_id: str) -> str:
+    """The app that created a cron job, or ``""`` (person-created, or no such job).
+
+    Reads the in-memory job list CACHE-ONLY: no store lock, no ``_sync``, no
+    disk I/O, because this runs ON the event loop and the cron store's
+    synchronous readers deliberately refuse to be called there. The list is
+    replaced by atomic reference assignment, so iterating one snapshot can never
+    see a half-rebuilt list -- the same rationale the cron reaper's own
+    lock-free read relies on.
+    """
+    if jobs is None or not job_id:
+        # An empty id identifies nothing; matching a record that also happens to
+        # carry an empty id would resolve a malformed key to somebody's app.
+        return ""
+    try:
+        snapshot = list(cast("Iterable[Any]", jobs))  # one coherent list; never torn
+    except Exception:  # noqa: BLE001 - an auth path must never 500 on this
+        return ""
+    for job in snapshot:
+        if str(getattr(job, "id", "") or "") != job_id:
+            continue
+        created_by = str(getattr(job, "created_by", "") or "")
+        if created_by.startswith("app:"):
+            return created_by[len("app:") :]
+        # A job the person created.
+        return ""
+    return ""
+
+
+def _slot_by_linked_key(slots: object, session_key: str) -> object | None:
+    """The slot whose ``linked_session_key`` is ``session_key``, or ``None``.
+
+    Scans rather than indexes because the registry is keyed by slot name; the
+    live slot count is small (one per open tab) and this runs only after the
+    direct lookup missed. Defensive against a registry that is not a mapping and
+    against a slot object without the attribute, because a raise here would turn
+    an authenticated request into a 500.
+    """
+    try:
+        candidates = list(getattr(slots, "values", lambda: [])())
+    except Exception:  # noqa: BLE001 - a hostile/partial registry must not 500
+        return None
+    for slot in candidates:
+        if str(getattr(slot, "linked_session_key", "") or "") == session_key:
+            return slot
+    return None
+
+
+def _derive_internal_caller_app(request: web.Request) -> str:
+    """:func:`derive_caller_app` bound to an aiohttp request's own context."""
+    state = request.app.get("state")
+    if state is None:
+        return derive_caller_app(None, request.headers.get("X-Session-Key", ""))
+    # ``_jobs`` / ``_agents`` directly, not store readers: this runs on the event
+    # loop and the cron store's sync readers refuse that on purpose (they would
+    # park the loop for the lock window). See ``_cron_job_owner``.
+    jobs = getattr(getattr(state, "crons", None), "_jobs", None)
+    subagents = getattr(getattr(state, "subagents", None), "_agents", None)
+    return derive_caller_app(
+        getattr(state, "_slots", None),
+        request.headers.get("X-Session-Key", ""),
+        jobs,
+        subagents,
+    )
+
+
+def _internal_caller_record_missing(request: web.Request) -> bool:
+    """:func:`caller_record_is_missing` bound to an aiohttp request's context."""
+    state = request.app.get("state")
+    if state is None:
+        return False
+    return caller_record_is_missing(
+        request.headers.get("X-Session-Key", ""),
+        getattr(getattr(state, "crons", None), "_jobs", None),
+        getattr(getattr(state, "subagents", None), "_agents", None),
+    )
+
+
+def token_auth_middleware(
+    *,
+    internal_paths: frozenset[str] = frozenset(),
+    mixed_internal_paths: frozenset[str] = frozenset(),
+    internal_secret: str = "",
+    port: int = 5476,
+    local_only: bool = True,
+    spa_shell_handler: Callable[..., Any] | None = None,
+    tailnet_trust: TailnetTrust | None = None,
+) -> Callable[..., Any]:
+    """Factory returning aiohttp middleware for token-based dashboard auth.
+
+    ALL requests require a valid token — loopback is no longer exempt
+    because local port forwarders (socat, ssh -R, custom scripts) make
+    remote traffic appear as 127.0.0.1, bypassing auth entirely.
+
+    *internal_paths* are exact paths that internal processes (mcp-core,
+    doctor) call — these require loopback AND a matching
+    ``X-Internal-Secret`` header (read from ``~/.kiro/crew/.local_secret``).
+    Non-loopback access to these paths is always denied.
+
+    *mixed_internal_paths* are paths called by BOTH internal processes
+    (loopback + secret) AND the browser (cookie auth).  On non-loopback
+    they perform explicit cookie validation (deny-by-default) instead
+    of hard-denying, so DCV/SSH-forwarded browsers polling these routes
+    (e.g. ``/api/spawn`` every 5s) don't trigger false session-expired
+    banners.  Use this for any internal-path that the browser polls.
+
+    *tailnet_trust* is the operator's identity-trust opt-in (RFC §2–§3.1,
+    validated at config load). When set and enabled, a request arriving from
+    the local ``tailscale serve`` proxy is attributed to the daemon-verified
+    tailnet peer: the session pin binds to a ``ts:``-prefixed peer key instead of
+    the proxy's loopback address, the allowlist is enforced, and audit records
+    name the login. When ``None`` (the default, and every failure mode of the
+    resolution) behaviour is byte-for-byte the existing token+IP path.
+    """
+
+    # NOTE: the signing-secret and revoked-nonce singletons are NOT warmed
+    # here anymore. This factory is invoked from `start_dashboard()` /
+    # `start_api_server()`, which are `async def` and therefore run ON the
+    # event loop — a synchronous warm-up here (blocking key-file read + a
+    # Windows `icacls` subprocess on first create) would block the loop during
+    # startup (no-blocking-call-on-event-loop). The async startup paths instead
+    # `await warm_auth_singletons()` (which offloads to a worker thread) BEFORE
+    # constructing this middleware chain, so the first auth op still hits the
+    # already-built singletons without any blocking I/O landing on the loop.
+
+    def _extract_and_validate_token(
+        request: web.Request, _port: int
+    ) -> tuple[bool, str, str, str, str]:
+        """Extract token from query param or cookie and validate it.
+
+        Returns ``(valid, user_id, reason, app_name, token)``. Used by
+        internal-path browser/app auth (no secret header). The main auth flow
+        has its own extraction with peer-binding and from_cookie tracking that
+        this helper intentionally does not replicate — but its callers still
+        run the peer-pin check on the returned token, so an internal path never
+        accepts a session pin the main flow would refuse.
+        """
+        cookie_name = f"mc_token_{_cookie_port_from_host(request, _port)}"
+        token = request.query.get("token") or request.cookies.get(cookie_name, "")
+        if not token:
+            return False, "", "no token", "", ""
+        valid, uid, reason, app = validate_token_with_app(token, use_session_exp=True)
+        return valid, uid, reason, app, token
+
+    @web.middleware
+    async def middleware(request: web.Request, handler: object) -> web.StreamResponse:
+        path = request.path
+
+        # Forwarded-peer resolution (RFC §2), once per request — the WebSocket
+        # path therefore resolves once at upgrade, never per frame. ``None`` on
+        # every unresolvable or failure case, in which case everything below is
+        # byte-for-byte the existing token+IP behaviour.
+        #
+        # Gated on the request PRESENTING A CREDENTIAL (query token, an access
+        # or refresh cookie), not on where in the middleware it would be
+        # consumed: a credential-less request (static assets, probes) can never
+        # bind or satisfy a pin, so resolving identity for it would only hand
+        # an unauthenticated local caller a header-driven daemon spawn. The
+        # gate is credential-PRESENCE rather than validity so the allowlist
+        # deny below still covers the /api/auth/refresh bypass.
+        peer: ForwardedPeer | None = None
+        if (
+            tailnet_trust is not None
+            and tailnet_trust.trust_identity
+            and tailnet_trust.allowed_logins
+            and (
+                bool(request.query.get("token"))
+                or any(c.startswith(("mc_token_", "mc_refresh_")) for c in request.cookies)
+            )
+        ):
+            peer = await resolve_forwarded_peer(request, tailnet_trust)
+            if peer is not None and not login_allowed(peer.login, tailnet_trust.allowed_logins):
+                # The allowlist is mandatory (RFC §3): a daemon-verified login
+                # that the operator did not allowlist is denied outright — a
+                # positive identity outside the allowlist must never fall
+                # through to a path it could satisfy with a leaked token.
+                _sel = _sel_fn()
+                _sel.log_api_access(
+                    caller=peer.login,
+                    operation="tailnet_peer_auth",
+                    outcome="denied",
+                    source="token_auth",
+                    resources=path,
+                    error="login not in allowed_logins",
+                )
+                _log_auth(request, peer.login, "denied", "tailnet login not allowed")
+                return _deny(request, "tailnet login not allowed")
+        # Audit attribution (RFC §3): when a peer resolved, the trail names a
+        # person; otherwise it stays the immediate peer address as today.
+        _caller = peer.login if peer is not None else (request.remote or "")
+
+        def _audit_uid(user_id: str) -> str:
+            """The identity ``_log_auth`` should record as the caller.
+
+            The daemon-verified login when a peer resolved (the RFC's audit
+            requirement — the trail names a person, not the proxy or a bare
+            token subject); the token identity otherwise.
+            """
+            return peer.login if peer is not None else user_id
+
+        def _peer_key_for_request() -> str:
+            """The pin key this request must satisfy (RFC §3)."""
+            if peer is not None and tailnet_trust is not None:
+                return peer_pin_key(peer, tailnet_trust.pin_scope)
+            return f"ip:{request.remote or 'unknown'}"
+
+        def _check_pin(token: str) -> tuple[bool, str]:
+            """Peer-pin check with an honest failure reason.
+
+            When the stored pin is a tailnet identity but NO peer resolved on
+            this request, the mismatch is reported as the identity being
+            UNVERIFIED rather than a device mismatch: this request could not
+            establish who is behind the proxy (daemon blip, header stripped,
+            or a genuinely different client), and "device identity mismatch"
+            would send the user chasing a re-enrolled device that never
+            changed. Fail-closed either way — an identity-pinned session is
+            never satisfiable by an unverified proxied request.
+            """
+            ok, mismatch = check_token_peer(token, _peer_key_for_request())
+            if not ok and peer is None and mismatch != "IP mismatch":
+                mismatch = "tailnet identity unverified"
+            if ok and peer is not None and not _state.has_binding(token):
+                # First-use re-pin after a restart, at the shared check so the
+                # internal cookie-auth branches get it too. The binding map is
+                # in-memory by design (RFC: regenerated on restart), so a
+                # surviving cookie is unbound until the first VERIFIED peer
+                # claims it; every other device is denied from then on, and
+                # the SEL row names who claimed it. Scoped to resolved peers —
+                # re-pinning ip: keys would change app-token and multi-hop
+                # semantics that predate identity pinning.
+                repin_key = _peer_key_for_request()
+                bind_token_peer(token, repin_key)
+                _sel_fn().log_api_access(
+                    caller=peer.login,
+                    operation="tailnet_peer_bind",
+                    outcome="granted",
+                    source="token_auth",
+                    resources=f"{repin_key} (first-use re-pin)",
+                )
+            return ok, mismatch
+
+        # Internal API paths: loopback + secret grants immediate access.
+        # If the secret is missing (browser request), fall through to
+        # normal cookie auth so dashboard pages can call these routes.
+        _matches_strict = internal_paths and (
+            path in internal_paths or any(path.startswith(p + "/") for p in internal_paths)
+        )
+        _matches_mixed = mixed_internal_paths and (
+            path in mixed_internal_paths
+            or any(path.startswith(p + "/") for p in mixed_internal_paths)
+        )
+        # local_only=False: treat ALL internal paths as mixed (backward compat
+        # with mainline's local_only semantics — user opted into remote access)
+        if not local_only and _matches_strict and not _matches_mixed:
+            _matches_mixed = True
+            _matches_strict = False
+        _matches_internal = _matches_strict or _matches_mixed
+        # A request on the dashboard's unix socket is same-machine by
+        # construction (the socket lives in the 0700 data home), so it
+        # qualifies as "local" for the internal branch even though it has no
+        # loopback peer IP (request.remote is empty for AF_UNIX transports).
+        _unix_sock = _unix_request_socket(request) if _matches_internal else None
+        if _matches_internal and (_unix_sock is not None or is_loopback(request.remote or "")):
+            # Kernel-attested peer verification (AF_UNIX only): deny a caller
+            # whose /proc ancestry resolves to a DIFFERENT session than the
+            # one its X-Session-Key header declares. Runs before either auth
+            # flavor grants — a mismatched peer is denied no matter what
+            # credentials it carries. TCP loopback is untouched (no peer
+            # credentials to check).
+            if _unix_sock is not None:
+                _peer_deny = await _verify_unix_peer(request, _unix_sock, path)
+                if _peer_deny is not None:
+                    return _peer_deny
+            _has_secret_header = "X-Internal-Secret" in request.headers
+            if _has_secret_header:
+                _provided_secret = request.headers["X-Internal-Secret"]
+                # Secret header present — validate it strictly
+                if not internal_secret:
+                    _sel = _sel_fn()
+                    _sel.log_api_access(
+                        caller=_caller,
+                        operation="internal_auth",
+                        outcome="denied",
+                        source="token_auth",
+                        resources=path,
+                        error="no internal secret configured",
+                    )
+                    _log_auth(request, "internal", "denied", "no internal secret configured")
+                    return _deny(request, "Forbidden")
+                if hmac.compare_digest(internal_secret, _provided_secret):
+                    _sel = _sel_fn()
+                    _sel.log_api_access(
+                        caller=_caller,
+                        operation="internal_auth",
+                        outcome="granted",
+                        source="token_auth",
+                        resources=path,
+                    )
+                    _log_auth(request, "internal", "granted", "")
+                    # Mark the grant so handlers can distinguish "the internal
+                    # loopback caller (kiro-cli / MCP) authenticated" from "no
+                    # auth ran at all".
+                    request["internal_auth"] = True
+                    # Derive the app identity ONCE, here, so every ownership
+                    # check downstream sees it (issue #3690). The secret proves
+                    # the call came from inside, not who made it, so identity
+                    # comes from the authenticated calling session.
+                    #
+                    # Publishing is deliberately NARROWING-ONLY: the claim is
+                    # set only when an app is positively resolved. When the
+                    # caller is the person, ``request["app"]`` is left ABSENT
+                    # rather than set to ``""`` — several sites read a PRESENT
+                    # empty claim as positive proof of the dashboard user
+                    # (``"app" not in request or request["app"] != ""`` in
+                    # handlers/source_providers, and handlers/kiro_prerequisite),
+                    # so writing ``""`` here would turn their refusal of this
+                    # transport into an admission. Absence keeps those exactly
+                    # as they were; presence makes the app-ownership guards bite.
+                    _derived_app = _derive_internal_caller_app(request)
+                    if _derived_app:
+                        request["app"] = _derived_app
+                        # POSITIVE non-dashboard-user signal for the WS scope
+                        # gate, which must never infer trust from a falsy app
+                        # claim (CWE-269).
+                        request["is_dashboard_user"] = False
+                    elif _internal_caller_record_missing(request):
+                        # A delegated caller whose OWN record is gone. Absence of
+                        # an app claim is only trustworthy for a caller that
+                        # never had a record to carry one; a cron whose job was
+                        # deleted mid-run, or a subagent evicted from the
+                        # registry, would otherwise keep the app reach the
+                        # deleted record was the only proof of. Refused rather
+                        # than admitted as the person -- the narrow, positively
+                        # confirmed case, not every unplaceable caller (a Slack
+                        # thread has no record to be missing).
+                        _sel = _sel_fn()
+                        _sel.log_api_access(
+                            caller=_caller,
+                            operation="internal_auth",
+                            outcome="denied",
+                            source="token_auth",
+                            resources=path,
+                            error="delegated caller's own record is gone",
+                        )
+                        _log_auth(request, "internal", "denied", "delegated record missing")
+                        return _deny(request, "Forbidden", "caller_record_missing")
+                    return await handler(request)  # type: ignore[operator]
+                # Wrong secret → deny (don't fall through)
+                _sel = _sel_fn()
+                _sel.log_api_access(
+                    caller=_caller,
+                    operation="internal_auth",
+                    outcome="denied",
+                    source="token_auth",
+                    resources=path,
+                    error=f"wrong secret ({_credential_mismatch_detail(internal_secret, _provided_secret)})",
+                )
+                _log_auth(
+                    request,
+                    "internal",
+                    "denied",
+                    f"wrong secret ({_credential_mismatch_detail(internal_secret, _provided_secret)})",
+                )
+                return _deny(request, "Forbidden", "internal_auth_mismatch")
+            # No secret header (browser request) → verify cookie/query-param auth
+            # inline to satisfy deny-by-default: positively confirm auth
+            # at the decision point rather than deferring to downstream.
+            # NOTE: uses _extract_and_validate_token helper (defined above)
+            # for cookie/query-param validation.
+            _valid, _uid, _reason, _app, _tok = _extract_and_validate_token(request, port)
+            if not _valid:
+                _sel = _sel_fn()
+                _sel.log_api_access(
+                    caller=_caller,
+                    operation="internal_auth",
+                    outcome="denied",
+                    source="token_auth",
+                    resources=path,
+                    error=f"cookie auth failed: {_reason}",
+                )
+                _log_auth(request, "internal", "denied", f"cookie auth failed: {_reason}")
+                return _deny(request, "Forbidden")
+            # Session-pin enforcement (RFC §3). Internal paths validated the
+            # cookie but historically skipped the pin, which would let a
+            # peer-pinned session be replayed against /api/chat, /api/spawn
+            # and friends from a client the pin excludes.
+            _pin_ok, _pin_mismatch = _check_pin(_tok)
+            if not _pin_ok:
+                _log_auth(request, _audit_uid(_uid), "denied", _pin_mismatch)
+                return _deny(request, _pin_mismatch)
+            # Expose identity so downstream handlers (and app-scope) see it.
+            request["user"] = _uid
+            request["app"] = _app
+            # POSITIVE dashboard-user signal for the WS scope gate: the WS
+            # layer must never infer trust from a falsy app claim (CWE-269).
+            request["is_dashboard_user"] = not _app
+            # App tokens are confined to their declared scope even on internal
+            # paths (e.g. /api/chat, /api/spawn are mixed_internal) — otherwise
+            # an app token would reach them on loopback with NO app identity set
+            # and be treated as the dashboard user (privilege escalation).
+            _scope_deny = _enforce_app_scope(request, _app, path)
+            if _scope_deny is not None:
+                return _scope_deny
+            _sel = _sel_fn()
+            _sel.log_api_access(
+                caller=_caller,
+                operation="internal_auth",
+                outcome="granted",
+                source="token_auth",
+                resources=path,
+                error="cookie auth (no secret header)",
+            )
+            _log_auth(request, "internal", "granted", f"cookie auth for {_uid}")
+            return await handler(request)  # type: ignore[operator]
+        elif _matches_internal:
+            if _matches_mixed:
+                # Mixed paths on non-loopback (DCV/SSH-forwarded browsers):
+                # explicit cookie validation, mirroring the loopback
+                # no-secret-header branch above.  Deny-by-default —
+                # positively confirm auth at this decision point rather
+                # than relying on downstream fall-through.
+                # If X-Internal-Secret header is present, validate it first
+                # (defense-in-depth: wrong secret = deny, even with valid cookie)
+                if "X-Internal-Secret" in request.headers:
+                    if not internal_secret or not hmac.compare_digest(
+                        internal_secret, request.headers["X-Internal-Secret"]
+                    ):
+                        # Same fingerprint detail and code as the loopback arm
+                        # above. This arm was left on the bare string, so a
+                        # denial here still could not say which side was wrong --
+                        # in particular an ABSENT credential (a caller that could
+                        # read no credential file at all) read identically to a
+                        # caller holding the wrong one, which is the exact
+                        # confusion the fingerprint exists to remove.
+                        _detail = (
+                            "wrong secret (non-loopback mixed, "
+                            f"{_credential_mismatch_detail(internal_secret, request.headers['X-Internal-Secret'])})"
+                        )
+                        _sel = _sel_fn()
+                        _sel.log_api_access(
+                            caller=_caller,
+                            operation="internal_auth",
+                            outcome="denied",
+                            source="token_auth",
+                            resources=path,
+                            error=_detail,
+                        )
+                        _log_auth(request, "internal", "denied", _detail)
+                        return _deny(request, "Forbidden", "internal_auth_mismatch")
+                _valid, _uid, _reason, _app, _tok = _extract_and_validate_token(request, port)
+                if not _valid:
+                    _sel = _sel_fn()
+                    _sel.log_api_access(
+                        caller=_caller,
+                        operation="internal_auth",
+                        outcome="denied",
+                        source="token_auth",
+                        resources=path,
+                        error=f"mixed non-loopback cookie auth failed: {_reason}",
+                    )
+                    _log_auth(
+                        request,
+                        "internal",
+                        "denied",
+                        f"mixed non-loopback cookie auth failed: {_reason}",
+                    )
+                    return _deny(request, "Forbidden")
+                # Session-pin enforcement (RFC §3) — same rationale as the
+                # loopback branch above.
+                _pin_ok, _pin_mismatch = _check_pin(_tok)
+                if not _pin_ok:
+                    _log_auth(request, _audit_uid(_uid), "denied", _pin_mismatch)
+                    return _deny(request, _pin_mismatch)
+                # Expose identity + confine app tokens to their declared scope
+                # (same rationale as the loopback branch above).
+                request["user"] = _uid
+                request["app"] = _app
+                # POSITIVE dashboard-user signal for the WS scope gate (see
+                # the loopback branch above).
+                request["is_dashboard_user"] = not _app
+                _scope_deny = _enforce_app_scope(request, _app, path)
+                if _scope_deny is not None:
+                    return _scope_deny
+                _sel = _sel_fn()
+                _sel.log_api_access(
+                    caller=_caller,
+                    operation="internal_auth",
+                    outcome="granted",
+                    source="token_auth",
+                    resources=path,
+                    error="mixed non-loopback cookie auth",
+                )
+                _log_auth(
+                    request, "internal", "granted", f"mixed non-loopback cookie auth for {_uid}"
+                )
+                return await handler(request)  # type: ignore[operator]
+            else:
+                # INVARIANT: non-loopback access to strict internal paths is
+                # ALWAYS denied.  Do NOT remove this branch — without it,
+                # non-loopback requests would silently fall through to
+                # normal cookie auth, defeating the machine-to-machine
+                # isolation that the internal-secret design provides.
+                _sel = _sel_fn()
+                _sel.log_api_access(
+                    caller=_caller,
+                    operation="internal_auth",
+                    outcome="denied",
+                    source="token_auth",
+                    resources=path,
+                    error="non-loopback source",
+                )
+                _log_auth(request, "internal", "denied", "non-loopback source")
+                return _deny(request, "Forbidden")
+
+        # Bypass static assets
+        if any(path.startswith(p) for p in _BYPASS_PREFIXES):
+            return await handler(request)  # type: ignore[operator]
+        if path in _BYPASS_EXACT:
+            return await handler(request)  # type: ignore[operator]
+        # Method-scoped exact bypasses. A non-listed method on the same path
+        # falls through to the ordinary token gate rather than bypassing it.
+        _bypass_methods = _BYPASS_EXACT_METHODS.get(path)
+        if _bypass_methods is not None and request.method in _bypass_methods:
+            return await handler(request)  # type: ignore[operator]
+        # Icon files: anchored regex with bounded digit count to prevent
+        # ReDoS and ensure only legitimate PWA icon paths bypass auth.
+        if re.fullmatch(r"/icon-\d{1,4}\.png", path):
+            return await handler(request)  # type: ignore[operator]
+
+        # Installed-app UI bundles: anchored to /apps/{name}/ui/* only.
+        # Does NOT match the reverse-proxy path /apps/{name}/api/*.
+        # Restricted to safe methods (GET/HEAD) — static file serving only.
+        # If a write-capable handler is ever registered under /apps/{name}/ui/,
+        # it stays auth-protected because the bypass never fires for it.
+        if _APPS_UI_BYPASS_RE.match(path) and request.method in ("GET", "HEAD"):
+            return await handler(request)  # type: ignore[operator]
+
+        # Bypass app token exchange (App Kit §5.1) — app authenticates
+        # via X-App-Secret header, not a token cookie.
+        if re.match(r"^/api/apps/[a-z0-9][a-z0-9_-]*/token$", path) and request.method == "POST":
+            return await handler(request)  # type: ignore[operator]
+
+        # Bypass /api/auth/refresh — the handler authenticates via the
+        # refresh cookie (path-restricted to this endpoint), not the access
+        # cookie. Adding here lets refresh succeed even when the access
+        # cookie has just expired (the whole point of the refresh flow).
+        # GET is also allowed for /api/auth/me which is gated by normal auth
+        # below — only POST /api/auth/refresh bypasses.
+        if path == "/api/auth/refresh" and request.method == "POST":
+            return await handler(request)  # type: ignore[operator]
+
+        # Bypass /api/auth/logout — same rationale as /api/auth/refresh:
+        # the handler authenticates via the refresh cookie and must work
+        # even if the access cookie has just expired (so a user can still
+        # tear down their refresh chain on the way out).
+        if path == "/api/auth/logout" and request.method == "POST":
+            return await handler(request)  # type: ignore[operator]
+
+        # Extract token from query param or cookie
+        cookie_name = f"mc_token_{_cookie_port_from_host(request, port)}"
+        token = request.query.get("token") or ""
+        from_cookie = False
+        if not token:
+            token = request.cookies.get(cookie_name, "")
+            from_cookie = bool(token)
+
+        if not token:
+            # Cold-start (no token — e.g. the access cookie expired over a
+            # weekend). Serve the shell directly (not the matched handler) so
+            # the app boots and self-recovers via the refresh cookie. Default-
+            # deny: fires only when a shell handler is wired and the path is a
+            # non-data GET/HEAD nav; no cookie minted.
+            if spa_shell_handler is not None and _is_spa_shell_request(request):
+                _log_auth(request, "", "shell_unauth", "SPA shell served (no token, cold-start)")
+                return await spa_shell_handler(request)  # type: ignore[operator]
+            _log_auth(request, "", "denied", "Token required")
+            return _deny(request, "Token required")
+
+        valid, user_id, reason, app_name = validate_token_with_app(
+            token, use_session_exp=from_cookie
+        )
+        if not valid:
+            # Cold-start variant: an expired/forged token is present (cookie
+            # survived but its token lapsed). Same rationale — serve the shell
+            # so the SPA can boot and silently refresh.
+            if spa_shell_handler is not None and _is_spa_shell_request(request):
+                # Distinct outcome (NOT "ok"): keep forged-token navigations
+                # detectable by SEL anomaly detection while still serving the
+                # secret-free shell.
+                _log_auth(
+                    request,
+                    "",
+                    "shell_unauth_invalid_token",
+                    f"SPA shell served (invalid token: {reason})",
+                )
+                return await spa_shell_handler(request)  # type: ignore[operator]
+            _log_auth(request, "", "denied", reason)
+            return _deny(request, reason)
+
+        # The session pin key (RFC §3): the daemon-verified peer identity when
+        # one resolved, else the immediate address — byte-for-byte today's pin.
+        peer_key = _peer_key_for_request()
+
+        _pin_ok, _pin_mismatch = _check_pin(token)
+        if not _pin_ok:
+            _log_auth(request, _audit_uid(user_id), "denied", _pin_mismatch)
+            return _deny(request, _pin_mismatch)
+
+        # Extract session_exp for cookie and IP binding on first query-param use
+        session_exp = 0.0
+        session_token = token
+        if not from_cookie:
+            _link_nonce = ""
+            _embed_parent_port = ""
+            _no_refresh = False
+            try:
+                payload_bytes = _b64url_decode(token.split(".")[0])
+                data = json.loads(payload_bytes)
+                session_exp = float(data.get("session_exp", 0.0))
+                _link_nonce = str(data.get("nonce", ""))
+                # Carry the multi-instance frame-ancestors claim (the embedding
+                # parent dashboard's port) THROUGH the exchange. The framed
+                # document is authenticated by the session cookie minted below,
+                # so without this the cookie would drop the claim and the CSP
+                # reader (server._extra_frame_ancestors) would fall back to bare
+                # ``'self'`` — the blank embedded-pane bug.
+                _epp = data.get("embed_parent_port")
+                if isinstance(_epp, str) and _epp:
+                    _embed_parent_port = _epp
+                # A link minted for a device this dashboard does not control (the
+                # tailnet phone-access QR) says so with this claim, and the
+                # promise it encodes is an EXPIRY: that session ends when its
+                # short session_exp does. Honoured by NOT issuing a refresh
+                # cookie below, rather than by a check in the refresh handler —
+                # a credential that was never minted cannot be replayed, whereas
+                # a guarded one relies on every future refresh entry point
+                # remembering the guard.
+                _no_refresh = str(data.get("no_refresh", "")) == "1"
+            except Exception:
+                session_exp = 0.0
+            # Expose the frame-ancestors parent-port claim to the response-header
+            # layer NOW, BEFORE the link nonce is revoked below. The FIRST framed
+            # instance document is loaded via ``?token=`` and the browser enforces
+            # that response's ``frame-ancestors``; re-validating the (about-to-be-
+            # revoked) link token in server._extra_frame_ancestors would return
+            # None and fall back to bare ``'self'`` (blank pane). Signature is
+            # already verified above; this only carries the loopback parent port.
+            if _embed_parent_port:
+                request["embed_parent_port"] = _embed_parent_port
+            # Token→session exchange (CWE-613 / secure token handling): NEVER
+            # reuse the one-time URL/link token string as the long-lived session
+            # cookie. The link token is exposed in URLs, Slack messages, terminal
+            # history, browser history and access/proxy logs. Minting a SEPARATE
+            # session token here (fresh nonce, same identity + remaining
+            # lifetime) means an observer of any of those channels obtains only
+            # the 5-minute link — not the 20-hour session credential. The link
+            # token stops being a bearer credential the moment its short ``exp``
+            # window closes; the cookie is an unrelated string. Per-session
+            # revocation still works because the minted token carries its own
+            # nonce (see RevokedNonceStore / api_auth_logout).
+            _remaining = int(session_exp - time.time()) if session_exp else MAX_SESSION_TTL_SECS
+            if _remaining > 0:
+                # Claims that must SURVIVE the exchange are copied explicitly.
+                # The session token is a fresh mint, so anything not named here
+                # is dropped — and silently dropping ``boot`` would be the worst
+                # possible failure: the link would be boot-bound, the cookie it
+                # became would not, and the phone session would quietly outlive
+                # the restart it was supposed to end at. The claim is carried,
+                # never re-derived from current_boot_id(), so a link minted by a
+                # PREVIOUS process cannot launder itself into a live session —
+                # validate_token has already rejected it by this point, and
+                # re-deriving would hide that.
+                _carried: dict[str, str] = {}
+                if _embed_parent_port:
+                    _carried["embed_parent_port"] = _embed_parent_port
+                _token_boot = str(data.get("boot", ""))
+                if _token_boot:
+                    _carried["boot"] = _token_boot
+                session_token = generate_token(
+                    user_id,
+                    ttl_seconds=_remaining,
+                    app=app_name,
+                    register_nonce=False,
+                    extra=_carried or None,
+                )
+            # Kill the link token AS A COOKIE. Exchange alone is not enough: the
+            # link token still carries the 20h ``session_exp``, so a captured
+            # copy (from a log/Slack/history) could otherwise be presented
+            # directly as ``mc_token_<port>`` and validate on the cookie path for
+            # the full session. Adding its nonce to the persisted denylist makes
+            # validate_token(use_session_exp=True) reject it. Crucially the
+            # query-param LINK path (use_session_exp=False) does NOT consult the
+            # denylist, so legitimate re-navigation of the same link URL — remote
+            # instance iframes re-deriving /?token=, self-nudge polling — keeps
+            # working within the 5-minute window (it just re-exchanges for a
+            # fresh session cookie each time). Guarded by is_revoked so repeated
+            # exchanges of the same link don't re-write the denylist file.
+            if _link_nonce and session_exp and not _get_revoked_store().is_revoked(_link_nonce):
+                # revoke() does synchronous file I/O (mkdir/write/chmod/replace);
+                # offload so it never blocks the event loop. is_revoked above is
+                # an in-memory check and is cheap enough to run inline.
+                await asyncio.to_thread(_get_revoked_store().revoke, _link_nonce, session_exp)
+            # Bind the SESSION token (what becomes the cookie) to the peer key,
+            # not the consumed URL token. ``proxied`` is recorded so Security
+            # Posture can tell the user whether that pin is per-client or shared
+            # with everyone behind a same-host tunnel — it does not affect the
+            # binding itself. A session pinned to a daemon-verified tailnet peer
+            # is per-client even though the request is proxied, so the flag is
+            # only set when NO peer resolved.
+            bind_token_peer(
+                session_token,
+                peer_key,
+                session_exp,
+                proxied=is_proxied_request(request) and peer is None,
+            )
+            if peer is not None:
+                # The one permission decision that changes state: this session
+                # is now pinned to a verified identity and the audit trail
+                # re-attributes to a login. One SEL row per session, at bind —
+                # not per request, which would only add volume.
+                _sel_fn().log_api_access(
+                    caller=peer.login,
+                    operation="tailnet_peer_bind",
+                    outcome="granted",
+                    source="token_auth",
+                    resources=peer_key,
+                )
+
+            # Token-consumption anchor seam (Default: no-op, OSS-identical). A
+            # Slack challenge-redirect link, once opened on a verified device,
+            # consumes its token here — the edition opens the bounded per-(user,
+            # channel) auth window that lets follow-up Slack traffic flow inline.
+            # channel/thread_ts ride the token's signed ``extra`` payload (``data``);
+            # absent for non-challenge tokens, so the window is only opened for a
+            # real challenge exchange. Fail-safe: ``safe_context_call`` swallows an
+            # observer error (fallback=None) so it never blocks token consumption /
+            # login, while still re-raising ``PlatformCompositionError`` — the boot
+            # invariant that a mis-composed edition MUST abort rather than silently
+            # degrade. Do NOT wrap this in a bare ``except Exception``: that is
+            # exactly the swallow ``safe_context_call`` centralizes to prevent.
+            _chan = str(data.get("channel", "")) if isinstance(data, dict) else ""
+            _thread = (data.get("thread_ts") if isinstance(data, dict) else None) or None
+            if _chan:
+                from kiro_crew.platform import current_context, safe_context_call
+
+                safe_context_call(
+                    lambda: current_context().dashboard.on_token_consumed(
+                        user_id, _chan, session_exp, _thread
+                    ),
+                    fallback=None,
+                    log_message="dashboard.on_token_consumed observer failed",
+                )
+
+        # Expose authenticated identity to handlers (deny-by-default)
+        request["user"] = user_id
+        request["app"] = app_name
+        # POSITIVE dashboard-user signal for the WS scope gate (see above).
+        request["is_dashboard_user"] = not app_name
+
+        # App-token least-privilege gate (CWE-269): an app token is confined to
+        # its own namespace + its manifest ``permissions.api`` allowlist. This
+        # is the primary enforcement point for the normal cookie/query-param
+        # flow (e.g. /api/sessions, /api/config/*, the /apps/<other>/api proxy).
+        _scope_deny = _enforce_app_scope(request, app_name, path)
+        if _scope_deny is not None:
+            return _scope_deny
+
+        # Proceed to handler
+        resp = await handler(request)  # type: ignore[operator]
+
+        # Set cookie after handler (needs response object)
+        if not from_cookie:
+            cookie_max_age = MAX_SESSION_TTL_SECS
+            if session_exp:
+                remaining = int(session_exp - time.time())
+                if 0 < remaining <= MAX_SESSION_TTL_SECS:
+                    cookie_max_age = remaining
+            resp.set_cookie(
+                cookie_name,
+                session_token,
+                httponly=True,
+                samesite="Lax",
+                # Secure only when over HTTPS (direct or via a
+                # TLS-terminating tunnel/proxy — see is_https_request).
+                # Localhost plain HTTP must not set it or the browser
+                # refuses to send it back.
+                secure=is_https_request(request),
+                path="/",
+                max_age=cookie_max_age,
+            )
+            # Clean up legacy cookie from pre-port-specific era
+            resp.set_cookie("mc_token", "", max_age=0, path="/")
+
+            # Trim other-port auth cookies from the shared 127.0.0.1 jar so it
+            # can't grow past aiohttp's header limit (see
+            # refresh_tokens.foreign_port_cookies). Gated on jar size so live
+            # co-existing gateways keep their sessions until accumulation
+            # genuinely threatens overflow. This page request only carries
+            # other-port ACCESS cookies (path "/"); other-port refresh cookies
+            # (path "/api/auth") are trimmed on the next refresh call.
+            if cookie_jar_needs_pruning(request.cookies):
+                for _stale_name, _stale_path in foreign_port_cookies(
+                    request.cookies, _cookie_port_from_host(request, port)
+                ):
+                    resp.set_cookie(_stale_name, "", max_age=0, path=_stale_path)
+
+            # Initial mint via token URL: also attach a refresh cookie so
+            # the user does not have to re-mint via URL every ~20h. Inlined
+            # here (rather than calling handlers.auth_refresh) to keep the
+            # import top-level and the cycle direction one-way:
+            # token_auth → refresh_tokens, never the reverse.
+            #
+            # SKIPPED ENTIRELY for a no-refresh session. Such a link was minted
+            # for a device this dashboard does not control (the tailnet
+            # phone-access QR), and its short ``session_exp`` is the whole reason
+            # handing that device a credential is acceptable. A refresh chain
+            # would defeat it: ``api_auth_refresh`` re-mints at
+            # MAX_SESSION_TTL_SECS without carrying the original ceiling forward,
+            # so one rotation silently promotes a ~1h session to the 20h cap.
+            # Enforced by never minting the chain rather than by a check inside
+            # the refresh handler — a credential that does not exist cannot be
+            # replayed, while a guarded one relies on every future refresh entry
+            # point remembering the guard.
+            if _no_refresh:
+                # Not minting one is only HALF the guarantee. The browser may
+                # ALREADY hold a refresh cookie for this port from an earlier
+                # full session (a prior `?token=` link, a Slack `!dashboard`
+                # link), and `api_auth_refresh` authenticates on the refresh
+                # cookie ALONE — it never checks that the access token beside it
+                # belongs to the same session. Left in place, that residual
+                # credential rotates into a 20-hour session and the QR's short
+                # window is bypassed by a path that never touched this branch.
+                #
+                # Every way a refresh credential can reach this session, and
+                # where each is closed:
+                #   1. minted here during the exchange   -> not minted (below)
+                #   2. already in the browser            -> expired here
+                #   3. rotated by api_auth_refresh       -> unreachable once 1+2
+                #      are closed, since rotation needs an existing chain
+                #
+                # Only THIS port's cookie is cleared. A `mc_refresh_<other>`
+                # belongs to a different gateway instance, cannot refresh this
+                # session, and is not ours to revoke.
+                resp.set_cookie(
+                    refresh_cookie_name(_cookie_port_from_host(request, port)),
+                    "",
+                    max_age=0,
+                    path=REFRESH_COOKIE_PATH,
+                )
+            else:
+                try:
+                    # The refresh chain inherits the boot binding. Without this
+                    # the chain is the escape hatch: the access cookie would die
+                    # at restart while a 30-day refresh credential beside it
+                    # re-minted a fresh session on the next visit, and "ends at
+                    # restart" would be false by one rotation.
+                    refresh_token, chain_id, _jti, refresh_exp = generate_refresh_token(
+                        user_id, boot=str(data.get("boot", ""))
+                    )
+                    refresh_remaining = int(refresh_exp - time.time())
+                    if refresh_remaining > 0:
+                        resp.set_cookie(
+                            refresh_cookie_name(_cookie_port_from_host(request, port)),
+                            refresh_token,
+                            httponly=True,
+                            samesite="Lax",
+                            secure=is_https_request(request),
+                            path=REFRESH_COOKIE_PATH,
+                            max_age=min(refresh_remaining, MAX_REFRESH_TTL_SECS),
+                        )
+                        # Audit the initial-mint event so forensics can trace any
+                        # subsequent chain revocation back to the user it was
+                        # issued to.
+                        try:
+                            _sel_fn().log_api_access(
+                                caller=user_id,
+                                operation="refresh_token_initial_mint",
+                                outcome="ok",
+                                source="refresh_tokens",
+                                resources=chain_id,
+                            )
+                        except Exception as exc:  # pragma: no cover
+                            # SEL must never block auth flows, but log the failure
+                            # so it's observable.
+                            logger.debug("token_auth: SEL audit failed: %s", exc)
+                except Exception as _refresh_err:
+                    # Refresh cookie is best-effort. If something goes wrong
+                    # here, the access cookie still works as before — the
+                    # user just won't get the refresh upgrade until next mint.
+                    logger.warning(
+                        "token_auth: failed to attach refresh cookie (%s); "
+                        "access cookie still set, user can re-mint as before",
+                        _refresh_err,
+                    )
+
+        _log_auth(request, _audit_uid(user_id), "ok", "")
+        return resp  # type: ignore[return-value]
+
+    middleware._is_token_auth = True  # type: ignore[attr-defined]  # sentinel for server.py security gate
+    return middleware
+
+
+def _credential_fingerprint(value: str) -> str:
+    """Identify a credential without disclosing it: short digest + length.
+
+    ``absent`` for an empty value, which is a distinct and common case (a caller
+    that could not read any credential file at all) and must not be confused with
+    a caller holding the wrong one.
+
+    Eight hex characters of a SHA-256 is an identifier, not the credential: it
+    does not survive inversion for a 128-bit random value, and it goes only to the
+    SEL audit log, which already sits on the keystone floor. Without it a
+    cross-generation mismatch is indistinguishable from a forged header, which is
+    what made a real desync take hours to attribute -- the log said only
+    "wrong secret" and named no side.
+    """
+    if not value:
+        return "absent"
+    return f"{hashlib.sha256(value.encode()).hexdigest()[:8]}/len={len(value)}"
+
+
+def _credential_mismatch_detail(expected: str, provided: str) -> str:
+    """Both fingerprints, for the one log line that has to explain a 403."""
+    return (
+        f"expected={_credential_fingerprint(expected)} "
+        f"received={_credential_fingerprint(provided)}"
+    )
+
+
+def _deny(request: web.Request, reason: str, code: str = "") -> web.Response:
+    headers = {"X-Auth-Required": "true"}
+    if request.path.startswith("/api/"):
+        # A machine-readable code alongside the prose: a caller cannot distinguish
+        # a credential desync from a genuine permission denial by matching the
+        # body text, and a tool that guesses from prose misdiagnoses the other one.
+        # Written as a dict LITERAL with the key present so the error-code ratchet
+        # can still read this sink statically -- handing it a prebuilt variable
+        # would trade a `missing_code` for an `opaque_body`, which is the bucket
+        # that hides every future regression here.
+        return web.json_response(
+            {"error": reason, "code": code or "forbidden"}, status=403, headers=headers
+        )
+    return web.Response(
+        text=_403_HTML.format(reason=reason),
+        status=403,
+        content_type="text/html",
+        headers=headers,
+    )
+
+
+def _log_auth(request: web.Request, user_id: str, outcome: str, error: str) -> None:
+    try:
+        _sel_fn().log_api_access(
+            caller=user_id or request.remote or "unknown",
+            operation="dashboard.token_auth",
+            outcome=outcome,
+            resources=request.path,
+            error=error,
+        )
+    except Exception:
+        logger.warning("Failed to log auth event to SEL", exc_info=True)

@@ -1,0 +1,944 @@
+"""Dashboard endpoints for session storage: what it costs, and reclaiming it.
+
+Read is open; every mutation is gated on :func:`_is_restricted_session` and
+audited through the SEL, because all three of them move or delete a user's
+conversation history.
+
+The wire shape deliberately reports a session as ONE size. Sessions occupy two
+stores underneath (see :mod:`kiro_crew.session_storage`), but that is an
+implementation detail the reader cannot act on, so it is neither split out here
+nor derivable from these payloads.
+
+Reclaiming stages files in a trash rather than deleting them, which means the
+reclaim itself does not return space to the filesystem. ``trash`` carries the
+staged total precisely so a client can say so; a client that reports a reclaim as
+freed space is lying to the user.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import time
+from dataclasses import dataclass, field
+from typing import Any
+
+from aiohttp import web
+
+from kiro_crew.dashboard.handlers._shared import _is_restricted_session, _read_session_key
+from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.history import transcript_stems
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.session_digest import digest
+from kiro_crew.session_map import SessionMap
+from kiro_crew.session_storage import (
+    BUCKET_DAYS,
+    MIN_RECLAIM_AGE_DAYS,
+    SessionIndex,
+    SessionStorageError,
+    SessionUnit,
+    empty_trash,
+    list_trash,
+    list_units,
+    measure,
+    move_to_trash,
+    restore,
+    select_reclaimable,
+    staged_targets,
+)
+
+logger = logging.getLogger(__name__)
+
+# Why a reclaim is being run. Recorded in the batch manifest and surfaced in the
+# trash listing so a user can tell a bulk threshold sweep apart from sessions they
+# picked by hand.
+REASON_POLICY = "policy"
+REASON_MANUAL = "manual"
+
+# A reclaim of six figures of sessions is minutes of filesystem work even at
+# rename speed, so every operation here is offloaded off the event loop.
+_MAX_SELECTION = 200_000
+
+# How many replay-only sessions the inventory lists individually. The rest are
+# reported as a total.
+#
+# A cap is not a display preference here: the collapsed group holds six figures of
+# rows on a long-lived install, and sending them all is both the bulk of the
+# response and — if the group is ever expanded — more DOM than a browser will
+# render. The cut is by size, so the rows worth choosing between by hand are the
+# ones that survive it, and the summary states what was left out so the list never
+# reads as the whole store.
+_BACKGROUND_ROW_LIMIT = 200
+
+
+def _sel():
+    # circular import: the handlers package imports this module at load, so the
+    # SEL accessor is resolved per call instead of at import time. Late binding
+    # also keeps the test suite's patch of the package-level sel() effective.
+    import kiro_crew.dashboard.handlers as _pkg
+
+    return _pkg.sel()
+
+
+def _build_index(state: DashboardState | None = None) -> SessionIndex:
+    """Pair every mapped session's replay log with its transcript files.
+
+    Stems come from :func:`kiro_crew.history.transcript_stems`, which returns both
+    the canonical name and the pre-migration bare ``thread_ts`` name a Slack thread
+    may still log under. Using only the canonical stem would leave a legacy
+    transcript looking like it belongs to no session — and therefore reclaimable
+    while the session is still resumable.
+
+    *state*, when given, additionally marks the sessions with a turn in flight.
+    That set is only ever used to EXPLAIN a refusal, never to grant one: every
+    refusal is already decided by ``active_sids``, which is the whole map. Omitting
+    the state therefore cannot make anything reclaimable that would not be —
+    it only costs the caller the ability to say which sessions are truly busy.
+    """
+    mapping = SessionMap().mapped_sids_by_key()
+    stem_to_sid = {stem: sid for key, sid in mapping.items() for stem in transcript_stems(key)}
+    running = state.running_session_keys() if state is not None else frozenset()
+    live_sids = frozenset(sid for key, sid in mapping.items() if key in running)
+    return SessionIndex(
+        stem_to_sid=stem_to_sid,
+        active_sids=frozenset(mapping.values()),
+        live_sids=live_sids,
+    )
+
+
+def _deny(operation: str, request: web.Request) -> web.Response:
+    _sel().log_api_access(
+        caller=_read_session_key(request),
+        operation=operation,
+        outcome="denied",
+        source="dashboard",
+        resources="restricted_session_block",
+    )
+    return web.json_response(
+        {
+            "error": "Reclaiming session storage is not allowed in this session mode.",
+            "code": "restricted_session",
+        },
+        status=403,
+    )
+
+
+def _bad_request(message: str, code: str) -> web.Response:
+    return web.json_response({"error": message, "code": code}, status=400)
+
+
+def _refused(exc: SessionStorageError, code: str) -> web.Response:
+    return web.json_response({"error": str(exc), "code": code}, status=400)
+
+
+# Sentinel for "the key was present but is not a list of strings". Distinct from
+# ``None``, which means "omitted" and is what widens an operation to every batch or
+# every session in one — so a malformed value must never collapse into it.
+_MALFORMED: list[str] = []
+
+
+def _optional_str_list(body: dict[str, Any], key: str) -> list[str] | None:
+    """Parse an optional list-of-strings field.
+
+    Returns ``None`` when the key is absent, the list when it is well-formed, and
+    :data:`_MALFORMED` (identity-compared) otherwise. Filtering a malformed value
+    down to whatever happened to be a string is the dangerous reading: a bare
+    string is not a list, so it would silently become "omitted" and widen a
+    targeted delete into a total one.
+    """
+    if key not in body or body[key] is None:
+        return None
+    value = body[key]
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        return _MALFORMED
+    return list(value)
+
+
+async def _json_body(request: web.Request) -> dict[str, Any] | None:
+    """Parse a JSON object body; ``None`` when it is absent, empty, or malformed.
+
+    A parse failure must NOT become ``{}``. An empty object is a legitimate request
+    on these endpoints, so collapsing malformed input into it would let a truncated
+    or non-JSON body read as "no arguments given" — and on this surface "no
+    arguments" is what widens an operation.
+    """
+    raw = await request.read()
+    if not raw.strip():
+        return {}
+    try:
+        body = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return body if isinstance(body, dict) else None
+
+
+def _report_payload() -> dict[str, Any]:
+    index = _build_index()
+    report = measure(index)
+    return {
+        "total_bytes": report.total_bytes,
+        "total_sessions": report.total_sessions,
+        "active_sessions": report.active_sessions,
+        "active_bytes": report.active_bytes,
+        "reclaimable_sessions": report.reclaimable_sessions,
+        "reclaimable_bytes": report.reclaimable_bytes,
+        # Non-empty when this instance must not reclaim at all; a client should
+        # explain rather than offer an action that can only be refused.
+        "reclaim_blocked_reason": report.reclaim_blocked_reason,
+        "buckets": [
+            {"label": b.label, "sessions": b.sessions, "bytes": b.bytes} for b in report.buckets
+        ],
+        "trash": {
+            "bytes": report.trash_bytes,
+            # Staged bytes still occupy the filesystem. Named so a client cannot
+            # present a reclaim as reclaimed space without contradicting itself.
+            "still_on_disk": True,
+            "instant": report.trash_same_filesystem,
+            "batches": [
+                {
+                    "batch_id": batch.batch_id,
+                    "created_at": batch.created_at,
+                    "reason": batch.reason,
+                    "sessions": batch.sessions,
+                    "bytes": batch.bytes,
+                }
+                for batch in list_trash()
+            ],
+        },
+    }
+
+
+async def api_session_storage(request: web.Request) -> web.Response:
+    """GET /api/system/session-storage — what sessions cost and what can be reclaimed.
+
+    Uncached: it walks both stores, so it is far too expensive to serve on a poll
+    and is meant to be fetched when the screen opens or after an action.
+    """
+    data = await asyncio.to_thread(_report_payload)
+    return web.json_response(data)
+
+
+async def api_session_storage_cleanup(request: web.Request) -> web.Response:
+    """POST /api/system/session-storage/cleanup — stage old sessions for deletion.
+
+    ``dry_run`` returns the same counts without moving anything, so a client can
+    show exactly what a threshold will do before the user commits. The selection
+    is re-derived here rather than accepted from the client: the numbers a screen
+    is showing may be minutes old, and acting on them would move sessions the
+    user never saw.
+    """
+    state: DashboardState = request.app["state"]
+    if _is_restricted_session(state, request):
+        return _deny("session_storage.cleanup", request)
+
+    body = await _json_body(request)
+    if body is None:
+        return _bad_request("Request body must be a JSON object.", "invalid_body")
+    raw_days = body.get("older_than_days")
+    if not isinstance(raw_days, (int, float)) or isinstance(raw_days, bool):
+        return web.json_response(
+            {"error": "older_than_days must be a number.", "code": "invalid_threshold"},
+            status=400,
+        )
+    try:
+        # JSON puts no bound on an integer, so a caller can send hundreds of
+        # digits. That is a bad request, not a server error — float() raises
+        # OverflowError on it, which would otherwise surface as a 500.
+        threshold = float(raw_days)
+    except (OverflowError, ValueError):
+        return _bad_request("older_than_days is out of range.", "invalid_threshold")
+    dry_run = bool(body.get("dry_run"))
+    # Reading and possibly migrating session_map.json is filesystem work, so it
+    # belongs off the loop like every other operation on this surface.
+    index = await asyncio.to_thread(_build_index)
+
+    try:
+        selected = await asyncio.to_thread(select_reclaimable, index, threshold)
+    except SessionStorageError as exc:
+        return _refused(exc, "invalid_threshold")
+
+    # Above the per-batch bound, stage the OLDEST sessions and report the rest as
+    # remaining, rather than refusing. A refusal dead-ends the very install this
+    # exists for: the measured motivating machine already holds six figures of
+    # sessions, and no threshold a client could pick would get under the cap.
+    # Oldest-first makes repeating the call monotonic progress.
+    selected.sort(key=lambda unit: unit.mtime)
+    remaining = max(0, len(selected) - _MAX_SELECTION)
+    selected = selected[:_MAX_SELECTION]
+
+    total = sum(unit.bytes for unit in selected)
+    if dry_run:
+        return web.json_response(
+            {"dry_run": True, "sessions": len(selected), "bytes": total, "remaining": remaining}
+        )
+    if not selected:
+        return web.json_response(
+            {"sessions": 0, "bytes": 0, "batch_id": "", "remaining": remaining}
+        )
+
+    try:
+        batch = await asyncio.to_thread(
+            move_to_trash,
+            [unit.uid for unit in selected],
+            reason=REASON_POLICY,
+            index=index,
+            # Re-read the map inside the lock: the scan above can take long enough
+            # for a session to be resumed and mapped in the meantime.
+            refresh=_build_index,
+        )
+    except SessionStorageError as exc:
+        return _refused(exc, "cleanup_refused")
+
+    _sel().log_api_access(
+        caller=_read_session_key(request),
+        operation="session_storage.cleanup",
+        outcome="success",
+        source="dashboard",
+        resources=f"{batch.batch_id}:{batch.sessions}",
+    )
+    return web.json_response(
+        {
+            "sessions": batch.sessions,
+            "bytes": batch.bytes,
+            "batch_id": batch.batch_id,
+            "remaining": remaining,
+        }
+    )
+
+
+async def api_session_storage_restore(request: web.Request) -> web.Response:
+    """POST /api/system/session-storage/restore — undo a staged batch.
+
+    Omitting ``uids`` restores the whole batch, which is the unit a user thinks in
+    ("undo what I just did"); naming them restores only those, for the case where
+    one conversation turns out to be wanted out of a large sweep.
+    """
+    state: DashboardState = request.app["state"]
+    if _is_restricted_session(state, request):
+        return _deny("session_storage.restore", request)
+
+    body = await _json_body(request)
+    if body is None:
+        return _bad_request("Request body must be a JSON object.", "invalid_body")
+    batch_id = body.get("batch_id")
+    if not isinstance(batch_id, str) or not batch_id:
+        return web.json_response(
+            {"error": "batch_id is required.", "code": "invalid_batch"}, status=400
+        )
+    uids = _optional_str_list(body, "uids")
+    if uids is _MALFORMED:
+        # Omitted means "the whole batch"; a malformed value must not widen into it.
+        return web.json_response(
+            {"error": "uids must be a list of strings.", "code": "invalid_batch"},
+            status=400,
+        )
+
+    try:
+        restored = await asyncio.to_thread(restore, batch_id, uids)
+    except SessionStorageError as exc:
+        return _refused(exc, "restore_refused")
+
+    _sel().log_api_access(
+        caller=_read_session_key(request),
+        operation="session_storage.restore",
+        outcome="success",
+        source="dashboard",
+        resources=f"{batch_id}:{restored}",
+    )
+    return web.json_response({"restored": restored})
+
+
+@dataclass
+class _EmptyJob:
+    """One in-flight or recently-finished empty, as the screen needs to read it.
+
+    Process-local and single-slot on purpose. The work itself is already serialized
+    by the storage module's mutation lock, so a second concurrent empty would only
+    queue behind the first while the screen showed one indistinguishable "working"
+    state for both; refusing it says which operation the progress belongs to. It is
+    not persisted: if the gateway dies mid-delete the files are gone either way, and
+    a resurrected record would claim a delete is running when no thread is.
+    """
+
+    job_id: str
+    #: What the batches said they held when the job started, so the screen has a
+    #: denominator. Read from the manifests, not remeasured. Filled in just after
+    #: the slot is claimed, so it is 0 for the instant before that.
+    total_bytes: int = 0
+    freed_bytes: int = 0
+    done: bool = False
+    finished_at: float = 0.0
+    #: Empty unless the delete was refused or crashed; already a safe string.
+    error: str = ""
+    #: ``SKIP_*`` codes for batches deliberately kept. A skip is a refusal the user
+    #: has to be told about: without this a batch held back looked exactly like an
+    #: empty one, "0 bytes freed, success", with the reason only in the log.
+    skipped: list[str] = field(default_factory=list)
+    task: asyncio.Task[None] | None = None
+
+
+#: The one empty this process knows about, running or recently finished.
+_empty_job: _EmptyJob | None = None
+
+#: How long a finished job keeps being reported. Long enough to cover a user who
+#: started a delete, walked away and came back, and short enough that the outcome
+#: does not sit on the screen as current for the life of the gateway — which is
+#: what "Freed 18GB." pinned above the Trash for days would be.
+_JOB_TTL_SECONDS = 600.0
+
+#: How much of a refusal's text reaches the client. A message is a sentence, and a
+#: cap means a pathological one cannot become the payload of a pollable endpoint.
+_ERROR_TEXT_LIMIT = 400
+
+
+def _reportable_job() -> _EmptyJob | None:
+    """The job worth showing, or None once a finished one has gone stale."""
+    job = _empty_job
+    if job is None:
+        return None
+    if job.done and time.time() - job.finished_at > _JOB_TTL_SECONDS:
+        return None
+    return job
+
+
+def _empty_job_payload(job: _EmptyJob) -> dict[str, Any]:
+    """The wire shape of a job. Carries no path and no batch id.
+
+    Only what the screen renders: a progress figure needs a total and a running
+    total, an outcome needs the error or the kept-batch codes. Timestamps and a
+    session count were sent and read by nothing, and the staleness rule they would
+    have served is applied here instead, where the clock is.
+    """
+    return {
+        "job_id": job.job_id,
+        "running": not job.done,
+        "total_bytes": job.total_bytes,
+        "freed_bytes": job.freed_bytes,
+        "error": job.error,
+        "skipped": job.skipped,
+    }
+
+
+async def _run_empty_job(job: _EmptyJob, batch_ids: list[str], caller: str) -> None:
+    """Run one empty to completion, then audit it.
+
+    ``batch_ids`` is always explicit - never ``None`` for "all" - so the set the
+    worker destroys is the set the request resolved, under the storage mutation lock.
+
+    Deliberately not tied to the request that started it: the delete is minutes of
+    filesystem work, and a user who closes the tab or walks to another page must
+    not be able to abandon it half-done. That was already true by accident (aiohttp
+    does not cancel handlers on disconnect) — here it is the design, and the job
+    record is what lets the screen pick the run back up when it returns.
+    """
+    outcome = "success"
+    try:
+        job.freed_bytes = await asyncio.to_thread(
+            empty_trash,
+            batch_ids,
+            lambda freed: setattr(job, "freed_bytes", freed),
+            job.skipped.append,
+        )
+    except SessionStorageError as exc:
+        # Scrubbed, not passed through. A refusal's text can quote the argument that
+        # caused it - a client-supplied batch id, or a path the module was resolving -
+        # and this string is the one part of the job a browser renders. Every other
+        # payload in this module goes through `_redact` for exactly that reason, and
+        # the length cap keeps a pathological message out of the status read.
+        job.error = _redact(str(exc))[:_ERROR_TEXT_LIMIT]
+        outcome = "refused"
+    except Exception:
+        # Broad on purpose. Anything unhandled here would otherwise leave the job
+        # flagged running for the life of the process, and the screen polling a
+        # delete that stopped — the exact "I cannot tell whether it worked" this
+        # endpoint exists to remove. The detail goes to the log, not to the client.
+        logger.exception("emptying the session trash failed")
+        job.error = "The delete stopped on an unexpected error. See the gateway log."
+        outcome = "error"
+    else:
+        # A kept batch is not a success even though nothing raised: the user asked
+        # for it to be destroyed and it is still there.
+        if job.skipped:
+            outcome = "refused"
+    finally:
+        job.finished_at = time.time()
+        job.done = True
+
+    _sel().log_api_access(
+        caller=caller,
+        operation="session_storage.empty",
+        outcome=outcome,
+        source="dashboard",
+        resources=f"freed:{job.freed_bytes}",
+    )
+
+
+async def api_session_storage_empty(request: web.Request) -> web.Response:
+    """POST /api/system/session-storage/empty — delete staged batches for good.
+
+    The only irreversible operation in this surface, and the only one that returns
+    space to the filesystem. Audited with the bytes freed so the record shows what
+    was actually destroyed rather than what was requested.
+
+    Answers 202 with a job as soon as the work is accepted rather than holding the
+    request open until the files are gone. Emptying tens of thousands of staged
+    sessions is minutes of filesystem work; a client that can only await the
+    response can say nothing during it, which is what left a user unable to tell a
+    running delete from a stuck one. Progress is read from
+    :func:`api_session_storage_empty_status`.
+    """
+    global _empty_job
+
+    state: DashboardState = request.app["state"]
+    if _is_restricted_session(state, request):
+        return _deny("session_storage.empty", request)
+
+    body = await _json_body(request)
+    if body is None:
+        return _bad_request("Request body must be a JSON object.", "invalid_body")
+    batch_ids = _optional_str_list(body, "batch_ids")
+    if batch_ids is _MALFORMED:
+        return _bad_request("batch_ids must be a list of strings.", "invalid_batch")
+
+    # Emptying takes EXPLICIT intent: either the batches to destroy, or all=true.
+    # This endpoint is the only irreversible one, and an "omitted means everything"
+    # default put that outcome at the end of every path that produced an empty
+    # body — a malformed payload, a wrong-typed field, a client that forgot the
+    # argument. Requiring the caller to say which, or to say all, removes the
+    # default rather than guarding each way of reaching it.
+    empty_all = body.get("all") is True
+    if empty_all and batch_ids:
+        return _bad_request("Pass batch_ids or all=true, not both.", "invalid_batch")
+    if not empty_all and not batch_ids:
+        return _bad_request(
+            "Specify batch_ids, or all=true to empty the whole trash.",
+            "nothing_specified",
+        )
+
+    # Refused, not queued: see _EmptyJob. Answering with the running job means a
+    # second tab that tried lands on the same progress instead of an error it
+    # cannot act on. Nested under "job" rather than spread into the body: the same
+    # shape the status read returns, and a spread hides `code` from the error-code
+    # contract scan.
+    if _empty_job is not None and not _empty_job.done:
+        return web.json_response(
+            {
+                "error": "An empty is already running.",
+                "code": "empty_in_progress",
+                "job": _empty_job_payload(_empty_job),
+            },
+            status=409,
+        )
+
+    # Claim the slot in the SAME synchronous step as the check, before any await.
+    # Reading the trash first would put a suspension point between the two: two
+    # near-simultaneous POSTs would both pass the guard, both get a 202, and the
+    # second would overwrite the first — leaving the status endpoint reporting a job
+    # that (serialized behind the mutation lock) finds the trash already gone and
+    # says "freed 0", while the delete the user is waiting on has no record at all.
+    requested = None if empty_all else batch_ids
+    previous = _empty_job
+    job = _EmptyJob(
+        # Time-based and process-local; it identifies a run to the screen polling
+        # it, and is never a path or a batch id.
+        job_id=f"empty-{int(time.time() * 1000)}",
+    )
+    _empty_job = job
+    # Resolve WHICH batches this destroys now, and UNDER the storage mutation lock.
+    # Both halves came from a finding: resolving it here at all (rather than letting
+    # the worker enumerate when it runs) is what stops a batch staged after the click
+    # from being destroyed, and resolving it under the lock is what stops a batch that
+    # is still being staged from being selected mid-write - which would make the delete
+    # wait for staging and then destroy the finished batch, sessions and all. The byte
+    # total comes from the same pass, so the denominator on screen describes exactly
+    # the batches that will be deleted.
+    #
+    # It can also refuse - a named id that is not a batch, or one no longer staged -
+    # and an exception escaping here after the slot was claimed used to 500 the POST
+    # and leave a job that never finishes, making every later attempt a 409 for the
+    # life of the process.
+    try:
+        targets, job.total_bytes = await asyncio.to_thread(staged_targets, requested)
+    except SessionStorageError as exc:
+        # A named id that is not a batch. Answered as the 400 it always was rather
+        # than as a job, because nothing was dispatched and the caller can fix the
+        # argument — and the slot goes back to whatever it held, so a refusal cannot
+        # discard an outcome the screen is still showing.
+        _empty_job = previous
+        return _refused(exc, "empty_refused")
+    except Exception:
+        logger.exception("could not read the staged batches for the trash")
+        if requested is None:
+            # Fail closed, and SAY so on the job. "Everything currently staged"
+            # cannot be resolved, and handing the worker `None` so it re-enumerates
+            # later is the data loss this snapshot exists to prevent. The job is
+            # answered already-settled rather than 500'd so the screen has one shape
+            # to read and the user learns why nothing moved.
+            job.error = "The staged batches could not be read, so nothing was deleted."
+            job.finished_at = time.time()
+            job.done = True
+            return web.json_response(_empty_job_payload(job), status=202)
+        # An explicit selection needs no snapshot: the caller already named it, and a
+        # missing total only costs the progress bar its denominator.
+        targets = list(batch_ids or [])
+    job.task = asyncio.create_task(_run_empty_job(job, targets, _read_session_key(request)))
+    return web.json_response(_empty_job_payload(job), status=202)
+
+
+async def api_session_storage_empty_status(request: web.Request) -> web.Response:
+    """GET /api/system/session-storage/empty — the running or recent empty.
+
+    Cheap by construction: it reads counters this process already holds and touches
+    no store, which is what makes it pollable at all — every other endpoint in this
+    module walks the sessions on disk.
+    """
+    job = _reportable_job()
+    if job is None:
+        return web.json_response({"job": None})
+    return web.json_response({"job": _empty_job_payload(job)})
+
+
+# ------------------------------------------------------------------ inventory
+#
+# The list surface. Where the report above answers "how much in total", these
+# answer "which sessions, and may I have this one back" — the question a person
+# actually acts on.
+#
+# The split across three endpoints is a cost boundary, not taste. Titles are one
+# readline() per transcript and are cheap enough to serve for every row; a first
+# message, a turn count and an image count each need the WHOLE file, which at six
+# figures of sessions is not servable on open. So those are fetched per row, when
+# a row expands.
+
+
+def _origin(unit: SessionUnit) -> str:
+    """A display-ready provenance line, e.g. ``dashboard · chat-70``.
+
+    Composed from the id, so it carries no translatable prose — the parts are
+    literal channel and slot names. A unit with no transcript stem is one that
+    only exists in the replay store, which is what a subagent looks like on disk;
+    it has no channel to name, so its own id is the honest answer.
+
+    The result is scrubbed by the caller before it ships: a session id may be
+    only loosely constrained (``_UNIT_ID_RE`` admits the alphanumeric shape of an
+    access-key id), and this string IS rendered, so it gets the same treatment as
+    any other content on the way out.
+    """
+    stem = unit.stems[0] if unit.stems else ""
+    if not stem:
+        return unit.uid
+    channel, _, rest = stem.partition("_")
+    return f"{channel} · {rest}" if rest else stem
+
+
+def _redact(text: str) -> str:
+    """Scrub a string that came out of a user's transcript.
+
+    Both fields this screen shows — a session's title and its first message —
+    are conversation content, so either can carry a pasted key or a credential
+    in a URL. Per the ``security-controls`` rule every LLM- or user-originated
+    string is passed through both scrubbers, in this order, before it reaches a
+    dashboard surface.
+    """
+    if not text:
+        return text
+    cleaned, _ = redact_exfiltration_urls(text)
+    cleaned, _ = redact_credentials(cleaned)
+    return cleaned
+
+
+def _titles_by_stem(conversation_log: Any) -> dict[str, str]:
+    """Map transcript stem to its session title.
+
+    ``list_sessions`` reads only each file's first metadata line and caches on
+    mtime, so this stays a readline per session rather than a full read. The log
+    is taken from dashboard state rather than constructed here precisely so that
+    cache is shared. A session that never got a title simply has no entry.
+    """
+    try:
+        rows = conversation_log.list_sessions()
+    except Exception:
+        logger.debug("session titles unreadable", exc_info=True)
+        return {}
+    # Only string titles. The resume path assigns a client-supplied `body["title"]`
+    # to the slot without validating its type, so a number can reach the persisted
+    # metadata — and a number is truthy, so a plain `.get("title")` check would let
+    # it through to the scrubbers and turn a read into a 500.
+    return {
+        row["key"]: row["title"]
+        for row in rows
+        if row.get("key") and isinstance(row.get("title"), str) and row["title"]
+    }
+
+
+def _inventory_payload(state: DashboardState) -> dict[str, Any]:
+    index = _build_index(state)
+    units = list_units(index)
+    titles = _titles_by_stem(state.conversation_log)
+    # The same pass answers both halves of the screen. Measuring separately would
+    # re-enumerate a store that reaches half a million files, and would let the
+    # totals describe a different instant than the rows printed beneath them.
+    report = measure(index, units=units)
+
+    # Replay-only units — subagent runs — are what a long-lived install accumulates
+    # by the hundred thousand, and this screen folds every one of them into a single
+    # collapsed group. Sending them individually cost 35MB of JSON on the measured
+    # machine to render one line, which is most of why the screen took tens of
+    # seconds to open. So the group is summarised here and only its largest members
+    # are listed: someone picking sessions by hand is choosing among the big ones,
+    # and everything below the cut is reached by age instead (``cleanup``), which
+    # needs no per-row selection at all.
+    foreground: list[SessionUnit] = []
+    background: list[SessionUnit] = []
+    for unit in units:
+        (foreground if unit.stems else background).append(unit)
+    background.sort(key=lambda u: u.bytes, reverse=True)
+    listed_background = background[:_BACKGROUND_ROW_LIMIT]
+
+    # One clock for every age answer in this payload, so the thresholds cannot
+    # disagree with each other by the time the last one is computed.
+    now = time.time()
+    reclaimable = [u for u in units if not u.active and u.age_days(now) >= MIN_RECLAIM_AGE_DAYS]
+
+    sessions = []
+    # Biggest first: the screen exists to answer "what is taking the space", so the
+    # answer should be the first row rather than something to sort for. Sorted on
+    # the units, not on the built payload, because the rows are heterogeneous dicts.
+    for unit in sorted(foreground, key=lambda u: u.bytes, reverse=True) + listed_background:
+        title = _redact(next((titles[stem] for stem in unit.stems if stem in titles), ""))
+        # A session with NO transcript half is one that was never a conversation in
+        # the product: a subagent run, which only ever writes a replay log. Those
+        # are what the client folds into a single group.
+        #
+        # Deliberately NOT "absent from the session map": a mapped entry is pruned
+        # once a session stops being resumable, so keying on the map would sweep a
+        # titled conversation the user still recognises into the anonymous group —
+        # and those are exactly the rows worth showing, because being unmapped is
+        # also what makes them reclaimable.
+        background_row = not unit.stems
+        sessions.append(
+            {
+                "uid": unit.uid,
+                "title": title,
+                "origin": _redact(_origin(unit)),
+                "bytes": unit.bytes,
+                "mtime": unit.mtime,
+                # Not advisory: a client must not offer to reclaim one of these,
+                # and the module refuses it independently if a client tries.
+                "active": unit.active,
+                # Why it is refused. `live` is a turn in flight, which is the real
+                # hazard; `active and not live` is merely "the product could still
+                # resume this", which is a policy choice rather than a danger. Both
+                # are refused today; separating them stops the screen telling a user
+                # a month-old idle conversation is "in use".
+                "live": unit.live,
+                "background": background_row,
+            }
+        )
+    return {
+        "total_bytes": report.total_bytes,
+        "total_sessions": report.total_sessions,
+        "reclaimable_bytes": report.reclaimable_bytes,
+        "reclaim_blocked_reason": report.reclaim_blocked_reason,
+        "sessions": sessions,
+        # The truth about the group the rows above only partly represent, so a
+        # client can say "the 200 largest of 168,832" instead of implying the list
+        # it received is the whole of it.
+        "background": {
+            "sessions": len(background),
+            "bytes": sum(u.bytes for u in background),
+            "listed": len(listed_background),
+        },
+        # What an age sweep would take, per threshold. That is how the bulk of a
+        # large store is actually reclaimed, and this pass already computed it —
+        # sending it lets a client offer the choice without a dry run per option.
+        #
+        # Cumulative ("older than N"), matching what ``cleanup`` actually does,
+        # rather than the disjoint bands ``measure`` reports. A client handed bands
+        # would have to re-derive each threshold by summing them and inferring the
+        # boundaries from their labels, and a label it failed to parse would
+        # silently understate what a sweep is about to move.
+        "age_options": [
+            {
+                "days": days,
+                "sessions": sum(1 for u in reclaimable if u.age_days(now) >= days),
+                "bytes": sum(u.bytes for u in reclaimable if u.age_days(now) >= days),
+            }
+            for days in BUCKET_DAYS
+        ],
+        "trash": {
+            "bytes": report.trash_bytes,
+            "still_on_disk": True,
+            "instant": report.trash_same_filesystem,
+            "batches": [
+                {
+                    "batch_id": batch.batch_id,
+                    "created_at": batch.created_at,
+                    "reason": batch.reason,
+                    "sessions": batch.sessions,
+                    "bytes": batch.bytes,
+                }
+                for batch in list_trash()
+            ],
+        },
+    }
+
+
+async def api_session_inventory(request: web.Request) -> web.Response:
+    """GET /api/system/session-storage/sessions — one row per session.
+
+    Uncached and scan-bound like the report, so it is fetched when the screen
+    opens or after an action, never on a poll.
+    """
+    state: DashboardState = request.app["state"]
+    data = await asyncio.to_thread(_inventory_payload, state)
+    return web.json_response(data)
+
+
+def _detail_payload(uid: str) -> dict[str, Any] | None:
+    index = _build_index()
+    unit = next((u for u in list_units(index) if u.uid == uid), None)
+    if unit is None:
+        return None
+    d = digest(unit.uid, unit.stems, unit.sid)
+    return {
+        "uid": unit.uid,
+        "first_message": _redact(d.first_message),
+        "turns": d.turns,
+        "images": d.images,
+        "bytes": unit.bytes,
+        "mtime": unit.mtime,
+    }
+
+
+async def api_session_inventory_detail(request: web.Request) -> web.Response:
+    """GET /api/system/session-storage/sessions/{uid} — one row's detail.
+
+    Reads whole files, so it is deliberately per-row and must never be called in
+    a loop over the list. An unreadable or malformed file degrades to empty
+    values rather than failing: the row still has a real size to show, and a
+    truncated transcript is not a reason to refuse to talk about the session.
+    """
+    uid = request.match_info.get("uid", "")
+    if not uid:
+        return _bad_request("uid is required.", "invalid_uid")
+    data = await asyncio.to_thread(_detail_payload, uid)
+    if data is None:
+        return web.json_response({"error": "No such session.", "code": "unknown"}, status=404)
+    return web.json_response(data)
+
+
+def _classify(uids: list[str], index: SessionIndex, now: float) -> tuple[list[str], list[dict]]:
+    """Split a client's selection into what may move and what may not, with reasons.
+
+    This exists because :func:`move_to_trash` is all-or-nothing by design: one
+    live or too-fresh session in the list and the WHOLE call raises, moving
+    nothing. That is the right guarantee for the module — a selection either
+    happens or it does not — but it makes a bulk screen useless if a single row
+    went live while the user was reading.
+
+    So the eligible ones are separated here and only those are handed over, which
+    means the module's refusal never has to fire on a normal request. The
+    guarantee is NOT weakened: it still re-reads the session map inside the lock
+    and still refuses anything live, so this pre-pass can only ever be more
+    conservative than the authority, never less.
+    """
+    by_uid = {u.uid: u for u in list_units(index)}
+    eligible: list[str] = []
+    refused: list[dict] = []
+    for uid in uids:
+        unit = by_uid.get(uid)
+        if unit is None:
+            refused.append({"uid": uid, "reason": "unknown"})
+        elif unit.live:
+            # A turn is in flight. The one genuinely hazardous case.
+            refused.append({"uid": uid, "reason": "in_use"})
+        elif unit.active:
+            # Idle, but the product could still resume it. Refused today; calling
+            # this "in use" would be a lie the user can disprove by looking at the
+            # last-used date.
+            refused.append({"uid": uid, "reason": "resumable"})
+        elif unit.age_days(now) < MIN_RECLAIM_AGE_DAYS:
+            refused.append({"uid": uid, "reason": "too_fresh"})
+        else:
+            eligible.append(uid)
+    return eligible, refused
+
+
+async def api_session_inventory_trash(request: web.Request) -> web.Response:
+    """POST /api/system/session-storage/trash — move a named selection to the trash.
+
+    Unlike ``cleanup``, which derives its own selection from an age threshold,
+    this accepts the rows a person ticked. That is safe because the authority did
+    not move to the client: :func:`move_to_trash` re-reads the session map inside
+    the mutation lock and unions the active sets, so a selection that has gone
+    stale can only be refused, never honoured against a live session.
+
+    Sessions the server would not take are reported per uid rather than silently
+    dropped — doing less than the user asked without saying so is a defect.
+    """
+    state: DashboardState = request.app["state"]
+    if _is_restricted_session(state, request):
+        return _deny("session_storage.trash", request)
+
+    body = await _json_body(request)
+    if body is None:
+        return _bad_request("Request body must be a JSON object.", "invalid_body")
+    uids = _optional_str_list(body, "uids")
+    if uids is _MALFORMED:
+        return _bad_request("uids must be a list of strings.", "invalid_selection")
+    # Omitting the selection must NOT widen to "everything": this endpoint exists
+    # to act on named rows, and there is no meaningful default for which.
+    if not uids:
+        return _bad_request("uids is required.", "nothing_specified")
+    if len(uids) > _MAX_SELECTION:
+        return _bad_request("Too many sessions in one request.", "selection_too_large")
+
+    # The running-state signal only LABELS a refusal, so passing state here
+    # cannot widen what may be taken: active_sids still refuses the whole map.
+    index = await asyncio.to_thread(_build_index, state)
+    eligible, refused = await asyncio.to_thread(_classify, uids, index, time.time())
+
+    if refused:
+        # A refusal is a security-relevant outcome, not a quiet detail of a 200.
+        # Someone asked to remove specific conversations and was told no; audited
+        # here so the record shows the attempt and which sessions were protected.
+        # Emitted for a PARTIAL refusal too, otherwise a request that took nine of
+        # ten sessions would leave the tenth's protection unrecorded.
+        _sel().log_api_access(
+            caller=_read_session_key(request),
+            operation="session_storage.trash",
+            outcome="denied",
+            source="dashboard",
+            resources=",".join(f"{r['uid']}:{r['reason']}" for r in refused)[:512],
+        )
+    if not eligible:
+        return web.json_response({"sessions": 0, "bytes": 0, "batch_id": "", "refused": refused})
+
+    try:
+        batch = await asyncio.to_thread(
+            move_to_trash,
+            eligible,
+            reason=REASON_MANUAL,
+            index=index,
+            refresh=_build_index,
+        )
+    except SessionStorageError as exc:
+        return _refused(exc, "trash_refused")
+
+    _sel().log_api_access(
+        caller=_read_session_key(request),
+        operation="session_storage.trash",
+        outcome="success",
+        source="dashboard",
+        resources=f"{batch.batch_id}:{batch.sessions}",
+    )
+    return web.json_response(
+        {
+            "sessions": batch.sessions,
+            "bytes": batch.bytes,
+            "batch_id": batch.batch_id,
+            "refused": refused,
+        }
+    )

@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "boot": {
+    "fail_closed": true
+  },
+  "network": {
+    "egress": {
+      "mode": "allow",
+      "allow": [
+        "*.amazonaws.com",
+        "*.kiro.dev",
+        "management.*.kiro.dev",
+        "runtime.*.kiro.dev"
+      ]
+    }
+  },
+  "commands": {
+    "mode": "deny",
+    "deny": [
+      "curl*://*",
+      "wget*://*",
+      "nc *",
+      "ncat *"
+    ]
+  }
+}

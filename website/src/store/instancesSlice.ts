@@ -1,0 +1,171 @@
+/**
+ * instancesSlice — shared client state for the multi-instance header switcher.
+ *
+ * `warm` holds the in-memory loopback port + minted token for each connected
+ * instance whose iframe is kept mounted (hide-not-unmount). It is NEVER
+ * persisted and never logged — it lives only for the dashboard session. The
+ * header tab strip writes it (on connect) and the viewport reads it (to build
+ * iframe src + render).
+ *
+ * `activeId` is the instance currently filling the page body, or `null` for the
+ * native dashboard (the "Local" tab). `mru` is recency order (front = most
+ * recent) for K-cap eviction. `unread` is the validated postMessage relay count.
+ *
+ * `host` is the ONLY field written inside an embedded remote pane: the parent
+ * dashboard relays the switcher model (tabs + which one is active + this pane's
+ * own tunnel status + macOS traffic-light inset) down via postMessage so the
+ * embedded header can render the instance switcher inline — exactly like the
+ * local tab — instead of the parent stacking a second standalone strip on top
+ * of the pane (option B). It is null in the top-level (non-embedded) dashboard.
+ */
+import { createSlice, type PayloadAction } from '@reduxjs/toolkit'
+
+export interface WarmConn {
+  port: number
+  token: string
+}
+
+/** One switcher tab as relayed to an embedded pane (parent → frame). */
+export interface HostTab {
+  id: string
+  name: string
+  sshHost: string
+  /** Live tunnel state driving the per-tab dot: connected|connecting|error|disconnected. */
+  state?: string
+  unread: number
+}
+
+/** The embedded pane's OWN tunnel status, used by its readout capsule (item 1). */
+export interface HostSelfTunnel {
+  state?: string
+  /** Seconds of token life remaining (parent-owned). */
+  ttlRemaining?: number
+  /** Total token TTL in seconds. */
+  ttlTotal?: number
+}
+
+/** Full model the parent relays to each embedded pane. */
+export interface HostModel {
+  tabs: HostTab[]
+  activeId: string | null
+  self: HostSelfTunnel | null
+  /** True when the parent is a macOS Electron window not in fullscreen, so the
+   *  embedded header must inset its content clear of the native traffic lights. */
+  macInset: boolean
+  /** The parent window's focus mode, relayed so the pane hides its own chrome to
+   *  match instead of landing fully-framed inside a focused window. `null` means
+   *  the host SENT NO OPINION — an older host whose model predates the field —
+   *  and the pane must keep its own state: coercing absence to `false` would
+   *  snap a user-toggled pane back off on every host re-broadcast, since an old
+   *  host also ignores the pane's echoed `mc-set-focus-mode`. The pane's OWN
+   *  `mc-focus-mode` setting is left untouched either way — this is the host's
+   *  view preference, and the pane has its own localStorage (cross-origin iframe). */
+  focusMode: boolean | null
+  /** True when the parent shell is Electron. Gates the embedded ⌘/Ctrl+digit
+   *  instance-switch chord: in a plain browser those chords are reserved for
+   *  browser tab switching, so the pane must not bind (or advertise) them. */
+  electron: boolean
+  /** The crews the parent has pinned into header chips, by id (`__local__` for
+   *  the local dashboard). Relayed so the embedded bar shows the same chips as
+   *  the local bar instead of reading its own cross-origin-iframe localStorage,
+   *  which the parent's toggle can never reach. An embedded toggle posts
+   *  `mc-set-crew-pin` back up so the set stays one shared value across every
+   *  pane. A plain array because postMessage cannot carry a Set. */
+  pinnedCrews: string[]
+  /** The parent's "keep tab order fixed" preference, relayed so the embedded bar
+   *  applies the same ordering as the local bar instead of always reshuffling on
+   *  switch (its own cross-origin-iframe localStorage the parent can never
+   *  reach). An embedded toggle posts `mc-set-stable-order` back up so the value
+   *  stays one shared preference across every pane.
+   *
+   *  Tri-state on purpose, exactly like `focusMode` above: `null` means the host
+   *  SENT NO OPINION — an older parent whose model predates this field, and which
+   *  therefore also has no `mc-set-stable-order` handler. Coercing that absence
+   *  to `false` would leave the pane offering a toggle the host can never honor,
+   *  so `null` orders by the pre-relay default AND hides the control instead. */
+  stableOrder: boolean | null
+}
+
+interface InstancesState {
+  warm: Record<string, WarmConn>
+  activeId: string | null
+  mru: string[]
+  unread: Record<string, number>
+  /** Panes whose embedded SPA announced `mc-embedded-ready` for the CURRENT
+   *  src (port+token). Cleared whenever the src changes (a reload is coming),
+   *  so the viewport can tell a live pane from one still loading / dead. */
+  ready: Record<string, boolean>
+  host: HostModel | null
+}
+
+const initialState: InstancesState = {
+  warm: {},
+  activeId: null,
+  mru: [],
+  unread: {},
+  ready: {},
+  host: null,
+}
+
+const instancesSlice = createSlice({
+  name: 'instances',
+  initialState,
+  reducers: {
+    setWarm(state, action: PayloadAction<{ id: string; conn: WarmConn }>) {
+      const { id, conn } = action.payload
+      const prev = state.warm[id]
+      // A new port/token changes the iframe src (srcFor), which reloads the
+      // pane — its previous readiness no longer describes what's on screen.
+      // Tests preload partial slices, so tolerate a missing `ready` map.
+      if (!state.ready) state.ready = {}
+      if (!prev || prev.port !== conn.port || prev.token !== conn.token) {
+        delete state.ready[id]
+      }
+      state.warm[id] = conn
+      state.mru = [id, ...state.mru.filter(x => x !== id)]
+    },
+    setActiveId(state, action: PayloadAction<string | null>) {
+      state.activeId = action.payload
+      if (action.payload) {
+        state.mru = [action.payload, ...state.mru.filter(x => x !== action.payload)]
+        // Selecting an instance clears its unread badge.
+        if (state.unread[action.payload]) state.unread[action.payload] = 0
+      }
+    },
+    /** Pure client-state teardown for one connection (no API call). */
+    removeWarm(state, action: PayloadAction<string>) {
+      const id = action.payload
+      delete state.warm[id]
+      delete state.unread[id]
+      if (state.ready) delete state.ready[id]
+      state.mru = state.mru.filter(x => x !== id)
+      if (state.activeId === id) state.activeId = null
+    },
+    /** The pane's embedded SPA mounted and announced `mc-embedded-ready`. */
+    setPaneReady(state, action: PayloadAction<string>) {
+      if (!state.ready) state.ready = {}
+      state.ready[action.payload] = true
+    },
+    setUnread(state, action: PayloadAction<{ id: string; count: number }>) {
+      state.unread[action.payload.id] = action.payload.count
+    },
+    /** Embedded panes only: store the switcher model relayed by the parent. */
+    setHostModel(state, action: PayloadAction<HostModel | null>) {
+      state.host = action.payload
+    },
+    clearInstances() {
+      return initialState
+    },
+  },
+})
+
+export const {
+  setWarm,
+  setActiveId,
+  removeWarm,
+  setPaneReady,
+  setUnread,
+  setHostModel,
+  clearInstances,
+} = instancesSlice.actions
+export default instancesSlice.reducer

@@ -1,0 +1,225 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # PRs cancel superseded revisions: only a PR's tip commit needs a verdict.
+  # main does not, so let an in-flight run finish instead of killing it.
+  # This does NOT produce a verdict per commit. The group still permits one
+  # pending run, and GitHub evicts that pending run when a newer one queues
+  # (a documented GitHub concurrency behavior). With a ~19min run and a
+  # ~1.4min median merge gap, main gets periodic verdicts instead of none.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build-wheel:
+    name: Build Wheel
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Build frontend
+        working-directory: website
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Stage frontend into package
+        run: |
+          rm -rf src/kiro_crew/static/dist
+          mkdir -p src/kiro_crew/static
+          cp -R website/dist src/kiro_crew/static/dist
+
+      # Build the sdist too, not just the wheel: `--wheel` alone reads
+      # package_data and never evaluates MANIFEST.in, so a MANIFEST regression
+      # that strips the vendored native libs is INVISIBLE to a wheel-only build
+      # here. The release lane builds the published wheel FROM the sdist, so
+      # that regression would first surface at tag push — after it reached main.
+      - name: Build wheel + sdist
+        run: |
+          pip install --upgrade build
+          python -m build
+
+      - name: Verify wheel installs cleanly
+        run: |
+          pip install dist/*.whl
+          kirocrew --version
+
+      # The PR-time vendored-lib gate. Without it the only such gate on a PR is
+      # the pytest guard, which MODELS MANIFEST.in rather than executing it — so
+      # this is what proves the real artifacts. Shared with build-wheel.yml so
+      # the two lanes cannot drift; a gate that diverges stops guarding without
+      # ever failing.
+      - name: Verify vendored native libs survived into the wheel + sdist
+        run: python scripts/verify_vendored_payload.py
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wheel
+          path: dist/*.whl
+
+  # Keep the native installer fast without coupling the check to a custom UI.
+  # This builds the real Windows artifact, installs it silently, verifies the
+  # registration and payload, and fails if extraction exceeds five minutes.
+  build-windows-installer:
+    name: Build Windows Installer (x64)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: website/electron/package-lock.json
+
+      - name: Install Electron packaging dependencies
+        working-directory: website/electron
+        run: npm ci --no-audit --no-fund
+
+      - name: Create minimal backend payload
+        shell: pwsh
+        working-directory: website/electron
+        run: |
+          New-Item -ItemType Directory -Force backend-dist/kirocrew-backend/bin | Out-Null
+          @('@echo off', 'exit /b 0') | Set-Content -Encoding ascii backend-dist/kirocrew-backend/bin/kirocrew.cmd
+
+      - name: Compile unsigned x64 NSIS installer
+        working-directory: website/electron
+        run: npx --no-install electron-builder --win nsis --x64 --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: Enforce native installer performance ceiling
+        shell: pwsh
+        working-directory: website/electron
+        run: '& "$env:GITHUB_WORKSPACE\.github\scripts\test-windows-installer.ps1" -SkipGatewayValidation'
+
+      - name: Upload installer timing
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-installer-performance
+          path: |
+            website/electron/runtime-evidence/install-timing.txt
+            website/electron/runtime-evidence/native-install-mode.png
+          if-no-files-found: warn
+
+  # Resolve which desktop platforms a PR builds. Linux (both arches) ALWAYS
+  # builds -- it is comparatively cheap and catches cross-platform bundle
+  # breakage, and cannot be cross-compiled. The macos-15 leg bills at ~10x and
+  # its UNIQUE coverage is macOS packaging (DMG, universal/Rosetta, mac
+  # electron-builder), so on a pull_request it builds only when a macOS-
+  # packaging input changed; push / release events always build it. The release
+  # lane (build-desktop.yml) still ships every platform unconditionally.
+  desktop-matrix:
+    name: Resolve desktop matrix
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      os: ${{ steps.compute.outputs.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        if: github.event_name == 'pull_request'
+        with:
+          filters: |
+            desktop:
+              - 'website/electron/**'
+              - 'website/package.json'
+              - 'website/package-lock.json'
+              - 'build-desktop.sh'
+              - 'Makefile'
+              - 'pyproject.toml'
+              - 'setup.cfg'
+              - '.github/workflows/build.yml'
+              - '.github/workflows/build-desktop.yml'
+      - id: compute
+        env:
+          IS_PR: ${{ github.event_name == 'pull_request' }}
+          DESKTOP_CHANGED: ${{ steps.filter.outputs.desktop }}
+        run: |
+          # Linux legs are unconditional; macos-15 only when a packaging-relevant
+          # path changed on a PR (always on push / non-PR events).
+          if [ "$IS_PR" != "true" ] || [ "$DESKTOP_CHANGED" = "true" ]; then
+            echo 'os=["macos-15","ubuntu-22.04","ubuntu-22.04-arm"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'os=["ubuntu-22.04","ubuntu-22.04-arm"]' >> "$GITHUB_OUTPUT"
+          fi
+
+  build-desktop:
+    needs: [desktop-matrix]
+    name: Build Desktop (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # macOS bills at 10x, so an unbounded hang here is the costliest in the repo.
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # Resolved by the desktop-matrix job: both Linux arches always (Linux
+        # cannot be cross-compiled -- build-desktop.sh RUNS the interpreter it
+        # provisions -- so each arch needs its own runner), plus macos-15 when a
+        # macOS-packaging input changed or on any non-PR event. build-desktop.yml
+        # stays the release matrix that ships every platform unconditionally.
+        os: ${{ fromJSON(needs.desktop-matrix.outputs.os) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
+      - name: Build desktop app (PBS + uv venv)
+        run: make desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: Upload desktop artifact (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-macos-arm64
+          path: |
+            website/electron/dist/*.dmg
+            website/electron/dist/*.zip
+          if-no-files-found: warn
+
+      - name: Upload desktop artifact (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          # Arch in the name: both Linux legs match `runner.os == 'Linux'`, and a
+          # shared artifact name makes the two uploads collide.
+          name: desktop-linux-${{ runner.arch }}
+          path: website/electron/dist/*.AppImage
+          if-no-files-found: warn
