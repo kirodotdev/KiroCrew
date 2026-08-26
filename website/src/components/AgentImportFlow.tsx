@@ -17,10 +17,12 @@ import {
 } from 'lucide-react'
 import {
   api,
+  ApiError,
   type AgentImportApplyRequest,
   type AgentImportConflictStrategy,
   type AgentImportSource,
 } from '../api/client'
+import { parseErrorCode } from '../utils/errorReport'
 import { fmtList } from '../i18n/format'
 import { useDocumentImeLatch } from '../hooks/useImeGuard'
 import { Btn, SendBtn } from './ui'
@@ -102,6 +104,32 @@ function eligibleSources(sources: AgentImportSource[]): AgentImportSource[] {
 }
 
 function errorMessage(error: unknown, fallback: string): string {
+  // The shared transport has already replaced an auth-expired denial with its
+  // actionable, localized sign-in instructions. Preserve that message before
+  // considering the route fallback: gateway auth bodies also carry a `code`,
+  // and treating every coded response alike would turn "sign in again" into a
+  // futile "try again".
+  if (error instanceof ApiError && error.authRequired && error.message) {
+    return error.message
+  }
+  if (error instanceof ApiError) {
+    const code = parseErrorCode(error.body)
+    // `_caller` is the handler's defense-in-depth owner gate. Normally the
+    // shared auth middleware refuses first; if this 401 reaches the component,
+    // retrying the import cannot add the missing identity. Use existing
+    // localized recovery copy instead of the operation's retry fallback.
+    if (code === 'auth_required') {
+      return i18nT('components.kiroPrerequisiteGate.sign_in_again_to_continue')
+    }
+    // A backend `code` means the refusal is already identified, so *fallback*
+    // -- which every call site supplies from the i18n catalog -- describes it in
+    // the reader's language. The server's own `error` prose for these routes is
+    // English produced in Python ("invalid request", "request failed") that
+    // never passes through a catalog, and it says strictly less than the
+    // fallback does. An error with no code keeps rendering its message: there
+    // it may be the only detail available.
+    if (code) return fallback
+  }
   return error instanceof Error && error.message ? error.message : fallback
 }
 

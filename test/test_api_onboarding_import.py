@@ -72,7 +72,7 @@ async def test_all_onboarding_import_endpoints_require_authentication(
         response_body = await response.json()
 
     assert response.status == 401
-    assert response_body == {"error": "authentication required"}
+    assert response_body == {"error": "authentication required", "code": "auth_required"}
     assert audit.events[-1]["outcome"] == "denied"
 
 
@@ -189,7 +189,7 @@ async def test_apply_rejects_invalid_plan_with_generic_400(monkeypatch, body: ob
         response_body = await response.json()
 
     assert response.status == 400
-    assert response_body == {"error": "invalid request"}
+    assert response_body == {"error": "invalid request", "code": "invalid_request"}
     assert audit.events[-1]["outcome"] == "failed"
     assert audit.events[-1]["error"] == "invalid_request"
 
@@ -212,7 +212,7 @@ async def test_apply_rejects_malformed_json(monkeypatch) -> None:
         response_body = await response.json()
 
     assert response.status == 400
-    assert response_body == {"error": "invalid request"}
+    assert response_body == {"error": "invalid request", "code": "invalid_request"}
     assert audit.events[-1]["error"] == "invalid_request"
 
 
@@ -568,7 +568,7 @@ async def test_state_rejects_invalid_completed_boolean(monkeypatch, body: object
         response_body = await response.json()
 
     assert response.status == 400
-    assert response_body == {"error": "invalid request"}
+    assert response_body == {"error": "invalid request", "code": "invalid_request"}
 
 
 @pytest.mark.asyncio
@@ -627,7 +627,7 @@ async def test_state_failure_is_generic_and_credential_free(monkeypatch) -> None
         response_body = await response.json()
 
     assert response.status == 500
-    assert response_body == {"error": "request failed"}
+    assert response_body == {"error": "request failed", "code": "state_failed"}
     assert private_detail not in str(audit.events)
     assert audit.events[-1]["outcome"] == "failed"
 
@@ -671,7 +671,7 @@ async def test_apply_rejects_an_unrecognized_conflict_strategy(monkeypatch, stra
         body = await response.json()
 
     assert response.status == 400
-    assert body == {"error": "invalid request"}
+    assert body == {"error": "invalid request", "code": "invalid_request"}
     # Nothing was applied.
     assert called == []
     assert audit.events[-1]["error"] == "invalid_request"
@@ -866,7 +866,7 @@ async def test_apply_rejects_an_explicit_null_conflict_strategy(monkeypatch) -> 
         body = await response.json()
 
     assert response.status == 400
-    assert body == {"error": "invalid request"}
+    assert body == {"error": "invalid request", "code": "invalid_request"}
     assert called == []
 
 
@@ -1059,3 +1059,129 @@ def test_handler_category_tables_match_the_backend() -> None:
     assert set(module._CATEGORY_NAMES) >= {
         category for _, category in backend._GEMINI_UNSUPPORTED_DIRS
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("get", "/api/onboarding/import/scan"),
+        ("post", "/api/onboarding/import/apply"),
+        ("put", "/api/onboarding/import/state"),
+    ],
+)
+async def test_denial_code_is_the_wire_name_for_the_audited_identity(
+    monkeypatch, method: str, path: str
+) -> None:
+    """The 401 body names the same failure the audit records.
+
+    The audit taxonomy calls it ``authentication_required``; the wire
+    vocabulary for that denial is ``auth_required`` (``handlers_cloud.py``).
+    This pins the pair so neither can be renamed without the other being
+    considered.
+    """
+    module = _handler_module()
+    audit = _AuditLog()
+    monkeypatch.setattr(module, "_sel", lambda: audit)
+
+    async with TestClient(TestServer(_make_app(module))) as client:
+        response = await getattr(client, method)(path, json={})
+        response_body = await response.json()
+
+    assert response.status == 401
+    assert response_body["code"] == "auth_required"
+    assert audit.events[-1]["error"] == "authentication_required"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "path", "expected_code"),
+    [
+        ("get", "/api/onboarding/import/scan", "scan_failed"),
+        ("post", "/api/onboarding/import/apply", "apply_failed"),
+    ],
+)
+async def test_failure_code_equals_the_audited_error(
+    monkeypatch, method: str, path: str, expected_code: str
+) -> None:
+    """A 500's ``code`` is the identity the audit already recorded.
+
+    These two paths return the same opaque prose ("request failed") on purpose
+    — the detail is private (see
+    ``test_import_failures_do_not_expose_private_details``). Which operation
+    failed is not private, and before this it was visible only in the audit log.
+    """
+    module = _handler_module()
+    audit = _AuditLog()
+
+    def fail(*args: Any, **kwargs: Any):
+        raise RuntimeError("boom")
+
+    backend = SimpleNamespace(preview_import=fail, apply_import=fail)
+    monkeypatch.setattr(module, "_backend", lambda: backend)
+    monkeypatch.setattr(module, "_sel", lambda: audit)
+    kwargs: dict[str, object] = {"headers": {"X-Test-User": "owner"}}
+    if method == "post":
+        kwargs["json"] = {"sources": [{"id": "claude_code", "categories": ["skills"]}]}
+
+    async with TestClient(TestServer(_make_app(module))) as client:
+        response = await getattr(client, method)(path, **kwargs)
+        response_body = await response.json()
+
+    assert response.status == 500
+    assert response_body["code"] == expected_code
+    assert audit.events[-1]["error"] == expected_code
+    # The prose stays opaque: the code identifies the operation, not the cause.
+    assert response_body["error"] == "request failed"
+    assert "boom" not in str(response_body)
+
+
+@pytest.mark.asyncio
+async def test_state_failure_code_equals_the_audited_error(monkeypatch) -> None:
+    module = _handler_module()
+    audit = _AuditLog()
+
+    def fail_load():
+        raise OSError("boom")
+
+    monkeypatch.setattr(module.KiroCrewConfig, "load", fail_load)
+    monkeypatch.setattr(module, "_sel", lambda: audit)
+
+    async with TestClient(TestServer(_make_app(module))) as client:
+        response = await client.put(
+            "/api/onboarding/import/state",
+            json={"completed": True},
+            headers={"X-Test-User": "owner"},
+        )
+        response_body = await response.json()
+
+    assert response.status == 500
+    assert response_body["code"] == "state_failed"
+    assert audit.events[-1]["error"] == "state_failed"
+
+
+@pytest.mark.asyncio
+async def test_every_refusal_carries_a_code(monkeypatch) -> None:
+    """Per-file ratchet: no refusal path may regress to prose-only."""
+    module = _handler_module()
+    monkeypatch.setattr(module, "_sel", lambda: _AuditLog())
+
+    async with TestClient(TestServer(_make_app(module))) as client:
+        responses = [
+            await client.get("/api/onboarding/import/scan"),
+            await client.post(
+                "/api/onboarding/import/apply",
+                data="{",
+                headers={"Content-Type": "application/json", "X-Test-User": "owner"},
+            ),
+            await client.put(
+                "/api/onboarding/import/state",
+                json={"completed": "yes"},
+                headers={"X-Test-User": "owner"},
+            ),
+        ]
+        for response in responses:
+            body = await response.json()
+            assert response.status >= 400, body
+            assert isinstance(body.get("code"), str) and body["code"], body
+            assert isinstance(body.get("error"), str) and body["error"], body
