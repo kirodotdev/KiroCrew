@@ -53,11 +53,62 @@ from kiro_crew.constants import env_flag_enabled
 from kiro_crew.cron_history import CronHistoryStore, CronRunRecord
 from kiro_crew.executors import _CRON_QUEUE_WAIT_SECS, cron_gate_budget, subprocess_executor
 from kiro_crew.resource_status import admission_check
-from kiro_crew.validation import MAX_CRON_MESSAGE, MAX_SHORT_STRING
+from kiro_crew.validation import CHANNEL_MAX_LEN, MAX_CRON_MESSAGE, MAX_SHORT_STRING
 
 logger = logging.getLogger(__name__)
 
 # ── Constants ──
+
+# Table-driven string-field caps for the persistence chokepoint. Every
+# caller-supplied string field persisted by _build_job/_update_job_locked
+# is listed here with its cap matching the REST/MCP boundary schemas
+# (CRON_ADD_SCHEMA / cron_update ToolSchema in validation.py). A helper
+# iterates this table so adding a field requires ONE edit, not two.
+_CRON_STRING_FIELD_CAPS: tuple[tuple[str, int], ...] = (
+    ("name", MAX_SHORT_STRING),
+    ("message", MAX_CRON_MESSAGE),
+    ("channel", CHANNEL_MAX_LEN),
+    ("thread_ts", 30),
+    ("agent_id", MAX_SHORT_STRING),
+    ("created_by", MAX_SHORT_STRING),
+    ("folder_id", MAX_SHORT_STRING),
+    ("session_key", MAX_SHORT_STRING),
+    ("model", MAX_SHORT_STRING),
+    ("command", 5000),
+    ("script", 200),
+    ("timezone", 50),
+)
+
+
+def _validate_cron_string_fields(
+    values: dict[str, object],
+    *,
+    required: frozenset[str] = frozenset(),
+) -> None:
+    """Type+length gate for every caller-supplied string field.
+
+    Iterates _CRON_STRING_FIELD_CAPS. For each field:
+    - If in *required*: always validates (rejects non-str or over-cap).
+    - Otherwise: ``None`` and ``""`` mean "not set" and are skipped; any
+      other value — including falsy non-strings like ``[]`` or ``0``, which
+      a bare truthiness test would silently admit — must be a string within
+      the cap.
+    """
+    for field_name, cap in _CRON_STRING_FIELD_CAPS:
+        val = values.get(field_name)
+        if field_name in required:
+            if not isinstance(val, str):
+                raise ValueError(f"{field_name} must be a string")
+            if len(val) > cap:
+                raise ValueError(f"{field_name} exceeds max length {cap}")
+        else:
+            if val is None or val == "":
+                continue
+            if not isinstance(val, str):
+                raise ValueError(f"{field_name} must be a string")
+            if len(val) > cap:
+                raise ValueError(f"{field_name} exceeds max length {cap}")
+
 
 # Resolved per call, never captured at import: an import-time binding freezes
 # the data home and defeats pod isolation, the lazy legacy-home migration and
@@ -1608,29 +1659,28 @@ class CronService:
         valid_approval_modes = ("", "auto")
         if approval_mode not in valid_approval_modes:
             raise ValueError(f"Invalid approval_mode: {approval_mode!r}")
-        # Message cap enforced HERE, at the persistence owner, for the same
-        # reason as timezone/skip_dates below: every create path (MCP, apps
-        # SDK, dashboard, CLI) shares one check, so no surface can admit a
-        # message the others would reject. Uses the cron-specific cap, not
-        # MAX_MEDIUM_STRING — a cron message is a task prompt (see
-        # validation.MAX_CRON_MESSAGE). Type-checked first: len() succeeds on
-        # a list, and a non-str message would be persisted into crons.json and
-        # only blow up at fire time inside _build_prompt.
-        if not isinstance(message, str):
-            raise ValueError("message must be a string")
-        if len(message) > MAX_CRON_MESSAGE:
-            raise ValueError(f"message exceeds max length {MAX_CRON_MESSAGE}")
-        # Same chokepoint argument for the name. The dashboard POST handler
-        # caps it at MAX_SHORT_STRING via validate_string_field, but the other
-        # create surfaces (MCP cron_add, the apps SDK, the CLI) reach this
-        # constructor directly, so the cap has to live here to actually bind
-        # them. Type first: len() succeeds on a list, which would then be
-        # persisted into crons.json and only surface as a render/log failure
-        # somewhere far from the request that wrote it.
-        if not isinstance(name, str):
-            raise ValueError("name must be a string")
-        if len(name) > MAX_SHORT_STRING:
-            raise ValueError(f"name exceeds max length {MAX_SHORT_STRING}")
+        # Table-driven type+length gate for every persisted string field.
+        # Runs at the persistence owner so EVERY create path (MCP, apps SDK,
+        # dashboard, CLI) shares one check. name and message are required
+        # (validated even when empty); all other fields use the falsy-skip
+        # pattern (None/"" = "not set").
+        _validate_cron_string_fields(
+            {
+                "name": name,
+                "message": message,
+                "channel": channel,
+                "thread_ts": thread_ts,
+                "agent_id": agent_id,
+                "created_by": created_by,
+                "folder_id": folder_id,
+                "session_key": session_key,
+                "model": model,
+                "command": command,
+                "script": script,
+                "timezone": timezone,
+            },
+            required=frozenset({"name", "message"}),
+        )
         if timeout_secs and not 1 <= int(timeout_secs) <= 86400:
             raise ValueError(f"timeout_secs must be within 1..86400, got {timeout_secs}")
         if timeout_secs and (command or script):
@@ -1843,24 +1893,12 @@ class CronService:
                     if kwargs["approval_mode"] not in valid_approval_modes:
                         raise ValueError(f"Invalid approval_mode: {kwargs['approval_mode']!r}")
                 # Validate before any mutations
-                if "name" in kwargs and kwargs["name"]:
-                    # Mirrors the message check below and _build_job's create-side
-                    # cap: PATCH /api/crons/{id} copied `name` into kwargs raw, so
-                    # a non-string or oversize name was persisted verbatim while
-                    # POST rejected the identical value (#3831).
-                    if not isinstance(kwargs["name"], str):
-                        raise ValueError("name must be a string")
-                    if len(kwargs["name"]) > MAX_SHORT_STRING:
-                        raise ValueError(f"name exceeds max length {MAX_SHORT_STRING}")
-                if "message" in kwargs and kwargs["message"]:
-                    # Same chokepoint rationale as _build_job: every update
-                    # surface (MCP, dashboard PATCH, CLI) funnels here. Type
-                    # first — len() succeeds on a list, which would then be
-                    # persisted and only raise at fire time in _build_prompt.
-                    if not isinstance(kwargs["message"], str):
-                        raise ValueError("message must be a string")
-                    if len(kwargs["message"]) > MAX_CRON_MESSAGE:
-                        raise ValueError(f"message exceeds max length {MAX_CRON_MESSAGE}")
+                # Table-driven type+length gate for every updatable string
+                # field. Falsy values are intentional no-ops (the assignment
+                # section below skips them too).
+                _validate_cron_string_fields(
+                    {f: kwargs[f] for f, _ in _CRON_STRING_FIELD_CAPS if f in kwargs},
+                )
                 if (
                     "cron_expr" in kwargs
                     and kwargs["cron_expr"]
