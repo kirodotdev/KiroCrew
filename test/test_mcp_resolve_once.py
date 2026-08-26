@@ -695,7 +695,9 @@ class TestInstall:
         unbounded background process.
         """
         killed: list[tuple[int, int]] = []
-        real_kill = R.kill_process_tree_async
+        from kiro_crew import platform_compat
+
+        real_kill = platform_compat.kill_process_tree_async
 
         async def fake_kill_tree(pid, sig):
             # Record AND actually kill: a recording-only spy would leave the stub
@@ -704,7 +706,7 @@ class TestInstall:
             killed.append((pid, sig))
             return await real_kill(pid, sig)
 
-        monkeypatch.setattr(R, "kill_process_tree_async", fake_kill_tree)
+        monkeypatch.setattr(platform_compat, "kill_process_tree_async", fake_kill_tree)
         home = str(tmp_path / "home")
         spec = R.NpmSpec(package="foo@1.0.0", passthrough=())
         # A stub that never exits on its own, so the deadline is what ends it.
@@ -714,7 +716,7 @@ class TestInstall:
         rec = await R.install(home, spec, npm=str(sleeper), timeout_secs=0.4)
         assert rec is None
         # The GROUP was signalled, not just the pid.
-        assert killed and killed[0][1] == R.SIGKILL
+        assert killed and killed[0][1] == platform_compat.SIGKILL
 
     async def test_the_install_is_spawned_in_its_own_process_group(self) -> None:
         # Reaping the tree is only possible if the tree is a group of its own;
@@ -939,3 +941,58 @@ class TestSubstitutionActuallyHappens:
         inner = ("npx", ["-y", "foo@1.0.0"], dict(os.environ), "/tmp")
         resolver = G.resolve_once_resolver(lambda _key: inner)
         assert resolver(SimpleNamespace(server_name="s")) == inner
+
+
+class _ReapProbe:
+    """An install-tree child double that records how it is reaped.
+
+    ``_reap_install_tree`` runs on the timeout and cancellation arms with the
+    ``_drain_capped`` reader already cancelled, so the stdout pipe is undrained:
+    a killed npm blocked writing into a full pipe -- or a lifecycle-script
+    grandchild still holding it open -- makes a bare ``await proc.wait()`` hang
+    forever (#6005). The bounded reap must drain via ``communicate()`` and never
+    touch ``wait()``.
+    """
+
+    def __init__(self, pid: int = 4242) -> None:
+        self.pid = pid
+        self.returncode: "int | None" = None
+        self.kill_calls = 0
+        self.wait_calls = 0
+        self.communicate_calls = 0
+
+    async def communicate(self):
+        self.communicate_calls += 1
+        self.returncode = -9
+        return b"", b""
+
+    def kill(self) -> None:
+        self.kill_calls += 1
+
+    async def wait(self) -> int:
+        self.wait_calls += 1
+        return -9
+
+
+class TestReapInstallTree:
+    @pytest.mark.asyncio
+    async def test_reaps_via_communicate_not_wait(self, monkeypatch) -> None:
+        """The reap must go through the bounded, pipe-draining ``kill_and_reap``,
+        never a bare ``await proc.wait()`` that a full pipe can hang (#6005)."""
+        from kiro_crew import platform_compat
+
+        proc = _ReapProbe()
+        tree_kills: "list[tuple[int, int]]" = []
+
+        async def _fake_tree(pid, sig):
+            tree_kills.append((pid, sig))
+            return True
+
+        # Fake pid + patched tree kill so no test can reach a real killpg.
+        monkeypatch.setattr(platform_compat, "kill_process_tree_async", _fake_tree)
+
+        await R._reap_install_tree(proc)
+
+        assert proc.communicate_calls == 1
+        assert proc.wait_calls == 0
+        assert tree_kills and tree_kills[0][0] == proc.pid

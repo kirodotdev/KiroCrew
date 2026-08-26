@@ -654,6 +654,13 @@ async def test_run_json_kills_process_tree_when_stdout_exceeds_limit(monkeypatch
             self.returncode = -9
             self.done.set()
 
+        async def communicate(self):
+            # The bounded reap drains the pipes via communicate() rather than a
+            # bare wait() that a full pipe could hang.
+            self.returncode = -9
+            self.done.set()
+            return b"", b""
+
     proc = FakeProcess()
     spawn_kwargs = {}
 
@@ -661,26 +668,26 @@ async def test_run_json_kills_process_tree_when_stdout_exceeds_limit(monkeypatch
         spawn_kwargs.update(kwargs)
         return proc
 
-    def kill_tree(pid, sig):
-        assert pid == proc.pid
-        assert sig == source.platform_compat.SIGKILL
+    tree_kills: list[tuple[int, int]] = []
+
+    async def kill_tree(pid, sig):
+        tree_kills.append((pid, sig))
         proc.returncode = -sig
         proc.done.set()
         return True
 
-    tree_kill = MagicMock(side_effect=kill_tree)
     monkeypatch.setattr(source, "_resolve_provider_executable", lambda _name: "/usr/bin/gh")
     monkeypatch.setattr(
         source,
         "sandboxed_spawn_argv",
         lambda argv, **kwargs: (argv, kwargs["env"], None),
     )
-    monkeypatch.setattr(source.platform_compat, "kill_process_tree", tree_kill)
+    monkeypatch.setattr(source.platform_compat, "kill_process_tree_async", kill_tree)
     monkeypatch.setattr(source.asyncio, "create_subprocess_exec", fake_create)
     with pytest.raises(source.SourceProviderError, match="response was too large"):
         await source._run_json("gh", "api", "repos/acme/repo", max_output_bytes=4)
-    tree_kill.assert_called_once_with(proc.pid, source.platform_compat.SIGKILL)
-    assert proc.killed is False
+    # The whole tree is SIGKILLed through the bounded reap (kill_and_reap).
+    assert tree_kills == [(proc.pid, source.platform_compat.SIGKILL)]
     assert spawn_kwargs["env"]["GH_HOST"] == "github.com"
     assert spawn_kwargs["start_new_session"] is source.platform_compat.IS_POSIX
     assert spawn_kwargs["creationflags"] == source.platform_compat.CREATE_NEW_PROCESS_GROUP
@@ -7837,3 +7844,62 @@ class TestJiraLinkedChanges:
         assert result[1]["issueKey"] == "B-2"
         assert result[1]["relation"] == "is duplicated by"
         assert result[1]["state"] == "closed"
+
+
+class _ReapProbe:
+    """A PIPE-stdio child double that records how it is reaped.
+
+    A killed child blocked writing into a full pipe -- or a surviving
+    descendant still holding the pipes open -- makes a bare ``await
+    proc.wait()`` hang the caller forever (#6005). The bounded reap must
+    therefore drain the pipes via ``communicate()`` and must never touch
+    ``wait()``.
+    """
+
+    def __init__(self, pid: int = 4242) -> None:
+        self.pid = pid
+        self.returncode: "int | None" = None
+        self.kill_calls = 0
+        self.wait_calls = 0
+        self.communicate_calls = 0
+
+    async def communicate(self):
+        self.communicate_calls += 1
+        self.returncode = -9
+        return b"", b""
+
+    def kill(self) -> None:
+        self.kill_calls += 1
+
+    async def wait(self) -> int:
+        self.wait_calls += 1
+        return -9
+
+
+@pytest.mark.asyncio
+async def test_terminate_process_reaps_via_communicate_not_wait(monkeypatch):
+    """``_terminate_process`` must route through the bounded, pipe-draining
+    ``kill_and_reap`` -- a bare ``await proc.wait()`` here can hang the gateway
+    task forever when the child is killed with a full pipe (#6005)."""
+    from kiro_crew import platform_compat
+
+    proc = _ReapProbe()
+    tree_kills: "list[tuple[int, int]]" = []
+
+    async def _fake_tree(pid, sig):
+        tree_kills.append((pid, sig))
+        return True
+
+    # Fake pid + patched tree kill so no test can reach a real killpg. Both the
+    # async helper (used by kill_and_reap) and the legacy sync entry point are
+    # patched so the pin stays safe even when run against unmodified code.
+    monkeypatch.setattr(platform_compat, "kill_process_tree_async", _fake_tree)
+    monkeypatch.setattr(
+        platform_compat, "kill_process_tree", lambda *a, **k: tree_kills.append(a)
+    )
+
+    await source._terminate_process(proc)
+
+    assert proc.communicate_calls == 1
+    assert proc.wait_calls == 0
+    assert tree_kills and tree_kills[0][0] == proc.pid

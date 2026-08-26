@@ -630,16 +630,15 @@ async def _read_stream_limited(stream: asyncio.StreamReader, limit: int, label: 
 
 
 async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
-    """Kill and reap a provider process tree after timeout, overflow, or cancellation."""
-    if proc.returncode is None:
-        try:
-            platform_compat.kill_process_tree(proc.pid, platform_compat.SIGKILL)
-        except (OSError, ValueError):
-            # Best-effort PID fallback if group lookup races with launcher exit.
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-    with contextlib.suppress(ProcessLookupError):
-        await proc.wait()
+    """Kill and reap a provider process tree after timeout, overflow, or cancellation.
+
+    The reap is bounded and drains the pipes: this path is reached with the
+    stdout/stderr readers already cancelled by ``wait_for``, so a killed child
+    blocked writing into a full pipe -- or a surviving descendant still holding
+    the pipes open -- would make a bare ``await proc.wait()`` hang the calling
+    task forever.
+    """
+    await platform_compat.kill_and_reap(proc)
 
 
 async def _collect_process_output(
