@@ -2664,5 +2664,5 @@ class ConversationLog:
     def _rewrite_session_locked(self, key: str, messages: list[dict]) -> None:
         self._rewrite_coordinator._rewrite_session_locked(key, messages)
 
-    def _maybe_rotate(self, path: Path, key: str) -> None:
-        self._rewrite_coordinator._maybe_rotate(path, key)
+    def _maybe_rotate(self, path: Path, key: str, *, max_drop: int | None = None) -> int:
+        return self._rewrite_coordinator._maybe_rotate(path, key, max_drop=max_drop)

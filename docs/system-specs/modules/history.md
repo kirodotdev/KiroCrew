@@ -39,7 +39,21 @@ injected into every component.
 Per-thread JSONL files at `~/.kiro/crew/sessions/{safe_key}.jsonl`. First line is metadata, subsequent lines are messages with `role`, `content`, `ts`, `tools`, `source_thread`, `source_user`. A writer can also supply `cls` (presentation class) and `mid` — persisted as `meta.mid`, the same field shape the dashboard slot save writes, so a dual-write injector's durable copy carries the SAME delivery identity as its in-memory window copy and a bounded slot-detail read reconciles the two as one message instead of re-appending the injection. A row appended without an id carries no `meta` at all (the pre-id shape readers keep an id-less fallback for; existing transcripts are never migrated).
 
 - Append-only for LLM cache efficiency
-- Rotation at 2MB (keeps metadata + last 200 messages, atomic write)
+- Rotation at 2MB (keeps metadata + last 200 messages, atomic write). Two callers:
+  `ConversationLog.append` (uncapped) and the dashboard whole-file save
+  (`_save_slot_to_history`), which passes `_maybe_rotate(max_drop=...)` to cap the
+  drop at the **frozen prefix**. That save rewrites the file as
+  `meta + frozen_prefix + serialize(window)`, so a line dropped from the window
+  region is one the slot still holds in memory: the next save re-emits it,
+  rotation drops it again, and the two churn indefinitely. Capping the drop keeps
+  the window's head as the file's first message line — the only state the
+  frozen-prefix + window model can express (there is no representable state with a
+  hole at the front of the window). The cost is that a session whose whole
+  transcript is still its live window — no memory trim has run, so no prefix
+  exists — stays over the cap until the trim supplies a prefix or an `append`
+  writer rotates it uncapped. Unbounded growth is unaffected: the live window is
+  capped at `_MAX_SLOT_MESSAGES`, so every byte a long session accumulates beyond
+  that lands in the prefix, which is exactly what the save path can reclaim.
 - **Cache-fill staleness guard** — mtime-keyed memos cannot trust "same mtime == same content": housekeeping rewrites (compaction / rotation / metadata edits / `mark_consolidated`) restore the pre-write mtime via `_restore_mtime`, so a fill spanning one would park pre-rewrite data under an mtime the file still has — undetectably, for the life of the process. Two mechanisms close the fill window, by cache: `_meta_cache` and `_recent_cache` publish through a per-key invalidation **generation** (`_invalidate_cache` bumps the counter BEFORE dropping entries; each fill snapshots it before its `stat` and re-checks it around the publish via `_publish_if_current`, discarding the fill if it moved — lock-free on read paths reachable on the event loop, a discarded fill costs one re-read), while `_folded_cache`/`_snippet_cache` serialize the whole stat → read → store under `_file_lock` (`_folded_content`), and `_msg_cache` uses that same double-checked miss-only locking whose unlocked on-loop fallback publishes under the generation plus a cross-process flock-hold witness (`_read_messages`, below). The generation table is process-wide (class-level, keyed by transcript dir + sanitized stem — see `_read_messages` below for why instance scope is not enough), and generations, invalidation, and the pops all cover every cache-key spelling of one session — logical key, sanitized `path.stem`, and the canonical/legacy Slack aliases in both directions (`_cache_key_identities`) — because `list_sessions` keys its fills by stem while most writers invalidate under the logical key. `_meta_cache`, `_folded_cache`, and `_snippet_cache` entries ALSO record the generation they were filled under and a warm hit requires both the mtime and the generation to match, with the store routed through `_publish_if_current`: the fold's `_file_lock` is process-wide and path-keyed, so it orders fills against every in-process writer regardless of instance — but `_invalidate_cache`'s pops reach only the writer's own instance's caches, so an entry already sitting warm in ANOTHER instance survives a preserved-mtime rewrite, and the generation clause on the hit (backed by the process-wide table) is what unhits it. The store-side guard is generation-stamp hygiene — the lock already covers the fill window in-process; unlike `_read_messages`' flock-hold witness, the search memos have no cross-process witness, so a preserved-mtime rewrite from a different PROCESS remains a known residual gap for them.
 - `recent(key)` — last 20 messages for context injection
 - `recent_with_provenance(key)` — entries with source citations
@@ -511,7 +525,11 @@ archived instead of being permanently deleted:
 - **Triggers**: `_rotate()` (>2MB), `rewrite_session()` (compact), and the
   dashboard rewrite path (`_save_slot_to_history` with a snapshot /
   `rewrite=True` / `_pending_rewrite` → `_archive_dropped_lines`). The default
-  frozen-prefix dashboard save drops nothing, so it does not archive.
+  frozen-prefix dashboard save archives nothing of its OWN — its payload is a
+  superset of what is on disk — but it does call `_maybe_rotate` (capped at the
+  frozen prefix, above), so on an over-cap transcript it archives via that path.
+  Reaching the steady state costs at most one such rotation: the drop is capped at
+  lines the slot does not hold, so nothing it re-emits can be dropped again.
 - **Atomic writes**: exclusive-create (`open mode 'x'`) avoids TOCTOU clobber
 - **Retention**: configurable via `session.archive_retention_days` (default 30
   days; `-1` or `null` disables cleanup so the user manages deletion manually).

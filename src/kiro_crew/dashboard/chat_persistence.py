@@ -2885,7 +2885,69 @@ def _save_slot_to_history(
             # from ``existing_meta`` when present), so the delete-won guard can
             # recognize a file recreated by another writer after a permanent
             # delete on the NEXT save.
+            #
+            # Read before the rotation below, but valid after it either way:
+            # rotation rewrites the meta line to stamp ``rotated_at`` and
+            # preserves every other field, so ``created_at`` — the only field
+            # this identity depends on — survives a rotation unchanged.
             slot._disk_meta_created_at = str(meta_line.get("created_at") or "")
+            # Enforce the session byte cap on THIS path too, against the FROZEN
+            # PREFIX. ``_maybe_rotate`` used to have exactly one caller
+            # (``ConversationLog.append``), so a transcript written only through
+            # this whole-file save was never size-checked while the documented cap
+            # said otherwise. The prefix is also the part that actually grows
+            # without bound: the live window is capped at ``_MAX_SLOT_MESSAGES``,
+            # so every byte a long session accumulates beyond that lands in the
+            # prefix, and the prefix is what this save re-emits verbatim forever.
+            #
+            # ``max_drop`` is the whole reason this call is safe. This save writes
+            # ``meta + frozen_prefix + serialize(window)``, so a line rotation
+            # drops from the WINDOW region is one the slot still holds in
+            # ``slot.messages`` — the next save re-emits it, rotation drops it
+            # again, and the two churn forever. Measured on the unbounded call at
+            # 30 x 100 KB with no frozen prefix: rotation dropped 10 window rows,
+            # and each of the next 5 ordinary saves resurrected and re-dropped the
+            # same 10 (5 rotations, 50 re-archived lines). Capping the drop at the
+            # prefix leaves the window's head as the file's first message line,
+            # which is the only state the frozen-prefix + window model can
+            # express; there is no representable state with a hole at the front of
+            # the window.
+            #
+            # Deliberately NOT closed by trimming ``slot.messages`` instead: this
+            # runs in the flush executor thread (see the snapshot rationale at the
+            # top of this function), where every other window mutation in the
+            # dashboard is loop-only, and it would delete messages out from under
+            # an open tab. The cost of the cap is that a session whose entire
+            # transcript is still its live window stays oversized until the memory
+            # trim gives it a prefix, or until an ``append`` writer rotates it
+            # uncapped. Oversized is recoverable; churn and lost rows are not.
+            #
+            # The ceiling is counted off the prefix bytes actually written, not
+            # ``disk_older``: on a short/truncated file the prefix carries fewer
+            # lines than the counter claims, and ``count("\n")`` is the count that
+            # matches how rotation will re-split the file.
+            #
+            # Called INSIDE ``_locked`` and after the mtime restore, so rotation
+            # cannot race another writer and cannot resurrect an mtime the close
+            # path deliberately rewound.
+            dropped = state.conversation_log._maybe_rotate(
+                path, history_key, max_drop=frozen_prefix.count("\n")
+            )
+            if dropped:
+                # Rotation removed leading messages, which moves the frozen-prefix
+                # boundary this slot is holding. Reconcile it: without this, every
+                # later save rebuilds its payload from ``body[:disk_older]`` — a
+                # floor that no longer exists — RESURRECTING the dropped messages,
+                # which rotation then drops again.
+                #
+                # A plain subtraction, because ``max_drop`` above guarantees
+                # ``dropped`` came entirely from the prefix. ``_disk_window_len``
+                # is deliberately left alone: it is a PREFIX length over the
+                # window ("``messages[:n]`` are on disk"), so there is no value it
+                # could take to describe a window whose head is missing from disk —
+                # which is exactly why rotation is not allowed to create that
+                # state.
+                slot._disk_older_count = max(0, slot._disk_older_count - dropped)
             # Record the post-write mtime in the frozen-prefix cache (even when
             # there is no frozen prefix, ``disk_older == 0``). The cache doubles
             # as the "did another process touch this file since we last wrote
@@ -2898,17 +2960,28 @@ def _save_slot_to_history(
             # the on-disk window region (after the frozen prefix), and because
             # ``disk_older`` is unchanged a bare frozen+window rebuild on the next
             # save would otherwise silently delete them.
-            try:
-                _st = path.stat()
-                slot._frozen_prefix_cache = (
-                    _st.st_mtime,
-                    _st.st_size,
-                    disk_older,
-                    frozen_prefix,
-                    foreign_lines,
-                )
-            except OSError:
+            #
+            # After a rotation the cached tuple would be stale on the two fields
+            # that matter: ``disk_older`` and ``frozen_prefix`` describe the
+            # pre-rotation file. Caching it is worse than caching nothing,
+            # because the next save trusts the cache instead of re-reading and so
+            # re-emits the dropped rows. Drop the cache and let that save pay one
+            # O(file) re-read against the reconciled counts above; rotation is
+            # rare, so this costs nothing on the steady path.
+            if dropped:
                 slot._frozen_prefix_cache = None
+            else:
+                try:
+                    _st = path.stat()
+                    slot._frozen_prefix_cache = (
+                        _st.st_mtime,
+                        _st.st_size,
+                        disk_older,
+                        frozen_prefix,
+                        foreign_lines,
+                    )
+                except OSError:
+                    slot._frozen_prefix_cache = None
             state.conversation_log._invalidate_cache(history_key)
             state.conversation_log.note_tab_id(history_key, tab_id)
             return True
