@@ -578,16 +578,24 @@ class TestSampleLiveCosts:
         info._pid = 4242
         return info
 
+    @staticmethod
+    def _sample(rss_kb: int = -1, jiffies: int = 0):
+        """The one subtree reading the sweep takes per agent."""
+        from kiro_crew.subagent import _SubtreeSample
+
+        return _SubtreeSample(rss_kb, jiffies, None, None)
+
     def test_rss_high_water(self, monkeypatch) -> None:
         import kiro_crew.subagent as sub
 
         m = _mgr(running=1, max_concurrent=16, last_ts=0.0)
         info = self._agent()
         m._agents = {"a1": info}
-        monkeypatch.setattr(sub, "_subtree_cpu_jiffies", lambda pid: 0)
         # Two polls: 2 GB then 1 GB — peak must stick at 2.
         rss_seq = iter([2 * 1024 * 1024, 1 * 1024 * 1024])
-        monkeypatch.setattr(sub, "_proc_rss_kb", lambda pid: next(rss_seq))
+        monkeypatch.setattr(
+            sub, "_proc_subtree_sample", lambda pid, **kw: self._sample(rss_kb=next(rss_seq))
+        )
         m._sample_live_costs()
         m._sample_live_costs()
         assert info.peak_rss_gb == pytest.approx(2.0, abs=0.01)
@@ -598,7 +606,6 @@ class TestSampleLiveCosts:
         m = _mgr(running=1, max_concurrent=16, last_ts=0.0)
         info = self._agent()
         m._agents = {"a1": info}
-        monkeypatch.setattr(sub, "_proc_rss_kb", lambda pid: -1)  # ignore RSS
         monkeypatch.setattr(sub, "_CLK_TCK", 100)
 
         # Control wall-clock: poll1 t=10, poll2 t=11 (dt=1s).
@@ -609,8 +616,11 @@ class TestSampleLiveCosts:
         # StopIteration into unrelated event-loop cleanup.
         monkeypatch.setattr(sub.time, "monotonic", lambda: next(times, 11.0))
         # jiffies: 1000 then 1100 → 100 jiffies / (100 tck * 1s) = 1.0 core.
+        # RSS stays -1 so only the CPU half of the sample is under test.
         jiff = iter([1000, 1100])
-        monkeypatch.setattr(sub, "_subtree_cpu_jiffies", lambda pid: next(jiff))
+        monkeypatch.setattr(
+            sub, "_proc_subtree_sample", lambda pid, **kw: self._sample(jiffies=next(jiff))
+        )
 
         m._sample_live_costs()  # seeds baseline, no delta
         assert info.peak_cpu_cores == 0.0
@@ -626,12 +636,11 @@ class TestSampleLiveCosts:
         m._agents = {"d": done}
         called = {"n": 0}
 
-        def _rss(pid):
+        def _walk(pid, **kw):
             called["n"] += 1
-            return 1024 * 1024
+            return self._sample(rss_kb=1024 * 1024)
 
-        monkeypatch.setattr(sub, "_proc_rss_kb", _rss)
-        monkeypatch.setattr(sub, "_subtree_cpu_jiffies", lambda pid: 0)
+        monkeypatch.setattr(sub, "_proc_subtree_sample", _walk)
         m._sample_live_costs()
         assert called["n"] == 0  # done agent not sampled
         assert done.peak_rss_gb == 0.0
@@ -655,15 +664,18 @@ class TestSampleLiveCosts:
 
         # Shared runtime measures 4 GB RSS; with 2 live shared sessions each
         # agent is charged 2 GB, never the full 4 GB.
-        monkeypatch.setattr(sub, "_proc_rss_kb", lambda pid: 4 * 1024 * 1024)
-        monkeypatch.setattr(sub, "_subtree_cpu_jiffies", lambda pid: 0)
+        monkeypatch.setattr(
+            sub, "_proc_subtree_sample", lambda pid, **kw: self._sample(rss_kb=4 * 1024 * 1024)
+        )
         m._sample_live_costs()
 
         assert a.peak_rss_gb == pytest.approx(2.0, abs=0.01)
         assert b.peak_rss_gb == pytest.approx(2.0, abs=0.01)
         # Single shared session → full measured RSS (divisor 1).
         b.done = True
-        monkeypatch.setattr(sub, "_proc_rss_kb", lambda pid: 3 * 1024 * 1024)
+        monkeypatch.setattr(
+            sub, "_proc_subtree_sample", lambda pid, **kw: self._sample(rss_kb=3 * 1024 * 1024)
+        )
         m._sample_live_costs()
         assert a.peak_rss_gb == pytest.approx(3.0, abs=0.01)
 
@@ -946,9 +958,12 @@ class TestLastSampleAndMemoryRows:
         m = _mgr(running=1, max_concurrent=16, last_ts=0.0)
         info = self._agent()
         m._agents = {"a1": info}
-        monkeypatch.setattr(sub, "_subtree_cpu_jiffies", lambda pid: 0)
         rss_seq = iter([2 * 1024 * 1024, 1 * 1024 * 1024])
-        monkeypatch.setattr(sub, "_proc_rss_kb", lambda pid: next(rss_seq))
+        monkeypatch.setattr(
+            sub,
+            "_proc_subtree_sample",
+            lambda pid, **kw: sub._SubtreeSample(next(rss_seq), 0, None, None),
+        )
         m._sample_live_costs()
         m._sample_live_costs()
 
@@ -964,8 +979,11 @@ class TestLastSampleAndMemoryRows:
         a = self._agent(id="a1", _session_sharing=True)
         b = self._agent(id="a2", _session_sharing=True)
         m._agents = {"a1": a, "a2": b}
-        monkeypatch.setattr(sub, "_subtree_cpu_jiffies", lambda pid: 0)
-        monkeypatch.setattr(sub, "_proc_rss_kb", lambda pid: 2 * 1024 * 1024)
+        monkeypatch.setattr(
+            sub,
+            "_proc_subtree_sample",
+            lambda pid, **kw: sub._SubtreeSample(2 * 1024 * 1024, 0, None, None),
+        )
         m._sample_live_costs()
 
         assert a.last_rss_gb == pytest.approx(1.0, abs=0.01)

@@ -753,7 +753,7 @@ class TestPidHelpers:
 
 class TestLiveSharedCount:
     def test_no_pid_counts_as_one(self) -> None:
-        assert _manager()._live_shared_count(None) == 1
+        assert _manager()._live_shared_count(None, []) == 1
 
     def test_counts_live_sharers_on_the_same_pid(self) -> None:
         mgr = _manager()
@@ -766,10 +766,23 @@ class TestLiveSharedCount:
         dead._session_sharing = True
         dead._pid = 777
         mgr._agents["dead"] = dead
-        assert mgr._live_shared_count(777) == 3
+        assert mgr._live_shared_count(777, list(mgr._agents.values())) == 3
 
     def test_unknown_pid_floors_at_one(self) -> None:
-        assert _manager()._live_shared_count(31337) == 1
+        mgr = _manager()
+        assert mgr._live_shared_count(31337, list(mgr._agents.values())) == 1
+
+    def test_snapshot_is_required_not_read_from_the_live_registry(self) -> None:
+        """The sole caller runs off-loop, so the count must never touch
+        ``self._agents``: it can only see what the caller snapshotted."""
+        mgr = _manager()
+        info = _info("s0")
+        info._session_sharing = True
+        info._pid = 777
+        mgr._agents[info.id] = info
+        assert mgr._live_shared_count(777, []) == 1, "an empty snapshot means no sharers seen"
+        with pytest.raises(TypeError):
+            mgr._live_shared_count(777)  # type: ignore[call-arg]
 
 
 class TestProcSubtreeCounts:
@@ -818,6 +831,112 @@ class TestProcSubtreeCounts:
         assert procs is not None and procs < sa._RSS_SUBTREE_MAX_PROCS * 3
 
 
+class TestProcSubtreeSample:
+    """``_proc_subtree_sample`` — the ONE walk every reading now comes off.
+
+    The three readers it replaced ran three independent walks at three different
+    instants, so a process that exited between them was counted by one and
+    missed by another. These pin both halves of the claim: the readings are the
+    same values the separate readers produced, and they cost one walk.
+    """
+
+    #: 1 runtime + 3 children; two of the children are MCP stubs.
+    TREE = {10: [11, 12, 13], 11: [], 12: [], 13: []}
+    RSS = {10: 1000, 11: 200, 12: 30, 13: 4}
+    JIFFIES = {10: 100, 11: 50, 12: 25, 13: 10}
+    STUBS = {11, 12}
+
+    @contextlib.contextmanager
+    def _fake_tree(self):
+        with (
+            patch.object(sa.platform_compat, "IS_LINUX", True),
+            patch.object(sa, "_single_proc_rss_kb", side_effect=lambda p: self.RSS.get(p, -1)),
+            patch.object(sa, "_proc_cpu_jiffies", side_effect=lambda p: self.JIFFIES.get(p, 0)),
+            patch.object(sa, "_proc_children", side_effect=lambda p: self.TREE.get(p, [])),
+            patch.object(
+                sa.platform_compat,
+                "process_matches",
+                side_effect=lambda p, needles: p in self.STUBS and needles == (sa.STUB_MODULE,),
+            ),
+        ):
+            yield
+
+    def test_one_sample_carries_all_four_readings(self) -> None:
+        with self._fake_tree():
+            sample = sa._proc_subtree_sample(10)
+        assert sample.rss_kb == sum(self.RSS.values())
+        assert sample.jiffies == sum(self.JIFFIES.values())
+        assert (sample.procs, sample.stubs) == (4, 2)
+
+    def test_the_wrappers_still_report_what_they_always_did(self) -> None:
+        """Value preservation: consolidating must not move a single number, or
+        the learned-cost store and ``compute_max_subagents`` would see a step."""
+        with self._fake_tree():
+            assert sa._proc_rss_kb(10) == sum(self.RSS.values())
+            assert sa._subtree_cpu_jiffies(10) == sum(self.JIFFIES.values())
+            assert sa._proc_subtree_counts(10) == (4, 2)
+
+    def test_the_subtree_is_walked_once_not_once_per_metric(self) -> None:
+        seen: list[int] = []
+        with (
+            self._fake_tree(),
+            patch.object(
+                sa,
+                "_proc_children",
+                side_effect=lambda p: (seen.append(p), self.TREE.get(p, []))[1],
+            ),
+        ):
+            sa._proc_subtree_sample(10)
+        assert sorted(seen) == [10, 11, 12, 13], "each process's children read exactly once"
+
+    def test_no_pid_is_unmeasurable_in_every_column(self) -> None:
+        assert sa._proc_subtree_sample(None) == sa._SubtreeSample(-1, 0, None, None)
+
+    def test_non_linux_loses_only_the_counts(self) -> None:
+        """Counts are ``None`` off Linux, but RSS and CPU keep their own
+        sentinels — the columns are unmeasurable in different ways."""
+        with self._fake_tree(), patch.object(sa.platform_compat, "IS_LINUX", False):
+            sample = sa._proc_subtree_sample(10)
+        assert (sample.procs, sample.stubs) == (None, None)
+        assert sample.rss_kb == sum(self.RSS.values())
+        assert sample.jiffies == sum(self.JIFFIES.values())
+
+    def test_dead_root_keeps_the_cpu_walk(self) -> None:
+        """An unreadable root status means RSS and the counts have nothing to
+        attribute, but jiffies is consumed as a *delta*, so its walk stands."""
+        with self._fake_tree(), patch.object(sa, "_single_proc_rss_kb", return_value=-1):
+            sample = sa._proc_subtree_sample(10)
+        assert sample.rss_kb == -1
+        assert (sample.procs, sample.stubs) == (None, None)
+        assert sample.jiffies == sum(self.JIFFIES.values())
+
+    def test_a_skipped_metric_costs_no_reads(self) -> None:
+        """A single-metric wrapper must not pay for the other two, or sharing the
+        walk would have made every caller slower."""
+        with (
+            self._fake_tree(),
+            patch.object(
+                sa,
+                "_proc_cpu_jiffies",
+                side_effect=AssertionError("CPU read on an RSS-only sample"),
+            ),
+        ):
+            assert sa._proc_rss_kb(10) == sum(self.RSS.values())
+
+    def test_the_walk_is_bounded_by_the_one_shared_ceiling(self) -> None:
+        assert sa._RSS_SUBTREE_MAX_PROCS == sa._SUBTREE_MAX_PROCS
+        assert sa._CPU_SUBTREE_MAX_PROCS == sa._SUBTREE_MAX_PROCS
+        with (
+            patch.object(sa.platform_compat, "IS_LINUX", True),
+            patch.object(sa, "_single_proc_rss_kb", return_value=1024),
+            patch.object(sa, "_proc_cpu_jiffies", return_value=1),
+            patch.object(sa, "_proc_children", side_effect=lambda p: [p * 10, p * 10 + 1]),
+            patch.object(sa.platform_compat, "process_matches", return_value=False),
+        ):
+            sample = sa._proc_subtree_sample(2)
+        assert sample.procs is not None and sample.procs < sa._SUBTREE_MAX_PROCS * 3
+
+
 class TestAttributedCount:
     def test_unmeasured_keeps_the_last_good_reading(self) -> None:
         assert sa._attributed_count(None, 1, 7) == 7
@@ -843,11 +962,8 @@ class TestSampleLiveCounts:
     """The sweep must write procs/mcp on both the shared and exclusive paths."""
 
     def _patched(self, counts: tuple[int, int]):
-        return (
-            patch.object(sa, "_proc_rss_kb", return_value=1024 * 1024),
-            patch.object(sa, "_subtree_cpu_jiffies", return_value=0),
-            patch.object(sa, "_proc_subtree_counts", return_value=counts),
-        )
+        sample = sa._SubtreeSample(1024 * 1024, 0, counts[0], counts[1])
+        return (patch.object(sa, "_proc_subtree_sample", return_value=sample),)
 
     def test_shared_runtime_counts_are_split_per_sharer(self) -> None:
         mgr = _manager()
@@ -856,8 +972,8 @@ class TestSampleLiveCounts:
             info._session_sharing = True
             info._pid = 777
             mgr._agents[info.id] = info
-        rss, cpu, counts = self._patched((21, 18))
-        with rss, cpu, counts:
+        (sample,) = self._patched((21, 18))
+        with sample:
             mgr._sample_live_costs()
         for info in mgr._agents.values():
             assert info.last_procs == 7
@@ -868,8 +984,8 @@ class TestSampleLiveCounts:
         info = _info("solo")
         info._pid = 999
         mgr._agents["solo"] = info
-        rss, cpu, counts = self._patched((7, 6))
-        with rss, cpu, counts:
+        (sample,) = self._patched((7, 6))
+        with sample:
             mgr._sample_live_costs()
         assert info.last_procs == 7
         assert info.last_stubs == 6
@@ -880,13 +996,33 @@ class TestSampleLiveCounts:
         info._pid = 999
         info.last_procs, info.last_stubs = 7, 6
         mgr._agents["solo"] = info
-        with (
-            patch.object(sa, "_proc_rss_kb", return_value=-1),
-            patch.object(sa, "_subtree_cpu_jiffies", return_value=0),
-            patch.object(sa, "_proc_subtree_counts", return_value=(None, None)),
+        with patch.object(
+            sa, "_proc_subtree_sample", return_value=sa._SubtreeSample(-1, 0, None, None)
         ):
             mgr._sample_live_costs()
         assert (info.last_procs, info.last_stubs) == (7, 6)
+
+    def test_one_walk_per_agent_not_one_per_metric(self) -> None:
+        """The whole point of #3970: RSS, CPU and both counts come off ONE walk.
+
+        Patching the shared sample is not enough to prove that — a sweep that
+        still called three readers would also pass the assertions above. Count
+        the walks instead.
+        """
+        mgr = _manager()
+        for idx in range(2):
+            info = _info(f"s{idx}")
+            info._pid = 900 + idx
+            mgr._agents[info.id] = info
+        walks: list[object] = []
+
+        def _sample(pid, **kwargs):  # noqa: ANN001, ANN003 — test double
+            walks.append(pid)
+            return sa._SubtreeSample(1024, 0, 4, 2)
+
+        with patch.object(sa, "_proc_subtree_sample", side_effect=_sample):
+            mgr._sample_live_costs()
+        assert walks == [900, 901], "exactly one subtree walk per live agent"
 
     def test_sweep_reads_the_registry_once_so_it_is_thread_safe(self) -> None:
         """The sweep runs on an executor thread, so it must not iterate the live
@@ -908,8 +1044,8 @@ class TestSampleLiveCounts:
                 return super().values()
 
         mgr._agents = _CountingRegistry(real)  # type: ignore[assignment]
-        rss, cpu, counts = self._patched((4, 2))
-        with rss, cpu, counts:
+        (sample,) = self._patched((4, 2))
+        with sample:
             mgr._sample_live_costs()
         assert reads["n"] == 1, "the registry must be snapshotted exactly once"
 

@@ -467,7 +467,9 @@ async def test_dead_does_not_skip_two_sweep_when_a_sibling_shares_the_runtime():
     sibling = _info(turns=1, _pid=4242, _session_sharing=True)
     sibling.id = "sibling00"
     _register(mgr, victim, sibling)
-    assert mgr._live_shared_count(4242) == 2, "test setup: siblings must share the pid"
+    assert (
+        mgr._live_shared_count(4242, list(mgr._agents.values())) == 2
+    ), "test setup: siblings must share the pid"
 
     # Sweep 1: no immediate flag — it only becomes a suspect.
     assert await _flag_with_dead(mgr, victim, now) is False, "DEAD skipped dampening"
@@ -495,7 +497,9 @@ async def test_dead_does_not_skip_two_sweep_for_a_lone_agent_in_a_shared_runtime
     now = 1_000.0
     info = _info(turns=1, _pid=4242, last_activity=now - 25, _session_sharing=True)
     _register(mgr, info)
-    assert mgr._live_shared_count(4242) == 1, "test setup: no live sibling, parent unseen"
+    assert (
+        mgr._live_shared_count(4242, list(mgr._agents.values())) == 1
+    ), "test setup: no live sibling, parent unseen"
 
     # Sweep 1: the sibling count says "alone", but the parent shares the pid.
     assert await _flag_with_dead(mgr, info, now) is False, "lone shared agent kept fast path"
@@ -529,5 +533,7 @@ async def test_a_done_sibling_does_not_restore_the_fast_path():
     finished = _info(turns=1, _pid=4242, _session_sharing=True, done=True)
     finished.id = "finished0"
     _register(mgr, info, finished)
-    assert mgr._live_shared_count(4242) == 1, "a done sibling must not count as live"
+    assert (
+        mgr._live_shared_count(4242, list(mgr._agents.values())) == 1
+    ), "a done sibling must not count as live"
     assert await _flag_with_dead(mgr, info, now) is False, "shared agent kept fast path"
