@@ -460,6 +460,58 @@ class TestOAuthParamCredentialScan:
         )
         assert oauth_url_contains_credential(url) is False
 
+    def test_superhuman_mcp_endpoint_high_entropy_state_allowed(self):
+        # Regression: Superhuman's MCP authorization endpoint
+        # (mcp.auth.mail.superhuman.com/oauth2/authorize) is in the builtin
+        # allowlist, so its opaque high-entropy state must NOT be flagged. This
+        # is the exact reconnect that failed with "URL contained credential or
+        # exfiltration pattern" before the endpoint was added.
+        url = (
+            "https://mcp.auth.mail.superhuman.com/oauth2/authorize"
+            "?client_id=sh_mcp_client_0123456789&response_type=code"
+            "&redirect_uri=http%3A%2F%2F127.0.0.1%3A33418%2Fcallback&scope=mcp"
+            "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+            "&code_challenge_method=S256"
+            "&state=" + ("Kp7mQ2xR" * 12)
+        )
+        assert oauth_url_contains_credential(url) is False
+
+    def test_superhuman_high_entropy_state_still_rejected_at_unlisted_host(self):
+        # The endpoint allowlist — not the params — is what grants the
+        # exemption: the SAME high-entropy state at a look-alike host that is
+        # not on the allowlist must still be rejected. Guards against a
+        # suffix-match or host-spoof regression.
+        url = (
+            "https://mcp.auth.mail.superhuman.com.attacker.example/oauth2/authorize"
+            "?client_id=sh_mcp_client_0123456789&response_type=code"
+            "&redirect_uri=http%3A%2F%2F127.0.0.1%3A33418%2Fcallback&scope=mcp"
+            "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+            "&code_challenge_method=S256"
+            "&state=" + ("Kp7mQ2xR" * 12)
+        )
+        assert oauth_url_contains_credential(url) is True
+
+    def test_superhuman_endpoint_does_not_waive_fixed_credentials(self):
+        # Adding an endpoint to the allowlist only exempts high-entropy OAuth
+        # entropy — a hard credential signature (AWS key) smuggled into a param
+        # must still be rejected even at the approved Superhuman endpoint.
+        url = (
+            "https://mcp.auth.mail.superhuman.com/oauth2/authorize"
+            "?client_id=x&state=AKIAIOSFODNN7EXAMPLE&response_type=code"
+        )
+        assert oauth_url_contains_credential(url) is True
+
+    def test_superhuman_endpoint_is_in_builtin_allowlist(self):
+        # Pins the fix at the data layer: the endpoint pair must be present
+        # exactly (host lowercase, path exact), so a rename/move in the set
+        # fails loudly rather than silently re-breaking reconnect.
+        from kiro_crew.security import _OAUTH_AUTHORIZATION_ENDPOINTS
+
+        assert (
+            "mcp.auth.mail.superhuman.com",
+            "/oauth2/authorize",
+        ) in _OAUTH_AUTHORIZATION_ENDPOINTS
+
 
 # ── Banner gate consolidation: one security predicate, no local copy (#2403) ──
 

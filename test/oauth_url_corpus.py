@@ -152,6 +152,22 @@ LEGIT_OAUTH_URLS: list[tuple[str, str]] = [
         "&code_challenge_method=S256"
         "&state=" + ("a1B2c3D4" * 16),  # 128-char opaque state
     ),
+    # Superhuman Mail MCP OAuth + PKCE. Endpoint taken from Superhuman's own
+    # RFC 8414 metadata (authorization_servers -> mcp.auth.mail.superhuman.com,
+    # authorization_endpoint /oauth2/authorize). kiro-cli generates the opaque
+    # state and S256 code_challenge, identical in shape to the other MCP-server
+    # providers already in the builtin set.
+    (
+        "superhuman-mail-mcp",
+        "https://mcp.auth.mail.superhuman.com/oauth2/authorize"
+        "?client_id=sh_mcp_client_0123456789"
+        "&response_type=code"
+        "&redirect_uri=http%3A%2F%2F127.0.0.1%3A33418%2Fcallback"
+        "&scope=mcp"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256"
+        "&state=" + ("Kp7mQ2xR" * 12),  # 96-char opaque state
+    ),
 ]
 
 # Consent URLs that the ACP banner-safety gate

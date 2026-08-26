@@ -8122,6 +8122,7 @@ _OAUTH_AUTHORIZATION_ENDPOINTS: frozenset[tuple[str, str]] = frozenset(
         # MCP authorization server here too.
         ("access.stripe.com", "/mcp/oauth2/authorize"),
         ("gitlab.com", "/oauth/authorize"),
+        ("mcp.auth.mail.superhuman.com", "/oauth2/authorize"),
         ("mcp.linear.app", "/authorize"),
         ("mcp.notion.com", "/authorize"),
         ("vercel.com", "/oauth/authorize"),
