@@ -92,6 +92,23 @@ logger = logging.getLogger(__name__)
 #: point can silently drift to a different limit.
 MAX_LIVE_SLOTS = 500
 
+#: The most live slots ONE creator may hold, as a sub-ceiling under
+#: :data:`MAX_LIVE_SLOTS`. The global ceiling alone bounds the total but not the
+#: distribution, so a single automated creator working through a nudge loop can
+#: reach 500 on its own and every later create -- including the person opening a
+#: new chat tab -- gets the 429. That is the availability half of the cap: a
+#: bounded resource that one caller may exhaust entirely is not bounded from
+#: anybody else's point of view.
+#:
+#: Deliberately far above real use and far below the global ceiling: a decomposed
+#: goal runs on the order of ten concurrent sessions, so 50 never binds honest
+#: work, while 450 slots stay reachable by everyone else no matter what one
+#: caller does. Enforced in ``session_control.create_session``, which is the only
+#: entry point that creates on some OTHER caller's behalf; a person's own new tab
+#: and a fork are attributed to nobody and so are bounded by the global ceiling
+#: alone.
+MAX_SLOTS_PER_CREATOR = 50
+
 #: Return type of a mutate_folders callback.
 _T = TypeVar("_T")
 
@@ -2664,6 +2681,7 @@ class _ChatSlot:
         "_summary_turn_mark",
         "_detail_render_lock",
         "_last_stop_reason",
+        "_created_by",
         "_artifact",
         "_channel_folder_filed",
         "_resumed_count",
@@ -2876,6 +2894,11 @@ class _ChatSlot:
         # finish, and deriving anything from it would describe work that was
         # interrupted mid-flight as if it had concluded.
         self._last_stop_reason: str = ""
+        #: The resolved slot key of the caller that asked for this session via the
+        #: session-control create verb, or "" for a slot nobody asked for -- a
+        #: person's own tab, a fork, a restore. Read by
+        #: ``DashboardState.creator_slot_count`` for ``MAX_SLOTS_PER_CREATOR``.
+        self._created_by: str = ""
         # Artifact companion binding: set when this slot is a
         # companion chat session for an artifact (slug). At most one
         # non-archived slot per slug by convention — the frontend flow
@@ -6936,6 +6959,26 @@ class DashboardState:
         each slip past a cap that is already full.
         """
         return len(self._slots) + len(self._slots_under_construction)
+
+    def creator_slot_count(self, creator_key: str) -> int:
+        """Live slots that *creator_key* asked for, for :data:`MAX_SLOTS_PER_CREATOR`.
+
+        Counts only slots carrying the attribution ``create_session`` writes, so a
+        person's own tab and a fork -- which name no creator -- are never charged to
+        anyone and stay bounded by :data:`MAX_LIVE_SLOTS` alone.
+
+        Unlike :meth:`live_slot_count` this does NOT add the under-construction set:
+        attribution is written just after the slot is minted, with no suspension
+        between the caller's cap test and that write, so a slot mid-construction has
+        no creator to compare and adding the set would charge one caller for
+        another's in-flight create. An empty ``creator_key`` counts nothing rather
+        than matching every unattributed slot.
+        """
+        if not creator_key:
+            return 0
+        return sum(
+            1 for slot in self._slots.values() if getattr(slot, "_created_by", "") == creator_key
+        )
 
     def begin_slot_construction(self, key: str) -> None:
         """Mark *key* as allocated-but-unpublished.

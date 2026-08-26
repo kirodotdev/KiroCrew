@@ -4423,6 +4423,103 @@ in-flight item, which you handle immediately.
 """
 
 
+#: The dashboard verbs the conductor may call WITHOUT an approval prompt, named one
+#: by one rather than as the whole ``@kirocrew-dashboard`` server.
+#:
+#: THE INVARIANT, so a later reader extends this by rule and not by taste. A
+#: granted verb must satisfy BOTH halves:
+#:
+#: 1. It may CREATE something new or READ. It may never MUTATE user-visible
+#:    workspace state that already exists and is not the conductor's own — a
+#:    session's contents or liveness, or the arrangement the person made of their
+#:    sessions and folders.
+#: 2. Its worst case, called in a loop, must be BOUNDED BY THE SERVER — and
+#:    bounded so the resource stays reachable by everyone else.
+#:
+#: The conductor ingests untrusted text by design — its charter's worked example is
+#: "resolve this repo's open issues", and it holds ``web_fetch`` for exactly that —
+#: so every granted verb is reachable by content it read, with no human in the loop
+#: on a nudge-driven patrol cycle. Per-call approval was the only thing
+#: rate-limiting a granted verb, and ``allowedTools`` has no argument or rate
+#: matching to replace it, so the bound cannot live in this list: it has to live in
+#: the endpoint. Half 2 is not a restatement of half 1 — an unbounded create is how
+#: a create does damage without mutating anything.
+#:
+#: Half 1 names user-visible workspace state deliberately, rather than "any
+#: pre-existing resource", because a create ALWAYS writes some shared bookkeeping —
+#: the slot table, the folder index, the session-pulse counter below — and a literal
+#: reading would forbid every create and decide nothing. What it protects is state
+#: the person arranged and would have to reconstruct by hand. Creation is otherwise
+#: recoverable clutter; mutation of what the user arranged is not.
+#:
+#: Both granted creation verbs earn half 2 from a server ceiling, and BOTH ceilings
+#: were added by this change — neither verb was safe to auto-approve as the code
+#: stood:
+#:
+#: * ``chat_folder_create`` had no bound at all, so a loop grew durable on-disk
+#:   state without limit. Now ``MAX_CHAT_FOLDERS``, tested under the folder lock.
+#: * ``session_create`` had a GLOBAL ceiling (``MAX_LIVE_SLOTS``) but no
+#:   distribution: one caller could hold all 500, and every later create — the
+#:   person opening a chat tab included — got the 429. A bounded resource that one
+#:   caller can exhaust is not bounded from anybody else's point of view. Now
+#:   ``MAX_SLOTS_PER_CREATOR`` bounds what a single caller holds, leaving 450 slots
+#:   reachable no matter what the conductor does.
+#:
+#: Every verb this server exposes, against that rule:
+#:
+#: * ``chat_folder_tree`` — READ of the caller's visible tree. GRANTED.
+#: * ``chat_folder_create`` — creates a NEW folder, and
+#:   ``_refuse_tree_shaping_if_unverifiable`` refuses an unverifiable caller and
+#:   keeps an app agent out of the person's own folders. Touches nothing that
+#:   already existed, and bounded by ``MAX_CHAT_FOLDERS``. GRANTED.
+#: * ``session_create`` — creates a NEW session in the caller's workspace, bounded
+#:   both globally (``MAX_LIVE_SLOTS``, 429 on breach) and per caller
+#:   (``MAX_SLOTS_PER_CREATOR``), and visible in the sidebar. GRANTED.
+#:   One known side effect, recorded because it is the closest thing to an
+#:   exception here: ``create_session`` mints its slot with
+#:   ``origin=SlotOrigin.USER`` (it is a first-class user-owned session, which is
+#:   what keeps it correctly private), and ``get_or_create_slot`` increments the
+#:   session-pulse counter on exactly that origin — so conductor-created sessions
+#:   count toward the feedback survey's "10 genuine user chats" window. That is a
+#:   pre-existing conflation in the counter, not something this grant introduces:
+#:   the counter uses the ownership tag as a proxy for "a person started a chat",
+#:   and it miscounts for every caller of the session-control create verb. Filed
+#:   as issue #6139 rather than point-fixed here, because the correct fix is a
+#:   fail-open/fail-closed decision about which call sites opt in, inside the
+#:   session-pulse surface. Consequence if it drifts: a survey prompt appears
+#:   earlier than the product intended. No workspace state is altered.
+#: * ``session_read_message`` — read-only, and the verb the patrol loop actually
+#:   needs on a cycle with nobody at the keyboard. GRANTED.
+#: * ``chat_folder_move_session`` — WITHHELD. It writes another session's
+#:   ``folder_id``: the PATCH goes to ``/api/chat/slots/<target>/folder`` where the
+#:   target is the session named in the ARGUMENTS, and the strictly-resolved
+#:   caller key is only the authority header. ``mcp_dashboard`` calls it "the one
+#:   tool here that writes to a session OTHER than the caller's". Auto-approving it
+#:   would let ingested content silently refile or unfile any persistent
+#:   same-workspace session, losing filing the user did by hand.
+#: * ``chat_folder_move`` — WITHHELD. Reparents an existing folder tree, and no
+#:   conductor step needs it.
+#: * ``session_send`` — WITHHELD. Runs text as another session's user-role turn
+#:   under that target's own grants. The server-side gates bound WHICH target is
+#:   reachable; nothing bounds WHAT is sent.
+#: * ``session_stop`` — WITHHELD. Ends another session's in-flight turn and
+#:   DISCARDS its work (``stop_target``: "A first call cancels cooperatively;
+#:   calling again while that is pending escalates to a hard kill").
+#:
+#: Every withheld verb stays MOUNTED (``@kirocrew-dashboard`` is still in
+#: ``tools``) — it just passes through ``hooks.on_tool_call`` like any ungranted
+#: tool. The cost is an approval when a round files a session, seeds a child, or
+#: stops one; all three happen right after a human approved the plan, while the
+#: unattended patrol cycle needs none of them. Issue #6118 (a ``folder`` argument
+#: on ``session_create``) would remove the filing call altogether.
+_CONDUCTOR_DASHBOARD_GRANTS: tuple[str, ...] = (
+    "@kirocrew-dashboard/chat_folder_tree",
+    "@kirocrew-dashboard/chat_folder_create",
+    "@kirocrew-dashboard/session_create",
+    "@kirocrew-dashboard/session_read_message",
+)
+
+
 def _install_conductor_agent() -> None:
     """Generate and install the kirocrew-conductor agent config.
 
@@ -4438,11 +4535,28 @@ def _install_conductor_agent() -> None:
     the explicit per-agent assignment that set requires — it is deliberately
     absent from the default agent's spec.
 
-    ``@kirocrew-dashboard`` is NOT added to ``allowedTools``: its calls must
-    keep passing through ``hooks.on_tool_call`` where the deny floor and
-    governance ceiling apply, so every session-control call prompts. Neither is
-    ``execute_bash``, for the same reason — the evaluator run prompts too, which
-    is what actually bounds what an acceptance spec can execute.
+    ``@kirocrew-dashboard`` is MOUNTED whole but auto-approved only verb by verb,
+    via ``_CONDUCTOR_DASHBOARD_GRANTS`` (see its comment for the per-verb
+    reasoning). Both backends honour a per-tool reference, so the narrowing is
+    real rather than cosmetic: kiro-cli's ``is_tool_in_allowlist`` checks
+    ``@server`` and then ``@server/<tool>``, and ``allowed_tools_to_permissions``
+    maps the same entry to an exact KAS ``server/tool`` resource match.
+
+    The line the split follows is stated as an invariant on that tuple, not as a
+    taste call: a granted verb may CREATE or READ, never MUTATE something that
+    already exists and is not the conductor's own. Reads and creates are granted
+    because the patrol loop is nudge-driven and must not block on an approval
+    nobody is there to give. ``session_stop`` (discards a peer's in-flight turn),
+    ``session_send`` (runs text as a peer's turn) and ``chat_folder_move_session``
+    (writes a peer session's ``folder_id``) are withheld, because the conductor
+    ingests untrusted content by design and the server-side gates bound which
+    target is reachable, not what is done to it.
+
+    ``execute_bash`` is withheld for a different reason that is worth keeping
+    distinct: ``allowedTools`` is name-scoped with no argument matching, so
+    trusting the two bundled scripts cannot be told apart from trusting arbitrary
+    shell. There is no per-argument form of that grant the way there is a per-tool
+    form of the MCP one.
 
     The operating procedure ships as the ``goal-conductor`` builtin skill, NOT
     ``conductor``: that skill name is owned by the generated delegation skill
@@ -4490,7 +4604,7 @@ def _install_conductor_agent() -> None:
     # then applies the ceiling's per-tool rule with the real arguments.
     granted: list[str] = []
     withheld: list[str] = []
-    for ref in ("session", "report", "@kirocrew-core"):
+    for ref in ("session", "report", "@kirocrew-core", *_CONDUCTOR_DASHBOARD_GRANTS):
         (granted if _may_auto_approve(ref) else withheld).append(ref)
     config["allowedTools"] = granted
     if withheld:

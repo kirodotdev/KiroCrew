@@ -63,13 +63,15 @@ class TestConductorInstaller:
         assert data["name"] == "kirocrew-conductor"
         assert "work item" in data["prompt"]
 
-    def test_no_write_tool_and_dashboard_not_preapproved(self, tmp_path, monkeypatch):
-        """The two deliberate security properties of the spec.
+    def test_no_write_tool_and_shell_not_preapproved(self, tmp_path, monkeypatch):
+        """The security properties of the spec, in one place.
 
         No ``fs_write``: the conductor cannot do a work item's work itself.
-        ``@kirocrew-dashboard`` and ``execute_bash`` reachable but NOT in
-        ``allowedTools``: their calls must keep passing through the tool-call
-        hook where the deny floor and governance ceiling apply.
+        ``@kirocrew-dashboard`` is MOUNTED whole but never granted whole — the
+        auto-approve list names verbs, so the destructive ones keep prompting.
+        ``execute_bash`` is mounted and never granted, because ``allowedTools``
+        has no argument matching and trusting the two bundled scripts cannot be
+        told apart from trusting arbitrary shell.
         """
         data = self._install(tmp_path, monkeypatch)
         assert "fs_write" not in data["tools"]
@@ -77,6 +79,60 @@ class TestConductorInstaller:
         assert "@kirocrew-dashboard" not in data["allowedTools"]
         assert "execute_bash" in data["tools"]
         assert "execute_bash" not in data["allowedTools"]
+
+    def test_only_create_and_read_verbs_are_auto_approved(self, tmp_path, monkeypatch):
+        """The grant invariant: create or read, never mutate someone else's thing.
+
+        Every auto-approved verb is reachable by content the conductor ingested
+        (its charter reads issue text; it holds ``web_fetch`` for that), with no
+        human in the loop on a nudge-driven cycle. So a granted verb may make a
+        NEW folder or session, or read — never write a resource the user already
+        arranged, because that destroys state no prompt asked about.
+
+        Pinned as literal names rather than by importing the tuple: the point is
+        that WIDENING the tuple fails a test, which a tautological assertion
+        against the tuple itself could never catch. Each withheld verb below is
+        withheld for a reason recorded next to it in ``agent.py``:
+        ``chat_folder_move_session`` PATCHes another session's ``folder_id``
+        (target comes from the arguments, not the caller), ``session_send`` runs
+        text as a peer's turn, ``session_stop`` discards a peer's in-flight work,
+        and ``chat_folder_move`` reparents an existing tree.
+        """
+        granted = self._install(tmp_path, monkeypatch)["allowedTools"]
+        for verb in (
+            "chat_folder_move_session",
+            "chat_folder_move",
+            "session_send",
+            "session_stop",
+        ):
+            assert f"@kirocrew-dashboard/{verb}" not in granted, verb
+        for verb in (
+            "chat_folder_tree",
+            "chat_folder_create",
+            "session_create",
+            "session_read_message",
+        ):
+            assert f"@kirocrew-dashboard/{verb}" in granted, verb
+
+    def test_no_dashboard_verb_is_granted_outside_the_named_set(self, tmp_path, monkeypatch):
+        """Nothing reaches ``allowedTools`` that the audit above did not rule on.
+
+        Guards the gap the per-verb lists cannot: a NEW tool added to the
+        dashboard server, or a stray entry added to the grant tuple, would
+        otherwise be auto-approved without anyone deciding it should be. The
+        expected set is spelled out so adding a grant is a deliberate edit here.
+        """
+        granted = self._install(tmp_path, monkeypatch)["allowedTools"]
+        dashboard = {g for g in granted if g.startswith("@kirocrew-dashboard")}
+        assert dashboard == {
+            "@kirocrew-dashboard/chat_folder_tree",
+            "@kirocrew-dashboard/chat_folder_create",
+            "@kirocrew-dashboard/session_create",
+            "@kirocrew-dashboard/session_read_message",
+        }
+        # The bare server must never appear: it would grant every verb, including
+        # the four the test above withholds.
+        assert "@kirocrew-dashboard" not in granted
 
     def test_mounts_no_tool_the_charter_never_names(self, tmp_path, monkeypatch):
         """An unused grant is surface the charter cannot account for.
@@ -160,26 +216,63 @@ class TestConductorInstaller:
         )
         assert "@kirocrew-core" in data["tools"]
         assert "@kirocrew-core" not in data["allowedTools"]
-        assert data["allowedTools"] == ["session", "report"]
+        assert data["allowedTools"] == [
+            "session",
+            "report",
+            "@kirocrew-dashboard/chat_folder_tree",
+            "@kirocrew-dashboard/chat_folder_create",
+            "@kirocrew-dashboard/session_create",
+            "@kirocrew-dashboard/session_read_message",
+        ]
 
     def test_kas_permissions_are_derived_from_the_filtered_grants(self, tmp_path, monkeypatch):
         """The KAS block is derived, not restated — so the ceiling reaches it too.
 
-        Ungoverned: the ``@kirocrew-core`` grant projects to an ``mcp`` allow
-        rule. Governed: the grant is gone, so the rule is too — and the key is
-        still present, because its mere presence is what makes KAS load the spec.
+        Ungoverned: the per-tool dashboard grants project to EXACT ``server/tool``
+        resources rather than a ``kirocrew-dashboard/*`` wildcard, which is what
+        makes the narrowing real on the KAS backend as well as on kiro-cli — a
+        wildcard here would re-grant the ``session_stop`` / ``session_send`` that
+        ``allowedTools`` deliberately withholds. Governed against
+        ``@kirocrew-core``: that pattern is gone while the dashboard ones survive,
+        which is the property a rule list restated as a literal would have lost.
         """
+        dashboard_resources = [
+            "kirocrew-dashboard/chat_folder_create",
+            "kirocrew-dashboard/chat_folder_tree",
+            "kirocrew-dashboard/session_create",
+            "kirocrew-dashboard/session_read_message",
+        ]
         data = self._install(tmp_path, monkeypatch)
         assert data["permissions"] == {
-            "rules": [{"capability": "mcp", "match": ["kirocrew-core/*"], "effect": "allow"}]
+            "rules": [
+                {
+                    "capability": "mcp",
+                    "match": ["kirocrew-core/*", *dashboard_resources],
+                    "effect": "allow",
+                }
+            ]
         }
+        assert "kirocrew-dashboard/*" not in data["permissions"]["rules"][0]["match"]
 
         governed = self._install(
             tmp_path,
             monkeypatch,
             may_auto_approve=lambda ref: ref != "@kirocrew-core",
         )
-        assert governed["permissions"] == {"rules": []}
+        assert governed["permissions"] == {
+            "rules": [{"capability": "mcp", "match": dashboard_resources, "effect": "allow"}]
+        }
+
+    def test_a_fully_governed_host_still_emits_the_permissions_key(self, tmp_path, monkeypatch):
+        """``{"rules": []}`` when nothing qualifies — the key's PRESENCE loads the spec.
+
+        Split from the test above once the dashboard grant meant a ceiling on
+        ``@kirocrew-core`` alone no longer empties the rule list: without this,
+        the empty-policy branch would have silently lost its coverage.
+        """
+        data = self._install(tmp_path, monkeypatch, may_auto_approve=lambda ref: False)
+        assert data["permissions"] == {"rules": []}
+        assert data["allowedTools"] == []
 
     def test_withholding_a_grant_is_audit_logged(self, tmp_path, monkeypatch):
         """A withheld grant is a permission DECISION and must leave a record.
@@ -225,7 +318,63 @@ class TestConductorInstaller:
         data = self._install(
             tmp_path, monkeypatch, may_auto_approve=lambda ref: ref != "@kirocrew-core"
         )
-        assert data["allowedTools"] == ["session", "report"]
+        assert data["allowedTools"] == [
+            "session",
+            "report",
+            "@kirocrew-dashboard/chat_folder_tree",
+            "@kirocrew-dashboard/chat_folder_create",
+            "@kirocrew-dashboard/session_create",
+            "@kirocrew-dashboard/session_read_message",
+        ]
+
+    def test_skill_gates_the_plan_once_instead_of_interrogating(self):
+        """Round 0 must be ONE plan message, not a round of questions.
+
+        The first live run opened with a clarification round: the previous
+        wording ("restate the plan, wait for the user") left room for one ahead
+        of the plan, and every question spent there is latency on work the
+        conductor could have assumed and let the user correct. Pinned as a doc
+        ratchet because the instruction, not the code, is what would drift.
+        """
+        text = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+        # What the conductor can settle itself is an assumption, not a question.
+        assert "Decide, do not ask" in text
+        assert "Assumptions" in text
+        # And a goal that already authorizes execution must not be re-gated.
+        assert "Skip the gate when the user already gave one" in text
+
+    def test_skill_requires_the_goal_folder_before_the_first_session(self):
+        """Folder creation is a round-level PRECONDITION, not a per-item step.
+
+        ``session_create`` has no ``folder`` argument, so filing a session is a
+        separate call — and when the instruction sat inside the per-item loop
+        worded "once per goal (skip if it exists)" the first live run dropped it
+        and every dispatched session landed loose at the sidebar's top level,
+        with nothing tying it to the goal it belongs to.
+        """
+        text = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+        assert "Before the round: the goal's folder must exist" in text
+        # The create must be named as a defect, not merely discouraged, and the
+        # failure path must stop rather than dispatch into no folder.
+        assert "before its folder exists is a defect" in text
+        # Creating the folder is not sufficient on its own: the user can delete
+        # it mid-round, so a FAILED move must stop the item before the seed —
+        # otherwise the session is both unfiled and already doing work, which is
+        # strictly worse than the outcome the precondition exists to prevent.
+        assert "If the move\n   fails, stop this item before the seed" in text
+
+    def test_skill_states_the_real_approval_cost(self):
+        """The cost note must match the spec, or patrol plans for wrong prompts.
+
+        The granted verbs run silently while `session_send` / `session_stop` and
+        the bundled scripts prompt, so a skill that claimed either "everything
+        prompts" or "nothing prompts" would have the conductor sizing its nudge
+        interval around approvals it does not pay — or walking into ones it does.
+        """
+        text = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+        assert "Reads and creates do not prompt" in text
+        assert "`chat_folder_move_session`,\n  `session_send` and `session_stop`" in text
+        assert "accept_eval.py` invocation" in text
 
     def test_skill_documents_artifacts_as_a_string_map(self):
         """The ledger's ``artifacts`` values MUST be JSON-serialized strings.

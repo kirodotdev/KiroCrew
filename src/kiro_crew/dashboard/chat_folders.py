@@ -14,6 +14,7 @@ from aiohttp import web
 
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_utils import effective_session_key
+from kiro_crew.dashboard.create_rate_limit import FOLDER_CREATE, allow_create
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.token_auth import caller_names_a_missing_slot, derive_caller_app
 from kiro_crew.executors import subprocess_executor
@@ -23,6 +24,19 @@ from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exf
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
+
+#: The ceiling on chat folders, the folder-tree counterpart to
+#: :data:`~kiro_crew.dashboard.state.MAX_LIVE_SLOTS`. Folder creation had no bound
+#: at all: every other create path in the dashboard tests a ceiling, so an
+#: automated caller looping on this one was the single way to grow durable
+#: on-disk state without limit.
+#:
+#: Chosen to sit far above any hand-built tree -- a person organizing chats works
+#: in tens of folders, not hundreds -- so the only thing that ever reaches it is a
+#: runaway loop. Tested under ``mutate_folders``, not before it: the count is only
+#: authoritative while the lock is held, which is the same reason the parent is
+#: re-checked and ``order`` recounted there.
+MAX_CHAT_FOLDERS = 500
 
 _folder_icon_lock = LoopBoundLock()
 
@@ -389,6 +403,29 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     if (refusal := _refuse_unattributable_caller(state, request)) is not None:
         return refusal
+    # Rate-limit INTERNAL callers only. This endpoint is mixed-path: the browser's
+    # own "new folder" control posts here too, and a person organizing their chats
+    # can legitimately create a dozen in one sitting, so throttling them would be a
+    # regression with no security value. The threat is an automated loop on an
+    # auto-approved verb, and `_audit_origin` already tells the two apart -- a
+    # request without the internal secret is the browser.
+    #
+    # Keyed on the VALIDATED caller name, not the session key. The session key would
+    # give finer granularity but is partly caller-supplied:
+    # `_refuse_unattributable_caller` only refuses a `dashboard:` key naming a dead
+    # slot, so a caller could present rotating non-dashboard keys and earn a fresh
+    # budget for each. The caller name is checked against `_KNOWN_INTERNAL_CALLERS`,
+    # so it cannot be varied to escape the bucket. The cost is that internal callers
+    # share one folder budget, which is acceptable when a goal needs exactly one.
+    rl_source, rl_caller = _audit_origin(request)
+    if rl_source != "dashboard" and not allow_create(FOLDER_CREATE, rl_caller):
+        return web.json_response(
+            {
+                "error": "too many folders created recently; retry shortly",
+                "code": "create_rate_limited",
+            },
+            status=429,
+        )
     try:
         body = await request.json()
     except Exception:
@@ -441,6 +478,12 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
         parent = next((f for f in folders if f["id"] == parent_id), None) if parent_id else None
         if parent_id and parent is None:
             return False, "parent_not_found"
+        # The ceiling is tested here, under the lock, for the same reason the parent
+        # is re-checked here: `len(folders)` is only authoritative while the lock is
+        # held, so a pre-lock test lets concurrent creators each pass a cap that is
+        # already full.
+        if len(folders) >= MAX_CHAT_FOLDERS:
+            return False, "folder_cap_reached"
         # Nesting into a folder writes to THAT folder's child list, so an app may
         # only nest under one of its own. The top level is not a folder row and
         # so has no owner to violate — that is where an app's own tree starts.
@@ -453,6 +496,14 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
         return True, ""
 
     create_err = await state.mutate_folders(_append)
+    if create_err == "folder_cap_reached":
+        return web.json_response(
+            {
+                "error": f"folder cap reached ({MAX_CHAT_FOLDERS})",
+                "code": "folder_cap_reached",
+            },
+            status=429,
+        )
     if create_err == "parent_not_found":
         # The parent was deleted while this request waited for the lock.
         return web.json_response(

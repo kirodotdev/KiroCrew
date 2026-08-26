@@ -1962,6 +1962,78 @@ def test_the_slot_cap_is_re_checked_after_the_await(tmp_path, monkeypatch):
     assert err.value.code == "slot_cap_reached"
 
 
+def test_a_created_slot_records_the_caller_that_asked_for_it(tmp_path, monkeypatch):
+    """Attribution is what makes the per-creator ceiling countable at all.
+
+    Mutation guard: drop the ``_created_by`` write and every caller's count stays
+    0, so ``MAX_SLOTS_PER_CREATOR`` can never be reached and the cap is decorative.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    caller.agent = "researcher"
+    _agent_resolves(monkeypatch, "default")
+
+    created = asyncio.run(sc.create_session(state, caller_session_key=_key(caller)))
+
+    child = state.get_slot(created["target"])
+    assert child is not None
+    # The resolved slot key, which is the identity `create_session` also audits --
+    # not the history key the caller presents. Write and count must agree, or the
+    # ceiling silently never binds.
+    assert getattr(child, "_created_by", "") == caller.key
+    assert state.creator_slot_count(caller.key) == 1
+
+
+def test_one_caller_cannot_consume_everybody_elses_slots(tmp_path, monkeypatch):
+    """The per-creator ceiling bounds the DISTRIBUTION, not just the total.
+
+    The global cap alone leaves an automated creator on a nudge loop able to hold
+    all ``MAX_LIVE_SLOTS`` itself, after which every later create -- the person
+    opening a new chat tab included -- gets the 429. A resource one caller can
+    exhaust is not bounded from anybody else's point of view, so this is the half
+    of the bound that keeps the verb safe to auto-approve.
+
+    Mutation guard: test the caller's count against ``MAX_LIVE_SLOTS`` instead of
+    ``MAX_SLOTS_PER_CREATOR`` and the first assertion stops refusing.
+    """
+    state = _make_state(tmp_path)
+    hog = _slot(state, "chat-hog")
+    hog.agent = "researcher"
+    other = _slot(state, "chat-other")
+    other.agent = "researcher"
+    _agent_resolves(monkeypatch, "default")
+
+    # Exactly what create_session writes, without paying for 50 real creates.
+    for i in range(sc.MAX_SLOTS_PER_CREATOR):
+        _slot(state, f"held-{i}")._created_by = hog.key
+
+    with pytest.raises(sc.SessionControlError) as err:
+        asyncio.run(sc.create_session(state, caller_session_key=_key(hog)))
+    assert err.value.code == "creator_slot_cap_reached"
+    assert err.value.status == 429, "a cap breach is a 429, not a 500"
+
+    # The global ceiling is nowhere near full, which is the point: the refusal came
+    # from this caller's own share, and everyone else still has room.
+    assert state.live_slot_count() < sc.MAX_LIVE_SLOTS
+    created = asyncio.run(sc.create_session(state, caller_session_key=_key(other)))
+    assert created["ok"] is True, "one caller's full share must not starve another"
+
+
+def test_slots_nobody_asked_for_are_charged_to_nobody(tmp_path):
+    """A person's own tab and a fork reach ``get_or_create_slot`` unattributed.
+
+    Two failure modes this pins at once: charging those to a caller would let
+    ordinary human use burn an automated caller's budget, and counting an empty
+    creator key would make every unattributed slot match at once -- so the first
+    ``create_session`` call would refuse on a tree the conductor never touched.
+    """
+    state = _make_state(tmp_path)
+    person = _slot(state, "chat-person")
+
+    assert state.creator_slot_count("") == 0, "an empty key must match nothing"
+    assert state.creator_slot_count(person.key) == 0
+
+
 def test_creation_never_loads_the_config_on_the_event_loop():
     """A cache miss reads and validates the config file, stalling every task.
 

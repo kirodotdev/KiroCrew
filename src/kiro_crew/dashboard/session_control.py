@@ -42,7 +42,8 @@ from kiro_crew.config.loader import (
 from kiro_crew.dashboard.chat_delivery import sanitize_outbound
 from kiro_crew.dashboard.chat_persistence import _TRANSIENT_ROLES as _PERSISTENCE_TRANSIENT_ROLES
 from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
-from kiro_crew.dashboard.state import MAX_LIVE_SLOTS, SlotOrigin
+from kiro_crew.dashboard.create_rate_limit import SESSION_CREATE, allow_create
+from kiro_crew.dashboard.state import MAX_LIVE_SLOTS, MAX_SLOTS_PER_CREATOR, SlotOrigin
 from kiro_crew.history import metadata_now_iso, transcript_stem
 from kiro_crew.security import redact, redact_and_truncate
 from kiro_crew.sel import sel
@@ -766,10 +767,35 @@ async def create_session(
             code="caller_workspace_changed",
         )
     _refuse_ineligible_creator(state, live_caller)
+    # The RATE guard, ahead of the capacity ceilings below. Those bound how many
+    # sessions can exist; this bounds how fast one caller may open them, which is
+    # the property an auto-approved verb loses -- a waived prompt leaves a loop
+    # nothing to push back on. Deliberately the control that needs no durable
+    # state: a lifetime quota means nothing across a restart unless every
+    # rehydrate path carries its attribution, while a five-minute window buys a
+    # restart one window rather than a clean slate.
+    if not allow_create(SESSION_CREATE, caller_key):
+        raise SessionControlError(
+            "too many sessions created recently; retry shortly",
+            code="create_rate_limited",
+            status=429,
+        )
     if state.live_slot_count() >= MAX_LIVE_SLOTS:
         raise SessionControlError(
             f"slot cap reached ({MAX_LIVE_SLOTS})",
             code="slot_cap_reached",
+            status=429,
+        )
+    # Then the per-creator sub-ceiling. The global cap above bounds the TOTAL but
+    # not the distribution, so without this one caller can hold all 500 and the
+    # person's own next chat tab gets the 429 -- the resource is bounded, but not
+    # from anyone else's point of view. This is the bound that makes the verb safe
+    # to auto-approve: the worst case of an automated creator looping on it is its
+    # own 50 slots, not everyone's 500.
+    if state.creator_slot_count(caller_key) >= MAX_SLOTS_PER_CREATOR:
+        raise SessionControlError(
+            f"per-caller slot cap reached ({MAX_SLOTS_PER_CREATOR})",
+            code="creator_slot_cap_reached",
             status=429,
         )
 
@@ -780,6 +806,15 @@ async def create_session(
     slot = state.get_or_create_slot(
         None, agent=agent_name, workspace=workspace, origin=SlotOrigin.USER
     )
+    # Attribute the slot to the caller that asked for it, which is what makes the
+    # per-creator ceiling above countable. Written here, inside the synchronous
+    # window that follows the mint, so no suspension point separates the cap test
+    # from this write -- otherwise two concurrent creates could both pass a ceiling
+    # that one of them had already filled. Only this entry point sets it: a
+    # person's own tab and a fork reach `get_or_create_slot` directly and stay
+    # unattributed, so ordinary human use never consumes an automated caller's
+    # share.
+    slot._created_by = caller_key
     # cwd must follow the workspace too, or file search and project-scoped agents
     # resolve against a directory the slot does not claim -- the same
     # authorization-vs-execution split as the agent binding, one layer down.

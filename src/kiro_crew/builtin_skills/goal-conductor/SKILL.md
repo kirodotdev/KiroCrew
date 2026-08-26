@@ -65,11 +65,28 @@ Worked example — goal "resolve this repo's open issues":
 
 ## The loop
 
-### Round 0 — agree the plan
+### Round 0 — one plan, one gate
 
-Restate the goal, list the work items with their acceptance conditions, and say
-how many you will run per round. Wait for the user. Do not dispatch on a plan
-they have not seen.
+Your FIRST reply to a goal is the plan itself — never a round of questions.
+Restate the goal, list the work items with their acceptance conditions, name the
+concurrency, and list your assumptions as **Assumptions** the user can correct
+in the same breath. Then stop and wait for exactly one go-ahead.
+
+**Decide, do not ask.** Anything you can settle yourself is an assumption, not a
+question: which repo, how many items per round, which crew, how to phrase an
+acceptance condition, what to do about an ambiguous candidate. Pick the sensible
+default, write it under Assumptions, and let the user overrule it. A question is
+warranted only when a wrong guess is unrecoverable AND no default exists —
+credentials, spend, deleting or overwriting someone's work, or a goal so
+underspecified you cannot name a single work item. At most **one** such question,
+folded into the plan message, never a separate turn.
+
+**Skip the gate when the user already gave one.** If the goal message itself
+authorizes execution — "just do it", "go ahead", "don't ask me", a re-send of a
+plan you already showed — dispatch round 1 immediately and report the plan as
+part of that same turn. Do not re-ask for permission you already hold. Otherwise
+one confirmation is all you get: after the go-ahead, run rounds without
+re-gating each one.
 
 **Respect existing ownership signals during triage.** Other automation shares
 your work pool — Issue Radar crews label issues `claimed`, humans assign
@@ -81,11 +98,21 @@ beats more parallelism: every open item is a session the user may have to read.
 
 ### Dispatch a round
 
-For each item in the round:
+**Before the round: the goal's folder must exist.** Once per goal, ahead of the
+FIRST `session_create` you ever make for it, call `chat_folder_tree` and then
+`chat_folder_create` for the goal if it is not already there. Keep the returned
+folder id — every session for this goal is filed there.
 
-1. `chat_folder_create` once per goal (skip if it exists) so every session for
-   this goal lands in one place.
-2. `session_create` with a title that says what the item is FOR, and `agent` set
+`session_create` has no `folder` argument, so filing is a separate call and
+therefore easy to skip. Do not skip it. **A `session_create` for this goal
+before its folder exists is a defect, not a shortcut**: the sessions land loose
+at the sidebar's top level, the user cannot tell which goal they belong to, and
+there is no grouping to clean up by when the goal ends. If `chat_folder_create`
+fails, say so and stop — do not dispatch into no folder.
+
+Then for each item in the round:
+
+1. `session_create` with a title that says what the item is FOR, and `agent` set
    to the crew that fits. Call `select_crew` first and pass the agent it names —
    the matched crew when the item is clearly a specialist's job, otherwise the
    `default_agent` it returns. **Do NOT leave `agent` unset to "inherit the
@@ -93,11 +120,18 @@ For each item in the round:
    spec deliberately has no `fs_write` — so the child could not write a file even
    though writing one is the work you dispatched it to do, and the item would
    look stalled rather than misconfigured.
-3. `chat_folder_move_session` to file the new session under the goal's folder.
-4. `session_send` the seed prompt into the new session — the item's goal, its
+2. `chat_folder_move_session` to file the new session under the goal's folder.
+   Do this immediately after the create, before the seed — an unfiled session
+   that then starts working is one the user has to hunt for. **If the move
+   fails, stop this item before the seed** and say so: the folder can be gone
+   by now even though you created it (the user can delete it mid-round), and
+   seeding anyway is exactly the unfiled-session outcome the precondition above
+   exists to prevent — except worse, because the session is now also doing work.
+   Recreate the folder and retry the move, or leave the item undispatched.
+3. `session_send` the seed prompt into the new session — the item's goal, its
    acceptance condition, and where to report. The seed is the item's whole
    contract: the child session gets no other context from you.
-5. `session_ledger_record` the item: its goal text, the round number, and — in
+4. `session_ledger_record` the item: its goal text, the round number, and — in
    `artifacts`, under an `item-<n>` key — the durable item entry carrying its
    acceptance spec, session key, round, status and read cursor. **Never
    hand-write the entry value: encode it with the bundled codec**
@@ -329,17 +363,23 @@ watches, and that cost grows with the loop's own history.
   defaults to OFF and fails closed — every session tool answers
   `session_control_disabled` until the user sets it to `true` in config.json.
   If you see that error, say which switch to flip; do not retry.
-- **Every dashboard tool call prompts for approval, and so does every bundled
-  script run.** That is deliberate: both `@kirocrew-dashboard` and `execute_bash`
-  are withheld from auto-approve so their calls still pass through the tool-call
-  hook where the deny floor and governance ceiling apply. The steady-state cost is
-  concrete and worth planning for: **each patrol cycle blocks on one approval for
-  the `accept_eval.py` invocation** plus one per codec call, and one per
-  session-control call in a dispatch round. Patrol is therefore
-  attended-unattended — the loop wakes itself, but a cycle that finds nobody at
-  the keyboard waits rather than proceeding. Size the nudge interval for that,
-  and prefer batched calls — one evaluator call per cycle carrying every open
-  item, one codec call per map-wide operation — over one call per item.
+- **Reads and creates do not prompt; anything that touches another session does.**
+  Auto-approved by name: `chat_folder_tree`, `chat_folder_create`,
+  `session_create`, `session_read_message` — so a patrol cycle that wakes on a
+  nudge with nobody at the keyboard never blocks. **`chat_folder_move_session`,
+  `session_send` and `session_stop` are deliberately NOT auto-approved**, because
+  each writes to a session that is not yours: filing rewrites another session's
+  folder, a seed runs as the target's own turn, and a stop discards the target's
+  in-flight work. You ingest external content by design, so the prompt is the only
+  call-time check on all three. Expect an approval per item at dispatch (one to
+  file it, one to seed it) and one if you ever stop an item — all of which happen
+  right after the user approved a plan, not mid-patrol. `execute_bash` also still
+  prompts, so **each patrol cycle blocks on one approval for the
+  `accept_eval.py` invocation** plus one per codec call. Size the nudge interval
+  for that, and batch: one evaluator call per cycle carrying every open item, one
+  codec call per map-wide operation. On a host with a governance ceiling even the
+  granted verbs prompt; if you see approvals where this says you should not, that
+  is why.
 - **`session_send` reports delivery, not completion.** `started: true` means the
   target began a turn on your message; `started: false` means it queued. Neither
   says the work succeeded — acceptance is still the domain assertion's job.
