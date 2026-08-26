@@ -1024,6 +1024,12 @@ async def api_tips_status(request: web.Request) -> web.Response:
     )
 
 
+# Cap on the `id` a feedback call may name. Tip ids are catalog- or
+# curated-authored slugs; the bound exists so an unbounded client string is
+# never carried into the persisted dismissal state.
+_TIP_ID_MAX_CHARS = 100
+
+
 async def api_tips_feedback(request: web.Request) -> web.Response:
     """POST /api/tips/feedback — record user feedback on a tip.
 
@@ -1047,19 +1053,41 @@ async def api_tips_feedback(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except ValueError:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response(
+            {"error": "invalid JSON", "code": "invalid_json"}, status=400
+        )
 
     if not isinstance(body, dict):
-        return web.json_response({"error": "body must be a JSON object"}, status=400)
+        return web.json_response(
+            {"error": "body must be a JSON object", "code": "body_not_object"},
+            status=400,
+        )
 
     tip_id = body.get("id", "")
     action = body.get("action", "")
-    if not isinstance(tip_id, str) or not isinstance(action, str) or len(tip_id) > 100:
-        return web.json_response({"error": "invalid fields"}, status=400)
+    if not isinstance(tip_id, str) or not isinstance(action, str):
+        return web.json_response(
+            {"error": "id and action must be strings", "code": "invalid_field_type"},
+            status=400,
+        )
+    # Split from the isinstance check above: a client fixes an oversized id by
+    # sending a shorter one, and a wrong type by sending a different type. A
+    # `code` is API surface that cannot be narrowed later, so the two refusals
+    # must not share one.
+    if len(tip_id) > _TIP_ID_MAX_CHARS:
+        return web.json_response(
+            {
+                "error": f"id exceeds {_TIP_ID_MAX_CHARS} characters",
+                "code": "tip_id_too_long",
+            },
+            status=400,
+        )
 
     valid_actions = ("shown", "ack", "dismiss", "snooze", "helpful", "optout", "optin")
     if action not in valid_actions:
-        return web.json_response({"error": "invalid action"}, status=400)
+        return web.json_response(
+            {"error": "invalid action", "code": "invalid_action"}, status=400
+        )
 
     now = time.time()
 

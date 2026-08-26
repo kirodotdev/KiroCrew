@@ -2083,3 +2083,118 @@ class TestRelinkedStateMigration:
         st = self._load(tmp_path, {"tips": [bad]})
         assert st.tips[0]["doc"] == ""
         assert st.tips[0]["doc_link"] == ""
+
+
+class TestFeedbackErrorCodes:
+    """Every refusal from ``POST /api/tips/feedback`` carries a machine-readable
+    ``code``, per the contract gate in ``test/test_error_code_contract.py``.
+
+    The prose stays where it is and keeps its meaning — it is demoted to
+    advisory, not removed — so an existing client that only reads ``error`` is
+    unaffected. What changes is that a client no longer has to match English to
+    tell "the body was not JSON" from "that action does not exist".
+    """
+
+    @staticmethod
+    async def _refuse(tmp_path: Path, raw: bytes) -> tuple[int, dict]:
+        """Drive the REAL handler with *raw* as the request body."""
+        import types
+        from unittest.mock import Mock
+
+        from aiohttp import streams
+        from aiohttp.test_utils import make_mocked_request
+
+        from kiro_crew.tips import TipsCache, api_tips_feedback
+
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            cache = TipsCache()
+            cache.state = TipsState()
+            state = types.SimpleNamespace(_tips_cache=cache)
+
+            payload = streams.StreamReader(Mock(_reading_paused=False), 2 ** 16,
+                                           loop=asyncio.get_event_loop())
+            payload.feed_data(raw)
+            payload.feed_eof()
+            req = make_mocked_request("POST", "/api/tips/feedback", payload=payload)
+            req.app["state"] = state
+            resp = await api_tips_feedback(req)
+            return resp.status, json.loads(resp.body)
+
+    @pytest.mark.asyncio
+    async def test_body_is_not_json(self, tmp_path: Path) -> None:
+        status, body = await self._refuse(tmp_path, b"not json at all")
+        assert status == 400
+        assert body["code"] == "invalid_json"
+
+    @pytest.mark.asyncio
+    async def test_body_is_json_but_not_an_object(self, tmp_path: Path) -> None:
+        status, body = await self._refuse(tmp_path, b'["id", "action"]')
+        assert status == 400
+        assert body["code"] == "body_not_object"
+
+    @pytest.mark.asyncio
+    async def test_non_string_id_is_a_type_refusal(self, tmp_path: Path) -> None:
+        status, body = await self._refuse(
+            tmp_path, json.dumps({"id": 7, "action": "ack"}).encode()
+        )
+        assert status == 400
+        assert body["code"] == "invalid_field_type"
+
+    @pytest.mark.asyncio
+    async def test_non_string_action_is_a_type_refusal(self, tmp_path: Path) -> None:
+        status, body = await self._refuse(
+            tmp_path, json.dumps({"id": "t", "action": ["ack"]}).encode()
+        )
+        assert status == 400
+        assert body["code"] == "invalid_field_type"
+
+    @pytest.mark.asyncio
+    async def test_oversized_id_is_a_length_refusal_not_a_type_refusal(
+        self, tmp_path: Path
+    ) -> None:
+        """The 100-char cap and the isinstance checks share one prose string on
+        main. They are different failures — the client fixes them differently —
+        so they must not share one code: a code is API surface that cannot be
+        narrowed later.
+        """
+        status, body = await self._refuse(
+            tmp_path, json.dumps({"id": "x" * 101, "action": "ack"}).encode()
+        )
+        assert status == 400
+        assert body["code"] == "tip_id_too_long"
+
+    @pytest.mark.asyncio
+    async def test_id_at_the_cap_is_accepted(self, tmp_path: Path) -> None:
+        """Boundary: 100 characters is still valid — the split must not move it."""
+        status, _ = await self._refuse(
+            tmp_path, json.dumps({"id": "x" * 100, "action": "helpful"}).encode()
+        )
+        assert status == 200
+
+    @pytest.mark.asyncio
+    async def test_unknown_action(self, tmp_path: Path) -> None:
+        status, body = await self._refuse(
+            tmp_path, json.dumps({"id": "t", "action": "explode"}).encode()
+        )
+        assert status == 400
+        assert body["code"] == "invalid_action"
+
+    @pytest.mark.asyncio
+    async def test_every_refusal_carries_both_a_code_and_its_prose(
+        self, tmp_path: Path
+    ) -> None:
+        """The ratchet for this file: no refusal path may regress to prose-only,
+        and none may drop the advisory text an existing client still reads.
+        """
+        for raw in (
+            b"not json at all",
+            b'["id", "action"]',
+            json.dumps({"id": 7, "action": "ack"}).encode(),
+            json.dumps({"id": "t", "action": ["ack"]}).encode(),
+            json.dumps({"id": "x" * 101, "action": "ack"}).encode(),
+            json.dumps({"id": "t", "action": "explode"}).encode(),
+        ):
+            status, body = await self._refuse(tmp_path, raw)
+            assert status == 400, raw
+            assert isinstance(body.get("code"), str) and body["code"], raw
+            assert isinstance(body.get("error"), str) and body["error"], raw
