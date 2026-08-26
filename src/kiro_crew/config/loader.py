@@ -5321,8 +5321,12 @@ class WatchdogConfig:
             "for long builds and MCP tools on macOS, where the liveness oracle "
             "degrades (no /proc) and cannot distinguish a live build from a stall, "
             "while still landing inside the turn's own ceiling "
-            "(agent.chat_turn_timeout_secs) so recovery is reachable. A window at or "
-            "past that ceiling is clamped at load with a warning.",
+            "(agent.chat_turn_timeout_secs) so recovery is reachable. Enforcement is "
+            "at handle construction, not config load: a window past the headroom "
+            "fraction of the transport's per-prompt timeout is clamped with a "
+            "warning, while one that merely exceeds agent.chat_turn_timeout_secs is "
+            "warned about but left as set, because the same handle also serves "
+            "callers that pass a larger prompt timeout (review and cron turns).",
         ),
     )
     tool_stall_hard_cap_secs: float = field(
@@ -5331,8 +5335,10 @@ class WatchdogConfig:
             "Hard cap (s)",
             "Absolute ceiling for UNKNOWN-verdict forbearance (e.g. the extended "
             "probably-thinking window). Applies ONLY to UNKNOWN verdicts — never "
-            "to a WORKING session. Default 1h, bounded by the turn ceiling like "
-            "the suspect window.",
+            "to a WORKING session, which is deferred before this cap is consulted "
+            "and is therefore bounded only by the turn's own ceiling. Default 1h, "
+            "clamped against the transport's per-prompt timeout like the suspect "
+            "window.",
         ),
     )
     model_silent_probe_secs: float = field(
