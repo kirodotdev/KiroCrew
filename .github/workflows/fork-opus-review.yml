@@ -163,6 +163,12 @@ jobs:
       # pull request (two PRs may share a commit), and completing that one would
       # publish a verdict computed from a different diff. The sweep matches on
       # this id, so it can only ever finish a run this pull request created.
+      #
+      # `details_url` carries this run's URL: a workflow_run-triggered run is
+      # keyed to the DEFAULT branch context, so this stamp is the only link
+      # from the PR head back to the lane run — the human-override handler
+      # reads it to re-run the lane, and a human clicking the check lands on
+      # the run logs instead of a bare check-run page.
       - name: Open check-run (in progress)
         id: check
         env:
@@ -175,6 +181,7 @@ jobs:
           id="$(gh api --method POST "repos/$REPO/check-runs" \
             -f name="Opus 4.8 Review" -f head_sha="$HEAD" -f status="in_progress" \
             -f external_id="opus-pr-$PR" \
+            -f details_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID" \
             --jq '.id')"
           echo "id=$id" >> "$GITHUB_OUTPUT"
 
@@ -489,9 +496,19 @@ jobs:
           if [ -n "${CHECK_ID:-}" ]; then
             complete "$CHECK_ID" "$conclusion" "$title" || true
           elif [ -n "${HEAD:-}" ]; then
+            # external_id makes this fallback check-run discoverable by the
+            # override handler's fork rerun lookup, same as the opening POST.
+            # PR can be empty in exactly this branch (HEAD has a workflow_run
+            # fallback, PR does not), and a malformed "opus-pr-" id would
+            # match nothing -- stamp it only when the PR is known.
+            ext_args=()
+            if [ -n "${PR:-}" ]; then
+              ext_args=(-f external_id="opus-pr-$PR")
+            fi
             gh api --method POST "repos/$REPO/check-runs" \
               -f name="Opus 4.8 Review" -f head_sha="$HEAD" \
-              -f status="completed" -f conclusion="failure" \
+              -f status="completed" -f conclusion="failure" "${ext_args[@]}" \
+              -f details_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID" \
               -f "output[title]=Opus 4.8 Review — could not run" \
               -f "output[summary]=The fork Opus review job failed before producing a verdict; re-run it." >/dev/null || true
           fi

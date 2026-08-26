@@ -138,6 +138,68 @@ class TestHumanOverrideHandler:
         assert 'rerun_reviewer "ux-review.yml"' in workflow
         assert 'rerun_reviewer "first-principles-review.yml"' in workflow
 
+    def test_rerun_resolves_fork_lane_runs_from_the_stamped_check_run(self) -> None:
+        # A fork PR's reviewers are the workflow_run-triggered Stage-2 lanes.
+        # Their run objects are keyed to the DEFAULT branch context (head_sha
+        # is main's tip, pull_requests is empty), so the same-repo lookup by
+        # PR head can never find them -- the rerun step must branch on the
+        # PR's head repo and read the lane's run id back from the details_url
+        # the lane stamps into its check-run on the PR head.
+        workflow = _workflow("ai-review-human-override.yml")
+        script = _step_script(workflow, "Re-run line reviewers with the human decision")
+
+        assert 'if [ "$IS_FORK" = "true" ]; then' in script
+        assert "check-runs?check_name=$enc" in script
+        assert 'select(.external_id == \\"$lane-pr-$PR\\")' in script
+        assert "sort_by(.started_at) | last" in script
+        # The resolved run must be verified to belong to the expected fork
+        # lane before anything is re-run: any workflow with checks:write
+        # could post a check-run of the same name.
+        assert '[ "$run_path" != ".github/workflows/$fork_workflow" ]' in script
+        for fork_lane in (
+            "fork-opus-review.yml",
+            "fork-gpt-review.yml",
+            "fork-design-review.yml",
+            "fork-ux-review.yml",
+            "fork-first-principles-review.yml",
+        ):
+            assert f'"{fork_lane}"' in script
+
+    def test_rerun_failure_is_a_warning_once_the_judgment_recorded(self) -> None:
+        # The judgment records in the step BEFORE the rerun. A rerun-lookup
+        # failure after that must not red the run -- a red X there is
+        # indistinguishable from a rejected override -- but it must stay
+        # visible: a warning annotation plus a PR notice naming the lanes to
+        # re-run manually.
+        workflow = _workflow("ai-review-human-override.yml")
+        script = _step_script(workflow, "Re-run line reviewers with the human decision")
+
+        assert "::error::" not in script
+        assert "::warning::" in script
+        assert 'if [ -n "$failed_lanes" ]; then' in script
+        assert "post_notice" in script
+        assert "could not be re-run automatically" in script
+
+    def test_fork_lanes_stamp_their_run_url_into_the_check_run(self) -> None:
+        # The only link from a PR head back to the workflow_run-keyed lane run
+        # is the run URL the lane stamps into its check-run's details_url; the
+        # override handler's fork rerun path reads it back. Both the opening
+        # POST and the finalize fallback POST (used when the job dies before
+        # opening one) must carry the stamp -- and the fallback must also
+        # carry the external_id the handler filters on, or the one check-run
+        # holding the run URL is never a lookup candidate.
+        stamp = '-f details_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"'
+        for name, lane in (
+            ("fork-opus-review.yml", "opus"),
+            ("fork-gpt-review.yml", "gpt"),
+            ("fork-design-review.yml", "design"),
+            ("fork-ux-review.yml", "ux"),
+            ("fork-first-principles-review.yml", "first-principles"),
+        ):
+            workflow = _workflow(name)
+            assert workflow.count(stamp) >= 2, name
+            assert f'ext_args=(-f external_id="{lane}-pr-$PR")' in workflow, name
+
     def test_handler_requires_write_permission_fresh_sha_and_reason(self) -> None:
         workflow = _workflow("ai-review-human-override.yml")
 

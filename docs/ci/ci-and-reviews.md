@@ -481,7 +481,15 @@ characters, then posts a **bot-authored** marker comment that the reviewer workf
 trust. Raw PR comments can never turn a gate green directly; only that marker can.
 The scope is **this commit only**, so a new push needs a new judgment. The workflow
 then re-runs the affected reviewer, cancelling an in-flight run first so its stale
-verdict cannot race the human decision.
+verdict cannot race the human decision. On a fork PR the affected reviewer is the
+`workflow_run`-triggered Stage-2 lane, whose run objects are keyed to the default
+branch — the handler locates the lane run through the run URL the lane stamps into
+the `details_url` of the check-run it posts on the PR head, verifies the resolved
+run belongs to the expected fork workflow, and re-runs it. The fork lanes consume
+no override marker, so that re-run is a fresh review roll rather than a forced
+pass. A rerun failure after the judgment has recorded is reported as a warning
+annotation plus a PR notice naming the lane to re-run manually — never as a failed
+run, which would make a recorded judgment look rejected.
 
 ## `pr-readiness.yml`: the aggregator
 

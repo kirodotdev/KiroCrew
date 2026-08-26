@@ -491,12 +491,13 @@ jobs:
                 # -- an errored, throttled or verdict-less run resolves NEUTRAL
                 # and exits 0 -- so `failure` here can only mean a judged-wrong
                 # verdict, never infrastructure noise. NOTE: `/ai-review
-                # override` is a SAME-REPO mechanism (the handler re-runs the
-                # same-repo lanes, whose own runs are what the same-repo reader
-                # below consults; it never touches these Stage-2 fork
-                # check-runs), so a fork false BLOCK is cleared by pushing a new
-                # commit, not by override -- identical to the fork Opus / GPT /
-                # Design lanes, which already block a fork PR the same way.
+                # override` records the judgment and re-runs the Stage-2 fork
+                # lane (located via the run URL its check-run carries), but the
+                # fork lanes consume no override marker, so the re-run is a
+                # fresh review roll -- a fork false BLOCK clears via a clean
+                # re-roll or a new commit, never a forced pass -- identical to
+                # the fork Opus / GPT / Design lanes, which already block a
+                # fork PR the same way.
                 if [ "$fail" -gt 0 ]; then
                   failed+=("$label (BLOCK)")
                 elif [ "$pass" -gt 0 ]; then
