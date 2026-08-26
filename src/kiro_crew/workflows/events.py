@@ -63,9 +63,9 @@ class EventStream:
     deterministic run clock, not ``time`` — keeps the stream resume-stable).
     """
 
-    def __init__(self, run_id: str) -> None:
+    def __init__(self, run_id: str, *, starting_seq: int = 0) -> None:
         self.run_id = run_id
-        self._seq = 0
+        self._seq = starting_seq
 
     def _emit(self, ts: str, type_: str, data: dict[str, Any]) -> WorkflowEvent:
         event = WorkflowEvent(run_id=self.run_id, seq=self._seq, ts=ts, type=type_, data=data)

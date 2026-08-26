@@ -2781,6 +2781,9 @@ async def start_dashboard(
             nudge_authorizer=_wf_nudge_authorizer,
             timeout_secs=_wf_timeout_secs,
         )
+        if state.task_runner is not None:
+            state.workflow_service.attach_task_runner(state.task_runner)
+            state.task_runner.attach_workflow_service(state.workflow_service)
         logger.info(
             "WorkflowService ready (dynamic workflows, max parallel agents=%s, run ceiling=%ss)",
             _wf_concurrency,

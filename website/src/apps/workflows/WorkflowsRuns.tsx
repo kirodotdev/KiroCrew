@@ -1,29 +1,40 @@
 /**
  * WorkflowsRuns — the "Runs" view of the Workflows tab (M6.5).
  *
- * Lists all background workflow runs (newest-first), each clickable to load its
- * full event stream. The selected run is rendered with the same phase-tree +
- * budget helpers the live-run view uses (reused from WorkflowsPage), plus a
- * Cancel button for runs still in flight.
+ * Lists every workflow-backed run (newest-first), whether driven directly by a
+ * dynamic workflow or published by TaskRunner. Each run loads the same event,
+ * source, lifecycle-control, and save-to-library surfaces.
  *
  * Unlike the author/validate/run flow — which is proxied through the workflows
  * builtin-app backend at `/apps/workflows/api/*` — the run registry is served by
  * the gateway CORE API at `/api/workflows/*`. We poll the list every ~2s while
  * mounted (no WebSocket needed).
  *
- * Backend contract (frozen):
+ * Backend contract:
  *   GET  /api/workflows/runs            -> { runs: RunSummary[] }   (newest first)
  *   GET  /api/workflows/runs/{id}       -> RunDetail                (with events[])
  *   POST /api/workflows/runs/{id}/cancel -> { run_id, cancelled }
  */
 import { useCallback, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Workflow as WorkflowIcon, CheckCircle2, XCircle, Loader2, Ban, ListTree } from 'lucide-react'
-import { Badge } from '../../components/ui'
+import {
+  Workflow as WorkflowIcon,
+  CheckCircle2,
+  XCircle,
+  Loader2,
+  Ban,
+  ListTree,
+  PauseCircle,
+  Save,
+} from 'lucide-react'
+import { api } from '../../api/client'
+import Modal from '../../components/Modal'
+import { Badge, Btn, Input } from '../../components/ui'
 // Import shared view-model helpers from runModel directly (NOT from WorkflowsPage)
 // so this module and WorkflowsPage do not form an import cycle.
-import { latestBudget } from './runModel'
+import { latestBudget, type WfEvent } from './runModel'
 import WorkflowRunTree from './WorkflowRunTree'
+import WorkflowSourceCode from './WorkflowSourceCode'
 
 import { i18nT } from '../../i18n/t'
 // Gateway CORE API base — distinct from the builtin-app proxy used by the
@@ -48,10 +59,10 @@ async function corePost<T>(path: string): Promise<T> {
 }
 
 // ---------------------------------------------------------------------------
-// Contract types (frozen — see module docstring)
+// Contract types
 // ---------------------------------------------------------------------------
 
-export type RunStatus = 'running' | 'finished' | 'failed' | 'cancelled'
+export type RunStatus = 'running' | 'paused' | 'finished' | 'failed' | 'cancelled'
 
 export interface RunSummary {
   run_id: string
@@ -62,24 +73,18 @@ export interface RunSummary {
   author: string | null
   session_key: string | null
   event_count: number
+  source_format?: 'python' | 'task-plan'
+  driver?: 'workflow' | 'taskrunner' | string
+  task_id?: string
+  capabilities?: string[]
+  workflow_id?: string
+  workflow_slug?: string
+  workflow_revision?: number
 }
 
-interface RunEvent {
-  run_id: string
-  seq: number
-  ts: string
-  type: string
-  data: Record<string, any>
-}
-
-interface RunDetail {
-  run_id: string
-  name: string
-  status: RunStatus
-  result: unknown
-  error: string | null
-  event_count: number
-  events: RunEvent[]
+export interface RunDetail extends RunSummary {
+  source?: string
+  events: WfEvent[]
 }
 
 interface RunsListResponse {
@@ -110,16 +115,37 @@ export interface StatusBadgeSpec {
 export function statusBadge(status: string | null | undefined): StatusBadgeSpec {
   switch (status) {
     case 'running':
-      return { variant: 'aim', label: 'Running', active: true }
+      return { variant: 'aim', label: i18nT('pages.projectsPage.running'), active: true }
+    case 'paused':
+      return { variant: 'warn', label: i18nT('pages.aidlc.dagView.paused'), active: false }
     case 'finished':
-      return { variant: 'ok', label: 'Finished', active: false }
+      return { variant: 'ok', label: i18nT('pages.devFleetPage.finished'), active: false }
     case 'failed':
-      return { variant: 'err', label: 'Failed', active: false }
+      return { variant: 'err', label: i18nT('pages.agentsPage.failed'), active: false }
     case 'cancelled':
-      return { variant: 'warn', label: 'Cancelled', active: false }
+      return { variant: 'warn', label: i18nT('pages.chat.activityViewer.cancelled'), active: false }
     default:
       return { variant: 'warn', label: status ? String(status) : i18nT('apps.workflows.workflowsRuns.unknown'), active: false }
   }
+}
+
+export function canSaveRun(run: RunDetail | null | undefined): boolean {
+  return !!(
+    run?.source &&
+    !run.workflow_id &&
+    run.capabilities?.includes('save') &&
+    (run.status === 'paused' || run.status === 'finished')
+  )
+}
+
+function workflowSlug(name: string): string {
+  return name
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64)
 }
 
 /** True when a run can be cancelled (i.e. it is still running). */
@@ -193,8 +219,13 @@ export function orderRuns(rows: RunRow[]): RunRow[] {
 // Component
 // ---------------------------------------------------------------------------
 
-export default function WorkflowsRuns() {
+export default function WorkflowsRuns({ embedded = false }: { embedded?: boolean }) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [saveOpen, setSaveOpen] = useState(false)
+  const [saveName, setSaveName] = useState('')
+  const [saveSlug, setSaveSlug] = useState('')
+  const [saveDescription, setSaveDescription] = useState('')
+  const [savedSlug, setSavedSlug] = useState('')
   const queryClient = useQueryClient()
 
   // Run list — react-query polling (dedup + caching + self-managed cleanup).
@@ -221,28 +252,54 @@ export default function WorkflowsRuns() {
       queryClient.invalidateQueries({ queryKey: ['workflow-run-detail'] })
     },
   })
+  const saveMutation = useMutation({
+    mutationFn: () =>
+      api.promoteWorkflowRun(selectedId!, {
+        name: saveName.trim(),
+        description: saveDescription.trim(),
+        slug: saveSlug.trim(),
+      }),
+    onSuccess: async result => {
+      setSavedSlug(result.definition.slug)
+      setSaveOpen(false)
+      await queryClient.invalidateQueries({ queryKey: ['workflow-definitions'] })
+    },
+  })
   const cancelMutationError =
     cancelMutation.error instanceof Error ? cancelMutation.error.message : cancelMutation.error ? String(cancelMutation.error) : null
   const detailError =
     cancelMutationError ?? (detailErrorObj instanceof Error ? detailErrorObj.message : detailErrorObj ? String(detailErrorObj) : null)
   const cancellingId = cancelMutation.isPending ? (cancelMutation.variables ?? null) : null
 
-  const select = useCallback((id: string) => setSelectedId(id), [])
+  const select = useCallback((id: string) => {
+    setSelectedId(id)
+    setSavedSlug('')
+  }, [])
   const cancelRun = useCallback((id: string) => cancelMutation.mutate(id), [cancelMutation])
 
   const rows = useMemo(() => orderRuns(summarizeRuns(runs)), [runs])
 
   // Phase-tree folding happens inside <WorkflowRunTree>; here we only keep the
   // budget badge for the detail header.
-  const events = detail?.events ?? []
+  const events = useMemo(() => detail?.events ?? [], [detail?.events])
   const budget = useMemo(() => latestBudget(events), [events])
+  const beginSave = () => {
+    if (!detail) return
+    saveMutation.reset()
+    setSaveName(detail.name || detail.run_id)
+    setSaveSlug(workflowSlug(detail.name || detail.run_id))
+    setSaveDescription('')
+    setSaveOpen(true)
+  }
 
   return (
-    <div className="px-4 md:px-6 pb-8 grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <div
+      className={`${embedded ? '' : 'px-4 md:px-6 pb-8'} grid grid-cols-1 2xl:grid-cols-[minmax(280px,0.8fr)_minmax(0,1.2fr)] gap-6`}
+    >
       {/* ----- Runs list ----- */}
       <div className="flex flex-col gap-3">
         <div className="flex items-center gap-2 text-[13px] text-muted">
-          <ListTree size={14} /> {i18nT('apps.workflows.workflowsRuns.background_runs')}
+          <ListTree size={14} /> {i18nT('pages.hooksPage.runs')}
           <span className="ml-auto text-[11px] tabular-nums">{rows.length}</span>
         </div>
 
@@ -281,6 +338,8 @@ export default function WorkflowsRuns() {
                   <Loader2 size={14} className="text-accent animate-spin shrink-0" />
                 ) : row.status === 'finished' ? (
                   <CheckCircle2 size={14} className="text-green-500 shrink-0" />
+                ) : row.status === 'paused' ? (
+                  <PauseCircle size={14} className="text-warn shrink-0" />
                 ) : row.status === 'failed' ? (
                   <XCircle size={14} className="text-red-500 shrink-0" />
                 ) : (
@@ -295,7 +354,9 @@ export default function WorkflowsRuns() {
                 </div>
                 <div className="ml-auto flex items-center gap-2 shrink-0">
                   <span className="text-[10px] text-muted tabular-nums">
-                    {row.agentCount > 0 ? `${row.agentCount} agents · ` : ''}
+                    {row.agentCount > 0
+                      ? `${row.agentCount} ${i18nT('pages.channelPage.agents')} · `
+                      : ''}
                     {row.eventCount} {i18nT('apps.workflows.workflowsRuns.events')}
                   </span>
                   <Badge variant={row.badge.variant}>{row.badge.label}</Badge>
@@ -307,7 +368,7 @@ export default function WorkflowsRuns() {
                       }}
                       disabled={cancellingId === row.run_id}
                       className="flex items-center gap-1 px-2 py-0.5 text-[11px] rounded border border-border disabled:opacity-50"
-                      aria-label={`cancel ${row.name}`}
+                      aria-label={i18nT('apps.workflows.workflowsRuns.cancel')}
                     >
                       <Ban size={12} /> {cancellingId === row.run_id ? i18nT('apps.workflows.workflowsRuns.cancelling') : i18nT('apps.workflows.workflowsRuns.cancel')}
                     </button>
@@ -321,14 +382,34 @@ export default function WorkflowsRuns() {
 
       {/* ----- Selected run detail ----- */}
       <div className="flex flex-col gap-3">
-        <div className="flex items-center gap-2 text-[13px] text-muted">
-          <WorkflowIcon size={14} /> {detail ? detail.name || detail.run_id : i18nT('apps.workflows.workflowsRuns.run_detail')}
+        <div className="flex flex-wrap items-center gap-2 text-[13px] text-muted">
+          <span className="flex min-w-0 flex-1 items-center gap-2">
+            <WorkflowIcon size={14} className="shrink-0" />
+            <span className="truncate">
+              {detail
+                ? detail.name || detail.run_id
+                : i18nT('apps.workflows.workflowsRuns.run_detail')}
+            </span>
+          </span>
           {budget && (
-            <span className="ml-auto text-[11px] tabular-nums">
+            <span className="text-[11px] tabular-nums">
               {i18nT('apps.workflows.workflowsRuns.budget')} {budget.spent}
               {budget.total != null ? ` / ${budget.total}` : ''}
             </span>
           )}
+          {detail?.driver ? <Badge variant="muted">{detail.driver}</Badge> : null}
+          {detail?.source_format ? (
+            <Badge variant="aim">{detail.source_format}</Badge>
+          ) : null}
+          {savedSlug ? (
+            <code className="text-[11px] text-ok">/workflow {savedSlug}</code>
+          ) : null}
+          {canSaveRun(detail) ? (
+            <Btn onClick={beginSave} className="ml-auto">
+              <Save className="lucide-inline" />
+              {i18nT('pages.chat.workflowRunCard.save_workflow')}
+            </Btn>
+          ) : null}
         </div>
 
         {detailError && (
@@ -355,6 +436,95 @@ export default function WorkflowsRuns() {
           />
         )}
       </div>
+      <Modal
+        open={saveOpen}
+        onClose={() => setSaveOpen(false)}
+        title={i18nT('pages.chat.workflowRunCard.save_title')}
+        maxWidth={760}
+        footer={
+          <>
+            <Btn onClick={() => setSaveOpen(false)}>
+              {i18nT('pages.chat.workflowRunCard.cancel')}
+            </Btn>
+            <Btn
+              primary
+              onClick={() => saveMutation.mutate()}
+              disabled={
+                saveMutation.isPending || !saveName.trim() || !saveSlug.trim()
+              }
+            >
+              {saveMutation.isPending ? (
+                <Loader2 className="lucide-inline animate-spin" />
+              ) : (
+                <Save className="lucide-inline" />
+              )}
+              {i18nT('pages.overview.workflowLibrary.save_to_library')}
+            </Btn>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <div className="block text-[12px] text-muted">
+            <span className="block mb-1">
+              {i18nT('pages.overview.workflowLibrary.name')}
+            </span>
+            <Input
+              id="workflow-run-save-name"
+              aria-label={i18nT('pages.overview.workflowLibrary.name')}
+              value={saveName}
+              onChange={event => setSaveName(event.target.value)}
+              disabled={saveMutation.isPending}
+              className="w-full"
+            />
+          </div>
+          <div className="block text-[12px] text-muted">
+            <span className="block mb-1">
+              {i18nT('pages.overview.workflowLibrary.slug')}
+            </span>
+            <Input
+              id="workflow-run-save-slug"
+              aria-label={i18nT('pages.overview.workflowLibrary.slug')}
+              value={saveSlug}
+              onChange={event => setSaveSlug(event.target.value)}
+              disabled={saveMutation.isPending}
+              className="w-full font-mono"
+            />
+          </div>
+          <div className="block text-[12px] text-muted">
+            <span className="block mb-1">
+              {i18nT('pages.overview.workflowLibrary.workflow_description')}
+            </span>
+            <Input
+              id="workflow-run-save-description"
+              aria-label={i18nT(
+                'pages.overview.workflowLibrary.workflow_description',
+              )}
+              value={saveDescription}
+              onChange={event => setSaveDescription(event.target.value)}
+              disabled={saveMutation.isPending}
+              className="w-full"
+            />
+          </div>
+          {detail?.source ? (
+            <div className="text-[12px] text-muted">
+              <span className="block mb-1">
+                {i18nT('pages.overview.workflowLibrary.source')}
+              </span>
+              <WorkflowSourceCode
+                source={detail.source}
+                sourceFormat={detail.source_format}
+                ariaLabel={i18nT('pages.overview.workflowLibrary.source')}
+                compact
+              />
+            </div>
+          ) : null}
+          {saveMutation.error ? (
+            <p className="text-[12px] text-danger">
+              {i18nT('pages.overview.workflowLibrary.request_failed')}
+            </p>
+          ) : null}
+        </div>
+      </Modal>
     </div>
   )
 }

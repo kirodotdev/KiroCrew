@@ -10,6 +10,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   statusBadge,
+  canSaveRun,
   isCancellable,
   summarizeRuns,
   orderRuns,
@@ -34,6 +35,7 @@ function run(over: Partial<RunSummary> = {}): RunSummary {
 describe('statusBadge', () => {
   it('maps each known status to a variant + label + active flag', () => {
     expect(statusBadge('running')).toEqual({ variant: 'aim', label: 'Running', active: true })
+    expect(statusBadge('paused')).toEqual({ variant: 'warn', label: 'Paused', active: false })
     expect(statusBadge('finished')).toEqual({ variant: 'ok', label: 'Finished', active: false })
     expect(statusBadge('failed')).toEqual({ variant: 'err', label: 'Failed', active: false })
     expect(statusBadge('cancelled')).toEqual({ variant: 'warn', label: 'Cancelled', active: false })
@@ -41,6 +43,7 @@ describe('statusBadge', () => {
 
   it('only running is active (cancellable)', () => {
     expect(isCancellable('running')).toBe(true)
+    expect(isCancellable('paused')).toBe(false)
     expect(isCancellable('finished')).toBe(false)
     expect(isCancellable('failed')).toBe(false)
     expect(isCancellable('cancelled')).toBe(false)
@@ -50,6 +53,57 @@ describe('statusBadge', () => {
     expect(statusBadge(undefined)).toEqual({ variant: 'warn', label: 'Unknown', active: false })
     expect(statusBadge(null)).toEqual({ variant: 'warn', label: 'Unknown', active: false })
     expect(statusBadge('weird')).toEqual({ variant: 'warn', label: 'weird', active: false })
+  })
+})
+
+describe('canSaveRun', () => {
+  it('allows paused TaskRunner plans and finished runs with save capability', () => {
+    const taskPlan = {
+      ...run({ status: 'paused' }),
+      source: 'agents:\n  test:\n    prompt: run tests\n',
+      source_format: 'task-plan' as const,
+      capabilities: ['save'],
+      events: [],
+    }
+    const finished = {
+      ...run({ status: 'finished' }),
+      source: 'async def workflow(ctx):\n    return 1\n',
+      capabilities: ['save'],
+      events: [],
+    }
+
+    expect(canSaveRun(taskPlan)).toBe(true)
+    expect(canSaveRun(finished)).toBe(true)
+  })
+
+  it('rejects running runs and runs without an exact source', () => {
+    expect(
+      canSaveRun({
+        ...run({ status: 'running' }),
+        source: 'source',
+        capabilities: ['save'],
+        events: [],
+      }),
+    ).toBe(false)
+    expect(
+      canSaveRun({
+        ...run({ status: 'paused' }),
+        capabilities: ['save'],
+        events: [],
+      }),
+    ).toBe(false)
+  })
+
+  it('rejects invocations that already came from a saved definition', () => {
+    expect(
+      canSaveRun({
+        ...run({ status: 'finished' }),
+        source: 'async def workflow(ctx):\n    return 1\n',
+        workflow_id: 'wfd_saved',
+        capabilities: ['save'],
+        events: [],
+      }),
+    ).toBe(false)
   })
 })
 

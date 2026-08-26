@@ -4540,7 +4540,6 @@
         "workflows": "Workflows"
       },
       "workflowsRuns": {
-        "background_runs": "백그라운드 실행",
         "budget": "예산",
         "cancel": "취소",
         "cancelling": "취소 중…",

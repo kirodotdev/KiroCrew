@@ -65,6 +65,8 @@ def _svc(request: web.Request):
 
 def _sel():
     """Late-bind the shared SEL provider for handler-package import safety."""
+    # Circular import: handlers.__init__ re-exports this module, while tests patch
+    # the package-level sel seam that must be resolved at call time.
     import kiro_crew.dashboard.handlers as handlers  # noqa: F811
 
     return handlers.sel()
@@ -173,6 +175,9 @@ async def api_workflow_definitions_create(request: web.Request) -> web.Response:
     if lineage_value is not None and derived_from is None:
         return _error("derived_from is invalid", "workflow_lineage_invalid", 400)
     lineage_kwargs = {"derived_from": derived_from} if "derived_from" in body else {}
+    source_format = body.get("format", "python")
+    if source_format not in ("python", "task-plan"):
+        return _error("format is invalid", "workflow_format_invalid", 400)
     try:
         out = await asyncio.to_thread(
             svc.save_definition,
@@ -182,6 +187,7 @@ async def api_workflow_definitions_create(request: web.Request) -> web.Response:
                 body.get("description", "") if isinstance(body.get("description"), str) else ""
             ),
             slug=body.get("slug", "") if isinstance(body.get("slug"), str) else "",
+            source_format=source_format,
             **lineage_kwargs,
         )
     except Exception:
@@ -311,12 +317,17 @@ async def api_workflow_definition_run(request: web.Request) -> web.Response:
         return _error("could not start saved workflow", "workflow_definition_start_failed", 500)
     if "run_id" in out:
         return web.json_response(_redact_obj(out))
+    error = _redact_obj(out.get("error") or "could not start saved workflow")
+    if out.get("not_found"):
+        return _error(error, "workflow_definition_not_found", 404)
+    if out.get("unavailable"):
+        return _error(error, "workflow_executor_unavailable", 503)
     return web.json_response(
         {
-            "error": _redact_obj(out.get("error") or "no such saved workflow"),
-            "code": "workflow_definition_not_found",
+            "error": error,
+            "code": "workflow_definition_start_rejected",
         },
-        status=404,
+        status=409,
     )
 
 

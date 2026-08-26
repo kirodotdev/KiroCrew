@@ -4496,7 +4496,6 @@
         "workflows": "工作流"
       },
       "workflowsRuns": {
-        "background_runs": "后台运行",
         "budget": "预算",
         "cancel": "取消",
         "cancelling": "正在取消…",

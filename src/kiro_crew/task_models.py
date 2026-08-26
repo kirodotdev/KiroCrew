@@ -115,12 +115,22 @@ class Project:
     commit_hashes: list[str] = field(default_factory=list)
     worktree_path: str = ""
     repo_root: str = ""  # original repo root (for worktree cleanup)
-    git_enabled: bool = True  # False when the workspace is not a git repo (run in place, no git ops)
+    git_enabled: bool = (
+        True  # False when the workspace is not a git repo (run in place, no git ops)
+    )
     lessons_learned: list[str] = field(default_factory=list)
     mode: str = "quick"  # "quick" (text only) | "spec" (has spec file/content)
     source_spec: str = ""  # original input text or spec content
     skip_planning: bool = False  # true = plan + execute immediately
-    auto_approve: bool = False  # per-run trust intent (UI flag); the live, expiring, audited grant is held in SafetyOverride (scope taskrunner:{task_id}:autoapprove)
+    auto_approve: bool = (
+        False  # per-run trust intent (UI flag); the live, expiring, audited grant is held in SafetyOverride (scope taskrunner:{task_id}:autoapprove)
+    )
+    workflow_run_id: str = ""  # shared workflow-history run driven by TaskRunner
+    workflow_id: str = ""  # saved definition provenance, when invoked by name
+    workflow_slug: str = ""
+    workflow_revision: int = 0
+    derived_from_workflow_id: str = ""  # saved ancestor after the plan is adapted
+    derived_from_revision: int = 0
 
 
 # ``NotifyCallback`` moved to ``task_reporter``, which owns the notification

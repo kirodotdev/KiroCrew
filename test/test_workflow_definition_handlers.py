@@ -87,6 +87,7 @@ async def test_definition_list_and_create_preserve_lineage() -> None:
             "/api/workflows/definitions",
             json={
                 "source": "source",
+                "format": "task-plan",
                 "name": "Debug",
                 "derived_from": {"workflow_id": "wfd_parent", "revision": 4},
             },
@@ -95,6 +96,7 @@ async def test_definition_list_and_create_preserve_lineage() -> None:
 
     assert listed["definitions"][0]["search"] == "debugging"
     assert created["definition"]["slug"] == "debug"
+    assert service.saved[1]["source_format"] == "task-plan"
     assert service.saved[1]["derived_from"] == {"workflow_id": "wfd_parent", "revision": 4}
 
 
@@ -105,6 +107,27 @@ async def test_definition_get_missing_has_machine_readable_code() -> None:
 
     assert response.status == 404
     assert body["code"] == "workflow_definition_not_found"
+
+
+async def test_definition_run_reports_executor_rejection_instead_of_not_found() -> None:
+    service = FakeService()
+
+    async def reject_start(_workflow_ref, **_kwargs):
+        return {
+            "error": "Too many concurrent tasks (3/3).",
+            "admission_rejected": True,
+        }
+
+    service.start_definition = reject_start  # type: ignore[method-assign]
+    async with TestClient(TestServer(_app(service))) as client:
+        response = await client.post("/api/workflows/definitions/debug/run", json={})
+        body = await response.json()
+
+    assert response.status == 409
+    assert body == {
+        "error": "Too many concurrent tasks (3/3).",
+        "code": "workflow_definition_start_rejected",
+    }
 
 
 async def test_definition_update_returns_conflict_and_run_maps_input() -> None:

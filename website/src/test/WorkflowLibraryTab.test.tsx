@@ -13,28 +13,33 @@ vi.mock('../api/client', () => ({ api: mockApi }))
 vi.mock('../apps/workflows/WorkflowSourceCode', () => ({
   default: ({
     source,
+    sourceFormat,
     onChange,
     ariaLabel,
   }: {
     source: string
+    sourceFormat?: 'python' | 'task-plan'
     onChange?: (value: string) => void
     ariaLabel: string
   }) => (
     <textarea
       aria-label={ariaLabel}
-      data-language="python"
+      data-language={sourceFormat === 'task-plan' ? 'yaml' : 'python'}
       data-line-numbers="true"
       value={source}
       onChange={(event) => onChange?.(event.target.value)}
     />
   ),
 }))
+vi.mock('../apps/workflows/WorkflowsRuns', () => ({
+  default: () => <div>Unified workflow runs</div>,
+}))
 
 import WorkflowLibraryTab from '../pages/overview/WorkflowLibraryTab'
 import { i18nT } from '../i18n/t'
 
 const DEFINITION = {
-  schema_version: 1,
+  schema_version: 2,
   id: 'wfd_1',
   slug: 'debug-project',
   name: 'Debug Project',
@@ -42,6 +47,7 @@ const DEFINITION = {
   created_at: '2026-08-24T00:00:00Z',
   updated_at: '2026-08-24T00:00:00Z',
   revision: 2,
+  format: 'python' as const,
   source:
     'META = {"name": "debug-project"}\nasync def workflow(ctx):\n    return 1\n',
   content_hash: 'hash',
@@ -77,6 +83,18 @@ beforeEach(() => {
 })
 
 describe('WorkflowLibraryTab', () => {
+  it('switches between the saved library and unified run history', async () => {
+    renderTab()
+
+    await screen.findByText('Debug Project')
+    fireEvent.click(
+      screen.getByRole('button', { name: i18nT('pages.hooksPage.runs') }),
+    )
+
+    expect(screen.getByText('Unified workflow runs')).toBeInTheDocument()
+    expect(screen.queryByText('Debug Project')).not.toBeInTheDocument()
+  })
+
   it('shows saved workflows, slash invocation, and lineage', async () => {
     renderTab()
 
@@ -89,6 +107,26 @@ describe('WorkflowLibraryTab', () => {
     expect(
       screen.getByLabelText(i18nT('pages.overview.workflowLibrary.source')),
     ).toHaveAttribute('data-line-numbers', 'true')
+  })
+
+  it('shows saved TaskRunner plans as YAML workflows', async () => {
+    mockApi.workflowDefinitions.mockResolvedValue({
+      definitions: [
+        {
+          ...DEFINITION,
+          format: 'task-plan',
+          source: 'agents:\n  test:\n    prompt: run tests\n',
+        },
+      ],
+    })
+    renderTab()
+
+    expect(
+      await screen.findByLabelText(
+        i18nT('pages.overview.workflowLibrary.source'),
+      ),
+    ).toHaveAttribute('data-language', 'yaml')
+    expect(screen.getByText('task-plan')).toBeInTheDocument()
   })
 
   it('authors an unsaved draft and only promotes it after Save to library', async () => {

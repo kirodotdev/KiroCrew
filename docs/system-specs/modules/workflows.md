@@ -9,6 +9,13 @@ statically, executes it in a restricted namespace under hard ceilings, and strea
 a typed event journal that drives the UI, the chat `workflow_*` MCP tools, and
 resume.
 
+This module also provides Kiro Crew's shared orchestration substrate: run
+identity, lifecycle state, event history, exact source, provenance, cancellation
+binding, and the reusable definition library. Python dynamic workflows are one
+driver of that substrate. TaskRunner is another, stricter product layer: it uses
+the common substrate but keeps its planning, approval, retry, test,
+git/worktree, replan, persistence, and cleanup semantics.
+
 The subsystem lives in `src/kiro_crew/workflows/` (13 modules). This file is the
 **frozen contract** those modules cite: `workflows/__init__.py` declares the `ctx`
 Protocol and the event vocabulary and points here, `events.py` says the per-type
@@ -515,7 +522,8 @@ objects (in particular never the `asyncio.Task`).
 
 `RunHandle` holds `run_id`, `name`, `status`, the growing `events` list, `result`,
 `error`, `author`, `session_key`, `source`, `args`, `agent_results`,
-`agent_errors`, and the driving `task`. Statuses: `running`, `finished`, `failed`,
+`agent_errors`, exact saved-definition provenance, optional `derived_from`
+ancestry, and the driving `task`. Statuses: `running`, `finished`, `failed`,
 `cancelled`.
 
 Two distinct serializations:
@@ -546,6 +554,17 @@ two) plus the guaranteed flush at `mark_terminal`. The trade is explicit: a hard
 gateway kill can lose the newest payloads no flush has covered yet, exactly as it
 can already lose the newest events. A raising `on_event` / `on_done` subscriber is
 swallowed, because a bad subscriber must not break a run.
+
+The trusted host lifecycle is the exception to the synchronous registry mirror. Its
+service methods mutate loop-affine handles and event streams on the event loop, then
+await async registry checkpoints for registration, binding/rebinding, source updates,
+status transitions, throttled events, terminal flushes, and deletion. Each checkpoint
+snapshots the handle on the event loop, then moves only the durable write through
+`asyncio.to_thread`. TaskRunner plans can reach the 256 KiB request ceiling, so no
+host lifecycle checkpoint may stall the gateway event loop or move live registry
+state across threads. Cancellation drains an in-flight registration write before
+asynchronously deleting the partial run, so a late atomic replace cannot resurrect an
+identity that was never returned to its host driver.
 
 ### `store.py`
 
@@ -600,7 +619,10 @@ authorization gates is SEL-audited.
 
 A definition has a stable `wfd_*` id, unique slash-command `slug`, current source,
 SHA-256 content hash, timestamps, an integer `revision`, immutable source entries
-in `revisions`, and optional `derived_from: {workflow_id, revision}` lineage.
+in `revisions`, an immutable `format` (`python` or `task-plan`), and optional
+`derived_from: {workflow_id, revision}` lineage. Schema-v1 records omit `format`
+and load as `python`; newly written records use schema v2. Python and TaskRunner
+YAML sources are validated by their owning parser before persistence.
 Every explicit save creates a separate definition identity, including when its
 source is byte-identical to a parent it adapted. Updates require `expected_revision`
 and append a revision; a stale writer receives a conflict instead of overwriting
@@ -621,23 +643,32 @@ and accepts lineage only when the authored `META["adapted_from"]` exactly names
 the current revision of one of the candidates included in that prompt. Historical
 revisions embedded in a candidate record are not offered authoring references.
 The authored result remains an unsaved draft until `save_definition` is called.
-An explicit id or slug reference takes the
-opposite path: `start_definition` executes the exact current saved source and
-places free-form slash-command input in `ctx.args["input"]`.
+An explicit id or slug reference takes the opposite path: `start_definition`
+executes the exact current saved source. Python definitions place free-form
+slash-command input in `ctx.args["input"]`. `task-plan` definitions delegate
+their exact YAML to TaskRunner without LLM decomposition and retain the saved
+definition id, slug, and revision on both the project and shared run.
 
-The chat run card offers explicit promotion only after an ad-hoc run reaches
-`finished`. It loads the response-redacted run snapshot for its compact read-only
-Python-highlighted preview, but submits only the run id plus user-entered name,
-slash-command slug, and description to the promotion route. The service reads the
-original source from the server-side run handle and passes those exact bytes to
-`save_definition`; display redaction can therefore never become executable source.
+The chat run card offers explicit promotion after an ad-hoc Python run reaches
+`finished`. Agent Capabilities > Workflows has **Workflow library** and **Runs**
+views; the Runs view lists both dynamic Python and TaskRunner-backed runs. It
+also offers promotion for a paused or finished TaskRunner plan whose run
+declares the `save` capability. It loads the response-redacted run snapshot for
+its compact read-only, format-highlighted preview, but submits only the run id
+plus user-entered name, slash-command slug, and description to the promotion
+route. The service reads the original source from the server-side run handle and
+passes those exact bytes to `save_definition`; display redaction can therefore
+never become executable source.
 The durable store records whether source bytes survived redaction unchanged. Exact
 restored source remains promotable; redaction-changed and legacy source lacks exact
 provenance and cannot use this route. An unedited rerun preserves that provenance;
 a genuinely edited rerun is exact to the submitted edit.
-Running, failed, cancelled, and already-named saved invocations are not promotion
-candidates. The definition editor uses the same line-numbered, horizontally
-scrolling source surface in editable mode. Both source views are presentation-only:
+Running, failed, and cancelled runs are not promotion candidates. The definition
+id on an exact saved invocation also makes it ineligible: it is already reusable
+and must not mint an accidental duplicate definition. The definition
+editor uses the same line-numbered, horizontally scrolling source surface in
+editable mode. Python is highlighted as Python and TaskRunner plans as YAML. Both
+source views are presentation-only:
 neither normalizes nor reformats source bytes. On success, the card shows
 `/workflow <slug>` and links to Agent Capabilities > Workflows.
 
@@ -664,7 +695,18 @@ stored handle. If `source` is supplied and differs from the stored script, the
 rerun is treated as **edited**: the edited source is validated first (rejected with
 errors if invalid) and the replay cache is **not** reused (`replay_before=0`,
 `replay_results={}`), because editing the script can shift call indices and a
-mismatched index would replay the wrong result into the wrong step.
+mismatched index would replay the wrong result into the wrong step. An unedited
+rerun of a saved definition retains its definition id, slug, and revision so it
+remains an exact saved invocation and cannot be promoted into a duplicate. An
+edited rerun clears that saved-definition identity because its submitted source
+is no longer the exact saved revision.
+
+TaskRunner applies the same rule to saved task plans. A user edit or automatic
+replan clears the run's exact definition id, slug, and revision before publishing
+the changed YAML. The run retains the former id and revision only as
+`derived_from` ancestry, so promoting the adapted plan creates a distinct saved
+definition with correct lineage instead of falsely attributing changed source to
+the original revision.
 
 ## Gateway wiring
 
@@ -676,8 +718,24 @@ run.
 
 Entry points: `author`, `start`, `start_from_intent`, `status`, `result`,
 `list_runs`, `cancel`, `rerun_subtree`, `list_definitions`, `get_definition`,
-`save_definition`, `update_definition`, and `start_definition`, plus the
-`timeout_secs` property.
+`save_definition`, `update_definition`, and `start_definition`, plus the trusted
+host lifecycle (`begin_host_run`, `bind_task`, `phase`, `log`, `step`, `pause`,
+`rebind`, `finish`, `fail`, `cancel_host_run`, `delete_run`) and the
+`timeout_secs` property. Every trusted host lifecycle mutation is async when it can
+produce a durable checkpoint, so host drivers await the off-loop persistence path.
+
+Host-driven runs carry `driver`, `source_format`, `task_id`, `capabilities`, and
+saved-definition provenance in every compact and full snapshot. `paused` is an
+active, durable workflow status. A restored paused host run, or a host run
+demoted to failed after interruption, rebuilds its event stream at the next
+sequence number and reopens the same identity when TaskRunner resumes it. Reopening a
+terminal host run first removes its trailing terminal event, so the retried attempt
+still has one terminal event at the end of a contiguous journal. Host drivers keep
+their own completion/reporting path by setting `completion_injection=false`.
+Off-loop checkpoints are serialized per run. When parallel host steps queue
+multiple snapshots behind an active write, superseded intermediate snapshots are
+discarded and the newest snapshot is written last; deletion uses the same queue
+so an in-flight checkpoint cannot resurrect a removed run.
 
 Run ids are `wf_NNNNNN` from a per-process monotonic counter, deliberately with no
 time or random component so they stay resume-stable. On startup, after rehydrating
@@ -789,14 +847,14 @@ caller's `X-Session-Key` header becomes the run's `author` and `session_key`.
 | `POST /api/workflows/run_intent` | `{intent, args?, name?, budget_total?, timeout_secs?}` | `{run_id}` immediately |
 | `GET /api/workflows/runs` | | `{runs: [...]}` compact, newest first |
 | `GET /api/workflows/runs/{run_id}` | | full snapshot incl. `events` (404 if absent) |
-| `POST /api/workflows/runs/{run_id}/promote` | `{name?, description?, slug?}` | save the original completed source; 404 when unknown, 409 before completion or when only a restored redacted source remains |
+| `POST /api/workflows/runs/{run_id}/promote` | `{name?, description?, slug?}` | save exact source from a finished run or paused TaskRunner plan; 404 when unknown, 409 when not promotable or only a restored redacted source remains |
 | `POST /api/workflows/runs/{run_id}/cancel` | | `{run_id, cancelled}` |
 | `POST /api/workflows/runs/{run_id}/rerun` | `{from_index?, source?}` | `{run_id, from, replayed_before, edited}`; 400 on an invalid edited script, 404 on an unknown run |
 | `GET /api/workflows/definitions?q=` | optional local match query | `{definitions: [...]}` |
-| `POST /api/workflows/definitions` | `{source, name?, description?, slug?, derived_from?}` | explicitly save a validated definition |
+| `POST /api/workflows/definitions` | `{source, format?, name?, description?, slug?, derived_from?}` | explicitly save a validated definition; format defaults to `python` |
 | `GET /api/workflows/definitions/{id-or-slug}` | | one definition including revisions and lineage |
 | `PATCH /api/workflows/definitions/{id-or-slug}` | `{source, expected_revision, name?, description?, slug?}` | append a revision; 404 when unknown, 409 on stale revision |
-| `POST /api/workflows/definitions/{id-or-slug}/run` | `{input?, args?, budget_total?, timeout_secs?}` | run the exact saved revision |
+| `POST /api/workflows/definitions/{id-or-slug}/run` | `{input?, args?, budget_total?, timeout_secs?}` | run the exact saved revision; 404 when unknown, 409 on execution admission rejection, 503 when its executor is unavailable |
 
 With no `workflow_service` on state, every route answers 503.
 
@@ -836,9 +894,11 @@ mutation routes.
 The dashboard handles `/workflow <slug> [input]` locally before harness session
 acquisition; `/workflow` alone lists saved definitions. This keeps the command
 identical across Kiro and adapted harnesses, and prevents an explicit reference
-from being reinterpreted by a harness. The Agent Capabilities → Workflows tab is
-the human management surface for listing, authoring unsaved drafts, explicit
-promotion, lineage, source edits as new revisions, and exact saved runs.
+from being reinterpreted by a harness. The definition format selects its owning
+driver; there is no user-facing engine choice. The Agent Capabilities →
+Workflows tab is the human management surface. Its Workflow library view owns
+listing, authoring unsaved drafts, lineage, source edits as new revisions, and
+exact saved runs; its Runs view owns common history and explicit promotion.
 
 The `workflows` builtin app (`apps/builtins/workflows/`) is `defaultEnabled:
 false` and `hidden: true`; it exposes `/validate`, `/run` and `/examples` over its

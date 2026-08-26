@@ -54,7 +54,44 @@ agents:
     assert tasks[0].title == "My Worker"
 
 
+def test_approval_gates_are_loaded_from_yaml():
+    yaml = """
+agents:
+  preview:
+    prompt: show the deployment plan
+    requires_approval: true
+  deploy:
+    depends_on: [preview]
+    prompt: deploy the release
+    force_approval: true
+"""
+
+    tasks = decompose_yaml(yaml)
+
+    assert tasks[0].requires_approval is True
+    assert tasks[0].force_approval is False
+    assert tasks[1].requires_approval is False
+    assert tasks[1].force_approval is True
+
+
+@pytest.mark.parametrize("key", ["requires_approval", "force_approval"])
+def test_approval_gate_must_be_a_boolean(key):
+    yaml = f"agents:\n  deploy:\n    prompt: deploy\n    {key}: yes please\n"
+
+    with pytest.raises(ValueError, match=f"{key} must be a boolean"):
+        decompose_yaml(yaml)
+
+
+@pytest.mark.parametrize("key", ["description", "prompt", "shell", "agent", "timeout"])
+def test_yaml_string_fields_reject_non_strings(key):
+    yaml = f"agents:\n  test:\n    {key}: {{nested: value}}\n"
+
+    with pytest.raises(ValueError, match=f"{key} must be a string"):
+        decompose_yaml(yaml)
+
+
 # ── Cycle detection ──
+
 
 def test_cycle_a_b_a():
     yaml = """
@@ -83,6 +120,7 @@ agents:
 
 # ── Unknown dependency ──
 
+
 def test_unknown_dependency():
     yaml = """
 agents:
@@ -96,6 +134,7 @@ agents:
 
 # ── Bad keys ──
 
+
 def test_bad_keys_rejected():
     yaml = """
 agents:
@@ -108,6 +147,7 @@ agents:
 
 
 # ── Empty / malformed input ──
+
 
 def test_empty_string():
     with pytest.raises(ValueError, match="agents"):
@@ -136,6 +176,7 @@ def test_empty_agents():
 
 # ── Size limits ──
 
+
 def test_yaml_too_large():
     big = "agents:\n  a:\n    prompt: " + "x" * (256 * 1024 + 1)
     with pytest.raises(ValueError, match="too large"):
@@ -153,8 +194,10 @@ def test_too_many_agents():
 
 # ── _check_acyclic directly (iterative DFS) ──
 
+
 def test_check_acyclic_no_cycle():
     from kiro_crew.task_models import Task
+
     tasks = [
         Task(index=1, title="a", description="", depends_on=[]),
         Task(index=2, title="b", description="", depends_on=[1]),
@@ -165,13 +208,18 @@ def test_check_acyclic_no_cycle():
 def test_check_acyclic_deep_chain():
     """Iterative DFS handles chains deeper than Python's recursion limit."""
     from kiro_crew.task_models import Task
+
     n = 1500
     # Each task depends on the *next* one so DFS from task 1 must chase the full chain (stack depth n).
-    tasks = [Task(index=i, title=f"t{i}", description="", depends_on=[i + 1] if i < n else []) for i in range(1, n + 1)]
+    tasks = [
+        Task(index=i, title=f"t{i}", description="", depends_on=[i + 1] if i < n else [])
+        for i in range(1, n + 1)
+    ]
     _check_acyclic(tasks)  # should not raise RecursionError
 
 
 # ── YAML type coercion guards ──
+
 
 def test_non_string_agent_name():
     yaml = "agents:\n  123:\n    prompt: x\n"
@@ -240,6 +288,34 @@ def test_plan_to_yaml_roundtrips_titles_and_dag():
     assert sorted(rt[2].depends_on) == [1, 2]
 
 
+def test_plan_to_yaml_roundtrips_approval_gates():
+    """Saving a task plan must not remove the gates that protect execution."""
+    from kiro_crew.task_models import Task
+
+    tasks = [
+        Task(
+            index=1,
+            title="Preview",
+            description="show the deployment plan",
+            requires_approval=True,
+        ),
+        Task(
+            index=2,
+            title="Deploy",
+            description="deploy the release",
+            force_approval=True,
+            depends_on=[1],
+        ),
+    ]
+
+    restored = decompose_yaml(plan_to_yaml(tasks))
+
+    assert restored[0].requires_approval is True
+    assert restored[0].force_approval is False
+    assert restored[1].requires_approval is False
+    assert restored[1].force_approval is True
+
+
 def test_plan_to_yaml_dedups_duplicate_titles():
     """Two tasks with the same title get distinct agent keys (foo / foo-2)."""
     from kiro_crew.task_models import Task
@@ -259,7 +335,9 @@ def test_plan_to_yaml_extracts_agent_timeout_preamble():
     """A description carrying the import preamble round-trips back into agent/timeout keys."""
     from kiro_crew.task_models import Task
 
-    tasks = [Task(index=1, title="Build", description="Agent: coder\nTimeout: 30m\n\nrun the build")]
+    tasks = [
+        Task(index=1, title="Build", description="Agent: coder\nTimeout: 30m\n\nrun the build")
+    ]
     y = plan_to_yaml(tasks)
     assert "agent: coder" in y
     assert "timeout: 30m" in y

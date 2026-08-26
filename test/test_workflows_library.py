@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from kiro_crew import security
@@ -63,6 +65,69 @@ def test_create_round_trips_a_global_definition_with_lineage(tmp_path) -> None:
     assert restored["revision"] == 1
     assert restored["source"] == SOURCE_V1
     assert restored["derived_from"] == {"workflow_id": "wfd_parent", "revision": 3}
+
+
+def test_create_records_python_as_the_default_source_format(tmp_path) -> None:
+    library = WorkflowDefinitionLibrary(tmp_path)
+
+    created = library.create(source=SOURCE_V1, name="Debug Project")
+
+    assert created["schema_version"] == 2
+    assert created["format"] == "python"
+
+
+def test_version_one_definition_without_format_loads_as_python(tmp_path) -> None:
+    library = WorkflowDefinitionLibrary(tmp_path)
+    library.library_dir.mkdir(parents=True)
+    path = library.library_dir / "wfd_legacy.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "id": "wfd_legacy",
+                "slug": "legacy",
+                "name": "Legacy",
+                "revision": 1,
+                "source": SOURCE_V1,
+                "revisions": [{"revision": 1, "source": SOURCE_V1}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    restored = library.get("wfd_legacy")
+
+    assert restored is not None
+    assert restored["format"] == "python"
+
+
+def test_task_plan_format_survives_create_and_revision_update(tmp_path) -> None:
+    library = WorkflowDefinitionLibrary(tmp_path)
+    source_v1 = "agents:\n  inspect:\n    prompt: inspect the repository\n"
+    source_v2 = source_v1.replace("inspect the repository", "inspect the failing tests")
+
+    created = library.create(source=source_v1, name="Inspect", source_format="task-plan")
+    updated = library.update(created["id"], source=source_v2, expected_revision=1)
+
+    assert created["format"] == "task-plan"
+    assert updated is not None
+    assert updated["format"] == "task-plan"
+
+
+def test_search_can_be_limited_to_one_source_format(tmp_path) -> None:
+    library = WorkflowDefinitionLibrary(tmp_path)
+    python_definition = library.create(source=SOURCE_V1, name="Debug Python")
+    task_definition = library.create(
+        source="agents:\n  debug:\n    prompt: debug the project\n",
+        name="Debug Task Plan",
+        source_format="task-plan",
+    )
+
+    python_matches = library.search("debug project", source_format="python")
+    task_matches = library.search("debug project", source_format="task-plan")
+
+    assert [item["id"] for item in python_matches] == [python_definition["id"]]
+    assert [item["id"] for item in task_matches] == [task_definition["id"]]
 
 
 def test_identical_source_creates_a_separate_definition_and_lineage(tmp_path) -> None:

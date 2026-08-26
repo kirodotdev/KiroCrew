@@ -89,6 +89,7 @@ export interface WorkflowDefinition {
   created_at: string
   updated_at: string
   revision: number
+  format: 'python' | 'task-plan'
   source: string
   content_hash: string
   derived_from: WorkflowLineage | null
@@ -97,6 +98,7 @@ export interface WorkflowDefinition {
 
 export interface WorkflowDefinitionWrite {
   source: string
+  format?: 'python' | 'task-plan'
   name?: string
   description?: string
   slug?: string

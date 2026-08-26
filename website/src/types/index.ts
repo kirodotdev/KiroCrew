@@ -1366,6 +1366,13 @@ export interface WorkflowRunSummary {
   error?: string | null;
   /** Originating chat session, `""` for a UI-launched run that belongs to no chat. */
   session_key?: string;
+  source_format?: 'python' | 'task-plan';
+  driver?: 'workflow' | 'taskrunner' | string;
+  task_id?: string;
+  capabilities?: string[];
+  workflow_id?: string;
+  workflow_slug?: string;
+  workflow_revision?: number;
   /** Title of the most recent `phase_started` event. */
   phase?: string;
   /** Most recent narrator `log` message. */

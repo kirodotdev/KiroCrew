@@ -238,7 +238,6 @@ src/kiro_crew/dashboard/handlers/side.py
 src/kiro_crew/dashboard/handlers/source_providers.py
 src/kiro_crew/dashboard/handlers/sso_login.py
 src/kiro_crew/dashboard/handlers/steering.py
-src/kiro_crew/dashboard/handlers/taskrunner.py
 src/kiro_crew/dashboard/handlers/terminal.py
 src/kiro_crew/dashboard/handlers/themes.py
 src/kiro_crew/dashboard/handlers/tunnel.py
@@ -400,9 +399,6 @@ src/kiro_crew/slack/sessions_view.py
 src/kiro_crew/subagent_persistence.py
 src/kiro_crew/subagent_scale.py
 src/kiro_crew/suggestions.py
-src/kiro_crew/task_models.py
-src/kiro_crew/task_planner.py
-src/kiro_crew/taskrunner.py
 src/kiro_crew/testing/channel_fixtures.py
 src/kiro_crew/testing/fake_acp_backend.py
 src/kiro_crew/tips.py
@@ -413,7 +409,6 @@ src/kiro_crew/webhooks.py
 src/kiro_crew/weixin/client.py
 src/kiro_crew/workflows/agent_exec.py
 src/kiro_crew/workflows/context.py
-src/kiro_crew/workflows/runner.py
 test/conftest.py
 test/fake_mcp_app_server.py
 test/metrics/test_context_occupancy.py
@@ -670,7 +665,6 @@ test/test_dashboard_worktree_coverage.py
 test/test_dashboard_ws_offloop_fanout.py
 test/test_dashboard_ws_task_tracking.py
 test/test_dashboard_yolo_startup.py
-test/test_decompose_yaml.py
 test/test_deferred_disposition_ratchet.py
 test/test_delete_message.py
 test/test_denied_commands_api.py
@@ -788,7 +782,6 @@ test/test_handlers_channel_presets.py
 test/test_handlers_files_upload.py
 test/test_handlers_mcp_coverage.py
 test/test_handlers_memory_coverage.py
-test/test_handlers_taskrunner_coverage.py
 test/test_heartbeat_atomic_merge.py
 test/test_heartbeat_cycle_recycle.py
 test/test_heartbeat_prompt_deliver.py
@@ -1195,7 +1188,6 @@ test/test_tailnet_e2e.py
 test/test_tailnet_origin.py
 test/test_tailnet_serve.py
 test/test_tailnet_session_url.py
-test/test_taskrunner.py
 test/test_taskrunner_atomic_persistence.py
 test/test_taskrunner_autoapprove.py
 test/test_taskrunner_coverage.py

@@ -19,9 +19,12 @@ from kiro_crew.workflows.store import default_workflow_library_dir
 logger = logging.getLogger(__name__)
 
 _LIBRARY_SUBDIR = "library"
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _MAX_SLUG_LENGTH = 64
 _DEFAULT_SEARCH_LIMIT = 3
+SOURCE_FORMAT_PYTHON = "python"
+SOURCE_FORMAT_TASK_PLAN = "task-plan"
+SOURCE_FORMATS = frozenset({SOURCE_FORMAT_PYTHON, SOURCE_FORMAT_TASK_PLAN})
 _WORD_RE = re.compile(r"[a-z0-9]+")
 _IGNORED_SEARCH_WORDS = frozenset(
     {
@@ -106,6 +109,9 @@ class WorkflowDefinitionLibrary:
             try:
                 value = json.loads(path.read_text(encoding="utf-8"))
                 if isinstance(value, dict) and value.get("id"):
+                    # Version 1 predates multi-format definitions and every
+                    # record it could contain was validated Python source.
+                    value.setdefault("format", SOURCE_FORMAT_PYTHON)
                     definitions.append(value)
             except Exception:  # noqa: BLE001 - one corrupt definition must not hide the library
                 logger.debug("workflow library: skip unreadable %s", path, exc_info=True)
@@ -162,8 +168,11 @@ class WorkflowDefinitionLibrary:
         description: str = "",
         slug: str = "",
         derived_from: Optional[dict[str, Any]] = None,
+        source_format: str = SOURCE_FORMAT_PYTHON,
     ) -> dict[str, Any]:
         """Create a definition with its own identity, even for identical source."""
+        if source_format not in SOURCE_FORMATS:
+            raise ValueError(f"unsupported workflow source format: {source_format}")
         content_hash = _source_hash(source)
         created_at = _now()
         workflow_id = f"wfd_{uuid.uuid4().hex[:16]}"
@@ -179,6 +188,7 @@ class WorkflowDefinitionLibrary:
             "slug": self._unique_slug(safe_slug_source),
             "name": safe_name,
             "description": safe_description,
+            "format": source_format,
             "created_at": created_at,
             "updated_at": created_at,
             "revision": 1,
@@ -245,7 +255,13 @@ class WorkflowDefinitionLibrary:
             self._load_all(), key=lambda item: str(item.get("updated_at", "")), reverse=True
         )
 
-    def search(self, intent: str, limit: int = _DEFAULT_SEARCH_LIMIT) -> List[dict[str, Any]]:
+    def search(
+        self,
+        intent: str,
+        limit: int = _DEFAULT_SEARCH_LIMIT,
+        *,
+        source_format: str = "",
+    ) -> List[dict[str, Any]]:
         """Rank saved definitions using deterministic local lexical similarity."""
         query_tokens = _tokens(intent)
         if not query_tokens or limit <= 0:
@@ -253,6 +269,8 @@ class WorkflowDefinitionLibrary:
 
         ranked: list[tuple[int, str, dict[str, Any]]] = []
         for definition in self._load_all():
+            if source_format and definition.get("format") != source_format:
+                continue
             title_tokens = _tokens(f"{definition.get('slug', '')} {definition.get('name', '')}")
             description_tokens = _tokens(str(definition.get("description", "")))
             source_tokens = _tokens(str(definition.get("source", "")))

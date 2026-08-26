@@ -348,6 +348,19 @@ class TestUpdatePlan:
         with pytest.raises(ValueError, match=f"while {status}"):
             await runner.update_plan("plan_1", [])
 
+    @pytest.mark.asyncio
+    async def test_populates_new_empty_chat_plan(self, tmp_path: Path) -> None:
+        runner = _runner(tmp_path)
+        run = _seed_run(runner, tmp_path, tasks=[])
+
+        updated = await runner.update_plan(
+            run.task_id,
+            [{"title": "First"}, {"title": "Second", "depends_on": [1]}],
+        )
+
+        assert [task.title for task in updated.tasks] == ["First", "Second"]
+        assert updated.tasks[1].depends_on == [1]
+
 
 class TestUpdateTask:
     @pytest.mark.asyncio

@@ -24,6 +24,13 @@ export interface RunSnapshot {
   error?: string | null
   event_count?: number
   source?: string
+  source_format?: 'python' | 'task-plan'
+  driver?: 'workflow' | 'taskrunner' | string
+  task_id?: string
+  capabilities?: string[]
+  workflow_id?: string
+  workflow_slug?: string
+  workflow_revision?: number
   events: WfEvent[]
 }
 

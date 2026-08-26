@@ -4652,7 +4652,6 @@
         "workflows": "Flujos de trabajo"
       },
       "workflowsRuns": {
-        "background_runs": "Ejecuciones en segundo plano",
         "budget": "presupuesto",
         "cancel": "Cancelar",
         "cancelling": "Cancelando…",

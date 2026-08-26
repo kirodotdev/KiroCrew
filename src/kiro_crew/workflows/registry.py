@@ -26,9 +26,12 @@ from . import WorkflowEvent
 
 # Run lifecycle states (also the values surfaced to the UI / MCP status tool).
 STATUS_RUNNING = "running"
+STATUS_PAUSED = "paused"
 STATUS_FINISHED = "finished"
 STATUS_FAILED = "failed"
 STATUS_CANCELLED = "cancelled"
+ACTIVE_STATUSES = frozenset({STATUS_RUNNING, STATUS_PAUSED})
+_TERMINAL_EVENT_TYPES = frozenset({"run_finished", "run_failed", "run_cancelled"})
 
 # Max concurrently-tracked runs kept in memory (oldest finished evicted first).
 DEFAULT_MAX_RUNS = 200
@@ -84,6 +87,22 @@ class RunHandle:
     # call_index → bounded reason that call failed. Kept next to agent_results so a
     # missing payload always comes with an explanation instead of a bare ok=False.
     agent_errors: dict = field(default_factory=dict)
+    source_format: str = "python"
+    driver: str = "workflow"
+    task_id: str = ""
+    capabilities: tuple[str, ...] = ()
+    completion_injection: bool = True
+    workflow_id: str = ""
+    workflow_slug: str = ""
+    workflow_revision: int = 0
+    derived_from_workflow_id: str = ""
+    derived_from_revision: int = 0
+    # Off-loop persistence coordination belongs to the run identity itself. It
+    # is live-only state and therefore intentionally absent from snapshots.
+    _persist_lock: Optional[asyncio.Lock] = field(
+        default=None, init=False, repr=False, compare=False
+    )
+    _persist_generation: int = field(default=0, init=False, repr=False, compare=False)
 
     def snapshot(self, *, include_events: bool = True) -> dict:
         """JSON-serializable view of this run (never leaks the asyncio.Task)."""
@@ -95,6 +114,22 @@ class RunHandle:
             "error": self.error,
             "author": self.author,
             "session_key": self.session_key,
+            "source_format": self.source_format,
+            "driver": self.driver,
+            "task_id": self.task_id,
+            "capabilities": list(self.capabilities),
+            "completion_injection": self.completion_injection,
+            "workflow_id": self.workflow_id,
+            "workflow_slug": self.workflow_slug,
+            "workflow_revision": self.workflow_revision,
+            "derived_from": (
+                {
+                    "workflow_id": self.derived_from_workflow_id,
+                    "revision": self.derived_from_revision,
+                }
+                if self.derived_from_workflow_id and self.derived_from_revision
+                else None
+            ),
             "event_count": len(self.events),
             # Live progress for the compact list view (sidebar + chat indicator):
             # the current phase title and most recent narrator line, derived from
@@ -110,7 +145,7 @@ class RunHandle:
         # would both mislead the reader and re-send every payload on every poll.
         # The COUNTS ride in the compact view so a completion message can say the
         # work survived; the payloads themselves ride only in the detail view.
-        ended_without_result = self.status not in (STATUS_RUNNING, STATUS_FINISHED)
+        ended_without_result = self.status not in ACTIVE_STATUSES | {STATUS_FINISHED}
         partials = self.agent_results if ended_without_result else {}
         if partials:
             snap["partial_result_count"] = len(partials)
@@ -156,6 +191,22 @@ class RunHandle:
             "error": self.error,
             "author": self.author,
             "session_key": self.session_key,
+            "source_format": self.source_format,
+            "driver": self.driver,
+            "task_id": self.task_id,
+            "capabilities": list(self.capabilities),
+            "completion_injection": self.completion_injection,
+            "workflow_id": self.workflow_id,
+            "workflow_slug": self.workflow_slug,
+            "workflow_revision": self.workflow_revision,
+            "derived_from": (
+                {
+                    "workflow_id": self.derived_from_workflow_id,
+                    "revision": self.derived_from_revision,
+                }
+                if self.derived_from_workflow_id and self.derived_from_revision
+                else None
+            ),
             "source": self.source,
             "source_is_original": self.source_is_original,
             "args": self.args,
@@ -168,6 +219,7 @@ class RunHandle:
     def from_store_json(cls, obj: dict) -> "RunHandle":
         status = obj.get("status", STATUS_FINISHED)
         error = obj.get("error")
+        derived_from = obj.get("derived_from") or {}
         # A run that was still "running" when the gateway died can never resume in
         # this process — mark it failed (interrupted) so the registry isn't stuck
         # with a zombie and eviction can reclaim it. Give it a clear error if the
@@ -184,6 +236,16 @@ class RunHandle:
             error=error,
             author=obj.get("author", ""),
             session_key=obj.get("session_key", ""),
+            source_format=obj.get("source_format", "python"),
+            driver=obj.get("driver", "workflow"),
+            task_id=obj.get("task_id", ""),
+            capabilities=tuple(obj.get("capabilities") or ()),
+            completion_injection=obj.get("completion_injection", True) is True,
+            workflow_id=obj.get("workflow_id", ""),
+            workflow_slug=obj.get("workflow_slug", ""),
+            workflow_revision=int(obj.get("workflow_revision") or 0),
+            derived_from_workflow_id=str(derived_from.get("workflow_id") or ""),
+            derived_from_revision=int(derived_from.get("revision") or 0),
             source=obj.get("source", ""),
             # Legacy records lack provenance and therefore fail closed.
             source_is_original=obj.get("source_is_original") is True,
@@ -223,23 +285,28 @@ class RunRegistry:
     def _persist(self, handle: RunHandle) -> None:
         if self._store is None:
             return
+        self._persist_snapshot(handle.run_id, handle.to_store_json())
+
+    def _persist_snapshot(self, run_id: str, payload: dict[str, Any]) -> None:
+        """Write a caller-built snapshot without touching loop-affine state."""
         try:
-            self._store.save(handle.run_id, handle.to_store_json())
+            self._store.save(run_id, payload)
         except Exception:  # noqa: BLE001 - persistence must never break a run
             pass
 
     # --- lifecycle ---
-    def register(self, handle: RunHandle) -> None:
+    def register(self, handle: RunHandle, *, persist: bool = True) -> None:
         self._runs[handle.run_id] = handle
         self._runs.move_to_end(handle.run_id)
         self._evict()
-        self._persist(handle)
+        if persist:
+            self._persist(handle)
 
     def _evict(self) -> None:
         # Drop oldest TERMINAL runs first; never evict a still-running run.
         while len(self._runs) > self._max_runs:
             for rid, h in list(self._runs.items()):
-                if h.status != STATUS_RUNNING:
+                if h.status not in ACTIVE_STATUSES:
                     del self._runs[rid]
                     if self._store is not None:
                         try:
@@ -250,7 +317,7 @@ class RunRegistry:
             else:
                 break  # all running — keep them
 
-    def record_event(self, run_id: str, event: WorkflowEvent) -> None:
+    def record_event(self, run_id: str, event: WorkflowEvent, *, persist: bool = True) -> None:
         h = self._runs.get(run_id)
         if h is None:
             return
@@ -262,8 +329,19 @@ class RunRegistry:
                 pass
         # Throttled durable checkpoint while running, so a restart mid-run keeps
         # most of the event stream (and the authored source, recorded at start).
-        if self._store is not None and len(h.events) % self._save_every == 0:
+        if persist and self._store is not None and len(h.events) % self._save_every == 0:
             self._persist(h)
+
+    async def record_event_async(self, run_id: str, event: WorkflowEvent) -> None:
+        """Record an event and move any throttled checkpoint write off-loop."""
+        self.record_event(run_id, event, persist=False)
+        handle = self._runs.get(run_id)
+        if (
+            handle is not None
+            and self._store is not None
+            and len(handle.events) % self._save_every == 0
+        ):
+            await self.persist_async(run_id)
 
     def record_agent_result(
         self,
@@ -300,29 +378,155 @@ class RunRegistry:
         if error or not ok:
             h.agent_errors[call_index] = error or "agent call failed (no reason recorded)"
 
-    def mark_terminal(
+    def _transition_terminal(
         self, run_id: str, status: str, *, result: Any = None, error: Optional[str] = None
-    ) -> None:
+    ) -> Optional[RunHandle]:
         h = self._runs.get(run_id)
-        if h is None or h.status != STATUS_RUNNING:
-            return  # idempotent: only the first terminal transition counts
+        if h is None or h.status not in ACTIVE_STATUSES:
+            return None  # idempotent: only the first terminal transition counts
         h.status = status
         h.result = result
         h.error = error
+        return h
+
+    def _notify_done(self, run_id: str, handle: RunHandle) -> None:
+        if handle.completion_injection and self._on_done is not None:
+            try:
+                self._on_done(run_id, handle.snapshot(include_events=False))
+            except Exception:  # noqa: BLE001
+                pass
+
+    def mark_terminal(
+        self, run_id: str, status: str, *, result: Any = None, error: Optional[str] = None
+    ) -> None:
+        h = self._transition_terminal(run_id, status, result=result, error=error)
+        if h is None:
+            return
         # Durable flush on terminal state — the final result + full stream + the
         # authored script are now complete and reusable across restarts.
         self._persist(h)
-        if self._on_done is not None:
-            try:
-                self._on_done(run_id, h.snapshot(include_events=False))
-            except Exception:  # noqa: BLE001
-                pass
+        self._notify_done(run_id, h)
+
+    async def mark_terminal_async(
+        self, run_id: str, status: str, *, result: Any = None, error: Optional[str] = None
+    ) -> None:
+        """Mark terminal and await the durable flush without blocking the loop."""
+        h = self._transition_terminal(run_id, status, result=result, error=error)
+        if h is None:
+            return
+        await self.persist_async(run_id)
+        self._notify_done(run_id, h)
 
     def persist(self, run_id: str) -> None:
         """Public hook: force-persist a run (e.g. after its source is set mid-run)."""
         h = self._runs.get(run_id)
         if h is not None:
             self._persist(h)
+
+    async def persist_async(self, run_id: str) -> None:
+        """Snapshot on-loop and serialize the durable mirror off-loop per run."""
+        handle = self._runs.get(run_id)
+        if handle is None or self._store is None:
+            return
+        payload = handle.to_store_json()
+        handle._persist_generation += 1
+        generation = handle._persist_generation
+        if handle._persist_lock is None:
+            handle._persist_lock = asyncio.Lock()
+        lock = handle._persist_lock
+
+        async def _write_latest() -> None:
+            async with lock:
+                if generation != handle._persist_generation or self._runs.get(run_id) is not handle:
+                    return
+                await asyncio.to_thread(self._persist_snapshot, run_id, payload)
+
+        write_task = asyncio.create_task(_write_latest())
+        try:
+            await asyncio.shield(write_task)
+        except BaseException:
+            # A worker write cannot be stopped after dispatch. Keep the per-run
+            # lock until it settles so cancellation cannot let another checkpoint
+            # overlap the same temporary file or overtake the durable snapshot.
+            await asyncio.shield(write_task)
+            raise
+
+    def delete(self, run_id: str) -> bool:
+        """Forget one run and its durable record."""
+        handle = self._runs.pop(run_id, None)
+        if handle is None:
+            return False
+        if self._store is not None:
+            try:
+                self._store.delete(run_id)
+            except Exception:  # noqa: BLE001 - in-memory deletion stays authoritative
+                pass
+        return True
+
+    async def delete_async(self, run_id: str) -> bool:
+        """Forget one run while keeping durable deletion off the event loop."""
+        handle = self._runs.pop(run_id, None)
+        if handle is None:
+            return False
+        if self._store is not None:
+            handle._persist_generation += 1
+            if handle._persist_lock is None:
+                handle._persist_lock = asyncio.Lock()
+            lock = handle._persist_lock
+
+            async def _delete_after_writes() -> None:
+                async with lock:
+                    try:
+                        await asyncio.to_thread(self._store.delete, run_id)
+                    except Exception:  # noqa: BLE001 - memory deletion is authoritative
+                        pass
+
+            delete_task = asyncio.create_task(_delete_after_writes())
+            try:
+                await asyncio.shield(delete_task)
+            except BaseException:
+                await asyncio.shield(delete_task)
+                raise
+        return True
+
+    def set_status(self, run_id: str, status: str, *, persist: bool = True) -> bool:
+        """Move a host-driven run between non-terminal lifecycle states."""
+        if status not in ACTIVE_STATUSES:
+            raise ValueError(f"unsupported active workflow status: {status}")
+        handle = self._runs.get(run_id)
+        if handle is None or handle.status not in ACTIVE_STATUSES:
+            return False
+        handle.status = status
+        if persist:
+            self._persist(handle)
+        return True
+
+    def reopen_host_run(self, run_id: str, *, task_id: str = "", persist: bool = True) -> bool:
+        """Reopen a persisted host run while preserving its stable identity.
+
+        A TaskRunner project can survive a gateway restart or be retried after a
+        terminal outcome. The host remains authoritative for that lifecycle, so
+        its shared projection reconciles onto the existing run instead of
+        minting a second history entry.
+        """
+        handle = self._runs.get(run_id)
+        if handle is None or handle.driver == "workflow":
+            return False
+        if task_id and handle.task_id and handle.task_id != task_id:
+            return False
+        # A reopened host run continues one journal identity. Its prior terminal
+        # marker described the interrupted attempt, but leaving it in place would
+        # put a terminal event in the middle of the retried stream.
+        if handle.events and handle.events[-1].type in _TERMINAL_EVENT_TYPES:
+            handle.events.pop()
+        handle.status = STATUS_RUNNING
+        handle.result = None
+        handle.error = None
+        if task_id:
+            handle.task_id = task_id
+        if persist:
+            self._persist(handle)
+        return True
 
     def load_persisted(self) -> int:
         """Rehydrate runs from the store on startup. Returns the count loaded.
@@ -383,6 +587,9 @@ async def start_background_run(
     source: str = "",
     source_is_original: bool = True,
     args: Optional[dict] = None,
+    workflow_id: str = "",
+    workflow_slug: str = "",
+    workflow_revision: int = 0,
 ) -> str:
     """Schedule a workflow run on the loop, register a handle, return its run_id.
 
@@ -401,6 +608,9 @@ async def start_background_run(
         source=source,
         source_is_original=source_is_original,
         args=args or {},
+        workflow_id=workflow_id,
+        workflow_slug=workflow_slug,
+        workflow_revision=workflow_revision,
     )
     registry.register(handle)
 

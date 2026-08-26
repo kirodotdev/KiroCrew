@@ -10,18 +10,22 @@ const READ_ONLY_OPTIONS = {
 
 export default function WorkflowSourceCode({
   source,
+  sourceFormat = 'python',
   onChange,
   ariaLabel,
   compact = false,
 }: {
   source: string
+  sourceFormat?: 'python' | 'task-plan'
   onChange?: (value: string) => void
   ariaLabel: string
   compact?: boolean
 }) {
+  const language = sourceFormat === 'task-plan' ? 'yaml' : 'python'
+  const filename = sourceFormat === 'task-plan' ? 'workflow.yaml' : 'workflow.py'
   const file = useMemo(
-    () => ({ name: 'workflow.py', contents: source }),
-    [source],
+    () => ({ name: filename, contents: source }),
+    [filename, source],
   )
   const editable = onChange !== undefined
 
@@ -36,17 +40,17 @@ export default function WorkflowSourceCode({
       {editable ? (
         <CodeEditor
           content={source}
-          lang="python"
+          lang={language}
           lineNums
           wordWrap={false}
           onChange={onChange}
           flush
-          filePath="workflow.py"
+          filePath={filename}
         />
       ) : (
         <PierreCode
           file={file}
-          langHint="python"
+          langHint={language}
           options={READ_ONLY_OPTIONS}
           scrollClassName="absolute inset-0 overflow-auto pierre-surface"
         />

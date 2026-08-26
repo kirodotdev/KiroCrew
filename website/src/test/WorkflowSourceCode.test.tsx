@@ -73,4 +73,19 @@ describe('WorkflowSourceCode', () => {
     expect(code).toHaveAttribute('data-overflow', 'scroll')
     expect(code?.textContent).toBe(SOURCE)
   })
+
+  it('formats TaskRunner plans as YAML', () => {
+    const source = 'agents:\n  test:\n    prompt: run tests\n'
+    render(
+      <WorkflowSourceCode
+        source={source}
+        sourceFormat="task-plan"
+        ariaLabel="Workflow source"
+      />,
+    )
+
+    expect(
+      screen.getByRole('region', { name: 'Workflow source' }).querySelector('pre'),
+    ).toHaveAttribute('data-language', 'yaml')
+  })
 })

@@ -22,6 +22,7 @@ from kiro_crew.workflows.registry import (
     STATUS_CANCELLED,
     STATUS_FINISHED,
     STATUS_RUNNING,
+    RunHandle,
     RunRegistry,
 )
 from kiro_crew.workflows.runner import WorkflowRunner
@@ -149,3 +150,44 @@ async def test_list_newest_first_and_running_not_evicted() -> None:
 async def test_cancel_unknown_run_is_false() -> None:
     reg = RunRegistry()
     assert await reg.cancel("nope") is False
+
+
+async def test_async_persistence_serializes_and_discards_superseded_snapshots(
+    monkeypatch,
+) -> None:
+    class RecordingStore:
+        def __init__(self) -> None:
+            self.saved_names: list[str] = []
+
+        def save(self, _run_id: str, payload: dict) -> None:
+            self.saved_names.append(payload["name"])
+
+    store = RecordingStore()
+    registry = RunRegistry(store=store)
+    handle = RunHandle(run_id="wf_serial", name="first")
+    registry.register(handle, persist=False)
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def controlled_to_thread(fn, *args):
+        payload = args[1]
+        if payload["name"] == "first":
+            first_started.set()
+            await release_first.wait()
+        return fn(*args)
+
+    monkeypatch.setattr("kiro_crew.workflows.registry.asyncio.to_thread", controlled_to_thread)
+
+    first = asyncio.create_task(registry.persist_async(handle.run_id))
+    await first_started.wait()
+    handle.name = "superseded"
+    superseded = asyncio.create_task(registry.persist_async(handle.run_id))
+    await asyncio.sleep(0)
+    handle.name = "latest"
+    latest = asyncio.create_task(registry.persist_async(handle.run_id))
+    await asyncio.sleep(0)
+
+    release_first.set()
+    await asyncio.gather(first, superseded, latest)
+
+    assert store.saved_names == ["first", "latest"]

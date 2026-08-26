@@ -3524,7 +3524,6 @@
         "workflows": "Workflows"
       },
       "workflowsRuns": {
-        "background_runs": "Background runs",
         "budget": "budget",
         "could_not_load_runs": "Could not load runs:",
         "events": "events",

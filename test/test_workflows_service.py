@@ -56,6 +56,31 @@ class FakeSessions:
             self.cleaned.append(key)
 
 
+class BlockingSourceStore:
+    """Store that holds source-bearing writes until a test releases them."""
+
+    def __init__(self, *, wait_timeout: float = 2) -> None:
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.save_thread_id = 0
+        self.deleted: list[str] = []
+        self.wait_timeout = wait_timeout
+
+    def load_all(self) -> list[dict]:
+        return []
+
+    def save(self, _run_id: str, payload: dict) -> None:
+        if not payload.get("source"):
+            return
+        self.save_thread_id = threading.get_ident()
+        self.started.set()
+        if not self.release.wait(timeout=self.wait_timeout):
+            raise TimeoutError("test did not release workflow persistence")
+
+    def delete(self, run_id: str) -> None:
+        self.deleted.append(run_id)
+
+
 def _patch_stream(monkeypatch, replies: list[str]) -> dict:
     """Patch stream_and_collect to return successive canned replies."""
     state = {"i": 0}
@@ -172,6 +197,30 @@ async def test_author_uses_a_matching_saved_workflow_as_an_adaptation_example(
     assert out["derived_from"] == {"workflow_id": parent["id"], "revision": 1}
 
 
+async def test_authoring_does_not_use_task_plans_as_python_examples(monkeypatch, tmp_path) -> None:
+    library = WorkflowDefinitionLibrary(tmp_path)
+    task_plan = library.create(
+        source="agents:\n  debug:\n    prompt: debug the failure\n",
+        name="Debug Task Plan",
+        source_format="task-plan",
+    )
+    captured: list[str] = []
+
+    async def fake_stream(provider, message, **kw):
+        captured.append(message)
+        return GOOD_SCRIPT
+
+    import kiro_crew.workflows.service as svc_mod
+
+    monkeypatch.setattr(svc_mod, "stream_and_collect", fake_stream)
+    svc = WorkflowService(sessions=FakeSessions([]), persist=False, definition_library=library)
+
+    out = await svc.author("debug the failure")
+
+    assert out["ok"] is True
+    assert task_plan["id"] not in captured[0]
+
+
 async def test_author_rejects_lineage_to_an_unsupplied_historical_revision(
     monkeypatch, tmp_path
 ) -> None:
@@ -238,6 +287,26 @@ async def test_save_and_update_definition_validate_before_persisting(tmp_path) -
     invalid = svc.save_definition("import os\n")
     assert invalid["ok"] is False
     assert len(library.list()) == 1
+
+
+async def test_save_and_update_task_plan_definition_use_yaml_validation(tmp_path) -> None:
+    library = WorkflowDefinitionLibrary(tmp_path)
+    svc = WorkflowService(sessions=FakeSessions([]), persist=False, definition_library=library)
+    source = "agents:\n  test:\n    prompt: run tests\n    force_approval: true\n"
+
+    saved = svc.save_definition(source, name="Test", source_format="task-plan")
+    updated = svc.update_definition(
+        saved["definition"]["id"],
+        source=source.replace("run tests", "run the full suite"),
+        expected_revision=1,
+    )
+    rejected = svc.save_definition("agents: []\n", source_format="task-plan")
+
+    assert saved["ok"] is True
+    assert saved["definition"]["format"] == "task-plan"
+    assert updated["ok"] is True
+    assert updated["definition"]["format"] == "task-plan"
+    assert rejected["ok"] is False
 
 
 async def test_update_definition_distinguishes_missing_from_stale_revision(tmp_path) -> None:
@@ -349,6 +418,228 @@ async def test_promote_run_uses_raw_source_and_declared_lineage(tmp_path) -> Non
     }
 
 
+async def test_promote_paused_taskrunner_plan_saves_a_task_plan_definition(tmp_path) -> None:
+    library = WorkflowDefinitionLibrary(tmp_path)
+    svc = WorkflowService(sessions=FakeSessions([]), persist=False, definition_library=library)
+    source = "agents:\n  test:\n    prompt: run tests\n    force_approval: true\n"
+    run_id = await svc.begin_host_run(
+        name="Test project",
+        source=source,
+        source_format="task-plan",
+        task_id="task_123",
+        driver="taskrunner",
+    )
+    await svc.pause(run_id)
+
+    promoted = await svc.promote_run_definition(run_id, name="Test project")
+
+    assert promoted["ok"] is True
+    assert promoted["definition"]["format"] == "task-plan"
+    assert promoted["definition"]["source"] == source
+
+
+async def test_restored_paused_host_run_continues_its_event_sequence(tmp_path) -> None:
+    store = WorkflowRunStore(tmp_path / "store")
+    original = WorkflowService(sessions=FakeSessions([]), store=store)
+    run_id = await original.begin_host_run(
+        name="Restorable plan",
+        source="agents:\n  test:\n    prompt: run tests\n",
+        source_format="task-plan",
+        task_id="task_123",
+        driver="taskrunner",
+    )
+    await original.phase(run_id, "Planning")
+    await original.pause(run_id)
+
+    restored = WorkflowService(sessions=FakeSessions([]), store=store)
+    task = asyncio.create_task(asyncio.sleep(0))
+    try:
+        assert await restored.rebind(run_id, task, task_id="task_123") is True
+        await restored.phase(run_id, "Execution")
+        await restored.finish(run_id, {"task_id": "task_123"})
+    finally:
+        await task
+
+    snapshot = restored.result(run_id)
+    assert snapshot["status"] == "finished"
+    assert [event["seq"] for event in snapshot["events"]] == list(range(len(snapshot["events"])))
+    assert snapshot["events"][-1]["type"] == "run_finished"
+
+
+async def test_restored_running_host_run_reopens_with_the_same_identity(tmp_path) -> None:
+    store = WorkflowRunStore(tmp_path / "store")
+    original = WorkflowService(sessions=FakeSessions([]), store=store)
+    run_id = await original.begin_host_run(
+        name="Interrupted plan",
+        source="agents:\n  test:\n    prompt: run tests\n",
+        source_format="task-plan",
+        task_id="task_123",
+        driver="taskrunner",
+    )
+
+    restored = WorkflowService(sessions=FakeSessions([]), store=store)
+    assert restored.status(run_id)["status"] == "failed"
+    task = asyncio.create_task(asyncio.sleep(0))
+    try:
+        assert await restored.rebind(run_id, task, task_id="task_123") is True
+    finally:
+        await task
+
+    assert restored.status(run_id)["status"] == "running"
+    assert [run["run_id"] for run in restored.list_runs()] == [run_id]
+
+
+async def test_retried_terminal_host_run_replaces_its_terminal_event(tmp_path) -> None:
+    svc = WorkflowService(sessions=FakeSessions([]), persist=False)
+    run_id = await svc.begin_host_run(
+        name="Retried plan",
+        source="agents:\n  test:\n    prompt: run tests\n",
+        source_format="task-plan",
+        task_id="task_123",
+        driver="taskrunner",
+    )
+    await svc.phase(run_id, "Execution")
+    await svc.fail(run_id, "interrupted")
+
+    task = asyncio.create_task(asyncio.sleep(0))
+    try:
+        assert await svc.rebind(run_id, task, task_id="task_123") is True
+        await svc.phase(run_id, "Execution")
+        await svc.finish(run_id, {"task_id": "task_123"})
+    finally:
+        await task
+
+    events = svc.result(run_id)["events"]
+    terminal_types = {"run_finished", "run_failed", "run_cancelled"}
+    assert [event["seq"] for event in events] == list(range(len(events)))
+    assert [event["type"] for event in events if event["type"] in terminal_types] == [
+        "run_finished"
+    ]
+    assert events[-1]["type"] == "run_finished"
+
+
+async def test_host_step_result_summary_is_bounded(tmp_path) -> None:
+    svc = WorkflowService(sessions=FakeSessions([]), persist=False)
+    run_id = await svc.begin_host_run(
+        name="Bounded plan",
+        source_format="task-plan",
+        task_id="task_123",
+        driver="taskrunner",
+    )
+
+    await svc.step(run_id, 1, "Test", status="finished", result="x" * 1000)
+
+    event = svc.result(run_id)["events"][-1]
+    assert event["type"] == "agent_finished"
+    assert event["data"]["result_summary"] == "x" * 120
+
+
+async def test_host_source_persistence_runs_off_event_loop() -> None:
+    store = BlockingSourceStore()
+    svc = WorkflowService(sessions=FakeSessions([]), store=store)
+    run_id = await svc.begin_host_run(
+        name="Large plan",
+        source_format="task-plan",
+        task_id="task_123",
+        driver="taskrunner",
+    )
+    loop_thread_id = threading.get_ident()
+    source = "agents:\n  test:\n    prompt: " + "x" * (256 * 1024)
+
+    update = asyncio.create_task(svc.set_source(run_id, source, source_format="task-plan"))
+    try:
+        assert await asyncio.to_thread(store.started.wait, 1)
+        await asyncio.sleep(0)
+        assert update.done() is False
+        assert store.save_thread_id != loop_thread_id
+    finally:
+        store.release.set()
+
+    assert await update is True
+    assert svc.result(run_id)["source"] == source
+
+
+async def test_host_registration_persistence_runs_off_event_loop() -> None:
+    store = BlockingSourceStore()
+    svc = WorkflowService(sessions=FakeSessions([]), store=store)
+    loop_thread_id = threading.get_ident()
+    source = "agents:\n  test:\n    prompt: " + "x" * (256 * 1024)
+
+    registration = asyncio.create_task(
+        svc.begin_host_run(
+            name="Large saved plan",
+            source=source,
+            source_format="task-plan",
+            task_id="task_456",
+            driver="taskrunner",
+        )
+    )
+    try:
+        assert await asyncio.to_thread(store.started.wait, 1)
+        await asyncio.sleep(0)
+        assert registration.done() is False
+        assert store.save_thread_id != loop_thread_id
+    finally:
+        store.release.set()
+
+    run_id = await registration
+    assert svc.result(run_id)["source"] == source
+
+
+async def test_cancelled_host_registration_removes_the_partial_run() -> None:
+    store = BlockingSourceStore()
+    svc = WorkflowService(sessions=FakeSessions([]), store=store)
+    source = "agents:\n  test:\n    prompt: " + "x" * (256 * 1024)
+    registration = asyncio.create_task(
+        svc.begin_host_run(
+            name="Cancelled plan",
+            source=source,
+            source_format="task-plan",
+            task_id="task_cancelled",
+            driver="taskrunner",
+        )
+    )
+    assert await asyncio.to_thread(store.started.wait, 1)
+
+    registration.cancel()
+    store.release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await registration
+
+    assert svc.list_runs() == []
+    assert store.deleted == ["wf_000001"]
+
+
+async def test_host_rebind_persistence_runs_off_event_loop() -> None:
+    store = BlockingSourceStore(wait_timeout=0.1)
+    store.release.set()
+    svc = WorkflowService(sessions=FakeSessions([]), store=store)
+    run_id = await svc.begin_host_run(
+        name="Large resumable plan",
+        source="agents:\n  test:\n    prompt: " + "x" * (256 * 1024),
+        source_format="task-plan",
+        task_id="task_rebind",
+        driver="taskrunner",
+    )
+    store.started.clear()
+    store.release.clear()
+    store.save_thread_id = 0
+    loop_thread_id = threading.get_ident()
+    driver_task = asyncio.create_task(asyncio.sleep(10))
+
+    checkpoint = asyncio.create_task(svc.rebind(run_id, driver_task, task_id="task_rebind"))
+    try:
+        assert await asyncio.to_thread(store.started.wait, 1)
+        await asyncio.sleep(0)
+        assert checkpoint.done() is False
+        assert store.save_thread_id != loop_thread_id
+    finally:
+        store.release.set()
+        driver_task.cancel()
+
+    assert await checkpoint is True
+
+
 async def test_promote_run_rejects_sensitive_raw_source(tmp_path) -> None:
     library = WorkflowDefinitionLibrary(tmp_path)
     svc = WorkflowService(sessions=FakeSessions([]), persist=False, definition_library=library)
@@ -421,6 +712,101 @@ async def test_start_definition_runs_exact_saved_source_with_input(tmp_path) -> 
     assert started["workflow_id"] == saved["id"]
     assert started["revision"] == 1
     assert snap["result"] == {"input": "hello world"}
+    assert snap["workflow_id"] == saved["id"]
+    assert snap["workflow_slug"] == saved["slug"]
+    assert snap["workflow_revision"] == saved["revision"]
+
+    promoted = await svc.promote_run_definition(started["run_id"], name="Duplicate")
+    assert promoted["ok"] is False
+    assert promoted["already_saved"] is True
+
+
+async def test_unedited_saved_definition_rerun_preserves_provenance(tmp_path) -> None:
+    library = WorkflowDefinitionLibrary(tmp_path)
+    source = (
+        'META = {"name": "echo", "description": "d"}\n'
+        "async def workflow(ctx):\n"
+        "    return {'input': ctx.args.get('input', '')}\n"
+    )
+    saved = library.create(source=source, name="Echo")
+    svc = WorkflowService(sessions=FakeSessions([]), persist=False, definition_library=library)
+    started = await svc.start_definition(saved["slug"], input_text="hello world")
+    await _wait_terminal(svc, started["run_id"])
+
+    rerun = await svc.rerun_subtree(started["run_id"])
+    snap = await _wait_terminal(svc, rerun["run_id"])
+
+    assert snap["workflow_id"] == saved["id"]
+    assert snap["workflow_slug"] == saved["slug"]
+    assert snap["workflow_revision"] == saved["revision"]
+    promoted = await svc.promote_run_definition(rerun["run_id"], name="Duplicate")
+    assert promoted["ok"] is False
+    assert promoted["already_saved"] is True
+
+
+async def test_task_plan_definition_accepts_structured_input_arg(tmp_path) -> None:
+    library = WorkflowDefinitionLibrary(tmp_path)
+    saved = library.create(
+        source="agents:\n  test:\n    prompt: run tests\n",
+        name="Test project",
+        source_format="task-plan",
+    )
+
+    class FakeTaskRunner:
+        async def start_workflow_definition(self, definition, **kwargs):
+            assert definition == saved
+            assert kwargs["input_text"] == "structured input"
+            return {"task_id": "task_123", "run_id": "wf_task"}
+
+    svc = WorkflowService(
+        sessions=FakeSessions([]),
+        persist=False,
+        definition_library=library,
+        task_runner=FakeTaskRunner(),
+    )
+
+    started = await svc.start_definition(saved["slug"], args={"input": "structured input"})
+    assert started["run_id"] == "wf_task"
+
+
+async def test_start_task_plan_definition_delegates_to_taskrunner_without_python_execution(
+    tmp_path,
+) -> None:
+    library = WorkflowDefinitionLibrary(tmp_path)
+    saved = library.create(
+        source="agents:\n  test:\n    prompt: run tests\n",
+        name="Test project",
+        source_format="task-plan",
+    )
+
+    class FakeTaskRunner:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        async def start_workflow_definition(self, definition, **kwargs):
+            self.calls.append({"definition": definition, **kwargs})
+            return {"task_id": "task_123", "run_id": "wf_task"}
+
+    task_runner = FakeTaskRunner()
+    svc = WorkflowService(
+        sessions=FakeSessions([]),
+        persist=False,
+        definition_library=library,
+        task_runner=task_runner,
+    )
+
+    started = await svc.start_definition(saved["slug"], input_text="from slash")
+
+    assert started["run_id"] == "wf_task"
+    assert started["task_id"] == "task_123"
+    assert task_runner.calls == [
+        {
+            "definition": saved,
+            "input_text": "from slash",
+            "author": "",
+            "session_key": "",
+        }
+    ]
 
 
 async def test_start_definition_loads_saved_source_off_the_event_loop(
@@ -499,6 +885,72 @@ async def test_concurrency_cap_flows_to_runner() -> None:
     svc = WorkflowService(sessions=FakeSessions([]), concurrency=5)
     runner = svc._runner("wf_x")
     assert runner._concurrency == 5
+
+
+async def test_host_run_uses_the_shared_history_without_chat_completion_injection() -> None:
+    done: list[dict] = []
+    svc = WorkflowService(
+        sessions=FakeSessions([]),
+        persist=False,
+        on_done=lambda rid, snap: done.append({"rid": rid, **snap}),
+    )
+
+    run_id = await svc.begin_host_run(
+        name="Ship release",
+        source="agents:\n  test:\n    prompt: run tests\n",
+        source_format="task-plan",
+        task_id="task_123",
+        driver="taskrunner",
+        capabilities=("pause", "cancel", "retry", "save"),
+    )
+    driver_task = asyncio.create_task(asyncio.sleep(0))
+    await svc.bind_task(run_id, driver_task, task_id="task_123")
+    await svc.phase(run_id, "Execution")
+    await svc.step(run_id, 1, "Run tests", status="running")
+    await svc.log(run_id, "Running the existing TaskRunner executor")
+    await svc.step(run_id, 1, "Run tests", status="finished", result="passed")
+    await svc.finish(run_id, {"task_id": "task_123", "status": "completed"})
+    await driver_task
+
+    snap = svc.result(run_id)
+    assert snap is not None
+    assert snap["status"] == "finished"
+    assert snap["source_format"] == "task-plan"
+    assert snap["driver"] == "taskrunner"
+    assert snap["task_id"] == "task_123"
+    assert snap["capabilities"] == ["pause", "cancel", "retry", "save"]
+    assert [event["type"] for event in snap["events"]] == [
+        "run_started",
+        "phase_started",
+        "agent_started",
+        "log",
+        "agent_finished",
+        "run_finished",
+    ]
+    assert done == []
+
+
+async def test_host_run_can_pause_and_rebind_the_same_run() -> None:
+    svc = WorkflowService(sessions=FakeSessions([]), persist=False)
+    run_id = await svc.begin_host_run(
+        name="Reusable task plan",
+        source_format="task-plan",
+        task_id="task_456",
+        driver="taskrunner",
+    )
+    first_task = asyncio.create_task(asyncio.sleep(0))
+    await svc.bind_task(run_id, first_task, task_id="task_456")
+    await svc.pause(run_id)
+    await first_task
+
+    assert svc.status(run_id)["status"] == "paused"
+
+    resumed_task = asyncio.create_task(asyncio.sleep(0))
+    await svc.rebind(run_id, resumed_task, task_id="task_456")
+    await resumed_task
+
+    assert svc.status(run_id)["status"] == "running"
+    assert svc.registry.get(run_id).task is resumed_task
 
 
 # --------------------------------------------------------------------------- #

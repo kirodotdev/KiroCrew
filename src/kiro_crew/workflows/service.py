@@ -21,17 +21,33 @@ authoring-reliability gates (G1/G2) cover this shape.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import threading
 from typing import Any, Callable, Optional
 
 from kiro_crew import autonudge
 from kiro_crew.llm_helpers import ToolApprovalPolicy, stream_and_collect
+from kiro_crew.task_planner import decompose_yaml
 
 from .agent_exec import build_agent_fn
 from .agent_pool import build_pooled_agent_fn
-from .library import SensitiveWorkflowSourceError, WorkflowDefinitionLibrary
-from .registry import STATUS_FINISHED, RunRegistry
+from .events import EventStream
+from .library import (
+    SOURCE_FORMAT_PYTHON,
+    SOURCE_FORMAT_TASK_PLAN,
+    SensitiveWorkflowSourceError,
+    WorkflowDefinitionLibrary,
+)
+from .registry import (
+    STATUS_CANCELLED,
+    STATUS_FAILED,
+    STATUS_FINISHED,
+    STATUS_PAUSED,
+    STATUS_RUNNING,
+    RunHandle,
+    RunRegistry,
+)
 from .runner import WorkflowRunner, clamp_run_timeout
 from .store import WorkflowRunStore
 from .validate import validate
@@ -141,6 +157,7 @@ class WorkflowService:
         nudge_authorizer: Optional[Callable[..., Any]] = None,
         timeout_secs: Optional[int] = None,
         definition_library: Any = None,
+        task_runner: Any = None,
     ) -> None:
         # Durable store: runs are mirrored to disk so they survive gateway
         # restarts. Pass persist=False (or store=None) to keep a purely in-memory
@@ -163,6 +180,7 @@ class WorkflowService:
         if on_event is not None:
             self.registry.set_on_event(on_event)
         self._sessions = sessions
+        self._task_runner = task_runner
         # Injected by the gateway: an async ``(*, slot_key, message, idle_secs,
         # max_cycles) -> None`` that runs the SHARED authorize_and_add_nudge
         # chokepoint (ownership/allowlist checks + message limit + SEL audit)
@@ -186,6 +204,7 @@ class WorkflowService:
         # ends. Off => the original cold-start-per-call path (build_agent_fn).
         self._pool_agents = pool_agents
         self._seq = 0
+        self._host_streams: dict[str, EventStream] = {}
         # Rehydrate any persisted runs from a prior process, and continue the
         # run-id sequence past the highest seen so new ids never collide.
         try:
@@ -215,6 +234,229 @@ class WorkflowService:
         # Deterministic, monotonic per process (no time/random — resume-stable).
         self._seq += 1
         return f"wf_{self._seq:06d}"
+
+    async def begin_host_run(
+        self,
+        *,
+        name: str,
+        source: str = "",
+        source_format: str,
+        task_id: str = "",
+        driver: str,
+        author: str = "",
+        session_key: str = "",
+        capabilities: tuple[str, ...] = (),
+        workflow_id: str = "",
+        workflow_slug: str = "",
+        workflow_revision: int = 0,
+        derived_from_workflow_id: str = "",
+        derived_from_revision: int = 0,
+    ) -> str:
+        """Register work executed by a trusted host on the shared run substrate.
+
+        Host runs publish lifecycle and progress only. Their driver keeps all
+        product semantics, including planning, approvals, retries, and cleanup.
+        """
+        run_id = self._new_run_id()
+        handle = RunHandle(
+            run_id=run_id,
+            name=name or run_id,
+            author=author,
+            session_key=session_key,
+            source=source,
+            source_format=source_format,
+            driver=driver,
+            task_id=task_id,
+            capabilities=capabilities,
+            completion_injection=False,
+            workflow_id=workflow_id,
+            workflow_slug=workflow_slug,
+            workflow_revision=workflow_revision,
+            derived_from_workflow_id=derived_from_workflow_id,
+            derived_from_revision=derived_from_revision,
+        )
+        self.registry.register(handle, persist=False)
+        stream = EventStream(run_id)
+        self._host_streams[run_id] = stream
+        script_hash = hashlib.sha256(source.encode("utf-8")).hexdigest() if source else ""
+        self.registry.record_event(
+            run_id,
+            stream.run_started(
+                self._now_fn(),
+                name=handle.name,
+                args={},
+                script_hash=script_hash,
+                budget_total=None,
+            ),
+            persist=False,
+        )
+        persist_task = asyncio.create_task(self.registry.persist_async(run_id))
+        try:
+            await asyncio.shield(persist_task)
+        except BaseException:
+            # The worker write cannot be cancelled once dispatched. Drain it
+            # before deleting so a late atomic replace cannot resurrect a host
+            # run whose registration never returned to its driver.
+            try:
+                await asyncio.shield(persist_task)
+            finally:
+                self._host_streams.pop(run_id, None)
+                await asyncio.shield(self.registry.delete_async(run_id))
+            raise
+        return run_id
+
+    async def bind_task(self, run_id: str, task: "asyncio.Task[Any]", *, task_id: str = "") -> bool:
+        """Bind cancellation of a shared run to its host driver's live task."""
+        handle = self.registry.get(run_id)
+        if handle is None:
+            return False
+        handle.task = task
+        if task_id:
+            handle.task_id = task_id
+        await self.registry.persist_async(run_id)
+        return True
+
+    def _host_stream(self, run_id: str) -> Optional[EventStream]:
+        """Return a stream that continues a host run's persisted sequence."""
+        stream = self._host_streams.get(run_id)
+        if stream is not None:
+            return stream
+        handle = self.registry.get(run_id)
+        if handle is None or handle.driver == "workflow":
+            return None
+        next_seq = max((event.seq for event in handle.events), default=-1) + 1
+        stream = EventStream(run_id, starting_seq=next_seq)
+        self._host_streams[run_id] = stream
+        return stream
+
+    async def phase(self, run_id: str, title: str) -> None:
+        stream = self._host_stream(run_id)
+        if stream is not None:
+            await self.registry.record_event_async(
+                run_id, stream.phase_started(self._now_fn(), title=title)
+            )
+
+    async def log(self, run_id: str, message: str) -> None:
+        stream = self._host_stream(run_id)
+        if stream is not None:
+            await self.registry.record_event_async(
+                run_id, stream.log(self._now_fn(), message=message)
+            )
+
+    async def set_source(
+        self,
+        run_id: str,
+        source: str,
+        *,
+        source_format: str = "",
+        clear_definition: bool = False,
+    ) -> bool:
+        handle = self.registry.get(run_id)
+        if handle is None:
+            return False
+        handle.source = source
+        if source_format:
+            handle.source_format = source_format
+        if clear_definition:
+            if (
+                handle.workflow_id
+                and handle.workflow_revision
+                and not handle.derived_from_workflow_id
+            ):
+                handle.derived_from_workflow_id = handle.workflow_id
+                handle.derived_from_revision = handle.workflow_revision
+            handle.workflow_id = ""
+            handle.workflow_slug = ""
+            handle.workflow_revision = 0
+        # TaskRunner plans can reach the 256 KiB request ceiling. Persisting that
+        # source performs JSON encoding plus an atomic disk write, so keep the
+        # loop-affine mutation above on the event loop and move only the durable
+        # mirror to a worker thread.
+        await self.registry.persist_async(run_id)
+        return True
+
+    async def step(
+        self,
+        run_id: str,
+        index: int,
+        title: str,
+        *,
+        status: str,
+        result: str = "",
+        error: str = "",
+    ) -> None:
+        """Publish one host step using the common agent progress vocabulary."""
+        stream = self._host_stream(run_id)
+        if stream is None:
+            return
+        agent_id = f"taskrunner:{index}"
+        if status == STATUS_RUNNING:
+            snapshot = self.registry.status(run_id) or {}
+            event = stream.agent_started(
+                self._now_fn(),
+                agent_id=agent_id,
+                label=title,
+                phase=snapshot.get("phase", ""),
+                call_index=index,
+            )
+        else:
+            event = stream.agent_finished(
+                self._now_fn(),
+                agent_id=agent_id,
+                result_summary=result[:120],
+                ok=status == STATUS_FINISHED,
+                error=error,
+            )
+        await self.registry.record_event_async(run_id, event)
+
+    async def pause(self, run_id: str) -> bool:
+        handle = self.registry.get(run_id)
+        if handle is not None:
+            handle.task = None
+        if not self.registry.set_status(run_id, STATUS_PAUSED, persist=False):
+            return False
+        await self.registry.persist_async(run_id)
+        return True
+
+    async def rebind(self, run_id: str, task: "asyncio.Task[Any]", *, task_id: str = "") -> bool:
+        if not self.registry.set_status(run_id, STATUS_RUNNING, persist=False):
+            if not self.registry.reopen_host_run(run_id, task_id=task_id, persist=False):
+                return False
+        self._host_stream(run_id)
+        return await self.bind_task(run_id, task, task_id=task_id)
+
+    async def finish(self, run_id: str, result: Any) -> None:
+        stream = self._host_streams.pop(run_id, None)
+        if stream is not None:
+            await self.registry.record_event_async(
+                run_id,
+                stream.run_finished(self._now_fn(), result=result, duration_s=0.0),
+            )
+        await self.registry.mark_terminal_async(run_id, STATUS_FINISHED, result=result)
+
+    async def fail(self, run_id: str, error: str, *, where: str = "host") -> None:
+        stream = self._host_streams.pop(run_id, None)
+        if stream is not None:
+            await self.registry.record_event_async(
+                run_id,
+                stream.run_failed(self._now_fn(), error=error, where=where),
+            )
+        await self.registry.mark_terminal_async(run_id, STATUS_FAILED, error=error)
+
+    async def cancel_host_run(self, run_id: str, reason: str = "cancelled") -> None:
+        stream = self._host_streams.pop(run_id, None)
+        if stream is not None:
+            await self.registry.record_event_async(
+                run_id,
+                stream.run_cancelled(self._now_fn(), reason=reason),
+            )
+        await self.registry.mark_terminal_async(run_id, STATUS_CANCELLED, error=reason)
+
+    async def delete_run(self, run_id: str) -> bool:
+        """Delete a shared run after its owning product has stopped it."""
+        self._host_streams.pop(run_id, None)
+        self._nudge_tasks.pop(run_id, None)
+        return await self.registry.delete_async(run_id)
 
     def _nudge_port(
         self,
@@ -535,6 +777,9 @@ class WorkflowService:
         session_key: str = "",
         budget_total: Optional[int] = None,
         timeout_secs: Optional[int] = None,
+        workflow_id: str = "",
+        workflow_slug: str = "",
+        workflow_revision: int = 0,
     ) -> dict:
         """Validate + launch a background run; return {run_id} or {error}.
 
@@ -555,6 +800,9 @@ class WorkflowService:
             author=author,
             session_key=session_key,
             budget_total=budget_total,
+            workflow_id=workflow_id,
+            workflow_slug=workflow_slug,
+            workflow_revision=workflow_revision,
         )
         return {"run_id": run_id, "name": name or (vr.meta or {}).get("name", "")}
 
@@ -567,7 +815,15 @@ class WorkflowService:
 
     def _search_definitions(self, intent: str) -> list[dict[str, Any]]:
         with self._definition_lock:
-            return self._definition_library.search(intent, limit=_AUTHOR_REFERENCE_LIMIT)
+            return self._definition_library.search(
+                intent,
+                limit=_AUTHOR_REFERENCE_LIMIT,
+                source_format=SOURCE_FORMAT_PYTHON,
+            )
+
+    def attach_task_runner(self, task_runner: Any) -> None:
+        """Register the TaskRunner start port for saved task-plan definitions."""
+        self._task_runner = task_runner
 
     def get_definition(self, workflow_ref: str) -> Optional[dict[str, Any]]:
         with self._definition_lock:
@@ -581,13 +837,25 @@ class WorkflowService:
         description: str = "",
         slug: str = "",
         derived_from: Any = None,
+        source_format: str = SOURCE_FORMAT_PYTHON,
     ) -> dict[str, Any]:
-        """Validate and explicitly promote an authored script into the library."""
+        """Validate and explicitly promote a source definition into the library."""
         with self._definition_lock:
-            vr = validate(source)
-            if not vr.ok:
-                return {"ok": False, "error": "; ".join(vr.errors), "errors": vr.errors}
-            meta = vr.meta or {}
+            errors: list[str] = []
+            meta: dict[str, Any] = {}
+            if source_format == SOURCE_FORMAT_PYTHON:
+                vr = validate(source)
+                errors = list(vr.errors)
+                meta = vr.meta or {}
+            elif source_format == SOURCE_FORMAT_TASK_PLAN:
+                try:
+                    decompose_yaml(source)
+                except (ImportError, ValueError, KeyError) as exc:
+                    errors = [str(exc)]
+            else:
+                errors = [f"unsupported workflow source format: {source_format}"]
+            if errors:
+                return {"ok": False, "error": "; ".join(errors), "errors": errors}
             if derived_from is not None:
                 definitions = self._definition_library.list()
                 if not _lineage_exists(derived_from, definitions):
@@ -600,6 +868,7 @@ class WorkflowService:
                     description=description or str(meta.get("description", "")),
                     slug=slug,
                     derived_from=derived_from,
+                    source_format=source_format,
                 )
             except SensitiveWorkflowSourceError as exc:
                 return {"ok": False, "error": str(exc), "errors": [str(exc)]}
@@ -613,11 +882,18 @@ class WorkflowService:
         description: str = "",
         slug: str = "",
     ) -> dict[str, Any]:
-        """Promote a completed run from its unredacted server-side snapshot."""
+        """Promote a reusable run source from its unredacted server snapshot."""
         handle = self.registry.get(run_id)
         if handle is None:
             return {"ok": False, "error": "no such workflow run", "not_found": True}
-        if handle.status != STATUS_FINISHED:
+        if handle.workflow_id:
+            return {
+                "ok": False,
+                "error": "saved workflow invocations are already reusable",
+                "already_saved": True,
+            }
+        promotable_plan = handle.driver == "taskrunner" and handle.status == STATUS_PAUSED
+        if handle.status != STATUS_FINISHED and not promotable_plan:
             return {
                 "ok": False,
                 "error": "workflow run is not finished",
@@ -632,14 +908,31 @@ class WorkflowService:
         source = handle.source
         if not source:
             return {"ok": False, "error": "workflow run has no source", "no_source": True}
-        validated = validate(source)
-        if not validated.ok:
-            return {
-                "ok": False,
-                "error": "; ".join(validated.errors),
-                "errors": validated.errors,
-            }
-        derived_from = _declared_lineage(validated.meta or {})
+        if handle.source_format == SOURCE_FORMAT_PYTHON:
+            validated = validate(source)
+            if not validated.ok:
+                return {
+                    "ok": False,
+                    "error": "; ".join(validated.errors),
+                    "errors": validated.errors,
+                }
+            derived_from = _declared_lineage(validated.meta or {})
+        elif handle.source_format == SOURCE_FORMAT_TASK_PLAN:
+            try:
+                decompose_yaml(source)
+            except (ImportError, ValueError, KeyError) as exc:
+                return {"ok": False, "error": str(exc), "errors": [str(exc)]}
+            derived_from = (
+                {
+                    "workflow_id": handle.derived_from_workflow_id,
+                    "revision": handle.derived_from_revision,
+                }
+                if handle.derived_from_workflow_id and handle.derived_from_revision
+                else None
+            )
+        else:
+            error = f"unsupported workflow source format: {handle.source_format}"
+            return {"ok": False, "error": error, "errors": [error]}
         return await asyncio.to_thread(
             self.save_definition,
             source,
@@ -647,6 +940,7 @@ class WorkflowService:
             description=description,
             slug=slug,
             derived_from=derived_from,
+            source_format=handle.source_format,
         )
 
     def update_definition(
@@ -668,9 +962,20 @@ class WorkflowService:
                     "error": "no such saved workflow",
                     "not_found": True,
                 }
-            vr = validate(source)
-            if not vr.ok:
-                return {"ok": False, "error": "; ".join(vr.errors), "errors": vr.errors}
+            source_format = str(current.get("format") or SOURCE_FORMAT_PYTHON)
+            if source_format == SOURCE_FORMAT_PYTHON:
+                vr = validate(source)
+                errors = list(vr.errors)
+            elif source_format == SOURCE_FORMAT_TASK_PLAN:
+                try:
+                    decompose_yaml(source)
+                    errors = []
+                except (ImportError, ValueError, KeyError) as exc:
+                    errors = [str(exc)]
+            else:
+                errors = [f"unsupported workflow source format: {source_format}"]
+            if errors:
+                return {"ok": False, "error": "; ".join(errors), "errors": errors}
             try:
                 definition = self._definition_library.update(
                     str(current["id"]),
@@ -704,8 +1009,32 @@ class WorkflowService:
         """Run the exact current revision of a named saved workflow."""
         definition = await asyncio.to_thread(self.get_definition, workflow_ref)
         if definition is None:
-            return {"error": f"no such saved workflow: {workflow_ref}"}
+            return {"error": f"no such saved workflow: {workflow_ref}", "not_found": True}
         run_args = dict(args or {})
+        effective_input = input_text or str(run_args.get("input", ""))
+        if definition.get("format") == SOURCE_FORMAT_TASK_PLAN:
+            if self._task_runner is None:
+                return {
+                    "error": "task runner is not available for this workflow",
+                    "unavailable": True,
+                }
+            started = await self._task_runner.start_workflow_definition(
+                definition,
+                input_text=effective_input,
+                author=author,
+                session_key=session_key,
+            )
+            if "run_id" in started:
+                started.update(
+                    {
+                        "workflow_id": definition["id"],
+                        "slug": definition["slug"],
+                        "revision": definition["revision"],
+                    }
+                )
+            elif "error" in started:
+                started["admission_rejected"] = True
+            return started
         if input_text:
             run_args["input"] = input_text
         started = await self.start(
@@ -716,6 +1045,9 @@ class WorkflowService:
             session_key=session_key,
             budget_total=budget_total,
             timeout_secs=timeout_secs,
+            workflow_id=str(definition["id"]),
+            workflow_slug=str(definition["slug"]),
+            workflow_revision=int(definition["revision"]),
         )
         if "run_id" in started:
             started.update(
@@ -790,6 +1122,9 @@ class WorkflowService:
             replay_results=replay_results,
             replay_before=replay_before,
             source_is_original=edited or prior.source_is_original,
+            workflow_id="" if edited else prior.workflow_id,
+            workflow_slug="" if edited else prior.workflow_slug,
+            workflow_revision=0 if edited else prior.workflow_revision,
         )
         return {
             "run_id": new_id,

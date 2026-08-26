@@ -1244,9 +1244,9 @@ class TestFileSend:
 
         with patch.object(mcp_core, "_post", side_effect=_post) as m:
             out = _call_tool("file_send", {"path": str(src), "channel": "C0TRACKED123"})
-        assert all(c[0][0] != "/api/channel/upload-file" for c in m.call_args_list), (
-            "native delivery must not run for an explicitly named channel"
-        )
+        assert all(
+            c[0][0] != "/api/channel/upload-file" for c in m.call_args_list
+        ), "native delivery must not run for an explicitly named channel"
         assert any(c[0][0] == "/api/slack/upload-file" for c in m.call_args_list)
         assert out == "File sent: report.txt"
 

@@ -12,7 +12,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol
 
 from kiro_crew import git_coord, shutdown_event
 from kiro_crew.atomic_write import atomic_write
@@ -57,6 +57,7 @@ from kiro_crew.task_planner import (
 )
 from kiro_crew.task_planner import plan_to_chat_context as _planner_plan_to_chat_context
 from kiro_crew.task_planner import (
+    plan_to_yaml,
     update_plan_tasks,
 )
 from kiro_crew.task_reporter import (  # noqa: F401  (NotifyCallback re-exported)
@@ -96,6 +97,65 @@ _DEFAULT_TOKEN_BUDGET = DEFAULT_TOKEN_BUDGET
 _HEARTBEAT_INTERVAL = 30  # watchdog checks process liveness every 30s
 _DEAD_THRESHOLD = 2  # consecutive dead checks before fail-fast reset
 _RESULT_MEM_CAP = 4000  # truncate task.result in memory after step completes
+_WORKFLOW_RESULT_SUMMARY_CAP = 120
+
+
+class WorkflowRunPublisher(Protocol):
+    """Narrow publication port from TaskRunner into shared workflow history."""
+
+    async def begin_host_run(
+        self,
+        *,
+        name: str,
+        source: str = "",
+        source_format: str,
+        task_id: str = "",
+        driver: str,
+        author: str = "",
+        session_key: str = "",
+        capabilities: tuple[str, ...] = (),
+        workflow_id: str = "",
+        workflow_slug: str = "",
+        workflow_revision: int = 0,
+        derived_from_workflow_id: str = "",
+        derived_from_revision: int = 0,
+    ) -> str: ...
+
+    async def phase(self, run_id: str, title: str) -> None: ...
+
+    async def set_source(
+        self,
+        run_id: str,
+        source: str,
+        *,
+        source_format: str = "",
+        clear_definition: bool = False,
+    ) -> bool: ...
+
+    async def step(
+        self,
+        run_id: str,
+        index: int,
+        title: str,
+        *,
+        status: str,
+        result: str = "",
+        error: str = "",
+    ) -> None: ...
+
+    async def pause(self, run_id: str) -> bool: ...
+
+    async def rebind(self, run_id: str, task: asyncio.Task[Any], *, task_id: str = "") -> bool: ...
+
+    async def finish(self, run_id: str, result: Any) -> None: ...
+
+    async def fail(self, run_id: str, error: str, *, where: str = "host") -> None: ...
+
+    async def cancel_host_run(self, run_id: str, reason: str = "cancelled") -> None: ...
+
+    async def delete_run(self, run_id: str) -> bool: ...
+
+    def status(self, run_id: str) -> dict[str, Any] | None: ...
 
 
 def _auto_approve_scope(task_id: str) -> str:
@@ -136,8 +196,7 @@ def _resolve_workspace_dir(raw: str) -> str:
         except Exception:
             logger.debug("SEL audit for workspace_dir rejection failed", exc_info=True)
         raise ValueError(
-            "workspace_dir resolves to a sensitive/credential path and was "
-            f"rejected: {raw!r}"
+            "workspace_dir resolves to a sensitive/credential path and was " f"rejected: {raw!r}"
         )
     # Accepting a workspace_dir authorizes LLM-driven autonomous execution in
     # that directory — a permission decision, so audit the "allowed" outcome too
@@ -166,15 +225,19 @@ def _decompose_yaml_with_audit(yaml_content: str, task_id: str) -> list[Task]:
     try:
         tasks = decompose_yaml(yaml_content)
         sel().log_tool_invocation(
-            session_key="dashboard", source="taskrunner",
-            tool_name="decompose_yaml", outcome="ok",
+            session_key="dashboard",
+            source="taskrunner",
+            tool_name="decompose_yaml",
+            outcome="ok",
             metadata={"task_id": task_id, "task_count": len(tasks)},
         )
         return tasks
     except Exception as exc:
         sel().log_tool_invocation(
-            session_key="dashboard", source="taskrunner",
-            tool_name="decompose_yaml", outcome="error",
+            session_key="dashboard",
+            source="taskrunner",
+            tool_name="decompose_yaml",
+            outcome="error",
             metadata={"task_id": task_id, "error": str(exc)},
         )
         raise
@@ -200,6 +263,7 @@ class TaskRunner:
         on_approval: Callable[[Task], Awaitable[bool]] | None = None,
         max_parallel_steps: int | None = None,
         workspace_dir: str = "",
+        workflow_service: WorkflowRunPublisher | None = None,
     ) -> None:
         self._sessions = sessions
         self._ctx = context_builder
@@ -253,6 +317,7 @@ class TaskRunner:
         self._persist_written = 0  # highest sequence persisted (lock-guarded)
         self._tasks: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
         self._start_lock = asyncio.Lock()
+        self._plan_ids_in_flight: set[str] = set()
         self._plan_task: asyncio.Task | None = None  # type: ignore[type-arg]
         self._on_tool_approval: Callable[[LLMEvent], Awaitable[bool]] | None = None
         self._stall_cancelled_ids: set[str] = set()
@@ -263,6 +328,10 @@ class TaskRunner:
         # key would outlive the binding it names and send a restart's first
         # notice into a conversation that may no longer resolve.
         self._run_session_keys: dict[str, str] = {}
+        # Optional publication port into the shared workflow history. TaskRunner
+        # remains the owner of planning/execution semantics; this port only
+        # mirrors lifecycle and progress for one unified management surface.
+        self._workflow_service = workflow_service
         self._agent: str = ""
         self._load_runs()
 
@@ -275,6 +344,151 @@ class TaskRunner:
     @property
     def running(self) -> bool:
         return any(not t.done() for t in self._tasks.values())
+
+    def attach_workflow_service(self, service: WorkflowRunPublisher | None) -> None:
+        """Attach the shared workflow publication port after gateway startup."""
+        self._workflow_service = service
+
+    async def _workflow_begin(
+        self, run: Project, *, source: str = "", persist_link: bool = False
+    ) -> None:
+        service = self._workflow_service
+        if service is None or run.workflow_run_id:
+            return
+        try:
+            run.workflow_run_id = await service.begin_host_run(
+                name=run.name or run.task_id,
+                source=source,
+                source_format="task-plan",
+                task_id=run.task_id,
+                driver="taskrunner",
+                session_key=self._run_session_keys.get(run.task_id, ""),
+                capabilities=("pause", "cancel", "retry", "save", "delete"),
+                workflow_id=run.workflow_id,
+                workflow_slug=run.workflow_slug,
+                workflow_revision=run.workflow_revision,
+                derived_from_workflow_id=run.derived_from_workflow_id,
+                derived_from_revision=run.derived_from_revision,
+            )
+            if persist_link:
+                persist_task = asyncio.create_task(self._apersist_runs())
+                try:
+                    await asyncio.shield(persist_task)
+                except BaseException:
+                    # Once begin_host_run returns, cancellation must not strand
+                    # its durable record without the owning project link.
+                    await asyncio.shield(persist_task)
+                    raise
+            await service.phase(run.workflow_run_id, "Planning")
+        except Exception:
+            logger.warning("TaskRunner workflow publication failed to start", exc_info=True)
+
+    async def _workflow_set_plan(
+        self,
+        run: Project,
+        *,
+        pause: bool = False,
+        source: str | None = None,
+        modified: bool = False,
+    ) -> None:
+        if not run.tasks:
+            return
+        rendered_source = plan_to_yaml(run.tasks) if source is None else source
+        if modified:
+            self._mark_workflow_adapted(run)
+        service = self._workflow_service
+        if service is None or not run.workflow_run_id:
+            return
+        try:
+            if modified:
+                await service.set_source(
+                    run.workflow_run_id,
+                    rendered_source,
+                    source_format="task-plan",
+                    clear_definition=True,
+                )
+            else:
+                await service.set_source(
+                    run.workflow_run_id,
+                    rendered_source,
+                    source_format="task-plan",
+                )
+            if pause:
+                await service.pause(run.workflow_run_id)
+        except Exception:
+            logger.warning("TaskRunner workflow plan publication failed", exc_info=True)
+
+    @staticmethod
+    def _mark_workflow_adapted(run: Project) -> None:
+        """Replace exact saved-revision provenance with durable ancestry."""
+        if run.workflow_id and run.workflow_revision and not run.derived_from_workflow_id:
+            run.derived_from_workflow_id = run.workflow_id
+            run.derived_from_revision = run.workflow_revision
+        run.workflow_id = ""
+        run.workflow_slug = ""
+        run.workflow_revision = 0
+
+    async def _workflow_persist_replacement(self, run: Project, *, source: str) -> bool:
+        """Create and durably link a replacement shared workflow run."""
+        run.workflow_run_id = ""
+        await self._workflow_begin(run, source=source, persist_link=True)
+        return bool(run.workflow_run_id)
+
+    async def _workflow_rebind(self, run: Project) -> None:
+        service = self._workflow_service
+        task = asyncio.current_task()
+        if service is None or task is None:
+            return
+        try:
+            snapshot = service.status(run.workflow_run_id) if run.workflow_run_id else None
+            if not snapshot:
+                if not await self._workflow_persist_replacement(
+                    run, source=plan_to_yaml(run.tasks) if run.tasks else ""
+                ):
+                    return
+            if not run.workflow_run_id:
+                return
+            if not await service.rebind(run.workflow_run_id, task, task_id=run.task_id):
+                if not await self._workflow_persist_replacement(
+                    run, source=plan_to_yaml(run.tasks) if run.tasks else ""
+                ):
+                    return
+                await service.rebind(run.workflow_run_id, task, task_id=run.task_id)
+            await service.phase(run.workflow_run_id, "Execution")
+        except Exception:
+            logger.warning("TaskRunner workflow publication failed to bind", exc_info=True)
+
+    async def _workflow_finalize(self, run: Project) -> None:
+        service = self._workflow_service
+        if service is None or not run.workflow_run_id:
+            return
+        try:
+            result = {"task_id": run.task_id, "status": run.status}
+            if run.status == "completed":
+                await service.finish(run.workflow_run_id, result)
+            elif run.status == "paused":
+                await service.pause(run.workflow_run_id)
+            elif run.status == "cancelled":
+                await service.cancel_host_run(run.workflow_run_id, run.error or "cancelled")
+            elif run.status == "failed":
+                await service.fail(
+                    run.workflow_run_id, run.error or "TaskRunner failed", where="taskrunner"
+                )
+        except Exception:
+            logger.warning("TaskRunner workflow publication failed to finalize", exc_info=True)
+
+    async def _workflow_delete_link(self, run: Project) -> None:
+        service = self._workflow_service
+        if service is None or not run.workflow_run_id:
+            return
+        try:
+            await service.delete_run(run.workflow_run_id)
+        except Exception:
+            logger.debug(
+                "delete linked workflow run failed for %s",
+                run.workflow_run_id,
+                exc_info=True,
+            )
 
     @staticmethod
     def _auto_name(spec_content: str, spec_path: str = "") -> str:
@@ -309,6 +523,12 @@ class TaskRunner:
         spec_path: str = "",
         agent: str = "",
         workspace_dir: str = "",
+        workflow_name: str = "",
+        workflow_id: str = "",
+        workflow_slug: str = "",
+        workflow_revision: int = 0,
+        workflow_source: str = "",
+        session_key: str = "",
     ) -> Project:
         self._agent = agent
         if source == "file":
@@ -329,20 +549,33 @@ class TaskRunner:
             decompose_input = original_input = input_text
             spec_content = ""
 
-        task_id = f"plan_{int(time.time())}"
         _override = _resolve_workspace_dir(workspace_dir)
+        async with self._start_lock:
+            id_suffix = time.time_ns()
+            task_id = f"plan_{id_suffix}"
+            while (
+                task_id in self._runs
+                or task_id in self._tasks
+                or task_id in self._plan_ids_in_flight
+            ):
+                id_suffix += 1
+                task_id = f"plan_{id_suffix}"
+            self._plan_ids_in_flight.add(task_id)
         _effective_ws = _override or self._workspace_dir
         owns_task_dir = not _effective_ws
         task_dir = Path(_effective_ws) if _effective_ws else self._work_dir / f"plan_{task_id}"
         created_task_dir = False
-        if owns_task_dir:
-            try:
+        try:
+            if owns_task_dir:
                 task_dir.mkdir(parents=True, exist_ok=False)
                 created_task_dir = True
-            except FileExistsError:
-                pass
-        else:
-            task_dir.mkdir(parents=True, exist_ok=True)
+            else:
+                task_dir.mkdir(parents=True, exist_ok=True)
+        except FileExistsError:
+            pass
+        except BaseException:
+            self._plan_ids_in_flight.discard(task_id)
+            raise
         run = Project(
             spec_path=spec_path or "",
             spec_content=spec_content,
@@ -351,7 +584,10 @@ class TaskRunner:
             status="planned",
             task_id=task_id,
             work_dir=str(task_dir),
-            name=auto_name(spec_content or original_input, spec_path),
+            name=workflow_name or auto_name(spec_content or original_input, spec_path),
+            workflow_id=workflow_id,
+            workflow_slug=workflow_slug,
+            workflow_revision=workflow_revision,
         )
         try:
             if source == "yaml":
@@ -376,10 +612,69 @@ class TaskRunner:
                     task_dir.rmdir()
                 except OSError:
                     logger.warning("Failed to remove rejected plan directory %s", task_dir)
+            self._plan_ids_in_flight.discard(task_id)
             raise
-        self._runs[task_id] = run
+        if session_key:
+            self._run_session_keys[task_id] = session_key
+        committed = False
+        try:
+            await self._workflow_begin(run, source=workflow_source)
+            await self._workflow_set_plan(
+                run,
+                pause=True,
+                source=workflow_source or None,
+            )
+            self._runs[task_id] = run
+            await self._apersist_runs()
+            committed = True
+            return run
+        except BaseException:
+            if not committed:
+                if self._runs.get(task_id) is run:
+                    self._runs.pop(task_id, None)
+                self._run_session_keys.pop(task_id, None)
+                await asyncio.shield(self._workflow_delete_link(run))
+                if created_task_dir:
+                    try:
+                        task_dir.rmdir()
+                    except OSError:
+                        logger.warning("Failed to remove cancelled plan directory %s", task_dir)
+            raise
+        finally:
+            self._plan_ids_in_flight.discard(task_id)
+
+    async def start_workflow_definition(
+        self,
+        definition: dict,
+        *,
+        input_text: str = "",
+        author: str = "",
+        session_key: str = "",
+    ) -> dict[str, str]:
+        """Execute one saved task-plan revision through the existing TaskRunner."""
+        del author  # reserved for a future TaskRunner attribution surface
+        run = await self.plan(
+            str(definition.get("source", "")),
+            source="yaml",
+            workflow_name=str(definition.get("name", "")),
+            workflow_id=str(definition.get("id", "")),
+            workflow_slug=str(definition.get("slug", "")),
+            workflow_revision=int(definition.get("revision") or 0),
+            workflow_source=str(definition.get("source", "")),
+            session_key=session_key,
+        )
+        run.original_input = input_text
         await self._apersist_runs()
-        return run
+        try:
+            await self.execute_plan(run.task_id)
+        except ValueError as exc:
+            # Planning owns a durable TaskRunner project and shared workflow run
+            # before execution admission is checked. A rejected saved invocation
+            # must relinquish both identities so its chat caller can report the
+            # rejection without leaving an inert run behind.
+            await self.delete_run(run.task_id)
+            return {"error": str(exc)}
+        return {"task_id": run.task_id, "run_id": run.workflow_run_id}
 
     def cancel_plan(self) -> None:
         if self._plan_task and not self._plan_task.done():
@@ -391,7 +686,13 @@ class TaskRunner:
             raise ValueError(f"Run {task_id} not found")
         if run.status in ("running", "cancelling"):
             raise ValueError(f"Cannot update plan while {run.status}")
+        previous_source = plan_to_yaml(run.tasks) if run.tasks else ""
         result = update_plan_tasks(run, tasks)
+        await self._workflow_set_plan(
+            run,
+            pause=run.status == "planned",
+            modified=plan_to_yaml(run.tasks) != previous_source,
+        )
         await self._apersist_runs()
         return result
 
@@ -425,7 +726,9 @@ class TaskRunner:
             deps = updates["depends_on"]
             if not isinstance(deps, list):
                 raise ValueError("depends_on must be a list")
-            changes["depends_on"] = [int(d) for d in deps if isinstance(d, (int, float)) and 0 < int(d) < index]
+            changes["depends_on"] = [
+                int(d) for d in deps if isinstance(d, (int, float)) and 0 < int(d) < index
+            ]
         if "requires_approval" in updates:
             changes["requires_approval"] = bool(updates["requires_approval"])
         if "force_approval" in updates:
@@ -434,13 +737,33 @@ class TaskRunner:
             # workflow gate, not an access control mechanism. The gate re-triggers on resume
             # regardless, so removing it is an explicit user decision.
             changes["force_approval"] = bool(updates["force_approval"])
+        previous_source = plan_to_yaml(run.tasks)
         # Apply atomically
         for key, value in changes.items():
             setattr(task, key, value)
+        await self._workflow_set_plan(
+            run,
+            pause=run.status == "planned",
+            modified=plan_to_yaml(run.tasks) != previous_source,
+        )
         await self._apersist_runs()
-        return {"index": task.index, "title": task.title, "description": task.description, "depends_on": task.depends_on, "requires_approval": task.requires_approval, "force_approval": task.force_approval}
+        return {
+            "index": task.index,
+            "title": task.title,
+            "description": task.description,
+            "depends_on": task.depends_on,
+            "requires_approval": task.requires_approval,
+            "force_approval": task.force_approval,
+        }
 
-    async def execute_plan(self, task_id: str, agent: str = "", fresh: bool = False, workspace_dir: str = "", auto_approve: bool = False) -> str:
+    async def execute_plan(
+        self,
+        task_id: str,
+        agent: str = "",
+        fresh: bool = False,
+        workspace_dir: str = "",
+        auto_approve: bool = False,
+    ) -> str:
         run = self._runs.get(task_id)
         if not run:
             raise ValueError(f"Run {task_id} not found")
@@ -488,6 +811,7 @@ class TaskRunner:
             try:
                 run.status = "running"
                 run.started_at = run.last_task_time = time.time()
+                await self._workflow_rebind(run)
                 await self._apersist_runs()  # persist immediately so crash recovery works
                 try:
                     await git_coord.init_workspace(run)
@@ -534,6 +858,7 @@ class TaskRunner:
                         await git_coord.finalize(run)
                     except Exception:
                         logger.debug("Git finalize failed", exc_info=True)
+                await self._workflow_finalize(run)
                 if watchdog_task and not watchdog_task.done():
                     watchdog_task.cancel()
                 if self._consolidator:
@@ -552,8 +877,13 @@ class TaskRunner:
     # ── Core Execution ──
 
     async def run(
-        self, spec_path: str | Path, task_id: str = "", name: str = "", source: str = "",
-        workspace_dir: str = "", auto_approve: bool = False,
+        self,
+        spec_path: str | Path,
+        task_id: str = "",
+        name: str = "",
+        source: str = "",
+        workspace_dir: str = "",
+        auto_approve: bool = False,
     ) -> Project:
         spec_path = Path(spec_path)
         if not spec_path.exists():
@@ -567,6 +897,7 @@ class TaskRunner:
         _effective_ws = _override or self._workspace_dir
         task_dir = Path(_effective_ws) if _effective_ws else self._work_dir / spec_path.stem
         task_dir.mkdir(parents=True, exist_ok=True)
+        existing = self._runs.get(task_id)
         run = Project(
             spec_path=str(spec_path),
             spec_content=spec_content,
@@ -574,16 +905,24 @@ class TaskRunner:
             last_task_time=time.time(),
             status="running",
             source=source,
+            workflow_run_id=existing.workflow_run_id if existing else "",
+            workflow_id=existing.workflow_id if existing else "",
+            workflow_slug=existing.workflow_slug if existing else "",
+            workflow_revision=existing.workflow_revision if existing else 0,
+            derived_from_workflow_id=existing.derived_from_workflow_id if existing else "",
+            derived_from_revision=existing.derived_from_revision if existing else 0,
         )
         run.task_id = task_id
         run.name = name or auto_name(spec_content, str(spec_path))
         run.work_dir = str(task_dir)
         self._grant_run_trust(run, bool(auto_approve))
         self._runs[task_id] = run
-        await self._apersist_runs()  # persist immediately so crash recovery works
         watchdog_task: asyncio.Task | None = None  # type: ignore[type-arg]
         history_key = f"taskrunner:run:{spec_path.stem}"
         try:
+            await self._workflow_begin(run)
+            await self._workflow_rebind(run)
+            await self._apersist_runs()  # persist immediately so crash recovery works
             await self._notify("\U0001f680 Task started", f"Spec: `{spec_path.name}`", run=run)
             if source == "yaml":
                 run.tasks = _decompose_yaml_with_audit(spec_content, task_id)
@@ -591,7 +930,10 @@ class TaskRunner:
                 try:
                     run.tasks = _decompose_yaml_with_audit(spec_content, task_id)
                 except (ValueError, KeyError):
-                    logger.warning("YAML spec %s is not in workflow format; falling back to LLM decomposition", spec_path.name)
+                    logger.warning(
+                        "YAML spec %s is not in workflow format; falling back to LLM decomposition",
+                        spec_path.name,
+                    )
                     run.tasks = await self._decompose(spec_content, run.work_dir, task_id)
             else:
                 run.tasks = await self._decompose(spec_content, run.work_dir, task_id)
@@ -600,6 +942,7 @@ class TaskRunner:
                 run.error = "Failed to decompose spec into tasks"
                 await self._notify("\u274c Task failed", run.error, run=run)
                 return run
+            await self._workflow_set_plan(run)
             await self._apersist_runs()  # persist tasks so resume works after crash
             try:
                 await git_coord.init_workspace(run)
@@ -659,6 +1002,7 @@ class TaskRunner:
                     await git_coord.finalize(run)
                 except Exception:
                     logger.debug("Git finalize failed", exc_info=True)
+            await self._workflow_finalize(run)
             if watchdog_task and not watchdog_task.done():
                 watchdog_task.cancel()
             if self._consolidator:
@@ -787,7 +1131,13 @@ class TaskRunner:
         history_key: str = "",
         session_key: str = "",
     ) -> bool:
-        return await execute_single_task(
+        service = self._workflow_service
+        if service is not None and run.workflow_run_id:
+            try:
+                await service.step(run.workflow_run_id, task.index, task.title, status="running")
+            except Exception:
+                logger.debug("TaskRunner workflow step start publication failed", exc_info=True)
+        success = await execute_single_task(
             run=run,
             task=task,
             history_key=history_key,
@@ -809,6 +1159,19 @@ class TaskRunner:
             extract_lesson_fn=self._extract_lesson,
             session_key=session_key,
         )
+        if service is not None and run.workflow_run_id:
+            try:
+                await service.step(
+                    run.workflow_run_id,
+                    task.index,
+                    task.title,
+                    status="finished" if success else "failed",
+                    result=task.result[:_WORKFLOW_RESULT_SUMMARY_CAP],
+                    error=task.error,
+                )
+            except Exception:
+                logger.debug("TaskRunner workflow step finish publication failed", exc_info=True)
+        return success
 
     async def _try_replan(self, run: Project, failed_task: Task) -> bool:
         if run.replan_count >= _MAX_REPLAN:
@@ -858,6 +1221,7 @@ class TaskRunner:
             task.depends_on = [d + base_idx for d in task.depends_on]
             task.index = base_idx + i
         run.tasks.extend(new_tasks)
+        await self._workflow_set_plan(run, modified=True)
         task_list = "\n".join(f"  {t.index}. {t.title}" for t in new_tasks)
         await self._notify(
             "\U0001f4cb Revised plan", f"{len(new_tasks)} new task(s):\n{task_list}", run=run
@@ -888,9 +1252,15 @@ class TaskRunner:
         return True
 
     async def start_background(
-        self, spec_path: str | Path, agent: str = "", name: str = "", source: str = "",
-        workspace_dir: str = "", auto_approve: bool = False,
-        *, session_key: str = "",
+        self,
+        spec_path: str | Path,
+        agent: str = "",
+        name: str = "",
+        source: str = "",
+        workspace_dir: str = "",
+        auto_approve: bool = False,
+        *,
+        session_key: str = "",
     ) -> str:
         """Plan and execute *spec_path* in the background; returns the task id.
 
@@ -910,7 +1280,9 @@ class TaskRunner:
             safe_sp = validate_file_path(str(spec_path))
             if safe_sp:
                 early_content = await asyncio.to_thread(
-                    _read_spec_prefix, safe_sp, 4000,
+                    _read_spec_prefix,
+                    safe_sp,
+                    4000,
                 )
             else:
                 early_content = ""
@@ -936,10 +1308,7 @@ class TaskRunner:
                 if run.status in ("completed", "failed", "cancelled")
             ]
             # Always purge completed cron runs; keep last 10 others.
-            cron_done = [
-                task_id for task_id in completed
-                if self._runs[task_id].source == "cron"
-            ]
+            cron_done = [task_id for task_id in completed if self._runs[task_id].source == "cron"]
             for task_id in cron_done:
                 self._runs.pop(task_id, None)
                 self._stall_cancelled_ids.discard(task_id)
@@ -971,11 +1340,15 @@ class TaskRunner:
             )
             if session_key:
                 self._run_session_keys[task_id] = session_key
+            await self._workflow_begin(self._runs[task_id])
             try:
                 await self._apersist_runs()  # durable before background execution
             except BaseException:
-                self._runs.pop(task_id, None)
-                self._run_session_keys.pop(task_id, None)
+                try:
+                    await asyncio.shield(self._workflow_delete_link(self._runs[task_id]))
+                finally:
+                    self._runs.pop(task_id, None)
+                    self._run_session_keys.pop(task_id, None)
                 raise
 
             async def _wrapped() -> None:
@@ -1094,6 +1467,7 @@ class TaskRunner:
         self._stall_cancelled_ids.discard(task_id)
         self._run_session_keys.pop(task_id, None)
         await self._apersist_runs()
+        await self._workflow_delete_link(run)
         try:
             # Resolved from ``kiro_crew.sel`` at call time, not through the
             # module-level binding, so a substituted SEL factory is observed.
@@ -1170,6 +1544,7 @@ class TaskRunner:
         async def _retry() -> None:
             watchdog_task: asyncio.Task | None = None  # type: ignore[type-arg]
             try:
+                await self._workflow_rebind(run)
                 if run.branch_name and not Path(run.work_dir).exists():
                     try:
                         await git_coord.init_workspace(run)
@@ -1202,6 +1577,7 @@ class TaskRunner:
                 run.finished_at = time.time()
                 save_progress(run)
                 await self._apersist_runs()
+                await self._workflow_finalize(run)
                 if watchdog_task and not watchdog_task.done():
                     watchdog_task.cancel()
                 self._tasks.pop(task_id, None)
@@ -1268,17 +1644,13 @@ class TaskRunner:
             try:
                 _do()
             except Exception:
-                logger.debug(
-                    "Failed to log task to conversation history", exc_info=True
-                )
+                logger.debug("Failed to log task to conversation history", exc_info=True)
             return
 
         def _report(fut: "asyncio.Future[None]") -> None:
             exc = fut.exception()
             if exc is not None:
-                logger.debug(
-                    "Failed to log task to conversation history: %r", exc
-                )
+                logger.debug("Failed to log task to conversation history: %r", exc)
 
         loop.run_in_executor(None, _do).add_done_callback(_report)
 
@@ -1310,7 +1682,10 @@ class TaskRunner:
                 # dashboard/handlers/cron.py api_lessons_create).
                 await run_in_embed_pool(
                     self._consolidator._vector_store.write_lesson,
-                    rule, category, negative, "task_runner",
+                    rule,
+                    category,
+                    negative,
+                    "task_runner",
                 )
             else:
                 # Offloaded for the same reason as write_lesson above, and now
@@ -1461,7 +1836,17 @@ class TaskRunner:
         for run in self._runs.values():
             if run.source == "cron":
                 continue
-            if run.status in ("planning", "planned", "running", "cancelling", "pausing", "paused", "completed", "failed", "cancelled"):
+            if run.status in (
+                "planning",
+                "planned",
+                "running",
+                "cancelling",
+                "pausing",
+                "paused",
+                "completed",
+                "failed",
+                "cancelled",
+            ):
                 data.append(
                     {
                         "task_id": run.task_id,
@@ -1478,6 +1863,12 @@ class TaskRunner:
                         "source": run.source,
                         "spec_content": run.spec_content,
                         "auto_approve": run.auto_approve,
+                        "workflow_run_id": run.workflow_run_id,
+                        "workflow_id": run.workflow_id,
+                        "workflow_slug": run.workflow_slug,
+                        "workflow_revision": run.workflow_revision,
+                        "derived_from_workflow_id": run.derived_from_workflow_id,
+                        "derived_from_revision": run.derived_from_revision,
                         "task_details": [
                             {
                                 "index": t.index,
@@ -1578,9 +1969,7 @@ class TaskRunner:
             try:
                 path.replace(bak)
             except OSError:
-                logger.warning(
-                    "Failed to preserve corrupt runs registry", exc_info=True
-                )
+                logger.warning("Failed to preserve corrupt runs registry", exc_info=True)
             return
         try:
             for item in items:
@@ -1615,6 +2004,12 @@ class TaskRunner:
                     source=item.get("source", ""),
                     tasks=tasks,
                     auto_approve=item.get("auto_approve", False),
+                    workflow_run_id=item.get("workflow_run_id", ""),
+                    workflow_id=item.get("workflow_id", ""),
+                    workflow_slug=item.get("workflow_slug", ""),
+                    workflow_revision=int(item.get("workflow_revision") or 0),
+                    derived_from_workflow_id=item.get("derived_from_workflow_id", ""),
+                    derived_from_revision=int(item.get("derived_from_revision") or 0),
                 )
                 self._runs[run.task_id] = run
                 # Compensating control: never let per-run trust silently survive a
@@ -1630,10 +2025,14 @@ class TaskRunner:
                     if not run.tasks:
                         run.status = "failed"
                         run.error = "Gateway crashed before task decomposition completed — re-run to continue"
-                        logger.info("Recovered crashed run %s with no tasks — marked as failed", run.task_id)
+                        logger.info(
+                            "Recovered crashed run %s with no tasks — marked as failed", run.task_id
+                        )
                     else:
                         run.status = "paused"
-                        run.error = run.error or "Gateway crashed during execution — resume to continue"
+                        run.error = (
+                            run.error or "Gateway crashed during execution — resume to continue"
+                        )
                         for t in run.tasks:
                             if t.status == TaskStatus.IN_PROGRESS:
                                 t.status = TaskStatus.PENDING
@@ -1652,15 +2051,15 @@ class TaskRunner:
                             t.attempts = max(0, t.attempts - 1)
                         elif t.status in (TaskStatus.PENDING, TaskStatus.REVIEWING):
                             t.status = TaskStatus.CANCELLED
-                    logger.info("Recovered crashed cancelling run %s — marked as cancelled", run.task_id)
+                    logger.info(
+                        "Recovered crashed cancelling run %s — marked as cancelled", run.task_id
+                    )
         except Exception:
             # A structural error while rebuilding an individual run (not a
             # parse failure — that is handled above) is surfaced loudly and
             # leaves the runs already loaded intact, rather than silently
             # discarding the whole registry.
-            logger.error(
-                "Failed to deserialize a run from registry %s", path, exc_info=True
-            )
+            logger.error("Failed to deserialize a run from registry %s", path, exc_info=True)
 
     def _save_progress(self, run: Project) -> None:
         save_progress(run)

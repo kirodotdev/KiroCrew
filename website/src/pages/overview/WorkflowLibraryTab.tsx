@@ -1,6 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { GitBranch, Loader2, Play, Plus, Save, Workflow } from 'lucide-react'
+import {
+  GitBranch,
+  Library,
+  ListTree,
+  Loader2,
+  Play,
+  Plus,
+  Save,
+  Workflow,
+} from 'lucide-react'
 
 import {
   api,
@@ -18,13 +27,16 @@ import {
 } from '../../components/ui'
 import { activeLocale, fmtDateTime } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
+import SegmentedControl from '../../components/SegmentedControl'
 import WorkflowSourceCode from '../../apps/workflows/WorkflowSourceCode'
+import WorkflowsRuns from '../../apps/workflows/WorkflowsRuns'
 
 interface EditorState {
   name: string
   description: string
   slug: string
   source: string
+  format: 'python' | 'task-plan'
   derivedFrom: WorkflowLineage | null
 }
 
@@ -35,11 +47,14 @@ type WorkflowDefinitionUpdate = Omit<
   expected_revision: number
 }
 
+type WorkflowManagementView = 'library' | 'runs'
+
 const EMPTY_EDITOR: EditorState = {
   name: '',
   description: '',
   slug: '',
   source: '',
+  format: 'python',
   derivedFrom: null,
 }
 
@@ -49,6 +64,7 @@ function editorFromDefinition(definition: WorkflowDefinition): EditorState {
     description: definition.description,
     slug: definition.slug,
     source: definition.source,
+    format: definition.format ?? 'python',
     derivedFrom: definition.derived_from,
   }
 }
@@ -59,6 +75,7 @@ function editorsMatch(left: EditorState, right: EditorState): boolean {
     left.description === right.description &&
     left.slug === right.slug &&
     left.source === right.source &&
+    left.format === right.format &&
     left.derivedFrom?.workflow_id === right.derivedFrom?.workflow_id &&
     left.derivedFrom?.revision === right.derivedFrom?.revision
   )
@@ -72,6 +89,7 @@ function errorText(error: unknown): string {
 
 export default function WorkflowLibraryTab() {
   const queryClient = useQueryClient()
+  const [view, setView] = useState<WorkflowManagementView>('library')
   const [filter, setFilter] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
@@ -132,6 +150,7 @@ export default function WorkflowLibraryTab() {
         description: result.meta?.description ?? '',
         slug: result.meta?.name ?? '',
         source: result.source,
+        format: 'python',
         derivedFrom: result.derived_from ?? null,
       })
     },
@@ -249,7 +268,10 @@ export default function WorkflowLibraryTab() {
     setLastRunId('')
   }
 
-  const write = (key: keyof Omit<EditorState, 'derivedFrom'>, value: string) =>
+  const write = (
+    key: keyof Omit<EditorState, 'derivedFrom' | 'format'>,
+    value: string,
+  ) =>
     setEditor((current) => ({ ...current, [key]: value }))
 
   const mutationError =
@@ -262,19 +284,46 @@ export default function WorkflowLibraryTab() {
     <Card className="min-h-[520px]">
       <CardTitle className="flex-wrap">
         <Workflow className="lucide-inline" />
-        {i18nT('pages.overview.workflowLibrary.title')}
-        <span className="ml-auto">
-          <Btn primary onClick={beginCreate}>
-            <Plus className="lucide-inline" />{' '}
-            {i18nT('pages.overview.workflowLibrary.new_workflow')}
-          </Btn>
-        </span>
+        {i18nT('apps.workflows.workflowsPage.workflows')}
+        {view === 'library' ? (
+          <span className="ml-auto">
+            <Btn primary onClick={beginCreate}>
+              <Plus className="lucide-inline" />{' '}
+              {i18nT('pages.overview.workflowLibrary.new_workflow')}
+            </Btn>
+          </span>
+        ) : null}
       </CardTitle>
-      <p className="text-[13px] text-muted mb-4">
-        {i18nT('pages.overview.workflowLibrary.description')}
-      </p>
+      <div className="mb-4">
+        <SegmentedControl<WorkflowManagementView>
+          segments={[
+            {
+              key: 'library',
+              label: i18nT('pages.overview.workflowLibrary.title'),
+              icon: <Library size={14} />,
+            },
+            {
+              key: 'runs',
+              label: i18nT('pages.hooksPage.runs'),
+              icon: <ListTree size={14} />,
+            },
+          ]}
+          value={view}
+          onChange={setView}
+          layoutId="workflow-management-view"
+          collapse={false}
+        />
+      </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-[260px_minmax(0,1fr)] gap-4">
+      {view === 'runs' ? (
+        <WorkflowsRuns embedded />
+      ) : (
+        <>
+          <p className="text-[13px] text-muted mb-4">
+            {i18nT('pages.overview.workflowLibrary.description')}
+          </p>
+
+          <div className="grid grid-cols-1 md:grid-cols-[260px_minmax(0,1fr)] gap-4">
         <aside className="min-w-0 border border-border rounded-lg p-2 bg-bg-elevated">
           <SearchInput
             value={filter}
@@ -364,6 +413,7 @@ export default function WorkflowLibraryTab() {
                     saveDraft.mutate({
                       body: {
                         source: editor.source,
+                        format: editor.format,
                         name: editor.name,
                         description: editor.description,
                         slug: editor.slug,
@@ -391,6 +441,7 @@ export default function WorkflowLibraryTab() {
                     revision: selected.revision,
                   })}
                 </Badge>
+                <Badge variant="aim">{selected.format ?? 'python'}</Badge>
                 <code className="text-[12px] text-accent">
                   /workflow {selected.slug}
                 </code>
@@ -438,7 +489,9 @@ export default function WorkflowLibraryTab() {
                   className="block text-[12px] text-muted mb-2"
                 >
                   <span className="block mb-1">
-                    {i18nT('pages.overview.workflowLibrary.run_input')}
+                    {editor.format === 'task-plan'
+                      ? i18nT('pages.chat.activityViewer.input')
+                      : i18nT('pages.overview.workflowLibrary.run_input')}
                   </span>
                   <Input
                     id="workflow-run-input"
@@ -484,7 +537,9 @@ export default function WorkflowLibraryTab() {
             </p>
           ) : null}
         </section>
-      </div>
+          </div>
+        </>
+      )}
     </Card>
   )
 }
@@ -494,7 +549,10 @@ function WorkflowEditor({
   write,
 }: {
   editor: EditorState
-  write: (key: keyof Omit<EditorState, 'derivedFrom'>, value: string) => void
+  write: (
+    key: keyof Omit<EditorState, 'derivedFrom' | 'format'>,
+    value: string,
+  ) => void
 }) {
   return (
     <div className="space-y-3">
@@ -545,6 +603,7 @@ function WorkflowEditor({
         </span>
         <WorkflowSourceCode
           source={editor.source}
+          sourceFormat={editor.format}
           onChange={(value) => write('source', value)}
           ariaLabel={i18nT('pages.overview.workflowLibrary.source')}
         />

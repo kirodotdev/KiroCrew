@@ -4618,7 +4618,6 @@
         "workflows": "Workflows"
       },
       "workflowsRuns": {
-        "background_runs": "Hintergrundausführungen",
         "budget": "Budget",
         "cancel": "Abbrechen",
         "cancelling": "Wird abgebrochen…",

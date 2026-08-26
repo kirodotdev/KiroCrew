@@ -86,9 +86,7 @@ MAX_RUN_TIMEOUT_SECS = 6 * 3600
 MAX_AGENT_ERROR_CHARS = 500
 
 
-def clamp_run_timeout(
-    value: Optional[int], *, default: int = DEFAULT_RUN_TIMEOUT_SECS
-) -> int:
+def clamp_run_timeout(value: Optional[int], *, default: int = DEFAULT_RUN_TIMEOUT_SECS) -> int:
     """Clamp a caller-supplied run ceiling into ``[MIN, MAX]``.
 
     ``None``, non-numeric, or non-positive input falls back to ``default`` — so a
@@ -863,11 +861,14 @@ class WorkflowRunner:
                 except Exception:  # noqa: BLE001
                     pass
 
-        # 3. exec the module (defines `workflow`) then await it under a wall clock.
+        # 3. Execute the statically validated module in the B7 restricted namespace,
+        # then await it under a wall clock. This is the engine's sole execution boundary.
         started = time.monotonic()
         task: Optional["asyncio.Task[Any]"] = None
         try:
-            exec(compile(source, f"<workflow:{run_id}>", "exec"), safe_globals)  # noqa: S102  # nosemgrep: python.lang.security.audit.exec-detected.exec-detected
+            exec(  # nosemgrep: python.lang.security.audit.exec-detected.exec-detected
+                compile(source, f"<workflow:{run_id}>", "exec"), safe_globals
+            )  # noqa: S102
             entry = safe_globals.get("workflow")
             if entry is None:
                 raise RuntimeError("script defines no 'workflow' coroutine")
@@ -992,6 +993,9 @@ class WorkflowRunner:
         replay_results: Optional[dict] = None,
         replay_before: int = 0,
         source_is_original: bool = True,
+        workflow_id: str = "",
+        workflow_slug: str = "",
+        workflow_revision: int = 0,
         intent: str = "",
         author_fn: Optional[AuthorFn] = None,
     ) -> str:
@@ -1104,4 +1108,7 @@ class WorkflowRunner:
             source=source,
             source_is_original=source_is_original,
             args=args or {},
+            workflow_id=workflow_id,
+            workflow_slug=workflow_slug,
+            workflow_revision=workflow_revision,
         )

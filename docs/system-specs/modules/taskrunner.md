@@ -6,6 +6,13 @@ Autonomous task executor that reads a spec file, decomposes it into
 ordered steps via LLM, and executes each step through ACP sessions
 with test verification, retries, and progress checkpointing.
 
+TaskRunner is a product-layer superset of the workflow run substrate. It keeps
+ownership of planning, approval gates, retries, replanning, test verification,
+git/worktree coordination, persistence, pause/resume, and cleanup. The workflow
+service supplies the common run identity, event history, source/provenance, and
+saved-definition invocation used by all workflow-like execution. It does not
+replace or reinterpret TaskRunner execution.
+
 Supports multiple concurrent tasks, interactive tool approval,
 per-step session isolation with full memory injection, git-coordinated
 step commits and reverts, independent review via actual diffs,
@@ -34,6 +41,74 @@ taskrunner.py        (orchestrator, ~1270 lines)
 | `task_executor.py` | `execute_task()`, `build_task_prompt()`, `self_review()`, `run_tests()`, `check_context()` | Task execution with retry/recovery budgets, prompt building, context compaction, test running, self-review |
 | `task_reporter.py` | `notify()`, `build_status()`, `save_progress()`, `load_checkpoint()`, `build_resume_context()`, `format_completion_summary()` | Notifications, status reporting, TASK_PROGRESS.md checkpointing, resume context |
 | `taskrunner.py` | `TaskRunner` | Orchestrator — owns run lifecycle, `_try_replan`, watchdog, run persistence (`_persist_runs`/`_load_runs`); delegates decomposition/execution/reporting to the helper modules |
+
+### Workflow substrate attachment
+
+The gateway attaches its singleton `WorkflowService` and `TaskRunner` after both
+are constructed. The dependency is optional so CLI, tests, and headless callers
+retain the existing TaskRunner behavior when no workflow service is present.
+Workflow publication is best-effort: an unavailable registry cannot fail task
+planning or execution. Every host lifecycle checkpoint — registration, source,
+rebind, phase/step events, pause, terminal state, and deletion — awaits the workflow
+service's off-loop durable mirror, so a maximum-size YAML plan cannot block the
+gateway event loop while its shared run record is written.
+
+The chat-to-plan dashboard route registers its placeholder project with this
+port before applying steps, and the dashboard delete route delegates to
+`TaskRunner.delete_run`, so those established entrypoints cannot leave an
+unlinked or orphaned common run.
+
+Each `Project` persists `workflow_run_id` plus optional saved-definition
+provenance (`workflow_id`, `workflow_slug`, `workflow_revision`). Planning
+registers one host-driven workflow run, publishes the exact canonical plan YAML,
+and pauses that same run while the project awaits execution. `execute_plan`,
+retry, and restart recovery rebind the existing run rather than allocating a
+second identity. A terminal project marks the linked workflow run terminal;
+deleting the project removes the linked workflow record. The common terminal
+transition occurs only after TaskRunner has written its durable state and
+completed git/worktree finalization, so the shared view cannot report completion
+ahead of the product-layer owner.
+
+Task execution emits common workflow lifecycle and agent-step events around the
+existing `_execute_tasks` path. Step result summaries use the workflow event
+contract's 120-character bound; complete TaskRunner results remain in TaskRunner
+storage. Cancellation binds the workflow handle to the
+actual TaskRunner asyncio task. The workflow handle disables chat completion
+injection because TaskRunner retains its existing reporting and notification
+path, preventing duplicate completion messages.
+
+Direct `run()` setup performs workflow registration, task binding, and the initial
+TaskRunner registry write inside the same lifecycle `try` block as execution. A
+cancellation at any of those awaits therefore reaches the established cleanup and
+terminal-projection path; neither the TaskRunner project nor its shared workflow run
+can remain `running` after its driver task exits.
+
+Planning treats workflow publication plus the first TaskRunner registry write as one
+ownership handoff. If cancellation or persistence failure occurs before that handoff
+commits, TaskRunner removes the in-memory placeholder, its owned plan directory, and
+the linked workflow run. A workflow identity therefore cannot survive as active when
+the corresponding project was never returned or durably registered.
+
+Retry and recovery preserve the linked workflow identity when it remains available.
+If eviction or an incompatible restored record requires a replacement, TaskRunner
+durably writes the replacement `workflow_run_id` before rebinding or publishing more
+progress. A gateway crash therefore cannot leave the project pointing at the rejected
+identity while the replacement survives as an orphaned workflow run.
+
+Background admission uses the same ownership rule: its placeholder is durably written
+before the execution task is registered, and rollback deletes the linked workflow run
+before removing the placeholder. Cancellation at that persistence await cannot leave
+an active workflow with no TaskRunner task capable of driving it.
+
+Saved definitions whose immutable `format` is `task-plan` are invoked through
+`TaskRunner.start_workflow_definition`. The saved YAML is parsed exactly; it is
+not re-decomposed by an LLM. The resulting project then follows the normal
+TaskRunner execution pipeline, including `requires_approval` and
+`force_approval`. Free-form `/workflow` input is recorded as the project's
+original input for run context and provenance; it does not mutate the saved plan.
+If execution admission rejects the invocation, TaskRunner deletes the newly planned
+project and its linked workflow run, then returns the admission error to the workflow
+caller so chat can complete normally without exposing an orphaned run.
 
 ### Import Graph (no cycles)
 
@@ -180,6 +255,12 @@ class Project:
     repo_root: str         # original repo root (for worktree cleanup)
     auto_approve: bool = False  # per-run trust: auto-approve tool permission requests
                                 # (deny-lists + force_approval gates still apply)
+    workflow_run_id: str = ""   # shared workflow-run identity
+    workflow_id: str = ""       # exact saved-definition provenance
+    workflow_slug: str = ""
+    workflow_revision: int = 0
+    derived_from_workflow_id: str = ""  # saved ancestor after an edit or replan
+    derived_from_revision: int = 0
 ```
 
 ## Concurrent Tasks

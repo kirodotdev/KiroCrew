@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 def _sel():
     """Late-binding _sel() for test monkeypatch compatibility."""
     import kiro_crew.dashboard.handlers as _pkg  # noqa: F811
+
     return _pkg.sel()
 
 
@@ -45,7 +46,9 @@ async def _gate_auto_approve(
     """
     request_app = request.get("app", "")
     granted = requested
-    if requested and (request_app != "" or (claimed_source is not None and claimed_source != "dashboard")):
+    if requested and (
+        request_app != "" or (claimed_source is not None and claimed_source != "dashboard")
+    ):
         granted = False
     if requested:
         try:
@@ -155,7 +158,7 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
     # Handle inline spec content
     created_spec: Path | None = None
     if spec_path.startswith("__inline__:"):
-        content = spec_path[len("__inline__:"):]
+        content = spec_path[len("__inline__:") :]
         if not content.strip():
             return web.json_response({"error": "empty spec content"}, status=400)
         work_dir = state.task_runner._work_dir
@@ -178,7 +181,11 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
             request, body.get("auto_approve") is True, claimed_source, endpoint="start"
         )
         task_id = await state.task_runner.start_background(
-            spec_path, agent=agent, name=task_name, source=source, workspace_dir=workspace_dir,
+            spec_path,
+            agent=agent,
+            name=task_name,
+            source=source,
+            workspace_dir=workspace_dir,
             auto_approve=auto_approve,
         )
     except Exception as exc:
@@ -193,7 +200,8 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
             except OSError:
                 logger.warning(
                     "failed to remove inline spec %s after a rejected start",
-                    created_spec, exc_info=True,
+                    created_spec,
+                    exc_info=True,
                 )
         return web.json_response({"error": str(exc)}, status=400)
     return web.json_response({"ok": True, "spec": spec_path, "task_id": task_id})
@@ -225,21 +233,31 @@ async def api_taskrunner_pause(request: web.Request) -> web.Response:
         run = matches[0] if matches else None
     if not run:
         _sel().log_tool_invocation(
-            session_key="api", source="dashboard", tool_name="taskrunner_pause",
-            outcome="error", resources=task_id, metadata={"reason": "not found"},
+            session_key="api",
+            source="dashboard",
+            tool_name="taskrunner_pause",
+            outcome="error",
+            resources=task_id,
+            metadata={"reason": "not found"},
         )
         return web.json_response({"error": "not found"}, status=404)
     if run.status != "running":
         _sel().log_tool_invocation(
-            session_key="api", source="dashboard", tool_name="taskrunner_pause",
-            outcome="denied", resources=run.task_id,
+            session_key="api",
+            source="dashboard",
+            tool_name="taskrunner_pause",
+            outcome="denied",
+            resources=run.task_id,
             metadata={"reason": f"status={run.status}"},
         )
         return web.json_response({"error": f"cannot pause (status={run.status})"}, status=409)
     runner.pause(run.task_id)
     _sel().log_tool_invocation(
-        session_key="api", source="dashboard", tool_name="taskrunner_pause",
-        outcome="success", resources=run.task_id,
+        session_key="api",
+        source="dashboard",
+        tool_name="taskrunner_pause",
+        outcome="success",
+        resources=run.task_id,
     )
     return web.json_response({"ok": True, "message": "Paused — use execute to resume"})
 
@@ -255,9 +273,7 @@ async def api_taskrunner_delete(request: web.Request) -> web.Response:
         return web.json_response({"error": "not found"}, status=404)
     if run.status in ("running", "cancelling"):
         return web.json_response({"error": "cancel first"}, status=409)
-    state.task_runner._runs.pop(task_id, None)
-    state.task_runner._stall_cancelled_ids.discard(task_id)
-    await state.task_runner._apersist_runs()
+    await state.task_runner.delete_run(task_id)
     return web.json_response({"ok": True})
 
 
@@ -311,8 +327,12 @@ async def api_taskrunner_update_task(request: web.Request) -> web.Response:
         return web.json_response({"ok": True, **result})
     except ValueError as exc:
         _sel().log_tool_invocation(
-            session_key="dashboard", agent="user", source="taskrunner_update_task",
-            tool_name="update_task", tool_kind="write", outcome="denied",
+            session_key="dashboard",
+            agent="user",
+            source="taskrunner_update_task",
+            tool_name="update_task",
+            tool_kind="write",
+            outcome="denied",
             metadata={"task_id": task_id, "index": index, "error": str(exc)},
         )
         return web.json_response({"error": str(exc)}, status=409)
@@ -330,7 +350,9 @@ async def api_taskrunner_retry(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid JSON"}, status=400)
     from_step = body.get("from_step", 1)
     try:
-        await state.task_runner.retry_from_task(task_id, from_step, agent=state.task_runner._agent or "")
+        await state.task_runner.retry_from_task(
+            task_id, from_step, agent=state.task_runner._agent or ""
+        )
         return web.json_response({"ok": True, "task_id": task_id})
     except ValueError as exc:
         return web.json_response({"error": str(exc)}, status=400)
@@ -412,9 +434,7 @@ async def api_taskrunner_to_chat(request: web.Request) -> web.Response:
         slot.append("user", summary, "msg msg-u")
         from kiro_crew.dashboard.chat import _run_chat  # noqa: F811
 
-        task = asyncio.create_task(
-            _run_chat(state, slot, summary, _directive_user_origin=False)
-        )
+        task = asyncio.create_task(_run_chat(state, slot, summary, _directive_user_origin=False))
         slot.task = task
         state._background_tasks.add(task)
         task.add_done_callback(state._background_tasks.discard)
@@ -532,7 +552,9 @@ async def api_taskrunner_plan(request: web.Request) -> web.Response:
                 {
                     "index": s.index,
                     "title": redact_credentials(redact_exfiltration_urls(s.title or "")[0])[0],
-                    "description": redact_credentials(redact_exfiltration_urls(s.description or "")[0])[0],
+                    "description": redact_credentials(
+                        redact_exfiltration_urls(s.description or "")[0]
+                    )[0],
                     "depends_on": s.depends_on,
                     "requires_approval": s.requires_approval,
                     "force_approval": s.force_approval,
@@ -577,7 +599,9 @@ async def api_taskrunner_update_plan(request: web.Request) -> web.Response:
                 {
                     "index": s.index,
                     "title": redact_credentials(redact_exfiltration_urls(s.title or "")[0])[0],
-                    "description": redact_credentials(redact_exfiltration_urls(s.description or "")[0])[0],
+                    "description": redact_credentials(
+                        redact_exfiltration_urls(s.description or "")[0]
+                    )[0],
                     "depends_on": s.depends_on,
                     "requires_approval": s.requires_approval,
                     "force_approval": s.force_approval,
@@ -615,7 +639,13 @@ async def api_taskrunner_execute_plan(request: web.Request) -> web.Response:
         request, body.get("auto_approve") is True, None, endpoint="execute"
     )
     try:
-        await state.task_runner.execute_plan(task_id, agent=agent, fresh=fresh, workspace_dir=workspace_dir, auto_approve=auto_approve)
+        await state.task_runner.execute_plan(
+            task_id,
+            agent=agent,
+            fresh=fresh,
+            workspace_dir=workspace_dir,
+            auto_approve=auto_approve,
+        )
     except ValueError as exc:
         return web.json_response({"error": str(exc)}, status=400)
     return web.json_response({"ok": True, "task_id": task_id})
@@ -648,20 +678,23 @@ async def api_taskrunner_from_chat(request: web.Request) -> web.Response:
                     break
                 except FileExistsError:
                     continue
+            original_input = str(body.get("original_input", ""))
             run = Project(
                 spec_path="",
                 spec_content="",
-                original_input=body.get("original_input", ""),
+                original_input=original_input,
                 source="chat",
                 status="planned",
                 task_id=new_id,
                 work_dir=str(task_dir),
+                name=state.task_runner._auto_name(original_input),
             )
             state.task_runner._runs[new_id] = run
+            await state.task_runner._workflow_begin(run)
             try:
                 run = await state.task_runner.update_plan(new_id, steps)
             except ValueError:
-                state.task_runner._runs.pop(new_id, None)
+                await state.task_runner.delete_run(new_id)
                 try:
                     task_dir.rmdir()
                 except OSError:
@@ -677,7 +710,9 @@ async def api_taskrunner_from_chat(request: web.Request) -> web.Response:
                 {
                     "index": s.index,
                     "title": redact_credentials(redact_exfiltration_urls(s.title or "")[0])[0],
-                    "description": redact_credentials(redact_exfiltration_urls(s.description or "")[0])[0],
+                    "description": redact_credentials(
+                        redact_exfiltration_urls(s.description or "")[0]
+                    )[0],
                     "depends_on": s.depends_on,
                     "requires_approval": s.requires_approval,
                     "force_approval": s.force_approval,

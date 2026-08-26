@@ -56,6 +56,7 @@ ALLOWED_SIBLING_IMPORTS: dict[str, set[str]] = {
         "agent_pool",
         "store",
         "library",
+        "events",
     },
 }
 

@@ -28,7 +28,7 @@ export interface WorkflowRunTreeProps {
   events: WfEvent[]
   /** Terminal status of the run; drives the per-phase fallback when no agents
    *  have started yet. */
-  status?: 'running' | 'finished' | 'failed' | 'cancelled'
+  status?: 'running' | 'paused' | 'finished' | 'failed' | 'cancelled'
   /** Final result blob (only meaningful when status === 'finished'). */
   result?: unknown
   /** Failure message (only meaningful when status === 'failed'). */
@@ -59,7 +59,7 @@ function phaseStatus(
   if (agents.some(a => a.ok === false)) return 'failed'
   if (!isLast) return 'ok' // a later phase started → this one is done
   // Last phase = the current one.
-  if (runStatus && runStatus !== 'running') {
+  if (runStatus && runStatus !== 'running' && runStatus !== 'paused') {
     // Run is terminal: reflect it (cancelled/failed → not ok unless agents ok).
     return runStatus === 'finished' ? 'ok' : runStatus === 'failed' ? 'failed' : 'ok'
   }
@@ -108,7 +108,9 @@ const WorkflowRunTree = memo(function WorkflowRunTree({
       {phases.map((phase, idx) => {
         const isCollapsed = !!collapsed[phase.title]
         const ps = phaseStatus(phase.agents, status, idx === phases.length - 1)
-        const title = sanitizeLlmOutput(phase.title || '(no phase)').slice(0, 80)
+        const title = sanitizeLlmOutput(
+          phase.title || i18nT('apps.workflows.workflowsRuns.unknown'),
+        ).slice(0, 80)
         return (
           <div key={phase.title} className="border border-border rounded">
             <button
@@ -168,14 +170,14 @@ const WorkflowRunTree = memo(function WorkflowRunTree({
         <div className="text-[11px] font-mono text-muted border border-border rounded p-2 max-h-32 overflow-auto">
           {logLines.map((e, i) => (
             <div key={i} className="truncate">
-              · {sanitizeLlmOutput(String((e.data as any)?.message ?? '')).slice(0, 200)}
+              · {sanitizeLlmOutput(String(e.data?.message ?? '')).slice(0, 200)}
             </div>
           ))}
         </div>
       )}
 
       {/* terminal result / failure panel */}
-      {status && status !== 'running' && (
+      {status && status !== 'running' && status !== 'paused' && (
         <div
           className={`text-[12px] rounded p-2 border ${
             status === 'finished'
