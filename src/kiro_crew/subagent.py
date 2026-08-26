@@ -630,13 +630,10 @@ def check_memory_available(min_gb: float = 4.0, path: str = "/proc/meminfo") -> 
 # Process-subtree readers (relocated from the upstream mcp_gateway pool,
 # which is absent in this fork). Pure-stdlib /proc walkers: on non-Linux hosts
 # every /proc access raises OSError and these degrade to -1 / [] gracefully.
-#
-# ONE ceiling for every reader. RSS, CPU and the two counts used to carry their
-# own copy of the same 256, which is how they could have drifted apart; they now
-# read one constant, and the aliases below exist only so external references
-# keep resolving.
+# ONE ceiling for every reading. RSS, CPU and the two counts used to be three
+# walks carrying two copies of the same 256, which is how they could have
+# drifted apart.
 _SUBTREE_MAX_PROCS = 256
-_RSS_SUBTREE_MAX_PROCS = _SUBTREE_MAX_PROCS
 
 
 def _single_proc_rss_kb(pid: int) -> int:
@@ -707,9 +704,11 @@ class _SubtreeSample(NamedTuple):
       unreadable (it is gone, or the host has no ``/proc``).
     * ``jiffies`` — summed utime+stime clock ticks; an unreadable pid
       contributes 0, since a *delta* of jiffies is what the caller consumes.
-    * ``procs`` / ``stubs`` — ``None`` means UNMEASURABLE, never zero. Rendering
-      "0 processes" for a live runtime would be a lie; the surface renders
-      ``None`` as an em dash instead.
+    * ``procs`` / ``stubs`` — how many processes a runtime carries, and how many
+      of them are MCP stubs, matched on ``STUB_MODULE``, the module path the
+      rewriter itself puts on the stub launch line. ``None`` means UNMEASURABLE,
+      never zero. Rendering "0 processes" for a live runtime would be a lie; the
+      surface renders ``None`` as an em dash instead.
     """
 
     rss_kb: int
@@ -722,7 +721,6 @@ def _proc_subtree_sample(
     pid: Optional[int],
     *,
     rss: bool = True,
-    cpu: bool = True,
     counts: bool = True,
 ) -> _SubtreeSample:
     """Walk ``pid``'s process subtree ONCE and return every reading from it.
@@ -731,19 +729,19 @@ def _proc_subtree_sample(
     memory lives in a child process, so all four readings describe the whole
     subtree rather than the root pid alone.
 
-    The point of one pass is not only the ~3x fewer ``/proc`` reads: three
-    separate walks ran at three different instants, so a process that exited
-    between them was counted by one reader and missed by another. Reading every
+    The point of one pass is not only the ~3x fewer ``/proc`` reads: the three
+    readers this replaced ran at three different instants, so a process that
+    exited between them was counted by one and missed by another. Reading every
     metric off a single frontier is what makes "the same set of processes" true
     of the *result* and not merely of the walk rules.
 
-    The keyword flags let a single-metric caller skip the per-process reads it
-    does not need, so a wrapper costs exactly what it cost before this walk was
-    shared. Skipped metrics come back as their own unmeasurable sentinel.
+    ``rss`` / ``counts`` let a caller that only needs the CPU total skip those
+    per-process reads, so it costs what it cost before this walk was shared.
+    Skipped metrics come back as their own unmeasurable sentinel.
 
     Blocking: reads a handful of ``/proc`` entries per process in the subtree,
     so it belongs on an executor thread, never on the event loop (see
-    ``_reaper_loop`` → ``_sample_live_costs``).
+    ``_reaper_loop`` -> ``_sample_live_costs``).
     """
     if not pid:
         return _SubtreeSample(-1, 0, None, None)
@@ -753,7 +751,7 @@ def _proc_subtree_sample(
     countable = counts and platform_compat.IS_LINUX and own_rss >= 0
     rss_total = own_rss if (rss and own_rss >= 0) else -1
     needles = (STUB_MODULE,)
-    jiffies = _proc_cpu_jiffies(pid) if cpu else 0
+    jiffies = _proc_cpu_jiffies(pid)
     procs = 1
     stubs = 1 if countable and platform_compat.process_matches(pid, needles) else 0
     seen = {pid}
@@ -769,8 +767,7 @@ def _proc_subtree_sample(
                     kb = _single_proc_rss_kb(child)
                     if kb > 0:
                         rss_total += kb
-                if cpu:
-                    jiffies += _proc_cpu_jiffies(child)
+                jiffies += _proc_cpu_jiffies(child)
                 if countable:
                     procs += 1
                     if platform_compat.process_matches(child, needles):
@@ -782,35 +779,11 @@ def _proc_subtree_sample(
     return _SubtreeSample(rss_total, jiffies, procs, stubs)
 
 
-def _proc_rss_kb(pid: Optional[int]) -> int:
-    """Resident set size (KiB) for ``pid`` **and all its descendants**, or -1.
-
-    Thin wrapper over :func:`_proc_subtree_sample`. Callers that need more than
-    one reading should take the sample directly rather than call two wrappers,
-    which would walk the subtree twice.
-    """
-    return _proc_subtree_sample(pid, cpu=False, counts=False).rss_kb
-
-
-def _proc_subtree_counts(pid: Optional[int]) -> tuple[Optional[int], Optional[int]]:
-    """``(processes, mcp_stubs)`` in ``pid``'s subtree, or ``(None, None)``.
-
-    The two count columns of the Sessions surface: how many processes a runtime
-    carries, and how many of them are MCP stubs — matched on ``STUB_MODULE``,
-    the module path the rewriter itself puts on the stub launch line.
-
-    Thin wrapper over :func:`_proc_subtree_sample`; see there for the
-    unmeasurable-vs-zero contract.
-    """
-    sample = _proc_subtree_sample(pid, cpu=False)
-    return (sample.procs, sample.stubs)
-
-
 def _subtree_cpu_jiffies(pid: int) -> int:
     """Sum utime+stime across ``pid`` and its descendants (clock ticks).
 
-    Thin wrapper over :func:`_proc_subtree_sample`, so the CPU subtree is the
-    same subtree the RSS and count readings describe.
+    Thin wrapper over :func:`_proc_subtree_sample`, so the CPU subtree the
+    Sessions session rows read is the same subtree the task rows describe.
     """
     return _proc_subtree_sample(pid, rss=False, counts=False).jiffies
 
@@ -1071,8 +1044,6 @@ def resolve_max_subagents(cfg: KiroCrewConfig) -> int:
 
 
 _CLK_TCK = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
-# Alias kept for external references; the CPU walk shares the one ceiling now.
-_CPU_SUBTREE_MAX_PROCS = _SUBTREE_MAX_PROCS
 
 
 def validate_cwd(cwd: str, allowed_roots: list[str]) -> tuple[str, str]:

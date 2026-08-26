@@ -378,25 +378,25 @@ class TestProcRssReaders:
             assert sa._proc_children(1234) == []
 
     def test_subtree_rss_falsy_pid(self) -> None:
-        assert sa._proc_rss_kb(None) == -1
-        assert sa._proc_rss_kb(0) == -1
+        assert sa._proc_subtree_sample(None, counts=False).rss_kb == -1
+        assert sa._proc_subtree_sample(0, counts=False).rss_kb == -1
 
     def test_subtree_rss_unreadable_parent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(sa, "_single_proc_rss_kb", lambda _pid: -1)
-        assert sa._proc_rss_kb(99) == -1
+        assert sa._proc_subtree_sample(99, counts=False).rss_kb == -1
 
     def test_subtree_rss_sums_descendants(self, monkeypatch: pytest.MonkeyPatch) -> None:
         tree = {1: [2, 3], 2: [4], 3: [], 4: []}
         monkeypatch.setattr(sa, "_single_proc_rss_kb", lambda pid: 100 * pid)
         monkeypatch.setattr(sa, "_proc_children", lambda pid: tree.get(pid, []))
-        assert sa._proc_rss_kb(1) == 100 + 200 + 300 + 400
+        assert sa._proc_subtree_sample(1, counts=False).rss_kb == 100 + 200 + 300 + 400
 
     def test_subtree_rss_ignores_cycles_and_dead_children(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(sa, "_single_proc_rss_kb", lambda pid: 100 if pid == 1 else -1)
         monkeypatch.setattr(sa, "_proc_children", lambda pid: [1, 2] if pid == 1 else [])
-        assert sa._proc_rss_kb(1) == 100
+        assert sa._proc_subtree_sample(1, counts=False).rss_kb == 100
 
 
 class TestReadIntFile:
@@ -785,52 +785,6 @@ class TestLiveSharedCount:
             mgr._live_shared_count(777)  # type: ignore[call-arg]
 
 
-class TestProcSubtreeCounts:
-    """``_proc_subtree_counts`` — the reading task rows were missing entirely."""
-
-    def test_no_pid_is_unmeasurable(self) -> None:
-        assert sa._proc_subtree_counts(None) == (None, None)
-
-    def test_non_linux_is_unmeasurable_not_zero(self) -> None:
-        with patch.object(sa.platform_compat, "IS_LINUX", False):
-            assert sa._proc_subtree_counts(4242) == (None, None)
-
-    def test_dead_pid_is_unmeasurable(self) -> None:
-        with (
-            patch.object(sa.platform_compat, "IS_LINUX", True),
-            patch.object(sa, "_single_proc_rss_kb", return_value=-1),
-        ):
-            assert sa._proc_subtree_counts(4242) == (None, None)
-
-    def test_counts_the_subtree_and_its_stubs(self) -> None:
-        # 1 runtime + 3 children, two of which are stubs.
-        children = {10: [11, 12, 13], 11: [], 12: [], 13: []}
-        stub_pids = {11, 12}
-        with (
-            patch.object(sa.platform_compat, "IS_LINUX", True),
-            patch.object(sa, "_single_proc_rss_kb", return_value=1024),
-            patch.object(sa, "_proc_children", side_effect=lambda p: children.get(p, [])),
-            patch.object(
-                sa.platform_compat,
-                "process_matches",
-                side_effect=lambda p, needles: p in stub_pids and needles == (sa.STUB_MODULE,),
-            ),
-        ):
-            assert sa._proc_subtree_counts(10) == (4, 2)
-
-    def test_walk_is_bounded(self) -> None:
-        """A pathological tree cannot walk past the shared subtree ceiling."""
-        with (
-            patch.object(sa.platform_compat, "IS_LINUX", True),
-            patch.object(sa, "_single_proc_rss_kb", return_value=1024),
-            patch.object(sa, "_proc_children", side_effect=lambda p: [p * 10, p * 10 + 1]),
-            patch.object(sa.platform_compat, "process_matches", return_value=False),
-        ):
-            procs, stubs = sa._proc_subtree_counts(2)
-        assert stubs == 0
-        assert procs is not None and procs < sa._RSS_SUBTREE_MAX_PROCS * 3
-
-
 class TestProcSubtreeSample:
     """``_proc_subtree_sample`` — the ONE walk every reading now comes off.
 
@@ -838,6 +792,11 @@ class TestProcSubtreeSample:
     instants, so a process that exited between them was counted by one and
     missed by another. These pin both halves of the claim: the readings are the
     same values the separate readers produced, and they cost one walk.
+
+    This class also absorbs what ``TestProcSubtreeCounts`` used to assert for the
+    #3953 count contract, and strengthens it: no-pid, non-Linux and dead-root are
+    now checked across all four columns at once rather than the two count columns
+    alone.
     """
 
     #: 1 runtime + 3 children; two of the children are MCP stubs.
@@ -868,13 +827,18 @@ class TestProcSubtreeSample:
         assert sample.jiffies == sum(self.JIFFIES.values())
         assert (sample.procs, sample.stubs) == (4, 2)
 
-    def test_the_wrappers_still_report_what_they_always_did(self) -> None:
+    def test_the_readings_still_report_what_they_always_did(self) -> None:
         """Value preservation: consolidating must not move a single number, or
-        the learned-cost store and ``compute_max_subagents`` would see a step."""
+        the learned-cost store and ``compute_max_subagents`` would see a step.
+
+        The expected values are what the three separate readers produced for this
+        tree: summed RSS, summed jiffies, and the count pair from #3954.
+        """
         with self._fake_tree():
-            assert sa._proc_rss_kb(10) == sum(self.RSS.values())
+            sample = sa._proc_subtree_sample(10)
+            assert sample.rss_kb == sum(self.RSS.values())
+            assert (sample.procs, sample.stubs) == (4, 2)
             assert sa._subtree_cpu_jiffies(10) == sum(self.JIFFIES.values())
-            assert sa._proc_subtree_counts(10) == (4, 2)
 
     def test_the_subtree_is_walked_once_not_once_per_metric(self) -> None:
         seen: list[int] = []
@@ -911,21 +875,24 @@ class TestProcSubtreeSample:
         assert sample.jiffies == sum(self.JIFFIES.values())
 
     def test_a_skipped_metric_costs_no_reads(self) -> None:
-        """A single-metric wrapper must not pay for the other two, or sharing the
-        walk would have made every caller slower."""
+        """The one CPU-only caller must not pay for RSS and the counts, or
+        sharing the walk would have made the session rows slower."""
         with (
             self._fake_tree(),
             patch.object(
                 sa,
-                "_proc_cpu_jiffies",
-                side_effect=AssertionError("CPU read on an RSS-only sample"),
+                "_single_proc_rss_kb",
+                side_effect=AssertionError("RSS read on a CPU-only sample"),
+            ),
+            patch.object(
+                sa.platform_compat,
+                "process_matches",
+                side_effect=AssertionError("stub match on a CPU-only sample"),
             ),
         ):
-            assert sa._proc_rss_kb(10) == sum(self.RSS.values())
+            assert sa._subtree_cpu_jiffies(10) == sum(self.JIFFIES.values())
 
-    def test_the_walk_is_bounded_by_the_one_shared_ceiling(self) -> None:
-        assert sa._RSS_SUBTREE_MAX_PROCS == sa._SUBTREE_MAX_PROCS
-        assert sa._CPU_SUBTREE_MAX_PROCS == sa._SUBTREE_MAX_PROCS
+    def test_the_walk_is_bounded_by_one_ceiling(self) -> None:
         with (
             patch.object(sa.platform_compat, "IS_LINUX", True),
             patch.object(sa, "_single_proc_rss_kb", return_value=1024),
@@ -934,6 +901,7 @@ class TestProcSubtreeSample:
             patch.object(sa.platform_compat, "process_matches", return_value=False),
         ):
             sample = sa._proc_subtree_sample(2)
+        assert sample.stubs == 0
         assert sample.procs is not None and sample.procs < sa._SUBTREE_MAX_PROCS * 3
 
 
@@ -2319,5 +2287,4 @@ class TestPlatformConstants:
         assert sa._CLK_TCK > 0
 
     def test_subtree_walk_caps_are_bounded(self) -> None:
-        assert sa._RSS_SUBTREE_MAX_PROCS > 0
-        assert sa._CPU_SUBTREE_MAX_PROCS > 0
+        assert sa._SUBTREE_MAX_PROCS > 0
