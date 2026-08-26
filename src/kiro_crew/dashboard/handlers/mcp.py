@@ -1642,20 +1642,43 @@ def _load_json_or_empty(path: Path) -> dict[str, Any]:
 async def _offload_config_write(fn, /, *args, **kwargs):
     """Run a store-writing helper in a worker thread, surviving cancellation.
 
-    A worker thread cannot be cancelled: shielding the await and re-awaiting
-    the future on ``CancelledError`` guarantees the write runs to completion
-    before the cancellation propagates.  Without this, a cancelled request
-    task would release the MCP lock (or begin teardown) while the thread is
-    still mutating the store, letting a concurrent purge interleave with the
-    stale write.  Same pattern as the dangling-uninstall sweep below.
+    A worker thread cannot be cancelled, so the write always runs to completion;
+    the job here is to keep the CALLER from unwinding before it does. Awaiting
+    the future through ``asyncio.shield`` and, on ``CancelledError``, re-awaiting
+    it guarantees the write has finished before the cancellation propagates.
+    Without this, a cancelled request task would release the MCP lock (or begin
+    teardown) while the thread is still mutating the store, letting a concurrent
+    purge interleave with the stale write.
+
+    The drain is a LOOP, not a single re-await, because the drain is itself
+    cancellable: a second cancellation arriving while it is in flight would
+    cancel the drain and unwind the caller with the worker still writing —
+    exactly the window this function exists to close. Each re-shield absorbs one
+    more cancellation, so the guarantees hold under REPEATED cancellation:
+
+    * the write always runs to completion before this returns or raises;
+    * if cancelled, ``CancelledError`` is re-raised AFTER the drain;
+    * an exception from the write still propagates (and, as before, takes
+      precedence over a pending cancellation).
+
+    Same pattern as the dangling-uninstall sweep below.
     """
     loop = asyncio.get_running_loop()
     future = loop.run_in_executor(None, partial(fn, *args, **kwargs))
-    try:
-        return await asyncio.shield(future)
-    except asyncio.CancelledError:
-        await future
-        raise
+    cancelled: asyncio.CancelledError | None = None
+    while True:
+        try:
+            result = await asyncio.shield(future)
+            break
+        except asyncio.CancelledError as exc:
+            # Remember the FIRST cancellation and keep draining. Once the future
+            # is done, ``await shield(...)`` returns without suspending, so this
+            # cannot spin: the loop turns only on an actual new cancellation.
+            if cancelled is None:
+                cancelled = exc
+    if cancelled is not None:
+        raise cancelled
+    return result
 
 
 def _atomic_write(path: Path, data: dict) -> None:
