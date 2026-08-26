@@ -110,7 +110,10 @@ completion — this path fires for every terminal state, including runs that
 never executed (the never-ran reading comes from the record's execution marker,
 never from its error wording):
 
-- completed: `The agent finished but result delivery timed out.`
+- completed: `The agent finished, but its result could not be delivered.`
+  The line names no mechanism: `<reason>` above it already carries one, and
+  most call sites pass something other than a timeout (a dead provider, a
+  died ACP process, a raw exception string).
 - failed after execution began: `The agent failed before a result could be delivered.`
 - failed before execution (approval or queued rejection, no output exists):
   `The run failed before it started, so there is no result to deliver.`

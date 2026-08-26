@@ -1380,7 +1380,17 @@ def _injection_notice_outcome(info: "SubagentInfo") -> str:
     their record without it) with no wording contract between ``error``
     strings and this notice. The "no result to deliver" phrasings are guarded
     on the absence of any output so they can never contradict the result-path
-    recovery hint. Pure function of the record, unit-tested per branch.
+    recovery hint.
+
+    The completed branch names no delivery MECHANISM. Only two of the six
+    ``notify_injection_failed`` call sites pass a timeout; the rest pass
+    "provider dead after prompt-busy retries", "ACP process died", a raw
+    ``str(exception)`` and the last injection-failure reason. Since the notice
+    prints ``reason`` on the line directly above this one, asserting a timeout
+    here would contradict it — and the reader is an LLM deciding whether to
+    retry. The cause belongs to ``reason``; this line states only the outcome.
+
+    Pure function of the record, unit-tested per branch.
     """
     never_ran = info._exec_started is None and not info.result and not info.result_path
     outcome = info.outcome
@@ -1392,7 +1402,7 @@ def _injection_notice_outcome(info: "SubagentInfo") -> str:
         if never_ran:
             return "The run failed before it started, so there is no result to deliver."
         return "The agent failed before a result could be delivered."
-    return "The agent finished but result delivery timed out."
+    return "The agent finished, but its result could not be delivered."
 
 
 # Event callback: (event_type, info, extra_data) -> None

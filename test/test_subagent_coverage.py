@@ -1295,11 +1295,12 @@ class TestNotifyInjectionFailed:
 class TestInjectionNoticeOutcome:
     """The pure helper maps a terminal record to a truthful outcome line."""
 
-    def test_completed_keeps_the_finished_copy(self) -> None:
+    def test_completed_states_the_outcome_without_a_mechanism(self) -> None:
         info = _info(done=True, result="ok")
-        assert sa._injection_notice_outcome(info) == (
-            "The agent finished but result delivery timed out."
-        )
+        line = sa._injection_notice_outcome(info)
+        assert line == "The agent finished, but its result could not be delivered."
+        # The cause belongs to ``reason``, printed on the line above this one.
+        assert "timed out" not in line
 
     def test_failed_run_does_not_claim_finished(self) -> None:
         info = _info(done=True, error="Timed out after 30 minutes", _exec_started=123.0)
@@ -1348,6 +1349,83 @@ class TestInjectionNoticeOutcome:
         assert sa._injection_notice_outcome(info) == (
             "The agent failed before a result could be delivered."
         )
+
+
+class TestInjectionNoticeDoesNotContradictItsReason:
+    """A completed run's outcome line must not name a mechanism.
+
+    ``notify_injection_failed`` prints ``reason`` one line above the outcome
+    line, and most of its callers pass something that is not a timeout:
+    ``slack/gateway.py`` sends "provider dead after prompt-busy retries",
+    "ACP process died", a raw ``str(exception)`` from a failed injection turn,
+    and the last injection-failure reason after the attempt cap. A completed
+    branch that asserts "delivery timed out" contradicts every one of them, in
+    a message whose reader is the LLM deciding what to do next.
+    """
+
+    #: The reasons the four non-timeout call sites actually pass, verbatim.
+    NON_TIMEOUT_REASONS = [
+        "provider dead after prompt-busy retries",
+        "ACP process died",
+        "AcpError: stream closed while waiting for result",
+        "no active session for parent",
+    ]
+
+    async def _notice_for(self, info: SubagentInfo, reason: str) -> str:
+        seen: list[dict] = []
+
+        async def _on_event(_etype: str, _info: SubagentInfo, extra: dict) -> None:
+            seen.append(extra)
+
+        mgr = _manager(on_event=_on_event)
+        with patch("kiro_crew.dashboard.chat_utils.dashboard_slot_key", return_value="slot-1"):
+            mgr.notify_injection_failed(info, reason=reason)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert seen, "expected a subagent_injection_failed event"
+        return str(seen[0]["failure_msg"])
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("reason", NON_TIMEOUT_REASONS)
+    async def test_a_non_timeout_reason_is_not_overridden_by_the_outcome_line(
+        self, reason: str
+    ) -> None:
+        info = _info(
+            parent_session_key="dash:1", done=True, result="ok", _exec_started=123.0
+        )
+        msg = await self._notice_for(info, reason)
+        assert reason in msg, "the caller's reason must still be shown"
+        assert "timed out" not in msg, (
+            f"the notice says the delivery timed out while its own reason says {reason!r}"
+        )
+        assert "The agent finished, but its result could not be delivered." in msg
+
+    @pytest.mark.asyncio
+    async def test_a_real_timeout_still_reads_as_one(self) -> None:
+        """Neutral copy loses nothing: the timeout callers say so in ``reason``."""
+        info = _info(
+            parent_session_key="dash:1", done=True, result="ok", _exec_started=123.0
+        )
+        msg = await self._notice_for(info, "injection timed out after 300s")
+        assert "injection timed out after 300s" in msg
+        assert "The agent finished, but its result could not be delivered." in msg
+
+    @pytest.mark.asyncio
+    async def test_the_result_recovery_hint_still_agrees_with_the_line(self) -> None:
+        """"could not be delivered" must not read as "there is nothing to read":
+        when a result file exists the notice still points at it."""
+        info = _info(
+            parent_session_key="dash:1",
+            done=True,
+            result="ok",
+            result_path="/tmp/subagent-result.txt",
+            _exec_started=123.0,
+        )
+        with patch("os.path.getsize", return_value=42):
+            msg = await self._notice_for(info, "ACP process died")
+        assert "The agent finished, but its result could not be delivered." in msg
+        assert "/tmp/subagent-result.txt" in msg
+        assert "Use the read tool" in msg
 
 
 class TestNotifyInjectionFailedOutcomeCopy:
@@ -1404,7 +1482,7 @@ class TestNotifyInjectionFailedOutcomeCopy:
         assert "finished" not in msg
 
     @pytest.mark.asyncio
-    async def test_post_run_delivery_timeout_keeps_existing_copy_and_hint(
+    async def test_post_run_delivery_failure_keeps_the_completed_copy_and_hint(
         self, tmp_path: Path
     ) -> None:
         result = tmp_path / "result.txt"
@@ -1413,7 +1491,7 @@ class TestNotifyInjectionFailedOutcomeCopy:
             parent_session_key="dash:1", done=True, result="hello", result_path=str(result)
         )
         msg = await self._notice_for(info)
-        assert "The agent finished but result delivery timed out." in msg
+        assert "The agent finished, but its result could not be delivered." in msg
         assert "Result saved at" in msg
 
 
