@@ -528,13 +528,21 @@ commit status plus one `readiness:` label**.
 
 Two subtleties:
 
-- **It refreshes while a workflow is re-running.** It triggers on `workflow_run`
-  `requested` and `in_progress` as well as `completed`, so when a monitored workflow
-  flips back to running (most often a reviewer re-run after a human override) the
-  live query buckets it into `pending` and the label honestly drops from a stale
-  `action required` back to `checking`, instead of freezing on the previous commit's
-  verdict. The `pr+sha` concurrency group collapses the resulting burst into one
-  evaluation.
+- **It refreshes while a workflow is re-running, but not when one starts.** It triggers
+  on `workflow_run` `in_progress` and `completed`, not on `requested`. `in_progress` is a
+  merge guard, not a cosmetic: it is the only type that sees a monitored workflow go back
+  to running, because a re-run reuses the same run and increments its attempt instead of
+  creating a new one. Without it, a re-run of an already-green lane would leave readiness
+  publishing the pre-re-run `success` for the whole re-run -- and since that status is the
+  branch-protection handle for the entire fan-out, armed auto-merge could merge a revision
+  whose lane is failing at that moment. `requested` is the type that carries nothing: it
+  fires at run CREATION, when no lane can have a verdict yet and readiness has already
+  published `checking` from the `pull_request_target` path. Since every type fires once per
+  monitored workflow per revision, listing all three dispatched up to 42 readiness runs per
+  head update and made readiness ~67% of every workflow run this repository created; two
+  types put the ceiling at 28. The `pr+sha` concurrency group collapses the burst for
+  execution, but a collapsed run has already consumed its dispatch slot, so the group does
+  not bound that cost.
 - **A `pull_request_target` run gets its own isolated concurrency group.** Those are
   the only readiness runs that surface as a CheckRun in the PR's rollup, and GitHub
   marks any superseded run "cancelled" whichever way `cancel-in-progress` is set, so

@@ -36,17 +36,35 @@ on:
       - Fork Design Review
       - Fork UX Review
       - Fork First Principles Review
-    # `completed` publishes the real verdict. `requested`/`in_progress` exist so
-    # a monitored workflow flipping BACK to running -- most commonly a re-run of
-    # a reviewer (e.g. Opus 4.8 re-run after a human override) -- re-triggers this
-    # job WHILE it runs, instead of leaving the label frozen at the previous
-    # commit's verdict until the re-run completes. On re-evaluation that workflow
-    # is queried live as `in_progress`, buckets into `pending`, and the label
-    # drops from a stale `action required` (red) back to `checking` (yellow) --
-    # an honest "recomputing" signal. Cheap: the in_progress path has pending>0,
-    # and the pr+sha concurrency group (cancel-in-progress) collapses the burst
-    # of near-simultaneous requested/in_progress fires into one live evaluation.
-    types: [requested, in_progress, completed]
+    # `completed` publishes the real verdict. `in_progress` is kept as a merge
+    # guard, and `requested` is deliberately absent.
+    #
+    # Why `requested` carries nothing: it fires when a run is CREATED, which on
+    # a head update happens for all 14 workflows above before any of them can
+    # have a verdict -- and readiness has already published `checking` for that
+    # revision via the `pull_request_target: synchronize` path. Its only other
+    # occasion is a brand-new run, whose eventual `completed` is the fire that
+    # actually decides anything. Listing it cost a third of this workflow's
+    # dispatch to re-publish a `pending` that was already pending.
+    #
+    # Why `in_progress` is load-bearing and NOT a cosmetic: it is the only type
+    # that observes a monitored workflow going BACK to running. A re-run reuses
+    # the same workflow run and increments its attempt rather than creating a
+    # new one, so `requested` does not fire for it -- `in_progress` does. That
+    # matters for a re-run of an already-GREEN lane: without it, readiness holds
+    # the pre-re-run `success` for the whole re-run, and since this status is
+    # the branch-protection handle for the entire fan-out, armed auto-merge can
+    # merge a revision whose lane is at that moment failing. Dropping it would
+    # trade a merge-safety guard for dispatch, which is the wrong direction.
+    #
+    # The dispatch problem this addresses: every type fires once per monitored
+    # workflow per revision, so all three dispatched up to 42 readiness runs per
+    # head update and made this workflow the majority of the repository's run
+    # creation. Two types put the ceiling at 28. The per-revision concurrency
+    # group below collapses the burst for EXECUTION, but a collapsed run has
+    # already consumed its dispatch slot, so the group never bounded this cost.
+    # Measurements and the queue-saturation mechanism: docs/ci/ci-and-reviews.md.
+    types: [in_progress, completed]
   workflow_dispatch:
     inputs:
       pr:
