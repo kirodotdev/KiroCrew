@@ -255,11 +255,13 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402
     SUBAGENT_COMPLETION_KIND,
     SYNTHETIC_RECOVERY_KIND,
     RecoveryPayload,
+    has_leaked_tool_call,
     is_promise_only_terminal,
     is_synthetic_payload_item,
     is_synthetic_recovery_item,
     mint_options_token,
     payload_for_replay,
+    should_notice_leaked_tool_call,
     should_recover_promise_only,
 )
 
@@ -4706,6 +4708,11 @@ async def _run_chat(
     # continuation (see the promise-only guard near turn completion). Like
     # _retrying_empty it suppresses success-recording for this non-landing turn.
     _recovering_promise = False
+    # Set when the turn ended with a tool-call block leaked into its text and
+    # the notice was surfaced (#6112). Same un-landed semantics as
+    # _recovering_promise: the turn announced work it never did, so it must not
+    # be recorded as a success or reset the retry budgets.
+    _noticed_leak = False
     # Whether THIS turn consumed the one-shot post-compaction re-injection flag.
     # Bound at turn scope, not at the consume site: the consume lives inside the
     # context-builder leg, and the probe/base legs skip it entirely — reading an
@@ -8009,6 +8016,67 @@ async def _run_chat(
                 slot._stage_titles, slot._plan_goal, slot._stage_descriptions = (
                     _extract_and_redact_plan_metadata(_orch_plan_buf)
                 )
+        # Leaked tool-call notice (#6112): the turn ended NORMALLY with an
+        # invoke block emitted as TEXT and zero tool calls — the model wrote
+        # the invocation into the prose channel instead of executing it, so
+        # nothing ran and, in a monitor/autonudge loop, the session silently
+        # stalls. Surface a visible notice and mark the turn un-landed.
+        # NOTICE-ONLY by design — no continuation is queued, because an
+        # injected "re-issue that call" carries runtime authority into
+        # sessions where the call auto-approves (slot trust, yolo, or a static
+        # agent tool allowlist — the last invisible at this layer, so no
+        # fail-closed downgrade condition exists), and the leaked block may be
+        # untrusted external content the model merely reproduced. Rationale in
+        # full: should_notice_leaked_tool_call's docstring. Checked BEFORE the
+        # promise-only guard: a leaked block is machine syntax, not a promise
+        # sentence, and the more specific detector must own the turn.
+        if not _armed_final and should_notice_leaked_tool_call(
+            stop_reason=_stop_reason,
+            end_turn_reason=STOP_REASON_END_TURN,
+            final_segment_text=assistant_text,
+            prompt_depth=_prompt_depth,
+            is_cancelled=(_stop_reason == STOP_REASON_CANCELLED),
+            refusal_reasons=_refusal_reasons,
+            turn_tool_calls=_turn_tool_calls,
+            # A stage-execution turn must not be un-landed from here: the
+            # orchestrator's stage loop reads this turn's result for stage
+            # accounting, and the leak mark would let it record an unfinished
+            # stage as complete (same exclusion as the promise-only guard).
+            in_stage_execution=slot._in_stage_execution,
+        ):
+            logger.warning(
+                "Leaked tool call for slot %s — the final message contained an "
+                "invoke block as text with no tool call executed (credits=%.4f)",
+                slot.key,
+                _turn_credits,
+            )
+            slot.append(
+                "notice",
+                "ℹ️ A tool call leaked into the reply text instead of executing — "
+                "nothing was run. Re-send your request to retry (an active monitor "
+                "loop retries on its next cycle).",
+                "msg msg-info",
+            )
+            _noticed_leak = True
+        elif (
+            _turn_tool_calls > 0
+            and _stop_reason == STOP_REASON_END_TURN
+            and _prompt_depth == 0
+            and has_leaked_tool_call(assistant_text)
+        ):
+            # MIXED-TURN diagnostic (advisory gap named by review): the turn
+            # executed tools and THEN leaked a final dispatch as text. The
+            # notice/un-landing path deliberately excludes this shape —
+            # un-landing a turn whose earlier tool calls had real side effects
+            # would misdescribe it — but the stall must stay diagnosable, so
+            # log it. No notice card, no un-landing, no behavior change.
+            logger.warning(
+                "Leaked tool call alongside %d executed tool call(s) for slot %s "
+                "— the final segment contains an invoke block as text; the turn "
+                "lands normally (diagnostic only)",
+                _turn_tool_calls,
+                slot.key,
+            )
         # Promise-only guard (#2686): the turn ended NORMALLY with visible text
         # whose FINAL segment only ANNOUNCES an immediate action ("I'll do that
         # now") without making the tool call, so the work never happened yet the
@@ -8020,7 +8088,9 @@ async def _run_chat(
         # (the [OPTION] gate is the action), so it is excluded. Bounded to one
         # attempt via slot._promise_only_retries; a second promise-only ending
         # falls through and lands normally rather than looping.
-        if not _armed_final and should_recover_promise_only(
+        # Chained as `elif` off the leaked-tool-call notice above: at most one
+        # of the two unacted-turn paths may claim a turn.
+        elif not _armed_final and should_recover_promise_only(
             stop_reason=_stop_reason,
             end_turn_reason=STOP_REASON_END_TURN,
             # `_produced_visible_output` is set True ONLY on the paths that reset
@@ -8191,11 +8261,11 @@ async def _run_chat(
             await save_slot_off_loop(state, slot)
         # Reset ALL retry budgets once the cycle completes (success OR the
         # terminal second-empty error) so each new user turn gets fresh budgets.
-        # Guarded by _retrying_empty AND _recovering_promise: neither a re-queue
-        # nor a promise-only recovery is a landed turn, so both must preserve the
-        # counters (a promise-only turn that reset budgets would also mask the
-        # transient-failure retry accounting).
-        if not _retrying_empty and not _recovering_promise:
+        # Guarded by _retrying_empty, _recovering_promise and _noticed_leak:
+        # neither a re-queue nor an unacted turn is a landed turn, so all must
+        # preserve the counters (an unacted turn that reset budgets would also
+        # mask the transient-failure retry accounting).
+        if not _retrying_empty and not _recovering_promise and not _noticed_leak:
             # A non-zero stall budget reaching this reset on an OK turn is a
             # COMPLETED recovery cycle: the stall branches return early, so the
             # only way here with an armed budget is the synthetic recovery turn
@@ -8256,7 +8326,7 @@ async def _run_chat(
 
         if _stop_reason == STOP_REASON_CANCELLED:
             logger.info("Turn cancelled by user for slot %s", slot.key)
-        elif not _retrying_empty and not _recovering_promise:
+        elif not _retrying_empty and not _recovering_promise and not _noticed_leak:
             _maybe_consolidate(state, slot)
         state.sessions.check_context_usage(session_key, client)
         pct = client.context_usage_pct()
@@ -8265,11 +8335,13 @@ async def _run_chat(
             _stop_reason != STOP_REASON_CANCELLED
             and not _retrying_empty
             and not _recovering_promise
+            and not _noticed_leak
         ):
-            # A promise-only turn is deliberately NOT recorded as a landed success:
-            # it announced work it never did, so counting it would tell the
+            # An unacted turn (promise-only, or a tool call leaked as text) is
+            # deliberately NOT recorded as a landed success: it announced or
+            # serialized work it never did, so counting it would tell the
             # reliability metrics (and the poisoned-conversation one-shot) the turn
-            # succeeded. The single injected continuation gets its own turn; if THAT
+            # succeeded. The promise-only continuation gets its own turn; if THAT
             # lands, it records success normally.
             state.sessions.record_success(session_key)
             # A LANDED turn breaks the pre-stream-exhaustion streak and

@@ -114,6 +114,30 @@ send time.
   pending synthesis, and the tag is merge-breaking so a nudge is never folded
   into a `[N queued messages merged]` user turn. At `_prompt_depth > 0` the ladder is disabled entirely (terminal
   notice on the first empty) to prevent nested-turn re-queue loops.
+- **Leaked tool-call notice** (dashboard chat runner, depth-0 turns only,
+  issue #6112): a turn that ends normally with an invoke block emitted as
+  TEXT and zero tool calls executed — the model wrote its invocation into the
+  prose channel instead of dispatching it (observed with deferred MCP tools
+  whose schema is not yet bound, and with large nested arguments) — surfaces
+  a visible notice card and is marked un-landed (no success recording, no
+  budget reset, no consolidation), so an unattended monitor/autonudge cycle
+  that leaked never lands silently. Detection is machine-shaped
+  (`chat_utils.has_leaked_tool_call`): an unquoted invoke open tag plus a
+  parameter or close tag, with fenced code blocks and inline code spans
+  stripped first so a pasted transcript or explained example never matches;
+  the gate (`should_notice_leaked_tool_call`) is claimed ahead of the
+  promise-only guard and excludes stage-execution turns (the orchestrator's
+  stage loop reads the turn result for stage accounting). Deliberately **notice-only** — no continuation is
+  queued, because an injected "re-issue that call" would carry runtime
+  authority into sessions where the call auto-approves (slot trust, global
+  yolo, or a static agent tool allowlist, the last invisible at the runner
+  layer, so no fail-closed downgrade condition exists) and the leaked block
+  may be untrusted external content the model merely reproduced. A loop loses
+  one cycle, visibly, and retries on its own schedule. Scope limit: the
+  notice/un-landing applies only to ZERO-tool-call turns — a mixed turn that
+  executed tools and then leaked its final dispatch as text lands normally
+  (un-landing a turn whose earlier calls had real side effects would
+  misdescribe it) and is logged at WARNING as a diagnostic instead.
 - **Context compaction**: at ≥ configured threshold (`session.autocompact_pct`, default 70%, valid 5–90), compacts **in place** on both
   backends: kiro-cli via a `/compact` **prompt** (`session/prompt` +
   `_kiro.dev/compaction/status` watch — never the string form of

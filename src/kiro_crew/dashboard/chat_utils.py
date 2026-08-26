@@ -1687,6 +1687,189 @@ def is_promise_only_terminal(final_segment_text: str) -> bool:
     return bool(_PROMISE_NOW_RE.search(text))
 
 
+# Fenced code blocks (``` or ~~~, any length ≥3) and inline code spans (a
+# backtick run closed by an equal-length run on the same line) are QUOTED
+# content: a user pasting a leak transcript, or the model explaining tool
+# syntax, legitimately shows an invoke block inside them. Both are stripped
+# before the leak scan so quoted machine syntax never triggers the notice.
+# Only PAIRED delimiters are removed — an unpaired fence or tick run inside a
+# genuinely leaked payload leaves the surrounding invoke tags visible (failure
+# direction: a missed notice, never a suppressed one).
+#
+# LINEAR BY CONSTRUCTION, deliberately. The scan runs on the event loop at
+# every turn completion over model-authored text, so it must stay linear on
+# ADVERSARIAL input too: a variable-length backreference pattern like
+# ``(`{3,}|~{3,}).*?(?P=fence)`` backtracks over every possible delimiter
+# split, and a few thousand consecutive backticks stall the loop for tens of
+# seconds — long enough for the liveness watchdog to kill the gateway. So the
+# delimiters are tokenized with a fixed-alternative regex (no backreferences)
+# and paired in one forward pass.
+_CODE_DELIM_RE = re.compile(r"`+|~{3,}")
+
+
+def _strip_quoted_code(text: str) -> str:
+    """*text* with paired code fences and inline code spans removed, linearly.
+
+    One forward pass over the delimiter tokens:
+
+    * A run of ≥3 backticks or ≥3 tildes OPENS a fence; the next run of the
+      same character AT LEAST AS LONG (CommonMark's closer rule) CLOSES it,
+      and everything between is dropped — so a four-backtick quote can carry
+      triple-backtick content without being cut short. Delimiters of the
+      other kind, and shorter runs of the same kind, inside an open fence are
+      content.
+    * Outside a fence, a backtick run of length L opens an inline span; the
+      next run of exactly length L on the SAME line closes it. A newline
+      discards all pending span opens (spans cannot contain newlines), and a
+      pending open that never closes is emitted as literal text.
+
+    Every token is visited once and every output chunk is appended/discarded
+    at most once, so the pass is linear whatever the input shape.
+    """
+    out: list[str] = []
+    # Pending inline-span opens: run length -> index in ``out`` where the
+    # opening run was appended. Cleared on every newline and on fence entry.
+    span_open_at: dict[int, int] = {}
+    fence_char = ""  # non-empty while inside an open fence
+    fence_open_len = 0
+    fence_open_out_idx = 0
+    pos = 0
+    for tok in _CODE_DELIM_RE.finditer(text):
+        seg = text[pos : tok.start()]
+        delim = tok.group()
+        pos = tok.end()
+        if fence_char:
+            # Inside a fence: append tentatively — the content is dropped only
+            # when a closer actually arrives, so an UNPAIRED fence leaves every
+            # byte in place (fail toward detection, never suppression).
+            out.append(seg)
+            if delim[0] == fence_char and len(delim) >= fence_open_len:
+                del out[fence_open_out_idx:]  # drop the fence and its content
+                fence_char = ""
+            else:
+                out.append(delim)
+            continue
+        out.append(seg)
+        if "\n" in seg:
+            span_open_at.clear()
+        if len(delim) >= 3:
+            # Fence opener (either character). Tentatively append; the closer
+            # (if any) truncates back to this index.
+            fence_open_out_idx = len(out)
+            out.append(delim)
+            fence_char = delim[0]
+            fence_open_len = len(delim)
+            span_open_at.clear()
+            continue
+        opened = span_open_at.pop(len(delim), None)
+        if opened is not None:
+            del out[opened:]  # drop the span, its delimiters, and its content
+            # Pending opens recorded INSIDE the just-dropped span went with it;
+            # keeping their indices would point past the truncated output.
+            span_open_at = {ln: i for ln, i in span_open_at.items() if i < opened}
+        else:
+            span_open_at[len(delim)] = len(out)
+            out.append(delim)
+    # An unpaired fence needs no special handling here: its tentatively-
+    # appended delimiter is already in ``out`` as literal text.
+    out.append(text[pos:])
+    return "".join(out)
+
+
+# The leaked block's signature: an invoke open tag with a name attribute
+# (optionally namespace-prefixed the way some harnesses emit it). MACHINE-SHAPED
+# on purpose — unlike the promise-only detector this is not a natural-language
+# inference, so the false-positive surface is quoted syntax (handled by the
+# stripping above), not phrasing.
+_LEAKED_INVOKE_OPEN_RE = re.compile(
+    r"<(?:[A-Za-z][\w.-]*:)?invoke\s+name\s*=\s*[\"'][^\"'<>]+[\"']"
+)
+# Corroboration: the block must also carry a parameter tag or its own close tag,
+# so a lone stray open tag in prose (a truncated quote, a typo'd example) does
+# not read as a full leaked invocation.
+_LEAKED_INVOKE_BODY_RE = re.compile(r"<(?:[A-Za-z][\w.-]*:)?(?:parameter\b|/invoke\s*>)")
+
+
+def has_leaked_tool_call(text: str) -> bool:
+    """True when *text* contains a tool invocation emitted as PROSE — an
+    unquoted invoke-block open tag with a parameter or close tag (issue #6112:
+    the model writes the call into the text channel instead of executing it,
+    the turn ends with zero tool calls, and the session silently stalls).
+
+    Quoted syntax is excluded structurally: fenced code blocks and inline code
+    spans are stripped before the scan, so a pasted bug report or an explained
+    example never matches. The caller must additionally require
+    ``turn_tool_calls == 0`` — a turn that executed tools and ALSO printed a
+    block is not the leak shape.
+    """
+    if not text:
+        return False
+    stripped = _strip_quoted_code(text)
+    opener = _LEAKED_INVOKE_OPEN_RE.search(stripped)
+    if not opener:
+        return False
+    # Corroboration must FOLLOW the opener: a parameter/close tag sitting
+    # before a lone opener is unrelated markup, not this invocation's body.
+    return bool(_LEAKED_INVOKE_BODY_RE.search(stripped, opener.end()))
+
+
+def should_notice_leaked_tool_call(
+    *,
+    stop_reason: str,
+    end_turn_reason: str,
+    final_segment_text: str,
+    prompt_depth: int,
+    is_cancelled: bool,
+    refusal_reasons: list,
+    turn_tool_calls: int = 0,
+    in_stage_execution: bool = False,
+) -> bool:
+    """Decide whether to surface the leaked-tool-call NOTICE (issue #6112).
+
+    The defect: the model emits an invoke block into its TEXT channel instead
+    of executing it (observed when the target is a deferred MCP tool whose
+    schema is not yet bound, and with large nested arguments), the turn then
+    ends with zero tool calls, and the session idles — in a monitor/autonudge
+    loop this is a silent stall the user only discovers by noticing nothing
+    happened.
+
+    NOTICE-ONLY, deliberately. An injected "re-issue that call" continuation
+    would carry runtime authority into a session where the call can execute
+    with no human gate — slot trust, global yolo, OR a static agent tool
+    allowlist all auto-approve it, and the last of these is invisible at this
+    layer, so no downgrade condition can be written here that fails closed.
+    The leaked block is also not proof of the model's own intent: untrusted
+    external content (a pasted issue, a fetched page quoting a leak) can carry
+    an unfenced block the model merely reproduces. So the turn is marked
+    un-landed and the user gets a visible card naming what happened; nothing
+    is queued and nothing can execute. An unattended loop loses one cycle and
+    retries on its own schedule — visibly, which is the half of #6112 this
+    layer can fix honestly.
+
+    Gates: the turn ended NORMALLY (cancel/refusal/error paths own their own
+    reporting), made ZERO tool calls (a turn that executed tools and also
+    printed a block is not the leak shape), is top-level, is NOT a
+    stage-execution turn (the orchestrator's stage loop reads the turn result
+    for stage accounting, and un-landing a stage turn from here would let the
+    loop record an unfinished stage as complete — same exclusion as the
+    promise-only guard), and its final segment carries the machine-shaped
+    leak (:func:`has_leaked_tool_call`). No one-shot budget: nothing is
+    re-queued, so there is no loop to bound, and every leaked turn deserves
+    its own visible mark.
+    """
+    if is_cancelled or refusal_reasons:
+        return False
+    if turn_tool_calls != 0:
+        return False
+    if in_stage_execution:
+        return False
+    if stop_reason != end_turn_reason:
+        return False
+    if prompt_depth != 0:
+        return False
+    return has_leaked_tool_call(final_segment_text)
+
+
 def should_recover_promise_only(
     *,
     stop_reason: str,
