@@ -80,6 +80,7 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/connections/mint", handlers.api_connections_mint_state)
     app.router.add_get("/api/connections/status", handlers.api_connections_status)
     app.router.add_post("/api/connections/cancel", handlers.api_connections_cancel)
+    app.router.add_post("/api/connections/disconnect", handlers.api_connections_disconnect)
     # REST-style MCP server registration (App Kit)
     app.router.add_put("/api/mcp/servers/{name}", handlers.api_mcp_server_detail)
     app.router.add_delete("/api/mcp/servers/{name}", handlers.api_mcp_server_detail)

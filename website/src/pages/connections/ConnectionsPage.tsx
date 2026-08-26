@@ -45,7 +45,11 @@ export type ConnectionCardState =
 
 type ConnectionAction = 'connect' | 'disconnect' | 'relay' | 'test'
 export type Feedback = {
-  kind: 'success' | 'error'
+  // THREE kinds, because "the click did not do what you asked" splits in two. An
+  // `error` is a failure; a `warning` is a deliberate refusal that leaves the user
+  // a repair to make. Both must ANNOUNCE (role=alert) -- only `success` is a
+  // passing status update.
+  kind: 'success' | 'warning' | 'error'
   text: string
   revoke?: { href: string; provider: string }
 }
@@ -221,9 +225,10 @@ export function uninstallOnCancel(pending: PendingConnect | undefined): boolean 
 export function disconnectFeedback(
   provider: Pick<ConnectionProvider, 'name' | 'revoke_page_url'>,
   text: string,
+  kind: Feedback['kind'] = 'success',
 ): Feedback {
   return {
-    kind: 'success',
+    kind,
     text,
     revoke: { href: provider.revoke_page_url, provider: provider.name },
   }
@@ -591,7 +596,7 @@ function ConnectionCard({
       </div>
 
       {feedback && (
-        <div role={feedback.kind === 'error' ? 'alert' : 'status'} className={`mt-3 text-[11px] ${feedback.kind === 'error' ? 'text-danger' : 'text-ok'}`}>
+        <div role={feedback.kind === 'success' ? 'status' : 'alert'} className={`mt-3 text-[11px] ${feedback.kind === 'error' ? 'text-danger' : feedback.kind === 'warning' ? 'text-warn' : 'text-ok'}`}>
           {feedback.text}
           {feedback.revoke && (
             <>
@@ -855,17 +860,91 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
   })
 
   const disconnect = async (provider: ConnectionProvider, server: McpServer, cancelled = false) => run(provider, 'disconnect', async () => {
-    await api.mcpApply([{ name: server.name, uninstall: true }])
+    // Cancel must NOT revoke, and this branch is load-bearing. A grant is keyed by
+    // ENDPOINT, not by entry, so a cancelled *new* connect routed through the
+    // revoking endpoint would delete a grant that a user's own separately-named
+    // server at the same URL is still using — silently, because `cancelled`
+    // suppresses the note below. Cancel therefore keeps the entry-only removal it
+    // always had; only a deliberate Disconnect revokes.
+    if (cancelled) {
+      await api.mcpApply([{ name: server.name, uninstall: true }])
+    }
+    // One call does all three local things: dispose any in-flight mint, delete the
+    // stored grant artifacts when they are ours alone, and remove the MCP entry.
+    // This was an mcpApply uninstall, which took the entry out and left a usable
+    // refresh token on disk — so a later reconnect silently resumed a grant this
+    // card had already told the user was gone.
+    const result = cancelled ? undefined : await api.connectionsDisconnect(provider.slug)
     setLocallyWaiting(current => {
       const next = { ...current }
       delete next[provider.slug]
       return next
     })
     await queryClient.invalidateQueries({ queryKey: ['mcp-servers'] })
-    if (!cancelled) {
+    // The grant feed too, mirroring the connect-completed path: a Disconnect that
+    // deletes the grant but keeps the entry would otherwise leave the cached
+    // grantPresent=true rendering "Connected" beside a note saying the grant is
+    // gone, until the next poll.
+    void queryClient.invalidateQueries({ queryKey: ['connections-status'] })
+    if (result) {
+      // Facts are reported INDEPENDENTLY, never as an exclusive chain — two review
+      // rounds landed findings in this span because each single message asserted a
+      // second fact it never tested ("Entry removed." while the entry stayed;
+      // "Disconnected, but…" while the backend declined). The GRANT clause states
+      // only what happened to the grant; the ENTRY clause is appended whenever the
+      // backend left the entry alone. TWO of the three outcomes announce: a
+      // survivor is an `error` (a grant outliving the click is the state this
+      // endpoint exists to prevent) and a census gap is a `warning` (nothing
+      // failed, but the grant is still there and a file needs repairing). A grant
+      // deliberately kept for a NAMED sharer needs nothing from the user, so it
+      // stays a success status.
+      // `grantSurviving` now reports FAILED unlinks only: the backend re-stats
+      // just the pairs it actually tried to remove, so a deliberate keep (a
+      // sharer, or a census gap) never appears here. That is what collapses the
+      // precedence ladder these branches used to need — a survivor no longer has
+      // to be disambiguated against `shared`/`censusGap` before it can alert.
+      const survived = result.grantSurviving.length > 0
+      const shared = result.grantSharedWith.length > 0
+      const censusGap = !shared && result.grantCensusIncomplete
+      const entryKept = !result.entryRemoved
+      // The census knows which source it could not read, so the repair instruction
+      // names it. Empty is the honest case, not a missing field: `censusIncomplete`
+      // is also set by an entry whose URL could not be compared, which names no
+      // file -- so that outcome keeps the source-less wording instead of
+      // interpolating a blank into "fix that file".
+      const unreadable = result.grantCensusUnreadable ?? []
+      const grantClause = survived
+        ? t('pages.connectionsPage.disconnect_grant_survived')
+        : shared
+          ? t('pages.connectionsPage.disconnect_grant_shared', {
+              names: result.grantSharedWith.join(', '),
+            })
+          : censusGap
+            ? unreadable.length > 0
+              ? t('pages.connectionsPage.disconnect_census_incomplete_source', {
+                  source: unreadable[0],
+                })
+              : t('pages.connectionsPage.disconnect_census_incomplete')
+            : result.grantRemoved && entryKept
+            ? t('pages.connectionsPage.disconnect_entry_not_ours')
+            : entryKept
+              ? '' // no grant existed and the entry stayed: the entry clause is the whole story
+              : t('pages.connectionsPage.disconnected_locally')
+      const entryClause =
+        entryKept && (survived || shared || !result.grantRemoved)
+          ? t('pages.connectionsPage.disconnect_entry_left_alone')
+          : ''
       setFeedback(current => ({
         ...current,
-        [provider.slug]: disconnectFeedback(provider, t('pages.connectionsPage.disconnected_locally')),
+        [provider.slug]: disconnectFeedback(
+          provider,
+          [grantClause, entryClause].filter(Boolean).join(' '),
+          // A census gap is the one outcome that tells the user their access was
+          // NOT withdrawn AND hands them a file to repair. Rendering it green under
+          // role=status announced a chore as a success; it is still not an `error`,
+          // because nothing failed -- a safety rule declined to act.
+          survived ? 'error' : censusGap ? 'warning' : 'success',
+        ),
       }))
     }
   })

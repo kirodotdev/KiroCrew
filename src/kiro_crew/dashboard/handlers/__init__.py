@@ -90,6 +90,7 @@ from kiro_crew.dashboard.handlers.agents import (  # noqa: E402, F401
 # ── Connections OAuth relay (handlers/connections.py) ──
 from kiro_crew.dashboard.handlers.connections import (  # noqa: E402, F401
     api_connections_cancel,
+    api_connections_disconnect,
     api_connections_mint,
     api_connections_mint_state,
     api_connections_status,
