@@ -1,7 +1,9 @@
 """Tests for Phase 2 of the local notification bus RFC: app producers."""
 
+import ast
 import asyncio
 import contextlib
+import inspect
 import json
 from unittest.mock import MagicMock, patch
 
@@ -829,3 +831,156 @@ class TestSigningPayloadCoversCrons:
         # identical payload (no key present when crons are empty).
         m = AppManifest(name="a", version="1.0.0")
         assert b"crons" not in m.signing_payload()
+
+
+# -- Machine-readable error codes -------------------------------------------
+
+
+class TestPushErrorCodes:
+    """Every refusal this endpoint can return names itself.
+
+    The consumers here are App Kit clients, not the dashboard, so the prose is
+    the part they cannot use: an app that wants to back off on a 429 and fix its
+    payload on a 400 has to branch on something stable, and an English sentence
+    is neither stable nor translatable. ``code`` is that identity; ``error``
+    stays advisory.
+    """
+
+    async def _post(self, client, **body):
+        payload = {"channel": "ticket-update", "title": "t", "body": "b"}
+        payload.update(body)
+        return await client.post("/api/notifications/push", json=payload)
+
+    @pytest.mark.asyncio
+    async def test_missing_app_identity(self):
+        state = _FakeState()
+        with _patch_channels(), _fresh_limiter():
+            async with TestClient(TestServer(_make_app(state, {"app": ""}))) as client:
+                resp = await self._post(client)
+                body = await resp.json()
+        assert resp.status == 403
+        assert body["code"] == "push_app_token_required"
+
+    @pytest.mark.asyncio
+    async def test_app_not_installed_or_disabled(self):
+        state = _FakeState()
+        with _patch_channels(channels=None), _fresh_limiter():
+            async with TestClient(TestServer(_make_app(state, {"app": "oncall-radar"}))) as client:
+                resp = await self._post(client)
+                body = await resp.json()
+        assert resp.status == 403
+        assert body["code"] == "push_app_not_enabled"
+
+    @pytest.mark.asyncio
+    async def test_channel_not_declared(self):
+        state = _FakeState()
+        with _patch_channels(), _fresh_limiter():
+            async with TestClient(TestServer(_make_app(state, {"app": "oncall-radar"}))) as client:
+                resp = await self._post(client, channel="not-declared")
+                body = await resp.json()
+        assert resp.status == 400
+        assert body["code"] == "push_channel_not_declared"
+
+    @pytest.mark.asyncio
+    async def test_manifest_default_priority_is_unusable(self):
+        """A corrupt on-disk defaultPriority fails registration, and is a
+        DIFFERENT client remedy from a bad payload -- the app's manifest is
+        wrong, not its request."""
+        state = _FakeState()
+        with _patch_channels({"ticket-update": "not-a-priority"}), _fresh_limiter():
+            async with TestClient(TestServer(_make_app(state, {"app": "oncall-radar"}))) as client:
+                resp = await self._post(client)
+                body = await resp.json()
+        assert resp.status == 400
+        assert body["code"] == "push_channel_registration_invalid"
+
+    @pytest.mark.asyncio
+    async def test_invalid_payload(self):
+        state = _FakeState()
+        with _patch_channels(), _fresh_limiter():
+            async with TestClient(TestServer(_make_app(state, {"app": "oncall-radar"}))) as client:
+                resp = await self._post(client, url="")
+                body = await resp.json()
+        assert resp.status == 400
+        assert body["code"] == "push_payload_invalid"
+
+    @pytest.mark.asyncio
+    async def test_rate_limited(self):
+        state = _FakeState()
+        with _patch_channels():
+            async with TestClient(TestServer(_make_app(state, {"app": "oncall-radar"}))) as client:
+                for _ in range(RATE_LIMIT_BURST):
+                    assert (await self._post(client)).status == 200
+                resp = await self._post(client)
+                body = await resp.json()
+        assert resp.status == 429
+        assert body["code"] == "push_rate_limited"
+
+    @pytest.mark.asyncio
+    async def test_delivery_failed(self):
+        state = _FakeState()
+
+        def exploding_sink(note):
+            raise OSError("disk full")
+
+        state.notification_bus = NotificationBus(sink=exploding_sink)
+        with _patch_channels(), _fresh_limiter():
+            async with TestClient(TestServer(_make_app(state, {"app": "oncall-radar"}))) as client:
+                resp = await self._post(client)
+                body = await resp.json()
+        assert resp.status == 500
+        assert body["code"] == "push_delivery_failed"
+
+    @pytest.mark.asyncio
+    async def test_persistence_failed(self):
+        state = _FakeState()
+
+        def failing_sink(note):
+            state.delivered.append(note)
+            fut = asyncio.get_running_loop().create_future()
+            fut.set_result(False)
+            state.last_notification_persist = fut
+
+        state.notification_bus = NotificationBus(sink=failing_sink)
+        with _patch_channels(), _fresh_limiter():
+            async with TestClient(TestServer(_make_app(state, {"app": "oncall-radar"}))) as client:
+                resp = await self._post(client)
+                body = await resp.json()
+        assert resp.status == 500
+        assert body["code"] == "push_persistence_failed"
+
+    @pytest.mark.asyncio
+    async def test_the_prose_is_unchanged(self):
+        """``code`` is additive: ``error`` keeps its existing wording, so an
+        app reading the sentence today is not broken by this."""
+        state = _FakeState()
+        with _patch_channels(), _fresh_limiter():
+            async with TestClient(TestServer(_make_app(state, {"app": "oncall-radar"}))) as client:
+                resp = await self._post(client, channel="not-declared")
+                body = await resp.json()
+        assert body["error"] == "channel not declared in app manifest: 'not-declared'"
+
+    def test_every_refusal_in_this_handler_carries_a_code(self):
+        """Per-file ratchet. ``error-code-baseline.json`` no longer lists this
+        module, and the repo-wide gate only fails on a NET regression across
+        1300+ sites -- which a new bare refusal here could hide behind an
+        unrelated conversion. This one cannot be hidden behind anything."""
+        tree = ast.parse(inspect.getsource(api_push_notification))
+        bare: list[int] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            status = next(
+                (kw.value for kw in node.keywords if kw.arg == "status"), None
+            )
+            if not isinstance(status, ast.Constant) or not isinstance(status.value, int):
+                continue
+            if status.value < 400 or not node.args:
+                continue
+            body = node.args[0]
+            if not isinstance(body, ast.Dict):
+                continue
+            keys = {k.value for k in body.keys if isinstance(k, ast.Constant)}
+            if "code" not in keys:
+                bare.append(node.lineno)
+        assert not bare, f"refusal(s) with no machine-readable code at offsets {bare}"

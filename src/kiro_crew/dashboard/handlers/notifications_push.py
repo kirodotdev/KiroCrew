@@ -69,7 +69,7 @@ async def api_push_notification(request: web.Request) -> web.Response:
             error="app token required",
         )
         return web.json_response(
-            {"error": "app token required"}, status=403
+            {"error": "app token required", "code": "push_app_token_required"}, status=403
         )
 
     # Bound the body BEFORE decoding via the shared helper so the cap and the
@@ -106,7 +106,13 @@ async def api_push_notification(request: web.Request) -> web.Response:
                 source="notifications_api",
                 error="app not installed or not enabled",
             )
-            return web.json_response({"error": "app not installed or not enabled"}, status=403)
+            return web.json_response(
+                {
+                    "error": "app not installed or not enabled",
+                    "code": "push_app_not_enabled",
+                },
+                status=403,
+            )
 
         if channel_id not in channels:
             sel().log_api_access(
@@ -117,7 +123,11 @@ async def api_push_notification(request: web.Request) -> web.Response:
                 error=f"undeclared channel: {channel_id!r}",
             )
             return web.json_response(
-                {"error": f"channel not declared in app manifest: {channel_id!r}"}, status=400
+                {
+                    "error": f"channel not declared in app manifest: {channel_id!r}",
+                    "code": "push_channel_not_declared",
+                },
+                status=400,
             )
 
         try:
@@ -129,7 +139,9 @@ async def api_push_notification(request: web.Request) -> web.Response:
             if not bus.is_registered(full_channel):
                 bus.register_channel(full_channel, channels[channel_id])
         except NotificationValidationError as exc:
-            return web.json_response({"error": str(exc)}, status=400)
+            return web.json_response(
+                {"error": str(exc), "code": "push_channel_registration_invalid"}, status=400
+            )
 
     priority_raw = body.get("priority")
     # ``is not None`` (not truthiness): falsy-but-valid values like
@@ -164,7 +176,9 @@ async def api_push_notification(request: web.Request) -> web.Response:
         # already happened above, under the lifecycle lock.)
         payload.validate()
     except NotificationValidationError as exc:
-        return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response(
+            {"error": str(exc), "code": "push_payload_invalid"}, status=400
+        )
 
     if not state.notification_rate_limiter.allow(app_name):
         sel().log_api_access(
@@ -174,7 +188,9 @@ async def api_push_notification(request: web.Request) -> web.Response:
             source="notifications_api",
             error="rate limit exceeded",
         )
-        return web.json_response({"error": "rate limit exceeded"}, status=429)
+        return web.json_response(
+            {"error": "rate limit exceeded", "code": "push_rate_limited"}, status=429
+        )
 
     try:
         # bus.push delivers via the state sink: redact, in-memory append,
@@ -187,7 +203,9 @@ async def api_push_notification(request: web.Request) -> web.Response:
         # cannot turn this into an unhandled 500. Refund the token: nothing
         # was delivered, and the budget caps delivered notifications only.
         state.notification_rate_limiter.refund(app_name)
-        return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response(
+            {"error": str(exc), "code": "push_payload_invalid"}, status=400
+        )
     except Exception:
         # Sink failure during delivery. Delivery may have PARTIALLY happened
         # (broadcast precedes persist), so the token is deliberately NOT
@@ -201,7 +219,10 @@ async def api_push_notification(request: web.Request) -> web.Response:
             source="notifications_api",
             error="delivery failed",
         )
-        return web.json_response({"error": "notification delivery failed"}, status=500)
+        return web.json_response(
+            {"error": "notification delivery failed", "code": "push_delivery_failed"},
+            status=500,
+        )
 
     # Await durability before acknowledging: an accepted app push must not
     # be silently lost to a disk failure (legacy system producers remain
@@ -218,7 +239,10 @@ async def api_push_notification(request: web.Request) -> web.Response:
             source="notifications_api",
             error="persistence failed",
         )
-        return web.json_response({"error": "notification persistence failed"}, status=500)
+        return web.json_response(
+            {"error": "notification persistence failed", "code": "push_persistence_failed"},
+            status=500,
+        )
 
     sel().log_api_access(
         caller=app_name,
