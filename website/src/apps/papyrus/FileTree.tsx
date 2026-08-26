@@ -127,7 +127,7 @@ export default function FileTree({
 
   const isMobile = useIsMobile()
   return (
-    <div className="h-full min-h-0 flex flex-col border-r border-border bg-bg-subtle" data-testid="papyrus-file-tree">
+    <div className="h-full min-h-0 flex flex-col border-r border-border bg-bg-accent" data-testid="papyrus-file-tree">
       <div className="flex items-center gap-1 px-2 py-1.5 border-b border-border shrink-0">
         {/* While narrow the page puts a labelled disclosure bar directly above
             this row, so repeating the word here is two adjacent headings saying

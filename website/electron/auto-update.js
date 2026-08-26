@@ -345,6 +345,97 @@ function resolveChannel(stamped, preference) {
 }
 
 /**
+ * Is `candidate` a STRICTLY NEWER version than `current`? Returns null when the
+ * comparison cannot be made (either string unparseable, or semver unavailable).
+ *
+ * Uses electron-updater's own bundled `semver` so the ordering matches the
+ * library's, and understands the prerelease stamps this app ships
+ * (`0.3.0-insider.13`, `0.1.2-nightly.<ts>`). `require`d inline — like the
+ * `fs`/`child_process` requires elsewhere in this module — so the pure helper
+ * stays loadable outside an Electron runtime; a stubbed/absent semver yields
+ * null (fail-open) rather than throwing.
+ *
+ * @param {string} candidate
+ * @param {string} current
+ * @returns {boolean|null}
+ */
+function isNewerVersion(candidate, current) {
+  if (!candidate || !current) return null;
+  let semver;
+  try {
+    semver = require("semver");
+  } catch {
+    return null;
+  }
+  const a = semver.valid(candidate) || semver.valid(semver.coerce(candidate));
+  const b = semver.valid(current) || semver.valid(semver.coerce(current));
+  if (!a || !b) return null;
+  try {
+    return semver.gt(a, b);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Should a discovered version drive the AUTOMATIC update path — the background
+ * download and the "update found" nudge?
+ *
+ * - YES for a genuine upgrade (candidate strictly newer than the running build).
+ * - YES for ANY version when the FOLLOWED channel differs from the build's own
+ *   DEFAULT (no-preference) channel: that is a deliberate channel switch — the
+ *   user's stored preference has actively moved this install off the lane it
+ *   would otherwise follow — where landing on an older build of the chosen
+ *   channel is the intended, user-initiated outcome `allowDowngrade=true` exists
+ *   for.
+ * - NO for a same-channel version that is NOT newer than the running build.
+ *   That is a build running AHEAD of what its own channel has published
+ *   (locally-built or prerelease bytes ahead of the feed): from that channel's
+ *   point of view there is nothing to install, so electron-updater's
+ *   difference-based `update-available` (which fires for any version ≠ running,
+ *   because allowDowngrade=true) would otherwise nag a DOWNGRADE. This is the
+ *   bug this guard closes.
+ *
+ * **Why the switch signal is the DEFAULT lane, not the byte stamp.** A promoted
+ * stable release ships the soaked insider candidate's exact bytes, so its
+ * version keeps the insider stamp (`0.3.0-insider.13`) and `channelForVersion`
+ * reports `insider` for a build that is, in fact, a stable install following the
+ * stable feed with no deliberate switch. Keying the exemption on that raw stamp
+ * (`followed=stable !== stamped=insider`) therefore fired for the ENTIRE
+ * promoted-stable population — and for any prerelease-stamped build running ahead
+ * of stable (`0.5.0-insider.20`) — re-opening the exact downgrade nag this guard
+ * removes. So the comparison uses `defaultChannel = resolveChannel(stamped, "")`
+ * (the lane with no preference, which folds promoted-insider bytes to stable),
+ * and the exemption fires only when the FOLLOWED channel differs from THAT — i.e.
+ * an explicit preference actually moved the install to a non-default lane.
+ *
+ * `allowDowngrade` stays true, so a real channel switch and any EXPLICIT user
+ * download still roll the version; only the unsolicited auto-path is suppressed.
+ *
+ * Fail-open: an unrankable comparison (isNewerVersion → null) is treated as
+ * offerable, so a version we cannot compare is never silently hidden.
+ *
+ * TRADE-OFF (deliberate, not accidental): a same-channel version RETRACTION —
+ * the feed intentionally repointed to an older build — also reads as "not
+ * newer, same channel" and is therefore no longer auto-applied. The client
+ * cannot tell a retraction from an ahead-of-feed dev build by version alone, and
+ * silently DOWNGRADING a user on the next restart is the more dangerous default,
+ * so the safe direction is to not auto-act. A deliberate `retracted` feed flag
+ * could re-enable that path explicitly in future.
+ *
+ * @param {{candidate:string, current:string, followedChannel:string, defaultChannel:(string|null)}} o
+ * @returns {boolean}
+ */
+function shouldAutoOffer({ candidate, current, followedChannel, defaultChannel }) {
+  if (followedChannel && defaultChannel && followedChannel !== defaultChannel) {
+    return true;
+  }
+  const newer = isNewerVersion(candidate, current);
+  if (newer === null) return true;
+  return newer;
+}
+
+/**
  * Build the per-channel feed DIRECTORY url for the generic provider. Pure +
  * testable.
  *
@@ -693,7 +784,21 @@ function initAutoUpdate(deps) {
   }
   function emit(state, extra = {}) {
     if (!uiDriven) return;
-    const payload = { state, channel: currentChannel(), version: app.getVersion(), ...extra };
+    const payload = {
+      state,
+      channel: currentChannel(),
+      version: app.getVersion(),
+      // The renderer cannot infer the real updater handoff from getInfo().platform:
+      // packaged Linux variants and older bundles make that display field an
+      // unreliable capability signal. Carry the handoff contract with every
+      // lifecycle event so both ready surfaces can set the right expectation.
+      // Externally managed Windows installs run the marker's update command
+      // and relaunch directly; they never hand off to our NSIS installer.
+      installHandoff: osPlatform === "win32" && !managed
+        ? "windows-installer"
+        : "automatic-relaunch",
+      ...extra,
+    };
     // Remembered even when the push below throws: a renderer that missed the
     // push is exactly the one the getInfo() replay exists to catch up.
     lastEmittedState = payload;
@@ -1142,6 +1247,14 @@ function initAutoUpdate(deps) {
   let installing = false;
   let quitHandled = false;
   let checking = false;
+  // The channel the LAST configureFeed() pointed the updater at. Captured at
+  // check time because the update-available handler's direction gate must
+  // compare the candidate against the channel its FEED was configured for, not
+  // against a live currentChannel() read: the preference can flip mid-flight
+  // (an in-flight stable check, then the user picks insider), and re-reading it
+  // in the handler would treat a stable-feed downgrade as a deliberate insider
+  // switch and stage it. Null until the first configureFeed().
+  let feedChannel = null;
 
   /**
    * Version of the update currently being fetched/held -- NOT the running
@@ -1183,6 +1296,10 @@ function initAutoUpdate(deps) {
 
   function configureFeed() {
     const channel = currentChannel();
+    // Record the channel this check's feed is configured for, so the
+    // update-available handler compares the candidate against THIS lane rather
+    // than a currentChannel() that may have changed since (see feedChannel).
+    feedChannel = channel;
     // A package install reads its channel file from a per-format subdirectory,
     // so the two Linux formats never overwrite each other's metadata.
     const url = buildFeedBase({ base: feedBase, channel, variant: linux.format });
@@ -1333,16 +1450,28 @@ function initAutoUpdate(deps) {
 
   // isForceRunAfter=true so the user lands back in the app after the swap.
   //
-  // isSilent is platform-dependent, and on Windows it decides whether this is an
-  // automatic update at all. NsisUpdater passes /S only when isSilent, and the
-  // installer is assisted (nsis.oneClick=false), so isSilent=false shows the
-  // full NSIS wizard: the app would quit and then sit waiting for the user to
-  // click through a setup dialog, which is not the silent swap macOS and Linux
-  // perform. macOS and Linux have no installer UI to suppress, and passing
-  // isSilent there would change which relaunch flag BaseUpdater honours, so the
-  // flag is set only for win32.
+  // Windows deliberately uses isSilent=false. The assisted NSIS installer has
+  // update-only hooks in build/installer.nsh that skip every decision page,
+  // leave the native extraction progress visible, then relaunch and close on
+  // completion. Passing /S hid that only useful feedback for several minutes,
+  // making a healthy update look exactly like a crash. The installer also
+  // converts /S back to this visible update mode for clients released before
+  // this change, so the first upgrade into the fix is covered too.
+  function notifyWindowsInstallHandoff() {
+    if (osPlatform !== "win32") return;
+    try {
+      new Notification({
+        title: "Installing Kiro Crew update",
+        // Timing and automatic relaunch stay on the installer window that they
+        // explain. The toast carries only the unique recovery instruction.
+        body: "If Kiro Crew doesn’t reopen after the installer finishes, open it from the Start menu.",
+      }).show();
+    } catch { /* notifications optional */ }
+  }
+
   function quitAndInstall() {
-    autoUpdater.quitAndInstall(osPlatform === "win32", true);
+    notifyWindowsInstallHandoff();
+    autoUpdater.quitAndInstall(false, true);
   }
 
   async function applyUpdateAndRestart() {
@@ -1409,7 +1538,7 @@ function initAutoUpdate(deps) {
       installing = false;
       try { if (onInstallFailed) onInstallFailed(); } catch { /* advisory */ }
       // Use the install-error renderer contract, NOT a bare found/not-available:
-      // the user just clicked Restart & Update and is watching an install
+      // the user just clicked Install Update & Restart App and is watching an install
       // surface -- a silent state swap reads as an unexplained cancel. The
       // error/install shape has an existing renderer contract (the About
       // card, and the in-place overlay failure state) that says the install
@@ -1501,16 +1630,19 @@ function initAutoUpdate(deps) {
   }
 
   async function promptInstall(versionName, notes) {
+    const handoffDetail = osPlatform === "win32"
+      ? "Installing can take several minutes. Kiro Crew will close, show Windows installation progress, and reopen automatically."
+      : "Installing can take several minutes. Kiro Crew will close and reopen automatically when the update is complete.";
     const { response } = await dialog.showMessageBox({
       type: "info",
-      buttons: ["Restart & Update", "Later"],
+      buttons: ["Install Update & Restart App", "Later"],
       defaultId: 0,
       cancelId: 1,
       title: "Kiro Crew update ready",
       message: `Kiro Crew ${versionName || ""} is ready to install.`.trim(),
       detail:
         (notes || "").slice(0, 500) +
-        "\n\nKiro Crew will stop the local gateway, install the update, and relaunch.",
+        `\n\n${handoffDetail}`,
     });
     if (response === 0) {
       await applyUpdateAndRestart();
@@ -1590,6 +1722,50 @@ function initAutoUpdate(deps) {
   // and the consent paths share one guarded entry point (startDownload).
   autoUpdater.on("update-available", (info) => {
     foundVersion = (info && info.version) || null;
+    // Direction gate — the fix for the "update to an OLDER version" nag.
+    // electron-updater fires this for ANY feed version that DIFFERS from the
+    // running one, because allowDowngrade=true — so on a build running ahead of
+    // its channel's published latest it reports a DOWNGRADE as available. When
+    // this is a same-channel version that is not newer, suppress the automatic
+    // path entirely: discard any stage armed for it, report up to date, and do
+    // NOT download or nag. A deliberate channel switch (followed !== default
+    // lane) is exempt, and explicit user downloads are unaffected.
+    if (
+      foundVersion &&
+      !shouldAutoOffer({
+        candidate: foundVersion,
+        current: app.getVersion(),
+        // The channel THIS candidate's feed was configured for, captured at
+        // check time (feedChannel), NOT a live currentChannel() read. If the
+        // preference flipped while this check was in flight, a live read would
+        // pair the new channel with the OLD feed's candidate and wrongly treat
+        // a stale-feed downgrade as a deliberate switch. Falls back to a live
+        // read only before the first configureFeed() has run.
+        followedChannel: feedChannel || currentChannel(),
+        // The lane this build follows with NO preference. Folds a promoted
+        // stable build's insider-stamped bytes back to stable, so only an
+        // explicit preference that MOVES the install off its default lane reads
+        // as a deliberate channel switch (see shouldAutoOffer).
+        defaultChannel: resolveChannel(channelForVersion(app.getVersion()), ""),
+      })
+    ) {
+      log.info(
+        `[update] feed offers ${foundVersion} but running ${app.getVersion()} is not older `
+          + "on the same channel — treating as up to date (suppressing downgrade nag)",
+      );
+      if (updateReady || stagedVersion) {
+        // A downgrade staged before this guard existed (or by a race) must not
+        // survive to install on the next quit.
+        updateReady = false;
+        stagedVersion = null;
+        stagedNotes = "";
+        quitHandled = false;
+        app.removeListener("before-quit", deferredInstallOnQuit);
+      }
+      foundVersion = null;
+      emit("not-available");
+      return;
+    }
     // A stage is only useful if it is still the latest thing on the feed.
     // Because the RUNNING version never changes mid-session, the updater
     // reports "available" for the staged version too — so the comparison
@@ -1704,6 +1880,8 @@ module.exports = {
   channelForFlavor,
   channelForVersion,
   resolveChannel,
+  isNewerVersion,
+  shouldAutoOffer,
   buildFeedBase,
   configureUpdater,
   classifyError,

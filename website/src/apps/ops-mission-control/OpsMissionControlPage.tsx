@@ -346,7 +346,7 @@ function ClosedIncidents() {
                   onClick={() =>
                     setExpanded(expanded === inc.incident_id ? null : inc.incident_id)
                   }
-                  className="w-full flex items-center gap-2 py-2 text-left text-sm hover:bg-card-hover"
+                  className="w-full flex items-center gap-2 py-2 text-left text-sm hover:bg-bg-hover"
                 >
                   <StatusIcon status={inc.status} />
                   <span className="font-mono text-xs text-muted shrink-0">{inc.incident_id}</span>
@@ -730,7 +730,7 @@ export default function OpsMissionControlPage() {
                       onClick={() =>
                         setSelected(selected === inc.incident_id ? null : inc.incident_id)
                       }
-                      className="w-full flex items-center gap-2 py-2 text-left text-sm hover:bg-card-hover"
+                      className="w-full flex items-center gap-2 py-2 text-left text-sm hover:bg-bg-hover"
                     >
                       <StatusIcon status={inc.status} />
                       <span className="font-mono text-xs text-muted shrink-0">

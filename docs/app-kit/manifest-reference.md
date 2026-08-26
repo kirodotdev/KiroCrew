@@ -20,6 +20,11 @@ The app manifest (`app.json`) declares your app's identity, resources, and requi
 | `minKiroCrewVersion` | string | Minimum Gateway version required |
 | `tags` | string[] | Discovery tags (e.g. `["oncall", "monitoring"]`) |
 | `jobFamilies` | string[] | Job families this app is relevant to |
+| `highlights` | string[] | Concise feature bullets for the detail page |
+| `useCases` | string[] | Short, operator-oriented situations where the app is useful |
+| `configuration` | string[] | Concise setup or configuration steps shown on the detail page |
+| `screenshots` | string[] | Real product screenshots; paths follow the same distribution rules as hero art |
+| `screenshotsDark` | string[] | Optional dark-appearance screenshot variants |
 
 ## Resources
 
@@ -70,6 +75,13 @@ installed against:
       "cron_expr": "0 9 * * 1-5",
       "message": "Generate daily digest",
       "agent": "digest-agent"
+    },
+    {
+      "name": "market-open",
+      "cron_expr": "30 9 * * 1-5",
+      "message": "Summarise the overnight tape",
+      "timezone": "America/New_York",
+      "skip_dates": ["2026-12-25"]
     }
   ]
 }
@@ -82,6 +94,8 @@ installed against:
 | `cron_expr` | string | Cron expression (mutually exclusive with `every`) |
 | `message` | string | Prompt sent to the agent on each run |
 | `agent` | string | Agent to run (optional, uses default if omitted) |
+| `timezone` | string | IANA zone name the schedule and `skip_dates` are evaluated in, e.g. `America/New_York`. Optional, but an empty value falls back to the gateway config's timezone and then to **UTC** — so `"cron_expr": "0 6 * * *"` without it fires at 06:00 UTC, the wrong calendar day for most users. An unknown zone is rejected at manifest validation. A per-**user** zone is not manifest data: pass `timezone=` to `ctx.cron.add_job` instead |
+| `skip_dates` | string[] | Calendar dates the job must not fire on, evaluated in `timezone`. Must be zero-padded `YYYY-MM-DD` — `2026-1-1` parses but never matches the padded fire-time rendering, so it is rejected at manifest validation rather than silently skipping nothing |
 | `enabled` | boolean | Default `true`. Must be a JSON boolean — any other type is rejected at manifest validation. When `false` the cron is registered **paused** (visible in the Schedule view, resumable) instead of firing on install/enable — for jobs that need user configuration first |
 
 > **Caveat:** disabling an app deletes its registered cron jobs, and re-enabling
@@ -168,6 +182,28 @@ At most one enabled app owns a slot. When two enabled apps declare the same
 `replaces`, the first by app name wins and the collision is reported -- the winner
 does not depend on which app was enabled or installed more recently.
 
+### App Icon
+
+`iconPath` is the App Store's card and row icon, and it is **top-level** — not
+under `ui`. `ui.pages[].icon` and `ui.pages[].iconUrl` above are the sidebar glyph
+for an app that is already *installed*, a different surface; neither one supplies
+a store icon, and an app that declares only those publishes no icon at all.
+
+```json
+{
+  "iconPath": "assets/icon.png"
+}
+```
+
+`kirocrew app init` scaffolds `assets/icon.png` and this field, so a new app
+starts with a working icon rather than a placeholder card. Replace the generated
+placeholder with real artwork before publishing.
+
+For the artwork requirements — path form, dimensions, why the icon must be
+opaque, and how the dark variant relates — see
+[Publishing an app](publishing-guide.md), which owns that spec for every art
+field.
+
 ### Hero Images
 
 Top-level manifest fields that supply the artwork rendered on App Store browse
@@ -179,7 +215,9 @@ and detail cards. The path form depends on how the app is distributed:
   ```json
   {
     "heroImage": "/apps/my-app/ui/hero-light.svg",
-    "heroImageDark": "/apps/my-app/ui/hero-dark.svg"
+    "heroImageDark": "/apps/my-app/ui/hero-dark.svg",
+    "heroImageDetail": "/apps/my-app/ui/hero-detail-light.svg",
+    "heroImageDetailDark": "/apps/my-app/ui/hero-detail-dark.svg"
   }
   ```
 
@@ -190,7 +228,9 @@ and detail cards. The path form depends on how the app is distributed:
   ```json
   {
     "heroImage": "ui/hero-light.svg",
-    "heroImageDark": "ui/hero-dark.svg"
+    "heroImageDark": "ui/hero-dark.svg",
+    "heroImageDetail": "ui/hero-detail-light.svg",
+    "heroImageDetailDark": "ui/hero-detail-dark.svg"
   }
   ```
 
@@ -198,6 +238,11 @@ and detail cards. The path form depends on how the app is distributed:
 |-------|------|-------------|
 | `heroImage` | string | Hero image shown on the App Store card (light theme) |
 | `heroImageDark` | string | Hero image variant used in dark theme |
+| `heroImageDetail` | string | Wide banner preferred by the detail page (light theme) |
+| `heroImageDetailDark` | string | Wide detail banner used in dark theme |
+
+Hero images are illustrative marketing art. `screenshots` are separate and must
+show the real product UI; the detail page renders both when both are declared.
 
 ## Backend
 
@@ -510,6 +555,9 @@ the user to run locally instead of executing it on the server.
   "description": "Monitor tickets, pipelines, and alarms for your on-call rotation",
   "author": "kirocrew",
   "tags": ["oncall", "monitoring"],
+  "useCases": ["Keep a shared view of firing alerts and active investigations"],
+  "configuration": ["Connect an alert provider in Settings, then start in read-only mode"],
+  "screenshots": ["ui/screenshots/board.png"],
   "agents": ["agents/ticket-analyst.json"],
   "skills": ["skills/oncall-runbook"],
   "crons": [

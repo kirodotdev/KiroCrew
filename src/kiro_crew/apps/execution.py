@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 _BUILTINS_DIR = (Path(__file__).resolve().parent / "builtins").resolve()
 _ALLOW_ALL_SETTING_PATH = "agent.apps_allow_third_party"
 _TRUST_SETTING_PATH = "agent.apps_trusted"
+_TRUST_REPOSITORIES_SETTING_PATH = "agent.apps_trusted_repositories"
 
 # App names admissible as a per-app trust grant. Deliberately the same shape the
 # dashboard's app routes accept, so a grant can only ever name a real app: no
@@ -423,12 +424,209 @@ def trusted_app_names() -> frozenset[str]:
     )
 
 
+def trusted_app_repository(app_name: str) -> str:
+    """Repository recorded when *app_name* received its execution grant.
+
+    An empty result means there is no active repository-bound grant. A legacy
+    name grant written before repository binding existed therefore returns
+    empty; :func:`repository_bound_grant_denied` decides whether that grant can
+    still cover confirmed-local code or needs one-time repository re-consent.
+    A repository record without a matching effective entry in
+    ``agent.apps_trusted`` is inert, so stale metadata can never block an
+    unrelated install after its grant was removed.
+    """
+    try:
+        # Deferred for the same reason as third_party_execution_allowed().
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        agent = KiroCrewConfig.load().agent
+        raw_names = getattr(agent, "apps_trusted", [])
+        raw_repositories = getattr(agent, "apps_trusted_repositories", {})
+    except Exception as exc:  # noqa: BLE001 - unreadable policy has no usable binding
+        logger.error(
+            "%s: config load failed (%s); ignoring repository bindings",
+            _TRUST_REPOSITORIES_SETTING_PATH,
+            exc,
+        )
+        return ""
+    if not isinstance(raw_names, list) or app_name not in raw_names:
+        return ""
+    if not APP_NAME_RE.fullmatch(app_name) or not isinstance(raw_repositories, dict):
+        return ""
+    repository = raw_repositories.get(app_name)
+    return repository.strip() if isinstance(repository, str) else ""
+
+
+def trusted_local_app_names() -> frozenset[str]:
+    """Explicit local-source grant markers that also hold an active name grant."""
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        agent = KiroCrewConfig.load().agent
+        raw_names = getattr(agent, "apps_trusted", [])
+        raw_local = getattr(agent, "apps_trusted_local", [])
+    except Exception as exc:  # noqa: BLE001 - unreadable policy must fail closed
+        logger.error(
+            "agent.apps_trusted_local: config load failed (%s); ignoring local grants",
+            exc,
+        )
+        return frozenset()
+    if not isinstance(raw_names, list) or not isinstance(raw_local, list):
+        return frozenset()
+    active = {
+        name
+        for name in raw_names[:_MAX_GRANT_ENTRIES]
+        if isinstance(name, str) and APP_NAME_RE.fullmatch(name)
+    }
+    return frozenset(
+        name
+        for name in raw_local[:_MAX_GRANT_ENTRIES]
+        if isinstance(name, str)
+        and APP_NAME_RE.fullmatch(name)
+        and name in active
+    )
+
+
+def _repository_grant_denied_for_binding(
+    app_name: str,
+    *,
+    binding: str,
+    local_binding: bool = False,
+    repository: str | None = None,
+) -> str | None:
+    """Compare one already-active grant without re-reading trust config.
+
+    Kept separate so snapshot construction can classify every bounded grant from
+    one config read while sharing the exact runtime provenance decision.
+    """
+    if not binding:
+        # Any non-empty source coordinate is repository-backed. An explicit local
+        # marker covers an empty coordinate without consulting mutable installed
+        # metadata; that is what prevents an old name-only grant from authorising
+        # a fresh same-name local takeover.
+        if repository is not None and repository.strip():
+            repository_backed = True
+        elif repository is not None and local_binding:
+            return None
+        else:
+            repository_backed = True
+            try:
+                from kiro_crew.apps.manager import get_app
+                from kiro_crew.apps.registry import resolve_installed_trust_repository
+
+                installed = get_app(app_name)
+                if installed is not None:
+                    resolved, installed_repository = (
+                        resolve_installed_trust_repository(
+                            installed, allow_registry_lookup=False
+                        )
+                    )
+                    repository_backed = not resolved or bool(installed_repository)
+            except Exception:  # noqa: BLE001 - unknown provenance must fail closed
+                # This helper is also called while classifying config-derived
+                # grant names for the dashboard snapshot.  Config values are
+                # untrusted and may themselves be secrets, while exception
+                # messages can reflect repository coordinates.  Keep the
+                # diagnostic to a compile-time classification: neither value is
+                # needed to make the fail-closed decision below.
+                logger.warning(
+                    "legacy app trust provenance could not be resolved"
+                )
+                repository_backed = True
+        if not repository_backed:
+            # Migration compatibility for an old grant over an app that remains
+            # installed with positively local provenance. It does not cover a
+            # fresh install after that occupant disappears.
+            return None
+        # No coordinates cross this boundary. Repository URLs may contain
+        # userinfo credentials and this reason is returned and audited broadly.
+        if local_binding:
+            return (
+                "local-source execution trust does not cover repository-backed "
+                "code; refresh the app listing, review its current repository, "
+                "and grant trust again"
+            )
+        return (
+            "execution trust predates repository binding and is inactive for "
+            "repository-backed code; refresh the app listing, review its current "
+            "repository, and grant trust again"
+        )
+
+    actual = repository
+    if actual is None:
+        try:
+            from kiro_crew.apps.manager import get_app
+            from kiro_crew.apps.registry import resolve_installed_trust_repository
+
+            installed = get_app(app_name)
+            if installed is None:
+                actual = ""
+            else:
+                resolved, actual = resolve_installed_trust_repository(
+                    installed, allow_registry_lookup=False
+                )
+                if not resolved:
+                    actual = ""
+        except Exception:  # noqa: BLE001 - provenance failure must deny execution
+            logger.warning("bound app trust provenance could not be resolved")
+            actual = ""
+
+    try:
+        # Deferred with the resolver above to avoid execution -> registry import
+        # recursion during module initialisation.
+        from kiro_crew.apps.registry import _same_git_target
+
+        matches = bool(actual) and _same_git_target(binding, actual)
+    except Exception:  # noqa: BLE001 - comparison failure must not widen trust
+        logger.warning("app trust repository comparison failed")
+        matches = False
+    if matches:
+        return None
+    # Do not echo either coordinate. Clone URLs may contain userinfo or other
+    # credentials, and this denial is returned through APIs and logged by every
+    # execution caller. The comparison above needs the exact values; the error
+    # surface only needs the decision and remediation.
+    return (
+        "execution trust does not match the current code source; revoke the grant "
+        "and review this source before granting it again"
+    )
+
+
+def repository_bound_grant_denied(
+    app_name: str, *, repository: str | None = None
+) -> str | None:
+    """Return why *app_name*'s repository-bound grant does not cover this code.
+
+    ``repository`` is the clone target a source-changing caller is about to use.
+    Runtime callers omit it; the installed record is then resolved independently.
+    A grant without a repository entry is the historical name-only form.  It
+    remains sufficient only for code the caller positively identifies as local.
+    Repository-backed code (and runtime provenance that cannot be resolved) must
+    receive one fresh consent so the repository coordinate is recorded.
+
+    Imports are deferred because ``apps.registry`` imports this module.  Any
+    failure to resolve a bound grant denies: treating an unreadable provenance as
+    a legacy name-only grant would turn a metadata failure into code execution.
+    """
+    # Manager install/update/register call this helper even for untrusted apps;
+    # an inert/stale binding must not become an independent denial surface.
+    if app_name not in trusted_app_names():
+        return None
+    return _repository_grant_denied_for_binding(
+        app_name,
+        binding=trusted_app_repository(app_name),
+        local_binding=app_name in trusted_local_app_names(),
+        repository=repository,
+    )
+
+
 def app_execution_denied(
     app_name: str,
     *,
     action: str,
     app_root: Path | None = None,
     caller: str = "gateway",
+    repository: str | None = None,
 ) -> str | None:
     """Return a denial reason when an app execution surface must not run.
 
@@ -436,16 +634,26 @@ def app_execution_denied(
     immutable builtin package registered for ``app_name``.  Every other target
     requires EITHER a per-app grant in ``agent.apps_trusted`` (the narrow form,
     admitting this app alone) OR ``agent.apps_allow_third_party`` set to the JSON
-    boolean ``true`` (the blanket form).  Allowed and denied decisions are
-    audited best-effort, but audit unavailability never changes the execution
-    decision.
+    boolean ``true`` (the blanket form). A repository-bound name grant must also
+    match either the caller-supplied source coordinate (before install/update) or
+    the independently resolved installed provenance (at runtime). Allowed and
+    denied decisions are audited best-effort, but audit unavailability never
+    changes the execution decision.
     """
     builtin = is_builtin_app(app_name=app_name, app_root=app_root)
-    granted = not builtin and app_name in trusted_app_names()
+    name_granted = not builtin and app_name in trusted_app_names()
+    repository_denied = (
+        repository_bound_grant_denied(app_name, repository=repository)
+        if name_granted
+        else None
+    )
+    granted = name_granted and repository_denied is None
     if builtin:
         provenance = "provenance=shipped_builtin"
     elif granted:
         provenance = "provenance=trusted_grant"
+    elif name_granted:
+        provenance = "provenance=trusted_grant_repository_mismatch"
     else:
         provenance = "provenance=unverified"
     if builtin or granted or third_party_execution_allowed():
@@ -454,23 +662,23 @@ def app_execution_denied(
                 caller=caller,
                 operation="app_execution_admission",
                 outcome="allowed",
-                resources=f"app={app_name!r} action={action!r} {provenance}",
+                resources=f"action={action!r} {provenance}",
             )
         except Exception:  # noqa: BLE001 - admission must survive audit unavailability
             logger.debug("app execution admission audit failed", exc_info=True)
         return None
 
-    reason = (
-        "third-party app execution is disabled; trust this app alone by adding "
-        f"{app_name!r} to {_TRUST_SETTING_PATH}, or set {_ALLOW_ALL_SETTING_PATH}=true to allow every "
-        "third-party app's Python, backend, and manifest shell code"
+    reason = repository_denied or (
+        "third-party app execution is disabled; trust this app alone in Settings "
+        f"({_TRUST_SETTING_PATH}), or set {_ALLOW_ALL_SETTING_PATH}=true to allow "
+        "every third-party app's Python, backend, and manifest shell code"
     )
     try:
         sel().log_api_access(
             caller=caller,
             operation="app_execution_admission",
             outcome="denied",
-            resources=f"app={app_name!r} action={action!r} {provenance}",
+            resources=f"action={action!r} {provenance}",
             error=reason,
         )
     except Exception:  # noqa: BLE001 - denial must survive audit unavailability

@@ -47,6 +47,33 @@ Framework **pushes** activities to a messaging endpoint you host. Kiro Crew:
   If the channel is enabled without this extra, Kiro Crew logs an actionable
   error and skips Teams (the rest of the gateway still starts).
 
+ > [!NOTE]
+ > The error `invalid-egg-fragment` occurs because modern `pip` (v22+) deprecated and removed support for using `#egg=package_name[extra]` in direct Git URLs.
+ >
+ > Use PIP's **Direct URL requirement syntax** (`package[extra] @ git+https://...`) to install the package along with extras:
+ >
+ > ```bash
+ > pip install "kirocrew[teams] @ git+https://github.com/kirodotdev/KiroCrew.git"
+ > ```
+ > ### Alternative Solutions
+ >
+ > #### Option 1: Install Subdirectory / Local Clone (Editable Mode)
+ >
+ > If you have cloned the [Kiro Crew GitHub repository](https://github.com/kirodotdev/KiroCrew) locally, navigate to the repo root and run:
+ >
+ > ```bash
+ > pip install -e ".[teams]"
+ > ```
+ >
+ > #### Option 2: Fallback to Two Steps
+ >
+ > If you run into issues with Git dependency syntax, you can install the repository root first and then install the required `teams` dependencies directly (such as `pyjwt` and `cryptography` required for Azure Bot Framework JWT validation):
+ >
+ > ```bash
+ > pip install "git+https://github.com/kirodotdev/KiroCrew.git"
+ > pip install pyjwt cryptography
+ > ```
+
 ## 1. Register an Azure Bot
 
 1. In the [Azure Portal](https://portal.azure.com), create an **Azure Bot**

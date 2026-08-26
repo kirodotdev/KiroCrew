@@ -231,6 +231,20 @@ class TestUrlHelpers:
             ("ssh://git@Example.com:2222/a.git", "example.com"),
             ("git@example.com:owner/a.git", "example.com"),
             ("git+ssh://user@host.internal/a.git", "host.internal"),
+            ("ssh://git@[2001:DB8:0:0::1]:2222/a.git", "2001:db8::1"),
+            ("git@[2001:DB8::1]:owner/a.git", "2001:db8::1"),
+            ("https://[2001:db8::1]/owner/a.git", "2001:db8::1"),
+            ("ssh://git@[2001:db8::1/a.git", ""),
+            ("ssh://git@[]/a.git", ""),
+            ("ssh://git@[not-ipv6]/a.git", ""),
+            ("ssh://git@[2001:db8::1]junk/a.git", ""),
+            ("ssh://git@[2001:db8::1]:0/a.git", ""),
+            ("ssh://git@[2001:db8::1]:65536/a.git", ""),
+            ("git@[2001:db8::1]junk:owner/a.git", ""),
+            ("ssh://git@2001:db8::1/a.git", ""),
+            ("ssh://git@example.test:１２/a.git", ""),
+            ("ssh://deploy:password@example.test/a.git", ""),
+            ("git+ssh://deploy:password@example.test/a.git", ""),
             ("  ", ""),
             ("not a url", ""),
         ],
@@ -244,6 +258,10 @@ class TestUrlHelpers:
             ("ssh://git@github.com/a.git", True),
             ("git+ssh://git@github.com/a.git", True),
             ("git@github.com:owner/a.git", True),
+            ("ssh://git@[2001:db8::1]/a.git", True),
+            ("git@[2001:db8::1]:owner/a.git", True),
+            ("git@[2001:db8::1]junk:owner/a.git", False),
+            ("ssh://deploy:password@github.com/a.git", False),
             ("https://github.com/owner/a.git", False),
             ("", False),
         ],
@@ -265,6 +283,14 @@ class TestCloneSandboxMode:
     def test_untrusted_ssh_host_stays_strict(self):
         assert registry._clone_sandbox_mode("git@evil.example:owner/a.git") == "strict"
 
+    def test_colon_bearing_ssh_userinfo_never_receives_host_trust(self):
+        target = "ssh://deploy:password@github.com/owner/a.git"
+
+        assert registry.is_clone_host_trusted(target) is False
+        assert registry._clone_sandbox_mode(
+            target, frozenset({"github.com"})
+        ) == "strict"
+
     def test_https_never_needs_ssh_keys(self):
         assert registry._clone_sandbox_mode("https://github.com/owner/a.git") == "strict"
 
@@ -284,6 +310,64 @@ class TestConfiguredRegistryHosts:
             ],
         )
         assert registry._configured_registry_hosts() == frozenset({"gitea.internal"})
+
+    def test_ipv6_hosts_are_exact_for_trust_and_ssh_sandbox(self, monkeypatch):
+        configured = "ssh://git@[2001:DB8::1]/owner/index.git"
+        _config_with(monkeypatch, [_reg("ipv6", configured)])
+
+        trusted = registry._configured_registry_hosts()
+        assert trusted == frozenset({"2001:db8::1"})
+
+        exact_uri = "ssh://git@[2001:db8::1]/owner/app.git"
+        other_uri = "ssh://git@[2001:dead::2]/owner/app.git"
+        exact_scp = "git@[2001:db8::1]:owner/app.git"
+        other_scp = "git@[2001:dead::2]:owner/app.git"
+
+        assert registry.is_clone_host_trusted(exact_uri) is True
+        assert registry.is_clone_host_trusted(exact_scp) is True
+        assert registry.is_clone_host_trusted(other_uri) is False
+        assert registry.is_clone_host_trusted(other_scp) is False
+        assert registry._clone_sandbox_mode(exact_uri, trusted) == "standard"
+        assert registry._clone_sandbox_mode(exact_scp, trusted) == "standard"
+        assert registry._clone_sandbox_mode(other_uri, trusted) == "strict"
+        assert registry._clone_sandbox_mode(other_scp, trusted) == "strict"
+
+    @pytest.mark.parametrize(
+        "target",
+        [
+            "ssh://git@[2001:db8::1/owner/app.git",
+            "ssh://git@[]/owner/app.git",
+            "ssh://git@[not-ipv6]/owner/app.git",
+            "git@[2001:db8::1]junk:owner/app.git",
+        ],
+    )
+    def test_malformed_ipv6_hosts_fail_closed(self, monkeypatch, target):
+        _config_with(
+            monkeypatch,
+            [_reg("ipv6", "ssh://git@[2001:db8::1]/owner/index.git")],
+        )
+
+        assert registry._git_url_host(target) == ""
+        assert registry.is_clone_host_trusted(target) is False
+        assert registry._clone_sandbox_mode(target) == "strict"
+
+    def test_oversized_ports_fail_closed_without_integer_conversion_crash(
+        self, monkeypatch
+    ):
+        _config_with(
+            monkeypatch,
+            [_reg("ipv6", "ssh://git@[2001:db8::1]/owner/index.git")],
+        )
+        oversized = "9" * 5000
+        targets = [
+            f"ssh://git@[2001:db8::1]:{oversized}/owner/app.git",
+            f"ssh://git@example.test:{oversized}/owner/app.git",
+        ]
+
+        for target in targets:
+            assert registry._git_url_host(target) == ""
+            assert registry.is_clone_host_trusted(target) is False
+            assert registry._clone_sandbox_mode(target) == "strict"
 
     def test_config_load_failure_degrades_to_empty(self, monkeypatch):
         def _boom(cls):
@@ -836,12 +920,16 @@ class TestMergeManifest:
                 "author": "someone",
                 "tags": ["a"],
                 "highlights": ["h"],
+                "useCases": ["u"],
+                "configuration": ["c"],
                 "license": "MIT",
                 "minKiroCrewVersion": "0.1.0",
             },
         )
         assert merged["displayName"] == "Demo"
         assert merged["tags"] == ["a"]
+        assert merged["useCases"] == ["u"]
+        assert merged["configuration"] == ["c"]
         assert merged["minKiroCrewVersion"] == "0.1.0"
         # Registry-only fields survive.
         assert merged["name"] == "demo" and merged["branch"] == "main"
@@ -901,6 +989,18 @@ class TestMergeManifest:
             merged["heroImageDetailDark"]
             == "/api/apps/blob?repo=o/demo&path=detail-dark.png"
         )
+
+    def test_blob_urls_never_embed_registry_clone_credentials(self):
+        secret = "BlobProxySecret"
+        merged = registry._merge_manifest(
+            {"name": "demo", "repo": f"https://user:{secret}@example.com/o/demo.git"},
+            {"iconPath": "assets/icon.png", "screenshots": ["shot.png"]},
+        )
+
+        wire = json.dumps(merged)
+        assert secret not in wire
+        assert "user:" not in wire
+        assert "repo=https://example.com/o/demo.git" in wire
 
     def test_without_a_repo_no_blob_urls_are_minted(self):
         merged = registry._merge_manifest(
@@ -1112,6 +1212,30 @@ class TestCandidateResolution:
         )
         assert entry is not None and entry.get("hit") is True
 
+    def test_rotated_credentials_still_match_the_same_pinned_source(self, monkeypatch):
+        """Userinfo authenticates transport; it is not repository identity."""
+        monkeypatch.setattr(
+            registry,
+            "_registry_app_candidates",
+            lambda name: [
+                {
+                    "gitUrl": "https://new-user:new-secret@example.com/o/demo.git",
+                    "_registry": "https://new-reg:new-token@example.com/o/index.git",
+                    "hit": True,
+                }
+            ],
+        )
+
+        entry = registry._pinned_registry_entry(
+            "demo",
+            {
+                "sourceUrl": "https://old-user:old-secret@example.com/o/demo.git",
+                "sourceRegistry": "https://old-reg:old-token@example.com/o/index.git",
+            },
+        )
+
+        assert entry is not None and entry.get("hit") is True
+
     def test_pinned_entry_returns_none_when_the_source_is_gone(self, monkeypatch):
         monkeypatch.setattr(
             registry,
@@ -1170,6 +1294,18 @@ class TestResolveInstallEntry:
         entry, err = registry._resolve_install_entry("demo")
         assert entry is None
         assert "refusing to update it from a different source" in err
+
+    def test_missing_pin_error_never_returns_embedded_credentials(self, monkeypatch):
+        secret = "PinMismatchSecret"
+        raw_url = f"https://user:{secret}@example.com/o/demo.git"
+        monkeypatch.setattr(registry, "get_app", lambda name: {"sourceUrl": raw_url})
+        monkeypatch.setattr(registry, "_pinned_registry_entry", lambda name, meta: None)
+
+        entry, err = registry._resolve_install_entry("demo")
+
+        assert entry is None
+        assert secret not in err
+        assert raw_url not in err
 
 
 class TestRepoLookups:
@@ -1335,7 +1471,9 @@ class TestReadCloneBranch:
         assert await registry._clone_origin_matches(tmp_path, "") is False
 
     @pytest.mark.asyncio
-    async def test_origin_matches_is_byte_identical(self, tmp_path, monkeypatch):
+    async def test_origin_matches_uses_credential_free_clone_identity(
+        self, tmp_path, monkeypatch
+    ):
         async def _origin(dest):
             return "https://github.com/o/demo.git"
 
@@ -1346,6 +1484,16 @@ class TestReadCloneBranch:
         )
         assert (
             await registry._clone_origin_matches(tmp_path, "https://github.com/o/demo")
+            is True
+        )
+        assert (
+            await registry._clone_origin_matches(
+                tmp_path, "https://rotated:new-secret@github.com/o/demo.git"
+            )
+            is True
+        )
+        assert (
+            await registry._clone_origin_matches(tmp_path, "https://github.com/o/Demo.git")
             is False
         )
 
@@ -1960,6 +2108,143 @@ class TestInstallFromRegistryRefusals:
         assert result == {"ok": False, "error": "app 'demo' has no git URL configured"}
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("git_url", "reason"),
+        [
+            (
+                "https://example.test/owner/repo.git?repo=A&access_token=secret-a",
+                "query",
+            ),
+            (
+                "https://example.test/owner/repo.git?repo=B&access_token=secret-b",
+                "query",
+            ),
+            ("ssh://deploy@example.test/owner/repo.git#private-ref", "query"),
+            (
+                "deploy:password@example.invalid:owner/repo.git",
+                "ambiguous Git transport",
+            ),
+            (
+                "ssh://deploy:password@example.invalid/owner/repo.git",
+                "ambiguous Git transport",
+            ),
+        ],
+    )
+    async def test_unsupported_clone_target_refuses_before_trust_or_fetch(
+        self, monkeypatch, git_url, reason
+    ):
+        monkeypatch.setattr(
+            registry,
+            "_resolve_install_entry",
+            lambda name: ({"name": name, "gitUrl": git_url}, ""),
+        )
+
+        async def _never_fetch(*args, **kwargs):
+            raise AssertionError("unsupported clone target must fail before fetch")
+
+        def _never_check_trust(*args, **kwargs):
+            raise AssertionError("unsupported clone target must fail before trust")
+
+        monkeypatch.setattr(registry, "_fetch_app_manifest", _never_fetch)
+        monkeypatch.setattr(
+            registry, "repository_bound_grant_denied", _never_check_trust
+        )
+        result = await registry.install_from_registry("demo")
+
+        assert result["ok"] is False
+        assert result["code"] == "invalid_registry_source"
+        assert reason in result["error"]
+        assert "secret" not in result["error"]
+        assert git_url not in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_trust_repository_mismatch_refuses_before_fetch_or_clone(
+        self, monkeypatch
+    ):
+        granted = "https://User:GrantedSecret@example.test/owner/consented.git"
+        resolved = "https://User:ResolvedSecret@example.test/owner/rebound.git"
+        monkeypatch.setattr(
+            registry,
+            "_resolve_install_entry",
+            lambda name: ({"name": "demo", "gitUrl": resolved}, ""),
+        )
+        monkeypatch.setattr(registry, "trusted_app_repository", lambda name: granted)
+        monkeypatch.setattr(
+            registry,
+            "repository_bound_grant_denied",
+            lambda name, **kwargs: (
+                "execution trust does not match the current registry source; "
+                "revoke the existing grant and grant it again"
+            ),
+        )
+        audit = MagicMock()
+        monkeypatch.setattr(registry, "sel", lambda: audit)
+
+        result = await registry.install_from_registry("demo")
+
+        assert result["ok"] is False
+        assert result["code"] == "app_trust_repository_mismatch"
+        # Clone coordinates are comparison inputs, not API/log data: they may
+        # contain embedded credentials and must not be reflected on refusal.
+        assert granted not in result["error"]
+        assert resolved not in result["error"]
+        assert "GrantedSecret" not in result["error"]
+        assert "ResolvedSecret" not in result["error"]
+        assert "grant it again" in result["error"]
+        audit.log_api_access.assert_called_once_with(
+            caller="app_install_from_registry",
+            operation="trust_repository_mismatch",
+            outcome="rejected",
+            resources="name='demo'",
+            error=result["error"],
+        )
+
+    @pytest.mark.asyncio
+    async def test_legacy_name_grant_refuses_before_manifest_fetch_or_clone(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.config.loader import _invalidate_config_cache
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        (home / "config.json").write_text(
+            json.dumps({"agent": {"apps_trusted": ["demo"]}}),
+            encoding="utf-8",
+        )
+        _invalidate_config_cache()
+        secret = "ResolvedSecret"
+        resolved = f"https://User:{secret}@example.test/owner/rebound.git"
+        monkeypatch.setattr(
+            registry,
+            "_resolve_install_entry",
+            lambda name: ({"name": "demo", "gitUrl": resolved}, ""),
+        )
+
+        async def _never_fetch(*args, **kwargs):
+            raise AssertionError("legacy trust must refuse before manifest fetch")
+
+        monkeypatch.setattr(registry, "_fetch_app_manifest", _never_fetch)
+        audit = MagicMock()
+        monkeypatch.setattr(registry, "sel", lambda: audit)
+
+        result = await registry.install_from_registry("demo")
+
+        assert result["ok"] is False
+        assert result["code"] == "app_execution_denied"
+        assert "predates repository binding" in result["error"]
+        assert secret not in result["error"]
+        assert resolved not in result["error"]
+        audit.log_api_access.assert_called_once_with(
+            caller="app_install_from_registry",
+            operation="trust_repository_binding_required",
+            outcome="rejected",
+            resources="name='demo'",
+            error=result["error"],
+        )
+        assert secret not in str(audit.log_api_access.call_args)
+
+    @pytest.mark.asyncio
     async def test_admission_denial_stops_before_the_clone(self, monkeypatch):
         monkeypatch.setattr(
             registry,
@@ -2049,7 +2334,7 @@ class TestInstallFromRegistryRefusals:
         monkeypatch.setattr(
             registry,
             "app_execution_denied",
-            lambda name, action="", caller="": "needs a trust grant",
+            lambda name, action="", caller="", repository=None: "needs a trust grant",
         )
         result = await registry.install_from_registry("demo")
         assert result["ok"] is False

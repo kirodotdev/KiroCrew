@@ -31,7 +31,14 @@ class TestLinkToDashboardCommand:
             patch.object(handler, "is_allowed_user", return_value=True),
         ):
             result = await handler._handle_slash_command(
-                "!link-to-dashboard", slack, MagicMock(), "C1", "t1", "msg1", "t1", "U1",
+                "!link-to-dashboard",
+                slack,
+                MagicMock(),
+                "C1",
+                "t1",
+                "msg1",
+                "t1",
+                "U1",
             )
         assert result == ""
         assert any("not available" in str(c).lower() for c in slack.post_message.call_args_list)
@@ -48,7 +55,14 @@ class TestLinkToDashboardCommand:
             patch.object(handler, "is_allowed_user", return_value=True),
         ):
             result = await handler._handle_slash_command(
-                "!link-to-dashboard", slack, MagicMock(), "C1", "msg1", "msg1", "msg1", "U1",
+                "!link-to-dashboard",
+                slack,
+                MagicMock(),
+                "C1",
+                "msg1",
+                "msg1",
+                "msg1",
+                "U1",
             )
         assert result == ""
         assert any("thread" in str(c).lower() for c in slack.post_message.call_args_list)
@@ -69,7 +83,14 @@ class TestLinkToDashboardCommand:
             ),
         ):
             result = await handler._handle_slash_command(
-                "!link-to-dashboard", slack, MagicMock(), "C1", "t1", "msg1", "t1", "U1",
+                "!link-to-dashboard",
+                slack,
+                MagicMock(),
+                "C1",
+                "t1",
+                "msg1",
+                "t1",
+                "U1",
             )
         assert result == ""
         assert any("could not" in str(c).lower() for c in slack.post_message.call_args_list)
@@ -81,7 +102,14 @@ class TestLinkToDashboardCommand:
         slack = _make_slack()
         with patch.object(handler, "is_allowed_user", return_value=False):
             result = await handler._handle_slash_command(
-                "!link-to-dashboard", slack, MagicMock(), "C1", "t1", "msg1", "t1", "UBAD",
+                "!link-to-dashboard",
+                slack,
+                MagicMock(),
+                "C1",
+                "t1",
+                "msg1",
+                "t1",
+                "UBAD",
             )
         assert result == ""
         assert any("not authorized" in str(c).lower() for c in slack.post_message.call_args_list)
@@ -109,7 +137,14 @@ class TestLinkToDashboardCommand:
                 ),
             ):
                 result = await handler._handle_slash_command(
-                    "!link-to-dashboard", slack, MagicMock(), "C1", "t1", "msg1", "t1", "U1",
+                    "!link-to-dashboard",
+                    slack,
+                    MagicMock(),
+                    "C1",
+                    "t1",
+                    "msg1",
+                    "t1",
+                    "U1",
                 )
         finally:
             handler.sel = orig_sel
@@ -144,7 +179,13 @@ class TestLinkedThreadIntercept:
                 patch.object(handler, "is_allowed_user", return_value=False),
             ):
                 await handler.handle_message(
-                    slack, MagicMock(), "C1", "hello", "t1", "msg1", "UBAD",
+                    slack,
+                    MagicMock(),
+                    "C1",
+                    "hello",
+                    "t1",
+                    "msg1",
+                    "UBAD",
                 )
                 mock_sel_inst.log_tool_invocation.assert_called_once()
                 kw = mock_sel_inst.log_tool_invocation.call_args[1]
@@ -174,7 +215,13 @@ class TestLinkedThreadIntercept:
             patch("kiro_crew.dashboard.chat._run_chat", new_callable=AsyncMock) as mock_run_chat,
         ):
             await handler.handle_message(
-                slack, MagicMock(), "C1", "hello", "t1", "msg1", "U1",
+                slack,
+                MagicMock(),
+                "C1",
+                "hello",
+                "t1",
+                "msg1",
+                "U1",
             )
             slot.append.assert_called_once()
             mock_run_chat.assert_called_once()
@@ -201,11 +248,19 @@ class TestLinkedThreadIntercept:
             patch.object(handler, "_dashboard_state", ds),
             patch.object(handler, "is_allowed_user", return_value=True),
             patch("kiro_crew.dashboard.chat._run_chat", new_callable=AsyncMock) as mock_run_chat,
-            patch.object(handler, "redact_exfiltration_urls", return_value=("[REDACTED-URL]", True)),
+            patch.object(
+                handler, "redact_exfiltration_urls", return_value=("[REDACTED-URL]", True)
+            ),
             patch.object(handler, "redact_credentials", return_value=("[REDACTED]", True)),
         ):
             await handler.handle_message(
-                slack, MagicMock(), "C1", "hello http://evil.com", "t1", "msg1", "U1",
+                slack,
+                MagicMock(),
+                "C1",
+                "hello http://evil.com",
+                "t1",
+                "msg1",
+                "U1",
             )
             # UI gets redacted text
             slot.append.assert_called_once_with("user", "[REDACTED]", "msg msg-u")
@@ -222,8 +277,13 @@ class TestLinkedThreadIntercept:
         slot.key = "slot1"
         slot._queue = []
 
-        def queue_append(content, *, directive_user_origin):
+        def queue_append(content, *, meta=None, directive_user_origin):
             assert directive_user_origin is True
+            # The linked-thread enqueue stamps the admission-time containment
+            # snapshot (#5911) so the drain can re-assert it at delivery.
+            from kiro_crew.dashboard.session_control import QUEUED_CONTAINMENT_META_KEY
+
+            assert isinstance(meta, dict) and QUEUED_CONTAINMENT_META_KEY in meta
             slot._queue.append({"id": "test", "content": content})
             return "test"
 
@@ -239,7 +299,13 @@ class TestLinkedThreadIntercept:
             patch("kiro_crew.dashboard.chat._run_chat", new_callable=AsyncMock) as mock_run_chat,
         ):
             await handler.handle_message(
-                slack, MagicMock(), "C1", "hello", "t1", "msg1", "U1",
+                slack,
+                MagicMock(),
+                "C1",
+                "hello",
+                "t1",
+                "msg1",
+                "U1",
             )
             assert len(slot._queue) == 1
             mock_run_chat.assert_not_called()
@@ -278,7 +344,13 @@ class TestTransportLinkedThreadIntercept:
             patch("kiro_crew.dashboard.chat._run_chat", new_callable=AsyncMock) as mock_run_chat,
         ):
             await transport_dispatch.handle_message_transport(
-                slack, sessions, "C1", "hello", "t1", "msg1", "U1",
+                slack,
+                sessions,
+                "C1",
+                "hello",
+                "t1",
+                "msg1",
+                "U1",
             )
             slot.append.assert_called_once()
             mock_run_chat.assert_called_once()
@@ -305,14 +377,19 @@ class TestTransportLinkedThreadIntercept:
                 patch.object(handler, "is_allowed_user", return_value=False),
             ):
                 await transport_dispatch.handle_message_transport(
-                    slack, sessions, "C1", "hello", "t1", "msg1", "UBAD",
+                    slack,
+                    sessions,
+                    "C1",
+                    "hello",
+                    "t1",
+                    "msg1",
+                    "UBAD",
                 )
                 # Denied with SEL audit; no session acquired.
                 mock_sel_inst.log_tool_invocation.assert_called_once()
                 assert mock_sel_inst.log_tool_invocation.call_args[1]["outcome"] == "denied"
                 assert any(
-                    "not authorized" in str(c).lower()
-                    for c in slack.post_message.call_args_list
+                    "not authorized" in str(c).lower() for c in slack.post_message.call_args_list
                 )
                 sessions.get_or_create.assert_not_called()
         finally:

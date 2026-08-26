@@ -121,7 +121,7 @@ export default function ProjectSkillsTrustDialog({
           {i18nT('components.projectSkillsTrust.body', { skill: skillLeaf })}
         </p>
         {reviewedPath && (
-          <code className="block break-all rounded bg-panel px-2 py-1.5 text-[12px] text-muted">
+          <code className="block break-all rounded bg-card px-2 py-1.5 text-[12px] text-muted">
             {reviewedPath}
           </code>
         )}

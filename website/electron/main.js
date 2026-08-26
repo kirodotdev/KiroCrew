@@ -1,4 +1,4 @@
-const { app, BaseWindow, BrowserWindow, WebContentsView, shell, dialog, Tray, Menu, nativeImage, nativeTheme, Notification, ipcMain, webContents, session, desktopCapturer, systemPreferences, screen } = require("electron");
+const { app, BaseWindow, BrowserWindow, WebContentsView, shell, dialog, Tray, Menu, nativeImage, nativeTheme, Notification, ipcMain, webContents, session, desktopCapturer, systemPreferences, screen, crashReporter } = require("electron");
 const Store = require("electron-store");
 const fs = require("fs");
 const os = require("os");
@@ -7,7 +7,7 @@ const path = require("path");
 const http = require("http");
 
 const { findKirocrewBin } = require("./find-bin");
-const { buildGatewayEnvironment } = require("./gateway-env");
+const { buildGatewayEnvironment, gatewayBytecodeEnvironment } = require("./gateway-env");
 const { resolveGatewayPath } = require("./mac-env");
 const {
   findMissingBundleParts,
@@ -53,7 +53,13 @@ const {
   windowsProcessCommand,
   windowsTaskkill,
 } = require("./windows-port");
-const { waitForGateway, describeGatewayFailure, tailLines, isPortInUse } = require("./gateway-wait");
+const {
+  gatewayWaitTimeoutMs,
+  waitForGateway,
+  describeGatewayFailure,
+  tailLines,
+  isPortInUse,
+} = require("./gateway-wait");
 const { describeSandboxProfileNeed } = require("./sandbox-profile");
 const { sanitizeWindowState, captureWindowState } = require("./window-state");
 const {
@@ -135,6 +141,8 @@ const { seedRenamedStore } = require("./store-rename");
 
 const { isLocalGatewayEnabled, setLocalGatewayEnabled, classifyStartFailure } = require("./local-gateway");
 
+const { initNativeLogging } = require("./native-logging");
+
 // Carry settings across the npm `name` rename, by writing the new store's file
 // BEFORE electron-store opens it. Order is load-bearing: construction writes the
 // defaults, after which the file always exists and the seed can never run. It only
@@ -207,7 +215,6 @@ if (migrateRemoteHostConfig(store, PORT)) {
 }
 const HEALTH_URL = `${BACKEND_URL}/api/status`;
 const POLL_INTERVAL_MS = 500;
-const MAX_WAIT_MS = 30_000; // 30s max wait for backend
 const IS_MAC = process.platform === "darwin";
 const IS_WINDOWS = process.platform === "win32";
 const IS_WIN = IS_WINDOWS;
@@ -284,6 +291,28 @@ if (IS_WIN) {
 if (!app.requestSingleInstanceLock()) {
   app.exit(0);
 } else {
+  // Arm native diagnostic capture as the FIRST thing the winning instance does:
+  // early enough that Chromium still reads the logging switches (it reads them
+  // during initialization, so a call after app-ready is accepted and ignored),
+  // but strictly INSIDE the lock-won branch. A rejected second instance must not
+  // reach this: it would rotate `chromium.log` out from under the primary — the
+  // primary's open fd follows the renamed inode, and the genuine previous
+  // generation is destroyed — so double-clicking the icon of a running app would
+  // wipe exactly the retained evidence this capture exists to keep. `app.exit(0)`
+  // above is synchronous, so placing it here is what makes that unreachable
+  // rather than merely unlikely.
+  //
+  // `gatewayLogPath` is a hoisted function declaration needing only the modules
+  // required at the top of this file, so calling it here reuses its logs-dir
+  // resolution (including the tmpdir fallback) rather than duplicating it.
+  initNativeLogging({
+    logsDir: path.dirname(gatewayLogPath()),
+    appendSwitch: (name, value) => app.commandLine.appendSwitch(name, value),
+    startCrashReporter: (opts) => crashReporter.start(opts),
+    fs,
+    log: (m) => glog(m),
+  });
+
   app.on("second-instance", () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       // Relaunching the app is a request for the window back; it must win over
@@ -993,17 +1022,16 @@ function spawnGateway(resolve) {
             // (two levels up from electron/), so resolve by markers there.
             // macOS/Linux keep the original one-level-up path unchanged.
             KIROCREW_PROJECT_DIR: IS_WIN ? resolveProjectDir() : path.resolve(__dirname, ".."),
-            // Keep CPython bytecode caches OUT of the signed app bundle.
-            // Without this, the embedded interpreter writes __pycache__/*.pyc
-            // next to the bundled sources on first import, breaking the
-            // codesign seal ("a sealed resource is missing or invalid") --
-            // Gatekeeper then fails the installed app, and Squirrel's
-            // installer can trip over the corrupted target during updates.
-            // CPython creates the directory tree on demand (PEP 3147 /
-            // sys.pycache_prefix). Inherited by every Python child the
-            // gateway spawns (app servers run on the same interpreter), so
-            // the whole process tree stays out of the bundle.
-            PYTHONPYCACHEPREFIX: path.join(kirocrewDir, "cache", "pycache"),
+            // macOS code signing seals the app tree and Linux packages may be
+            // read-only, so those platforms redirect runtime bytecode. Windows
+            // consumes checked-hash pycs generated during packaging instead;
+            // avoiding the redirected-cache population is the main cold-start
+            // win on a freshly installed, Defender-scanned bundle.
+            ...gatewayBytecodeEnvironment(
+              process.platform,
+              path.join(kirocrewDir, "cache", "pycache"),
+              app.isPackaged,
+            ),
           }),
         });
         gatewayProcess = child;
@@ -1246,7 +1274,13 @@ function waitForBackend(targetWin, healthUrl = HEALTH_URL, { watchSpawn = false 
     getFailure: watchSpawn ? (() => gatewayStartFailure) : (() => null),
     isWindowAlive: () => !targetWin?.isDestroyed(),
     onStatus: (msg) => { try { targetWin?.webContents?.send("status", msg); } catch { /* window gone */ } },
-    maxWaitMs: MAX_WAIT_MS,
+    // Windows may spend well past the ordinary deadline importing a newly
+    // installed bundled Python tree. Keep showing live splash progress only for
+    // the gateway child we spawned; exits still fail immediately via getFailure.
+    maxWaitMs: gatewayWaitTimeoutMs({
+      platform: process.platform,
+      watchSpawn: watchSpawn && gatewayOwnership === "spawned",
+    }),
     pollIntervalMs: POLL_INTERVAL_MS,
   });
 }

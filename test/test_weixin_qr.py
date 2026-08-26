@@ -378,3 +378,71 @@ def test_prune_sessions_survives_a_client_whose_close_cannot_be_scheduled(monkey
     }
     qr._prune_sessions()
     assert qr._SESSIONS == {}
+
+
+# ── Cross-process .env.lock exclusion ─────────────────────────────────────────
+# Regression: _commit_credential_and_config must acquire the shared .env.lock
+# advisory lock (same sidecar file used by `secrets import --apply`) so that the
+# WeChat sign-in handler and the CLI importer cannot interleave their
+# read-modify-write cycles.  If the lock is already held, the handler must abort
+# with OSError instead of writing a potentially stale value.
+
+
+def test_commit_credential_aborts_when_env_lock_is_held(tmp_path, monkeypatch):
+    """_commit_credential_and_config raises OSError when .env.lock is held.
+
+    Simulates a concurrent ``secrets import --apply`` holding the advisory lock
+    by patching ``platform_compat.try_acquire_lock`` to return False (the same
+    signal the importer uses to detect a held lock).  Confirms the handler:
+      * does NOT write WEIXIN_TOKEN to .env (no partial write),
+      * does NOT write config.json,
+      * raises OSError with a descriptive message.
+    """
+    import kiro_crew.platform_compat as _pc
+
+    ep = tmp_path / ".env"
+    ep.write_text("OTHER=keepme\n", encoding="utf-8")
+    cp = tmp_path / "config.json"
+    monkeypatch.setattr(qr, "env_path", lambda: ep)
+
+    # Simulate a held lock: try_acquire_lock returns False for the .env.lock fd.
+    # We only intercept the lock acquisition; all other platform_compat calls are
+    # left untouched.
+    original_try = _pc.try_acquire_lock
+
+    def _always_busy(fd, *, exclusive=False):  # noqa: ARG001
+        return False
+
+    monkeypatch.setattr(_pc, "try_acquire_lock", _always_busy)
+    # release_lock and os.close must still run (the fd was opened); patch
+    # release_lock to a no-op so the test does not need a real lockable fd.
+    monkeypatch.setattr(_pc, "release_lock", lambda fd: None)
+
+    with pytest.raises(OSError, match="locked by another process"):
+        qr._commit_credential_and_config(cp, "{}", "should-not-be-written")
+
+    # .env must be untouched — WEIXIN_TOKEN was not inserted.
+    assert qr._read_env_value("WEIXIN_TOKEN") is None
+    assert ep.read_text(encoding="utf-8") == "OTHER=keepme\n"
+    # config.json must not have been created.
+    assert not cp.exists()
+
+    monkeypatch.setattr(_pc, "try_acquire_lock", original_try)
+
+
+def test_commit_credential_succeeds_when_env_lock_is_free(tmp_path, monkeypatch):
+    """_commit_credential_and_config writes normally when it acquires the lock.
+
+    Complementary to the abort test above: confirm the happy-path still works
+    after the lock-acquisition layer was added (no regression in the normal case).
+    """
+    ep = tmp_path / ".env"
+    ep.write_text("OTHER=keepme\n", encoding="utf-8")
+    cp = tmp_path / "config.json"
+    monkeypatch.setattr(qr, "env_path", lambda: ep)
+
+    qr._commit_credential_and_config(cp, '{"weixin": {}}', "newtoken")
+
+    assert qr._read_env_value("WEIXIN_TOKEN") == "newtoken"
+    assert qr._read_env_value("OTHER") == "keepme"
+    assert cp.exists() and json.loads(cp.read_text()) == {"weixin": {}}

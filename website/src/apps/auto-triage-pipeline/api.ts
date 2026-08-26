@@ -310,3 +310,391 @@ export const autoTriagePipelineApi = {
     return out
   },
 }
+
+// ---------------------------------------------------------------------------
+// L0 / L1 / L2 — the app's OWN three read endpoints.
+//
+// These hit this app's own backend (`/api/apps/auto-triage-pipeline/*`, folded
+// by `pipeline_fold.py`), not Issue Radar's seam above. The `to_dict()` payloads
+// in that module ARE the contract mirrored here.
+//
+// Same forward-tolerant law as `crewFabric`: the folds read a LIVE, append-only
+// log another process is writing, so EVERY field can be absent, null, or the
+// wrong type on a partial payload. The types below describe the well-formed
+// shape; the clients COERCE every field defensively and never throw — a
+// transport failure, any non-2xx, a non-JSON body, or a partial/newer-schema
+// payload all collapse to a designed empty result the view can render.
+// ---------------------------------------------------------------------------
+
+/** This app's own backend base — distinct from `ISSUE_RADAR_API` above. */
+const ATP_API = `/api/apps/${'auto-triage-pipeline'}`
+
+/** Unit a step's throughput is counted in. Early steps are batch jobs that open
+ * no session, so they count issues; the session-bearing steps count sessions.
+ * Never label a count with the wrong unit. */
+export type StepUnit = 'issues' | 'sessions'
+
+/** One routed outcome of a field-routed step (e.g. triage's classification):
+ * how many items went each way. */
+export interface StepRoute {
+  outcome: string
+  count: number
+}
+
+/** L0 — one step's throughput. `entered`/`done` are EVENT counts (rework counts
+ * twice, so `done` CAN exceed `entered` — this is not a monotonic funnel);
+ * `distinctEntered`/`distinctDone` are ITEM counts and legitimately disagree
+ * with the event counts. `inFlight` is distinct items admitted and not yet
+ * observed leaving. */
+export interface OverviewStep {
+  key: string
+  label: string
+  unit: StepUnit
+  entered: number
+  done: number
+  skipped: number
+  churn: number
+  recentEntered: number
+  recentDone: number
+  inFlight: number
+  distinctEntered: number
+  distinctDone: number
+  routed: StepRoute[]
+}
+
+/** One event name the fold could not map to a step, with how often it appeared —
+ * a coverage signal for the view, not an error. */
+export interface UnmappedEvent {
+  event: string
+  count: number
+}
+
+/** L0 — the whole pipeline. Timestamps are epoch SECONDS and may be null. */
+export interface OverviewResponse {
+  steps: OverviewStep[]
+  totalEvents: number
+  unparseable: number
+  unmappedEvents: UnmappedEvent[]
+  firstEventAt: number | null
+  lastEventAt: number | null
+  recentHours: number
+}
+
+/** L1 — one issue sitting in a step. Timestamps are epoch SECONDS and may be
+ * null; `pr` may be null; every array may be empty. */
+export interface StepItem {
+  number: number
+  title: string
+  labels: string[]
+  author: string
+  assignees: string[]
+  /** null when the local issue cache has no answer -- NOT the same as zero. */
+  comments: number | null
+  queuedAt: number | null
+  dispatchedAt: number | null
+  resumeCount: number
+  slot: string
+  previousSlots: string[]
+  withdrawn: boolean
+  needsHuman: boolean
+  pr: number | null
+  lastEvent: string
+  lastEventAt: number | null
+}
+
+/** L1 — the items inside one step. */
+export interface StepResponse {
+  step: string
+  count: number
+  items: StepItem[]
+}
+
+/** L2 — one agent session that worked an item, with what it cost.
+ *
+ * `turns` is the usage ROW COUNT, which is the honest turn count: the usage
+ * endpoint's contract is one row per turn, and the rows' own `turns` field is
+ * structurally zero in real data, so the backend deliberately does not send it.
+ * Timestamps are epoch SECONDS and may be null; every numeric field can be zero
+ * (tokens and cost are always zero today), which is why `populatedColumns` exists
+ * — render only the columns it names. */
+export interface ItemSession {
+  slot: string
+  model: string
+  agent: string
+  surface: string
+  current: boolean
+  startedAt: number | null
+  lastAt: number | null
+  turns: number
+  input: number
+  output: number
+  cacheCreate: number
+  cacheRead: number
+  cost: number
+  credits: number
+  durationMs: number
+  contextUsed: number
+  contextWindow: number
+  lastPhase: string
+  lastStopReason: string
+}
+
+/** L2 — the sessions that worked one item. `populatedColumns` names the numeric
+ * columns that carry data; a column ABSENT from it must NOT be rendered, else
+ * the table prints a column of zeros (tokens/cost are always zero today) beside
+ * a real credit total. */
+export interface ItemSessionsResponse {
+  number: number
+  count: number
+  sessions: ItemSession[]
+  populatedColumns: string[]
+}
+
+/** Read the string at `k` on `o`, or `fallback` (default '') when absent/wrong
+ * type. The folds emit `_printable` strings, but a partial payload may omit one. */
+function str(o: Record<string, unknown>, k: string, fallback = ''): string {
+  const v = o[k]
+  return typeof v === 'string' ? v : fallback
+}
+
+/** Read a finite number at `k`, or `fallback` (default 0). A null, string,
+ * NaN or Infinity coerces to the fallback so one bad field cannot poison a total
+ * the view renders as money or a count. */
+function num(o: Record<string, unknown>, k: string, fallback = 0): number {
+  const v = o[k]
+  return typeof v === 'number' && Number.isFinite(v) ? v : fallback
+}
+
+/** Read an epoch-seconds timestamp at `k` — a finite number, else null. Unlike
+ * `num`, ABSENCE is meaningful here (an event with no recorded time), so it does
+ * not collapse to 0. */
+function ts(o: Record<string, unknown>, k: string): number | null {
+  const v = o[k]
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+}
+
+/** Read a nullable item/PR number at `k` — a finite number, else null. */
+function numOrNull(o: Record<string, unknown>, k: string): number | null {
+  const v = o[k]
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+}
+
+/** Read the boolean at `k`, coercing anything non-boolean to false. */
+function bool(o: Record<string, unknown>, k: string): boolean {
+  return o[k] === true
+}
+
+/** Coerce an unknown into an array of strings, dropping non-string / empty
+ * entries. A missing or non-array value yields []. */
+function strList(v: unknown): string[] {
+  if (!Array.isArray(v)) return []
+  const out: string[] = []
+  for (const e of v) if (typeof e === 'string' && e) out.push(e)
+  return out
+}
+
+/** Narrow an unknown to a plain object, or null. */
+function asObject(v: unknown): Record<string, unknown> | null {
+  return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null
+}
+
+/** GET `path` and parse a JSON object body. A FAILURE THROWS -- transport,
+ * non-2xx, non-JSON and non-object all raise.
+ *
+ * The three fold clients use this. A nullable reader is right for the older
+ * Issue Radar seams, where an absent answer and an empty one mean the same thing to
+ * the caller -- but it is wrong for these, because the views distinguish "nothing is
+ * in this step" from "we could not ask". Returning an empty payload on a transport
+ * failure made `isError` unreachable, which in turn made the views' error branches
+ * dead code and put a confident "No pipeline activity yet" in front of a backend
+ * outage. The error has to reach the query for the view to be able to tell the
+ * truth.
+ */
+async function getObjectOrThrow(path: string): Promise<Record<string, unknown>> {
+  const r = await fetch(path, { credentials: 'same-origin' })
+  if (!r.ok) throw new Error(`request failed with status ${r.status}`)
+  const body: unknown = await r.json()
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new Error('response was not an object')
+  }
+  return body as Record<string, unknown>
+}
+
+function coerceOverviewStep(v: unknown): OverviewStep | null {
+  const o = asObject(v)
+  if (!o) return null
+  const routed: StepRoute[] = []
+  if (Array.isArray(o.routed)) {
+    for (const e of o.routed) {
+      const r = asObject(e)
+      if (r) routed.push({ outcome: str(r, 'outcome'), count: num(r, 'count') })
+    }
+  }
+  return {
+    key: str(o, 'key'),
+    label: str(o, 'label'),
+    // The backend only ever emits 'issues' | 'sessions'; anything else is a
+    // partial payload, so default to 'issues' rather than trusting a stray value.
+    unit: o.unit === 'sessions' ? 'sessions' : 'issues',
+    entered: num(o, 'entered'),
+    done: num(o, 'done'),
+    skipped: num(o, 'skipped'),
+    churn: num(o, 'churn'),
+    recentEntered: num(o, 'recentEntered'),
+    recentDone: num(o, 'recentDone'),
+    inFlight: num(o, 'inFlight'),
+    distinctEntered: num(o, 'distinctEntered'),
+    distinctDone: num(o, 'distinctDone'),
+    routed,
+  }
+}
+
+function coerceStepItem(v: unknown): StepItem | null {
+  const o = asObject(v)
+  if (!o) return null
+  return {
+    number: num(o, 'number'),
+    title: str(o, 'title'),
+    labels: strList(o.labels),
+    author: str(o, 'author'),
+    assignees: strList(o.assignees),
+    // Preserved as null when the server sends null: `num()` would coerce it to 0,
+    // which is the very claim the backend stopped making.
+    comments: typeof o.comments === 'number' && Number.isFinite(o.comments) ? o.comments : null,
+    queuedAt: ts(o, 'queuedAt'),
+    dispatchedAt: ts(o, 'dispatchedAt'),
+    resumeCount: num(o, 'resumeCount'),
+    slot: str(o, 'slot'),
+    previousSlots: strList(o.previousSlots),
+    withdrawn: bool(o, 'withdrawn'),
+    needsHuman: bool(o, 'needsHuman'),
+    pr: numOrNull(o, 'pr'),
+    lastEvent: str(o, 'lastEvent'),
+    lastEventAt: ts(o, 'lastEventAt'),
+  }
+}
+
+function coerceItemSession(v: unknown): ItemSession | null {
+  const o = asObject(v)
+  if (!o) return null
+  return {
+    slot: str(o, 'slot'),
+    model: str(o, 'model'),
+    agent: str(o, 'agent'),
+    surface: str(o, 'surface'),
+    current: bool(o, 'current'),
+    startedAt: ts(o, 'startedAt'),
+    lastAt: ts(o, 'lastAt'),
+    turns: num(o, 'turns'),
+    input: num(o, 'input'),
+    output: num(o, 'output'),
+    cacheCreate: num(o, 'cacheCreate'),
+    cacheRead: num(o, 'cacheRead'),
+    cost: num(o, 'cost'),
+    credits: num(o, 'credits'),
+    durationMs: num(o, 'durationMs'),
+    contextUsed: num(o, 'contextUsed'),
+    contextWindow: num(o, 'contextWindow'),
+    lastPhase: str(o, 'lastPhase'),
+    lastStopReason: str(o, 'lastStopReason'),
+  }
+}
+
+/** The query params for a step request — owner/repo/step plus an optional limit. */
+export interface StepQuery extends RepoRef {
+  step: string
+  limit?: number
+}
+
+/** The read clients for this app's own backend. All three are forward-tolerant
+ * and NEVER throw — every degraded path returns a designed empty result. */
+export const autoTriagePipelineFoldApi = {
+  /**
+   * L0 — the pipeline overview for the last `hours` (default: server's own
+   * window). Empty result on any failure: no steps, zero counts, null bounds.
+   */
+  overview: async (hours?: number): Promise<OverviewResponse> => {
+    const empty = (): OverviewResponse => ({
+      steps: [],
+      totalEvents: 0,
+      unparseable: 0,
+      unmappedEvents: [],
+      firstEventAt: null,
+      lastEventAt: null,
+      recentHours: typeof hours === 'number' && Number.isFinite(hours) ? hours : 0,
+    })
+    const q = new URLSearchParams()
+    if (typeof hours === 'number' && Number.isFinite(hours)) q.set('hours', String(Math.trunc(hours)))
+    const suffix = q.toString() ? `?${q.toString()}` : ''
+    const o = await getObjectOrThrow(`${ATP_API}/overview${suffix}`)
+    const steps: OverviewStep[] = []
+    if (Array.isArray(o.steps)) {
+      for (const s of o.steps) {
+        const step = coerceOverviewStep(s)
+        if (step) steps.push(step)
+      }
+    }
+    const unmappedEvents: UnmappedEvent[] = []
+    if (Array.isArray(o.unmappedEvents)) {
+      for (const e of o.unmappedEvents) {
+        const r = asObject(e)
+        if (r) unmappedEvents.push({ event: str(r, 'event'), count: num(r, 'count') })
+      }
+    }
+    return {
+      steps,
+      totalEvents: num(o, 'totalEvents'),
+      unparseable: num(o, 'unparseable'),
+      unmappedEvents,
+      firstEventAt: ts(o, 'firstEventAt'),
+      lastEventAt: ts(o, 'lastEventAt'),
+      recentHours: num(o, 'recentHours', empty().recentHours),
+    }
+  },
+
+  /**
+   * L1 — the items sitting in one step. `step`/`owner`/`repo` are required;
+   * `limit` is optional. Empty result (`items: []`, `count: 0`, echoing the
+   * requested step) on any failure.
+   */
+  step: async (query: StepQuery): Promise<StepResponse> => {
+    const q = new URLSearchParams({ step: query.step, owner: query.owner, repo: query.repo })
+    if (query.provider) q.set('provider', query.provider)
+    if (query.host) q.set('host', query.host)
+    if (typeof query.limit === 'number' && Number.isFinite(query.limit)) {
+      q.set('limit', String(Math.trunc(query.limit)))
+    }
+    const o = await getObjectOrThrow(`${ATP_API}/step?${q.toString()}`)
+    const items: StepItem[] = []
+    if (Array.isArray(o.items)) {
+      for (const it of o.items) {
+        const row = coerceStepItem(it)
+        if (row) items.push(row)
+      }
+    }
+    return { step: str(o, 'step', query.step), count: num(o, 'count'), items }
+  },
+
+  /**
+   * L2 — the sessions that worked one item. Empty result (`sessions: []`,
+   * `count: 0`, `populatedColumns: []`, echoing the requested number) on any
+   * failure.
+   */
+  itemSessions: async (number: number): Promise<ItemSessionsResponse> => {
+    const q = new URLSearchParams({ number: String(Math.trunc(number)) })
+    const o = await getObjectOrThrow(`${ATP_API}/item/sessions?${q.toString()}`)
+    const sessions: ItemSession[] = []
+    if (Array.isArray(o.sessions)) {
+      for (const s of o.sessions) {
+        const row = coerceItemSession(s)
+        if (row) sessions.push(row)
+      }
+    }
+    return {
+      number: num(o, 'number', number),
+      count: num(o, 'count'),
+      sessions,
+      populatedColumns: strList(o.populatedColumns),
+    }
+  },
+}

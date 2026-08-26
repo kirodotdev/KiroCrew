@@ -15,7 +15,17 @@
        non-zero values on notched iPhones (Safari and the standalone PWA).
        Screen-edge surfaces then inset themselves with the tailwindcss-safe-area
        utilities; src/test/safeArea.guard.test.ts enforces that. -->
-  <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content, viewport-fit=cover" />
+  <!-- `maximum-scale=1, user-scalable=no`: the dashboard is an application shell, not a
+       zoomable document, and a pinch magnifies a `position: fixed` / `h-dvh` shell that
+       has no scroll axis to reach what the magnification pushed off-screen.
+       These two keys are ONE of three mechanisms and cover only Blink and Gecko: WebKit
+       ignores them for user gestures, so iOS needs the `gesturestart` suppression in
+       utils/pageZoom.ts plus the root `touch-action` in index.css. Removing any one of
+       the three silently un-covers an engine.
+       Rationale, the accessibility trade and what still magnifies: the policy section
+       in website/docs/page-layout.md is the authoritative copy — extend it there, not
+       here. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, interactive-widget=resizes-content, viewport-fit=cover" />
   <link rel="icon" href="/logo.png" type="image/png" />
   <link rel="manifest" href="/manifest.json" />
   <meta name="theme-color" content="#0d0f12" />

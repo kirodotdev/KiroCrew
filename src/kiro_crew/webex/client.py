@@ -58,38 +58,12 @@ def truncate_utf8(text: str, max_bytes: int = WEBEX_MAX_TEXT) -> str:
     """Byte-exact truncation, defaulted to Webex's own cap.
 
     The implementation is the shared one in ``messaging.split``; this wrapper
-    exists only to keep ``WEBEX_MAX_TEXT`` as the default for Webex's call sites.
-    It loses the tail, so it is the last-resort guard for a SINGLE send —
-    multi-message content is split losslessly first by :func:`chunk_utf8`.
+    exists only to keep ``WEBEX_MAX_TEXT`` as the default for this module's three
+    call sites. It loses the tail, so it is the last-resort guard for a SINGLE
+    send — multi-message content is split losslessly first, by the shared
+    ``messaging.split.chunk_utf8_bytes`` at the renderer's answer path.
     """
     return _truncate_utf8(text, max_bytes)
-
-
-def chunk_utf8(text: str, max_bytes: int = WEBEX_MAX_TEXT) -> list[str]:
-    """Split ``text`` into chunks of at most *max_bytes* UTF-8 bytes each,
-    never splitting a code point and never dropping content.
-
-    The neutral ``chunk_text`` helper splits by CHARACTERS, but Webex limits
-    BYTES — a multibyte-heavy chunk under the character cap could exceed the
-    byte limit and be silently tail-truncated by the send path, losing the
-    remainder. Splitting on the encoded bytes and re-decoding with
-    ``errors="ignore"`` finds the largest whole-code-point prefix per chunk;
-    the loop then resumes from exactly the characters consumed, so the
-    concatenation of all chunks always equals the input.
-    """
-    if not text:
-        return []
-    chunks: list[str] = []
-    remaining = text
-    while remaining:
-        encoded = remaining.encode("utf-8")
-        if len(encoded) <= max_bytes:
-            chunks.append(remaining)
-            break
-        piece = encoded[:max_bytes].decode("utf-8", errors="ignore")
-        chunks.append(piece)
-        remaining = remaining[len(piece) :]
-    return chunks
 
 
 # A WS connection must live at least this long to count as "healthy" and reset
@@ -162,8 +136,7 @@ _PERSON_CACHE_MAX = 256
 # Bounded because the user is waiting on a reply, and this runs before the turn
 # starts: past this the honest answer is "still scanning, re-send shortly".
 _SCAN_WAIT_BUDGET_S = 60.0
-# Bounds on the server-supplied Retry-After: a missing header must not mean zero
-# (a hot loop) and a hostile one must not park the turn.
+
 # Host suffixes a Device Manager URL may name. The bearer token rides device
 # registration, so the destination cannot be free-form — and both inputs that can
 # name it are untrusted in different ways:
@@ -200,6 +173,11 @@ def _is_webex_host(url: str) -> bool:
 #: Refusal reason for a scan that outlasted the budget. Reaches the user through
 #: ``messaging.attachments``, so it reads as an instruction rather than an error.
 _STILL_SCANNING = "still being scanned, re-send shortly"
+
+# Bounds on the server-supplied Retry-After for the SCAN-WAIT ladder (the 423 path
+# in ``download_content``, via ``_retry_after``): a missing header must not mean zero
+# (a hot loop) and a hostile one must not park the turn. The 429 API back-off in
+# ``_api`` is a separate policy with its own narrower bounds, and does not read these.
 _RETRY_AFTER_MIN_S = 1.0
 _RETRY_AFTER_MAX_S = 15.0
 # Chunk size for streaming a download to disk, so a 100 MB file never lands in
@@ -389,21 +367,24 @@ class WebexClient:
     async def close(self) -> None:
         """Gracefully shut down."""
         self._closed = True
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-            self._task = None
-        if self._handler_tasks:
-            for t in list(self._handler_tasks):
-                t.cancel()
-            await asyncio.gather(*self._handler_tasks, return_exceptions=True)
-            self._handler_tasks.clear()
-        if self._session and not self._session.closed:
-            await self._session.close()
-            self._session = None
+        try:
+            if self._task:
+                self._task.cancel()
+                try:
+                    await self._task
+                except asyncio.CancelledError:
+                    pass
+                finally:
+                    self._task = None
+        finally:
+            if self._handler_tasks:
+                for t in list(self._handler_tasks):
+                    t.cancel()
+                await asyncio.gather(*self._handler_tasks, return_exceptions=True)
+                self._handler_tasks.clear()
+            if self._session and not self._session.closed:
+                await self._session.close()
+                self._session = None
 
     def set_message_handler(self, on_message: Callable[[WebexInbound], Awaitable[None]]) -> None:
         """Set/replace the inbound-message handler after construction.
@@ -538,7 +519,7 @@ class WebexClient:
         error yields ``[]``: history is supplementary and must not fail a turn.
         """
         result = await self._api("GET", f"/messages{query}", None)
-        items = (result or {}).get("items") if isinstance(result, dict) else None
+        items = result.get("items") if isinstance(result, dict) else None
         return [i for i in (items or []) if isinstance(i, dict)]
 
     async def head_content(self, url: str) -> tuple[str, str, int]:
@@ -1090,7 +1071,7 @@ class WebexClient:
         if cached is not None:
             return cached
         person = await self._api("GET", f"/people/{person_id}", None)
-        emails = (person or {}).get("emails") or [] if isinstance(person, dict) else []
+        emails = (person.get("emails") or []) if isinstance(person, dict) else []
         email = str(emails[0]).lower() if emails else ""
         # Bounded: a room's membership is small, but a long-lived gateway seeing
         # many rooms should not accumulate without limit.
@@ -1115,7 +1096,7 @@ class WebexClient:
         if cached is not None:
             return cached
         room = await self._api("GET", f"/rooms/{room_id}", None)
-        room_type = str((room or {}).get("type") or "") if isinstance(room, dict) else ""
+        room_type = str(room.get("type") or "") if isinstance(room, dict) else ""
         if len(self._room_types) >= _PERSON_CACHE_MAX:
             self._room_types.pop(next(iter(self._room_types)), None)
         # Cached even when empty: a bot removed from the room would otherwise
@@ -1166,11 +1147,13 @@ class WebexClient:
                     timeout=aiohttp.ClientTimeout(total=timeout),
                 ) as resp:
                     if resp.status == 429 and attempt == 0:
-                        retry_after = 1.0
                         try:
                             retry_after = float(resp.headers.get("Retry-After", "1"))
                         except (TypeError, ValueError):
-                            pass
+                            # Mirrors the header default above, so a malformed value
+                            # paces exactly like a missing one. The clamp below is
+                            # what bounds the wait either way.
+                            retry_after = 1.0
                         await asyncio.sleep(min(max(retry_after, 0.5), 10.0))
                         continue
                     if 200 <= resp.status < 300:

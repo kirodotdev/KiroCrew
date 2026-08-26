@@ -8,6 +8,7 @@ import {
   Download,
   ExternalLink,
   Globe,
+  LockKeyhole,
   LogIn,
   Play,
   QrCode,
@@ -43,12 +44,13 @@ function CopyBtn({ value, label }: { value: string; label: string }) {
     <Btn
       aria-label={label}
       onClick={async () => {
-        // `copyToClipboard` returns Promise<void>, so its resolution — not a
-        // return value — is the success signal; it also carries a textarea
-        // fallback for the non-secure-origin case, which is why it is used
-        // instead of touching `navigator.clipboard` here.
+        // `copyToClipboard` resolves a boolean (false = the legacy fallback
+        // reported failure) and still rejects on a genuine exception — both
+        // must suppress the tick. It carries a textarea fallback for the
+        // non-secure-origin case, which is why it is used instead of touching
+        // `navigator.clipboard` here.
         try {
-          await copyToClipboard(value)
+          if ((await copyToClipboard(value)) === false) return
         } catch {
           return
         }
@@ -74,6 +76,7 @@ const STEP_ICON: Record<TailnetMobileStep, typeof Smartphone> = {
   start_daemon: Play,
   sign_in: LogIn,
   enable_magicdns: Globe,
+  enable_https: LockKeyhole,
   trust_off: ShieldCheck,
   restart_gateway: RefreshCw,
   occupied: AlertTriangle,
@@ -90,6 +93,7 @@ const STEP_TITLE_KEY: Record<TailnetMobileStep, string> = {
   start_daemon: 'components.tailnetMobile.start_daemon_title',
   sign_in: 'components.tailnetMobile.sign_in_title',
   enable_magicdns: 'components.tailnetMobile.enable_magicdns_title',
+  enable_https: 'components.tailnetMobile.enable_https_title',
   trust_off: 'components.tailnetMobile.trust_off_title',
   restart_gateway: 'components.tailnetMobile.restart_gateway_title',
   occupied: 'components.tailnetMobile.occupied_title',
@@ -103,6 +107,7 @@ const STEP_BODY_KEY: Record<TailnetMobileStep, string> = {
   start_daemon: 'components.tailnetMobile.start_daemon_body',
   sign_in: 'components.tailnetMobile.sign_in_body',
   enable_magicdns: 'components.tailnetMobile.enable_magicdns_body',
+  enable_https: 'components.tailnetMobile.enable_https_body',
   trust_off: 'components.tailnetMobile.trust_off_body',
   restart_gateway: 'components.tailnetMobile.restart_gateway_body',
   occupied: 'components.tailnetMobile.occupied_body',
@@ -139,6 +144,52 @@ const DETAIL_STEPS = new Set<TailnetMobileStep>([
  *  in the shared config would sync a display choice across every device that
  *  reaches this dashboard. */
 const INVITE_EXPANDED_LS_KEY = 'mc-tailnet-mobile-invite-expanded'
+
+/** Steps the dashboard can finish without sending the operator elsewhere.
+ *
+ * Tailscale installation, daemon startup, sign-in, MagicDNS, and tailnet-wide
+ * HTTPS consent remain explicit prerequisites because the gateway cannot safely
+ * complete them on a user's behalf. Once those are satisfied, these three steps
+ * are one operation from the operator's point of view: trust the daemon-derived
+ * name, restart through the formal single-flight path, publish through Tailscale
+ * Serve, and mint the QR after the replacement gateway proves readiness.
+ */
+const ONE_CLICK_SETUP_STEPS = new Set<TailnetMobileStep>([
+  'trust_off',
+  'restart_gateway',
+  'publish',
+])
+
+const RESTART_POLL_MS = 1000
+const RESTART_WAIT_MS = 60_000
+
+function pause(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms))
+}
+
+/** Wait for the replacement gateway rather than mistaking the old process's
+ * final 200 for recovery. The old process can answer `restart_gateway` for the
+ * 250 ms response-flush window; only a different step proves startup ran again.
+ * Network errors are expected while the listener is between process images.
+ */
+async function waitForRestartedGateway(
+  onStatus: (next: TailnetMobileData) => void,
+): Promise<TailnetMobileData> {
+  const deadline = Date.now() + RESTART_WAIT_MS
+
+  while (Date.now() < deadline) {
+    try {
+      const next = await api.tailnetMobile()
+      onStatus(next)
+      if (next.step !== 'trust_off' && next.step !== 'restart_gateway') return next
+    } catch {
+      // Expected while the old listener exits and the replacement binds.
+    }
+    await pause(RESTART_POLL_MS)
+  }
+
+  throw new Error(i18nT('components.tailnetMobile.setup_timeout'))
+}
 
 /** Reads are guarded because `localStorage` THROWS, it does not merely return
  *  null, when storage is unavailable (Safari private browsing, a blocked
@@ -179,6 +230,12 @@ function writeInviteExpanded(expanded: boolean): void {
  * the `occupied` step, so the card renders the manual command (see the
  * `occupied` branch below, which prints `kirocrew tailnet up`) instead of a
  * publish button that would overwrite a mount it could not identify.
+ *
+ * **Setup is one explicit mutation, even across a gateway restart.** The click
+ * itself is the operator's consent to every in-scope step, so the mutation may
+ * resume when the listener comes back and mint the QR. It never runs on render,
+ * and it never crosses the `occupied` refusal into overwriting another Serve
+ * mount.
  */
 export function TailnetMobileCard() {
   const qc = useQueryClient()
@@ -207,29 +264,11 @@ export function TailnetMobileCard() {
     void qc.invalidateQueries({ queryKey: ['tailnet-status'] })
   }
 
-  const publish = useMutation({
-    mutationFn: () => api.tailnetMobilePublish(),
-    onSuccess: (res) => {
-      setActionError(res.ok ? '' : res.detail)
-      invalidate()
-    },
-    onError: (err: Error) => setActionError(err.message),
-  })
-
   const unpublish = useMutation({
     mutationFn: () => api.tailnetMobileUnpublish(),
     onSuccess: (res) => {
       setActionError(res.ok ? '' : res.detail)
       setQr(null)
-      invalidate()
-    },
-    onError: (err: Error) => setActionError(err.message),
-  })
-
-  const enableTrust = useMutation({
-    mutationFn: () => api.patchConfig('dashboard.tailscale.enabled', true),
-    onSuccess: () => {
-      setActionError('')
       invalidate()
     },
     onError: (err: Error) => setActionError(err.message),
@@ -244,12 +283,51 @@ export function TailnetMobileCard() {
     onError: (err: Error) => setActionError(err.message),
   })
 
-  // The gateway replaces its own process image, so this request answers and THEN
-  // the connection drops. There is no success state to render — the page simply
-  // reconnects — so the only honest feedback is "asked, now wait".
-  const restart = useMutation({
-    mutationFn: () => api.restartGateway(),
-    onSuccess: () => setActionError(''),
+  /** Finish every gateway-owned step behind one click.
+   *
+   * Each transition is read back from the server rather than re-derived here.
+   * That preserves `_derive_step` as the single owner of readiness and makes a
+   * future gateway step fail closed: anything except `publish` or `ready` stops
+   * before either exposure or credential minting.
+   */
+  const setup = useMutation({
+    mutationFn: async (): Promise<TailnetMobileQr> => {
+      if (!data) throw new Error(i18nT('components.tailnetMobile.setup_timeout'))
+      let current = data
+      const accept = (next: TailnetMobileData) => {
+        current = next
+        qc.setQueryData(['tailnet-mobile'], next)
+      }
+
+      if (current.step === 'trust_off') {
+        await api.patchConfig('dashboard.tailscale.enabled', true)
+        accept(await api.tailnetMobile())
+      }
+
+      if (current.step === 'restart_gateway') {
+        await api.restartGateway()
+        current = await waitForRestartedGateway(accept)
+      }
+
+      if (current.step === 'publish') {
+        const result = await api.tailnetMobilePublish()
+        if (!result.ok) throw new Error(result.detail)
+        accept(await api.tailnetMobile())
+      }
+
+      if (current.step !== 'ready') {
+        throw new Error(
+          current.detail || i18nT('components.tailnetMobile.setup_timeout'),
+        )
+      }
+
+      return api.tailnetMobileQr()
+    },
+    onMutate: () => setActionError(''),
+    onSuccess: (res) => {
+      setQr(res)
+      invalidate()
+    },
     onError: (err: Error) => setActionError(err.message),
   })
 
@@ -310,12 +388,9 @@ export function TailnetMobileCard() {
 
   const Icon = STEP_ICON[step]
   const busy =
-    publish.isPending ||
     unpublish.isPending ||
-    enableTrust.isPending ||
     mintQr.isPending ||
-    restart.isPending ||
-    restart.isSuccess
+    setup.isPending
 
   return (
     <Card>
@@ -411,30 +486,12 @@ export function TailnetMobileCard() {
               </>
             ) : null}
 
-            {step === 'trust_off' ? (
-              <Btn primary disabled={busy} onClick={() => enableTrust.mutate()}>
-                {i18nT('components.tailnetMobile.enable_trust')}
-              </Btn>
-            ) : null}
-
-            {step === 'restart_gateway' ? (
-              <>
-                <Btn primary disabled={busy} onClick={() => restart.mutate()}>
-                  <RefreshCw className="lucide-inline" />
-                  {i18nT('components.tailnetMobile.restart_action')}
-                </Btn>
-                {restart.isSuccess ? (
-                  <span className="text-muted">
-                    {i18nT('components.tailnetMobile.restarting')}
-                  </span>
-                ) : null}
-              </>
-            ) : null}
-
-            {step === 'publish' ? (
-              <Btn primary disabled={busy} onClick={() => publish.mutate()}>
+            {ONE_CLICK_SETUP_STEPS.has(step) ? (
+              <Btn primary disabled={busy} onClick={() => setup.mutate()}>
                 <Smartphone className="lucide-inline" />
-                {i18nT('components.tailnetMobile.publish_action')}
+                {setup.isPending
+                  ? i18nT('components.tailnetMobile.setting_up')
+                  : i18nT('components.tailnetMobile.setup_action')}
               </Btn>
             ) : null}
 
@@ -473,6 +530,12 @@ export function TailnetMobileCard() {
             <p className="mt-2 text-danger">{actionError}</p>
           ) : null}
 
+          {ONE_CLICK_SETUP_STEPS.has(step) ? (
+            <p className="mt-2 text-muted">
+              {i18nT('components.tailnetMobile.automatic_https')}
+            </p>
+          ) : null}
+
           {/* ── The QR itself ───────────────────────────────────────────── */}
           {qr ? (
             <div className="mt-4 border-t border-border pt-3">
@@ -501,7 +564,7 @@ export function TailnetMobileCard() {
             </div>
           ) : null}
 
-          {step === 'enable_magicdns' ? (
+          {step === 'enable_magicdns' || step === 'enable_https' ? (
             <a
               className="mt-2 inline-flex items-center gap-1 text-accent"
               href="https://login.tailscale.com/admin/dns"
@@ -509,7 +572,11 @@ export function TailnetMobileCard() {
               rel="noopener noreferrer"
             >
               <ExternalLink className="lucide-inline" />
-              {i18nT('components.tailnetMobile.open_dns_admin')}
+              {i18nT(
+                step === 'enable_https'
+                  ? 'components.tailnetMobile.open_https_admin'
+                  : 'components.tailnetMobile.open_dns_admin',
+              )}
             </a>
           ) : null}
         </div>

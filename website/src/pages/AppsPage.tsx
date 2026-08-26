@@ -623,13 +623,27 @@ export default function AppsPage() {
   const getApp = (name: string) => navigate(`/apps/detail/${name}`, { state: { autoAction: 'install' } })
   const updateApp = (name: string) => navigate(`/apps/detail/${name}`, { state: { autoAction: 'update' } })
 
-  // Provenance the consent modal shows. The browse-catalog row is preferred:
-  // registry rows carry `repo`/`_registry`, which the installed record does not.
+  // Provenance the consent modal shows. For an installed app, the server-bound
+  // source wins over today's registry row; for an install prompt, the registry's
+  // server-resolved clone target is the authority.
   const trustTarget = (name: string): TrustAppTarget => {
     const row = browseApps.find(a => a.name === name)
-    if (row) return { name: row.name, displayName: row.displayName, repo: row.repo, origin: row.origin, _registry: row._registry }
     const installed = apps.find(a => a.name === name)
-    return { name, displayName: installed?.displayName, repo: installed?.manifest?.repo, origin: installed?.origin }
+    if (installed) return {
+      name,
+      displayName: installed.displayName,
+      trustRepository: installed.trustRepository,
+      origin: installed.origin,
+      _registry: row?._registry,
+    }
+    if (row) return {
+      name: row.name,
+      displayName: row.displayName,
+      trustRepository: row.trustRepository,
+      origin: row.origin,
+      _registry: row._registry,
+    }
+    return { name }
   }
 
   /** The single enable path — shared by Discover, Library, and the trust retry. */
@@ -761,7 +775,7 @@ export default function AppsPage() {
     announceAppsChanged()
     if (failed.length) setError(i18nT('pages.appsPage.failed_to_update', { names: failed.join(', ') }))
     else {
-      setSuccessMsg(`Updated ${targets.length} app${targets.length === 1 ? '' : 's'}.`)
+      setSuccessMsg(i18nT('pages.appsPage.updated_app', { count: targets.length }))
       setTimeout(() => setSuccessMsg(''), 4000)
     }
   }

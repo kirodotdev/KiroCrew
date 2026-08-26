@@ -73,7 +73,7 @@ const PinnedMessagesPanel = memo(function PinnedMessagesPanel({
         {!loading && pins.map(pin => (
           <Clickable
             key={pin.id}
-            className="group/pin flex flex-col gap-1 px-3 py-2.5 rounded-md hover:bg-hover cursor-pointer transition-colors mb-1"
+            className="group/pin flex flex-col gap-1 px-3 py-2.5 rounded-md hover:bg-bg-hover cursor-pointer transition-colors mb-1"
             onClick={() => onJumpToMessage(pin.message_ts, pin.mid)}
             data-testid="pin-entry"
             aria-label={i18nT('pages.chat.pins.jump_to_message')}

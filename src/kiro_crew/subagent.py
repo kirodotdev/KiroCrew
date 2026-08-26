@@ -18,7 +18,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional, Protocol
+from typing import TYPE_CHECKING, Any, NamedTuple, Optional, Protocol
 
 from kiro_crew.acp.liveness import (
     VERDICT_DEAD,
@@ -627,10 +627,13 @@ def check_memory_available(min_gb: float = 4.0, path: str = "/proc/meminfo") -> 
     return (True, -1.0)
 
 
-# Process-subtree RSS readers (relocated from the upstream mcp_gateway pool,
+# Process-subtree readers (relocated from the upstream mcp_gateway pool,
 # which is absent in this fork). Pure-stdlib /proc walkers: on non-Linux hosts
 # every /proc access raises OSError and these degrade to -1 / [] gracefully.
-_RSS_SUBTREE_MAX_PROCS = 256
+# ONE ceiling for every reading. RSS, CPU and the two counts used to be three
+# walks carrying two copies of the same 256, which is how they could have
+# drifted apart.
+_SUBTREE_MAX_PROCS = 256
 
 
 def _single_proc_rss_kb(pid: int) -> int:
@@ -666,80 +669,123 @@ def _proc_children(pid: int) -> list[int]:
     return kids
 
 
-def _proc_rss_kb(pid: Optional[int]) -> int:
-    """Resident set size (KiB) for ``pid`` **and all its descendants**.
+def _parse_cpu_jiffies(stat: bytes) -> int:
+    """Sum utime+stime (clock ticks) from raw ``/proc/<pid>/stat`` bytes.
+
+    Splits after the final ``)`` so a ``comm`` containing spaces/parens is
+    handled. utime/stime are fields 14/15 (1-indexed) → indices 11/12 of the
+    post-comm tokens. Returns 0 on any parse error.
+    """
+    try:
+        rparen = stat.rindex(b")")
+        fields = stat[rparen + 2 :].split()
+        return int(fields[11]) + int(fields[12])
+    except (ValueError, IndexError):
+        return 0
+
+
+def _proc_cpu_jiffies(pid: int) -> int:
+    """utime+stime (clock ticks) for a single pid, 0 on error."""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as fh:
+            return _parse_cpu_jiffies(fh.read())
+    except OSError:
+        return 0
+
+
+class _SubtreeSample(NamedTuple):
+    """Every subtree reading the cost sweep needs, from ONE walk.
+
+    Each field keeps the sentinel its own reader had, because the four readings
+    are unmeasurable in different ways and collapsing any of them into zero is
+    the bug class the count columns were added to fix:
+
+    * ``rss_kb`` — summed KiB, or ``-1`` when the root pid's own status is
+      unreadable (it is gone, or the host has no ``/proc``).
+    * ``jiffies`` — summed utime+stime clock ticks; an unreadable pid
+      contributes 0, since a *delta* of jiffies is what the caller consumes.
+    * ``procs`` / ``stubs`` — how many processes a runtime carries, and how many
+      of them are MCP stubs, matched on ``STUB_MODULE``, the module path the
+      rewriter itself puts on the stub launch line. ``None`` means UNMEASURABLE,
+      never zero. Rendering "0 processes" for a live runtime would be a lie; the
+      surface renders ``None`` as an em dash instead.
+    """
+
+    rss_kb: int
+    jiffies: int
+    procs: Optional[int]
+    stubs: Optional[int]
+
+
+def _proc_subtree_sample(
+    pid: Optional[int],
+    *,
+    rss: bool = True,
+    counts: bool = True,
+) -> _SubtreeSample:
+    """Walk ``pid``'s process subtree ONCE and return every reading from it.
 
     A subagent's kiro-cli process is frequently a thin launcher whose real
-    memory lives in a child process. Counting only ``pid``'s own ``VmRSS``
-    under-reports the true footprint, so we sum the whole subtree.
+    memory lives in a child process, so all four readings describe the whole
+    subtree rather than the root pid alone.
 
-    Returns -1 if ``pid`` is falsy or its own status cannot be read; otherwise
-    the summed KiB (descendants that vanish mid-walk are simply skipped, so the
-    result degrades gracefully to parent-only when ``children`` is unreadable).
+    The point of one pass is not only the ~3x fewer ``/proc`` reads: the three
+    readers this replaced ran at three different instants, so a process that
+    exited between them was counted by one and missed by another. Reading every
+    metric off a single frontier is what makes "the same set of processes" true
+    of the *result* and not merely of the walk rules.
+
+    ``rss`` / ``counts`` let a caller that only needs the CPU total skip those
+    per-process reads, so it costs what it cost before this walk was shared.
+    Skipped metrics come back as their own unmeasurable sentinel.
+
+    Blocking: reads a handful of ``/proc`` entries per process in the subtree,
+    so it belongs on an executor thread, never on the event loop (see
+    ``_reaper_loop`` -> ``_sample_live_costs``).
     """
     if not pid:
-        return -1
-    own = _single_proc_rss_kb(pid)
-    if own < 0:
-        return -1
-    total = own
-    seen = {pid}
-    frontier = [pid]
-    while frontier and len(seen) < _RSS_SUBTREE_MAX_PROCS:
-        nxt: list[int] = []
-        for parent in frontier:
-            for child in _proc_children(parent):
-                if child in seen:
-                    continue
-                seen.add(child)
-                kb = _single_proc_rss_kb(child)
-                if kb > 0:
-                    total += kb
-                nxt.append(child)
-        frontier = nxt
-    return total
-
-
-def _proc_subtree_counts(pid: Optional[int]) -> tuple[Optional[int], Optional[int]]:
-    """``(processes, mcp_stubs)`` in ``pid``'s subtree, or ``(None, None)``.
-
-    The companion to :func:`_proc_rss_kb` for the two count columns of the
-    Sessions surface: how many processes a runtime carries, and how many of them
-    are MCP stubs — matched on ``STUB_MODULE``, the module path the rewriter
-    itself puts on the stub launch line.
-
-    ``None`` means UNMEASURABLE, never zero. A host without ``/proc`` cannot walk
-    a subtree at all, and rendering that as "0 processes" for a live runtime
-    would be a lie — the surface renders ``None`` as an em dash instead.
-
-    Walk order, depth and the ``_RSS_SUBTREE_MAX_PROCS`` ceiling mirror
-    ``_proc_rss_kb`` so both readings describe the same set of processes.
-
-    Blocking: reads one ``/proc`` entry per process in the subtree, so it belongs
-    on an executor thread, never on the event loop (see ``_reaper_loop``).
-    """
-    if not pid or not platform_compat.IS_LINUX:
-        return (None, None)
-    if _single_proc_rss_kb(pid) < 0:
-        return (None, None)  # pid gone or /proc unreadable: nothing to attribute
+        return _SubtreeSample(-1, 0, None, None)
+    # The counts share RSS's liveness probe: a root pid whose own status cannot
+    # be read has nothing to attribute, so there is nothing to count either.
+    own_rss = _single_proc_rss_kb(pid) if (rss or counts) else -1
+    countable = counts and platform_compat.IS_LINUX and own_rss >= 0
+    rss_total = own_rss if (rss and own_rss >= 0) else -1
     needles = (STUB_MODULE,)
+    jiffies = _proc_cpu_jiffies(pid)
     procs = 1
-    stubs = 1 if platform_compat.process_matches(pid, needles) else 0
+    stubs = 1 if countable and platform_compat.process_matches(pid, needles) else 0
     seen = {pid}
     frontier = [pid]
-    while frontier and len(seen) < _RSS_SUBTREE_MAX_PROCS:
+    while frontier and len(seen) < _SUBTREE_MAX_PROCS:
         nxt: list[int] = []
         for parent in frontier:
             for child in _proc_children(parent):
                 if child in seen:
                     continue
                 seen.add(child)
-                procs += 1
-                if platform_compat.process_matches(child, needles):
-                    stubs += 1
+                if rss_total >= 0:
+                    kb = _single_proc_rss_kb(child)
+                    if kb > 0:
+                        rss_total += kb
+                jiffies += _proc_cpu_jiffies(child)
+                if countable:
+                    procs += 1
+                    if platform_compat.process_matches(child, needles):
+                        stubs += 1
                 nxt.append(child)
         frontier = nxt
-    return (procs, stubs)
+    if not countable:
+        return _SubtreeSample(rss_total, jiffies, None, None)
+    return _SubtreeSample(rss_total, jiffies, procs, stubs)
+
+
+def _subtree_cpu_jiffies(pid: int) -> int:
+    """Sum utime+stime across ``pid`` and its descendants (clock ticks).
+
+    Thin wrapper over :func:`_proc_subtree_sample`, so the CPU subtree the
+    Sessions session rows read is the same subtree the task rows describe.
+    """
+    return _proc_subtree_sample(pid, rss=False, counts=False).jiffies
 
 
 def _attributed_count(total: Optional[int], sharers: int, previous: Optional[int]) -> Optional[int]:
@@ -998,53 +1044,6 @@ def resolve_max_subagents(cfg: KiroCrewConfig) -> int:
 
 
 _CLK_TCK = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
-_CPU_SUBTREE_MAX_PROCS = 256
-
-
-def _parse_cpu_jiffies(stat: bytes) -> int:
-    """Sum utime+stime (clock ticks) from raw ``/proc/<pid>/stat`` bytes.
-
-    Splits after the final ``)`` so a ``comm`` containing spaces/parens is
-    handled. utime/stime are fields 14/15 (1-indexed) → indices 11/12 of the
-    post-comm tokens. Returns 0 on any parse error.
-    """
-    try:
-        rparen = stat.rindex(b")")
-        fields = stat[rparen + 2 :].split()
-        return int(fields[11]) + int(fields[12])
-    except (ValueError, IndexError):
-        return 0
-
-
-def _proc_cpu_jiffies(pid: int) -> int:
-    """utime+stime (clock ticks) for a single pid, 0 on error."""
-    try:
-        with open(f"/proc/{pid}/stat", "rb") as fh:
-            return _parse_cpu_jiffies(fh.read())
-    except OSError:
-        return 0
-
-
-def _subtree_cpu_jiffies(pid: int) -> int:
-    """Sum utime+stime across ``pid`` and its descendants (clock ticks).
-
-    Walks the same kernel children list as ``pool._proc_rss_kb`` so the CPU
-    subtree matches the RSS subtree.
-    """
-    total = _proc_cpu_jiffies(pid)
-    seen = {pid}
-    frontier = [pid]
-    while frontier and len(seen) < _CPU_SUBTREE_MAX_PROCS:
-        nxt: list[int] = []
-        for parent in frontier:
-            for child in _proc_children(parent):
-                if child in seen:
-                    continue
-                seen.add(child)
-                total += _proc_cpu_jiffies(child)
-                nxt.append(child)
-        frontier = nxt
-    return total
 
 
 def validate_cwd(cwd: str, allowed_roots: list[str]) -> tuple[str, str]:
@@ -1364,6 +1363,36 @@ class SubagentInfo:
 
 # Callback: (subagent_info) -> None
 AnnounceCallback = Callable[[SubagentInfo], Awaitable[None]]
+
+
+def _injection_notice_outcome(info: "SubagentInfo") -> str:
+    """One-sentence outcome line for the injection-failure fallback notice.
+
+    ``notify_injection_failed`` fires whenever a terminal report could not be
+    injected into the parent — for EVERY terminal state, not just successful
+    completion. Asserting "finished" for a run that was stopped or rejected
+    before it executed misdescribes the outcome, so the line branches on the
+    record's canonical :attr:`SubagentInfo.outcome` with one before-start
+    refinement per branch: ``_exec_started`` — the marker ``_run_inner`` sets
+    when execution actually begins — is ``None`` exactly when the run never
+    executed, which covers every spawn-rejection site (all of them construct
+    their record without it) with no wording contract between ``error``
+    strings and this notice. The "no result to deliver" phrasings are guarded
+    on the absence of any output so they can never contradict the result-path
+    recovery hint. Pure function of the record, unit-tested per branch.
+    """
+    never_ran = info._exec_started is None and not info.result and not info.result_path
+    outcome = info.outcome
+    if outcome == "stopped":
+        if never_ran:
+            return "The run was stopped before it started, so there is no result to deliver."
+        return "The run was stopped before it completed."
+    if outcome == "failed":
+        if never_ran:
+            return "The run failed before it started, so there is no result to deliver."
+        return "The agent failed before a result could be delivered."
+    return "The agent finished but result delivery timed out."
+
 
 # Event callback: (event_type, info, extra_data) -> None
 SubagentEventCallback = Callable[[str, "SubagentInfo", dict], Awaitable[None]]
@@ -1908,24 +1937,22 @@ class SubagentManager:
                 logger.debug("on_orphan_dm raised", exc_info=True)
         logger.warning("Orphan notification (no delivery channel wired): %s", msg[:200])
 
-    def _live_shared_count(
-        self, pid: int | None, agents: "list[SubagentInfo] | None" = None
-    ) -> int:
+    def _live_shared_count(self, pid: int | None, agents: "list[SubagentInfo]") -> int:
         """Count live session-shared subagents sharing runtime *pid* (>= 1).
 
         Used to average the shared AcpRuntime's measured RSS/CPU across the
         sessions currently running inside it, so each shared subagent is charged
         an empirical per-session share rather than the whole process.
 
-        *agents* lets an off-loop caller pass the snapshot it already took, so the
-        count never iterates the live registry from a worker thread (see
-        ``_sample_live_costs``). Omitted, it reads the registry directly, which is
-        correct on the event loop.
+        *agents* is the registry snapshot the caller already took, and is
+        required: the sole caller runs on a worker thread (see
+        ``_sample_live_costs``), where iterating the live registry would raise
+        ``RuntimeError`` the moment the event loop registered or evicted an
+        agent. An on-loop caller passes ``list(self._agents.values())``.
         """
         if not pid:
             return 1
-        pool = agents if agents is not None else list(self._agents.values())
-        n = sum(1 for a in pool if not a.done and a._session_sharing and a._pid == pid)
+        n = sum(1 for a in agents if not a.done and a._session_sharing and a._pid == pid)
         return n if n > 0 else 1
 
     def _sample_live_costs(self) -> None:
@@ -1937,9 +1964,10 @@ class SubagentManager:
         seeds the CPU baseline (no delta yet). Best-effort: a dead/unreadable
         pid is simply skipped.
 
-        BLOCKING, and therefore off-loop: every live agent costs several ``/proc``
-        walks (RSS subtree, CPU jiffies, process+stub counts), so the caller
-        hands this to :func:`maintenance_executor` and the body must stay
+        BLOCKING, and therefore off-loop: every live agent costs ONE ``/proc``
+        subtree walk (:func:`_proc_subtree_sample`, which returns RSS, CPU
+        jiffies and the process/stub counts from a single frontier), so the
+        caller hands this to :func:`maintenance_executor` and the body must stay
         thread-safe. Concretely that means it takes ONE snapshot of the agent
         registry up front and derives everything, sharer counts included, from
         that list: iterating the live dict from a worker thread would raise
@@ -1959,44 +1987,23 @@ class SubagentManager:
             # by the number of concurrently-live shared sessions on that PID — an
             # empirical per-session average, not a guessed constant
             # (dynamic-subagent-sizing.md §session-sharing cost model).
-            if info._session_sharing:
-                shared_n = self._live_shared_count(pid_owner := info._pid, agents=agents)
-                rss_kb = _proc_rss_kb(pid_owner)
-                if rss_kb > 0 and shared_n > 0:
-                    gb = (rss_kb / (1024 * 1024)) / shared_n
-                    info.last_rss_gb = gb
-                    if gb > info.peak_rss_gb:
-                        info.peak_rss_gb = gb
-                procs, stubs = _proc_subtree_counts(pid_owner)
-                info.last_procs = _attributed_count(procs, shared_n, info.last_procs)
-                info.last_stubs = _attributed_count(stubs, shared_n, info.last_stubs)
-                jiffies = _subtree_cpu_jiffies(pid_owner)
-                if info._cpu_sample_ts > 0.0 and jiffies >= info._cpu_jiffies_prev and shared_n > 0:
-                    dt = now - info._cpu_sample_ts
-                    if dt > 0:
-                        cores = ((jiffies - info._cpu_jiffies_prev) / (_CLK_TCK * dt)) / shared_n
-                        info.last_cpu_cores = cores
-                        if cores > info.peak_cpu_cores:
-                            info.peak_cpu_cores = cores
-                info._cpu_jiffies_prev = jiffies
-                info._cpu_sample_ts = now
-                continue
-            pid = info._pid
-            rss_kb = _proc_rss_kb(pid)
-            if rss_kb > 0:
-                gb = rss_kb / (1024 * 1024)
+            #
+            # Sole tenant of its own process: the subtree reading IS this run's,
+            # which is a share of one.
+            shared_n = self._live_shared_count(info._pid, agents) if info._session_sharing else 1
+            sample = _proc_subtree_sample(info._pid)
+            if sample.rss_kb > 0 and shared_n > 0:
+                gb = (sample.rss_kb / (1024 * 1024)) / shared_n
                 info.last_rss_gb = gb
                 if gb > info.peak_rss_gb:
                     info.peak_rss_gb = gb
-            procs, stubs = _proc_subtree_counts(pid)
-            # Sole tenant of its own process: the subtree reading IS this run's.
-            info.last_procs = _attributed_count(procs, 1, info.last_procs)
-            info.last_stubs = _attributed_count(stubs, 1, info.last_stubs)
-            jiffies = _subtree_cpu_jiffies(pid)
-            if info._cpu_sample_ts > 0.0 and jiffies >= info._cpu_jiffies_prev:
+            info.last_procs = _attributed_count(sample.procs, shared_n, info.last_procs)
+            info.last_stubs = _attributed_count(sample.stubs, shared_n, info.last_stubs)
+            jiffies = sample.jiffies
+            if info._cpu_sample_ts > 0.0 and jiffies >= info._cpu_jiffies_prev and shared_n > 0:
                 dt = now - info._cpu_sample_ts
                 if dt > 0:
-                    cores = (jiffies - info._cpu_jiffies_prev) / (_CLK_TCK * dt)
+                    cores = ((jiffies - info._cpu_jiffies_prev) / (_CLK_TCK * dt)) / shared_n
                     info.last_cpu_cores = cores
                     if cores > info.peak_cpu_cores:
                         info.peak_cpu_cores = cores
@@ -2984,7 +2991,11 @@ class SubagentManager:
         Appends a synthetic error to the dashboard slot (UI) and queues a
         failure message into ``slot._pending_subagent_failures`` so the LLM
         learns about the failure on the next ``_run_chat`` turn and can read
-        the result from disk if needed.
+        the result from disk if needed. The notice's outcome line is derived
+        from the record (:func:`_injection_notice_outcome`) rather than
+        asserting completion: this path fires for every terminal state whose
+        report could not be injected, including runs cancelled or rejected
+        before they ever executed.
         """
         try:
             # Lazy: the dashboard layer must not be imported by a core module at
@@ -3017,7 +3028,7 @@ class SubagentManager:
                 f"{SUBAGENT_COMPLETION_PREFIX}\n"
                 f"Agent `{info.id}` ❌ {reason}\n"
                 f"Task: {task_preview}\n"
-                f"The agent finished but result delivery timed out.{result_hint}"
+                f"{_injection_notice_outcome(info)}{result_hint}"
             )
 
             # Queue for LLM context drain on next _run_chat
@@ -4827,16 +4838,28 @@ class SubagentManager:
     def _settle_digest_holds(self, info: SubagentInfo) -> None:
         """Settle delivery tombstones for wave members whose injection was
         held for this member's digest. Called ONLY after ``_on_done`` returned
-        without raising — the digest has been handed off, so marking the held
-        members delivered no longer risks the restart-loss window
-        (settling at digest composition, before routing, would).
+        without raising — and it is a real settle only for the routes where
+        that return IS the confirmation. Both dashboard routes hand off
+        asynchronously, so they detach the ids before ``_on_done`` returns and
+        owe them to the parent's consumption instead (the queue branch via
+        ``_defer_queued_delivery``, the direct-injection branch via the same
+        slot ledger), leaving this a no-op there. Marking the held members
+        delivered no longer risks the restart-loss window here (settling at
+        digest composition, before routing, would).
+
+        The ids are taken off ``info`` BEFORE settling, so a re-entry cannot
+        write a second tombstone and a route that detached them first leaves
+        this a no-op.
+
+        A failing tombstone write is logged and skipped, never raised: one
+        unwritable run folder must not strand the rest of the chunk.
         """
-        for _hid in info._digest_settle_ids:
+        ids, info._digest_settle_ids = info._digest_settle_ids, []
+        for _hid in ids:
             try:
                 mark_delivered(_hid)
             except Exception:
                 logger.debug("Failed to settle held subagent %s", _hid, exc_info=True)
-        info._digest_settle_ids = []
 
     def get(self, agent_id: str) -> SubagentInfo | None:
         """Get agent info by ID."""

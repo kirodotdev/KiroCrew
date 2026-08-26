@@ -17,8 +17,6 @@ Dependency direction is ``webex -> messaging`` (allowed).
 from __future__ import annotations
 
 import logging
-import mimetypes
-import os
 from typing import TYPE_CHECKING
 
 from kiro_crew.messaging.attachments import (
@@ -80,15 +78,3 @@ async def process_webex_attachments(client: "WebexClient", inbound: "WebexInboun
         handle_audio=True,
     )
     return await transcribe_audio_attachments(result, "Webex")
-
-
-def outbound_mimetype(path: str, fallback: str = "application/octet-stream") -> str:
-    """A content type for an outbound upload, from the extension.
-
-    Webex needs one on the multipart part, and only a handful of types render an
-    inline preview — everything else still uploads, it just shows as a file. So a
-    wrong guess costs a preview, not the delivery, which is why the fallback is a
-    generic binary type rather than a refusal.
-    """
-    guessed, _ = mimetypes.guess_type(os.path.basename(path))
-    return guessed or fallback

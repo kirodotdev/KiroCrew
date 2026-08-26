@@ -56,6 +56,8 @@
     "memory_unavailable": "메모리: 사용 불가",
     "metrics_are_stale_latest_fetch_failed": "지표가 오래되었습니다. 최근 가져오기에 실패했습니다",
     "metrics_unavailable": "지표 사용 불가",
+    "n_more_other": "{{count}}개 더",
+    "notification_count_other": "알림 {{count}}개",
     "resource_critical": "Critical",
     "resource_posture_tooltip_critical": "Host memory is critically low ({{gb}} GB free). Avoid heavy parallel work.",
     "resource_posture_tooltip_tight": "Host memory is tight ({{gb}} GB free). Heavy work may be slower.",
@@ -82,6 +84,7 @@
     "search_sessions_files_and_commands": "세션, 파일, 명령 검색",
     "show_fewer_apps": "앱 적게 보기",
     "show_less": "간략히 보기",
+    "show_more_apps_other": "앱 {{count}}개 더 보기",
     "signed_in_with": "{{provider}}(으)로 로그인됨",
     "skip_to_content": "본문으로 건너뛰기",
     "social_login": "소셜 로그인",
@@ -128,6 +131,8 @@
   "apps": {
     "agentWorlds": {
       "manifest": {
+        "use_case_1": "크루가 작업하는 동안 실행 중인 에이전트, cron, 서브에이전트를 세컨드 스크린에서 한눈에 확인합니다.",
+        "configuration_1": "앱을 활성화하고 Agent Worlds를 연 다음 장면을 선택하세요. 필요하면 별도 창으로 띄울 수 있습니다. 자격 증명이나 외부 서비스는 필요하지 않습니다.",
         "description": "실행 중인 에이전트를 애니메이션 픽셀 아트 장면 속 캐릭터로 바꿔, 한눈에 Kiro Crew가 얼마나 바쁜지 알 수 있게 합니다. 활성 에이전트마다 스프라이트로 나타나 작업이 시작되고 끝날 때 반응하며, 고전적인 사무실부터 마법사 탑이나 심해 연구소까지 테마 장면을 넘나듭니다. 별도 창으로 띄워 작업하는 동안 두 번째 화면에 계속 띄워 둘 수 있습니다.",
         "display_name": "Agent Worlds",
         "highlight_1": "어떤 에이전트가 실행 중인지 목록이 아닌 캐릭터로 보여 주는 실시간 뷰",
@@ -148,6 +153,8 @@
         "staygreen": "STAYGREEN"
       },
       "manifest": {
+        "use_case_1": "측정 가능한 성능 향상 또는 재현 가능한 버그 수정을 입증한 뒤, 통과한 결과를 검토 가능한 GitHub 변경 사항으로 만듭니다.",
+        "configuration_1": "게이트웨이 호스트에는 git과 인증된 gh CLI가 필요합니다. GitHub 저장소를 연결하고 기준 브랜치를 선택한 다음, 성능 실행 전에 측정 기준을 보정하세요.",
         "description": "GitHub 저장소를 변경하기 전에 먼저 측정합니다. 보정된 성능 지표(잣대)를 설계하고, 이미 알려진 개선으로 그 지표가 믿을 만한지 증명한 뒤, 유지 또는 되돌리기 개선 주기를 실행합니다. 모든 후보 수정은 격리된 worktree에서 작성되고, 편집 허용 목록과 저장소 자체 테스트로 검사되며, 측정된 개선이 잡음 구간을 넘어설 때만 유지됩니다. 살아남은 변경은 직접 리뷰하고 공개하는 GitHub 풀 리퀘스트 초안이 됩니다.",
         "display_name": "Auto-Improvement",
         "highlight_1": "지표부터 증명합니다 — 잣대를 믿을 수 없으면 실행을 시작하지 않습니다",
@@ -182,6 +189,8 @@
         "tree_is_getting_large_consider_pruning_branches": "트리가 커지고 있습니다 — 진행하지 않을 가지는 정리하는 것을 고려하세요."
       },
       "manifest": {
+        "use_case_1": "넓은 질문을 확장하고 증거를 스트리밍하며 재사용 가능한 보고서를 만드는 다중 주기 조사를 실행합니다.",
+        "configuration_1": "캠페인을 만들고 Agent 또는 Dynamic Workflow 모드를 선택해 질문을 확장한 다음, 주기 수, 간격, 작업 에이전트 수, 사용자 참여 또는 무인 실행을 설정하세요.",
         "description": "자리를 비운 뒤에도 계속 진행되는 다중 사이클 조사 캠페인을 실행합니다. 질문을 주면 더 좁은 하위 질문의 트리로 확장하고, 각각을 조사할 에이전트를 보내며, 결과가 도착하는 대로 페이지에 스트리밍합니다. 캠페인은 질문에 답이 나오거나 진전이 멈춘 것을 감지할 때까지 스스로 진행되며, 완성된 보고서는 지식 라이브러리나 공유 가능한 아티팩트로 넘길 수 있습니다.",
         "display_name": "Research Lab",
         "highlight_1": "에이전트 시간을 쓰기 전에 하나의 넓은 질문을 범위가 정해진 하위 질문 트리로 확장합니다",
@@ -353,9 +362,11 @@
     },
     "autoTriagePipeline": {
       "manifest": {
-        "description": "Kiro Crew 자체 자동 분류 파이프라인의 전체 화면 보기입니다. 페이즈 열거를 따라 crew 작업 항목마다 가로 레인을 하나씩 표시하여, 각 항목이 어느 페이즈에 있는지, 어디에서 항목이 쌓이는지, 어느 것이 멈췄는지를 운영자가 한눈에 볼 수 있습니다. Issue Radar의 crew-fabric 심을 통해 crew 원장을 읽습니다. 레인 도면은 '이 항목이 어디에 있는가'에, 큐 요약은 '큐 상태가 어떤가'에 답합니다.",
+        "description": "Kiro Crew 자체 자동 트리아지 파이프라인의 읽기 전용 3단계 보기. 여섯 단계와 처리량, 단계 안의 이슈, 각 이슈의 에이전트 세션 비용을 보여줍니다.",
         "display_name": "Kiro Crew 자동 분류 파이프라인",
-        "page_label": "자동 분류 파이프라인"
+        "page_label": "자동 분류 파이프라인",
+        "use_case_1": "Issue Radar의 크루 작업이 전체 제공 파이프라인에서 어디에 쌓이거나 다시 열리거나 대기 중인지 확인합니다.",
+        "configuration_1": "Issue Radar에서 저장소를 연결해 크루 원장이 단계 이벤트를 수집하게 한 다음, 이 앱을 활성화하고 선택기에서 해당 저장소를 고르세요."
       },
       "pipeline": {
         "subtitle": "크루 작업 항목마다 레인 하나씩, 모든 단계를 가로질러 표시 — 각 항목이 어느 단계에 있고 어디에 쌓이고 있는지 한눈에 확인하세요.",
@@ -435,10 +446,83 @@
         "header_addressing_review": "리뷰 대응",
         "header_awaiting_merge": "병합 대기",
         "header_resolved": "해결됨"
+      },
+      "global": {
+        "tab_pipeline": "파이프라인",
+        "tab_lanes": "항목 레인",
+        "tablist_label": "자동 분류 파이프라인 보기",
+        "title": "파이프라인",
+        "subtitle": "분류 파이프라인의 각 단계와 각 단계에 있는 항목, 그리고 지금까지 처리한 수",
+        "refresh": "새로고침",
+        "loading": "불러오는 중…",
+        "no_pipeline_title": "아직 파이프라인 활동이 없습니다",
+        "no_pipeline_subtitle": "분류 파이프라인이 실행되면 각 단계와 그 단계를 지나는 항목이 여기에 표시됩니다",
+        "close_step": "단계 닫기",
+        "step_heading_other": "{{step}} · 항목 {{count}}개",
+        "session_current": "현재 세션",
+        "turns_n_other": "{{count}}턴",
+        "open_session": "세션 열기",
+        "sessions_empty_title": "이 항목에 대한 세션이 없습니다",
+        "sessions_empty_subtitle": "이 항목은 에이전트 세션을 연 적이 없어 표시할 내용이 없습니다",
+        "unit_sessions": "세션",
+        "unit_issues": "이슈",
+        "in_step": "단계 내 ({{unit}})",
+        "recent": "최근",
+        "total": "전체",
+        "never": "없음",
+        "stat_in_flight": "처리 중",
+        "stat_last_activity": "마지막 활동",
+        "stat_events": "이벤트",
+        "stat_window": "{{hours}}시간 동안 처리",
+        "flow_hint": "연결선 두께는 단계 사이의 최근 흐름을 나타냅니다",
+        "unparseable_other": "이벤트 {{count}}개를 파싱할 수 없습니다",
+        "untitled": "제목 없음",
+        "resumed_times_other": "{{count}}회 재개",
+        "needs_human": "사람 필요",
+        "pr_not_recorded": "기록된 풀 리퀘스트 없음",
+        "labels": "레이블",
+        "not_cached": "캐시되지 않음",
+        "assignees": "담당자",
+        "comments": "댓글",
+        "last_event": "마지막 이벤트",
+        "step_empty_title": "이 단계에 항목이 없습니다",
+        "step_empty_subtitle": "지금 이 단계에는 아무것도 없습니다",
+        "step": {
+          "scan": "스캔",
+          "triage": "분류",
+          "dispatch": "디스패치",
+          "implement": "구현",
+          "verify": "검증",
+          "cleanup": "정리"
+        },
+        "col_credits": "크레딧",
+        "col_durationMs": "소요 시간",
+        "col_contextUsed": "컨텍스트",
+        "col_input": "입력",
+        "col_output": "출력",
+        "col_cacheCreate": "캐시 쓰기",
+        "col_cacheRead": "캐시 읽기",
+        "col_cost": "비용",
+        "session_retired": "이 세션은 종료되었습니다 -- 명령을 보낼 수 없습니다",
+        "load_failed": "이 데이터를 불러올 수 없습니다",
+        "retry": "다시 시도",
+        "col_slot": "세션",
+        "col_model": "모델",
+        "col_turns": "턴",
+        "author": "작성자",
+        "queued": "대기 등록",
+        "dispatched": "디스패치됨",
+        "first_started": "최초 시작",
+        "total_sessions": "세션",
+        "toggle_detail": "항목 #{{number}} 세부 정보 표시",
+        "liveness_checking": "세션 확인 중",
+        "liveness_unknown": "세션 상태를 확인할 수 없음"
       }
     },
     "channels": {
       "manifest": {
+        "use_case_1": "이름이 지정된 여러 에이전트 역할과 감사 가능한 공유 대화 기록에서 인시던트 대응, 조사 또는 코드 리뷰를 진행합니다.",
+        "configuration_1": "`kirocrew app enable channels`로 숨겨진 앱을 활성화하고, 프리셋 또는 Custom으로 채널을 만든 다음 에이전트와 수신 모드를 배정하세요. 이후 @멘션으로 작업을 넘기세요.",
         "description": "에이전트 하나가 혼자 일하는 대신 여러 에이전트가 함께 문제를 다루는 공유 공간입니다. 각 에이전트에 역할을 지정하면 채널에 진행 상황을 올리고 서로의 @mentions에 공개적으로 답합니다 — 에이전트 간 비공개 메시지가 없어 전체 대화를 그대로 읽을 수 있고, 상태를 바꾸는 작업의 승인자는 계속 사용자입니다. 에이전트는 해제되거나 시간이 초과될 때까지 채널에 남아 있습니다.",
         "display_name": "채널",
         "highlight_1": "역할이 지정된 여러 에이전트가 하나의 읽기 쉬운 공유 기록에서 협업합니다",
@@ -819,6 +903,8 @@
         }
       },
       "manifest": {
+        "use_case_1": "하나 이상의 GitHub 풀 리퀘스트를 위험도에 따라 검토하고, 집중할 결과를 확인하며, 게시할 가치가 있는 댓글만 준비합니다.",
+        "configuration_1": "게이트웨이 호스트에 gh CLI를 설치하고 인증한 뒤 저장소를 추가하세요. 이후 설정에서 리뷰 모델, 추론 수준, 동시 실행 수를 선택하세요.",
         "description": "GitHub pull request를 심층 리뷰하고 실제로 주의를 기울일 가치가 있는 변경 사항을 알려 줍니다. 변경된 파일은 각각 격리된 에이전트 세션에서 리뷰되고, 영향 범위에 따라 가중치가 매겨져 우선순위가 정해진 포커스 리포트로 정리됩니다. 발견 사항은 사용자가 제출하기 전까지 공개되지 않는 초안 GitHub 리뷰로 준비되며, 리뷰어는 반영된 수정과 과거 리뷰 댓글에서 저장소의 실제 기준을 계속 학습합니다.",
         "display_name": "Code Review Sage",
         "highlight_1": "포커스 리포트가 영향 범위에 따라 변경 사항의 순위를 매겨 위험한 파일부터 읽게 합니다",
@@ -890,6 +976,8 @@
       "group_settings": "설정",
       "leave_scope": "모든 명령으로 돌아가기",
       "manifest": {
+        "use_case_1": "키보드에서 손을 떼지 않고 앱, 설정, 주의가 필요한 세션 또는 새 에이전트 요청으로 이동합니다.",
+        "configuration_1": "기본으로 활성화되어 있습니다. 어디서든 Cmd+K 또는 Ctrl+K를 누르고 명령을 입력하세요. ‘세션’ 범위에서 최근 대화나 일치하는 대화를 찾을 수 있습니다.",
         "display_name": "커맨드 바",
         "description": "빠른 검색(Cmd+K / Ctrl+K) 화면을 런처로 대체합니다. 검색어가 아니라 명령을 입력하세요. 첫 페이지에는 앱 명령과 이동 대상, 시스템 설정만 있고 요청을 보내지 않으므로 입력에 비용이 없습니다. 세션은 들어가서 쓰는 행이 됩니다. 활성화된 동안에는 지식, 산출물, 스킬, 프롬프트 검색을 사용할 수 없습니다. 되돌리려면 비활성화하세요."
       },
@@ -1076,6 +1164,8 @@
         "title": "Crew Companion"
       },
       "manifest": {
+        "use_case_1": "데스크톱 컴패니언에서 휴식 알림, 자연어 리마인더, 호흡 재정비, 세션 알림을 이용합니다.",
+        "configuration_1": "Kiro Crew Desktop에서 앱을 활성화한 뒤 해당 페이지에서 휴식 간격과 완료 알림을 설정하세요. 아바타는 컴패니언 Gallery에서 선택할 수 있습니다.",
         "description": "하루의 속도를 조절하도록 돕는 Kiro Crew의 데스크톱 컴패니언입니다. 휴식을 권하고, 일상적인 말로 설정한 리마인더를 기억하며, 재충전이 필요할 때 짧은 호흡 운동을 진행합니다. 세션이 끝나거나 실패하거나 승인이 필요할 때도 알려 줍니다.",
         "display_name": "Crew Companion",
         "highlight_1": "물 마시기·스트레칭·먼 곳 보기 등 부드러운 휴식 알림을 원하는 간격으로",
@@ -1361,6 +1451,8 @@
         "where": "위치"
       },
       "manifest": {
+        "use_case_1": "화면 하나 또는 전체 제품 흐름을 보이는 영역과 연결된 심각도순 휴리스틱 기반 결과로 검토합니다.",
+        "configuration_1": "스크린샷을 놓으면 별도 설정 없이 검토할 수 있습니다. Figma 파일, 저장소, 로컬 폴더 또는 이미 실행 중인 URL도 제공할 수 있습니다. 비공개 GitHub 소스에는 gh auth login이 필요할 수 있습니다.",
         "description": "동료에게 물어보기 전에 먼저 돌려 볼 수 있는 디자인 비평입니다. 스크린샷 하나, 여러 화면으로 이어지는 플로 전체, Figma 파일, git 저장소, 또는 이미 서비스 중인 URL을 주면 후보 화면을 찾아내고 무엇을 볼지 고르게 한 다음, 경험 많은 디자이너처럼 보고합니다. 전체 인상, 잘 되고 있는 점, 그리고 다듬을 만한 지점을 각각 이름이 명시된 휴리스틱과 연결해 제시합니다. 여러 화면으로 된 플로에서는 화면 하나만으로는 드러나지 않는 문제 — 일관성 없는 컨트롤, 진행 표시 누락, 되돌아갈 방법 없음, 막다른 길 — 도 함께 찾아냅니다. 코드와 Figma는 판단하기 전에 렌더링하므로 실제로 보지 않은 화면을 비평하지 않으며, 접근하지 못한 화면은 추측하지 않고 그대로 밝힙니다.",
         "display_name": "Design Critique",
         "highlight_1": "스크린샷, Figma 링크, git 저장소, 로컬 폴더, 실행 중인 URL을 받아 — 시작하기 전에 무엇을 찾았는지 알려 줍니다",
@@ -1532,6 +1624,8 @@
         "using_running_dev_server": "{{url}}에서 이미 실행 중인 개발 서버를 사용합니다."
       },
       "manifest": {
+        "use_case_1": "실행 중인 UI 요소에 맥락을 유지한 주석을 달고, 소스에 매핑된 시각적 변경 묶음을 코딩 에이전트에게 보냅니다.",
+        "configuration_1": "로컬 웹 프로젝트를 불러와 감지된 개발 서버를 시작하거나 기존 URL을 입력하세요. Edit 모드로 전환하고 요소를 마우스 오른쪽 버튼으로 클릭한 뒤 변경 묶음을 보내세요.",
         "display_name": "Design Tweak",
         "description": "실행 중인 앱 미리보기에서 요소를 시각적으로 선택하여, 에이전트를 위한 범위가 지정된 소스맵 편집 요청으로 변환합니다 — 코드에 대한 Figma 댓글과 같은 방식입니다.",
         "page_label": "Design Tweak"
@@ -1539,6 +1633,8 @@
     },
     "devFleet": {
       "manifest": {
+        "use_case_1": "실행 중인 게이트웨이는 그대로 둔 채 Kiro Crew 기능 워크트리와 격리된 미리 보기 포드를 운영합니다.",
+        "configuration_1": "앱에 Kiro Crew 체크아웃 경로를 지정하세요. PR 작업에는 인증된 gh가 필요합니다. 포드에는 Linux의 systemd --user 또는 macOS의 launchd가 필요하며 먼저 프로비저닝해야 합니다.",
         "description": "Kiro Crew 자체를 개발하기 위한 제어판입니다. 모든 기능 워크트리를 풀 리퀘스트 상태, 커밋 수, 디스크 사용량과 함께 나열하고, 그중 어느 것이든 포드로 띄울 수 있습니다. 포드는 자체 포트와 자체 데이터 디렉터리를 갖는 완전한 미리 보기 인스턴스이므로, 실행 중인 게이트웨이를 건드리지 않고 완성되지 않은 변경을 직접 눌러 볼 수 있습니다. main 풀 및 재빌드, 브랜치 리베이스, 포드 로그 스트리밍, 이미 병합된 워크트리 정리 같은 주변 작업도 함께 처리합니다.",
         "display_name": "Dev Fleet",
         "highlight_1": "어떤 워크트리든 자체 포트와 데이터 디렉터리를 쓰는 격리된 포드로 띄워, 실행 중인 게이트웨이는 그대로 둡니다",
@@ -1578,6 +1674,8 @@
         "truncated": "· 잘림"
       },
       "manifest": {
+        "use_case_1": "페이지에 쓰기 권한을 주지 않고 게이트웨이 호스트의 파일을 읽고, 검색하고, 미리 보고, 다운로드하거나 대화로 논의합니다.",
+        "configuration_1": "앱을 활성화하고 경로 표시줄에서 허용된 디렉터리를 여세요. 계정은 필요하지 않으며 git 또는 ripgrep은 선택적인 상태 표시와 검색 기능만 추가합니다.",
         "description": "대시보드를 벗어나지 않고 Kiro Crew가 실행 중인 머신의 파일을 살펴보고 읽습니다. 여러 파일을 탭으로 열어 두고, 각 파일의 git 상태가 옆에 표시되는 디렉터리 트리를 따라 이동하고, 폴더 전체에서 문자열을 검색하고, Markdown을 원본이 아닌 렌더링된 형태로 읽을 수 있습니다. 설계상 읽기 전용입니다. 파일을 열고 검색하지만 편집·이동·삭제는 절대 하지 않으며, 접근 범위는 홈 디렉터리와 /tmp, /opt로 한정됩니다.",
         "display_name": "파일",
         "highlight_1": "읽기 전용: 파일을 열고 검색하며, 쓰기·이동·삭제는 하지 않습니다",
@@ -1594,6 +1692,7 @@
         "path_to_folder": "/path/to/folder"
       },
       "searchPanel": {
+        "capped": "(상한 도달)",
         "close_esc": "닫기 (Esc)",
         "close_search": "검색 닫기",
         "comma_separated_glob_patterns": "쉼표로 구분한 글로브 패턴",
@@ -1955,6 +2054,7 @@
         "prList": {
           "clear_search": "검색 지우기",
           "closed_merged_prs_are_capped_at_the_100_most_rec": "닫힘·병합된 PR은 가장 최근 업데이트된 100건으로 제한됩니다 — 저장소 전체를 완전히 검색하려면 ‘me’ 필터를 켜세요",
+          "file_changed_other": "파일 {{count}}개 변경됨",
           "loading_the_rest": "나머지를 불러오고 있습니다…",
           "pr_other": "PR {{count}}건",
           "re_fetch_from": "{{label}}을(를) {{provider}}에서 다시 가져오기",
@@ -2079,6 +2179,8 @@
         }
       },
       "manifest": {
+        "use_case_1": "연결된 제공자의 이슈와 풀 리퀘스트를 트리아지하면서 요약, 제안 레이블, 조사 기록을 유지합니다.",
+        "configuration_1": "저장소를 연결하고 게이트웨이 호스트에서 제공자 CLI를 인증하세요. GitHub에는 gh, GitLab에는 glab, Azure DevOps에는 macOS, Linux 또는 WSL에서 확장을 설치한 az가 필요합니다.",
         "description": "기억하는 이슈 트리아지 어시스턴트입니다. AI가 제안하는 레이블과 항목별 조사 노트로 GitHub 이슈, GitLab 이슈, Azure DevOps 작업 항목을 살펴보고 필터링하고 트리아지하세요 — 조사 결과는 로컬 원장에 보관되므로 같은 내용을 다시 조사하지 않습니다.",
         "display_name": "Issue Radar",
         "highlight_1": "이슈와 풀 리퀘스트에 대한 AI 요약과 추천 레이블, 각각의 근거 제공",
@@ -2403,6 +2505,8 @@
             "labels": "레이블",
             "looking_for_labels_this_repo_is_missing": "이 저장소에 없는 레이블을 찾는 중…",
             "none_the_repo_s_taxonomy_already_covers_what_its": "없음 — 저장소의 분류 체계가 열린 이슈에 필요한 것을 이미 모두 담고 있습니다.",
+            "open_issue_other": "열린 이슈 {{count}}개",
+            "open_with_description_other": "{{description}} — 열린 이슈 {{count}}개",
             "propose_labels_this_repo_is_missing_from_its_ope": "열린 이슈를 바탕으로 이 저장소에 없는 레이블 제안",
             "read_only_repo_needs_triage_push_access": "읽기 전용 저장소 — 트리아지·푸시 권한이 필요합니다",
             "suggest_again": "다시 제안",
@@ -2425,6 +2529,7 @@
         },
         "taggingView": {
           "analyzing": "분석 중…",
+          "apply_suggestion_other": "제안 {{count}}개 적용",
           "applying": "적용 중…",
           "applying_is_disabled_until_they_load_because_a_s": "불러오기 전까지는 적용이 비활성화됩니다. 저장소에 더 이상 없는\n 레이블을 지정한 제안은 배치 전체가 거부되기 때문입니다.",
           "applying_needs_write_access": "적용하려면 쓰기 권한이 필요합니다",
@@ -2436,6 +2541,8 @@
           "created_but_settings_not_updated": "‘{{name}}’을(를) GitHub에 생성했지만 이 저장소의 로컬 트리아지 설정을 업데이트하지 못했습니다: {{error}}",
           "defines_no_labels_yet_so_there_is_nothing_to_ass": "아직 레이블을 정의하지 않아 지정할 것이 없습니다. 위에서 몇 가지를 제안받고\n 원하는 것을 만든 다음, 여기로 돌아와 레이블을 제안하세요.",
           "every_open_issue_in": "다음의 모든 열린 이슈:",
+          "labelled_issue_other": "이슈 {{count}}개에 라벨을 지정했습니다.",
+          "labelled_issue_with_failures_other": "이슈 {{count}}개에 라벨을 지정했습니다. {{failed}}개는 업데이트하지 못했습니다(아래 행 참조).",
           "loading_the_untagged_queue": "태그 없는 대기열을 불러오는 중…",
           "newest_first": "최신순",
           "read_only_repo_needs_triage_or_push_access": "읽기 전용 저장소 — 트리아지 또는 푸시 권한이 필요합니다",
@@ -2582,6 +2689,8 @@
         "label": "{{productName}} 지식과 동기화"
       },
       "manifest": {
+        "use_case_1": "위키링크, 백링크, 검색, Git 기록, 선택적 Knowledge 인덱싱을 지원하는 이식 가능한 Markdown 보관소를 편집합니다.",
+        "configuration_1": "Git 저장소를 클론하거나 기존 로컬 폴더를 연결한 다음, 필요하면 Knowledge와 정기 동기화를 활성화하세요. 비공개 GitHub 저장소를 클론하려면 PAT 또는 인증된 gh가 필요합니다.",
         "description": "Git 저장소에 들어 있는 Markdown 노트북을 관리하여 노트가 버전 관리되고, 이동이 자유롭고, 다른 어떤 편집기에서도 읽힐 수 있게 합니다. GitHub 저장소를 지정하면 작업 사본을 클론하고, 이미 가지고 있는 폴더를 연결하면 — 기존 Obsidian 보관소도 포함해 — 복사본을 만들지 않고 그 체크아웃을 그 자리에서 사용합니다. 노트는 바로 클릭해 편집할 수 있는 서식 있는 텍스트로 렌더링되고, [[wikilinks]]로 서로 연결되며, 모든 노트는 자신을 가리키는 링크를 보여 줍니다. 동기화는 커밋·풀·푸시를 한 번에 처리하고, 병합 충돌이 생기면 아무것도 덮어쓰지 않고 충돌한 노트를 나열하며 병합을 중단해 알려 줍니다.",
         "display_name": "노트",
         "highlight_1": "노트는 Git 저장소 안의 순수 Markdown입니다 — 종속되지 않고 Obsidian이나 어떤 편집기로도 읽을 수 있습니다",
@@ -2746,6 +2855,8 @@
         "title": "회의"
       },
       "manifest": {
+        "use_case_1": "실시간 회의를 캡처하는 동안 여러 에이전트가 대화 기록, 구조화된 노트, 다이어그램, 액션 아이템 검토를 병렬로 만듭니다.",
+        "configuration_1": "실시간 캡처에는 브라우저 마이크 액세스를 허용하세요. 필요하면 설정에서 iCalendar 경로 또는 URL, 로컬 작업 원장, 에이전트 역할, 음성 인식 교정 용어를 구성하세요.",
         "description": "AI 회의 도우미입니다. 진행 중인 회의를 전사하고, 진행에 맞춰 구조화된 노트와 다이어그램을 유지하며, 액션 아이템을 추출해 등록 전에 검토할 수 있게 합니다.",
         "display_name": "회의",
         "highlight_1": "Kiro Crew 자체 음성 인식으로 실시간 전사 — 추가 데몬도, 이미 쓰고 있는 것 외의 클라우드 계정도 필요 없습니다",
@@ -3091,6 +3202,8 @@
         "this_computer": "이 컴퓨터"
       },
       "manifest": {
+        "use_case_1": "조용한 데스크톱 펫과 대화하고, 리마인더와 공개 페이지 변경을 추적하며, 연결된 캘린더 일정에 맞춰 동작을 조정합니다.",
+        "configuration_1": "Kiro Crew Desktop에서 Mochi를 활성화하고 외형과 동작을 선택하세요. 그런 다음 채팅이나 대시보드에서 감시 대상을 추가하세요. 일정을 반영한 계획에는 연결된 캘린더 MCP 도구가 필요합니다.",
         "description": "화면에서 함께 지내는 데스크톱 친구입니다. Mochi는 자체 패널로 대화하고, 페이지와 피드를 대신 지켜보고, 일정에 맞춰 하루를 계획하고, 함께한 시간을 기억하며, 실제로 무언가 바뀌었을 때만 알려 줍니다.",
         "display_name": "Mochi",
         "highlight_1": "데스크톱에 떠 있는 펫 창 — 투명하고 클릭이 통과하며 언제나 곁에 있습니다",
@@ -3544,6 +3657,8 @@
         "live_investigation_header": "{{incident}}{{title}}의 실시간 조사입니다. 에이전트에게 답하거나 방향을 잡으려면 여기에 회신하세요."
       },
       "manifest": {
+        "use_case_1": "운영 신호를 감시하고, 인시던트를 조사하고, 검증된 수정 방법을 재사용하며, 완전한 로컬 감사 기록을 인계합니다.",
+        "configuration_1": "설정에서 환경 자격 증명 또는 제공자 토큰으로 제공자를 추가하세요. 읽기 전용으로 사용하려면 Observe를 유지하고, 허용할 Propose 또는 Act 작업은 명시적으로 활성화하세요. Slack 출력은 기존 Kiro Crew 연결을 재사용합니다.",
         "description": "자율 운영 초동 대응자입니다. 알람, 페이지, 모니터를 감시하고 발생한 것을 인수하며, 실제 컨텍스트로 조사하고 수정을 제안합니다. 학습한 모든 내용을 로컬 원장에 보관하므로 두 번째 발생은 첫 번째보다 빠릅니다.",
         "display_name": "Ops Mission Control",
         "highlight_1": "발생한 알람을 하트비트 한 번 안에 인수하고 누군가 확인해야 하기 전에 조사합니다",
@@ -3892,6 +4007,8 @@
         "no_source_files": "소스 파일이 없습니다."
       },
       "manifest": {
+        "use_case_1": "컴파일된 PDF 옆에서 LaTeX 논문을 작성하고, 빌드 오류에서 소스로 이동하며, 논문 전용 에이전트와 협업합니다.",
+        "configuration_1": "앱에서 관리형 Tectonic을 설치하거나 tectonic 또는 pdflatex를 PATH에 추가하세요. 그런 다음 논문을 만들거나 비대화형 Git 자격 증명을 미리 구성해 저장소를 클론하세요.",
         "description": "실시간 PDF 미리보기와 AI 공동 저자를 갖춘 LaTeX 논문 에디터입니다. 분할 창 에디터에서 작성하고 Cmd+S(Windows 및 Linux에서는 Ctrl+S)를 눌러 pdflatex 또는 tectonic으로 컴파일하며, 소스 옆에서 렌더링된 PDF를 읽습니다. 컴파일 오류는 문제가 된 행으로 이동하는 클릭 가능한 목록으로 파싱됩니다. 임의의 git 리모트에서 기존 논문을 클론한 뒤 툴바에서 커밋하고 푸시하세요. 공동 저자 패널은 논문에 범위가 지정된 실제 Kiro Crew 채팅 세션이므로, PDF가 갱신되는 것을 보는 동안 에이전트가 LaTeX를 읽고 편집할 수 있습니다.",
         "display_name": "Papyrus",
         "highlight_1": "실시간 PDF 미리보기를 옆에 둔 분할 창 LaTeX 에디터",
@@ -3975,6 +4092,8 @@
     },
     "personalShopper": {
       "manifest": {
+        "use_case_1": "지정한 공개 스토어의 제품을 조사하면서 결정, 장바구니, 계정, 결제를 직접 관리합니다.",
+        "configuration_1": "스토어 자격 증명은 필요하지 않습니다. 필요하면 Preferences와 Sites를 참고용으로 저장한 다음, 관련 제약 조건과 스토어 이름을 어드바이저 대화에 붙여 넣으세요.",
         "description": "실제 스토어를 조사하고, 구매로 끝나지 않을 수도 있는 문제의 해결을 돕는 개인 어드바이저입니다. 취향 탭은 사용자용 참조 목록이며, 중요한 항목은 채팅에 붙여 주세요. 절대 직접 구매하지 않습니다 — 구매는 사용자가 합니다.",
         "display_name": "Personal Shopper",
         "highlight_1": "무언가를 추천하기 전에 문제를 먼저 진단합니다 — 답이 구매가 아닐 때도 있습니다",
@@ -4101,6 +4220,8 @@
         "unpin_style": "이 스타일 고정 해제"
       },
       "manifest": {
+        "use_case_1": "아이디어, URL 또는 원문을 실제 프레젠테이션으로 바꾸고, 슬라이드를 실시간으로 미리 보며 시각적 스타일을 재사용합니다.",
+        "configuration_1": "처음 사용할 때 고정된 엔진을 설치하고, 더 폭넓은 미리 보기가 필요하면 LibreOffice를 설치하세요. 출력 디렉터리를 선택하고 재사용할 HTML 스타일 또는 PPTX 템플릿을 가져오세요.",
         "description": "원하는 덱을 채팅으로 설명하면 실제 .pptx를 받습니다. 에이전트가 인터뷰하고 브리프, 개요, 아트 디렉션을 작성한 뒤 모든 슬라이드를 구성하고 파일을 생성하며, 대화 옆의 실시간 미리보기에서 각 산출물이 나타나는 것을 볼 수 있습니다. 슬라이드는 만들어지는 동안 애니메이션 SVG로 렌더링되므로 다운로드를 기다리는 대신 덱이 모습을 갖추는 과정을 볼 수 있습니다. 재사용 가능한 스타일과 .pptx 템플릿으로 같은 콘텐츠를 세 가지 다른 프레젠테이션처럼 보이게 할 수 있습니다.",
         "display_name": "PPTX Maker",
         "highlight_1": "채팅으로 완성된 .pptx까지 — 스펙 모드는 꼼꼼히 계획하고, Vibe 모드는 URL이나 붙여넣은 텍스트를 바로 슬라이드로 만듭니다",
@@ -4161,6 +4282,8 @@
     },
     "projects": {
       "manifest": {
+        "use_case_1": "자연어, 기존 사양 또는 결정론적 YAML에서 의존성을 인식하는 다중 에이전트 작업을 계획하고 실행합니다.",
+        "configuration_1": "Task Runner를 열고 Compose, From Spec 또는 From YAML을 선택하세요. 에이전트와 선택적으로 절대 경로의 작업 공간을 지정한 다음, Plan으로 검토하거나 Run으로 바로 시작하세요.",
         "description": "여러 단계로 이루어진 작업을 넘기면 무인으로 끝까지 실행됩니다. 작업을 일상 언어로 설명하거나, 작성된 스펙을 붙여넣거나, YAML 파일을 업로드한 뒤, 계획을 먼저 생성해 단계를 검토하거나 바로 시작할 수 있습니다. 각 실행에는 단계별 진행 상황을 보여주는 전용 페이지가 있으며, 언제든지 일시 중지, 재개, 재시도, 중지할 수 있습니다.",
         "display_name": "Task Runner",
         "highlight_1": "세 가지 방법: 작업을 일상 언어로 설명하거나, 스펙을 붙여넣거나, YAML을 업로드합니다",
@@ -4355,6 +4478,8 @@
         }
       },
       "manifest": {
+        "use_case_1": "기능, 버그 또는 빠른 작업을 저장소 맥락을 반영한 검토 가능한 요구 사항, 설계, 구현 단계로 바꿉니다.",
+        "configuration_1": "프로젝트 폴더와 Feature, Bug 또는 Quick 모드를 선택하고 필요하면 새 워크트리를 만드세요. 빌드를 시작하기 전에 생성된 각 단계를 검토하고 승인하세요.",
         "description": "Kiro Crew 안에서의 스펙 주도 개발: 내장 에이전트와 함께 기능 아이디어를 요구사항 → 설계 → 작업으로 바꾸고, 앱 안에서 Markdown을 검토한 뒤 승인된 계획을 자율 실행 세션으로 넘깁니다.",
         "display_name": "Spec Builder",
         "page_label": "Spec Builder"
@@ -4367,6 +4492,8 @@
     },
     "workflows": {
       "manifest": {
+        "use_case_1": "제한된 워크플로 스크립트를 검증하고 살펴보거나, 핵심 다중 에이전트 워크플로 실행을 단계별로 모니터링합니다.",
+        "configuration_1": "`kirocrew app enable workflows`로 숨겨진 앱을 활성화하세요. Author에서 DSL Python을 검증하거나 실제 에이전트 오케스트레이션이 필요할 때 채팅 또는 MCP 워크플로 도구를 사용하고 Runs에서 모니터링하세요.",
         "description": "동적 워크플로를 작성, 실행, 관찰합니다: 보통 에이전트가 일상 영어 목표로부터 작성해 주는 Python 스크립트로, 여러 Kiro Crew 에이전트를 정해진 단계에 따라 구동합니다. 스크립트는 실행 전에 샌드박스화된 워크플로 명령 집합에 대해 검사되므로 실수가 실행 없이 드러나며, 이후 페이지가 실행이 진행되는 동안 각 단계와 에이전트 이벤트를 스트리밍합니다. 시작점으로 쓸 실행 가능한 예제가 앱에 함께 제공됩니다.",
         "display_name": "Workflows",
         "highlight_1": "실행 전에 워크플로를 검증합니다 — 아무것도 실행되지 않은 채 오류가 드러납니다",
@@ -4444,7 +4571,7 @@
     "colChecks": "검사",
     "colPr": "풀 리퀘스트",
     "colVerdict": "상태",
-    "commitConfirm": "이 변경을 {{branch}}에 커밋하고 푸시하시겠습니까? 공개된 커밋은 되돌릴 수 없습니다.",
+    "commitConfirm": "이 변경을 ‘{{branch}}’에 커밋하고 푸시하시겠습니까? 공개된 커밋은 되돌릴 수 없습니다.",
     "commitFailed": "커밋이 거부되었습니다.",
     "commitFinding": "브랜치에 커밋",
     "currentRepo": "작업 대상",
@@ -4636,6 +4763,10 @@
       "trusted_auto_approving_future_calls": "신뢰함 — 이후 호출을 자동 승인"
     },
     "approvalModePicker": {
+      "nudge_body": "여기에서 {{productName}}의 승인 모드를 조정할 수 있습니다. 여기에서 '신뢰'를 선택하면 이 대화에서 먼저 묻지 않고 작업합니다. 언제든지 되돌릴 수 있습니다.",
+      "nudge_dismiss": "확인",
+      "nudge_title": "승인 요청을 줄이고 싶으신가요?",
+      "nudge_view_options": "옵션 보기",
       "all_tools_will_get_auto_approved_across_all_sess": "모든 세션에서 모든 도구가 자동 승인됩니다.",
       "approval_mode": "승인 모드",
       "approval_mode_aria": "승인 모드: {{mode}}",
@@ -4881,6 +5012,8 @@
       "more_actions": "추가 작업"
     },
     "chatInput": {
+      "approval_hint_adjust": "승인 모드 조정",
+      "approval_hint_question": "매번 확인하기 번거로우신가요?",
       "send_a_message_or_tap_the_mic_for_voice": "메시지를 보내거나 마이크를 눌러 음성 사용",
       "release_to_transcribe": "놓으면 텍스트 변환",
       "hold_to_talk": "눌러서 말하기",
@@ -6556,6 +6689,11 @@
       "use_this_folder": "이 폴더 사용"
     },
     "terminalKeyBar": {
+      "paste": "붙여넣기",
+      "paste_clipboard_empty": "클립보드가 비어 있습니다",
+      "paste_failed": "붙여넣기 실패",
+      "paste_needs_https": "붙여넣기에는 보안(HTTPS) 연결이 필요합니다",
+      "paste_permission_needed": "클립보드 접근을 허용하세요",
       "terminal_keys": "터미널 키"
     },
     "themeEditor": {
@@ -6685,14 +6823,15 @@
       "dismiss_update_dialog": "업데이트 대화상자 닫기",
       "install_failed": "업데이트를 설치하지 못했습니다",
       "install_failed_body": "업데이트를 적용할 수 없습니다. {{productName}}이(가) 로컬 게이트웨이를 복구하는 중입니다. 이 버전을 계속 사용하고 설정 > 정보에서 다시 시도할 수 있습니다.",
+      "install_restart_timing": "설치에는 몇 분이 걸릴 수 있습니다. 앱이 닫히고 업데이트가 완료되면 자동으로 다시 열립니다.",
+      "windows_installer_handoff": "Windows 설치 창에 진행 상황이 표시됩니다.",
       "installing_update": "업데이트 설치 중…",
-      "installing_update_body": "{{productName}}이(가) 로컬 게이트웨이를 중지하고 업데이트를 설치하고 있습니다. 1분 정도 걸릴 수 있습니다. 앱을 종료하지 마세요. 자동으로 다시 시작됩니다.",
+      "installing_update_body": "{{productName}}이(가) 로컬 게이트웨이를 중지하고 업데이트를 설치하고 있습니다. 몇 분이 걸릴 수 있으며 완료되면 자동으로 다시 열립니다.",
       "is_downloaded_and_ready_to_install": "다운로드가 끝나 설치할 준비가 되었습니다.",
       "kirocrew": "{{productName}}",
       "later": "나중에",
-      "restart_update": "재시작 후 업데이트",
+      "restart_update": "업데이트 설치 후 앱 다시 시작",
       "restarting": "재시작 중…",
-      "the_app_will_stop_the_local_gateway_install_the": "앱이 로컬 게이트웨이를 중지하고 업데이트를 설치한 뒤 다시 시작합니다.",
       "update_ready": "업데이트 준비 완료"
     },
     "updatePill": {
@@ -7003,6 +7142,8 @@
       "sign_in_body": "Tailscale이 실행 중이지만 이 컴퓨터가 아직 네트워크에 로그인되어 있지 않습니다. 휴대폰에서 사용하는 계정으로 로그인한 다음 다시 확인하세요.",
       "enable_magicdns_title": "MagicDNS 켜기",
       "enable_magicdns_body": "이 컴퓨터는 로그인되어 있지만 네트워크에 이 컴퓨터를 위한 MagicDNS 이름이 없어, 휴대폰이 가리킬 주소가 없습니다. Tailscale 관리 콘솔에서 MagicDNS를 활성화한 다음 다시 확인하세요.",
+      "enable_https_title": "Tailscale에서 HTTPS 인증서 활성화",
+      "enable_https_body": "Serve에서 인증서를 발급하려면 tailnet 관리자의 일회성 동의가 필요합니다. Tailscale 관리 콘솔에서 HTTPS를 활성화한 다음 다시 확인하세요.",
       "trust_off_title": "이 컴퓨터의 네트워크 이름으로 접속 허용",
       "trust_off_body": "대시보드는 인식하지 못하는 주소의 요청을 거부합니다. 휴대폰이 접속할 수 있도록 이 컴퓨터의 사설 네트워크 이름을 허용하세요. 이 작업은 인터넷으로 어떤 포트도 열지 않으며 로그인 방식도 바꾸지 않습니다.",
       "restart_gateway_title": "완료하려면 Kiro Crew 재시작",
@@ -7016,8 +7157,6 @@
       "copy": "복사",
       "copy_link": "링크 복사",
       "download": "Tailscale 다운로드",
-      "enable_trust": "허용",
-      "publish_action": "휴대폰 접속 켜기",
       "show_qr": "QR 코드 표시",
       "hide_qr": "숨기기",
       "stop": "끄기",
@@ -7026,12 +7165,15 @@
       "qr_warning": "{{minutes}}분 이내에 스캔하세요. 이 코드에는 로그인 링크가 들어 있어 — 이를 획득하는 사람은 누구나 {{hours}}시간 동안 대시보드를 열 수 있으므로, 공유하거나 스크린샷을 게시하지 마세요.",
       "keep_awake_note": "휴대폰 접속이 켜져 있는 동안에는 대시보드에 계속 접속할 수 있도록 이 컴퓨터가 잠자기 모드로 전환되지 않습니다. 화면은 꺼질 수 있습니다.",
       "open_dns_admin": "Tailscale DNS 설정 열기",
+      "open_https_admin": "Tailscale HTTPS 설정 열기",
       "install_teaser": "휴대폰에서 사용하기",
       "install_teaser_hint": "Tailscale 필요",
-      "restart_action": "지금 재시작",
-      "restarting": "재시작 중입니다. 이 페이지는 자동으로 다시 연결됩니다.",
       "no_peers": "이 Tailscale 네트워크에 아직 다른 기기가 참여하지 않아 이 주소를 열 수 있는 기기가 없습니다. 휴대폰에 Tailscale을 설치하고 같은 계정으로 로그인하세요.",
-      "peers_offline": "다른 기기가 이 네트워크에 참여했지만 지금은 모두 오프라인이므로, 하나가 연결될 때까지 주소가 열리지 않습니다."
+      "peers_offline": "다른 기기가 이 네트워크에 참여했지만 지금은 모두 오프라인이므로, 하나가 연결될 때까지 주소가 열리지 않습니다.",
+      "automatic_https": "이 tailnet에 HTTPS가 활성화되면 Tailscale이 비공개 인증서를 자동으로 만들고 갱신합니다.",
+      "setting_up": "휴대폰 액세스를 설정하는 중…",
+      "setup_action": "설정하고 QR 표시",
+      "setup_timeout": "휴대폰 액세스가 준비되지 않았습니다. 설정을 확인한 후 다시 시도하세요."
     }
   },
   "hooks": {
@@ -7313,6 +7455,8 @@
       }
     },
     "appDetailPage": {
+      "use_cases": "사용 사례",
+      "configuration": "설정",
       "after_installation_run": "설치 후 실행:",
       "api_access": "API 액세스",
       "app_not_found": "앱을 찾을 수 없음",
@@ -7448,6 +7592,7 @@
       "v": "v",
       "installed_app_find_in_library_and_enable": "{{name}} 설치됨. 아래에서 켜서 활성화하세요.",
       "synced_from_its_source_directory": "{{name}}을(를) 소스 디렉터리에서 동기화했습니다.",
+      "updated_app_other": "앱 {{count}}개를 업데이트했습니다.",
       "updated_from_the_registry": "{{name}}을(를) 레지스트리에서 업데이트했습니다."
     },
     "artifactDeployPage": {
@@ -8700,6 +8845,7 @@
       "switching": "전환 중…",
       "tags": "태그",
       "temporary_no_memory_reads_or_writes": "임시 — 메모리 읽기·쓰기 없음",
+      "this_session_cannot_be_opened_from_the_chat_side": "‘{{title}}’은(는) 채팅 사이드바에서 열 수 없습니다 — {{surface}} 세션입니다.",
       "thinking": "생각 중…",
       "today": "오늘",
       "unfiled": "미분류",
@@ -9826,7 +9972,13 @@
         "undo": "실행 취소",
         "uninstall": "제거",
         "unknown": "알 수 없음",
-        "declared": "선언됨"
+        "declared": "선언됨",
+        "sign_in_required": "로그인 필요",
+        "sign_in_required_help": "이 서버는 OAuth를 사용하며 아직 아무도 로그인하지 않았습니다. <chatLink>채팅으로 이동한 다음</chatLink> 새 세션을 시작하고 아무 메시지나 보내면 채팅에서 로그인을 승인하라는 요청이 표시됩니다. 그런 다음 탐색을 실행해 목록을 새로 고칩니다.",
+        "oauth_not_a_static_token": "이 서버는 OAuth로 로그인하므로 정적 Authorization 헤더로는 연결할 수 없습니다. 이 서버를 제거하고 헤더 없이 다시 추가하여 활성화한 다음, 새 채팅 세션을 시작해 로그인하세요.",
+        "sign_in_required_next": "승인한 다음 이 표 위의 MCP 서버 탐색 버튼을 사용하세요. 그러면 행이 로그인됨으로 바뀝니다.",
+        "signed_in": "로그인됨",
+        "signed_in_help": "{{provider}}에 대한 로그인은 Kiro CLI가 보유하고 있습니다. 탐색은 해당 토큰 없이 실행되므로 {{productName}}은(는) 로그인이 여전히 유효한지 확인할 수 없습니다."
       },
       "memoryGraphTab": {
         "all_count": "전체 ({{count}})",
@@ -10668,6 +10820,21 @@
       "uptime": "가동 시간"
     },
     "settings": {
+      "mobileLoginCard": {
+        "sign_in_on_mobile": "모바일에서 로그인",
+        "create_a_one_time_link_for_mobile_or_another_browser": "모바일이나 다른 브라우저에서 사용할 수 있는 단기 로그인 링크를 만드세요. 링크는 5분 후에 만료됩니다.",
+        "creating_link": "링크 만드는 중…",
+        "create_mobile_sign_in_link": "모바일 로그인 링크 만들기",
+        "create_new_mobile_sign_in_link": "새 링크 만들기",
+        "mobile_sign_in_link": "모바일 로그인 링크",
+        "copy_sign_in_link": "로그인 링크 복사",
+        "link_copied": "링크가 복사되었습니다",
+        "link_expires_in_minutes": "이 링크는 {{minutes}}분 후에 만료됩니다.",
+        "send_the_copied_link_to_your_mobile_device_then_open_it": "복사한 링크를 모바일 기기로 보낸 다음 그곳에서 여세요.",
+        "dashboard_url_required_to_create_a_mobile_sign_in_link": "대시보드 URL이 구성되지 않았습니다. 모바일 로그인 링크를 만들려면 dashboard.url을 설정하세요.",
+        "could_not_create_a_sign_in_link_try_again": "로그인 링크를 만들 수 없습니다. 다시 시도하세요.",
+        "copy_failed_select_the_link_and_copy_it_manually": "복사하지 못했습니다. 링크를 선택하고 직접 복사하세요."
+      },
       "aboutPanel": {
         "diverged": "분기됨",
         "checkout_diverged_from_upstream": "이 체크아웃은 업스트림에서 분기되었습니다({{distance}}). rebase 또는 merge로 업데이트하세요 — 아무것도 자동으로 적용되지 않으므로 로컬 커밋은 안전합니다.",
@@ -10714,7 +10881,8 @@
         "downloading": "다운로드 중…",
         "insider": "Insider",
         "install_failed": "업데이트를 설치할 수 없습니다",
-        "installing_quiet_note": "설치 중 — Kiro Crew가 1~2분 동안 응답하지 않다가 자동으로 재시작됩니다.",
+        "install_update_restart_app": "업데이트 설치 후 앱 다시 시작",
+        "installing_quiet_note": "설치 중 — 몇 분이 걸릴 수 있습니다. 업데이트가 완료되면 {{productName}}이(가) 자동으로 다시 열립니다.",
         "is_available": "사용 가능합니다.",
         "loading_changelog": "변경 기록 불러오는 중…",
         "manual_install_fallback": "업데이트가 잘 되지 않으면 {{link}} 후 이 사본 위에 다시 설치할 수 있습니다. 설정, 채팅, 파일은 그대로 유지됩니다.",
@@ -10730,7 +10898,6 @@
         "restart_failed": "다시 시작 실패",
         "restart_gateway": "게이트웨이 다시 시작",
         "restart_row_note": "업데이트 없이 게이트웨이 프로서스를 다시 시작합니다. 활성 세션은 잠시 연결이 끊긝니다.",
-        "restart_update": "재시작 및 업데이트",
         "restarting": "재시작 중…",
         "retry": "다시 시도",
         "stable": "Stable",
@@ -10770,7 +10937,9 @@
         "view_this_commit_on_github": "GitHub에서 이 커밋 보기",
         "what_s_new": "새로운 기능",
         "you_are_on_the_latest_version": "최신 버전을 사용하고 있습니다.",
-        "you_re_on_the_latest_version": "최신 버전을 사용하고 있습니다."
+        "you_re_on_the_latest_version": "최신 버전을 사용하고 있습니다.",
+        "checks_for_updates_with_timing": "{{name}}은(는) 자동으로 업데이트를 확인합니다. {{timing}} 지금 바로 확인할 수도 있습니다.",
+        "last_checked_ago_next_check_in": "마지막 확인 {{ago}}, 다음 자동 확인 {{next}}."
       },
       "botChannelPanel": {
         "allowed_user_ids": "허용된 사용자 ID",
@@ -10876,6 +11045,7 @@
       },
       "chatPanel": {
         "about_you": "사용자 정보",
+        "answer_only_details_on_request": "답변만 — 자세한 내용은 요청 시 또는 중요할 때",
         "auto_add_documents": "문서 자동 추가",
         "auto_add_saved_artifacts": "저장된 아티팩트 자동 추가",
         "auto_compact_threshold": "자동 압축 임계값",
@@ -10953,7 +11123,7 @@
         "how_long_models_think_before_answering_by_defaul": "모델이 기본적으로 답변 전에 생각하는 시간입니다. 높을수록 느리고 비용이 커집니다. 추론이 가능한 모델(Opus, Sonnet, Fable, GPT-5.x)에서만 사용할 수 있습니다.",
         "how_long_to_wait_for_the_agent_to_honor_a_stop_p": "세션을 강제로 종료하기 전에 에이전트가 중지 요청을 따르도록 기다리는 시간입니다. 예산이 길수록 세션 상태가 더 자주 보존되지만, 에이전트가 긴 도구 호출에 묶여 있을 때 중지가 느리게 느껴집니다.",
         "how_much_an_automatically_registered_source_may_i": "자동 등록된 소스가 한 번에 가져올 수 있는 양입니다. 문서의 각 조각마다 추출 호출이 한 번씩 필요하므로 이 값이 비용을 제한합니다. 최신 문서가 먼저 들어오고 나머지는 이후 회차에 이어집니다. 0이면 제한이 없습니다. 기본값 {{count}}.",
-        "how_terse_the_agent_s_prose_is_ultra_concise_cap": "에이전트 문장의 간결한 정도입니다. ‘초간결’은 답변 전체를 짧게 유지합니다. 결론을 먼저 제시하고, 줄글보다 글머리 기호를 쓰며, 군더더기를 없앱니다. 코드, 명령, 오류 문자열은 어느 수준에서도 그대로 유지되며, 보안 경고와 여러 단계로 된 안내는 완전한 세부 내용을 유지합니다.",
+        "how_terse_the_agent_s_prose_is_ultra_concise_cap": "에이전트 문장의 간결한 정도입니다. ‘초간결’은 답변 전체를 짧게 유지합니다. 결론을 먼저 제시하고, 줄글보다 글머리 기호를 쓰며, 군더더기를 없앱니다. 코드, 명령, 오류 문자열은 어느 수준에서도 그대로 유지되며, 보안 경고와 여러 단계로 된 안내는 완전한 세부 내용을 유지합니다. ‘답변만’은 한 걸음 더 나아가 설명을 완전히 생략합니다. 최대 한 문장이며, 자세한 내용은 요청할 때 — 또는 보안, 정보 노출, 데이터 손실, 비용처럼 되돌리기 어려운 중대한 결정이라 근거 없이는 올바르게 선택할 수 없을 때 제공합니다.",
         "i_write_code": "코드를 작성합니다",
         "immediate": "즉시",
         "immediate_mode_shows_raw_chunks_as_they_arrive_s": "즉시 모드는 도착하는 원본 청크를 그대로 보여줍니다. 부드러움 모드는 텍스트를 버퍼링해 일정한 속도로 페이드인합니다.",
@@ -11578,9 +11748,9 @@
           "ineffective_description": "이 이름들은 신뢰됨으로 저장되었지만 Kiro Crew가 받아들이지 않아 앱은 여전히 차단되어 있습니다. 목록을 정리하려면 제거하세요.",
           "ineffective_label": "저장됨, 작동하지 않음",
           "revoke": "신뢰 해제",
-          "revoke_confirm_body": "{{name}}은(는) 꺼지고 동작을 멈춥니다. 설치된 상태로 남으며 나중에 다시 신뢰할 수 있습니다.",
+          "revoke_confirm_body": "‘{{name}}’은(는) 꺼지고 동작을 멈춥니다. 설치된 상태로 남으며 나중에 다시 신뢰할 수 있습니다.",
           "revoke_confirm_ok": "신뢰 해제하고 끄기",
-          "revoke_confirm_title": "{{name}}의 신뢰를 해제하시겠습니까?",
+          "revoke_confirm_title": "‘{{name}}’의 신뢰를 해제하시겠습니까?",
           "revoke_disables": "{{name}}은(는) 더 이상 신뢰되지 않으며 꺼졌습니다.",
           "revoke_hint": "신뢰를 해제하면 해당 앱도 꺼집니다.",
           "trusted_badge": "신뢰됨",
@@ -12098,7 +12268,7 @@
         "delete": "Delete…",
         "deleting": "삭제 중…",
         "delete_crew": "Delete {{name}}",
-        "confirm_delete_of": "Confirm deleting {{name}}",
+        "confirm_delete_of": "‘{{name}}’을(를) 삭제하시겠습니까?",
         "delete_warning": "Delete terminates the EC2 instance and ends its charges. This cannot be undone.",
         "before_you_start": "Before you start — your AWS setup",
         "checking": "Checking…",
@@ -12616,6 +12786,9 @@
     }
   },
   "utils": {
+    "agentSwitchFeedback": {
+      "turn_in_flight": "턴이 진행 중입니다 — 완료된 후 다시 시도하세요."
+    },
     "channelOrigin": {
       "direct_message": "다이렉트 메시지"
     },

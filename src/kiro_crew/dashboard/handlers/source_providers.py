@@ -29,7 +29,7 @@ import aiohttp
 from aiohttp import web
 
 from kiro_crew import github_runner, platform_compat
-from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.config.loader import KiroCrewConfig, config_dir, read_env_file_credential
 from kiro_crew.dashboard.handlers._shared import read_capped_response
 
 # Validation policy, well-known install dirs, and the strict-mode toggle are
@@ -50,6 +50,7 @@ from kiro_crew.github_runner import strict_provider_bins as _strict_provider_bin
 from kiro_crew.github_runner import validate_provider_executable as _validate_provider_executable
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.sandbox import create_subprocess_limited, sandboxed_spawn_argv
+from kiro_crew.secrets import SecretVault
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 _MAX_URL_LENGTH = 2048
@@ -630,16 +631,15 @@ async def _read_stream_limited(stream: asyncio.StreamReader, limit: int, label: 
 
 
 async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
-    """Kill and reap a provider process tree after timeout, overflow, or cancellation."""
-    if proc.returncode is None:
-        try:
-            platform_compat.kill_process_tree(proc.pid, platform_compat.SIGKILL)
-        except (OSError, ValueError):
-            # Best-effort PID fallback if group lookup races with launcher exit.
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-    with contextlib.suppress(ProcessLookupError):
-        await proc.wait()
+    """Kill and reap a provider process tree after timeout, overflow, or cancellation.
+
+    The reap is bounded and drains the pipes: this path is reached with the
+    stdout/stderr readers already cancelled by ``wait_for``, so a killed child
+    blocked writing into a full pipe -- or a surviving descendant still holding
+    the pipes open -- would make a bare ``await proc.wait()`` hang the calling
+    task forever.
+    """
+    await platform_compat.kill_and_reap(proc)
 
 
 async def _collect_process_output(
@@ -2269,17 +2269,30 @@ _JIRA_MAX_COMMENTS = 50
 
 
 def _get_jira_auth(host: str) -> tuple[str, str] | None:
-    """Return (email, token) for *host* from config + .env, or None if unconfigured.
+    """Return (email, token) for *host* from config + vault/.env, or None.
 
-    Host and email come from config.json (non-sensitive metadata).
-    The token comes from the protected .env file (JIRA_API_TOKEN env var),
-    following the same credential isolation pattern as Slack/Discord/Telegram
-    tokens — never stored in the agent-readable config.json.
+    Host and email come from config.json (non-sensitive metadata). The token is
+    resolved from the encrypted vault first (successor store, populated by
+    ``kirocrew secrets import``), falling back to the protected .env file /
+    environment for installs that have not migrated — following the same
+    credential isolation pattern as Slack/Discord/Telegram tokens, never stored
+    in the agent-readable config.json.
 
     Raises ValueError on config load failures so callers can distinguish
     "config is broken" from "no credentials configured" (None).
     """
     try:
+        # Snapshot the process-environment value of JIRA_API_TOKEN BEFORE
+        # KiroCrewConfig.load() / load_credentials() runs.  load_credentials()
+        # calls os.environ.setdefault(CRED_JIRA_API_TOKEN, ...) which seeds the
+        # .env global into os.environ when no real env override is present.
+        # Reading os.environ["JIRA_API_TOKEN"] AFTER that call would treat a
+        # merely-seeded .env value as a "live env override", causing the
+        # single-host global branch to use the .env global instead of the vault
+        # for a host that has its OWN per-host token in the vault.
+        # Capturing the value here — before any setdefault — means only a real
+        # operator-set env var (present before this call) counts as an override.
+        _env_global_override = os.environ.get("JIRA_API_TOKEN")
         cfg = KiroCrewConfig.load()
         entries = cfg.dashboard.jira_auth
         # Token is resolved from .env / environment, not config.json
@@ -2298,13 +2311,99 @@ def _get_jira_auth(host: str) -> tuple[str, str] | None:
             # Injective host-to-key: hex-encode the normalized host to avoid
             # collisions (e.g. jira-a.x.com vs jira.a-x.com).
             host_key = entry_host.encode().hex().upper()
-            token = creds.get(f"JIRA_TOKEN_{host_key}", "")
+            per_host_name = f"JIRA_TOKEN_{host_key}"
+            # Resolution order: the encrypted vault first (the successor store,
+            # populated by `kirocrew secrets import`), then the legacy .env /
+            # environment value so existing installs keep working unchanged.
+            #
+            # EXCEPTION for the global `JIRA_API_TOKEN`: a nonempty PROCESS-
+            # ENVIRONMENT value overrides even the vault. `load_credentials`
+            # overlays `os.environ` over the .env for this key, so a live env
+            # var is the effective credential at runtime — and `kirocrew secrets
+            # import` deliberately SKIPS migrating the key while such an override
+            # is set, precisely so it does not get pinned into the vault. But a
+            # vault entry written by an EARLIER migration (before the override
+            # existed) would otherwise be read vault-first and silently shadow
+            # that override. Consulting the env override before the global vault
+            # entry keeps the migrate-skip and the resolve-order consistent.
+            # Per-host `JIRA_TOKEN_<HEX>` keys are NOT env-overlaid, so they are
+            # unaffected and keep their vault-first order.
+            #
+            # We use `_env_global_override` (captured BEFORE load_credentials
+            # ran) rather than a fresh os.environ read so that a value merely
+            # seeded by load_credentials' setdefault — which is NOT a real
+            # operator override — cannot masquerade as one here.
+            #
+            # HOWEVER: `GatewayOrchestrator.__init__` calls `load_credentials()`
+            # at startup, which seeds the `.env` global into `os.environ` via
+            # `setdefault` BEFORE any request handler runs. A subsequent call to
+            # `_get_jira_auth` would then capture that `.env`-seeded value as
+            # `_env_global_override`, indistinguishable from a real operator
+            # override. Fix: after ruling out secret refs, compare the captured
+            # env value against the current `.env` file value — an equal value
+            # came from `.env` (stale, do not override the vault), a different
+            # value means the operator set a distinct override at runtime (treat
+            # as authoritative). `read_env_file_credential` blocks on I/O but
+            # `_get_jira_auth` is called via `asyncio.to_thread` so that is safe.
+            token = _resolve_jira_token_from_vault(per_host_name)
             if not token and len(entries) == 1:
-                token = creds.get("JIRA_API_TOKEN", "")
+                # A `secret://` value is a vault REFERENCE, not a raw token.
+                # After `secrets import --apply` the `.env` line becomes
+                # `JIRA_API_TOKEN=secret://JIRA_API_TOKEN`, and `load_credentials`
+                # propagates that into os.environ (and `creds`) via setdefault.
+                # So an env/creds value that is a `secret://` ref must NOT be
+                # used as the token — fall through to the vault. Only a real,
+                # non-ref env value that DIFFERS from the `.env` file counts as
+                # a genuine live override that beats the global vault entry.
+                _env_file_val = read_env_file_credential("JIRA_API_TOKEN")
+                _is_genuine_override = (
+                    _env_global_override
+                    and not _is_secret_ref(_env_global_override)
+                    and _env_global_override != _env_file_val
+                )
+                if _is_genuine_override:
+                    # _is_genuine_override is truthy only when _env_global_override
+                    # is a non-empty str, so `or ""` is dead in practice — it only
+                    # narrows str | None -> str for the type checker.
+                    token = _env_global_override or ""
+                else:
+                    token = _resolve_jira_token_from_vault("JIRA_API_TOKEN")
+            if not token:
+                _c = creds.get(per_host_name, "")
+                token = _c if not _is_secret_ref(_c) else ""
+            if not token and len(entries) == 1:
+                _c = creds.get("JIRA_API_TOKEN", "")
+                token = _c if not _is_secret_ref(_c) else ""
             if not token:
                 return None
             return (entry.email or "", token)
     return None
+
+
+def _is_secret_ref(value: str) -> bool:
+    """True if *value* is a ``secret://`` vault reference rather than a raw token.
+
+    After ``secrets import --apply`` the ``.env`` line for a migrated key becomes
+    ``KEY=secret://KEY``, and ``load_credentials`` propagates that string into
+    both ``os.environ`` and the returned creds dict. Such a value is a POINTER
+    to the vault, not a usable credential, so the resolver must treat it as
+    "look in the vault" and never hand it to Jira as the token.
+    """
+    return value.startswith("secret://")
+
+
+def _resolve_jira_token_from_vault(name: str) -> str:
+    """Return the vault secret *name*, or ``""`` if absent/unavailable.
+
+    Best-effort: a missing vault, missing entry, or read error all yield the
+    empty string so the caller falls back to the legacy .env / environment
+    value rather than failing.
+    """
+    try:
+        secret = SecretVault(config_dir()).get(name)
+    except Exception:
+        return ""
+    return secret.reveal() if secret is not None else ""
 
 
 def _jira_is_cloud(host: str) -> bool:

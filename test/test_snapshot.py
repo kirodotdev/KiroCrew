@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from conftest import requires_symlinks
+from kiro_crew import snapshot as snapshot_mod
 from kiro_crew.snapshot import restore_main, snapshot_main
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -93,7 +94,7 @@ def _setup_fake_kirocrew(d: Path) -> None:
     (d / "session_map.json").write_text("{}")
     (d / "hooks.json").write_text("{}")
     (d / "sel_hmac.key").write_bytes(b"\x00\x01\x02\x03")
-    (d / "telemetry_salt").write_bytes(b"\x04\x05\x06\x07")
+    (d / "telemetry_salt").write_bytes(b"\x04" * snapshot_mod._TELEMETRY_SALT_BYTES)
     (d / "notifications.jsonl").write_text('{"ts":"2026-01-01","msg":"test"}\n')
     (d / "project_dir").write_text("/home/user/project")
     (d / "workspace_dir").write_text("/home/user/.kirocrew/workspace")
@@ -1083,3 +1084,130 @@ class TestTheArchiveIsLockedDownBeforeItIsPublished:
         assert tarball.is_file()
         if os.name == "posix":
             assert tarball.stat().st_mode & 0o777 == 0o600, oct(tarball.stat().st_mode)
+
+
+class TestMergeRestoreLocksBeforePublish:
+    """#5346: merge restore of a missing security file must lock the temp first.
+
+    Merge only copies when the destination is absent, so a restrict failure
+    must leave that name uncreated rather than unlinking a published secret.
+    """
+
+    _SALT = b"s" * 32
+
+    def test_restrict_runs_on_the_temp_not_the_published_path(self, tmp_path, monkeypatch):
+        snap = tmp_path / "snap"
+        home = tmp_path / "home"
+        snap.mkdir()
+        home.mkdir()
+        (snap / "telemetry_salt").write_bytes(self._SALT)
+
+        locked: list[Path] = []
+        dest = home / "telemetry_salt"
+        real = snapshot_mod.platform_compat.restrict_to_owner
+
+        def _recording(path):
+            locked.append(Path(path))
+            assert not dest.exists(), "payload was published before the temp was locked"
+            return real(path)
+
+        monkeypatch.setattr(snapshot_mod.platform_compat, "restrict_to_owner", _recording)
+        snapshot_mod._do_merge(snap, home, ["security"], allow_unpinned=True)
+
+        assert dest.is_file()
+        assert dest.read_bytes() == self._SALT
+        assert locked, "restrict_to_owner was never called"
+        assert dest not in locked
+        if os.name == "posix":
+            assert dest.stat().st_mode & 0o777 == 0o600
+
+    def test_a_failed_lockdown_leaves_the_destination_uncreated(self, tmp_path, monkeypatch):
+        snap = tmp_path / "snap"
+        home = tmp_path / "home"
+        snap.mkdir()
+        home.mkdir()
+        (snap / "telemetry_salt").write_bytes(self._SALT)
+
+        monkeypatch.setattr(
+            snapshot_mod.platform_compat,
+            "restrict_to_owner",
+            lambda path: (_ for _ in ()).throw(OSError("icacls: transient failure")),
+        )
+        snapshot_mod._do_merge(snap, home, ["security"], allow_unpinned=True)
+
+        assert not (home / "telemetry_salt").exists()
+        assert not list(home.glob("*.tmp"))
+
+    def test_an_existing_dest_is_not_overwritten(self, tmp_path):
+        src = tmp_path / "from-archive"
+        dst = tmp_path / "telemetry_salt"
+        src.write_bytes(self._SALT)
+        dst.write_bytes(b"live")
+        snapshot_mod._copy_locked(src, dst)
+        assert dst.read_bytes() == b"live"
+
+    def test_an_oversized_source_is_refused_before_publish(self, tmp_path):
+        src = tmp_path / "from-archive"
+        dst = tmp_path / "telemetry_salt"
+        src.write_bytes(b"x" * 33)
+        assert snapshot_mod._copy_locked(src, dst) is False
+        assert not dst.exists()
+
+    def test_an_oversized_salt_does_not_abort_merge(self, tmp_path):
+        snap = tmp_path / "snap"
+        home = tmp_path / "home"
+        snap.mkdir()
+        home.mkdir()
+        (snap / "telemetry_salt").write_bytes(b"x" * 33)
+        snapshot_mod._do_merge(snap, home, ["security"], allow_unpinned=True)
+        assert not (home / "telemetry_salt").exists()
+
+    def test_a_dest_created_before_link_is_not_clobbered(self, tmp_path, monkeypatch):
+        src = tmp_path / "from-archive"
+        dst = tmp_path / "telemetry_salt"
+        src.write_bytes(self._SALT)
+        real_link = os.link
+
+        def _link(source, dest):
+            Path(dest).write_bytes(b"live")
+            return real_link(source, dest)
+
+        monkeypatch.setattr(snapshot_mod.os, "link", _link)
+        snapshot_mod._copy_locked(src, dst)
+        assert dst.read_bytes() == b"live"
+
+    def test_a_hardlink_failure_does_not_abort_merge(self, tmp_path, monkeypatch):
+        snap = tmp_path / "snap"
+        home = tmp_path / "home"
+        snap.mkdir()
+        home.mkdir()
+        (snap / "telemetry_salt").write_bytes(self._SALT)
+
+        def _link(_source, _dest):
+            raise OSError("Invalid cross-device link")
+
+        monkeypatch.setattr(snapshot_mod.os, "link", _link)
+        snapshot_mod._do_merge(snap, home, ["security"], allow_unpinned=True)
+        assert not (home / "telemetry_salt").exists()
+
+    def test_a_failed_close_does_not_abort_merge(self, tmp_path, monkeypatch):
+        snap = tmp_path / "snap"
+        home = tmp_path / "home"
+        snap.mkdir()
+        home.mkdir()
+        (snap / "telemetry_salt").write_bytes(self._SALT)
+
+        real_close = os.close
+        fired = False
+
+        def _close(fdnum):
+            nonlocal fired
+            real_close(fdnum)
+            if fired:
+                return
+            fired = True
+            raise OSError("close: delayed writeback")
+
+        monkeypatch.setattr(snapshot_mod.os, "close", _close)
+        snapshot_mod._do_merge(snap, home, ["security"], allow_unpinned=True)
+        assert not (home / "telemetry_salt").exists()

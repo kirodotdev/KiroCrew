@@ -17,6 +17,13 @@ fixed path — KiroCrew is not the authority on where Kiro CLI is installed, and
 Kiro CLI's own self-updater legitimately rewrites its bytes as the user, so an
 install-source/owner/path/codesign gate would strand real installs (toolbox,
 Homebrew, winget, a self-updated `/Applications` bundle) with no recovery path.
+On Windows the fixed candidates include the native per-user install at
+`%LOCALAPPDATA%\Kiro-Cli` before the machine-wide `Program Files\Kiro-Cli`
+location. After the inherited `PATH`, discovery also checks the shared set of
+standard user tool directories, preserving managed installations without
+hardcoding package-manager-specific paths. Discovery therefore sees a CLI
+installed after the desktop gateway started even though that process retains
+its old `PATH`.
 `snapshot_trusted_acp_executable` refuses only a non-runnable candidate and
 returns the resolved path; `TrustedAcpExecutableSnapshot` now carries just
 `launch_path`.
@@ -69,7 +76,24 @@ cancelled caller still lets the worker settle).
 
 `PermissionOption` field names differ between backends — kiro-cli uses `id`/`label`, claude-agent-acp uses `optionId`/`name` (per the public ACP spec). `_build_permission_event` reads both and remembers the optionIds keyed by `kind` (`allow_once`/`allow_always`/`reject_once`/`reject_always`) on the request id — recording an entry when **either** an allow option (for `approve_tool`) **or** a reject option (for a clean `reject_tool`) was advertised. `approve_tool(request_id, *, always=False)` echoes the matching allow id back, so the host doesn't need to know whether it's talking to kiro (`"allow_once"`/`"allow_always"`) or claude-agent-acp (`"allow"`/`"allow_always"`). `reject_tool` prefers a **clean reject**: if a reject optionId was advertised it sends `outcome: "selected"` with that id. Both backends advertise one — claude-agent-acp as `{kind:"reject_once", optionId:"reject"}` (→ `behavior:"deny"`), kiro-cli as `{kind:"reject_once", optionId:"reject_once"}` — and the fallback to `outcome: "cancelled"` therefore only applies to a backend that advertises no reject option at all. The distinction is load-bearing, not cosmetic: a clean reject resolves the tool call to `status:"failed"` with kiro-cli's fixed content `"User denied tool execution"` and the turn continues to the next model-inference boundary (`stopReason: "end_turn"`), whereas `cancelled` ends the turn immediately with `stopReason: "refusal"` and no text — and drops any queued `_session/steer` as `AgentExecutionUserMessageCleared`. That is why the host's in-band deny notice (`_steer_policy_notice`) can only be folded in on the clean-reject path, and why `stopReason: "refusal"` is NOT by itself evidence of a model-side content refusal.
 
+Both the shared runtime and the legacy direct `AcpClient` route permission
+frames through `_dispatch.build_permission_event`, including the same provenance
+flags. A shell-cache hit whose value is `False` sets `shell_classified=True` —
+it is a resolved non-shell call, not a cache miss — and a structured-params
+cache hit sets `raw_params_trusted=True`. The raw-params cache is read without
+consuming it, so a repeated permission frame for the same `toolCallId` keeps the
+original tool-call arguments authoritative instead of falling back to the
+permission frame's agent-authored inline input. A genuine miss may carry inline
+data for display, but both provenance flags remain false and consumers that
+need trusted arguments fail closed.
+
 The host always sends one-shot approvals (`always=False`, the default). KiroCrew — not the agent — owns the trust scope (`slot._trust`, `slot._trust_reads`, `slot._trusted_patterns`, `safety_override`, `channel.trusted`, parent session `approval_policy`). Per-call `session/request_permission` is required so KiroCrew's PreToolUse hooks (`auto_deny_tools`, sensitive-path checks, credential redaction) fire on every tool invocation. The `always=True` path is reserved for a future "skip KiroCrew hooks for this exact tool" feature; no caller passes it today.
+
+The rendered tool-input cache is consumed by the first permission event, but
+structured raw params remain keyed by `toolCallId` for the whole turn. A repeated
+permission for the same call therefore retains the fact that a non-shell MCP tool
+had arguments; it cannot be reclassified as an inputless canonical tool and match
+session durable trust merely because the display cache was already consumed.
 
 The handshake also branches on the backend:
 

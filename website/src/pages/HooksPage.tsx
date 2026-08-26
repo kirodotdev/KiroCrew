@@ -475,7 +475,7 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
         <Card>
           <CardTitle>{provider.labels.hooksSection} <InfoTip text={i18nT('pages.hooksPage.read_only_view_of_provider_hooks', { path: provider.labels.configFile || i18nT('pages.hooksPage.config') })} /></CardTitle>
           {providerHookError ? (
-            <EmptyState icon={<AlertTriangle className="lucide-inline text-warning" />} title={i18nT('pages.hooksPage.failed_to_load', { section: provider.labels.hooksSection.toLowerCase() })} subtitle={i18nT('pages.hooksPage.check_your_connection_or_configuration_and_try_a')} />
+            <EmptyState icon={<AlertTriangle className="lucide-inline text-warn" />} title={i18nT('pages.hooksPage.failed_to_load', { section: provider.labels.hooksSection.toLowerCase() })} subtitle={i18nT('pages.hooksPage.check_your_connection_or_configuration_and_try_a')} />
           ) : Object.values(providerHooks).some(entries => entries.length > 0) ? (
             // Focusable, named scrollport. This table is read-only — every cell
             // is plain text — and its columns reserve 700px, so at phone width

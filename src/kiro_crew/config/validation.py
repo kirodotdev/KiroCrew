@@ -135,6 +135,33 @@ def _actual_type_name(value: object) -> str:
     return type(value).__name__
 
 
+#: Exact dot-paths whose malformed values must SURVIVE advisory validation.
+#:
+#: ``_apply_field_default`` repairs a violating value by removing it so the
+#: loader falls back to defaults. Whether that repair is safe depends on the
+#: DIRECTION of the field's default:
+#:
+#: * ``publish`` (the section) and ``publish.allowed_destinations``: the
+#:   default is **open** (no restriction), so repairing a malformed narrowing
+#:   silently widens it to allow-all with no denial and no audit record
+#:   (#4057). The loader's recording coercion (``_coerced_section``) and the
+#:   gate's fail-closed checks are the honest handlers — but they can only run
+#:   if validation leaves the evidence in place. Keeping the value also keeps
+#:   security behaviour identical whether or not ``jsonschema`` is installed
+#:   (validation is a no-op without it), which is the split that let this gap
+#:   ship unnoticed.
+#:
+#: * Every OTHER publish field stays repairable, deliberately. For a field
+#:   whose default is **restrictive** the repair is the safe direction, and
+#:   preserving the malformed value can itself widen: a dict-shaped
+#:   ``publish.relocate_roots`` of ``{"/etc": false}`` iterates as its keys in
+#:   the loader's comprehension and would inject ``/etc`` as an allowed
+#:   relocate root, where the repaired default ``[]`` means home-only.
+#:
+#: Exact-match only: this is a per-path judgment, not a subtree rule.
+_FAIL_CLOSED_PATHS = frozenset({"publish", "publish.allowed_destinations"})
+
+
 def _apply_field_default(data: dict, dot_path: str) -> bool:
     """Remove the invalid value at *dot_path* so the loader falls back to defaults.
 
@@ -146,7 +173,14 @@ def _apply_field_default(data: dict, dot_path: str) -> bool:
     is stricter — removing them here would make validation destroy
     loader-valid data. Callers use the return value to log honestly: a kept
     value must not be reported as "using default".
+
+    Values at a fail-closed path (see :data:`_FAIL_CLOSED_PATHS`) are never
+    removed: repairing them to their open defaults silently widens a security
+    narrowing, and the loader/gate pair downstream turns the preserved
+    malformed value into a recorded degradation and a denial instead (#4057).
     """
+    if dot_path in _FAIL_CLOSED_PATHS:
+        return False
     parts = dot_path.split(".")
     if len(parts) == 1:
         data.pop(parts[0], None)

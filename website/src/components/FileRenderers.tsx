@@ -196,7 +196,7 @@ function JsonNode({ value, depth }: { value: unknown; depth: number }) {
   // quotes so a truncated leaf never reads as the faithful full value.
   if (typeof value === 'string') {
     const truncated = value.length > 200
-    return <span className="text-warning">{JSON.stringify(truncated ? value.slice(0, 200) : value)}{truncated && '…'}</span>
+    return <span className="text-warn">{JSON.stringify(truncated ? value.slice(0, 200) : value)}{truncated && '…'}</span>
   }
 
   const isArr = Array.isArray(value)
@@ -454,7 +454,7 @@ export const SheetViewer = memo(function SheetViewer({ filePath }: { filePath: s
   if (failed) {
     return (
       <div className="h-full flex flex-col">
-        <div className="text-center text-[11px] py-1.5 text-warning">
+        <div className="text-center text-[11px] py-1.5 text-warn">
           {i18nT('components.fileRenderers.sheet_preview_failed')}
         </div>
         <div className="flex-1 min-h-0"><OfficeViewer filePath={filePath} hideHint /></div>

@@ -13,7 +13,8 @@ from copy import deepcopy
 
 import pytest
 
-from kiro_crew.connections import get_provider, l1_smoke, mint
+from kiro_crew import mcp_grant
+from kiro_crew.connections import get_provider, l1_smoke
 from kiro_crew.mcp_discovery import McpServerInfo
 
 MCP_URL = "https://mcp.example.com/mcp"
@@ -91,7 +92,7 @@ def forbid_real_http_client(monkeypatch):
 @pytest.fixture
 def granted(tmp_path):
     """A cache dir holding the paired grant artifacts for ``MCP_URL``."""
-    key = mint.grant_key(MCP_URL)
+    key = mcp_grant.grant_key(MCP_URL)
     (tmp_path / f"{key}.token.json").write_text("{}", encoding="utf-8")
     (tmp_path / f"{key}.registration.json").write_text("{}", encoding="utf-8")
     return tmp_path
@@ -158,14 +159,14 @@ async def run_one(session, item=None, srv=None, cache_dir=None, timeout=5.0):
 # Grant presence: one implementation, and it never reads token material
 
 
-def test_grant_helpers_are_mints_and_not_a_local_copy():
+def test_grant_presence_uses_the_shared_mcp_helper():
     """N7's dedupe, pinned by identity so a future copy cannot creep back in.
 
     grant_present internally derives the cache key and resolves the cache dir,
     so pinning the one symbol this module uses transitively pins all three;
     test_connections_mint already pins the formula on this function.
     """
-    assert l1_smoke.grant_present is mint.grant_present
+    assert l1_smoke.grant_present is mcp_grant.grant_presence
 
 
 @pytest.fixture
@@ -204,7 +205,7 @@ async def test_a_full_pass_run_never_opens_the_paired_artifacts(granted, forbid_
 
 
 def test_the_read_guard_is_active(granted, forbid_token_reads):
-    artifact = granted / f"{mint.grant_key(MCP_URL)}.token.json"
+    artifact = granted / f"{mcp_grant.grant_key(MCP_URL)}.token.json"
     with pytest.raises(AssertionError, match="must never be read"):
         artifact.read_text(encoding="utf-8")
     with pytest.raises(AssertionError, match="must never be read"):
@@ -217,7 +218,7 @@ def test_real_http_client_guard_is_active():
 
 
 def test_cache_dir_defaults_to_the_kiro_cli_oauth_store(tmp_path):
-    assert mint.kiro_oauth_cache_dir(home=tmp_path) == tmp_path / ".aws" / "sso" / "cache"
+    assert mcp_grant.kiro_oauth_cache_dir(home=tmp_path) == tmp_path / ".aws" / "sso" / "cache"
 
 
 @pytest.mark.asyncio
@@ -487,6 +488,35 @@ async def test_the_grant_stat_runs_off_the_loop_and_a_stall_answers_in_bound(gra
     assert result["verdict"] == "FAIL"
     assert result["grant_present"] is False
     assert "stalled mount" in result["errors"][0]
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_cache_home_reports_false_not_null(tmp_path, monkeypatch):
+    """The tri-state is collapsed at L1's boundary, and nothing type-checks that.
+
+    ``grant_present`` aliases the THREE-valued ``grant_presence``: ``None`` means
+    the cache home could not be read at all (permission error, stalled mount), as
+    distinct from "no grant was ever written". ``SmokeResult`` declares
+    ``grant_present: bool``, and ``_bounded_stat`` is typed ``-> Any``, so a
+    ``None`` would reach the emitted report as ``null`` in a boolean field with no
+    mypy error to catch it.
+
+    L1 has nothing to say about the distinction -- it never initiates consent, so
+    both answers mean SKIPPED -- which is exactly why collapsing here is safe and
+    why the collapse must not be quietly dropped.
+    """
+    monkeypatch.setattr(l1_smoke, "grant_present", lambda mcp_url, *, cache_dir=None: None)
+
+    # No configured server: that branch passes the raw lookup straight through as
+    # ``grant_present=grant``. The not-installed and no-grant branches hardcode
+    # ``False``, so they cannot catch a leak -- this is the path that can.
+    result = await l1_smoke.smoke_provider(
+        FakeSession([]), provider(), None, timeout_seconds=5.0, cache_dir=tmp_path
+    )
+
+    assert result["grant_present"] is False
+    assert result["grant_present"] is not None
+    assert result["verdict"] == "SKIPPED"
 
 
 @pytest.mark.asyncio

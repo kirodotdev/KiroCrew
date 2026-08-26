@@ -10,13 +10,43 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_crew.dashboard.chat_runner import (
-    _extract_base_command,
-    _extract_full_command,
-    _matches_trusted_pattern,
-)
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.history import ConversationLog
+from kiro_crew.trust_patterns import (
+    approval_command,
+    approval_display_command,
+    canonical_non_shell_tool,
+    canonical_non_shell_trust_key,
+    exact_trust_pattern,
+)
+from kiro_crew.trust_patterns import extract_base_command as _canonical_extract_base_command
+from kiro_crew.trust_patterns import extract_full_command as _canonical_extract_full_command
+from kiro_crew.trust_patterns import matches_trusted_pattern as _canonical_matches_trusted_pattern
+
+
+def _legacy_title_command(value: str) -> str:
+    """Adapt old title-shaped fixtures into canonical command input.
+
+    Production helpers no longer strip display prefixes.  Most segmentation
+    tests below predate structured ``tool_input`` and still use title-shaped
+    fixtures; explicit boundary regressions exercise the raw helpers directly.
+    """
+    for prefix in ("Running: ", "Reading "):
+        if value.startswith(prefix):
+            return value[len(prefix) :]
+    return value
+
+
+def _extract_base_command(value: str) -> str:
+    return _canonical_extract_base_command(_legacy_title_command(value))
+
+
+def _extract_full_command(value: str) -> str:
+    return _canonical_extract_full_command(_legacy_title_command(value))
+
+
+def _matches_trusted_pattern(value: str, patterns: set[str]) -> str | None:
+    return _canonical_matches_trusted_pattern(_legacy_title_command(value), patterns)
 
 
 def _make_state(tmp_path):
@@ -48,6 +78,29 @@ def _make_app(state: DashboardState) -> web.Application:
     app["state"] = state
     app.router.add_post("/api/chat/slots/{slot}/approve", api_chat_slot_approve)
     return app
+
+
+def _trust_meta(
+    request_id: str,
+    full_command: str,
+    base_command: str = "",
+    *,
+    trust_command_key: str | None = None,
+) -> str:
+    """Build the server-derived pending metadata used by trust handler tests."""
+    meta = {
+        "request_id": request_id,
+        "full_command": full_command,
+        # Shell commands have the same display and trust key.  Collision tests
+        # override this with the encoded non-shell key.
+        "trust_command_key": trust_command_key or full_command,
+        "base_command": base_command,
+        "trust_command_grantable": "1",
+        "trust_grantable": "1",
+    }
+    if base_command:
+        meta["trust_base_grantable"] = "1"
+    return json.dumps(meta)
 
 
 # ── Pattern matching tests ──
@@ -111,12 +164,27 @@ class TestMatchesTrustedPattern:
         assert _matches_trusted_pattern("Running: rm -rf /", patterns) == "*"
         assert _matches_trusted_pattern("TaskeiGetTask", patterns) == "*"
 
+    def test_broad_wildcard_still_matches_encoded_non_shell_key(self):
+        key = canonical_non_shell_trust_key("github", "repo__delete")
+        assert _canonical_matches_trusted_pattern(key, {"*"}) == "*"
+
+    def test_old_ambiguous_exact_pattern_fails_closed_against_new_key(self):
+        old = exact_trust_pattern(canonical_non_shell_tool("github", "repo__delete"))
+        key = canonical_non_shell_trust_key("github", "repo__delete")
+        assert _canonical_matches_trusted_pattern(key, {old}) is None
+
     def test_reading_prefix(self):
         patterns = {"/home/user/file.txt"}
         assert (
             _matches_trusted_pattern("Reading /home/user/file.txt", patterns)
             == "/home/user/file.txt"
         )
+
+    def test_escaped_exact_grant_has_no_glob_power(self):
+        pattern = exact_trust_pattern("rm *.tmp")
+        assert pattern == "rm [*].tmp"
+        assert _matches_trusted_pattern("rm *.tmp", {pattern}) == pattern
+        assert _matches_trusted_pattern("rm secret.tmp", {pattern}) is None
 
 
 # ── Extraction helpers tests ──
@@ -150,6 +218,85 @@ class TestExtractBaseCommand:
     def test_reading_prefix(self):
         assert _extract_base_command("Reading /home/user/file.txt") == "/home/user/file.txt"
 
+    def test_env_assignment_prefix_is_not_a_grantable_base(self):
+        assert _extract_base_command("FOO=bar python task.py") == ""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            '"/tmp/my tool" --safe',
+            r"/tmp/my\ tool --safe",
+            "/tmp/a,b --safe",
+            "$TOOL --safe",
+            "~/bin/tool --safe",
+        ],
+    )
+    def test_ambiguous_or_expanding_executable_is_not_grantable(self, command):
+        assert _canonical_extract_base_command(command) == ""
+
+
+class TestApprovalCommand:
+    def test_shell_scope_comes_from_tool_input_not_title(self):
+        assert (
+            approval_command(
+                '{"command": "rm *.tmp"}',
+                is_shell=True,
+            )
+            == "rm *.tmp"
+        )
+
+    def test_non_shell_structured_input_is_not_promoted_to_command_scope(self):
+        assert (
+            approval_command(
+                '{"command": "rm -rf /"}',
+                is_shell=False,
+            )
+            == ""
+        )
+
+    def test_non_shell_scope_uses_cached_server_and_tool_not_display_title(self):
+        trust_key = approval_command(
+            "",
+            is_shell=False,
+            tool_name="delete_record",
+            mcp_server_name="records:primary",
+        )
+        assert trust_key == canonical_non_shell_trust_key("records:primary", "delete_record")
+        assert approval_display_command(
+            "",
+            is_shell=False,
+            tool_name="delete_record",
+            mcp_server_name="records:primary",
+        ) == canonical_non_shell_tool("records:primary", "delete_record")
+
+    def test_component_encoding_prevents_separator_collision(self):
+        first = canonical_non_shell_trust_key("github", "repo__delete")
+        second = canonical_non_shell_trust_key("github__repo", "delete")
+        assert canonical_non_shell_tool("github", "repo__delete") == canonical_non_shell_tool(
+            "github__repo", "delete"
+        )
+        assert first != second
+        assert _canonical_matches_trusted_pattern(first, {exact_trust_pattern(first)})
+        assert _canonical_matches_trusted_pattern(second, {exact_trust_pattern(first)}) is None
+
+    def test_component_encoding_preserves_lower_not_casefold_matching(self):
+        assert canonical_non_shell_trust_key(
+            "GitHub", "DELETE_REPO"
+        ) == canonical_non_shell_trust_key("github", "delete_repo")
+        # The existing matcher uses lower(), not casefold(); keep that narrower
+        # equivalence rather than widening Straße to STRASSE.
+        assert canonical_non_shell_trust_key("Straße", "delete") != canonical_non_shell_trust_key(
+            "STRASSE", "delete"
+        )
+
+    @pytest.mark.parametrize(
+        ("server", "tool"),
+        (("", "delete_record"), ("records:primary", ""), ("", "")),
+    )
+    def test_non_shell_scope_fails_closed_when_cached_identity_is_incomplete(self, server, tool):
+        assert canonical_non_shell_tool(server, tool) == ""
+        assert canonical_non_shell_trust_key(server, tool) == ""
+
 
 class TestExtractFullCommand:
     def test_shell_command(self):
@@ -160,6 +307,13 @@ class TestExtractFullCommand:
 
     def test_reading_prefix(self):
         assert _extract_full_command("Reading /home/user/file.txt") == "/home/user/file.txt"
+
+    def test_canonical_presentation_word_is_not_stripped(self):
+        command = "Reading /usr/bin/id"
+        assert _canonical_extract_full_command(command) == command
+        assert _canonical_extract_base_command(command) == "Reading"
+        assert _canonical_matches_trusted_pattern(command, {command}) == command
+        assert _canonical_matches_trusted_pattern("/usr/bin/id", {command}) is None
 
 
 # ── _ChatSlot trusted_patterns initialization ──
@@ -308,15 +462,13 @@ class TestPipedCommandTrust:
         base = _extract_base_command("""Running: echo "abcdefgh" | tr "'" " " | wc""")
         assert base == "echo,tr,wc"
 
-    def test_substitution_fallback_returns_first_token_only(self):
+    def test_substitution_is_not_grantable(self):
         base = _extract_base_command("Running: echo $(date),touch /tmp/pwned")
-        assert base == "echo"
-        assert "touch" not in base
+        assert base == ""
 
-    def test_backtick_substitution_fallback(self):
+    def test_backtick_substitution_is_not_grantable(self):
         base = _extract_base_command("Running: cat `which python` | head")
-        assert base == "cat"
-        assert "head" not in base
+        assert base == ""
 
     def test_background_ampersand_not_split(self):
         # Bare & (background) must NOT split in the grant path.
@@ -603,13 +755,7 @@ class TestApproveHandlerTrustCommand:
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[str] = loop.create_future()
         slot._approval_futures["req-100"] = fut
-        meta = json.dumps(
-            {
-                "request_id": "req-100",
-                "full_command": "ls /tmp",
-                "base_command": "ls",
-            }
-        )
+        meta = _trust_meta("req-100", "ls /tmp", "ls")
         slot.messages.append({"role": "permission", "content": "Running: ls /tmp", "cls": meta})
 
         app = _make_app(state)
@@ -623,20 +769,145 @@ class TestApproveHandlerTrustCommand:
         assert fut.result() == "approved"
 
     @pytest.mark.asyncio
-    async def test_trust_command_fallback_extracts_from_meta(self, tmp_path):
+    async def test_non_shell_collision_stores_only_server_internal_key(self, tmp_path):
+        """Two ACP pairs can share one wire/display name but never one grant."""
+        state = _make_state(tmp_path)
+        slot = _ChatSlot(key="slot-1")
+        state._slots["slot-1"] = slot
+        fut: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        slot._approval_futures["req-collision"] = fut
+        display = canonical_non_shell_tool("github", "repo__delete")
+        granted_key = canonical_non_shell_trust_key("github", "repo__delete")
+        colliding_key = canonical_non_shell_trust_key("github__repo", "delete")
+        slot.messages.append(
+            {
+                "role": "permission",
+                "content": "Repository action",
+                "cls": _trust_meta(
+                    "req-collision",
+                    display,
+                    trust_command_key=granted_key,
+                ),
+            }
+        )
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post(
+                "/api/chat/slots/slot-1/approve",
+                json={
+                    "action": "trust_command",
+                    "request_id": "req-collision",
+                    # The client consents to the compatible DISPLAY spelling;
+                    # it never supplies the authority stored below.
+                    "pattern": display,
+                },
+            )
+            assert response.status == 200
+
+        stored = exact_trust_pattern(granted_key)
+        assert slot._trusted_patterns == {stored}
+        assert _canonical_matches_trusted_pattern(granted_key, {stored}) == stored
+        assert _canonical_matches_trusted_pattern(colliding_key, {stored}) is None
+        assert fut.result() == "approved"
+
+    @pytest.mark.asyncio
+    async def test_old_pending_card_without_internal_key_fails_closed(self, tmp_path):
+        """A pre-upgrade live card remains allow-once/reject capable, not trustable."""
+        state = _make_state(tmp_path)
+        slot = _ChatSlot(key="slot-1")
+        state._slots["slot-1"] = slot
+        fut: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        slot._approval_futures["req-old"] = fut
+        display = canonical_non_shell_tool("github", "repo__delete")
+        slot.messages.append(
+            {
+                "role": "permission",
+                "content": "Repository action",
+                "cls": json.dumps(
+                    {
+                        "request_id": "req-old",
+                        "full_command": display,
+                        "trust_command_grantable": "1",
+                        # Deliberately no trust_command_key: this is the old
+                        # ambiguous pending-card shape.
+                    }
+                ),
+            }
+        )
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            refused = await client.post(
+                "/api/chat/slots/slot-1/approve",
+                json={
+                    "action": "trust_command",
+                    "request_id": "req-old",
+                    "pattern": display,
+                },
+            )
+            assert refused.status == 400
+            assert (await refused.json())["code"] == "pattern_underivable"
+            assert not fut.done()
+            assert not slot._trusted_patterns
+
+            allowed_once = await client.post(
+                "/api/chat/slots/slot-1/approve",
+                json={"action": "approved", "request_id": "req-old"},
+            )
+            assert allowed_once.status == 200
+
+        assert fut.result() == "approved"
+
+    @pytest.mark.asyncio
+    async def test_trust_command_rejects_stale_pattern_then_escapes_exact_grant(self, tmp_path):
+        state = _make_state(tmp_path)
+        slot = _ChatSlot(key="slot-1")
+        state._slots["slot-1"] = slot
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[str] = loop.create_future()
+        slot._approval_futures["req-wild"] = fut
+        meta = _trust_meta("req-wild", "rm *.tmp", "rm")
+        slot.messages.append({"role": "permission", "content": "Running: harmless", "cls": meta})
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            stale = await client.post(
+                "/api/chat/slots/slot-1/approve",
+                json={
+                    "action": "trust_command",
+                    "request_id": "req-wild",
+                    "pattern": "*",
+                },
+            )
+            assert stale.status == 400
+            assert (await stale.json())["code"] == "approval_superseded"
+            assert not fut.done()
+            assert not slot._trusted_patterns
+
+            accepted = await client.post(
+                "/api/chat/slots/slot-1/approve",
+                json={
+                    "action": "trust_command",
+                    "request_id": "req-wild",
+                    "pattern": "rm *.tmp",
+                },
+            )
+            assert accepted.status == 200
+
+        escaped = "rm [*].tmp"
+        assert slot._trusted_patterns == {escaped}
+        assert _matches_trusted_pattern("rm *.tmp", slot._trusted_patterns) == escaped
+        assert _matches_trusted_pattern("rm secret.tmp", slot._trusted_patterns) is None
+        assert fut.result() == "approved"
+
+    @pytest.mark.asyncio
+    async def test_trust_command_requires_client_consent_pattern(self, tmp_path):
         state = _make_state(tmp_path)
         slot = _ChatSlot(key="slot-1")
         state._slots["slot-1"] = slot
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[str] = loop.create_future()
         slot._approval_futures["req-200"] = fut
-        meta = json.dumps(
-            {
-                "request_id": "req-200",
-                "full_command": "grep -r foo .",
-                "base_command": "grep",
-            }
-        )
+        meta = _trust_meta("req-200", "grep -r foo .", "grep")
         slot.messages.append(
             {"role": "permission", "content": "Running: grep -r foo .", "cls": meta}
         )
@@ -647,8 +918,10 @@ class TestApproveHandlerTrustCommand:
                 "/api/chat/slots/slot-1/approve",
                 json={"action": "trust_command", "request_id": "req-200"},
             )
-            assert resp.status == 200
-        assert "grep -r foo ." in slot._trusted_patterns
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "pattern_required"
+        assert not slot._trusted_patterns
+        assert not fut.done()
 
     @pytest.mark.asyncio
     async def test_trust_base_adds_glob_and_bare(self, tmp_path):
@@ -658,13 +931,7 @@ class TestApproveHandlerTrustCommand:
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[str] = loop.create_future()
         slot._approval_futures["req-300"] = fut
-        meta = json.dumps(
-            {
-                "request_id": "req-300",
-                "full_command": "cat /etc/hosts",
-                "base_command": "cat",
-            }
-        )
+        meta = _trust_meta("req-300", "cat /etc/hosts", "cat")
         slot.messages.append(
             {"role": "permission", "content": "Running: cat /etc/hosts", "cls": meta}
         )
@@ -688,13 +955,7 @@ class TestApproveHandlerTrustCommand:
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[str] = loop.create_future()
         slot._approval_futures["req-400"] = fut
-        meta = json.dumps(
-            {
-                "request_id": "req-400",
-                "full_command": "cat /etc/hosts | wc -l",
-                "base_command": "cat,wc",
-            }
-        )
+        meta = _trust_meta("req-400", "cat /etc/hosts | wc -l", "cat,wc")
         slot.messages.append(
             {"role": "permission", "content": "Running: cat /etc/hosts | wc -l", "cls": meta}
         )
@@ -712,20 +973,14 @@ class TestApproveHandlerTrustCommand:
         assert "wc" in slot._trusted_patterns
 
     @pytest.mark.asyncio
-    async def test_trust_base_fallback_from_meta(self, tmp_path):
+    async def test_trust_base_requires_client_consent_pattern(self, tmp_path):
         state = _make_state(tmp_path)
         slot = _ChatSlot(key="slot-1")
         state._slots["slot-1"] = slot
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[str] = loop.create_future()
         slot._approval_futures["req-500"] = fut
-        meta = json.dumps(
-            {
-                "request_id": "req-500",
-                "full_command": "ls /tmp",
-                "base_command": "ls",
-            }
-        )
+        meta = _trust_meta("req-500", "ls /tmp", "ls")
         slot.messages.append({"role": "permission", "content": "Running: ls /tmp", "cls": meta})
 
         app = _make_app(state)
@@ -734,9 +989,10 @@ class TestApproveHandlerTrustCommand:
                 "/api/chat/slots/slot-1/approve",
                 json={"action": "trust_base", "request_id": "req-500"},
             )
-            assert resp.status == 200
-        assert "ls *" in slot._trusted_patterns
-        assert "ls" in slot._trusted_patterns
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "pattern_required"
+        assert not slot._trusted_patterns
+        assert not fut.done()
 
     @pytest.mark.asyncio
     async def test_trust_command_no_pending_returns_404(self, tmp_path):
@@ -753,7 +1009,7 @@ class TestApproveHandlerTrustCommand:
             assert resp.status == 404
 
     @pytest.mark.asyncio
-    async def test_trust_command_empty_pattern_ignored(self, tmp_path):
+    async def test_trust_command_empty_pattern_is_refused(self, tmp_path):
         state = _make_state(tmp_path)
         slot = _ChatSlot(key="slot-1")
         state._slots["slot-1"] = slot
@@ -767,8 +1023,10 @@ class TestApproveHandlerTrustCommand:
                 "/api/chat/slots/slot-1/approve",
                 json={"action": "trust_command", "request_id": "req-600", "pattern": ""},
             )
-            assert resp.status == 200
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "pattern_required"
         assert len(slot._trusted_patterns) == 0
+        assert not fut.done()
 
     @pytest.mark.asyncio
     async def test_existing_trust_action_still_works(self, tmp_path):
@@ -779,6 +1037,13 @@ class TestApproveHandlerTrustCommand:
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[str] = loop.create_future()
         slot._approval_futures["req-700"] = fut
+        slot.messages.append(
+            {
+                "role": "permission",
+                "content": "Running: ls",
+                "cls": _trust_meta("req-700", "ls", "ls"),
+            }
+        )
 
         app = _make_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -789,6 +1054,48 @@ class TestApproveHandlerTrustCommand:
             assert resp.status == 200
         assert slot._trust is True
         assert fut.result() == "approved"
+
+    @pytest.mark.asyncio
+    async def test_broad_trust_requires_card_proof_and_leaves_future_usable(self, tmp_path):
+        """An ungrantable Mochi/card request cannot widen the whole slot."""
+        state = _make_state(tmp_path)
+        slot = _ChatSlot(key="slot-1")
+        state._slots["slot-1"] = slot
+        set_policy = MagicMock()
+        state.sessions.set_approval_policy = set_policy
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[str] = loop.create_future()
+        slot._approval_futures["req-ungrantable"] = fut
+        # Redacted/underivable cards deliberately carry no grantability proof.
+        slot.messages.append(
+            {
+                "role": "permission",
+                "content": "Hidden input",
+                "cls": json.dumps({"request_id": "req-ungrantable"}),
+            }
+        )
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            denied = await client.post(
+                "/api/chat/slots/slot-1/approve",
+                json={"action": "trust", "request_id": "req-ungrantable"},
+            )
+            assert denied.status == 400
+            assert (await denied.json())["code"] == "pattern_underivable"
+            assert slot._trust is False
+            set_policy.assert_not_called()
+            assert not fut.done()
+
+            allowed_once = await client.post(
+                "/api/chat/slots/slot-1/approve",
+                json={"action": "approved", "request_id": "req-ungrantable"},
+            )
+            assert allowed_once.status == 200
+
+        assert fut.result() == "approved"
+        assert slot._trust is False
+        set_policy.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_trust_resolves_future_on_another_slot(self, tmp_path):
@@ -814,7 +1121,7 @@ class TestApproveHandlerTrustCommand:
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[str] = loop.create_future()
         owner._approval_futures["req-800"] = fut
-        meta = json.dumps({"request_id": "req-800", "full_command": "ls", "base_command": "ls"})
+        meta = _trust_meta("req-800", "ls", "ls")
         owner.messages.append({"role": "permission", "content": "Running: ls", "cls": meta})
 
         app = _make_app(state)
@@ -850,6 +1157,13 @@ class TestApproveHandlerTrustCommand:
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[str] = loop.create_future()
         slot._approval_futures["req-950"] = fut
+        slot.messages.append(
+            {
+                "role": "permission",
+                "content": "Running: ls",
+                "cls": _trust_meta("req-950", "ls", "ls"),
+            }
+        )
 
         app = _make_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -909,16 +1223,18 @@ class TestApproveHandlerTrustCommand:
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[str] = loop.create_future()
         owner._approval_futures["req-820"] = fut
-        meta = json.dumps(
-            {"request_id": "req-820", "full_command": "ls /tmp", "base_command": "ls"}
-        )
+        meta = _trust_meta("req-820", "ls /tmp", "ls")
         owner.messages.append({"role": "permission", "content": "Running: ls /tmp", "cls": meta})
 
         app = _make_app(state)
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
                 "/api/chat/slots/slot-1/approve",
-                json={"action": "trust_command", "request_id": "req-820"},
+                json={
+                    "action": "trust_command",
+                    "request_id": "req-820",
+                    "pattern": "ls /tmp",
+                },
             )
             assert resp.status == 200
         assert "ls /tmp" in owner._trusted_patterns
@@ -941,6 +1257,8 @@ class TestApproveHandlerTrustCommand:
                 json={"action": "trust", "request_id": "req-missing"},
             )
             assert resp.status == 404
+        assert state._slots["slot-1"]._trust is False
+        state.sessions.set_approval_policy.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_colliding_request_id_cannot_approve_unrelated_slot(self, tmp_path):
@@ -999,6 +1317,90 @@ class TestApproveHandlerTrustCommand:
             assert resp.status == 200
         assert state_fut.done()
         assert state_fut.result() is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("scoped_action", "pattern", "plain_action", "plain_result"),
+        (
+            ("trust_command", "ls /tmp", "approved", True),
+            ("trust_base", "ls *", "rejected", False),
+        ),
+    )
+    async def test_state_level_future_refuses_scoped_trust_then_accepts_plain_decision(
+        self, tmp_path, scoped_action, pattern, plain_action, plain_result
+    ):
+        """A state future has no slot-owned command metadata or pattern store.
+
+        A scoped trust action must therefore leave it unresolved instead of
+        silently becoming a boolean approval.  The same future must remain
+        usable through the ordinary state-level approval path afterwards.
+        """
+        state = _make_state(tmp_path)
+        state.sessions.set_approval_policy = MagicMock()
+        slot = _ChatSlot(key="slot-1")
+        state._slots["slot-1"] = slot
+        loop = asyncio.get_running_loop()
+        state_fut: asyncio.Future[bool] = loop.create_future()
+        state._approval_futures["req-state-scope"] = state_fut
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            scoped = await client.post(
+                "/api/chat/slots/slot-1/approve",
+                json={
+                    "action": scoped_action,
+                    "request_id": "req-state-scope",
+                    "pattern": pattern,
+                },
+            )
+            assert scoped.status == 400
+            assert (await scoped.json())["code"] == "approval_not_slot_owned"
+            assert not state_fut.done()
+            assert not slot._trusted_patterns
+
+            plain = await client.post(
+                "/api/chat/slots/slot-1/approve",
+                json={"action": plain_action, "request_id": "req-state-scope"},
+            )
+            assert plain.status == 200
+
+        assert state_fut.result() is plain_result
+
+    @pytest.mark.asyncio
+    async def test_state_level_future_refuses_broad_trust_then_accepts_plain_decision(
+        self, tmp_path
+    ):
+        """A state approval has no slot-owned pending-card grant proof."""
+        state = _make_state(tmp_path)
+        set_policy = MagicMock()
+        state.sessions.set_approval_policy = set_policy
+        slot = _ChatSlot(key="slot-1")
+        state._slots["slot-1"] = slot
+        loop = asyncio.get_running_loop()
+        state_fut: asyncio.Future[bool] = loop.create_future()
+        state._approval_futures["req-state-trust"] = state_fut
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/slots/slot-1/approve",
+                json={"action": "trust", "request_id": "req-state-trust"},
+            )
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "approval_not_slot_owned"
+            assert not state_fut.done()
+            assert slot._trust is False
+            set_policy.assert_not_called()
+
+            plain = await client.post(
+                "/api/chat/slots/slot-1/approve",
+                json={"action": "approved", "request_id": "req-state-trust"},
+            )
+            assert plain.status == 200
+
+        assert state_fut.result() is True
+        assert slot._trust is False
+        set_policy.assert_not_called()
 
 
 class TestMatchesTrustedPatternPiped:
@@ -1222,16 +1624,14 @@ class TestSplitterPlaceholderForgery:
     def test_bare_nul_anywhere_denies(self):
         assert _matches_trusted_pattern("Running: cat /etc/hosts\x00", {"cat *"}) is None
 
-    def test_grant_path_falls_back_to_first_token(self):
-        # The Trust dropdown must still offer something sane rather than
-        # propagating the crash: the substitution fallback (first token only).
-        assert _extract_base_command("Running: echo hi \x00REDIR\x00 there") == "echo"
-        assert _extract_base_command("Running: echo hi \x00SEP0\x00 there") == "echo"
+    def test_grant_path_denies_forged_placeholders(self):
+        assert _extract_base_command("Running: echo hi \x00REDIR\x00 there") == ""
+        assert _extract_base_command("Running: echo hi \x00SEP0\x00 there") == ""
 
     def test_grant_path_does_not_offer_forged_extra_segments(self):
         # A forged SEP placeholder must not restore into a separator that
         # widens the offered trust set beyond the first binary.
-        assert _extract_base_command("Running: echo ok\x00SEP0\x00 rm -rf /") == "echo"
+        assert _extract_base_command("Running: echo ok\x00SEP0\x00 rm -rf /") == ""
 
     def test_nul_free_commands_are_unaffected(self):
         # Guard against the deny becoming over-broad: normal commands, quoted

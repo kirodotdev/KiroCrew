@@ -326,6 +326,8 @@ class DaemonProbe:
     * ``reachable=False`` — the daemon is not answering; start it.
     * ``logged_in=False`` — signed out; sign in.
     * all true but ``name=""`` — signed in, but MagicDNS is off for the tailnet.
+    * ``https_enabled=False`` — the tailnet has not granted certificate
+      provisioning for this machine's MagicDNS name yet.
 
     ``peer_count`` / ``peers_online`` describe the OTHER devices on this tailnet,
     and they answer a question no amount of local state can: whether there is a
@@ -345,6 +347,12 @@ class DaemonProbe:
     detail: str
     peer_count: int = 0
     peers_online: int = 0
+    #: ``None`` means this older/unexpected status document did not expose the
+    #: field. It must not be treated as ``False``: older clients may still be
+    #: able to publish, and the authoritative ``tailscale serve`` write will
+    #: report any unmet requirement. ``False`` is reserved for an explicit
+    #: ``CertDomains`` list that does not contain this host.
+    https_enabled: bool | None = None
 
 
 def _count_peers(status: dict) -> tuple[int, int]:
@@ -417,6 +425,21 @@ def probe_daemon() -> DaemonProbe:
             peer_count=peer_count,
             peers_online=peers_online,
         )
+    # Tailscale's public ``ipnstate.Status`` contract defines CertDomains as the
+    # DNS names for which the control plane will help provision TLS certificates.
+    # An explicit empty/mismatching list is therefore a reliable first-use HTTPS
+    # prerequisite; an absent or malformed field stays unknown so an older CLI is
+    # allowed to reach the authoritative Serve attempt instead of being blocked
+    # forever by a field it never emitted.
+    raw_cert_domains = status.get("CertDomains")
+    https_enabled: bool | None = None
+    if isinstance(raw_cert_domains, list):
+        cert_domains = {
+            value.strip().rstrip(".").lower()
+            for value in raw_cert_domains
+            if isinstance(value, str) and value.strip()
+        }
+        https_enabled = name in cert_domains
     return DaemonProbe(
         name=name,
         installed=True,
@@ -425,6 +448,7 @@ def probe_daemon() -> DaemonProbe:
         detail="",
         peer_count=peer_count,
         peers_online=peers_online,
+        https_enabled=https_enabled,
     )
 
 

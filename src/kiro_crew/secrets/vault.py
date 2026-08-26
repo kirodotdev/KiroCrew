@@ -107,6 +107,46 @@ class SecretVault:
         async with self._lock:
             await asyncio.to_thread(self._set_sync, name, value)
 
+    async def set_if_absent(self, name: str, value: str) -> Optional[dict[str, str]]:
+        """Store ``value`` under ``name`` ONLY if the key is not already present.
+
+        Returns the exact encrypted entry dict that was written on a fresh write,
+        or ``None`` if the key was already present (left untouched). A non-None
+        return means "this call wrote the entry"; ``None`` means "a value was
+        already present". The presence check happens INSIDE the cross-process
+        store lock (see ``_write_store``), so a concurrent writer that stored the
+        key between a caller's earlier ``list_names()`` and this call always wins
+        — this call becomes a no-op rather than clobbering the newer value. Used
+        by the .env→vault importer, which must never overwrite a credential a
+        dashboard/other writer saved to the vault in the meantime.
+
+        The returned entry dict (when non-None) is the unique ciphertext
+        fingerprint for what this call stored — because ``_encrypt_entry`` uses a
+        random nonce per call, two encryptions of the same plaintext produce
+        different dicts. The importer's rollback path passes this dict to
+        ``_compare_and_delete_sync`` so it can identify and delete the exact entry
+        this run wrote, without risking deletion of a concurrent writer's entry
+        that may coincidentally hold the same plaintext.
+        """
+        async with self._lock:
+            return await asyncio.to_thread(self._set_if_absent_sync, name, value)
+
+    def _set_if_absent_sync(self, name: str, value: str) -> Optional[dict[str, str]]:
+        written_entry: Optional[dict[str, str]] = None
+
+        def _mutate(entries: dict) -> dict:
+            nonlocal written_entry
+            if name in entries:
+                # Concurrent writer already populated it under the lock — do not
+                # overwrite. Return entries unchanged so the write is a no-op.
+                return entries
+            entry = self._encrypt_entry(name, value.encode("utf-8"))
+            written_entry = entry
+            return {**entries, name: entry}
+
+        self._write_store(_mutate)
+        return written_entry
+
     def _set_sync(self, name: str, value: str) -> None:
         self._write_store(
             lambda entries: {**entries, name: self._encrypt_entry(name, value.encode("utf-8"))}
@@ -123,6 +163,45 @@ class SecretVault:
         if not self._store_path.exists():
             return
         self._write_store(lambda entries: {k: v for k, v in entries.items() if k != name})
+
+    def _compare_and_delete_sync(self, name: str, expected_entry: dict[str, str]) -> bool:
+        """Delete ``name`` ONLY if its stored encrypted entry equals ``expected_entry``.
+
+        The comparison is by exact ciphertext identity: ``entries[name] ==
+        expected_entry``. Because ``_encrypt_entry`` uses a random nonce per call,
+        two encryptions of the same plaintext produce different dicts, so this
+        comparison uniquely fingerprints the exact entry written by a particular
+        ``set_if_absent`` call. A concurrent writer that stored a new value (even
+        the same plaintext) will have a different ciphertext and a different dict,
+        so its entry is never deleted.
+
+        The comparison and deletion happen inside a single ``_write_store`` call,
+        i.e. under one cross-process flock acquisition, so no concurrent writer
+        can replace the value between the check and the delete.
+
+        Returns ``True`` if the entry was deleted, ``False`` if it was absent or
+        the stored entry differed from ``expected_entry`` (concurrent overwrite —
+        leave it alone).
+
+        Used by the rollback path in the .env importer: ``expected_entry`` is the
+        exact dict returned by ``set_if_absent``, so only the entry this run
+        wrote can be deleted — a concurrent writer's entry is always safe.
+        """
+        deleted = False
+
+        def _mutate(entries: dict) -> dict:
+            nonlocal deleted
+            if name not in entries:
+                return entries
+            if entries[name] != expected_entry:
+                # Stored entry differs (different ciphertext) — a concurrent
+                # writer replaced our entry. Do not delete.
+                return entries
+            deleted = True
+            return {k: v for k, v in entries.items() if k != name}
+
+        self._write_store(_mutate)
+        return deleted
 
     def list_names(self) -> list[str]:
         """Return all stored secret names."""
@@ -226,8 +305,27 @@ class SecretVault:
         return dict(envelope.get("entries", {}))
 
     @contextmanager
-    def _cross_process_lock(self) -> Iterator[None]:
-        """Acquire a cross-process lock via platform_compat.file_lock."""
+    def hold_cross_process_lock(self) -> Iterator[None]:
+        """Acquire and hold the vault's cross-process flock (.secrets.enc.lock).
+
+        Public context manager so callers that need to keep the vault immutable
+        across multiple operations (e.g. a re-verify + atomic .env rewrite that
+        must not be interrupted by a concurrent vault DELETE) can hold the lock
+        for the entire critical section.
+
+        The lock is the same advisory flock used internally by every vault write
+        (``_write_store``), so holding it here prevents any concurrent
+        ``set`` / ``set_if_absent`` / ``delete`` from mutating the store until
+        the caller's ``with`` block exits.
+
+        Deadlock prevention: callers MUST NOT call any mutating vault method
+        (``set``, ``set_if_absent``, ``delete``) while holding this lock,
+        because those methods call ``_write_store`` → ``_cross_process_lock``
+        which re-acquires the same flock — causing a deadlock on POSIX (flock is
+        not re-entrant across the same fd on most kernels). Read-only access
+        (``get``, ``list_names``) is safe because those methods do NOT acquire
+        the flock.
+        """
         self._config_dir.mkdir(parents=True, exist_ok=True)
         lock_path = self._store_path.with_name(".secrets.enc.lock")
         lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_WRONLY, 0o600)
@@ -236,6 +334,16 @@ class SecretVault:
                 yield
         finally:
             os.close(lock_fd)
+
+    @contextmanager
+    def _cross_process_lock(self) -> Iterator[None]:
+        """Acquire a cross-process lock via platform_compat.file_lock.
+
+        Delegates to :meth:`hold_cross_process_lock` so there is exactly one
+        flock-acquire implementation.
+        """
+        with self.hold_cross_process_lock():
+            yield
 
     def _write_store(self, mutate) -> None:
         """Atomically read-modify-write the store under cross-process lock.

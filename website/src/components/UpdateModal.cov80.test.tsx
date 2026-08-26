@@ -8,6 +8,7 @@ type UpdateState = {
   version?: string
   notes?: string
   phase?: 'check' | 'download' | 'install'
+  installHandoff?: 'windows-installer' | 'automatic-relaunch'
 }
 
 const install = vi.fn<() => Promise<unknown>>()
@@ -58,12 +59,21 @@ describe('UpdateModal', () => {
     expect(dialog()).toBeInTheDocument()
     expect(screen.getByText('9.9.9')).toBeInTheDocument()
     expect(screen.getByText('zzq changelog')).toBeInTheDocument()
+    expect(dialog()?.textContent).toMatch(/several minutes/i)
+    expect(dialog()?.textContent).toMatch(/relaunch automatically/i)
+    expect(dialog()?.textContent).not.toMatch(/installation progress/i)
   })
 
   it('omits the notes paragraph when the notes are blank', async () => {
     await mount({ ...downloaded, notes: '   ' })
     expect(dialog()).toBeInTheDocument()
     expect(screen.queryByText(/zzq/)).not.toBeInTheDocument()
+  })
+
+  it('sets the Windows installer-window expectation from the main-process handoff', async () => {
+    await mount({ ...downloaded, installHandoff: 'windows-installer' })
+    expect(dialog()?.textContent).toMatch(/Windows installation window/i)
+    expect(dialog()?.textContent).toMatch(/progress/i)
   })
 
   it('the header close button dismisses it', async () => {
@@ -154,6 +164,15 @@ describe('UpdateModal', () => {
       expect(
         screen.getByText(i18nT('components.updateModal.installing_update_body')),
       ).toBeInTheDocument()
+      expect(screen.getByRole('alert').textContent).toMatch(/several minutes/i)
+      expect(screen.getByRole('alert').textContent).toMatch(/relaunch automatically/i)
+    })
+
+    it('repeats the Windows installer-window handoff before the app closes', async () => {
+      await mount({ ...installing, installHandoff: 'windows-installer' })
+      const text = (await screen.findByRole('alert')).textContent
+      expect(text).toMatch(/Windows installation window/i)
+      expect(text).toMatch(/progress/i)
     })
 
     it('offers no dismiss affordance: no buttons, and Escape is inert', async () => {

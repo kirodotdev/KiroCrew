@@ -17,7 +17,7 @@ import asyncio
 import json
 import time
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 
@@ -348,7 +348,9 @@ class TestAgentCommand:
         assert "Reset to default agent." in _texts(slack)
 
     @pytest.mark.asyncio
-    async def test_write_failure_surfaces_error(self, slack, sessions, owner, agents_dir, monkeypatch):
+    async def test_write_failure_surfaces_error(
+        self, slack, sessions, owner, agents_dir, monkeypatch
+    ):
         def _boom(_name):
             raise ValueError("read-only config")
 
@@ -574,9 +576,12 @@ class TestChannelCommand:
         from kiro_crew.config.loader import config_path
 
         await _slash("!channel agent demo", slack, sessions)
-        assert json.loads(config_path().read_text(encoding="utf-8"))["slack"]["channels"]["C1"][
-            "agent"
-        ] == "demo"
+        assert (
+            json.loads(config_path().read_text(encoding="utf-8"))["slack"]["channels"]["C1"][
+                "agent"
+            ]
+            == "demo"
+        )
         slack.actions.clear()
         await _slash("!channel agent off", slack, sessions)
         assert "default" in _texts(slack)
@@ -645,7 +650,9 @@ class TestKeywordCommands:
         saver.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_spawn_keyword_skips_log_when_incognito(self, slack, sessions, owner, monkeypatch):
+    async def test_spawn_keyword_skips_log_when_incognito(
+        self, slack, sessions, owner, monkeypatch
+    ):
         saver = AsyncMock()
         monkeypatch.setattr(h, "save_conversation_turn_off_loop", saver)
         h._mark_incognito("t1")
@@ -800,7 +807,9 @@ class TestCronHelpers:
     async def test_remove_found_and_missing(self):
         svc = MagicMock()
         svc.remove_job_async = AsyncMock(return_value=True)
-        assert "Removed cron job" in _reply(await h._handle_cron_command("cron remove j1", svc, "C", "t"))
+        assert "Removed cron job" in _reply(
+            await h._handle_cron_command("cron remove j1", svc, "C", "t")
+        )
         svc.remove_job_async = AsyncMock(return_value=False)
         assert "not found" in _reply(await h._handle_cron_command("cron remove j1", svc, "C", "t"))
 
@@ -896,14 +905,18 @@ class TestRunHelper:
             "No task running."
         )
         busy = MagicMock(running=True)
-        assert "cancelled" in _reply(await h._handle_run_command("task run cancel", busy, slack, "C", "t"))
+        assert "cancelled" in _reply(
+            await h._handle_run_command("task run cancel", busy, slack, "C", "t")
+        )
         busy.cancel.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_missing_spec_file(self, slack, tmp_path):
         runner = MagicMock(running=False)
         out = _reply(
-            await h._handle_run_command(f"task run {tmp_path / 'absent.md'}", runner, slack, "C", "t")
+            await h._handle_run_command(
+                f"task run {tmp_path / 'absent.md'}", runner, slack, "C", "t"
+            )
         )
         assert "Spec file not found" in out
 
@@ -1383,9 +1396,7 @@ class TestHandleInteractionGuards:
         provider = MagicMock()
         provider.approve_tool = AsyncMock()
         h._pending_approvals["C1:m1"] = h._PendingApproval(provider, "r1", "sess-9")
-        out = await h.handle_interaction(
-            "C1", "m1", h._ACTION_TRUST, "U1", sessions=sessions
-        )
+        out = await h.handle_interaction("C1", "m1", h._ACTION_TRUST, "U1", sessions=sessions)
         assert out == h._ACTION_TRUST
         assert h.is_slack_session_trusted("sess-9")
         sessions.set_approval_policy.assert_called_once_with("sess-9", "auto")
@@ -1436,9 +1447,7 @@ class TestLinkedApprovals:
         state = MagicMock()
         state.resolve_approval.return_value = False
         monkeypatch.setattr(h, "_dashboard_state", state)
-        ts = _reply(
-            await h.post_linked_approval(slack, "C1", "t1", "r9", "slot-1", "Delete prod")
-        )
+        ts = _reply(await h.post_linked_approval(slack, "C1", "t1", "r9", "slot-1", "Delete prod"))
         out = await h.handle_interaction("C1", ts, h._ACTION_REJECT, "U1")
         assert out == h._ACTION_REJECT
         state.resolve_approval.assert_called_once_with("r9", False)
@@ -1489,7 +1498,8 @@ class TestRouteLinkedThread:
         state.get_linked_slot.return_value = slot
         monkeypatch.setattr(h, "_dashboard_state", state)
         assert await h.maybe_route_linked_thread("do it", "t1", "U1", "C1", slack, "t1") is True
-        slot.queue_append.assert_called_once_with("do it", directive_user_origin=True)
+        # meta carries the admission-time containment snapshot (#5911).
+        slot.queue_append.assert_called_once_with("do it", meta=ANY, directive_user_origin=True)
         slot.append.assert_called_once()
         state.push_slots_update.assert_called_once()
 
@@ -1780,9 +1790,7 @@ class TestPureHelpers:
         _, text = h.build_timing_footer(125.0)
         assert text == "Finished in 2m 5s"
 
-    @pytest.mark.parametrize(
-        ("pct", "icon"), [(80, "🔴"), (60, "🟠"), (40, "🟡"), (5, "🟢")]
-    )
+    @pytest.mark.parametrize(("pct", "icon"), [(80, "🔴"), (60, "🟠"), (40, "🟡"), (5, "🟢")])
     def test_timing_footer_context_icon(self, pct, icon):
         client = MagicMock()
         client.context_usage_pct.return_value = pct

@@ -49,7 +49,10 @@ The electron-builder configuration lives in
   alpha-blended window animation, honoring the client-area animation preference.
   It performs no timer-driven bitmap work or `Sleep` on the NSIS UI thread;
   Windows CI installs the real artifact, records its duration, and enforces a
-  5-minute ceiling.
+  5-minute ceiling. Auto-updates skip the assisted wizard's decision pages but
+  keep its native extraction progress visible, then relaunch Kiro Crew and close
+  automatically. A legacy silent `/S --updated` invocation is converted to the
+  same visible update path so the transition works from already-fielded clients.
 - linux targets: `AppImage`, `deb`, `rpm` (category `Development`). One backend
   tree is packaged three times, with `scripts/stamp-distribution.sh` re-run
   between electron-builder invocations so each artifact's beacon `dist` names
@@ -560,9 +563,10 @@ unit-testable without mocking globals.
   contract instead of falling back to the Windows ANSI code page or an
   incompatible inherited POSIX encoding override.
 - Leaves the inherited child `PATH` unchanged. The gateway prerequisite service
-  probes supported Kiro CLI locations independently, so Finder-launched macOS
-  apps and Linux desktop launchers still find user-local installations without
-  mutating the shell environment.
+  probes supported Kiro CLI locations independently — including the Windows
+  per-user install at `%LOCALAPPDATA%\Kiro-Cli` — so desktop launches find
+  user-local installations without mutating the shell environment or requiring
+  the already-running gateway to inherit an installer-updated `PATH`.
 - On window close the app hides to the tray; quitting sends `SIGTERM` to the
   gateway process.
 

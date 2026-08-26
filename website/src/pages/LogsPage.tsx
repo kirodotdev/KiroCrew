@@ -118,20 +118,20 @@ export function LogViewer({ compact }: { compact?: boolean }) {
       <div className={`flex gap-2 flex-wrap ${compact ? 'mb-2' : 'mb-3'} items-center`}>
         <input type="text" aria-label={i18nT('pages.logsPage.filter_logs')} placeholder={i18nT('pages.logsPage.filter_logs_2')} value={search}
           onChange={e => { const v = e.target.value; setSearch(v); if (!v) setMatchesOnly(false) }}
-          className={`flex-1 ${sz.input} rounded-lg border border-border bg-surface text-text font-mono placeholder:text-muted focus:outline-none focus-visible:border-accent`}
+          className={`flex-1 ${sz.input} rounded-lg border border-border bg-bg-elevated text-text font-mono placeholder:text-muted focus:outline-none focus-visible:border-accent`}
         />
         {search && (
           <>
-            <button className={`${sz.btn} rounded cursor-pointer border transition-all whitespace-nowrap ${matchesOnly ? 'bg-surface border-border-strong text-text' : 'bg-transparent border-border text-muted'}`}
+            <button className={`${sz.btn} rounded cursor-pointer border transition-all whitespace-nowrap ${matchesOnly ? 'bg-bg-elevated border-border-strong text-text' : 'bg-transparent border-border text-muted'}`}
               onClick={() => setMatchesOnly(p => !p)}>{i18nT('pages.logsPage.matches_only')}</button>
             <span className={`${sz.label} text-muted whitespace-nowrap`}>{matchCount} {i18nT('pages.logsPage.matches')}</span>
           </>
         )}
-        <button className={`${sz.btn} rounded cursor-pointer border transition-all whitespace-nowrap ml-auto ${newestFirst ? 'bg-surface border-border-strong text-text' : 'bg-transparent border-border text-muted'}`}
+        <button className={`${sz.btn} rounded cursor-pointer border transition-all whitespace-nowrap ml-auto ${newestFirst ? 'bg-bg-elevated border-border-strong text-text' : 'bg-transparent border-border text-muted'}`}
           onClick={() => setNewestFirst(p => !p)}>{newestFirst ? i18nT('pages.logsPage.latest_first') : i18nT('pages.logsPage.latest_last')}</button>
-        <button className={`${sz.btn} rounded cursor-pointer border transition-all whitespace-nowrap ${wrapLines ? 'bg-surface border-border-strong text-text' : 'bg-transparent border-border text-muted'}`}
+        <button className={`${sz.btn} rounded cursor-pointer border transition-all whitespace-nowrap ${wrapLines ? 'bg-bg-elevated border-border-strong text-text' : 'bg-transparent border-border text-muted'}`}
           onClick={() => setWrapLines(p => !p)}>{wrapLines ? i18nT('pages.logsPage.wrap_on') : i18nT('pages.logsPage.wrap_off')}</button>
-        <button className={`${sz.btn} rounded cursor-pointer border transition-all whitespace-nowrap ${autoFollow ? 'bg-surface border-border-strong text-text' : 'bg-transparent border-border text-muted'}`}
+        <button className={`${sz.btn} rounded cursor-pointer border transition-all whitespace-nowrap ${autoFollow ? 'bg-bg-elevated border-border-strong text-text' : 'bg-transparent border-border text-muted'}`}
           onClick={toggleTail}>{autoFollow ? i18nT('pages.logsPage.tail_on') : i18nT('pages.logsPage.tail_off')}</button>
       </div>
       <div className={`flex-1 flex flex-col min-h-0 ${compact ? 'border border-border rounded-lg overflow-hidden mb-2' : 'card-glow border border-border bg-card rounded-lg p-5 animate-rise shadow-sm transition-all'}`}>

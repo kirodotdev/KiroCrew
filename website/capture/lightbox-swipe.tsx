@@ -68,6 +68,11 @@ interface SwipeState {
   open: boolean
   transform: string
   backdrop: string
+  /** The <img>'s own transform, which carries the pinch scale and the pan. Read
+   *  separately from `transform` because the two live on different elements on
+   *  purpose: the wrapper holds the dismiss offset so it composes with, rather
+   *  than fights, the zoom. */
+  image: string
 }
 
 declare global {
@@ -78,12 +83,14 @@ declare global {
 
 window.__swipe = () => {
   const overlay = document.querySelector<HTMLElement>('[role="button"].fixed.inset-0')
-  if (!overlay) return { open: false, transform: 'none', backdrop: 'none' }
+  if (!overlay) return { open: false, transform: 'none', backdrop: 'none', image: 'none' }
   const inner = overlay.firstElementChild as HTMLElement
+  const img = overlay.querySelector('img')
   return {
     open: true,
     transform: getComputedStyle(inner).transform,
     backdrop: getComputedStyle(overlay).backgroundColor,
+    image: img ? getComputedStyle(img).transform : 'none',
   }
 }
 

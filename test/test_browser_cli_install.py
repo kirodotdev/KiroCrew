@@ -1,4 +1,4 @@
-"""Detection, install sequencing, and the presence-is-consent gate."""
+"""Detection, install sequencing, and the capability-availability probe."""
 
 from __future__ import annotations
 
@@ -148,10 +148,10 @@ def test_available_is_false_without_the_binary(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_available_is_presence_only(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Presence is consent: a broken Node or missing browser does not revoke it.
+    """Presence reports availability even with a broken Node or missing browser.
 
-    Reporting "not consented" for a repairable environment would send the
-    operator to the wrong fix, and there is no toggle that could say otherwise.
+    Reporting a repairable environment as absent would send the operator to the
+    wrong fix. Shell approval is a separate decision made by the runner.
     """
     _wire(
         monkeypatch,
@@ -165,10 +165,10 @@ def test_available_is_presence_only(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_no_consent_flag_is_consulted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The gate reads PATH and nothing else -- no flag file, no config key.
+    """Availability reads PATH and nothing else -- no flag file, no config key.
 
     An empty data home must not make an installed CLI unavailable, which is what
-    a re-introduced consent file would do.
+    a capability flag would do. Approval remains outside this module.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "empty-home"))
     _wire(

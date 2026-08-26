@@ -114,6 +114,7 @@ WRITE_DESTINATION_ARG = {
     "replace": 1,  # os.replace(tmp, final)
     "rename": 1,  # os.rename(tmp, final)
     "move": 1,  # shutil.move(tmp, final)
+    "link": 1,  # os.link(tmp, final) — create-only publish; still a content landing
 }
 
 #: The same destinations by KEYWORD name. Reading positionally alone let the
@@ -128,6 +129,7 @@ WRITE_DESTINATION_KWARG = {
     "replace": "dst",
     "rename": "dst",
     "move": "dst",
+    "link": "dst",
 }
 
 #: Keyword name of a publish call's SOURCE (the temp being renamed away).
@@ -150,7 +152,7 @@ WRITE_METHODS = frozenset({"write_text", "write_bytes"})
 #: ``move`` to the final path recorded no publication (so a lockdown after it was
 #: not flagged) AND the source got no temp exemption (so locking a temp and then
 #: moving it -- correct code -- was flagged).
-PUBLISH_CALLS = frozenset({"replace", "rename", "move"})
+PUBLISH_CALLS = frozenset({"replace", "rename", "move", "link"})
 
 #: The subset with a pathlib METHOD spelling where the receiver is the temp:
 #: ``<tmp>.rename(final)`` / ``<tmp>.replace(final)``. ``shutil.move`` is a
@@ -180,21 +182,10 @@ SUPPRESS_RE = re.compile(r"#\s*lockdown-ok\s*:\s*(?P<reason>\S.*)$")
 #: added to an allowlisted function would be suppressed along with the tracked
 #: one, so an allowlist entry would quietly widen into a whole-function waiver.
 KNOWN_UNCONVERTED: dict[str, tuple[str, str]] = {
-    # Classified by #5346 -- the sites #5307's third acceptance criterion left
-    # untriaged. The remaining snapshot one is a shutil.copy2 into a final
-    # destination, so it needs copy-to-temp + restrict + replace rather than a
-    # one-line atomic_write swap.
-    #
-    # #5285's six sites were here until main converted them mid-review; the
-    # shrink-only rule below is what forced this list to follow.
-    "src/kiro_crew/snapshot.py::_do_merge": ("#5346", "d"),
-    "src/kiro_crew/sel.py::_append_lines_locked": ("#5346", "self._path"),
-    # Surfaced once _mode_of learned the symbolic spelling: writes a config that
-    # "can carry provider tokens / API keys" (its own docstring), then chmods.
-    # Path expressions are recorded after alias resolution, so this entry names
-    # `home_dir / "config.json"` rather than the local `dst_cfg` the line spells.
-    # That is the more durable key: renaming the local no longer stales the entry.
-    "src/kiro_crew/pod/runtime.py::write_pod_config": ("#5346", 'home_dir / "config.json"'),
+    # Empty: #5493 converted denied_commands; this PR converts write_pod_config
+    # and snapshot._do_merge, and annotates sel._append_lines_locked lockdown-ok
+    # (same event-loop / icacls reason as #5228). Shrink-only: do not re-add a
+    # converted site.
 }
 
 
@@ -650,6 +641,7 @@ def _temp_sources(node: ast.Call, source: str) -> list[str]:
     """Paths this call publishes UNDER ANOTHER NAME, in either spelling.
 
     ``os.replace(tmp, final)``   -- the temp is the first argument.
+    ``os.link(tmp, final)``      -- create-only publish; the temp is still arg 0.
     ``tmp.rename(final)``        -- the temp is the receiver.
     ``tmp.replace(target=final)`` -- likewise, and missing this spelling made the
     exemption fail OPEN in the other direction: a CORRECT writer that locked its

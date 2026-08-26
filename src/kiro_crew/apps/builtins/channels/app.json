@@ -35,5 +35,18 @@
       }
     ]
   },
-  "iconUrl": "/app-assets/channels/icon.svg"
+  "iconUrl": "/app-assets/channels/icon.svg",
+  "useCases": [
+    "Run incident response, research, or code review with several named agent roles in one auditable shared transcript."
+  ],
+  "configuration": [
+    "Enable the hidden app with kirocrew app enable channels, create a channel from a preset or Custom, assign agents and listen modes, then use @mentions to hand off work."
+  ],
+  "screenshots": [
+    "/app-assets/channels/screenshot-main.png"
+  ],
+  "heroImage": "/app-assets/channels/hero-light.svg",
+  "heroImageDark": "/app-assets/channels/hero-dark.svg",
+  "heroImageDetail": "/app-assets/channels/hero-detail-light.svg",
+  "heroImageDetailDark": "/app-assets/channels/hero-detail-dark.svg"
 }

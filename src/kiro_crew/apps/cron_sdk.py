@@ -203,12 +203,21 @@ class CronSDK:
         persistent_session: bool,
         silent: bool,
         enabled: bool,
+        timezone: str,
+        skip_dates: list[str] | None,
     ) -> dict[str, Any]:
         """Build the kwargs common to the sync/async ``CronService.add_job``.
 
         Threads every field so the job is persisted FULLY-FORMED and owner-tagged
         in ONE locked build+persist (no follow-up unlocked ``_save()`` that could
         race a concurrent create).
+
+        ``timezone``/``skip_dates`` are threaded here rather than left to a
+        follow-up ``update_job``: they are the two calendar-validity-sensitive
+        fields ``CronService.add_job`` owns and validates before its single
+        locked save, so passing them at create keeps the fully-formed-on-first-
+        save invariant instead of persisting a job that resolves to UTC and
+        correcting it in a second write.
         """
         return dict(
             name=name,
@@ -223,6 +232,8 @@ class CronSDK:
             persistent_session=persistent_session,
             silent=silent,
             enabled=enabled,
+            timezone=timezone or "",
+            skip_dates=skip_dates or None,
             created_by=self._owner_prefix,
         )
 
@@ -243,11 +254,22 @@ class CronSDK:
         persistent_session: bool = True,
         silent: bool = False,
         enabled: bool = True,
+        timezone: str = "",
+        skip_dates: list[str] | None = None,
     ) -> Any:
         """Create a cron job owned by this app. **Synchronous** (preserves the
         published SDK contract). See :meth:`add_job_async` for the loop-native
         variant. Raises ``CronSyncOnLoopError`` if called on a running event loop
         (use :meth:`add_job_async` there). Returns the created CronJob object.
+
+        ``timezone`` is an IANA zone name (e.g. ``"America/Los_Angeles"``) that
+        the schedule and any ``skip_dates`` are evaluated in. Leaving it empty
+        falls back to the gateway config's timezone and then to UTC, so an app
+        scheduling against a user's local time should pass it explicitly.
+        ``CronService.add_job`` validates both fields before the single locked
+        save, so an unknown zone or a malformed ``YYYY-MM-DD`` raises
+        ``ValueError`` at create time instead of silently resolving to UTC when
+        the job fires.
         """
         self._vet_command_script(name, command, script)
         job = _run_sync_mutator(
@@ -258,7 +280,7 @@ class CronSDK:
                 every_secs=every_secs, cron_expr=cron_expr, agent=agent,
                 command=command, script=script, agent_sequence=agent_sequence,
                 env=env, persistent_session=persistent_session, silent=silent,
-                enabled=enabled,
+                enabled=enabled, timezone=timezone, skip_dates=skip_dates,
             ),
         )
         self._audit_add(job)
@@ -279,11 +301,17 @@ class CronSDK:
         persistent_session: bool = True,
         silent: bool = False,
         enabled: bool = True,
+        timezone: str = "",
+        skip_dates: list[str] | None = None,
     ) -> Any:
         """Event-loop-native :meth:`add_job`: routes through
         ``CronService.add_job_async`` (bounded store-lock spin offloaded to a
         worker thread), so an on-loop caller awaits without ever parking the
         loop. Returns the created CronJob object.
+
+        ``timezone``/``skip_dates`` behave exactly as in :meth:`add_job` --
+        validated at the persistence owner and folded into the single locked
+        save, so a job never exists with the wrong calendar settings.
         """
         self._vet_command_script(name, command, script)
         job = await self._cron.add_job_async(
@@ -292,7 +320,7 @@ class CronSDK:
                 every_secs=every_secs, cron_expr=cron_expr, agent=agent,
                 command=command, script=script, agent_sequence=agent_sequence,
                 env=env, persistent_session=persistent_session, silent=silent,
-                enabled=enabled,
+                enabled=enabled, timezone=timezone, skip_dates=skip_dates,
             ),
         )
         self._audit_add(job)
@@ -313,6 +341,8 @@ class CronSDK:
         persistent_session: bool = True,
         silent: bool = False,
         enabled: bool = True,
+        timezone: str = "",
+        skip_dates: list[str] | None = None,
     ) -> Any:
         """Atomic add-if-absent by job name; returns None when already present.
 
@@ -321,6 +351,10 @@ class CronSDK:
         so two concurrent registrars (e.g. a CLI enable racing gateway boot)
         cannot both snapshot the name as absent and persist duplicates. The
         bounded lock spin runs in a worker thread, keeping on-loop callers safe.
+
+        ``timezone``/``skip_dates`` are threaded through the same build as
+        :meth:`add_job`, so the winning registrar's job is calendar-correct on
+        its first and only save.
         """
         self._vet_command_script(name, command, script)
         job = await self._cron.add_job_if_absent_async(
@@ -330,7 +364,7 @@ class CronSDK:
                 every_secs=every_secs, cron_expr=cron_expr, agent=agent,
                 command=command, script=script, agent_sequence=agent_sequence,
                 env=env, persistent_session=persistent_session, silent=silent,
-                enabled=enabled,
+                enabled=enabled, timezone=timezone, skip_dates=skip_dates,
             ),
         )
         if job is not None:
@@ -365,7 +399,11 @@ class CronSDK:
         """
         self._assert_owned(job_id, "cron_remove_job")
         result = _run_sync_mutator(
-            self._cron.remove_job, job_id, _api="remove_job"
+            self._cron.remove_job,
+            job_id,
+            _api="remove_job",
+            actor=self._owner_prefix,
+            source="cron_sdk",
         )
         self._audit_remove(job_id)
         return result
@@ -374,7 +412,9 @@ class CronSDK:
         """Event-loop-native :meth:`remove_job` (routes through
         ``CronService.remove_job_async``)."""
         self._assert_owned(job_id, "cron_remove_job")
-        result = await self._cron.remove_job_async(job_id)
+        result = await self._cron.remove_job_async(
+            job_id, actor=self._owner_prefix, source="cron_sdk"
+        )
         self._audit_remove(job_id)
         return result
 

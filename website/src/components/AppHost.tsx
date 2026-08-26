@@ -30,6 +30,7 @@ export interface AppHostProps {
     version?: string
     displayName?: string
     enabled?: boolean
+    origin?: string
     manifest?: {
       name?: string
       version?: string
@@ -175,7 +176,7 @@ function AppNoUI({ app }: { app: AppHostProps['app'] }) {
     <>
       <PageHeader
         title={appDisplayName(app)}
-        subtitle={appDescription({ name: app.name, description: app.manifest?.description })}
+        subtitle={appDescription({ name: app.name, description: app.manifest?.description, origin: app.origin })}
       />
       <div className="flex-1 flex items-center justify-center p-8">
         <div className="text-center max-w-md">

@@ -9,6 +9,9 @@ src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::Te
 src/kiro_crew/apps/builtins/auto_improvement/tests/test_pollute.py::TestExcludesAreNarrow::test_a_relative_or_symlinked_exclude_still_matches
 src/kiro_crew/apps/builtins/auto_improvement/tests/test_pr_watchers.py::TestCloneIsolation::test_symlinked_destination_is_refused
 src/kiro_crew/apps/builtins/auto_improvement/tests/test_reconcile_and_publish.py::TestOrphanCloneSweep::test_a_symlink_is_not_followed
+src/kiro_crew/apps/builtins/spec_builder/tests/test_routes.py::test_a_claim_through_an_aliased_spelling_is_refused
+src/kiro_crew/apps/builtins/spec_builder/tests/test_routes.py::test_a_symlinked_spelling_cannot_record_a_second_answer
+src/kiro_crew/apps/builtins/spec_builder/tests/test_routes.py::test_an_unresolvable_directory_keeps_its_normalized_literal_key
 src/kiro_crew/apps/builtins/spec_builder/tests/test_routes.py::test_handoff_refuses_a_symlinked_tasks_file
 src/kiro_crew/apps/builtins/spec_builder/tests/test_routes.py::test_resolved_spec_dir_is_revalidated_for_sensitivity
 src/kiro_crew/apps/builtins/spec_builder/tests/test_routes.py::test_safe_dir_resolves_symlinks_before_checking
@@ -17,6 +20,7 @@ src/kiro_crew/apps/builtins/spec_builder/tests/test_routes.py::test_spec_file_re
 src/kiro_crew/apps/builtins/spec_builder/tests/test_routes.py::test_spec_file_refuses_symlink_to_sensitive_target
 src/kiro_crew/apps/builtins/spec_builder/tests/test_routes.py::test_spec_read_refuses_a_symlinked_spec_file
 src/kiro_crew/apps/builtins/spec_builder/tests/test_routes.py::test_symlinked_spec_dir_cannot_touch_another_specs_sentinel
+src/kiro_crew/apps/builtins/spec_builder/tests/test_routes.py::test_the_ledger_key_touches_no_filesystem
 test/test_enterprise.py::test_dangling_symlink_config_fails_closed
 test/test_enterprise.py::test_symlink_to_empty_config_stays_default_open
 test/test_external_logout_detection.py::TestIdentityFingerprint::test_missing_and_symlinked_stores_read_as_absent
@@ -69,6 +73,7 @@ test/test_pptx_maker_decks.py::TestListDecks::test_a_symlinked_artifact_subdirec
 test/test_pptx_maker_decks.py::TestListDecks::test_a_symlinked_brief_is_not_followed
 test/test_pptx_maker_decks.py::TestListDecks::test_a_symlinked_deck_is_not_listed_or_read
 test/test_prepare_pr_local_review.py::test_branch_symlink_cannot_redirect_a_reviewers_contract
+test/test_prepare_pr_local_review.py::test_worktree_bootstrap_source_cannot_escape_the_worktree
 test/test_prepare_pr_profiles.py::test_symlinked_config_is_refused
 test/test_prompts.py::TestListAimPrompts::test_sensitive_sop_symlink_skipped
 test/test_pwa_file_symlink.py::test_pwa_file_rejects_traversal

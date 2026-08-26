@@ -232,7 +232,11 @@ async def _stage_loop(
 
     logger.info(
         "Stage loop start: slot=%s total=%d start_idx=%d auto_run=%s titles=%s",
-        slot.key, total, start_idx, auto_run, titles,
+        slot.key,
+        total,
+        start_idx,
+        auto_run,
+        titles,
     )
 
     _paused = False
@@ -265,7 +269,9 @@ async def _stage_loop(
             if stage_idx >= slot._plan_stage_count:
                 logger.warning(
                     "Stage loop clamp for slot %s: stage_idx=%d >= plan_stage_count=%d; stopping",
-                    slot.key, stage_idx, slot._plan_stage_count,
+                    slot.key,
+                    stage_idx,
+                    slot._plan_stage_count,
                 )
                 break
 
@@ -330,7 +336,10 @@ async def _stage_loop(
             # Inject as hidden user message and run LLM turn
             logger.info(
                 "Stage %d/%d: context=%d chars, messages=%d",
-                stage_num, total, len(context), len(slot.messages),
+                stage_num,
+                total,
+                len(context),
+                len(slot.messages),
             )
             # NOT flushed here: a stage turn is automatic (`auto-go`), and a held
             # note is owed to the next USER turn, so feeding it to a stage would
@@ -377,7 +386,9 @@ async def _stage_loop(
                 # convention already used by _run_pending_synthesis).
                 logger.error(
                     "Stage %d exceeded its %ds ceiling for slot %s",
-                    stage_num, tracker.stage_timeout_seconds, slot.key,
+                    stage_num,
+                    tracker.stage_timeout_seconds,
+                    slot.key,
                 )
                 _timeout_msg = (
                     f"⏱️ Stage {stage_num} timed out after {tracker.timeout_human}. "
@@ -404,8 +415,12 @@ async def _stage_loop(
                 )
                 break
             except Exception:
-                logger.exception("_run_chat failed during stage %d for slot %s", stage_num, slot.key)
-                _err_msg = f"❌ Stage {stage_num} failed due to an internal error. Auto-run stopped."
+                logger.exception(
+                    "_run_chat failed during stage %d for slot %s", stage_num, slot.key
+                )
+                _err_msg = (
+                    f"❌ Stage {stage_num} failed due to an internal error. Auto-run stopped."
+                )
                 slot._auto_run = False
                 slot.append("assistant", _err_msg, "msg msg-a")
                 state.broadcast_ws(
@@ -451,11 +466,11 @@ async def _stage_loop(
                 logger.warning(
                     "Stage %d: subagents manager is None for slot %s"
                     " — stopping auto-run (fail-closed)",
-                    stage_num, slot.key,
+                    stage_num,
+                    slot.key,
                 )
                 _fc_msg = (
-                    f"⚠️ Stage {stage_num}: subagent manager unavailable. "
-                    "Auto-run stopped."
+                    f"⚠️ Stage {stage_num}: subagent manager unavailable. " "Auto-run stopped."
                 )
                 slot._auto_run = False
                 slot.append("assistant", _fc_msg, "msg msg-a")
@@ -485,12 +500,10 @@ async def _stage_loop(
                     logger.warning(
                         "Stage %d: running_agents_for returned None for slot %s"
                         " — stopping auto-run (fail-closed)",
-                        stage_num, slot.key,
+                        stage_num,
+                        slot.key,
                     )
-                    _fc_msg = (
-                        f"⚠️ Stage {stage_num}: subagent check failed. "
-                        "Auto-run stopped."
-                    )
+                    _fc_msg = f"⚠️ Stage {stage_num}: subagent check failed. " "Auto-run stopped."
                     slot._auto_run = False
                     slot.append("assistant", _fc_msg, "msg msg-a")
                     state.broadcast_ws(
@@ -528,13 +541,17 @@ async def _stage_loop(
                     if _pending and _sa_rounds % 10 == 0:
                         state.broadcast_ws(
                             "chat_status",
-                            {"slot": slot.key, "status": f"Waiting for {len(_pending)} subagent(s)..."},
+                            {
+                                "slot": slot.key,
+                                "status": f"Waiting for {len(_pending)} subagent(s)...",
+                            },
                         )
                     if _pending is None:
                         logger.warning(
                             "Stage %d: running_agents_for returned None during"
                             " polling for slot %s — stopping auto-run",
-                            stage_num, slot.key,
+                            stage_num,
+                            slot.key,
                         )
                         slot._auto_run = False
                         break
@@ -567,7 +584,11 @@ async def _stage_loop(
                 _wait_secs = _sa_rounds * 2
                 logger.warning(
                     "Stage %d: subagent wait exhausted after %ds (%d rounds, cap %d) for slot %s",
-                    stage_num, _wait_secs, _sa_rounds, _sa_max_rounds, slot.key,
+                    stage_num,
+                    _wait_secs,
+                    _sa_rounds,
+                    _sa_max_rounds,
+                    slot.key,
                 )
                 slot._auto_run = False
                 _sa_msg = (
@@ -603,14 +624,20 @@ async def _stage_loop(
                 result_path = _capture_stage_result(slot, stage_num)
                 tracker.record_stage_result(stage_num, result_path)
             except OSError:
-                logger.warning("Failed to capture stage %d result to disk", stage_num, exc_info=True)
+                logger.warning(
+                    "Failed to capture stage %d result to disk", stage_num, exc_info=True
+                )
 
             # Gate: if not auto_run, wait for user approval
             if not auto_run:
                 # Emit completion message — user must click Go for next stage
                 if stage_idx + 1 < total:
                     next_title = titles[stage_idx + 1] if stage_idx + 1 < len(titles) else ""
-                    next_label = f"Stage {stage_idx + 2}: {next_title}" if next_title else f"Stage {stage_idx + 2}"
+                    next_label = (
+                        f"Stage {stage_idx + 2}: {next_title}"
+                        if next_title
+                        else f"Stage {stage_idx + 2}"
+                    )
                     done_msg = (
                         f"✅ Stage {stage_num} complete. Click **Go** to proceed to {next_label}."
                         "\n\n[OPTION: Go | Go All | Cancel]"
@@ -686,7 +713,11 @@ async def _stage_loop(
         slot._in_stage_execution = False
         logger.info(
             "Stage loop end: slot=%s current_stage=%s/%s stopping=%s auto_run=%s",
-            slot.key, tracker.current_stage, total, slot._stopping, slot._auto_run,
+            slot.key,
+            tracker.current_stage,
+            total,
+            slot._stopping,
+            slot._auto_run,
         )
         # Hand off any messages the user queued while the plan ran (held via the
         # _in_stage_execution gate in _start_next_queued_turn — now cleared above).
@@ -785,7 +816,7 @@ async def api_chat_plan_action(request: web.Request) -> web.Response:
         slot._auto_run = False
         if state.subagents:
             session_key = f"dashboard:{slot.key}"
-            for a in (state.subagents.running_agents_for(session_key) or []):
+            for a in state.subagents.running_agents_for(session_key) or []:
                 t = state.subagents._tasks.get(a["id"])
                 if t and not t.done():
                     t.cancel()
@@ -799,7 +830,19 @@ async def api_chat_plan_action(request: web.Request) -> web.Response:
 
     # Go or Go All — use Python-controlled stage loop
     if slot.running:
-        slot.queue_append("Go")
+        # circular import: session_control imports this package's modules at module level.
+        from kiro_crew.dashboard.session_control import containment_meta
+
+        # Provenance follows the CALLER — the same request-identity split as
+        # api_chat and the manual continue. A human clicking Go on their own
+        # busy session must not lose the approval if they link the session
+        # before the drain; an app relaying a plan action never gains the
+        # authenticated-human flag.
+        slot.queue_append(
+            "Go",
+            meta=containment_meta(state, slot),
+            directive_user_origin=not bool(request.get("app", "")),
+        )
         return web.json_response({"ok": True, "queued": True})
 
     is_auto = action == "go all"

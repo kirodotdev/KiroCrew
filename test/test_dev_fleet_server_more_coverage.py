@@ -49,6 +49,7 @@ class _FakeProc:
         self.stdout = self
         self.kills = 0
         self.waits = 0
+        self.communicates = 0
         self._lines = list(lines or [])
         self._rc = rc
         self._readline_error = readline_error
@@ -63,7 +64,10 @@ class _FakeProc:
 
     # -- communicate side (used by _run_cmd) --
     async def communicate(self) -> tuple[bytes, bytes]:
-        if self._communicate_delay is not None:
+        self.communicates += 1
+        # A killed child's pipes close: the post-kill reap returns promptly
+        # rather than re-serving the hang that triggered the timeout.
+        if self._communicate_delay is not None and self.kills == 0:
             await asyncio.sleep(self._communicate_delay)
         self.returncode = self._rc
         return b"out", b"err"
@@ -189,13 +193,20 @@ async def test_run_cmd_timeout_kills_tree_and_reports(monkeypatch, tmp_path):
     _spawn_returns(monkeypatch, proc)
     killed: list[int] = []
     monkeypatch.setattr(mod, "_kill_tree", AsyncMock(side_effect=killed.append))
+    # The shared reap helper also signals the tree; intercept it so a fake pid
+    # never reaches a real killpg on the host.
+    monkeypatch.setattr(mod.platform_compat, "kill_process_tree_async", AsyncMock())
 
     rc, out, err = await mod._run_cmd(["git", "status"], timeout=0)
 
     assert (rc, out, err) == (-1, "", "timeout (0s)")
     assert killed == [proc.pid]
-    # kill() + wait() both ran, and the missing cleanup file was tolerated.
-    assert (proc.kills, proc.waits) == (1, 1)
+    # The reap drains pipes via communicate() after kill(); a bare wait() on
+    # a killed child blocked writing into a full pipe would hang the caller
+    # forever (#5989). With timeout=0 the site's own communicate() is
+    # cancelled before it ever runs, so the single recorded call IS the reap.
+    # The missing cleanup file was tolerated.
+    assert (proc.kills, proc.communicates, proc.waits) == (1, 1, 0)
 
 
 @pytest.mark.asyncio
@@ -287,6 +298,9 @@ async def test_start_run_stream_error_reaps_live_child(monkeypatch):
     _spawn_returns(monkeypatch, proc)
     killed: list[int] = []
     monkeypatch.setattr(mod, "_kill_tree", AsyncMock(side_effect=killed.append))
+    # The shared reap helper also signals the tree; intercept it so the fake
+    # pid never reaches a real killpg on the host.
+    monkeypatch.setattr(mod.platform_compat, "kill_process_tree_async", AsyncMock())
 
     rid = await mod._start_run("sync", ["kirocrew", "sync"])
     rec = await _drain_run(rid)
@@ -306,6 +320,9 @@ async def test_start_run_stream_error_tolerates_already_reaped_child(monkeypatch
     )
     _spawn_returns(monkeypatch, proc)
     monkeypatch.setattr(mod, "_kill_tree", AsyncMock())
+    # The shared reap helper also signals the tree; intercept it so the fake
+    # pid never reaches a real killpg on the host.
+    monkeypatch.setattr(mod.platform_compat, "kill_process_tree_async", AsyncMock())
 
     rid = await mod._start_run("sync", ["kirocrew", "sync"])
     rec = await _drain_run(rid)

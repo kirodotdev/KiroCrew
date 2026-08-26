@@ -2194,6 +2194,42 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
   [data-composer-typo]::placeholder { font-size: 0.875rem; }
 }
 
+/* ── Why there is deliberately NO app-wide 16px field rule here ──
+   The composer rule above is scoped to one hook on purpose. A generalised version was
+   written and withdrawn: CSS can only SET a size, never floor one, so a rule broad
+   enough to reach every field SHRINKS the ones deliberately larger (measured: the
+   artifact rename field's `text-2xl`), while any narrower selector list misses the next
+   field written with an arbitrary value, an `!important` modifier or an inline style.
+   Do not re-add one — `noPageZoom.test.ts` fails if a blanket element rule reappears.
+   Full reasoning, and what a correct fix would need instead, live in the page-zoom
+   section of website/docs/page-layout.md and in issue #6001. */
+
+/* ── The shell is not a zoomable document ──
+   `pan-x pan-y` allows exactly the two behaviours the app needs from the browser
+   on touch -- scrolling either axis -- and withholds the two it does not:
+   pinch page zoom and double-tap zoom. Both magnify a `position: fixed` /
+   `h-dvh` shell, which has no scroll axis to reach whatever the magnification
+   pushed off the visual viewport, so the topbar, composer and drawer all leave
+   at once with no gesture but a second pinch to bring them back.
+
+   `touch-action` is declared on the ROOT because the browser intersects the
+   values from the hit-test target up to the root before deciding which native
+   gesture to run: putting it here restricts every descendant with one rule and
+   cannot be undone lower down -- which is why the image viewer, the one surface
+   that must magnify, owns its pinch as a transform of its own rather than
+   asking for `pinch-zoom` back (see Lightbox in MarkdownRenderer.tsx).
+
+   Existing `touch-action: none` handles (resize separators, drag rows) are
+   unaffected: `none` is strictly narrower, so the intersection is still `none`.
+
+   Pointer-fine devices keep the browser's full gesture set -- ctrl+wheel and
+   the trackpad pinch are a desktop convention this has no business changing.
+   The viewport meta in index.html and the `gesturestart` suppression in
+   utils/pageZoom.ts cover the engines this rule does not reach. */
+@media (pointer: coarse) {
+  html { touch-action: pan-x pan-y; }
+}
+
 /* ── Liquid-glass design system ──
  * Two composable classes for any surface that should look like Apple-style
  * liquid glass — file chips, sidebar, chat input, follow-up bar, etc.

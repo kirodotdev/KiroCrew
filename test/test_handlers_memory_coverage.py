@@ -1483,7 +1483,11 @@ class TestEnsurePipEdgeCases:
         assert ok is False
         assert "timed out" in err
         proc.kill.assert_called_once()
-        proc.wait.assert_awaited_once()
+        # The critical pin: the reap drains pipes via a SECOND communicate();
+        # a bare wait() on a killed child blocked writing into a full stderr
+        # pipe would hang the handler forever (#5989).
+        assert proc.communicate.call_count == 2
+        proc.wait.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_temp_wrapper_is_unlinked_even_when_already_gone(self, tmp_path: Path) -> None:

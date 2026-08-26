@@ -125,7 +125,7 @@ It also pins the other real host paths a test must not reach: the subagent regis
 running gateway sweeps stray entries there as orphans), the 610MB embedding-model
 download, and the agent-state sidecar.
 
-Three members are there for a different reason — a **process-global** that any testpath
+Five members are there for a different reason — a **process-global** that any testpath
 can poison for every test after it, which is the same failure shape as host mutation
 one scope down:
 
@@ -151,6 +151,21 @@ one scope down:
   undoes it, so a test driving that code cannot avoid it.
   `log_redaction.uninstall_log_redaction()` exists for a test that wants to assert on
   the uninstalled state itself.
+* `_restore_logger_levels` puts every logger's level and `disabled` flag back. A level is
+  process-global AND hierarchical, so an explicit one left on `kiro_crew` decides what
+  every `kiro_crew.*` logger in the worker may emit and it outranks the root level
+  `caplog.at_level()` sets — the victim's `caplog.text` comes back **empty**, not wrong,
+  which reads as "the code stopped logging" rather than as pollution.
+  `cli._setup_cli_logging` pins `kiro_crew` at WARNING, and test modules across the suite
+  run it for real by driving `cli.main()` in process. Restored rather than blamed, for the
+  same reason the CWD restore is. **Handlers are deliberately not restored**: one is
+  routinely paired with a module-global recording it as installed
+  (`dashboard.handlers.updates._log_ring_handler_installed`), and a floor can detach the
+  handler but cannot know to clear the flag, which leaves the singleton reporting
+  installed with nothing attached. The root logger's handler list is doubly excluded —
+  pytest's own `catching_logs` adds one per test phase and removes it at the phase
+  boundary, so writing back a setup-phase snapshot during teardown would drop the handler
+  the teardown phase is capturing through.
 * `_restore_autonudge_singleton` puts `autonudge._INSTANCE` back to whatever the test
   inherited. `AutoNudgeService.start()` publishes itself there and `stop()` clears it, so
   a test that starts the service — or drives a dashboard handler that does — leaves a live

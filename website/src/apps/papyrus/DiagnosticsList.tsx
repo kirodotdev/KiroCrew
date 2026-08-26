@@ -89,7 +89,7 @@ export default function DiagnosticsList({ diagnostics, log, onJumpToLine }: Diag
     return (
       <div className="p-2" data-testid="papyrus-diagnostics">
         {log ? (
-          <pre className="max-h-40 overflow-auto rounded bg-bg-subtle p-2 font-mono text-[12px] text-muted whitespace-pre-wrap">
+          <pre className="max-h-40 overflow-auto rounded bg-bg-accent p-2 font-mono text-[12px] text-muted whitespace-pre-wrap">
             {log}
           </pre>
         ) : (

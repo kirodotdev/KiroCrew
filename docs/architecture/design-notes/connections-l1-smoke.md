@@ -68,7 +68,7 @@ makes that `vacuous`, nonzero. `GRANT_HELD` counts as exercised; `SKIPPED` not.
 
 ## Grant presence is observed, never read
 
-`grant_present` is imported from `connections/mint.py` rather than copied —
+`grant_present` aliases `mcp_grant.grant_presence` rather than copying it —
 this slice's dedupe obligation, pinned by identity in the tests; the key
 formula and cache-dir resolution are pinned transitively, since it derives
 both internally (a drifted copy grades a live connection `SKIPPED` while the
@@ -76,9 +76,10 @@ card says connected). Presence is a `stat` of the paired
 `{sha256}.token.json` + `{sha256}.registration.json` artifacts and opens
 neither, so no token byte can enter the process, report, or a log line; the
 single-file `{sha256}.json` SSO form is deliberately not consulted, and a test
-fixture makes any *open* of either artifact an outright failure. No SEL read
-audit, unlike mint's `_grant_observed`: that covers a Connect flow acting for a
-remote caller, whereas this is an operator's own CLI, `l0_probe`'s class.
+fixture makes any *open* of either artifact an outright failure. L1 calls the
+synchronous presence helper and emits no SEL read audit, unlike mint's use of
+`grant_observed`: that covers a Connect flow acting for a remote caller, whereas
+this is an operator's own CLI, `l0_probe`'s class.
 
 ## Known gap: proving a tool actually works
 

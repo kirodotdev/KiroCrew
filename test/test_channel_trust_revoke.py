@@ -10,6 +10,7 @@ channel session auto-approving with no way to switch it off.
 
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -280,6 +281,19 @@ class TestApprovalCardGrantIsRevocable:
         slot = _surfaced_slot(state)
         fut: asyncio.Future[str] = asyncio.get_running_loop().create_future()
         slot._approval_futures["req-1"] = fut
+        slot.messages.append(
+            {
+                "role": "permission",
+                "content": "Running: ls",
+                "cls": json.dumps(
+                    {
+                        "request_id": "req-1",
+                        "full_command": "ls",
+                        "trust_grantable": "1",
+                    }
+                ),
+            }
+        )
 
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post(

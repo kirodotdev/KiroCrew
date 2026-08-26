@@ -297,6 +297,66 @@ visible area (a chat container, a modal). Safe area is **padding, not size**:
 `padding-bottom: env(safe-area-inset-bottom)`, which resolves to 0 without
 `viewport-fit=cover`.
 
+**The shell is an application, not a zoomable document — page zoom is off on touch.**
+Pinching magnifies a `position: fixed` / `h-dvh` layout whose scrollers are all
+*inner*, so there is no axis left to reach what the magnification pushed outside the
+visual viewport: topbar, composer and drawer leave at once and only a second pinch
+brings them back. Three mechanisms enforce it because no single one covers every
+engine — `maximum-scale=1, user-scalable=no` in `index.html` (Blink, Gecko), a root
+`html { touch-action: pan-x pan-y }` under `@media (pointer: coarse)` in `index.css`
+(Blink's pinch and double-tap paths), and cancelling Safari's `gesturestart` in
+`utils/pageZoom.ts` (WebKit has ignored the viewport zoom keys for user gestures
+since iOS 10). Pointer-fine devices are untouched: ctrl+wheel and the trackpad pinch
+are a desktop convention this has no business changing.
+
+The corollary is the part to get right. **A surface that must magnify owns its own
+zoom — it does not ask for `pinch-zoom` back.** `touch-action` is intersected from
+the hit-test target up to the root, so a descendant cannot re-grant a behaviour the
+root withheld; declaring `touch-pinch-zoom` there buys a dead gesture, not a working
+one. The image viewer (`Lightbox` in `MarkdownRenderer.tsx`) is the worked example:
+`touch-none` plus a two-pointer distance ratio driving the same `zoom` state its
+toolbar and keyboard drive. Code blocks take the other legitimate route and scroll
+horizontally instead. And note what is *not* lost — the OS Display Zoom setting sits
+outside the viewport contract and still magnifies anything. A browser tab's own
+text-size control does too, but it is **not** a fallback in the installed app: a
+standalone PWA has no Safari toolbar to reach it from, so on a home-screen install
+Display Zoom is the only route. State it with that qualification everywhere the
+claim appears (`website/index.html`, `docs/guides/remote-and-mobile.md`) — an
+unqualified version points a low-vision user at a control that is not there.
+
+**Any touch input below 16px zooms the viewport on focus, and WebKit does not zoom
+back out.** The scale is `clampTo(16 / fontSize, minimumScale, maximumScale)` from the
+FIELD's computed size, so a `text-sm` field can leave the user zoomed in — and with
+page zoom off there is no pinch-out to undo it. **An app-wide floor for this was
+written and withdrawn, and it should stay withdrawn** unless someone brings evidence
+from a real device, because CSS cannot express a floor at all: it can only SET a
+size, so the two available shapes are wrong in opposite directions. A rule broad
+enough to reach every field SHRINKS the ones that are deliberately larger — measured,
+not hypothetical: `input:not([type=…]):not([type=…])` is (0,2,1) and beat the artifact
+rename field's `text-2xl`, snapping a 24px title to 16px on a phone. A narrower
+selector list misses fields instead, because a size can arrive as a named utility, an
+arbitrary value (`text-[13px]`), an `!important` modifier or an inline style, and no
+list contains the next one. A guard test rescues neither shape: ~120 of this app's
+fields are routed through `<Input>` / `<Textarea>` rather than a native tag, so a
+source sweep for `<input>` cannot see them and reports green.
+
+Two things make withholding the floor the safer side of that trade. The focus zoom is
+**pre-existing** — it is not introduced by suppressing pinch, which removes only the
+recovery gesture — and whether it can fire at all once `maximum-scale=1` is authored
+depends on the same engine path that decides whether WebKit honours the viewport keys,
+which is not answerable from source. Settle it on a device; if it does fire, the fix
+belongs in the field components, where a real `max(16px, authored)` is expressible.
+
+**The `meta-viewport` axe rule is left ENABLED, deliberately.** `@axe-core/react` scans
+every render, so `user-scalable=no` reports a critical WCAG 1.4.4 finding on every scan.
+A waiver for it was written and removed; do not re-add one. The argument for waiving was
+that a permanent finding nobody can action trains contributors to ignore the console —
+but the finding *is* actionable, because it is a decision, and a decision does not stop
+being owed because a scanner keeps asking for it. That recurring report is currently the
+only automated reminder that suppressing page zoom is an accessibility trade with no
+in-app text-size control substituting for it. Revisit the waiver only once that decision
+is recorded, and then record the decision rather than the silence.
+
 **Use the line-length cap in reverse to tell "ugly" from "broken".** WCAG 1.4.8 caps a
 reading measure at 80 characters, 40 for CJK. Run it backwards and a squeezed pane stops
 being a matter of taste: a 50px column at 13px holds three CJK glyphs, which is a defect

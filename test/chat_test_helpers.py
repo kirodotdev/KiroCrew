@@ -11,6 +11,7 @@ from aiohttp import web
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import ConversationLog
 from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
+from kiro_crew.messaging.link import ChannelLink
 
 #: Draining is a LOOP because a drained task may register another -- not because any
 #: current one does (``chat_slack`` has a single ``create_task``, and the backfill
@@ -129,12 +130,16 @@ def _make_state(tmp_path, **kwargs):
     # and a bare MagicMock is unconditionally truthy, so every session reads as
     # mirrored to a channel. A guard that refuses mirrored sessions then refuses
     # ALL of them, which looks like a broken guard rather than a missing double.
-    # Parity with SessionStore: absent -> None.
-    _mirror_links: dict[str, tuple[str, str]] = {}
+    # Parity with SessionStore: absent -> None, present -> ChannelLink (the
+    # drain's mirror-retarget comparison reads the link's identity fields, so a
+    # bare tuple would make every mirror identical).
+    _mirror_links: dict[str, ChannelLink] = {}
 
     def _set_mirror_link(key, channel_id, thread_ts):
         if channel_id or thread_ts:
-            _mirror_links[key] = (channel_id, thread_ts)
+            _mirror_links[key] = ChannelLink(
+                channel_type="slack", channel_id=channel_id, thread_id=thread_ts
+            )
         else:
             _mirror_links.pop(key, None)
 

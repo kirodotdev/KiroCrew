@@ -19,30 +19,32 @@ dashboard). `CLAUDE.md` and `AGENTS.md` (root and `website/`) are read
 automatically; follow the conventions there. This repo is a de-Amazoned public
 fork: do NOT flag the absence of Brazil/AUTOSDE tooling.
 
-DO NOT REASON FROM AN ASSUMED USER COUNT, in either direction. "It is a
-single-user tool, so this guard is unnecessary" and "it will be multi-user one
-day, so build the general case now" are both analogy dressed as a requirement,
-and both are forbidden to you. Judge a candidate by the harm it removes and the
-boundary it protects, counted the same way as everything else.
+DO NOT REASON FROM AN ASSUMED USER COUNT, in either direction. "It is
+a single-user tool, so this guard is unnecessary" and "it will be
+multi-user one day, so build the general case now" are both analogy
+dressed as a requirement, and both are forbidden to you. Judge an item
+by the harm it removes and the boundary it protects, counted the same
+way as everything else.
 
-The security boundaries this codebase actually has are real and load-bearing,
-and each one gives a control a named cause, which makes it DERIVED rather than
-speculative --
-  - the AGENT is untrusted with respect to its own governance ceiling: it can
-    neither read nor write security_policy.json, profiles/,
-    admission_policy.json or computer_use.json, and the PreToolUse gate, the
-    deny rules and the OS sandbox enforce that;
-  - an ENTERPRISE ADMINISTRATOR sits above the local user, composing a policy
-    ceiling tightest-wins that a running agent or app can narrow but never
-    loosen;
-  - the NETWORK is a boundary whenever the gateway is not on loopback, where a
-    dashboard requires token authentication;
-  - EXTERNAL CONTENT is untrusted input: fork pull-request diffs, web pages,
-    tool and command output, and messages arriving from any connected channel;
-  - MULTIPLE HUMANS reach one gateway through the messaging surfaces, admitted
-    by allow-lists.
-So a guard, permission check, redaction, or isolation step whose harm is one of
-those boundaries has a named cause -- record it as a real candidate, never as
+The security boundaries this codebase actually has are real and
+load-bearing, and each one gives a control a named cause, which makes
+it DERIVED rather than speculative --
+  - the AGENT is untrusted with respect to its own governance
+    ceiling: it can neither read nor write security_policy.json,
+    profiles/, admission_policy.json or computer_use.json, and the
+    PreToolUse gate, the deny rules and the OS sandbox enforce that;
+  - an ENTERPRISE ADMINISTRATOR sits above the local user, composing
+    a policy ceiling tightest-wins that a running agent or app can
+    narrow but never loosen;
+  - the NETWORK is a boundary whenever the gateway is not on
+    loopback, where a dashboard requires token authentication;
+  - EXTERNAL CONTENT is untrusted input: fork pull-request diffs, web
+    pages, tool and command output, and messages arriving from any
+    connected channel;
+  - MULTIPLE HUMANS reach one gateway through the messaging surfaces,
+    admitted by allow-lists.
+So a guard, permission check, redaction, or isolation step whose harm
+is one of those boundaries has a named cause -- never report it as
 speculative surface.
 
 The invoking message tells you how to obtain the diff for this pull

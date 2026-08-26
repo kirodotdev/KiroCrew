@@ -1824,3 +1824,276 @@ class TestTranscribeAwsTempOwnership:
         # is exception identity, not removal.
         assert owned.exists()
         assert src.exists()
+
+    @pytest.mark.asyncio
+    async def test_timeout_reaps_ffmpeg_via_communicate(self, tmp_path, monkeypatch):
+        """When the ffmpeg remux times out, the killed child must be reaped via
+        ``communicate()`` -- not ``wait()`` -- so the PIPE buffers are drained
+        and a child blocked writing to a full stderr PIPE cannot hang the
+        event loop (#5834)."""
+        from kiro_crew import transcribe as tr
+
+        cfg = SttConfig(enabled=True, provider="transcribe", timeout_secs=10)
+        self._grant_consent(tmp_path, monkeypatch, cfg)
+        owned = self._owned_temp(tmp_path, monkeypatch)
+        src = tmp_path / "voice.webm"
+        src.write_bytes(b"data")
+
+        proc = AsyncMock()
+        proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
+        proc.kill = MagicMock()
+        proc.returncode = -9
+
+        monkeypatch.setattr(tr, "boto3", object())
+        monkeypatch.setattr(
+            tr, "_load_aws_transcribe_components", lambda: (object, object)
+        )
+        with (
+            patch("kiro_crew.transcribe._find_ffmpeg", return_value="/fake/ffmpeg"),
+            patch("asyncio.create_subprocess_exec", return_value=proc),
+        ):
+            result = await tr._transcribe_aws(str(src), cfg)
+
+        # The timeout is caught by ``except Exception``; returns None.
+        assert result is None
+        proc.kill.assert_called_once()
+        # The critical pin: reap via communicate(), not wait(). The remux
+        # call itself awaits communicate once; the reap must award a SECOND
+        # await, and wait() must never be touched.
+        assert proc.communicate.await_count == 2
+        proc.wait.assert_not_awaited()
+        assert not owned.exists()
+        assert src.exists()
+
+# ---------------------------------------------------------------------------
+# _run_whisper_cli child/temp-dir ownership under cancellation (#5821)
+# ---------------------------------------------------------------------------
+
+
+class TestRunWhisperCliTempOwnership:
+    """``_run_whisper_cli`` owns its child and ``out_dir`` until every exit reaps
+    and removes them.
+
+    A cancellation mid-``communicate`` (``CancelledError`` is a
+    ``BaseException``, so the ``except asyncio.TimeoutError`` arm misses it)
+    must kill AND reap the whisper child before the directory removal — Windows
+    keeps the output files locked until the child fully exits — and the
+    ``finally`` removal is shielded so a REPEAT cancellation cannot
+    land on it and skip the cleanup. Reference pattern:
+    ``test_apple_speech.py::TestTranscodeTempOwnership`` (#5777).
+    """
+
+    @staticmethod
+    def _pin_out_dir(tmp_path, monkeypatch):
+        """Pin ``tempfile.mkdtemp`` to a known directory so tests can watch it."""
+        out_dir = tmp_path / "whisper-out"
+        out_dir.mkdir()
+        monkeypatch.setattr(transcribe.tempfile, "mkdtemp", lambda: str(out_dir))
+        return out_dir
+
+    @staticmethod
+    def _track_rmtree(monkeypatch, out_dir, events):
+        real_rmtree = transcribe.shutil.rmtree
+
+        def tracked(path, *args, **kwargs):
+            if str(path) == str(out_dir):
+                events.append("rmtree")
+            return real_rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr(transcribe.shutil, "rmtree", tracked)
+
+    @pytest.mark.asyncio
+    async def test_cancellation_reaps_the_child_before_removing_out_dir(
+        self, tmp_path, monkeypatch
+    ):
+        """A cancellation mid-``communicate`` must kill the child, reap it, THEN
+        remove ``out_dir``, and re-raise — the old code only killed on the
+        ``TimeoutError`` branch, orphaning the child (#5821)."""
+        out_dir = self._pin_out_dir(tmp_path, monkeypatch)
+        events: list[str] = []
+        self._track_rmtree(monkeypatch, out_dir, events)
+
+        class _Proc:
+            def __init__(self):
+                self._calls = 0
+
+            async def communicate(self):
+                self._calls += 1
+                if self._calls == 1:
+                    raise asyncio.CancelledError()
+                events.append("reaped")
+                return b"", b""
+
+            def kill(self):
+                events.append("killed")
+
+        with patch("asyncio.create_subprocess_exec", return_value=_Proc()):
+            with pytest.raises(asyncio.CancelledError):
+                await transcribe._run_whisper_cli(
+                    "/fake/whisper", lambda d: [d], 10, label="test"
+                )
+        assert events == ["killed", "reaped", "rmtree"]
+        assert not out_dir.exists()
+
+    @pytest.mark.asyncio
+    async def test_repeat_cancellation_on_the_reap_still_removes_out_dir(
+        self, tmp_path, monkeypatch
+    ):
+        """A REPEAT cancellation landing on the ``finally`` removal await
+        abandons only the wait: the removal was already scheduled as its own
+        task, so it still runs to completion off-loop — the old code awaited
+        the hop directly, so the repeat cancellation skipped the removal and
+        leaked the directory (#5821)."""
+        out_dir = self._pin_out_dir(tmp_path, monkeypatch)
+        events: list[str] = []
+        self._track_rmtree(monkeypatch, out_dir, events)
+
+        # Model the repeat cancellation landing on the ``finally`` removal
+        # await: hold the removal hop open on an Event, cancel the task while
+        # it awaits, and only then release the hop. The removal must still run
+        # to completion — the old code awaited the hop directly, so abandoning
+        # the await abandoned the removal and leaked the directory. The
+        # ``func is ...rmtree`` predicate is load-bearing: ``asyncio.to_thread``
+        # is patched process-wide, so a wider predicate would capture any
+        # concurrent off-loop hop (the ``mkdtemp`` allocation included).
+        hop_reached = asyncio.Event()
+        hop_release = asyncio.Event()
+        real_to_thread = asyncio.to_thread
+
+        async def held_rmtree_hop(func, *args, **kwargs):
+            if func is transcribe.shutil.rmtree:
+                hop_reached.set()
+                await hop_release.wait()
+                return func(*args, **kwargs)
+            return await real_to_thread(func, *args, **kwargs)
+
+        monkeypatch.setattr(asyncio, "to_thread", held_rmtree_hop)
+
+        class _Proc:
+            def __init__(self):
+                self._calls = 0
+
+            async def communicate(self):
+                self._calls += 1
+                if self._calls == 1:
+                    raise asyncio.CancelledError()
+                events.append("reaped")
+                return b"", b""
+
+            def kill(self):
+                events.append("killed")
+
+        with patch("asyncio.create_subprocess_exec", return_value=_Proc()):
+            task = asyncio.ensure_future(
+                transcribe._run_whisper_cli("/fake/whisper", lambda d: [d], 10, label="test")
+            )
+            await hop_reached.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            # The await was abandoned by the repeat cancellation, but the
+            # removal had already been scheduled as its own task: releasing
+            # the hop lets it finish.
+            assert "rmtree" not in events
+            hop_release.set()
+            for _ in range(50):
+                if "rmtree" in events:
+                    break
+                await asyncio.sleep(0)
+        assert events == ["killed", "reaped", "rmtree"]
+        assert not out_dir.exists()
+
+    @pytest.mark.asyncio
+    async def test_permission_error_from_kill_does_not_replace_the_cancellation(
+        self, tmp_path, monkeypatch
+    ):
+        """``kill()`` raising ``PermissionError`` (an ``OSError``, e.g. a child
+        in a state the OS refuses to signal) is swallowed: the removal still
+        runs and the in-flight cancellation — not the ``PermissionError`` —
+        reaches the awaiter."""
+        out_dir = self._pin_out_dir(tmp_path, monkeypatch)
+        events: list[str] = []
+        self._track_rmtree(monkeypatch, out_dir, events)
+
+        class _Proc:
+            async def communicate(self):
+                raise asyncio.CancelledError()
+
+            def kill(self):
+                events.append("kill_attempted")
+                raise PermissionError("operation not permitted")
+
+        with patch("asyncio.create_subprocess_exec", return_value=_Proc()):
+            with pytest.raises(asyncio.CancelledError):
+                await transcribe._run_whisper_cli(
+                    "/fake/whisper", lambda d: [d], 10, label="test"
+                )
+        assert events == ["kill_attempted", "rmtree"]
+        assert not out_dir.exists()
+
+    @pytest.mark.asyncio
+    async def test_timeout_still_reaps_and_returns_none(self, tmp_path, monkeypatch):
+        """The new cancellation arm must not eat the established timeout
+        contract: kill, reap, log, return None, remove ``out_dir``."""
+        out_dir = self._pin_out_dir(tmp_path, monkeypatch)
+        events: list[str] = []
+        self._track_rmtree(monkeypatch, out_dir, events)
+
+        class _Proc:
+            def __init__(self):
+                self._calls = 0
+
+            async def communicate(self):
+                self._calls += 1
+                if self._calls == 1:
+                    await asyncio.sleep(3600)
+                events.append("reaped")
+                return b"", b""
+
+            def kill(self):
+                events.append("killed")
+
+        with patch("asyncio.create_subprocess_exec", return_value=_Proc()):
+            result = await transcribe._run_whisper_cli(
+                "/fake/whisper", lambda d: [d], 0.01, label="test"
+            )
+        assert result is None
+        assert events == ["killed", "reaped", "rmtree"]
+        assert not out_dir.exists()
+
+    @pytest.mark.asyncio
+    async def test_success_still_hands_the_transcript_to_the_caller(
+        self, tmp_path, monkeypatch
+    ):
+        """The cleanup must not eat the success path: the transcript written
+        into ``out_dir`` is collected before the directory is removed."""
+        out_dir = self._pin_out_dir(tmp_path, monkeypatch)
+        (out_dir / "voice.txt").write_text("hello world")
+
+        proc = AsyncMock()
+        proc.communicate = AsyncMock(return_value=(b"", b""))
+        proc.returncode = 0
+        with patch("asyncio.create_subprocess_exec", return_value=proc):
+            result = await transcribe._run_whisper_cli(
+                "/fake/whisper", lambda d: [d], 10, label="test"
+            )
+        assert result == "hello world"
+        assert not out_dir.exists()
+
+    @pytest.mark.asyncio
+    async def test_cancellation_during_spawn_still_removes_out_dir(
+        self, tmp_path, monkeypatch
+    ):
+        """A cancellation landing on ``create_subprocess_exec`` itself means no
+        child exists — ``out_dir`` must still be removed and the cancellation
+        must propagate."""
+        out_dir = self._pin_out_dir(tmp_path, monkeypatch)
+
+        with patch(
+            "asyncio.create_subprocess_exec", side_effect=asyncio.CancelledError()
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await transcribe._run_whisper_cli(
+                    "/fake/whisper", lambda d: [d], 10, label="test"
+                )
+        assert not out_dir.exists()

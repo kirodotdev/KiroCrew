@@ -513,9 +513,7 @@ class TestRunCommand:
         spec.write_text("# task\n", encoding="utf-8", newline="\n")
 
         runner = _FakeRunner()
-        out = await h._handle_run_command(
-            f"task run {spec}", runner, MockSlackClient(), "C1", "t1"
-        )
+        out = await h._handle_run_command(f"task run {spec}", runner, MockSlackClient(), "C1", "t1")
         assert "Task started" in out and runner.started == [spec]
 
         class _Boom(_FakeRunner):
@@ -798,9 +796,7 @@ class TestHandleInteractionAuthReChecks:
     @pytest.mark.asyncio
     async def test_trust_with_session_key_propagates_policy_to_subagents(self, owner):
         provider = FakeProvider()
-        h._pending_approvals["C1:m1"] = h._PendingApproval(
-            provider, "rq9", session_key="slack:t1"
-        )
+        h._pending_approvals["C1:m1"] = h._PendingApproval(provider, "rq9", session_key="slack:t1")
         sessions = FakeSessions()
         out = await handle_interaction(
             "C1", "m1", h._ACTION_TRUST, owner, thread_ts="t1", sessions=sessions
@@ -1215,8 +1211,11 @@ class _Slot:
     def append(self, role, text, cls):
         self.appended.append((role, text))
 
-    def queue_append(self, text, *, directive_user_origin):
+    def queue_append(self, text, *, meta=None, directive_user_origin):
         assert directive_user_origin is True
+        # The linked-thread enqueue stamps the admission-time containment
+        # snapshot (#5911) so the drain can re-assert it at delivery.
+        assert isinstance(meta, dict)
         self.queued.append(text)
 
 

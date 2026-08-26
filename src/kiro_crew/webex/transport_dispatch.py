@@ -959,7 +959,9 @@ class WebexDispatcher:
             resolved = _APPROVALS.resolve(
                 approval_scope, approved, request_id=request_id, expected_nonce=nonce
             )
-            outcome = ("approved" if approved else "denied") if resolved else "denied"
+            # Only a resolve that actually landed can record an approval: a press
+            # the registry refused (stale nonce, wrong request id) decided nothing.
+            outcome = "approved" if resolved and approved else "denied"
         sel().log_api_access(
             caller=f"webex:{inbound.person_email}",
             operation="webex.tool_approval",
@@ -1090,13 +1092,11 @@ class WebexDispatcher:
             texts: list[str] = []
             files: list[str] = []
             remainder: list[tuple[str, str, dict]] = []
-            # The room this drained turn answers into, taken from the FIRST entry
-            # rather than from *inbound*: the turn that just finished may have been
-            # opened by a different person on a shared unified key.
             # The CONVERSATION this drained turn answers into: room AND thread
             # root, because that pair is what the reply envelope carries. Taken
             # from the FIRST entry rather than from *inbound*, whose turn may have
-            # been opened by another person or in another thread.
+            # been opened by another person (a shared unified key puts two humans
+            # on one queue) or in another thread.
             convo: tuple[str, str] | None = None
             email = ""
             async with self._queue.lock:

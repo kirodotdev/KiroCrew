@@ -60,6 +60,7 @@ from kiro_crew.apps.hooks_integration import (
 # Aliased to keep `routes._run_lifecycle_script` patchable, which several tests rely on.
 from kiro_crew.apps.lifecycle_scripts import run_lifecycle_script as _run_lifecycle_script
 from kiro_crew.apps.manager import (
+    _credential_free_source_metadata,
     app_lifecycle_lock,
     apps_dir,
     cleanup_migrated_builtin,
@@ -85,11 +86,16 @@ from kiro_crew.apps.registry import (
     _TRUST_OWNER,
     _context_clone_sandbox_mode,
     _entry_git_url,
+    _git_fetch_branch,
+    _git_target_is_unsupported,
     _git_url_host,
-    _is_owner_designated_repo,
+    _loggable_git_transport_output,
+    _owner_designated_repo_target,
     _pinned_registries,
     _registry_identity_key,
+    _same_git_target,
     _sel_credential_grant,
+    _strip_git_target_userinfo,
     anonymous_git_env,
     get_registry_app_by_repo,
     get_server_platform,
@@ -100,6 +106,7 @@ from kiro_crew.apps.registry import (
     list_registry,
     minimal_env,
     registry_name_from_source,
+    resolve_installed_trust_repository,
 )
 from kiro_crew.apps.spawn_sdk import build_spawn_impl
 from kiro_crew.apps.teardown import teardown_app_runtime
@@ -241,12 +248,62 @@ async def _notify_builtin_service(request: web.Request, name: str) -> str | None
         return f"restart failed: {exc}"
 
 
+def _stamp_installed_trust_repository(app: dict[str, Any]) -> dict[str, Any]:
+    """Overwrite the consent target from server-resolved provenance."""
+    app.pop("trustRepository", None)
+    try:
+        resolved, repository = resolve_installed_trust_repository(app)
+    except Exception:
+        # Catalog failure or corrupt registry state must not make the app list
+        # fail. Omitting the proof leaves the grant handler fail-closed.
+        logger.warning(
+            "could not resolve trust repository for installed app %r",
+            app.get("name", ""),
+            exc_info=True,
+        )
+        resolved, repository = False, ""
+    if resolved and repository:
+        app["trustRepository"] = repository
+    # Installed provenance and manifest metadata are also returned by the apps
+    # API. Keep clone credentials server-side even when an old install record
+    # persisted a credential-bearing source URL.
+    source = app.get("source")
+    if isinstance(source, str):
+        app["source"] = _credential_free_source_metadata(source)
+    for coordinate_key in ("sourceUrl", "repo", "gitUrl"):
+        coordinate = app.get(coordinate_key)
+        if isinstance(coordinate, str):
+            app[coordinate_key] = _strip_git_target_userinfo(coordinate)
+    source_registry = app.get("sourceRegistry")
+    if isinstance(source_registry, str):
+        app["sourceRegistry"] = _credential_free_source_metadata(source_registry)
+    manifest = app.get("manifest")
+    if isinstance(manifest, dict):
+        manifest_repo = manifest.get("repo")
+        if isinstance(manifest_repo, str):
+            manifest["repo"] = _strip_git_target_userinfo(manifest_repo)
+    return app
+
+
+def _listed_apps_with_trust() -> list[dict[str, Any]]:
+    """Read installed apps and resolve their consent coordinates synchronously.
+
+    Both halves may touch disk (and the legacy provenance resolver may consult
+    registry/catalog state), so async handlers must offload this whole helper
+    rather than moving only :func:`list_apps` off the event loop.
+    """
+    installed = list_apps()
+    for app in installed:
+        _stamp_installed_trust_repository(app)
+    return installed
+
+
 async def handle_list_apps(request: web.Request) -> web.Response:
     """GET /api/apps — list all installed apps."""
     # list_apps() walks the apps dir and reads two files per installed app, and
     # this endpoint re-runs it on every dashboard refresh — so the walk goes off
     # the loop (its cost scales with installed app count).
-    apps = await asyncio.to_thread(list_apps)
+    apps = await asyncio.to_thread(_listed_apps_with_trust)
     # Enrich with backend process status
     procs = {p["app_name"]: p for p in list_app_processes()}
     for app in apps:
@@ -469,7 +526,9 @@ async def handle_get_app(request: web.Request) -> web.Response:
         if name == "deploy-web":
             raise web.HTTPTemporaryRedirect(location="/api/deploy/list")
         return web.json_response({"error": f"app {name!r} not installed"}, status=404)
-    return web.json_response(info)
+    return web.json_response(
+        await asyncio.to_thread(_stamp_installed_trust_repository, info)
+    )
 
 
 async def handle_get_manifest(request: web.Request) -> web.Response:
@@ -811,16 +870,36 @@ async def handle_register_external(request: web.Request) -> web.Response:
             status=400,
         )
 
-    result = register_external_app(
-        name=name,
-        version=version,
-        display_name=display_name,
-        source=body.get("source", ""),
-        manifest_data=body.get("manifest"),
-        origin=body.get("origin", "external"),
-        resources=body.get("resources", "app"),
-        lifecycle=body.get("lifecycle", "app"),
-    )
+    # Registry provenance is server-owned. A self-registering process may
+    # refresh its display metadata, but it cannot mint the marker that makes a
+    # later update resolve by registry name or claim a registry origin. Existing
+    # registry installs are already identified by their durable sourceUrl, which
+    # register_external_app preserves independently of these request fields.
+    source = body.get("source", "")
+    source = source if isinstance(source, str) else ""
+    if source == "builtin" or is_registry_source(source):
+        source = ""
+
+    # Share the install/update/uninstall lock across the complete metadata
+    # transaction. Without it, this read-modify-write could restore a stale
+    # sourceUrl/provenance snapshot over a concurrent registry transition.
+    # The manager call performs blocking filesystem and secret-store I/O, so it
+    # belongs in the subprocess executor while the loop owns the lock.
+    async with app_lifecycle_lock(name):
+        result = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(),
+            partial(
+                register_external_app,
+                name=name,
+                version=version,
+                display_name=display_name,
+                source=source,
+                manifest_data=body.get("manifest"),
+                origin="external",
+                resources=body.get("resources", "app"),
+                lifecycle=body.get("lifecycle", "app"),
+            ),
+        )
     if not result.ok:
         sel().log_api_access(
             caller="dashboard",
@@ -2198,7 +2277,7 @@ def _repo_key_owner_count(repo: str) -> int:
     """Count the configured registry SOURCES that publish an entry keyed on ``repo``.
 
     The blob credential carve-out grants owner credentials only when
-    :func:`_is_owner_designated_repo` confirms the resolved entry's clone URL is
+    :func:`_owner_designated_repo_target` confirms the resolved entry's clone URL is
     byte-identical to *its own* registry's configured ``repo``.  That predicate is
     entry-scoped and sound for the entry it is handed — but the entry is SELECTED
     by :func:`get_registry_app_by_repo`, which returns the FIRST source (bundled,
@@ -2229,17 +2308,29 @@ def _repo_key_owner_count(repo: str) -> int:
 
     try:
         sources = 0
-        if any(e.get("repo") == repo for e in _load_registry_file()):
+        if any(
+            isinstance(e.get("repo"), str) and _same_git_target(e["repo"], repo)
+            for e in _load_registry_file()
+        ):
             sources += 1
         for reg in _effective_registries():
             cached = _read_external_registry_cache(reg.name or reg.repo, ignore_ttl=True)
-            if any(isinstance(e, dict) and e.get("repo") == repo for e in cached or []):
+            if any(
+                isinstance(e, dict)
+                and isinstance(e.get("repo"), str)
+                and _same_git_target(e["repo"], repo)
+                for e in cached or []
+            ):
                 sources += 1
                 if sources > 1:
                     return sources  # already ambiguous — no need to keep counting
         return sources
     except Exception:  # provenance unresolvable → treat as ambiguous, never grant
-        logger.debug("_repo_key_owner_count: read failed for %r", repo, exc_info=True)
+        logger.debug(
+            "_repo_key_owner_count: read failed for %r",
+            _strip_git_target_userinfo(repo),
+            exc_info=True,
+        )
         return 2
 
 
@@ -2251,6 +2342,7 @@ async def _fetch_git_blob(
     *,
     git_url: str,
     owner_designated: bool = False,
+    credential_target: str | None = None,
 ) -> bool:
     """Fetch a single file from a registry app's git repo via a shallow clone.
 
@@ -2260,24 +2352,19 @@ async def _fetch_git_blob(
     (mirroring how :mod:`kiro_crew.apps.registry` already clones), read the
     requested file out of the checkout, and write it to the blob cache.
 
-    ``git_url`` is the clone URL, a REQUIRED parameter supplied by the caller.
-    It is never resolved here from ``repo``: this function performs no registry
-    lookup on any branch.  The caller (:func:`handle_blob_proxy`) resolves it
-    ONCE — for a bundled entry, atomically with the ``owner_designated``
-    credential decision, from the SAME registry entry that decision was made
-    against (via :func:`kiro_crew.apps.registry._entry_git_url`); for the
-    no-entry external/federated branch, by an inline in-memory URL-form check on
-    the already-validated ``repo`` — and threads it in.  The one threaded value
-    decides credentials AND is the URL cloned; this function never looks the URL
-    up again, so there is no second read to race on ANY branch.  Threading the
-    decided URL closes the TOCTOU window a re-resolution would open: with two
-    independent reads, a concurrent registry refresh could swap the entry backing
-    ``repo`` between the decision and the clone, so a grant decided for one URL
-    would clone a different one (a private sibling repo) with owner credentials.
+    ``git_url`` is the credential-free clone identity, a REQUIRED parameter
+    supplied by the caller. It is never resolved here from ``repo``: this
+    function performs no registry lookup. For the exact owner-designated case,
+    ``credential_target`` may carry the matching config-only HTTP transport URL.
+    The match is rechecked here before any spawn, and the split fetch helper gives
+    that raw value only to the network subprocess; argv, checkout and cache
+    identity retain ``git_url``. This paired handoff closes the TOCTOU window a
+    second registry-row resolution would open without retaining credentials in
+    the row itself.
 
     ``owner_designated`` extends the same-repo credential carve-out (PR 918) to
     this third clone chokepoint.  It is ``True`` only when the caller has
-    confirmed — via the merged :func:`_is_owner_designated_repo` predicate,
+    confirmed — via the merged :func:`_owner_designated_repo_target` predicate,
     evaluated against the SAME entry ``git_url`` was resolved from — that the
     entry's clone URL is byte-identical to the owner-typed
     ``ExternalRegistryConfig.repo``.  In that case the confused-deputy defense
@@ -2286,19 +2373,34 @@ async def _fetch_git_blob(
     context clone sandbox mode, exactly like the manifest/clone chokepoints.
     A sibling repo on the same host is a *different* URL, so it never matches
     and stays anonymous + strict — the carve-out is URL-exact, not host-granular.
-    Because the decision and the clone now use one threaded value, the granted
-    credentials and the URL they reach cannot disagree; the only credential
-    decision here is the GRANT below, which is SEL-audited against ``git_url``.
+    The public identity and optional transport target must sanitize to the same
+    URL, so the granted credentials and the repository they reach cannot
+    disagree. The grant is SEL-audited against the public ``git_url``.
     """
-    # ``git_url`` is the caller's once-resolved clone URL (required param); the
-    # value used for the SSRF gate, the credential decision, and the clone is
-    # always exactly what the caller supplied — one read, no re-resolution, no
-    # race.  The caller already rejects an unresolvable URL (the
+    # ``git_url`` is the caller's once-resolved public clone identity. The caller
+    # already rejects an unresolvable URL (the
     # ``blob_no_git_url`` early-return), so ``git_url`` is non-empty here; keep a
     # defensive guard rather than assume it.
     if not git_url:
-        logger.debug("No git URL resolvable for registry repo %r — skipping blob fetch", repo)
+        logger.debug(
+            "No git URL resolvable for registry repo %r — skipping blob fetch",
+            _strip_git_target_userinfo(repo),
+        )
         return False
+    if _git_target_is_unsupported(git_url):
+        logger.warning("blob clone refused an unsupported clone target")
+        return False
+    # ``git_url`` is the public repository identity used by argv and the blob
+    # cache. The optional raw target is recovered server-side from current
+    # configuration only for an exact owner-designated match; it is never read
+    # from the retained registry row. Accept a raw ``git_url`` as a compatibility
+    # fallback for direct internal callers, then immediately split it here.
+    credential_target = credential_target or git_url
+    git_url = _strip_git_target_userinfo(git_url)
+    if _strip_git_target_userinfo(credential_target) != git_url:
+        logger.warning("blob clone credential target did not match repository identity")
+        return False
+    credentialed_transport = credential_target != git_url
 
     # SSRF gate: a configured external registry's (untrusted) index can list an
     # app ``repo`` pointing at an internal address (e.g. ``https://127.0.0.1/x``)
@@ -2314,8 +2416,8 @@ async def _fetch_git_blob(
     if not await asyncio.to_thread(is_clone_host_trusted, git_url):
         logger.warning(
             "Blob clone refused for repo=%r url=%r: host not in trusted forge/registry set (SSRF gate)",
-            repo,
-            git_url,
+            _strip_git_target_userinfo(repo),
+            _strip_git_target_userinfo(git_url),
         )
         return False
 
@@ -2324,17 +2426,6 @@ async def _fetch_git_blob(
     tmp_root: str | None = None
     try:
         tmp_root = await asyncio.to_thread(tempfile.mkdtemp, prefix="kirocrew-blob-")
-        clone_cmd = [
-            "git",
-            "clone",
-            "--depth",
-            "1",
-            "--branch",
-            ref,
-            "--single-branch",
-            git_url,
-            tmp_root,
-        ]
         # Credential posture for the browse-time icon/blob clone.  By default
         # this is an index-originated automatic clone, so it forces the strict
         # sandbox (~/.ssh hidden) and a credential-free env: a trusted-host repo
@@ -2350,7 +2441,7 @@ async def _fetch_git_blob(
             # ``_context_clone_sandbox_mode`` reaches the same config subsystem the
             # two sibling calls in this function already offload (the SSRF-gate
             # ``is_clone_host_trusted`` above and the caller's
-            # ``_is_owner_designated_repo``): it flows
+            # ``_owner_designated_repo_target``): it flows
             # ``_configured_registry_hosts`` -> ``_effective_registries`` ->
             # ``KiroCrewConfig.load`` (an unbounded ``read_text`` + ``json.loads`` +
             # ``jsonschema.validate`` on a cold/invalidated cache, e.g. right after
@@ -2367,49 +2458,112 @@ async def _fetch_git_blob(
         else:
             clone_mode = "strict"
             clone_env = anonymous_git_env()
-        sandboxed_cmd, _cleanup = wrap_argv(clone_cmd, mode=clone_mode)
-        sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
-        proc = await create_subprocess_limited(
-            *sandboxed_cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=clone_env,
-        )
-        try:
-            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=_BLOB_FETCH_TIMEOUT)
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.communicate()
-            logger.warning("git clone timed out for %s/%s", repo, file_path)
-            return False
-
-        if proc.returncode != 0:
-            logger.debug(
-                "git clone failed for %s/%s: %s",
-                repo,
-                file_path,
-                stderr.decode(errors="replace").strip() if stderr else "",
+        clone_root = Path(tmp_root)
+        if credentialed_transport:
+            # A combined credentialed clone performs fetch and checkout in one
+            # process. Repository-controlled filters (and checkout-time hooks)
+            # would therefore inherit the one-shot URL rewrite containing the
+            # secret. Reuse the registry split: only `git fetch` receives that
+            # environment; init, checkout and file reads use the credential-free
+            # base environment.
+            clone_root /= "branch"
+            fetch_log: list[str] = []
+            fetch_error = await _git_fetch_branch(
+                git_url,
+                ref,
+                clone_root,
+                fetch_log,
+                credential_target=credential_target,
+                clone_env=clone_env,
+                sandbox_mode=clone_mode,
             )
-            return False
+            if fetch_error is not None:
+                logger.debug(
+                    "git fetch failed for %s/%s: %s",
+                    _strip_git_target_userinfo(repo),
+                    file_path,
+                    _loggable_git_transport_output(
+                        "\n".join(fetch_log), credentialed=True
+                    ),
+                )
+                return False
+        else:
+            clone_cmd = [
+                "git",
+                "clone",
+                "--depth",
+                "1",
+                "--branch",
+                ref,
+                "--single-branch",
+                git_url,
+                tmp_root,
+            ]
+            sandboxed_cmd, _cleanup = wrap_argv(clone_cmd, mode=clone_mode)
+            sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
+            proc = await create_subprocess_limited(
+                *sandboxed_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=clone_env,
+            )
+            try:
+                _, stderr = await asyncio.wait_for(
+                    proc.communicate(), timeout=_BLOB_FETCH_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.communicate()
+                logger.warning(
+                    "git clone timed out for %s/%s",
+                    _strip_git_target_userinfo(repo),
+                    file_path,
+                )
+                return False
+
+            if proc.returncode != 0:
+                logger.debug(
+                    "git clone failed for %s/%s: %s",
+                    _strip_git_target_userinfo(repo),
+                    file_path,
+                    (
+                        _loggable_git_transport_output(
+                            stderr.decode(errors="replace").strip(),
+                            credentialed=False,
+                        )
+                        if stderr
+                        else ""
+                    ),
+                )
+                return False
 
         # Read the requested file from the checkout, guarding against escapes
         # out of the clone via symlinks or traversal.
-        clone_root = Path(tmp_root).resolve()
+        clone_root = clone_root.resolve()
         blob_path = (clone_root / file_path).resolve()
         try:
             blob_path.relative_to(clone_root)
         except ValueError:
-            logger.debug("blob path escapes clone root for %s/%s", repo, file_path)
+            logger.debug(
+                "blob path escapes clone root for %s/%s",
+                _strip_git_target_userinfo(repo),
+                file_path,
+            )
             return False
         if not blob_path.is_file():
             return False
         data = await asyncio.to_thread(blob_path.read_bytes)
     except OSError as exc:
-        logger.debug("Failed to fetch blob from %s/%s: %s", repo, file_path, exc)
+        logger.debug(
+            "Failed to fetch blob from %s/%s: %s",
+            _strip_git_target_userinfo(repo),
+            file_path,
+            _loggable_git_transport_output(str(exc), credentialed=credentialed_transport),
+        )
         return False
     finally:
         if tmp_root:
-            await asyncio.to_thread(shutil.rmtree, tmp_root, ignore_errors=True)
+            await asyncio.to_thread(platform_compat.rmtree_force, tmp_root)
 
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     await asyncio.to_thread(cache_path.write_bytes, data)
@@ -2505,7 +2659,10 @@ async def handle_blob_proxy(request: web.Request) -> web.Response:
             repo if ("://" in repo) or repo.startswith("git@") or repo.endswith(".git") else ""
         )
     if not clone_url:
-        logger.debug("No git URL resolvable for registry repo %r — skipping blob fetch", repo)
+        logger.debug(
+            "No git URL resolvable for registry repo %r — skipping blob fetch",
+            _strip_git_target_userinfo(repo),
+        )
         return web.json_response(
             {"error": "failed to fetch blob", "code": "blob_no_git_url"}, status=502
         )
@@ -2548,10 +2705,11 @@ async def handle_blob_proxy(request: web.Request) -> web.Response:
         # a bundled entry (no ``_registry``) or a sibling repo on the same host
         # returns False and stays anonymous + strict.
         #
-        # ``clone_url`` was resolved above (atomically with the cache-key
-        # binding) from the SAME ``entry`` object the credential decision is made
-        # against, and is threaded into ``_fetch_git_blob`` for BOTH authorization
-        # and the clone.  The callee never re-resolves from ``repo``.  This closes
+        # ``clone_url`` was resolved above from the SAME ``entry`` object the
+        # credential decision is made against. The public identity remains the
+        # cache key and argv URL; an exact raw config target is handed off
+        # separately and accepted only when it sanitizes back to that identity.
+        # The callee never re-resolves from ``repo``. This closes
         # a TOCTOU window: if the callee re-read the URL from ``repo`` a concurrent
         # registry refresh could, between this decision and the clone, swap the
         # entry backing ``repo`` to a private sibling — and the owner-credential
@@ -2559,6 +2717,7 @@ async def handle_blob_proxy(request: web.Request) -> web.Response:
         # of one entry makes ``owner_designated`` and ``clone_url`` describe the
         # same value by identity, not "by construction" across two reads.
         owner_designated = False
+        owner_credential_target = ""
         if entry is not None:
             # The owner-credential grant must be scoped to the entry's CONFIGURED
             # branch, not an attacker-chosen ``ref``.  ``ref`` falls back to the
@@ -2584,21 +2743,29 @@ async def handle_blob_proxy(request: web.Request) -> web.Response:
                 # entry, so downgrade to anonymous+strict (never grant) rather than
                 # clone A's private repo with A's credentials on a B-reachable
                 # request.  Only a single owner may reach
-                # ``_is_owner_designated_repo``; the grant then stays gated on the
+                # ``_owner_designated_repo_target``; the grant then stays gated on the
                 # entry-scoped byte-identical URL check as before (no widening).
                 owner_count = await asyncio.to_thread(_repo_key_owner_count, repo)
                 if owner_count == 1:
-                    owner_designated = await asyncio.to_thread(_is_owner_designated_repo, entry)
+                    owner_credential_target = await asyncio.to_thread(
+                        _owner_designated_repo_target, entry
+                    )
+                    owner_designated = bool(owner_credential_target)
         async with _BLOB_FETCH_SEMAPHORE:
             # Re-check after acquiring semaphore (another request may have cached it)
             if not cache_path.is_file():
+                fetch_kwargs: dict[str, Any] = {
+                    "git_url": clone_url,
+                    "owner_designated": owner_designated,
+                }
+                if owner_credential_target and owner_credential_target != clone_url:
+                    fetch_kwargs["credential_target"] = owner_credential_target
                 ok = await _fetch_git_blob(
                     repo,
                     ref,
                     file_path,
                     cache_path,
-                    git_url=clone_url,
-                    owner_designated=owner_designated,
+                    **fetch_kwargs,
                 )
                 if not ok:
                     return web.json_response({"error": "failed to fetch blob"}, status=502)
@@ -2608,7 +2775,7 @@ async def handle_blob_proxy(request: web.Request) -> web.Response:
         caller="dashboard",
         operation="app_blob_proxy",
         outcome="served",
-        resources=f"repo={repo} path={file_path}",
+        resources=f"repo={_strip_git_target_userinfo(repo)} path={file_path}",
     )
     return web.FileResponse(  # type: ignore[return-value]
         cache_path,
@@ -2917,7 +3084,12 @@ async def handle_registries(request: web.Request) -> web.Response:
         # from build-pinned rows, since `config.json` is agent-writable. Echoing a
         # hand-edited `owner` back would report a grant the runtime does not honour.
         registries = [
-            {"name": r.name, "repo": r.repo, "branch": r.branch, "trust": _TRUST_INDEX}
+            {
+                "name": r.name,
+                "repo": _strip_git_target_userinfo(r.repo),
+                "branch": r.branch,
+                "trust": _TRUST_INDEX,
+            }
             for r in config.registries
         ]
         # Edition-pinned registries are reported SEPARATELY and read-only. They
@@ -2926,7 +3098,12 @@ async def handle_registries(request: web.Request) -> web.Response:
         # operator's config.json, where a later edition change could no longer
         # move it. The client renders these as non-editable rows.
         pinned = [
-            {"name": r.name, "repo": r.repo, "branch": r.branch, "trust": r.trust}
+            {
+                "name": r.name,
+                "repo": _strip_git_target_userinfo(r.repo),
+                "branch": r.branch,
+                "trust": r.trust,
+            }
             for r in _pinned_registries()
         ]
         sel().log_api_access(
@@ -2972,18 +3149,23 @@ async def handle_registries(request: web.Request) -> web.Response:
         repo = str(entry.get("repo", "")).strip()
         if not repo:
             return _deny("repo is required")
+        public_repo = _strip_git_target_userinfo(repo)
         # Accept a bare name (legacy — kept for companion resolution) OR a
         # vetted full git URL. Reuse the blob-proxy validator, which rejects
         # shell metacharacters / traversal and owner/repo shorthand.
         if not _is_safe_repo_identifier(repo):
-            return _deny(f"invalid repo URL or name: {repo!r}", f"repo={repo}")
+            return _deny(
+                f"invalid repo URL or name: {public_repo!r}", f"repo={public_repo}"
+            )
         if repo in _blocked_repos:
             return _deny(
-                f"{repo!r} is the core registry — no need to add it", f"blocked_repo={repo}"
+                f"{public_repo!r} is the core registry — no need to add it",
+                f"blocked_repo={public_repo}",
             )
-        if repo in _pinned_repos:
+        if any(_same_git_target(repo, pinned_repo) for pinned_repo in _pinned_repos):
             return _deny(
-                f"{repo!r} is already provided by this build", f"pinned_repo={repo}"
+                f"{public_repo!r} is already provided by this build",
+                f"pinned_repo={public_repo}",
             )
         # Bare names default the display name to the repo (legacy). Full URLs
         # derive a safe slug from host+path so two URL registries never collide
@@ -3073,7 +3255,7 @@ async def handle_registries(request: web.Request) -> web.Response:
                 caller="dashboard",
                 operation="registries.host_trust_granted",
                 outcome="success",
-                resources=f"host={host} repo={r['repo']}",
+                resources=f"host={host} repo={_strip_git_target_userinfo(r['repo'])}",
             )
 
     data["registries"] = validated
@@ -3084,10 +3266,20 @@ async def handle_registries(request: web.Request) -> web.Response:
         caller="dashboard",
         operation="registries.update",
         outcome="success",
-        resources=f"count={len(validated)} repos={','.join(r['repo'] for r in validated)}",
+        resources=(
+            f"count={len(validated)} repos="
+            f"{','.join(_strip_git_target_userinfo(r['repo']) for r in validated)}"
+        ),
     )
+    public_registries = [
+        {**row, "repo": _strip_git_target_userinfo(row["repo"])} for row in validated
+    ]
     return web.json_response(
-        {"ok": True, "registries": validated, "newlyTrustedHosts": newly_trusted_hosts}
+        {
+            "ok": True,
+            "registries": public_registries,
+            "newlyTrustedHosts": newly_trusted_hosts,
+        }
     )
 
 
@@ -3119,24 +3311,26 @@ async def handle_registries_refresh(request: web.Request) -> web.Response:
             repo = str(raw).strip() or None
 
     if repo is not None and not _is_safe_repo_identifier(repo):
+        public_repo = _strip_git_target_userinfo(repo)
         sel().log_api_access(
             caller=caller,
             operation="registries.refresh",
             outcome="denied",
-            resources=f"repo={repo}",
+            resources=f"repo={public_repo}",
         )
-        return web.json_response({"error": f"invalid repo: {repo!r}"}, status=400)
+        return web.json_response({"error": f"invalid repo: {public_repo!r}"}, status=400)
 
     result = await refresh_registries(repo)
     if result.get("not_found"):
+        public_repo = _strip_git_target_userinfo(repo or "")
         sel().log_api_access(
             caller=caller,
             operation="registries.refresh",
             outcome="not_found",
-            resources=f"repo={repo}",
+            resources=f"repo={public_repo}",
         )
         return web.json_response(
-            {"error": f"no configured registry matches repo: {repo!r}"},
+            {"error": f"no configured registry matches repo: {public_repo!r}"},
             status=404,
         )
     sel().log_api_access(

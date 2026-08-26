@@ -2305,6 +2305,8 @@ class TestCronServiceBridge:
                 "env": {"FOO": "bar"},
                 "persistent_session": False,
                 "silent": True,
+                "timezone": "America/New_York",
+                "skip_dates": ["2026-12-25"],
             }
         ]
         self._write_app_crons(tmp_path, "test-app", cron_defs)
@@ -2331,7 +2333,35 @@ class TestCronServiceBridge:
             persistent_session=False,
             silent=True,
             enabled=True,
+            timezone="America/New_York",
+            skip_dates=["2026-12-25"],
         )
+
+    def test_cron_without_timezone_passes_the_empty_sentinel(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        """A def that names no zone keeps today's config-then-UTC fallback."""
+        from unittest.mock import MagicMock, patch
+
+        from kiro_crew.apps.bridges import register_app_crons_with_service
+
+        self._write_app_crons(
+            tmp_path,
+            "test-app",
+            [{"name": "test-app/refresh", "every": 600, "message": "go"}],
+        )
+
+        mock_cron_service = MagicMock()
+        mock_sdk = MagicMock()
+        mock_sdk.list_jobs.return_value = []
+        mock_sdk.add_job_if_absent_async = AsyncMock(return_value=MagicMock(id="abc123"))
+
+        with patch("kiro_crew.apps.bridges.CronSDK", return_value=mock_sdk):
+            _run(register_app_crons_with_service("test-app", mock_cron_service))
+
+        kwargs = mock_sdk.add_job_if_absent_async.call_args.kwargs
+        assert kwargs["timezone"] == ""
+        assert kwargs["skip_dates"] is None
 
     def test_disabled_cron_registers_paused(self, tmp_path, app_env, monkeypatch):
         """A manifest cron with enabled:false is passed through as enabled=False."""
@@ -2478,6 +2508,8 @@ class TestCronServiceBridge:
             persistent_session=False,
             silent=True,
             enabled=True,
+            timezone="",
+            skip_dates=None,
         )
 
     def test_rejects_malicious_command(self, tmp_path, app_env, monkeypatch):
@@ -2609,6 +2641,8 @@ class TestCronServiceBridge:
             env={"K": "V"},
             persistent_session=False,
             silent=True,
+            timezone="America/New_York",
+            skip_dates=["2026-12-25"],
         )
         manifest.crons = [entry]
 
@@ -2621,6 +2655,10 @@ class TestCronServiceBridge:
         assert d["env"] == {"K": "V"}
         assert d["persistent_session"] is False
         assert d["silent"] is True
+        # Without these the declared zone is dropped between the manifest and
+        # the scheduler, and the job fires in UTC.
+        assert d["timezone"] == "America/New_York"
+        assert d["skip_dates"] == ["2026-12-25"]
 
     def test_add_job_exception_logged_and_skipped(self, tmp_path, app_env):
         """Exception from CronSDK.add_job is caught, logged, and execution continues."""

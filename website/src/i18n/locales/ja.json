@@ -56,6 +56,8 @@
     "memory_unavailable": "メモリ: 利用不可",
     "metrics_are_stale_latest_fetch_failed": "メトリクスが古く、最新の取得に失敗しました",
     "metrics_unavailable": "メトリクス利用不可",
+    "n_more_other": "ほか{{count}}件",
+    "notification_count_other": "{{count}} 件の通知",
     "resource_critical": "Critical",
     "resource_posture_tooltip_critical": "Host memory is critically low ({{gb}} GB free). Avoid heavy parallel work.",
     "resource_posture_tooltip_tight": "Host memory is tight ({{gb}} GB free). Heavy work may be slower.",
@@ -82,6 +84,7 @@
     "search_sessions_files_and_commands": "セッション、ファイル、コマンドを検索",
     "show_fewer_apps": "表示するアプリを減らす",
     "show_less": "表示を減らす",
+    "show_more_apps_other": "さらに{{count}}個のアプリを表示",
     "signed_in_with": "{{provider}} でサインイン済み",
     "skip_to_content": "コンテンツにスキップ",
     "social_login": "ソーシャルログイン",
@@ -128,6 +131,8 @@
   "apps": {
     "agentWorlds": {
       "manifest": {
+        "use_case_1": "クルーの作業中、実行中のエージェント、cron、サブエージェントをセカンドスクリーンで一覧できます。",
+        "configuration_1": "アプリを有効にして Agent Worlds を開き、シーンを選択します。必要なら別ウィンドウにポップアウトできます。認証情報や外部サービスは不要です。",
         "description": "実行中のエージェントをアニメーション化されたピクセルアートシーンの文字に変えます。そのため、ひと目で Kiro Crew がどのくらい忙しいかがわかります。各アクティブなエージェントはスプライトとして表示され、仕事が開始および完了するときに反応します。クラシックなオフィスからウィザードタワーまたは水中ラボへのテーマシーンをまたいでいます。別のウィンドウにポップアウトして、作業中に2番目の画面に保つことができます。",
         "display_name": "Agent Worlds",
         "highlight_1": "実行中のエージェントをリストではなく文字として表示するライブビュー",
@@ -148,6 +153,8 @@
         "staygreen": "STAYGREEN"
       },
       "manifest": {
+        "use_case_1": "測定可能な性能向上または再現可能な不具合修正を証明してから、採用された結果をレビュー可能な GitHub の変更にします。",
+        "configuration_1": "ゲートウェイホストには git と認証済みの gh CLI が必要です。GitHub リポジトリを接続し、ベースブランチを選び、性能改善を実行する前にルーラーを校正します。",
         "description": "GitHub リポジトリを変更する前に測定します。校正済みの性能指標（ものさし）を設計し、既知の改善に対してその指標が信頼できることを証明したうえで、保持か巻き戻しの改善サイクルを実行します。候補となる修正はすべて隔離された worktree で書かれ、編集許可リストとリポジトリ自身のテストで検査され、測定した改善がノイズ帯を超えたときにだけ保持されます。残ったものは、あなたがレビューして自分で公開する GitHub のドラフトのプルリクエストになります。",
         "display_name": "Auto-Improvement",
         "highlight_1": "まず自らの指標を証明します — 信頼できないものさしでは実行を開始しません",
@@ -182,6 +189,8 @@
         "tree_is_getting_large_consider_pruning_branches": "ツリーが大きくなっています — 追求しないブランチの削除を検討してください。"
       },
       "manifest": {
+        "use_case_1": "大まかな問いを展開し、証拠をストリーミングし、再利用可能なレポートを作成する複数サイクルの調査を実行します。",
+        "configuration_1": "キャンペーンを作成し、Agent または Dynamic Workflow モードを選んで問いを展開した後、サイクル数、間隔、ワーカー数、有人または無人での実行を設定します。",
         "description": "席を離れても継続するマルチサイクルの調査キャンペーンを実行します。質問を与えると、より具体的なサブ質問のツリーに展開し、それぞれをエージェントに調査させ、結果が届くたびにページへ表示します。質問に答えが出るか、進展が止まったと判断するまでキャンペーンは自律的に進み、完成したレポートをナレッジライブラリや共有可能なアーティファクトへ渡せます。",
         "display_name": "Research Lab",
         "highlight_1": "1 つの幅広い質問をスコープされた小質問のツリーに展開してからエージェント時間を使用",
@@ -353,9 +362,11 @@
     },
     "autoTriagePipeline": {
       "manifest": {
-        "description": "Kiro Crew 自身の自動トリアージパイプラインの全画面ビュー。フェーズ列挙に沿って crew の作業項目ごとに横レーンを1本表示し、各項目がどのフェーズにあるか、どこで項目が滞留しているか、どれが停止しているかをオペレーターが一目で把握できます。Issue Radar の crew-fabric シームを通して crew 台帳を読み取ります。レーン図は「この項目はどこにあるか」に、キュー要約は「キューの状態はどうか」に答えます。",
+        "description": "Kiro Crew 自身の自動トリアージパイプラインを 3 階層で見る読み取り専用ビュー。6 つのステップとその処理量、ステップ内の Issue、各 Issue のエージェントセッションの費用を表示します。",
         "display_name": "Kiro Crew 自動トリアージパイプライン",
-        "page_label": "自動トリアージパイプライン"
+        "page_label": "自動トリアージパイプライン",
+        "use_case_1": "Issue Radar のクルー作業がデリバリーパイプライン全体のどこで滞留、再オープン、待機しているかを確認します。",
+        "configuration_1": "Issue Radar でリポジトリを接続し、クルー台帳にフェーズイベントを蓄積させます。その後、このアプリを有効にしてピッカーからそのリポジトリを選択します。"
       },
       "pipeline": {
         "subtitle": "クルーの作業アイテムごとに 1 レーン、全フェーズを横断表示 — 各アイテムのフェーズと、どこで詰まっているかがひと目でわかります。",
@@ -435,10 +446,83 @@
         "header_addressing_review": "レビュー対応",
         "header_awaiting_merge": "マージ待ち",
         "header_resolved": "解決済み"
+      },
+      "global": {
+        "tab_pipeline": "パイプライン",
+        "tab_lanes": "項目レーン",
+        "tablist_label": "自動トリアージパイプラインのビュー",
+        "title": "パイプライン",
+        "subtitle": "トリアージパイプラインの各ステップと、そこにある項目、これまでに処理した数",
+        "refresh": "更新",
+        "loading": "読み込み中…",
+        "no_pipeline_title": "パイプラインの活動はまだありません",
+        "no_pipeline_subtitle": "トリアージパイプラインが動き出すと、各ステップとそこを通る項目がここに表示されます",
+        "close_step": "ステップを閉じる",
+        "step_heading_other": "{{step}} · {{count}} 件の項目",
+        "session_current": "現在のセッション",
+        "turns_n_other": "{{count}} ターン",
+        "open_session": "セッションを開く",
+        "sessions_empty_title": "この項目のセッションはありません",
+        "sessions_empty_subtitle": "この項目はエージェントセッションを一度も開いていないため、表示するものがありません",
+        "unit_sessions": "セッション",
+        "unit_issues": "課題",
+        "in_step": "ステップ内 ({{unit}})",
+        "recent": "最近",
+        "total": "合計",
+        "never": "なし",
+        "stat_in_flight": "処理中",
+        "stat_last_activity": "最終アクティビティ",
+        "stat_events": "イベント",
+        "stat_window": "{{hours}} 時間で処理",
+        "flow_hint": "コネクタの太さは、ステップ間の最近の流量を表します",
+        "unparseable_other": "{{count}} 件のイベントを解析できませんでした",
+        "untitled": "無題",
+        "resumed_times_other": "{{count}} 回再開",
+        "needs_human": "要対応",
+        "pr_not_recorded": "プルリクエストは記録されていません",
+        "labels": "ラベル",
+        "not_cached": "キャッシュなし",
+        "assignees": "担当者",
+        "comments": "コメント",
+        "last_event": "最終イベント",
+        "step_empty_title": "このステップに項目はありません",
+        "step_empty_subtitle": "現在このステップには何もありません",
+        "step": {
+          "scan": "スキャン",
+          "triage": "トリアージ",
+          "dispatch": "ディスパッチ",
+          "implement": "実装",
+          "verify": "検証",
+          "cleanup": "クリーンアップ"
+        },
+        "col_credits": "クレジット",
+        "col_durationMs": "所要時間",
+        "col_contextUsed": "コンテキスト",
+        "col_input": "入力",
+        "col_output": "出力",
+        "col_cacheCreate": "キャッシュ書き込み",
+        "col_cacheRead": "キャッシュ読み取り",
+        "col_cost": "コスト",
+        "session_retired": "このセッションは終了しています -- コマンドを送信できません",
+        "load_failed": "このデータを読み込めませんでした",
+        "retry": "再試行",
+        "col_slot": "セッション",
+        "col_model": "モデル",
+        "col_turns": "ターン",
+        "author": "作成者",
+        "queued": "キュー投入",
+        "dispatched": "割り当て済み",
+        "first_started": "最初の開始",
+        "total_sessions": "セッション",
+        "toggle_detail": "項目 #{{number}} の詳細を表示",
+        "liveness_checking": "セッションを確認中",
+        "liveness_unknown": "セッションの状態を取得できません"
       }
     },
     "channels": {
       "manifest": {
+        "use_case_1": "名前付きの複数のエージェントロールを使い、監査可能な共有トランスクリプト上でインシデント対応、調査、コードレビューを進めます。",
+        "configuration_1": "kirocrew app enable channels で非表示のアプリを有効にし、プリセットまたは Custom からチャンネルを作成して、エージェントとリッスンモードを割り当てます。その後、@メンションで作業を引き継ぎます。",
         "description": "1 人のエージェントだけでなく、複数のエージェントが 1 つの問題に共同で取り組む共有ルームです。各エージェントに役割を割り当てると、進捗をチャネルに投稿し、互いの @mentions に公開で応答します。エージェント間の非公開メッセージはないため、やり取り全体を追跡でき、状態を変更する操作では引き続きあなたが承認者です。エージェントは終了またはタイムアウトするまでチャネルに残ります。",
         "display_name": "チャネル",
         "highlight_1": "複数のロール割り当てエージェントが 1 つの共有で読みやすいトランスクリプトで協力",
@@ -819,6 +903,8 @@
         }
       },
       "manifest": {
+        "use_case_1": "1 件または複数の GitHub プルリクエストをリスク順にレビューし、重点的な指摘を確認して、公開する価値のあるコメントだけをステージします。",
+        "configuration_1": "ゲートウェイホストに gh CLI をインストールして認証し、リポジトリを追加してから、設定でレビューモデル、推論強度、同時実行数を選択します。",
         "description": "GitHub pull requestsの詳細確認を行い、実際に注目する価値のある変更を示します。変更されたファイルはすべて独自の分離されたエージェントセッションで確認され、持っているブラスト半径の量で加重され、優先度付きフォーカスレポートにロールアップされます。検出結果は、GitHub で送信するまで未公開のままのドラフト GitHub レビューとしてステージングされ、確認者は出荷されたフィックスと過去のレビューコメントからリポジトリの真の標準を学び続けます。",
         "display_name": "Code Review Sage",
         "highlight_1": "フォーカスレポートはブラスト半径によって変更をランク付けするため、リスクの高いファイルが最初に読み取られます",
@@ -890,6 +976,8 @@
       "group_settings": "設定",
       "leave_scope": "すべてのコマンドに戻る",
       "manifest": {
+        "use_case_1": "キーボードから手を離さずに、アプリ、設定、対応が必要なセッション、新しいエージェントリクエストへ移動します。",
+        "configuration_1": "既定で有効です。任意の場所で Cmd+K または Ctrl+K を押してコマンドを入力し、「セッション」スコープから最近の会話や一致する会話を探します。",
         "display_name": "コマンドバー",
         "description": "クイック検索（Cmd+K / Ctrl+K）をランチャーに置き換えます。検索語ではなくコマンドを入力します。最初のページはアプリのコマンド、移動先、システム設定だけでリクエストを出さないため、入力に費用がかかりません。セッションは入って使う行になります。有効な間はナレッジ、成果物、スキル、プロンプトの検索はできません。戻すには無効にしてください。"
       },
@@ -1076,6 +1164,8 @@
         "title": "Crew Companion"
       },
       "manifest": {
+        "use_case_1": "デスクトップコンパニオンから、休憩の通知、自然言語のリマインダー、呼吸リセット、セッション通知を受け取ります。",
+        "configuration_1": "Kiro Crew Desktop でアプリを有効にし、そのページで休憩間隔と完了通知を設定します。アバターはコンパニオンの Gallery で選択できます。",
         "description": "Kiro Crewのデスクトップコンパニオン。1日のペースを保つのに役立ちます。休憩を取るように促し、プレーンテキストで設定したリマインダーを保持し、リセットが必要な場合は短い呼吸エクササイズを実行します。セッションが終了した場合、失敗した場合、またはOKが必要な場合も通知します。",
         "display_name": "Crew Companion",
         "highlight_1": "優しい休憩の促し — 水を飲む、ストレッチ、目をそらす — あなたが選んだ間隔で",
@@ -1361,6 +1451,8 @@
         "where": "場所"
       },
       "manifest": {
+        "use_case_1": "1 画面または製品フロー全体を、表示領域に紐づく重要度順のヒューリスティックベースの指摘で評価します。",
+        "configuration_1": "スクリーンショットをドロップすれば設定なしでレビューできます。Figma ファイル、リポジトリ、ローカルフォルダー、起動済みの URL も指定できます。非公開の GitHub ソースでは gh auth login が必要な場合があります。",
         "description": "同僚に相談する前に実行できるデザイン批評です。スクリーンショット、複数画面のフロー、Figma ファイル、Git リポジトリ、または公開中の URL を指定すると、候補画面を検出し、確認対象を選べます。その後、経験豊富なデザイナーのように、全体評価、良い点、改善すべき点を、それぞれ明確なヒューリスティックに結び付けて報告します。複数画面のフローでは、コントロールの不一致、進捗表示の欠如、戻る手段の欠如、行き止まりなど、単一画面では分からない問題も検出します。コードと Figma はレンダリングしてから評価するため、実際に確認していないビジュアルを批評せず、アクセスできなかった画面も推測せず明示します。",
         "display_name": "Design Critique",
         "highlight_1": "スクリーンショット、Figmaリンク、Gitリポジトリ、ローカルフォルダー、または実行中のURL受け取り — 開始前に見つけたものを返す",
@@ -1532,6 +1624,8 @@
         "using_running_dev_server": "{{url}} で実行中の開発サーバーを使用しています。"
       },
       "manifest": {
+        "use_case_1": "実行中の UI 要素にその場で注釈を付け、ソースにマッピングされた一括の見た目変更をコーディングエージェントに送ります。",
+        "configuration_1": "ローカル Web プロジェクトを読み込み、検出された開発サーバーを起動するか、既存の URL を入力します。Edit モードに切り替え、要素を右クリックしてから変更を一括送信します。",
         "display_name": "Design Tweak",
         "description": "アプリのライブプレビューで要素をビジュアルに選択し、エージェント向けのスコープ付きソースマップ編集リクエストに変換します — Figmaのコメントのような感覚で、コードに対して行えます。",
         "page_label": "Design Tweak"
@@ -1539,6 +1633,8 @@
     },
     "devFleet": {
       "manifest": {
+        "use_case_1": "稼働中のゲートウェイに影響を与えず、Kiro Crew の機能ワークツリーと分離されたプレビューポッドを運用します。",
+        "configuration_1": "アプリに Kiro Crew のチェックアウト先を指定します。PR 操作には認証済みの gh が必要です。ポッドには Linux の systemd --user または macOS の launchd が必要で、事前にプロビジョニングする必要があります。",
         "description": "Kiro Crew自体の作業用コントロールパネル。すべての機能ワークツリーを、プルリクエスト状態、コミット数、ディスク使用量と一緒にリストして、それらを任意のポッドとして表示できます。独自のポートと独自のデータディレクトリを持つ完全なプレビューインスタンスなので、ライブゲートウェイに影響を与えずに未完成の変更をクリックして確認できます。また、メインのプルとリビルド、ブランチのリベース、ポッドログのストリーミング、作業がマージされたワークツリーの削除など、その周囲の作業を処理します。",
         "display_name": "Dev Fleet",
         "highlight_1": "任意のワークツリーを独自のポートとデータディレクトリ上の分離ポッドとして表示して、ライブゲートウェイに影響を与えない",
@@ -1578,6 +1674,8 @@
         "truncated": "· 省略"
       },
       "manifest": {
+        "use_case_1": "ページに書き込みアクセスを与えず、ゲートウェイホスト上のファイルを読み取り、検索、プレビュー、ダウンロード、またはチャットで相談できます。",
+        "configuration_1": "アプリを有効にし、パスバーから許可されたディレクトリを開きます。アカウントは不要で、git または ripgrep は任意のステータス表示と検索機能を追加するだけです。",
         "description": "Kiro Crewが実行されているマシン上のファイルを閲覧して読み込み、ダッシュボードを離れる必要がありません。複数のファイルをタブで開いたままにして、各ファイルのGitステータスを表示させながらディレクトリツリーを操作して、フォルダー全体の文字列を検索して、マークダウンをレンダリングされたものとして読み込みます。設計上は読み取り専用です。ファイルを開いて検索しますが、決して編集、移動、削除することはなく、ホームディレクトリ、/tmp、/optのみにアクセスできます。",
         "display_name": "ファイル",
         "highlight_1": "読み取り専用：ファイルを開いて検索しますが、決して書き込み、移動、削除しません",
@@ -1594,6 +1692,7 @@
         "path_to_folder": "/パス/フォルダー"
       },
       "searchPanel": {
+        "capped": "（上限あり）",
         "close_esc": "閉じる (Esc)",
         "close_search": "検索を閉じる",
         "comma_separated_glob_patterns": "カンマ区切りのグロブパターン",
@@ -1955,6 +2054,7 @@
         "prList": {
           "clear_search": "検索をクリア",
           "closed_merged_prs_are_capped_at_the_100_most_rec": "閉じられた/マージ済みPRは最後に更新された100件に限定されます。完全にリポジトリ全体を検索するには「me」フィルターをオンにしてください",
+          "file_changed_other": "{{count}} 個のファイルが変更されました",
           "loading_the_rest": "残りを読み込んでいます…",
           "pr_other": "{{count}}個のPR",
           "re_fetch_from": "{{label}} を {{provider}} から再取得",
@@ -2079,6 +2179,8 @@
         }
       },
       "manifest": {
+        "use_case_1": "接続済みプロバイダーの Issue とプルリクエストをトリアージしながら、要約、推奨ラベル、調査履歴を保持します。",
+        "configuration_1": "リポジトリを接続し、ゲートウェイホストでプロバイダーの CLI を認証します。GitHub は gh、GitLab は glab、Azure DevOps は macOS、Linux、WSL 上で拡張機能を追加した az を使用します。",
         "description": "覚えているIssueトリアージアシスタント。AIが提案するラベルと項目ごとの調査ノートを使用して、GitHub のIssue、GitLab のIssue、Azure DevOps の作業項目をブラウズ、フィルター、トリアージします。ローカル台帳で調査結果を保持するため、何度も調査されることはありません。",
         "display_name": "Issue Radar",
         "highlight_1": "Issue とプルリクエストのAI要約と推奨ラベル、それぞれの根拠を表示",
@@ -2403,6 +2505,8 @@
             "labels": "ラベル",
             "looking_for_labels_this_repo_is_missing": "このリポジトリにないラベルを検索中…",
             "none_the_repo_s_taxonomy_already_covers_what_its": "なし。リポジトリのタクソノミーは、オープン Issue が必要とするものをすでにカバーしています。",
+            "open_issue_other": "{{count}}個の未解決Issue",
+            "open_with_description_other": "{{description}} — 未解決{{count}}件",
             "propose_labels_this_repo_is_missing_from_its_ope": "リポジトリがオープン Issue から取得する必要があるラベルを提案",
             "read_only_repo_needs_triage_push_access": "読み取り専用リポジトリ。トリアージ/プッシュアクセスが必要です",
             "suggest_again": "もう一度提案",
@@ -2425,6 +2529,7 @@
         },
         "taggingView": {
           "analyzing": "分析中…",
+          "apply_suggestion_other": "{{count}} 件の提案を適用",
           "applying": "適用中…",
           "applying_is_disabled_until_they_load_because_a_s": "リポジトリが不要になったラベルに名前を付けているため、\n            読み込みまでは適用が無効になります。バッチ全体の入力が却下されます。",
           "applying_needs_write_access": "適用には書き込みアクセスが必要です",
@@ -2436,6 +2541,8 @@
           "created_but_settings_not_updated": "「{{name}}」を GitHub 上に作成しましたが、このリポジトリのローカルトリアージ設定を更新できませんでした：{{error}}",
           "defines_no_labels_yet_so_there_is_nothing_to_ass": "まだラベルを定義していないため、割り当てるものがありません。\n            上記でいくつかを提案し、必要なものを作成してから、ここに戻ってラベルを提案してください。",
           "every_open_issue_in": "内のすべてのオープン Issue",
+          "labelled_issue_other": "{{count}}個のIssueにラベルを付けました。",
+          "labelled_issue_with_failures_other": "{{count}}個のIssueにラベルを付けました。{{failed}}個は更新できませんでした（下の行を参照）。",
           "loading_the_untagged_queue": "タグなしキューを読み込み中…",
           "newest_first": "最新のものから",
           "read_only_repo_needs_triage_or_push_access": "読み取り専用リポジトリ。トリアージまたはプッシュアクセスが必要です",
@@ -2582,6 +2689,8 @@
         "label": "{{productName}} ナレッジと同期"
       },
       "manifest": {
+        "use_case_1": "wikilink、バックリンク、検索、Git 履歴、任意の Knowledge インデックス機能を備えた、持ち運び可能な Markdown ボールトを編集します。",
+        "configuration_1": "Git リポジトリをクローンするか既存のローカルフォルダーを接続し、必要に応じて Knowledge と定期同期を有効にします。非公開 GitHub リポジトリのクローンには PAT または認証済みの gh が必要です。",
         "description": "git リポジトリに置かれたマークダウンノートブックを保持してください。ノートはバージョン管理され、ポータブルで、他のエディタで読み取り可能です。GitHub リポジトリを指すと、作業コピーがクローンされるか、既存のフォルダーを接続します。既存の Obsidian ボールトなどを含む。フォルダーは 2 番目のコピーを作成せずにその場で採用されます。ノートは、クリックしてすぐに編集できるフォーマット済みテキストとしてレンダリングされます。[[wikilinks]] はそれらを接続し、すべてのノートは何がそれにリンクバックしているかを示します。同期は 1 つのステップでコミット、プル、プッシュを行い、マージ競合は何かを上書きするのではなく、競合するノートを一覧に表示し、マージを中止して報告されます。",
         "display_name": "ノート",
         "highlight_1": "ノートはプレーンマークダウン git リポジトリ内にあります。ロックイン不要、Obsidian または任意のエディタで読み取り可能",
@@ -2746,6 +2855,8 @@
         "title": "会議"
       },
       "manifest": {
+        "use_case_1": "ライブ会議を記録しながら、複数のエージェントがトランスクリプト、構造化ノート、図、アクションアイテムのレビューを並行して作成します。",
+        "configuration_1": "ライブ収録ではブラウザーのマイクアクセスを許可します。必要に応じて、設定で iCalendar のパスまたは URL、ローカルタスク台帳、エージェントロール、音声認識の修正用語を指定します。",
         "description": "AIミーティングアシスタント。ライブ会議を文字起こしし、進行中に構造化されたノートとダイアグラムを保持し、アクションアイテムを抽出し、ファイリング前に確認できます。",
         "display_name": "会議",
         "highlight_1": "Kiro Crew独自の音声テキスト変換によるライブ文字起こし—追加のデーモンなし、既に使用しているもの以上のクラウドアカウントなし",
@@ -3091,6 +3202,8 @@
         "this_computer": "このコンピューター"
       },
       "manifest": {
+        "use_case_1": "静かなデスクトップペットとチャットし、リマインダーや公開ページの変更を監視し、接続済みカレンダーの予定に合わせて動作を調整します。",
+        "configuration_1": "Kiro Crew Desktop で Mochi を有効にし、外観と動作を選びます。その後、チャットまたはダッシュボードで監視対象を追加します。予定を考慮した計画には、接続済みのカレンダー MCP ツールが必要です。",
         "description": "あなたの画面に住んでいるデスクトップコンパニオン。Mochi は独自のパネルでチャットし、ページとフィードを監視し、あなたのスケジュールの周りで独自の日を計画し、一緒に過ごした時間を覚えており、実際に変わったときだけあなたに肩をたたきます。",
         "display_name": "Mochi",
         "highlight_1": "デスクトップに浮かぶペットウィンドウ — 透明、クリックスルー、常に相手がいます",
@@ -3544,6 +3657,8 @@
         "live_investigation_header": "{{incident}}{{title}}のライブ調査。エージェントに答えるか、それを操向するにはここで返信してください。"
       },
       "manifest": {
+        "use_case_1": "運用シグナルを監視し、インシデントを調査し、実績のある修正を再利用して、完全なローカル監査証跡を引き継ぎます。",
+        "configuration_1": "設定で環境認証情報またはプロバイダートークンを使ってプロバイダーを追加します。読み取り専用では Observe のままにし、許可する Propose または Act アクションを明示的に有効にします。Slack への出力は既存の Kiro Crew 接続を再利用します。",
         "description": "自律型オペレーション初期対応者。アラーム、ページ、モニターを監視し、発火したものを引き受け、実際のコンテキストで調査し、修正を提案します。すべての学習を地元の元帳に保持するため、2番目の発生は最初よりも高速です。",
         "display_name": "Ops Mission Control",
         "highlight_1": "発火したアラームを1ハートビート以内に引き受け、誰も見る必要があるまえに調査します",
@@ -3892,6 +4007,8 @@
         "no_source_files": "ソースファイルがありません。"
       },
       "manifest": {
+        "use_case_1": "コンパイル済み PDF と並べて LaTeX 論文を執筆し、ビルドエラーからソースへ移動し、論文専用エージェントと共同作業します。",
+        "configuration_1": "アプリから管理対象の Tectonic をインストールするか、tectonic または pdflatex を PATH に追加します。その後、論文を作成するか、非対話型の Git 認証情報を事前設定してリポジトリをクローンします。",
         "description": "LaTeX ペーパーエディターで、ライブ PDF プレビューと AI 共著者を備えています。スプリットペインエディターで執筆し、Cmd+S（Windows および Linux では Ctrl+S）を押して pdflatex または tectonic でコンパイルします。ソースの横でレンダリングされた PDF を読みます。コンパイルエラーはクリック可能なリストに解析され、問題のある行にジャンプします。任意の git リモートから既存のペーパーをクローンして、ツールバーからコミットしてプッシュします。共著者パネルは、ペーパーにスコープされた実際の Kiro Crew チャットセッションであるため、エージェントは LaTeX を読み取りして編集でき、PDF が更新されるのを見ることができます。",
         "display_name": "Papyrus",
         "highlight_1": "ライブ PDF プレビュー横のスプリットペイン LaTeX エディター",
@@ -3975,6 +4092,8 @@
     },
     "personalShopper": {
       "manifest": {
+        "use_case_1": "指定した公開ストアの商品を調査しながら、意思決定、カート、アカウント、購入手続きを自分で管理します。",
+        "configuration_1": "ストアの認証情報は不要です。必要に応じて Preferences と Sites を自分用のメモとして保存し、関連する条件とストア名をアドバイザーとの会話に貼り付けます。",
         "description": "実際のストアを調べ、購入で終わるとは限らない問題の解決を手伝うパーソナルアドバイザーです。「好み」タブはあなた用の参照リストで、大事なものはチャットに貼ってください。購入は一切行いません — 決めるのはあなたです。",
         "display_name": "Personal Shopper",
         "highlight_1": "何かを薦める前に問題を見極めます — 買わないことが答えの場合もあります",
@@ -4101,6 +4220,8 @@
         "unpin_style": "このスタイルをピン留め解除"
       },
       "manifest": {
+        "use_case_1": "アイデア、URL、元テキストを、ライブスライドプレビューと再利用可能なビジュアルスタイルを備えた実際のプレゼンテーションに変換します。",
+        "configuration_1": "初回利用時に固定バージョンのエンジンをインストールし、必要に応じてプレビュー対応を広げる LibreOffice をインストールします。出力ディレクトリを選び、再利用する HTML スタイルや PPTX テンプレートをインポートします。",
         "description": "チャットでデッキについて説明し、実際の .pptx を取得します。エージェントがインタビューを行い、ブリーフ、アウトライン、アートディレクションを作成してからすべてのスライドを作成し、ファイルを生成します。会話の横に表示されるライブプレビューで各成果物を見ることができます。スライドは構築されるときにアニメーション SVG としてレンダリングされるため、ダウンロードを待つ代わりにデッキが構築される様子を見ることができます。再利用可能なスタイルと .pptx テンプレートにより、同じコンテンツを 3 つの異なるプレゼンテーションのように見せることができます。",
         "display_name": "PPTX Maker",
         "highlight_1": "チャットで完成した .pptx を実現 — 仕様モードは注意深く計画し、Vibe モードは URL または貼り付けたテキストをすぐにスライドに変換します",
@@ -4161,6 +4282,8 @@
     },
     "projects": {
       "manifest": {
+        "use_case_1": "自然言語、既存の仕様、または決定的な YAML から、依存関係を認識するマルチエージェントジョブを計画して実行します。",
+        "configuration_1": "Task Runner を開き、Compose、From Spec、From YAML のいずれかを選び、エージェントと必要に応じて絶対パスのワークスペースを指定します。その後、Plan で確認するか Run ですぐに開始します。",
         "description": "マルチステップのジョブを引き渡し、無人で完了まで実行します。プレーンランゲージで作業を説明するか、書かれたスペックを貼り付けるか、YAML ファイルをアップロードしてから、ステップをレビューするために最初に計画を生成するか、すぐに開始するかのどちらかを選択します。各実行には独自のページがあり、ステップバイステップの進行状況が表示され、いつでも一時停止、再開、再試行、または停止できます。",
         "display_name": "Task Runner",
         "highlight_1": "3 つの方法: プレーンランゲージで作業を説明するか、スペックを貼り付けるか、YAML をアップロードします",
@@ -4355,6 +4478,8 @@
         }
       },
       "manifest": {
+        "use_case_1": "機能、不具合、クイックタスクを、リポジトリの文脈に沿ったレビュー可能な要件、設計、実装手順に変換します。",
+        "configuration_1": "プロジェクトフォルダーと Feature、Bug、Quick のいずれかのモードを選び、必要に応じて新しいワークツリーを作成します。その後、ビルドを開始する前に生成された各段階を確認して承認します。",
         "description": "Kiro Crew内でのスペック駆動開発：機能のアイデアを「要件 → デザイン → タスク」に変換。組み込みエージェント付き、アプリ内でMarkdownを確認し、承認済みプランを自動実行セッションに引き渡します。",
         "display_name": "Spec Builder",
         "page_label": "Spec Builder"
@@ -4367,6 +4492,8 @@
     },
     "workflows": {
       "manifest": {
+        "use_case_1": "制限付きワークフロースクリプトを検証して確認するか、コアのマルチエージェントワークフロー実行をフェーズごとに監視します。",
+        "configuration_1": "kirocrew app enable workflows で非表示のアプリを有効にします。Author で DSL Python を検証するか、実際のエージェントオーケストレーションが必要な場合はチャットまたは MCP ワークフローツールを使い、Runs で監視します。",
         "description": "動的ワークフローを作成、実行、監視：通常はエージェントが素の英語のゴールから書く Python スクリプト。複数の Kiro Crewエージェントを順序付けられたフェーズで駆動します。スクリプトは実行前にサンドボックス化されたワークフローコマンドセットに対してチェックされるため、ミスは実行なしで明らかになり、実行時はページがフェーズごとにストリーミングされます。実行可能な例がアプリに組み込まれています。",
         "display_name": "Workflows",
         "highlight_1": "ワークフローを実行前に検証 — エラーが何も実行されずに明らかになります",
@@ -4444,7 +4571,7 @@
     "colChecks": "チェック",
     "colPr": "プルリクエスト",
     "colVerdict": "状態",
-    "commitConfirm": "この変更を {{branch}} にコミットしてプッシュしますか？公開したコミットは取り消せません。",
+    "commitConfirm": "この変更を 「{{branch}}」 にコミットしてプッシュしますか？公開したコミットは取り消せません。",
     "commitFailed": "コミットは拒否されました。",
     "commitFinding": "ブランチにコミット",
     "currentRepo": "対象",
@@ -4636,6 +4763,10 @@
       "trusted_auto_approving_future_calls": "信頼済み—今後の呼び出しを自動承認"
     },
     "approvalModePicker": {
+      "nudge_body": "ここで {{productName}} の承認モードを調整できます。ここで「信頼」を選ぶと、このチャットでは事前に確認せずに作業します。いつでも戻せます。",
+      "nudge_dismiss": "了解しました",
+      "nudge_title": "確認の回数を減らしたいですか？",
+      "nudge_view_options": "オプションを見る",
       "all_tools_will_get_auto_approved_across_all_sess": "すべてのツールはすべてのセッション全体で自動承認されます。",
       "approval_mode": "承認モード",
       "approval_mode_aria": "承認モード: {{mode}}",
@@ -4881,6 +5012,8 @@
       "more_actions": "その他の操作"
     },
     "chatInput": {
+      "approval_hint_adjust": "承認モードを調整",
+      "approval_hint_question": "毎回の確認が面倒ですか？",
       "send_a_message_or_tap_the_mic_for_voice": "メッセージを送信、またはマイクをタップして音声入力",
       "release_to_transcribe": "離して文字起こし",
       "hold_to_talk": "押して話す",
@@ -6556,6 +6689,11 @@
       "use_this_folder": "このフォルダーを使用"
     },
     "terminalKeyBar": {
+      "paste": "貼り付け",
+      "paste_clipboard_empty": "クリップボードが空です",
+      "paste_failed": "貼り付けに失敗しました",
+      "paste_needs_https": "貼り付けには安全な (HTTPS) 接続が必要です",
+      "paste_permission_needed": "クリップボードへのアクセスを許可してください",
       "terminal_keys": "ターミナルキー"
     },
     "themeEditor": {
@@ -6685,14 +6823,15 @@
       "dismiss_update_dialog": "更新ダイアログを閉じる",
       "install_failed": "更新をインストールできませんでした",
       "install_failed_body": "更新を適用できませんでした。{{productName}} はローカルゲートウェイを復旧しています。このバージョンのまま利用を続け、「設定 > このアプリについて」から再試行できます。",
+      "install_restart_timing": "インストールには数分かかる場合があります。アプリは閉じ、更新が完了すると自動的に再び開きます。",
+      "windows_installer_handoff": "Windows のインストール画面に進行状況が表示されます。",
       "installing_update": "更新をインストール中…",
-      "installing_update_body": "{{productName}} はローカルゲートウェイを停止して更新をインストールしています。1分ほどかかることがあります。アプリを終了しないでください。自動的に再起動します。",
+      "installing_update_body": "{{productName}} はローカルゲートウェイを停止して更新をインストールしています。数分かかる場合があります。完了後に自動的に再び開きます。",
       "is_downloaded_and_ready_to_install": "がダウンロードされ、インストール準備ができています。",
       "kirocrew": "{{productName}}",
       "later": "後で",
-      "restart_update": "再起動して更新",
+      "restart_update": "更新をインストールしてアプリを再起動",
       "restarting": "再起動中…",
-      "the_app_will_stop_the_local_gateway_install_the": "アプリはローカルゲートウェイを停止し、更新をインストールして再起動します。",
       "update_ready": "更新準備完了"
     },
     "updatePill": {
@@ -7003,6 +7142,8 @@
       "sign_in_body": "Tailscale は実行中ですが、このコンピューターはまだネットワークにサインインしていません。スマートフォンで使用しているアカウントでサインインしてから、再確認してください。",
       "enable_magicdns_title": "MagicDNS をオンにする",
       "enable_magicdns_body": "このコンピューターはサインイン済みですが、ネットワークにこのコンピューター用の MagicDNS 名がないため、スマートフォンから指定できるアドレスがありません。Tailscale 管理コンソールで MagicDNS を有効にしてから、再確認してください。",
+      "enable_https_title": "Tailscale で HTTPS 証明書を有効にする",
+      "enable_https_body": "Serve が証明書を発行する前に、tailnet 管理者による 1 回限りの承認が必要です。Tailscale 管理コンソールで HTTPS を有効にしてから、再確認してください。",
       "trust_off_title": "このコンピューターのネットワーク名によるアクセスを許可する",
       "trust_off_body": "ダッシュボードは認識できないアドレスからのリクエストを拒否します。スマートフォンからアクセスできるよう、このコンピューター自身のプライベートネットワーク名を許可してください。これによりインターネットへのポートは開かれず、サインイン方法も変わりません。",
       "restart_gateway_title": "完了するには Kiro Crew を再起動してください",
@@ -7016,8 +7157,6 @@
       "copy": "コピー",
       "copy_link": "リンクをコピー",
       "download": "Tailscale をダウンロード",
-      "enable_trust": "許可する",
-      "publish_action": "スマートフォンアクセスを有効化",
       "show_qr": "QR コードを表示",
       "hide_qr": "非表示",
       "stop": "オフにする",
@@ -7026,12 +7165,15 @@
       "qr_warning": "{{minutes}} 分以内にスキャンしてください。このコードにはサインインリンクが含まれており — 入手した人は誰でも {{hours}} 時間ダッシュボードを開けます。共有したりスクリーンショットを投稿したりしないでください。",
       "keep_awake_note": "スマートフォンアクセスがオンの間、ダッシュボードにアクセスできるよう、このコンピューターはスリープしません。画面はオフになる場合があります。",
       "open_dns_admin": "Tailscale の DNS 設定を開く",
+      "open_https_admin": "Tailscale の HTTPS 設定を開く",
       "install_teaser": "スマートフォンで使う",
       "install_teaser_hint": "Tailscale が必要",
-      "restart_action": "今すぐ再起動",
-      "restarting": "再起動中です。このページは自動的に再接続します。",
       "no_peers": "この Tailscale ネットワークにはまだ他の端末が参加していないため、このアドレスを開ける端末がありません。スマートフォンに Tailscale をインストールし、同じアカウントでサインインしてください。",
-      "peers_offline": "他の端末はこのネットワークに参加していますが、現在どれもオンラインではないため、いずれかが接続するまでこのアドレスは読み込めません。"
+      "peers_offline": "他の端末はこのネットワークに参加していますが、現在どれもオンラインではないため、いずれかが接続するまでこのアドレスは読み込めません。",
+      "automatic_https": "この tailnet で HTTPS を有効にすると、Tailscale がプライベート証明書を自動で作成・更新します。",
+      "setting_up": "スマートフォンからのアクセスを設定中…",
+      "setup_action": "設定して QR を表示",
+      "setup_timeout": "スマートフォンアクセスの準備が完了しませんでした。設定を確認して、もう一度お試しください。"
     }
   },
   "hooks": {
@@ -7313,6 +7455,8 @@
       }
     },
     "appDetailPage": {
+      "use_cases": "使用例",
+      "configuration": "設定",
       "after_installation_run": "インストール後、実行:",
       "api_access": "API アクセス",
       "app_not_found": "アプリが見つかりません",
@@ -7448,6 +7592,7 @@
       "v": "v",
       "installed_app_find_in_library_and_enable": "{{name}} をインストールしました。下でオンにして有効化してください。",
       "synced_from_its_source_directory": "{{name}} をソースディレクトリから同期しました。",
+      "updated_app_other": "{{count}} アプリを更新しました。",
       "updated_from_the_registry": "{{name}} をレジストリから更新しました。"
     },
     "artifactDeployPage": {
@@ -8698,6 +8843,7 @@
       "switching": "切り替え中…",
       "tags": "タグ",
       "temporary_no_memory_reads_or_writes": "一時セッション — メモリの読み書きなし",
+      "this_session_cannot_be_opened_from_the_chat_side": "「{{title}}」はチャットサイドバーから開けません — これは {{surface}} セッションです。",
       "thinking": "考え中…",
       "today": "今日",
       "unfiled": "未整理",
@@ -9826,7 +9972,13 @@
         "undo": "元に戻す",
         "uninstall": "アンインストール",
         "unknown": "不明",
-        "declared": "宣言のみ"
+        "declared": "宣言のみ",
+        "sign_in_required": "サインインが必要",
+        "sign_in_required_help": "このサーバーは OAuth を使用しており、まだ誰もサインインしていません。<chatLink>チャットに移動し</chatLink>、新しいセッションを開始して任意のメッセージを送信すると、チャットでサインインの承認を求められます。 その後、プローブしてこの一覧を更新します。",
+        "oauth_not_a_static_token": "このサーバーは OAuth でサインインするため、静的な Authorization ヘッダーでは接続できません。このサーバーを削除してヘッダーなしで再追加し、有効にしてから、新しいチャットセッションを開始してサインインしてください。",
+        "sign_in_required_next": "承認したら、この表の上にある「MCP サーバーをプローブ」ボタンを使用します。行は「サインイン済み」に変わります。",
+        "signed_in": "サインイン済み",
+        "signed_in_help": "{{provider}} のサインインは Kiro CLI が保持しています。プローブはそのトークンなしで実行されるため、{{productName}} はサインインが有効なままかどうかを確認できません。"
       },
       "memoryGraphTab": {
         "all_count": "すべて（{{count}}）",
@@ -10668,6 +10820,21 @@
       "uptime": "稼働時間"
     },
     "settings": {
+      "mobileLoginCard": {
+        "sign_in_on_mobile": "モバイルでサインイン",
+        "create_a_one_time_link_for_mobile_or_another_browser": "モバイルまたは別のブラウザー用に、有効期限の短いサインインリンクを作成します。5分で有効期限が切れます。",
+        "creating_link": "リンクを作成中…",
+        "create_mobile_sign_in_link": "モバイル用サインインリンクを作成",
+        "create_new_mobile_sign_in_link": "新しいリンクを作成",
+        "mobile_sign_in_link": "モバイル用サインインリンク",
+        "copy_sign_in_link": "サインインリンクをコピー",
+        "link_copied": "リンクをコピーしました",
+        "link_expires_in_minutes": "このリンクは{{minutes}}分で期限切れになります。",
+        "send_the_copied_link_to_your_mobile_device_then_open_it": "コピーしたリンクをモバイル端末に送信して、そこで開いてください。",
+        "dashboard_url_required_to_create_a_mobile_sign_in_link": "ダッシュボード URL が設定されていません。モバイル用サインインリンクを作成するには dashboard.url を設定してください。",
+        "could_not_create_a_sign_in_link_try_again": "サインインリンクを作成できませんでした。もう一度試してください。",
+        "copy_failed_select_the_link_and_copy_it_manually": "コピーに失敗しました。リンクを選択して手動でコピーしてください。"
+      },
       "aboutPanel": {
         "diverged": "分岐あり",
         "checkout_diverged_from_upstream": "このチェックアウトはアップストリームから分岐しています（{{distance}}）。rebase または merge で更新してください — 何も自動では適用されないため、ローカルコミットは安全です。",
@@ -10714,7 +10881,8 @@
         "downloading": "ダウンロード中…",
         "insider": "Insider",
         "install_failed": "更新をインストールできませんでした",
-        "installing_quiet_note": "インストール中 — Kiro Crew は 1 ～ 2 分間沈黙してから自動的に再起動します。",
+        "install_update_restart_app": "更新をインストールしてアプリを再起動",
+        "installing_quiet_note": "インストール中 — 数分かかる場合があります。更新が完了すると {{productName}} は自動的に再び開きます。",
         "is_available": "が利用可能です。",
         "loading_changelog": "変更ログを読み込み中…",
         "manual_install_fallback": "更新がうまくいかない場合は、{{link}} をして、このコピーの上に再インストールできます。設定、チャット、ファイルは保持されます。",
@@ -10730,7 +10898,6 @@
         "restart_failed": "再起動に失敗しました",
         "restart_gateway": "ゲートウェイを再起動",
         "restart_row_note": "更新せずにゲートウェイプロセスを再起動します。アクティブなセッションは一時的に切断されます。",
-        "restart_update": "再起動して更新",
         "restarting": "再起動中…",
         "retry": "再試行",
         "stable": "Stable",
@@ -10770,7 +10937,9 @@
         "view_this_commit_on_github": "GitHub でこのコミットを表示",
         "what_s_new": "新着情報",
         "you_are_on_the_latest_version": "最新版を使用しています。",
-        "you_re_on_the_latest_version": "最新版を使用しています。"
+        "you_re_on_the_latest_version": "最新版を使用しています。",
+        "checks_for_updates_with_timing": "{{name}} は自動的にアップデートを確認します。{{timing}} 今すぐ確認することもできます。",
+        "last_checked_ago_next_check_in": "最終確認 {{ago}}、次回の自動確認 {{next}}。"
       },
       "botChannelPanel": {
         "allowed_user_ids": "許可されたユーザー ID",
@@ -10876,6 +11045,7 @@
       },
       "chatPanel": {
         "about_you": "自分について",
+        "answer_only_details_on_request": "回答のみ — 詳細は要望時、重要な場面では自動で",
         "auto_add_documents": "ドキュメントの自動追加",
         "auto_add_saved_artifacts": "保存されたアーティファクトの自動追加",
         "auto_compact_threshold": "自動圧縮のしきい値",
@@ -10953,7 +11123,7 @@
         "how_long_models_think_before_answering_by_defaul": "モデルがデフォルトで回答する前に考える時間。高いほど遅く、コストが高くなります。推論対応モデル（Opus、Sonnet、Fable、GPT-5.x）でのみ利用可能です。",
         "how_long_to_wait_for_the_agent_to_honor_a_stop_p": "エージェントが停止を実行するまで待つ時間。その後、セッションを強制的に終了します。予算が長いほどセッション状態がより保存されますが、エージェントが長いツール呼び出しに固まったときに停止が遅く感じられます。",
         "how_much_an_automatically_registered_source_may_i": "自動登録されたソースが 1 パスで取り込める量。ドキュメントの各部分は 1 つの抽出呼び出しかかるため、これはコストを制限するものです。最新のドキュメントが最初に登録され、残りは後のパスに続きます。0 で制限を削除します。デフォルト {{count}}。",
-        "how_terse_the_agent_s_prose_is_ultra_concise_cap": "エージェントの文章の簡潔さを設定します。「極簡潔」は回答全体を短く保ちます。結論を先に示し、文章ではなく箇条書きを使い、前置きを省きます。コード・コマンド・エラー文字列はどのレベルでもそのまま維持され、セキュリティ警告と手順の説明は完全な詳細を保ちます。",
+        "how_terse_the_agent_s_prose_is_ultra_concise_cap": "エージェントの文章の簡潔さを設定します。「極簡潔」は回答全体を短く保ちます。結論を先に示し、文章ではなく箇条書きを使い、前置きを省きます。コード・コマンド・エラー文字列はどのレベルでもそのまま維持され、セキュリティ警告と手順の説明は完全な詳細を保ちます。 「回答のみ」はさらに踏み込んで説明を一切省きます。最大でも 1 文で、詳細は求められたとき、または判断の重みが大きい場合（セキュリティ、情報漏えい、データ損失、コスト、取り消しが難しいもの）に限って、正しく選べるよう理由まで示します。",
         "i_write_code": "コードを書きます",
         "immediate": "即座",
         "immediate_mode_shows_raw_chunks_as_they_arrive_s": "即座モードは到着時の生チャンクを表示します。スムーズモードはテキストをバッファリングして一定の速度でフェードインさせます。",
@@ -11594,8 +11764,8 @@
           "revoke_disables": "{{name}} は信頼されなくなり、オフに切り替えられました。",
           "change_failed": "この変更は反映されませんでした：{{detail}}",
           "unknown_error": "不明なエラー",
-          "revoke_confirm_title": "{{name}} の信頼を解除しますか？",
-          "revoke_confirm_body": "{{name}} はオフに切り替えられ、動作を停止します。インストールされたままなので、後で再び信頼できます。",
+          "revoke_confirm_title": "「{{name}}」 の信頼を解除しますか？",
+          "revoke_confirm_body": "「{{name}}」 はオフに切り替えられ、動作を停止します。インストールされたままなので、後で再び信頼できます。",
           "revoke_confirm_ok": "信頼を解除してオフにする",
           "allow_all_confirm_body": "すべてのサードパーティアプリを信頼すると、インストールしたどのアプリも Kiro Crew の内部で独自のコードを実行でき、Kiro Crew と同じアクセス権 — あなたのファイル、保存された認証情報、およびインターネット — を持ちます。一度に1つのアプリだけを信頼する方が安全です。",
           "allow_all_confirm_ack": "インストールする各サードパーティアプリが、Kiro Crew のアクセス権で独自のコードを実行できるようになることを理解しました。",
@@ -12098,7 +12268,7 @@
         "delete": "Delete…",
         "deleting": "削除中…",
         "delete_crew": "Delete {{name}}",
-        "confirm_delete_of": "Confirm deleting {{name}}",
+        "confirm_delete_of": "「{{name}}」を削除しますか？",
         "delete_warning": "Delete terminates the EC2 instance and ends its charges. This cannot be undone.",
         "before_you_start": "Before you start — your AWS setup",
         "checking": "Checking…",
@@ -12616,6 +12786,9 @@
     }
   },
   "utils": {
+    "agentSwitchFeedback": {
+      "turn_in_flight": "ターンが進行中です — 完了してからもう一度お試しください。"
+    },
     "channelOrigin": {
       "direct_message": "ダイレクトメッセージ"
     },

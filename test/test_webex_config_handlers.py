@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -114,6 +115,38 @@ class TestSave:
         assert resp.status == 200
         assert "WEBEX_BOT_TOKEN" not in env.read_text(encoding="utf-8")
 
+    def test_clear_config_write_failure_does_not_leave_env_cleared(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """On a CLEAR, config.json is purged BEFORE .env is emptied. If the
+        config write fails, .env must be untouched — otherwise a restart would
+        fall back to the still-present legacy config.json token (resurrecting
+        the credential the operator asked to clear). Config-purge-first means a
+        config-write failure leaves the credential fully present, never half-
+        cleared into a resurrectable state."""
+        env = tmp_path / ".env"
+        cfg_path = tmp_path / "config.json"
+        env.write_text("WEBEX_BOT_TOKEN=live-token\n", encoding="utf-8")
+        cfg_path.write_text(json.dumps({"webex": {"bot_token": "legacy-token"}}), encoding="utf-8")
+        monkeypatch.setattr(loader, "env_path", lambda: env)
+        monkeypatch.setattr(loader, "config_path", lambda: cfg_path)
+        monkeypatch.setattr(mod, "is_direct_local_request", lambda req: True)
+
+        def _boom(*_a, **_k):
+            raise OSError("disk full during config write")
+
+        import kiro_crew.agent as _agent
+
+        monkeypatch.setattr(_agent, "_atomic_json_write", _boom)
+        try:
+            asyncio.run(mod.api_webex_config_save(_StubRequest({"bot_token_clear": True})))
+        except Exception:
+            pass  # the handler may 500; the invariant is about .env, checked below.
+        # .env still holds the token: config-purge ran first and failed, so the
+        # .env delete never executed — the credential is intact, not resurrected.
+        assert "WEBEX_BOT_TOKEN=live-token" in env.read_text(encoding="utf-8")
+        monkeypatch.delenv("WEBEX_BOT_TOKEN", raising=False)
+
     def test_invalid_email_rejected(self, monkeypatch, tmp_path: Path) -> None:
         resp, _, cfg_path = _save(monkeypatch, tmp_path, {"allowed_emails": ["not-an-email"]})
         assert resp.status == 400
@@ -165,6 +198,102 @@ class TestSave:
         data = json.loads(cfg_path.read_text(encoding="utf-8"))
         assert data["webex"]["bot_token"] == ""  # cleared everywhere
         assert "WEBEX_BOT_TOKEN" not in env.read_text(encoding="utf-8")
+
+    def test_set_config_write_failure_leaves_consistent_pair(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """On a SET, config.json is written FIRST.  If it fails, .env is never
+        touched — old credential + old metadata, always a consistent pair.
+
+        The config write only fires on the SET path when there is a legacy
+        plaintext token in config.json to purge (bot_token -> "").  This test
+        seeds that condition so the config-write failure path is exercised."""
+        env = tmp_path / ".env"
+        cfg_path = tmp_path / "config.json"
+        env.write_text("WEBEX_BOT_TOKEN=old-token\n", encoding="utf-8")
+        # Seed a legacy plaintext token so the handler adds `bot_token: ""`
+        # to `changes`, triggering the config write (and its failure).
+        cfg_path.write_text(json.dumps({"webex": {"bot_token": "legacy-plain"}}), encoding="utf-8")
+        monkeypatch.setattr(loader, "env_path", lambda: env)
+        monkeypatch.setattr(loader, "config_path", lambda: cfg_path)
+        monkeypatch.setattr(mod, "is_direct_local_request", lambda req: True)
+        monkeypatch.setattr(mod, "_validate_webex_token", lambda tok: None)
+
+        import kiro_crew.agent as _agent
+
+        def _boom(*a, **k):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(_agent, "_atomic_json_write", _boom)
+
+        try:
+            asyncio.run(mod.api_webex_config_save(_StubRequest({"bot_token": "new-token"})))
+        except Exception:
+            pass
+
+        # CRITICAL: .env must be untouched — config write failed before the
+        # handler reached _write_env_now(), so the old token is still there.
+        env_text = env.read_text(encoding="utf-8")
+        assert (
+            "old-token" in env_text
+        ), "Config-first: .env must be untouched when config write fails"
+        assert "new-token" not in env_text, ".env must not hold new-token when config write failed"
+        monkeypatch.delenv("WEBEX_BOT_TOKEN", raising=False)
+
+    def test_set_config_write_failure_preserves_process_only_credential(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """Webex SET with config-write failure must NOT clobber a credential
+        that lives ONLY in os.environ (not in .env).
+
+        Scenario:
+          - os.environ["WEBEX_BOT_TOKEN"] = "env-only-tok"  (process-only)
+          - .env file has no WEBEX_BOT_TOKEN entry
+          - _atomic_json_write raises (disk full)
+
+        With config-first ordering: the config write fails before
+        _write_env_now() is called, so os.environ is never mutated by the
+        handler.  The process-only credential is trivially preserved.
+        """
+        env = tmp_path / ".env"
+        cfg_path = tmp_path / "config.json"
+        # .env has NO token — credential is process-only.
+        env.write_text("", encoding="utf-8")
+        # Seed a legacy plaintext token so the handler adds bot_token: ""
+        # to `changes`, triggering the config write (and its failure).
+        cfg_path.write_text(json.dumps({"webex": {"bot_token": "legacy-plain"}}), encoding="utf-8")
+        monkeypatch.setattr(loader, "env_path", lambda: env)
+        monkeypatch.setattr(loader, "config_path", lambda: cfg_path)
+        monkeypatch.setattr(mod, "is_direct_local_request", lambda req: True)
+        monkeypatch.setattr(mod, "_validate_webex_token", lambda tok: None)
+
+        # Plant the credential ONLY in os.environ, not in .env.
+        monkeypatch.setenv("WEBEX_BOT_TOKEN", "env-only-tok")
+
+        import kiro_crew.agent as _agent
+
+        def _boom(*a, **k):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(_agent, "_atomic_json_write", _boom)
+
+        try:
+            asyncio.run(mod.api_webex_config_save(_StubRequest({"bot_token": "new-token"})))
+        except Exception:
+            pass
+
+        # CRITICAL: the process-only credential must survive intact.
+        # Config-first ordering: _write_env_now() is never called when config
+        # write fails, so os.environ is untouched by the failed request.
+        assert os.environ.get("WEBEX_BOT_TOKEN") == "env-only-tok", (
+            "Config-first ordering: process-only credential must be untouched "
+            f"when config write fails; got: {os.environ.get('WEBEX_BOT_TOKEN')!r}"
+        )
+        # .env must NOT hold the new token value — .env was never written.
+        assert "new-token" not in env.read_text(
+            encoding="utf-8"
+        ), ".env must not be written when config write fails (config-first ordering)"
+        monkeypatch.delenv("WEBEX_BOT_TOKEN", raising=False)
 
 
 class TestSaveWritesEveryValidatedField:

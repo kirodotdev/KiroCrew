@@ -5,7 +5,9 @@ Properties 3, 4, 5, 6: Cron job creation, ownership, filtering, cleanup.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -13,6 +15,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from kiro_crew.apps.cron_sdk import CronSDK
+from kiro_crew.cron import CronService
 
 
 def _run(value: Any) -> Any:
@@ -51,6 +54,8 @@ class MockCronJob:
     user_paused: bool = False
     every_secs: int | None = None
     cron_expr: str | None = None
+    timezone: str = ""
+    skip_dates: list[str] = field(default_factory=list)
 
 
 class MockCronService:
@@ -64,6 +69,8 @@ class MockCronService:
         # are normalized to concrete empties (never None).
         kwargs["agent_sequence"] = list(kwargs.get("agent_sequence") or [])
         kwargs["env"] = dict(kwargs.get("env") or {})
+        kwargs["skip_dates"] = list(kwargs.get("skip_dates") or [])
+        kwargs["timezone"] = kwargs.get("timezone") or ""
         job = MockCronJob(
             id=f"job-{self._next_id}",
             user_paused=not kwargs.get("enabled", True),
@@ -76,22 +83,31 @@ class MockCronService:
     async def add_job_async(self, **kwargs: Any) -> MockCronJob:
         return self.add_job(**kwargs)
 
+    async def add_job_if_absent_async(
+        self, predicate: Any, **kwargs: Any
+    ) -> MockCronJob | None:
+        if any(predicate(j) for j in self._jobs):
+            return None
+        return self.add_job(**kwargs)
+
     def list_jobs(self, include_disabled: bool = False) -> list[MockCronJob]:
         if include_disabled:
             return list(self._jobs)
         return [j for j in self._jobs if j.enabled]
 
-    def remove_job(self, job_id: str) -> bool:
+    def remove_job(self, job_id: str, *, actor: str, source: str) -> bool:
         for i, j in enumerate(self._jobs):
             if j.id == job_id:
                 self._jobs.pop(i)
                 return True
         return False
 
-    async def remove_job_async(self, job_id: str) -> bool:
-        return self.remove_job(job_id)
+    async def remove_job_async(self, job_id: str, *, actor: str, source: str) -> bool:
+        return self.remove_job(job_id, actor=actor, source=source)
 
-    def remove_jobs_sync(self, job_ids: list[str]) -> tuple[list[str], list[str]]:
+    def remove_jobs_sync(
+        self, job_ids: list[str], *, actor: str, source: str
+    ) -> tuple[list[str], list[str]]:
         removed: list[str] = []
         missing: list[str] = []
         present = {j.id for j in self._jobs}
@@ -102,8 +118,10 @@ class MockCronService:
             self._jobs = [j for j in self._jobs if j.id not in targets]
         return removed, missing
 
-    async def remove_jobs(self, job_ids: list[str]) -> tuple[list[str], list[str]]:
-        return self.remove_jobs_sync(list(job_ids))
+    async def remove_jobs(
+        self, job_ids: list[str], *, actor: str, source: str
+    ) -> tuple[list[str], list[str]]:
+        return self.remove_jobs_sync(list(job_ids), actor=actor, source=source)
 
     def remove_jobs_by_owner_sync(self, owner_prefix: str) -> list[str]:
         removed = [
@@ -244,6 +262,152 @@ class TestCronJobCreation:
         assert updated.user_paused is False
         # Resumed job shows up in the active (non-disabled) list again.
         assert job in svc.list_jobs()
+
+
+# ---------------------------------------------------------------------------
+# Calendar fields (timezone / skip_dates) are settable AT CREATE
+# ---------------------------------------------------------------------------
+
+
+class TestCronCalendarFieldsOnCreate:
+    """``timezone``/``skip_dates`` reach ``CronService.add_job`` from the SDK.
+
+    Regression for the gap where ``_add_job_kwargs`` was a closed allowlist that
+    omitted both fields, so an app could only ever create jobs with an empty
+    timezone -- resolving to UTC at fire time -- and had to issue a SECOND
+    ``update_job`` write to correct it. That second write is exactly the
+    half-formed-job window the single locked build+persist exists to remove: a
+    "run at 06:00 local" job briefly exists as 06:00 UTC.
+    """
+
+    def test_add_job_threads_timezone_and_skip_dates(self) -> None:
+        """The sync create path persists both calendar fields on the job."""
+        svc = MockCronService()
+        sdk = CronSDK("digest-app", svc)
+
+        job = _run(sdk.add_job(
+            name="digest-app/daily",
+            message="summarise the last 24 hours",
+            cron_expr="0 6 * * *",
+            timezone="America/Los_Angeles",
+            skip_dates=["2026-12-25"],
+        ))
+
+        assert job.timezone == "America/Los_Angeles"
+        assert job.skip_dates == ["2026-12-25"]
+
+    def test_add_job_defaults_leave_calendar_fields_empty(self) -> None:
+        """Omitting both keeps today's behaviour (config timezone, then UTC)."""
+        svc = MockCronService()
+        sdk = CronSDK("digest-app", svc)
+
+        job = _run(sdk.add_job(
+            name="digest-app/daily", message="go", cron_expr="0 6 * * *",
+        ))
+
+        assert job.timezone == ""
+        assert job.skip_dates == []
+
+    @pytest.mark.asyncio
+    async def test_add_job_async_threads_timezone_and_skip_dates(self) -> None:
+        """The loop-native create path threads both fields too."""
+        svc = MockCronService()
+        sdk = CronSDK("digest-app", svc)
+
+        job = await sdk.add_job_async(
+            name="digest-app/daily",
+            message="go",
+            cron_expr="0 6 * * *",
+            timezone="Australia/Sydney",
+            skip_dates=["2026-01-01", "2026-01-26"],
+        )
+
+        assert job.timezone == "Australia/Sydney"
+        assert job.skip_dates == ["2026-01-01", "2026-01-26"]
+
+    @pytest.mark.asyncio
+    async def test_add_job_if_absent_async_threads_timezone(self) -> None:
+        """The atomic add-if-absent path (app-manifest registration) too."""
+        svc = MockCronService()
+        sdk = CronSDK("digest-app", svc)
+
+        job = await sdk.add_job_if_absent_async(
+            name="digest-app/daily",
+            message="go",
+            cron_expr="0 6 * * *",
+            timezone="Europe/Berlin",
+        )
+
+        assert job is not None
+        assert job.timezone == "Europe/Berlin"
+
+
+class TestCronCalendarFieldsAgainstRealService:
+    """End-to-end against the real ``CronService``: one locked save, validated.
+
+    The mock service above proves the SDK forwards the kwargs; these prove the
+    real persistence owner accepts them at create, writes them in the job's
+    FIRST and only save, and rejects invalid values before anything lands on
+    disk.
+    """
+
+    def _service(self, tmp_path: Path) -> CronService:
+        svc = CronService(base_dir=tmp_path)
+        svc._dir.mkdir(parents=True, exist_ok=True)
+        return svc
+
+    def test_timezone_lands_in_the_first_persisted_write(self, tmp_path: Path) -> None:
+        svc = self._service(tmp_path)
+        sdk = CronSDK("digest-app", svc)
+
+        job = sdk.add_job(
+            name="digest-app/daily",
+            message="summarise the last 24 hours",
+            cron_expr="0 6 * * *",
+            timezone="America/Los_Angeles",
+            skip_dates=["2026-12-25"],
+        )
+
+        assert job.timezone == "America/Los_Angeles"
+        assert job.skip_dates == ["2026-12-25"]
+        # The store on disk carries them, so no follow-up update_job is needed
+        # and the job is never observable with the wrong timezone.
+        on_disk = json.loads(svc._path.read_text())
+        entry = next(j for j in on_disk["jobs"] if j["id"] == job.id)
+        assert entry["timezone"] == "America/Los_Angeles"
+        assert entry["skip_dates"] == ["2026-12-25"]
+        assert entry["created_by"] == "app:digest-app"
+
+    def test_unknown_timezone_raises_and_persists_nothing(self, tmp_path: Path) -> None:
+        """An app author learns at create time, not at fire time."""
+        svc = self._service(tmp_path)
+        sdk = CronSDK("digest-app", svc)
+
+        with pytest.raises(ValueError, match="Invalid timezone"):
+            sdk.add_job(
+                name="digest-app/daily",
+                message="go",
+                cron_expr="0 6 * * *",
+                timezone="Mars/Olympus_Mons",
+            )
+
+        assert svc.list_jobs(include_disabled=True) == []
+
+    def test_malformed_skip_date_raises_and_persists_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        svc = self._service(tmp_path)
+        sdk = CronSDK("digest-app", svc)
+
+        with pytest.raises(ValueError, match="Invalid skip_date"):
+            sdk.add_job(
+                name="digest-app/daily",
+                message="go",
+                cron_expr="0 6 * * *",
+                skip_dates=["25/12/2026"],
+            )
+
+        assert svc.list_jobs(include_disabled=True) == []
 
 
 # ---------------------------------------------------------------------------

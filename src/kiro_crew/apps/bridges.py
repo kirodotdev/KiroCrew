@@ -1337,6 +1337,8 @@ def _cron_defs_from_manifest(
                 "persistent_session": cron.persistent_session,
                 "silent": cron.silent,
                 "enabled": cron.enabled,
+                "timezone": cron.timezone,
+                "skip_dates": cron.skip_dates,
             }
         )
         registered.append(namespaced)
@@ -1537,6 +1539,12 @@ async def register_app_crons_with_service(app_name: str, cron_service: Any) -> l
                 persistent_session=d.get("persistent_session", False),
                 silent=bool(d.get("silent", False)),
                 enabled=bool(d.get("enabled", True)),
+                # An empty timezone resolves to the config zone and then to UTC
+                # at fire time, so a manifest that pins an hour meaningful only
+                # in one zone must have it threaded here, not corrected by a
+                # second write after the job already exists.
+                timezone=d.get("timezone") or "",
+                skip_dates=d.get("skip_dates") or None,
             )
             if job is None:
                 # Lost the race (or already present): another registrar

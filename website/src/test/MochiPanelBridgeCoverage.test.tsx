@@ -1135,11 +1135,11 @@ describe('panelBridge approvals', () => {
 
   it('a scoped trust grant goes to the slot route, carrying its pattern', async () => {
     const bridge = await loadBridge()
-    await bridge.respondApproval('req3', 'trust_command', 'ls -la')
+    await bridge.respondApproval('req3', 'trust_command', 'ls -la', true)
     const [call] = calls('/api/chat/slots/mochi/approve', 'POST')
     expect(bodyOf(call)).toEqual({ action: 'trust_command', request_id: 'req3', pattern: 'ls -la' })
 
-    await bridge.respondApproval('req4', 'trust')
+    await bridge.respondApproval('req4', 'trust', undefined, true)
     expect(bodyOf(calls('/api/chat/slots/mochi/approve', 'POST')[1]).pattern).toBeUndefined()
   })
 
@@ -1212,16 +1212,17 @@ describe('panelBridge model selection', () => {
 
   it('switches the slot model and reports failure honestly', async () => {
     const bridge = await loadBridge()
-    expect(await bridge.setModel('sonnet')).toBe(true)
+    expect(await bridge.setModel('sonnet')).toEqual({ ok: true })
     expect(bodyOf(calls('/api/chat/slots/mochi/model', 'POST')[0])).toEqual({ model: 'sonnet' })
 
+    // A code-less refusal stays a generic failure (no `code` field invented).
     route('/api/chat/slots/mochi/model', { ok: false, status: 400 }, 'POST')
     const failing = await loadBridge()
-    expect(await failing.setModel('bogus')).toBe(false)
+    expect(await failing.setModel('bogus')).toEqual({ ok: false })
 
     route('/api/chat/slots/mochi/model', { reject: true }, 'POST')
     const offline = await loadBridge()
-    expect(await offline.setModel('sonnet')).toBe(false)
+    expect(await offline.setModel('sonnet')).toEqual({ ok: false })
   })
 })
 

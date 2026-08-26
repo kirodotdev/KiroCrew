@@ -55,6 +55,17 @@ Current status:
   missing even though its `.exe` is untouched. Either mode leaves
   the Kiro Crew home alone (`deleteAppDataOnUninstall` stays false, and
   `~/.kiro/crew` is outside the install directory).
+- **Auto-updates stay visible without becoming interactive** — after the app
+  stops its local gateway and closes, the update path skips Welcome, install
+  scope, and Finish, but leaves the native NSIS extraction page on screen with
+  real progress. At 100% it reopens Kiro Crew and closes automatically. A
+  persistent message on that progress page warns that the handoff can take
+  several minutes; a Windows notification tells the user to reopen Kiro Crew
+  from the Start menu if the relaunch does not happen. New clients call
+  `quitAndInstall(false, true)` so NSIS is visible;
+  the installer also converts a legacy `/S --updated` launch back to this same
+  visible path, which covers the first upgrade from clients that predate the
+  change.
 - **Guided Kiro Crew artwork** — the welcome and finish pages use the existing
   Kiro Crew logo and ghost family in the native NSIS sidebar, and intermediate
   pages retain a compact branded header. Buttons, progress, install-mode copy,
@@ -62,8 +73,20 @@ Current status:
   Native page boundaries use a short Win32 alpha-blended cross-fade and honor
   Windows' client-area animation setting. The fade contains no timer-driven
   bitmap swap or UI-thread sleep, so extraction keeps the native progress path;
-  CI performs a real silent install, records its duration, and fails if it
-  exceeds 5 minutes.
+  CI performs a real silent first install, records its duration, and fails if
+  it exceeds 2 minutes. The auto-update path remains visible.
+- **Single-pass payload publication** — the differential-aware updater still
+  verifies and fully extracts its 7z payload into a staging directory before it
+  changes the installation. On the normal same-volume per-user Windows layout,
+  the installer then renames Electron's large `resources` and `locales`
+  directories into place instead of asking Defender and the filesystem to
+  process thousands of Python files in a second copy pass. Per-machine installs
+  retain electron-builder's original `CopyFiles` path so the payload inherits
+  the Program Files ACL. A cross-volume temporary directory, occupied
+  destination, or failed rename also falls back to that copy path and its
+  bounded retry prompts. The build-time patch is
+  pinned to the installed app-builder-lib version and fails closed if its NSIS
+  template changes, so an upgrade cannot silently remove that fallback.
 - **Uninstall removes the app and its caches, and keeps your data.** Removed:
   the install directory, the Start Menu shortcut, the uninstall registry key,
   and any “start with Windows” Run entry left by an earlier custom installer,
@@ -92,6 +115,17 @@ Current status:
   open the existing native Electron menus from the left of that row, the command
   palette remains centered on the window, and native minimize/maximize/close
   controls remain on the right.
+- **Precompiled Windows gateway startup** — packaging traces the real
+  `kiro_crew.cli_server` import after pruning and ships checked-hash bytecode for
+  that import closure beside its sources. Windows consumes those caches directly,
+  avoiding the thousand-file cache-population burst that otherwise overlaps
+  Defender's post-install scanning. macOS and Linux still redirect bytecode out
+  of the signed/read-only app tree. The loading screen retains its extended
+  Windows handoff window as a slow-machine fallback; a child exit or spawn error
+  still fails immediately and includes the launch-log cause. CI starts the
+  just-installed bundled interpreter against an isolated data home and requires
+  `/api/ready` within 30 seconds, so both the packaged caches and the full gateway
+  handoff are covered rather than only a synthetic import benchmark.
 
 The source install below remains the fully supported path.
 
@@ -172,6 +206,11 @@ PowerShell installer; if it is signed out, choose **Sign in to Kiro** and
 complete the device-code flow in the browser. The dashboard opens automatically
 after `kiro-cli whoami` succeeds. This setup runs on the gateway machine, which
 may be different from the computer running the browser.
+
+The per-user Kiro CLI install under `%LOCALAPPDATA%\Kiro-Cli` is discovered
+independently of the gateway's inherited `PATH`. Installing it while the desktop
+gateway is already running is therefore picked up by the setup page's next
+automatic check; neither a gateway restart nor a Windows reboot is required.
 
 `kirocrew` lands in `.venv\Scripts\`. If a launched (non-shell)
 gateway can't find the built-in `kirocrew-cron` / `kirocrew-core` MCP servers,

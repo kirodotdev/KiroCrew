@@ -17,15 +17,18 @@ import re
 import shutil
 import stat
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 from urllib.parse import urlparse
 
 from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.discovery import discover_builtin_apps
 from kiro_crew.apps.execution import (
     app_execution_denied,
+    repository_bound_grant_denied,
     shipped_builtin_app_root,
 )
 from kiro_crew.apps.manifest import AppManifest, app_name_error
@@ -230,11 +233,43 @@ def _read_installed(name: str) -> InstalledApp | None:
         return None
 
 
+def _credential_free_source_metadata(value: str) -> str:
+    """Sanitize an explicit remote URI while preserving path/id metadata."""
+    candidate = value.strip()
+    if re.match(r"^[A-Za-z][A-Za-z0-9+.\-]*://", candidate) is None:
+        return value
+
+    # Deferred because ``apps.registry`` imports this module.
+    from kiro_crew.apps.registry import _strip_git_target_userinfo
+
+    return _strip_git_target_userinfo(candidate)
+
+
 def _write_installed(name: str, meta: InstalledApp) -> None:
-    """Write installed.json for an app."""
+    """Write credential-free installed.json metadata for an app.
+
+    A raw clone/source URL is a transport capability, not durable app identity.
+    Registry callers already pass credential-free provenance, but the external
+    registration API also accepts a free-form ``source`` and direct Python
+    callers can supply ``sourceUrl`` independently.  ``sourceUrl`` is always a
+    Git coordinate and is sanitized unconditionally.  ``source`` and
+    ``sourceRegistry`` are discriminated metadata (path/marker/id OR URL), so
+    only an explicit remote URI is sanitized; treating arbitrary ``:...@...:``
+    text as SCP would corrupt valid POSIX filenames.
+
+    The import is deferred because ``apps.registry`` imports this module.
+    """
+    from kiro_crew.apps.registry import _strip_git_target_userinfo
+
+    credential_free_meta = replace(
+        meta,
+        source=_credential_free_source_metadata(str(meta.source or "")),
+        sourceUrl=_strip_git_target_userinfo(str(meta.sourceUrl or "")),
+        sourceRegistry=_credential_free_source_metadata(str(meta.sourceRegistry or "")),
+    )
     meta_path = app_dir(name) / INSTALLED_META_FILENAME
     meta_path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write(meta_path, json.dumps(meta.to_dict(), indent=2) + "\n")
+    atomic_write(meta_path, json.dumps(credential_free_meta.to_dict(), indent=2) + "\n")
 
 
 # ---------------------------------------------------------------------------
@@ -422,6 +457,35 @@ def _copy_app_tree(source: Path, dest: Path) -> None:
 # destroy preserved user data.  Different apps proceed in parallel.
 _LIFECYCLE_LOCKS: dict[str, LoopBoundLock] = {}
 
+# Registry installs historically call ``install_app(source)`` / ``update_app(source)``
+# with one positional argument. Keep that internal callable contract (tests and
+# downstream integrations replace these functions), while carrying the server-
+# resolved repository through ``asyncio.to_thread`` without putting it in the
+# app-controlled manifest. Context variables are copied into to_thread workers
+# and remain task-local when two registry installs run concurrently.
+_REGISTRY_SOURCE_REPOSITORY: ContextVar[str | None] = ContextVar(
+    "kirocrew_registry_source_repository", default=None
+)
+
+
+@contextmanager
+def registry_source_repository(repository: str) -> Iterator[None]:
+    """Scope a sanitized registry coordinate to one manager operation."""
+    coordinate = repository.strip()
+    if not coordinate:
+        raise ValueError("registry source repository is required")
+    token = _REGISTRY_SOURCE_REPOSITORY.set(coordinate)
+    try:
+        yield
+    finally:
+        _REGISTRY_SOURCE_REPOSITORY.reset(token)
+
+
+def _effective_source_repository(explicit: str) -> str:
+    """Resolve an explicit/local source against the scoped registry source."""
+    contextual = _REGISTRY_SOURCE_REPOSITORY.get()
+    return contextual if contextual is not None else explicit.strip()
+
 
 def app_lifecycle_lock(name: str) -> LoopBoundLock:
     """Return the per-app lock guarding install/update/uninstall (loop-bound, #4800).
@@ -440,7 +504,10 @@ def app_lifecycle_lock(name: str) -> LoopBoundLock:
 
 
 def install_app(
-    source: str | Path, *, expected_name: str | None = None
+    source: str | Path,
+    *,
+    expected_name: str | None = None,
+    source_repository: str = "",
 ) -> AppResult:
     """Install an app from a local directory path.
 
@@ -536,6 +603,23 @@ def install_app(
             f"Uninstall first or use the update endpoint.",
         )
 
+    source_repository = _effective_source_repository(source_repository)
+    trust_denied = repository_bound_grant_denied(name, repository=source_repository)
+    if trust_denied:
+        sel().log_api_access(
+            caller="app_install",
+            operation="trust_repository",
+            outcome="rejected",
+            resources=f"name={name!r}",
+            error=trust_denied,
+        )
+        return AppResult(
+            ok=False,
+            name=name,
+            error=trust_denied,
+            error_code="app_trust_repository_mismatch",
+        )
+
     # Preserve existing data/ directory (left behind by a prior default uninstall)
     existing_data = dest / "data" if dest.exists() else None
     # Use same temp name as uninstall_app/update_app so data stranded by a
@@ -624,6 +708,11 @@ def install_app(
         enabled=False,  # installed but not enabled until explicitly enabled
         installedAt=_now_iso(),
         source=str(source),
+        # Persist the server-resolved repository at the first durable metadata
+        # write.  The registry's richer set_app_provenance bookkeeping happens
+        # later and may fail after the copied app is already the live occupant;
+        # runtime admission must still remain bound to what was installed.
+        sourceUrl=source_repository.strip(),
     )
     _write_installed(name, meta)
 
@@ -653,7 +742,12 @@ def install_app(
 # ---------------------------------------------------------------------------
 
 
-def update_app(source: str | Path, *, expected_name: str | None = None) -> AppResult:
+def update_app(
+    source: str | Path,
+    *,
+    expected_name: str | None = None,
+    source_repository: str = "",
+) -> AppResult:
     """Update an already-installed app from a local directory path.
 
     1. Validate new manifest
@@ -704,6 +798,23 @@ def update_app(source: str | Path, *, expected_name: str | None = None) -> AppRe
     if not existing:
         return AppResult(ok=False, name=name, error=f"app {name!r} is not installed")
 
+    source_repository = _effective_source_repository(source_repository)
+    trust_denied = repository_bound_grant_denied(name, repository=source_repository)
+    if trust_denied:
+        sel().log_api_access(
+            caller="app_update",
+            operation="trust_repository",
+            outcome="rejected",
+            resources=f"name={name!r}",
+            error=trust_denied,
+        )
+        return AppResult(
+            ok=False,
+            name=name,
+            error=trust_denied,
+            error_code="app_trust_repository_mismatch",
+        )
+
     old_version = existing.version
 
     # Preserve data directory and app secret
@@ -753,7 +864,8 @@ def update_app(source: str | Path, *, expected_name: str | None = None) -> AppRe
 
     # Update metadata — carry every persisted field forward from ``existing``
     # via dataclasses.replace, overriding only what the update actually changes
-    # (version/displayName/updatedAt/source). Constructing a fresh InstalledApp
+    # (version/displayName/updatedAt/source and source provenance). Constructing
+    # a fresh InstalledApp
     # here silently dropped any field not re-listed (enabled, installedAt,
     # origin, resources, lifecycle, schemaVersion, migratedTo, and — the bug
     # that surfaced this — the ``dev`` flag, so updating an app being iterated
@@ -765,6 +877,15 @@ def update_app(source: str | Path, *, expected_name: str | None = None) -> AppRe
         displayName=manifest.displayName,
         updatedAt=_now_iso(),
         source=str(source),
+        # A local-source update is a provenance transition, not a refresh of the
+        # old registry checkout. Keeping the previous sourceUrl made runtime
+        # repository checks attest repo A while the files now came from local B.
+        # Registry callers pass the target they just cloned and then persist the
+        # remaining commit/signer fields through set_app_provenance.
+        sourceUrl=source_repository.strip(),
+        sourceRegistry="",
+        sourceCommit="",
+        sourceSigner="",
     )
     _write_installed(name, meta)
 
@@ -815,10 +936,12 @@ def uninstall_app(name: str, *, keep_data: bool = True) -> AppResult:
     # Withdraw the execution grant FIRST, and abort the whole uninstall if it
     # cannot be withdrawn.
     #
-    # A grant is keyed on the app NAME and nothing else, so one left behind admits
-    # a DIFFERENT app later installed under this name — in-process code execution
+    # Runtime admission is keyed on the app NAME, so one left behind can admit a
+    # DIFFERENT app later installed under this name — in-process code execution
     # with no consent prompt, because the gate just sees a name it was told to
-    # trust. Doing this AFTER the files were deleted (as this did) produced a state
+    # trust. New registry grants additionally bind their install repository, but
+    # that does not make an orphaned runtime grant safe. Doing this AFTER the files
+    # were deleted (as this did) produced a state
     # the user could not recover from: the app is gone, so there is nothing left to
     # uninstall and no retry that would clear the grant, while the name stays
     # armed. Ordering it first makes the failure retryable — nothing has been
@@ -830,6 +953,8 @@ def uninstall_app(name: str, *, keep_data: bool = True) -> AppResult:
         # exactly what was there — and only when there WAS something. Restoring a
         # grant the app never held would be granting, not restoring.
         had_grant = _has_trust_grant(name)
+        granted_repository = _trust_grant_repository(name)
+        granted_local = _trust_grant_local(name)
         _drop_trust_grant(name)
     except Exception as exc:  # noqa: BLE001 - refuse rather than half-uninstall
         logger.warning("trust-grant cleanup on uninstall of %r failed", name, exc_info=True)
@@ -876,7 +1001,13 @@ def uninstall_app(name: str, *, keep_data: bool = True) -> AppResult:
         # failed uninstall with no side effect on trust.
         restore_note = ""
         try:
-            _restore_trust_grant(name, had_grant)
+            _restore_trust_grant(
+                name,
+                had_grant,
+                granted_repository,
+                local=granted_local,
+                expected_app=meta,
+            )
         except Exception as restore_exc:  # noqa: BLE001 - report, never mask the real error
             logger.warning(
                 "could not restore %r's execution grant after a failed uninstall",
@@ -884,9 +1015,9 @@ def uninstall_app(name: str, *, keep_data: bool = True) -> AppResult:
                 exc_info=True,
             )
             restore_note = (
-                f" Its third-party execution grant was withdrawn and could not be "
-                f"restored ({restore_exc}); re-grant it in Settings if you still "
-                f"want this app to run its own code."
+                f" Its third-party execution grant could not be safely restored "
+                f"({restore_exc}). Review the current installed app, then re-grant "
+                f"it in Settings only if you still trust that occupant."
             )
         return AppResult(
             ok=False, name=name, error=f"failed to remove app: {exc}{restore_note}"
@@ -1043,11 +1174,25 @@ def _drop_trust_grant(name: str) -> None:
     if not isinstance(agent_raw, dict):
         return
     base_grants = agent_raw.get("apps_trusted")
-    # A non-list value cannot express a grant for this app, so there is nothing
-    # here that would later admit a replacement under this name.
-    if not isinstance(base_grants, list) or name not in base_grants:
+    repositories = agent_raw.get("apps_trusted_repositories")
+    local_grants = agent_raw.get("apps_trusted_local")
+    has_name = isinstance(base_grants, list) and name in base_grants
+    has_repository = isinstance(repositories, dict) and name in repositories
+    has_local = isinstance(local_grants, list) and name in local_grants
+    # Orphaned kind metadata is inert without the name grant, but uninstall still
+    # clears it so a later hand edit cannot unexpectedly reactivate old consent.
+    # Preserve the no-grant fast path: ordinary uninstalls perform no config write.
+    if not (has_name or has_repository or has_local):
         return
-    agent_raw["apps_trusted"] = [a for a in base_grants if a != name]
+    agent_raw["apps_trusted"] = [
+        a for a in (base_grants if isinstance(base_grants, list) else []) if a != name
+    ]
+    if isinstance(repositories, dict):
+        repositories = dict(repositories)
+        repositories.pop(name, None)
+        agent_raw["apps_trusted_repositories"] = repositories
+    if isinstance(local_grants, list):
+        agent_raw["apps_trusted_local"] = [a for a in local_grants if a != name]
     # Concurrency: this is the repo's standard config read-modify-write, and it
     # inherits that model exactly — no cross-process lock, atomic (tmp+rename) on
     # the way out so no reader can see a torn file. `read_config_for_update`'s own
@@ -1112,15 +1257,64 @@ def _has_trust_grant(name: str) -> bool:
     return isinstance(grants, list) and name in grants
 
 
-def _restore_trust_grant(name: str, had_grant: bool) -> None:
+def _trust_grant_repository(name: str) -> str:
+    """Repository binding for *name* in the BASE config, or ``""``."""
+    path = config_path()
+    if not path.is_file():
+        return ""
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return ""
+    agent_raw = raw.get("agent") if isinstance(raw, dict) else None
+    if not isinstance(agent_raw, dict):
+        return ""
+    repositories = agent_raw.get("apps_trusted_repositories")
+    repository = repositories.get(name) if isinstance(repositories, dict) else None
+    return repository if isinstance(repository, str) else ""
+
+
+def _trust_grant_local(name: str) -> bool:
+    """Whether *name* has an explicit local grant marker in the BASE config."""
+    path = config_path()
+    if not path.is_file():
+        return False
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    agent_raw = raw.get("agent") if isinstance(raw, dict) else None
+    if not isinstance(agent_raw, dict):
+        return False
+    local_grants = agent_raw.get("apps_trusted_local")
+    return isinstance(local_grants, list) and name in local_grants
+
+
+def _restore_trust_grant(
+    name: str,
+    had_grant: bool,
+    repository: str = "",
+    *,
+    local: bool = False,
+    expected_app: InstalledApp,
+) -> None:
     """Put *name*'s grant back after an uninstall failed with the app still installed.
 
     A no-op when the app held no grant to begin with — restoring one it never had
     would be GRANTING execution permission as a side effect of a failed uninstall,
-    which is the one thing this must never do. Also a no-op if a grant is already
-    present, so a concurrent re-grant is not duplicated.
+    which is the one thing this must never do. The durable installed record must
+    match *expected_app* both before and after the config write, so a partial delete
+    or same-name replacement cannot inherit the old occupant's consent. Also a
+    no-op if a grant is already present, so a concurrent re-grant is not duplicated.
     """
-    if not had_grant or _has_trust_grant(name):
+    if not had_grant:
+        return
+    if _read_installed(name) != expected_app:
+        raise RuntimeError(
+            "the original installed app metadata is missing or changed; "
+            "leaving its execution grant withdrawn"
+        )
+    if _has_trust_grant(name):
         return
     path = config_path()
     raw = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
@@ -1131,7 +1325,36 @@ def _restore_trust_grant(name: str, had_grant: bool) -> None:
         raise RuntimeError(f"{path} has a non-object agent section")
     grants = agent_raw.get("apps_trusted")
     agent_raw["apps_trusted"] = [*(grants if isinstance(grants, list) else []), name]
+    if repository:
+        repositories = agent_raw.get("apps_trusted_repositories")
+        bindings = dict(repositories) if isinstance(repositories, dict) else {}
+        bindings[name] = repository
+        agent_raw["apps_trusted_repositories"] = bindings
+    if local:
+        local_grants = agent_raw.get("apps_trusted_local")
+        local_names = list(local_grants) if isinstance(local_grants, list) else []
+        if name not in local_names:
+            local_names.append(name)
+        agent_raw["apps_trusted_local"] = local_names
     write_config_atomically(path, raw)
+
+    # The CLI and dashboard run in different processes, so a same-name
+    # replacement can land after the pre-write check.  Recheck the exact durable
+    # occupant after the config write; if it changed, remove every kind of grant
+    # we just restored rather than arming replacement code with old consent.
+    if _read_installed(name) != expected_app:
+        try:
+            _drop_trust_grant(name)
+        except Exception as rollback_exc:  # noqa: BLE001 - report an armed name
+            raise RuntimeError(
+                "the installed app changed while its grant was restored and the "
+                f"unsafe grant could not be withdrawn ({rollback_exc}); remove it "
+                "in Settings before installing or running this name"
+            ) from rollback_exc
+        raise RuntimeError(
+            "the installed app changed while its grant was restored; the grant "
+            "was withdrawn"
+        )
     logger.info("Restored %s's trust grant after a failed uninstall", name)
     try:
         sel().log_api_access(
@@ -1458,6 +1681,7 @@ def register_external_app(
     origin: str = "external",
     resources: str = "app",
     lifecycle: str = "app",
+    source_repository: str = "",
 ) -> AppResult:
     """Register a self-managed app with KiroCrew's app system.
 
@@ -1475,6 +1699,9 @@ def register_external_app(
         origin: Classification — where the app came from.
         resources: Classification — who manages resource registration.
         lifecycle: Classification — who manages updates/uninstall.
+        source_repository: Server-resolved repository coordinate for a registry
+            install/update. An empty value on an existing repository-owned record
+            is a metadata refresh, not permission to erase its provenance.
 
     Returns:
         AppResult indicating success or failure.
@@ -1530,8 +1757,38 @@ def register_external_app(
         )
         return AppResult(ok=False, name=name, error=f"blocked by admission policy: {denied}")
 
-    dest = app_dir(name)
     existing = _read_installed(name)
+    requested_repository = source_repository.strip()
+    preserve_server_provenance = bool(
+        existing and not requested_repository and existing.sourceUrl.strip()
+    )
+    # Self-managed registry apps use the public registration contract on every
+    # launch. That request cannot carry a server-resolved clone coordinate, so an
+    # omission refreshes app-owned metadata while the durable install coordinate
+    # remains the authority for an existing grant. Only an internal caller that
+    # supplies a non-empty repository can request a source transition.
+    trust_repository = (
+        existing.sourceUrl.strip()
+        if preserve_server_provenance and existing is not None
+        else requested_repository
+    )
+    trust_denied = repository_bound_grant_denied(name, repository=trust_repository)
+    if trust_denied:
+        sel().log_api_access(
+            caller="app_register_external",
+            operation="trust_repository",
+            outcome="rejected",
+            resources=f"name={name!r}",
+            error=trust_denied,
+        )
+        return AppResult(
+            ok=False,
+            name=name,
+            error=trust_denied,
+            error_code="app_trust_repository_mismatch",
+        )
+
+    dest = app_dir(name)
 
     # Builtin provenance is assigned ONLY by register_builtin_apps(). A
     # self-registration must never OVERWRITE an existing builtin-owned record
@@ -1563,9 +1820,14 @@ def register_external_app(
         existing.version = version
         existing.displayName = display_name
         existing.updatedAt = _now_iso()
-        if source:
-            existing.source = source
-        existing.origin = origin
+        if not preserve_server_provenance:
+            if source:
+                existing.source = source
+            existing.sourceUrl = requested_repository
+            existing.sourceRegistry = ""
+            existing.sourceCommit = ""
+            existing.sourceSigner = ""
+            existing.origin = origin
         existing.resources = resources
         existing.lifecycle = lifecycle
         _write_installed(name, existing)
@@ -1579,6 +1841,7 @@ def register_external_app(
             enabled=True,  # self-managed apps are always "enabled"
             installedAt=_now_iso(),
             source=source,
+            sourceUrl=requested_repository,
             origin=origin,
             resources=resources,
             lifecycle=lifecycle,

@@ -113,6 +113,7 @@ def _install(
     entry_point: str | None = None,
     port: int | str | None = None,
     body: str = "",
+    source_repository: str = "",
 ) -> None:
     """Install a minimal app record under the tmp KIROCREW_HOME.
 
@@ -124,6 +125,8 @@ def _install(
     ``entry_point`` declares a gateway-spawned backend so the app has real code to
     stop; *body* is written to that file. ``port`` declares that backend's port —
     a fixed number is observable after a stop attempt, ``"auto"`` is not.
+    ``source_repository`` models a registry install when the test pre-seeds a
+    repository-bound execution grant.
     """
     source = tmp_path / "source" / name
     source.mkdir(parents=True)
@@ -140,7 +143,7 @@ def _install(
             manifest["backend"]["port"] = port
         (source / entry_point).write_text(body, encoding="utf-8")
     (source / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest), encoding="utf-8")
-    assert install_app(source).ok
+    assert install_app(source, source_repository=source_repository).ok
     meta = _read_installed(name)
     assert meta is not None
     meta.enabled = enabled
@@ -187,7 +190,9 @@ def test_snapshot_sorts_and_dedupes_and_drops_junk(home: Path):
         json.dumps({"agent": {"apps_trusted": ["zebra", "apple", "apple", "", 5, {}]}}),
         encoding="utf-8",
     )
-    assert build_trusted_apps_snapshot()["apps"] == ["apple", "zebra"]
+    snapshot = build_trusted_apps_snapshot()
+    assert snapshot["apps"] == []
+    assert snapshot["ineffective"] == ["apple", "zebra"]
 
 
 def test_snapshot_allow_all_string_true_is_not_truthy(home: Path):
@@ -197,6 +202,37 @@ def test_snapshot_allow_all_string_true_is_not_truthy(home: Path):
         json.dumps({"agent": {"apps_allow_third_party": "true"}}), encoding="utf-8"
     )
     assert build_trusted_apps_snapshot()["allowAll"] is False
+
+
+def test_snapshot_marks_legacy_repository_grant_ineffective(
+    home: Path, tmp_path: Path
+):
+    _install(tmp_path, _APP)
+    meta = _read_installed(_APP)
+    assert meta is not None
+    meta.source = f"registry:{_APP}"
+    meta.sourceUrl = "https://example.test/owner/repository-app"
+    _write_installed(_APP, meta)
+    (home / "config.json").write_text(
+        json.dumps({"agent": {"apps_trusted": [_APP]}}), encoding="utf-8"
+    )
+
+    assert build_trusted_apps_snapshot() == {
+        "apps": [],
+        "ineffective": [_APP],
+        "allowAll": False,
+    }
+
+
+def test_snapshot_keeps_installed_legacy_local_grant_effective(
+    home: Path, tmp_path: Path
+):
+    _install(tmp_path, _APP)
+    (home / "config.json").write_text(
+        json.dumps({"agent": {"apps_trusted": [_APP]}}), encoding="utf-8"
+    )
+
+    assert build_trusted_apps_snapshot()["apps"] == [_APP]
 
 
 # ── GET ──
@@ -230,6 +266,7 @@ async def test_grant_persists_and_is_idempotent(home: Path, tmp_path: Path, mock
         assert (await second.json())["apps"] == [_APP]
 
     assert _stored(home)["apps_trusted"] == [_APP]
+    assert _stored(home)["apps_trusted_local"] == [_APP]
     ops = [c.kwargs["operation"] for c in mock_sel.log_api_access.call_args_list]
     assert ops == ["security.trusted_apps.grant"] * 2
     assert all(c.kwargs["outcome"] == "ok" for c in mock_sel.log_api_access.call_args_list)
@@ -301,6 +338,8 @@ async def test_revoke_removes_grant_and_is_idempotent(home: Path, tmp_path: Path
         assert (await never.json())["disabled"] is False
 
     assert _stored(home)["apps_trusted"] == []
+    assert _stored(home)["apps_trusted_local"] == []
+    assert _stored(home)["apps_trusted_repositories"] == {}
 
 
 @pytest.mark.asyncio
@@ -332,6 +371,38 @@ async def test_revoke_of_disabled_app_reports_not_disabled(home: Path, tmp_path:
         await client.post(f"/api/security/trusted-apps/{_APP}")
         resp = await client.delete(f"/api/security/trusted-apps/{_APP}")
         assert (await resp.json())["disabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_revoke_tears_down_ineffective_legacy_repository_grant(
+    home: Path, tmp_path: Path, mock_sel
+):
+    import kiro_crew.apps.teardown as appteardown
+
+    torn: list[str] = []
+
+    async def _teardown(name: str, record: dict, **_kw):
+        torn.append(name)
+        return appteardown.TeardownResult(warnings=[], failures=[])
+
+    _install(tmp_path, _APP, enabled=True)
+    meta = _read_installed(_APP)
+    assert meta is not None
+    meta.source = f"registry:{_APP}"
+    meta.sourceUrl = "https://example.test/owner/repository-app"
+    _write_installed(_APP, meta)
+    (home / "config.json").write_text(
+        json.dumps({"agent": {"apps_trusted": [_APP]}}), encoding="utf-8"
+    )
+    assert build_trusted_apps_snapshot()["ineffective"] == [_APP]
+
+    with patch.object(security, "teardown_app_runtime", _teardown):
+        async with _client() as client:
+            response = await client.delete(f"/api/security/trusted-apps/{_APP}")
+            assert response.status == 200
+
+    assert torn == [_APP]
+    assert _stored(home)["apps_trusted"] == []
 
 
 # ── allow-all ──
@@ -835,6 +906,67 @@ async def test_blanket_off_sweeps_an_app_whose_metadata_says_disabled(
     # It was already off, so it is not claimed as an app this action stopped.
     assert body["stopped"] == []
     assert body["stillRunning"] == []
+
+
+@pytest.mark.asyncio
+async def test_blanket_off_sweeps_legacy_repository_grant(
+    home: Path, tmp_path: Path, mock_sel
+):
+    import kiro_crew.apps.teardown as appteardown
+
+    torn: list[str] = []
+
+    async def _teardown(name: str, record: dict, **_kw):
+        torn.append(name)
+        return appteardown.TeardownResult(warnings=[], failures=[])
+
+    _install(tmp_path, _APP, enabled=True)
+    meta = _read_installed(_APP)
+    assert meta is not None
+    meta.source = f"registry:{_APP}"
+    meta.sourceUrl = "https://example.test/owner/repository-app"
+    _write_installed(_APP, meta)
+    (home / "config.json").write_text(
+        json.dumps(
+            {
+                "agent": {
+                    "apps_allow_third_party": True,
+                    "apps_trusted": [_APP],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with patch.object(security, "teardown_app_runtime", _teardown):
+        async with _client() as client:
+            off = await client.put(
+                "/api/security/trusted-apps/allow-all", json={"value": False}
+            )
+            assert off.status == 200
+
+    assert torn == [_APP]
+
+
+@pytest.mark.asyncio
+async def test_blanket_off_keeps_explicit_local_grant_running(
+    home: Path, tmp_path: Path, mock_sel
+):
+    _install(tmp_path, _APP, enabled=True)
+    async with _client() as client:
+        granted = await client.post(f"/api/security/trusted-apps/{_APP}")
+        assert granted.status == 200
+        assert (
+            await client.put(
+                "/api/security/trusted-apps/allow-all", json={"value": True}
+            )
+        ).status == 200
+        with patch.object(security, "teardown_app_runtime") as teardown:
+            off = await client.put(
+                "/api/security/trusted-apps/allow-all", json={"value": False}
+            )
+            assert off.status == 200
+            teardown.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1538,6 +1670,8 @@ async def test_refused_builtin_grant_is_not_inherited_by_a_later_takeover(
 # ── 5. a registry name that is not installed yet is grantable ──
 
 _REG_ONLY = "registry-only-app"
+_REG_ONLY_REPO_ALIAS = "https://example.test/display/registry-only-app"
+_REG_ONLY_CLONE_TARGET = "https://clone.example.test/Owner/registry-only-app"
 
 
 @pytest.fixture
@@ -1548,7 +1682,14 @@ def seeded_registry(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         registry,
         "_load_registry_file",
-        lambda: [{"name": _REG_ONLY, "repo": "acme/registry-only-app", "branch": "main"}],
+        lambda: [
+            {
+                "name": _REG_ONLY,
+                "repo": _REG_ONLY_REPO_ALIAS,
+                "gitUrl": f"{_REG_ONLY_CLONE_TARGET}.git",
+                "branch": "main",
+            }
+        ],
     )
     # "Never touches the network" needs the catalog pinned too: resolution
     # consults the official catalog BEFORE the seed row, with a fresh uncached
@@ -1575,15 +1716,276 @@ async def test_grant_accepts_a_registry_name_that_is_not_installed(
     assert get_app(_REG_ONLY) is None, "fixture must NOT install the app"
 
     async with _client() as client:
-        resp = await client.post(f"/api/security/trusted-apps/{_REG_ONLY}")
+        resp = await client.post(
+            f"/api/security/trusted-apps/{_REG_ONLY}",
+            json={"repository": _REG_ONLY_CLONE_TARGET},
+        )
         assert resp.status == 200
         assert (await resp.json())["apps"] == [_REG_ONLY]
 
     # Persisted AND effective, so the install that follows is admitted.
     assert _stored(home)["apps_trusted"] == [_REG_ONLY]
+    assert _stored(home)["apps_trusted_repositories"] == {
+        _REG_ONLY: _REG_ONLY_CLONE_TARGET
+    }
     from kiro_crew.apps.execution import app_execution_denied
 
-    assert app_execution_denied(_REG_ONLY, action="install") is None
+    assert (
+        app_execution_denied(
+            _REG_ONLY,
+            action="install",
+            repository=_REG_ONLY_CLONE_TARGET,
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_repository_grant_never_persists_embedded_clone_credentials(
+    home: Path,
+    mock_sel,
+    seeded_registry: str,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import kiro_crew.apps.registry as registry
+
+    secret = "SuperSecret"
+    credentialed = f"HTTPS://User:{secret}@Clone.Example.test/Owner/registry-only-app.git"
+    reviewed = _REG_ONLY_CLONE_TARGET
+    monkeypatch.setattr(
+        registry,
+        "_load_registry_file",
+        lambda: [{"name": _REG_ONLY, "gitUrl": credentialed, "branch": "main"}],
+    )
+
+    async with _client() as client:
+        resp = await client.post(
+            f"/api/security/trusted-apps/{_REG_ONLY}",
+            json={"repository": reviewed},
+        )
+        assert resp.status == 200
+        assert secret not in await resp.text()
+
+    stored_raw = (home / "config.json").read_text(encoding="utf-8")
+    assert secret not in stored_raw
+    assert _stored(home)["apps_trusted_repositories"] == {_REG_ONLY: reviewed}
+    assert registry._same_git_target(reviewed, credentialed)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        None,
+        {"repository": _REG_ONLY_REPO_ALIAS},
+        {"repository": "https://clone.example.test/Owner/different-app"},
+    ],
+)
+async def test_repository_grant_requires_matching_consent_proof(
+    home: Path, mock_sel, seeded_registry: str, body: dict[str, str] | None
+):
+    async with _client() as client:
+        if body is None:
+            resp = await client.post(f"/api/security/trusted-apps/{_REG_ONLY}")
+        else:
+            resp = await client.post(
+                f"/api/security/trusted-apps/{_REG_ONLY}", json=body
+            )
+
+        assert resp.status == 409
+        assert (await resp.json())["code"] == "app_trust_repository_mismatch"
+
+    assert _stored(home).get("apps_trusted", []) == []
+    assert _stored(home).get("apps_trusted_repositories", {}) == {}
+
+
+@pytest.mark.asyncio
+async def test_legacy_registry_install_binds_grant_to_current_repository(
+    home: Path, tmp_path: Path, mock_sel, monkeypatch: pytest.MonkeyPatch
+):
+    """A legacy bare-name source cannot degrade into a name-only grant."""
+    _install(tmp_path, _APP)
+    meta = _read_installed(_APP)
+    assert meta is not None
+    meta.source = f"registry:{_APP}"
+    meta.sourceUrl = ""
+    _write_installed(_APP, meta)
+
+    current_repository = "https://clone.example.test/Owner/current-app"
+    monkeypatch.setattr(
+        "kiro_crew.apps.registry.get_registry_app",
+        lambda name: {"name": name, "gitUrl": f"{current_repository}.git"},
+    )
+
+    async with _client() as client:
+        stale = await client.post(
+            f"/api/security/trusted-apps/{_APP}",
+            json={"repository": "https://clone.example.test/Owner/replaced-app"},
+        )
+        assert stale.status == 409
+        assert (await stale.json())["code"] == "app_trust_repository_mismatch"
+
+        granted = await client.post(
+            f"/api/security/trusted-apps/{_APP}",
+            json={"repository": current_repository},
+        )
+        assert granted.status == 200
+
+    assert _stored(home)["apps_trusted_repositories"] == {
+        _APP: current_repository
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "source_url",
+    [
+        "https://clone.example.test/Owner/App.git?repo=A",
+        "deploy:password@example.invalid:Owner/App.git",
+        "ssh://deploy:password@example.invalid/Owner/App.git",
+    ],
+)
+async def test_legacy_unsupported_install_cannot_receive_repository_grant(
+    home: Path, tmp_path: Path, mock_sel, source_url: str
+):
+    """Old ambiguous provenance is unknown until reinstalled from a safe URL."""
+    from kiro_crew.apps.manager import INSTALLED_META_FILENAME, app_dir
+
+    _install(tmp_path, _APP)
+    meta_path = app_dir(_APP) / INSTALLED_META_FILENAME
+    legacy_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    legacy_meta["source"] = f"registry:{_APP}"
+    legacy_meta["sourceUrl"] = source_url
+    # Deliberately bypass today's sanitized write boundary to model an upgrade
+    # from a version that persisted this ambiguous source verbatim.
+    meta_path.write_text(json.dumps(legacy_meta), encoding="utf-8")
+
+    async with _client() as client:
+        response = await client.post(
+            f"/api/security/trusted-apps/{_APP}",
+            json={"repository": "https://clone.example.test/Owner/App"},
+        )
+        payload = await response.json()
+
+    assert response.status == 404
+    assert payload["code"] == "app_not_installed"
+    assert _stored(home).get("apps_trusted", []) == []
+    assert _stored(home).get("apps_trusted_repositories", {}) == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["grant", "revoke"])
+@pytest.mark.parametrize(
+    "legacy_binding",
+    [
+        "https://example.test/owner/old?repo=A",
+        "deploy:password@example.invalid:owner/old.git",
+        "ssh://deploy:password@example.invalid/owner/old.git",
+    ],
+)
+async def test_unrelated_mutation_never_heals_legacy_unsupported_binding(
+    home: Path,
+    tmp_path: Path,
+    mock_sel,
+    operation: str,
+    legacy_binding: str,
+):
+    """Changing app B drops, rather than normalizes, app A's inert binding."""
+    _install(tmp_path, _APP)
+    trusted = [_OTHER]
+    local: list[str] = []
+    if operation == "revoke":
+        trusted.append(_APP)
+        local.append(_APP)
+    (home / "config.json").write_text(
+        json.dumps(
+            {
+                "agent": {
+                    "apps_trusted": trusted,
+                    "apps_trusted_local": local,
+                    "apps_trusted_repositories": {_OTHER: legacy_binding},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    async with _client() as client:
+        if operation == "grant":
+            response = await client.post(f"/api/security/trusted-apps/{_APP}")
+        else:
+            response = await client.delete(f"/api/security/trusted-apps/{_APP}")
+        assert response.status == 200
+
+    stored = _stored(home)
+    assert _OTHER in stored["apps_trusted"]
+    assert _OTHER not in stored.get("apps_trusted_repositories", {})
+    assert _OTHER in build_trusted_apps_snapshot()["ineffective"]
+
+
+@pytest.mark.parametrize(
+    "entry_url",
+    [
+        "https://example.test/owner/registry-only?repo=other",
+        "deploy:password@example.invalid:owner/registry-only.git",
+        "ssh://deploy:password@example.invalid/owner/registry-only.git",
+    ],
+)
+def test_uninstalled_unsupported_registry_row_is_never_reported_effective(
+    home: Path, mock_sel, monkeypatch: pytest.MonkeyPatch, entry_url: str
+):
+    safe_repository = "https://example.test/owner/registry-only"
+    (home / "config.json").write_text(
+        json.dumps(
+            {
+                "agent": {
+                    "apps_trusted": [_REG_ONLY],
+                    "apps_trusted_repositories": {_REG_ONLY: safe_repository},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(security, "get_app", lambda name: None)
+    monkeypatch.setattr(
+        security,
+        "get_registry_app",
+        lambda name: {"name": name, "gitUrl": entry_url},
+    )
+
+    assert build_trusted_apps_snapshot() == {
+        "apps": [],
+        "ineffective": [_REG_ONLY],
+        "allowAll": False,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "proof",
+    [
+        "https://example.test/registry-only?access_token=proof-query-secret",
+        "deploy:proof-scp-secret@example.invalid:owner/registry-only.git",
+        "ssh://deploy:proof-ssh-secret@example.invalid/owner/registry-only.git",
+    ],
+)
+async def test_unsupported_consent_proof_is_rejected_without_echo(
+    home: Path, mock_sel, seeded_registry: str, proof: str
+):
+    async with _client() as client:
+        response = await client.post(
+            f"/api/security/trusted-apps/{_REG_ONLY}",
+            json={"repository": proof},
+        )
+        body = await response.text()
+
+    assert response.status == 400
+    assert json.loads(body)["code"] == "invalid_repository_consent"
+    assert proof not in body
+    assert "proof-query-secret" not in body
+    assert "proof-scp-secret" not in body
+    assert "proof-ssh-secret" not in body
+    assert _stored(home).get("apps_trusted", []) == []
 
 
 @pytest.mark.asyncio
@@ -1846,7 +2248,10 @@ async def test_refused_revoke_does_not_switch_the_app_off(
     # asked to withdraw permission and instead lost the working app and kept the
     # permission. Config mutability is now pre-flighted before anything is stopped.
     (home / "config.local.json").write_text(
-        json.dumps({"agent": {"apps_trusted": [_APP]}}), encoding="utf-8"
+        json.dumps(
+            {"agent": {"apps_trusted": [_APP], "apps_trusted_local": [_APP]}}
+        ),
+        encoding="utf-8",
     )
     _install(tmp_path, _APP, enabled=True)
     with patch(
@@ -1894,7 +2299,10 @@ def test_uninstall_reports_an_overlay_owned_grant_it_cannot_drop(
     from kiro_crew.apps import manager as appmanager
 
     (home / "config.local.json").write_text(
-        json.dumps({"agent": {"apps_trusted": [_APP]}}), encoding="utf-8"
+        json.dumps(
+            {"agent": {"apps_trusted": [_APP], "apps_trusted_local": [_APP]}}
+        ),
+        encoding="utf-8",
     )
     _install(tmp_path, _APP, enabled=False)
     result = appmanager.uninstall_app(_APP)
@@ -1934,14 +2342,28 @@ def test_uninstall_drops_the_base_grant_even_when_an_overlay_replaces_the_list(
     # key and a different app installed under this name inherits the grant.
     from kiro_crew.apps import manager as appmanager
 
+    # Install before authoring the trust fixture. Installation legitimately
+    # persists config and applies overlay ownership; doing it afterwards would
+    # remove the base key this test is specifically meant to exercise before
+    # uninstall ever runs.
+    _install(tmp_path, _APP, enabled=False)
     (home / "config.json").write_text(
-        json.dumps({"agent": {"apps_trusted": [_APP], "model": "sonnet"}}),
+        json.dumps(
+            {
+                "agent": {
+                    "apps_trusted": [_APP],
+                    "apps_trusted_repositories": {
+                        _APP: "https://example.test/owner/trust-app"
+                    },
+                    "model": "sonnet",
+                }
+            }
+        ),
         encoding="utf-8",
     )
     (home / "config.local.json").write_text(
         json.dumps({"agent": {"apps_trusted": ["some-other-app"]}}), encoding="utf-8"
     )
-    _install(tmp_path, _APP, enabled=False)
 
     # Not blocked: the OVERLAY does not grant this app, so the effective grant is
     # removable even though the overlay owns the setting's merged value.
@@ -1951,6 +2373,7 @@ def test_uninstall_drops_the_base_grant_even_when_an_overlay_replaces_the_list(
 
     base = json.loads((home / "config.json").read_text(encoding="utf-8"))
     assert base["agent"]["apps_trusted"] == []
+    assert base["agent"]["apps_trusted_repositories"] == {}
     # Everything else in the base file survives the targeted edit.
     assert base["agent"]["model"] == "sonnet"
     # And the overlay is never written by us.
@@ -2013,10 +2436,25 @@ def test_a_failed_delete_puts_the_trust_grant_back(home: Path, tmp_path: Path):
     from kiro_crew.apps import manager as appmanager
 
     (home / "config.json").write_text(
-        json.dumps({"agent": {"apps_trusted": [_APP], "model": "sonnet"}}),
+        json.dumps(
+            {
+                "agent": {
+                    "apps_trusted": [_APP],
+                    "apps_trusted_repositories": {
+                        _APP: "https://example.test/owner/trust-app"
+                    },
+                    "model": "sonnet",
+                }
+            }
+        ),
         encoding="utf-8",
     )
-    _install(tmp_path, _APP, enabled=False)
+    _install(
+        tmp_path,
+        _APP,
+        enabled=False,
+        source_repository="https://example.test/owner/trust-app",
+    )
 
     def _boom(*a, **kw):
         raise OSError("device busy")
@@ -2029,7 +2467,166 @@ def test_a_failed_delete_puts_the_trust_grant_back(home: Path, tmp_path: Path):
     assert base["agent"]["apps_trusted"] == [_APP], (
         "a failed uninstall left the still-installed app stripped of its grant"
     )
+    assert base["agent"]["apps_trusted_repositories"] == {
+        _APP: "https://example.test/owner/trust-app"
+    }, "a failed uninstall restored the name but lost its repository binding"
     assert base["agent"]["model"] == "sonnet"
+
+
+def test_a_failed_delete_restores_explicit_local_grant_kind(
+    home: Path, tmp_path: Path
+):
+    from kiro_crew.apps import manager as appmanager
+
+    _install(tmp_path, _APP, enabled=False)
+    (home / "config.json").write_text(
+        json.dumps(
+            {
+                "agent": {
+                    "apps_trusted": [_APP],
+                    "apps_trusted_local": [_APP],
+                    "model": "sonnet",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def _boom(*args, **kwargs):
+        raise OSError("device busy")
+
+    with patch.object(appmanager.shutil, "rmtree", _boom):
+        result = appmanager.uninstall_app(_APP)
+
+    assert result.ok is False
+    base = json.loads((home / "config.json").read_text(encoding="utf-8"))
+    assert base["agent"]["apps_trusted"] == [_APP]
+    assert base["agent"]["apps_trusted_local"] == [_APP]
+    assert base["agent"]["model"] == "sonnet"
+
+
+def test_partial_delete_never_restores_grant_to_a_missing_or_replacement_app(
+    home: Path, tmp_path: Path
+):
+    """Old consent cannot survive loss of the durable installed occupant."""
+    from kiro_crew.apps import manager as appmanager
+    from kiro_crew.apps.execution import app_execution_denied
+    from kiro_crew.config.loader import _invalidate_config_cache
+
+    _install(tmp_path, _APP, enabled=False)
+    (home / "config.json").write_text(
+        json.dumps(
+            {
+                "agent": {
+                    "apps_trusted": [_APP],
+                    "apps_trusted_repositories": {
+                        _APP: "https://example.test/owner/original"
+                    },
+                    "apps_trusted_local": [_APP],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    _invalidate_config_cache()
+
+    def _partial_rmtree(path, *args, **kwargs):
+        (Path(path) / "installed.json").unlink()
+        raise OSError("device failed after deleting installed metadata")
+
+    with patch.object(appmanager.shutil, "rmtree", _partial_rmtree):
+        result = appmanager.uninstall_app(_APP)
+
+    assert result.ok is False
+    assert "could not be safely restored" in result.error
+    base = json.loads((home / "config.json").read_text(encoding="utf-8"))
+    assert base["agent"]["apps_trusted"] == []
+    assert base["agent"]["apps_trusted_repositories"] == {}
+    assert base["agent"]["apps_trusted_local"] == []
+
+    replacement = appmanager.register_external_app(
+        _APP,
+        "2.0.0",
+        "Same-name replacement",
+    )
+    assert replacement.ok, replacement.error
+    assert app_execution_denied(_APP, action="module_load") is not None
+
+
+def test_restore_postcheck_withdraws_grant_if_installed_occupant_changes(
+    home: Path, tmp_path: Path
+):
+    """A replacement between the precheck and config write inherits nothing."""
+    from kiro_crew.apps import manager as appmanager
+    from kiro_crew.config.loader import _invalidate_config_cache
+
+    _install(tmp_path, _APP, enabled=False)
+    (home / "config.json").write_text(
+        json.dumps(
+            {
+                "agent": {
+                    "apps_trusted": [_APP],
+                    "apps_trusted_local": [_APP],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    _invalidate_config_cache()
+
+    def _delete_failure(*args, **kwargs):
+        raise OSError("device busy")
+
+    real_write = appmanager.write_config_atomically
+    writes = 0
+
+    def _write_then_replace(path, raw):
+        nonlocal writes
+        writes += 1
+        real_write(path, raw)
+        if writes == 2:  # pre-delete drop is first; restore write is second
+            changed = appmanager._read_installed(_APP)
+            assert changed is not None
+            changed.version = "9.9.9"
+            appmanager._write_installed(_APP, changed)
+
+    with (
+        patch.object(appmanager.shutil, "rmtree", _delete_failure),
+        patch.object(appmanager, "write_config_atomically", _write_then_replace),
+    ):
+        result = appmanager.uninstall_app(_APP)
+
+    assert result.ok is False
+    assert "installed app changed" in result.error
+    base = json.loads((home / "config.json").read_text(encoding="utf-8"))
+    assert base["agent"]["apps_trusted"] == []
+    assert base["agent"]["apps_trusted_local"] == []
+
+
+def test_successful_uninstall_removes_explicit_local_grant_kind(
+    home: Path, tmp_path: Path
+):
+    from kiro_crew.apps import manager as appmanager
+
+    _install(tmp_path, _APP, enabled=False)
+    (home / "config.json").write_text(
+        json.dumps(
+            {
+                "agent": {
+                    "apps_trusted": [_APP],
+                    "apps_trusted_local": [_APP],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = appmanager.uninstall_app(_APP)
+
+    assert result.ok, result.error
+    base = json.loads((home / "config.json").read_text(encoding="utf-8"))
+    assert base["agent"]["apps_trusted"] == []
+    assert base["agent"]["apps_trusted_local"] == []
 
 
 def test_a_failed_delete_does_not_grant_an_app_that_had_no_grant(
@@ -2067,7 +2664,10 @@ def test_the_cli_trust_withdrawal_is_audited(home: Path, tmp_path: Path):
     from kiro_crew.apps import manager as appmanager
 
     (home / "config.json").write_text(
-        json.dumps({"agent": {"apps_trusted": [_APP]}}), encoding="utf-8"
+        json.dumps(
+            {"agent": {"apps_trusted": [_APP], "apps_trusted_local": [_APP]}}
+        ),
+        encoding="utf-8",
     )
     _install(tmp_path, _APP, enabled=False)
 
@@ -2205,7 +2805,10 @@ async def test_uninstall_route_refuses_before_running_anything_destructive(
     from kiro_crew.apps import routes as approutes
 
     (home / "config.local.json").write_text(
-        json.dumps({"agent": {"apps_trusted": [_APP]}}), encoding="utf-8"
+        json.dumps(
+            {"agent": {"apps_trusted": [_APP], "apps_trusted_local": [_APP]}}
+        ),
+        encoding="utf-8",
     )
     _install(tmp_path, _APP, enabled=False)
 
@@ -2356,6 +2959,8 @@ def test_blanket_flag_is_not_editable_through_the_generic_config_patch():
     assert "/api/security/trusted-apps/allow-all" in hint
     # The sibling grant list is not editable there either, for the same reason.
     assert "agent.apps_trusted" not in _EDITABLE_CONFIG
+    assert "agent.apps_trusted_local" not in _EDITABLE_CONFIG
+    assert "agent.apps_trusted_repositories" not in _EDITABLE_CONFIG
 
 
 @pytest.mark.asyncio

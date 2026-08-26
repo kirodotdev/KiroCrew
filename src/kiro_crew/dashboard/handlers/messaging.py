@@ -14,6 +14,7 @@ from typing import Any, Callable, cast
 
 from aiohttp import web
 
+from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.browser.command_bus import (
     DEFAULT_COMMAND_TIMEOUT_MS,
@@ -25,6 +26,7 @@ from kiro_crew.browser.command_bus import (
 from kiro_crew.browser_cli import install as browser_cli_install
 from kiro_crew.browser_cli import token as browser_cli_token
 from kiro_crew.browser_cli import view as browser_cli_view
+from kiro_crew.config import loader as _loader
 from kiro_crew.config.loader import (
     IMESSAGE_SERVICES,
     TELEGRAM_ACTIVATIONS,
@@ -108,6 +110,17 @@ _SEND_MESSAGE_CHANNEL_TYPES: frozenset[str] = frozenset(CHANNEL_SESSION_NAMESPAC
     "unified",
 }
 logger = logging.getLogger(__name__)
+
+
+def _read_text_or_none(path: Path) -> str | None:
+    """Read ``path`` as UTF-8, or return None if it does not exist.
+
+    Pure synchronous filesystem I/O — call via ``asyncio.to_thread`` from an
+    async handler so the stat + read never block the gateway event loop. Used to
+    snapshot config.json before a credential write so a failed .env commit can
+    roll the metadata back to a consistent pair.
+    """
+    return path.read_text(encoding="utf-8") if path.exists() else None
 
 
 def _sel():
@@ -2720,9 +2733,8 @@ def _deny_non_owner_browser_request(request: web.Request, operation: str) -> web
 
     The mutations guarded here are security-sensitive:
 
-    * installing the CLI globally ACTIVATES browser auto-approval, so a
-      non-owner could hand the agent an unprompted browser on a host that had
-      none;
+    * installing the CLI globally adds an executable host capability, so a
+      non-owner must not be able to mutate the machine to provide it;
     * the attach token is a stored credential that silences the browser's own
       per-attach approval prompt — the last human checkpoint before a program
       drives the user's logged-in session;
@@ -3294,9 +3306,44 @@ def _write_env_updates(updates: dict[str, str | None]) -> None:
     nobody re-read. ``test/test_channel_env_write_off_loop.py`` pins both
     properties for all six channels.
     """
-    from kiro_crew.config.loader import env_path  # noqa: F811
+    ep = _loader.env_path()
+    # Ensure the parent exists before opening the lock file (the .env itself may
+    # not exist yet — e.g. first credential save into a fresh config dir).
+    ep.parent.mkdir(parents=True, exist_ok=True)
+    # Serialize this read-modify-write against the OTHER cross-process .env
+    # writers (the `kirocrew secrets import` migrator and the WeChat/Weixin QR
+    # handler) on the SAME advisory lock, derived from the shared helper so all
+    # writers provably use one lock file. Without this, a channel/token save
+    # here could interleave with the importer's rewrite (read stale bytes here,
+    # or clobber the importer's commit), losing a freshly saved token or leaving
+    # a `secret://` reference pointing at the wrong value. The lock wraps the
+    # entire read → transform → atomic-rename sequence.
+    # Lazy import: `secrets.migrate` is the CLI migration module and must stay
+    # OFF the gateway boot path (messaging.py is imported at startup). Importing
+    # it inside the writer keeps it off the module-import path so gateway
+    # readiness is not delayed by loading the migration module.
+    from kiro_crew.secrets.migrate import _env_lock_path
 
-    ep = env_path()
+    lock_path = _env_lock_path(ep)
+    lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    if not platform_compat.try_acquire_lock(lock_fd, exclusive=True):
+        os.close(lock_fd)
+        raise OSError(
+            f"{ep} is locked by another process (a secrets import or another "
+            "credential save is in progress); no update performed. Retry once "
+            "the other operation finishes."
+        )
+    try:
+        _write_env_updates_locked(ep, updates)
+    finally:
+        platform_compat.release_lock(lock_fd)
+        os.close(lock_fd)
+
+
+def _write_env_updates_locked(ep: "Path", updates: dict[str, str | None]) -> None:
+    """The read-modify-atomic-rewrite of .env, run under the .env lock held by
+    the caller (:func:`_write_env_updates`)."""
+
     lines = ep.read_text(encoding="utf-8").splitlines() if ep.exists() else []
     seen: set[str] = set()
     out: list[str] = []
@@ -3578,7 +3625,17 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
                 os.environ[key] = new_val
     if staged:
         slack_cfg.update(staged)
-        _atomic_json_write(path, data)
+        # Shield + drain so a cancellation arriving mid-write cannot release
+        # the config lock while the worker thread is still replacing the file.
+        # Without this a later save can interleave writes under the lock.
+        _cfg_write_task_sl: asyncio.Task[None] = asyncio.ensure_future(
+            asyncio.to_thread(_atomic_json_write, path, data)
+        )
+        try:
+            await asyncio.shield(_cfg_write_task_sl)
+        except asyncio.CancelledError:
+            await asyncio.gather(_cfg_write_task_sl, return_exceptions=True)
+            raise
 
     # Create the configured session folder now, on this user-initiated save,
     # so the reconcile path never has to write the folder store. Best-effort:
@@ -4683,9 +4740,9 @@ async def api_teams_config_save(request: web.Request) -> web.Response:
         CRED_MICROSOFT_APP_ID,
         CRED_MICROSOFT_APP_PASSWORD,
         CRED_MICROSOFT_APP_TENANT_ID,
-        KiroCrewConfig,
         _threshold_pct,
         config_path,
+        read_env_file_credential,
     )
 
     caller = request.get("user", "dashboard")
@@ -4804,20 +4861,47 @@ async def api_teams_config_save(request: web.Request) -> web.Response:
         CRED_MICROSOFT_APP_PASSWORD in env_updates or "app_id" in staged or "tenant_id" in staged
     )
     if credential_touched:
-        # Both reads touch the filesystem (config.json, then .env), so they go to a
-        # thread rather than stalling the gateway loop on a save.
-        current_cfg = await asyncio.to_thread(KiroCrewConfig.load)
-        current_creds = await asyncio.to_thread(current_cfg.load_credentials)
-        eff_password = env_updates.get(
-            CRED_MICROSOFT_APP_PASSWORD,
-            current_creds.get(CRED_MICROSOFT_APP_PASSWORD, "") or current_cfg.teams.app_password,
-        )
-        eff_app_id = current_creds.get(CRED_MICROSOFT_APP_ID, "") or str(
-            staged.get("app_id", current_cfg.teams.app_id)
-        )
-        eff_tenant = current_creds.get(CRED_MICROSOFT_APP_TENANT_ID, "") or str(
-            staged.get("tenant_id", current_cfg.teams.tenant_id)
-        )
+        # Read credentials directly from .env (+ os.environ override) rather
+        # than via KiroCrewConfig.load(), which triggers _load_resolved() ->
+        # cfg.save(), an unconditional migration write-back that purges
+        # teams.app_password from config.json as a side-effect.  That
+        # write-back races Phase 2's write-order invariant (SET: .env first,
+        # then config purge) by clearing the legacy credential before the .env
+        # write has succeeded.  read_env_file_credential touches only the .env
+        # file and never writes config.json.
+        _p15_cfg = config_path()
+        _raw_teams_15: dict = {}
+        try:
+            # Offload read_text + json.loads to a thread so a slow filesystem
+            # cannot stall the async event loop (Finding 1).
+            def _read_config_15() -> dict:
+                return json.loads(_p15_cfg.read_text(encoding="utf-8")) if _p15_cfg.exists() else {}
+
+            _rd15 = await asyncio.to_thread(_read_config_15)
+            # Guard against a malformed config.json where "teams" is not a dict
+            # (e.g. someone hand-edited it to a list).  .get() on a list raises
+            # AttributeError; the isinstance check degrades gracefully (Finding 3).
+            _t15 = _rd15.get("teams")
+            _raw_teams_15 = _t15 if isinstance(_t15, dict) else {}
+        except Exception:
+            pass
+        _c_pw = await asyncio.to_thread(read_env_file_credential, CRED_MICROSOFT_APP_PASSWORD)
+        _c_app_id = await asyncio.to_thread(read_env_file_credential, CRED_MICROSOFT_APP_ID)
+        _c_tenant = await asyncio.to_thread(read_env_file_credential, CRED_MICROSOFT_APP_TENANT_ID)
+        # ENV-first, matching load_credentials() semantics: os.environ overrides
+        # the .env file (Finding 2).  A pending in-flight update still wins as
+        # the outermost layer (see env_updates.get() below).
+        _c_pw = os.environ.get(CRED_MICROSOFT_APP_PASSWORD, "") or _c_pw
+        _c_app_id = os.environ.get(CRED_MICROSOFT_APP_ID, "") or _c_app_id
+        _c_tenant = os.environ.get(CRED_MICROSOFT_APP_TENANT_ID, "") or _c_tenant
+        # ENV-first: env_updates wins, then .env/os.environ (_c_pw).  When the
+        # password lives ONLY in legacy config.json (not in .env or os.environ,
+        # so _c_pw is empty), fall back to the raw legacy value so verification
+        # and Phase-2's purge-write see the existing credential and preserve it.
+        _c_pw_effective = _c_pw or _raw_teams_15.get("app_password", "")
+        eff_password = env_updates.get(CRED_MICROSOFT_APP_PASSWORD, _c_pw_effective)
+        eff_app_id = _c_app_id or str(staged.get("app_id", _raw_teams_15.get("app_id", "")))
+        eff_tenant = _c_tenant or str(staged.get("tenant_id", _raw_teams_15.get("tenant_id", "")))
         # Nothing to verify while half the pair is missing (e.g. the operator is
         # clearing the secret, or is filling the form in two saves).
         if eff_app_id and eff_password:
@@ -4865,21 +4949,23 @@ async def api_teams_config_save(request: web.Request) -> web.Response:
             # the secret. Each verifies a triple containing the OTHER's old value and
             # passes; the serialized commits then merge into a stored triple neither one
             # checked, and the channel is dead at the next restart with a green "Saved."
-            # ``load_credentials`` reads only ``.env`` plus the environment (it never
-            # touches ``self``), so this is a .env read and not a second config load --
-            # and it goes to a thread because it touches the filesystem.
-            fresh_creds = await asyncio.to_thread(current_cfg.load_credentials)
+            # Read credentials directly from .env (same rationale as Phase 1.5:
+            # avoid KiroCrewConfig.load() which would trigger migration write-back).
+            _f_pw = await asyncio.to_thread(read_env_file_credential, CRED_MICROSOFT_APP_PASSWORD)
+            _f_app_id = await asyncio.to_thread(read_env_file_credential, CRED_MICROSOFT_APP_ID)
+            _f_tenant = await asyncio.to_thread(
+                read_env_file_credential, CRED_MICROSOFT_APP_TENANT_ID
+            )
+            # ENV-first, matching load_credentials() semantics (Finding 2).
+            _f_pw = os.environ.get(CRED_MICROSOFT_APP_PASSWORD, "") or _f_pw
+            _f_app_id = os.environ.get(CRED_MICROSOFT_APP_ID, "") or _f_app_id
+            _f_tenant = os.environ.get(CRED_MICROSOFT_APP_TENANT_ID, "") or _f_tenant
             now_password = env_updates.get(
                 CRED_MICROSOFT_APP_PASSWORD,
-                fresh_creds.get(CRED_MICROSOFT_APP_PASSWORD, "")
-                or str(teams_cfg.get("app_password", "")),
+                _f_pw or str(teams_cfg.get("app_password", "")),
             )
-            now_app_id = fresh_creds.get(CRED_MICROSOFT_APP_ID, "") or str(
-                staged.get("app_id", teams_cfg.get("app_id", ""))
-            )
-            now_tenant = fresh_creds.get(CRED_MICROSOFT_APP_TENANT_ID, "") or str(
-                staged.get("tenant_id", teams_cfg.get("tenant_id", ""))
-            )
+            now_app_id = _f_app_id or str(staged.get("app_id", teams_cfg.get("app_id", "")))
+            now_tenant = _f_tenant or str(staged.get("tenant_id", teams_cfg.get("tenant_id", "")))
             if (now_app_id, now_password, now_tenant) != verified_triple:
                 return _reject(
                     "config_changed",
@@ -4930,13 +5016,35 @@ async def api_teams_config_save(request: web.Request) -> web.Response:
             changes["session_folder"] = staged["session_folder"]
         applied = list(changes.keys())
         # The secret is env-only; if a legacy plaintext app_password ever landed
-        # in config.json, purge it so it can't shadow or outlive the .env value.
-        if teams_cfg.get("app_password"):
+        # in config.json, purge it when the credential is safely held elsewhere:
+        # either it is being written to .env in this same save, or it already
+        # exists in .env / os.environ (so purging the config copy is safe).
+        # Do NOT purge when the password lives ONLY in legacy config.json (no .env
+        # entry, no env_update) — that would erase the sole credential copy and
+        # produce a dead pair at the next restart (Finding 1).
+        # _c_pw is only populated inside ``if credential_touched`` (Phase 1.5).
+        # For metadata-only saves (credential_touched=False) fall back to a
+        # synchronous os.environ check — load_credentials() seeds os.environ from
+        # .env at startup, so the key is present when .env holds the credential.
+        _pw_in_env_or_environ = locals().get("_c_pw") or os.environ.get(
+            CRED_MICROSOFT_APP_PASSWORD, ""
+        )
+        _pw_safe_in_env = bool(
+            CRED_MICROSOFT_APP_PASSWORD in env_updates  # being written this save
+            or _pw_in_env_or_environ  # already in .env / os.environ
+        )
+        if teams_cfg.get("app_password") and _pw_safe_in_env:
             changes["app_password"] = ""
             applied.append("app_password_purged")
 
+        _cfg_snapshot: str | None = None
         if changes:
             teams_cfg.update(changes)
+            # Snapshot the on-disk config BEFORE writing the new metadata, so
+            # that if the subsequent .env credential write fails we can roll
+            # the metadata back.  Restoring config on .env failure keeps the
+            # pair consistent (old credential + old meta).
+            _cfg_snapshot = await asyncio.to_thread(_read_text_or_none, path)
             _atomic_json_write(path, data)
 
         # Create the configured session folder now, on this user-initiated save,
@@ -4955,7 +5063,49 @@ async def api_teams_config_save(request: web.Request) -> web.Response:
         if env_updates:
             # Off-loop: restrict_to_owner spawns whoami/icacls subprocesses on
             # Windows, which would stall the gateway loop if run inline.
-            await _write_env_off_loop(env_updates)
+            #
+            # Cancellation guard: _write_env_off_loop shields + drains its
+            # worker, so a CancelledError from it means the .env write has
+            # already finished (either succeeded or failed). Roll config back
+            # ONLY when the write actually failed; if it succeeded, the pair
+            # is consistent and rolling back would create a mismatch.
+            _env_write_task: asyncio.Task[None] = asyncio.ensure_future(
+                _write_env_off_loop(env_updates)
+            )
+            try:
+                await asyncio.shield(_env_write_task)
+            except asyncio.CancelledError:
+                # Drain to completion WITHOUT propagating, so we can inspect the
+                # outcome and roll back before re-raising (a second shield() would
+                # re-raise CancelledError before the rollback ran).
+                await asyncio.gather(_env_write_task, return_exceptions=True)
+                _env_exc = _env_write_task.exception() if not _env_write_task.cancelled() else None
+                if _env_exc is not None:
+                    # .env write failed — roll config back for consistency.
+                    if changes:
+                        if _cfg_snapshot is None:
+                            await asyncio.to_thread(path.unlink, missing_ok=True)
+                        else:
+                            await asyncio.to_thread(
+                                _atomic_json_write,
+                                path,
+                                json.loads(_cfg_snapshot),
+                            )
+                raise
+            except BaseException:
+                # Genuine .env write failure — roll the config metadata back so
+                # a failed write cannot leave the NEW metadata paired with the
+                # OLD credential on disk.
+                if changes:
+                    if _cfg_snapshot is None:
+                        await asyncio.to_thread(path.unlink, missing_ok=True)
+                    else:
+                        await asyncio.to_thread(
+                            _atomic_json_write,
+                            path,
+                            json.loads(_cfg_snapshot),
+                        )
+                raise
             for key, new_val in env_updates.items():
                 if new_val is None:
                     os.environ.pop(key, None)
@@ -5224,8 +5374,14 @@ async def api_webex_config_save(request: web.Request) -> web.Response:
             changes["bot_token"] = ""
             applied.append("bot_token_purged")
 
+        _cfg_snapshot: str | None = None
         if changes:
             webex_cfg.update(changes)
+            # Snapshot the on-disk config BEFORE writing the new metadata, so
+            # that if the subsequent .env credential write fails we can roll
+            # the metadata back.  Restoring config on .env failure keeps the
+            # pair consistent (old token + old meta).
+            _cfg_snapshot = await asyncio.to_thread(_read_text_or_none, path)
             _atomic_json_write(path, data)
 
         # Create the configured session folder now, on this user-initiated save,
@@ -5244,7 +5400,38 @@ async def api_webex_config_save(request: web.Request) -> web.Response:
         if env_updates:
             # Off-loop: on Windows the owner-only lockdown shells out to icacls,
             # which must not block the event loop.
-            await _write_env_off_loop(env_updates)
+            #
+            # Cancellation guard: see Teams save for the full rationale. Only
+            # roll config back when the .env write actually failed, not when
+            # cancellation arrived after the write already committed.
+            _env_write_task_wx: asyncio.Task[None] = asyncio.ensure_future(
+                _write_env_off_loop(env_updates)
+            )
+            try:
+                await asyncio.shield(_env_write_task_wx)
+            except asyncio.CancelledError:
+                await asyncio.gather(_env_write_task_wx, return_exceptions=True)
+                _env_exc_wx = (
+                    _env_write_task_wx.exception() if not _env_write_task_wx.cancelled() else None
+                )
+                if _env_exc_wx is not None:
+                    if changes:
+                        if _cfg_snapshot is None:
+                            await asyncio.to_thread(path.unlink, missing_ok=True)
+                        else:
+                            await asyncio.to_thread(
+                                _atomic_json_write, path, json.loads(_cfg_snapshot)
+                            )
+                raise
+            except BaseException:
+                # Roll config back so a failed .env write cannot leave the
+                # NEW metadata paired with the OLD token on disk.
+                if changes:
+                    if _cfg_snapshot is None:
+                        await asyncio.to_thread(path.unlink, missing_ok=True)
+                    else:
+                        await asyncio.to_thread(_atomic_json_write, path, json.loads(_cfg_snapshot))
+                raise
             # Keep the live process environment in sync (see the Slack save path).
             for key, new_val in env_updates.items():
                 if new_val is None:
@@ -5476,7 +5663,17 @@ async def api_imessage_config_save(request: web.Request) -> web.Response:
 
         if changes:
             imessage_cfg.update(changes)
-            _atomic_json_write(path, data)
+            # Shield + drain so a cancellation arriving mid-write cannot
+            # release the config lock while the worker thread is still
+            # replacing the file (interleaved-write race, Finding 3).
+            _cfg_write_task_im: asyncio.Task[None] = asyncio.ensure_future(
+                asyncio.to_thread(_atomic_json_write, path, data)
+            )
+            try:
+                await asyncio.shield(_cfg_write_task_im)
+            except asyncio.CancelledError:
+                await asyncio.gather(_cfg_write_task_im, return_exceptions=True)
+                raise
 
         # Create the configured session folder now, on this user-initiated save,
         # so the reconcile path never has to write the folder store. Best-effort:
@@ -5766,8 +5963,14 @@ async def _wecom_config_save_locked(request: web.Request) -> web.Response:
     # the status badge reports the truth after the next gateway restart.
 
     # ── Phase 2: commit. All validation passed, so writes are safe. ──
+    _cfg_snapshot: str | None = None
     if staged:
         wc_cfg.update(staged)
+        # Snapshot the on-disk config BEFORE writing the new metadata, so
+        # that if the subsequent .env credential write fails we can roll
+        # the metadata back.  Restoring config on .env failure keeps the
+        # pair consistent (old credentials + old meta).
+        _cfg_snapshot = await asyncio.to_thread(_read_text_or_none, path)
         # Off-loop: the atomic write (temp file + fsync + replace) must not
         # block the gateway event loop.
         await asyncio.to_thread(_atomic_json_write, path, data)
@@ -5788,7 +5991,36 @@ async def _wecom_config_save_locked(request: web.Request) -> web.Response:
     if env_updates:
         # Off-loop: on Windows the owner-only lockdown shells out to icacls,
         # which must not block the event loop.
-        await _write_env_off_loop(env_updates)
+        #
+        # Cancellation guard: see Teams save for the full rationale. Only
+        # roll config back when the .env write actually failed, not when
+        # cancellation arrived after the write already committed.
+        _env_write_task_wc: asyncio.Task[None] = asyncio.ensure_future(
+            _write_env_off_loop(env_updates)
+        )
+        try:
+            await asyncio.shield(_env_write_task_wc)
+        except asyncio.CancelledError:
+            await asyncio.gather(_env_write_task_wc, return_exceptions=True)
+            _env_exc_wc = (
+                _env_write_task_wc.exception() if not _env_write_task_wc.cancelled() else None
+            )
+            if _env_exc_wc is not None:
+                if staged:
+                    if _cfg_snapshot is None:
+                        await asyncio.to_thread(path.unlink, missing_ok=True)
+                    else:
+                        await asyncio.to_thread(_atomic_json_write, path, json.loads(_cfg_snapshot))
+            raise
+        except BaseException:
+            # Roll config back so a failed .env write cannot leave the NEW
+            # metadata paired with the OLD credentials on disk.
+            if staged:
+                if _cfg_snapshot is None:
+                    await asyncio.to_thread(path.unlink, missing_ok=True)
+                else:
+                    await asyncio.to_thread(_atomic_json_write, path, json.loads(_cfg_snapshot))
+            raise
         # Keep the live process environment in sync with the new .env state
         # (load_credentials() lets os.environ win over .env — see the Slack
         # save handler for the full rationale).

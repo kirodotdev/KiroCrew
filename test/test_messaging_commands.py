@@ -640,12 +640,11 @@ class TestCron:
     async def test_remove_all_reports_each_job_and_batches_one_write(self) -> None:
         svc = MagicMock()
         svc.list_jobs.return_value = [_job("j1"), _job("j2")]
-        # `remove_jobs` answers `(removed_ids, missing_ids)`; the reply unpacks it
-        # for the SEL batch audit, so a bare mock is not a stand-in for the service.
+        # The command forwards the whole batch to the service's mutation/audit seam.
         svc.remove_jobs = AsyncMock(return_value=(["j1", "j2"], []))
         out = await cron_command_reply("cron remove all", svc) or ""
         assert "Removed 2 cron job(s)" in out and "`j1`" in out and "`j2`" in out
-        assert svc.remove_jobs.await_args.args[0] == ["j1", "j2"]
+        svc.remove_jobs.assert_awaited_once_with(["j1", "j2"], actor="system", source="messaging")
 
     @pytest.mark.asyncio
     async def test_remove_all_redacts_each_job_name(self) -> None:
@@ -655,12 +654,12 @@ class TestCron:
         assert _AWS_KEY not in (await cron_remove_all_reply(svc) or "")
 
     @pytest.mark.asyncio
-    async def test_every_channel_gets_the_delete_audits_not_only_slack(self) -> None:
-        """The audits moved WITH the command, which is the point of the hoist.
+    async def test_every_channel_forwards_delete_attribution_not_only_slack(self) -> None:
+        """Every shared command caller reaches the service-owned audit seam.
 
-        They arrived on Slack's own copy of `cron remove`; hoisting the command
-        without them would have been a silent revert for Slack and would have left
-        every other channel deleting cron jobs with no trail at all.
+        Actor and source arrived on Slack's old copy of `cron remove`; hoisting the
+        command must retain them for every channel without a duplicate command-level
+        audit.
         """
         svc = MagicMock()
         svc.list_jobs.return_value = [_job("j1")]
@@ -669,15 +668,11 @@ class TestCron:
 
         with patch("kiro_crew.messaging.commands.sel") as mock_sel:
             await cron_command_reply("cron remove all", svc, source="telegram", caller="7")
-            batch = mock_sel.return_value.log_api_access.call_args.kwargs
             await cron_command_reply("cron remove j1", svc, source="telegram", caller="7")
-            single = mock_sel.return_value.log_api_access.call_args.kwargs
 
-        assert batch["operation"] == "cron.batch_delete"
-        assert single["operation"] == "cron.remove"
-        for event in (batch, single):
-            assert event["source"] == "telegram", "the surface must be the channel, not slack"
-            assert event["caller"] == "7", "and the caller the person who typed it"
+        svc.remove_jobs.assert_awaited_once_with(["j1"], actor="7", source="telegram")
+        svc.remove_job_async.assert_awaited_once_with("j1", actor="7", source="telegram")
+        mock_sel.return_value.log_api_access.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_a_caller_that_names_nobody_still_leaves_a_record(self) -> None:
@@ -691,7 +686,8 @@ class TestCron:
         with patch("kiro_crew.messaging.commands.sel") as mock_sel:
             await cron_command_reply("cron remove all", svc, source="webex")
 
-        assert mock_sel.return_value.log_api_access.call_args.kwargs["caller"] == "webex"
+        svc.remove_jobs.assert_awaited_once_with(["j1"], actor="webex", source="webex")
+        mock_sel.return_value.log_api_access.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_remove_all_on_an_empty_roster_touches_nothing(self) -> None:

@@ -1,21 +1,30 @@
-"""Kiro Crew Auto Triage Pipeline — a full-page pipeline view of Kiro Crew's
-own auto-triage crews.
+"""Kiro Crew Auto Triage Pipeline — a full-page view of Kiro Crew's own
+auto-triage pipeline.
 
-One horizontal lane per crew work item across the phase enum: which phase each
-item is in right now, where items are piling up, and which have stalled. This is
-the first tenant of the "a repo plugs in its own pipeline" idea — Issue Radar is
-for ANY repo, while this pipeline is OURS, one specific automation.
+The pipeline itself is a chain of scheduled jobs that already exist and already
+own their state: a scanner labels new issues, a triage pass classifies them, a
+dispatcher opens one chat session per accepted item, that session does the work
+and opens the pull request, and a cleanup pass reaps what died. This app does not
+reimplement any of that. It READS the trail those jobs leave and presents it as
+three nested levels:
 
-Manifest-only, like ``projects``, ``agent_worlds`` and ``channels``: this app
-ships NO backend routes and re-exports NO ``register_routes``. It reads its data
-through Issue Radar's existing, already-green crew-fabric seam
-(``GET /api/apps/issue-radar/crew/fabric``) — the repo-agnostic data half
-(``phase`` on the ledger event line, ``fold_fabric``, the route) stays in
-``issue_radar`` on purpose. The package exists only so
-``discover_builtin_apps()`` finds the ``app.json`` next to it, the same way it
-does for every other manifest-only builtin.
+* the pipeline and how much each step is moving,
+* the items sitting inside one step, each carrying its own trail,
+* the agent sessions that worked one item, and what each cost.
 
-Because there is no ``register_routes`` here, the app is deliberately NOT listed
-in ``kiro_crew.apps.builtins.BUILTIN_NAMES`` — that list is only for builtins
-whose Python package registers routes or services at gateway startup.
+The app ships a backend, but a strictly read-only one: three GET routes and no
+write path of any kind. That boundary is deliberate. The scheduled jobs hold
+hard-won operational semantics -- an instance-aware claim protocol, heartbeat
+liveness, terminal-event backfill for sessions that exit without reporting,
+resume bounds, dispatch budget and jitter -- most of which exist because
+something failed in production once. Re-deriving them inside a view would mean
+re-earning each lesson, and would give a display surface the power to act on the
+repository. It has none.
+
+Listed in ``kiro_crew.apps.builtins.BUILTIN_NAMES`` because
+``backend/routes.py`` re-exported here registers routes at gateway startup.
 """
+
+from .backend.routes import register_routes
+
+__all__ = ["register_routes"]

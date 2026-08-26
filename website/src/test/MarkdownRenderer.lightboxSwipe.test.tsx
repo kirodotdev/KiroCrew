@@ -135,12 +135,145 @@ describe('Lightbox swipe-to-dismiss', () => {
     expect(container.firstChild).toBeNull()
   })
 
-  it('keeps the browser pinch by declaring pinch-zoom rather than no touch action', () => {
+  it('owns every gesture on the overlay rather than leaving one to the browser', () => {
     const { container } = render(<Lightbox />)
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const { overlay } = surfaces(container)
-    expect(overlay.className).toContain('touch-pinch-zoom')
-    expect(overlay.className).not.toContain('touch-none')
+    // Page zoom is off across the touch shell, so `pinch-zoom` here would ask for
+    // a behaviour the root `touch-action` has already withheld — and get a dead
+    // gesture. The viewer scales its own transform instead (see the pinch block).
+    expect(overlay.className).toContain('touch-none')
+    expect(overlay.className).not.toContain('touch-pinch-zoom')
+  })
+
+  // ── pinch-to-zoom: the viewer owns it, because the shell has no page zoom ──
+
+  it('scales the image by the ratio the fingers spread', () => {
+    const { container } = render(<Lightbox />)
+    act(() => open([{ src: 'a.png', alt: 'a' }]))
+    const { overlay } = surfaces(container)
+    const img = () => container.querySelector('img') as HTMLImageElement
+    expect(img().getAttribute('style')).toContain('scale(1)')
+    // Two fingers 100px apart, spread to 250px → 2.5x.
+    act(() => { fireEvent.pointerDown(overlay, touch(100, 100, 1)) })
+    act(() => { fireEvent.pointerDown(overlay, touch(200, 100, 2)) })
+    act(() => { fireEvent.pointerMove(overlay, touch(325, 100, 2)) })
+    expect(img().getAttribute('style')).toContain('scale(2.25)')
+    // Pinching back in returns to fit and is clamped there, not below.
+    act(() => { fireEvent.pointerMove(overlay, touch(120, 100, 2)) })
+    expect(img().getAttribute('style')).toContain('scale(1)')
+    act(() => { fireEvent.pointerUp(overlay, touch(120, 100, 2)) })
+    act(() => { fireEvent.pointerUp(overlay, touch(100, 100, 1)) })
+  })
+
+  it('is bounded by the same max the toolbar is', () => {
+    const { container } = render(<Lightbox />)
+    act(() => open([{ src: 'a.png', alt: 'a' }]))
+    const { overlay } = surfaces(container)
+    act(() => { fireEvent.pointerDown(overlay, touch(100, 100, 1)) })
+    act(() => { fireEvent.pointerDown(overlay, touch(110, 100, 2)) })
+    // 10px → 900px is 90x; LIGHTBOX_ZOOM_MAX is 5.
+    act(() => { fireEvent.pointerMove(overlay, touch(1000, 100, 2)) })
+    expect((container.querySelector('img') as HTMLImageElement).getAttribute('style')).toContain('scale(5)')
+  })
+
+  it('keeps the pinch alive when a finger lands while the image is already zoomed', () => {
+    const { container } = render(<Lightbox />)
+    act(() => open([{ src: 'a.png', alt: 'a' }]))
+    const { overlay } = surfaces(container)
+    // Zoom past fit first: at this point the <img> pan owns one-finger drags, and
+    // recording the contact only after that bail-out would lose the second finger.
+    act(() => { fireEvent.keyDown(window, { key: '+' }) })
+    act(() => { fireEvent.pointerDown(overlay, touch(100, 100, 1)) })
+    act(() => { fireEvent.pointerDown(overlay, touch(200, 100, 2)) })
+    // 100px → 200px doubles the zoom the gesture STARTED from (1.5), not from fit.
+    act(() => { fireEvent.pointerMove(overlay, touch(300, 100, 2)) })
+    expect((container.querySelector('img') as HTMLImageElement).getAttribute('style')).toContain('scale(3)')
+  })
+
+  it('does not let the click after a pinch close the viewer', () => {
+    const { container } = render(<Lightbox />)
+    act(() => open([{ src: 'a.png', alt: 'a' }]))
+    const { overlay } = surfaces(container)
+    act(() => { fireEvent.pointerDown(overlay, touch(100, 100, 1)) })
+    act(() => { fireEvent.pointerDown(overlay, touch(200, 100, 2)) })
+    act(() => { fireEvent.pointerMove(overlay, touch(400, 100, 2)) })
+    act(() => { fireEvent.pointerUp(overlay, touch(400, 100, 2)) })
+    act(() => { fireEvent.pointerUp(overlay, touch(100, 100, 1)) })
+    act(() => { fireEvent.click(overlay) })
+    expect(container.querySelector('img')).not.toBeNull()
+  })
+
+  it('ignores a two-finger mouse-typed sequence, so no desktop path is armed', () => {
+    const { container } = render(<Lightbox />)
+    act(() => open([{ src: 'a.png', alt: 'a' }]))
+    const { overlay } = surfaces(container)
+    const mouse = (y: number, id: number) => ({ pointerType: 'mouse', pointerId: id, clientX: 100, clientY: y })
+    act(() => { fireEvent.pointerDown(overlay, mouse(100, 1)) })
+    act(() => { fireEvent.pointerDown(overlay, mouse(200, 2)) })
+    act(() => { fireEvent.pointerMove(overlay, mouse(500, 2)) })
+    expect((container.querySelector('img') as HTMLImageElement).getAttribute('style')).toContain('scale(1)')
+  })
+
+  it('drops the contacts when the viewer closes mid-pinch', () => {    const { container } = render(<Lightbox />)
+    act(() => open([{ src: 'a.png', alt: 'a' }]))
+    const { overlay } = surfaces(container)
+    act(() => { fireEvent.pointerDown(overlay, touch(100, 100, 1)) })
+    act(() => { fireEvent.pointerDown(overlay, touch(200, 100, 2)) })
+    act(() => { fireEvent.pointerMove(overlay, touch(400, 100, 2)) })
+    act(() => { fireEvent.keyDown(window, { key: 'Escape' }) })
+    expect(container.firstChild).toBeNull()
+    // Reopened, a single finger is a dismiss-drag again — not the survivor of a
+    // pair whose partner is still recorded from the previous open.
+    act(() => open([{ src: 'a.png', alt: 'a' }]))
+    const next = surfaces(container)
+    act(() => { fireEvent.pointerDown(next.overlay, touch(100, 100, 1)) })
+    act(() => { fireEvent.pointerMove(next.overlay, touch(160, 100, 1)) })
+    expect(next.inner.getAttribute('style')).toContain('translateY(60.0px)')
+  })
+
+  // The pinch pair is DERIVED from the live contacts rather than stored as two
+  // pointer ids. These two specs are what that invariant buys: both describe a
+  // contact set changing in a way a `size < 2` test cannot see.
+
+  it('keeps scaling when a third finger joins and an original one lifts', () => {
+    const { container } = render(<Lightbox />)
+    act(() => open([{ src: 'a.png', alt: 'a' }]))
+    const { overlay } = surfaces(container)
+    const scale = () => (container.querySelector('img') as HTMLImageElement).getAttribute('style')
+    act(() => { fireEvent.pointerDown(overlay, touch(100, 100, 1)) })
+    act(() => { fireEvent.pointerDown(overlay, touch(200, 100, 2)) })
+    act(() => { fireEvent.pointerMove(overlay, touch(300, 100, 2)) })
+    expect(scale()).toContain('scale(2)')
+    // A third finger lands, then finger 1 — a member of the measured pair — lifts.
+    // Two contacts remain, so nothing resets, and an id-based pinch would still be
+    // pointing at the lifted pointer: every later move would read `undefined` for
+    // it and silently stop scaling until the user lifted everything.
+    act(() => { fireEvent.pointerDown(overlay, touch(400, 100, 3)) })
+    act(() => { fireEvent.pointerUp(overlay, touch(300, 100, 1)) })
+    // The first move after the pair changes only RE-SEATS the baseline (measuring
+    // from the current zoom, so nothing jumps); the one after it must scale.
+    act(() => { fireEvent.pointerMove(overlay, touch(700, 100, 3)) })
+    act(() => { fireEvent.pointerMove(overlay, touch(1100, 100, 3)) })
+    expect(scale()).toContain('scale(4)')
+    expect(container.querySelector('img')).not.toBeNull()
+  })
+
+  it('re-seats the baseline on a pair change instead of jumping the zoom', () => {
+    const { container } = render(<Lightbox />)
+    act(() => open([{ src: 'a.png', alt: 'a' }]))
+    const { overlay } = surfaces(container)
+    const scale = () => (container.querySelector('img') as HTMLImageElement).getAttribute('style')
+    act(() => { fireEvent.pointerDown(overlay, touch(100, 100, 1)) })
+    act(() => { fireEvent.pointerDown(overlay, touch(200, 100, 2)) })
+    act(() => { fireEvent.pointerMove(overlay, touch(300, 100, 2)) })
+    expect(scale()).toContain('scale(2)')
+    // A third finger at the SAME separation as the live pair. Re-seating measures
+    // the new baseline from the current zoom, so the very next frame must not
+    // recompute the scale from the old pair's distance — the zoom holds at 2.
+    act(() => { fireEvent.pointerDown(overlay, touch(500, 100, 3)) })
+    act(() => { fireEvent.pointerMove(overlay, touch(500, 100, 3)) })
+    expect(scale()).toContain('scale(2)')
   })
 
   // ── the gesture must not take anything away ───────────────────────────────

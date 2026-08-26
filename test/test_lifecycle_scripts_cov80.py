@@ -23,19 +23,25 @@ class _Process:
 
     def __init__(self, *, output: bytes = b"", returncode: int = 0, hang: bool = False) -> None:
         self.pid = 4242
-        self.returncode = returncode
+        # A hung child has no exit status until something kills it.
+        self.returncode: int | None = None if hang else returncode
         self._output = output
         self._hang = hang
         self.killed = False
         self.waited = False
+        self.communicate_calls = 0
 
     async def communicate(self):
-        if self._hang:
+        self.communicate_calls += 1
+        if self._hang and not self.killed:
+            # Still hanging: both the site's own wait and the TERM grace
+            # window time out until the SIGKILL escalation lands.
             raise asyncio.TimeoutError
         return self._output, None
 
     def kill(self) -> None:
         self.killed = True
+        self.returncode = -9
 
     async def wait(self) -> int:
         self.waited = True
@@ -138,11 +144,47 @@ async def test_timeout_kills_the_process_tree(admit, monkeypatch, tmp_path) -> N
         killed.append((pid, sig))
 
     monkeypatch.setattr(platform_compat, "kill_process_tree_async", _kill_tree)
+    monkeypatch.setattr(lifecycle_scripts, "_TERM_GRACE_SECS", 0.01)
     result = await lifecycle_scripts.run_lifecycle_script("demo-app", "sleep 99", timeout=7)
     assert result == {"output": "script timed out after 7s", "failed": True}
-    assert killed == [(proc.pid, platform_compat.SIGTERM)]
-    assert proc.waited is True
+    # Graceful SIGTERM first with a bounded grace window (a script's cleanup
+    # trap can run), then the shared helper escalates the whole tree to
+    # SIGKILL when the child ignored the TERM.
+    assert killed == [(proc.pid, platform_compat.SIGTERM), (proc.pid, platform_compat.SIGKILL)]
+    # The pid-scoped kill is the helper's second barrel after the tree signal.
+    assert proc.killed is True
+    # The critical pin: every post-kill wait drains pipes via communicate();
+    # a bare wait() on a killed child blocked writing into a full pipe would
+    # hang the caller forever (#5989). Calls: the site's own wait, the TERM
+    # grace, and the escalation reap.
+    assert proc.communicate_calls == 3
+    assert proc.waited is False
+
+
+@pytest.mark.asyncio
+async def test_timeout_grace_lets_a_term_trap_finish_without_sigkill(
+    admit, monkeypatch, tmp_path
+) -> None:
+    """A script whose TERM trap exits within the grace window is never
+    SIGKILLed — the graceful path stays graceful."""
+    (tmp_path / "demo-app").mkdir()
+    proc = _Process(hang=True)
+    admit(proc)
+    killed: list[tuple[int, Any]] = []
+
+    async def _kill_tree(pid, sig):
+        killed.append((pid, sig))
+        # The script's TERM trap runs and the child exits inside the grace
+        # window: the next communicate() returns instead of hanging.
+        proc._hang = False
+        proc.returncode = 0
+
+    monkeypatch.setattr(platform_compat, "kill_process_tree_async", _kill_tree)
+    result = await lifecycle_scripts.run_lifecycle_script("demo-app", "sleep 99", timeout=7)
+    assert result == {"output": "script timed out after 7s", "failed": True}
+    assert killed == [(proc.pid, platform_compat.SIGTERM)]  # no SIGKILL escalation
     assert proc.killed is False
+    assert proc.waited is False
 
 
 @pytest.mark.asyncio

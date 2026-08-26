@@ -21,5 +21,18 @@
         "replaces": "quick-search"
       }
     ]
-  }
+  },
+  "useCases": [
+    "Jump to apps, settings, sessions that need attention, or a new agent request without leaving the keyboard."
+  ],
+  "configuration": [
+    "It is enabled by default: press Cmd+K or Ctrl+K anywhere, type a command, and use the Sessions scope for recent or matching conversations."
+  ],
+  "screenshots": [
+    "/app-assets/command-bar/screenshot-main.png"
+  ],
+  "heroImage": "/app-assets/command-bar/hero-light.svg",
+  "heroImageDark": "/app-assets/command-bar/hero-dark.svg",
+  "heroImageDetail": "/app-assets/command-bar/hero-detail-light.svg",
+  "heroImageDetailDark": "/app-assets/command-bar/hero-detail-dark.svg"
 }

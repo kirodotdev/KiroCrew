@@ -893,29 +893,26 @@ describe('cost discipline', () => {
 })
 
 describe('theme tokens', () => {
-  it('uses no phantom color class', () => {
+  it('paints its two pinned bars with real surface tokens', () => {
     // A Tailwind utility only exists if its key is MAPPED in tailwind.config.js.
     // `--panel` / `--panel-strong` are defined in index.css but never mapped, so
     // `bg-panel` and `bg-panel-strong` compile to nothing and the element paints
     // the colour behind it — which is invisible in code review and, on a dark
     // theme, nearly invisible in a screenshot. The panel's two pinned bars are
     // the surfaces that depend on a real fill to separate them from the list
-    // they sit outside, so they are what this pins. Real keys: `card`,
-    // `bg-elevated`. opsMissionControl.test.ts guards the same mistake for the
-    // ops panels; its file list cannot cover files added later, so each surface
-    // carries its own assertion.
+    // they sit outside, so they are what this pins.
+    //
+    // The "not phantom" half of this test is gone: the repo-wide
+    // `phantom-classes` gate asks Tailwind whether a class is emitted, for every
+    // file, so it covers this one without a name list — and it caught what the
+    // list here missed, `text-warn-strong` on line 550 of the very file this
+    // guards. What remains is the POSITIVE assertion, which the gate cannot
+    // make: a phantom fill can also be "fixed" by deleting the class outright,
+    // and these two bars need a fill to read as separate surfaces at all.
     const src = readFileSync(
       resolve(__dirname, '../pages/chat/SessionSummaryTab.tsx'),
       'utf-8',
     )
-    expect(src).not.toMatch(/\bbg-panel\b/)
-    expect(src).not.toMatch(/\bbg-panel-strong\b/)
-    expect(src).not.toMatch(/\bborder-line\b/)
-    expect(src).not.toMatch(/\bborder-subtle\b/)
-    expect(src).not.toMatch(/\btext-success\b/)
-    expect(src).not.toMatch(/\btext-warning\b/)
-    // The replacements must be present, or this passes by the classes simply
-    // having been deleted.
     expect(src).toMatch(/\bbg-card\b/)
     expect(src).toMatch(/\bbg-bg-elevated\b/)
   })

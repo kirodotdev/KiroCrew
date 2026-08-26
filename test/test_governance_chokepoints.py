@@ -1203,6 +1203,51 @@ class TestFilesystemEgressAtGate:
         # Empty kind + a shell command → NOT filesystem/egress (commands scope).
         assert classify_tool_args("", {"command": "rm -rf /"}) == ()
 
+    @pytest.mark.parametrize("key", ["path", "file_path", "filePath"])
+    def test_every_path_alias_is_classified(self, key):
+        from kiro_crew.platform.governance import classify_tool_args
+
+        assert classify_tool_args("edit", {key: "/srv/secret"}) == (
+            ("filesystem.write", "/srv/secret"),
+        )
+        assert classify_tool_args("read", {key: "/srv/secret"}) == (
+            ("filesystem.read", "/srv/secret"),
+        )
+
+    def test_conflicting_path_aliases_are_all_classified(self):
+        """An innocent first alias must not mask a sensitive later alias."""
+        from kiro_crew.platform.governance import classify_tool_args
+
+        assert classify_tool_args(
+            "edit",
+            {
+                "path": "/tmp/innocent",
+                "file_path": {"not": "a path"},
+                "filePath": "/home/user/.ssh/id_rsa",
+            },
+        ) == (
+            ("filesystem.write", "/tmp/innocent"),
+            ("filesystem.write", "/home/user/.ssh/id_rsa"),
+        )
+
+    def test_conflicting_path_alias_cannot_bypass_gate(self):
+        _install(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "filesystem": {"write": {"mode": "allow", "allow": ["/tmp/**"]}},
+            }
+        )
+        from kiro_crew.hooks import TOOL_DENY, HookManager
+
+        decision = HookManager().on_tool_call(
+            "Editing notes",
+            session_key="cli_chat",
+            tool_kind="edit",
+            raw_params={"path": "/tmp/allowed.txt", "filePath": "/srv/outside.txt"},
+        )
+        assert decision.action == TOOL_DENY
+
     def test_empty_kind_write_still_denied_at_gate(self):
         # End-to-end: an edit with tool_kind="" (backend omitted kind) to a
         # path outside the write allowlist must still be DENIED at the gate.
@@ -1324,6 +1369,10 @@ class TestPermissionEventCarriesRawParams:
         client._tool_call_mcp_server = {}
         client._tool_call_tool_name = {}
         client._permission_options = {}
+        # Deliberately omit the newer redaction-provenance cache: minimal and
+        # legacy constructors must remain compatible without weakening the
+        # permission event's authorization provenance.
+        assert not hasattr(client, "_tool_call_input_redacted")
         # Simulate the ToolCall notification caching structured params...
         client._tool_call_params["tc-1"] = {"path": "/etc/passwd", "command": None}
         # ...then the request_permission message referencing the same toolCallId.
@@ -1342,6 +1391,7 @@ class TestPermissionEventCarriesRawParams:
         assert evt.kind == EVENT_PERMISSION_REQUEST
         assert evt.raw_tool_params == {"path": "/etc/passwd", "command": None}
         assert evt.tool_kind == "edit"
+        assert evt.tool_input_redacted is False  # no cached input to distrust
 
 
 def tmp_profile_dir(monkeypatch):

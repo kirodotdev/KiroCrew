@@ -58,6 +58,8 @@ import AppDetailPage from '../pages/AppDetailPage'
 const NAME = 'ledger-lens'
 const DENIED = 'blocked by execution policy: third-party app execution is disabled'
 const TRUST_MODAL = /to run its own code\?/i
+const REPO_ALIAS = 'https://example.test/display/ledger-lens'
+const TRUST_REPOSITORY = 'https://clone.example.test/Owner/ledger-lens'
 
 type Dict = Record<string, unknown>
 
@@ -72,6 +74,7 @@ function installedApp(overrides: Dict = {}): Dict {
     resources: 'gateway',
     lifecycle: 'gateway',
     installedAt: '2026-07-01T00:00:00Z',
+    trustRepository: TRUST_REPOSITORY,
     manifest: {
       displayName: 'Ledger Lens',
       description: 'Reads your books and explains them.',
@@ -89,6 +92,8 @@ function registryRow(overrides: Dict = {}): Dict {
     description: 'Reads your books and explains them.',
     version: '1.0.0',
     author: 'zezhexu',
+    repo: REPO_ALIAS,
+    trustRepository: TRUST_REPOSITORY,
     installed: false,
     ...overrides,
   }
@@ -509,7 +514,7 @@ describe('AppDetailPage — uncovered surfaces', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /trust this app and enable/i }))
 
-    await waitFor(() => expect(trustApp).toHaveBeenCalledWith(NAME))
+    await waitFor(() => expect(trustApp).toHaveBeenCalledWith(NAME, TRUST_REPOSITORY))
     await waitFor(() => expect(screen.queryByText(TRUST_MODAL)).not.toBeInTheDocument())
     expect(installFromRegistryStream).toHaveBeenCalledTimes(2)
   })

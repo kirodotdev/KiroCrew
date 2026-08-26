@@ -198,17 +198,6 @@ def _build_stream_chunk(msg: dict) -> str:
     )
 
 
-def _extract_bash_command(tool_input: str) -> str:
-    """Extract the command string from execute_bash tool_input (JSON or raw)."""
-    try:
-        data = json.loads(tool_input)
-        if isinstance(data, dict):
-            return data.get("command", "")
-    except (json.JSONDecodeError, TypeError):
-        pass
-    return tool_input
-
-
 # Deprecated -1m model aliases → base model (Anthropic 1M GA, April 2026)
 _DEPRECATED_MODEL_MAP = {
     "claude-opus-4.6-1m": "claude-opus-4.6",

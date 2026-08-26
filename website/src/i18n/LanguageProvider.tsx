@@ -295,6 +295,14 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
   )
 
   return (
+    // The value object is DELIBERATELY rebuilt every render — do not wrap it in
+    // useMemo([language, resolved, …]). The post-swap repaint of memoized
+    // useLanguage() consumers rides on this identity changing when `setActive`
+    // re-renders the provider AFTER the async catalog swap (none of the would-be
+    // deps change on that render, so memoizing would freeze the identity and
+    // leave memo() consumers rendering the previous catalog).
+    // MemoI18nSubscriptionRatchet.test.ts's format branch counts a useLanguage()
+    // read as a valid subscription on exactly this guarantee.
     <LanguageContext.Provider value={{ language, resolved, detected, setLanguage, syncFailed }}>
       {refreshed}
     </LanguageContext.Provider>

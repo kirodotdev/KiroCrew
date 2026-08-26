@@ -547,7 +547,7 @@ export default function SessionSummaryTab({ slot }: { slot: string }) {
           </>
         )}
         {generateError && (
-          <div className="text-[11px] text-warn-strong max-w-[280px] text-center">
+          <div className="text-[11px] text-warn max-w-[280px] text-center">
             {generateError}
           </div>
         )}

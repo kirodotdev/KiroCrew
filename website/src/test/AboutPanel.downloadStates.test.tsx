@@ -160,21 +160,33 @@ describe('AboutPanel download states', () => {
   it('keeps the install button terminal after dispatch (no re-arm before the quit)', async () => {
     // `update:install` resolves as soon as the install is DISPATCHED; on macOS the
     // platform installer then works for several more seconds before the app quits.
-    // The button must NOT become clickable again in that window -- a clickable
-    // "Restart & Update" followed by an unexplained quit reads as a crash.
+    // The button must NOT become clickable again in that window -- an
+    // install-and-restart action followed by an unexplained quit reads as a crash.
     const { setState } = mountWithStates()
     setState({ state: 'downloaded', version: '0.1.3' })
 
-    const btn = await screen.findByRole('button', { name: /restart & update/i })
+    const btn = await screen.findByRole('button', { name: /install update & restart app/i })
     expect(btn.hasAttribute('disabled')).toBe(false)
     fireEvent.click(btn)
 
     const restarting = await screen.findByRole('button', { name: /restarting/i })
     // The card's last words before the gateway goes down must explain the
-    // coming silence -- the dashboard disconnects for the whole handoff.
-    expect((await screen.findByTestId('update-card')).textContent).toMatch(/go quiet/i)
+    // potentially long handoff and the automatic return.
+    const cardText = (await screen.findByTestId('update-card')).textContent
+    expect(cardText).toMatch(/several minutes/i)
+    expect(cardText).toMatch(/reopen automatically/i)
+    expect(cardText).not.toMatch(/installation progress/i)
     expect(restarting.hasAttribute('disabled')).toBe(true)
-    expect(screen.queryByRole('button', { name: /restart & update/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /install update & restart app/i })).toBeNull()
+  })
+
+  it('warns before dispatch when Windows will take over in a separate installer window', async () => {
+    const { setState } = mountWithStates()
+    setState({ state: 'downloaded', version: '0.1.3', installHandoff: 'windows-installer' })
+
+    const cardText = (await screen.findByTestId('update-card')).textContent
+    expect(cardText).toMatch(/Windows installation window/i)
+    expect(cardText).toMatch(/progress/i)
   })
 
   // When an update downloads but never applies, the card just re-offers the

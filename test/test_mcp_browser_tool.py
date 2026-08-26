@@ -22,7 +22,7 @@ from kiro_crew.mcp_tools import browser as mod
 
 @pytest.fixture(autouse=True)
 def _browsing_on(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Presence of the CLI is the browse consent gate; force it on so the tool
+    # Presence of the CLI is the browse availability gate; force it on so the tool
     # runs its body instead of the "not set up" early return.
     monkeypatch.setattr(mod, "_browsing_available", lambda: True)
     # The header encodability guard is orthogonal to what these tests exercise.
@@ -63,7 +63,9 @@ def test_resolved_session_posts_namespaced_header_and_bare_bus_key(
 ) -> None:
     monkeypatch.setattr(mod.mcp_core, "_resolve_session_key", lambda: "dashboard:chat-7-1786752973")
     calls: list[tuple[str, str, dict, str]] = []
-    monkeypatch.setattr(mod, "_post_command", _capture_post(calls, 200, {"ok": True, "result": "ok"}))
+    monkeypatch.setattr(
+        mod, "_post_command", _capture_post(calls, 200, {"ok": True, "result": "ok"})
+    )
 
     out = mod.browser("browser", {"op": "navigate", "args": {"url": "https://example.com"}})
 
@@ -82,7 +84,9 @@ def test_bus_key_left_as_is_when_not_namespaced(
 ) -> None:
     monkeypatch.setattr(mod.mcp_core, "_resolve_session_key", lambda: "chat-9-1786000000")
     calls: list[tuple[str, str, dict, str]] = []
-    monkeypatch.setattr(mod, "_post_command", _capture_post(calls, 200, {"ok": True, "result": "ok"}))
+    monkeypatch.setattr(
+        mod, "_post_command", _capture_post(calls, 200, {"ok": True, "result": "ok"})
+    )
 
     mod.browser("browser", {"op": "snapshot"})
 
@@ -94,9 +98,7 @@ def test_bus_key_left_as_is_when_not_namespaced(
 
 def test_no_native_panel_503_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(mod.mcp_core, "_resolve_session_key", lambda: "dashboard:chat-7-1786752973")
-    monkeypatch.setattr(
-        mod, "_post_command", _capture_post([], 503, {"code": "no_native_panel"})
-    )
+    monkeypatch.setattr(mod, "_post_command", _capture_post([], 503, {"code": "no_native_panel"}))
 
     out = mod.browser("browser", {"op": "navigate", "args": {"url": "https://example.com"}})
     assert out == mod._FALLBACK_TEXT
@@ -106,12 +108,12 @@ def test_no_native_panel_503_falls_back(monkeypatch: pytest.MonkeyPatch) -> None
     "url",
     [
         "http://127.0.0.1:5476/api/spawn",  # loopback control plane
-        "http://localhost:8080/",           # loopback name
+        "http://localhost:8080/",  # loopback name
         "http://169.254.169.254/latest/meta-data/",  # cloud metadata (IMDS)
-        "http://10.0.0.5/",                 # RFC1918 private
-        "http://192.168.1.1/",              # RFC1918 private
-        "file:///etc/passwd",               # non-http scheme
-        "http://[::1]/",                    # IPv6 loopback
+        "http://10.0.0.5/",  # RFC1918 private
+        "http://192.168.1.1/",  # RFC1918 private
+        "file:///etc/passwd",  # non-http scheme
+        "http://[::1]/",  # IPv6 loopback
     ],
 )
 def test_navigate_to_non_public_target_is_refused_without_posting(
@@ -153,7 +155,9 @@ def test_governance_deny_refuses_without_fallback_or_posting(
     # (that would let browsing continue) and NOT POST to the bus.
     monkeypatch.setattr(mod.mcp_core, "_resolve_session_key", lambda: "dashboard:chat-7-1")
     monkeypatch.setattr(
-        mod.mcp_core, "_vet_browse_governance", lambda s: "web browsing is disabled by governance policy"
+        mod.mcp_core,
+        "_vet_browse_governance",
+        lambda s: "web browsing is disabled by governance policy",
     )
 
     def _must_not_post(*_a: Any, **_k: Any) -> tuple[int, dict]:
@@ -166,7 +170,9 @@ def test_governance_deny_refuses_without_fallback_or_posting(
     assert out != mod._FALLBACK_TEXT  # not the playwright downgrade
 
 
-def test_builtin_off_falls_back_to_playwright_without_posting(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_builtin_off_falls_back_to_playwright_without_posting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # With the built-in-browser preference OFF, browsing is still allowed (unlike
     # a governance deny) -- the tool returns the dedicated built-in-off message
     # (naming the setting, not a missing panel) and never touches the native panel.
@@ -190,7 +196,9 @@ def test_governance_deny_wins_over_builtin_off(monkeypatch: pytest.MonkeyPatch) 
     # keep browsing via playwright -- exactly the control the ordering protects.
     monkeypatch.setattr(mod.mcp_core, "_resolve_session_key", lambda: "dashboard:chat-7-1")
     monkeypatch.setattr(
-        mod.mcp_core, "_vet_browse_governance", lambda s: "web browsing is disabled by governance policy"
+        mod.mcp_core,
+        "_vet_browse_governance",
+        lambda s: "web browsing is disabled by governance policy",
     )
     monkeypatch.setattr(mod, "_use_builtin_browser", lambda: False)
 
@@ -256,14 +264,18 @@ def test_browsing_not_set_up_degrades_at_call_time(monkeypatch: pytest.MonkeyPat
 
 def test_op_ran_but_failed_surfaces_the_error(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(mod.mcp_core, "_resolve_session_key", lambda: "dashboard:chat-7-1")
-    monkeypatch.setattr(mod, "_post_command", _capture_post([], 200, {"ok": False, "error": "boom"}))
+    monkeypatch.setattr(
+        mod, "_post_command", _capture_post([], 200, {"ok": False, "error": "boom"})
+    )
     out = mod.browser("browser", {"op": "snapshot"})
     assert out == "Error: boom"
 
 
 def test_hard_non_200_is_surfaced_not_masked_as_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(mod.mcp_core, "_resolve_session_key", lambda: "dashboard:chat-7-1")
-    monkeypatch.setattr(mod, "_post_command", _capture_post([], 429, {"code": "queue_full", "error": "queue-full"}))
+    monkeypatch.setattr(
+        mod, "_post_command", _capture_post([], 429, {"code": "queue_full", "error": "queue-full"})
+    )
     out = mod.browser("browser", {"op": "snapshot"})
     assert out.startswith("Error: browser command failed (HTTP 429, queue_full)")
 
@@ -296,7 +308,9 @@ def test_post_command_parses_success_and_transport_errors(monkeypatch: pytest.Mo
 
     # HTTPError -> (code, parsed-or-empty)
     def _raise_http(req, timeout):
-        raise mod.urllib.error.HTTPError("u", 503, "x", None, io.BytesIO(b'{"code":"no_native_panel"}'))
+        raise mod.urllib.error.HTTPError(
+            "u", 503, "x", None, io.BytesIO(b'{"code":"no_native_panel"}')
+        )
 
     monkeypatch.setattr(mod.mcp_core, "_api_urlopen", _raise_http)
     status, payload = mod._post_command("chat-1", "snapshot", {}, "dashboard:chat-1", 15000)

@@ -12,6 +12,7 @@ about both isolation layers being inactive (Fix #3 of the insecure-defaults audi
 from __future__ import annotations
 
 import logging
+import sys
 
 import kiro_crew.sandbox as sb
 
@@ -101,6 +102,28 @@ def test_mode_off_emits_security_warning(monkeypatch, caplog):
     assert warnings, "expected a SECURITY warning when mode=off with no delegation"
     msg = warnings[0].getMessage()
     assert "sandbox='off'" in msg or "both" in msg.lower() or "no OS-level" in msg.lower()
+
+
+def test_mode_off_diagnostic_never_logs_argv_values(monkeypatch, caplog):
+    """The generic sandbox logger emits only a fixed command class.
+
+    CodeQL models list elements as interchangeable, and the runtime contract is
+    stronger anyway: neither an executable path nor any later argument belongs
+    in a security-degradation log.
+    """
+    _reset_warned()
+    _neutralize_passthrough(monkeypatch)
+    monkeypatch.setattr(sys, "platform", "win32")
+    secret_marker = "SandboxCommandSecret"
+
+    with caplog.at_level(logging.WARNING, logger=sb.logger.name):
+        sb.wrap_argv(
+            [f"C:/private/{secret_marker}/git.exe", f"--token={secret_marker}"],
+            mode="off",
+        )
+
+    assert secret_marker not in caplog.text
+    assert "Command: git" in caplog.text
 
 
 def test_scrub_env_drops_credential_keys():

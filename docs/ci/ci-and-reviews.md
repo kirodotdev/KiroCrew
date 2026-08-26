@@ -358,7 +358,18 @@ the network and cannot fetch it itself.
 
 Both line reviewers run the same review contract, and severity encodes exactly one
 thing: *does this block the merge*, **never confidence**. There is no
-"possible issue" tier. A finding must state a concrete input or condition that
+"possible issue" tier. The blocks of that contract shared by the two GPT
+workflows — the diff-is-not-evidence clause, the coverage/finding/fix bars, the
+output contract, and the falsification-pass mandate and verdict framing — live in
+shared `.github/review-prompts/gpt-*.md` files rather than as two inline copies,
+so the lanes cannot drift apart on them (#5852). The same-repo lane stages them
+from the PR's **base** commit like the Opus lanes; unlike those lanes it falls
+back to the checked-out copy (with a warning) when a block is absent on the base,
+because a hard gate cannot afford a no-verdict pass and, on a same-repo PR, the
+workflow file itself is already editable by the PR — the fallback adds no attack
+surface the lane did not have. The fork lane's checkout *is* the trusted base
+(the diff is never applied), so it reads the files straight from the tree and
+fails closed if one is missing. A finding must state a concrete input or condition that
 occurs in practice, the call path to the changed line, and an observable wrong
 outcome; anything phrased as "could", "might" or "if a caller were to" is **not a
 finding**, and silence is the correct output. Only two labels exist: **BLOCKING**
@@ -381,7 +392,7 @@ observable outcome itself from code it opened in that pass. Pass 2 may also *add
 defect discovery missed, in both lanes, but only under that same three-part
 grounding and the same confidence floor — killing a candidate stays its primary
 job, and a self-found finding gets no second opinion, so it earns no cheaper path
-in. In the Opus lane such a finding is tagged `(origin: validation)` in the posted
+in. In both lanes such a finding is tagged `(origin: validation)` in the posted
 review, because it is un-falsified by construction: the tag is what lets a reader
 weight it accordingly, and what lets the precision of self-added findings be
 compared against survivors' rather than assumed equal. Pass 2 is the only
@@ -481,7 +492,15 @@ characters, then posts a **bot-authored** marker comment that the reviewer workf
 trust. Raw PR comments can never turn a gate green directly; only that marker can.
 The scope is **this commit only**, so a new push needs a new judgment. The workflow
 then re-runs the affected reviewer, cancelling an in-flight run first so its stale
-verdict cannot race the human decision.
+verdict cannot race the human decision. On a fork PR the affected reviewer is the
+`workflow_run`-triggered Stage-2 lane, whose run objects are keyed to the default
+branch — the handler locates the lane run through the run URL the lane stamps into
+the `details_url` of the check-run it posts on the PR head, verifies the resolved
+run belongs to the expected fork workflow, and re-runs it. The fork lanes consume
+no override marker, so that re-run is a fresh review roll rather than a forced
+pass. A rerun failure after the judgment has recorded is reported as a warning
+annotation plus a PR notice naming the lane to re-run manually — never as a failed
+run, which would make a recorded judgment look rejected.
 
 ## `pr-readiness.yml`: the aggregator
 
@@ -509,13 +528,21 @@ commit status plus one `readiness:` label**.
 
 Two subtleties:
 
-- **It refreshes while a workflow is re-running.** It triggers on `workflow_run`
-  `requested` and `in_progress` as well as `completed`, so when a monitored workflow
-  flips back to running (most often a reviewer re-run after a human override) the
-  live query buckets it into `pending` and the label honestly drops from a stale
-  `action required` back to `checking`, instead of freezing on the previous commit's
-  verdict. The `pr+sha` concurrency group collapses the resulting burst into one
-  evaluation.
+- **It refreshes while a workflow is re-running, but not when one starts.** It triggers
+  on `workflow_run` `in_progress` and `completed`, not on `requested`. `in_progress` is a
+  merge guard, not a cosmetic: it is the only type that sees a monitored workflow go back
+  to running, because a re-run reuses the same run and increments its attempt instead of
+  creating a new one. Without it, a re-run of an already-green lane would leave readiness
+  publishing the pre-re-run `success` for the whole re-run -- and since that status is the
+  branch-protection handle for the entire fan-out, armed auto-merge could merge a revision
+  whose lane is failing at that moment. `requested` is the type that carries nothing: it
+  fires at run CREATION, when no lane can have a verdict yet and readiness has already
+  published `checking` from the `pull_request_target` path. Since every type fires once per
+  monitored workflow per revision, listing all three dispatched up to 42 readiness runs per
+  head update and made readiness ~67% of every workflow run this repository created; two
+  types put the ceiling at 28. The `pr+sha` concurrency group collapses the burst for
+  execution, but a collapsed run has already consumed its dispatch slot, so the group does
+  not bound that cost.
 - **A `pull_request_target` run gets its own isolated concurrency group.** Those are
   the only readiness runs that surface as a CheckRun in the PR's rollup, and GitHub
   marks any superseded run "cancelled" whichever way `cancel-in-progress` is set, so

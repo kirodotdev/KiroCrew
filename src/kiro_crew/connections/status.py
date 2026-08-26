@@ -37,9 +37,9 @@ import logging
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from stat import S_ISREG
 from typing import TypedDict
 
+from kiro_crew import mcp_grant
 from kiro_crew.config.loader import data_home
 from kiro_crew.connections.registry import Provider, get_visible_providers
 
@@ -270,8 +270,9 @@ def _reconcile_connected_since_locked(statuses: list[ConnectionStatus], now: str
     if fresh:
         # The credential-store observation this module ACTS on: a first-observed
         # grant became a persisted timestamp and a Connected badge. Mirrors the
-        # mint engine's ``_grant_observed`` convention -- audited on the acted-on
-        # observation only (not once per poll sweep), best-effort rather than
+        # shared ``mcp_grant.grant_observed`` convention -- audited on the acted-on
+        # observation only (this module polls, so not once per sweep), best-effort
+        # rather than
         # fail-closed because nothing sensitive crosses this boundary (the
         # artifacts are stat-ed, never opened); an SEL outage must not turn the
         # status read into an error, but it does leave a warning behind.
@@ -299,35 +300,16 @@ def _classify(granted: bool | None, mint_state: str) -> tuple[str, str]:
     return STATUS_NOT_CONNECTED, "no_grant"
 
 
-def _artifact_presence(path: Path) -> bool | None:
-    """One stat, three answers: present, definitively absent, or unknowable."""
-    try:
-        mode = path.stat().st_mode
-    except (FileNotFoundError, NotADirectoryError):
-        return False  # ENOENT-family: an answer (nothing was written), not an error
-    except OSError:
-        return None  # EACCES/EIO/stalled mount: nothing knowable right now
-    return S_ISREG(mode)
-
-
 def _provider_grant_presence(mcp_url: str) -> bool | None:
-    """Tri-state grant presence from ONE stat pass per paired artifact.
+    """Tri-state grant presence, resolved by the shared leaf module.
 
-    Deliberately not ``grant_present()`` followed by a diagnostic re-stat: two
-    passes race, and a transient failure that clears between them reads as a
-    definitive absence -- which prunes a persisted timestamp nothing can
-    reconstruct. Each artifact is stat-ed exactly once and the pair combines:
-    either artifact definitively absent decides the pair (both must exist), any
-    remaining failed stat makes the pair unknowable, otherwise present.
+    The derivation lives in :func:`mcp_grant.grant_presence` rather than here
+    because the remote probe renders the same three answers, and two spellings of
+    "present, absent, or unknowable" over the same artifacts is how one of them
+    silently loses the middle one. Here the middle answer is what keeps a
+    persisted timestamp that nothing could reconstruct.
     """
-    from kiro_crew.connections.mint import grant_artifact_paths
-
-    verdicts = [_artifact_presence(path) for path in grant_artifact_paths(mcp_url)]
-    if False in verdicts:
-        return False
-    if None in verdicts:
-        return None
-    return True
+    return mcp_grant.grant_presence(mcp_url)
 
 
 def _grant_presence_map(providers: list[Provider]) -> dict[str, bool | None]:

@@ -17,6 +17,7 @@ from types import ModuleType
 import pytest
 from skill_script_helpers import load_skill_script
 
+from kiro_crew import irq
 from kiro_crew.cron_script import Done, Report, Skip
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -82,7 +83,11 @@ def _wire(monkeypatch, module: ModuleType, payload: dict | None) -> None:
 
 
 def _msg(**overrides) -> str:
-    base = {"repo": "acme/widgets", "pr": 42}
+    # coalesce_secs=0 pins the fire-on-first-anomaly contract this suite
+    # was written against, which is still supported and is the documented
+    # migration setting. The coalescing window has its own tests in
+    # test/test_irq.py, plus the two probe-level cases at the end here.
+    base = {"repo": "acme/widgets", "pr": 42, "coalesce_secs": 0}
     base.update(overrides)
     return json.dumps(base)
 
@@ -166,12 +171,12 @@ def test_alert_rearms_after_the_dedupe_window(monkeypatch, module):
     payload = _payload([_check("CI", status="QUEUED")], mergeable="CONFLICTING")
     _wire(monkeypatch, module, payload)
     t = [1_000_000.0]
-    monkeypatch.setattr(module.time, "time", lambda: t[0])
+    monkeypatch.setattr(irq.time, "time", lambda: t[0])
     with pytest.raises(Report):
         _tick(module, _msg())
     with pytest.raises(Skip):
         _tick(module, _msg())
-    t[0] += module._REALERT_SECS + 1
+    t[0] += irq.DEFAULT_REALERT_SECS + 1
     with pytest.raises(Report):  # condition persists -> re-delivered
         _tick(module, _msg())
 
@@ -261,7 +266,7 @@ def test_unknown_conclusion_vocabulary_wakes_a_brain(monkeypatch, module):
 
 def test_gh_failures_stay_quiet_then_alert_once(monkeypatch, module):
     _wire(monkeypatch, module, None)
-    for _ in range(module._MAX_CONSECUTIVE_ERRORS - 1):
+    for _ in range(irq.DEFAULT_MAX_CONSECUTIVE_ERRORS - 1):
         with pytest.raises(Skip):
             _tick(module, _msg())
     with pytest.raises(Report, match="consecutive"):
@@ -275,7 +280,7 @@ def test_blind_alert_rearms_after_the_dedupe_window(monkeypatch, module):
     the signal: with the count PAST the threshold (the state a swallowed
     delivery leaves behind), an expired dedupe window re-fires the alert."""
     _wire(monkeypatch, module, None)
-    for _ in range(module._MAX_CONSECUTIVE_ERRORS - 1):
+    for _ in range(irq.DEFAULT_MAX_CONSECUTIVE_ERRORS - 1):
         with pytest.raises(Skip):
             _tick(module, _msg())
     with pytest.raises(Report, match="re-alert"):
@@ -285,9 +290,9 @@ def test_blind_alert_rearms_after_the_dedupe_window(monkeypatch, module):
     with pytest.raises(Skip, match="deduped"):
         _tick(module, _msg())
     # Expire the window: the alert re-arms while the condition persists.
-    spath = module._state_path("acme/widgets", 42, "job-e2e-1")
+    spath = irq.state_path("gh-pr", "acme/widgets#42", "job-e2e-1")
     st = json.loads(spath.read_text(encoding="utf-8"))
-    st["alerted"]["blind"] -= module._REALERT_SECS + 1
+    st["alerted"]["blind"] -= irq.DEFAULT_REALERT_SECS + 1
     spath.write_text(json.dumps(st), encoding="utf-8")
     with pytest.raises(Report, match="re-alert"):
         _tick(module, _msg())
@@ -297,7 +302,7 @@ def test_recovery_clears_the_blind_marker_for_the_next_streak(monkeypatch, modul
     """A new failure streak after a recovery alerts promptly instead of
     inheriting the previous streak's dedupe window."""
     _wire(monkeypatch, module, None)
-    for _ in range(module._MAX_CONSECUTIVE_ERRORS - 1):
+    for _ in range(irq.DEFAULT_MAX_CONSECUTIVE_ERRORS - 1):
         with pytest.raises(Skip):
             _tick(module, _msg())
     with pytest.raises(Report, match="re-alert"):
@@ -306,7 +311,7 @@ def test_recovery_clears_the_blind_marker_for_the_next_streak(monkeypatch, modul
     with pytest.raises(Skip):  # recovery tick resets streak + blind marker
         _tick(module, _msg())
     _wire(monkeypatch, module, None)
-    for _ in range(module._MAX_CONSECUTIVE_ERRORS - 1):
+    for _ in range(irq.DEFAULT_MAX_CONSECUTIVE_ERRORS - 1):
         with pytest.raises(Skip):
             _tick(module, _msg())
     with pytest.raises(Report, match="re-alert"):  # new streak alerts promptly
@@ -319,10 +324,10 @@ def test_future_dedupe_timestamp_reads_as_stale_not_fresh_forever(monkeypatch, m
     _wire(monkeypatch, module, _payload([_check("A", "FAILURE")]))
     with pytest.raises(Report):
         _tick(module, _msg())
-    spath = module._state_path("acme/widgets", 42, "job-e2e-1")
+    spath = irq.state_path("gh-pr", "acme/widgets#42", "job-e2e-1")
     st = json.loads(spath.read_text(encoding="utf-8"))
     for k in st.get("alerted", {}):
-        st["alerted"][k] = time.time() + 10 * module._REALERT_SECS  # far future
+        st["alerted"][k] = time.time() + 10 * irq.DEFAULT_REALERT_SECS  # far future
     spath.write_text(json.dumps(st), encoding="utf-8")
     with pytest.raises(Report):  # future stamp = stale, alert fires again
         _tick(module, _msg())
@@ -367,7 +372,7 @@ def test_same_named_checks_from_different_apps_keep_distinct_identity(monkeypatc
     ]
     _wire(monkeypatch, module, _payload(rows2))
     with pytest.raises(Report, match="green"):  # rerun green supersedes
-        _tick(module, json.dumps({"repo": "acme/widgets", "pr": 43}))
+        _tick(module, json.dumps({"repo": "acme/widgets", "pr": 43, "coalesce_secs": 0}))
 
 
 def test_gh_recovery_resets_the_error_streak(monkeypatch, module):
@@ -401,7 +406,7 @@ def test_state_survives_corrupt_state_file(monkeypatch, module, tmp_path):
     _wire(monkeypatch, module, _payload([_check("A", "FAILURE")]))
     with pytest.raises(Report):
         _tick(module, _msg())
-    spath = module._state_path("acme/widgets", 42, "job-e2e-1")
+    spath = irq.state_path("gh-pr", "acme/widgets#42", "job-e2e-1")
     spath.write_text("{broken", encoding="utf-8")
     # Corrupt state reads as fresh: the red alerts again rather than crashing.
     with pytest.raises(Report):
@@ -422,7 +427,7 @@ def test_malformed_state_field_types_read_as_fresh(monkeypatch, module):
     _wire(monkeypatch, module, _payload([_check("A", "FAILURE")]))
     with pytest.raises(Report):
         _tick(module, _msg())
-    spath = module._state_path("acme/widgets", 42, "job-e2e-1")
+    spath = irq.state_path("gh-pr", "acme/widgets#42", "job-e2e-1")
     spath.write_text(json.dumps({"head": 7, "alerted": "yes", "errors": "x"}), encoding="utf-8")
     with pytest.raises(Report):  # wrong types coerce to fresh, never crash
         _tick(module, _msg())
@@ -435,13 +440,13 @@ def test_huge_or_nonfinite_timestamps_drop_entry_not_crash(monkeypatch, module):
     _wire(monkeypatch, module, _payload([_check("A", "FAILURE")]))
     with pytest.raises(Report):
         _tick(module, _msg())
-    spath = module._state_path("acme/widgets", 42, "job-e2e-1")
+    spath = irq.state_path("gh-pr", "acme/widgets#42", "job-e2e-1")
     huge = int("9" * 4001)
     spath.write_text(
         '{"alerted": {"bad-huge": %d, "bad-nan": NaN, "bad-inf": Infinity, "good": 1.0}}' % huge,
         encoding="utf-8",
     )
-    state = module._load_state(spath)
+    state = irq.load_state(spath)
     assert state["alerted"] == {"good": 1.0}  # bad entries dropped, sibling kept
     with pytest.raises(Report):  # and the tick still runs (re-alert, no crash)
         _tick(module, _msg())
@@ -459,9 +464,12 @@ def test_boolean_and_nonpositive_pr_numbers_are_terminal(monkeypatch, module):
         _tick(module, _msg(pr=True))  # bool passes isinstance(int) checks
     with pytest.raises(Done, match="positive int"):
         _tick(module, _msg(pr=0))
-    with pytest.raises(Done, match="positive int"):
+    # A host segment in `repo` is refused by the repo guard, which carries its
+    # own message: enterprise hosts come from the operator's trusted gh config
+    # (GH_HOST), never from cron-message data.
+    with pytest.raises(Done, match="owner/name"):
         _tick(module, json.dumps({"repo": "host/owner/name", "pr": 1}))
-    with pytest.raises(Done, match="positive int"):  # host segments refused
+    with pytest.raises(Done, match="owner/name"):
         _tick(module, json.dumps({"repo": "ghe.corp.example/o/r", "pr": 1}))
 
 
@@ -481,7 +489,7 @@ def test_double_failure_alerts_immediately(monkeypatch, module):
     """gh failing AND state unwritable: the counted threshold can never fire,
     so the watch says it is inoperative on the first tick."""
     _wire(monkeypatch, module, None)
-    monkeypatch.setattr(module, "_save_state", lambda *a: False)
+    monkeypatch.setattr(irq, "save_state", lambda *a, **k: False)
     with pytest.raises(Report, match="inoperative"):
         _tick(module, _msg())
 
@@ -508,7 +516,7 @@ def test_unwritable_state_degrades_to_repeats_not_removal(monkeypatch, module):
     be lost) and must not silence it: the alert still fires, carrying the
     degraded-dedupe warning, and repeats on the next tick."""
     _wire(monkeypatch, module, _payload([_check("A", "FAILURE")]))
-    monkeypatch.setattr(module, "_save_state", lambda *a: False)
+    monkeypatch.setattr(irq, "save_state", lambda *a, **k: False)
     with pytest.raises(Report, match="unwritable"):
         _tick(module, _msg())
     with pytest.raises(Report):  # duplicate wake, never a lost signal
@@ -536,3 +544,160 @@ def test_rerun_red_supersedes_stale_green_row_of_same_name(monkeypatch, module):
     _wire(monkeypatch, module, _payload(checks))
     with pytest.raises(Report, match="new failing check"):
         _tick(module, _msg())
+
+
+# -- coalescing, at probe level (default window ON) ------------------------
+
+
+def _msg_coalescing(**overrides) -> str:
+    base = {"repo": "acme/widgets", "pr": 42, "coalesce_secs": 0.01}
+    base.update(overrides)
+    return json.dumps(base)
+
+
+def test_default_window_holds_a_red_while_checks_still_run(monkeypatch, module):
+    """With coalescing on, a red arriving while checks are pending does not
+    wake: the turn it would schedule could not decide anything yet."""
+    _wire(
+        monkeypatch,
+        module,
+        _payload([_check("lint", "FAILURE"), _check("unit", "", "IN_PROGRESS")]),
+    )
+    with pytest.raises(Skip):
+        _tick(module, _msg_coalescing())
+
+
+def test_staggered_reds_arrive_as_one_wake(monkeypatch, module):
+    """Two reds landing on one head minutes apart must produce ONE wake, not
+    one each -- they are fixed by a single edit and a single push."""
+    _wire(
+        monkeypatch,
+        module,
+        _payload([_check("lint", "FAILURE"), _check("unit", "", "IN_PROGRESS")]),
+    )
+    with pytest.raises(Skip):
+        _tick(module, _msg_coalescing())
+
+    time.sleep(0.05)
+    _wire(
+        monkeypatch,
+        module,
+        _payload([_check("lint", "FAILURE"), _check("unit", "FAILURE")]),
+    )
+    with pytest.raises(Report) as caught:
+        _tick(module, _msg_coalescing())
+    body = str(caught.value)
+    assert "lint" in body and "unit" in body
+
+
+def test_conflict_is_an_nmi_and_ignores_the_window(monkeypatch, module):
+    """A dirty PR dispatches no checks, so pending never drains and waiting
+    observes nothing: the conflict must fire despite an open window."""
+    _wire(
+        monkeypatch,
+        module,
+        _payload(
+            [_check("unit", "", "IN_PROGRESS")],
+            mergeable="CONFLICTING",
+            merge_state="DIRTY",
+        ),
+    )
+    with pytest.raises(Report, match="CONFLICTING"):
+        _tick(module, _msg_coalescing(coalesce_secs=9999))
+
+
+def test_nonfinite_window_is_terminal_not_a_crash_loop(monkeypatch, module):
+    """json.loads turns 1e309 into inf; an infinite window would raise
+    OverflowError every tick, and a cron that raises every tick is auto-paused
+    -- the watch would die silently from a config typo."""
+    _wire(monkeypatch, module, _payload([]))
+    with pytest.raises(Done, match="finite"):
+        _tick(module, '{"repo": "acme/widgets", "pr": 42, "coalesce_secs": 1e309}')
+
+
+def test_oversized_json_integer_is_terminal_not_a_crash_loop(monkeypatch, module):
+    """CPython raises a BARE ValueError past the int-str conversion limit (~4300
+    digits), which is not a JSONDecodeError. It does NOT escape: the kernel's
+    identity() wrapper converts every ValueError into Done, so the watch removes
+    itself with a reason instead of raising on every tick.
+
+    This pins the mechanism a review round claimed was broken.
+    """
+    _wire(monkeypatch, module, _payload([]))
+    huge = "9" * 5000
+    with pytest.raises(Done):
+        _tick(module, '{"repo": "acme/widgets", "pr": ' + huge + "}")
+
+
+def test_deeply_nested_message_is_terminal_not_a_crash_loop(monkeypatch, module):
+    """The fourth hostile shape for one field: json.loads blows the interpreter
+    stack on deeply nested input and raises RecursionError, which is not a
+    JSONDecodeError -- so it would escape identity() uncaught rather than
+    becoming a Done, crashing every tick and auto-pausing the watch."""
+    _wire(monkeypatch, module, _payload([]))
+    nested = "[" * 20000 + "]" * 20000
+    with pytest.raises(Done, match="valid JSON"):
+        _tick(module, nested)
+
+
+def test_deeply_nested_gh_response_reads_as_unobservable(monkeypatch, module):
+    """A pathologically nested API response must read as 'could not observe',
+    which feeds the error backstop, rather than raise out of the tick."""
+
+    def _nested_run_gh(args):
+        return 0, "[" * 20000 + "]" * 20000
+
+    monkeypatch.setattr(module, "_run_gh", _nested_run_gh)
+    with pytest.raises(Skip):
+        _tick(module, _msg())
+
+
+def test_oversized_window_integer_is_terminal_not_a_crash_loop(monkeypatch, module):
+    """The third hostile shape json.loads produces for one field: an
+    arbitrary-precision int. float() on it raises OverflowError, which is not a
+    ValueError and so would escape identity() uncaught rather than becoming a
+    Done -- crashing every tick and auto-pausing the watch."""
+    _wire(monkeypatch, module, _payload([]))
+    huge = "1" + "0" * 400
+    with pytest.raises(Done, match="too large"):
+        _tick(module, '{"repo": "acme/widgets", "pr": 42, "coalesce_secs": ' + huge + "}")
+
+
+def test_known_reds_match_the_bare_name_operators_actually_write(monkeypatch, module):
+    """`known_reds` is written by hand from what GitHub's UI shows -- the BARE
+    check name -- while the dedupe identity is workflow-qualified. Matching
+    only the qualified spelling would suppress nothing, wake on every
+    inherited red, and never let `ready` fire.
+
+    `wake_on_green` is off so the assertion isolates the SUPPRESSION: with it
+    on, a fully-filtered rollup correctly reports review-ready, which would
+    mask whether the bare name matched at all.
+    """
+    checks = [
+        {
+            "name": "Frontend Tests (4)",
+            "workflowName": "CI",
+            "conclusion": "FAILURE",
+            "status": "COMPLETED",
+        }
+    ]
+    _wire(monkeypatch, module, _payload(checks))
+    with pytest.raises(Skip):
+        _tick(module, _msg(known_reds=["Frontend Tests (4)"], wake_on_green=False))
+
+
+def test_unfiltered_qualified_red_still_wakes(monkeypatch, module):
+    """The mirror of the case above: a red NOT in the allow-list must wake, and
+    the brief names it in its qualified spelling so two workflows sharing a
+    check name stay distinguishable."""
+    checks = [
+        {
+            "name": "Frontend Tests (4)",
+            "workflowName": "CI",
+            "conclusion": "FAILURE",
+            "status": "COMPLETED",
+        }
+    ]
+    _wire(monkeypatch, module, _payload(checks))
+    with pytest.raises(Report, match="CI / Frontend Tests"):
+        _tick(module, _msg(known_reds=["something else"]))

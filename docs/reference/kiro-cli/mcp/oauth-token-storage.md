@@ -40,8 +40,10 @@ sha256(input)
 ```
 
 So the input is exactly `<scheme>://<host><port>/<path>` — the URL string
-from the agent config's `mcpServers["<name>"].url`, no normalization beyond
-`url::Url::ascii_serialization()`.
+from the agent config's `mcpServers["<name>"].url`, normalized by
+`url::Url::ascii_serialization()`. That serialization lowercases the host,
+IDNA-encodes Unicode domain names, keeps brackets around IPv6 literals, and
+omits the default port.
 
 Compute it from Python:
 

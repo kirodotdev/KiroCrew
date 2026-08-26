@@ -66,6 +66,14 @@ export const FOLLOWUP_CHIP_STAGGER_MAX_STEPS = 6
 export const FOLLOWUP_CHIP_HOP_DURATION_MS = 420
 
 /**
+ * Single-click debounce on a chip that also offers double-click-to-send: the
+ * timer this long is what lets a double-click cancel the pending select.
+ * Exported so tests advance fake timers against the component's own value
+ * instead of a hand-copied literal that silently drifts.
+ */
+export const FOLLOWUP_CHIP_DEBOUNCE_MS = 220
+
+/**
  * How long the staggered entrance can still be in flight: the deepest rung of
  * the ladder plus one animation.
  */
@@ -249,7 +257,7 @@ function Chip({ option, isPicked, picked, quickSend, onSelect, onSend, className
     timerRef.current = setTimeout(() => {
       timerRef.current = null
       onSelect(option, synth)
-    }, 220)
+    }, FOLLOWUP_CHIP_DEBOUNCE_MS)
   }
 
   const handleDoubleClick = () => {

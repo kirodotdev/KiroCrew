@@ -1921,3 +1921,67 @@ class TestPollersMarkTruncationSoAbsenceIsNotRecovery(unittest.IsolatedAsyncioTe
         with mock.patch.object(github_issues, "_run_gh", side_effect=_fake_under):
             result = await github_issues.GitHubIssuesAdapter().poll()
         self.assertNotIsInstance(result, TruncatedSignals)
+
+
+class TestRunGhTimeoutReapsChild(unittest.IsolatedAsyncioTestCase):
+    """A timed-out ``gh`` must be tree-killed and reaped by draining pipes.
+
+    After ``wait_for`` cancels ``communicate()``, a killed child blocked
+    writing into a full stderr pipe makes a bare ``wait()`` hang the polling
+    task forever (#5989) — the reap must be a SECOND ``communicate()``.
+    """
+
+    async def test_timeout_reaps_child_via_communicate_not_wait(self):
+        from kiro_crew import platform_compat
+        from kiro_crew.apps.builtins.ops_mission_control.backend.providers import (
+            github_issues,
+        )
+
+        class HangProc:
+            pid = 4242
+            returncode: int | None = None
+            kill_calls = 0
+            wait_calls = 0
+            communicate_calls = 0
+
+            async def communicate(self):
+                HangProc.communicate_calls += 1
+                if HangProc.communicate_calls == 1:
+                    raise asyncio.TimeoutError
+                HangProc.returncode = -9
+                return b"", b""
+
+            def kill(self):
+                HangProc.kill_calls += 1
+
+            async def wait(self):
+                HangProc.wait_calls += 1
+                return -9
+
+        async def fake_spawn(*argv, **kwargs):
+            return HangProc()
+
+        killed: list[tuple[int, int]] = []
+
+        async def fake_tree_kill(pid, sig):
+            killed.append((pid, sig))
+            return True
+
+        with (
+            mock.patch.object(
+                github_issues,
+                "sandboxed_spawn_argv",
+                lambda argv, **kw: (argv, {}, None),
+            ),
+            mock.patch.object(github_issues, "create_subprocess_limited", fake_spawn),
+            mock.patch.object(platform_compat, "kill_process_tree_async", fake_tree_kill),
+        ):
+            rc, out, err = await github_issues._run_gh(["issue", "list"])
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(out, "")
+        self.assertIn("timed out", err)
+        self.assertEqual(killed, [(HangProc.pid, platform_compat.SIGKILL)])
+        self.assertEqual(HangProc.kill_calls, 1)
+        self.assertEqual(HangProc.communicate_calls, 2)
+        self.assertEqual(HangProc.wait_calls, 0)

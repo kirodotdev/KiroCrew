@@ -654,6 +654,13 @@ async def test_run_json_kills_process_tree_when_stdout_exceeds_limit(monkeypatch
             self.returncode = -9
             self.done.set()
 
+        async def communicate(self):
+            # The bounded reap drains the pipes via communicate() rather than a
+            # bare wait() that a full pipe could hang.
+            self.returncode = -9
+            self.done.set()
+            return b"", b""
+
     proc = FakeProcess()
     spawn_kwargs = {}
 
@@ -661,26 +668,26 @@ async def test_run_json_kills_process_tree_when_stdout_exceeds_limit(monkeypatch
         spawn_kwargs.update(kwargs)
         return proc
 
-    def kill_tree(pid, sig):
-        assert pid == proc.pid
-        assert sig == source.platform_compat.SIGKILL
+    tree_kills: list[tuple[int, int]] = []
+
+    async def kill_tree(pid, sig):
+        tree_kills.append((pid, sig))
         proc.returncode = -sig
         proc.done.set()
         return True
 
-    tree_kill = MagicMock(side_effect=kill_tree)
     monkeypatch.setattr(source, "_resolve_provider_executable", lambda _name: "/usr/bin/gh")
     monkeypatch.setattr(
         source,
         "sandboxed_spawn_argv",
         lambda argv, **kwargs: (argv, kwargs["env"], None),
     )
-    monkeypatch.setattr(source.platform_compat, "kill_process_tree", tree_kill)
+    monkeypatch.setattr(source.platform_compat, "kill_process_tree_async", kill_tree)
     monkeypatch.setattr(source.asyncio, "create_subprocess_exec", fake_create)
     with pytest.raises(source.SourceProviderError, match="response was too large"):
         await source._run_json("gh", "api", "repos/acme/repo", max_output_bytes=4)
-    tree_kill.assert_called_once_with(proc.pid, source.platform_compat.SIGKILL)
-    assert proc.killed is False
+    # The whole tree is SIGKILLed through the bounded reap (kill_and_reap).
+    assert tree_kills == [(proc.pid, source.platform_compat.SIGKILL)]
     assert spawn_kwargs["env"]["GH_HOST"] == "github.com"
     assert spawn_kwargs["start_new_session"] is source.platform_compat.IS_POSIX
     assert spawn_kwargs["creationflags"] == source.platform_compat.CREATE_NEW_PROCESS_GROUP
@@ -7637,6 +7644,337 @@ class TestGetJiraAuth:
         result = source._get_jira_auth("acme.atlassian.net")
         assert result == ("dev@acme.com", "per-host-secret")
 
+    def test_seeded_global_env_does_not_bypass_per_host_vault(self, monkeypatch):
+        """A global JIRA_API_TOKEN that load_credentials merely SEEDED into
+        os.environ (setdefault), not a real pre-existing operator override,
+        must NOT be treated as a live override: a host with its own per-host
+        vault token still gets that per-host token. The snapshot is captured
+        BEFORE load_credentials runs, so a value that did not exist in the
+        environment beforehand is not seen as an override."""
+
+        class FakeEntry:
+            host = "acme.atlassian.net"
+            email = "dev@acme.com"
+
+        class FakeDashboard:
+            jira_auth = [FakeEntry()]
+
+        # No REAL operator override present before the call.
+        monkeypatch.delenv("JIRA_API_TOKEN", raising=False)
+
+        class FakeConfig:
+            dashboard = FakeDashboard()
+
+            @classmethod
+            def load(cls):
+                return cls()
+
+            def load_credentials(self):
+                # Simulate load_credentials' setdefault seeding the .env global
+                # into the process environment during the call. Use monkeypatch
+                # so the seed is auto-reverted at test teardown and cannot leak
+                # into later tests (a raw os.environ.setdefault would persist).
+                monkeypatch.setenv("JIRA_API_TOKEN", "seeded-global")
+                return {"JIRA_API_TOKEN": "seeded-global"}
+
+        host_key = "acme.atlassian.net".encode().hex().upper()
+        monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
+        monkeypatch.setattr(
+            source,
+            "_resolve_jira_token_from_vault",
+            lambda name: "per-host-vault" if name == f"JIRA_TOKEN_{host_key}" else "",
+        )
+        result = source._get_jira_auth("acme.atlassian.net")
+        # Per-host vault token wins; the seeded global is ignored.
+        assert result == ("dev@acme.com", "per-host-vault")
+
+    def test_vault_token_preferred_over_env(self, monkeypatch):
+        """A vault secret wins over the legacy .env value for the same host."""
+
+        class FakeEntry:
+            host = "acme.atlassian.net"
+            email = "dev@acme.com"
+
+        class FakeDashboard:
+            jira_auth = [FakeEntry()]
+
+        class FakeConfig:
+            dashboard = FakeDashboard()
+
+            @classmethod
+            def load(cls):
+                return cls()
+
+            def load_credentials(self):
+                return {"JIRA_API_TOKEN": "env-token"}
+
+        monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
+        host_key = "acme.atlassian.net".encode().hex().upper()
+        monkeypatch.setattr(
+            source,
+            "_resolve_jira_token_from_vault",
+            lambda name: "vault-token" if name == f"JIRA_TOKEN_{host_key}" else "",
+        )
+        result = source._get_jira_auth("acme.atlassian.net")
+        assert result == ("dev@acme.com", "vault-token")
+
+    def test_vault_miss_falls_back_to_env(self, monkeypatch):
+        """When the vault has no entry, the .env / environ value is used."""
+
+        class FakeEntry:
+            host = "acme.atlassian.net"
+            email = "dev@acme.com"
+
+        class FakeDashboard:
+            jira_auth = [FakeEntry()]
+
+        class FakeConfig:
+            dashboard = FakeDashboard()
+
+            @classmethod
+            def load(cls):
+                return cls()
+
+            def load_credentials(self):
+                return {"JIRA_API_TOKEN": "env-token"}
+
+        monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
+        monkeypatch.setattr(source, "_resolve_jira_token_from_vault", lambda name: "")
+        monkeypatch.delenv("JIRA_API_TOKEN", raising=False)
+        result = source._get_jira_auth("acme.atlassian.net")
+        assert result == ("dev@acme.com", "env-token")
+
+    def test_vault_single_host_global_token(self, monkeypatch):
+        """Single host with no per-host vault entry uses the global vault secret."""
+
+        class FakeEntry:
+            host = "acme.atlassian.net"
+            email = "dev@acme.com"
+
+        class FakeDashboard:
+            jira_auth = [FakeEntry()]
+
+        class FakeConfig:
+            dashboard = FakeDashboard()
+
+            @classmethod
+            def load(cls):
+                return cls()
+
+            def load_credentials(self):
+                return {}
+
+        monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
+        monkeypatch.setattr(
+            source,
+            "_resolve_jira_token_from_vault",
+            lambda name: "vault-global" if name == "JIRA_API_TOKEN" else "",
+        )
+        monkeypatch.delenv("JIRA_API_TOKEN", raising=False)
+        result = source._get_jira_auth("acme.atlassian.net")
+        assert result == ("dev@acme.com", "vault-global")
+
+    def test_global_env_override_beats_stale_global_vault(self, monkeypatch):
+        """A nonempty process-environment JIRA_API_TOKEN overrides even a stale
+        global vault entry.
+
+        `load_credentials` overlays `os.environ` over the .env for this key, so
+        a live env var is the effective credential — and `secrets import` skips
+        migrating the key while such an override is set. A vault entry left by an
+        EARLIER migration must NOT shadow that override under vault-first
+        resolution. Per-host keys are unaffected (not env-overlaid)."""
+
+        class FakeEntry:
+            host = "acme.atlassian.net"
+            email = "dev@acme.com"
+
+        class FakeDashboard:
+            jira_auth = [FakeEntry()]
+
+        class FakeConfig:
+            dashboard = FakeDashboard()
+
+            @classmethod
+            def load(cls):
+                return cls()
+
+            def load_credentials(self):
+                # env overlay would also place it here; the resolver reads the
+                # override directly from os.environ before the global vault.
+                return {"JIRA_API_TOKEN": "env-override"}
+
+        monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
+        # Stale global vault entry that must NOT win.
+        monkeypatch.setattr(
+            source,
+            "_resolve_jira_token_from_vault",
+            lambda name: "stale-vault" if name == "JIRA_API_TOKEN" else "",
+        )
+        monkeypatch.setenv("JIRA_API_TOKEN", "env-override")
+        result = source._get_jira_auth("acme.atlassian.net")
+        assert result == ("dev@acme.com", "env-override")
+
+    def test_migrated_secret_ref_in_env_resolves_from_vault_not_uri(self, monkeypatch):
+        """After `secrets import --apply`, the .env line is
+        `JIRA_API_TOKEN=secret://JIRA_API_TOKEN` and `load_credentials`
+        propagates that ref into os.environ AND the creds dict. The resolver
+        must NOT hand the `secret://` URI to Jira as the token — it must treat
+        it as a vault reference and resolve the real secret from the vault."""
+
+        class FakeEntry:
+            host = "acme.atlassian.net"
+            email = "dev@acme.com"
+
+        class FakeDashboard:
+            jira_auth = [FakeEntry()]
+
+        class FakeConfig:
+            dashboard = FakeDashboard()
+
+            @classmethod
+            def load(cls):
+                return cls()
+
+            def load_credentials(self):
+                # load_credentials overlays the migrated secret:// ref here too.
+                return {"JIRA_API_TOKEN": "secret://JIRA_API_TOKEN"}
+
+        monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
+        monkeypatch.setattr(
+            source,
+            "_resolve_jira_token_from_vault",
+            lambda name: "real-vault-secret" if name == "JIRA_API_TOKEN" else "",
+        )
+        # The migrated ref is propagated into the environment by load_credentials.
+        monkeypatch.setenv("JIRA_API_TOKEN", "secret://JIRA_API_TOKEN")
+        result = source._get_jira_auth("acme.atlassian.net")
+        # The vault secret is used — NOT the secret:// URI.
+        assert result == ("dev@acme.com", "real-vault-secret")
+
+    def test_returns_none_when_no_token_anywhere(self, monkeypatch):
+        """Configured host but neither vault nor env holds a token → None."""
+
+        class FakeEntry:
+            host = "acme.atlassian.net"
+            email = "dev@acme.com"
+
+        class FakeDashboard:
+            jira_auth = [FakeEntry()]
+
+        class FakeConfig:
+            dashboard = FakeDashboard()
+
+            @classmethod
+            def load(cls):
+                return cls()
+
+            def load_credentials(self):
+                return {}
+
+        monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
+        monkeypatch.setattr(source, "_resolve_jira_token_from_vault", lambda name: "")
+        assert source._get_jira_auth("acme.atlassian.net") is None
+
+    def test_env_override_equal_to_env_file_is_not_genuine_override(self, monkeypatch):
+        """When os.environ['JIRA_API_TOKEN'] equals the .env file value (i.e. it
+        was seeded there by GatewayOrchestrator's startup load_credentials call),
+        it must NOT beat a vault entry — the vault's rotated value should win.
+
+        This is the Finding 2 fix: a value that merely came from .env via
+        load_credentials' setdefault is NOT a genuine operator override.
+        """
+
+        class FakeEntry:
+            host = "acme.atlassian.net"
+            email = "dev@acme.com"
+
+        class FakeDashboard:
+            jira_auth = [FakeEntry()]
+
+        _ENV_FILE_TOKEN = "stale-env-token"
+        _VAULT_TOKEN = "fresh-vault-token"
+
+        monkeypatch.setenv("JIRA_API_TOKEN", _ENV_FILE_TOKEN)
+
+        class FakeConfig:
+            dashboard = FakeDashboard()
+
+            @classmethod
+            def load(cls):
+                return cls()
+
+            def load_credentials(self):
+                return {"JIRA_API_TOKEN": _ENV_FILE_TOKEN}
+
+        monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
+        # Per-host vault returns nothing; global vault has the rotated token.
+        monkeypatch.setattr(
+            source,
+            "_resolve_jira_token_from_vault",
+            lambda name: (
+                _VAULT_TOKEN if name == "JIRA_API_TOKEN" else ""
+            ),
+        )
+        # .env file contains the same value as os.environ (startup-seeded).
+        monkeypatch.setattr(
+            source,
+            "read_env_file_credential",
+            lambda key: _ENV_FILE_TOKEN if key == "JIRA_API_TOKEN" else "",
+        )
+        result = source._get_jira_auth("acme.atlassian.net")
+        # Vault token must win; the .env-seeded env value must NOT override it.
+        assert result == ("dev@acme.com", _VAULT_TOKEN), (
+            "Vault token should win when env value equals .env file value "
+            f"(startup-seeded); got {result}"
+        )
+
+    def test_env_override_differing_from_env_file_is_genuine_override(self, monkeypatch):
+        """When os.environ['JIRA_API_TOKEN'] DIFFERS from the .env file value,
+        the operator explicitly set it at runtime — it must beat the vault entry.
+        """
+
+        class FakeEntry:
+            host = "acme.atlassian.net"
+            email = "dev@acme.com"
+
+        class FakeDashboard:
+            jira_auth = [FakeEntry()]
+
+        _ENV_FILE_TOKEN = "stale-env-token"
+        _OPERATOR_TOKEN = "operator-set-at-runtime"
+        _VAULT_TOKEN = "vault-token"
+
+        monkeypatch.setenv("JIRA_API_TOKEN", _OPERATOR_TOKEN)
+
+        class FakeConfig:
+            dashboard = FakeDashboard()
+
+            @classmethod
+            def load(cls):
+                return cls()
+
+            def load_credentials(self):
+                return {"JIRA_API_TOKEN": _OPERATOR_TOKEN}
+
+        monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
+        monkeypatch.setattr(
+            source,
+            "_resolve_jira_token_from_vault",
+            lambda name: _VAULT_TOKEN if name == "JIRA_API_TOKEN" else "",
+        )
+        # .env file contains a different (older) value — operator set a new one.
+        monkeypatch.setattr(
+            source,
+            "read_env_file_credential",
+            lambda key: _ENV_FILE_TOKEN if key == "JIRA_API_TOKEN" else "",
+        )
+        result = source._get_jira_auth("acme.atlassian.net")
+        # The differing env value is a genuine override; it must win over vault.
+        assert result == ("dev@acme.com", _OPERATOR_TOKEN), (
+            "Operator runtime override should win over vault when it differs "
+            f"from .env file value; got {result}"
+        )
+
 
 class TestJiraIsCloud:
     def test_cloud_host(self):
@@ -7837,3 +8175,62 @@ class TestJiraLinkedChanges:
         assert result[1]["issueKey"] == "B-2"
         assert result[1]["relation"] == "is duplicated by"
         assert result[1]["state"] == "closed"
+
+
+class _ReapProbe:
+    """A PIPE-stdio child double that records how it is reaped.
+
+    A killed child blocked writing into a full pipe -- or a surviving
+    descendant still holding the pipes open -- makes a bare ``await
+    proc.wait()`` hang the caller forever (#6005). The bounded reap must
+    therefore drain the pipes via ``communicate()`` and must never touch
+    ``wait()``.
+    """
+
+    def __init__(self, pid: int = 4242) -> None:
+        self.pid = pid
+        self.returncode: "int | None" = None
+        self.kill_calls = 0
+        self.wait_calls = 0
+        self.communicate_calls = 0
+
+    async def communicate(self):
+        self.communicate_calls += 1
+        self.returncode = -9
+        return b"", b""
+
+    def kill(self) -> None:
+        self.kill_calls += 1
+
+    async def wait(self) -> int:
+        self.wait_calls += 1
+        return -9
+
+
+@pytest.mark.asyncio
+async def test_terminate_process_reaps_via_communicate_not_wait(monkeypatch):
+    """``_terminate_process`` must route through the bounded, pipe-draining
+    ``kill_and_reap`` -- a bare ``await proc.wait()`` here can hang the gateway
+    task forever when the child is killed with a full pipe (#6005)."""
+    from kiro_crew import platform_compat
+
+    proc = _ReapProbe()
+    tree_kills: "list[tuple[int, int]]" = []
+
+    async def _fake_tree(pid, sig):
+        tree_kills.append((pid, sig))
+        return True
+
+    # Fake pid + patched tree kill so no test can reach a real killpg. Both the
+    # async helper (used by kill_and_reap) and the legacy sync entry point are
+    # patched so the pin stays safe even when run against unmodified code.
+    monkeypatch.setattr(platform_compat, "kill_process_tree_async", _fake_tree)
+    monkeypatch.setattr(
+        platform_compat, "kill_process_tree", lambda *a, **k: tree_kills.append(a)
+    )
+
+    await source._terminate_process(proc)
+
+    assert proc.communicate_calls == 1
+    assert proc.wait_calls == 0
+    assert tree_kills and tree_kills[0][0] == proc.pid

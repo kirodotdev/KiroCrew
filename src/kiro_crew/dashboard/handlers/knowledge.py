@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import uuid
 import zipfile
 from datetime import datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -19,6 +20,7 @@ from aiohttp import web
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.artifacts import get_default_store
 from kiro_crew.config.loader import KiroCrewConfig, config_dir, data_home
+from kiro_crew.dashboard import part_stream
 from kiro_crew.dashboard.handlers.files import (
     _ZIP_CONTAINER_EXTS,
     _content_matches_ext,
@@ -57,7 +59,6 @@ from kiro_crew.knowledge.spend import source_spend
 from kiro_crew.knowledge.store import KnowledgeBundleError
 from kiro_crew.knowledge.sync import SyncScheduler
 from kiro_crew.knowledge.watcher import KnowledgeWatcher
-from kiro_crew.messaging.raster import SNIFF_BYTES
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
 
@@ -1523,39 +1524,32 @@ async def ingest_file(request: web.Request) -> web.Response:
     filename = getattr(field, "filename", None) or "upload"
     suffix = Path(filename).suffix
     ext = suffix.lower()
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix, prefix="kn_")
+    staged = Path(tempfile.gettempdir()) / f"kn_{uuid.uuid4().hex}{suffix}"
     try:
-        total_size = 0
-        # Capture the leading bytes so the claimed extension can be verified
-        # against the file signature; SNIFF_BYTES covers every signature in the
-        # sibling gate (PNG magic is 8, WEBP needs bytes 8:12, zip/PDF fewer).
-        head = bytearray()
-        while True:
-            chunk = await field.read_chunk()  # type: ignore[union-attr]
-            if not chunk:
-                break
-            total_size += len(chunk)
-            if total_size > _MAX_INGEST_FILE_SIZE:
-                tmp.close()
-                Path(tmp.name).unlink(missing_ok=True)
-                return web.json_response(
-                    {"error": f"file too large (max {_MAX_INGEST_FILE_SIZE // (1024 * 1024)} MB)"}, status=413)
-            if len(head) < SNIFF_BYTES:
-                head.extend(chunk[: SNIFF_BYTES - len(head)])
-            tmp.write(chunk)
-        tmp.close()
+        # The signature gate (CWE-434) and the byte ceiling are both enforced by
+        # the shared streaming path, which judges the leading bytes while they
+        # are still in memory. That is stricter than this call site used to be:
+        # it wrote the whole file first and only then sniffed, so rejected
+        # content did reach the filesystem. Cleanup on cancellation is the
+        # helper's, not this function's -- see part_stream's docstring.
+        await part_stream.stream_part_to_file(
+            field,  # type: ignore[arg-type]
+            staged,
+            max_bytes=_MAX_INGEST_FILE_SIZE,
+            accepts=lambda head: _content_matches_ext(ext, head),
+        )
+    except part_stream.PartTooLarge:
+        return web.json_response(
+            {"error": f"file too large (max {_MAX_INGEST_FILE_SIZE // (1024 * 1024)} MB)"},
+            status=413,
+        )
+    except part_stream.PartContentMismatch:
+        _sel_log("ingest", filename=filename, outcome="rejected")
+        return web.json_response(
+            {"error": f"file content does not match its type: {ext}"}, status=400
+        )
 
-        # Content-signature gate (CWE-434): the extension is attacker-controlled
-        # and FileReader dispatches to binary parsers (.pdf/.docx) purely by
-        # extension, so verify the magic bytes match the claimed type BEFORE the
-        # file is handed to a parser. Text formats have no reliable signature and
-        # pass through, matching the sibling upload gate in handlers/files.py.
-        if not _content_matches_ext(ext, bytes(head)):
-            Path(tmp.name).unlink(missing_ok=True)
-            _sel_log("ingest", filename=filename, outcome="rejected")
-            return web.json_response(
-                {"error": f"file content does not match its type: {ext}"}, status=400)
-
+    try:
         # Decompression-bomb guard (CWE-770): a valid-signature OOXML/zip can
         # still be a bomb whose members expand unbounded once python-docx / the
         # zip parser opens it. Bound the declared member count and aggregate
@@ -1564,9 +1558,9 @@ async def ingest_file(request: web.Request) -> web.Response:
         # corrupt/lying archive. Run off the event loop so a hostile central
         # directory can't stall the gateway loop/heartbeat.
         if ext in _ZIP_CONTAINER_EXTS:
-            reason = await asyncio.to_thread(_inspect_zip_archive, tmp.name)
+            reason = await asyncio.to_thread(_inspect_zip_archive, str(staged))
             if reason is not None:
-                Path(tmp.name).unlink(missing_ok=True)
+                staged.unlink(missing_ok=True)
                 _sel_log("ingest", filename=filename, outcome="rejected", reason=reason)
                 return web.json_response(
                     {"error": f"{ext} archive rejected ({reason})"}, status=400)
@@ -1596,7 +1590,7 @@ async def ingest_file(request: web.Request) -> web.Response:
             finally:
                 Path(tmp_path).unlink(missing_ok=True)
 
-        task = asyncio.create_task(_bg_ingest(tmp.name, source_id))
+        task = asyncio.create_task(_bg_ingest(str(staged), source_id))
         app_tasks = request.app.setdefault("_bg_tasks", set())
         app_tasks.add(task)
         task.add_done_callback(app_tasks.discard)
@@ -1605,7 +1599,7 @@ async def ingest_file(request: web.Request) -> web.Response:
         return web.json_response({"source_id": source_id, "status": "processing"})
     except Exception:
         logger.exception("Ingestion failed for %s", filename)
-        Path(tmp.name).unlink(missing_ok=True)
+        staged.unlink(missing_ok=True)
         return web.json_response({"error": "internal server error"}, status=500)
 
 

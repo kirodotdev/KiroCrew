@@ -331,6 +331,11 @@ class TestFaissInstallTimeout:
                 assert "timed out" in body["error"]
 
         proc.kill.assert_called_once()
+        # The critical pin: the reap drains pipes via a SECOND communicate();
+        # a bare wait() on a killed pip blocked writing into a full stderr
+        # pipe would hang the handler forever (#5989).
+        assert proc.communicate.call_count == 2
+        proc.wait.assert_not_awaited()
         assert mem_mod._embedding_setup_status["step"] == "idle"
         assert "timed out" in str(mem_mod._embedding_setup_status["error"])
 

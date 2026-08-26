@@ -401,6 +401,7 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # tool is unreachable in production while handler-level tests still pass.
         "/api/session-control/create",
         "/api/session-control/stop",
+        "/api/session-control/send",
         "/api/session-control/read",
     }
 )
@@ -1188,6 +1189,9 @@ def _register_mcp_routes(app: web.Application) -> None:
     )
     app.router.add_post(
         "/api/session-control/stop", _deferred_session_control("api_session_control_stop")
+    )
+    app.router.add_post(
+        "/api/session-control/send", _deferred_session_control("api_session_control_send")
     )
     app.router.add_get(
         "/api/session-control/read", _deferred_session_control("api_session_control_read")
@@ -2723,7 +2727,12 @@ async def start_dashboard(
 
     app = web.Application(
         client_max_size=60 * 1024 * 1024
-    )  # 60 MB: covers 50 MB upload + multipart overhead
+    )  # 60 MB: covers a 50 MB BUFFERED upload + multipart overhead. NOT a
+    # ceiling on every upload: aiohttp enforces this in Request.read()/.post(),
+    # not on the streaming multipart() reader, so the video path in
+    # handlers/files.py streams past it under its own _MAX_VIDEO_UPLOAD_BYTES
+    # (pinned by test_streaming_bypasses_the_app_client_max_size). Reading this
+    # number as a global request cap is the false invariant to avoid.
     app["state"] = state
     # Bind the serving loop once, here: this runs ON that loop, so every
     # surface that later hands work in from a foreign thread -- slots
@@ -2769,6 +2778,7 @@ async def start_dashboard(
     await asyncio.to_thread(state.load_chat_pins)
     state.load_tags()
     app["port"] = port
+    app["dashboard_url"] = dashboard_url
 
     # Route pull-request status deltas to owner websockets. Extracted so the
     # register + shutdown-cleanup contract is unit-testable without booting the
@@ -3717,7 +3727,12 @@ async def start_api_server(
 
     app = web.Application(
         client_max_size=60 * 1024 * 1024
-    )  # 60 MB: covers 50 MB upload + multipart overhead
+    )  # 60 MB: covers a 50 MB BUFFERED upload + multipart overhead. NOT a
+    # ceiling on every upload: aiohttp enforces this in Request.read()/.post(),
+    # not on the streaming multipart() reader, so the video path in
+    # handlers/files.py streams past it under its own _MAX_VIDEO_UPLOAD_BYTES
+    # (pinned by test_streaming_bypasses_the_app_client_max_size). Reading this
+    # number as a global request cap is the false invariant to avoid.
     app["state"] = state
     # Bind the serving loop once, here: this runs ON that loop, so every
     # surface that later hands work in from a foreign thread -- slots

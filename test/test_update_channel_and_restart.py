@@ -43,7 +43,10 @@ def _request(body: object) -> web.Request:
         return body
 
     req.json = _json
-    req.app = {"state": MagicMock()}
+    state = MagicMock()
+    state._gateway_restart_task = None
+    state._gateway_restart_in_progress = False
+    req.app = {"state": state}
     return req
 
 
@@ -493,3 +496,30 @@ class TestRestartEndpoint:
         state = asyncio.run(_run())
         # The user is told, rather than left watching a spinner that never ends.
         assert state.push_update_progress.called
+
+    def test_duplicate_requests_share_one_restart_task(self):
+        """Double-clicks cannot race two successors for one gateway port."""
+        calls = 0
+        release = asyncio.Event()
+
+        async def _fake_restart(_state: object) -> None:
+            nonlocal calls
+            calls += 1
+            await release.wait()
+
+        async def _run() -> tuple[web.Response, web.Response]:
+            req = _request({})
+            req.app["state"]._background_tasks = set()
+            with patch.object(updates, "_restart_gateway", _fake_restart):
+                first = await updates.api_gateway_restart(req)
+                second = await updates.api_gateway_restart(req)
+                assert json.loads(second.body)["already_in_progress"] is True
+                await asyncio.sleep(0.3)
+                assert calls == 1
+                release.set()
+                await asyncio.sleep(0)
+            return first, second
+
+        first, second = asyncio.run(_run())
+        assert first.status == 200
+        assert second.status == 200

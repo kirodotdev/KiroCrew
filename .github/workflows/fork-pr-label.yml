@@ -41,6 +41,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           LABEL: "fork"
+          # See the truncation guard below.
+          PR_LIST_LIMIT: "900"
           EVENT: ${{ github.event_name }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_IS_FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
@@ -75,8 +77,18 @@ jobs:
 
           # Sweep (schedule / manual dispatch): label every open fork PR that is
           # missing the label. `isCrossRepository` is GitHub's own fork flag.
-          prs="$(gh pr list --repo "$REPO" --state open --limit 300 \
+          # `gh pr list` returns NEWEST-first and truncates at --limit SILENTLY,
+          # so a ceiling below the real open-PR count drops the OLDEST PRs --
+          # in this sweep, the ones most likely to be missing the label. The
+          # ceiling is a variable kept clear of the real set, and a hit is
+          # reported as an action item rather than absorbed as a measurement.
+          prs="$(gh pr list --repo "$REPO" --state open --limit "$PR_LIST_LIMIT" \
             --json number,isCrossRepository,labels)"
+          if [ "$(jq 'length' <<<"$prs")" -ge "$PR_LIST_LIMIT" ]; then
+            echo "::warning::Open-PR list hit its ceiling of $PR_LIST_LIMIT;" \
+              "the oldest open PRs were dropped and were not considered." \
+              "Raise PR_LIST_LIMIT in this workflow."
+          fi
           echo "$prs" | jq -c '.[] | select(.isCrossRepository == true)' | while read -r pr; do
             number="$(jq -r '.number' <<<"$pr")"
             has_label="$(jq -r --arg l "$LABEL" 'any(.labels[]?; .name == $l)' <<<"$pr")"

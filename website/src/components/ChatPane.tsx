@@ -23,7 +23,10 @@ import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
 import { useAvailableModels } from '../hooks/useAvailableModels'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAppSelector, useAppDispatch, store } from '../store'
-import { PANE_HYDRATE_LIMIT, retireStatelessQuestion, captureStatelessCard, capturePendingAskId, confirmOptimisticSend, selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, cancelQueuedMessage, editQueuedMessage, setAgentSwitchNotice } from '../store/chatSlice'
+import { PANE_HYDRATE_LIMIT, retireStatelessQuestion, captureStatelessCard, capturePendingAskId, confirmOptimisticSend, selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, cancelQueuedMessage, editQueuedMessage, setAgentSwitchNotice, pendingQuestionFor } from '../store/chatSlice'
+import { deriveFollowUpOptions } from '../app-sdk/protocol'
+import { loadChatConfig, type ChatConfig } from '../pages/chat/ChatSettings'
+import { tryQuickSend } from '../lib/quickSend'
 import { confirmedDelivered, readSendReceipt } from '../utils/sendDelivery'
 import { mergeRecoveredDraft } from '../utils/chatDrafts'
 import { triggerRefresh, updateSlot } from '../store/dashboardSlice'
@@ -32,7 +35,7 @@ import { performAgentSlotSwitch } from '../lib/agentSwitch'
 import { api } from '../api/client'
 import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
 import { classifyDrop } from '../utils/dropClassify'
-import { serializeDirTokens, spliceDirTokens } from '../utils/fileTokens'
+import { serializeDirTokens, spliceDirTokens, VIDEO_EXT, VIDEO_MAX_BYTES } from '../utils/fileTokens'
 import { displayModel } from '../lib/model'
 
 
@@ -131,6 +134,48 @@ export default function ChatPane({
     () => splitPaneMessages(allMessages),
     [allMessages],
   )
+
+  // Follow-up [OPTIONS:] pills for this pane's composer — the same
+  // derive-and-pass wiring ChatPage uses, adapted to the pane's own signals.
+  // Derived from `allMessages`, NOT the queued-stripped `messages` above:
+  // deriveFollowUpOptions short-circuits on a `queued` row (the user already
+  // acted), and splitPaneMessages removes exactly those rows, so deriving from
+  // the filtered list would keep stale pills alive past a queued send.
+  // The pane's composer-busy rule (main turn streaming OR sub-agents running)
+  // stands in for ChatPage's isStreaming as the mid-turn gate: the pane already
+  // treats `busy` as its one busy signal everywhere else (queue affordance,
+  // optimistic-bubble skip), so the pills follow the same rule rather than
+  // introducing a second busy variant. A pending question card suppresses them
+  // for the same reason as ChatPage: both would offer the same choices, and
+  // only the card can answer the blocked tool call.
+  const pendingQuestion = useAppSelector((s) => pendingQuestionFor(s.chat.pendingQuestions, slotKey))
+  const { followUpOptions } = useMemo(
+    () => deriveFollowUpOptions(allMessages, busy, !!pendingQuestion),
+    [allMessages, busy, pendingQuestion],
+  )
+  // Visual-only highlight state; the composer text is the source of truth for
+  // what gets sent. Cleared whenever the options list changes (new assistant
+  // message) or the pane is re-bound to another slot — both signal a fresh turn.
+  const [followUpPicked, setFollowUpPicked] = useState<Set<string>>(() => new Set())
+  // Read by the option handler instead of the state: two clicks landing before
+  // a re-render would both see the same set and both take the append branch.
+  const followUpPickedRef = useRef(followUpPicked); followUpPickedRef.current = followUpPicked
+  const followUpOptionsKey = followUpOptions.join('\x00')
+  useEffect(() => { setFollowUpPicked(new Set()) }, [followUpOptionsKey, slotKey])
+  // Quick Send parity with ChatPage: same query key, so the cache is shared
+  // with the page and no extra request is made for a pane.
+  const { data: dashCfg } = useQuery<{ quick_send?: boolean }>({ queryKey: ['dashboardConfig'], queryFn: () => api.dashboardConfig(), staleTime: 30_000 })
+  // Follow-up bar layout: the same persisted setting ChatPage reads, kept live
+  // the same way (ChatPage.tsx's reload listener) — a pane is long-lived, so a
+  // one-shot read would leave it on the old layout after the user changes the
+  // setting while split view is open.
+  const [chatConfig, setChatConfig] = useState<ChatConfig>(loadChatConfig)
+  useEffect(() => {
+    const reload = () => { const next = loadChatConfig(); setChatConfig(prev => JSON.stringify(prev) === JSON.stringify(next) ? prev : next) }
+    window.addEventListener('focus', reload)
+    window.addEventListener('mc-config-changed', reload)
+    return () => { window.removeEventListener('focus', reload); window.removeEventListener('mc-config-changed', reload) }
+  }, [])
 
   // Pickers — same hooks/data sources ChatPage uses, but selection targets THIS slot.
   // Subscribes to the store's global refresh so a default-agent write in ANY pane (or
@@ -276,7 +321,17 @@ export default function ChatPane({
   })
   const uploadFiles = useCallback((files: File[]) => {
     if (!files.length || files.length > 20) return
-    if (files.find((f) => f.size > 50 * 1024 * 1024)) return
+    // Same video exemption as ChatPage's uploadFiles: the server's video cap is
+    // far higher than 50 MB, and this guard drops the batch SILENTLY, so
+    // applying it to a recording would swallow the attach with no explanation.
+    // But this pane has no error surface at all -- `uploadMutation` renders
+    // nothing on failure -- so it cannot delegate the ceiling to the server's
+    // 413 the way ChatPage does. It pre-checks against the server's own cap
+    // instead: a legal recording gets through, and an over-cap one is dropped
+    // exactly the way this pane already drops every oversized file, rather than
+    // gaining a NEW silent failure mode from this change.
+    const cap = (f: File) => (VIDEO_EXT.test(f.name) ? VIDEO_MAX_BYTES : 50 * 1024 * 1024)
+    if (files.find((f) => f.size > cap(f))) return
     uploadMutation.mutate(files)
   }, [uploadMutation])
 
@@ -332,8 +387,12 @@ export default function ChatPane({
     }))
   }, [dispatch, slotKey])
 
-  const doSend = useCallback(() => {
-    const text = input.trim()
+  const doSend = useCallback((optionText?: string) => {
+    // `optionText` mirrors ChatPage.send's first parameter: the follow-up
+    // bar's direct-send gesture (double-click / split button) hands the option
+    // label here so it bypasses the setInput race, superseding any composer
+    // text exactly as ChatPage does with `optionText || inputRef.current`.
+    const text = (optionText || input).trim()
     if (!text && !pendingFiles.length) return
     // Capture the stateless card pending at ENTRY (before any state updates
     // or yields): this send consumes the answer channel of the card the user
@@ -345,9 +404,18 @@ export default function ChatPane({
     // A blocking card is resolved over the network, not in the store — an agent
     // is parked on its request.
     const askAtSend = capturePendingAskId(store.getState().chat.pendingQuestions, slotKey)
-    setInput('')
-    const files = pendingFiles
-    setPendingFiles([])
+    // Staged text and files belong to the COMPOSER, so only a send that
+    // consumes the composer may clear or carry them. An `optionText` send (the
+    // follow-up bar's direct-send gesture) supplies its own text and leaves the
+    // composer untouched — same invariant as ChatPage.send's `if (!optionText)`
+    // gate: no send-without-clear (duplicate) and no clear-without-send (silent
+    // loss). Consuming the draft or attachments here would wipe text the user
+    // never sent and attach files to a message they never composed.
+    const files = optionText ? [] : pendingFiles
+    if (!optionText) {
+      setInput('')
+      setPendingFiles([])
+    }
     // Folder tokens take the same wire/bubble split ChatPage uses: the wire
     // text carries `[attached_dir N] path` markers the agent can resolve, the
     // bubble keeps the `@path/` token for the chip, and `meta.dirs` indexes
@@ -381,7 +449,11 @@ export default function ChatPane({
     // error row and handed the text back; the pane now does the same.
     const reportFailedSend = (reason?: string) => {
       reportSendFailure(reason)
-      restoreIntoComposer(text, files)
+      // Only a composer send has anything to hand back: an option send never
+      // consumed the draft (see the `!optionText` gate above), so restoring the
+      // option label here would CLOBBER the preserved draft with text the user
+      // can re-click any time.
+      if (!optionText) restoreIntoComposer(text, files)
     }
     // Same 10s abort `ChatPage.send` uses. Without it a HUNG (not refused) POST
     // settles neither way until the browser's own network timeout, so the
@@ -654,6 +726,50 @@ export default function ChatPane({
           onAgentClick={provider.capabilities.agentTemplates ? (rect) => { setAgentBtnRect(rect); agentDD.setOpen(!agentDD.open) } : undefined}
           onModelClick={(rect) => { setModelBtnRect(rect); modelDD.setOpen(!modelDD.open) }}
           approvalMode={displayMode}
+          followUpOptions={followUpOptions}
+          followUpPicked={followUpPicked}
+          followUpLayout={chatConfig.followUpLayout}
+          quickSend={dashCfg?.quick_send}
+          onFollowUpSelect={(o: string, e: React.MouseEvent) => {
+            // Mirrors ChatPage's toggle wiring, minus the plan-dispatch branch:
+            // panes have no orchestrator plan mutation, so plan options fall
+            // through to the composer like any other option (follow-up: #5870
+            // disposition names this delta). One-click Quick Send takes the
+            // same gate as ChatPage: enabled + no shift + not busy + not
+            // already in multi-select.
+            if (tryQuickSend(o, dashCfg?.quick_send, e.shiftKey, busy, followUpPickedRef.current.size, (t: string) => doSend(t))) return
+            // Regular options: toggle. Click unpicked → append + mark; click
+            // picked → try to remove the text + unmark (if the user edited the
+            // text so it no longer matches, leave the text alone — the chip
+            // still un-highlights for consistency).
+            if (followUpPickedRef.current.has(o)) {
+              const next = new Set(followUpPickedRef.current); next.delete(o)
+              followUpPickedRef.current = next
+              setInput(prev => {
+                // Order matters: try leading ", o" first so "opt, opt" + remove
+                // last "opt" doesn't match "opt, " and splice the wrong one.
+                // lastIndexOf, not indexOf: the handler appends options at the
+                // END, so the last occurrence is the one it created — a draft
+                // merely containing ", o" as a substring (draft "Please, Google"
+                // + option "Go") must not be spliced mid-word.
+                const leading = ', ' + o
+                let idx = prev.lastIndexOf(leading)
+                if (idx >= 0) return prev.slice(0, idx) + prev.slice(idx + leading.length)
+                const trailing = o + ', '
+                idx = prev.indexOf(trailing)
+                if (idx >= 0) return prev.slice(0, idx) + prev.slice(idx + trailing.length)
+                if (prev === o) return ''
+                return prev  // user edited — leave text, still unmark below
+              })
+              setFollowUpPicked(next)
+            } else {
+              const next = new Set(followUpPickedRef.current); next.add(o)
+              followUpPickedRef.current = next
+              setInput(prev => prev.trim() ? prev.trimEnd() + ', ' + o : o)
+              setFollowUpPicked(next)
+            }
+          }}
+          onFollowUpSend={(text?: string) => doSend(text)}
           project={paneSlot?.project ?? ''}
           onUploadFiles={uploadFiles}
           pendingFiles={pendingFiles}

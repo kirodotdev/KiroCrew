@@ -32,6 +32,7 @@ from kiro_crew.config.loader import (
 )
 from kiro_crew.constants import DATA_WARNING, MIN_NODE_MAJOR
 from kiro_crew.sandbox import unavailable_kind
+from kiro_crew.secrets.migrate import _env_lock_path
 from kiro_crew.sel import sel
 from kiro_crew.skills import SkillsLoader
 
@@ -505,30 +506,61 @@ def _setup_slack_tokens() -> None:
         print("  ⚠️  Missing tokens — Slack integration will be disabled.\n")
         return
 
-    # Preserve any extra keys already in .env
-    existing[CRED_SLACK_APP_TOKEN] = app_token
-    existing[CRED_SLACK_BOT_TOKEN] = bot_token
-    if owner_id:
-        existing[CRED_OWNER_ID] = owner_id
-
+    # Serialize the read-modify-write against every OTHER .env writer (the
+    # `kirocrew secrets import` migrator, the WeChat/Weixin QR handler, and the
+    # dashboard channel-credential handlers) on the SAME advisory lock, derived
+    # from the shared helper. Without this, a concurrent importer commit (its
+    # final CAS + atomic_write) could interleave with this write and clobber the
+    # freshly-typed Slack tokens. The prompts above run OUTSIDE the lock (they
+    # can block on the user for minutes); the lock wraps only the short
+    # re-read → merge → atomic-rename critical section, and we RE-READ .env
+    # fresh under the lock so we merge onto the latest on-disk state rather than
+    # the possibly-stale snapshot read before the prompts.
     cred_path.parent.mkdir(parents=True, exist_ok=True)
-    lines = [f"{k}={v}" for k, v in existing.items()]
-    # atomic_write with restrict_to_owner, not write_text + chmod(0o600): a
-    # bare chmod is a silent no-op for Windows ACLs, and applying any lockdown
-    # only AFTER the tokens are on disk leaves them readable through the
-    # directory's inherited DACL in the failure window. The helper locks its
-    # unique temp file down before any content reaches it and renames only on
-    # success, so the tokens never exist under a wider mode and a failure
-    # leaves the previous .env untouched. restrict_on_error="warn" matches the
-    # .env doctrine (enforce the lockdown, log a warning if it fails) and the
-    # dashboard credential writers: an ACL-refusing host still completes the
-    # wizard instead of aborting after the user typed their tokens.
-    atomic_write(
-        cred_path,
-        "\n".join(lines) + "\n",
-        restrict_to_owner=True,
-        restrict_on_error="warn",
-    )
+    lock_path = _env_lock_path(cred_path)
+    lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    if not platform_compat.try_acquire_lock(lock_fd, exclusive=True):
+        os.close(lock_fd)
+        print(
+            "  ⚠️  .env is locked by another process (a secrets import or "
+            "credential save is in progress); tokens not saved. Retry once the "
+            "other operation finishes.\n",
+            file=sys.stderr,
+        )
+        return
+    try:
+        # Re-read fresh under the lock, then merge the just-collected tokens on
+        # top so a concurrent write that landed during the prompts is preserved.
+        merged: dict[str, str] = {}
+        if cred_path.exists():
+            for line in cred_path.read_text(encoding="utf-8").splitlines():
+                if "=" in line and not line.startswith("#"):
+                    k, _, v = line.partition("=")
+                    merged[k.strip()] = v.strip()
+        merged[CRED_SLACK_APP_TOKEN] = app_token
+        merged[CRED_SLACK_BOT_TOKEN] = bot_token
+        if owner_id:
+            merged[CRED_OWNER_ID] = owner_id
+        lines = [f"{k}={v}" for k, v in merged.items()]
+        # atomic_write with restrict_to_owner, not write_text + chmod(0o600): a
+        # bare chmod is a silent no-op for Windows ACLs, and applying any lockdown
+        # only AFTER the tokens are on disk leaves them readable through the
+        # directory's inherited DACL in the failure window. The helper locks its
+        # unique temp file down before any content reaches it and renames only on
+        # success, so the tokens never exist under a wider mode and a failure
+        # leaves the previous .env untouched. restrict_on_error="warn" matches the
+        # .env doctrine (enforce the lockdown, log a warning if it fails) and the
+        # dashboard credential writers: an ACL-refusing host still completes the
+        # wizard instead of aborting after the user typed their tokens.
+        atomic_write(
+            cred_path,
+            "\n".join(lines) + "\n",
+            restrict_to_owner=True,
+            restrict_on_error="warn",
+        )
+    finally:
+        platform_compat.release_lock(lock_fd)
+        os.close(lock_fd)
     print(f"  ✅ Credentials saved to {cred_path}\n")
 
 

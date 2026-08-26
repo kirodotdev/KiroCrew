@@ -480,13 +480,12 @@ which shows the live session and lets you take over with real mouse and keyboard
 That is how you complete a CAPTCHA or a 2FA prompt, and how you log in once so a
 session can be captured with `playwright-cli state-save`.
 
-**Installing the CLI is what grants browsing.** There is no separate toggle,
-because the CLI has no capability gating and a binary on `PATH` is reachable from
-any shell command the agent runs, so no subset of browsing could be granted or
-withheld. Read that in both directions: uninstalling `playwright-cli` (or never
-installing it) is the way to withhold the capability, and if you installed it for
-your own unrelated work then the capability is armed on this host without a
-separate opt-in. It matters most for `playwright-cli attach --extension`, which
+**Installing the CLI makes browsing available; it does not auto-approve it.**
+There is no separate capability toggle because the CLI has no way to expose only
+a subset of its verbs. Every `playwright-cli` shell command still follows the
+ordinary approval flow. Under normal mode the first command prompts; you can
+approve once, trust its command pattern for the session, or deliberately enable a
+wider trust mode. This matters most for `playwright-cli attach --extension`, which
 drives your own running Chrome with the sessions you are already logged into.
 
 ## Configuration

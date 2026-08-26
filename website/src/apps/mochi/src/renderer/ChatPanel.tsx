@@ -893,8 +893,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
     }
   }, [])
 
-  const handleApproval = useCallback(async (id: string, action: string, pattern?: string) => {
-    const res = await api?.respondApproval?.(id, action, pattern)
+  const handleApproval = useCallback(async (
+    id: string,
+    action: string,
+    pattern?: string,
+    trustGrantable = false,
+  ) => {
+    const res = await api?.respondApproval?.(id, action, pattern, trustGrantable)
     if (res !== undefined && res !== null && res.ok === false) {
       // The POST failed. Do NOT relabel the card "Approved"/"Trusted" — that
       // would claim a security decision that never reached the agent, which is
@@ -1840,6 +1845,8 @@ interface ApprovalPayload {
   fullCommand?: string
   /** Comma-joined base binaries ("cat,wc"), for a grant scoped to the family. */
   baseCommand?: string
+  /** Server proof that this pending card may create a durable trust grant. */
+  trustGrantable?: boolean
 }
 
 /** Parse an approval payload, or null when the text is not really one of ours.
@@ -1891,7 +1898,7 @@ const trustScopeBtnStyle: React.CSSProperties = {
 
 // Exported for the capture harness (capture/mochi-trust-label.tsx), which mounts
 // the real approval card as screenshot evidence; not part of the app's API.
-export const Bubble = React.memo<{ message: ChatMessage; onOption?: (text: string) => void; onImageClick?: (b64: string) => void; onApproval?: (id: string, action: string, pattern?: string) => void; onEdit?: (content: string) => void; animate?: boolean }>(({ message, onOption, onImageClick, onApproval, onEdit, animate = true }) => {
+export const Bubble = React.memo<{ message: ChatMessage; onOption?: (text: string) => void; onImageClick?: (b64: string) => void; onApproval?: (id: string, action: string, pattern?: string, trustGrantable?: boolean) => void; onEdit?: (content: string) => void; animate?: boolean }>(({ message, onOption, onImageClick, onApproval, onEdit, animate = true }) => {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const mounted = React.useRef(false)
   const shouldAnimate = animate && !mounted.current
@@ -1918,7 +1925,15 @@ export const Bubble = React.memo<{ message: ChatMessage; onOption?: (text: strin
     // grant — see src/shared/trustPatterns, which must stay equivalent to the
     // dashboard's TrustDropdown so both surfaces offer the same scopes.
     const showTrustBase = familyGrantIsDistinct(req.fullCommand, req.baseCommand)
-    const hasTrustScopes = Boolean(req.fullCommand) || showTrustBase
+    const hasTrustScopes = req.trustGrantable === true
+      && (Boolean(req.fullCommand) || showTrustBase)
+    const approvalActions = [
+      ['approve', i18nT('apps.mochi.approval.btn_approve'), '#2e7d32', Check],
+      ...(req.trustGrantable === true
+        ? [['trust', i18nT('apps.mochi.approval.btn_trust'), '#1565c0', Handshake]]
+        : []),
+      ['reject', i18nT('apps.mochi.approval.btn_reject'), '#c62828', Ban],
+    ] as [string, string, string, React.ComponentType<{ size?: number }>][]
     return (
       <div style={{ alignSelf: 'flex-start', maxWidth: '85%', animation: shouldAnimate ? 'msgIn 0.25s ease-out' : 'none' }}>
         <div style={{
@@ -1932,21 +1947,17 @@ export const Bubble = React.memo<{ message: ChatMessage; onOption?: (text: strin
                 string: an emoji in the copy can't follow the theme, renders at
                 whatever size the font picks, and has to be repeated in every
                 locale (AGENTS.md: emoji-as-icon is a bug). */}
-            {([
-              ['approve', i18nT('apps.mochi.approval.btn_approve'), '#2e7d32', Check],
-              ['trust', i18nT('apps.mochi.approval.btn_trust'), '#1565c0', Handshake],
-              ['reject', i18nT('apps.mochi.approval.btn_reject'), '#c62828', Ban],
-            ] as [string, string, string, React.ComponentType<{ size?: number }>][]).map(
+            {approvalActions.map(
               ([action, label, bg, Icon]) => (
               <button
                 key={action}
                 // Trust is a SCOPE choice, not one verb. Tapping it reveals the
-                // grants inline (see below) instead of firing the broadest one;
-                // when the gateway sent no pattern fields there is nothing to
-                // scope, so it stays a direct single-action button.
+                // grants inline (see below) instead of firing the broadest one.
+                // The action exists only when the gateway supplied grant proof;
+                // a proven but scopeless card remains a direct broad action.
                 onClick={() => {
                   if (action === 'trust' && hasTrustScopes) { setTrustOpen(v => !v); return }
-                  onApproval?.(req.id, action)
+                  onApproval?.(req.id, action, undefined, req.trustGrantable === true)
                 }}
                 aria-expanded={action === 'trust' && hasTrustScopes ? trustOpen : undefined}
                 style={{
@@ -1966,7 +1977,7 @@ export const Bubble = React.memo<{ message: ChatMessage; onOption?: (text: strin
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6 }}>
               {req.fullCommand && (
                 <button
-                  onClick={() => onApproval?.(req.id, 'trust_command', req.fullCommand)}
+                  onClick={() => onApproval?.(req.id, 'trust_command', req.fullCommand, true)}
                   // The untruncated command as a tooltip: the label is budget-clamped,
                   // and this grant is an exact-string match, so the user must be able
                   // to read the whole thing before agreeing to it.
@@ -1985,17 +1996,17 @@ export const Bubble = React.memo<{ message: ChatMessage; onOption?: (text: strin
               )}
               {showTrustBase && (
                 <button
-                  onClick={() => onApproval?.(req.id, 'trust_base', trustBasePattern(req.baseCommand ?? ''))}
+                  onClick={() => onApproval?.(req.id, 'trust_base', trustBasePattern(req.baseCommand ?? ''), true)}
                   style={trustScopeBtnStyle}
                 ><ShieldPlus size={11} />{i18nT('apps.mochi.approval.trust_all_base', { base: (req.baseCommand ?? '').split(',').join(', ') })}</button>
               )}
               <button
-                onClick={() => onApproval?.(req.id, 'trust')}
+                onClick={() => onApproval?.(req.id, 'trust', undefined, true)}
                 style={trustScopeBtnStyle}
               ><ShieldCheck size={11} />{i18nT('apps.mochi.approval.trust_all_tools')}</button>
             </div>
           )}
-          {!hasTrustScopes && (
+          {req.trustGrantable === true && !hasTrustScopes && (
             <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 5 }}>
               {i18nT('apps.mochi.approval.trust_hint', { tool: req.tool })}
             </div>
@@ -2211,4 +2222,3 @@ function ContextRing({ pct }: { pct: number }) {
     </div>
   )
 }
-

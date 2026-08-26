@@ -324,6 +324,28 @@ class TestLifecycle:
         await client.close()
         assert ws.close_calls == 0
 
+    @pytest.mark.asyncio
+    async def test_close_closes_session_even_when_task_died_with_a_bug(self) -> None:
+        """A task already dead from an uncaught, non-CancelledError exception
+        makes ``task.cancel()`` a no-op, and re-``await``ing it re-raises that
+        exception -- which must not skip the session close (issue #4627)."""
+        client = _make_client()
+        session = FakeSession()
+        client._session = session  # type: ignore[assignment]
+
+        async def _buggy_loop() -> None:
+            raise ValueError("malformed frame")
+
+        client._task = asyncio.create_task(_buggy_loop())
+        await _REAL_SLEEP(0)  # let the task actually finish before close()
+
+        with pytest.raises(ValueError, match="malformed frame"):
+            await client.close()
+
+        assert client._task is None
+        assert session.close_calls == 1
+        assert client._session is None
+
     def test_set_message_handler_replaces_the_handler(self) -> None:
         client = _make_client()
 

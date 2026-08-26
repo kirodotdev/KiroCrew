@@ -1096,30 +1096,59 @@ class AcpRuntime:
             profile=RLIMIT_PROFILE_SESSION_HOST,
         )
         self._pid = self._process.pid
-        # Windows resource ceiling, applied while the child is still SUSPENDED,
-        # then resumed. No-op on POSIX (CREATE_SUSPENDED is 0 there). This shared
-        # runtime multiplexes many session handles, so an unbounded fork/memory
-        # blowup here takes down every session on it, not just one. Offloaded for
-        # the same reason as in `AcpClient._spawn`: the Windows path reads config
-        # and walks the process and thread tables, and this runtime's event loop
-        # is serving every other session while it spawns.
-        await asyncio.get_running_loop().run_in_executor(
-            subprocess_executor(),
-            functools.partial(
-                finish_suspended_spawn, self._process, self._pid, label=f"{KIRO_CLI_BIN} acp"
-            ),
-        )
-        self._start_time = _get_start_time(self._pid)
-        self._spawn_monotonic = time.monotonic()
-        self._last_activity = time.monotonic()
-        if self._scratch_dir is not None:
-            # Liveness anchor for the scratch sweeps: a dir whose recorded
-            # owner is dead is reclaimable. Off-loop (file write), fail-open
-            # (an unowned dir falls under the grace-window rule instead).
+        # The subprocess is LIVE from here on but nothing has recorded it yet, so
+        # this window needs the same guard AcpClient._spawn has. finish_suspended_spawn
+        # documents its own resume failure as FATAL, and _get_start_time can raise;
+        # all four runtime.spawn() callers (providers/acp.py:726, :825 catch
+        # AcpRuntimeError; session.py:1416, :1490 catch AcpRuntimeDead) let anything
+        # else through, so a raise here left a live process absent from both PID
+        # files -- unreachable by every agent-runtime reaper and leaking until the
+        # host reboots. kill() reaps it before we re-raise.
+        #
+        # BaseException so a cancellation mid-window cleans up too. This is the same
+        # guard as the reader/handshake one below; they stay separate blocks because
+        # only the later one has reader/stderr tasks to tear down.
+        try:
+            # Windows resource ceiling, applied while the child is still SUSPENDED,
+            # then resumed. No-op on POSIX (CREATE_SUSPENDED is 0 there). This shared
+            # runtime multiplexes many session handles, so an unbounded fork/memory
+            # blowup here takes down every session on it, not just one. Offloaded for
+            # the same reason as in `AcpClient._spawn`: the Windows path reads config
+            # and walks the process and thread tables, and this runtime's event loop
+            # is serving every other session while it spawns.
             await asyncio.get_running_loop().run_in_executor(
                 subprocess_executor(),
-                functools.partial(agent_scratch.record_owner, self._scratch_dir, self._pid),
+                functools.partial(
+                    finish_suspended_spawn, self._process, self._pid, label=f"{KIRO_CLI_BIN} acp"
+                ),
             )
+            self._start_time = _get_start_time(self._pid)
+            self._spawn_monotonic = time.monotonic()
+            self._last_activity = time.monotonic()
+            if self._scratch_dir is not None:
+                # Liveness anchor for the scratch sweeps: a dir whose recorded
+                # owner is dead is reclaimable. Off-loop (file write), fail-open
+                # (an unowned dir falls under the grace-window rule instead).
+                await asyncio.get_running_loop().run_in_executor(
+                    subprocess_executor(),
+                    functools.partial(agent_scratch.record_owner, self._scratch_dir, self._pid),
+                )
+        except BaseException:
+            logger.error(
+                "AcpRuntime: spawn failed after the process was live (PID %s); reaping it "
+                "so it cannot leak untracked",
+                self._pid,
+                exc_info=True,
+            )
+            try:
+                await self.kill()
+            except Exception:
+                logger.warning(
+                    "AcpRuntime: cleanup reap after a failed spawn did not complete for PID %s",
+                    self._pid,
+                    exc_info=True,
+                )
+            raise
         logger.info(
             "AcpRuntime spawned backend=%s agent=%s (PID %d)",
             self._acp_backend,
@@ -1133,17 +1162,42 @@ class AcpRuntime:
         # A LIVE runtime is already protected during the periodic sweep because
         # AcpSessionProvider._pid feeds _collect_active_pids — this only closes
         # the cross-restart leak.
+        # Shield this shared runtime's PID from the periodic orphan sweep.
+        # _bg_runtime and companion subagent runtimes are held only in
+        # SessionManager instance attributes (not registered sessions /
+        # warm-pool providers), so _collect_active_pids would otherwise
+        # classify them as orphans and SIGKILL them mid-use.
+        #
+        # Ordered BEFORE the two file appends, which is the only ordering that
+        # is safe: register_protected_pid is an in-memory set insert under a
+        # threading lock with no IO, so it cannot fail for the reasons an append
+        # can (ENOSPC, a wedged file lock). Behind the appends it was reachable
+        # only if they both succeeded, so one failed append escalated into a
+        # LIVE runtime losing its shield and being SIGKILLed mid-use by the very
+        # sweep this call exists to hide it from.
+        register_protected_pid(self._pid)
         try:
             _track_pid(self._pid)
             _track_session_pid(self._pid)
-            # Shield this shared runtime's PID from the periodic orphan sweep.
-            # _bg_runtime and companion subagent runtimes are held only in
-            # SessionManager instance attributes (not registered sessions /
-            # warm-pool providers), so _collect_active_pids would otherwise
-            # classify them as orphans and SIGKILL them mid-use.
-            register_protected_pid(self._pid)
         except Exception:
-            logger.debug("AcpRuntime: PID tracking failed for %s", self._pid, exc_info=True)
+            # A runtime that is not in the PID files is unreachable by every
+            # agent-runtime reaper: cleanup_orphaned_sessions,
+            # _periodic_pid_sweep and cleanup_orphaned_session_roots all read
+            # those files, and the /proc orphan scan declines managed agent
+            # runtimes on purpose (session_pid._MANAGED_AGENT_MARKERS is a
+            # negative gate) precisely because this lifecycle is meant to own
+            # them. So the process keeps working, holds hundreds of MB, and
+            # leaks for the rest of the host's uptime.
+            #
+            # ERROR, not debug: this log line is the only signal that will ever
+            # be emitted for that leak. #2985 made a failed PID-file REWRITE
+            # loud for the same reason; this is the append half.
+            logger.error(
+                "AcpRuntime: PID tracking failed for %s — this runtime is now "
+                "invisible to every reaper and will leak until the host reboots",
+                self._pid,
+                exc_info=True,
+            )
 
         # Everything after the subprocess exists must be guarded: if reader
         # startup or the initialize handshake fails (kiro-cli hang / auth stall),

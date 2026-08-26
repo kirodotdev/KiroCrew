@@ -5059,8 +5059,16 @@ def _dispatch_turn(
     """Relay a turn into the spec's agent slot with its structural provenance."""
     if getattr(slot, "running", False):
         try:
+            # circular import (deferred), and load-bearing (#5911): a spec slot
+            # is app-scoped, so an UNMARKED plain entry would fail the drain's
+            # closed-world re-check.
+            # The stamp records app=True at admission, which the drain treats as
+            # designed behaviour rather than a containment change.
+            from kiro_crew.dashboard.session_control import containment_meta
+
             slot.queue_append(
                 message,
+                meta=containment_meta(state, slot),
                 directive_user_origin=directive_user_origin,
             )
         except Exception:

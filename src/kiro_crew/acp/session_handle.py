@@ -544,6 +544,10 @@ class AcpSessionHandle:
         # toolCallId -> redacted input string, written by the shared parser so a
         # later tool result can recover its originating input (mirrors AcpClient).
         self._tool_call_inputs: dict[str, str] = {}
+        # Same-key provenance for ``_tool_call_inputs``.  The cached text is
+        # intentionally redacted; this bit lets an approval surface fail closed
+        # without retaining or forwarding the removed secret bytes.
+        self._tool_call_input_redacted: dict[str, bool] = {}
         # toolCallId -> is_shell, cached from the tool_call notification so the
         # later permission_request event (which carries no trusted kind) can
         # inherit the canonical shell signal. Mirrors AcpClient's cache and is
@@ -801,6 +805,7 @@ class AcpSessionHandle:
         self._retire_liveness_state()
         self._working_logged_ts = _WORKING_NEVER_LOGGED
         self._tool_call_inputs.clear()
+        self._tool_call_input_redacted.clear()
         self._tool_call_is_shell.clear()
         self._tool_call_raw_params.clear()
         self._tool_call_mcp_server.clear()
@@ -2810,6 +2815,7 @@ class AcpSessionHandle:
         event, recorded = build_permission_event(
             msg,
             tool_input_cache=self._tool_call_inputs,
+            tool_input_redacted_cache=self._tool_call_input_redacted,
             shell_cache=self._tool_call_is_shell,
             raw_params_cache=self._tool_call_raw_params,
             mcp_server_name_cache=self._tool_call_mcp_server,
@@ -3097,6 +3103,7 @@ class AcpSessionHandle:
             child_events = parse_session_update(
                 update,
                 tool_input_cache=self._tool_call_inputs,
+                tool_input_redacted_cache=self._tool_call_input_redacted,
                 shell_cache=self._tool_call_is_shell,
                 raw_params_cache=self._tool_call_raw_params,
                 mcp_server_name_cache=self._tool_call_mcp_server,
@@ -3192,6 +3199,7 @@ class AcpSessionHandle:
                     parse_session_update(
                         update,
                         tool_input_cache=self._tool_call_inputs,
+                        tool_input_redacted_cache=self._tool_call_input_redacted,
                         shell_cache=self._tool_call_is_shell,
                         raw_params_cache=self._tool_call_raw_params,
                         mcp_server_name_cache=self._tool_call_mcp_server,
@@ -3213,6 +3221,7 @@ class AcpSessionHandle:
         events = parse_session_update(
             update,
             tool_input_cache=self._tool_call_inputs,
+            tool_input_redacted_cache=self._tool_call_input_redacted,
             shell_cache=self._tool_call_is_shell,
             raw_params_cache=self._tool_call_raw_params,
             mcp_server_name_cache=self._tool_call_mcp_server,

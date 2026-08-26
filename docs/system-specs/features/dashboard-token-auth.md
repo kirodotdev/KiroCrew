@@ -8,6 +8,8 @@ Up to `MAX_CONCURRENT_NONCES` (50) link nonces can be valid concurrently (FIFO e
 
 The dashboard also issues a paired **refresh cookie** (`mc_refresh_{port}`, HttpOnly, path-restricted to `/api/auth`, up to 30-day TTL) alongside the access cookie on initial token-URL use. The SPA calls `POST /api/auth/refresh` shortly before the access cookie expires to silently rotate both cookies (rotation-on-use), so users only re-run `!dashboard` / `kirocrew token` roughly once per 30 idle days instead of every ~20h. Refresh tokens are HMAC-signed with the same persistent `token_signing.key` and enforce RFC 6819 §5.2.2.3 reuse detection: a consumed `jti` replayed outside a 60s same-IP multi-tab grace window auto-revokes the entire chain.
 
+An existing dashboard session can recover another browser with `POST /api/auth/mobile-link`. The endpoint requires the normal access-cookie session and an allowed same-origin request; it refuses unauthenticated and app-scoped callers. It returns a normal signed URL token plus `Cache-Control: no-store`; the browser uses that token through the ordinary link-to-cookie exchange, which establishes a separate access cookie and a refresh chain. The dashboard presents this as **Settings → Security → Sign in on mobile**, so a mobile browser whose storage was cleared can be restored without exposing a raw token prompt. The returned link has the normal five-minute click window, is built only from the configured external dashboard origin, and must be transferred only to the intended device.
+
 The refresh scheduler is mounted by `DashboardBootstrap` outside the first-run
 Kiro CLI prerequisite gate. A cold browser with a stale access cookie can
 therefore rotate its refresh cookie even while the main dashboard tree is not
@@ -593,7 +595,9 @@ Note: Loopback access (127.0.0.1) is always trusted for both token auth and CSRF
 | Malformed token (can't decode) | 403 | JSON for `/api/*`, HTML for pages |
 | Invalid duration in `!dashboard` | N/A | Slack usage message |
 
-HTML 403 page includes instructions to run `!dashboard` in Slack. The middleware never raises unhandled exceptions.
+HTML 403 page directs users to create a mobile sign-in link from an existing
+dashboard session; if no other device is signed in, it restores the
+`kirocrew token` CLI recovery path. The middleware never raises unhandled exceptions.
 
 > **Note:** the *No token* / *Expired token* / *Invalid HMAC signature* rows above apply to `/api/*`, `/apps/*`, and non-`GET`/`HEAD` requests. A non-API `GET`/`HEAD` navigation in those same states is instead served the public SPA shell (200) so the app can cold-start its refresh flow — see *SPA Shell Bypass (cold-start recovery)*. `IP mismatch` is **not** relaxed: it remains a hard 403 (theft signal).
 

@@ -26,6 +26,8 @@ export type UpdateState = {
   /** Download progress, 0-100. Absent until the first progress event arrives. */
   percent?: number
   bytesPerSecond?: number
+  /** Platform handoff the ready/installing UI should explain. */
+  installHandoff?: 'windows-installer' | 'automatic-relaunch'
   /**
    * True when this payload was replayed from getInfo() on a fresh mount rather
    * than pushed live. Restoration surfaces (the About card) render it like any

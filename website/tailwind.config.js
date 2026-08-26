@@ -5,7 +5,7 @@
  * transform — see the note in `ui/dialog.tsx`.
  */
 import tailwindcssAnimate from 'tailwindcss-animate'
-import tailwindPlugin from 'tailwindcss/plugin'
+import tailwindPlugin from 'tailwindcss/plugin.js'
 
 /* iOS safe-area utilities, emitted locally.
  *

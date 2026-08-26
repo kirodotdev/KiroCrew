@@ -378,25 +378,25 @@ class TestProcRssReaders:
             assert sa._proc_children(1234) == []
 
     def test_subtree_rss_falsy_pid(self) -> None:
-        assert sa._proc_rss_kb(None) == -1
-        assert sa._proc_rss_kb(0) == -1
+        assert sa._proc_subtree_sample(None, counts=False).rss_kb == -1
+        assert sa._proc_subtree_sample(0, counts=False).rss_kb == -1
 
     def test_subtree_rss_unreadable_parent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(sa, "_single_proc_rss_kb", lambda _pid: -1)
-        assert sa._proc_rss_kb(99) == -1
+        assert sa._proc_subtree_sample(99, counts=False).rss_kb == -1
 
     def test_subtree_rss_sums_descendants(self, monkeypatch: pytest.MonkeyPatch) -> None:
         tree = {1: [2, 3], 2: [4], 3: [], 4: []}
         monkeypatch.setattr(sa, "_single_proc_rss_kb", lambda pid: 100 * pid)
         monkeypatch.setattr(sa, "_proc_children", lambda pid: tree.get(pid, []))
-        assert sa._proc_rss_kb(1) == 100 + 200 + 300 + 400
+        assert sa._proc_subtree_sample(1, counts=False).rss_kb == 100 + 200 + 300 + 400
 
     def test_subtree_rss_ignores_cycles_and_dead_children(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(sa, "_single_proc_rss_kb", lambda pid: 100 if pid == 1 else -1)
         monkeypatch.setattr(sa, "_proc_children", lambda pid: [1, 2] if pid == 1 else [])
-        assert sa._proc_rss_kb(1) == 100
+        assert sa._proc_subtree_sample(1, counts=False).rss_kb == 100
 
 
 class TestReadIntFile:
@@ -753,7 +753,7 @@ class TestPidHelpers:
 
 class TestLiveSharedCount:
     def test_no_pid_counts_as_one(self) -> None:
-        assert _manager()._live_shared_count(None) == 1
+        assert _manager()._live_shared_count(None, []) == 1
 
     def test_counts_live_sharers_on_the_same_pid(self) -> None:
         mgr = _manager()
@@ -766,56 +766,143 @@ class TestLiveSharedCount:
         dead._session_sharing = True
         dead._pid = 777
         mgr._agents["dead"] = dead
-        assert mgr._live_shared_count(777) == 3
+        assert mgr._live_shared_count(777, list(mgr._agents.values())) == 3
 
     def test_unknown_pid_floors_at_one(self) -> None:
-        assert _manager()._live_shared_count(31337) == 1
+        mgr = _manager()
+        assert mgr._live_shared_count(31337, list(mgr._agents.values())) == 1
+
+    def test_snapshot_is_required_not_read_from_the_live_registry(self) -> None:
+        """The sole caller runs off-loop, so the count must never touch
+        ``self._agents``: it can only see what the caller snapshotted."""
+        mgr = _manager()
+        info = _info("s0")
+        info._session_sharing = True
+        info._pid = 777
+        mgr._agents[info.id] = info
+        assert mgr._live_shared_count(777, []) == 1, "an empty snapshot means no sharers seen"
+        with pytest.raises(TypeError):
+            mgr._live_shared_count(777)  # type: ignore[call-arg]
 
 
-class TestProcSubtreeCounts:
-    """``_proc_subtree_counts`` — the reading task rows were missing entirely."""
+class TestProcSubtreeSample:
+    """``_proc_subtree_sample`` — the ONE walk every reading now comes off.
 
-    def test_no_pid_is_unmeasurable(self) -> None:
-        assert sa._proc_subtree_counts(None) == (None, None)
+    The three readers it replaced ran three independent walks at three different
+    instants, so a process that exited between them was counted by one and
+    missed by another. These pin both halves of the claim: the readings are the
+    same values the separate readers produced, and they cost one walk.
 
-    def test_non_linux_is_unmeasurable_not_zero(self) -> None:
-        with patch.object(sa.platform_compat, "IS_LINUX", False):
-            assert sa._proc_subtree_counts(4242) == (None, None)
+    This class also absorbs what ``TestProcSubtreeCounts`` used to assert for the
+    #3953 count contract, and strengthens it: no-pid, non-Linux and dead-root are
+    now checked across all four columns at once rather than the two count columns
+    alone.
+    """
 
-    def test_dead_pid_is_unmeasurable(self) -> None:
+    #: 1 runtime + 3 children; two of the children are MCP stubs.
+    TREE = {10: [11, 12, 13], 11: [], 12: [], 13: []}
+    RSS = {10: 1000, 11: 200, 12: 30, 13: 4}
+    JIFFIES = {10: 100, 11: 50, 12: 25, 13: 10}
+    STUBS = {11, 12}
+
+    @contextlib.contextmanager
+    def _fake_tree(self):
         with (
             patch.object(sa.platform_compat, "IS_LINUX", True),
-            patch.object(sa, "_single_proc_rss_kb", return_value=-1),
-        ):
-            assert sa._proc_subtree_counts(4242) == (None, None)
-
-    def test_counts_the_subtree_and_its_stubs(self) -> None:
-        # 1 runtime + 3 children, two of which are stubs.
-        children = {10: [11, 12, 13], 11: [], 12: [], 13: []}
-        stub_pids = {11, 12}
-        with (
-            patch.object(sa.platform_compat, "IS_LINUX", True),
-            patch.object(sa, "_single_proc_rss_kb", return_value=1024),
-            patch.object(sa, "_proc_children", side_effect=lambda p: children.get(p, [])),
+            patch.object(sa, "_single_proc_rss_kb", side_effect=lambda p: self.RSS.get(p, -1)),
+            patch.object(sa, "_proc_cpu_jiffies", side_effect=lambda p: self.JIFFIES.get(p, 0)),
+            patch.object(sa, "_proc_children", side_effect=lambda p: self.TREE.get(p, [])),
             patch.object(
                 sa.platform_compat,
                 "process_matches",
-                side_effect=lambda p, needles: p in stub_pids and needles == (sa.STUB_MODULE,),
+                side_effect=lambda p, needles: p in self.STUBS and needles == (sa.STUB_MODULE,),
             ),
         ):
-            assert sa._proc_subtree_counts(10) == (4, 2)
+            yield
 
-    def test_walk_is_bounded(self) -> None:
-        """A pathological tree cannot walk past the shared subtree ceiling."""
+    def test_one_sample_carries_all_four_readings(self) -> None:
+        with self._fake_tree():
+            sample = sa._proc_subtree_sample(10)
+        assert sample.rss_kb == sum(self.RSS.values())
+        assert sample.jiffies == sum(self.JIFFIES.values())
+        assert (sample.procs, sample.stubs) == (4, 2)
+
+    def test_the_readings_still_report_what_they_always_did(self) -> None:
+        """Value preservation: consolidating must not move a single number, or
+        the learned-cost store and ``compute_max_subagents`` would see a step.
+
+        The expected values are what the three separate readers produced for this
+        tree: summed RSS, summed jiffies, and the count pair from #3954.
+        """
+        with self._fake_tree():
+            sample = sa._proc_subtree_sample(10)
+            assert sample.rss_kb == sum(self.RSS.values())
+            assert (sample.procs, sample.stubs) == (4, 2)
+            assert sa._subtree_cpu_jiffies(10) == sum(self.JIFFIES.values())
+
+    def test_the_subtree_is_walked_once_not_once_per_metric(self) -> None:
+        seen: list[int] = []
+        with (
+            self._fake_tree(),
+            patch.object(
+                sa,
+                "_proc_children",
+                side_effect=lambda p: (seen.append(p), self.TREE.get(p, []))[1],
+            ),
+        ):
+            sa._proc_subtree_sample(10)
+        assert sorted(seen) == [10, 11, 12, 13], "each process's children read exactly once"
+
+    def test_no_pid_is_unmeasurable_in_every_column(self) -> None:
+        assert sa._proc_subtree_sample(None) == sa._SubtreeSample(-1, 0, None, None)
+
+    def test_non_linux_loses_only_the_counts(self) -> None:
+        """Counts are ``None`` off Linux, but RSS and CPU keep their own
+        sentinels — the columns are unmeasurable in different ways."""
+        with self._fake_tree(), patch.object(sa.platform_compat, "IS_LINUX", False):
+            sample = sa._proc_subtree_sample(10)
+        assert (sample.procs, sample.stubs) == (None, None)
+        assert sample.rss_kb == sum(self.RSS.values())
+        assert sample.jiffies == sum(self.JIFFIES.values())
+
+    def test_dead_root_keeps_the_cpu_walk(self) -> None:
+        """An unreadable root status means RSS and the counts have nothing to
+        attribute, but jiffies is consumed as a *delta*, so its walk stands."""
+        with self._fake_tree(), patch.object(sa, "_single_proc_rss_kb", return_value=-1):
+            sample = sa._proc_subtree_sample(10)
+        assert sample.rss_kb == -1
+        assert (sample.procs, sample.stubs) == (None, None)
+        assert sample.jiffies == sum(self.JIFFIES.values())
+
+    def test_a_skipped_metric_costs_no_reads(self) -> None:
+        """The one CPU-only caller must not pay for RSS and the counts, or
+        sharing the walk would have made the session rows slower."""
+        with (
+            self._fake_tree(),
+            patch.object(
+                sa,
+                "_single_proc_rss_kb",
+                side_effect=AssertionError("RSS read on a CPU-only sample"),
+            ),
+            patch.object(
+                sa.platform_compat,
+                "process_matches",
+                side_effect=AssertionError("stub match on a CPU-only sample"),
+            ),
+        ):
+            assert sa._subtree_cpu_jiffies(10) == sum(self.JIFFIES.values())
+
+    def test_the_walk_is_bounded_by_one_ceiling(self) -> None:
         with (
             patch.object(sa.platform_compat, "IS_LINUX", True),
             patch.object(sa, "_single_proc_rss_kb", return_value=1024),
+            patch.object(sa, "_proc_cpu_jiffies", return_value=1),
             patch.object(sa, "_proc_children", side_effect=lambda p: [p * 10, p * 10 + 1]),
             patch.object(sa.platform_compat, "process_matches", return_value=False),
         ):
-            procs, stubs = sa._proc_subtree_counts(2)
-        assert stubs == 0
-        assert procs is not None and procs < sa._RSS_SUBTREE_MAX_PROCS * 3
+            sample = sa._proc_subtree_sample(2)
+        assert sample.stubs == 0
+        assert sample.procs is not None and sample.procs < sa._SUBTREE_MAX_PROCS * 3
 
 
 class TestAttributedCount:
@@ -843,11 +930,8 @@ class TestSampleLiveCounts:
     """The sweep must write procs/mcp on both the shared and exclusive paths."""
 
     def _patched(self, counts: tuple[int, int]):
-        return (
-            patch.object(sa, "_proc_rss_kb", return_value=1024 * 1024),
-            patch.object(sa, "_subtree_cpu_jiffies", return_value=0),
-            patch.object(sa, "_proc_subtree_counts", return_value=counts),
-        )
+        sample = sa._SubtreeSample(1024 * 1024, 0, counts[0], counts[1])
+        return (patch.object(sa, "_proc_subtree_sample", return_value=sample),)
 
     def test_shared_runtime_counts_are_split_per_sharer(self) -> None:
         mgr = _manager()
@@ -856,8 +940,8 @@ class TestSampleLiveCounts:
             info._session_sharing = True
             info._pid = 777
             mgr._agents[info.id] = info
-        rss, cpu, counts = self._patched((21, 18))
-        with rss, cpu, counts:
+        (sample,) = self._patched((21, 18))
+        with sample:
             mgr._sample_live_costs()
         for info in mgr._agents.values():
             assert info.last_procs == 7
@@ -868,8 +952,8 @@ class TestSampleLiveCounts:
         info = _info("solo")
         info._pid = 999
         mgr._agents["solo"] = info
-        rss, cpu, counts = self._patched((7, 6))
-        with rss, cpu, counts:
+        (sample,) = self._patched((7, 6))
+        with sample:
             mgr._sample_live_costs()
         assert info.last_procs == 7
         assert info.last_stubs == 6
@@ -880,13 +964,33 @@ class TestSampleLiveCounts:
         info._pid = 999
         info.last_procs, info.last_stubs = 7, 6
         mgr._agents["solo"] = info
-        with (
-            patch.object(sa, "_proc_rss_kb", return_value=-1),
-            patch.object(sa, "_subtree_cpu_jiffies", return_value=0),
-            patch.object(sa, "_proc_subtree_counts", return_value=(None, None)),
+        with patch.object(
+            sa, "_proc_subtree_sample", return_value=sa._SubtreeSample(-1, 0, None, None)
         ):
             mgr._sample_live_costs()
         assert (info.last_procs, info.last_stubs) == (7, 6)
+
+    def test_one_walk_per_agent_not_one_per_metric(self) -> None:
+        """The whole point of #3970: RSS, CPU and both counts come off ONE walk.
+
+        Patching the shared sample is not enough to prove that — a sweep that
+        still called three readers would also pass the assertions above. Count
+        the walks instead.
+        """
+        mgr = _manager()
+        for idx in range(2):
+            info = _info(f"s{idx}")
+            info._pid = 900 + idx
+            mgr._agents[info.id] = info
+        walks: list[object] = []
+
+        def _sample(pid, **kwargs):  # noqa: ANN001, ANN003 — test double
+            walks.append(pid)
+            return sa._SubtreeSample(1024, 0, 4, 2)
+
+        with patch.object(sa, "_proc_subtree_sample", side_effect=_sample):
+            mgr._sample_live_costs()
+        assert walks == [900, 901], "exactly one subtree walk per live agent"
 
     def test_sweep_reads_the_registry_once_so_it_is_thread_safe(self) -> None:
         """The sweep runs on an executor thread, so it must not iterate the live
@@ -908,8 +1012,8 @@ class TestSampleLiveCounts:
                 return super().values()
 
         mgr._agents = _CountingRegistry(real)  # type: ignore[assignment]
-        rss, cpu, counts = self._patched((4, 2))
-        with rss, cpu, counts:
+        (sample,) = self._patched((4, 2))
+        with sample:
             mgr._sample_live_costs()
         assert reads["n"] == 1, "the registry must be snapshotted exactly once"
 
@@ -1287,6 +1391,134 @@ class TestNotifyInjectionFailed:
             side_effect=RuntimeError("no dashboard"),
         ):
             mgr.notify_injection_failed(_info(parent_session_key="dash:1"))
+
+
+# ── Injection-failure notice: outcome-aware copy ──────────────────────────
+
+
+class TestInjectionNoticeOutcome:
+    """The pure helper maps a terminal record to a truthful outcome line."""
+
+    def test_completed_keeps_the_finished_copy(self) -> None:
+        info = _info(done=True, result="ok")
+        assert sa._injection_notice_outcome(info) == (
+            "The agent finished but result delivery timed out."
+        )
+
+    def test_failed_run_does_not_claim_finished(self) -> None:
+        info = _info(done=True, error="Timed out after 30 minutes", _exec_started=123.0)
+        line = sa._injection_notice_outcome(info)
+        assert line == "The agent failed before a result could be delivered."
+
+    def test_stopped_mid_run_reads_as_stopped(self) -> None:
+        info = _info(
+            done=True, user_stopped=True, _exec_started=123.0, tool_count=3, result="partial"
+        )
+        assert sa._injection_notice_outcome(info) == "The run was stopped before it completed."
+
+    def test_stopped_in_startup_window_is_not_before_start(self) -> None:
+        # Execution began (_exec_started set) but no turn, tool call, or output
+        # landed yet — the run DID start, so the before-start copy would lie.
+        info = _info(done=True, user_stopped=True, _exec_started=123.0)
+        assert sa._injection_notice_outcome(info) == "The run was stopped before it completed."
+
+    def test_stopped_before_execution_says_it_never_ran(self) -> None:
+        # A stop landing on a registered run before _run_inner ever executed:
+        # no _exec_started marker and no output of any kind.
+        info = _info(done=True, user_stopped=True)
+        assert sa._injection_notice_outcome(info) == (
+            "The run was stopped before it started, so there is no result to deliver."
+        )
+
+    def test_rejections_read_as_failed_before_start(self) -> None:
+        # Every spawn-rejection site constructs its record without
+        # _exec_started, so the never-ran refinement covers them all — the
+        # sentinel-worded ones AND the unknown-agent refusal, whose exact
+        # wording is consumed by _is_unknown_agent_refusal and cannot change.
+        for err in (
+            "spawn rejected",
+            "spawn refused: only 1.0 GB memory available (need 4 GB)",
+            "agent 'ghost' not found; available: scout, probe",
+        ):
+            info = _info(done=True, error=err)
+            assert sa._injection_notice_outcome(info) == (
+                "The run failed before it started, so there is no result to deliver."
+            ), err
+
+    def test_error_with_output_keeps_the_recovery_hint_honest(self) -> None:
+        # Defensive: a record carrying output must never be described as
+        # having no result to deliver — the generic failed copy stays truthful.
+        info = _info(done=True, error="spawn rejected", result_path="/tmp/r.txt")
+        assert sa._injection_notice_outcome(info) == (
+            "The agent failed before a result could be delivered."
+        )
+
+
+class TestNotifyInjectionFailedOutcomeCopy:
+    """End-to-end: the queued failure message carries the outcome-aware line.
+
+    Four regression paths: stop before execution, approval rejection, queued
+    rejection, and the ordinary post-run delivery timeout (whose copy is
+    unchanged).
+    """
+
+    async def _notice_for(self, info: SubagentInfo) -> str:
+        seen: list[dict] = []
+
+        async def _on_event(_etype: str, _info: SubagentInfo, extra: dict) -> None:
+            seen.append(extra)
+
+        mgr = _manager(on_event=_on_event)
+        with patch("kiro_crew.dashboard.chat_utils.dashboard_slot_key", return_value="slot-1"):
+            mgr.notify_injection_failed(info)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert seen, "expected a subagent_injection_failed event"
+        return str(seen[0]["failure_msg"])
+
+    @pytest.mark.asyncio
+    async def test_stop_before_execution_does_not_claim_the_agent_finished(self) -> None:
+        # A user stop landing on a registered run before execution began marks
+        # the record user_stopped with no _exec_started and no output: it never
+        # ran. (A cancel on a spawn still WAITING in the stagger queue is
+        # unqueued without a record and never reaches this notice at all.)
+        info = _info(parent_session_key="dash:1", done=True, user_stopped=True)
+        msg = await self._notice_for(info)
+        assert "The run was stopped before it started" in msg
+        assert "finished" not in msg
+
+    @pytest.mark.asyncio
+    async def test_approval_rejection_reads_as_never_started(self) -> None:
+        info = _info(parent_session_key="dash:1", done=True, error="spawn rejected")
+        msg = await self._notice_for(info)
+        assert "The run failed before it started" in msg
+        assert "finished" not in msg
+
+    @pytest.mark.asyncio
+    async def test_queued_rejection_reads_as_never_started_without_mechanism_detail(self) -> None:
+        info = _info(
+            parent_session_key="dash:1",
+            done=True,
+            error="spawn refused: only 1.0 GB memory available (need 4 GB)",
+        )
+        msg = await self._notice_for(info)
+        assert "The run failed before it started" in msg
+        # Mechanism details stay out of the user-facing notice.
+        assert "GB" not in msg
+        assert "finished" not in msg
+
+    @pytest.mark.asyncio
+    async def test_post_run_delivery_timeout_keeps_existing_copy_and_hint(
+        self, tmp_path: Path
+    ) -> None:
+        result = tmp_path / "result.txt"
+        result.write_text("hello", newline="\n")
+        info = _info(
+            parent_session_key="dash:1", done=True, result="hello", result_path=str(result)
+        )
+        msg = await self._notice_for(info)
+        assert "The agent finished but result delivery timed out." in msg
+        assert "Result saved at" in msg
 
 
 # ── Manager: continuable conversations ────────────────────────────────────
@@ -2055,5 +2287,4 @@ class TestPlatformConstants:
         assert sa._CLK_TCK > 0
 
     def test_subtree_walk_caps_are_bounded(self) -> None:
-        assert sa._RSS_SUBTREE_MAX_PROCS > 0
-        assert sa._CPU_SUBTREE_MAX_PROCS > 0
+        assert sa._SUBTREE_MAX_PROCS > 0

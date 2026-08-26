@@ -22,7 +22,7 @@ const assert = require("node:assert");
 const { initAutoUpdate } = require("../auto-update");
 
 function makeDeps({ appVersion = "1.0.0", withNative = true } = {}) {
-  const calls = { quitAndInstall: [], exit: 0 };
+  const calls = { quitAndInstall: [], notifications: [], states: [], exit: 0 };
   const handlers = {};
   const nativeHandlers = {};
   const autoUpdater = {
@@ -42,12 +42,15 @@ function makeDeps({ appVersion = "1.0.0", withNative = true } = {}) {
     },
     autoUpdater,
     dialog: { showMessageBox: async () => ({ response: 1 }) },
-    Notification: function () { return { show: () => {} }; },
+    Notification: function (options) {
+      calls.notifications.push(options);
+      return { show: () => {} };
+    },
     getFlavor: () => "stable",
     stopGateway: async () => {},
     osPlatform: "darwin",
     feedBase: "https://cdn.example.dev/feed",
-    onUpdateState: () => {},
+    onUpdateState: (payload) => calls.states.push(payload),
     log: { info: () => {}, warn: () => {}, error: () => {} },
     ...(withNative
       ? {
@@ -91,6 +94,27 @@ test("TEMPORAL: the app is NOT force-exited while the installer is still working
   } finally {
     mock.timers.reset();
   }
+});
+
+test("Windows uses visible native progress and leaves a recovery notification", async () => {
+  const { deps, calls, emit } = makeDeps();
+  deps.osPlatform = "win32";
+  const u = initAutoUpdate(deps);
+  emit("update-downloaded", { version: "1.1.0" });
+  await u.install();
+
+  assert.deepStrictEqual(
+    calls.quitAndInstall,
+    [[false, true]],
+    "Windows must not pass /S; the update-only NSIS path owns the visible progress and automatic relaunch",
+  );
+  assert.strictEqual(calls.notifications.length, 1);
+  assert.match(calls.notifications[0].body, /Start menu/i);
+  assert.doesNotMatch(calls.notifications[0].body, /several minutes|reopen automatically/i);
+  assert.strictEqual(
+    calls.states.find((state) => state.state === "downloaded").installHandoff,
+    "windows-installer",
+  );
 });
 
 test("TEMPORAL: once the installer HAS taken over, the failsafe still guarantees exit", async () => {
@@ -326,7 +350,7 @@ test("a FAILED install fires onInstallFailed and allows a retry", async () => {
   emit("error", new Error("Code signature at URL ... did not pass validation"));
   assert.strictEqual(calls.failed, 1, "host must be told the install failed");
 
-  // `installing` was reset, so the user can click Restart & Update again.
+  // `installing` was reset, so the user can click Install Update & Restart App again.
   await updater.install();
   assert.strictEqual(calls.stops, 2, "retry must reach stopGateway again");
 });

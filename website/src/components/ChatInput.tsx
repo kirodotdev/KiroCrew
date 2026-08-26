@@ -15,7 +15,7 @@ import { useSlotId } from '../providers/SlotContext'
 import { useToolPillVisible } from '../store/toolPillRegistry'
 import { ToolDetails } from '../pages/chat/ToolDetails'
 import { api, ApiError } from '../api/client'
-import { safeSetItem } from '../utils/safeStorage'
+import { safeSetItem, safeGetItem } from '../utils/safeStorage'
 import { offlineProps } from '../utils/offline'
 import { shallowEqual } from 'react-redux'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -27,6 +27,7 @@ import TrustDropdown from './TrustDropdown'
 import AutoNudgePopover, { type AutoNudgeLoop } from './AutoNudgePopover'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { isTouchDevice } from '../utils/isTouchDevice'
+import { useIsTouchDevice } from '../hooks/useIsTouchDevice'
 import { Btn } from './ui'
 import { useTouchPushToTalk } from '../hooks/useTouchPushToTalk'
 import { consumeComposerRelease } from '../pages/chat/composerFocus'
@@ -59,7 +60,16 @@ import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 // Upload picker accept hints. Client-side ONLY (UX) — the server validates type
 // (magic bytes), size, and runs malware scanning per input-validation guidance.
 const IMAGE_ACCEPT = 'image/png,image/jpeg,image/gif,image/webp,image/bmp,image/svg+xml'
-const FILE_ACCEPT = IMAGE_ACCEPT + ',.txt,.md,.json,.har,.yaml,.yml,.xml,.csv,.log,.py,.js,.ts,.tsx,.jsx,.html,.css,.sh,.bash,.rb,.go,.rs,.java,.c,.cpp,.h,.hpp,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.odp,.rtf,.zip,.tar,.gz'
+// Video containers the server accepts (see `_ALLOWED_VIDEO_EXT`). MIME form, not
+// extensions, because this string is also what the MOBILE photo picker filters
+// the library by: iOS shows videos only when a video/* type is listed, so an
+// extension-only hint is what made a phone able to attach photos and nothing else.
+// One MIME per accepted extension — `video/x-m4v` is NOT covered by `video/mp4`
+// in a picker's filter, so omitting it hides a file the server would accept.
+// test_accept_list_covers_every_accepted_extension pins this set against the
+// server's, from the Python side, since a vitest cannot read the Python constant.
+const VIDEO_ACCEPT = 'video/mp4,video/x-m4v,video/quicktime,video/webm'
+const FILE_ACCEPT = IMAGE_ACCEPT + ',' + VIDEO_ACCEPT + ',.txt,.md,.json,.har,.yaml,.yml,.xml,.csv,.log,.py,.js,.ts,.tsx,.jsx,.html,.css,.sh,.bash,.rb,.go,.rs,.java,.c,.cpp,.h,.hpp,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.odp,.rtf,.zip,.tar,.gz'
 
 // Extension per image MIME type, mirroring IMAGE_ACCEPT. Used to synthesize a
 // filename for clipboard-pasted images (see nameClipboardImage).
@@ -99,7 +109,7 @@ function nameClipboardImage(f: File, batchIndex: number): File {
   return new File([f], `pasted-image-${stamp}${suffix}.${ext}`, { type: f.type, lastModified: f.lastModified })
 }
 
-import ApprovalModePicker from './ApprovalModePicker'
+import ApprovalModePicker, { APPROVAL_MODE_ADJUSTED_LS_KEY } from './ApprovalModePicker'
 // Effort vocabulary lives in lib/effort.ts (mirrors backend effort.py).
 // Re-exported here for back-compat with existing `from './ChatInput'` imports.
 export {
@@ -120,6 +130,7 @@ import { skillsCacheStaleTime } from '../lib/skillsCache'
 import ProjectSkillsTrustDialog from './ProjectSkillsTrustDialog'
 import { matchFileToken, matchSkillToken, replaceTokenAtCaret } from './composerTokens'
 import { useStopEscapeHatch } from '../hooks/useStopEscapeHatch'
+import { useMeasuredHeight } from '../hooks/useMeasuredHeight'
 
 import { i18nT } from '../i18n/t'
 import { fmtDateFields, fmtPercent } from '../i18n/format'
@@ -129,14 +140,6 @@ const INPUT_MIN_H = 44
 const INPUT_DEFAULT_MAX_H = 140
 const INPUT_PREFILL_MAX_H = 320
 const INPUT_DRAG_MIN_H = 93
-const FILE_PREVIEW_H = 81 // h-16 (64px) + py-2 (16px) + border-t (1px)
-/** Same strip once any staged image carries a resize pill: the pill sits in flow
- *  under its thumbnail, so the tallest chip grows by gap-0.5 (2px) + the pill's
- *  own 18px. Keep in sync with ResizeBadge and FilePreviewStrip. */
-const FILE_PREVIEW_H_RESIZED = 101
-/** Height of the staged-session-reference strip: one chip row (py-1 + 12px text
- *  ≈ 26px) + py-2 (16px) + border-t (1px). Keep in sync with SessionRefStrip. */
-const SESSION_REF_STRIP_H = 43
 const INPUT_DRAG_MAX_RATIO = 0.5
 const INPUT_HEIGHT_LS_KEY = 'mc-input-height'
 /**
@@ -183,6 +186,11 @@ function toApiDecision(d: string): 'approve' | 'reject' {
  *  `_BACKGROUND_APPROVAL_SOURCES` minus `autonudge`, which does run in-session. */
 export const UNATTENDED_APPROVAL_SOURCES = new Set(['cron', 'heartbeat', 'taskrunner'])
 
+/** B2 nudge: after this many manual one-shot approvals in one slot while the
+ *  mode is still `normal`, offer the approval-mode picker once. Three is the
+ *  point where repeated prompting reads as friction rather than safety. */
+const APPROVAL_NUDGE_THRESHOLD = 3
+
 // Pending-approval selection is slot-aware — see selectSlotPendingApproval
 // in chatSlice: each grid pane's approval bar reflects ITS slot.
 
@@ -213,12 +221,24 @@ function stripTrailingBlankLines(s: string): string {
 /** Auto-size textarea to fit content (only when not manually sized).
  *  Sets overflow:hidden during measurement so the parent flex container
  *  never sees the collapsed (height:0) intermediate state — prevents the
- *  Virtuoso message list above from reflowing and causing visible vibration. */
+ *  Virtuoso message list above from reflowing and causing visible vibration.
+ *
+ *  `parked` is a hard precondition, not an optimisation. Voice hold mode and the
+ *  dictation panel both keep the textarea mounted inside an `sr-only` box (value,
+ *  caret and IME state have to survive the swap), and `sr-only` is a 1px clip — a
+ *  textarea one pixel wide reports a `scrollHeight` of the better part of a
+ *  viewport, which this function would then clamp to `cap` and WRITE BACK as an
+ *  inline height. That height outlives the parking (nothing re-measures until
+ *  `value` changes again), so a single voice round-trip left the composer stuck
+ *  at the 140px ceiling with an empty box, on a surface whose only way to shrink
+ *  it — the drag handle's double-click — does not exist under a finger. */
 function applyHeight(
   el: HTMLTextAreaElement,
   manualHeight: number | null,
   prefillHint?: boolean,
+  parked?: boolean,
 ) {
+  if (parked) return // clipped out of layout — there is nothing valid to measure
   if (manualHeight !== null) return // manual height — wrapper controls size
   const cap = prefillHint ? INPUT_PREFILL_MAX_H : INPUT_DEFAULT_MAX_H
   const prev = el.style.height
@@ -549,7 +569,7 @@ function ResizeBadge({ resize }: { resize: ResizeInfo }) {
  *  effect on every render (a fresh [] literal changes deps each time). */
 const NO_DIRS: string[] = []
 
-function FilePreviewStrip({ files, dirs = NO_DIRS, resizedInfo, onRemove, onRemoveDir }: { files: string[]; dirs?: string[]; resizedInfo?: Record<string, ResizeInfo>; onRemove?: (path: string) => void; onRemoveDir?: (path: string) => void }) {
+function FilePreviewStrip({ files, dirs = NO_DIRS, resizedInfo, onRemove, onRemoveDir, rootRef }: { files: string[]; dirs?: string[]; resizedInfo?: Record<string, ResizeInfo>; onRemove?: (path: string) => void; onRemoveDir?: (path: string) => void; rootRef?: (node: HTMLDivElement | null) => void }) {
   const [attachScroller, edges, remeasure] = useScrollEdges<HTMLDivElement>()
   // Chips are added and removed while the strip stays mounted (a paste, a
   // remove), and the scroller keeps its own box through those changes, so the
@@ -563,10 +583,8 @@ function FilePreviewStrip({ files, dirs = NO_DIRS, resizedInfo, onRemove, onRemo
     // The wrapper exists for the edge cues: absolutely-positioned children of
     // the scroller itself would travel with the scrolled content, so the fades
     // anchor to a non-scrolling parent, same shape as the sibling strips.
-    <div className="relative">
-      {/* NOTE: rendered height must match FILE_PREVIEW_H / FILE_PREVIEW_H_RESIZED,
-          update them together.
-          items-start, not items-end: a chip carrying a resize pill is taller than a
+    <div className="relative" ref={rootRef}>
+      {/* items-start, not items-end: a chip carrying a resize pill is taller than a
           plain one, and bottom-alignment would spend that difference staggering the
           THUMBNAILS (the thing being compared) instead of letting the pills hang. */}
       <div ref={attachScroller} data-testid="preview-strip" className="flex gap-2 px-4 py-2 border-t border-border bg-chrome/50 overflow-x-auto items-start" data-image-scope="">
@@ -787,6 +805,33 @@ function ChatInput({
   const pendingApproval = slotApprovalChrome ? pendingApprovalRaw : null
   const hasApproval = !!pendingApproval
   const [approvalSubmitting, setApprovalSubmitting] = useState(false)
+  // A2: bumping this opens the footer ApprovalModePicker with a spotlight
+  // ring, so the approval bar's hint lands the user on the real control.
+  const [approvalPickerSignal, setApprovalPickerSignal] = useState(0)
+  // A1: the hint retires once the user has ever adjusted the mode themselves.
+  // Read per approval arrival (cheap), not once per mount, so adjusting the
+  // mode hides the hint on the very next approval without a reload.
+  const approvalModeAdjusted = !!pendingApproval && !!safeGetItem(APPROVAL_MODE_ADJUSTED_LS_KEY)
+  // B2: per-slot manual one-shot approval tally for this dashboard session.
+  // In-memory by design — "3 approvals in one sitting" is the annoyance
+  // signal; persisting it would fire the nudge on stale history.
+  const approvalCountsRef = useRef<Record<string, number>>({})
+  const [approvalNudgeSlot, setApprovalNudgeSlot] = useState<string | null>(null)
+  const approvalNudgeActive = !!approvalNudgeSlot && approvalNudgeSlot === slotId
+  // Permanent dismissal (buttons / menu open): the callout has delivered its
+  // lesson, so the A1 hint retires with it — otherwise a "Got it" user keeps
+  // seeing "Tired of confirming every step?" on every later approval.
+  const dismissApprovalNudge = useCallback(() => {
+    setApprovalNudgeSlot(null)
+    // One flag carries both retirements: the adjusted/discovery flag already
+    // suppresses the hint AND gates the nudge, so a separate dismissed flag
+    // would only ever be written alongside it — dead state.
+    safeSetItem(APPROVAL_MODE_ADJUSTED_LS_KEY, '1')
+  }, [])
+  // Session-scoped hide (Escape): a reflexive Escape aimed at the composer
+  // must not spend the one-time callout unseen; it may re-fire on a later
+  // approval in this sitting.
+  const hideApprovalNudge = useCallback(() => setApprovalNudgeSlot(null), [])
   // Non-null while the last approval decision failed. Rendered as a one-line
   // strip under the composer; auto-clears so it cannot become permanent chrome.
   const [approvalNotice, setApprovalNotice] = useState<string | null>(null)
@@ -798,8 +843,12 @@ function ChatInput({
   const approvalIsReadOnly = !!(approvalMeta?.is_read_only)
   const approvalFullCommand = (approvalMeta?.full_command as string) || ''
   const approvalBaseCommand = (approvalMeta?.base_command as string) || ''
-  const approvalToolTitle = (approvalMeta?.tool_title as string) || ''
-  const approvalIsShell = approvalToolTitle.startsWith('Running: ')
+  const approvalIsShell = approvalMeta?.is_shell === '1'
+  // Command-scoped trust is offered only when the gateway proved a canonical,
+  // unredacted scope.  The title/input preview are presentation data and must
+  // never be promoted into grant authority by a frontend fallback.
+  const approvalTrustCommandGrantable = approvalMeta?.trust_command_grantable === '1'
+  const approvalTrustBaseGrantable = approvalMeta?.trust_base_grantable === '1'
   /** Sources that run with no human attached to THIS conversation. Session
    *  trust means "auto-approve tools for this chat session", which is
    *  incoherent for an unattended job: the job is not this session, so the
@@ -873,6 +922,21 @@ function ChatInput({
     const finish = () => {
       dispatch(resolveByApprovalId({ id: approvalId, decision }))
       setApprovalSubmitting(false)
+      // B2: tally manual one-shot approvals per slot. Only 'approved' counts —
+      // a trust grant already reduces future prompts, and a rejection is not
+      // approval fatigue. Fires once per dashboard install (localStorage
+      // guard) and only while the slot still asks about everything (normal).
+      if (decision === 'approved' && activeSlot && !approvalIsUnattended) {
+        const n = (approvalCountsRef.current[activeSlot] || 0) + 1
+        approvalCountsRef.current[activeSlot] = n
+        if (
+          n >= APPROVAL_NUDGE_THRESHOLD &&
+          approvalMode === 'normal' &&
+          !safeGetItem(APPROVAL_MODE_ADJUSTED_LS_KEY)
+        ) {
+          setApprovalNudgeSlot(activeSlot)
+        }
+      }
     }
     const fail = (err: unknown) => {
       setApprovalSubmitting(false)
@@ -913,7 +977,7 @@ function ChatInput({
     } else {
       api.resolveApproval(approvalId, toApiDecision(decision)).then(finish).catch(fail)
     }
-  }, [approvalId, activeSlot, approvalIsUnattended, approvalSource, dispatch])
+  }, [approvalId, activeSlot, approvalIsUnattended, approvalSource, approvalMode, dispatch])
 
   // Pending sub-agent SPAWN approvals for this slot (blocked on user approval).
   // Surfaced as a top-level banner with inline Approve/Reject so the user can
@@ -1270,11 +1334,33 @@ function ChatInput({
     requestAnimationFrame(() => { const e2 = inputRef.current; if (e2) { e2.focus(); e2.setSelectionRange(next.caret, next.caret) } })
   }, [value, onChange])
   const chatMessages = useAppSelector(s => s.chat.messages)
-  const [manualHeight, setManualHeight] = useState<number | null>(() => {
+  /** The persisted drag-to-resize preference. Read `manualHeight` below instead —
+   *  this is the raw stored value and is not what the composer renders at. */
+  const [manualHeightPref, setManualHeight] = useState<number | null>(() => {
     const saved = localStorage.getItem(INPUT_HEIGHT_LS_KEY)
     const n = saved ? parseInt(saved, 10) : NaN
     return !isNaN(n) && n >= INPUT_MIN_H ? n : null
   })
+  /**
+   * Drag-to-resize is pointer-only, so on a touch device the composer always
+   * auto-sizes and the persisted preference is ignored outright.
+   *
+   * Nobody drags a phone's message box, and the affordance is not merely unused
+   * there — it is a trap. The handle is a 6px strip with `touch-action:none` and a
+   * zero-px drag threshold sitting directly above the input, so a thumb that lands
+   * short pins the height on the spot; and the only way back out is a
+   * double-click, which no finger can produce. One stray tap and the box was that
+   * size for good, across reloads.
+   *
+   * Derived rather than baked into the state's seed so a pointer-class change
+   * mid-session (a tablet gaining a trackpad) is honoured in both directions:
+   * the preference is never destroyed, only disregarded while there is no pointer
+   * to have set it. Every consumer below — the wrapper's height, the textarea's
+   * `flex-1`, the manual-resize floor, `applyHeight`'s bail — reads this and so
+   * follows automatically.
+   */
+  const isTouch = useIsTouchDevice()
+  const manualHeight = isTouch ? null : manualHeightPref
 
   // Drag-to-resize refs — resize wrapper div via direct DOM writes, commit on mouseup.
   // Resizing the wrapper (not the textarea) avoids layout thrashing: the textarea
@@ -1283,6 +1369,11 @@ function ChatInput({
   const dragging = useRef(false)
   const dragStartY = useRef(0)
   const dragStartH = useRef(0)
+  /** Mirrors `textareaParked` (defined with the voice-mode derivations, far below)
+   *  for the handlers declared above it. Assigned during render, like the other
+   *  prop/state mirrors in this file, so it is already current by the time any
+   *  effect or event handler reads it. */
+  const parkedRef = useRef(false)
 
   // Prompt history navigation: -1 = draft (not in history), else index into sentMessages.
   // Refs keep the handler stable across re-renders while preserving state between keystrokes.
@@ -1469,20 +1560,11 @@ function ChatInput({
     }
   }, [manualHeight, pendingFiles.length, pendingSessions.length])
 
-  // Auto-resize textarea to fit content
-  useEffect(() => {
-    if (inputRef.current && !dragging.current) applyHeight(inputRef.current, manualHeight, prefillHint)
-  }, [value, prefillHint, manualHeight])
-
-  // Keep the paste-highlight mirror's scroll aligned with the textarea after
-  // value/height changes (applyHeight mutates scrollTop programmatically, which
-  // doesn't fire the textarea's onScroll). rAF lets layout settle first.
-  useEffect(() => {
-    const id = requestAnimationFrame(() => {
-      if (mirrorRef.current && inputRef.current) mirrorRef.current.scrollTop = inputRef.current.scrollTop
-    })
-    return () => cancelAnimationFrame(id)
-  }, [value, prefillHint, manualHeight])
+  // The two effects that MEASURE the textarea (auto-size, and the paste-mirror
+  // scroll sync that reads the scrollTop auto-size just wrote) are declared much
+  // further down, immediately below `textareaParked` — they must not run while the
+  // textarea is clipped out of layout, and a dep can only name a variable already
+  // in scope. Do not move them back up here.
 
   // Reset manual height when input is cleared (new message sent)
   const prevValueRef = useRef(value)
@@ -1584,7 +1666,7 @@ function ChatInput({
   }, [value, autoFocusKey])
 
   const handleInput = useCallback((e: React.FormEvent<HTMLTextAreaElement>) => {
-    if (!dragging.current) applyHeight(e.target as HTMLTextAreaElement, manualHeight, prefillHint)
+    if (!dragging.current) applyHeight(e.target as HTMLTextAreaElement, manualHeight, prefillHint, parkedRef.current)
   }, [manualHeight, prefillHint])
 
   const setTextUndoable = useCallback((text: string) => {
@@ -2274,14 +2356,9 @@ function ChatInput({
     e.target.value = '' // reset so same file can be re-selected
   }, [onUploadFiles])
 
-  // The preview strip renders for folder references too, so height
-  // compensation must key off both staged families — otherwise a dirs-only
-  // strip appears with no wrapper expansion and eats into the textarea.
-  const hasFiles = pendingFiles.length > 0 || pendingDirs.length > 0
-  // A resize pill makes the strip taller, so the compensation has to know about
-  // it — otherwise the extra row eats into the textarea.
-  const hasResizedFile = pendingFiles.some(p => IMG_EXT.test(p) && !!resizedInfo?.[p])
   const hasSessionRefs = pendingSessions.length > 0
+  const [fileStripRef, fileStripH] = useMeasuredHeight<HTMLDivElement>()
+  const [sessionStripRef, sessionStripH] = useMeasuredHeight<HTMLDivElement>()
   /** True when the composer holds something a send would carry.
    *
    *  Hoisted because the hold-to-talk gate has to agree with the send button, and
@@ -2418,6 +2495,34 @@ function ChatInput({
    * pointer events, so the gesture cannot start from a bar that is switched off.
    */
   const voiceSettling = voiceHoldMode && touchPtt.bar === 'settling'
+  /**
+   * The textarea is PARKED: still mounted, but clipped out of layout by the
+   * `sr-only` box the hold bar and the dictation panel both put it in.
+   *
+   * Anything that measures the textarea has to ask this first — see `applyHeight`
+   * for what a 1px-wide measurement did to the composer's height. It also has to
+   * be a dep of those effects, so the height is recomputed on the way BACK: the
+   * value that was streamed in while parked is exactly the value whose height was
+   * never measurable.
+   */
+  const textareaParked = !!showDictation || voiceHoldMode
+  parkedRef.current = textareaParked
+
+  // Auto-resize textarea to fit content. Moved down here from the other composer
+  // effects so it can name `textareaParked` — see the note at that site.
+  useEffect(() => {
+    if (inputRef.current && !dragging.current) applyHeight(inputRef.current, manualHeight, prefillHint, textareaParked)
+  }, [value, prefillHint, manualHeight, textareaParked])
+
+  // Keep the paste-highlight mirror's scroll aligned with the textarea after
+  // value/height changes (applyHeight mutates scrollTop programmatically, which
+  // doesn't fire the textarea's onScroll). rAF lets layout settle first.
+  useEffect(() => {
+    const id = requestAnimationFrame(() => {
+      if (mirrorRef.current && inputRef.current) mirrorRef.current.scrollTop = inputRef.current.scrollTop
+    })
+    return () => cancelAnimationFrame(id)
+  }, [value, prefillHint, manualHeight, textareaParked])
   const toggleVoiceMode = useCallback(() => {
     setVoiceModePref(prev => {
       const next = !prev
@@ -2499,13 +2604,31 @@ function ChatInput({
   const voiceModePlaceholder = voiceModeAvailable && !voiceHoldMode && !composerHasDraft && !placeholder
     ? i18nT('components.chatInput.send_a_message_or_tap_the_mic_for_voice')
     : ''
-  /** Combined height of every strip currently stacked above the textarea. The
+  /** Combined height of every strip currently stacked above the textarea,
+   *  MEASURED rather than predicted from the strips' Tailwind classes. The
    *  manual-resize floor and the transient height adjustment below both work off
    *  this total, so adding a strip can never leave one of them counting only
-   *  attachments. */
-  const stripH = (hasFiles ? (hasResizedFile ? FILE_PREVIEW_H_RESIZED : FILE_PREVIEW_H) : 0)
-    + (hasSessionRefs ? SESSION_REF_STRIP_H : 0)
-  const prevStripH = useRef(stripH)
+   *  attachments.
+   *
+   *  Each strip reports 0 while unmounted, so the sum needs no per-strip
+   *  booleans: an absent strip reserves nothing by construction. That also
+   *  retires the `hasResizedFile` special case — a chip carrying a resize pill
+   *  is simply taller when measured, instead of needing a second predicted
+   *  height, which is how the third constant came to exist in the first place.
+   */
+  const stripH = fileStripH + sessionStripH
+  /** Whether `stripH` describes what is actually on screen right now.
+   *
+   *  A measured height arrives one commit AFTER the strip mounts: the ref
+   *  callback cannot read a box that has not been laid out yet. Without this
+   *  gate the settling 0 -> 81 reads as "a strip appeared" and the transient
+   *  adjustment below inflates a persisted manual height by the strip's height
+   *  on every mount that already had something staged. Waiting for a mounted
+   *  strip to report a non-zero box makes the first value a BASELINE rather
+   *  than a change. */
+  const stripsMounted = pendingFiles.length > 0 || pendingDirs.length > 0 || hasSessionRefs
+  const stripHSettled = stripsMounted ? stripH > 0 : stripH === 0
+  const prevStripH = useRef<number | null>(null)
   const dragMinH = INPUT_DRAG_MIN_H + stripH
   const dragMinHRef = useRef(dragMinH)
   dragMinHRef.current = dragMinH
@@ -2514,11 +2637,14 @@ function ChatInput({
   // rather than a per-strip boolean keeps the arithmetic correct when both
   // strips change in the same commit (e.g. send clears files and refs at once).
   useLayoutEffect(() => {
+    if (!stripHSettled) return
     const prev = prevStripH.current
     prevStripH.current = stripH
-    if (prev === stripH) return
+    // `null` is the first settled reading: there is no previous state to have
+    // moved from, so it establishes the baseline instead of adjusting.
+    if (prev === null || prev === stripH) return
     setManualHeight(h => h !== null ? Math.max(INPUT_DRAG_MIN_H, h + (stripH - prev)) : h)
-  }, [stripH])
+  }, [stripH, stripHSettled])
 
   return (
     // 'input-area' is a stable theming hook — see website/docs/theming-contract.md
@@ -2540,13 +2666,19 @@ function ChatInput({
           push it away from the box. */}
       {aboveComposer}
 
-      {/* Drag handle — always visible, sits above approval bar or input */}
+      {/* Drag handle — sits above approval bar or input, on pointer devices only */}
       {/* Pointer-drag resize handle for the message input (double-click resets).
           Resize is a pure visual enhancement — the textarea already auto-sizes to
           its content and there is no per-pixel keyboard resize gesture — so the
-          handle is aria-hidden and carries no interactive semantics. */}
-      {!showGhost && <div
+          handle is aria-hidden and carries no interactive semantics.
+
+          Absent under a finger, and its absence is the feature: the reset is a
+          double-click, so on touch the gesture could only ever pin the height, never
+          undo it. See `manualHeight` for why the persisted value is disregarded
+          there too. */}
+      {!showGhost && !isTouch && <div
         aria-hidden="true"
+        data-testid="composer-resize-handle"
         className="flex items-center justify-center h-[6px] cursor-row-resize group/drag"
         style={{ touchAction: 'none' }}
         {...inputResize}
@@ -2729,11 +2861,12 @@ function ChatInput({
                   <div className="flex gap-1.5 flex-wrap items-center">
                       <button disabled={approvalSubmitting} className={approvalBtnClass} onClick={() => handleApprovalAction('approved')}><CheckCircle size={12} className="shrink-0" />{i18nT('components.chatInput.allow_once')}</button>
                       {approvalIsReadOnly && !approvalIsUnattended && <button disabled={approvalSubmitting} className={approvalBtnClass} onClick={() => handleApprovalAction('trust_reads')}><BookOpen size={12} className="shrink-0" />{i18nT('components.chatInput.trust_reads')}</button>}
-                      {!approvalIsUnattended && (
+                      {!approvalIsUnattended && approvalTrustCommandGrantable && (
                         <TrustDropdown
-                            fullCommand={approvalFullCommand || approvalLabelRaw}
-                            baseCommand={approvalBaseCommand || approvalLabelRaw.split(/\s+/)[0] || ''}
-                            isShell={approvalIsShell}
+                            fullCommand={approvalFullCommand}
+                            baseCommand={approvalBaseCommand}
+                            isShell={approvalIsShell && approvalTrustBaseGrantable}
+                            hasCommand={approvalTrustCommandGrantable}
                             disabled={approvalSubmitting}
                             className={approvalBtnClass}
                             onAction={(action, pattern) => { handleApprovalAction(action, pattern) }}
@@ -2742,6 +2875,31 @@ function ChatInput({
                       <button disabled={approvalSubmitting} className={`${approvalBtnClass} hover:!text-danger hover:!bg-[color-mix(in_srgb,var(--danger)_10%,transparent)]`} onClick={() => handleApprovalAction('rejected')}><Ban size={12} className="shrink-0" />{i18nT('components.chatInput.reject')}</button>
                   </div>
               </div>
+              {/* A1 discoverability hint: points at the footer mode picker so a
+                  new user learns approval prompting is adjustable. Withheld for
+                  unattended sources (the mode picker governs THIS slot, not the
+                  job that raised the card), in the ghost state (the collapsed
+                  composer unmounts the picker, so the link would have nothing
+                  to open), while the B2 nudge is up (two pointers at one
+                  control), and retired forever once the user has found the
+                  picker — via this link or by adjusting the mode. */}
+              {!showGhost && !approvalIsUnattended && !approvalModeAdjusted && !approvalNudgeActive && approvalMode && (
+                <div className="flex items-center gap-1.5 flex-wrap px-3.5 pb-2 -mt-1 text-[12px] text-muted select-none">
+                  <span>{i18nT('components.chatInput.approval_hint_question')}</span>
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-0.5 p-0 bg-transparent border-none text-accent text-[12px] cursor-pointer hover:underline"
+                    onClick={() => {
+                      // Discovery achieved: the picker is about to open under a
+                      // spotlight, so the hint has done its job for good.
+                      safeSetItem(APPROVAL_MODE_ADJUSTED_LS_KEY, '1')
+                      setApprovalPickerSignal(n => n + 1)
+                    }}
+                  >
+                    {i18nT('components.chatInput.approval_hint_adjust')}
+                  </button>
+                </div>
+              )}
             </div>
           </motion.div>
         )}
@@ -2879,8 +3037,8 @@ function ChatInput({
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
-        <SessionRefStrip refs={pendingSessions} onRemove={onRemoveSessionRef} />
-        <FilePreviewStrip files={pendingFiles} dirs={pendingDirs} resizedInfo={resizedInfo} onRemove={onRemoveFile} onRemoveDir={onRemoveDir} />
+        <SessionRefStrip refs={pendingSessions} onRemove={onRemoveSessionRef} rootRef={sessionStripRef} />
+        <FilePreviewStrip files={pendingFiles} dirs={pendingDirs} resizedInfo={resizedInfo} onRemove={onRemoveFile} onRemoveDir={onRemoveDir} rootRef={fileStripRef} />
 
         {/* Cancel cue for the hold gesture. Rendered above the dictation panel so
             the drop zone is genuinely UP from the thumb, and only while a press is
@@ -3135,7 +3293,7 @@ function ChatInput({
                 />
               )}
               {!isMobile && approvalMode && (
-                <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} />
+                <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} openSignal={approvalPickerSignal} nudge={approvalNudgeActive} onNudgeDismiss={dismissApprovalNudge} onNudgeHide={hideApprovalNudge} />
               )}
               </div>
               {/* Edge cues, same treatment as the sibling strips that already
@@ -3156,7 +3314,7 @@ function ChatInput({
               )}
             </div>
             {isMobile && approvalMode && (
-              <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} compact />
+              <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} compact openSignal={approvalPickerSignal} nudge={approvalNudgeActive} onNudgeDismiss={dismissApprovalNudge} onNudgeHide={hideApprovalNudge} />
             )}
           </div>
           <div className="flex items-center gap-1 shrink-0">

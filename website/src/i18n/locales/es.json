@@ -56,6 +56,12 @@
     "memory_unavailable": "Memoria: no disponible",
     "metrics_are_stale_latest_fetch_failed": "Las métricas están desactualizadas, falló la última obtención",
     "metrics_unavailable": "métricas no disponibles",
+    "n_more_many": "{{count}} más",
+    "n_more_one": "{{count}} más",
+    "n_more_other": "{{count}} más",
+    "notification_count_many": "{{count}} notificaciones",
+    "notification_count_one": "{{count}} notificación",
+    "notification_count_other": "{{count}} notificaciones",
     "resource_critical": "Critical",
     "resource_posture_tooltip_critical": "Host memory is critically low ({{gb}} GB free). Avoid heavy parallel work.",
     "resource_posture_tooltip_tight": "Host memory is tight ({{gb}} GB free). Heavy work may be slower.",
@@ -82,6 +88,9 @@
     "search_sessions_files_and_commands": "Buscar sesiones, archivos y comandos",
     "show_fewer_apps": "Mostrar menos apps",
     "show_less": "Mostrar menos",
+    "show_more_apps_many": "Mostrar {{count}} apps más",
+    "show_more_apps_one": "Mostrar {{count}} app más",
+    "show_more_apps_other": "Mostrar {{count}} apps más",
     "signed_in_with": "Sesión iniciada con {{provider}}",
     "skip_to_content": "Saltar al contenido",
     "social_login": "Inicio de sesión social",
@@ -135,7 +144,9 @@
         "highlight_3": "Ábrela en una ventana aparte para un segundo monitor; la escena elegida se mantiene sincronizada",
         "highlight_4": "Recuerda la escena que elegiste entre visitas",
         "highlight_5": "Es solo una visualización — nunca cambia lo que hacen tus agentes",
-        "page_label": "Worlds"
+        "page_label": "Worlds",
+        "use_case_1": "Mantén a la vista en una segunda pantalla los agentes activos, las tareas cron y los subagentes mientras trabaja el equipo.",
+        "configuration_1": "Activa la app, abre Agent Worlds, elige una escena y, si quieres, sepárala en otra ventana; no se requieren credenciales ni servicios externos."
       }
     },
     "autoImprovement": {
@@ -156,7 +167,9 @@
         "highlight_4": "Redacta pull requests de GitHub: solo borradores, nunca publicados ni fusionados por ti",
         "highlight_5": "Funciona sobre un clon sin permiso de push, así nada sale del entorno aislado sin revisión",
         "highlight_6": "Una sesión de chat reanudable por cada pull request, hallazgo y ejecución",
-        "page_label": "Auto-Improve"
+        "page_label": "Auto-Improve",
+        "use_case_1": "Demuestra mejoras de rendimiento medibles o correcciones de errores reproducibles antes de convertir los candidatos válidos en cambios de GitHub listos para revisar.",
+        "configuration_1": "El host del gateway necesita Git y la CLI gh autenticada; conecta un repositorio de GitHub, elige su rama base y calibra una medida antes de las pruebas de rendimiento."
       },
       "setupPanel": {
         "https_github_com_owner_repo": "https://github.com/owner/repo"
@@ -191,7 +204,9 @@
         "highlight_5": "Agrega preguntas de seguimiento a mitad de la campaña sin empezar de nuevo",
         "highlight_6": "Inicia, pausa y reanuda cualquier campaña desde el panel",
         "highlight_7": "Exporta el informe terminado a tu biblioteca de Conocimiento o a un artefacto que puedas compartir",
-        "page_label": "Research Lab"
+        "page_label": "Research Lab",
+        "use_case_1": "Realiza una investigación de varios ciclos que amplía una pregunta general, transmite las pruebas y produce un informe reutilizable.",
+        "configuration_1": "Crea una campaña, elige el modo Agent o Dynamic Workflow, amplía la pregunta y configura los ciclos, el intervalo, los workers y el funcionamiento supervisado o autónomo."
       },
       "researchLabPage": {
         "120s": "120s",
@@ -353,9 +368,11 @@
     },
     "autoTriagePipeline": {
       "manifest": {
-        "description": "Vista de página completa del propio pipeline de auto-triaje de Kiro Crew: una vía horizontal por cada elemento de trabajo del crew a lo largo del enum de fases, para que un operador vea de un vistazo en qué fase está cada elemento, dónde se acumulan y cuáles se han estancado. Lee el ledger del crew a través de la costura crew-fabric de Issue Radar: el dibujo de vías responde '¿dónde está este elemento?', un resumen de la cola responde '¿cómo va la cola?'.",
+        "description": "Una vista de solo lectura en tres niveles de la canalizacion de triaje automatico de Kiro Crew: los seis pasos y su rendimiento, las incidencias dentro de un paso y el coste de las sesiones de agente de cada incidencia.",
         "display_name": "Pipeline de auto-triaje de Kiro Crew",
-        "page_label": "Pipeline de auto-triaje"
+        "page_label": "Pipeline de auto-triaje",
+        "use_case_1": "Detecta dónde se acumula, se reabre o queda en espera el trabajo del equipo de Issue Radar en todo el pipeline de entrega.",
+        "configuration_1": "Conecta un repositorio en Issue Radar y deja que su registro del equipo recopile eventos de fase; después activa esta app y elige ese repositorio."
       },
       "pipeline": {
         "subtitle": "Un carril por elemento de trabajo de la crew, en todas las fases: mira en qué fase está cada elemento y dónde se acumulan.",
@@ -435,6 +452,85 @@
         "header_addressing_review": "REVISIÓN",
         "header_awaiting_merge": "ESPERA FUSIÓN",
         "header_resolved": "RESUELTO"
+      },
+      "global": {
+        "tab_pipeline": "Flujo",
+        "tab_lanes": "Carriles de elementos",
+        "tablist_label": "Vistas del flujo de triaje automático",
+        "title": "Flujo",
+        "subtitle": "Cada paso del flujo de triaje, qué hay en cada uno y cuánto ha movido",
+        "refresh": "Actualizar",
+        "loading": "Cargando…",
+        "no_pipeline_title": "Aún no hay actividad en el flujo",
+        "no_pipeline_subtitle": "Cuando el flujo de triaje se ejecute, sus pasos y los elementos que los recorren aparecerán aquí",
+        "close_step": "Cerrar paso",
+        "step_heading_one": "{{step}} · {{count}} elemento",
+        "step_heading_other": "{{step}} · {{count}} elementos",
+        "session_current": "Sesión actual",
+        "turns_n_one": "{{count}} turno",
+        "turns_n_other": "{{count}} turnos",
+        "open_session": "Abrir sesión",
+        "sessions_empty_title": "No hay sesiones para este elemento",
+        "sessions_empty_subtitle": "Este elemento nunca abrió una sesión de agente, así que no hay nada que mostrar",
+        "unit_sessions": "sesiones",
+        "unit_issues": "incidencias",
+        "in_step": "En el paso ({{unit}})",
+        "recent": "Reciente",
+        "total": "Total",
+        "never": "nunca",
+        "stat_in_flight": "En curso",
+        "stat_last_activity": "Última actividad",
+        "stat_events": "Eventos",
+        "stat_window": "Movido en {{hours}} h",
+        "flow_hint": "El grosor del conector refleja el flujo reciente entre pasos",
+        "unparseable_one": "No se pudo analizar {{count}} evento",
+        "unparseable_other": "No se pudieron analizar {{count}} eventos",
+        "untitled": "Sin título",
+        "resumed_times_one": "Reanudado {{count}} vez",
+        "resumed_times_other": "Reanudado {{count}} veces",
+        "needs_human": "Requiere intervención humana",
+        "pr_not_recorded": "No se registró ninguna pull request",
+        "labels": "Etiquetas",
+        "not_cached": "No está en caché",
+        "assignees": "Responsables",
+        "comments": "Comentarios",
+        "last_event": "Último evento",
+        "step_empty_title": "No hay elementos en este paso",
+        "step_empty_subtitle": "Ahora mismo no hay nada en este paso",
+        "step": {
+          "scan": "Escanear",
+          "triage": "Triaje",
+          "dispatch": "Asignar",
+          "implement": "Implementar",
+          "verify": "Verificar",
+          "cleanup": "Limpieza"
+        },
+        "col_credits": "Créditos",
+        "col_durationMs": "Duración",
+        "col_contextUsed": "Contexto",
+        "col_input": "Entrada",
+        "col_output": "Salida",
+        "col_cacheCreate": "Escritura de caché",
+        "col_cacheRead": "Lectura de caché",
+        "col_cost": "Coste",
+        "session_retired": "Esta sesión se ha retirado: no se pueden enviar comandos",
+        "turns_n_many": "{{count}} turnos",
+        "unparseable_many": "No se pudieron analizar {{count}} eventos",
+        "resumed_times_many": "Reanudado {{count}} veces",
+        "step_heading_many": "{{step}} · {{count}} elementos",
+        "load_failed": "No se pudieron cargar estos datos",
+        "retry": "Reintentar",
+        "col_slot": "Sesión",
+        "col_model": "Modelo",
+        "col_turns": "Turnos",
+        "author": "Autor",
+        "queued": "En cola",
+        "dispatched": "Despachado",
+        "first_started": "Primer inicio",
+        "total_sessions": "Sesiones",
+        "toggle_detail": "Mostrar detalles del elemento #{{number}}",
+        "liveness_checking": "Comprobando la sesión",
+        "liveness_unknown": "Estado de la sesión no disponible"
       }
     },
     "channels": {
@@ -446,7 +542,9 @@
         "highlight_3": "Tú sigues siendo quien aprueba al final cualquier operación que modifique el estado",
         "highlight_4": "Los agentes permanecen en el canal hasta que los retiras o se agota su tiempo",
         "highlight_5": "Oculto en la cuadrícula de la App Store; actívalo con `kirocrew app enable channels`",
-        "page_label": "Canales"
+        "page_label": "Canales",
+        "use_case_1": "Gestiona la respuesta a incidentes, la investigación o la revisión de código con varios roles de agente identificados en una transcripción compartida y auditable.",
+        "configuration_1": "Activa la app oculta con kirocrew app enable channels, crea un canal desde una plantilla o con Custom, asigna agentes y modos de escucha y usa @menciones para transferir el trabajo."
       }
     },
     "codeReviewSage": {
@@ -870,7 +968,9 @@
         "highlight_3": "Las revisiones se leen en la aplicación: no se publica nada en tu pull request a menos que lo pidas",
         "highlight_4": "Aprende por repositorio a partir de correcciones ya integradas, comentarios de revisión y discusiones de diseño",
         "highlight_5": "Revisa pull requests de GitHub; necesita una CLI `gh` autenticada en el host del gateway",
-        "page_label": "Code Review Sage"
+        "page_label": "Code Review Sage",
+        "use_case_1": "Revisa una o varias pull requests de GitHub según su riesgo, inspecciona hallazgos concretos y prepara solo los comentarios que merezca la pena publicar.",
+        "configuration_1": "Instala y autentica la CLI gh en el host del gateway, añade un repositorio y elige en Ajustes el modelo de revisión, el nivel de razonamiento y la concurrencia."
       },
       "views": {
         "learningView": {
@@ -1041,7 +1141,7 @@
         "close": "Cerrar (Esc)",
         "custom": "Personalizado",
         "delete": "Eliminar",
-        "deleteConfirm": "¿Eliminar el pack de apariencia «{{name}}»? Esta acción no se puede deshacer.",
+        "deleteConfirm": "¿Eliminar el pack de apariencia “{{name}}”? Esta acción no se puede deshacer.",
         "deleteFailed": "Error al eliminar",
         "dressUp": "Vestir",
         "edit": "Editar",
@@ -1091,7 +1191,9 @@
         "highlight_3": "Un ejercicio corto de respiración para despejarte cuando lo necesitas",
         "highlight_4": "Te avisa cuando una sesión termina, falla o necesita tu aprobación",
         "highlight_5": "Flota en tu escritorio con un avatar intercambiable",
-        "page_label": "Crew Companion"
+        "page_label": "Crew Companion",
+        "use_case_1": "Usa un compañero de escritorio para avisos de descanso, recordatorios en lenguaje sencillo, ejercicios de respiración y notificaciones de sesiones.",
+        "configuration_1": "Usa Kiro Crew Desktop, activa la app y configura en su página el intervalo de descanso y las notificaciones de finalización; los avatares se eligen en la Gallery del compañero."
       },
       "memories": {
         "days_together_many": "{{count}} días juntos",
@@ -1387,7 +1489,9 @@
         "highlight_6": "Te dice qué no pudo ver en lugar de criticar una pantalla vacía o bloqueada",
         "highlight_7": "No toca el proyecto que revisa: nunca instala sus dependencias, ejecuta sus scripts, inicia su servidor de desarrollo ni edita sus archivos",
         "highlight_8": "Para tomar las capturas usa un navegador headless, que se descarga una vez en una caché de tu directorio home en el primer uso y nunca dentro del proyecto",
-        "page_label": "Design Critique"
+        "page_label": "Design Critique",
+        "use_case_1": "Evalúa una pantalla o un flujo de producto completo con hallazgos ordenados por gravedad, basados en heurísticas y vinculados a zonas visibles.",
+        "configuration_1": "Añade capturas para una revisión sin configuración o proporciona un archivo de Figma, un repositorio, una carpeta local o una URL ya activa; las fuentes privadas de GitHub pueden requerir gh auth login."
       },
       "scopingPicker": {
         "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
@@ -1427,7 +1531,9 @@
         "highlight_5": "Transmite los logs del pod y genera tokens de acceso al pod desde la interfaz",
         "highlight_6": "Hecho para quienes desarrollan Kiro Crew mismo — no hace falta para el uso diario",
         "highlight_7": "Los pods corren en Linux (systemd --user) y macOS (launchd) — pero el pod de macOS no tiene un límite de memoria/CPU aplicado; Activar sigue siendo solo para Linux; la vista de flota, el estado del PR, la sincronización, el rebase y la purga funcionan en cualquier plataforma",
-        "page_label": "Dev Fleet"
+        "page_label": "Dev Fleet",
+        "use_case_1": "Gestiona los worktrees de funciones de Kiro Crew y pods de vista previa aislados sin alterar el gateway en producción.",
+        "configuration_1": "Apunta la app a un checkout de Kiro Crew; las acciones de PR necesitan gh autenticado, mientras que los pods requieren systemd --user en Linux o launchd en macOS y deben aprovisionarse primero."
       }
     },
     "designTweak": {
@@ -1564,7 +1670,9 @@
       "manifest": {
         "display_name": "Design Tweak",
         "description": "Selecciona visualmente elementos en la vista previa en vivo de tu app y conviértelos en solicitudes de edición acotadas y vinculadas al código fuente para el agente — como comentarios de Figma, pero para código.",
-        "page_label": "Design Tweak"
+        "page_label": "Design Tweak",
+        "use_case_1": "Anota elementos de la interfaz en vivo dentro de su contexto y envía a un agente de programación un lote de cambios visuales vinculado al código fuente.",
+        "configuration_1": "Carga un proyecto web local, inicia el servidor de desarrollo detectado o introduce una URL existente, cambia al modo Edit, haz clic derecho en los elementos y envía el lote."
       }
     },
     "fileExplorer": {
@@ -1602,7 +1710,9 @@
         "highlight_4": "El árbol de directorios muestra el estado de git de cada archivo en línea",
         "highlight_5": "Busca en un directorio con coincidencias por línea y una vista previa del contexto",
         "highlight_6": "Las rutas accesibles se limitan a tu directorio home, /tmp y /opt — los enlaces simbólicos hacia fuera se rechazan",
-        "page_label": "Archivos"
+        "page_label": "Archivos",
+        "use_case_1": "Lee, busca, previsualiza, descarga o comenta archivos del host del gateway sin conceder a la página acceso de escritura.",
+        "configuration_1": "Activa la app y abre un directorio permitido desde la barra de ruta; no se requiere ninguna cuenta, y Git o ripgrep solo añaden funciones opcionales de estado y búsqueda."
       },
       "pathBar": {
         "click_to_edit_path": "Clic para editar la ruta",
@@ -1610,6 +1720,7 @@
         "path_to_folder": "/path/to/folder"
       },
       "searchPanel": {
+        "capped": "(limitado)",
         "close_esc": "Cerrar (Esc)",
         "close_search": "Cerrar la búsqueda",
         "comma_separated_glob_patterns": "Patrones glob separados por comas",
@@ -1993,6 +2104,9 @@
         "prList": {
           "clear_search": "Borrar búsqueda",
           "closed_merged_prs_are_capped_at_the_100_most_rec": "Las PR cerradas/fusionadas se limitan a las 100 actualizadas más recientemente — activa un filtro \"yo\" para hacer una búsqueda completa en todo el repositorio",
+          "file_changed_many": "{{count}} archivos modificados",
+          "file_changed_one": "{{count}} archivo modificado",
+          "file_changed_other": "{{count}} archivos modificados",
           "loading_the_rest": "Cargando el resto…",
           "pr_many": "{{count}} PR",
           "pr_one": "{{count}} PR",
@@ -2130,7 +2244,9 @@
         "highlight_7": "Muestra los repositorios en los que has contribuido hace poco, así conectar uno es un clic",
         "highlight_8": "Guarda en caché las incidencias, las etiquetas y los miembros de forma local, y los actualiza cuando lo pides",
         "highlight_9": "Funciona con GitHub, GitLab y Azure DevOps; necesita una CLI autenticada del proveedor que conectes (`gh`, `glab` o `az`) en el host del gateway — no hace falta la CLI de ningún proveedor concreto para instalarlo",
-        "page_label": "Issue Radar"
+        "page_label": "Issue Radar",
+        "use_case_1": "Clasifica issues y pull requests de proveedores conectados mientras conservas resúmenes, etiquetas sugeridas y el historial de investigación.",
+        "configuration_1": "Conecta un repositorio y autentica la CLI de su proveedor en el host del gateway: gh para GitHub, glab para GitLab o az con la extensión de Azure DevOps en macOS, Linux o WSL."
       },
       "views": {
         "comingSoon": {
@@ -2447,6 +2563,12 @@
             "labels": "Etiquetas",
             "looking_for_labels_this_repo_is_missing": "Buscando etiquetas que le faltan a este repositorio…",
             "none_the_repo_s_taxonomy_already_covers_what_its": "Ninguna — la taxonomía del repositorio ya cubre lo que necesitan sus incidencias abiertas.",
+            "open_issue_many": "{{count}} incidencias abiertas",
+            "open_issue_one": "{{count}} incidencia abierta",
+            "open_issue_other": "{{count}} incidencias abiertas",
+            "open_with_description_many": "{{description}} — {{count}} abiertas",
+            "open_with_description_one": "{{description}} — {{count}} abierta",
+            "open_with_description_other": "{{description}} — {{count}} abiertas",
             "propose_labels_this_repo_is_missing_from_its_ope": "Proponer etiquetas que le faltan a este repositorio, a partir de sus incidencias abiertas",
             "read_only_repo_needs_triage_push_access": "Repositorio de solo lectura — necesita acceso de triaje/escritura",
             "suggest_again": "Sugerir de nuevo",
@@ -2469,6 +2591,9 @@
         },
         "taggingView": {
           "analyzing": "Analizando…",
+          "apply_suggestion_many": "Aplicar {{count}} sugerencias",
+          "apply_suggestion_one": "Aplicar {{count}} sugerencia",
+          "apply_suggestion_other": "Aplicar {{count}} sugerencias",
           "applying": "Aplicando…",
           "applying_is_disabled_until_they_load_because_a_s": "aplicar está desactivado hasta que se carguen, porque una sugerencia que nombre una\n            etiqueta que el repositorio ya no tiene haría que se rechazara todo el lote.",
           "applying_needs_write_access": "aplicar requiere acceso de escritura",
@@ -2480,6 +2605,12 @@
           "created_but_settings_not_updated": "\"{{name}}\" se creó en GitHub, pero no se pudieron actualizar los ajustes locales de triaje de este repositorio: {{error}}",
           "defines_no_labels_yet_so_there_is_nothing_to_ass": "aún no define etiquetas, así que no hay nada que asignar. Sugiere algunas arriba,\n            crea las que quieras y luego vuelve aquí para sugerir etiquetas.",
           "every_open_issue_in": "Todas las incidencias abiertas de",
+          "labelled_issue_many": "Se etiquetaron {{count}} incidencias.",
+          "labelled_issue_one": "Se etiquetó {{count}} incidencia.",
+          "labelled_issue_other": "Se etiquetaron {{count}} incidencias.",
+          "labelled_issue_with_failures_many": "Se etiquetaron {{count}} incidencias; no fue posible actualizar {{failed}} (vea las filas de abajo).",
+          "labelled_issue_with_failures_one": "Se etiquetó {{count}} incidencia; no fue posible actualizar {{failed}} (vea las filas de abajo).",
+          "labelled_issue_with_failures_other": "Se etiquetaron {{count}} incidencias; no fue posible actualizar {{failed}} (vea las filas de abajo).",
           "loading_the_untagged_queue": "Cargando la cola sin etiquetar…",
           "newest_first": "más recientes primero",
           "read_only_repo_needs_triage_or_push_access": "Repositorio de solo lectura — necesita acceso de triaje o de escritura",
@@ -2636,7 +2767,9 @@
         "highlight_6": "La sincronización en un paso confirma, trae y envía los cambios; un conflicto de fusión lista las notas en conflicto y no sobrescribe nada",
         "highlight_7": "Un guardado se rechaza si el archivo cambió en el disco desde que lo abriste, así las ediciones hechas en otro lugar nunca se pisan",
         "highlight_8": "Opcionalmente, indexa una bóveda en la biblioteca de Conocimiento para que los agentes puedan buscar tus notas",
-        "page_label": "Notas"
+        "page_label": "Notas",
+        "use_case_1": "Edita un vault Markdown portátil con wikilinks, backlinks, búsqueda, historial de Git e indexación opcional en Knowledge.",
+        "configuration_1": "Clona un repositorio Git o adjunta una carpeta local existente y activa, si quieres, Knowledge y la sincronización programada; los clones privados de GitHub necesitan un PAT o gh autenticado."
       },
       "panel": {
         "connectVault": "Conectar una bóveda",
@@ -2799,7 +2932,9 @@
         "highlight_3": "Corrige una vez los errores recurrentes de voz a texto con un diccionario de tu dominio y todas las reuniones siguientes los transcriben bien",
         "highlight_4": "Revisa las tareas extraídas antes de registrar nada — archiva el ruido y registra el resto",
         "highlight_5": "Proveedores de tareas y de calendario conectables: incluye un registro local de tareas y un lector de iCalendar (.ics), y una organización puede registrar los suyos",
-        "page_label": "Reuniones"
+        "page_label": "Reuniones",
+        "use_case_1": "Captura una reunión en directo mientras agentes paralelos crean la transcripción, las notas estructuradas, el diagrama y la revisión de tareas.",
+        "configuration_1": "Permite que el navegador acceda al micrófono para la captura en directo; configura de forma opcional en Ajustes una ruta o URL de iCalendar, el registro local de tareas, los roles de agente y los términos de corrección de voz."
       },
       "meeting": {
         "agentsPaused": "Los agentes se detuvieron tras varios fallos.",
@@ -3106,7 +3241,7 @@
         "create_new": "Crear paquete SVG/Lottie",
         "custom": "Personalizado",
         "delete": "Eliminar",
-        "delete_confirm": "¿Eliminar el paquete de apariencia \"{{name}}\"? No se puede deshacer.",
+        "delete_confirm": "¿Eliminar el paquete de apariencia “{{name}}”? No se puede deshacer.",
         "edit": "Editar",
         "empty": "No hay paquetes de apariencia",
         "export": "Exportar",
@@ -3151,7 +3286,9 @@
         "highlight_4": "Recuerda su relación contigo — rachas, días más ocupados e hitos celebrados exactamente una vez",
         "highlight_5": "Silencioso por diseño: las notificaciones se agrupan, el modo silencio las retiene y se respetan las reuniones",
         "highlight_6": "El núcleo autónomo corre por completo en el mismo proceso — sin una segunda aplicación y sin un entorno de ejecución extra",
-        "page_label": "Mochi"
+        "page_label": "Mochi",
+        "use_case_1": "Mantén una mascota de escritorio discreta que conversa, sigue recordatorios y cambios en páginas públicas y se adapta a los eventos del calendario conectado.",
+        "configuration_1": "Usa Kiro Crew Desktop, activa Mochi, elige su aspecto y comportamiento y añade objetivos de seguimiento en el chat o el panel; la planificación según la agenda requiere una herramienta MCP de calendario conectada."
       },
       "menu": {
         "clear_screen": "Limpiar pantalla",
@@ -3604,7 +3741,9 @@
         "highlight_4": "Se conecta con AWS CloudWatch, PagerDuty, Datadog, GitHub Issues o cualquier sistema que pueda hacer POST de JSON firmado — incluidos los cuerpos con forma de Alertmanager, repartidos en un incidente por alerta",
         "highlight_5": "Solo lectura por defecto — las acciones de escritura se activan por patrón de señal, y cada una queda auditada",
         "highlight_6": "Tiene en cuenta la rotación: el nivel de automatización de guardia se activa y se desactiva por su cuenta",
-        "page_label": "Mission Control"
+        "page_label": "Mission Control",
+        "use_case_1": "Supervisa señales operativas, investiga incidentes, reutiliza correcciones probadas y entrega un registro de auditoría local completo.",
+        "configuration_1": "Añade proveedores en Ajustes con credenciales de entorno o tokens, conserva Observe para el uso de solo lectura y habilita expresamente las acciones Propose o Act permitidas; la salida a Slack reutiliza una conexión de Kiro Crew existente."
       },
       "opsMissionControlPage": {
         "act": "Act",
@@ -3975,7 +4114,9 @@
         "highlight_5": "Chat con el coautor de IA acotado al artículo — lee y edita el LaTeX que tienes delante",
         "highlight_6": "Clona un artículo desde cualquier remoto de git y luego confirma, trae y envía los cambios desde la barra de herramientas",
         "highlight_7": "Nunca ejecuta el compilador con shell escape, así que un archivo .tex hostil no puede ejecutar comandos",
-        "page_label": "Papyrus"
+        "page_label": "Papyrus",
+        "use_case_1": "Escribe un artículo en LaTeX junto a su PDF compilado, salta de los errores de compilación al código fuente y colabora con un agente limitado al artículo.",
+        "configuration_1": "Instala Tectonic gestionado desde la app o añade tectonic o pdflatex a PATH; después crea un artículo o clona un repositorio con credenciales de Git no interactivas ya configuradas."
       },
       "page": {
         "actions": "Acciones",
@@ -4062,7 +4203,9 @@
         "highlight_3": "Investiga solo las tiendas que le nombres, y avisa de que los precios vienen de páginas públicas, no de tu cuenta",
         "highlight_4": "No tiene forma de llegar al carrito ni al pago",
         "highlight_5": "Organiza tus preferencias guardadas en grupos en la pestaña Preferencias",
-        "page_label": "Personal Shopper"
+        "page_label": "Personal Shopper",
+        "use_case_1": "Investiga productos en las tiendas públicas indicadas mientras mantienes bajo tu control la decisión, el carrito, la cuenta y el pago.",
+        "configuration_1": "No necesitas credenciales de las tiendas; guarda de forma opcional Preferences y Sites como referencia y pega en la conversación con el asesor las restricciones y los nombres de tiendas relevantes."
       },
       "historyTab": {
         "liked": "Me gusta",
@@ -4191,7 +4334,9 @@
         "highlight_4": "Importa tu propio estilo HTML o una plantilla .pptx existente y el agente sigue sus colores, tipografías y composiciones",
         "highlight_5": "Abre el archivo terminado o muestra su carpeta sin salir del panel",
         "highlight_6": "Envuelve el motor público spec-driven-presentation-maker, descargado en una versión fijada por sha256; nada que instalar a mano",
-        "page_label": "PPTX Maker"
+        "page_label": "PPTX Maker",
+        "use_case_1": "Convierte una idea, una URL o un texto de origen en una presentación real con vistas previas de diapositivas en vivo y estilos visuales reutilizables.",
+        "configuration_1": "Instala el motor con versión fijada en el primer uso y, si quieres, LibreOffice para más vistas previas; elige un directorio de salida e importa los estilos HTML o plantillas PPTX que quieras reutilizar."
       },
       "pptxMakerPage": {
         "deck_output_directory": "Carpeta de salida de las presentaciones",
@@ -4252,7 +4397,9 @@
         "highlight_3": "Las ejecuciones corren sin supervisión, con el avance paso a paso en la página de cada una",
         "highlight_4": "Pausa, reanuda, reintenta o detén una ejecución en cualquier momento",
         "highlight_5": "Guarda un historial de las ejecuciones anteriores y sus resultados",
-        "page_label": "Task Runner"
+        "page_label": "Task Runner",
+        "use_case_1": "Planifica y ejecuta un trabajo multiagente con dependencias a partir de lenguaje natural, una especificación existente o YAML determinista.",
+        "configuration_1": "Abre Task Runner, elige Compose, From Spec o From YAML, selecciona un agente y, si quieres, un espacio de trabajo absoluto; después revisa con Plan o empieza directamente con Run."
       }
     },
     "specBuilder": {
@@ -4443,7 +4590,9 @@
       "manifest": {
         "description": "Desarrollo basado en especificaciones dentro de Kiro Crew: convierte una idea de función en Requisitos → Diseño → Tareas con un agente integrado, revisa el markdown en la propia app y luego entrega el plan aprobado a una sesión de ejecución autónoma.",
         "display_name": "Spec Builder",
-        "page_label": "Spec Builder"
+        "page_label": "Spec Builder",
+        "use_case_1": "Convierte una función, un error o una tarea rápida en requisitos, diseño y pasos de implementación vinculados al repositorio y listos para revisar.",
+        "configuration_1": "Elige una carpeta de proyecto y el modo Feature, Bug o Quick, crea si quieres un worktree nuevo y revisa y aprueba cada fase generada antes de iniciar la compilación."
       },
       "specBuilderPage": {
         "dismiss_error": "Descartar el error",
@@ -4460,7 +4609,9 @@
         "highlight_3": "Los scripts se limitan a una API de flujo de trabajo aislada en lugar de Python arbitrario",
         "highlight_4": "Normalmente se escriben por ti a partir de un objetivo en lenguaje natural y luego los puedes editar a mano",
         "highlight_5": "Incluye ejemplos ejecutables para empezar",
-        "page_label": "Flujos de trabajo"
+        "page_label": "Flujos de trabajo",
+        "use_case_1": "Valida e inspecciona scripts de flujo de trabajo restringidos o supervisa fase a fase las ejecuciones principales de flujos multiagente.",
+        "configuration_1": "Activa la app oculta con kirocrew app enable workflows; valida Python DSL en Author o usa las herramientas de flujo del chat o MCP para una orquestación real de agentes y supervísala en Runs."
       },
       "workflowRunTree": {
         "agent_many": "{{count}} agentes",
@@ -4536,7 +4687,9 @@
       "leave_scope": "Volver a todos los comandos",
       "manifest": {
         "display_name": "Barra de comandos",
-        "description": "Reemplaza la busqueda rapida (Cmd+K / Ctrl+K) por un lanzador: escribe un comando, no una consulta. La primera pagina contiene comandos de aplicaciones, destinos y ajustes del sistema y no hace ninguna peticion, asi que escribir no cuesta nada. Las sesiones pasan a ser una fila en la que entras; mientras este activo no se puede buscar en conocimiento, artefactos, habilidades ni prompts: desactivalo para recuperarlo."
+        "description": "Reemplaza la busqueda rapida (Cmd+K / Ctrl+K) por un lanzador: escribe un comando, no una consulta. La primera pagina contiene comandos de aplicaciones, destinos y ajustes del sistema y no hace ninguna peticion, asi que escribir no cuesta nada. Las sesiones pasan a ser una fila en la que entras; mientras este activo no se puede buscar en conocimiento, artefactos, habilidades ni prompts: desactivalo para recuperarlo.",
+        "use_case_1": "Accede a apps, ajustes, sesiones que requieren atención o una nueva solicitud para el agente sin apartarte del teclado.",
+        "configuration_1": "Está activada de forma predeterminada: pulsa Cmd+K o Ctrl+K en cualquier lugar, escribe un comando y usa el ámbito Sessions para conversaciones recientes o coincidentes."
       },
       "no_matches": "Sin resultados",
       "no_sessions": "Ninguna sesión coincide",
@@ -4574,7 +4727,7 @@
     "colChecks": "Comprobaciones",
     "colPr": "Solicitud",
     "colVerdict": "Estado",
-    "commitConfirm": "¿Confirmar este cambio en {{branch}} y subirlo? Un commit publicado no se puede retirar.",
+    "commitConfirm": "¿Confirmar este cambio en “{{branch}}” y subirlo? Un commit publicado no se puede retirar.",
     "commitFailed": "El commit fue rechazado.",
     "commitFinding": "Confirmar en la rama",
     "currentRepo": "Trabajando en",
@@ -4783,6 +4936,10 @@
       "trusted_auto_approving_future_calls": "De confianza — se aprobarán automáticamente las llamadas futuras"
     },
     "approvalModePicker": {
+      "nudge_body": "Aquí puedes ajustar cómo {{productName}} pide aprobación. Si eliges «Confianza» aquí, podrá trabajar en este chat sin preguntar antes; puedes volver a cambiarlo cuando quieras.",
+      "nudge_dismiss": "Entendido",
+      "nudge_title": "¿Quieres menos solicitudes de aprobación?",
+      "nudge_view_options": "Ver opciones",
       "all_tools_will_get_auto_approved_across_all_sess": "Todas las herramientas se aprobarán automáticamente en todas las sesiones.",
       "approval_mode": "Modo de aprobación",
       "approval_mode_aria": "Modo de aprobación: {{mode}}",
@@ -5029,6 +5186,8 @@
       "more_actions": "Más acciones"
     },
     "chatInput": {
+      "approval_hint_adjust": "Ajustar el modo de aprobación",
+      "approval_hint_question": "¿Cansado de confirmar cada paso?",
       "send_a_message_or_tap_the_mic_for_voice": "Envía un mensaje o toca el micrófono para usar voz",
       "release_to_transcribe": "Suelta para transcribir",
       "hold_to_talk": "Mantén pulsado para hablar",
@@ -6736,6 +6895,11 @@
       "use_this_folder": "usar esta carpeta"
     },
     "terminalKeyBar": {
+      "paste": "Pegar",
+      "paste_clipboard_empty": "El portapapeles está vacío",
+      "paste_failed": "Error al pegar",
+      "paste_needs_https": "Pegar requiere una conexión segura (HTTPS)",
+      "paste_permission_needed": "Permite el acceso al portapapeles",
       "terminal_keys": "Teclas del terminal"
     },
     "themeEditor": {
@@ -6865,14 +7029,15 @@
       "dismiss_update_dialog": "Descartar el diálogo de actualización",
       "install_failed": "No se pudo instalar la actualización",
       "install_failed_body": "No se pudo aplicar la actualización. {{productName}} está restaurando la puerta de enlace local — puedes seguir usando esta versión y reintentarlo en Configuración > Acerca de.",
+      "install_restart_timing": "La instalación puede tardar varios minutos. La app se cerrará y volverá a abrirse automáticamente cuando termine la actualización.",
+      "windows_installer_handoff": "Una ventana de instalación de Windows mostrará el progreso.",
       "installing_update": "Instalando la actualización…",
-      "installing_update_body": "{{productName}} está deteniendo la puerta de enlace local e instalando la actualización. Puede tardar un minuto — no cierres la aplicación; se reiniciará sola.",
+      "installing_update_body": "{{productName}} está deteniendo la puerta de enlace local e instalando la actualización. Puede tardar varios minutos. La app volverá a abrirse automáticamente.",
       "is_downloaded_and_ready_to_install": "se ha descargado y está listo para instalarse.",
       "kirocrew": "{{productName}}",
       "later": "Más tarde",
-      "restart_update": "Reiniciar y actualizar",
+      "restart_update": "Instalar actualización y reiniciar app",
       "restarting": "Reiniciando…",
-      "the_app_will_stop_the_local_gateway_install_the": "La app detendrá el gateway local, instalará la actualización y se reiniciará.",
       "update_ready": "Actualización lista"
     },
     "updatePill": {
@@ -7185,6 +7350,8 @@
       "sign_in_body": "Tailscale está en ejecución, pero este equipo aún no ha iniciado sesión en ninguna red. Inicia sesión con la cuenta que usa tu teléfono y vuelve a comprobar.",
       "enable_magicdns_title": "Activa MagicDNS",
       "enable_magicdns_body": "Este equipo ha iniciado sesión, pero su red no tiene un nombre de MagicDNS para él, así que no hay ninguna dirección a la que apuntar el teléfono. Activa MagicDNS en la consola de administración de Tailscale y vuelve a comprobar.",
+      "enable_https_title": "Activa los certificados HTTPS en Tailscale",
+      "enable_https_body": "Tailscale requiere el consentimiento único de un administrador de la tailnet antes de que Serve pueda aprovisionar certificados. Activa HTTPS en la consola de administración de Tailscale y vuelve a comprobar.",
       "trust_off_title": "Permitir el acceso por el nombre de red de este equipo",
       "trust_off_body": "El panel rechaza las solicitudes de direcciones que no reconoce. Permite su propio nombre de red privada para que un teléfono pueda alcanzarlo. Esto no abre ningún puerto a internet ni cambia la forma en que inicias sesión.",
       "restart_gateway_title": "Reinicia Kiro Crew para terminar",
@@ -7198,8 +7365,6 @@
       "copy": "Copiar",
       "copy_link": "Copiar enlace",
       "download": "Descargar Tailscale",
-      "enable_trust": "Permitirlo",
-      "publish_action": "Activar acceso móvil",
       "show_qr": "Mostrar QR",
       "hide_qr": "Ocultar",
       "stop": "Desactivar",
@@ -7208,12 +7373,15 @@
       "qr_warning": "Escanéalo en un plazo de {{minutes}} min. Este código contiene un enlace de inicio de sesión — cualquiera que lo obtenga puede abrir tu panel durante {{hours}} h, así que no lo compartas ni publiques una captura de pantalla.",
       "keep_awake_note": "Este equipo no entrará en suspensión mientras el acceso desde el teléfono esté activado, para que el panel siga siendo accesible. Su pantalla sí puede apagarse.",
       "open_dns_admin": "Abrir la configuración de DNS de Tailscale",
+      "open_https_admin": "Abrir la configuración HTTPS de Tailscale",
       "install_teaser": "Usar esto en el teléfono",
       "install_teaser_hint": "requiere Tailscale",
-      "restart_action": "Reiniciar ahora",
-      "restarting": "Reiniciando: esta página se reconectará.",
       "no_peers": "Ningún otro dispositivo se ha unido todavía a esta red de Tailscale, así que nada puede abrir esta dirección. Instala Tailscale en el teléfono e inicia sesión con la misma cuenta.",
-      "peers_offline": "Tus otros dispositivos se han unido a esta red, pero ninguno está en línea ahora, así que la dirección no cargará hasta que alguno se conecte."
+      "peers_offline": "Tus otros dispositivos se han unido a esta red, pero ninguno está en línea ahora, así que la dirección no cargará hasta que alguno se conecte.",
+      "automatic_https": "Después de activar HTTPS para esta tailnet, Tailscale crea y renueva automáticamente el certificado privado.",
+      "setting_up": "Configurando el acceso desde el teléfono…",
+      "setup_action": "Configurar y mostrar QR",
+      "setup_timeout": "El acceso desde el teléfono no quedó listo. Comprueba la configuración e inténtalo de nuevo."
     }
   },
   "hooks": {
@@ -7524,6 +7692,8 @@
       "failed_to_load_app": "No se pudo cargar la app",
       "failed_to_uninstall": "No se pudo desinstalar",
       "features": "Funciones",
+      "use_cases": "Casos de uso",
+      "configuration": "Configuración",
       "fix_with_ai": "Corregir con IA",
       "install": "Instalar",
       "install_complete": "Instalación completada",
@@ -7640,6 +7810,9 @@
       "update_many": "{{count}} actualizaciones",
       "update_one": "{{count}} actualización",
       "update_other": "{{count}} actualizaciones",
+      "updated_app_many": "Se actualizaron {{count}} apps.",
+      "updated_app_one": "Se actualizó {{count}} app.",
+      "updated_app_other": "Se actualizaron {{count}} apps.",
       "updating_progress": "Actualizando {{done}}/{{total}}…",
       "v": "v",
       "installed_app_find_in_library_and_enable": "{{name}} instalado. Actívalo abajo para habilitarlo.",
@@ -7695,7 +7868,7 @@
       "deployments_count": "Despliegues ({{count}})",
       "deployments_tip": "Todos los recursos desplegados: sitios estáticos publicados desde artefactos y despliegues de aplicaciones web completas. Retirar = baja reversible; Destruir = eliminación permanente de la infraestructura.",
       "destroy": "Destruir",
-      "destroy_confirm": "Elimina de forma permanente el bucket {{bucket}} y la distribución {{distribution}} de '{{name}}'. No se puede deshacer.",
+      "destroy_confirm": "¿DESTRUIR “{{name}}”? Elimina de forma permanente el bucket {{bucket}} y la distribución {{distribution}}. No se puede deshacer.",
       "destroying": "Destruyendo '{{name}}' (desactivar CloudFront puede tardar de 5 a 15 min).",
       "details": "Detalles",
       "dismiss": "Descartar",
@@ -7751,7 +7924,7 @@
       "ready_to_deploy_count": "Listos para desplegar ({{count}})",
       "ready_to_deploy_tip": "Artefactos de aplicación web que aún no se han desplegado. Desplegar abre una sesión de chat con la habilidad cargada que adapta la aplicación y la publica.",
       "recall": "Retirar",
-      "recall_confirm": "Vacía el bucket {{bucket}} de '{{name}}' (la URL → 404, reversible). Las cachés de borde pueden seguir sirviéndolo un rato; el contenido ya descargado no se puede retirar.",
+      "recall_confirm": "¿Retirar “{{name}}”? Vacía el bucket {{bucket}} (la URL → 404, reversible). Las cachés de borde pueden seguir sirviéndolo un rato; el contenido ya descargado no se puede retirar.",
       "recalled": "Se retiró '{{name}}'.",
       "refresh": "Actualizar",
       "region": "Región",
@@ -7760,7 +7933,7 @@
       "remove": "Eliminar",
       "remove_failed": "error al quitar",
       "remove_from_registry": "Quitar {{name}} del registro",
-      "remove_profile_confirm": "Quita '{{name}}' del registro. Tu ~/.aws/config NO se modifica.",
+      "remove_profile_confirm": "¿Quitar “{{name}}” del registro? Tu ~/.aws/config NO se modifica.",
       "removed_from_registry_your_aws_config_is_untouche": "Eliminado del registro (tu ~/.aws/config no se modifica).",
       "resolves_v2_before_any_v1": "del gateway resuelva v2 antes de cualquier v1.",
       "role_optional": "Rol (opcional)",
@@ -8003,7 +8176,7 @@
       "preview": "Vista previa: {{slug}}",
       "published": "Publicado ({{visibility}})",
       "published_sync_issue": "Publicado (problema de sincronización)",
-      "remove_artifact_confirm": "¿Quitar el artefacto \"{{slug}}\" de tu biblioteca?\n\nEsto elimina la entrada del artefacto y su historial de versiones. Si este artefacto vino de un archivo en disco o de un widget del chat, el original NO se modifica: puedes volver a añadirlo más tarde.",
+      "remove_artifact_confirm": "¿Quitar el artefacto “{{slug}}” de tu biblioteca?\n\nEsto elimina la entrada del artefacto y su historial de versiones. Si este artefacto vino de un archivo en disco o de un widget del chat, el original NO se modifica: puedes volver a añadirlo más tarde.",
       "remove_from_artifacts_library": "Quitar de la biblioteca de artefactos",
       "remove_from_library": "Quitar de la biblioteca",
       "remove_star_from_artifact": "Quitar el destacado del artefacto",
@@ -8802,7 +8975,7 @@
       "default_agent": "Agente predeterminado: {{name}}",
       "delete_column": "Eliminar la columna",
       "delete_folder": "Eliminar la carpeta",
-      "delete_folder_confirm": "¿Eliminar \"{{name}}\"? Las sesiones quedarán sin agrupar.",
+      "delete_folder_confirm": "¿Eliminar “{{name}}”? Las sesiones quedarán sin agrupar.",
       "delete_history_session": "Eliminar la sesión del historial",
       "delete_this_column": "¿Eliminar esta columna?",
       "double_click_to_rename": "Doble clic para cambiar el nombre",
@@ -8952,6 +9125,7 @@
       "switching": "Cambiando…",
       "tags": "Etiquetas",
       "temporary_no_memory_reads_or_writes": "Temporal — sin lecturas ni escrituras en la memoria",
+      "this_session_cannot_be_opened_from_the_chat_side": "\"{{title}}\" no se puede abrir desde la barra lateral del chat: es una sesión de {{surface}}.",
       "thinking": "Pensando…",
       "today": "Hoy",
       "unfiled": "Sin clasificar",
@@ -10094,7 +10268,13 @@
         "undo": "Deshacer",
         "uninstall": "Desinstalar",
         "unknown": "Desconocido",
-        "declared": "Declarado"
+        "declared": "Declarado",
+        "sign_in_required": "Inicio de sesión necesario",
+        "sign_in_required_help": "Este servidor usa OAuth y todavía nadie ha iniciado sesión. <chatLink>Ve al chat</chatLink>, inicia una sesión nueva y envía cualquier mensaje: se te pedirá que apruebes el inicio de sesión en el chat. Después sondea para actualizar esta lista.",
+        "oauth_not_a_static_token": "Este servidor inicia sesión con OAuth, por lo que una cabecera Authorization estática no le sirve. Quita y vuelve a añadir este servidor sin la cabecera, actívalo y luego inicia una sesión de chat nueva para iniciar sesión.",
+        "sign_in_required_next": "Una vez aprobado, usa el botón Sondear servidores MCP situado encima de esta tabla; la fila pasará entonces a Sesión iniciada.",
+        "signed_in": "Sesión iniciada",
+        "signed_in_help": "Kiro CLI conserva un inicio de sesión para {{provider}}. El sondeo se ejecuta sin ese token, por lo que {{productName}} no puede confirmar que el inicio de sesión siga siendo válido."
       },
       "memoryGraphTab": {
         "all_count": "Todos ({{count}})",
@@ -10245,9 +10425,9 @@
         "create": "Crear",
         "create_new_skill": "Crear nueva habilidad",
         "delete": "Eliminar",
-        "delete_confirm": "¿Eliminar \"{{name}}\"?",
+        "delete_confirm": "¿Eliminar “{{name}}”?",
         "dismiss": "Descartar",
-        "dismiss_confirm": "¿Descartar \"{{name}}\"?",
+        "dismiss_confirm": "¿Descartar “{{name}}”?",
         "dismiss_all": "Descartar todo",
         "dismiss_all_confirm": "¿Descartar las {{count}} habilidades pendientes?",
         "edit": "Editar",
@@ -10300,7 +10480,7 @@
         "content": "Contenido",
         "create": "Crear",
         "delete": "Eliminar",
-        "delete_confirm": "¿Eliminar \"{{path}}\"?",
+        "delete_confirm": "¿Eliminar “{{path}}”?",
         "edit": "Editar",
         "edit_2": "Editar {{path}}",
         "file_name": "Nombre del archivo",
@@ -10692,7 +10872,7 @@
         "batch_move_failed_one": "No se pudo mover {{count}} de {{total}} tarea",
         "batch_move_failed_other": "No se pudieron mover {{count}} de {{total}} tareas",
         "collapse_folder": "Contraer carpeta",
-        "confirm_delete_folder": "¿Eliminar \"{{name}}\"? Los trabajos quedarán sin agrupar.",
+        "confirm_delete_folder": "¿Eliminar “{{name}}”? Los trabajos quedarán sin agrupar.",
         "create": "Crear",
         "delete_folder": "Eliminar carpeta",
         "delete_folder_named": "Eliminar \"{{name}}\"",
@@ -10955,6 +11135,21 @@
       "uptime": "Tiempo activo"
     },
     "settings": {
+      "mobileLoginCard": {
+        "sign_in_on_mobile": "Iniciar sesión en móvil",
+        "create_a_one_time_link_for_mobile_or_another_browser": "Crea un enlace de inicio de sesión de corta duración para móvil u otro navegador. Caduca en 5 minutos.",
+        "creating_link": "Creando enlace…",
+        "create_mobile_sign_in_link": "Crear enlace de inicio de sesión móvil",
+        "create_new_mobile_sign_in_link": "Crear enlace nuevo",
+        "mobile_sign_in_link": "Enlace de inicio de sesión móvil",
+        "copy_sign_in_link": "Copiar enlace de inicio de sesión",
+        "link_copied": "Enlace copiado",
+        "link_expires_in_minutes": "Este enlace caduca en {{minutes}} minutos.",
+        "send_the_copied_link_to_your_mobile_device_then_open_it": "Envía el enlace copiado a tu dispositivo móvil y ábrelo allí.",
+        "dashboard_url_required_to_create_a_mobile_sign_in_link": "La URL del panel no está configurada. Configura dashboard.url para crear un enlace de inicio de sesión móvil.",
+        "could_not_create_a_sign_in_link_try_again": "No se pudo crear un enlace de inicio de sesión. Inténtalo de nuevo.",
+        "copy_failed_select_the_link_and_copy_it_manually": "No se pudo copiar. Selecciona el enlace y cópialo manualmente."
+      },
       "aboutPanel": {
         "diverged": "Divergente",
         "checkout_diverged_from_upstream": "Este checkout ha divergido de su upstream ({{distance}}). Haz rebase o merge para actualizar; nada se aplica automáticamente, así que tus commits locales están a salvo.",
@@ -11005,7 +11200,8 @@
         "downloading": "Descargando...",
         "insider": "Insider",
         "install_failed": "No se pudo instalar la actualización",
-        "installing_quiet_note": "Instalando — Kiro Crew dejará de responder durante uno o dos minutos y luego se reiniciará solo.",
+        "install_update_restart_app": "Instalar actualización y reiniciar app",
+        "installing_quiet_note": "Instalando — puede tardar varios minutos. {{productName}} volverá a abrirse automáticamente cuando termine la actualización.",
         "is_available": "está disponible.",
         "loading_changelog": "Cargando el registro de cambios…",
         "manual_install_fallback": "Si la actualización no funciona, puedes {{link}} y reinstalar sobre esta copia. Se conservan tus ajustes, chats y archivos.",
@@ -11021,7 +11217,6 @@
         "restart_failed": "Fallo al reiniciar",
         "restart_gateway": "Reiniciar la pasarela",
         "restart_row_note": "Reinicia el proceso de la pasarela sin actualizar. Las sesiones activas se desconectarán brevemente.",
-        "restart_update": "Reiniciar y actualizar",
         "restarting": "Reiniciando...",
         "retry": "Reintentar",
         "stable": "Estable",
@@ -11061,7 +11256,9 @@
         "view_this_commit_on_github": "Ver este commit en GitHub",
         "what_s_new": "Novedades",
         "you_are_on_the_latest_version": "Tienes la última versión.",
-        "you_re_on_the_latest_version": "Tienes la última versión."
+        "you_re_on_the_latest_version": "Tienes la última versión.",
+        "checks_for_updates_with_timing": "{{name}} busca actualizaciones automáticamente. {{timing}} También puedes buscar ahora.",
+        "last_checked_ago_next_check_in": "Última comprobación {{ago}}, próxima comprobación automática {{next}}."
       },
       "botChannelPanel": {
         "allowed_user_ids": "IDs de usuario permitidos",
@@ -11167,6 +11364,7 @@
       },
       "chatPanel": {
         "about_you": "Sobre ti",
+        "answer_only_details_on_request": "Solo la respuesta — detalles a petición o si es crítico",
         "auto_add_documents": "Añadir documentos automáticamente",
         "auto_add_saved_artifacts": "Añadir artefactos guardados automáticamente",
         "auto_compact_threshold": "Umbral de compactación automática",
@@ -11244,7 +11442,7 @@
         "how_long_models_think_before_answering_by_defaul": "Cuánto piensan los modelos antes de responder por defecto. Más alto es más lento y cuesta más. Solo disponible en modelos con capacidad de razonamiento (Opus, Sonnet, Fable, GPT-5.x).",
         "how_long_to_wait_for_the_agent_to_honor_a_stop_p": "Cuánto esperar a que el agente atienda una pulsación de Detener antes de terminar la sesión por la fuerza. Los márgenes más largos conservan el estado de la sesión más a menudo, pero hacen que las paradas parezcan lentas cuando los agentes están atascados en llamadas de herramientas largas.",
         "how_much_an_automatically_registered_source_may_i": "Cuánto puede tomar una fuente registrada automáticamente en una sola pasada. Cada fragmento de un documento cuesta una llamada de extracción, así que esto es lo que limita el coste; los documentos más recientes entran primero y el resto llega en pasadas posteriores. 0 elimina el límite. Predeterminado: {{count}}.",
-        "how_terse_the_agent_s_prose_is_ultra_concise_cap": "Qué tan escueta es la prosa del agente. «Ultraconciso» mantiene corta toda la respuesta: primero el resultado, viñetas en lugar de párrafos, sin relleno. El código, los comandos y los mensajes de error se mantienen literales en cualquier nivel, y las advertencias de seguridad y las instrucciones de varios pasos conservan todo el detalle.",
+        "how_terse_the_agent_s_prose_is_ultra_concise_cap": "Qué tan escueta es la prosa del agente. «Ultraconciso» mantiene corta toda la respuesta: primero el resultado, viñetas en lugar de párrafos, sin relleno. El código, los comandos y los mensajes de error se mantienen literales en cualquier nivel, y las advertencias de seguridad y las instrucciones de varios pasos conservan todo el detalle. «Solo la respuesta» va más lejos y elimina toda explicación: una frase como máximo, y detalles solo si los pides — o cuando una decisión es tan importante (seguridad, exposición, pérdida de datos, gasto, cualquier cosa difícil de deshacer) que necesitas el razonamiento para elegir bien.",
         "i_write_code": "Escribo código",
         "immediate": "Inmediato",
         "immediate_mode_shows_raw_chunks_as_they_arrive_s": "El modo inmediato muestra los fragmentos sin procesar a medida que llegan. El modo suave los almacena en búfer y muestra el texto a un ritmo constante.",
@@ -11885,8 +12083,8 @@
           "revoke_disables": "{{name}} ya no es de confianza y se ha apagado.",
           "change_failed": "El cambio no se aplicó: {{detail}}",
           "unknown_error": "error desconocido",
-          "revoke_confirm_title": "¿Quitar la confianza a {{name}}?",
-          "revoke_confirm_body": "{{name}} se apagará y dejará de funcionar. Sigue instalada, y podrás volver a confiar en ella más tarde.",
+          "revoke_confirm_title": "¿Quitar la confianza a “{{name}}”?",
+          "revoke_confirm_body": "“{{name}}” se apagará y dejará de funcionar. Sigue instalada, y podrás volver a confiar en ella más tarde.",
           "revoke_confirm_ok": "Quitar la confianza y apagar",
           "allow_all_confirm_body": "Confiar en todas las aplicaciones de terceros permite que cualquier aplicación que instales ejecute su propio código dentro de Kiro Crew, con el mismo acceso que tiene Kiro Crew — tus archivos, tus credenciales guardadas e Internet. Confiar en una aplicación cada vez es más seguro.",
           "allow_all_confirm_ack": "Entiendo que cada aplicación de terceros que instale podrá ejecutar su propio código con el acceso de Kiro Crew.",
@@ -12389,7 +12587,7 @@
         "delete": "Delete…",
         "deleting": "Eliminando…",
         "delete_crew": "Delete {{name}}",
-        "confirm_delete_of": "Confirm deleting {{name}}",
+        "confirm_delete_of": "Confirm deleting “{{name}}”",
         "delete_warning": "Delete terminates the EC2 instance and ends its charges. This cannot be undone.",
         "before_you_start": "Before you start — your AWS setup",
         "checking": "Checking…",
@@ -12925,6 +13123,9 @@
     }
   },
   "utils": {
+    "agentSwitchFeedback": {
+      "turn_in_flight": "Hay un turno en curso — inténtalo de nuevo cuando termine."
+    },
     "channelOrigin": {
       "direct_message": "Mensaje directo"
     },

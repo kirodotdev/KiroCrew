@@ -370,7 +370,9 @@ class TestExecutionDecision:
         # Shadowing install contributes nothing.
         assert "shadow-main" not in agents
 
-    def test_denial_is_audited_with_action_and_app(self, monkeypatch) -> None:
+    def test_denial_audit_uses_action_without_untrusted_app_name(
+        self, monkeypatch
+    ) -> None:
         from kiro_crew.apps import execution
 
         events: list[dict[str, Any]] = []
@@ -386,7 +388,8 @@ class TestExecutionDecision:
         assert len(events) == 1
         assert events[0]["operation"] == "app_execution_admission"
         assert events[0]["outcome"] == "denied"
-        assert "app='audit-app'" in events[0]["resources"]
+        assert "audit-app" not in events[0]["resources"]
+        assert "audit-app" not in events[0]["error"]
         assert "action='open_command'" in events[0]["resources"]
 
     def test_allowed_with_working_audit_emits_event(self, monkeypatch) -> None:
@@ -407,7 +410,7 @@ class TestExecutionDecision:
                 "caller": "dashboard",
                 "operation": "app_execution_admission",
                 "outcome": "allowed",
-                "resources": "app='audit-app' action='open_command' provenance=unverified",
+                "resources": "action='open_command' provenance=unverified",
             }
         ]
 
@@ -720,9 +723,495 @@ class TestTrustedGrantBounds:
         real = "real-grant-app"
         padding = [f"junk-{i:04d}" for i in range(_MAX_GRANT_ENTRIES + 50)]
         self._seed(tmp_path, monkeypatch, [real, *padding])
+        config_path = tmp_path / "home" / "config.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["agent"]["apps_trusted_local"] = [real]
+        config_path.write_text(json.dumps(config), encoding="utf-8")
         # Truncation is not a denial: the real grant is still enforced.
-        assert app_execution_denied(real, action="module_load") is None
+        assert (
+            app_execution_denied(real, action="local_install", repository="")
+            is None
+        )
         assert app_execution_denied(padding[-1], action="module_load") is not None
+
+    def test_repository_binding_is_inert_without_the_name_grant(self, monkeypatch) -> None:
+        from kiro_crew.apps import execution
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        monkeypatch.setattr(
+            KiroCrewConfig,
+            "load",
+            classmethod(
+                lambda cls: SimpleNamespace(
+                    agent=SimpleNamespace(
+                        apps_trusted=[],
+                        apps_trusted_repositories={
+                            "stale-app": "https://example.test/owner/stale"
+                        },
+                    )
+                )
+            ),
+        )
+
+        assert execution.trusted_app_repository("stale-app") == ""
+
+    def test_local_binding_is_inert_without_the_name_grant(self, monkeypatch) -> None:
+        from kiro_crew.apps import execution
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        monkeypatch.setattr(
+            KiroCrewConfig,
+            "load",
+            classmethod(
+                lambda cls: SimpleNamespace(
+                    agent=SimpleNamespace(
+                        apps_trusted=[],
+                        apps_trusted_local=["stale-app"],
+                    )
+                )
+            ),
+        )
+
+        assert "stale-app" not in execution.trusted_local_app_names()
+
+    def test_active_grant_exposes_its_repository_binding(self, monkeypatch) -> None:
+        from kiro_crew.apps import execution
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        repository = "https://example.test/Owner/Repo"
+        monkeypatch.setattr(
+            KiroCrewConfig,
+            "load",
+            classmethod(
+                lambda cls: SimpleNamespace(
+                    agent=SimpleNamespace(
+                        apps_trusted=["bound-app"],
+                        apps_trusted_repositories={"bound-app": repository},
+                    )
+                )
+            ),
+        )
+
+        assert execution.trusted_app_repository("bound-app") == repository
+
+    def test_bound_grant_admits_only_the_repository_that_was_reviewed(
+        self, monkeypatch
+    ) -> None:
+        from kiro_crew.apps import execution
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        repository = "https://example.test/Owner/Repo"
+        monkeypatch.setattr(
+            KiroCrewConfig,
+            "load",
+            classmethod(
+                lambda cls: SimpleNamespace(
+                    agent=SimpleNamespace(
+                        apps_allow_third_party=False,
+                        apps_trusted=["bound-app"],
+                        apps_trusted_repositories={"bound-app": repository},
+                    )
+                )
+            ),
+        )
+
+        assert (
+            execution.app_execution_denied(
+                "bound-app",
+                action="registry_install",
+                repository=f"{repository}.git",
+            )
+            is None
+        )
+        denied = execution.app_execution_denied(
+            "bound-app",
+            action="registry_install",
+            repository="https://User:SuperSecret@example.test/attacker/rebound",
+        )
+        assert denied is not None
+        assert "does not match" in denied
+        assert "SuperSecret" not in denied
+        assert "User" not in denied
+
+    def test_bound_grant_does_not_admit_an_unidentified_local_source(
+        self, monkeypatch
+    ) -> None:
+        from kiro_crew.apps import execution
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        monkeypatch.setattr(
+            KiroCrewConfig,
+            "load",
+            classmethod(
+                lambda cls: SimpleNamespace(
+                    agent=SimpleNamespace(
+                        apps_allow_third_party=False,
+                        apps_trusted=["bound-app"],
+                        apps_trusted_repositories={
+                            "bound-app": "https://example.test/Owner/Repo"
+                        },
+                    )
+                )
+            ),
+        )
+
+        assert execution.app_execution_denied(
+            "bound-app", action="local_install", repository=""
+        ) is not None
+
+    @pytest.mark.parametrize(
+        "repository",
+        [
+            "https://example.test/owner/repo-a",
+            "https://example.test/owner/repo-b",
+        ],
+    )
+    def test_legacy_name_grant_requires_reconsent_for_any_repository(
+        self, monkeypatch, repository: str
+    ) -> None:
+        from kiro_crew.apps import execution
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        monkeypatch.setattr(
+            KiroCrewConfig,
+            "load",
+            classmethod(
+                lambda cls: SimpleNamespace(
+                    agent=SimpleNamespace(
+                        apps_allow_third_party=False,
+                        apps_trusted=["legacy-app"],
+                        apps_trusted_local=[],
+                        apps_trusted_repositories={},
+                    )
+                )
+            ),
+        )
+
+        denied = execution.app_execution_denied(
+            "legacy-app",
+            action="registry_install",
+            repository=repository,
+        )
+
+        assert denied is not None
+        assert "predates repository binding" in denied
+        assert repository not in denied
+
+    def test_explicit_local_grant_covers_only_local_source(
+        self, monkeypatch
+    ) -> None:
+        from kiro_crew.apps import execution
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        monkeypatch.setattr(
+            KiroCrewConfig,
+            "load",
+            classmethod(
+                lambda cls: SimpleNamespace(
+                    agent=SimpleNamespace(
+                        apps_allow_third_party=False,
+                        apps_trusted=["local-app"],
+                        apps_trusted_local=["local-app"],
+                        apps_trusted_repositories={},
+                    )
+                )
+            ),
+        )
+
+        assert (
+            execution.app_execution_denied(
+                "local-app", action="local_install", repository=""
+            )
+            is None
+        )
+        denied = execution.app_execution_denied(
+            "local-app",
+            action="registry_install",
+            repository="https://User:Secret@example.test/owner/repo",
+        )
+        assert denied is not None
+        assert "local-source" in denied
+        assert "Secret" not in denied
+
+    def test_unknown_legacy_name_grant_cannot_claim_fresh_local_source(
+        self, monkeypatch
+    ) -> None:
+        from kiro_crew.apps import execution
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        monkeypatch.setattr(
+            KiroCrewConfig,
+            "load",
+            classmethod(
+                lambda cls: SimpleNamespace(
+                    agent=SimpleNamespace(
+                        apps_allow_third_party=False,
+                        apps_trusted=["legacy-app"],
+                        apps_trusted_local=[],
+                        apps_trusted_repositories={},
+                    )
+                )
+            ),
+        )
+        monkeypatch.setattr("kiro_crew.apps.manager.get_app", lambda name: None)
+
+        denied = execution.app_execution_denied(
+            "legacy-app", action="local_install", repository=""
+        )
+
+        assert denied is not None
+        assert "predates repository binding" in denied
+
+    def test_installed_legacy_local_grant_remains_migration_compatible(
+        self, monkeypatch
+    ) -> None:
+        from kiro_crew.apps import execution
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        monkeypatch.setattr(
+            KiroCrewConfig,
+            "load",
+            classmethod(
+                lambda cls: SimpleNamespace(
+                    agent=SimpleNamespace(
+                        apps_allow_third_party=False,
+                        apps_trusted=["legacy-local"],
+                        apps_trusted_local=[],
+                        apps_trusted_repositories={},
+                    )
+                )
+            ),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.apps.manager.get_app",
+            lambda name: {"name": name, "source": "C:/reviewed/local", "sourceUrl": ""},
+        )
+
+        assert (
+            execution.app_execution_denied(
+                "legacy-local", action="module_load"
+            )
+            is None
+        )
+
+    def test_runtime_rejects_installed_legacy_repository_grant(
+        self, monkeypatch
+    ) -> None:
+        from kiro_crew.apps import execution
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        monkeypatch.setattr(
+            KiroCrewConfig,
+            "load",
+            classmethod(
+                lambda cls: SimpleNamespace(
+                    agent=SimpleNamespace(
+                        apps_allow_third_party=False,
+                        apps_trusted=["legacy-repository"],
+                        apps_trusted_local=[],
+                        apps_trusted_repositories={},
+                    )
+                )
+            ),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.apps.manager.get_app",
+            lambda name: {
+                "name": name,
+                "source": f"registry:{name}",
+                "sourceUrl": "https://example.test/owner/repository",
+            },
+        )
+
+        denied = execution.app_execution_denied(
+            "legacy-repository", action="module_load"
+        )
+
+        assert denied is not None
+        assert "predates repository binding" in denied
+
+    @pytest.mark.parametrize(
+        "binding",
+        ["", "https://example.test/owner/repository"],
+        ids=["name-only", "repository-bound"],
+    )
+    def test_runtime_legacy_repository_never_consults_catalog(
+        self, monkeypatch, binding: str
+    ) -> None:
+        from kiro_crew.apps import execution, registry
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        monkeypatch.setattr(
+            KiroCrewConfig,
+            "load",
+            classmethod(
+                lambda cls: SimpleNamespace(
+                    agent=SimpleNamespace(
+                        apps_allow_third_party=False,
+                        apps_trusted=["legacy-repository"],
+                        apps_trusted_local=[],
+                        apps_trusted_repositories=(
+                            {"legacy-repository": binding} if binding else {}
+                        ),
+                    )
+                )
+            ),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.apps.manager.get_app",
+            lambda name: {
+                "name": name,
+                "source": f"registry:{name}",
+                "sourceUrl": "",
+            },
+        )
+
+        def _must_not_read_catalog(name):
+            raise AssertionError("runtime admission must not consult the catalog")
+
+        monkeypatch.setattr(registry, "get_registry_app", _must_not_read_catalog)
+
+        denied = execution.app_execution_denied(
+            "legacy-repository", action="module_load"
+        )
+
+        assert denied is not None
+        assert (
+            "predates repository binding" in denied
+            if not binding
+            else "does not match" in denied
+        )
+
+    @pytest.mark.parametrize(
+        "source_url",
+        [
+            "https://example.test/owner/repository?repo=other",
+            "deploy:password@example.invalid:owner/repository.git",
+            "ssh://deploy:password@example.invalid/owner/repository.git",
+        ],
+    )
+    def test_runtime_rejects_legacy_unsupported_repository(
+        self, monkeypatch, source_url: str
+    ) -> None:
+        from kiro_crew.apps import execution
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        safe_repository = "https://example.test/owner/repository"
+        monkeypatch.setattr(
+            KiroCrewConfig,
+            "load",
+            classmethod(
+                lambda cls: SimpleNamespace(
+                    agent=SimpleNamespace(
+                        apps_allow_third_party=False,
+                        apps_trusted=["legacy-repository"],
+                        apps_trusted_local=[],
+                        apps_trusted_repositories={
+                            "legacy-repository": safe_repository
+                        },
+                    )
+                )
+            ),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.apps.manager.get_app",
+            lambda name: {
+                "name": name,
+                "source": f"registry:{name}",
+                "sourceUrl": source_url,
+            },
+        )
+
+        denied = execution.app_execution_denied(
+            "legacy-repository", action="module_load"
+        )
+
+        assert denied is not None
+        assert "does not match" in denied
+
+    @pytest.mark.parametrize(
+        "binding",
+        [
+            "https://example.test/owner/repository?repo=old",
+            "deploy:password@example.invalid:owner/repository.git",
+            "ssh://deploy:password@example.invalid/owner/repository.git",
+        ],
+    )
+    def test_runtime_rejects_legacy_unsupported_config_binding(
+        self, monkeypatch, binding: str
+    ) -> None:
+        from kiro_crew.apps import execution
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        safe_repository = "https://example.test/owner/repository"
+        monkeypatch.setattr(
+            KiroCrewConfig,
+            "load",
+            classmethod(
+                lambda cls: SimpleNamespace(
+                    agent=SimpleNamespace(
+                        apps_allow_third_party=False,
+                        apps_trusted=["legacy-repository"],
+                        apps_trusted_local=[],
+                        apps_trusted_repositories={
+                            "legacy-repository": binding
+                        },
+                    )
+                )
+            ),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.apps.manager.get_app",
+            lambda name: {
+                "name": name,
+                "source": f"registry:{name}",
+                "sourceUrl": safe_repository,
+            },
+        )
+
+        denied = execution.app_execution_denied(
+            "legacy-repository", action="module_load"
+        )
+
+        assert denied is not None
+        assert "does not match" in denied
+
+    def test_config_derived_grant_name_never_enters_failure_logs(
+        self, monkeypatch, caplog
+    ) -> None:
+        from kiro_crew.apps import execution, manager, registry
+
+        secret_shaped_name = "secrettoken123"
+
+        def _resolution_failure(name):
+            raise RuntimeError(f"failed for {name}")
+
+        monkeypatch.setattr(manager, "get_app", _resolution_failure)
+        legacy_denied = execution._repository_grant_denied_for_binding(
+            secret_shaped_name,
+            binding="",
+        )
+        bound_denied = execution._repository_grant_denied_for_binding(
+            secret_shaped_name,
+            binding="https://example.test/owner/repo",
+        )
+
+        def _comparison_failure(left, right):
+            raise RuntimeError(f"cannot compare {left} for {secret_shaped_name}")
+
+        monkeypatch.setattr(registry, "_same_git_target", _comparison_failure)
+        comparison_denied = execution._repository_grant_denied_for_binding(
+            secret_shaped_name,
+            binding="https://example.test/owner/repo",
+            repository="https://example.test/owner/repo",
+        )
+
+        assert all(
+            secret_shaped_name not in reason
+            for reason in (legacy_denied, bound_denied, comparison_denied)
+            if reason is not None
+        )
+        assert secret_shaped_name not in caplog.text
 
 
 class TestRegistryAndProvenanceBoundary:

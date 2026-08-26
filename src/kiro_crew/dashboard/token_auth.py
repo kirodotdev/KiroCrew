@@ -705,9 +705,12 @@ _403_HTML = (
     "</style></head><body>"
     "<div class='c'>"
     "<div class='logo'>👻</div>"
-    "<h1>403 — {reason}</h1>"
-    "<p>Run <code>kirocrew token</code> in your terminal, then paste the URL below.</p>"
-    "<input id='u' type='text' placeholder='Paste token URL or raw token…' autofocus>"
+    "<h1>Sign in required — {reason}</h1>"
+    "<p>This browser does not have a dashboard session.</p>"
+    "<p>On a device already signed in, open <strong>Settings → Security → Sign in on mobile</strong>, "
+    "then send the sign-in link to this device. Or paste a sign-in link below.</p>"
+    "<p>No other signed-in device? Run <code>kirocrew token</code> in your terminal, then paste the URL below.</p>"
+    "<input id='u' type='text' placeholder='Paste sign-in link or token…' autofocus>"
     "<button onclick='go()'>Connect</button>"
     "<div class='err' id='e'>Invalid URL</div>"
     "</div>"
@@ -2503,6 +2506,16 @@ def token_auth_middleware(
                 _token_boot = str(data.get("boot", ""))
                 if _token_boot:
                     _carried["boot"] = _token_boot
+                # ``no_refresh`` gets the same treatment as ``boot`` and for the
+                # same reason: the claim must survive the exchange or a DOWNSTREAM
+                # consumer that reads the session cookie to learn the caller's
+                # bounds (the mobile-link mint) sees an unbounded session and
+                # re-mints an unbounded credential — the exact laundering the
+                # claim exists to prevent. Validation never acts on it on the
+                # cookie path, so carrying it is inert for auth itself; the
+                # refresh chain is still suppressed below by never being minted.
+                if _no_refresh:
+                    _carried["no_refresh"] = "1"
                 session_token = generate_token(
                     user_id,
                     ttl_seconds=_remaining,

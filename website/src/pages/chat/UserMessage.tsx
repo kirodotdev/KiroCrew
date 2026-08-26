@@ -168,7 +168,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
         {/* Actions sit BELOW the bubble (like the read-only action row) so they
             never impose a min-width floor on the auto-sized bubble. */}
         <div className="flex justify-end gap-2 mt-1">
-          <button onClick={cancel} className="px-3 py-1 text-[13px] leading-5 text-muted hover:text-text rounded border border-border hover:bg-hover transition-colors" title={i18nT('pages.chat.userMessage.cancel_esc')}>
+          <button onClick={cancel} className="px-3 py-1 text-[13px] leading-5 text-muted hover:text-text rounded border border-border hover:bg-bg-hover transition-colors" title={i18nT('pages.chat.userMessage.cancel_esc')}>
             {i18nT('pages.chat.userMessage.cancel')}
           </button>
           <button onClick={submit} className="flex items-center gap-1 px-3 py-1 text-[13px] leading-5 bg-accent text-accent-fg rounded hover:bg-accent/80 transition-colors" title={i18nT('pages.chat.userMessage.send_enter')}>

@@ -121,9 +121,7 @@ async def _stop_reader(task: asyncio.Task) -> None:
         pass
 
 
-async def _await_routed(
-    rt: AcpRuntime, *session_ids: str, timeout: float = 5.0
-) -> dict[str, int]:
+async def _await_routed(rt: AcpRuntime, *session_ids: str, timeout: float = 5.0) -> dict[str, int]:
     """Wait until the runtime has an in-flight request for each session, and
     return the ``{session_id: request_id}`` map.
 
@@ -324,10 +322,7 @@ async def test_ownerless_request_answered_once_not_broadcast():
         # The answer task runs off the reader loop; give it ticks to complete.
         for _ in range(20):
             await asyncio.sleep(0)
-        replies = [
-            json.loads(call.args[0].decode())
-            for call in proc.stdin.write.call_args_list
-        ]
+        replies = [json.loads(call.args[0].decode()) for call in proc.stdin.write.call_args_list]
         errors = [r for r in replies if r.get("id") == 4864 and "error" in r]
         assert len(errors) == 1, f"expected exactly one reply, got {replies}"
         assert errors[0]["error"]["code"] == -32601
@@ -412,10 +407,7 @@ async def test_ownerless_response_with_null_result_is_not_answered():
         _feed(reader, {"id": 77, "result": None})  # response shape, no method
         for _ in range(20):
             await asyncio.sleep(0)
-        replies = [
-            json.loads(call.args[0].decode())
-            for call in proc.stdin.write.call_args_list
-        ]
+        replies = [json.loads(call.args[0].decode()) for call in proc.stdin.write.call_args_list]
         assert not [r for r in replies if r.get("id") == 77]
     finally:
         await _stop_reader(task)
@@ -3656,9 +3648,7 @@ class TestAcpRuntimeLoadSession:
         )
 
     @pytest.mark.asyncio
-    async def test_load_session_keeps_the_transcript_path_alongside_the_agents(
-        self, monkeypatch
-    ):
+    async def test_load_session_keeps_the_transcript_path_alongside_the_agents(self, monkeypatch):
         """Merged, not assigned: a third _meta writer must not drop an earlier one.
 
         The two envelopes belong to different backends today (a transcript path is
@@ -3791,12 +3781,19 @@ class TestAcpRuntimeLoadSession:
         overlay = tmp_path / "agents"
         overlay.mkdir()
         (overlay / "kirocrew.json").write_text(
-            json.dumps({"name": "kirocrew", "mcpServers": {"builder-mcp": {
-                _WRAPPER_MARKER: True,
-                "command": "/data/mcp-gateway/stubs/mc-mcp-stub-wrapper.sh",
-                "args": ["--target-command=builder-mcp"],
-                "env": {},
-            }}}),
+            json.dumps(
+                {
+                    "name": "kirocrew",
+                    "mcpServers": {
+                        "builder-mcp": {
+                            _WRAPPER_MARKER: True,
+                            "command": "/data/mcp-gateway/stubs/mc-mcp-stub-wrapper.sh",
+                            "args": ["--target-command=builder-mcp"],
+                            "env": {},
+                        }
+                    },
+                }
+            ),
             encoding="utf-8",
         )
         rt, _, _ = _make_runtime()
@@ -3902,9 +3899,7 @@ class TestAcpRuntimeLoadSession:
             "_initialize_session",
         } <= builders.keys(), f"expected builders missing from scan: {sorted(builders)}"
         for name, body in builders.items():
-            assert (
-                "pooled_session_servers" in body or "_pooled_mcp_servers" in body
-            ), (
+            assert "pooled_session_servers" in body or "_pooled_mcp_servers" in body, (
                 f"{name} issues session/new or session/load but never consults "
                 "the pooled broker stubs — it would un-pool its sessions (#3528)"
             )
@@ -4432,9 +4427,7 @@ async def test_reader_retains_mcp_registration_frames_during_init():
             return {}
 
         with patch.object(rt, "_send_and_await", _fake_send):
-            with patch.object(
-                AcpSessionHandle, "drain_init", AsyncMock()
-            ) as mock_drain:
+            with patch.object(AcpSessionHandle, "drain_init", AsyncMock()) as mock_drain:
                 handle = await rt.create_session(cwd="/w", agent="kirocrew", mcp_servers=[])
         assert handle.session_id == "sid-warm"
         mock_drain.assert_awaited_once()
@@ -5066,6 +5059,34 @@ def test_build_permission_event_raw_params_none_without_cache():
     assert event.raw_tool_params is None
 
 
+@pytest.mark.parametrize("redaction_cache", [None, {}])
+def test_cached_input_without_redaction_provenance_fails_closed(redaction_cache):
+    """Unknown cached-input provenance may display, but cannot grant trust."""
+    from kiro_crew.acp._dispatch import build_permission_event
+    from kiro_crew.acp.types import METHOD_REQUEST_PERMISSION
+
+    msg = JsonRpcMessage.from_dict(
+        {
+            "id": 61,
+            "method": METHOD_REQUEST_PERMISSION,
+            "params": {
+                "toolCall": {"toolCallId": "tc-legacy", "title": "Legacy cached tool"},
+                "options": [],
+            },
+        }
+    )
+    cached = '{"command": "echo [REDACTED: credential]"}'
+
+    event, _ = build_permission_event(
+        msg,
+        tool_input_cache={"tc-legacy": cached},
+        tool_input_redacted_cache=redaction_cache,
+    )
+
+    assert event.tool_input == cached
+    assert event.tool_input_redacted is True
+
+
 def test_build_permission_event_recovers_mcp_server_name_from_cache():
     """Regression: build_permission_event must carry mcp_server_name recovered
     from the preceding tool_call (the permission payload has no _meta), so
@@ -5150,6 +5171,175 @@ def test_build_permission_event_tool_name_empty_without_cache():
     )
     event, _ = build_permission_event(msg, tool_name_cache={})
     assert event.tool_name == ""
+
+
+def test_shared_handle_permission_inherits_origin_bound_tool_identity():
+    """Shared-runtime transport carries identity through its real cache path."""
+    rt, _, _ = _make_runtime()
+    handle = AcpSessionHandle("sA", asyncio.Queue(), rt)
+    tool_events = handle._handle_update(
+        JsonRpcMessage.from_dict(
+            {
+                "method": "session/update",
+                "params": {
+                    "sessionId": "sA",
+                    "update": {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "tc-shared",
+                        "title": "Shared model-authored title",
+                        "kind": "other",
+                        "rawInput": {},
+                        "_meta": {
+                            "kiro": {
+                                "toolName": "delete_record",
+                                "mcpServerName": "records:primary",
+                            }
+                        },
+                    },
+                },
+            }
+        )
+    )
+    assert tool_events and tool_events[0].tool_name == "delete_record"
+
+    permission = handle._build_permission_event(
+        JsonRpcMessage.from_dict(
+            {
+                "id": 11,
+                "method": "session/request_permission",
+                "params": {
+                    "sessionId": "sA",
+                    "toolCall": {
+                        "toolCallId": "tc-shared",
+                        "title": "Shared model-authored title",
+                    },
+                    "options": [],
+                },
+            }
+        )
+    )
+
+    assert permission.tool_name == "delete_record"
+    assert permission.mcp_server_name == "records:primary"
+
+
+def test_shared_handle_structured_non_shell_reprompt_keeps_argument_provenance():
+    """Shared transport retains display and raw params across a re-prompt."""
+    from kiro_crew.trust_patterns import approval_command
+
+    rt, _, _ = _make_runtime()
+    handle = AcpSessionHandle("sA", asyncio.Queue(), rt)
+    handle._handle_update(
+        JsonRpcMessage.from_dict(
+            {
+                "method": "session/update",
+                "params": {
+                    "sessionId": "sA",
+                    "update": {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "tc-shared-args",
+                        "title": "Looking up the record",
+                        "kind": "other",
+                        "rawInput": {"record_id": "sensitive-record"},
+                        "_meta": {
+                            "kiro": {
+                                "toolName": "read_record",
+                                "mcpServerName": "records:primary",
+                            }
+                        },
+                    },
+                },
+            }
+        )
+    )
+    request = JsonRpcMessage.from_dict(
+        {
+            "id": 12,
+            "method": "session/request_permission",
+            "params": {
+                "sessionId": "sA",
+                "toolCall": {
+                    "toolCallId": "tc-shared-args",
+                    "title": "Looking up the record",
+                },
+                "options": [],
+            },
+        }
+    )
+
+    first = handle._build_permission_event(request)
+    repeated = handle._build_permission_event(request)
+
+    assert first.tool_input
+    assert repeated.tool_input == first.tool_input
+    assert repeated.raw_tool_params == {"record_id": "sensitive-record"}
+    assert (
+        approval_command(
+            repeated.tool_input,
+            is_shell=repeated.is_shell,
+            tool_name=repeated.tool_name,
+            mcp_server_name=repeated.mcp_server_name,
+            raw_tool_params=repeated.raw_tool_params,
+        )
+        == ""
+    )
+
+
+@pytest.mark.parametrize("raw_input", ["/etc/secret", ["/etc/secret"]])
+def test_shared_non_dict_non_shell_reprompt_cannot_become_durable_tool_trust(raw_input):
+    """String/list rawInput remains visible to the repeat trust gate."""
+    from kiro_crew.trust_patterns import approval_command
+
+    rt, _, _ = _make_runtime()
+    handle = AcpSessionHandle("sA", asyncio.Queue(), rt)
+    handle._handle_update(
+        JsonRpcMessage.from_dict(
+            {
+                "method": "session/update",
+                "params": {
+                    "sessionId": "sA",
+                    "update": {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "tc-shared-nondict",
+                        "title": "Reading a path",
+                        "kind": "read",
+                        "rawInput": raw_input,
+                        "_meta": {"kiro": {"toolName": "read_path", "mcpServerName": "files"}},
+                    },
+                },
+            }
+        )
+    )
+    request = JsonRpcMessage.from_dict(
+        {
+            "id": 13,
+            "method": "session/request_permission",
+            "params": {
+                "sessionId": "sA",
+                "toolCall": {
+                    "toolCallId": "tc-shared-nondict",
+                    "title": "Reading a path",
+                },
+                "options": [],
+            },
+        }
+    )
+
+    first = handle._build_permission_event(request)
+    repeated = handle._build_permission_event(request)
+
+    assert repeated.tool_input == first.tool_input
+    assert repeated.tool_input
+    assert (
+        approval_command(
+            repeated.tool_input,
+            is_shell=repeated.is_shell,
+            tool_name=repeated.tool_name,
+            mcp_server_name=repeated.mcp_server_name,
+            raw_tool_params=repeated.raw_tool_params,
+        )
+        == ""
+    )
 
 
 def test_build_permission_event_non_string_option_entries_skipped():
@@ -5749,15 +5939,11 @@ def test_mode_available_helper():
 
     assert AcpRuntime._mode_available("kirocrew", _new_resp(None)) is True
     assert (
-        AcpRuntime._mode_available(
-            "kirocrew", _new_resp({"availableModes": [{"id": "kirocrew"}]})
-        )
+        AcpRuntime._mode_available("kirocrew", _new_resp({"availableModes": [{"id": "kirocrew"}]}))
         is True
     )
     assert (
-        AcpRuntime._mode_available(
-            "kirocrew", _new_resp({"availableModes": [{"id": "default"}]})
-        )
+        AcpRuntime._mode_available("kirocrew", _new_resp({"availableModes": [{"id": "default"}]}))
         is False
     )
     # Present-but-empty availableModes → advertised, agent absent → fail closed.
@@ -6026,9 +6212,7 @@ async def test_unroutable_permission_request_is_auto_rejected(caplog):
 
         frame = _last_written_frame(proc)
         assert frame["id"] == 77
-        assert frame["result"] == {
-            "outcome": {"outcome": "selected", "optionId": "reject_once"}
-        }
+        assert frame["result"] == {"outcome": {"outcome": "selected", "optionId": "reject_once"}}
         # Answered, not dropped: the drop counter must stay empty so the
         # summary log cannot misattribute an answered request as a drop.
         assert rt._dropped_frames == {}
@@ -6116,7 +6300,9 @@ async def test_registered_session_permission_still_routes_to_queue():
                 "method": "session/request_permission",
                 "params": {
                     "sessionId": "known-session",
-                    "options": [{"optionId": "reject_once", "name": "Reject", "kind": "reject_once"}],
+                    "options": [
+                        {"optionId": "reject_once", "name": "Reject", "kind": "reject_once"}
+                    ],
                 },
             },
         )
@@ -6378,7 +6564,10 @@ async def test_unannounced_child_session_update_still_drops():
             reader,
             {
                 "method": "session/update",
-                "params": {"sessionId": "never-announced", "update": {"sessionUpdate": "tool_call"}},
+                "params": {
+                    "sessionId": "never-announced",
+                    "update": {"sessionUpdate": "tool_call"},
+                },
             },
         )
         await _drain(reader)
@@ -6447,31 +6636,42 @@ def test_child_low_fidelity_requires_structured_security_context():
     assert ev.child_low_fidelity is True
     # Child shell with params but unrecoverable command → LOW.
     ev = AcpEvent(
-        kind="permission_request", sub_session_id="child-a",
-        is_shell=True, raw_tool_params={"note": "no command key"},
-        raw_params_trusted=True, shell_classified=True,
+        kind="permission_request",
+        sub_session_id="child-a",
+        is_shell=True,
+        raw_tool_params={"note": "no command key"},
+        raw_params_trusted=True,
+        shell_classified=True,
     )
     assert ev.child_low_fidelity is True
     # Inline (agent-authored) params without cache provenance → LOW even
     # with a recoverable command.
     ev = AcpEvent(
-        kind="permission_request", sub_session_id="child-a",
-        is_shell=True, raw_tool_params={"command": "sha256sum README.md"},
-        raw_params_trusted=False, shell_classified=True,
+        kind="permission_request",
+        sub_session_id="child-a",
+        is_shell=True,
+        raw_tool_params={"command": "sha256sum README.md"},
+        raw_params_trusted=False,
+        shell_classified=True,
     )
     assert ev.child_low_fidelity is True
     # Unresolved shell classification (cache miss defaults is_shell=False) → LOW.
     ev = AcpEvent(
-        kind="permission_request", sub_session_id="child-a",
+        kind="permission_request",
+        sub_session_id="child-a",
         raw_tool_params={"path": "/tmp/x"},
-        raw_params_trusted=True, shell_classified=False,
+        raw_params_trusted=True,
+        shell_classified=False,
     )
     assert ev.child_low_fidelity is True
     # Child with full provenance context → parity (not low).
     ev = AcpEvent(
-        kind="permission_request", sub_session_id="child-a",
-        is_shell=True, raw_tool_params={"command": "sha256sum README.md"},
-        raw_params_trusted=True, shell_classified=True,
+        kind="permission_request",
+        sub_session_id="child-a",
+        is_shell=True,
+        raw_tool_params={"command": "sha256sum README.md"},
+        raw_params_trusted=True,
+        shell_classified=True,
     )
     assert ev.child_low_fidelity is False
     # Non-child events are never low-fidelity.
@@ -6669,9 +6869,7 @@ def test_missing_kind_is_not_a_resolved_shell_classification():
             },
         }
     )
-    event, _ = build_permission_event(
-        msg, shell_cache=shell_cache, raw_params_cache=raw_cache
-    )
+    event, _ = build_permission_event(msg, shell_cache=shell_cache, raw_params_cache=raw_cache)
     event.sub_session_id = "child-a"
     assert event.shell_classified is False
     assert event.child_low_fidelity is True  # downgrade applies
@@ -6684,6 +6882,64 @@ def test_missing_kind_is_not_a_resolved_shell_classification():
         raw_params_cache=raw_cache,
     )
     assert shell_cache.get("tc-rk") is False  # resolved non-shell
+
+
+def test_shared_permission_event_carries_redaction_provenance_without_secret():
+    """The shared-runtime cache must remember that its display input changed.
+
+    Re-redacting the already-clean permission event cannot recover this fact;
+    command trust needs the separate boolean while the removed bytes stay out
+    of the event's display input.
+    """
+    from kiro_crew.acp._dispatch import _build_tool_call_event, build_permission_event
+    from kiro_crew.acp.types import METHOD_REQUEST_PERMISSION
+
+    input_cache: dict[str, str] = {}
+    redacted_cache: dict[str, bool] = {}
+    shell_cache: dict[str, bool] = {}
+    _build_tool_call_event(
+        {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "tc-secret",
+            "title": "Run Command",
+            "kind": "execute",
+            "rawInput": {"command": "echo AKIAIOSFODNN7EXAMPLE"},
+        },
+        input_cache,
+        shell_cache=shell_cache,
+        tool_input_redacted_cache=redacted_cache,
+    )
+    assert redacted_cache["tc-secret"] is True
+
+    msg = JsonRpcMessage.from_dict(
+        {
+            "id": 71,
+            "method": METHOD_REQUEST_PERMISSION,
+            "params": {
+                "toolCall": {"toolCallId": "tc-secret", "title": "Run Command"},
+                "options": [],
+            },
+        }
+    )
+    event, _ = build_permission_event(
+        msg,
+        tool_input_cache=input_cache,
+        tool_input_redacted_cache=redacted_cache,
+        shell_cache=shell_cache,
+    )
+
+    assert event.tool_input_redacted is True
+    assert "AKIAIOSFODNN7EXAMPLE" not in event.tool_input
+    assert "[REDACTED: credential]" in event.tool_input
+    assert redacted_cache["tc-secret"] is True
+    repeated, _ = build_permission_event(
+        msg,
+        tool_input_cache=input_cache,
+        tool_input_redacted_cache=redacted_cache,
+        shell_cache=shell_cache,
+    )
+    assert repeated.tool_input_redacted is True
+    assert repeated.tool_input == event.tool_input
 
 
 def test_refinement_fills_raw_params_cache_for_following_permission():
@@ -6734,9 +6990,7 @@ def test_refinement_fills_raw_params_cache_for_following_permission():
             },
         }
     )
-    event, _ = build_permission_event(
-        msg, shell_cache=shell_cache, raw_params_cache=raw_cache
-    )
+    event, _ = build_permission_event(msg, shell_cache=shell_cache, raw_params_cache=raw_cache)
     event.sub_session_id = "child-a"
     assert event.raw_params_trusted is True
     assert event.shell_classified is True

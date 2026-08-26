@@ -506,15 +506,13 @@ class TestVoiceVoices:
 
         async def mock_exec(*args, **kwargs):
             proc = MagicMock()
-
-            async def comm():
-                raise asyncio.TimeoutError()
-            proc.communicate = comm
+            # First await (under wait_for) times out; the second (the reap
+            # after kill) drains the pipes and returns.
+            proc.communicate = AsyncMock(
+                side_effect=[asyncio.TimeoutError(), (b"", b"")]
+            )
             proc.kill = MagicMock()
-
-            async def _wait():
-                return 0
-            proc.wait = _wait
+            proc.wait = AsyncMock()
             return proc
 
         monkeypatch.setattr("asyncio.create_subprocess_exec", mock_exec)
@@ -530,6 +528,52 @@ class TestVoiceVoices:
         async with TestClient(TestServer(app)) as client:
             resp = await client.get("/api/voice/voices")
             assert resp.status == 504
+
+    @pytest.mark.asyncio
+    async def test_voices_timeout_reaps_child_via_communicate_not_wait(
+        self, tmp_path, monkeypatch
+    ):
+        """After a timeout kills the describe-voices child, the cleanup must
+        call ``communicate()`` -- not ``wait()`` -- so that PIPE buffers are
+        drained. A child blocked writing to a full stderr PIPE would hang the
+        request handler if only ``wait()`` were used (#5975)."""
+        import asyncio
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        mock_vc = MagicMock(provider="polly", aws_profile="", region="")
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._voices_cache", None)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._voices_cache_ts", 0)
+
+        proc = MagicMock()
+        proc.communicate = AsyncMock(side_effect=[asyncio.TimeoutError(), (b"", b"")])
+        proc.kill = MagicMock()
+        proc.wait = AsyncMock()
+
+        async def mock_exec(*args, **kwargs):
+            return proc
+
+        monkeypatch.setattr("asyncio.create_subprocess_exec", mock_exec)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_voice.resolve_polly_cli", lambda: "/usr/local/bin/aws"
+        )
+
+        from kiro_crew.dashboard.chat_voice import api_voice_voices
+        app = web.Application()
+        app["state"] = _make_state(tmp_path)
+        app.router.add_get("/api/voice/voices", api_voice_voices)
+
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/api/voice/voices")
+            assert resp.status == 504
+
+        proc.kill.assert_called_once()
+        # The critical pin: reap via communicate(), not wait(). The handler
+        # awaits communicate once under wait_for; the reap must award a
+        # SECOND await, and wait() must never be touched. (A bare
+        # ``communicate.assert_awaited()`` would pass even against a
+        # wait()-based reap, so it must be this count/not_awaited shape.)
+        assert proc.communicate.await_count == 2
+        proc.wait.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_voices_aws_not_found(self, tmp_path, monkeypatch):

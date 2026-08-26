@@ -347,6 +347,39 @@ class TestLifecycle:
         assert task.cancelled()
         assert c._handler_tasks == set()
 
+    @pytest.mark.asyncio
+    async def test_close_drains_handlers_and_session_even_when_run_loop_died(self) -> None:
+        """``_run_loop`` dying from an uncaught, non-CancelledError exception
+        makes ``self._task.cancel()`` a no-op, and re-``await``ing it re-raises
+        that exception -- which must not skip the handler-task drain or the
+        session close (issue #4627)."""
+
+        class _FakeSession:
+            def __init__(self) -> None:
+                self.closed = False
+
+            async def close(self) -> None:
+                self.closed = True
+
+        c = _client()
+        c._session = _FakeSession()  # type: ignore[assignment]
+        handler_task: asyncio.Task[Any] = asyncio.ensure_future(asyncio.sleep(100))
+        c._handler_tasks.add(handler_task)
+
+        async def _buggy_loop() -> None:
+            raise ValueError("malformed frame")
+
+        c._task = asyncio.create_task(_buggy_loop())
+        await asyncio.sleep(0)  # let the task actually finish before close()
+
+        with pytest.raises(ValueError, match="malformed frame"):
+            await c.close()
+
+        assert c._task is None
+        assert handler_task.cancelled()
+        assert c._handler_tasks == set()
+        assert c._session is None
+
 
 class TestRedeliveryHandling:
     """Acks and dedup, together.

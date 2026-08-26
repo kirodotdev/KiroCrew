@@ -53,7 +53,7 @@ export default function PdfPreview({ src, downloadName }: PdfPreviewProps) {
   }
 
   return (
-    <div className="flex-1 min-h-0 flex flex-col bg-bg-subtle" data-testid="papyrus-pdf">
+    <div className="flex-1 min-h-0 flex flex-col bg-bg-accent" data-testid="papyrus-pdf">
       <iframe
         key={src}
         src={src}

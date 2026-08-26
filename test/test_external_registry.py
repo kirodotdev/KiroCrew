@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kiro_crew.apps.registry import (
+    _EXTERNAL_REGISTRY_CACHE_TTL,
     _clone_sandbox_mode,
     _external_registry_cache_path,
     _external_registry_repos,
@@ -24,6 +25,7 @@ from kiro_crew.apps.registry import (
     _is_ssh_git_url,
     _load_external_registries,
     _manifest_cache_path,
+    _owner_designated_repo_target,
     _read_external_registry_cache,
     _safe_cache_stem,
     _write_external_registry_cache,
@@ -116,6 +118,109 @@ class TestExternalRegistryCache:
         _write_external_registry_cache("myorg", sample_entries)
         result = _read_external_registry_cache("myorg")
         assert result == sample_entries
+
+    def test_write_and_read_strip_http_userinfo_recursively(self, cache_dir):
+        secret = "RegistryCacheSecret"
+        raw = f"https://user:{secret}@git.example.com/org/apps.git"
+        query = f"https://git.example.com/org/apps.git?token={secret}#ignored"
+        generic = f"s3://user:{secret}@bucket.example/apps?token={secret}#ignored"
+        entries = [
+            {
+                "name": "private-app",
+                "repo": raw,
+                "gitUrl": raw,
+                "_registry": raw,
+                "nested": {
+                    "sourceUrl": raw,
+                    "queryUrl": query,
+                    "genericUrl": generic,
+                },
+            }
+        ]
+
+        _write_external_registry_cache(raw, entries)
+        path = _external_registry_cache_path(raw)
+        result = _read_external_registry_cache(raw)
+
+        assert secret not in path.name
+        assert secret not in path.read_text(encoding="utf-8")
+        assert secret not in repr(result)
+        assert result is not None
+        assert result[0]["repo"] == "https://git.example.com/org/apps.git"
+        assert result[0]["nested"]["queryUrl"] == "https://git.example.com/org/apps.git"
+        assert result[0]["nested"]["genericUrl"] == "s3://bucket.example/apps"
+
+    def test_named_legacy_cache_is_sanitized_and_rewritten_on_read(self, cache_dir):
+        secret = "NamedLegacyCacheSecret"
+        raw = f"https://user:{secret}@git.example.com/org/apps.git"
+        path = _external_registry_cache_path("corp")
+        path.write_text(
+            json.dumps([{"name": "private-app", "repo": raw, "_registry": raw}]),
+            encoding="utf-8",
+        )
+
+        result = _read_external_registry_cache("corp")
+
+        assert secret not in repr(result)
+        assert secret not in path.read_text(encoding="utf-8")
+
+    def test_stale_named_legacy_cache_is_cleaned_without_becoming_fresh(self, cache_dir):
+        secret = "StaleNamedLegacySecret"
+        raw = f"https://user:{secret}@git.example.com/org/apps.git?token={secret}"
+        path = _external_registry_cache_path("corp")
+        path.write_text(
+            json.dumps([{"name": "private-app", "repo": raw, "_registry": raw}]),
+            encoding="utf-8",
+        )
+        old_time = time.time() - 7200
+        os.utime(path, (old_time, old_time))
+
+        assert _read_external_registry_cache("corp") is None
+
+        assert secret not in path.read_text(encoding="utf-8")
+        assert path.stat().st_mtime < time.time() - _EXTERNAL_REGISTRY_CACHE_TTL
+        stale = _read_external_registry_cache("corp", ignore_ttl=True)
+        assert stale is not None
+        assert stale[0]["repo"] == "https://git.example.com/org/apps.git"
+
+    def test_unnamed_raw_legacy_cache_filename_is_removed_without_logging_secret(
+        self, cache_dir, caplog
+    ):
+        from kiro_crew.apps import registry as reg
+
+        secret = "LegacyFilenameSecret"
+        raw = f"https://user:{secret}@git.example.com/org/apps.git"
+        legacy = reg._legacy_external_registry_cache_path(raw)
+        legacy.write_text("[]", encoding="utf-8")
+        assert secret in legacy.name
+
+        with caplog.at_level(logging.WARNING):
+            assert _read_external_registry_cache(raw, ignore_ttl=True) is None
+
+        assert not legacy.exists()
+        assert secret not in caplog.text
+
+    def test_invalid_cached_values_are_not_echoed_to_logs(self, cache_dir, caplog):
+        secret = "InvalidCacheValueSecret"
+        path = _external_registry_cache_path("corp")
+        path.write_text(
+            json.dumps(
+                [
+                    {"name": secret, "repo": "https://example.invalid/repo.git"},
+                    {
+                        "name": "valid-app",
+                        "repo": "https://example.invalid/repo.git",
+                        "subdirectory": f"../{secret}",
+                    },
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.apps.registry"):
+            assert _read_external_registry_cache("corp", ignore_ttl=True) == []
+
+        assert secret not in caplog.text
 
     def test_read_returns_none_when_stale(self, cache_dir, sample_entries):
         _write_external_registry_cache("myorg", sample_entries)
@@ -211,6 +316,34 @@ class TestFetchExternalRegistryValidation:
         assert result is None
 
     @pytest.mark.asyncio
+    async def test_credentialed_fresh_index_returns_no_http_userinfo(self, monkeypatch, tmp_path):
+        secret = "FreshRegistrySecret"
+        raw_registry = f"https://user:{secret}@git.example.com/org/apps.git"
+
+        async def _fake_fetch(git_url, branch, dest, log_lines, **kwargs):
+            dest.mkdir(parents=True)
+            (dest / "app-registry.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "name": "private-app",
+                            "repo": raw_registry,
+                            "nested": {"sourceUrl": raw_registry},
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            return None
+
+        monkeypatch.setattr("kiro_crew.apps.registry._git_fetch_branch", _fake_fetch)
+        result = await _fetch_external_registry_index(raw_registry, "main")
+
+        assert result is not None
+        assert secret not in repr(result)
+        assert result[0]["repo"] == "https://git.example.com/org/apps.git"
+
+    @pytest.mark.asyncio
     async def test_rejects_repo_with_spaces(self):
         result = await _fetch_external_registry_index("my repo", "mainline")
         assert result is None
@@ -261,6 +394,83 @@ class TestFetchExternalRegistryValidation:
                 "https://github.com/example/MyRepo.git", "feature/branch-name"
             )
             assert mock_exec.called
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stale", [False, True])
+async def test_unnamed_credentialed_registry_cache_hit_and_stale_rows_are_public(
+    cache_dir, monkeypatch, stale
+):
+    from kiro_crew.apps import registry as reg
+
+    secret = "CachedRegistrySecret"
+    raw_registry = f"https://user:{secret}@git.example.com/org/apps.git"
+    public_registry = "https://git.example.com/org/apps.git"
+    mock_reg = SimpleNamespace(name="", repo=raw_registry, branch="main", trust="index")
+    _write_external_registry_cache(
+        raw_registry,
+        [{"name": "private-app", "repo": public_registry, "branch": "main"}],
+    )
+    if stale:
+        old = time.time() - 7200
+        os.utime(_external_registry_cache_path(raw_registry), (old, old))
+        monkeypatch.setattr(
+            reg,
+            "_fetch_and_cache_external_registry",
+            AsyncMock(return_value=None),
+        )
+    monkeypatch.setattr(reg, "_effective_registries", lambda: [mock_reg])
+
+    rows = await _load_external_registries()
+
+    assert rows and rows[0]["_registry"] == public_registry
+    assert secret not in repr(rows)
+
+
+@pytest.mark.asyncio
+async def test_url_shaped_registry_name_is_credential_free_in_cached_rows(cache_dir, monkeypatch):
+    from kiro_crew.apps import registry as reg
+
+    secret = "RegistryNameSecret"
+    raw_name = f"https://user:{secret}@registry.example/apps?token={secret}"
+    public_name = "https://registry.example/apps"
+    mock_reg = SimpleNamespace(
+        name=raw_name,
+        repo="https://git.example.com/org/apps.git",
+        branch="main",
+        trust="index",
+    )
+    _write_external_registry_cache(
+        raw_name,
+        [{"name": "private-app", "repo": mock_reg.repo, "branch": "main"}],
+    )
+    monkeypatch.setattr(reg, "_effective_registries", lambda: [mock_reg])
+
+    rows = await _load_external_registries()
+
+    assert rows and rows[0]["_registry"] == public_name
+    assert secret not in repr(rows)
+
+
+def test_url_shaped_registry_name_still_rehydrates_exact_owner_transport(monkeypatch):
+    from kiro_crew.apps import registry as reg
+
+    raw_name = "https://name-user:name-secret@registry.example/apps"
+    raw_repo = "https://repo-user:repo-secret@git.example.com/org/apps.git"
+    configured = SimpleNamespace(
+        name=raw_name,
+        repo=raw_repo,
+        branch="main",
+        trust="owner",
+    )
+    monkeypatch.setattr(reg, "_effective_registries", lambda: [configured])
+    entry = {
+        "name": "private-app",
+        "gitUrl": "https://git.example.com/org/apps.git",
+        "_registry": "https://registry.example/apps",
+    }
+
+    assert _owner_designated_repo_target(entry) == raw_repo
 
 
 # ---------------------------------------------------------------------------
@@ -874,6 +1084,16 @@ class TestExternalRegistryCachePath:
         # Same original name always maps to the same path (deterministic hash).
         name = "https://github.com/acme/apps"
         assert _external_registry_cache_path(name) == _external_registry_cache_path(name)
+
+    def test_credential_rotation_does_not_change_public_cache_identity(self, cache_dir):
+        first = _external_registry_cache_path(
+            "https://user:first-secret@git.example.com/acme/apps"
+        )
+        second = _external_registry_cache_path(
+            "https://user:second-secret@git.example.com/acme/apps"
+        )
+        assert first == second
+        assert "secret" not in first.name
 
 
 # ---------------------------------------------------------------------------

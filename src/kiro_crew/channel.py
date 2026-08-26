@@ -47,7 +47,10 @@ _INBOX_POLL_SECS = 1.0
 # control one.  CREATE is blocked for a different reason than the other two: it
 # writes nothing into an existing conversation, but a session it opened would be
 # one the channel agent then owns and may act on, which is exactly the
-# containment this list exists to hold.
+# containment this list exists to hold.  SEND is the sharpest of the four: stop
+# only cancels and read only exfiltrates, but send delivers text that the target
+# session RUNS as a turn — so external channel content would execute inside a
+# private dashboard conversation.
 # Matched against the rendered
 # permission-request text/title via _blocked_tool_named() (boundary-aware,
 # not naive substring — "Editing send_notification.py" must NOT match).
@@ -55,6 +58,7 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     "send_message",
     "send_notification",
     "session_stop",
+    "session_send",
     "session_read_message",
     "session_create",
 )

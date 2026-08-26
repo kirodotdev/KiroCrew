@@ -1158,25 +1158,17 @@ async def _run_cmd(
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
             await _kill_tree(proc.pid)
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-            await proc.wait()
+            await platform_compat.kill_and_reap(proc)
             return -1, "", f"timeout ({timeout}s)"
         except asyncio.CancelledError:
             # Backend shutdown/restart cancels in-flight handlers: the child
             # runs in its own process group and would outlive us (a canceled
             # rebase never reaches its --abort path, wedging the worktree).
+            # kill_and_reap is best-effort throughout, so an already-reaped
+            # child cannot REPLACE the in-flight CancelledError with
+            # ProcessLookupError and swallow the cancellation.
             await _kill_tree(proc.pid)
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                # Already reaped: an unguarded kill here would REPLACE the
-                # in-flight CancelledError with ProcessLookupError, swallowing
-                # the cancellation (#2096).
-                pass
-            await proc.wait()
+            await platform_compat.kill_and_reap(proc)
             raise
         return proc.returncode or 0, (stdout or b"").decode(errors="replace"), (stderr or b"").decode(errors="replace")
     finally:
@@ -1371,11 +1363,7 @@ async def _start_run(
             # so a worktree-controlled build can't outlive its run record.
             if proc is not None and proc.returncode is None:
                 await _kill_tree(proc.pid)
-                try:
-                    proc.kill()
-                except ProcessLookupError:
-                    pass
-                await proc.wait()
+                await platform_compat.kill_and_reap(proc)
             async with _RUNS_LOCK:
                 _RUNS[rid]["status"] = "done"
                 _RUNS[rid]["exit_code"] = -1

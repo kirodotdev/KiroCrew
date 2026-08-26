@@ -72,12 +72,13 @@ describe('remote-crew status dot colors', () => {
     expect(dots.connected).not.toBe(dots.stopped)
   })
 
-  it('uses no phantom success/warning utility anywhere in the panel', () => {
-    expect(panelSrc).not.toMatch(/\b(bg|text|border|ring)-success\b/)
-    expect(panelSrc).not.toMatch(/\b(bg|text|border|ring)-warning\b/)
-    // Alpha-modifier and -subtle forms of the same phantom names.
-    expect(panelSrc).not.toMatch(/\b(bg|text|border|ring)-(success|warning)[/-]/)
-  })
+  // The third assertion this file used to carry — "uses no phantom
+  // success/warning utility anywhere in the panel" — is gone: the repo-wide
+  // `phantom-classes` gate asks Tailwind whether a class is emitted, for every
+  // file, so a per-file name ban is now its third spelling and the one most
+  // likely to drift. What stays here is what the gate CANNOT check: that the map
+  // covers every tunnel state, and that `connected` is visually distinct from
+  // the neutral ones. Both classes could be real and the dot still wrong.
 })
 
 vi.mock('../api/client', () => ({

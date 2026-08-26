@@ -310,7 +310,9 @@ class TestReadPathsLocked:
                     svc.get_job(jid)
                 await asyncio.sleep(0)
 
-        remove_task = asyncio.create_task(svc.remove_jobs(ids[::2]))
+        remove_task = asyncio.create_task(
+            svc.remove_jobs(ids[::2], actor="test", source="test")
+        )
         read_tasks = [asyncio.create_task(reader()) for _ in range(4)]
         await asyncio.gather(remove_task, *read_tasks)
 
@@ -804,7 +806,7 @@ class TestMutatorContract:
             with pytest.raises(CronStoreBusy):
                 svc.update_job(existing.id, name="renamed")
             with pytest.raises(CronStoreBusy):
-                svc.remove_job(existing.id)
+                svc.remove_job(existing.id, actor="test", source="test")
             with pytest.raises(CronStoreBusy):
                 svc.enable_job(existing.id, enabled=False)
             with pytest.raises(CronStoreBusy):
@@ -846,7 +848,7 @@ class TestMutatorContract:
                 with pytest.raises(CronStoreBusy):
                     await svc.update_job_async(job.id, name="renamed")
                 with pytest.raises(CronStoreBusy):
-                    await svc.remove_job_async(job.id)
+                    await svc.remove_job_async(job.id, actor="test", source="test")
                 with pytest.raises(CronStoreBusy):
                     await svc.enable_job_async(job.id, enabled=False)
                 # Sampled while the lock is still held, BEFORE the ticker is
@@ -879,7 +881,7 @@ class TestMutatorContract:
             assert await svc.enable_job_async(job.id, enabled=False) is True
             assert await svc.ack_job_async(job.id, "note") is True
             assert await svc.unack_job_async(job.id) is True
-            assert await svc.remove_job_async(job.id) is True
+            assert await svc.remove_job_async(job.id, actor="test", source="test") is True
             assert svc.get_job(job.id) is None
 
         asyncio.run(scenario())

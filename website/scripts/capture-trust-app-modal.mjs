@@ -6,7 +6,7 @@
  * `POST /api/apps/launchdarkly/enable` is answered with the real refusal shape
  * (403 + `code: "app_execution_denied"`), which is what opens the modal.
  *
- *   01 consent   → title, scope line, three capabilities, provenance, actions
+ *   01 consent   → title, scope line, three capabilities, authoritative clone target, actions
  *   02 failed    → the retried enable also fails, reported inline
  *
  * Also asserts the translucent capability panel resolves to a real
@@ -19,28 +19,33 @@ import { mkdirSync } from 'node:fs'
 import { serveDist } from './lib/serve-dist.mjs'
 import { logPageProblems, stubDashboardApi } from './lib/stub-dashboard-api.mjs'
 
-const OUT = process.argv[2] || '../temp-screenshots/trust-app-modal'
+const OUT = process.argv[2] || '../temp-screenshots/issue-3711'
 const PREFIX = process.argv[3] || 'after'
 
 mkdirSync(OUT, { recursive: true })
 
-const REPO = 'https://github.com/launchdarkly-labs/launchdarkly-kiro-crew-app'
+// Deliberately disagree: `repo` is a registry display/lookup alias, while
+// `trustRepository` is the server-resolved `gitUrl` that will actually be
+// cloned.  The consent surface must show and submit only the latter.
+const LEGACY_REPO_ALIAS = 'launchdarkly-labs/legacy-registry-alias'
+const AUTHORITATIVE_CLONE_TARGET = 'https://git.example.test/security/authoritative-clone-target.git'
 
 const MANIFEST = {
   name: 'launchdarkly', version: '1.0.0', displayName: 'LaunchDarkly',
   description: 'Manage feature flags from your agentic workspace.',
-  author: 'launchdarkly', repo: REPO,
+  author: 'launchdarkly', repo: LEGACY_REPO_ALIAS,
 }
 
 const INSTALLED = [{
   name: 'launchdarkly', displayName: 'LaunchDarkly', version: '1.0.0',
   enabled: false, installedAt: '2026-08-03T00:00:00Z', origin: 'registry',
-  manifest: MANIFEST,
+  manifest: MANIFEST, trustRepository: AUTHORITATIVE_CLONE_TARGET,
 }]
 
 const REGISTRY = [{
   name: 'launchdarkly', displayName: 'LaunchDarkly', version: '1.0.0',
-  description: MANIFEST.description, author: 'launchdarkly', repo: REPO,
+  description: MANIFEST.description, author: 'launchdarkly', repo: LEGACY_REPO_ALIAS,
+  gitUrl: AUTHORITATIVE_CLONE_TARGET, trustRepository: AUTHORITATIVE_CLONE_TARGET,
   tags: ['feature-flags'], installed: true, enabled: false, origin: 'registry',
 }]
 
@@ -70,6 +75,11 @@ async function main() {
         return true
       }
       if (path === '/api/security/trusted-apps/launchdarkly') {
+        const request = route.request()
+        const body = request.postDataJSON()
+        if (body?.repository !== AUTHORITATIVE_CLONE_TARGET) {
+          throw new Error(`trust grant submitted wrong repository: ${JSON.stringify(body)}`)
+        }
         await route.fulfill({ json: { apps: ['launchdarkly'], allowAll: false } })
         return true
       }
@@ -82,6 +92,17 @@ async function main() {
   await page.getByRole('button', { name: /^Enable$/ }).first().click()
   await page.waitForSelector(MODAL)
   await page.waitForTimeout(400)
+
+  const modalText = await page.locator(MODAL).innerText()
+  if (!modalText.includes(AUTHORITATIVE_CLONE_TARGET)) {
+    throw new Error(`modal omitted authoritative clone target: ${modalText}`)
+  }
+  if (modalText.includes(LEGACY_REPO_ALIAS)) {
+    throw new Error(`modal exposed legacy repo alias as consent authority: ${modalText}`)
+  }
+  if (modalText.includes('{{app}}')) {
+    throw new Error(`modal leaked an uninterpolated app placeholder: ${modalText}`)
+  }
   await page.locator(MODAL).screenshot({ path: `${OUT}/${PREFIX}-01-consent.png` })
 
   // The translucent capability panel must resolve to a real background-color.

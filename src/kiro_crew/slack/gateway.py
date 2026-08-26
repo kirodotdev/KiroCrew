@@ -94,7 +94,11 @@ from kiro_crew.cron import (
 from kiro_crew.cron_script import run_command_sandboxed, run_script_sandboxed
 from kiro_crew.dashboard import cautious_boot, start_dashboard
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
-from kiro_crew.dashboard.chat_runner import _resolve_channel_target, _run_chat
+from kiro_crew.dashboard.chat_runner import (
+    _arm_queued_delivery_settlement,
+    _resolve_channel_target,
+    _run_chat,
+)
 from kiro_crew.dashboard.chat_utils import (
     CRON_NOTIFICATION_KIND,
     SUBAGENT_COMPLETION_KIND,
@@ -260,6 +264,7 @@ from kiro_crew.subagent import (
     SubagentInfo,
     SubagentManager,
     ToolApprovalCallback,
+    _injection_notice_outcome,
     resolve_max_subagents,
 )
 from kiro_crew.subagent_completion_meta import (
@@ -2331,6 +2336,12 @@ class GatewayOrchestrator:
                 "--version",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                # Own process group (POSIX; no-op on Windows) so the tree kill
+                # in `_kill_startup_child` below reaches any descendants, not
+                # just the direct child — the kill+reap arms were already here,
+                # but without a session of its own the group signal had nothing
+                # to address beyond the child's PID.
+                start_new_session=platform_compat.IS_POSIX,
             )
         except Exception:
             return  # binary missing/unspawnable — same silence as before
@@ -3094,7 +3105,12 @@ class GatewayOrchestrator:
                 logger.warning("Cron '%s' delivery failed: %s", job.name, notify_exc)
             if remove and delivered and self.cron_svc:
                 try:
-                    removed = await self.cron_svc.remove_job_async(job.id)
+                    await self.cron_svc.remove_job_async(
+                        job.id,
+                        actor="cron",
+                        source="cron",
+                        one_shot_path="cron_gateway",
+                    )
                 except CronStoreBusy:
                     # No caller to retry this fire-and-forget removal, so hand
                     # it to the service's deferred-removal queue: the job is
@@ -3109,17 +3125,6 @@ class GatewayOrchestrator:
                         "Cron '%s': store busy, queued one-shot removal for " "the next timer tick",
                         job.name,
                     )
-                else:
-                    if removed:
-                        # SEL audit: automated one-shot (Done) removal after
-                        # delivery (issue #5408). One owner for the record
-                        # shape: the service's helper emits the same
-                        # cron.remove event as the deferred-drain and
-                        # run-merge paths, best-effort and exception-contained
-                        # (audit unavailability never fails the delivery
-                        # callback). removed=False means another path already
-                        # deleted the job — that path owns the audit record.
-                        self.cron_svc.audit_one_shot_removal(job.id, "cron_gateway")
 
         async def _alert_cron_failure(job: CronJob, detail: str, *, denied: bool = False) -> None:
             """Tell the user WHY a script/command cron run failed or was denied.
@@ -6976,6 +6981,56 @@ class GatewayOrchestrator:
                             return
 
                         # Slot is idle — start _run_chat.
+                        #
+                        # This branch hands the digest off ASYNCHRONOUSLY: the
+                        # turn is a task, and `_on_done` returns to
+                        # `_report_terminal` while it is still pending — so a
+                        # bare return here is a local routing success, not
+                        # evidence the parent received anything (#2233). Owe
+                        # the delivery bookkeeping to the turn's CONSUMPTION
+                        # instead, through the same `_defer_queued_delivery`
+                        # the queue branch uses: it records the debt (the
+                        # completed member's own tombstone AND any held wave
+                        # siblings) in the slot's content-keyed ledger, keyed
+                        # on this announce, and flags `_delivery_queued` — so
+                        # the run loop's `mark_delivered` and its digest-hold
+                        # settle both become no-ops for this route, and the
+                        # two settle paths cannot both fire.
+                        #
+                        # The task's own OUTCOME is deliberately not the
+                        # signal: `_run_chat` returns NORMALLY on a signed-out
+                        # CLI, a dead provider, exhausted retries and a first
+                        # empty response — several of them after re-queueing
+                        # the announce itself — so "the task finished cleanly"
+                        # says nothing about delivery. Consumption does, and a
+                        # failure before it re-queues the announce, whose drain
+                        # claims this same content-keyed debt on the replay. An
+                        # unconfirmed hand-off leaves the debt parked on
+                        # purpose: a duplicate announce after a restart is
+                        # visible to the parent and recoverable, a lost result
+                        # is neither.
+                        #
+                        # Computed BEFORE the transfer (which detaches the held
+                        # ids); stays False when there is nothing to owe — a
+                        # failed or stopped solo member settles through its own
+                        # failure tombstone, not this ledger.
+                        _owes_delivery = bool(info._digest_settle_ids) or (
+                            not _flush_only and info.outcome == "completed"
+                        )
+                        self._defer_queued_delivery(
+                            _injection_slot, announce, info, flush_only=_flush_only
+                        )
+                        _consumed: list[bool] = [False]
+
+                        def _note_consumed(consumed: bool = True) -> None:
+                            # False is a retraction: the first empty response
+                            # re-queues this exact announce verbatim, so the
+                            # delivery that counts has not happened yet.
+                            _consumed[0] = consumed
+
+                        _run_kwargs: dict[str, Any] = {}
+                        if _owes_delivery:
+                            _run_kwargs["_on_consumed"] = _note_consumed
                         _task = asyncio.create_task(
                             bounded_chat_turn(
                                 _run_chat(
@@ -6983,6 +7038,7 @@ class GatewayOrchestrator:
                                     _injection_slot,
                                     announce,
                                     _directive_user_origin=False,
+                                    **_run_kwargs,
                                 )
                             )
                         )
@@ -7007,6 +7063,20 @@ class GatewayOrchestrator:
                                     )
 
                         _task.add_done_callback(_on_inject_done)
+                        if _owes_delivery:
+                            # Settle the owed tombstones only once the model has
+                            # consumed this turn's prompt — the drain's own
+                            # settlement path, reused verbatim (#2233, riding
+                            # the #4839 ledger). If the transfer above fell
+                            # back (stubbed slot), the ledger holds no debt and
+                            # the claim inside is an empty no-op.
+                            _arm_queued_delivery_settlement(
+                                self.dashboard_state,
+                                _injection_slot,
+                                _task,
+                                [announce],
+                                _consumed,
+                            )
                         self.dashboard_state.push_slots_update()
                         logger.info("Subagent %s → _run_chat in %s", info.id, _slot_name)
                     finally:
@@ -7484,14 +7554,18 @@ class GatewayOrchestrator:
                     task_preview, _ = redact_credentials(task_preview)
                     error_text, _ = redact_exfiltration_urls(extra.get("error", "timed out"))
                     error_text, _ = redact_credentials(error_text)
+                    # The visible transcript card must state the run's real
+                    # outcome, same as the queued LLM copy: this event fires for
+                    # every terminal state whose report could not be injected,
+                    # not only successful completions.
+                    outcome_line = _injection_notice_outcome(info)
                     slot.append(
                         "assistant",
                         f"{SUBAGENT_COMPLETION_PREFIX}\n"
                         f"Agent `{info.id}` ❌\n"
                         f"Task: {task_preview}\n\n"
                         f"Error: {error_text}\n"
-                        f"⚠️ Result delivery timed out — the subagent finished but "
-                        f"its result could not be injected into this session.",
+                        f"⚠️ Result delivery failed — {outcome_line}",
                         "msg msg-a",
                         meta={
                             SUBAGENT_COMPLETION_META_KEY: single_completion_meta(
@@ -8777,6 +8851,13 @@ class GatewayOrchestrator:
         proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
         if not proj:
             return
+        # Timeout/cancel discipline for every spawn below. Function-local like
+        # the wheel path's import further down this file: the helper owns the
+        # kill-the-tree + bounded-reap contract, and there is exactly one
+        # implementation of it (issue #4210 exists to close the two-conventions
+        # gap, not to add a second helper).
+        from kiro_crew.platform.update_provider import _kill_and_reap
+
         try:
             # Every git call below reads a tree an agent can write, and several of
             # them (`status`, `diff`, `reset`) will EXEC a program the repository
@@ -8827,8 +8908,20 @@ class GatewayOrchestrator:
                 env=_git_env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
+                # Own process group (POSIX; no-op on Windows) so a timeout or
+                # cancellation kill reaches the whole tree, not just the direct
+                # child. Every spawn in this method carries the same discipline
+                # (issue #4210): on TimeoutError/CancelledError, kill the tree
+                # and reap under a bound via the shared `_kill_and_reap`, then
+                # re-raise so the outer handler keeps its current behaviour —
+                # without this the child is ABANDONED on timeout, not stopped.
+                start_new_session=platform_compat.IS_POSIX,
             )
-            branch_out, _ = await asyncio.wait_for(branch_proc.communicate(), timeout=10)
+            try:
+                branch_out, _ = await asyncio.wait_for(branch_proc.communicate(), timeout=10)
+            except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
+                await _kill_and_reap(branch_proc)
+                raise
             if branch_proc.returncode != 0:
                 logger.error("Auto-update: could not determine current branch")
                 return
@@ -8912,8 +9005,13 @@ class GatewayOrchestrator:
                 env=_git_env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                start_new_session=platform_compat.IS_POSIX,
             )
-            await asyncio.wait_for(fetch.communicate(), timeout=60)
+            try:
+                await asyncio.wait_for(fetch.communicate(), timeout=60)
+            except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
+                await _kill_and_reap(fetch)
+                raise
 
             if fetch.returncode != 0:
                 if self.dashboard_state:
@@ -8944,8 +9042,13 @@ class GatewayOrchestrator:
                 env=_git_env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
+                start_new_session=platform_compat.IS_POSIX,
             )
-            target_out, _ = await asyncio.wait_for(target_proc.communicate(), timeout=10)
+            try:
+                target_out, _ = await asyncio.wait_for(target_proc.communicate(), timeout=10)
+            except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
+                await _kill_and_reap(target_proc)
+                raise
             target = (target_out or b"").strip().decode()
             if target_proc.returncode != 0 or not target:
                 logger.warning(
@@ -8967,8 +9070,13 @@ class GatewayOrchestrator:
                 env=_git_env,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
+                start_new_session=platform_compat.IS_POSIX,
             )
-            await asyncio.wait_for(diff_proc.wait(), timeout=10)
+            try:
+                await asyncio.wait_for(diff_proc.wait(), timeout=10)
+            except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
+                await _kill_and_reap(diff_proc)
+                raise
             if diff_proc.returncode == 0:
                 # No diff — already up to date
                 if self.dashboard_state:
@@ -9044,8 +9152,13 @@ class GatewayOrchestrator:
                 env=_git_env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
+                start_new_session=platform_compat.IS_POSIX,
             )
-            status_out, _ = await asyncio.wait_for(status_proc.communicate(), timeout=10)
+            try:
+                status_out, _ = await asyncio.wait_for(status_proc.communicate(), timeout=10)
+            except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
+                await _kill_and_reap(status_proc)
+                raise
             if status_proc.returncode != 0:
                 # Cannot prove the tree is clean, and the next step is
                 # irreversible — treat an unreadable status as dirty.
@@ -9131,8 +9244,13 @@ class GatewayOrchestrator:
                 env=_git_env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
+                start_new_session=platform_compat.IS_POSIX,
             )
-            added_out, _ = await asyncio.wait_for(added_proc.communicate(), timeout=10)
+            try:
+                added_out, _ = await asyncio.wait_for(added_proc.communicate(), timeout=10)
+            except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
+                await _kill_and_reap(added_proc)
+                raise
             if added_proc.returncode != 0:
                 logger.warning(
                     "Auto-update: skipping — could not list the paths %s would add; "
@@ -9227,8 +9345,15 @@ class GatewayOrchestrator:
                 env=_git_env,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
+                start_new_session=platform_compat.IS_POSIX,
             )
-            await asyncio.wait_for(reset.wait(), timeout=10)
+            try:
+                await asyncio.wait_for(reset.wait(), timeout=10)
+            except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
+                # This child is a MUTATION, not a query: abandoned, it is a
+                # hard reset still running against the operator's checkout.
+                await _kill_and_reap(reset)
+                raise
             if reset.returncode != 0:
                 logger.error("Auto-update: git reset --hard failed (rc=%d)", reset.returncode)
                 if self.dashboard_state:
@@ -9238,14 +9363,34 @@ class GatewayOrchestrator:
 
             # Update the optional kiro-cli backend if present.
             if shutil.which("kiro-cli"):
+                kiro_update: asyncio.subprocess.Process | None = None
                 try:
                     kiro_update = await asyncio.create_subprocess_exec(
                         "kiro-cli",
                         "update",
                         stdout=asyncio.subprocess.DEVNULL,
                         stderr=asyncio.subprocess.DEVNULL,
+                        # Own process group (POSIX; no-op on Windows) so the
+                        # kill in the arms below reaches the whole tree.
+                        start_new_session=platform_compat.IS_POSIX,
                     )
                     await asyncio.wait_for(kiro_update.wait(), timeout=120)
+                except (TimeoutError, asyncio.TimeoutError):
+                    # Kill the tree BEFORE falling through: this step is
+                    # non-fatal, but the code below rebuilds the frontend and
+                    # reinstalls the Python deps, and an abandoned
+                    # `kiro-cli update` would keep mutating the installation
+                    # concurrently — the same half-replaced-install race the
+                    # wheel path's CancelledError branch exists to prevent.
+                    if kiro_update is not None:
+                        await _kill_and_reap(kiro_update)
+                    logger.debug("Auto-update: kiro-cli update timed out (non-fatal)")
+                except asyncio.CancelledError:
+                    # Shutdown cancels the update task; without this the child
+                    # keeps mutating the installation unsupervised.
+                    if kiro_update is not None:
+                        await _kill_and_reap(kiro_update)
+                    raise
                 except Exception:
                     logger.debug("Auto-update: kiro-cli update failed (non-fatal)")
 
@@ -9329,8 +9474,15 @@ class GatewayOrchestrator:
                     cwd=proj,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    # Own process group (POSIX; no-op on Windows) so the kill
+                    # below reaches pip's build-backend grandchildren too.
+                    start_new_session=platform_compat.IS_POSIX,
                 )
-                _fb_out, fb_err = await asyncio.wait_for(fallback.communicate(), timeout=300)
+                try:
+                    _fb_out, fb_err = await asyncio.wait_for(fallback.communicate(), timeout=300)
+                except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
+                    await _kill_and_reap(fallback)
+                    raise
                 if fallback.returncode == 0:
                     logger.info(
                         "Auto-update: core deps repaired after pip failure (%s)",

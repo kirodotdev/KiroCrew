@@ -64,16 +64,21 @@ def _entries() -> list[str]:
     return found
 
 
-def _windows_only_decorator(nodes: list[ast.AST], src: str) -> bool:
+def _windows_only_decorator(nodes: list[ast.AST]) -> bool:
     for holder in nodes:
         for dec in getattr(holder, "decorator_list", []):
-            text = ast.get_source_segment(src, dec) or ""
+            # ``ast.get_source_segment`` splits the complete module source on every
+            # call.  Some listed modules contain thousands of tests, making this
+            # audit repeatedly rescan those files until pytest's timeout fires.
+            # Unparsing walks only the decorator node and preserves everything this
+            # source-text check needs.
+            text = ast.unparse(dec)
             if "skipif" in text and any(c in text for c in _WINDOWS_ONLY_CONDITIONS):
                 return True
     return False
 
 
-def _windows_only_body(fn: ast.AST, src: str) -> bool:
+def _windows_only_body(fn: ast.AST) -> bool:
     """True when a statement directly in the body skips the test off Windows.
 
     Only a guard that calls ``pytest.skip`` counts. A condition that merely brackets
@@ -84,7 +89,7 @@ def _windows_only_body(fn: ast.AST, src: str) -> bool:
     for stmt in getattr(fn, "body", []):
         if not isinstance(stmt, ast.If):
             continue
-        cond = ast.get_source_segment(src, stmt.test) or ""
+        cond = ast.unparse(stmt.test)
         if not any(c in cond for c in _WINDOWS_ONLY_CONDITIONS):
             continue
         for inner in ast.walk(ast.Module(body=stmt.body, type_ignores=[])):
@@ -114,7 +119,7 @@ def _file_index(path: Path) -> dict[str, bool] | None:
     classes: dict[str, ast.ClassDef] = {n.name: n for n in tree.body if isinstance(n, ast.ClassDef)}
     for node in tree.body:
         if isinstance(node, _DEFS):
-            index[node.name] = _windows_only_decorator([node], src) or _windows_only_body(node, src)
+            index[node.name] = _windows_only_decorator([node]) or _windows_only_body(node)
     for cls_name, cls in classes.items():
         own = {n.name: n for n in cls.body if isinstance(n, _DEFS)}
         # A test may be inherited from a mixin declared in the same module; without
@@ -127,9 +132,9 @@ def _file_index(path: Path) -> dict[str, bool] | None:
                 continue
             inherited.update({n.name: n for n in base_cls.body if isinstance(n, _DEFS)})
         for name, fn in {**inherited, **own}.items():
-            index[f"{cls_name}::{name}"] = _windows_only_decorator(
-                [fn, cls], src
-            ) or _windows_only_body(fn, src)
+            index[f"{cls_name}::{name}"] = _windows_only_decorator([fn, cls]) or _windows_only_body(
+                fn
+            )
     return index
 
 

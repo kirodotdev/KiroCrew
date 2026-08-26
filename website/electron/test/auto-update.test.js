@@ -5,6 +5,8 @@ const {
   channelForFlavor,
   channelForVersion,
   resolveChannel,
+  isNewerVersion,
+  shouldAutoOffer,
   buildFeedBase,
   configureUpdater,
   readExternallyManaged,
@@ -194,6 +196,206 @@ test("configureUpdater: allowDowngrade=true (difference-based gate: retraction +
   // based: a feed repointed to an older version (retraction) or a stable
   // preference on an insider build (switch-back downgrade) must be offered.
   assert.strictEqual(updater.allowDowngrade, true);
+});
+
+// ---------------------------------------------------------------------------
+// Downgrade-nag guard: allowDowngrade=true means the library reports
+// "available" for ANY feed version that differs from the running one, so a
+// build running AHEAD of its channel's published latest gets nagged to install
+// an OLDER build. isNewerVersion + shouldAutoOffer are the direction gate that
+// suppresses that automatic path while leaving deliberate channel switches and
+// explicit downloads alone.
+// ---------------------------------------------------------------------------
+
+test("isNewerVersion: strictly-greater release core is newer, older/equal is not", () => {
+  assert.strictEqual(isNewerVersion("0.5.0", "0.3.0"), true);
+  assert.strictEqual(isNewerVersion("0.3.0", "0.5.0"), false); // the reported bug
+  assert.strictEqual(isNewerVersion("1.0.0", "1.0.0"), false);
+});
+
+test("isNewerVersion understands the prerelease stamps this app ships", () => {
+  // A prerelease sorts BELOW its release core; a higher core wins regardless.
+  assert.strictEqual(isNewerVersion("0.3.0-insider.13", "0.3.0"), false);
+  assert.strictEqual(isNewerVersion("0.3.0", "0.3.0-insider.13"), true);
+  assert.strictEqual(isNewerVersion("0.5.0-nightly.20260801t000000", "0.3.0"), true);
+});
+
+test("isNewerVersion: unrankable input is null (fail-open, never a false 'not newer')", () => {
+  assert.strictEqual(isNewerVersion("", "1.0.0"), null);
+  assert.strictEqual(isNewerVersion("1.0.0", undefined), null);
+});
+
+test("shouldAutoOffer: same-channel downgrade is NOT offered (the fix)", () => {
+  // Exactly the reported case: a stable-stamped 0.5.0 following the stable feed
+  // whose latest published build is 0.3.0.
+  assert.strictEqual(
+    shouldAutoOffer({
+      candidate: "0.3.0",
+      current: "0.5.0",
+      followedChannel: "stable",
+      defaultChannel: "stable",
+    }),
+    false,
+  );
+});
+
+test("shouldAutoOffer: same-channel upgrade IS offered", () => {
+  assert.strictEqual(
+    shouldAutoOffer({
+      candidate: "0.6.0",
+      current: "0.5.0",
+      followedChannel: "stable",
+      defaultChannel: "stable",
+    }),
+    true,
+  );
+});
+
+test("shouldAutoOffer: a deliberate channel switch is exempt (followed != default lane)", () => {
+  // The user's explicit preference moved this install OFF its default lane
+  // (stable -> insider): landing on an older build of the chosen channel is the
+  // intended, user-initiated outcome allowDowngrade exists for.
+  assert.strictEqual(
+    shouldAutoOffer({
+      candidate: "0.3.0-insider.4",
+      current: "0.5.0",
+      followedChannel: "insider",
+      defaultChannel: "stable",
+    }),
+    true,
+  );
+});
+
+test("shouldAutoOffer: promoted-stable bytes are NOT read as a switch (byte-stamp trap)", () => {
+  // A promoted stable build carries the insider stamp, but with no preference it
+  // follows stable and its DEFAULT lane is also stable, so followed == default:
+  // it is a same-channel install and a lower feed version must NOT be offered.
+  // (Keying on the raw stamp — insider — would wrongly exempt it.)
+  assert.strictEqual(
+    shouldAutoOffer({
+      candidate: "0.3.0",
+      current: "0.5.0-insider.20",
+      followedChannel: "stable",
+      defaultChannel: "stable",
+    }),
+    false,
+  );
+});
+
+test("shouldAutoOffer: an unrankable version is offered (fail-open, no silent hide)", () => {
+  assert.strictEqual(
+    shouldAutoOffer({
+      candidate: "garbage",
+      current: "0.5.0",
+      followedChannel: "stable",
+      defaultChannel: "stable",
+    }),
+    true,
+  );
+});
+
+test("guard: a same-channel downgrade neither nags nor auto-downloads", async () => {
+  // Reproduces the screenshots: stable-stamped 0.5.0 on the stable feed, feed
+  // latest is 0.3.0, auto-download ON. The pre-fix behavior downloaded 0.3.0
+  // and popped "Update ready"; the guard must report up to date instead.
+  const seen = [];
+  const { deps, calls, emit, states } = makeDeps({ appVersion: "0.5.0" });
+  deps.getAutoDownloadPreference = () => true;
+  deps.notifyUpdateFound = (v, o) => seen.push([v, o]);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  emit("update-available", { version: "0.3.0", releaseNotes: "older" });
+  assert.strictEqual(calls.downloadUpdate, 0, "a same-channel downgrade must never auto-download");
+  assert.deepStrictEqual(seen, [], "a same-channel downgrade must never fire the OS nudge");
+  assert.ok(!states.some((s) => s.state === "found"), "must not surface a 'found' downgrade");
+  assert.strictEqual(states.at(-1).state, "not-available", "reports up to date instead");
+});
+
+test("guard: a same-channel UPGRADE still auto-downloads (no regression)", async () => {
+  const { deps, calls, emit, states } = makeDeps({ appVersion: "0.5.0" });
+  deps.getAutoDownloadPreference = () => true;
+  const u = initAutoUpdate(deps);
+  await u.check();
+  emit("update-available", { version: "0.6.0", releaseNotes: "newer" });
+  assert.strictEqual(calls.downloadUpdate, 1, "a real upgrade must still download");
+  assert.ok(states.some((s) => s.state === "found"), "a real upgrade must still surface 'found'");
+});
+
+test("guard: a prerelease-stamped build ahead of stable is NOT nagged (byte-stamp trap)", async () => {
+  // The regression both local reviewers caught: an insider-STAMPED build
+  // (0.5.0-insider.20) with no channel preference follows the STABLE feed by
+  // default. channelForVersion() reports 'insider' for the bytes, but the
+  // install is a plain stable follower running ahead of the stable feed's 0.3.0.
+  // Keying the switch exemption on the raw stamp would treat followed=stable !=
+  // stamped=insider as a deliberate switch and re-open the downgrade nag; keying
+  // it on the DEFAULT lane (also stable) correctly reads it as same-channel.
+  const seen = [];
+  const { deps, calls, emit, states } = makeDeps({ appVersion: "0.5.0-insider.20" });
+  deps.getAutoDownloadPreference = () => true;
+  deps.notifyUpdateFound = (v, o) => seen.push([v, o]);
+  // No getChannelPreference override -> defaults to "" -> follows stable.
+  const u = initAutoUpdate(deps);
+  await u.check();
+  emit("update-available", { version: "0.3.0", releaseNotes: "older stable" });
+  assert.strictEqual(calls.downloadUpdate, 0, "a promoted/ahead build must not auto-download a downgrade");
+  assert.deepStrictEqual(seen, [], "no OS nudge for a byte-stamp-only channel mismatch");
+  assert.ok(!states.some((s) => s.state === "found"), "must not surface a 'found' downgrade");
+  assert.strictEqual(states.at(-1).state, "not-available");
+});
+
+test("guard: an EXPLICIT channel switch off the default lane is still offered", async () => {
+  // Stable-stamped build whose user explicitly picked insider: the preference
+  // moves it off its default (stable) lane, so a lower insider build is a
+  // deliberate switch and must still be offered.
+  const { deps, calls, emit, states } = makeDeps({ appVersion: "0.5.0" });
+  deps.getAutoDownloadPreference = () => true;
+  deps.getChannelPreference = () => "insider";
+  const u = initAutoUpdate(deps);
+  await u.check();
+  emit("update-available", { version: "0.4.0-insider.1", releaseNotes: "insider lane" });
+  assert.strictEqual(calls.downloadUpdate, 1, "a deliberate channel switch must still download");
+  assert.ok(states.some((s) => s.state === "found"), "a deliberate switch must surface 'found'");
+});
+
+test("guard: a channel flip mid-check does not authorize a stale-feed downgrade (TOCTOU)", async () => {
+  // The GPT [BLOCK-MERGE] on #6011: an in-flight STABLE check, then the user
+  // picks insider before the response lands. The candidate (0.3.0) came from
+  // the stable feed the check configured; the guard must compare against THAT
+  // captured lane (feedChannel), not the now-insider live preference. A live
+  // read would make followedChannel=insider != default=stable, wrongly treat
+  // the stable downgrade as a deliberate insider switch, and stage it.
+  let pref = "";
+  const { deps, calls, emit, states } = makeDeps({ appVersion: "0.5.0" });
+  deps.getAutoDownloadPreference = () => true;
+  deps.getChannelPreference = () => pref;
+  const u = initAutoUpdate(deps);
+  await u.check(); // configureFeed() captures feedChannel = "stable"
+  pref = "insider"; // user flips the switcher while the check is in flight
+  emit("update-available", { version: "0.3.0", releaseNotes: "stale stable feed" });
+  assert.strictEqual(calls.downloadUpdate, 0, "a stale-feed downgrade must not download after a mid-check channel flip");
+  assert.ok(!states.some((s) => s.state === "found"), "must not surface a 'found' downgrade");
+  assert.strictEqual(states.at(-1).state, "not-available");
+});
+
+test("guard: a stage armed for a downgrade is discarded and disarmed", async () => {
+  // A 0.3.0 stage carried over (from before the fix, or a race): a later check
+  // that re-reports 0.3.0 on the same channel must drop it so it cannot install
+  // on the next quit.
+  const { deps, emit, states, appRemoved } = makeDeps({ appVersion: "0.5.0" });
+  deps.getAutoDownloadPreference = () => true;
+  const u = initAutoUpdate(deps);
+  await u.check();
+  // Force a staged state by driving the downloaded event directly.
+  emit("update-downloaded", { version: "0.3.0" });
+  assert.strictEqual(u.isReady(), true, "precondition: a stage exists");
+  states.length = 0;
+  emit("update-available", { version: "0.3.0" });
+  assert.strictEqual(u.isReady(), false, "the downgrade stage must be discarded");
+  assert.ok(
+    appRemoved.some((r) => r.ev === "before-quit"),
+    "the deferred-install-on-quit hook must be removed",
+  );
+  assert.strictEqual(states.at(-1).state, "not-available");
 });
 
 test("configureUpdater: allowPrerelease=true (nightly/insider stamps are semver prereleases)", () => {
@@ -597,6 +799,7 @@ function stubSpawn(script) {
 
 test("managed check() with updateCommand+checkCommand emits found with the printed version", async (t) => {
   const { deps, states } = makeDeps({
+    osPlatform: "win32",
     externallyManaged: {
       managedBy: "internal-registry",
       updateCommand: "pkgtool update kirocrew",
@@ -614,6 +817,11 @@ test("managed check() with updateCommand+checkCommand emits found with the print
   const found = states.find((s) => s.state === "found");
   assert.ok(found, "an available update must surface a 'found' state");
   assert.strictEqual(found.version, "0.5.0.5", "trimmed stdout is the version");
+  assert.strictEqual(
+    found.installHandoff,
+    "automatic-relaunch",
+    "managed Windows updates run the marker command and must not promise an NSIS window",
+  );
 });
 
 test("managed check(): non-zero exit -> not-available (ran, nothing new)", async (t) => {

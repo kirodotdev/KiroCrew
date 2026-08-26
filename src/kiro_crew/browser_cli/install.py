@@ -1,11 +1,9 @@
 """Detection, installation, and the capability gate for ``@playwright/cli``.
 
-The CLI has no capability gating of its own — every command is always available
-to whoever can run the binary — so the capability cannot be narrowed after the
-fact. **Presence of ``playwright-cli`` is therefore consent**, whichever tool
-installed it, and :func:`available` is the whole gate. This module deliberately
-holds no toggle, flag, or consent file: a second gate would be a lie, because a
-binary on PATH is reachable from any shell turn regardless of what a flag says.
+The CLI has no capability gating of its own — every command is available to
+whoever can run the binary — so :func:`available` reports host capability only.
+It is not an approval decision: dashboard shell turns still follow the ordinary
+approval ladder unless the user has granted trust or enabled auto-approve.
 
 Installation is global (``npm install -g``) rather than ``npx``. ``npx``
 re-resolves the package through the registry on every invocation, so an expired
@@ -540,11 +538,10 @@ def detect() -> dict[str, Any]:
 def available() -> bool:
     """Whether the browse capability exists on this host.
 
-    **This is the consent gate.** Presence of the binary is consent regardless
-    of who installed it — see the module docstring for why no additional gate is
-    possible. Node is not consulted: a host with the CLI installed and Node
-    broken has granted the capability and has a repairable environment, and
-    reporting that as "not consented" would send the operator to the wrong fix.
+    Presence is an availability signal, not consent to skip shell approval.
+    Node is not consulted: a host with the CLI installed and Node broken has a
+    repairable environment, and reporting that as absent would send the operator
+    to the wrong fix.
     """
     return cli_path() is not None
 

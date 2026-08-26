@@ -811,6 +811,53 @@ independently load-bearing:
   collision keeps the seed, so a republished document cannot silently re-home
   an app to a new repository under a familiar name.
 
+**Execution consent is repository-bound for new grants.** Registry and installed
+app responses carry a server-overwritten `trustRepository`: the normalized clone
+target the grant handler itself would resolve, never an index/manifest assertion.
+This field is deliberately separate from the legacy/display `repo` alias because
+an entry may legitimately carry a different `gitUrl`, and `_entry_git_url`
+prefers `gitUrl` for the actual clone. The trust dialog displays
+`trustRepository` and posts it back as consent proof.
+`POST /api/security/trusted-apps/{name}` freshly resolves the target and requires
+the normalized proof to match before it records that target in
+`agent.apps_trusted_repositories` beside the name in `agent.apps_trusted`.
+Missing or stale proof for a repository-backed app is refused. A local installed
+app with no repository remains grantable with no proof and records its grant kind
+in `agent.apps_trusted_local`; this prevents a pre-binding name-only grant from
+silently becoming local consent after a same-name takeover. The stored repository
+uses the same normalization as catalog supersession (scheme/host case-folded,
+trailing slash and `.git` removed, path case preserved). HTTP(S) userinfo is
+removed in full. Username-only SSH/git+ssh userinfo and scp-style
+`user@host:path` are retained because they select transport routing. Git passes
+colon-bearing SSH userinfo to OpenSSH as the complete username rather than
+treating the suffix as a password, so executable and governance paths reject it
+instead of rewriting it to a different identity. SCP likewise has no password
+field: in a no-scheme target whose first colon precedes `@`, Git treats the text
+before that colon as the host and everything after it as the path. Such an
+ambiguous target is rejected rather than rewritten to a different host. URI
+query and fragment components are omitted from the durable/API identity because
+free-form sources can carry provider tokens there. A registry clone target with
+either suffix or an ambiguous SSH/SCP identity is rejected before trust
+comparison or fetch: displaying one identity while transporting another would
+allow repository rebinding and trusted-host bypass. Legacy installed provenance,
+catalog fallback,
+or stored bindings containing any of these unsupported forms are inert: they
+cannot produce consent proof, compare equal, or pass the runtime gate and require
+revoke plus fresh consent. Clone-host trust parses bracketed IPv6 literals in URI
+and scp forms as validated canonical full addresses; malformed brackets/non-IPv6
+contents fail closed, and sharing a first hextet never grants host equivalence.
+`install_from_registry` compares its freshly resolved row against that value
+before manifest fetch, credential selection, clone, build, or setup code. A bound
+mismatch returns `app_trust_repository_mismatch` and requires revoke plus fresh
+consent without returning either repository coordinate. A legacy name grant with
+no binding is inactive for every repository-backed source — including the same
+repository it historically used — and returns `app_execution_denied` so the
+normal consent dialog can create the missing binding. A still-installed app with
+positively local provenance retains migration compatibility; an unknown/fresh
+same-name local source does not inherit that old grant. The commit is deliberately
+not bound: a new pin in the same repository is the ordinary catalog update path
+and does not warrant a new consent prompt.
+
 A name is a filesystem path on install, so `inventory()` and
 `list_catalog_rows` drop any entry whose name fails the manifest name contract
 (`app_name_error` / `KEBAB_RE`), and the catalog fetch runs off the event loop
@@ -820,7 +867,9 @@ Writers: `apps/official_catalog.py` (`list_catalog_rows`, `inventory`,
 `fetch_inventory_entries`, `inventory_for_install`), `apps/registry.py`
 (`list_catalog_apps`, `_resolve_registry_row`, `_git_fetch_commit`,
 `_append_external_registry_apps`, `_detect_installed_probe`),
-`apps/routes.py` (`handle_registry`).
+`dashboard/handlers/security.py` (`api_trusted_app_grant`),
+`apps/routes.py` (`handle_registry`, `handle_list_apps`, `handle_get_app`), and
+`website/src/components/appstore/TrustAppModal.tsx`.
 
 ## 15. A registry's credential posture follows its index's change control
 
@@ -959,3 +1008,31 @@ Writers: `apps/registry.py` (`_effective_registries`, `_pinned_registries`,
 `anonymous_git_env`), `platform/interfaces.py`
 (`AppsLoader.default_registries`), `config/loader.py`
 (`ExternalRegistryConfig.trust`), `apps/routes.py` (`handle_registries`).
+
+## 16. Store guidance and product screenshots are manifest-owned
+
+An App detail page carries three different kinds of information and does not
+substitute one for another:
+
+- `highlights` describes capabilities;
+- `useCases` says when an operator should reach for the App;
+- `configuration` says how to make it usable, including prerequisites that live
+  outside the page (provider CLIs, credentials, desktop shell, or another App).
+
+All three remain English in `app.json` so catalog-less consumers such as the CLI
+print meaningful copy. Builtins resolve them through the frontend catalogs; the
+manifest/catalog sync gate derives `use_case_N` and `configuration_N` keys and
+requires the English values to stay byte-identical. External apps fall back to
+their manifest copy because a third-party app id is not first-party provenance.
+
+Store artwork and proof are likewise distinct. `heroImage*` is illustrative
+banner art, while `screenshots*` must be a capture of the real App UI. The detail
+page prefers the wide `heroImageDetail*` banner when present and renders the
+screenshot gallery independently. Registry manifests project `useCases` and
+`configuration` as display metadata and rewrite repo-relative screenshot and
+hero paths through the same-origin blob proxy.
+
+Writers: builtin `app.json` manifests, `apps/registry.py` (`_merge_manifest`),
+`website/src/components/appstore/appManifest.ts`,
+`website/src/pages/AppDetailPage.tsx`, and
+`website/scripts/check-app-manifest-sync.mjs`.

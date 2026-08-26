@@ -76,7 +76,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
-from kiro_crew.platform_compat import SIGKILL, kill_process_tree_async
+from kiro_crew.platform_compat import kill_and_reap
 from kiro_crew.sandbox import create_subprocess_limited, sandboxed_spawn_argv
 
 logger = logging.getLogger(__name__)
@@ -575,11 +575,14 @@ async def _reap_install_tree(proc: "asyncio.subprocess.Process") -> None:
     Escalates straight to SIGKILL: this path is only reached when the install has
     already blown its deadline or the broker is going away, so there is nothing
     left to salvage by asking politely.
+
+    The reap is bounded and drains the pipes. This path is reached with the
+    ``_drain_capped`` reader already cancelled by ``wait_for`` (timeout) or by
+    broker shutdown (cancellation), so the stdout pipe is undrained: npm blocked
+    writing into a full pipe -- or a lifecycle-script grandchild still holding it
+    open -- would make a bare ``await proc.wait()`` hang forever.
     """
-    with contextlib.suppress(ProcessLookupError, OSError, ValueError):
-        await kill_process_tree_async(proc.pid, SIGKILL)
-    with contextlib.suppress(Exception):
-        await proc.wait()
+    await kill_and_reap(proc)
 
 
 async def _rmtree_off_loop(path: str) -> None:

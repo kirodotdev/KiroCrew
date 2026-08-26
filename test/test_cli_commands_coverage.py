@@ -41,7 +41,9 @@ def _ns(**kw: Any) -> argparse.Namespace:
     return argparse.Namespace(**kw)
 
 
-def _http_error(code: int, body: bytes | None = None, reason: str = "Boom") -> urllib.error.HTTPError:
+def _http_error(
+    code: int, body: bytes | None = None, reason: str = "Boom"
+) -> urllib.error.HTTPError:
     """Build an ``HTTPError`` whose ``.read()`` yields *body*."""
     fp = io.BytesIO(body if body is not None else b"")
     return urllib.error.HTTPError("http://localhost/x", code, reason, {}, fp)  # type: ignore[arg-type]
@@ -157,8 +159,12 @@ class TestWorkspaceDirGuard:
 
 
 class TestSpawnCli:
-    def test_list_prints_agents_with_status_glyphs(self, capsys: pytest.CaptureFixture[str]) -> None:
-        payload = {"agents": [{"id": "a1", "task": "do x", "done": True}, {"id": "a2", "task": "y"}]}
+    def test_list_prints_agents_with_status_glyphs(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        payload = {
+            "agents": [{"id": "a1", "task": "do x", "done": True}, {"id": "a2", "task": "y"}]
+        }
         with (
             patch("kiro_crew.cli_commands._internal_secret", return_value="s"),
             patch("kiro_crew.cli_commands.loopback_urlopen", return_value=_FakeResponse(payload)),
@@ -170,7 +176,10 @@ class TestSpawnCli:
     def test_list_empty_says_so(self, capsys: pytest.CaptureFixture[str]) -> None:
         with (
             patch("kiro_crew.cli_commands._internal_secret", return_value=""),
-            patch("kiro_crew.cli_commands.loopback_urlopen", return_value=_FakeResponse({"agents": []})),
+            patch(
+                "kiro_crew.cli_commands.loopback_urlopen",
+                return_value=_FakeResponse({"agents": []}),
+            ),
         ):
             cc._spawn(_ns(spawn_action="list", port=1234))
         assert "No subagents." in capsys.readouterr().out
@@ -193,7 +202,9 @@ class TestSpawnCli:
     ) -> None:
         with (
             patch("kiro_crew.cli_commands._internal_secret", return_value=""),
-            patch("kiro_crew.cli_commands.loopback_urlopen", side_effect=_http_error(503, b"<html>")),
+            patch(
+                "kiro_crew.cli_commands.loopback_urlopen", side_effect=_http_error(503, b"<html>")
+            ),
             pytest.raises(SystemExit),
         ):
             cc._spawn(_ns(spawn_action="list", port=1234))
@@ -204,7 +215,10 @@ class TestSpawnCli:
     ) -> None:
         with (
             patch("kiro_crew.cli_commands._internal_secret", return_value=""),
-            patch("kiro_crew.cli_commands.loopback_urlopen", side_effect=urllib.error.URLError("refused")),
+            patch(
+                "kiro_crew.cli_commands.loopback_urlopen",
+                side_effect=urllib.error.URLError("refused"),
+            ),
             pytest.raises(SystemExit) as exc,
         ):
             cc._spawn(_ns(spawn_action="list", port=4321))
@@ -348,9 +362,7 @@ class TestAppCli:
         out = capsys.readouterr().out
         assert "one" in out and "enabled" in out and "two" in out and "disabled" in out
 
-    def test_enable_success_counts_registrations(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_enable_success_counts_registrations(self, capsys: pytest.CaptureFixture[str]) -> None:
         with (
             patch("kiro_crew.cli_commands.enable_app", return_value=_result(True, message="on")),
             patch(
@@ -402,9 +414,7 @@ class TestAppCli:
         with (
             patch("kiro_crew.cli_commands._cleanup_app_crons_from_scheduler"),
             patch("kiro_crew.cli_commands.deregister_app"),
-            patch(
-                "kiro_crew.cli_commands.uninstall_app", return_value=_result(True)
-            ) as uninstall,
+            patch("kiro_crew.cli_commands.uninstall_app", return_value=_result(True)) as uninstall,
         ):
             cc._handle_app(_ns(app_action="uninstall", name="demo", purge_data=purge))
         uninstall.assert_called_once_with("demo", keep_data=expect_keep_data)
@@ -500,8 +510,12 @@ class TestAppCli:
 class TestRunAppMcpServer:
     def test_missing_module_exits_1_on_stderr(self, capsys: pytest.CaptureFixture[str]) -> None:
         """stdout is the JSON-RPC channel -- diagnostics must go to stderr."""
+        target = "kiro_crew.apps.builtins.my_app.mcp_server"
         with (
-            patch("importlib.import_module", side_effect=ImportError("nope")),
+            patch(
+                "importlib.import_module",
+                side_effect=ModuleNotFoundError(f"No module named {target!r}", name=target),
+            ),
             pytest.raises(SystemExit) as exc,
         ):
             cc._run_app_mcp_server("my-app")
@@ -509,6 +523,44 @@ class TestRunAppMcpServer:
         assert exc.value.code == 1
         assert captured.out == ""
         assert "my-app" in captured.err
+
+    def test_missing_parent_package_exits_1(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """A ModuleNotFoundError naming a PARENT package of the target is the
+        target being unimportable -- same clean refusal."""
+        parent = "kiro_crew.apps.builtins.my_app"
+        with (
+            patch(
+                "importlib.import_module",
+                side_effect=ModuleNotFoundError(f"No module named {parent!r}", name=parent),
+            ),
+            pytest.raises(SystemExit) as exc,
+        ):
+            cc._run_app_mcp_server("my-app")
+        assert exc.value.code == 1
+        assert "my-app" in capsys.readouterr().err
+
+    def test_missing_dependency_inside_module_propagates(self) -> None:
+        """A dependency missing INSIDE mcp_server.py is a real defect: it must
+        keep its traceback, not exit with a misleading 'has no MCP server'."""
+        with (
+            patch(
+                "importlib.import_module",
+                side_effect=ModuleNotFoundError(
+                    "No module named 'some_missing_dep'", name="some_missing_dep"
+                ),
+            ),
+            pytest.raises(ModuleNotFoundError, match="some_missing_dep"),
+        ):
+            cc._run_app_mcp_server("my-app")
+
+    def test_nameless_import_error_propagates(self) -> None:
+        """An ImportError that names no module cannot be attributed to the
+        target -- it must propagate."""
+        with (
+            patch("importlib.import_module", side_effect=ModuleNotFoundError("boom")),
+            pytest.raises(ModuleNotFoundError, match="boom"),
+        ):
+            cc._run_app_mcp_server("my-app")
 
     def test_module_without_runner_exits_1(self, capsys: pytest.CaptureFixture[str]) -> None:
         with (
@@ -1049,9 +1101,7 @@ class TestParseTimeSelector:
         Reading a bare date as local time would silently shift the window by the
         host's offset, so a window that looks right returns the wrong records.
         """
-        assert cc.parse_time_selector("2026-08-21") == datetime(
-            2026, 8, 21, tzinfo=timezone.utc
-        )
+        assert cc.parse_time_selector("2026-08-21") == datetime(2026, 8, 21, tzinfo=timezone.utc)
 
     def test_offset_is_normalized_to_utc(self) -> None:
         assert cc.parse_time_selector("2026-08-21T10:00:00+02:00") == datetime(
@@ -1124,9 +1174,7 @@ class TestPolicyCli:
             cc._policy(_ns(policy_action="show"))
         assert "commands.denied:" in capsys.readouterr().out
 
-    def test_show_ids_lists_rule_ids_per_category(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_show_ids_lists_rule_ids_per_category(self, capsys: pytest.CaptureFixture[str]) -> None:
         # Named --ids, not --verbose: the top-level parser already defines
         # --verbose/-v as an int `count` (log level); a same-named store_true
         # on this subparser would collide via argparse's parent/subparser
@@ -1192,9 +1240,7 @@ class TestPolicyCli:
         assert "bad.json: INVALID→deny-all" in out
         assert "some profiles failed validation" in out
 
-    def test_explain_unknown_scope_lists_catalog(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_explain_unknown_scope_lists_catalog(self, capsys: pytest.CaptureFixture[str]) -> None:
         with (
             patch(
                 "kiro_crew.platform.context.current_context",
@@ -1218,9 +1264,7 @@ class TestPolicyCli:
         out = capsys.readouterr().out
         assert "Unknown scope" in out and "capabilities.telemetry" in out
 
-    def test_explain_known_scope_prints_verdicts(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_explain_known_scope_prints_verdicts(self, capsys: pytest.CaptureFixture[str]) -> None:
         decision = SimpleNamespace(
             permitted=False, rule="deny", layer="policy", reason="pinned off"
         )
@@ -1298,9 +1342,7 @@ class TestPolicyCli:
                 "kiro_crew.platform.context.current_context",
                 return_value=SimpleNamespace(governance=None),
             ),
-            patch(
-                "kiro_crew.platform.governance_profiles.get_store_profile", return_value=None
-            ),
+            patch("kiro_crew.platform.governance_profiles.get_store_profile", return_value=None),
         ):
             cc._policy(_ns(policy_action="profile", name="ghost"))
         assert "No profile named 'ghost'" in capsys.readouterr().out
@@ -1317,9 +1359,7 @@ class TestPolicyCli:
                 "kiro_crew.platform.context.current_context",
                 return_value=SimpleNamespace(governance=None),
             ),
-            patch(
-                "kiro_crew.platform.governance_profiles.get_store_profile", return_value=prof
-            ),
+            patch("kiro_crew.platform.governance_profiles.get_store_profile", return_value=prof),
         ):
             cc._policy(_ns(policy_action="profile", name="team"))
         out = capsys.readouterr().out
@@ -1333,9 +1373,7 @@ class TestPolicyCli:
                 "kiro_crew.platform.context.current_context",
                 return_value=SimpleNamespace(governance=None),
             ),
-            patch(
-                "kiro_crew.platform.governance_profiles.get_store_profile", return_value=prof
-            ),
+            patch("kiro_crew.platform.governance_profiles.get_store_profile", return_value=prof),
         ):
             cc._policy(_ns(policy_action="profile", name="empty"))
         out = capsys.readouterr().out

@@ -2,7 +2,7 @@
   "name": "pptx-maker",
   "version": "0.3.0",
   "displayName": "PPTX Maker",
-  "description": "Describe the deck you want in chat and get a real .pptx back. An agent interviews you, writes a brief, an outline and an art direction, then composes every slide and generates the file \u2014 and you watch each deliverable appear in a live preview beside the conversation. Slides render as animated SVG as they are built, so you can see a deck take shape instead of waiting for a download. Reusable styles and .pptx templates let the same content come out looking like three different presentations.",
+  "description": "Describe the deck you want in chat and get a real .pptx back. An agent interviews you, writes a brief, an outline and an art direction, then composes every slide and generates the file — and you watch each deliverable appear in a live preview beside the conversation. Slides render as animated SVG as they are built, so you can see a deck take shape instead of waiting for a download. Reusable styles and .pptx templates let the same content come out looking like three different presentations.",
   "author": "sktok",
   "license": "MIT-0",
   "tags": [
@@ -13,7 +13,7 @@
     "documents"
   ],
   "highlights": [
-    "Chat your way to a finished .pptx \u2014 Spec mode plans it carefully, Vibe mode turns a URL or pasted text straight into slides",
+    "Chat your way to a finished .pptx — Spec mode plans it carefully, Vibe mode turns a URL or pasted text straight into slides",
     "Live preview of every deliverable: brief, outline, art direction, then slides as animated SVG while they compose",
     "Styles set the visual mood and .pptx templates set the structure, so one deck can be re-skinned without rewriting content",
     "Import your own HTML style or existing .pptx template and the agent follows its colours, fonts and layouts",
@@ -85,5 +85,14 @@
   "heroImage": "/app-assets/pptx-maker/hero-light.svg",
   "heroImageDark": "/app-assets/pptx-maker/hero-dark.svg",
   "heroImageDetail": "/app-assets/pptx-maker/hero-detail-light.svg",
-  "heroImageDetailDark": "/app-assets/pptx-maker/hero-detail-dark.svg"
+  "heroImageDetailDark": "/app-assets/pptx-maker/hero-detail-dark.svg",
+  "useCases": [
+    "Turn an idea, URL, or source text into a real presentation with live slide previews and reusable visual styles."
+  ],
+  "configuration": [
+    "Install the pinned engine on first use, optionally install LibreOffice for broader previews, choose an output directory, and import any HTML styles or PPTX templates you want reused."
+  ],
+  "screenshots": [
+    "/app-assets/pptx-maker/screenshot-main.png"
+  ]
 }

@@ -37,6 +37,7 @@ from kiro_crew import agent_scratch, model_registry, platform_compat
 from kiro_crew.acp._dispatch import (
     _kiro_mcp_server_name,
     _kiro_tool_name,
+    build_permission_event,
     derive_edit_diff,
     extract_tool_purpose,
     make_unified_diff,
@@ -63,7 +64,6 @@ from kiro_crew.acp.types import (
     EVENT_MCP_OAUTH_REQUEST,
     EVENT_MCP_SERVER_INIT_FAILURE,
     EVENT_MCP_SERVER_INITIALIZED,
-    EVENT_PERMISSION_REQUEST,
     EVENT_SUBAGENT_ACTIVITY,
     EVENT_SUBAGENT_LIST,
     EVENT_TEXT_CHUNK,
@@ -615,9 +615,7 @@ class OversizeLineUnrecoverable(Exception):
     """An oversize stdout line exceeded the drain budget without terminating."""
 
 
-async def _drain_oversize_line(
-    reader: asyncio.StreamReader, exc: asyncio.LimitOverrunError
-) -> int:
+async def _drain_oversize_line(reader: asyncio.StreamReader, exc: asyncio.LimitOverrunError) -> int:
     """Discard one oversize line ENTIRELY, leaving the stream on a frame boundary.
 
     Called after ``readuntil(b"\\n")`` raised ``LimitOverrunError``, which consumes
@@ -660,6 +658,7 @@ async def _drain_oversize_line(
         except asyncio.LimitOverrunError as again:
             exc = again
 
+
 # Max consecutive empty reads before checking if process is alive
 _MAX_CONSECUTIVE_EMPTY = 5
 
@@ -696,9 +695,7 @@ def _mentions_skill_file(raw_params: dict | None, command: str | None) -> bool:
             if _SKILL_FILE_BASENAME in value:
                 return True
         elif isinstance(value, (list, tuple)):
-            if any(
-                isinstance(v, str) and _SKILL_FILE_BASENAME in v for v in value
-            ):
+            if any(isinstance(v, str) and _SKILL_FILE_BASENAME in v for v in value):
                 return True
     return False
 
@@ -741,11 +738,7 @@ def format_command_result(result: dict) -> str:
         display = {k: v for k, v in data.items() if k not in ("agent", "model")}
         if display:
             block = json.dumps(display, indent=2)
-            text = (
-                f"{message}\n```json\n{block}\n```"
-                if message
-                else f"```json\n{block}\n```"
-            )
+            text = f"{message}\n```json\n{block}\n```" if message else f"```json\n{block}\n```"
     if not text:
         text = message or ""
     if text:
@@ -886,17 +879,6 @@ _WAIT_RESPONSE_MAX_TIMEOUT = 600.0  # 10 min absolute ceiling
 # and must never gate tool dispatch, so a wedged SEL backend is abandoned (the
 # worker thread may leak, which is survivable) after this timeout.
 _SEL_AUDIT_TIMEOUT_SECONDS = 5.0
-# Legacy kiro permission options omit the spec-mandated `kind` field. Only
-# synthesize a kind for these well-known literals — unknown ids stay empty
-# so we don't fabricate intent the agent didn't express.
-_LEGACY_OPTION_KIND: dict[str, str] = {
-    OPTION_ALLOW_ONCE: "allow_once",
-    "allow": "allow_once",
-    OPTION_ALLOW_ALWAYS: "allow_always",
-    "reject_once": "reject_once",
-    "reject_always": "reject_always",
-}
-
 # Canonical ACP tool-kind value for shell/exec tools. kiro-cli and
 # claude-agent-acp both report shell commands with kind="execute". This is the
 # ONE place the ACP shell literal lives — _is_shell_kind() maps it to the
@@ -1205,9 +1187,7 @@ def _model_is_unentitled(data: str, available_models: Sequence[str] | None) -> s
     return rejected
 
 
-def _is_transient_raw_error(
-    error: object, available_models: Sequence[str] | None = None
-) -> bool:
+def _is_transient_raw_error(error: object, available_models: Sequence[str] | None = None) -> bool:
     """True iff a raw ACP JSON-RPC ``error`` is a retryable transient backend
     failure (Bedrock 5xx / throttle / model-unavailable rollout) rather than an
     auth/validation/unknown error that a retry cannot fix.
@@ -2172,6 +2152,10 @@ class AcpClient:
         self._child_pids: dict[int, ChildRecord] = {}  # pid → (start_time, basename)
         self.last_prompt_stats = AcpPromptStats()
         self._tool_call_inputs: dict[str, str] = {}
+        # Same-key provenance for the redacted display cache.  No removed bytes
+        # are retained here; approval surfaces only need to know that the value
+        # they received was not the complete command the provider requested.
+        self._tool_call_input_redacted: dict[str, bool] = {}
         # Map toolCallId → is_shell, cached from the tool_call notification so
         # the later permission_request event (which carries no kind) can inherit
         # the canonical shell signal. Mirrors _tool_call_inputs lifecycle.
@@ -2288,9 +2272,7 @@ class AcpClient:
         servers — nothing is written to the user's project or to
         ``~/.kiro/agents/``. Empty when the shared gateway is disabled.
         """
-        return pooled_session_servers(
-            self._mcp_gateway_overlay, self._agent, self._channel_id
-        )
+        return pooled_session_servers(self._mcp_gateway_overlay, self._agent, self._channel_id)
 
     def _claude_session_mcp_servers(self) -> list:
         """MCP server array passed to a claude ``session/new`` / ``session/load``.
@@ -2565,9 +2547,7 @@ class AcpClient:
         # backend never loaded (would fault with "Mode '<agent>' not found").
         # Assigned unconditionally so a re-init that omits `modes` clears any
         # stale state rather than guarding on it.
-        self._available_mode_ids, _current_mode, self._modes_advertised = (
-            parse_session_modes(resp)
-        )
+        self._available_mode_ids, _current_mode, self._modes_advertised = parse_session_modes(resp)
 
     def _handle_config_option_update(self, msg: JsonRpcMessage) -> None:
         """Process a config_option_update session notification.
@@ -2870,63 +2850,99 @@ class AcpClient:
         _spawn_label = (
             "claude-agent-acp" if self._is_claude else f"{KIRO_CLI_BIN} {KIRO_CLI_SUBCMD}"
         )
-        # Windows resource ceiling, applied while the child is still SUSPENDED,
-        # then resumed. No-op on POSIX (CREATE_SUSPENDED is 0 there). OFFLOADED
-        # because the Windows path reads the config file and walks the process
-        # and thread tables (see the note on finish_suspended_spawn); the child
-        # is frozen until it returns, so this is the one await the spawn cannot
-        # skip.
-        await asyncio.get_running_loop().run_in_executor(
-            subprocess_executor(),
-            functools.partial(
-                finish_suspended_spawn, self._process, self._pid, label=_spawn_label
-            ),
-        )
-        self._start_time = await asyncio.get_running_loop().run_in_executor(
-            subprocess_executor(), _get_start_time, self._pid
-        )
-        if self._scratch_dir is not None:
-            # Liveness anchor for the scratch sweeps -- see acp/runtime.py's
-            # twin block. Off-loop, fail-open.
+        # Everything from here to the end of _spawn runs with a LIVE subprocess
+        # that nothing has recorded yet, so every step must be guarded. Without
+        # this, any exception in the window — finish_suspended_spawn, the
+        # start-time read, the two PID-file appends, the descendant scan — unwinds
+        # out of _spawn leaving that process running and absent from both PID
+        # files. It is then unreachable by every agent-runtime reaper (they all
+        # read those files, and the /proc orphan scan declines managed agent
+        # runtimes on purpose), so it leaks until the host reboots.
+        #
+        # ensure_ready()'s retry loop cannot substitute for this: it only catches
+        # AcpTimeoutError / AcpError, and nothing raised in this window is either
+        # of those — an OSError from the executor or a wedged file lock sails
+        # straight past it and its `finally` records metrics only.
+        #
+        # BaseException so a CancelledError mid-window cleans up too. Mirrors the
+        # twin guard in acp/runtime.py around reader startup + handshake.
+        try:
+            # Windows resource ceiling, applied while the child is still SUSPENDED,
+            # then resumed. No-op on POSIX (CREATE_SUSPENDED is 0 there). OFFLOADED
+            # because the Windows path reads the config file and walks the process
+            # and thread tables (see the note on finish_suspended_spawn); the child
+            # is frozen until it returns, so this is the one await the spawn cannot
+            # skip.
             await asyncio.get_running_loop().run_in_executor(
                 subprocess_executor(),
-                functools.partial(agent_scratch.record_owner, self._scratch_dir, self._pid),
+                functools.partial(
+                    finish_suspended_spawn, self._process, self._pid, label=_spawn_label
+                ),
             )
-        logger.info("Spawned %s (PID %d)", _spawn_label, self._pid)
-        # Track root PID and do an early descendant scan.  kiro-cli forks
-        # child processes quickly after launch.  Recording them here means
-        # _kill_process() can clean up even if _initialize_session() fails.
-        from kiro_crew.session import (  # circular: session -> config.loader -> providers.acp -> acp.client
-            _track_child_pids,
-            _track_pid,
-            _track_session_pid,
-        )
+            self._start_time = await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), _get_start_time, self._pid
+            )
+            if self._scratch_dir is not None:
+                # Liveness anchor for the scratch sweeps -- see acp/runtime.py's
+                # twin block. Off-loop, fail-open.
+                await asyncio.get_running_loop().run_in_executor(
+                    subprocess_executor(),
+                    functools.partial(agent_scratch.record_owner, self._scratch_dir, self._pid),
+                )
+            logger.info("Spawned %s (PID %d)", _spawn_label, self._pid)
+            # Track root PID and do an early descendant scan.  kiro-cli forks
+            # child processes quickly after launch.  Recording them here means
+            # _kill_process() can clean up even if _initialize_session() fails.
+            from kiro_crew.session import (  # circular: session -> config.loader -> providers.acp -> acp.client
+                _track_child_pids,
+                _track_pid,
+                _track_session_pid,
+            )
 
-        # The PID-file trackers each take an exclusive file lock and do a
-        # read-modify-append under it — blocking syscalls that must not run
-        # on the event loop: ensure_ready() awaits _spawn() from the loop on
-        # every cold start, so a contended or wedged lock holder here would
-        # stall every task including the liveness heartbeat. Ride the same
-        # executor as the descendant scans below.
-        _loop = asyncio.get_running_loop()
-        await _loop.run_in_executor(subprocess_executor(), _track_pid, self._pid)
-        # Separate file for startup cleanup.
-        await _loop.run_in_executor(subprocess_executor(), _track_session_pid, self._pid)
-        await asyncio.sleep(0.3)
-        early_descendants = await _loop.run_in_executor(
-            subprocess_executor(), _get_child_pids, self._pid
-        )
-        if early_descendants:
-            self._child_pids = await _loop.run_in_executor(
-                subprocess_executor(), _capture_child_records, early_descendants
+            # The PID-file trackers each take an exclusive file lock and do a
+            # read-modify-append under it — blocking syscalls that must not run
+            # on the event loop: ensure_ready() awaits _spawn() from the loop on
+            # every cold start, so a contended or wedged lock holder here would
+            # stall every task including the liveness heartbeat. Ride the same
+            # executor as the descendant scans below.
+            _loop = asyncio.get_running_loop()
+            await _loop.run_in_executor(subprocess_executor(), _track_pid, self._pid)
+            # Separate file for startup cleanup.
+            await _loop.run_in_executor(subprocess_executor(), _track_session_pid, self._pid)
+            await asyncio.sleep(0.3)
+            early_descendants = await _loop.run_in_executor(
+                subprocess_executor(), _get_child_pids, self._pid
             )
-            await _loop.run_in_executor(
-                subprocess_executor(), _track_child_pids, self._child_pids, self._pid or 0
-            )
-            logger.info("Early tracking %d descendants of PID %d", len(self._child_pids), self._pid)
+            if early_descendants:
+                self._child_pids = await _loop.run_in_executor(
+                    subprocess_executor(), _capture_child_records, early_descendants
+                )
+                await _loop.run_in_executor(
+                    subprocess_executor(), _track_child_pids, self._child_pids, self._pid or 0
+                )
+                logger.info(
+                    "Early tracking %d descendants of PID %d", len(self._child_pids), self._pid
+                )
 
-        if self._process.stderr:
-            self._stderr_task = asyncio.ensure_future(self._drain_stderr(self._process.stderr))
+            if self._process.stderr:
+                self._stderr_task = asyncio.ensure_future(self._drain_stderr(self._process.stderr))
+        except BaseException:
+            logger.error(
+                "Spawn of %s (PID %s) failed after the process was live; killing it so it "
+                "cannot leak untracked",
+                _spawn_label,
+                self._pid,
+                exc_info=True,
+            )
+            try:
+                await self._kill_process(force=True)
+            except Exception:
+                logger.warning(
+                    "Cleanup kill after a failed spawn did not complete for PID %s",
+                    self._pid,
+                    exc_info=True,
+                )
+            raise
 
     async def _drain_stderr(self, stderr: asyncio.StreamReader) -> None:
         # Count of suppressed high-frequency marker lines (see
@@ -3320,9 +3336,7 @@ class AcpClient:
                 session_file = ""
                 file_ok = True
             else:
-                session_file = str(
-                    kiro_sessions_dir() / f"{resume_sid}.json"
-                )
+                session_file = str(kiro_sessions_dir() / f"{resume_sid}.json")
                 file_ok = Path(session_file).exists()
             if file_ok:
                 try:
@@ -4266,6 +4280,7 @@ class AcpClient:
         """Shared event dispatch loop for prompts and commands."""
         self.last_prompt_stats = self.last_prompt_stats.carry_over()
         self._tool_call_inputs.clear()
+        self._tool_call_input_redacted.clear()
         self._tool_call_is_shell.clear()
         self._skill_read_noted.clear()
         self._pending_skill_reads.clear()
@@ -5276,11 +5291,15 @@ class AcpClient:
                 if diff_str:
                     input_str = diff_str
             # Redact sensitive content before caching/displaying
+            input_redacted = False
             if input_str:
-                input_str, _ = redact_exfiltration_urls(input_str)
-                input_str, _ = redact_credentials(input_str)
+                safe_input, _ = redact_exfiltration_urls(input_str)
+                safe_input, _ = redact_credentials(safe_input)
+                input_redacted = safe_input != input_str
+                input_str = safe_input
             if tool_call_id and input_str:
                 self._tool_call_inputs[tool_call_id] = input_str
+                self._tool_call_input_redacted[tool_call_id] = input_redacted
             # Cache the STRUCTURED raw params (path/url/command) so the later
             # request_permission event can feed the governance gate's arg-derived
             # scopes (filesystem.write / network.egress). Bounded by the same
@@ -5328,6 +5347,7 @@ class AcpClient:
                 tool_kind=kind,
                 tool_purpose=purpose,
                 tool_input=input_str,
+                tool_input_redacted=input_redacted,
                 tool_call_id=tool_call_id,
                 raw_tool_params=raw_input if isinstance(raw_input, dict) else None,
                 is_shell=is_shell,
@@ -5462,10 +5482,14 @@ class AcpClient:
                     if diff_str:
                         input_str = diff_str
                     break
+        input_redacted = False
         if input_str:
-            input_str, _ = redact_exfiltration_urls(input_str)
-            input_str, _ = redact_credentials(input_str)
+            safe_input, _ = redact_exfiltration_urls(input_str)
+            safe_input, _ = redact_credentials(safe_input)
+            input_redacted = safe_input != input_str
+            input_str = safe_input
             self._tool_call_inputs[tool_use_id] = input_str
+            self._tool_call_input_redacted[tool_use_id] = input_redacted
         # Refresh the cached shell signal only when this refinement carries a
         # kind. A refinement that omits kind must NOT clobber a True cached by
         # the initial tool_call notification (kind is optional on updates).
@@ -5510,6 +5534,7 @@ class AcpClient:
             tool_kind=kind_str,
             tool_purpose=purpose,
             tool_input=input_str,
+            tool_input_redacted=input_redacted,
             tool_call_id=tool_use_id,
             raw_tool_params=raw_input if isinstance(raw_input, dict) else None,
             is_shell=is_shell,
@@ -5578,174 +5603,40 @@ class AcpClient:
         return results
 
     def _build_permission_event(self, msg: JsonRpcMessage) -> AcpEvent:
-        request_id = msg.id if msg.id is not None else ""
-        params = msg.params or {}
-        # The permission payload comes straight from the agent process. A
-        # malformed toolCall (null/list/string) or options (null/dict/string,
-        # or non-dict entries) would raise AttributeError/TypeError here — and
-        # this runs inside the prompt-turn event generator, so the crash tears
-        # down the whole turn instead of degrading to the default options.
-        tool_call = params.get("toolCall", {})
-        if not isinstance(tool_call, dict):
-            tool_call = {}
-        title = tool_call.get("title", "unknown")
-        # The ACP toolCall carries a `kind` ("execute" for Bash, "read"/"edit"/
-        # …). Carry it onto the event as display/telemetry metadata. NOTE: the
-        # tool-name length-cap exemption does NOT key off this value — it uses
-        # the is_shell flag resolved below from the trusted tool_call cache, not
-        # the agent-influenced permission payload. Missing/empty stays "".
-        tool_kind = tool_call.get("kind", "")
-        # ACP spec uses optionId/name + kind ("allow_once"|"allow_always"|
-        # "reject_once"|"reject_always"); kiro-cli uses id/label
-        # with id values "allow_once"/"allow_always". Accept both shapes and
-        # remember the actual optionIds keyed by kind so approve_tool/
-        # reject_tool can echo the exact id the agent advertised.
-        options: list[dict[str, str]] = []
-        kind_to_id: dict[str, str] = {}
-        raw_options = params.get("options", [])
-        if not isinstance(raw_options, list):
-            raw_options = []
-        for o in raw_options:
-            if not isinstance(o, dict):
-                continue
-            opt_id = o.get("optionId") or o.get("id") or ""
-            opt_label = o.get("name") or o.get("label") or ""
-            opt_kind = o.get("kind") or ""
-            # A non-string id would crash opt_id.lower() below (and non-string
-            # label/kind would leak into the typed options list) — skip them.
-            if not isinstance(opt_id, str) or not opt_id:
-                continue
-            if not isinstance(opt_label, str):
-                opt_label = ""
-            if not isinstance(opt_kind, str):
-                opt_kind = ""
-            options.append({"id": opt_id, "label": opt_label})
-            if not opt_kind:
-                # Only synthesize a kind for well-known literals; unknown ids
-                # leave kind empty so we don't mis-classify agent intent.
-                opt_kind = _LEGACY_OPTION_KIND.get(opt_id.lower(), "")
-            if opt_kind:
-                kind_to_id.setdefault(opt_kind, opt_id)
-        if not options:
-            options = [
-                {"id": OPTION_ALLOW_ONCE, "label": "Allow once"},
-                {"id": OPTION_ALLOW_ALWAYS, "label": "Allow always"},
-            ]
-            kind_to_id = {"allow_once": OPTION_ALLOW_ONCE, "allow_always": OPTION_ALLOW_ALWAYS}
-        # Record optionIds the agent advertised so approve_tool / reject_tool
-        # can echo the exact ids. We record when EITHER an allow option (for
-        # approve) OR a reject option (for a clean reject) was advertised.
-        # Both backends advertise a reject option — claude-agent-acp as
-        # {kind:"reject_once", optionId:"reject"}, kiro-cli as
-        # {kind:"reject_once", optionId:"reject_once"} — and sending it is far
-        # better than a "cancelled" outcome: kiro-cli resolves a clean reject to
-        # a FAILED tool call and lets the turn continue to a model-inference
-        # boundary, whereas "cancelled" ends the turn outright with
-        # stopReason:"refusal" (and the claude adapter turns it into the cryptic
-        # "Tool use aborted"). reject_tool falls back to "cancelled" only for a
-        # backend that advertised no reject option at all.
-        any_allow = kind_to_id.get("allow_once") or kind_to_id.get("allow_always")
-        any_reject = kind_to_id.get("reject_once") or kind_to_id.get("reject_always")
-        if request_id != "" and (any_allow is not None or any_reject is not None):
-            recorded: dict[str, str] = {}
-            if any_allow is not None:
-                recorded["once"] = kind_to_id.get("allow_once") or any_allow
-                recorded["always"] = kind_to_id.get("allow_always") or any_allow
-            if any_reject is not None:
-                recorded["reject"] = any_reject
-            self._permission_options[request_id] = recorded
+        """Build one permission event through the transport-shared parser.
 
-        # Resolve full tool input — the preceding ToolCall session/notification
-        # carries the complete params that we cache by toolCallId.  The
-        # request_permission message only has a truncated human-readable title.
-        tool_input = ""
-        tool_call_id = tool_call.get("toolCallId", "")
-
-        # 1. Look up cached input from the ToolCall notification
-        if tool_call_id and tool_call_id in self._tool_call_inputs:
-            tool_input = self._tool_call_inputs.pop(tool_call_id)
-
-        # Recover the STRUCTURED raw params cached at the ToolCall notification
-        # (or carried inline on this permission message) so the governance gate
-        # can evaluate the filesystem.write (edit path) / network.egress (fetch
-        # url) scopes — the title alone cannot carry these.
-        raw_params: dict | None = None
-        if tool_call_id and tool_call_id in self._tool_call_params:
-            raw_params = self._tool_call_params.pop(tool_call_id)
-
-        # 2. Fallback: check if toolCall itself carries input/params
-        if not tool_input:
-            raw_input = tool_call.get("input") or tool_call.get("params")
-            if raw_input:
-                tool_input = (
-                    json.dumps(raw_input, indent=2)
-                    if isinstance(raw_input, (dict, list))
-                    else str(raw_input)
-                )
-                if raw_params is None and isinstance(raw_input, dict):
-                    raw_params = raw_input
-        elif raw_params is None:
-            # tool_input came from the cache; the permission message may still
-            # carry an inline params dict the gate can use.
-            inline = tool_call.get("input") or tool_call.get("params")
-            if isinstance(inline, dict):
-                raw_params = inline
-
-        # Resolve the canonical shell signal. SECURITY (deny-by-default): the
-        # ONLY trusted source is the value cached from the preceding tool_call
-        # notification (keyed by toolCallId). We deliberately do NOT fall back
-        # to the permission payload's own `kind`: that field is agent/LLM-
-        # influenced, and trusting it to waive the tool-name length cap on the
-        # very name being validated would let a malicious agent set
-        # kind="execute" on the permission payload to bypass the check. On a
-        # cache miss is_shell stays False and the length cap is enforced.
-        #
-        # Use .get() (not .pop()): a later tool_call_update refinement for the
-        # same toolCallId reads this same cache, so popping here would make that
-        # refinement wrongly report is_shell=False if it arrives after the
-        # permission event. The per-turn dispatch-loop .clear() handles cleanup.
-        cached_shell = self._tool_call_is_shell.get(tool_call_id) if tool_call_id else None
-        is_shell = bool(cached_shell)
-        if cached_shell is None and tool_input:
-            # Input resolved but the shell signal did not — the cache invariant
-            # (tool_call precedes permission) did not hold. Surface it so the
-            # miss is observable rather than silently enforcing the length cap.
-            logger.info(
-                "Permission event resolved tool_input but missed is_shell cache "
-                "(req=%s tool_call_id=%s)",
-                request_id,
-                tool_call_id,
-            )
-
-        logger.info("Permission requested for tool: %s (req=%s)", title, request_id)
-        if logger.isEnabledFor(logging.DEBUG):
-            _tc_redacted = repr(tool_call)
-            _tc_redacted, _ = redact_exfiltration_urls(_tc_redacted)
-            _tc_redacted, _ = redact_credentials(_tc_redacted)
-            logger.debug("Permission toolCall payload: %s", _tc_redacted)
-        return AcpEvent(
-            kind=EVENT_PERMISSION_REQUEST,
-            request_id=request_id,
-            title=title,
-            tool_kind=tool_kind,
-            options=options,
-            tool_input=tool_input,
-            tool_call_id=tool_call_id,
-            raw_tool_params=raw_params,
-            is_shell=is_shell,
-            # Trusted MCP server identity recovered from the preceding tool_call
-            # (the permission payload has no _meta). .get() mirrors the is_shell
-            # cache-read; empty on a miss (fail-closed for app-own auto-approve).
-            mcp_server_name=(
-                self._tool_call_mcp_server.get(tool_call_id, "") if tool_call_id else ""
-            ),
-            # Trusted tool name recovered from the preceding tool_call, mirroring
-            # mcp_server_name — lets the app-own-server auto-approve govern the
-            # canonical mcp__<server>__<tool> on this permission path.
-            tool_name=(
-                self._tool_call_tool_name.get(tool_call_id, "") if tool_call_id else ""
-            ),
+        The legacy direct client owns the same provenance caches as the shared
+        runtime. Routing them through one parser keeps a cached ``False`` shell
+        classification distinguishable from a cache miss and preserves cached
+        raw parameters across repeated permission frames for the same tool call.
+        """
+        event, recorded = build_permission_event(
+            msg,
+            tool_input_cache=self._tool_call_inputs,
+            # ``AcpClient`` predates this same-key provenance cache.  Normal
+            # instances initialize it in __init__, while legacy/minimal
+            # constructions (including embedders that allocate with __new__)
+            # may not.  The shared builder treats a missing map/key as
+            # redacted/unknown, so this compatibility fallback stays
+            # fail-closed for durable trust instead of inventing provenance.
+            tool_input_redacted_cache=getattr(self, "_tool_call_input_redacted", None),
+            shell_cache=self._tool_call_is_shell,
+            raw_params_cache=self._tool_call_params,
+            mcp_server_name_cache=self._tool_call_mcp_server,
+            tool_name_cache=self._tool_call_tool_name,
         )
+        if recorded is not None:
+            self._permission_options[event.request_id] = recorded
+        logger.info("Permission requested for tool: %s (req=%s)", event.title, event.request_id)
+        if logger.isEnabledFor(logging.DEBUG):
+            params = msg.params if isinstance(msg.params, dict) else {}
+            tool_call = params.get("toolCall", {})
+            tool_call = tool_call if isinstance(tool_call, dict) else {}
+            redacted_payload = repr(tool_call)
+            redacted_payload, _ = redact_exfiltration_urls(redacted_payload)
+            redacted_payload, _ = redact_credentials(redacted_payload)
+            logger.debug("Permission toolCall payload: %s", redacted_payload)
+        return event
 
     def _backfill_context_window(self, pct: float) -> None:
         """Derive window/used tokens from a percentage-only reading.
@@ -5754,9 +5645,7 @@ class AcpClient:
         lives on ``AcpPromptStats.backfill_context_window`` (the AcpSessionHandle
         path delegates to the same method, so the two can no longer drift).
         """
-        self.last_prompt_stats.backfill_context_window(
-            pct, self._resolved_model_id or self._model
-        )
+        self.last_prompt_stats.backfill_context_window(pct, self._resolved_model_id or self._model)
 
     def _track_metadata(self, msg: JsonRpcMessage) -> None:
         params = msg.params or {}

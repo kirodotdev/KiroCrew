@@ -41,11 +41,9 @@ from aiohttp import web
 
 from kiro_crew import sel as _sel_mod
 from kiro_crew.config.loader import (
-    ConfigReadError,
+    DEGRADED_WHOLE_CONFIG,
     KiroCrewConfig,
-    config_local_path,
-    config_path,
-    read_config_for_update,
+    degraded_config_files,
 )
 
 logger = logging.getLogger(__name__)
@@ -85,43 +83,67 @@ def _audit_deny(
         logger.debug("publish governance deny audit failed", exc_info=True)
 
 
-def _unparseable_config_reason() -> str | None:
-    """Return a denial reason when the on-disk config cannot be trusted.
+def _read_allowed_destinations() -> tuple[list[str], str | None]:
+    """Return ``(allowlist, denial_reason)`` from ONE read of the config.
 
-    ``KiroCrewConfig.load()`` deliberately DEGRADES: it catches
-    ``json.JSONDecodeError``/``OSError``, logs a warning and returns DEFAULTS.
-    That is right for an ordinary consumer and wrong here — an unparseable
-    ``config.json`` would turn a narrowed ``publish.allowed_destinations`` back
-    into the empty (allow-every-destination) default and silently reopen the path
-    the operator closed. Because ``load()`` cannot fail, a ``try/except`` around
-    it never fires, so this chokepoint has to ask the question itself.
+    The two questions this gate needs — "is the config trustworthy" and "what
+    did the operator allow" — are answered from a single ``load()``, because
+    answering them from two independent reads is what let a malformed section
+    reopen the allowlist (#4057).
 
-    It asks through :func:`read_config_for_update`, which already IS the repo's
-    fail-closed config read (absent → ``{}``, unreadable or non-object →
-    ``ConfigReadError``, ``UnicodeDecodeError`` named explicitly because it is a
-    ``ValueError`` rather than an ``OSError``). Hand-rolling a second spelling of
-    "a config parse must not degrade" would give the invariant two homes and let
-    them drift; the name reads oddly here only because nothing is being updated.
+    The old shape: a probe called ``read_config_for_update`` (which rejects only
+    a non-object TOP level) and, separately, the value came from
+    ``KiroCrewConfig.load().publish.allowed_destinations``. A ``config.json`` of
+    ``{"publish": []}`` is a valid object at the top level, so the probe PASSED —
+    and the loader then coerced the non-dict ``publish`` section to ``{}``, so
+    the allowlist came back empty. Empty is indistinguishable from "no
+    restriction configured", i.e. default-open. A malformed section did not deny
+    publishing and did not surface an error; it removed the restriction.
 
-    Both files are checked: the overlay ``config.local.json`` is deep-merged over
-    the base and swallows its own parse errors the same way, so a corrupt overlay
-    hides an allowlist just as effectively as a corrupt base.
+    Re-reading the FILE here cannot fix that, which is worth stating because it
+    is the obvious approach: ``load()`` runs a migration that REWRITES
+    ``config.json`` in normalized form, so after the gateway's first load the
+    malformed section is gone from disk and any later re-read sees a clean file
+    with an empty allowlist. The loader is the only place that ever sees the
+    degradation, so it is the loader that reports it — via
+    ``degraded_sections``.
 
-    A file that is simply ABSENT is not an error — that is the standalone default,
-    and an unnamed publish is ungoverned and permitted.
+    Two shapes deny: a config FILE that could not be read as a JSON object, and
+    a ``publish`` section present but not an object. Both arrive through
+    ``degraded_sections``.
 
-    These names are module-scope imports, unlike the ``kiro_crew.platform`` ones
-    inside :func:`publish_denied_reason`: ``config.loader`` is already a
-    module-scope dependency of this file (``KiroCrewConfig``), so the CPP
-    import-direction invariant has nothing to say about importing more of it.
+    NOT handled here, deliberately: a malformed ``allowed_destinations`` INSIDE
+    a well-formed section. The loader normalizes that value before this function
+    can see it — its comprehension iterates whatever it is given, so the string
+    ``"deploy-web"`` becomes the character list ``["d", "e", ...]`` — and a
+    check here would be dead code that only looked like a guard. It is the same
+    class one level down and wants the same treatment (the loader reporting what
+    it discarded), which is a change to the loader's per-field parsing rather
+    than to this gate. Filed separately rather than half-done here.
+
+    An ABSENT config or section is not degraded: genuinely unconfigured, and an
+    unnamed publish is ungoverned and permitted, so a standalone host is
+    unaffected.
     """
-    for path in (config_path(), config_local_path()):
-        try:
-            read_config_for_update(path)
-        except ConfigReadError as e:
-            logger.warning("publish denied: %s", e)
-            return f"publishing denied: {path.name} could not be read as a JSON object"
-    return None
+    cfg = KiroCrewConfig.load()
+    if DEGRADED_WHOLE_CONFIG in cfg.degraded_sections:
+        named = ", ".join(degraded_config_files(cfg.degraded_sections)) or "config.json"
+        reason = (
+            f"publishing denied: {named} could not be read as a JSON object, "
+            "so the destination allowlist is unknown; fix the file and restart "
+            "the gateway to clear"
+        )
+        logger.warning("%s", reason)
+        return [], reason
+    if "publish" in cfg.degraded_sections:
+        reason = (
+            "publishing denied: the 'publish' config section is malformed "
+            "(not a JSON object), so the destination allowlist is unknown; "
+            "fix the file and restart the gateway to clear"
+        )
+        logger.warning("%s", reason)
+        return [], reason
+    return list(cfg.publish.allowed_destinations), None
 
 
 def publish_denied_reason(request: web.Request, provider_name: str) -> str | None:
@@ -205,39 +227,28 @@ def publish_denied_reason(request: web.Request, provider_name: str) -> str | Non
     # Config allowlist (default-open, narrow-only). Empty list allows any
     # registered destination; a non-empty list restricts to those provider ids.
     #
-    # The parseability check comes FIRST and is not redundant with the try/except
-    # below: ``load()`` swallows its own parse errors and returns defaults, so a
-    # corrupt config would present as an EMPTY allowlist — indistinguishable from
-    # an operator who never narrowed it — and silently reopen a closed path. The
-    # except is kept for anything else ``load()`` can raise.
-    unparseable = _unparseable_config_reason()
-    if unparseable:
-        _audit_deny(
-            session_key=session_key,
-            provider_name=provider_name,
-            rule="publish.allowed_destinations",
-            layer="config",
-            reason=unparseable,
-        )
-        return unparseable
+    # ONE validated read yields both the verdict and the value. Asking those two
+    # questions separately is the defect: `load()` swallows its own parse errors
+    # and returns defaults, so a corrupt config (or a malformed `publish`
+    # section) presented as an EMPTY allowlist — indistinguishable from an
+    # operator who never narrowed it — and silently reopened a closed path.
     try:
-        allowed = KiroCrewConfig.load().publish.allowed_destinations
+        allowed, refusal = _read_allowed_destinations()
     except Exception:
-        logger.debug("publish config load failed; failing closed", exc_info=True)
-        # Audited like every other refusal: this was the last denial path that
-        # returned silently, which made `_audit_deny`'s "every layer routes
-        # through here" claim false. A refusal an operator cannot find in the
-        # audit log is indistinguishable to them from the publish never having
-        # been attempted.
-        reason = "publishing denied: publish config could not be loaded"
+        logger.debug("publish config read failed; failing closed", exc_info=True)
+        # Audited like every other refusal: a refusal an operator cannot find in
+        # the audit log is indistinguishable to them from the publish never
+        # having been attempted.
+        allowed, refusal = [], "publishing denied: publish config could not be loaded"
+    if refusal:
         _audit_deny(
             session_key=session_key,
             provider_name=provider_name,
             rule="publish.allowed_destinations",
             layer="config",
-            reason=reason,
+            reason=refusal,
         )
-        return reason
+        return refusal
     if allowed and provider_name not in allowed:
         _audit_deny(
             session_key=session_key,

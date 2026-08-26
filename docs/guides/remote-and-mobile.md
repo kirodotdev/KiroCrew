@@ -286,11 +286,30 @@ the same and the difference is the whole security story:
 - [`tailscale serve`](https://tailscale.com/kb/1242/tailscale-serve) publishes the
   dashboard **only inside your tailnet** — nothing is reachable from the public
   internet, you get TLS and a stable MagicDNS hostname, and who can reach it is
-  governed by your tailnet ACLs. This is the better answer for the phone case:
+  governed by your tailnet ACLs. This is the better answer for the phone case.
+
+  The guided path is in **Settings → Overview → Phone access**. It supports
+  Windows, macOS, and Linux gateway hosts, but it does not pretend that
+  tailnet-wide administrator consent is a local setting. Before the one-click
+  action appears, Tailscale must be installed and signed in, MagicDNS must be on,
+  and the current MagicDNS name must appear in Tailscale's `CertDomains`. On a
+  new tailnet the card links to the Tailscale HTTPS settings for the one-time
+  administrator approval, then waits for **Re-check**.
+
+  Once those prerequisites hold, click **Set up & show QR** once. The dashboard
+  enables its daemon-derived origin, restarts through the gateway's formal
+  single-flight restart path, waits for the replacement listener to prove the
+  new startup boundary is active, publishes through Tailscale Serve, verifies
+  the 443 mapping, and only then displays a short-lived sign-in QR. Tailscale
+  creates and renews the private certificate after HTTPS is enabled; there is no
+  certificate file to create or install manually. The action still refuses to
+  replace a different service already mounted at `443/`.
+
+  The CLI equivalent is:
   ```bash
   kirocrew config set dashboard.tailscale.enabled true   # once per machine
-  kirocrew tailnet up
   kirocrew restart
+  kirocrew tailnet up
   kirocrew token                                         # the link to open on the phone
   ```
   `kirocrew tailnet up` runs `tailscale serve` for you — HTTPS on 443 in front of
@@ -325,10 +344,12 @@ the same and the difference is the whole security story:
   hold the configured port, because `tailscale serve` will expose an unrelated local
   service to every device on your tailnet just as readily as the dashboard.
 
-  Changing serve configuration is daemon state, so on Linux it usually needs root
-  or a one-time grant: `sudo tailscale set --operator=$USER`. If the publish is
-  refused, the command prints what Tailscale itself said rather than a generic
-  failure.
+  Changing serve configuration is daemon state. On Linux it usually needs root
+  or a one-time grant (`sudo tailscale set --operator=$USER`); on Windows the
+  Tailscale CLI may need an Administrator terminal. These operating-system
+  permissions cannot be silently escalated by the dashboard. If the publish is
+  refused, the card and command print what Tailscale itself said rather than a
+  generic failure.
 
   `kirocrew tailnet status` shows the three things that are independently
   required — whether the setting is on, whether a MagicDNS name resolves right
@@ -342,14 +363,14 @@ the same and the difference is the whole security story:
   something else there by hand, `up` and `down` both stop and print the command
   instead of overwriting or deleting your mapping.
 
-  The setting reads your own MagicDNS name from the local Tailscale daemon once at
-  startup and trusts `https://<that name>` as an origin, so you do **not** have to
-  look the name up and hand-write `dashboard.url`. Because it is resolved once, a
-  restart is needed after publishing — and if the daemon comes up *after* the
-  gateway, nothing is trusted until you restart again. If Tailscale is absent,
-  stopped, or MagicDNS is off it contributes nothing and the dashboard starts
-  exactly as before. It does not widen the network bind and does not change
-  authentication — every request still needs a dashboard session.
+  At startup the setting reads your own MagicDNS name from the local Tailscale
+  daemon and trusts `https://<that name>` as an origin, so you do **not** have to
+  look the name up and hand-write `dashboard.url`. The Overview one-click flow
+  performs and waits for the same required restart automatically. If
+  Tailscale is absent, stopped, or MagicDNS is off at startup it contributes
+  nothing and the dashboard starts exactly as before. It does not widen the
+  network bind and does not change authentication — every request still needs a
+  dashboard session.
 
   If you would rather do it by hand, the equivalent is:
   ```bash
@@ -591,9 +612,15 @@ bugs:
   `ServiceWorkerRegistration.showNotification()`. Tracked in
   [issue #2267](https://github.com/kirodotdev/KiroCrew/issues/2267); the Android
   symptom is [issue #1828](https://github.com/kirodotdev/KiroCrew/issues/1828).
-- **Not edge-to-edge.** The shell sets neither `viewport-fit=cover` nor any
-  `env(safe-area-inset-*)` padding, so on a notched device the installed app
-  renders inside the safe area rather than filling the screen.
+- **Pinch zoom is off.** The installed app behaves like an application, not a
+  web page: two-finger pinch and double-tap no longer scale the shell. **To
+  magnify, use the OS Display Zoom setting** (iOS: Settings → Display &
+  Brightness → Display Zoom), which still enlarges everything; in a browser tab
+  Safari's Aa text-size control works too, but it is **not** reachable from the
+  installed app, which has no Safari toolbar. Pinch is off because magnifying a
+  fixed-height layout whose scrollers are all inner leaves no way to reach the
+  topbar and composer it pushes off-screen. The surfaces that need magnifying
+  keep it — the image viewer zooms on its own pinch, code blocks scroll sideways.
 
 Installing changes nothing about authentication: the app carries the same cookies
 the browser holds, on the same clocks as [Session duration](#session-duration).

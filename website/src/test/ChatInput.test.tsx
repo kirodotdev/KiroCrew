@@ -5,6 +5,10 @@ import { renderWithProviders } from './helpers'
 import { releaseComposerForKeyboardSwitch } from '../pages/chat/composerFocus'
 import { safeSetItem } from '../utils/safeStorage'
 import ChatInput from '../components/ChatInput'
+import { PREVIEW_STRIP_H, stubStripHeights } from './stripHeights'
+
+// The composer's own drag floor.
+const INPUT_DRAG_MIN_H = 93
 import { SlotProvider } from '../providers/SlotContext'
 import type { PasteBlock } from '../utils/pasteTokens'
 
@@ -25,6 +29,10 @@ const defaultProps = {
 
 beforeEach(() => {
   vi.restoreAllMocks()
+  // After restoreAllMocks: it would otherwise undo the layout stub. jsdom does
+  // no layout, and the composer MEASURES its strips, so a strip with no stubbed
+  // box measures 0 and reads as no strip at all.
+  stubStripHeights()
   localStorage.clear()
   touchEnv.touch = false
   mobileEnv.mobile = false
@@ -549,16 +557,17 @@ describe('ChatInput', () => {
       localStorage.setItem('mc-input-height', '150')
       const { container } = renderWithProviders(<ChatInput {...defaultProps} pendingFiles={['/tmp/a.png']} />)
       const wrapper = container.firstElementChild as HTMLElement
-      // With files: minHeight should be INPUT_DRAG_MIN_H (93) + FILE_PREVIEW_H (81) = 174
-      expect(wrapper.style.minHeight).toBe('174px')
+      // The drag floor plus whatever the strip MEASURED -- not a restatement of
+      // a predicted constant, which is what this used to assert.
+      expect(wrapper.style.minHeight).toBe(`${INPUT_DRAG_MIN_H + PREVIEW_STRIP_H}px`)
     })
 
     it('uses base minHeight when no files attached and manually sized', () => {
       localStorage.setItem('mc-input-height', '150')
       const { container } = renderWithProviders(<ChatInput {...defaultProps} pendingFiles={[]} />)
       const wrapper = container.firstElementChild as HTMLElement
-      // Without files: minHeight should be INPUT_DRAG_MIN_H (93)
-      expect(wrapper.style.minHeight).toBe('93px')
+      // No strip mounted, so it measures nothing and reserves nothing.
+      expect(wrapper.style.minHeight).toBe(`${INPUT_DRAG_MIN_H}px`)
     })
 
     it('wrapper uses flex-col layout for proper space distribution with file strip', () => {
@@ -573,16 +582,14 @@ describe('ChatInput', () => {
       const wrapper = screen.getByTestId('input-wrapper')
       expect(wrapper.style.height).toBe('200px')
       rerender(<ChatInput {...defaultProps} pendingFiles={['/tmp/a.png']} />)
-      // 200 + FILE_PREVIEW_H (81) = 281
-      expect(wrapper.style.height).toBe('281px')
+      expect(wrapper.style.height).toBe(`${200 + PREVIEW_STRIP_H}px`)
     })
 
     it('shrinks wrapper height when files are removed with manual sizing', () => {
-      localStorage.setItem('mc-input-height', '281')
+      localStorage.setItem('mc-input-height', String(200 + PREVIEW_STRIP_H))
       const { rerender } = renderWithProviders(<ChatInput {...defaultProps} pendingFiles={['/tmp/a.png']} />)
       rerender(<ChatInput {...defaultProps} pendingFiles={[]} />)
       const wrapper = screen.getByTestId('input-wrapper')
-      // 281 - FILE_PREVIEW_H (81) = 200
       expect(wrapper.style.height).toBe('200px')
     })
   })

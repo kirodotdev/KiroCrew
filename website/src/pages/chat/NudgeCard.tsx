@@ -102,7 +102,7 @@ export default memo(function NudgeCard({
           onClick={() => setExpanded(v => !v)}
           aria-expanded={expanded}
           aria-label={expanded ? i18nT('pages.chat.nudgeCard.hide_nudge_instructions') : i18nT('pages.chat.nudgeCard.show_nudge_instructions')}
-          className="flex items-center gap-2 min-w-0 flex-1 text-left text-[13px] leading-5 hover:text-fg transition-colors"
+          className="flex items-center gap-2 min-w-0 flex-1 text-left text-[13px] leading-5 hover:text-text transition-colors"
           data-testid="nudge-card-toggle"
         >
           <ChevronRight
@@ -120,7 +120,7 @@ export default memo(function NudgeCard({
           <button
             type="button"
             onClick={onOpenLoop}
-            className="shrink-0 text-[11px] leading-4 px-1.5 py-0.5 rounded border border-border hover:text-fg transition-colors"
+            className="shrink-0 text-[11px] leading-4 px-1.5 py-0.5 rounded border border-border hover:text-text transition-colors"
             data-testid="nudge-card-open-loop"
           >
             {i18nT('pages.chat.nudgeCard.loop')}

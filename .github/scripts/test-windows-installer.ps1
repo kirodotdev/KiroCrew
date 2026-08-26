@@ -1,6 +1,11 @@
+param(
+  [switch]$SkipGatewayValidation
+)
+
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
-$MaxInstallSeconds = 300
+$MaxInstallSeconds = 120
+$MaxGatewayReadySeconds = 30
 
 Add-Type -AssemblyName System.Drawing
 Add-Type -TypeDefinition @"
@@ -46,7 +51,7 @@ function Save-InstallerWindow {
 }
 
 function Find-InstallerRegistrations {
-  param([string]$ProductName)
+  param([string]$ExpectedDisplayName)
 
   $registrations = @()
   foreach ($location in @(
@@ -65,7 +70,7 @@ function Find-InstallerRegistrations {
   )) {
     foreach ($entry in Get-ItemProperty -Path $location.Uninstall -ErrorAction SilentlyContinue) {
       $displayName = $entry.PSObject.Properties["DisplayName"]
-      if ($displayName -and $displayName.Value -like "$ProductName*") {
+      if ($displayName -and $displayName.Value -eq $ExpectedDisplayName) {
         $registrations += [pscustomobject]@{
           Entry = $entry
           InstallRoot = $location.Install
@@ -100,10 +105,15 @@ $productFilename = if ($productFilenameProperty -and $productFilenameProperty.Va
 if (-not $productName -or -not $productFilename) {
   throw "package.json must define an installer product name."
 }
+$expectedDisplayName = "$productName $($package.version)"
 
-# Exercise the install-root ownership boundary with an existing directory. The
-# /D argument must remain last for NSIS to parse it as an install destination.
-$requestedInstallRoot = Join-Path $evidence "existing-install-parent"
+# Exercise the install-root ownership boundary with an existing directory. Keep
+# the install itself on the local temp volume: a synced workspace (OneDrive on a
+# developer machine) can recreate or hold files while NSIS removes them, which
+# tests the sync client rather than the installer. Evidence still lives under
+# the workspace for artifact upload. The /D argument must remain last for NSIS.
+$requestedInstallRoot = Join-Path ([IO.Path]::GetFullPath($env:TEMP)) `
+  "kirocrew-installer-test-$PID"
 $sentinel = Join-Path $requestedInstallRoot "pre-existing-user-file.txt"
 New-Item -ItemType Directory -Path $requestedInstallRoot -Force | Out-Null
 Set-Content -LiteralPath $sentinel -Value "must survive uninstall" -Encoding utf8NoBOM
@@ -173,7 +183,7 @@ if ($env:GITHUB_STEP_SUMMARY) {
 $deadline = [DateTime]::UtcNow.AddSeconds(10)
 $registrations = @()
 do {
-  $registrations = @(Find-InstallerRegistrations $productName)
+  $registrations = @(Find-InstallerRegistrations $expectedDisplayName)
   if ($registrations.Count -eq 0) {
     Start-Sleep -Milliseconds 250
   }
@@ -204,6 +214,111 @@ if (-not (Test-Path -LiteralPath $installedExecutable -PathType Leaf)) {
   throw "The installed application executable is missing: $installedExecutable"
 }
 
+if ($SkipGatewayValidation) {
+  Write-Host "Skipping bundled gateway validation for the synthetic CI backend payload."
+} else {
+# Exercise the same bundled interpreter Electron launches, immediately after
+# installation while Defender's post-install scanning is still active. The
+# Windows package ships checked-hash bytecode for the measured gateway import
+# closure; this catches either those files being filtered out of the artifact or
+# the launcher accidentally redirecting imports into an empty user cache again.
+$backendRoot = Join-Path $installLocation "resources\backend-dist\kirocrew-backend"
+$bundledPython = Join-Path $backendRoot "python.exe"
+if (-not (Test-Path -LiteralPath $bundledPython -PathType Leaf)) {
+  throw "The installed bundled Python is missing: $bundledPython"
+}
+$startupPycCount = @(
+  Get-ChildItem -LiteralPath $backendRoot -Recurse -File -Filter "*.pyc"
+).Count
+if ($startupPycCount -lt 1000) {
+  throw "Expected at least 1000 precompiled startup modules; found $startupPycCount."
+}
+
+$portProbe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+$portProbe.Start()
+$gatewayPort = ([Net.IPEndPoint]$portProbe.LocalEndpoint).Port
+$portProbe.Stop()
+$gatewayHome = Join-Path $evidence "gateway-home-$PID"
+$gatewayStdout = Join-Path $evidence "gateway-stdout.log"
+$gatewayStderr = Join-Path $evidence "gateway-stderr.log"
+New-Item -ItemType Directory -Path $gatewayHome -Force | Out-Null
+
+$savedGatewayEnv = @{
+  KIROCREW_HOME = $env:KIROCREW_HOME
+  KIROCREW_PROJECT_DIR = $env:KIROCREW_PROJECT_DIR
+  KIRO_HOME = $env:KIRO_HOME
+  PYTHONPYCACHEPREFIX = $env:PYTHONPYCACHEPREFIX
+  PYTHONPATH = $env:PYTHONPATH
+  PYTHONNOUSERSITE = $env:PYTHONNOUSERSITE
+  PYTHONUTF8 = $env:PYTHONUTF8
+  PYTHONIOENCODING = $env:PYTHONIOENCODING
+}
+$gatewayProcess = $null
+$gatewayReady = $false
+$gatewayTimer = [System.Diagnostics.Stopwatch]::StartNew()
+try {
+  $env:KIROCREW_HOME = $gatewayHome
+  $env:KIROCREW_PROJECT_DIR = $installLocation
+  $env:KIRO_HOME = Join-Path $gatewayHome "kiro"
+  $env:PYTHONPYCACHEPREFIX = $null
+  $env:PYTHONPATH = $null
+  $env:PYTHONNOUSERSITE = "1"
+  $env:PYTHONUTF8 = "1"
+  $env:PYTHONIOENCODING = "utf-8:backslashreplace"
+  $gatewayProcess = Start-Process -FilePath $bundledPython -ArgumentList @(
+    "-s", "-m", "kiro_crew", "gateway", "--no-open", "--port", "$gatewayPort"
+  ) -WorkingDirectory $installLocation -RedirectStandardOutput $gatewayStdout `
+    -RedirectStandardError $gatewayStderr -WindowStyle Hidden -PassThru
+
+  do {
+    try {
+      $readyResponse = Invoke-WebRequest -UseBasicParsing `
+        -Uri "http://127.0.0.1:$gatewayPort/api/ready" -TimeoutSec 1
+      $gatewayReady = $readyResponse.StatusCode -eq 200
+    } catch {
+      $gatewayReady = $false
+    }
+    if (-not $gatewayReady) {
+      Start-Sleep -Milliseconds 100
+      $gatewayProcess.Refresh()
+    }
+  } while (
+    -not $gatewayReady -and
+    -not $gatewayProcess.HasExited -and
+    $gatewayTimer.Elapsed.TotalSeconds -lt $MaxGatewayReadySeconds
+  )
+} finally {
+  $gatewayTimer.Stop()
+  if ($null -ne $gatewayProcess -and -not $gatewayProcess.HasExited) {
+    Stop-Process -Id $gatewayProcess.Id -Force -ErrorAction SilentlyContinue
+    $gatewayProcess.WaitForExit()
+  }
+  foreach ($name in $savedGatewayEnv.Keys) {
+    if ($null -eq $savedGatewayEnv[$name]) {
+      Remove-Item -Path "Env:$name" -ErrorAction SilentlyContinue
+    } else {
+      Set-Item -Path "Env:$name" -Value $savedGatewayEnv[$name]
+    }
+  }
+}
+
+$gatewayElapsed = [Math]::Round($gatewayTimer.Elapsed.TotalSeconds, 2)
+Set-Content -Path (Join-Path $evidence "gateway-startup-timing.txt") `
+  -Value "gateway-ready-seconds=$gatewayElapsed" -Encoding utf8NoBOM
+if (-not $gatewayReady) {
+  Write-Host "Gateway stdout tail:"
+  Get-Content -LiteralPath $gatewayStdout -Tail 30 -ErrorAction SilentlyContinue
+  Write-Host "Gateway stderr tail:"
+  Get-Content -LiteralPath $gatewayStderr -Tail 30 -ErrorAction SilentlyContinue
+  throw "Installed gateway was not ready within $MaxGatewayReadySeconds seconds."
+}
+Write-Host "Installed gateway became ready in $gatewayElapsed seconds ($startupPycCount pycs)."
+if ($env:GITHUB_STEP_SUMMARY) {
+  Add-Content -Path $env:GITHUB_STEP_SUMMARY `
+    -Value "Windows installed gateway ready: **$gatewayElapsed seconds** (ceiling: $MaxGatewayReadySeconds seconds)."
+}
+}
+
 $uninstaller = Get-ChildItem -LiteralPath $installLocation -File -Filter "Uninstall*.exe" |
   Select-Object -First 1
 if (-not $uninstaller) {
@@ -222,7 +337,7 @@ if ($uninstallProcess.ExitCode -ne 0) {
 
 $uninstallDeadline = [DateTime]::UtcNow.AddSeconds(30)
 do {
-  $remainingRegistrations = @(Find-InstallerRegistrations $productName)
+  $remainingRegistrations = @(Find-InstallerRegistrations $expectedDisplayName)
   if ($remainingRegistrations.Count -ne 0 -or (Test-Path -LiteralPath $installLocation)) {
     Start-Sleep -Milliseconds 250
   }
@@ -239,6 +354,11 @@ if (Test-Path -LiteralPath $installLocation) {
 if (-not (Test-Path -LiteralPath $sentinel -PathType Leaf)) {
   throw "Silent uninstall removed content from the pre-existing parent directory."
 }
+
+# The sentinel has proved ownership boundaries; leave only reusable evidence,
+# not a temp directory on local developer runs.
+Remove-Item -LiteralPath $sentinel -Force
+Remove-Item -LiteralPath $requestedInstallRoot -Force
 
 if ($elapsed -gt $MaxInstallSeconds) {
   throw "Windows installation took $elapsed seconds, above the $MaxInstallSeconds-second ceiling."

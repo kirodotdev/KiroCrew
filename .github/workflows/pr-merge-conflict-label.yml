@@ -46,6 +46,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           LABEL: "merge conflict"
+          # See the truncation guard below.
+          PR_LIST_LIMIT: "900"
         run: |
           set -euo pipefail
 
@@ -58,8 +60,18 @@ jobs:
           fi
 
           # Enumerate open PRs with GitHub's own mergeability + current labels.
-          prs="$(gh pr list --repo "$REPO" --state open --limit 300 \
+          # `gh pr list` returns NEWEST-first and truncates at --limit SILENTLY,
+          # so a ceiling below the real open-PR count drops the OLDEST PRs --
+          # in this sweep, the ones most likely to be missing the label. The
+          # ceiling is a variable kept clear of the real set, and a hit is
+          # reported as an action item rather than absorbed as a measurement.
+          prs="$(gh pr list --repo "$REPO" --state open --limit "$PR_LIST_LIMIT" \
             --json number,mergeable,labels)"
+          if [ "$(jq 'length' <<<"$prs")" -ge "$PR_LIST_LIMIT" ]; then
+            echo "::warning::Open-PR list hit its ceiling of $PR_LIST_LIMIT;" \
+              "the oldest open PRs were dropped and were not considered." \
+              "Raise PR_LIST_LIMIT in this workflow."
+          fi
 
           add_label() {
             jq -n --arg label "$LABEL" '{labels: [$label]}' \

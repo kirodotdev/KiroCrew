@@ -309,8 +309,8 @@ export function TeamsPanel() {
           `false` rather than falsy — a gateway that predates the field sends
           none, and absence must not be read as a missing dependency. */}
       {data.jwt_available === false && (
-        <div role="alert" className="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 mb-3 mt-2">
-          <AlertTriangle className="lucide-inline text-warning flex-none mt-0.5" aria-hidden />
+        <div role="alert" className="flex items-start gap-2 rounded-md border border-warn/40 bg-warn/10 px-3 py-2 mb-3 mt-2">
+          <AlertTriangle className="lucide-inline text-warn flex-none mt-0.5" aria-hidden />
           <span className="text-[12px] text-text">
             {/* One key for the whole notice: the install command has to stay
                 verbatim, and splitting the sentence around it would pin every
@@ -355,8 +355,8 @@ export function TeamsPanel() {
           <p className="text-[12px] text-muted mt-2 mb-0">
             {i18nT('pages.settings.teamsPanel.messaging_endpoint')} <code>{i18nT('pages.settings.teamsPanel.https_your_host')}{WEBHOOK_PATH}</code>
           </p>
-          <div className="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 mt-3">
-            <AlertTriangle size={13} className="lucide-inline text-warning flex-none mt-0.5" />
+          <div className="flex items-start gap-2 rounded-md border border-warn/40 bg-warn/10 px-3 py-2 mt-3">
+            <AlertTriangle size={13} className="lucide-inline text-warn flex-none mt-0.5" />
             <span className="text-[12px] text-text">
               <strong>{i18nT('pages.settings.teamsPanel.requires_a_public_https_url')}</strong> {i18nT('pages.settings.teamsPanel.teams_delivers_messages_by_calling_this_endpoint')} <code>{i18nT('pages.settings.teamsPanel.localhost')}</code> {i18nT('pages.settings.teamsPanel.or_ssh_tunneled_address_won_t_work_expose_the_ga')}
               <code>{i18nT('pages.settings.teamsPanel.your_host')}</code> {i18nT('pages.settings.teamsPanel.above_unlike_slack_the_bot_framework_has_no_outb')}

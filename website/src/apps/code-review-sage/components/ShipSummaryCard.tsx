@@ -46,7 +46,7 @@ export default function ShipSummaryCard({
       {/* Same footer control group as FindingCard: selecting this comment and
           drafting it are one decision, so the two controls sit together. */}
       {(posted || onPost || (selectable && !posted)) && (
-        <div className="flex items-center gap-2 border-t border-border-strong bg-panel-strong px-3.5 py-2">
+        <div className="flex items-center gap-2 border-t border-border-strong bg-bg-elevated px-3.5 py-2">
           {selectable && !posted && (
             <label className="flex items-center gap-2 text-[11.5px] text-muted cursor-pointer">
               <input

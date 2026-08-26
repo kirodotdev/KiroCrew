@@ -19,6 +19,7 @@ import json
 import os
 import platform
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -500,7 +501,14 @@ class TestAl2023Detection:
 
 
 class TestFindSuitablePython:
-    """The reject predicate must SKIP an unusable interpreter, never abort."""
+    """The reject predicate must SKIP an unusable interpreter, never abort.
+
+    Since #5535 both probes run through ``dep_sync._probe_interpreter`` so the
+    verdict describes the CANDIDATE interpreter, never the gateway's
+    environment. The decoy tests run a real child against ``sys.executable``
+    to prove the two attack routes (an inherited ``PYTHONPATH``, and ``-m``'s
+    import-and-execute of a planted ``pip``) stay closed.
+    """
 
     @staticmethod
     def _capture(monkeypatch):
@@ -514,29 +522,38 @@ class TestFindSuitablePython:
         assert core_mod._find_suitable_python() == "/usr/bin/python3"
         return captured["reject"]
 
+    @staticmethod
+    def _fake_probe(monkeypatch, version_rc=0, version_out="3.12.1 (main)", pip_rc=0):
+        """Stub ``dep_sync._probe_interpreter``: find_spec code = pip probe."""
+
+        def _fake(_py, code, timeout=None):
+            assert timeout == 5, "each probe must keep the 5s bound"
+            if "find_spec" in code:
+                return SimpleNamespace(returncode=pip_rc, stdout="", stderr="")
+            return SimpleNamespace(returncode=version_rc, stdout=version_out, stderr="")
+
+        monkeypatch.setattr(core_mod.dep_sync, "_probe_interpreter", _fake)
+
     def test_free_threaded_build_is_rejected(self, monkeypatch) -> None:
         reject = self._capture(monkeypatch)
-        monkeypatch.setattr(
-            subprocess,
-            "check_output",
-            lambda *a, **k: "3.14.0 free-threading build",
-        )
+        self._fake_probe(monkeypatch, version_out="3.14.0 free-threading build")
         assert reject("/usr/bin/python3.14t") is True
 
     def test_interpreter_with_pip_is_accepted(self, monkeypatch) -> None:
         reject = self._capture(monkeypatch)
-        monkeypatch.setattr(subprocess, "check_output", lambda *a, **k: "3.12.1 (main)")
+        self._fake_probe(monkeypatch)
         assert reject("/usr/bin/python3.12") is False
 
     def test_missing_pip_is_rejected(self, monkeypatch) -> None:
         reject = self._capture(monkeypatch)
+        self._fake_probe(monkeypatch, pip_rc=1)
+        assert reject("/usr/bin/python3.12") is True
 
-        def _fake(args, **_k):
-            if "pip" in args:
-                raise subprocess.CalledProcessError(1, args)
-            return "3.12.1 (main)"
-
-        monkeypatch.setattr(subprocess, "check_output", _fake)
+    def test_failed_version_probe_is_rejected(self, monkeypatch) -> None:
+        """_probe_interpreter reports failure via returncode, not an exception:
+        an implicit fall-through would hand the installer a broken target."""
+        reject = self._capture(monkeypatch)
+        self._fake_probe(monkeypatch, version_rc=1, version_out="")
         assert reject("/usr/bin/python3.12") is True
 
     def test_unspawnable_interpreter_is_rejected(self, monkeypatch) -> None:
@@ -544,8 +561,88 @@ class TestFindSuitablePython:
             raise OSError("exec format error")
 
         reject = self._capture(monkeypatch)
-        monkeypatch.setattr(subprocess, "check_output", _boom)
+        monkeypatch.setattr(core_mod.dep_sync, "_probe_interpreter", _boom)
         assert reject("/usr/bin/broken") is True
+
+    def test_hung_probe_is_rejected(self, monkeypatch) -> None:
+        def _hang(*_a, **_k):
+            raise subprocess.TimeoutExpired(cmd="python", timeout=5)
+
+        reject = self._capture(monkeypatch)
+        monkeypatch.setattr(core_mod.dep_sync, "_probe_interpreter", _hang)
+        assert reject("/usr/bin/python3.12") is True
+
+    def test_both_probes_run_isolated_bounded_and_without_dash_m(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """Structural pin on the child argv: ``-I`` (no PYTHONPATH / user-site /
+        CWD entry), the 5s bound, a neutral cwd — and never ``-m``, whose
+        import-and-execute is the half of #5535 that runs planted code."""
+        target = tmp_path / "bin" / "python3"
+        target.parent.mkdir(parents=True)
+        seen = []
+
+        def _fake_run(cmd, **kwargs):
+            seen.append((cmd, kwargs))
+            return SimpleNamespace(returncode=0, stdout="3.12.1 (main)", stderr="")
+
+        reject = self._capture(monkeypatch)
+        monkeypatch.setattr(core_mod.dep_sync.subprocess, "run", _fake_run)
+        assert reject(str(target)) is False
+        assert len(seen) == 2, "version probe + pip probe"
+        for cmd, kwargs in seen:
+            assert cmd[0] == str(target)
+            assert cmd[1] == "-I", "probe must run the interpreter isolated"
+            assert "-m" not in cmd, "-m imports and executes; probes must use -c"
+            assert kwargs.get("timeout") == 5, "the per-probe 5s bound must survive"
+            assert kwargs.get("cwd") == target.parent, "probe needs a neutral cwd"
+            assert "env" not in kwargs, "-I owns isolation; no env forwarding"
+
+    def test_a_sitecustomize_decoy_on_pythonpath_cannot_forge_free_threading(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """A ``sitecustomize.py`` on the caller's PYTHONPATH edits ``sys.version``
+        in every unisolated child — vetoing all candidates (Whisper reported
+        unavailable) or waving a genuinely free-threaded build through as the
+        install target. ``-I`` drops PYTHONPATH, so the verdict must not move."""
+        decoy = tmp_path / "decoy-path"
+        decoy.mkdir()
+        (decoy / "sitecustomize.py").write_text(
+            "import sys; sys.version += ' free-threading build'\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("PYTHONPATH", str(decoy))
+        reject = self._capture(monkeypatch)
+
+        # sys.executable (this test venv) has pip and is not free-threaded:
+        # the decoy must not flip its verdict to "unusable".
+        assert reject(sys.executable) is False
+
+    def test_a_decoy_pip_package_neither_executes_nor_forges_the_verdict(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """``-m pip`` IMPORTS AND EXECUTES the ``pip`` the child resolves, so a
+        decoy package on the caller's PYTHONPATH both runs planted code in the
+        probe child and answers "pip present/absent" regardless of reality.
+        The fixed probe asks ``find_spec`` under ``-I``: the decoy must never
+        run (no canary file) and must not flip the verdict (this interpreter's
+        real pip still wins)."""
+        decoy = tmp_path / "decoy-path"
+        canary = tmp_path / "canary"
+        pkg = decoy / "pip"
+        pkg.mkdir(parents=True)
+        (pkg / "__init__.py").write_text(
+            f"import pathlib, sys\n"
+            f"pathlib.Path({str(canary)!r}).write_text('ran', encoding='utf-8')\n"
+            f"sys.exit(1)\n",
+            encoding="utf-8",
+        )
+        (pkg / "__main__.py").write_text("", encoding="utf-8")
+        monkeypatch.setenv("PYTHONPATH", str(decoy))
+        reject = self._capture(monkeypatch)
+
+        assert reject(sys.executable) is False
+        assert not canary.exists(), "decoy pip must never be imported or executed"
 
 
 class TestInstallScript:

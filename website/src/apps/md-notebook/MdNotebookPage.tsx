@@ -39,6 +39,7 @@ import {
   DOC_HEADING_WEIGHTS,
   FONT_BODY,
   FONT_MONO,
+  HEADER_CONTROLS_GAP,
   LEGACY_LS,
   LS,
   MENU_SECTION_LABEL,
@@ -48,6 +49,7 @@ import {
   RAIL_TYPE,
   SAVE_DEBOUNCE_MS,
   SORTS,
+  TITLE_MIN_WIDTH,
   collapsedKey,
   pinnedKey,
 } from './constants'
@@ -61,6 +63,7 @@ import { ConfirmDialog } from './ConfirmDialog'
 import { InlineLink } from './bits'
 import { SettingsBar, SettingsPage } from './SettingsPage'
 import Clickable from '../../components/Clickable'
+import ReadingWidthToggle from '../../components/ReadingWidthToggle'
 import { NoteRow, flattenVisibleNotes, orderNotes, renderTree } from './NoteRow'
 import {
   FM_RE,
@@ -112,6 +115,28 @@ const iconBtn: CSSProperties = {
   color: 'var(--muted)',
   cursor: 'pointer',
   flexShrink: 0,
+}
+
+/**
+ * Ref callback reporting an element's box on attach and on every resize.
+ *
+ * Used where a layout decision is arithmetic on real widths rather than a CSS
+ * expression, so it needs the numbers: `onMeasure` must be stable.
+ */
+function useMeasuredBox(onMeasure: (el: HTMLElement) => void) {
+  const observer = useRef<ResizeObserver | null>(null)
+  return useCallback(
+    (el: HTMLElement | null) => {
+      observer.current?.disconnect()
+      observer.current = null
+      if (!el) return
+      const measure = () => onMeasure(el)
+      measure()
+      observer.current = new ResizeObserver(measure)
+      observer.current.observe(el)
+    },
+    [onMeasure],
+  )
 }
 
 export default function MdNotebookPage() {
@@ -202,6 +227,10 @@ export default function MdNotebookPage() {
   const [syncShortcut, setSyncShortcut] = useState<Shortcut>(() =>
     loadPref<Shortcut>(LS.syncShortcut, DEFAULT_SYNC_SHORTCUT),
   )
+  // Lifts the reading-column cap on the note body. Per device, not per vault or
+  // per note: it answers "how wide is this display", which is a property of the
+  // screen the user is reading on.
+  const [fullWidth, setFullWidth] = useState(() => loadPref<boolean>(LS.fullWidth, false))
   // True while Settings is capturing a shortcut, so the keys being recorded do
   // not also fire a sync.
   const recordingShortcutRef = useRef(false)
@@ -337,6 +366,54 @@ export default function MdNotebookPage() {
     },
     [],
   )
+  /** Lift or restore the reading-column cap, remembered for this device. */
+  const toggleFullWidth = useCallback(() => {
+    setFullWidth(on => {
+      savePref(LS.fullWidth, !on)
+      return !on
+    })
+  }, [])
+
+  // The rendered body caps its width directly; the raw textarea cannot cap its
+  // own content box, so it centres its text with side padding instead (see the
+  // override at that style block).
+  const columnMaxWidth = fullWidth ? undefined : `${COLUMN_MAX_WIDTH}px`
+
+  // The title band shares its row with the floating header controls, so a long
+  // first line could run beneath them. Both boxes are measured rather than
+  // guessed: the cluster's width is content-driven (the sync label varies by
+  // locale and state) and the band's width is the pane's, which the user drags.
+  const [headerControls, setHeaderControls] = useState({ width: 0, height: 0 })
+  const [headerBandWidth, setHeaderBandWidth] = useState(0)
+  const onMeasureControls = useCallback(
+    (el: HTMLElement) => setHeaderControls({ width: el.offsetWidth, height: el.offsetHeight }),
+    [],
+  )
+  const onMeasureBand = useCallback((el: HTMLElement) => setHeaderBandWidth(el.offsetWidth), [])
+  const headerControlsRef = useMeasuredBox(onMeasureControls)
+  const headerBandRef = useMeasuredBox(onMeasureBand)
+
+  // Clearance is arithmetic on those two widths, not a CSS expression, so the
+  // narrow case is readable in a unit test. `titleClearance` is the extra right
+  // padding the title reserves beyond the regular pad; `stackTitle` says the
+  // pane is too narrow to seat both on one row, so the title drops below the
+  // cluster instead of being squeezed into a column of single letters (the
+  // title wraps on any character, so a squeeze degrades far worse than a
+  // stack).
+  const { titleClearance, stackTitle } = useMemo(() => {
+    if (!headerBandWidth || !headerControls.width) return { titleClearance: 0, stackTitle: false }
+    const blockWidth = fullWidth ? headerBandWidth : Math.min(headerBandWidth, COLUMN_MAX_WIDTH)
+    // Both edges in band coordinates: the block is centred, the cluster is
+    // anchored to the band's right edge.
+    const titleRight = (headerBandWidth + blockWidth) / 2 - COLUMN_PAD_X
+    const clusterLeft = headerBandWidth - COLUMN_PAD_X - headerControls.width
+    const clearance = Math.max(0, titleRight + HEADER_CONTROLS_GAP - clusterLeft)
+    const titleWidth = blockWidth - COLUMN_PAD_X * 2 - clearance
+    return titleWidth < TITLE_MIN_WIDTH
+      ? { titleClearance: 0, stackTitle: true }
+      : { titleClearance: clearance, stackTitle: false }
+  }, [fullWidth, headerBandWidth, headerControls.width])
+
   const setSyncShortcutPref = useCallback((sc: Shortcut) => {
     setSyncShortcut(sc)
     savePref(LS.syncShortcut, sc)
@@ -1943,8 +2020,9 @@ export default function MdNotebookPage() {
         />
       ) : (
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-        <div style={{ position: 'relative' }}>
+        <div ref={headerBandRef} style={{ position: 'relative' }}>
           <div
+            ref={headerControlsRef}
             style={{
               position: 'absolute',
               top: '24px',
@@ -1953,6 +2031,18 @@ export default function MdNotebookPage() {
               display: 'flex',
               gap: '4px',
               alignItems: 'center',
+              // The cluster's width is content-driven (the sync label varies by
+              // locale and state), so on a pane too narrow to seat it in one
+              // row it would poke past the left edge and `overflow-x-hidden`
+              // would clip the view controls. Cap it to the measured band and
+              // wrap instead: every control stays reachable, and the wrapped
+              // height flows into the stacking arithmetic above, which already
+              // drops the title below whatever the cluster occupies.
+              maxWidth: headerBandWidth
+                ? `${Math.max(0, headerBandWidth - COLUMN_PAD_X * 2)}px`
+                : undefined,
+              flexWrap: 'wrap',
+              justifyContent: 'flex-end',
             }}
           >
             {/* Rendered / raw switch */}
@@ -1994,6 +2084,16 @@ export default function MdNotebookPage() {
                 </button>
               ))}
             </div>
+            {/* Reading column / full width. A sibling of the rendered-raw switch
+                because both answer "how do I want to read this note". The
+                control itself is `ReadingWidthToggle`, the component an artifact
+                already uses for this exact choice, so the two views cannot drift
+                apart on label, pressed state or accent. Only the stored
+                preference is this view's own (`LS.fullWidth`): a note and an
+                artifact are different reading surfaces, often open at the same
+                time in two panes, and one shared key would silently reflow the
+                other. */}
+            <ReadingWidthToggle value={fullWidth ? 'full' : 'md'} onToggle={toggleFullWidth} />
             <button
               type="button"
               onClick={() => void runSync()}
@@ -2048,9 +2148,13 @@ export default function MdNotebookPage() {
             style={{
               margin: '0 auto',
               width: '100%',
-              maxWidth: `${COLUMN_MAX_WIDTH}px`,
+              maxWidth: columnMaxWidth,
               boxSizing: 'border-box',
-              padding: `24px ${COLUMN_PAD_X}px 14px`,
+              // Stacked: the title clears the cluster from below, so the top
+              // pad carries the cluster's own height and the row is free.
+              padding: stackTitle
+                ? `${24 + headerControls.height + 8}px ${COLUMN_PAD_X}px 14px`
+                : `24px ${COLUMN_PAD_X + titleClearance}px 14px ${COLUMN_PAD_X}px`,
             }}
           >
             {activePath ? (
@@ -2239,6 +2343,11 @@ export default function MdNotebookPage() {
                 paddingRight: `max(${COLUMN_PAD_X}px, calc((100% - ${
                   COLUMN_MAX_WIDTH - COLUMN_PAD_X * 2
                 }px) / 2))`,
+                // Full width drops the centring measure. Declared after the two
+                // above so it overrides them, leaving their expression untouched.
+                ...(fullWidth
+                  ? { paddingLeft: `${COLUMN_PAD_X}px`, paddingRight: `${COLUMN_PAD_X}px` }
+                  : {}),
                 fontSize: `${DOC_BODY_PX}px`,
                 lineHeight: DOC_BODY_LINE_HEIGHT,
                 fontFamily: FONT_MONO,
@@ -2251,7 +2360,7 @@ export default function MdNotebookPage() {
               style={{
                 margin: '0 auto',
                 width: '100%',
-                maxWidth: `${COLUMN_MAX_WIDTH}px`,
+                maxWidth: columnMaxWidth,
                 boxSizing: 'border-box',
                 padding: `14px ${COLUMN_PAD_X}px 32px`,
               }}

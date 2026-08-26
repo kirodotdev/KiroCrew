@@ -166,8 +166,8 @@ class TestCronService:
         svc = CronService(base_dir=tmp_path)
         svc._load()
         job = svc.add_job(name="rm", message="bye", every_secs=300)
-        assert svc.remove_job(job.id)
-        assert not svc.remove_job("nonexistent")
+        assert svc.remove_job(job.id, actor="test", source="test")
+        assert not svc.remove_job("nonexistent", actor="test", source="test")
 
     def test_list_jobs(self, tmp_path: Path) -> None:
         svc = CronService(base_dir=tmp_path)

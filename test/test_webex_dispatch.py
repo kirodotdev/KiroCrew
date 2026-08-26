@@ -1972,6 +1972,35 @@ class TestApprovalCardPress:
         assert operations.count("webex.tool_approval") == 2
 
     @pytest.mark.asyncio
+    async def test_a_refused_press_never_audits_as_an_approval(self) -> None:
+        """The audit LABEL follows the resolve, not the button that was pressed.
+
+        A press the registry refused — stale nonce, wrong request id — decided
+        nothing, so recording the decision it ASKED for would put an approval in
+        the SEL log that no tool ever received. That record is the only trace a
+        forged or replayed press leaves, and the reply it draws is the same one a
+        genuinely expired card draws, so nothing else would contradict it.
+        """
+        d = _dispatcher(FakeSessions(FakeProvider([])), FakeCtx(), FakeClient())
+        key = d._session_key(_EMAIL)
+        task = await self._pending(d, key)
+        nonce = webex_dispatch._APPROVALS.reserve(key, "1")
+
+        with mock.patch("kiro_crew.webex.transport_dispatch.sel") as fake_sel:
+            await d.handle_message(_approval_press("approve", "FORGED"))
+            # Still open: the refused press must not have spent the decision.
+            assert webex_dispatch._APPROVALS.has_pending(key)
+            await d.handle_message(_approval_press("approve", nonce))
+
+        assert await task is True
+        outcomes = [
+            c.kwargs["outcome"]
+            for c in fake_sel.return_value.log_api_access.mock_calls
+            if c.kwargs.get("operation") == "webex.tool_approval"
+        ]
+        assert outcomes == ["denied", "approved"]
+
+    @pytest.mark.asyncio
     async def test_governance_blocks_an_approve_but_still_resolves_a_deny(self) -> None:
         """A policy that forbids this channel has no interest in keeping a tool
         request alive for its whole window."""

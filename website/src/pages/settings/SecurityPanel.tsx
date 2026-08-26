@@ -10,6 +10,7 @@ import Modal from '../../components/Modal'
 import InfoTip from '../../components/InfoTip'
 import { api, ApiError, type DeniedCommandsData, type DeniedCommandRule, type DeniedUserRule, type GovernancePolicyData, type GovernanceScope, type GovernanceScopeDetail, type SecurityPostureData, type TailnetStatusData, type TrustedAppsData } from '../../api/client'
 import { PostureDisclosureRow, CODE_BASE as POSTURE_CODE_BASE } from './PostureDisclosure'
+import { MobileLoginCard } from './MobileLoginCard'
 
 import { i18nT } from '../../i18n/t'
 import { fmtDateFields, fmtList, fmtTime, fmtTimeNumeric, toDate, compareText } from '../../i18n/format'
@@ -1287,6 +1288,7 @@ function PostureSection() {
 
   return (
     <SettingsSection title={i18nT('pages.settings.securityPanel.live_security_posture')}>
+      <MobileLoginCard />
       {/* data-setting-label: deep-link anchor for the manual registry entry
         * (settingsManual.ts `security.live-security-posture`) — the section is
         * raw markup the extractor cannot see, so without this the highlight
@@ -1623,7 +1625,7 @@ function DeniedCommandsSection({ draft, onDraftChange, noteDraft, onNoteDraftCha
 
       {/* Card B — Your custom denies */}
       <SettingsCard index={1}>
-        <div className="text-[13px] font-semibold text-text">{i18nT('pages.settings.securityPanel.your_custom_denies')}</div>
+        <div className="text-[13px] font-semibold text-text" data-setting-label={i18nT('pages.settings.securityPanel.your_custom_denies')}>{i18nT('pages.settings.securityPanel.your_custom_denies')}</div>
         <div className="text-[12px] text-muted mt-0.5 mb-1 leading-relaxed">
           {i18nT('pages.settings.securityPanel.add_your_own_deny_patterns_python_compatible_reg')}
         </div>

@@ -798,17 +798,14 @@ export function WhatsAppPanel() {
       </div>
 
       <div>
-        {/* Not a <label>: SimpleSelect renders a button, so `htmlFor` would point
-            at no form control. The caption keeps its key and is reused verbatim as
-            the trigger's accessible name. data-testid moves to this wrapper so the
-            Playwright drive (scripts/test-whatsapp-panel.mjs) still finds the field. */}
-        <div className="block" data-testid="whatsapp-dm-policy">
-          <span className="block text-[11px] text-muted mb-1.5">{i18nT('pages.settings.whatsAppPanel.who_can_message_the_bot')}</span>
-          {/* maxWidth: the native select was content-sized; the Radix trigger is
-              w-full and this field is a stretch flex item, so without a cap it
-              would span the whole panel while every neighbouring control stays
-              content-scaled. */}
-          <SimpleSelect
+        {/* maxWidth: the trigger is w-full and this field is a stretch flex item,
+            so without a cap it would span the whole panel while every
+            neighbouring control stays content-scaled. data-testid stays on this
+            wrapper so the Playwright drive (scripts/test-whatsapp-panel.mjs)
+            still finds the field. */}
+        <div className="block" data-testid="whatsapp-dm-policy" style={{ maxWidth: 280 }}>
+          <SettingsSelect
+            label={i18nT('pages.settings.whatsAppPanel.who_can_message_the_bot')}
             // Kept as paired entries: as two positional arrays these drifted,
             // and `open` shipped labelled "Only allowed numbers" -- a label
             // claiming a restriction that policy does not apply, so an operator
@@ -818,8 +815,6 @@ export function WhatsAppPanel() {
             value={data?.dm_policy || 'self'}
             disabled={readOnly}
             onChange={v => save({ dm_policy: v as 'self' | 'allowlist' | 'open' | 'disabled' })}
-            aria-label={i18nT('pages.settings.whatsAppPanel.who_can_message_the_bot')}
-            style={{ maxWidth: 280 }}
           />
         </div>
       </div>

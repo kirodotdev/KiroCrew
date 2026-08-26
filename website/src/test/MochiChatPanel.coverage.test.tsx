@@ -677,22 +677,21 @@ describe('ChatPanel edit and resend', () => {
 })
 
 describe('ChatPanel approval card', () => {
-  it('asks about the tool and its input, with a trust hint when nothing is scopable', async () => {
+  it('asks about the tool and its input without Trust when the server omitted proof', async () => {
     await renderPanel()
     emit('onApprovalRequest', approvalFrame())
     expect(await screen.findByText('execute_bash')).toBeInTheDocument()
     expect(screen.getByText('ls -la')).toBeInTheDocument()
     expect(screen.getByText(/Wants to run/)).toBeInTheDocument()
-    expect(
-      screen.getByText('Trust also auto-approves execute_bash from now on.'),
-    ).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Trust' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/Trust also auto-approves/)).not.toBeInTheDocument()
   })
 
   it('relabels the card once the approval reaches the agent', async () => {
     await renderPanel()
     emit('onApprovalRequest', approvalFrame())
     await userEvent.click(await screen.findByRole('button', { name: 'Approve' }))
-    expect(respondApproval).toHaveBeenCalledWith('req-1', 'approve', undefined)
+    expect(respondApproval).toHaveBeenCalledWith('req-1', 'approve', undefined, false)
     expect(await screen.findByText('Approved')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
   })
@@ -701,7 +700,7 @@ describe('ChatPanel approval card', () => {
     await renderPanel()
     emit('onApprovalRequest', approvalFrame())
     await userEvent.click(await screen.findByRole('button', { name: 'Reject' }))
-    expect(respondApproval).toHaveBeenCalledWith('req-1', 'reject', undefined)
+    expect(respondApproval).toHaveBeenCalledWith('req-1', 'reject', undefined, false)
     expect(await screen.findByText('Rejected')).toBeInTheDocument()
   })
 
@@ -720,7 +719,9 @@ describe('ChatPanel approval card', () => {
 
   it('reveals the scoped grants behind Trust instead of firing the widest one', async () => {
     await renderPanel()
-    emit('onApprovalRequest', approvalFrame({ fullCommand: 'cat /etc/hosts', baseCommand: 'cat,wc' }))
+    emit('onApprovalRequest', approvalFrame({
+      fullCommand: 'cat /etc/hosts', baseCommand: 'cat,wc', trustGrantable: true,
+    }))
     const trust = await screen.findByRole('button', { name: 'Trust' })
     expect(trust).toHaveAttribute('aria-expanded', 'false')
     await userEvent.click(trust)
@@ -730,21 +731,27 @@ describe('ChatPanel approval card', () => {
     expect(screen.getByRole('button', { name: /cat \/etc\/hosts/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Trust all tools' })).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Trust all cat, wc commands' }))
-    expect(respondApproval).toHaveBeenCalledWith('req-1', 'trust_base', 'cat *,wc *')
+    expect(respondApproval).toHaveBeenCalledWith('req-1', 'trust_base', 'cat *,wc *', true)
     expect(await screen.findByText('Trusted')).toBeInTheDocument()
   })
 
   it('grants only this command when the exact-command scope is picked', async () => {
     await renderPanel()
-    emit('onApprovalRequest', approvalFrame({ fullCommand: 'cat /etc/hosts', baseCommand: 'cat' }))
+    emit('onApprovalRequest', approvalFrame({
+      fullCommand: 'cat /etc/hosts', baseCommand: 'cat', trustGrantable: true,
+    }))
     await userEvent.click(await screen.findByRole('button', { name: 'Trust' }))
     await userEvent.click(screen.getByRole('button', { name: /cat \/etc\/hosts/ }))
-    expect(respondApproval).toHaveBeenCalledWith('req-1', 'trust_command', 'cat /etc/hosts')
+    expect(respondApproval).toHaveBeenCalledWith(
+      'req-1', 'trust_command', 'cat /etc/hosts', true,
+    )
   })
 
   it('offers no family grant when it would duplicate the command grant', async () => {
     await renderPanel()
-    emit('onApprovalRequest', approvalFrame({ fullCommand: 'fs_read', baseCommand: 'fs_read' }))
+    emit('onApprovalRequest', approvalFrame({
+      fullCommand: 'fs_read', baseCommand: 'fs_read', trustGrantable: true,
+    }))
     await userEvent.click(await screen.findByRole('button', { name: 'Trust' }))
     expect(screen.queryByRole('button', { name: /Trust all .* commands/ })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Trust all tools' })).toBeInTheDocument()

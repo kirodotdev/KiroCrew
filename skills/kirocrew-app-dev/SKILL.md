@@ -50,6 +50,13 @@ my-app/
       "every": 900,
       "silent": true,
       "persistent_session": false
+    },
+    {
+      "name": "market-open",
+      "message": "Summarise the overnight tape.",
+      "cron_expr": "30 9 * * 1-5",
+      "timezone": "America/New_York",
+      "skip_dates": ["2026-12-25"]
     }
   ],
   "permissions": {
@@ -84,6 +91,8 @@ my-app/
 | `ui.pages[].iconUrl` | Use `icon.svg` file path | String `icon` field only works for builtin apps |
 | `displayName` | Required | Gateway uses it for UI display |
 | `version` | Semver string | Used by update-check crons for comparison |
+| `crons[].timezone` | IANA zone name; omit it only when the hour is zone-agnostic | An empty timezone falls back to the gateway config's zone and then to **UTC**, so `"cron_expr": "0 6 * * *"` without it fires at 06:00 UTC — the wrong calendar day for most users. A per-USER zone is not manifest data: pass `timezone=` to `ctx.cron.add_job` instead |
+| `crons[].skip_dates` | Zero-padded `YYYY-MM-DD`, evaluated in `timezone` | `"2026-1-1"` parses but never matches the padded fire-time rendering, so the skip silently does nothing. Both fields are rejected at manifest validation, not at fire time |
 
 ## Self-Healing Pattern (CRITICAL)
 

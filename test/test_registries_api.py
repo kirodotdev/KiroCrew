@@ -870,6 +870,23 @@ class TestSshUrlParity:
             assert data["registries"][0]["repo"] == "ssh://dev@git.example.com/team/MyApps"
 
     @pytest.mark.asyncio
+    async def test_colon_bearing_ssh_userinfo_is_never_returned_or_persisted(
+        self, tmp_path, monkeypatch
+    ):
+        """Ambiguous SSH routing input fails safely without echoing its suffix."""
+        _setup_env(tmp_path, monkeypatch)
+        secret = "ssh-password-secret"
+        raw = f"ssh://dev:{secret}@git.example.com/team/MyApps"
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.put("/api/apps/registries", json={"registries": [{"repo": raw}]})
+            body = await resp.text()
+
+        assert resp.status == 400
+        assert secret not in body
+        assert raw not in body
+        assert "ssh://dev@git.example.com/team/MyApps" in body
+
+    @pytest.mark.asyncio
     async def test_accepts_ssh_url_with_port(self, tmp_path, monkeypatch):
         # ssh://host:22/path — port without user is valid.
         _setup_env(tmp_path, monkeypatch)

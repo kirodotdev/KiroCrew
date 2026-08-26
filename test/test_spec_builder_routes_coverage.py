@@ -1854,8 +1854,11 @@ class _Slot:
         self._pending_synthesis = False
         self.queued: list[str] = []
 
-    def queue_append(self, message: str, *, directive_user_origin: bool) -> None:
+    def queue_append(self, message: str, *, meta=None, directive_user_origin: bool) -> None:
         assert directive_user_origin is False
+        # The relay stamps the admission-time containment snapshot (#5911); an
+        # app slot records app=True so its own queued turns keep draining.
+        assert isinstance(meta, dict)
         self._queue.append(message)
 
     def append(self, role: str, content: str) -> None:

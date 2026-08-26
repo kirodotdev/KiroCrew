@@ -3095,6 +3095,82 @@ async def kill_process_tree_async(pid: int, sig: int = SIGTERM) -> bool:
     return await loop.run_in_executor(subprocess_executor(), kill_process_tree, pid, sig)
 
 
+#: Ceiling on waiting for a killed process tree. A descendant that ignores the
+#: signal must not turn cleanup into a hang while the caller is already
+#: handling a timeout or a cancellation — often on the shutdown path, where an
+#: unbounded reap would wedge the whole teardown.
+REAP_TIMEOUT_SECS: float = 10
+
+
+async def kill_and_reap(proc: asyncio.subprocess.Process, *, timeout: float | None = None) -> None:
+    """Kill *proc* AND its descendants, then wait for it under a bound.
+
+    The shared cleanup for a PIPE-stdio child whose ``communicate()`` was
+    abandoned by ``asyncio.wait_for`` — used on BOTH the timeout and the
+    cancellation path. Cancellation matters as much as timeout: a gateway
+    shutdown cancels the owning task, and without this the child keeps
+    running after the process that started it is gone.
+
+    The whole TREE is signalled, not just the direct child. A spawned command
+    is often a shell line (``curl … | sh``, ``pip … | tee log``), so killing
+    only the shell leaves the pipeline members running and can leave
+    ``communicate()`` waiting on pipes those survivors still hold. A child
+    sharing the caller's own process group (spawned without
+    ``start_new_session``) has no tree of its own to signal — the group kill
+    is skipped for it and the pid-scoped ``kill()`` below covers it, instead
+    of tripping :func:`kill_process_tree`'s broadcast guard on every routine
+    timeout.
+
+    The reap goes through ``communicate()`` rather than ``wait()`` so the
+    pipes are drained: ``wait_for`` already cancelled the original
+    ``communicate()``, and a killed child blocked writing into a full pipe
+    would make a bare ``wait()`` hang the calling task forever. The reap is
+    bounded by *timeout* (default :data:`REAP_TIMEOUT_SECS`). Both the kill
+    and the reap are best-effort, since the caller is already handling a
+    timeout or a cancellation and must not have it masked by a cleanup error.
+
+    The whole sequence runs in a shielded inner task: a (repeat) cancellation
+    of the caller landing mid-cleanup must not abandon the kill or leave the
+    child un-reaped — the cancellation is absorbed until cleanup finishes and
+    then re-delivered once.
+    """
+
+    async def _cleanup() -> None:
+        same_group = False
+        if IS_POSIX:
+            with contextlib.suppress(Exception):
+                same_group = os.getpgid(proc.pid) == _OWN_PGID
+        if not same_group:
+            # Bare-name lookup resolves through this module's namespace at
+            # call time, so tests patching ``kiro_crew.platform_compat.
+            # kill_process_tree_async`` still intercept the tree kill.
+            with contextlib.suppress(Exception):
+                await kill_process_tree_async(proc.pid, SIGKILL)
+        with contextlib.suppress(Exception):
+            proc.kill()
+        with contextlib.suppress(Exception, asyncio.TimeoutError):
+            await asyncio.wait_for(
+                proc.communicate(),
+                timeout=REAP_TIMEOUT_SECS if timeout is None else timeout,
+            )
+
+    cleanup = asyncio.ensure_future(_cleanup())
+    cancelled = False
+    while True:
+        try:
+            await asyncio.shield(cleanup)
+            break
+        except asyncio.CancelledError:
+            # Either the CALLER was (re-)cancelled while the shield kept the
+            # cleanup running, or the cleanup itself ended cancelled. Absorb
+            # until the cleanup has genuinely finished, then re-deliver.
+            cancelled = True
+            if cleanup.done():
+                break
+    if cancelled:
+        raise asyncio.CancelledError
+
+
 async def descendant_termination_handles_async(
     pid: int,
     retained_handles: Mapping[int, int] | None = None,

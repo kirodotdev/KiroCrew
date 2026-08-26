@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
 import { useNavigate } from 'react-router-dom'
 import { ShieldCheck, BookOpen, Handshake, Rocket, Check, Clock } from 'lucide-react'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from './ui/dropdown-menu'
+import { Popover, PopoverAnchor, PopoverContent } from './ui/popover'
 import { useAppDispatch, useAppSelector } from '../store'
 import { changeApprovalMode } from '../store/dashboardSlice'
 import { safeSetItem } from '../utils/safeStorage'
@@ -82,19 +83,86 @@ function segmentText(key: ApprovalModeKey): { label: string; tooltip: string; de
  *  `mc-yolo-ack` is committed ONLY when the user confirms via Enable with
  *  the checkbox ticked — never on checkbox change, so check-then-Cancel
  *  cannot silently disable the confirm. */
-export default function ApprovalModePicker({ mode, slotKey, compact }: { mode: string; slotKey: string; compact?: boolean }) {
+/** Set once the user has ever OPENED the approval-mode picker (any route:
+ *  trigger click, the approval bar's hint link, or the nudge). The approval
+ *  bar's discoverability hint keys off this: discoverability is achieved the
+ *  moment the picker opens, so a user who saw the options and deliberately
+ *  stayed on Normal is not nagged on every later approval. */
+export const APPROVAL_MODE_ADJUSTED_LS_KEY = 'mc-approval-mode-adjusted'
+
+/** How long the spotlight ring stays on the trigger after an external
+ *  open request, so the user's eye lands on where the control lives. */
+const SPOTLIGHT_MS = 2000
+
+export default function ApprovalModePicker({ mode, slotKey, compact, openSignal, nudge, onNudgeDismiss, onNudgeHide }: {
+  mode: string; slotKey: string; compact?: boolean
+  /** A2: increment to open the menu from outside (the approval bar's
+   *  "adjust approval mode" hint) and flash a spotlight ring on the trigger,
+   *  teaching where the control lives. 0 / undefined = inert. */
+  openSignal?: number
+  /** B2: render a one-time anchored callout above the trigger nudging the
+   *  user toward the mode picker after repeated manual approvals. */
+  nudge?: boolean
+  /** Called when the nudge is dismissed for good — by its buttons or ANY
+   *  menu open (the user has answered the callout's question either way). */
+  onNudgeDismiss?: () => void
+  /** Called on Escape instead of onNudgeDismiss: a reflexive Escape aimed at
+   *  the composer should hide the one-time callout for this sitting, not
+   *  spend it forever unseen. Falls back to onNudgeDismiss when unset. */
+  onNudgeHide?: () => void
+}) {
   const dispatch = useAppDispatch()
   const navigate = useNavigate()
   const yoloDuration = useAppSelector(s => s.dashboard.status?.yolo_duration)
   const [open, setOpen] = useState(false)
   const [yoloConfirm, setYoloConfirm] = useState(0)
   const [yoloDontAsk, setYoloDontAsk] = useState(false)
+  const [spotlight, setSpotlight] = useState(false)
+  const spotlightTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Focus home for the nudge callout's dismissal, and the read the popover's
+  // close-focus handler needs (state would be stale inside Radix's callback).
+  const triggerBtnRef = useRef<HTMLButtonElement>(null)
+  const openRef = useRef(false)
+  openRef.current = open
+
+  // Any open counts as discovery (and answers an active nudge) — route
+  // through onOpenChange so every open path shares one semantics.
+  const openMenu = () => onOpenChange(true)
+  const spotlightNow = () => {
+    setSpotlight(true)
+    if (spotlightTimer.current) clearTimeout(spotlightTimer.current)
+    spotlightTimer.current = setTimeout(() => setSpotlight(false), SPOTLIGHT_MS)
+  }
+
+  // External open request (approval-bar hint): open the real menu and flash
+  // a ring on the trigger. Skip the initial mount value so a remount (slot
+  // switch) does not replay a stale signal.
+  const lastSignal = useRef(openSignal ?? 0)
+  useEffect(() => {
+    if (openSignal === undefined || openSignal === lastSignal.current) return
+    lastSignal.current = openSignal
+    if (openSignal > 0) {
+      openMenu()
+      spotlightNow()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openSignal])
+  useEffect(() => () => { if (spotlightTimer.current) clearTimeout(spotlightTimer.current) }, [])
 
   const display = APPROVAL_SEGMENTS.find(s => s.key === mode) || APPROVAL_SEGMENTS[0]
   const displayText = segmentText(display.key)
 
   const onOpenChange = (o: boolean) => {
     setOpen(o)
+    if (o) {
+      // Opening by any route (trigger click included) is discovery — see
+      // APPROVAL_MODE_ADJUSTED_LS_KEY. Writing here also covers keyboard opens.
+      safeSetItem(APPROVAL_MODE_ADJUSTED_LS_KEY, '1')
+      // And it answers an active callout: without this, a trigger-click open
+      // only HID the callout (open gates its render), so closing the menu
+      // without picking resurrected the "one interruption total" nudge.
+      if (nudge) onNudgeDismiss?.()
+    }
     if (!o) { setYoloConfirm(0); setYoloDontAsk(false) }
   }
 
@@ -104,12 +172,20 @@ export default function ApprovalModePicker({ mode, slotKey, compact }: { mode: s
   }
 
   return (
+    // B2 callout: a Radix Popover anchored to the picker, portalled and
+    // collision-clamped by Radix itself (the composer's scrollable control
+    // row clips absolute children, and hand-rolled fixed positioning had to
+    // re-derive the clamping Radix already owns — this component already
+    // trusts the same machinery for its own menu).
+    <Popover open={!!nudge && !open}>
+      <PopoverAnchor asChild>
+        <div className="inline-flex shrink-0">
     <DropdownMenu open={open} onOpenChange={onOpenChange}>
       <DropdownMenuTrigger asChild>
         {/* Chrome type ("Normal" / "Reads" / "Trust" / "YOLO" are labels), so no
             `font-mono` — that pinned `var(--mono)`, which the Font Family
             setting never writes. */}
-        <button className="h-7 px-2 rounded-lg text-[12px] text-muted hover:text-text hover:bg-bg-hover flex items-center gap-1 cursor-pointer transition-all bg-transparent border-none shrink-0 whitespace-nowrap outline-none focus-visible:outline-2 focus-visible:outline-accent/50 focus-visible:-outline-offset-2" title={i18nT('components.approvalModePicker.approval_mode')} aria-label={i18nT('components.approvalModePicker.approval_mode_aria', { mode: displayText.label })}>
+        <button ref={triggerBtnRef} className={`h-7 px-2 rounded-lg text-[12px] text-muted hover:text-text hover:bg-bg-hover flex items-center gap-1 cursor-pointer transition-all bg-transparent border-none shrink-0 whitespace-nowrap outline-none focus-visible:outline-2 focus-visible:outline-accent/50 focus-visible:-outline-offset-2 ${spotlight || (nudge && !open) ? 'ring-2 ring-accent/60 bg-bg-hover text-text' : ''}`} title={i18nT('components.approvalModePicker.approval_mode')} aria-label={i18nT('components.approvalModePicker.approval_mode_aria', { mode: displayText.label })}>
           <span className={`shrink-0 ${display.color}`}>{display.icon}</span>
           {!compact && displayText.label}
         </button>
@@ -190,5 +266,57 @@ export default function ApprovalModePicker({ mode, slotKey, compact }: { mode: s
         )}
       </DropdownMenuContent>
     </DropdownMenu>
+        </div>
+      </PopoverAnchor>
+      <PopoverContent
+        side="top"
+        align="start"
+        sideOffset={10}
+        collisionPadding={8}
+        role="dialog"
+        aria-label={i18nT('components.approvalModePicker.nudge_title')}
+        className="w-[300px] max-w-[80vw] p-3 rounded-lg bg-card border-border-strong shadow-lg"
+        // Focus steal guard: the callout mounts from an async approval
+        // completion, so the user may already be typing in the composer —
+        // leave their caret alone and let the callout sit passively.
+        onOpenAutoFocus={e => {
+          const a = document.activeElement as HTMLElement | null
+          if (a && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT' || a.isContentEditable)) e.preventDefault()
+        }}
+        // Return focus to the picker trigger on dismissal instead of dropping
+        // it on <body> — unless the dismissal opened the menu, which manages
+        // its own focus (openRef: state would be stale in Radix's callback).
+        onCloseAutoFocus={e => {
+          e.preventDefault()
+          if (!openRef.current) triggerBtnRef.current?.focus()
+        }}
+        onEscapeKeyDown={() => (onNudgeHide ?? onNudgeDismiss)?.()}
+        // Dismissal semantics, complete: buttons and ANY menu open dismiss
+        // FOREVER (the callout answered); Escape and outside interaction hide
+        // for the SITTING (reflexive gestures must not spend the one-time
+        // teaching moment unseen). Without this, the callout kept covering
+        // transcript content until an explicit interaction.
+        onInteractOutside={() => (onNudgeHide ?? onNudgeDismiss)?.()}
+      >
+        <p className="text-[12.5px] font-medium text-text-strong">{i18nT('components.approvalModePicker.nudge_title')}</p>
+        <p className="text-[11.5px] text-muted leading-snug mt-0.5">{i18nT('components.approvalModePicker.nudge_body')}</p>
+        <div className="flex items-center gap-1.5 mt-2">
+          <button
+            className="px-2.5 py-1 rounded-md bg-accent text-accent-fg text-[12px] font-medium cursor-pointer border-none hover:bg-accent-hover"
+            onClick={() => {
+              // openMenu -> onOpenChange(true) both retires the nudge and
+              // writes the discovery flag; no separate dismiss call needed.
+              openMenu()
+              spotlightNow()
+            }}
+          >
+            {i18nT('components.approvalModePicker.nudge_view_options')}
+          </button>
+          <button className="px-2.5 py-1 rounded-md text-[12px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border border-border" onClick={() => onNudgeDismiss?.()}>
+            {i18nT('components.approvalModePicker.nudge_dismiss')}
+          </button>
+        </div>
+      </PopoverContent>
+    </Popover>
   )
 }

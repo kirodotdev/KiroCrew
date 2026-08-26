@@ -46,6 +46,12 @@ describe('productName interpolation variable', () => {
     expect(i18next.t('test.updating_product', { productName: 'Acme' })).toBe('Updating Acme…')
   })
 
+  it('keeps the update-restart handoff copy rebrandable', () => {
+    const copy = i18next.t('pages.settings.aboutPanel.installing_quiet_note', { productName: 'Acme' })
+    expect(copy).toContain('Acme')
+    expect(copy).not.toContain('Kiro Crew')
+  })
+
   it('refuses a late override rather than half-applying it', () => {
     // After init the variable has been handed to i18next; silently accepting
     // the call would leave the UI unchanged while the caller believes it

@@ -47,5 +47,14 @@
   "heroImageDark": "/app-assets/md-notebook/hero-dark.svg",
   "heroImageDetail": "/app-assets/md-notebook/hero-detail-light.svg",
   "heroImageDetailDark": "/app-assets/md-notebook/hero-detail-dark.svg",
-  "features": []
+  "features": [],
+  "useCases": [
+    "Edit a portable Markdown vault with wikilinks, backlinks, search, Git history, and optional Knowledge indexing."
+  ],
+  "configuration": [
+    "Clone a Git repository or attach an existing local folder, then optionally enable Knowledge and scheduled sync; private GitHub clones need a PAT or authenticated gh."
+  ],
+  "screenshots": [
+    "/app-assets/md-notebook/screenshot-main.png"
+  ]
 }

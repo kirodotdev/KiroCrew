@@ -110,7 +110,7 @@ export default function FindingDetail({ fp }: { fp: string }) {
   const queued = data.pr && data.pr.startsWith(QUEUED_PREFIX) ? data.pr : ''
 
   return (
-    <div className="flex flex-col gap-3 rounded border border-border bg-panel p-3">
+    <div className="flex flex-col gap-3 rounded border border-border bg-card p-3">
       {/* What the defect is */}
       {cand?.signature ? (
         <div>

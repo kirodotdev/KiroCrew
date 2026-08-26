@@ -3,8 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { QrCode, Loader2, Check, TriangleAlert, RefreshCw } from 'lucide-react'
 import { api, type WeixinConfigSave } from '../../api/client'
 import { WeixinLogo } from '../../components/WeixinLogo'
-import SimpleSelect from '../../components/SimpleSelect'
-import { SettingsInput, SettingsToggle } from '../../components/settings'
+import { SettingsInput, SettingsSelect, SettingsToggle } from '../../components/settings'
 import { useChannelFolderSave } from '../../hooks/useChannelFolderSave'
 import { TagListEditor } from './SlackPanel'
 
@@ -299,17 +298,14 @@ export function WeixinPanel() {
       </div>
 
       <div>
-        {/* Not a <label>: SimpleSelect renders a button, so `htmlFor` would point
-            at no form control. The caption keeps its key and is reused verbatim as
-            the trigger's accessible name. data-testid moves to this wrapper so the
-            Playwright drive (scripts/test-weixin-panel.mjs) still finds the field. */}
-        <div className="block" data-testid="weixin-dm-policy">
-          <span className="block text-[11px] text-muted mb-1.5">{i18nT('pages.settings.weixinPanel.who_can_message_the_bot')}</span>
-          {/* maxWidth: the native select was content-sized; the Radix trigger is
-              w-full and this field is a stretch flex item, so without a cap it
-              would span the whole panel while every neighbouring control stays
-              content-scaled. */}
-          <SimpleSelect
+        {/* maxWidth: the trigger is w-full and this field is a stretch flex item,
+            so without a cap it would span the whole panel while every
+            neighbouring control stays content-scaled. data-testid stays on this
+            wrapper so the Playwright drive (scripts/test-weixin-panel.mjs)
+            still finds the field. */}
+        <div className="block" data-testid="weixin-dm-policy" style={{ maxWidth: 280 }}>
+          <SettingsSelect
+            label={i18nT('pages.settings.weixinPanel.who_can_message_the_bot')}
             options={['open', 'allowlist', 'disabled']}
             optionLabels={[
               i18nT('pages.settings.weixinPanel.anyone_who_messages_the_bot'),
@@ -319,8 +315,6 @@ export function WeixinPanel() {
             value={data?.dm_policy || 'allowlist'}
             disabled={readOnly}
             onChange={v => save({ dm_policy: v })}
-            aria-label={i18nT('pages.settings.weixinPanel.who_can_message_the_bot')}
-            style={{ maxWidth: 280 }}
           />
         </div>
       </div>

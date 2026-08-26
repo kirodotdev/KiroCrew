@@ -398,6 +398,30 @@ def _reset_safety_override_between_tests():
 
 
 @pytest.fixture(autouse=True)
+def _reset_degraded_config_observations():
+    """Forget the loader's process-sticky malformed-config observations.
+
+    ``kiro_crew.config.loader`` remembers every malformed config section it has
+    ever seen for the LIFE OF THE PROCESS (deliberately: ``load()``'s migration
+    repairs the file on first read, so the observation is the only surviving
+    evidence, and the publish gate fails closed on it). Tests share one
+    interpreter, so without this reset any test that writes a malformed
+    ``config.json`` — loader error-path tests do — makes the publish/deploy
+    gate deny in every LATER test in the same worker, failing tests in files
+    that never touched the config (seen as ``TestPending`` 4xx refusals in
+    ``test_deploy_handlers_coverage.py`` under random orderings).
+
+    ``reset_degraded_observations`` documents tests as its only legitimate
+    caller; this fixture is that caller.
+    """
+    from kiro_crew.config.loader import reset_degraded_observations
+
+    reset_degraded_observations()
+    yield
+    reset_degraded_observations()
+
+
+@pytest.fixture(autouse=True)
 def _restore_autonudge_singleton():
     """Floor under ``autonudge._INSTANCE`` — the process-global service reference.
 

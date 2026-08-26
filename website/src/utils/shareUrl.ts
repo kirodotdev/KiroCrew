@@ -58,6 +58,6 @@ export function copySessionLink(
   messageTs?: string,
   mode?: string,
   mid?: string,
-): Promise<void> {
+): Promise<boolean> {
   return copyToClipboard(buildShareableUrl(slotKey, title, messageTs, mode, mid))
 }

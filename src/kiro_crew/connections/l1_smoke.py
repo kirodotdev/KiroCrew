@@ -8,7 +8,7 @@ process, so a managed provider's healthy reply is an OAuth challenge -- graded
 ``GRANT_HELD``, never ``NEEDS_RECONSENT``, reserved for attributable
 rejections); **L1 never initiates consent** (absent grant = ``SKIPPED``); an
 all-skipped sweep is ``vacuous``, not green. Grant presence is observed via
-:func:`~kiro_crew.connections.mint.grant_present` -- paired artifacts stat-ed,
+:func:`~kiro_crew.mcp_grant.grant_presence` -- paired artifacts stat-ed,
 never opened; one implementation of kiro-cli's key mirror; no SEL read audit,
 an operator CLI in ``l0_probe``'s class. Transport reuses ``mcp_discovery``'s
 reviewed plumbing (private names imported so the challenge rule cannot drift).
@@ -35,7 +35,6 @@ from typing import Any, Literal, Sequence, TypedDict
 
 import aiohttp
 
-from kiro_crew.connections.mint import grant_present
 from kiro_crew.connections.registry import Provider, get_all_registry_providers
 from kiro_crew.connections.tool_aliases import normalized_endpoint
 from kiro_crew.mcp_discovery import (
@@ -44,6 +43,7 @@ from kiro_crew.mcp_discovery import (
     list_servers,
     redact_mcp_error,
 )
+from kiro_crew.mcp_grant import grant_presence as grant_present
 
 __all__ = [
     "SmokeResult",
@@ -353,10 +353,20 @@ async def smoke_provider(
 
     # grant_present's contract: off-loop, bounded, a stalled mount answers as
     # itself. Past here budget expiry only happens inside the exchange.
+    #
+    # ``is True`` collapses the third answer at this boundary. The helper is
+    # tri-state (``None`` = the cache home could not be read at all), ``SmokeResult``
+    # declares ``grant_present: bool``, and ``_bounded_stat`` is typed ``-> Any`` --
+    # so without the coercion an unreadable home would put ``null`` into a boolean
+    # field of the emitted report with no type error to catch it. L1 has nothing to
+    # say about the difference: it never initiates consent, so "no grant" and "could
+    # not look" both mean SKIPPED.
     try:
-        grant = await _bounded_stat(
-            grant_present, provider["mcp_url"], cache_dir=cache_dir, timeout=timeout_seconds
-        )
+        grant = (
+            await _bounded_stat(
+                grant_present, provider["mcp_url"], cache_dir=cache_dir, timeout=timeout_seconds
+            )
+        ) is True
     except asyncio.TimeoutError:
         return _blank_result(
             provider,

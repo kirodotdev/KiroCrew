@@ -1058,6 +1058,21 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "substitute for redaction. `rating` (a fixed frontend enum) is not run "
         "through this pass.",
     ),
+    (
+        "Auto Triage Pipeline dashboard strings",
+        "apps/builtins/auto_triage_pipeline/backend/pipeline_fold.py",
+        "Every string this read-only fold hands to its routes -- issue titles, "
+        "assignee and author logins, labels, event names, slot keys -- funnels "
+        "through one `_printable` helper before serialization, and the routes render "
+        "it in the dashboard. The titles and labels are NOT our text: they come from "
+        "the forge, where any user can open an issue and write anything in the "
+        "title, so this is a dashboard-bound sink for attacker-controlled text. "
+        "`_printable` runs the shared credential + exfiltration-URL chain FIRST, "
+        "then neutralizes control and bidirectional-override characters, and "
+        "truncates LAST -- redaction has to precede truncation, because cutting "
+        "first can split a credential so only its tail is left to match and the head "
+        "survives into the output.",
+    ),
 )
 
 # Modules that call a redactor but are NOT an output egress boundary, so they do
@@ -1115,6 +1130,15 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "imessage/client.py",
         "imessage/transport.py",
         "imessage/transport_dispatch.py",
+        # The tool-permission prompt and its SEL record. Neither crosses a
+        # machine boundary: the prompt is written to the operator's OWN terminal
+        # in their own process, and the audit line goes to the local SEL log. The
+        # scrubbing there is targeted hygiene — a credential the model echoed
+        # into a tool title must not be copied into the audit record, and
+        # `log_tool_invocation` does not redact for its callers — not an egress
+        # pass. Local paths are deliberately NOT redacted in the prompt, because
+        # seeing the real path is part of what the operator is consenting to.
+        "cli_chat.py",
         "acp/_dispatch.py",
         "acp/client.py",
         # Redacts the tool title in the auto-rejected-permission WARNING (a

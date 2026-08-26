@@ -321,6 +321,32 @@ async def test_embed_parent_port_claim_survives_session_exchange() -> None:
     req.__setitem__.assert_any_call("embed_parent_port", "5476")
 
 
+@pytest.mark.asyncio
+async def test_no_refresh_claim_survives_session_exchange() -> None:
+    """The ``no_refresh`` bound must survive the link→cookie exchange like
+    ``boot`` does. The exchange already honors it by never minting the refresh
+    chain, but a downstream consumer that reads the SESSION cookie to learn the
+    caller's bounds (the mobile-link mint) would otherwise see an unbounded
+    session and re-mint an unbounded, refresh-chained credential — laundering
+    the exact ceiling the claim encodes."""
+    import json as _json
+
+    from kiro_crew.dashboard.token_auth import _b64url_decode
+
+    mw = token_auth_middleware()
+    token = generate_token("qruser", ttl_seconds=300, extra={"no_refresh": "1"})
+    req = _make_request(query={"token": token}, remote="10.0.0.1")
+
+    resp = await mw(req, _ok_handler)
+    assert resp.status == 200
+
+    cookie_header = resp.cookies.get("mc_token_5476")
+    assert cookie_header is not None
+    assert cookie_header.value != token
+    claims = _json.loads(_b64url_decode(cookie_header.value.split(".", 1)[0]))
+    assert claims["no_refresh"] == "1"
+
+
 # -- Property 7: Cookie not re-set when already matching --
 
 
@@ -1422,6 +1448,8 @@ async def test_non_api_path_gets_html_403() -> None:
     resp = await mw(req, _ok_handler)
     assert resp.status == 403
     assert resp.content_type == "text/html"
+    assert b"Settings \xe2\x86\x92 Security \xe2\x86\x92 Sign in on mobile" in resp.body
+    assert b"kirocrew token" in resp.body
 
 
 # -- Property 12b: SPA shell is public so the app can cold-start refresh --

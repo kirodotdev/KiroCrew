@@ -20,9 +20,10 @@ guidance text pointing at the ``playwright-cli`` verbs, and stops there.
 Visibility follows the browse capability: ``schemas()`` returns ``[]`` while
 ``playwright-cli`` is not installed, so a machine where browsing was never set
 up does not advertise a tool that cannot work. Presence of the CLI is the
-consent gate for browsing on this host (see ``browser_cli.install``), and the
-native panel is another expression of that same capability. The handler
-re-checks because kiro-cli caches ``tools/list`` for the life of a session.
+availability signal for browsing on this host (see ``browser_cli.install``), not
+consent to bypass the approval path. The native panel is another expression of
+that same capability. The handler re-checks because kiro-cli caches
+``tools/list`` for the life of a session.
 """
 
 from __future__ import annotations
@@ -172,8 +173,7 @@ def _browsing_available() -> bool:
     """True iff the browse capability is set up on this host. Fail-CLOSED.
 
     Delegates to ``browser_cli.install.available`` (``playwright-cli`` present),
-    the same signal that authorizes browsing today: presence of the CLI IS the
-    consent, and the native panel is another expression of that capability. Any
+    which reports only whether the host capability exists. Any
     error resolving it reads as "not available" so the tool stays hidden rather
     than advertising a capability that cannot work.
     """
@@ -397,17 +397,13 @@ def browser(name: str, args: dict[str, Any]) -> str:
         # NOT invent a placeholder key: it is guaranteed to fail the strict
         # route's peer check with a hard 403, masking the clean fallback. Route
         # to playwright-cli instead, exactly like the no-panel (503) case below.
-        logger.debug(
-            "browser-cmdbus/tool: unresolved session -> playwright-cli fallback"
-        )
+        logger.debug("browser-cmdbus/tool: unresolved session -> playwright-cli fallback")
         return _FALLBACK_TEXT
     header_err = mcp_core._session_key_header_error(session_key)
     if header_err:
         return f"Error: {header_err}"
     bus_key = (
-        session_key[len("dashboard:") :]
-        if session_key.startswith("dashboard:")
-        else session_key
+        session_key[len("dashboard:") :] if session_key.startswith("dashboard:") else session_key
     )
 
     logger.debug("browser-cmdbus/tool: op=%s session=%s -> POST /api/browser/command", op, bus_key)

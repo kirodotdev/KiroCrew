@@ -101,6 +101,11 @@ from kiro_crew.security import (
 )
 from kiro_crew.sel import SecurityEvent, sel
 from kiro_crew.session_summary import count_user_turns_in_records
+from kiro_crew.trust_patterns import (
+    base_consent_pattern,
+    base_trust_patterns,
+    exact_trust_pattern,
+)
 from kiro_crew.validation import (
     _AGENT_NAME_RE,
     ARTIFACT_SLUG_RE,
@@ -412,8 +417,12 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         and state.subagents is not None
         and state.subagents.running_agents_for(f"dashboard:{slot.key}")
     ):
+        # circular import: session_control imports this package's modules at module level.
+        from kiro_crew.dashboard.session_control import containment_meta
+
         qid = slot.queue_append(
             message,
+            meta=containment_meta(state, slot),
             directive_user_origin=not bool(request_app),
         )
         _c, _ = redact_exfiltration_urls(message)
@@ -2657,7 +2666,21 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
         # cleanly that it was "interrupted before it finished" sends it looking
         # for half-done work that does not exist.
         resume = _MANUAL_RESUME_MSG if _is_interrupted(slot) else _MANUAL_CONTINUE_MSG
-        slot.queue_insert(0, resume, kind=SYNTHETIC_RECOVERY_KIND)
+        # circular import: session_control imports this package's modules at module level.
+        from kiro_crew.dashboard.session_control import containment_meta
+
+        # Admission stamp + provenance (#5911): recovery-kind entries are subject
+        # to drain re-validation like any other externally admitted content, and
+        # provenance follows the CALLER — the same request-identity split as
+        # api_chat. An app hitting Continue on its own slot must not gain the
+        # authenticated-human flag that gates session-mutating effects.
+        slot.queue_insert(
+            0,
+            resume,
+            kind=SYNTHETIC_RECOVERY_KIND,
+            meta=containment_meta(state, slot),
+            directive_user_origin=not bool(request.get("app", "")),
+        )
 
     sel().log_tool_invocation(
         session_key=_history_key_for(name),
@@ -5453,7 +5476,33 @@ async def api_chat_mode(request: web.Request) -> web.Response:
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
     mode = body.get("mode", "normal")
-    slot_key = body.get("slot") or None
+    raw_slot = body.get("slot")
+    slot_key = raw_slot or None
+
+    # Refuse an unresolvable slot key BEFORE anything mutates: a slot-scoped
+    # request that names a slot which does not exist — or which is not a string
+    # at all — must neither widen to every slot (#4454) nor revoke the global
+    # grant, and its refusal must leave grant and slots exactly as they were.
+    # Falsy non-strings (``[]``, ``{}``, ``0``, ``False``) are refused on the
+    # raw value here, before ``raw_slot or None`` can erase them into the
+    # documented all-slots request. The resolved slot reference is what every
+    # branch writes through — nothing below re-indexes state._slots[slot_key]
+    # after the offloaded deactivate await, so a concurrent slot deletion
+    # cannot open a check/use gap. ``yolo`` is global and ignores ``slot``
+    # entirely (a stale key must not refuse it).
+    slot, denied = None, None
+    if mode != "yolo":
+        if raw_slot is not None and not isinstance(raw_slot, str):
+            denied = web.json_response({"ok": False, "error": "unknown slot"}, status=400)
+        elif slot_key is not None:
+            # An absent key is the documented "all slots" request; a present
+            # key must name a live slot or the whole request is refused here,
+            # before any mutation.
+            slot = state._slots.get(slot_key)
+            if slot is None:
+                denied = web.json_response({"ok": False, "error": "unknown slot"}, status=400)
+    if denied is not None:
+        return denied
 
     # The safety override (YOLO) is PROCESS-GLOBAL while an approval mode is
     # per-slot, so revoking it on behalf of a request that named ONE slot drops
@@ -5473,7 +5522,11 @@ async def api_chat_mode(request: web.Request) -> web.Response:
     # `until_shutdown` ad-hoc pick is equally permanent and must stay protected.
     slot_scoped_trust = slot_key is not None and mode in _SLOT_SCOPED_TRUST_MODES
     if mode != "yolo" and (not slot_scoped_trust or safety_override().is_declared):
-        safety_override().deactivate("dashboard")
+        # deactivate() writes a SEL event, so it is offloaded exactly like the
+        # sibling activate() — never run on the gateway loop (#4454). Safe after
+        # the resolution above: every branch mutates the captured slot, never
+        # re-indexing state._slots.
+        await asyncio.to_thread(safety_override().deactivate, "dashboard")
 
     if mode == "yolo":
         result = await asyncio.to_thread(safety_override().activate, "dashboard")
@@ -5492,15 +5545,15 @@ async def api_chat_mode(request: web.Request) -> web.Response:
         except Exception:
             logger.warning("SEL audit failed for YOLO mode activation", exc_info=True)
     elif mode == "trust_reads":
-        if slot_key and slot_key in state._slots:
-            state._slots[slot_key]._trust = False
-            state._slots[slot_key]._trust_reads = True
-            state.sessions.set_approval_policy(effective_session_key(state._slots[slot_key]), "")
+        if slot is not None:
+            slot._trust = False
+            slot._trust_reads = True
+            state.sessions.set_approval_policy(effective_session_key(slot), "")
         else:
-            for slot in state._slots.values():
-                slot._trust = False
-                slot._trust_reads = True
-                state.sessions.set_approval_policy(effective_session_key(slot), "")
+            for s in state._slots.values():
+                s._trust = False
+                s._trust_reads = True
+                state.sessions.set_approval_policy(effective_session_key(s), "")
         try:
             sel().log_api_access(
                 caller="dashboard:mode",
@@ -5512,27 +5565,25 @@ async def api_chat_mode(request: web.Request) -> web.Response:
             logger.warning("SEL audit failed for trust_reads mode activation", exc_info=True)
     elif mode == "trust":
         mgr = getattr(state, "channel_manager", None)
-        if slot_key is not None:
-            if slot_key not in state._slots:
-                return web.json_response({"ok": False, "error": "unknown slot"}, status=400)
+        if slot is not None:
             # Every slot that SHARES the session, matching the revoke below. The
             # policy is per session while the flag is per slot, so setting one of
             # two sharing slots leaves them disagreeing about a session they both
             # address, and the propagation pass would then be decided by slot
             # iteration order rather than by what the operator asked for.
-            _granted_key = effective_session_key(state._slots[slot_key])
+            _granted_key = effective_session_key(slot)
             for _sharing in state._slots.values():
                 if effective_session_key(_sharing) == _granted_key:
                     _sharing._trust = True
             state.sessions.set_approval_policy(_granted_key, "auto")
-            linked_ch = getattr(state._slots[slot_key], "_slack_channel", None)
+            linked_ch = getattr(slot, "_slack_channel", None)
             if mgr and linked_ch and linked_ch in mgr._channels:
                 mgr._channels[linked_ch].trusted = True
                 mgr._channels[linked_ch]._save()
         else:
-            for slot in state._slots.values():
-                slot._trust = True
-                state.sessions.set_approval_policy(effective_session_key(slot), "auto")
+            for s in state._slots.values():
+                s._trust = True
+                state.sessions.set_approval_policy(effective_session_key(s), "auto")
             if mgr:
                 for ch in mgr._channels.values():
                     ch.trusted = True
@@ -5552,30 +5603,28 @@ async def api_chat_mode(request: web.Request) -> web.Response:
             logger.warning("SEL audit failed for trust mode activation", exc_info=True)
     else:  # normal
         mgr = getattr(state, "channel_manager", None)
-        if slot_key is not None:
-            if slot_key not in state._slots:
-                return web.json_response({"ok": False, "error": "unknown slot"}, status=400)
+        if slot is not None:
             # Several slots can address ONE session (a rehydrated owner slot and
             # the alias its turns run under both resolve to the same effective
             # key), so revoking the selected slot alone leaves the others holding
             # a stale `_trust`, and the propagation below then rewrites the shared
             # session back to "auto" from it. The policy is per SESSION; the flag
             # is per slot; so the revoke has to clear every slot that shares it.
-            _revoked_key = effective_session_key(state._slots[slot_key])
+            _revoked_key = effective_session_key(slot)
             for _sharing in state._slots.values():
                 if effective_session_key(_sharing) == _revoked_key:
                     _sharing._trust = False
                     _sharing._trust_reads = False
             state.sessions.set_approval_policy(_revoked_key, "")
-            linked_ch = getattr(state._slots[slot_key], "_slack_channel", None)
+            linked_ch = getattr(slot, "_slack_channel", None)
             if mgr and linked_ch and linked_ch in mgr._channels:
                 mgr._channels[linked_ch].trusted = False
                 mgr._channels[linked_ch]._save()
         else:
-            for slot in state._slots.values():
-                slot._trust = False
-                slot._trust_reads = False
-                state.sessions.set_approval_policy(effective_session_key(slot), "")
+            for s in state._slots.values():
+                s._trust = False
+                s._trust_reads = False
+                state.sessions.set_approval_policy(effective_session_key(s), "")
             if mgr:
                 for ch in mgr._channels.values():
                     ch.trusted = False
@@ -5687,6 +5736,27 @@ def _get_pattern_from_pending(slot: _ChatSlot, request_id: str, field: str) -> s
     return ""
 
 
+def _deny_trust_pattern(name: str, request_id: str, action: str, code: str) -> web.Response:
+    """Refuse and audit a command-scoped trust grant without resolving it."""
+    try:
+        sel().log_api_access(
+            caller=f"dashboard:{name}",
+            operation=f"tool_approval:{action}",
+            outcome="trust_pattern_denied",
+            resources=request_id,
+            error=code,
+        )
+    except Exception:
+        logger.warning("SEL audit failed for refused trust grant %s", request_id, exc_info=True)
+    errors = {
+        "pattern_required": "pattern required for command-scoped trust",
+        "pattern_underivable": "the pending tool has no grantable command scope",
+        "approval_superseded": "pattern does not match the pending command",
+        "approval_not_slot_owned": "command-scoped trust requires a live slot approval",
+    }
+    return web.json_response({"error": errors[code], "code": code}, status=400)
+
+
 async def api_chat_slot_approve(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/approve — resolve a pending tool approval."""
     state: DashboardState = request.app["state"]
@@ -5739,6 +5809,16 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
             request_id, fut = pending[0]
         else:
             fut = None
+    # A state-level approval carries only a boolean decision and has no owning
+    # slot, canonical command card, or scoped-pattern store.  Do not let a
+    # durable-trust action fall through to ``resolve_state_approval`` as ``True``:
+    # that would approve the tool after skipping every scope check.  Truly
+    # missing IDs retain the 404 from the common fallback below; this explicit
+    # denial covers a live state owner.
+    if original_action in ("trust", "trust_command", "trust_base") and (not fut or fut.done()):
+        state_fut = state._approval_futures.get(request_id) if request_id else None
+        if state_fut and not state_fut.done():
+            return _deny_trust_pattern(name, request_id, original_action, "approval_not_slot_owned")
     # Trust: auto-approve remaining tools for this slot. The approval policy MUST
     # be keyed by the OWNER's EFFECTIVE session key — a linked cron/workflow or
     # channel-surfaced slot runs under ``linked_session_key``, not
@@ -5747,38 +5827,63 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
     # ``effective_session_key`` is the one derivation shared with ``api_chat_mode``'s
     # grants AND revokes, so an off-switch always addresses the key a grant wrote.
     if action == "trust":
-        owner._trust = True
-        state.sessions.set_approval_policy(effective_session_key(owner), "auto")
-        action = "approved"
+        # A pending-card trust decision may widen the slot only when this exact
+        # live card carries the server's durable-grant proof.  This check MUST
+        # precede every side effect: a forged/expired/state-owned request id
+        # must not leave _trust or the session policy enabled before the common
+        # resolver eventually returns 400/404.  Explicit session-mode changes
+        # use api_chat_mode and remain independent of this card-bound proof.
+        grantable = _get_pattern_from_pending(owner, request_id, "trust_grantable")
+        if not fut or fut.done():
+            # No state-level fallback for a trust grant.  The early state-owner
+            # guard above returns 400; a genuinely missing/expired id keeps the
+            # endpoint's existing 404 below without mutating anything.
+            action = "trust"
+        elif grantable != "1":
+            return _deny_trust_pattern(name, request_id, original_action, "pattern_underivable")
+        else:
+            owner._trust = True
+            state.sessions.set_approval_policy(effective_session_key(owner), "auto")
+            action = "approved"
     # Trust-reads: auto-approve read-only bash commands for this slot
     # Defer setting _trust_reads until after the approval future is consumed
     # to prevent the frontend from seeing trust_reads=true while still pending.
     elif action == "trust_reads":
         action = "approved_trust_reads"
-    # Trust-command: trust this exact command/tool (session-scoped)
+    # Trust-command: bind the grant to the SERVER-DERIVED pending command.  The
+    # client pattern is only proof that the card the user clicked describes the
+    # same command; it never supplies authority.
     elif action == "trust_command":
-        pattern = body.get("pattern", "")
-        if not pattern:
-            pattern = _get_pattern_from_pending(owner, request_id, "full_command")
-        if pattern:
-            owner._trusted_patterns.add(pattern)
+        if fut and not fut.done():
+            pattern = body.get("pattern", "")
+            expected = _get_pattern_from_pending(owner, request_id, "full_command")
+            trust_key = _get_pattern_from_pending(owner, request_id, "trust_command_key")
+            grantable = _get_pattern_from_pending(owner, request_id, "trust_command_grantable")
+            if not isinstance(pattern, str) or not pattern:
+                return _deny_trust_pattern(name, request_id, original_action, "pattern_required")
+            if grantable != "1" or not expected or not trust_key:
+                return _deny_trust_pattern(name, request_id, original_action, "pattern_underivable")
+            if pattern != expected:
+                return _deny_trust_pattern(name, request_id, original_action, "approval_superseded")
+            # ``_trusted_patterns`` is the existing fnmatch store.  Escape every
+            # metacharacter so an exact grant for ``rm *.tmp`` cannot authorize
+            # ``rm secret.tmp``.
+            owner._trusted_patterns.add(exact_trust_pattern(trust_key))
         action = "approved"
-    # Trust-base: trust the base command glob e.g. "ls *" (session-scoped)
-    # For multi-command titles ("cat,wc"), adds patterns for each binary.
+    # Trust-base: derive bases from the same canonical pending command, never
+    # from the client pattern or model-authored title.
     elif action == "trust_base":
-        pattern = body.get("pattern", "")
-        if not pattern:
+        if fut and not fut.done():
+            pattern = body.get("pattern", "")
             base = _get_pattern_from_pending(owner, request_id, "base_command")
-            pattern = ",".join(f"{b} *" for b in base.split(",") if b) if base else ""
-        for p in pattern.split(","):
-            p = p.strip()
-            if p:
-                owner._trusted_patterns.add(p)
-                # Also trust the bare command (no args) since "ls *" doesn't match "ls"
-                if p.endswith(" *"):
-                    bare = p[:-2]
-                    if bare:
-                        owner._trusted_patterns.add(bare)
+            grantable = _get_pattern_from_pending(owner, request_id, "trust_base_grantable")
+            if not isinstance(pattern, str) or not pattern:
+                return _deny_trust_pattern(name, request_id, original_action, "pattern_required")
+            if grantable != "1" or not base:
+                return _deny_trust_pattern(name, request_id, original_action, "pattern_underivable")
+            if pattern != base_consent_pattern(base):
+                return _deny_trust_pattern(name, request_id, original_action, "approval_superseded")
+            owner._trusted_patterns.update(base_trust_patterns(base))
         action = "approved"
     # YOLO: auto-approve all tools globally (all slots)
     elif action == "yolo":

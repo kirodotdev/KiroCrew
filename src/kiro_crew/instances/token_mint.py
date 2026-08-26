@@ -20,12 +20,12 @@ Security (standard practices):
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import re
 
 from kiro_crew.config.paths import CONFIG_DIR_NAME, LEGACY_CONFIG_DIR_NAME
 from kiro_crew.instances.constants import DEFAULT_MINT_TIMEOUT_SECS, TTL_PATTERN
+from kiro_crew.platform_compat import kill_and_reap
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
@@ -438,11 +438,7 @@ async def mint_remote_token(
     try:
         stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout_secs)
     except asyncio.TimeoutError as e:
-        proc.kill()
-        try:
-            await proc.wait()
-        except ProcessLookupError:
-            pass
+        await kill_and_reap(proc)
         raise TokenMintError(f"timed out minting token on {ssh_host} after {timeout_secs}s") from e
 
     stdout = stdout_b.decode("utf-8", "replace")
@@ -523,9 +519,7 @@ async def run_remote_kirocrew(
     try:
         _out, err_b = await asyncio.wait_for(proc.communicate(), timeout=timeout_secs)
     except asyncio.TimeoutError:
-        proc.kill()
-        with contextlib.suppress(ProcessLookupError):
-            await proc.wait()
+        await kill_and_reap(proc)
         return -1, f"timed out after {timeout_secs}s"
     err = err_b.decode("utf-8", "replace").strip()
     # Proxy-controlled stderr (e.g. a WSSH banner) can carry credential-looking

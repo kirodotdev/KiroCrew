@@ -54,8 +54,11 @@ function stateWithApproval(meta: Record<string, unknown> = {}): Partial<RootStat
             tool_input: '{"command":"ls /tmp"}',
             is_read_only: '1',
             tool_title: 'Running: ls /tmp',
+            is_shell: '1',
             full_command: 'ls /tmp',
             base_command: 'ls',
+            trust_command_grantable: '1',
+            trust_base_grantable: '1',
             tool_call_id: 'tc-1',
           },
           ...meta,
@@ -274,8 +277,10 @@ describe('ChatInput approval flow', () => {
     expect(items.some(b => b.textContent?.includes('Trust all tools'))).toBe(true)  // trust
   })
 
-  it('detects shell command from tool_title prefix', () => {
-    const store = createTestStore(stateWithApproval())
+  it('uses the server shell flag instead of the display title', () => {
+    const state = stateWithApproval()
+    state.chat!.messages[1].meta!.tool_title = 'harmless display title'
+    const store = createTestStore(state)
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByText('Trust'))
     // Should show base command option (only for shell)
@@ -287,6 +292,7 @@ describe('ChatInput approval flow', () => {
     const state = stateWithApproval()
     const msg = state.chat!.messages[1]
     msg.meta!.tool_title = 'TaskeiGetTask'
+    msg.meta!.is_shell = ''
     msg.meta!.full_command = 'TaskeiGetTask'
     msg.meta!.base_command = 'TaskeiGetTask'
     msg.content = 'TaskeiGetTask'
@@ -295,6 +301,18 @@ describe('ChatInput approval flow', () => {
     fireEvent.click(screen.getByText('Trust'))
     const buttons = screen.getAllByRole('menuitem')
     expect(buttons.some(b => b.textContent?.includes('commands'))).toBe(false)
+  })
+
+  it('hides trust when the server cannot prove a command scope', () => {
+    const state = stateWithApproval()
+    const meta = state.chat!.messages[1].meta!
+    delete meta.trust_command_grantable
+    delete meta.trust_base_grantable
+    const store = createTestStore(state)
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    expect(screen.queryByRole('button', { name: 'Trust' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Allow once' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Reject' })).toBeInTheDocument()
   })
 })
 

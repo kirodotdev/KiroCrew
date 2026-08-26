@@ -36,22 +36,41 @@ _QUEUE_ALIASES = frozenset(("/queue",))
 _STEER_ALIASES = frozenset(("/steer",))
 _MID_TURN_ALIASES = _QUEUE_ALIASES | _STEER_ALIASES
 
+#: alias -> canonical name, and the one mapping :func:`parse_command` and
+#: :data:`_ALL_COMMANDS` both read, so a command reaching one and not the other
+#: cannot happen: an alias missing from the parser answers as ordinary chat, and
+#: one missing from the token set is answered with "unknown command".
+#:
+#: The aliases stay as the named sets above rather than being spelled inline here,
+#: and ``_STOP_ALIASES`` MUST keep that name: a cross-channel tripwire ``getattr``s
+#: it off this module to check the shared cancel-during-a-governance-deny exemption
+#: covers every spelling this channel accepts. Inlining it costs nothing visible —
+#: the probe falls back to its default, and these two spellings are a subset of what
+#: the other channels contribute, so the union it asserts on does not move. The
+#: coverage just stops. The rest are named for symmetry; only that one has a reader
+#: outside this module.
+_ALIAS_TO_COMMAND: dict[str, str] = {
+    alias: canonical
+    for canonical, aliases in (
+        ("new", _NEW_ALIASES),
+        ("compact", _COMPACT_ALIASES),
+        ("help", _HELP_ALIASES),
+        ("stop", _STOP_ALIASES),
+        ("link", _LINK_ALIASES),
+        ("unlink", _UNLINK_ALIASES),
+        ("model", _MODEL_ALIASES),
+        ("sessions", _SESSIONS_ALIASES),
+        ("yolo", _YOLO_ALIASES),
+        ("dashboard", _DASHBOARD_ALIASES),
+    )
+    for alias in aliases
+}
+
 #: Every command token, so a caller can tell "a command the user misspelled"
-#: from "ordinary chat that happens to start with a slash".
-_ALL_COMMANDS = (
-    _NEW_ALIASES
-    | _COMPACT_ALIASES
-    | _HELP_ALIASES
-    | _STOP_ALIASES
-    | _LINK_ALIASES
-    | _UNLINK_ALIASES
-    | _MODEL_ALIASES
-    | _SESSIONS_ALIASES
-    | _YOLO_ALIASES
-    | _DASHBOARD_ALIASES
-    | _QUEUE_ALIASES
-    | _STEER_ALIASES
-)
+#: from "ordinary chat that happens to start with a slash". The mid-turn
+#: directives are added here and NOT to the mapping above, because they are
+#: prefixes rather than commands (see :func:`parse_command`).
+_ALL_COMMANDS = frozenset(_ALIAS_TO_COMMAND) | _MID_TURN_ALIASES
 
 
 def _first_token(text: str) -> str:
@@ -75,32 +94,11 @@ def parse_command(text: str) -> str | None:
 
     ``/queue`` and ``/steer`` deliberately do NOT resolve here: they are mid-turn
     prefixes handled by :func:`parse_mid_turn_override`, and treating a
-    ``/queue do the thing`` as a command would swallow the message body.
+    ``/queue do the thing`` as a command would swallow the message body — which is
+    why they are absent from :data:`_ALIAS_TO_COMMAND`.
     """
-    cmd = _first_token(text)
-    if not cmd:
-        return None
-    if cmd in _NEW_ALIASES:
-        return "new"
-    if cmd in _COMPACT_ALIASES:
-        return "compact"
-    if cmd in _HELP_ALIASES:
-        return "help"
-    if cmd in _STOP_ALIASES:
-        return "stop"
-    if cmd in _LINK_ALIASES:
-        return "link"
-    if cmd in _UNLINK_ALIASES:
-        return "unlink"
-    if cmd in _MODEL_ALIASES:
-        return "model"
-    if cmd in _SESSIONS_ALIASES:
-        return "sessions"
-    if cmd in _YOLO_ALIASES:
-        return "yolo"
-    if cmd in _DASHBOARD_ALIASES:
-        return "dashboard"
-    return None
+    # ``""`` is never a key, so ordinary chat falls through as None.
+    return _ALIAS_TO_COMMAND.get(_first_token(text))
 
 
 def parse_command_argument(text: str) -> str:

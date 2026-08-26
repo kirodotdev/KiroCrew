@@ -63,7 +63,7 @@ export default function AwsConsentGate({ service }: { service: string }) {
     <div
       className={
         'rounded-md border px-3 py-2.5 text-[13px] ' +
-        (c.granted ? 'border-border' : 'border-warning')
+        (c.granted ? 'border-border' : 'border-warn')
       }
       data-testid={'aws-consent-' + service}
     >
@@ -74,7 +74,7 @@ export default function AwsConsentGate({ service }: { service: string }) {
       </div>
 
       {c.revokedOnAccountChange ? (
-        <div className="text-warning mb-1.5">
+        <div className="text-warn mb-1.5">
           {i18nT('components.awsConsentGate.account_changed')}
         </div>
       ) : null}

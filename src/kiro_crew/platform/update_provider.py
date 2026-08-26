@@ -20,7 +20,6 @@ ungoverned default, where the gateway keeps its built-in update behaviour).
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import os
 import platform
@@ -29,6 +28,7 @@ from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from typing import Protocol, runtime_checkable
 
+from kiro_crew import platform_compat
 from kiro_crew.platform_compat import (
     IS_POSIX,
     trusted_system_bin,
@@ -77,41 +77,23 @@ async def _read_bounded_output(
 
 
 async def _kill_and_reap(proc: asyncio.subprocess.Process) -> None:
-    """Kill *proc* AND its descendants, then wait for it under a bound.
+    """Delegate to :func:`kiro_crew.platform_compat.kill_and_reap`.
 
-    Used on BOTH the timeout and the cancellation path. Cancellation matters as
-    much as timeout: a gateway shutdown (SIGTERM) cancels the update task, and
-    without this the updater keeps replacing files after the process that
-    started it is gone, leaving a half-updated installation nobody supervises.
-
-    The whole TREE is signalled, not just the direct child. An update command is
-    a shell line (``curl … | sh``, ``pkg update | tee log``), so killing only
-    the shell leaves the pipeline members running and can leave ``communicate()``
-    waiting on pipes those survivors still hold. Every spawn that reaches here
-    is started with ``start_new_session`` on POSIX so the tree is its own process
-    group and cannot reach back into the gateway's.
-
-    The reap is bounded: a descendant that ignores the signal must not turn
-    cleanup into a hang on the shutdown path. Both the kill and the reap are
-    best-effort, since the caller is already handling a timeout or a
-    cancellation and must not have it masked by a cleanup error.
+    Kept as a module-level seam rather than a bare re-export so the
+    module-local ceiling below keeps bounding the reap: existing callers
+    (including function-local imports elsewhere) and tests resolve both
+    names on THIS module.
     """
-    # Function-local deliberately: the tests patch
-    # ``kiro_crew.platform_compat.kill_process_tree_async`` on the SOURCE module,
-    # and a module-scope ``from`` import would freeze the reference so the patch
-    # could not reach it.
-    from kiro_crew import platform_compat
-
-    with contextlib.suppress(Exception):
-        await platform_compat.kill_process_tree_async(proc.pid, platform_compat.SIGKILL)
-    with contextlib.suppress(Exception):
-        proc.kill()
-    with contextlib.suppress(Exception, asyncio.TimeoutError):
-        await asyncio.wait_for(proc.communicate(), timeout=_REAP_TIMEOUT_SECS)
+    # Module-object attribute lookup happens at call time, so tests patching
+    # ``kiro_crew.platform_compat.kill_process_tree_async`` (inside the shared
+    # helper) still intercept the tree kill.
+    await platform_compat.kill_and_reap(proc, timeout=_REAP_TIMEOUT_SECS)
 
 
 #: Ceiling on waiting for a killed updater tree. A descendant that ignores the
 #: signal must not turn cleanup into a hang while the gateway is shutting down.
+#: Mirrors the shared default so the updater's bound stays independently
+#: patchable without touching every other reap site.
 _REAP_TIMEOUT_SECS = 10
 
 

@@ -171,7 +171,7 @@ function GlanceChip({ label, count, tone, onClick }: { label: string; count: num
   return (
     <Clickable
       onClick={onClick}
-      className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-[3px] text-[12px] transition-colors hover:border-border-hover ${toneCls}`}
+      className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-[3px] text-[12px] transition-colors hover:border-border-strong ${toneCls}`}
     >
       <span className="font-mono font-semibold">{count}</span>
       <span>{label}</span>

@@ -140,7 +140,7 @@ export default function InstalledAppCard({
                   the tile's own width plus the row gap -- `w-11` (44px) plus
                   `gap-3` (12px) -- or the text no longer lines up with the tile's
                   left edge; a test pins the three together. */}
-              <p className="text-sm text-muted mb-2 line-clamp-2 -ml-14 sm:ml-0">{appDescription({ name: app.name, description: m?.description })}</p>
+              <p className="text-sm text-muted mb-2 line-clamp-2 -ml-14 sm:ml-0">{appDescription({ name: app.name, description: m?.description, origin: app.origin })}</p>
               <div className="flex items-center gap-3 text-[12px] text-muted flex-wrap -ml-14 sm:ml-0">
                 {m?.author && <span className="flex items-center gap-1"><Users size={11} /> {m.author}</span>}
                 {agentCount > 0 && <span className="flex items-center gap-1"><Bot size={11} /> {i18nT('components.appstore.installedAppCard.agent', { count: agentCount })}</span>}

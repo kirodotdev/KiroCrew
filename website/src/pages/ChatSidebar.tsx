@@ -25,7 +25,8 @@ import { computeRecentRank, recencyTintShadow, clampTintCount } from '../utils/r
 import { computeActiveSubtree, folderIsHidden, folderOffersHide } from '../utils/folderVisibility'
 import { groupHistoryByFolder } from '../utils/groupHistoryByFolder'
 import { boardCollapseKey, boardColumnFromDroppableId, loadBoardFolderCollapse, persistBoardOverride, persistClearFolderOverrides, clearFolderOverrides } from '../utils/boardFolderCollapse'
-import { slotChannelLabel, slotChannelNamespace } from '../utils/channelOrigin'
+import { isChatPageSurface, slotChannelLabel, slotChannelNamespace } from '../utils/channelOrigin'
+import ErrorNotice from '../components/ErrorNotice'
 import { toolStatusLabel } from '../utils/toolStatusLabel'
 import { sessionRefBlockReason, type SessionRefBlockReason } from '../utils/sessionRefs'
 import { SearchInput, Input, Btn, IconButton, IconButtonGroup, Badge } from '../components/ui'
@@ -1341,6 +1342,16 @@ function ChatSidebar({
   const [seedError, setSeedError] = useState('')
   const [slotFilter, setSlotFilter] = useState('')
   const [historyFilter, setHistoryFilter] = useState('')
+  // A resumed history row whose surface ChatPage cannot display (e.g. a
+  // dashboard session) used to succeed on the wire and then silently bounce
+  // the user back to whatever slot was already open, indistinguishable from a
+  // dead click (#3624). Set right after such a resume resolves; cleared on
+  // dismiss or the next resume attempt.
+  const [unresumableNotice, setUnresumableNotice] = useState<string | null>(null)
+  // Monotonic guard for the resume promise chain below: rapid successive row
+  // clicks each start a resume, and an EARLIER one resolving after a LATER one
+  // must not show (or clear) feedback for a row the user has moved past.
+  const resumeSeqRef = useRef(0)
   // Digest of session keys + titles (NOT status), fed to both searches as their
   // revalidate signal. Sorted+joined so reordering `slots` alone cannot refetch.
   const slotTitleDigest = useMemo(
@@ -4253,7 +4264,7 @@ function ChatSidebar({
           onClick={() => toggleReveal(containerKey)}
           aria-expanded={open}
           title={open ? i18nT('pages.chatSidebar.collapse_hidden_folders') : i18nT('pages.chatSidebar.show_hidden_folder', { count: n })}
-          className="w-full flex items-center gap-1.5 py-1 pr-2 text-left text-[11px] text-muted hover:text-fg hover:bg-accent-subtle rounded-md cursor-pointer bg-transparent border-none transition-colors"
+          className="w-full flex items-center gap-1.5 py-1 pr-2 text-left text-[11px] text-muted hover:text-text hover:bg-accent-subtle rounded-md cursor-pointer bg-transparent border-none transition-colors"
           style={{ paddingLeft: `${8 + depth * 12}px` }}
         >
           <DisclosureChevron open={open} size={11} />
@@ -5548,6 +5559,14 @@ function ChatSidebar({
                   <button type="button" className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-text cursor-pointer bg-transparent border-none p-0 leading-none transition-colors" onClick={() => setHistoryFilter('')} aria-label={i18nT('pages.chatSidebar.clear_search')}><X size={13} /></button>
                 )}
               </div>
+              {unresumableNotice && (
+                <ErrorNotice
+                  message={unresumableNotice}
+                  onDismiss={() => setUnresumableNotice(null)}
+                  variant="block"
+                  className="mt-1.5"
+                />
+              )}
             </div>
             {/* scroll-shadow already fades the top/bottom edge as its
              *  scrollability cue, so the bar itself is redundant here. */}
@@ -5629,8 +5648,34 @@ function ChatSidebar({
                   const remoteInstanceId = (s as { instance_id?: string }).instance_id
                   const remoteInstanceName = (s as { instance_name?: string }).instance_name
                   const activateRow = () => {
+                    // A remote row never resumes here, so it can never produce the
+                    // unresumable notice below — the pane switch IS its outcome.
                     if (remoteInstanceId) { selectInstance(remoteInstanceId); return }
+                    // Resume, then check whether the resolved surface is one ChatPage
+                    // can actually show. The request itself succeeds either way
+                    // (`ok`), so `ok` alone cannot tell a genuinely usable resume
+                    // apart from one that will bounce right back (#3624).
+                    setUnresumableNotice(null)
+                    const seq = ++resumeSeqRef.current
                     dispatch(resumeFromHistory({ key: s.key, title: s.title || s.key }))
+                      .unwrap()
+                      .then(result => {
+                        // Latest-click-wins: an earlier resume resolving late must
+                        // not narrate a row the user has already moved past.
+                        if (seq !== resumeSeqRef.current) return
+                        if (result.ok && !isChatPageSurface(result.surface)) {
+                          // Name the surface from the WIRE answer the check itself
+                          // used. The key-prefix heuristic stays only as the
+                          // localized label for the known dashboard case and as a
+                          // last-resort fallback -- interpolating it for arbitrary
+                          // surfaces mislabels them (e.g. "a Session session").
+                          const noticeSurface = isDashboard ? surfaceLabel : (result.surface || surfaceLabel)
+                          setUnresumableNotice(
+                            i18nT('pages.chatSidebar.this_session_cannot_be_opened_from_the_chat_side', { title: s.title || s.key, surface: noticeSurface }),
+                          )
+                        }
+                      })
+                      .catch(() => { /* resumeFromHistory itself never rejects on an API-level failure; a genuine rejection has nothing more useful to add here. */ })
                   }
                   return (
                     <div className={`group relative flex items-start gap-2.5 pr-4 py-2 rounded-md text-sm transition-all select-none ${!connected ? 'text-muted opacity-50 cursor-not-allowed' : 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer'}`} style={{ paddingLeft: '10px' }} title={s.title || s.key} {...offlineProps(connected, 'resume sessions')} role="button" tabIndex={0} aria-disabled={!connected} onKeyDown={e => {
@@ -5666,7 +5711,7 @@ function ChatSidebar({
                       <div className="flex-1 min-w-0 overflow-hidden">
                         <div className={`session-agent-label text-[11px] font-semibold truncate leading-tight flex items-center gap-1 ${agentColor}`}>
                           <span className="truncate">{agentName || '\u00A0'}</span>
-                          {remoteInstanceName && <span className="shrink-0 text-[10px] px-1 rounded bg-bg-muted text-muted border border-border" title={remoteInstanceName}>{remoteInstanceName}</span>}
+                          {remoteInstanceName && <span className="shrink-0 text-[10px] px-1 rounded bg-bg-elevated text-muted border border-border" title={remoteInstanceName}>{remoteInstanceName}</span>}
                           {s.clean_mode
                             ? <span className="text-accent" title={i18nT('pages.chatSidebar.clean_agent_only_no_kirocrew_context_or_mcp')}><Droplet size={10} /></span>
                             : <>

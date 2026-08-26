@@ -1312,13 +1312,47 @@ class TestTeamsConfigSave:
     def test_purges_a_legacy_plaintext_secret_from_config_json(
         self, monkeypatch, tmp_path: Path
     ) -> None:
+        # The purge is safe only when the credential is also held in .env or being
+        # written to .env this save (Finding 1: purging the sole copy on a
+        # metadata-only save would erase the credential). Scenario: password in
+        # BOTH config.json AND os.environ (simulating a migrated, leaked copy).
+        env = tmp_path / ".env"
+        env.write_text("MICROSOFT_APP_PASSWORD=leaked\n", encoding="utf-8")
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text(json.dumps({"teams": {"app_password": "leaked"}}), encoding="utf-8")
+        monkeypatch.setattr(loader, "env_path", lambda: env)
+        monkeypatch.setattr(loader, "config_path", lambda: cfg_path)
+        monkeypatch.setattr(mod, "is_direct_local_request", lambda req: True)
+        # The credential is held in os.environ (safe to purge the config copy).
+        monkeypatch.setenv("MICROSOFT_APP_PASSWORD", "leaked")
+
+        async def _accept(*a, **kw):
+            return None
+
+        monkeypatch.setattr(mod, "_validate_teams_app_credentials", _accept)
+        resp = _run(mod.api_teams_config_save, _Req(_state(), {"enabled": True}))
+        assert resp.status == 200
+        data = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert (
+            data["teams"]["app_password"] == ""
+        ), "When password is also in os.environ/.env, purge the legacy config.json copy"
+
+    def test_does_not_purge_legacy_secret_that_is_the_sole_credential_copy(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        # Finding 1 regression: app_password ONLY in legacy config.json (not in
+        # .env or os.environ) must survive a metadata-only save.
         (tmp_path / "config.json").write_text(
-            json.dumps({"teams": {"app_password": "leaked"}}), encoding="utf-8"
+            json.dumps({"teams": {"app_password": "legacy-only"}}), encoding="utf-8"
         )
         resp, _, cfg = self._save(monkeypatch, tmp_path, {"enabled": True})
-        assert "app_password_purged" in json.dumps(_payload(resp)) or resp.status == 200
+        # _save sets MICROSOFT_APP_PASSWORD="" so os.environ fallback is empty.
+        assert resp.status == 200
         data = json.loads(cfg.read_text(encoding="utf-8"))
-        assert data["teams"]["app_password"] == ""
+        assert data["teams"].get("app_password") == "legacy-only", (
+            "Password that lives ONLY in legacy config.json must survive a "
+            "metadata-only save (Finding 1)"
+        )
 
     def test_no_op_save_reports_no_restart_needed(self, monkeypatch, tmp_path: Path) -> None:
         (tmp_path / "config.json").write_text(
@@ -1332,6 +1366,34 @@ class TestTeamsConfigSave:
         resp, _, cfg = self._save(monkeypatch, tmp_path, {"enabled": True})
         assert resp.status == 200
         assert json.loads(cfg.read_text(encoding="utf-8"))["teams"]["enabled"] is True
+
+    def test_clear_config_write_failure_does_not_leave_env_cleared(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """On a CLEAR the config.json purge runs BEFORE the .env delete. If the
+        config write fails the .env must be untouched — otherwise a restart would
+        fall back to any legacy config.json app_password, resurrecting the
+        credential the operator asked to clear."""
+        env = tmp_path / ".env"
+        cfg_path = tmp_path / "config.json"
+        env.write_text("MICROSOFT_APP_PASSWORD=live-pw\n", encoding="utf-8")
+        cfg_path.write_text(json.dumps({"teams": {"app_password": "legacy-pw"}}), encoding="utf-8")
+        monkeypatch.setattr(loader, "env_path", lambda: env)
+        monkeypatch.setattr(loader, "config_path", lambda: cfg_path)
+        monkeypatch.setattr(mod, "is_direct_local_request", lambda req: True)
+        monkeypatch.setenv("MICROSOFT_APP_PASSWORD", "")
+
+        import kiro_crew.agent as _agent
+
+        def _boom(*_a, **_k):
+            raise OSError("disk full during config write")
+
+        monkeypatch.setattr(_agent, "_atomic_json_write", _boom)
+        try:
+            _run(mod.api_teams_config_save, _Req(_state(), {"app_password_clear": True}))
+        except Exception:
+            pass
+        assert "MICROSOFT_APP_PASSWORD=live-pw" in env.read_text(encoding="utf-8")
 
 
 class TestTeamsActivity:
@@ -1429,6 +1491,32 @@ class TestWriteEnvUpdates:
 
         assert events == ["restrict", "write"], events
         assert env.read_text(encoding="utf-8") == "SLACK_BOT_TOKEN=xoxb-secret\n"
+
+    def test_aborts_when_shared_env_lock_is_held(self, monkeypatch, tmp_path: Path) -> None:
+        """A channel/token save serializes on the SAME .env.lock the importer
+        and the Weixin handler use, so it aborts (rather than racing the commit)
+        when another writer holds the lock — and leaves .env untouched."""
+        import os
+
+        from kiro_crew import platform_compat
+        from kiro_crew.secrets.migrate import _env_lock_path
+
+        env = tmp_path / ".env"
+        env.write_text("A=1\n", encoding="utf-8")
+        monkeypatch.setattr(loader, "env_path", lambda: env)
+
+        # Simulate the importer holding the shared advisory lock.
+        lock_path = _env_lock_path(env)
+        held_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        assert platform_compat.try_acquire_lock(held_fd, exclusive=True)
+        try:
+            with pytest.raises(OSError):
+                mod._write_env_updates({"B": "2"})
+            # .env is untouched — the aborted save did not partially write.
+            assert env.read_text(encoding="utf-8") == "A=1\n"
+        finally:
+            platform_compat.release_lock(held_fd)
+            os.close(held_fd)
 
 
 class _FakeResponse:

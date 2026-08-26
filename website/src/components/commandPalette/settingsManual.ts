@@ -86,4 +86,155 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     occurrence: 1,
     params: { section: 'posture' },
   },
+  {
+    // Add-a-custom-deny-pattern card: a create-form composite (pattern + note
+    // inputs + Add button) with no primitive shape, distinct from the built-in
+    // rules table the section-level 'security.denied-commands' entry covers.
+    id: 'security.your-custom-denies',
+    labelKey: 'pages.settings.securityPanel.your_custom_denies',
+    descriptionKey: 'pages.settings.securityPanel.add_your_own_deny_patterns_python_compatible_reg',
+    tab: 'security',
+    type: 'input',
+    occurrence: 1,
+    params: { section: 'rules' },
+  },
+  {
+    // One entry covers both mutually-styled channel switchers (desktop shell
+    // updater and gateway install) — same catalog label, same tab, and the
+    // SegmentedControl they render as has no primitive shape.
+    id: 'about.update-channel',
+    labelKey: 'pages.settings.aboutPanel.update_channel',
+    tab: 'about',
+    type: 'buttonGroup',
+    occurrence: 1,
+  },
+  {
+    // Gateway auto-update / update-notification toggle. Its rendered label is a
+    // ternary (self-update-capable installs read "Auto-update on restart"), which
+    // the extractor cannot resolve; indexed under the notify wording so it does
+    // not collide with the desktop SettingsToggle's generated entry.
+    id: 'about.update-notifications',
+    labelKey: 'pages.settings.aboutPanel.notify_when_an_update_is_available',
+    tab: 'about',
+    type: 'toggle',
+    occurrence: 1,
+    configKey: 'auto_update',
+  },
+  {
+    // Per-channel notification mute + priority overrides: rows are fetched at
+    // runtime (channel names are data), so one entry covers the Sources card.
+    id: 'notifications.sources',
+    labelKey: 'pages.settings.notificationsPanel.sources',
+    descriptionKey: 'pages.settings.notificationsPanel.mute_notification_sources_or_override_their_prio',
+    tab: 'notifications',
+    type: 'toggle',
+    occurrence: 1,
+  },
+  {
+    // Range slider — no slider primitive exists; stepper is the nearest shape.
+    id: 'notifications.volume',
+    labelKey: 'pages.settings.notificationsPanel.volume',
+    tab: 'notifications',
+    type: 'stepper',
+    occurrence: 1,
+  },
+  // Per-category sound selects render inside CATEGORY_ROWS.map with
+  // label={i18nT(CATEGORY_LABEL_KEY[cat])} — a dynamic expression the extractor
+  // skips. The category set is a closed union, so each row is indexed here as an
+  // explicit entry (literal keys, not a template: the i18n added-lines gate
+  // cannot statically verify a computed key). Highlighting works because
+  // SettingsSelect renders the resolved label as its own data-setting-label.
+  {
+    id: 'notifications.sound-category-all',
+    labelKey: 'pages.settings.notificationsPanel.category_all',
+    descriptionKey: 'pages.settings.notificationsPanel.category_all_description',
+    tab: 'notifications',
+    type: 'select',
+    occurrence: 1,
+  },
+  {
+    id: 'notifications.sound-category-turn',
+    labelKey: 'pages.settings.notificationsPanel.category_turn',
+    descriptionKey: 'pages.settings.notificationsPanel.category_turn_description',
+    tab: 'notifications',
+    type: 'select',
+    occurrence: 1,
+  },
+  {
+    id: 'notifications.sound-category-cron',
+    labelKey: 'pages.settings.notificationsPanel.category_cron',
+    descriptionKey: 'pages.settings.notificationsPanel.category_cron_description',
+    tab: 'notifications',
+    type: 'select',
+    occurrence: 1,
+  },
+  {
+    id: 'notifications.sound-category-approval',
+    labelKey: 'pages.settings.notificationsPanel.category_approval',
+    descriptionKey: 'pages.settings.notificationsPanel.category_approval_description',
+    tab: 'notifications',
+    type: 'select',
+    occurrence: 1,
+  },
+  {
+    id: 'notifications.sound-category-hook',
+    labelKey: 'pages.settings.notificationsPanel.category_hook',
+    descriptionKey: 'pages.settings.notificationsPanel.category_hook_description',
+    tab: 'notifications',
+    type: 'select',
+    occurrence: 1,
+  },
+  {
+    id: 'notifications.sound-category-heartbeat',
+    labelKey: 'pages.settings.notificationsPanel.category_heartbeat',
+    descriptionKey: 'pages.settings.notificationsPanel.category_heartbeat_description',
+    tab: 'notifications',
+    type: 'select',
+    occurrence: 1,
+  },
+  {
+    id: 'notifications.sound-category-subagent',
+    labelKey: 'pages.settings.notificationsPanel.category_subagent',
+    descriptionKey: 'pages.settings.notificationsPanel.category_subagent_description',
+    tab: 'notifications',
+    type: 'select',
+    occurrence: 1,
+  },
+  {
+    id: 'notifications.sound-category-taskrunner',
+    labelKey: 'pages.settings.notificationsPanel.category_taskrunner',
+    descriptionKey: 'pages.settings.notificationsPanel.category_taskrunner_description',
+    tab: 'notifications',
+    type: 'select',
+    occurrence: 1,
+  },
+  {
+    // Playwright attach token: a credential field with Save/Clear semantics the
+    // SettingsInput primitive has no shape for.
+    id: 'browser.attach-token',
+    labelKey: 'pages.settings.browserPanel.token_label',
+    tab: 'browser',
+    type: 'input',
+    occurrence: 1,
+  },
+  {
+    // Color-dot swatch row — circular color buttons don't fit
+    // SettingsButtonGroup's text-button pattern (comment at the render site).
+    id: 'display.default-for-new-sessions',
+    labelKey: 'pages.settings.displayPanel.default_for_new_sessions',
+    descriptionKey: 'pages.settings.displayPanel.none_auto_cycle_or_pick_a_fixed_color',
+    tab: 'display',
+    type: 'buttonGroup',
+    occurrence: 1,
+  },
+  {
+    // One-way enable action on the disabled-state gate card (writes
+    // instances.enabled); not a toggle row, so no primitive fits.
+    id: 'instances.enable-remote-crew-management',
+    labelKey: 'pages.settings.instancesPanel.enable_remote_crew_management',
+    tab: 'instances',
+    type: 'toggle',
+    occurrence: 1,
+    configKey: 'instances.enabled',
+  },
 ]

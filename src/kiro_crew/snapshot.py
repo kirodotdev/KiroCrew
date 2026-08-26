@@ -33,6 +33,11 @@ VALID_COMPONENTS = ("memory", "crons", "config", "skills", "workspace", "notific
 # Files that must always have 0o600 permissions in snapshots and on restore.
 SECURITY_SENSITIVE_FILES: frozenset = frozenset({"sel_hmac.key", "telemetry_salt"})
 
+# Must match ``handlers_system._get_telemetry_salt`` (``secrets.token_bytes(32)``).
+# ``_copy_locked`` loads telemetry_salt into memory, so a planted giant in an
+# untrusted snapshot would OOM restore after earlier merge steps.
+_TELEMETRY_SALT_BYTES = 32
+
 # Files that must NEVER ride a snapshot: sel_hmac.key is regenerated on restore
 # so audit-log HMACs stay bound to the host that wrote them.
 #
@@ -1099,6 +1104,68 @@ def _backup_and_copy(
         os.close(src_fd)
 
 
+def _copy_locked(src: Path, dst: Path) -> bool:
+    """Copy *src* onto a missing *dst*, owner-only before the name is published.
+
+    Merge restore only copies when *dst* is absent. Publish with ``os.link``
+    (the create-only shape ``_get_telemetry_salt`` uses) so a dest that
+    appears in the window — ``--force`` restore racing a live gateway
+    creating ``telemetry_salt`` — raises ``FileExistsError`` and the live
+    file is left alone. ``os.replace`` / ``atomic_write`` would clobber it.
+    The temp is locked down before any payload is written. Failures to
+    publish (unsupported hard links, a restrict error, a size mismatch)
+    skip this file without raising, because merge restore has already
+    applied earlier components and ``_get_telemetry_salt`` regenerates a
+    missing salt. Return True only when this call published *dst*.
+    """
+    if dst.exists():
+        return False
+    if src.name == "telemetry_salt" or dst.name == "telemetry_salt":
+        size = src.stat().st_size
+        if size != _TELEMETRY_SALT_BYTES:
+            return False
+    payload = src.read_bytes()
+    if dst.exists():
+        return False
+    fd, tmp = tempfile.mkstemp(prefix=f".{dst.name}.", suffix=".tmp", dir=str(dst.parent))
+    tmp_path = Path(tmp)
+    try:
+        platform_compat.restrict_to_owner(str(tmp_path))
+        view = memoryview(payload)
+        while view:
+            written = os.write(fd, view)
+            if written == 0:
+                raise OSError(f"short write restoring {src.name}")
+            view = view[written:]
+        # Drop the fd from finally before close: a close-time writeback
+        # error must not be retried on an already-released descriptor,
+        # because a second OSError in finally would replace the skip and
+        # abort merge after earlier components were applied.
+        pending = fd
+        fd = -1
+        os.close(pending)
+        os.link(str(tmp_path), str(dst))
+        return True
+    except OSError:
+        # FileExistsError: live dest won. EXDEV / EPERM / no-hardlink /
+        # restrict / short write / close: dest stays missing and
+        # `_get_telemetry_salt` regenerates. Raising here aborts merge
+        # after earlier components were already applied.
+        return False
+    finally:
+        if fd >= 0:
+            pending = fd
+            fd = -1
+            try:
+                os.close(pending)
+            except OSError:
+                pass
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def _lock_down_restored(path: Path, component: str) -> None:
     """Apply the owner-only lockdown a restored security file needs.
 
@@ -1278,19 +1345,8 @@ def _do_merge(
         for f in CORE_FILES["security"]:
             s, d = snap / f, mc / f
             if s.is_file() and not d.is_file():
-                shutil.copy2(str(s), str(d))
-                # restrict_to_owner (fail-loud), NOT chmod_safe — security
-                # files include sel_hmac.key; mirror the create path. Windows
-                # applies an owner-only DACL via icacls. Unlink the freshly
-                # copied file on
-                # failure so an icacls error doesn't leave a restored secret
-                # under the destination-inherited DACL.
-                try:
-                    platform_compat.restrict_to_owner(str(d))
-                except OSError:
-                    d.unlink(missing_ok=True)
-                    raise
-                print(f"  {f}: restored (was missing)")
+                if _copy_locked(s, d):
+                    print(f"  {f}: restored (was missing)")
         print("  ✅ security")
 
     if _want(components, "workspace"):

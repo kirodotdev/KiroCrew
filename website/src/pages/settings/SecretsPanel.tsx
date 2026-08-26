@@ -101,7 +101,7 @@ export function SecretsPanel() {
             {names.map(name => (
               <div
                 key={name}
-                className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between p-2 rounded bg-surface-secondary"
+                className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between p-2 rounded bg-bg-elevated"
               >
                 <div className="flex items-center gap-2 min-w-0">
                   <KeyRound size={14} className="text-muted shrink-0" />
@@ -110,7 +110,7 @@ export function SecretsPanel() {
                 </div>
                 {deleteConfirm === name ? (
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-xs text-warning">{i18nT('settings.secrets.delete_confirm')}</span>
+                    <span className="text-xs text-warn">{i18nT('settings.secrets.delete_confirm')}</span>
                     <Btn danger onClick={() => deleteMutation.mutate(name)}>
                       {i18nT('settings.secrets.delete')}
                     </Btn>
@@ -121,7 +121,7 @@ export function SecretsPanel() {
                 ) : (
                   <button
                     onClick={() => setDeleteConfirm(name)}
-                    className="p-1 rounded hover:bg-surface-tertiary text-muted hover:text-warning"
+                    className="p-1 rounded hover:bg-bg-hover text-muted hover:text-warn"
                     aria-label={i18nT('settings.secrets.delete_secret_name', { name })}
                   >
                     <Trash2 size={14} />
@@ -143,7 +143,7 @@ export function SecretsPanel() {
                   value={newName}
                   onChange={e => setNewName(e.target.value)}
                   placeholder="MY_API_KEY"
-                  className="w-full px-2 py-1.5 text-sm rounded border border-border bg-surface-primary text-text-strong mt-1 font-normal"
+                  className="w-full px-2 py-1.5 text-sm rounded border border-border bg-bg-elevated text-text-strong mt-1 font-normal"
                   aria-label={i18nT('settings.secrets.secret_name_aria')}
                   autoFocus
                 />
@@ -158,7 +158,7 @@ export function SecretsPanel() {
                   value={newValue}
                   onChange={e => setNewValue(e.target.value)}
                   placeholder="sk-..."
-                  className="w-full px-2 py-1.5 text-sm rounded border border-border bg-surface-primary text-text-strong mt-1 font-normal"
+                  className="w-full px-2 py-1.5 text-sm rounded border border-border bg-bg-elevated text-text-strong mt-1 font-normal"
                   aria-label={i18nT('settings.secrets.secret_value_aria')}
                 />
               </label>

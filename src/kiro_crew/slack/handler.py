@@ -2540,7 +2540,17 @@ async def maybe_route_linked_thread(
         _dashboard_state._background_tasks.add(_chat_task)  # type: ignore[attr-defined]
         _chat_task.add_done_callback(_dashboard_state._background_tasks.discard)  # type: ignore[attr-defined]
     else:
-        _linked_slot.queue_append(text, directive_user_origin=True)
+        # circular import: session_control pulls in dashboard modules at module level.
+        from kiro_crew.dashboard.session_control import containment_meta
+
+        # Stamp the admission-time containment (#5911). A linked slot records
+        # linked=True here, so its own channel's queued messages keep draining;
+        # only a constraint that appears AFTER this enqueue drops the entry.
+        _linked_slot.queue_append(
+            text,
+            meta=containment_meta(_dashboard_state, _linked_slot),  # type: ignore[arg-type]
+            directive_user_origin=True,
+        )
     _dashboard_state.push_slots_update()  # type: ignore[attr-defined]
     sel().log_tool_invocation(
         session_key=session_key,

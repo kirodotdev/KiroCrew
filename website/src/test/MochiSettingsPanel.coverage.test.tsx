@@ -50,7 +50,8 @@ const mocks = vi.hoisted(() => {
     getMcpServers: vi.fn<() => Promise<unknown>>(),
     discoverMcpTools: vi.fn<(name: string) => Promise<unknown>>(),
     getModels: vi.fn<() => Promise<unknown>>(),
-    setModel: vi.fn<(m: string) => Promise<boolean>>(),
+    getSlotModel: vi.fn<() => Promise<string>>(),
+    setModel: vi.fn<(m: string) => Promise<{ ok: boolean; code?: string }>>(),
     galleryOpen: vi.fn(),
     openExternal: vi.fn(),
     onSettingsCloseRequested: subscribeClose,
@@ -199,7 +200,8 @@ beforeEach(() => {
   api.getMcpServers.mockReset().mockResolvedValue([])
   api.discoverMcpTools.mockReset().mockResolvedValue(null)
   api.getModels.mockReset().mockResolvedValue([])
-  api.setModel.mockReset().mockResolvedValue(true)
+  api.getSlotModel.mockReset().mockResolvedValue('')
+  api.setModel.mockReset().mockResolvedValue({ ok: true })
   api.galleryOpen.mockReset()
   api.openExternal.mockReset()
   // The background section reads its usage ledger over plain fetch. Default to a
@@ -507,6 +509,49 @@ describe('SettingsPanel model section', () => {
     // The chat model is applied now, not staged, so Save stays disabled.
     await waitFor(() => expect(screen.queryByText('Switching model...')).toBeNull())
     expect(saveButton().disabled).toBe(true)
+    // A confirmed switch keeps the picked value — the refusal rollback below
+    // must never fire on {ok: true}.
+    expect((chat as HTMLSelectElement).value).toBe('claude-x')
+  })
+
+  it('hydrates the selector from the slot model instead of opening on Auto', async () => {
+    api.getModels.mockResolvedValue([{ model_name: 'gpt-y' }])
+    api.getSlotModel.mockResolvedValue('gpt-y')
+    await mount()
+    openSection('LLM Model')
+
+    const [chat] = await screen.findAllByRole('combobox')
+    await waitFor(() => expect((chat as HTMLSelectElement).value).toBe('gpt-y'))
+  })
+
+  it('rolls back to the hydrated model and says why when the switch is refused mid-turn', async () => {
+    api.getModels.mockResolvedValue([{ model_name: 'claude-x' }, { model_name: 'gpt-y' }])
+    api.getSlotModel.mockResolvedValue('claude-x')
+    api.setModel.mockResolvedValue({ ok: false, code: 'turn_in_flight' })
+    await mount()
+    openSection('LLM Model')
+
+    const [chat] = await screen.findAllByRole('combobox')
+    await waitFor(() => expect((chat as HTMLSelectElement).value).toBe('claude-x'))
+    fireEvent.change(chat, { target: { value: 'gpt-y' } })
+
+    // The gateway kept claude-x, so the selector must not claim gpt-y — and
+    // the user must be told the refusal is temporary, not a breakage.
+    await waitFor(() => expect((chat as HTMLSelectElement).value).toBe('claude-x'))
+    expect(await screen.findByText('A turn is running — try again when it finishes.')).toBeTruthy()
+  })
+
+  it('names a generic reported refusal instead of snapping back silently', async () => {
+    api.getModels.mockResolvedValue([{ model_name: 'gpt-y' }])
+    api.setModel.mockResolvedValue({ ok: false })
+    await mount()
+    openSection('LLM Model')
+
+    const [chat] = await screen.findAllByRole('combobox')
+    fireEvent.change(chat, { target: { value: 'gpt-y' } })
+
+    await waitFor(() => expect((chat as HTMLSelectElement).value).toBe(''))
+    expect(await screen.findByText('Something went wrong')).toBeTruthy()
   })
 
   it('stages the background model instead of applying it, since it is config', async () => {

@@ -3,6 +3,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, fireEvent } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
+import { PREVIEW_STRIP_H, setStripHeight, stubStripHeights } from './stripHeights'
+
+// The composer's own drag floor.
+const INPUT_DRAG_MIN_H = 93
 
 // Pins the resize-notice contract: downscale details render as an accent pill
 // IN FLOW UNDER the attachment chip, with a styled hover tooltip showing the
@@ -24,6 +28,8 @@ const RESIZE = { name: 'big-test-image.png', fromW: 2400, fromH: 3200, toW: 1176
 
 beforeEach(() => {
   vi.restoreAllMocks()
+  // After restoreAllMocks: it would otherwise undo the layout stub.
+  stubStripHeights()
   localStorage.clear()
 })
 
@@ -111,17 +117,26 @@ describe('ChatInput attachment resize badge', () => {
 
   // A chip carrying a pill is taller, so the wrapper's height compensation has
   // to know: without this the extra row eats into the textarea.
-  it('reserves the taller strip height only when a staged image was resized', () => {
+  //
+  // This used to assert two literal sums (174px, 194px) against two predicted
+  // constants, which meant it agreed with the source by construction and could
+  // not see the two drifting apart. The composer now MEASURES the strip, so the
+  // assertion is that the floor tracks the measurement — including when the
+  // strip changes height under a rerender, which is the behaviour the resize
+  // pill actually needs.
+  it('reserves whatever the strip measures, and follows it when the pill lands', () => {
     // A persisted manual height is what activates the minHeight compensation.
     localStorage.setItem('mc-input-height', '300')
     const outerOf = () => screen.getByLabelText('Message input').closest('.input-area') as HTMLElement
     const { rerender } = renderWithProviders(
       <ChatInput {...defaultProps} pendingFiles={[IMG]} />,
     )
-    // FILE_PREVIEW_H (81) + INPUT_DRAG_MIN_H (93)
-    expect(outerOf().style.minHeight).toBe('174px')
+    expect(outerOf().style.minHeight).toBe(`${INPUT_DRAG_MIN_H + PREVIEW_STRIP_H}px`)
+
+    // The pill makes the rendered strip taller. Re-stub the measurement to say
+    // so, and the reserved floor must move with it rather than with a constant.
+    setStripHeight('preview-strip', PREVIEW_STRIP_H + 20)
     rerender(<ChatInput {...defaultProps} pendingFiles={[IMG]} resizedInfo={{ [IMG]: RESIZE }} />)
-    // FILE_PREVIEW_H_RESIZED (101): the pill's 18px plus the 2px gap.
-    expect(outerOf().style.minHeight).toBe('194px')
+    expect(outerOf().style.minHeight).toBe(`${INPUT_DRAG_MIN_H + PREVIEW_STRIP_H + 20}px`)
   })
 })

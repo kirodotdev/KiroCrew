@@ -362,245 +362,6 @@ _UNSAFE_SHELL_RE = re.compile(r">|`|\$\(|<\(|(?<!&)&(?!&)")
 # a sink, smuggling a real-file write past the unsafe-shell check.
 _DEVNULL_REDIR_RE = re.compile(r"(?:\d*>>?|&>)\s*/dev/null(?![\w./-])|\d*>&\d+")
 
-# A trailing `--help` is only meaningful for a program that treats it as
-# "print usage and exit". These programs instead treat their operands as code
-# or a target to act on, so `--help` lands as a positional argument and the
-# real work still happens: `sh evil.sh --help` runs evil.sh with $1=--help.
-# The classifier cannot know which behaviour a given program has, so the
-# executors are named explicitly and the shape of the command is constrained
-# below.
-_HELP_PROBE_DENIED_PROGRAMS: frozenset[str] = frozenset(
-    (
-        # Shell builtins that run their operand in the current shell. These are
-        # not programs on PATH, so the PATH-name requirement below does not
-        # reach them on its own: `source payload --help` reads `payload` from
-        # the workspace and executes it, with `--help` landing as $1.
-        "source",
-        ".",
-        "exec",
-        "eval",
-        "command",
-        "builtin",
-        "trap",
-        # Shells and interpreters — operands are code.
-        "sh",
-        "bash",
-        "zsh",
-        "dash",
-        "ksh",
-        "fish",
-        "csh",
-        "tcsh",
-        "ash",
-        "busybox",
-        "python",
-        "python2",
-        "python3",
-        "perl",
-        "ruby",
-        "node",
-        "deno",
-        "bun",
-        "php",
-        "lua",
-        "tclsh",
-        "osascript",
-        "pwsh",
-        "powershell",
-        "cmd",
-        # Wrappers that hand off to another program.
-        "env",
-        "sudo",
-        "doas",
-        "nohup",
-        "setsid",
-        "nice",
-        "ionice",
-        "time",
-        "timeout",
-        "xargs",
-        "watch",
-        "script",
-        "stdbuf",
-        "unbuffer",
-        "ssh",
-        "scp",
-        "rsync",
-        "docker",
-        "podman",
-        "kubectl",
-        "make",
-        "cmake",
-        # Package managers that run a project-defined script. The subcommand form
-        # reads as `<program> <subcommand> --help`, but the "subcommand" is a name
-        # from the project's own manifest: `yarn clean --help` runs the `clean`
-        # script (deleting `dist` and `node_modules` in this repo) and passes
-        # `--help` to it. There is no way to tell a real subcommand from a script
-        # name from here, so the whole program is refused.
-        "yarn",
-        "yarnpkg",
-        "npm",
-        "npx",
-        "pnpm",
-        "bunx",
-        # Network tools — operands establish a connection.
-        "nc",
-        "ncat",
-        "netcat",
-        "socat",
-        "curl",
-        "wget",
-        "telnet",
-        "ftp",
-    )
-)
-
-# Only the unambiguous long spellings. `-v` and `-V` are excluded: for many
-# programs they mean verbose, not version, so `rm victim -v` would read as a
-# probe and delete the operand. `-h` is excluded: it collides with real options
-# (`head -h`, `ln -h`) and for shutdown/halt/reboot it means HALT, not help.
-# `java -version` and `python --version` keep working through their explicit
-# `_READ_ONLY_BASH_PREFIXES` entries rather than the probe rule.
-_HELP_FLAGS: frozenset[str] = frozenset(("--help", "--version"))
-
-# A subcommand between the program and the flag, e.g. `git log --help`. Bare
-# words only: no path separator, no dot, no leading dash. This is what keeps
-# `sh /tmp/evil.sh --help` (path) and `rm -rf ./proj --help` (option) out,
-# while `docker compose --help` and `git rev-parse --help` stay in.
-_HELP_PROBE_SUBCOMMAND_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
-# Programs whose `<program> <subcommand> --help` really is a usage probe.
-#
-# An ALLOWLIST, because the three-token form is the dangerous one: the middle
-# token is indistinguishable from an operand here, so a program that treats it as
-# a script RUNS it (`python3.12 payload --help`). The denied-program table cannot
-# answer that — it matches exactly, and the spellings a real system installs
-# (`python3.12`, `perl5.36`, `node20`, `sh.exe`, `g++-13`) are unbounded.
-#
-# Membership means: this program's subcommands are a fixed vocabulary it parses
-# itself, so an unknown one is an error rather than a file to execute. A program
-# missing from here is not blocked — its two-token probe still works, and the
-# three-token form falls through to the human prompt.
-_HELP_PROBE_SUBCOMMAND_PROGRAMS: frozenset[str] = frozenset(
-    (
-        "git",
-        "cargo",
-        "go",
-        "terraform",
-        "gh",
-        "glab",
-        "aws",
-        "gcloud",
-        "az",
-        "brew",
-        "apt",
-        "apt-get",
-        "dnf",
-        "yum",
-        "pacman",
-        "pip",
-        "pip3",
-        "poetry",
-        "uv",
-        "rustup",
-        "systemd-analyze",
-        # NOT archivers or `openssl`: their "subcommand" is a mode letter whose
-        # operands are files it reads or WRITES, so the three-token form is not a
-        # usage probe at all — `tar xf …` extracts, `zip …` creates, and `openssl
-        # <cmd>` reads a key. Membership here has to mean "an unknown subcommand
-        # is an error", and for these it means "a file to act on".
-    )
-)
-
-# The program must BE a bare command name, stated positively. The denied-program
-# table only knows the executors it lists, so anything it cannot recognise must
-# not be vouched for — and a rejection list cannot express that, because the
-# spellings the shell resolves at run time are unbounded:
-#
-#     $SHELL payload --help      ${SHELL} payload --help      $0 payload --help
-#
-# all name a shell that then RUNS `payload`, and all of them satisfied the
-# previous rule, which only asked "does the token contain a path separator?".
-# Requiring `[A-Za-z0-9][A-Za-z0-9._+-]*` refuses every one of them by
-# construction, along with `./payload`, `/tmp/x` and `../build/tool` that the
-# separator check was there for — a name this pattern accepts has to resolve
-# through PATH to something installed. Dots are allowed because real programs
-# carry them (`python3.12`, `apt-get`, `g++`).
-_HELP_PROBE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
-
-
-def _is_help_probe(segment: str) -> bool:
-    """True only when *segment* is a genuine usage/version probe.
-
-    Accepts ``<program> --help`` and ``<program> <subcommand> --help``. The
-    check is deliberately shaped as "only vouch for what is recognisably a
-    probe" rather than "reject the executors we know about": the denied-program
-    table cannot enumerate an arbitrary binary, so anything it does not
-    recognise must fail on the shape instead.
-
-    Rejected, each for its own reason:
-
-    * a flag other than ``--help`` / ``--version``, so ``rm victim -v``
-      is an operand plus verbose, not a probe;
-    * a program named by path (``./payload``, ``/tmp/x``), which the table has
-      no knowledge of and which may ignore ``--help`` entirely;
-    * a known code executor or hand-off wrapper (``sh``, ``python``, ``sudo``);
-    * a ``VAR=value`` prefix, which assigns into the command's environment;
-    * anything but a bare word between program and flag, which keeps file paths
-      and options out;
-    * unbalanced quotes, where argv cannot be established at all.
-
-    A rejected segment falls through to the read-only allowlist and, failing
-    that, to the human approval prompt — nothing is newly blocked.
-
-    The old rule was ``segment.endswith("--help")``, which auto-approved any
-    command at all once the token was appended.
-    """
-    try:
-        tokens = shlex.split(segment)
-    except ValueError:
-        # Unbalanced quotes: cannot establish the argv, so do not vouch for it.
-        return False
-    if len(tokens) < 2 or len(tokens) > 3:
-        return False
-    flag = tokens[-1]
-    if flag not in _HELP_FLAGS:
-        return False
-    program_token = tokens[0]
-    # A `VAR=value cmd --help` prefix assigns into the command's environment;
-    # shlex keeps it as one token, and it is not a usage probe.
-    if "=" in program_token:
-        return False
-    # Must BE a bare command name. Anything carrying a path separator, a shell
-    # expansion, or any other punctuation the shell resolves at run time is a
-    # program this classifier cannot identify, so it is not vouched for.
-    if not _HELP_PROBE_NAME_RE.match(program_token):
-        return False
-    if not program_token or program_token in _HELP_PROBE_DENIED_PROGRAMS:
-        return False
-    if len(tokens) == 3:
-        # The subcommand form only accepts the long spellings — short flags like
-        # `-h` collide with real options when an operand is present.
-        if flag not in _HELP_FLAGS:
-            return False
-        if not _HELP_PROBE_SUBCOMMAND_RE.match(tokens[1]):
-            return False
-        # The three-token form is ALLOWLISTED, not merely un-denied. In this shape
-        # the middle token is an operand as far as this classifier can tell, so an
-        # interpreter reached by a spelling the denylist does not carry runs it:
-        #
-        #     python3.12 payload --help      perl5.36 payload --help
-        #     node20 payload --help          g++-13 payload --help
-        #
-        # `_HELP_PROBE_DENIED_PROGRAMS` matches EXACTLY, and the variants a real
-        # system installs — version suffixes, `.exe`, `-13` — are unbounded, so no
-        # list of rejects closes this. Naming the programs whose subcommand form is
-        # known to be a usage probe does, and costs only that a program not yet
-        # listed falls through to the human prompt.
-        if program_token not in _HELP_PROBE_SUBCOMMAND_PROGRAMS:
-            return False
-    return True
-
-
 # ── Side effects reached through an allowlisted read-only verb ──
 #
 # The allowlist above names a verb and is matched as a prefix, so it vouches
@@ -1899,10 +1660,7 @@ def _classify_bash(cmd: str) -> str:
         # `file -c` only prints one).
         head = pipe_parts[0].strip()
         first = head.lower()
-        if not (
-            _is_help_probe(first)
-            or any(first == p or first.startswith(p + " ") for p in _READ_ONLY_BASH_PREFIXES)
-        ):
+        if not any(first == p or first.startswith(p + " ") for p in _READ_ONLY_BASH_PREFIXES):
             base = first.split()[0] if first.split() else first
             return f"command '{base}' is not on the read-only allowlist"
         # Clearing the allowlist only settles which program runs. The rest of
@@ -4473,7 +4231,14 @@ class _ChatSlot:
         ``running == False`` within a single loop iteration.
         """
         if self.running:
-            self.queue_append(prompt)
+            # circular import: session_control imports this module at module level.
+            from kiro_crew.dashboard.session_control import containment_meta
+
+            # Stamp the containment constraints holding at ADMISSION, so the
+            # queue drain can re-assert them at delivery (issue #5911): a target
+            # that gains a channel/mirror link while this prompt waits must not
+            # execute it under the weaker constraints that admitted it.
+            self.queue_append(prompt, meta=containment_meta(state, self))
             return False
         self.append("user", prompt, "msg msg-u")
         task = asyncio.create_task(run_chat_coro(state, self, prompt))
@@ -5199,6 +4964,14 @@ class DashboardState:
         # Sidebar columns — flat list of {id, name, tag_ids, mode, order, include_untagged}
         self._tag_boards: list[dict[str, Any]] = []
         self._background_tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
+        # Gateway replacement is process-wide, not an ordinary repeatable
+        # background mutation.  The task latch coalesces duplicate /api/restart
+        # clicks during the response-drain window; the in-progress latch also
+        # serializes restart requests arriving through update and other server
+        # paths.  Both are cleared when a mocked/failed exec returns, while a
+        # successful exec replaces this state with the successor process.
+        self._gateway_restart_task: asyncio.Task[None] | None = None
+        self._gateway_restart_in_progress: bool = False
         # FIX 2: unattended-turn concurrency cap. Semaphore is created lazily
         # (see _background_turn_sema) because this object outlives / predates
         # the event loop in some hosts. The counters exist so a queued fleet is
@@ -5592,6 +5365,8 @@ class DashboardState:
         update_managed_by: str = "",
         update_commits_ahead: int = 0,
         update_commits_behind: int = 0,
+        update_last_checked_at: float | None = None,
+        update_check_interval_secs: int = 43200,
     ) -> dict[str, Any]:
         """Core status fields shared by /api/status, SSE, and WebSocket pushes."""
         uptime = int(time.time() - self.start_time)
@@ -5651,6 +5426,8 @@ class DashboardState:
             # tell the two apart. 0/0 on non-git layouts and before any check.
             "update_commits_ahead": update_commits_ahead,
             "update_commits_behind": update_commits_behind,
+            "update_last_checked_at": update_last_checked_at,
+            "update_check_interval_secs": update_check_interval_secs,
             "no_crons": self.no_crons,
             "branch": branch,
             "commit": commit,

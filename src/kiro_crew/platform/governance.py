@@ -41,7 +41,7 @@ import json
 import logging
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import (
     Callable,
@@ -440,6 +440,24 @@ _KIND_READ = "read"
 _KIND_EDIT = "edit"
 _KIND_FETCH = "fetch"
 
+_PATH_ARG_KEYS = ("path", "file_path", "filePath")
+
+
+def _tool_arg_paths(raw_params: Mapping[str, object]) -> Tuple[str, ...]:
+    """Return every distinct, non-empty path carried under a supported alias.
+
+    Tool backends use all three spellings, sometimes in the same payload.  Every
+    value must be governed: choosing the first truthy alias would let a benign
+    ``path`` mask a sensitive ``filePath`` (and a truthy non-string value could
+    mask every later alias entirely).
+    """
+    paths: list[str] = []
+    for key in _PATH_ARG_KEYS:
+        value = raw_params.get(key)
+        if isinstance(value, str) and value.strip() and value not in paths:
+            paths.append(value)
+    return tuple(paths)
+
 
 def classify_tool_args(
     tool_kind: str, raw_params: Optional[Mapping[str, object]]
@@ -452,8 +470,10 @@ def classify_tool_args(
     authoritative signal.  Used by the gate to enforce the path/host scopes that a
     title cannot carry:
 
-    * ``kind == "edit"`` with a ``path`` → ``("filesystem.write", "<path>")``.
-    * ``kind == "read"`` with a ``path`` → ``("filesystem.read", "<path>")``
+    * ``kind == "edit"`` with a path argument →
+      ``("filesystem.write", "<path>")``.
+    * ``kind == "read"`` with a path argument →
+      ``("filesystem.read", "<path>")``
       (redundant with the ``Reading`` title path, harmless — both must permit).
     * ``kind == "fetch"`` with a ``url`` → ``("network.egress", "<host>")`` —
       the host is extracted from the URL so the ``host`` matcher applies.
@@ -462,7 +482,7 @@ def classify_tool_args(
     ACP backends omit it, so it arrives ``""``).**  When the kind is not one of
     the known fs/fetch kinds, we infer from the param SHAPE so an edit/fetch is
     still governed: a ``url``/``uri`` (and no shell ``command``) → egress; a
-    ``path``/``file_path`` (and no shell ``command``) → BOTH read and write
+    ``path``/``file_path``/``filePath`` (and no shell ``command``) → BOTH read and write
     (we cannot tell read from write without the kind, so we apply both ceilings —
     an ungoverned one permits, so this only tightens and never misroutes a shell
     command, which carries ``command`` and is governed by the ``commands`` scope).
@@ -473,14 +493,14 @@ def classify_tool_args(
     if not raw_params or not isinstance(raw_params, Mapping):
         return ()
     pairs: list = []
-    path = raw_params.get("path") or raw_params.get("file_path")
+    paths = _tool_arg_paths(raw_params)
     url = raw_params.get("url") or raw_params.get("uri")
     has_command = bool(raw_params.get("command"))  # a shell tool → commands scope
     if tool_kind == _KIND_EDIT:
-        if isinstance(path, str) and path:
+        for path in paths:
             pairs.append(("filesystem.write", path))
     elif tool_kind == _KIND_READ:
-        if isinstance(path, str) and path:
+        for path in paths:
             pairs.append(("filesystem.read", path))
     elif tool_kind == _KIND_FETCH:
         if isinstance(url, str) and url:
@@ -494,7 +514,7 @@ def classify_tool_args(
             host = _url_host(url)
             if host:
                 pairs.append(("network.egress", host))
-        if isinstance(path, str) and path:
+        for path in paths:
             # Can't distinguish read from write without the kind → apply both
             # ceilings (tightest-wins; an ungoverned scope permits).
             pairs.append(("filesystem.read", path))
@@ -625,6 +645,12 @@ class Decision:
     reason: str
     rule: str = ""  # rule1-allow | rule1-deny | rule2-intersect | ordinal | gate | default
     layer: str = ""  # policy | profile | both | default
+    # The governed item this outcome is ABOUT. One gate query can carry several
+    # identities for a single call (a prose title plus a trusted tool name plus an
+    # MCP reference), so a denial has to say WHICH one it denied or the audit
+    # record names the wrong subject. Empty when the caller asked about one item
+    # and already knows it.
+    item: str = ""
 
 
 # A control that can answer "is this item permitted?" for ONE level.  Both
@@ -2279,6 +2305,8 @@ def gate_decision(
     *,
     tool_kind: str = "",
     raw_params: Optional[Mapping[str, object]] = None,
+    mcp_ref: str = "",
+    extra_titles: Tuple[str, ...] = (),
 ) -> Decision:
     """Resolve a PreToolUse gate title against the governance ceiling ∩ profile.
 
@@ -2291,9 +2319,43 @@ def gate_decision(
     permitted here — an ungoverned scope permits.  When BOTH levels are
     ungoverned the result permits (the standalone default), so a host with no
     policy + no profile behaves exactly as today.
+
+    ``mcp_ref`` supplies an ALREADY-canonical ``@server`` / ``@server/tool``
+    reference for a caller that holds the server and tool as separate trusted
+    fields; it is checked in the ``mcp`` scope alongside anything the title maps
+    to.  Taking the reference directly is what makes such a call exact: the
+    ``mcp__<server>__<tool>`` title form is read by splitting on the LAST ``__``,
+    so it cannot represent a tool name containing ``__``, and a caller holding
+    the untangled fields must not be made to encode them into a form that loses
+    the distinction.
+
+    ``extra_titles`` carries any further NON-model-authored names the caller holds
+    for the SAME call (the trusted ``_meta.kiro.toolName`` beside a prose display
+    title). They belong in this one call rather than a second one: a separate call
+    re-resolves the active profile, so a hot reload between the two could answer
+    each question from a different snapshot and permit a tool that both complete
+    profiles deny. Empty entries are ignored.
     """
     pairs = list(classify_tool_title(tool_title))
+    # Additional NON-model-authored titles the caller holds for the same call --
+    # e.g. the trusted ``_meta.kiro.toolName`` beside an LLM-authored display
+    # title. They are classified here, in ONE decision, rather than asked as
+    # separate calls: each separate call would resolve the active profile again,
+    # so a profile hot-reloaded mid-call could serve a DIFFERENT snapshot to each
+    # question and a tool denied by both complete profiles could be permitted by
+    # every individual lookup. One snapshot, every target, deny if any denies.
+    # Empty entries are skipped: an empty title classifies to the unprefixed
+    # scopes as a real queryable item (``('tools', '')``), not a no-op, so it
+    # could match a rule it has nothing to do with.
+    for extra in extra_titles:
+        if extra:
+            pairs.extend(classify_tool_title(extra))
     pairs.extend(classify_tool_args(tool_kind, raw_params))
+    if mcp_ref:
+        pairs.append(("mcp", mcp_ref))
+    # Order-preserving dedupe -- a caller whose title already equals its trusted
+    # identity must not pay the same resolve twice.
+    pairs = list(dict.fromkeys(pairs))
     if not pairs:
         return Decision(True, "title not name-gate-governed", rule="default")
     # Deny if ANY governed scope the title/args map to denies it (the unprefixed
@@ -2302,7 +2364,10 @@ def gate_decision(
     for scope, item in pairs:
         decision = resolve(ceiling, profile, scope, item)
         if not decision.permitted:
-            return decision
+            # Name the identity that actually denied: with several targets in one
+            # query the caller cannot infer it, and an audit naming the prose
+            # title instead of the trusted tool name is a misleading record.
+            return replace(decision, item=item)
     return Decision(True, "permitted by all mapped scopes", rule="rule2-intersect")
 
 

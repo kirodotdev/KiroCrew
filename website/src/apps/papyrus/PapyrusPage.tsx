@@ -886,7 +886,7 @@ export default function PapyrusPage() {
         {hasConflict && (
           // The conflict has to be VISIBLE and have an exit. A silent read-only editor
           // whose saves fail would be worse than the overwrite it replaced.
-          <span className="flex items-center gap-2 text-[12px] text-warning">
+          <span className="flex items-center gap-2 text-[12px] text-warn">
             <AlertTriangle className="lucide-inline" />
             {i18nT('apps.papyrus.workspace.co_author_conflict')}
             <Btn onClick={resolveConflict}>
@@ -1060,7 +1060,7 @@ export default function PapyrusPage() {
           </div>
 
           {/* Status bar */}
-          <div className="flex items-center gap-4 px-3 py-1 border-t border-border bg-bg-subtle text-[12px] text-muted shrink-0">
+          <div className="flex items-center gap-4 px-3 py-1 border-t border-border bg-bg-accent text-[12px] text-muted shrink-0">
             <span title={i18nT('apps.papyrus.workspace.save_and_compile_hint')}>
               {i18nT('apps.papyrus.workspace.cursor_position', { line: cursor.line, column: cursor.column })}
             </span>

@@ -308,7 +308,7 @@ function CopyCommand({ children }: { children: ReactNode }) {
       onClick={handleCopy}
       aria-label={label}
       title={label}
-      className="group/cmd mt-1 flex w-full cursor-pointer items-center justify-between gap-2 rounded-lg border-none bg-surface-2 px-2 py-1.5 text-left hover:bg-bg-hover focus-ring"
+      className="group/cmd mt-1 flex w-full cursor-pointer items-center justify-between gap-2 rounded-lg border-none bg-bg-elevated px-2 py-1.5 text-left hover:bg-bg-hover focus-ring"
     >
       <span
         ref={hostRef}
@@ -503,7 +503,7 @@ function SandboxUnavailable({
             <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
               {i18nT('components.kiroPrerequisiteGate.technical_detail')}
             </p>
-            <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-surface-2 p-3 text-xs text-muted">
+            <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-bg-elevated p-3 text-xs text-muted">
               {detail}
             </pre>
           </div>

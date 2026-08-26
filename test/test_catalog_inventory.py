@@ -664,6 +664,31 @@ class TestCatalogFailureNeverDowngradesToAnUnpinnedSeed:
         assert row is None, "an unpinned seed must not stand in for an unknown pin"
         assert "could not be reached" in reason
 
+    def test_failure_log_and_reason_omit_name_and_exception_text(
+        self, monkeypatch, caplog
+    ):
+        secret_shaped_name = "secrettoken123"
+        monkeypatch.setattr(reg, "_load_registry_file", lambda: [])
+
+        def _unavailable(name):
+            raise reg.official_catalog.CatalogUnavailable(
+                f"catalog rejected {name} with embedded-secret"
+            )
+
+        monkeypatch.setattr(
+            reg.official_catalog,
+            "inventory_for_install",
+            _unavailable,
+        )
+
+        row, reason = reg._resolve_registry_row(secret_shaped_name)
+
+        assert row is None
+        assert secret_shaped_name not in reason
+        assert "embedded-secret" not in reason
+        assert secret_shaped_name not in caplog.text
+        assert "embedded-secret" not in caplog.text
+
     def test_an_authoritative_no_catalog_row_still_uses_the_seed(self, monkeypatch):
         """The other half: refusing on a successful "no row" would break every
         seed-only app for no security gain."""

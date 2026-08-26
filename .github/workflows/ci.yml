@@ -1286,6 +1286,29 @@ jobs:
           export I18N_BASE_REF
           npm run i18n:check
 
+      - name: Check the color utilities this change touches name real tokens
+        # A Tailwind utility naming a token the theme never declared is not an
+        # error anywhere: the class is simply not emitted, the element renders
+        # with no color, and the build, tsc and eslint all stay silent. Diff-
+        # scoped for the same reason as the focus-cue gate above: the tree
+        # carried a backlog of these, so a whole-tree gate would charge it to
+        # whoever pushed next. Literals a change touched are complete for
+        # regression, and the whole-tree count is printed as a non-failing
+        # report either way.
+        working-directory: website
+        env:
+          PHANTOM_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          # Absolute path: this step's working-directory is `website`.
+          PHANTOM_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
+            "$PHANTOM_BASE_REF" 'the phantom-classes gate')" || exit 1
+          export PHANTOM_BASE_REF
+          # Self-test first: it plants one probe per rule family, so a change
+          # that breaks the lexer or promotes a non-class string to a class
+          # fails here instead of shipping a gate that passes everything.
+          npm run lint:phantom-classes -- --test
+          npm run lint:phantom-classes
+
   cfn-lint:
     name: CloudFormation Lint
     runs-on: ubuntu-latest

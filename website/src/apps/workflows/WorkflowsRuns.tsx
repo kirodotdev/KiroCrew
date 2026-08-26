@@ -264,7 +264,7 @@ export default function WorkflowsRuns() {
               <div
                 className={`flex items-center gap-2 px-3 py-2 rounded border text-[12px] cursor-pointer ${
                   row.run_id === selectedId
-                    ? 'border-primary bg-card'
+                    ? 'border-accent bg-card'
                     : 'border-border hover:bg-card'
                 }`}
                 onClick={() => select(row.run_id)}

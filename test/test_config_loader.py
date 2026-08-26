@@ -3336,6 +3336,41 @@ class TestAppsAllowThirdParty:
         assert cfg.agent.apps_allow_third_party is False
 
 
+class TestTrustedAppRepositories:
+    def test_defaults_to_empty(self) -> None:
+        assert AgentConfig().apps_trusted_repositories == {}
+        assert _load_from_dict({}).agent.apps_trusted_repositories == {}
+
+    def test_string_bindings_round_trip_and_junk_is_dropped(self) -> None:
+        cfg = _load_from_dict(
+            {
+                "agent": {
+                    "apps_trusted_repositories": {
+                        "good-app": "https://example.test/owner/repo",
+                        "bad-value": 5,
+                    }
+                }
+            }
+        )
+        assert cfg.agent.apps_trusted_repositories == {
+            "good-app": "https://example.test/owner/repo"
+        }
+        assert cfg.to_dict()["agent"]["apps_trusted_repositories"] == {
+            "good-app": "https://example.test/owner/repo"
+        }
+
+
+class TestTrustedLocalApps:
+    def test_defaults_to_empty(self) -> None:
+        assert AgentConfig().apps_trusted_local == []
+        assert _load_from_dict({}).agent.apps_trusted_local == []
+
+    def test_string_markers_round_trip_and_junk_is_dropped(self) -> None:
+        cfg = _load_from_dict({"agent": {"apps_trusted_local": ["local-app", 5, "", None]}})
+        assert cfg.agent.apps_trusted_local == ["local-app"]
+        assert cfg.to_dict()["agent"]["apps_trusted_local"] == ["local-app"]
+
+
 def test_heartbeat_default_deliver_default_is_slack():
     """Absent config -> backward-compatible 'slack' default."""
     cfg = _load_from_dict({})

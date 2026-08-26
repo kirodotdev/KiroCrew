@@ -61,8 +61,8 @@ export default class MessageErrorBoundary extends Component<Props, State> {
     if (!this.state.error) return this.props.children
 
     return (
-      <div className="flex flex-col gap-1 px-3 py-2 rounded-md border border-warning/40 bg-warning-subtle/30 text-sm">
-        <div className="flex items-center gap-1.5 text-warning">
+      <div className="flex flex-col gap-1 px-3 py-2 rounded-md border border-warn/40 bg-warn-subtle/30 text-sm">
+        <div className="flex items-center gap-1.5 text-warn">
           <AlertTriangle size={14} />
           <span className="font-medium">{i18nT('components.messageErrorBoundary.message_failed_to_render')}</span>
           <AskAgentButton

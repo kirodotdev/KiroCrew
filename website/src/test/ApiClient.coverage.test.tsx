@@ -125,8 +125,9 @@ describe('client transport', () => {
   })
 
   it('POST/PUT/PATCH send a JSON content type alongside the placeholder key', async () => {
-    await api.trustApp('demo')
+    await api.trustApp('demo', 'https://example.test/owner/demo')
     expect(call().headers).toMatchObject({ 'Content-Type': 'application/json', 'X-Session-Key': 'dashboard:ui' })
+    expect(call().body).toEqual({ repository: 'https://example.test/owner/demo' })
     await api.setTrustAllApps(true)
     expect(call(1).method).toBe('PUT')
     expect(call(1).headers['Content-Type']).toBe('application/json')

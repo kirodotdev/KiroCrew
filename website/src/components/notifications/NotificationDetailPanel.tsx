@@ -59,7 +59,7 @@ export default function NotificationDetailPanel({ n, onClose }: { n: Notificatio
 
       {/* Meta bar */}
       <div className="px-5 py-3 border-b border-border flex items-center gap-3 flex-wrap bg-bg-elevated shrink-0">
-        <span className={`px-2 py-[3px] rounded-full text-[12px] font-bold ${km.color} border border-current/20`}>{km.label}</span>
+        <span className={`px-2 py-[3px] rounded-full text-[12px] font-bold ${km.color} border border-[color-mix(in_srgb,currentColor_20%,transparent)]`}>{km.label}</span>
         <span className="text-[13px] text-muted font-mono">{fmtFull(n.ts)}</span>
         {n.acked
           ? <Badge variant="ok">{i18nT('components.notifications.notificationDetailPanel.read')}</Badge>

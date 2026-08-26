@@ -2626,6 +2626,19 @@ class TestSlotLifecycle:
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[str] = loop.create_future()
         slot._approval_futures["test"] = fut
+        slot.messages.append(
+            {
+                "role": "permission",
+                "content": "Running: ls",
+                "cls": json.dumps(
+                    {
+                        "request_id": "test",
+                        "full_command": "ls",
+                        "trust_grantable": "1",
+                    }
+                ),
+            }
+        )
 
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post("/api/chat/slots/s1/approve", json={"action": "trust"})
@@ -8191,6 +8204,19 @@ class TestApproveYoloPropagation:
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[str] = loop.create_future()
         slot._approval_futures["test"] = fut
+        slot.messages.append(
+            {
+                "role": "permission",
+                "content": "Running: ls",
+                "cls": json.dumps(
+                    {
+                        "request_id": "test",
+                        "full_command": "ls",
+                        "trust_grantable": "1",
+                    }
+                ),
+            }
+        )
 
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post("/api/chat/slots/s1/approve", json={"action": "trust"})
@@ -8439,6 +8465,33 @@ class TestPlanAction:
             )
             assert resp.status == 200
         assert slot._auto_run is False
+
+    @pytest.mark.asyncio
+    async def test_busy_go_queues_with_stamp_and_human_provenance(self, tmp_path, monkeypatch):
+        """A Go clicked on a BUSY slot queues, and the entry carries both the
+        admission-time containment stamp and authenticated-human provenance —
+        without the flag, a human linking their own session before the drain
+        would silently destroy the approval they already gave (the same
+        request-identity split as api_chat and the manual continue)."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard import session_control as sc
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("plan-busy", mode="orchestrator")
+        task = MagicMock()
+        task.done.return_value = False
+        slot.task = task  # running -> the Go must queue, not start a stage loop
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/plan-busy/plan-action",
+                json={"action": "go"},
+            )
+            assert resp.status == 200
+            assert (await resp.json()).get("queued") is True
+        entry = slot._queue[0]
+        assert entry["content"] == "Go"
+        assert entry.get("_directive_user_origin") is True  # no app identity on the request
+        assert sc.QUEUED_CONTAINMENT_META_KEY in entry.get("meta", {})
 
 
 class TestPlanValidationStuck:
@@ -13489,6 +13542,9 @@ class TestAcpProcessDiedRecovery:
                 # A continuation, not the user's request: the turn had emitted, so
                 # this text is the runner's and must not mirror as user speech.
                 "payload": RecoveryPayload.CONTINUATION,
+                # Admission stamp (#5911): recovery requeues record the containment
+                # that held at requeue so the drain can re-validate the retry.
+                "meta": slot._queue[0]["meta"],
             }
         ]
 
@@ -13536,6 +13592,9 @@ class TestAcpProcessDiedRecovery:
                 # A continuation, not the user's request: the turn had emitted, so
                 # this text is the runner's and must not mirror as user speech.
                 "payload": RecoveryPayload.CONTINUATION,
+                # Admission stamp (#5911): recovery requeues record the containment
+                # that held at requeue so the drain can re-validate the retry.
+                "meta": slot._queue[0]["meta"],
             }
         ]
         # The status card and the queued marker describe the same event to two
@@ -13579,6 +13638,9 @@ class TestAcpProcessDiedRecovery:
                 "content": _CONN_RECOVER_MSG,
                 "kind": SYNTHETIC_RECOVERY_KIND,
                 "payload": RecoveryPayload.CONTINUATION,
+                # Admission stamp (#5911): recovery requeues record the containment
+                # that held at requeue so the drain can re-validate the retry.
+                "meta": slot._queue[0]["meta"],
             }
         ]
 

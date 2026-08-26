@@ -4084,3 +4084,116 @@ class TestTrustedGitBin:
             property(lambda _s: (_ for _ in ()).throw(AssertionError("probed on POSIX"))),
         )
         assert pc.trusted_git_bin() is None
+
+
+class TestKillAndReap:
+    """The shared kill-the-tree + bounded-pipe-draining-reap helper (#5989)."""
+
+    @staticmethod
+    def _proc(pid: int = 4242):
+        from unittest import mock
+
+        proc = mock.MagicMock()
+        proc.pid = pid
+        proc.kill = mock.MagicMock()
+        proc.communicate = mock.AsyncMock(return_value=(b"", b""))
+        proc.wait = mock.AsyncMock()
+        return proc
+
+    @pytest.mark.asyncio
+    async def test_kills_the_whole_tree_then_the_pid(self) -> None:
+        """A spawned command is often a shell line, so the whole group must be
+        signalled; the pid-scoped kill backs up a group signal that missed."""
+        from unittest import mock
+
+        proc = self._proc(pid=4242)
+        with mock.patch.object(pc, "kill_process_tree_async", mock.AsyncMock()) as tree:
+            await pc.kill_and_reap(proc)
+        tree.assert_awaited_once()
+        assert tree.await_args.args == (4242, pc.SIGKILL)
+        proc.kill.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_reaps_via_communicate_never_wait(self) -> None:
+        """The reap must drain the pipes: a killed child blocked writing into
+        a full pipe makes a bare ``wait()`` hang the calling task forever."""
+        from unittest import mock
+
+        proc = self._proc()
+        with mock.patch.object(pc, "kill_process_tree_async", mock.AsyncMock()):
+            await pc.kill_and_reap(proc)
+        proc.communicate.assert_awaited_once()
+        proc.wait.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_bounds_the_reap(self) -> None:
+        """A descendant that ignores SIGKILL's effects on the pipe (e.g. an
+        inherited fd held open) must not turn cleanup into a hang."""
+        import asyncio
+        from unittest import mock
+
+        assert 0 < pc.REAP_TIMEOUT_SECS <= 30
+        proc = self._proc(pid=1)
+
+        async def _never_returns():
+            await asyncio.sleep(3600)
+
+        proc.communicate = _never_returns
+        with mock.patch.object(pc, "kill_process_tree_async", mock.AsyncMock()):
+            # Outer bound is a hang detector only; the helper's own bound
+            # (passed explicitly) is what must return first.
+            await asyncio.wait_for(pc.kill_and_reap(proc, timeout=0.01), timeout=30)
+
+    @pytest.mark.asyncio
+    async def test_tolerates_dead_child_and_mock_pids(self) -> None:
+        """Best-effort throughout: an already-exited child (or a non-int test
+        pid refused by the broadcast guard) must not mask the caller's own
+        timeout or cancellation handling."""
+        from unittest import mock
+
+        proc = mock.MagicMock()  # pid is a MagicMock -> tree kill refuses it
+        proc.kill = mock.MagicMock(side_effect=ProcessLookupError())
+        proc.communicate = mock.AsyncMock(side_effect=RuntimeError("already reaped"))
+        await pc.kill_and_reap(proc)
+
+    @pytest.mark.asyncio
+    async def test_repeat_cancellation_does_not_abandon_cleanup(self) -> None:
+        """A second Task.cancel() landing mid-cleanup is a BaseException that
+        escapes ``suppress(Exception)``: without the shield it aborts the
+        cleanup before the reap, leaving the killed child un-drained. The
+        helper must finish the kill + reap, then re-deliver the cancellation
+        exactly once."""
+        import asyncio
+        from unittest import mock
+
+        started = asyncio.Event()
+        release = asyncio.Event()
+        events: list[str] = []
+
+        class Proc:
+            pid = 4242
+
+            def kill(self):
+                events.append("killed")
+
+            async def communicate(self):
+                events.append("reap-started")
+                started.set()
+                await release.wait()
+                events.append("reaped")
+                return b"", b""
+
+        async def _caller():
+            with mock.patch.object(pc, "kill_process_tree_async", mock.AsyncMock()):
+                await pc.kill_and_reap(Proc())
+
+        task = asyncio.ensure_future(_caller())
+        await started.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()  # the repeat cancellation that used to abort the reap
+        await asyncio.sleep(0)
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert events == ["killed", "reap-started", "reaped"]

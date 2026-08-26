@@ -1,7 +1,8 @@
 # Babysit PR Watch
 
 Status: implemented (this PR)
-Owners: babysit builtin skill (`builtin_skills/kirocrew-dev/babysit/`)
+Owners: babysit builtin skill (`builtin_skills/kirocrew-dev/babysit/`), on the
+interrupt controller in `irq.py` (see `agent-interrupt-controller.md`)
 
 ## 1. Problem
 
@@ -33,6 +34,13 @@ The babysit skill's decision table gains a watch-mode branch: `monitor_start`
 for phases where the agent acts most cycles, the watch cron for pure-wait
 phases, and an explicit composition pattern for switching between them.
 
+The generic half of that split now lives in `kiro_crew.irq`, the interrupt
+controller: state identity, masking, epoch resets, the coalescing window and
+the error backstop. This file is its first probe and owns only the two GitHub
+decisions — how to observe a pull request, and what counts as an anomaly. The
+probe never raises `Skip` / `Report` / `Done`; it returns a `Tick` of
+`Observation`s and the kernel raises the verdict.
+
 ## 3. Wake predicates
 
 Each fires once per head SHA per dedupe window (a force-push resets the
@@ -52,7 +60,27 @@ signal):
 `known_reds` carries the check names that are red on the base branch itself —
 the inherited-breakage filter that a human babysitter applies mentally. The
 watch never wakes for them, and counts them as green for the `ready`
-predicate.
+predicate. The probe filters them inside `observe()` and does not return them
+as observations at all. `known_reds` matches EITHER the bare check name (what
+an operator reads off GitHub's UI) or the workflow-qualified spelling the alert
+key uses, so a hand-written allow-list works while two workflows sharing a
+check name stay distinguishable.
+
+`new-red` and `ready` are **coalesced**; `conflict` is an `NMI` and fires
+immediately. The distinction is not importance but whether waiting can produce
+more information: a dirty PR dispatches no checks, so its `pending` count never
+drains and delaying the conflict signal would strand the operator on something
+already actionable.
+
+Coalescing was added because of a measured defect, not a hypothesis. Before it,
+`new-red` fired on the first failing check with no gate on `pending`. On this
+repository — roughly sixty-five checks finishing over about twenty minutes — one
+head woke the operator twice within four minutes, at 34 seconds for a body gate
+and at 4m55s for a reviewer lane, while twenty-four checks were still running.
+Neither wake could act: the first turn did not know whether more failures were
+coming, and both would have been serviced by the same edit and the same push.
+Notably a full read of the same file concluded it had no defects — the fault is
+a property of real CI timing, not of the code, and only running it exposed it.
 
 Deliberately not watched: reviewer comment bodies, marker freshness, human
 discussion. Parsing those requires the judgment this design exists to stop
@@ -89,10 +117,17 @@ it cancelled around.
   call per tick (25s subprocess timeout). The rollup is bucketed tolerantly
   across the CheckRun and StatusContext shapes; unknown conclusion vocabulary
   buckets as failing — when in doubt, wake a brain.
-- **State**: `<data home>/pr-watch/<repo-fold>-<pr>.json` holding the last
-  head, the per-head alert memory, and the consecutive-error streak. Corrupt
-  or missing state reads as fresh; the cost of lost state is one duplicate
-  wake, never a lost signal.
+- **State**: owned by the kernel at
+  `<data home>/watch/gh-pr/<subject-fold>-<digest>.json`, where the digest
+  covers `gh-pr#<repo>#<pr>#<cron job id>` — so two sessions babysitting one PR
+  keep independent alert memories and neither can suppress the other's
+  delivery. It holds the last head (the kernel's `epoch`), the per-head alert
+  memory, the consecutive-error streak, and any open coalescing window.
+  Corrupt or missing state reads as fresh; the cost of lost state is one
+  duplicate wake, never a lost signal. **This path differs from the previous
+  `<data home>/pr-watch/...`**, so the first tick after upgrading is a cache
+  miss and any currently-open anomaly wakes once more. That is expected, not a
+  regression.
 - **Wake targeting**: the cron must be armed FROM the babysit session — the
   cron system captures the calling session key at `cron_add` time and the
   delivery path resolves it back to that slot (rehydrating it from history if
@@ -124,7 +159,22 @@ it cancelled around.
 - Malformed cron message (bad JSON, missing repo/pr) → `Done` with the
   reason: a watch that can never succeed removes itself instead of retrying
   forever.
-- State file unwritable → alerts may repeat (duplicate wake), never lost.
+- State file unwritable → alerts may repeat (duplicate wake), never lost, and
+  every wake carries a warning naming the directory. If the probe is failing
+  *and* state cannot persist, the streak can never accumulate, so that case
+  reports on the first tick instead of waiting for a threshold it will never
+  reach.
+- **Coalescing costs at least one extra tick**, because a window cannot open
+  and fire within the same tick — `elapsed` is zero at the moment it opens. On
+  a 60-second cron that is at least 60 seconds of added latency. Set
+  `coalesce_secs: 0` in the cron message when latency matters more than being
+  woken once.
+- `pending` never draining (a check wedged in queued, a phantom pending row) →
+  the window fires at the `coalesce_max_secs` wall instead, which is measured
+  from the first anomaly and independent of `pending`. A new anomaly arriving
+  after that starts a fresh window, so under a permanently stuck `pending`
+  count the worst case is one wake per hard-cap interval — delayed, never
+  dropped.
 - Session tab closed → the delivery path rehydrates the slot from history;
   if the session's history was permanently deleted, delivery degrades to a
   bell notification.

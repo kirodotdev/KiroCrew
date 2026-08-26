@@ -182,14 +182,16 @@ def test_charter_budgets_match_the_ci_workflows():
         f"({opus_blocking} BLOCKING / {opus_advisory} advisory)"
     )
 
-    gpt_workflow = (
-        REPO_ROOT / ".github" / "workflows" / "codex-review.yml"
+    # The GPT lane's budget lives with the contract that applies it -- the
+    # shared review-core prompt (#5852) -- not in the workflow that splices it.
+    gpt_contract = (
+        REPO_ROOT / ".github" / "review-prompts" / "gpt-review-core.md"
     ).read_text(encoding="utf-8")
-    assert "BUDGET: report ALL findings that genuinely meet WHAT BLOCKS" in gpt_workflow, (
-        "codex-review.yml's BUDGET is expected to be report-ALL; if a numeric "
+    assert "BUDGET: report ALL findings that genuinely meet WHAT BLOCKS" in gpt_contract, (
+        "gpt-review-core.md's BUDGET is expected to be report-ALL; if a numeric "
         "cap returned, restore the numeric charter assertions here"
     )
-    assert re.search(r"BUDGET: at most \d+ BLOCKING", gpt_workflow) is None
+    assert re.search(r"BUDGET: at most \d+ BLOCKING", gpt_contract) is None
     assert "report-ALL" in skill, (
         "the gpt charter's budget no longer matches codex-review.yml "
         "(expected the report-ALL wording)"

@@ -331,7 +331,7 @@ describe('CI supplies a base commit on both paths', () => {
     // A count, not a set: the point is that a gate ADDED to ci.yml cannot skip
     // this file's `base.sha` assertion below by going unnoticed. Bump it when a
     // diff-scoped gate lands, and check the new wiring is in the loop.
-    expect(wirings).toHaveLength(7)
+    expect(wirings).toHaveLength(8)
   })
 
   it('diffs a PR against the commit its merge ref was built on, not the branch tip', () => {

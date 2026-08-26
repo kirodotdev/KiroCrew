@@ -32,6 +32,8 @@
     "(cd website && npx tsc -b)",
     "MW=\"$(grep -oE 'npx eslint src/ --max-warnings [0-9]+' .github/workflows/ci.yml | grep -oE '[0-9]+$')\" && [ -n \"$MW\" ] && (cd website && npx eslint src/ --max-warnings \"$MW\")",
     "BASE=\"$(git merge-base HEAD origin/main)\" && I18N_BASE_REF=\"$BASE\" npm --prefix website run i18n:check",
+    "npm --prefix website run lint:phantom-classes -- --test",
+    "BASE=\"$(git merge-base HEAD origin/main)\" && PHANTOM_BASE_REF=\"$BASE\" npm --prefix website run lint:phantom-classes",
     "(cd website && npx playwright install chromium)",
     "BASE=\"$(git merge-base HEAD origin/main)\" && I18N_BASE_REF=\"$BASE\" npm --prefix website run i18n:render",
     "BASE=\"$(git merge-base HEAD origin/main)\" && I18N_BASE_REF=\"$BASE\" SCOPED_TESTS_BASE_REF=\"$BASE\" python3 scripts/run_scoped_tests.py --surface frontend",

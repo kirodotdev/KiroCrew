@@ -25,7 +25,7 @@
  *
  * ONE session serves the whole gesture. It is opened before anyone knows what
  * the press will turn out to be, so ownership — not intent-at-open — decides its
- * fate (`ownerRef`):
+ * fate (the session core's `owner`):
  *
  * | the press turns out to be      | what happens to that session      |
  * |--------------------------------|-----------------------------------|
@@ -38,35 +38,47 @@
  * Nothing is transmitted for a discarded press: `useStreamingStt` buffers PCM
  * locally until the server's `ready` frame, which lands well after the threshold
  * has already resolved the gesture, so `cancel()` drops the buffer unsent.
+ *
+ * The ownership machinery itself — who owns the session, the in-flight-startup
+ * flag, the startup sequence, the hard-cap timer — lives in
+ * {@link createPttSession}, shared with the touch transport. This hook keeps
+ * only what is keyboard: key/chord matching, the latch, and the reconciliation
+ * paths a keyboard needs (a keyup that never arrives, a chord joining a held
+ * modifier, blur and visibility loss).
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import {
   loadPttConfig,
   matchesBinding,
-  MAX_HOLD_MS,
   PTT_CHANGED_EVENT,
   type PttConfig,
   isBareModifier,
   stillHeld,
 } from '../lib/pushToTalk'
+import {
+  createPttSession,
+  type PttPhase,
+  type PttSession,
+  type VoiceControls,
+} from '../lib/pttSession'
 
-/** The slice of `useVoiceInput` this hook drives. */
-export interface VoiceControls {
-  recording: boolean
-  start: () => Promise<void> | void
-  stop: () => void
-  /**
-   * End capture WITHOUT transcribing, and release whatever was acquired.
-   *
-   * This is the discard for a press that never became a recording. On the
-   * streaming path it also drops the locally-buffered PCM, which is why a
-   * discarded press transmits nothing.
-   */
-  cancel: () => void
-}
+// The interface predates the shared core and every consumer (including both
+// hook test suites) imports it from here, so it stays part of this module's
+// public surface.
+export type { VoiceControls }
 
-type Phase = 'idle' | 'arming' | 'holding'
+type Phase = PttPhase
+
+/**
+ * The keyboard's owner kinds.
+ *
+ *   `'gesture'` — the key press that opened the session.
+ *   `'latch'`   — a deliberate tap-latch or toggle. Outlives the keypress, so
+ *                 an idle phase is expected and must not stop it — which is
+ *                 exactly what the `isLatched` predicate below tells the core.
+ */
+type KeyOwner = 'gesture' | 'latch'
 
 export interface UsePushToTalkOpts {
   /** Disable entirely (e.g. STT off, or a modal owns the keyboard). */
@@ -91,117 +103,6 @@ export function usePushToTalk(voice: VoiceControls, { disabled }: UsePushToTalkO
   const setPhase = useCallback((p: Phase) => { phaseRef.current = p; setPhaseState(p) }, [])
 
   const armTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const capTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  /**
-   * The in-flight `start()`: what it was opened FOR, or null when none is
-   * pending. Set from just before the call until its promise settles.
-   *
-   *   `'hold'`  — a hold whose release must end the session.
-   *   `'latch'` — a deliberate toggle / tap-latch that must OUTLIVE the keypress.
-   *
-   * Load-bearing for the stuck-mic guarantee, because a startup can fail to
-   * settle AT ALL: the streaming path awaits a `ready` frame from the backend,
-   * and a socket that opens and then goes silent leaves that await pending
-   * forever. Any cleanup that runs only in the promise's own `.then()` therefore
-   * inherits its liveness, and the hard cap — the one mechanism that does not —
-   * has already been cleared by the time the key comes up. So every teardown in
-   * this window runs SYNCHRONOUSLY off this ref instead of awaiting anything.
-   *
-   * The KIND is what two decisions turn on, neither of which can read
-   * `voice.recording` (false for the whole `getUserMedia` + handshake window):
-   *
-   *   1. The settle handler telling an ORPHAN (a hold whose key is already up)
-   *      from a LATCH the user wants left running.
-   *   2. A second press cancelling a startup that has not gone live yet. Testing
-   *      `recording` alone let that press fall through and open a SECOND
-   *      `start()`, which `useVoiceInput`'s re-entrancy guard swallowed — so the
-   *      FIRST startup still went live and the mic stayed on with the user
-   *      believing they had just switched it off.
-   *
-   * Whether teardown commits or discards depends on the transport, not the kind:
-   * streaming has a live socket buffering real PCM, batch has no recorder yet.
-   * `cancel()` is the only call that aborts a batch startup — it releases the
-   * warm mic so `acquireWarm` rejects instead of handing back a stream — and it
-   * is also what releases the stream when startup REJECTS, since
-   * `useStreamingStt` builds its `AudioContext` and worklet after the handshake
-   * outside any `try` and `useVoiceInput` re-raises rather than catching.
-   */
-  /**
-   * Who owns the open session right now, or null when nobody does.
-   *
-   *   `'gesture'` — the key press that opened it. Owns it while `phase` is
-   *                 `arming` or `holding`; once `phase` returns to `idle` with
-   *                 this owner still set, the session is an ORPHAN.
-   *   `'latch'`   — a deliberate tap-latch or toggle. Outlives the keypress, so
-   *                 an idle phase is expected and must not stop it.
-   *
-   * The session is opened on keydown, BEFORE anyone knows whether the press is a
-   * tap, a hold, or a chord — so intent cannot be recorded at open time the way
-   * it could when `start()` waited for the threshold. Ownership is written when
-   * the gesture RESOLVES, and every teardown clears it, which is what lets the
-   * settle handler tell "still wanted" from "nothing is holding this any more".
-   */
-  const ownerRef = useRef<'gesture' | 'latch' | null>(null)
-  /**
-   * True while `start()`'s async startup is in flight.
-   *
-   * Load-bearing for the stuck-mic guarantee, because a startup can fail to
-   * settle AT ALL: the streaming path awaits a `ready` frame from the backend,
-   * and a socket that opens and then goes silent leaves that await pending
-   * forever. Any cleanup that runs only in the promise's own `.then()` therefore
-   * inherits its liveness, and the hard cap — the one mechanism that does not —
-   * may already have been cleared. So every teardown in this window runs
-   * SYNCHRONOUSLY off this ref instead of awaiting anything.
-   *
-   * It is also the only way to know a session exists at all before it goes live:
-   * `voice.recording` stays false for the whole `getUserMedia` + handshake
-   * window, so a second press that tested only `recording` fell through and
-   * opened a SECOND `start()` — which `useVoiceInput`'s re-entrancy guard
-   * swallowed, leaving the first startup to go live against a user who had just
-   * pressed to switch it off.
-   *
-   * Whether teardown commits or discards turns on `voice.recording` — "has
-   * capture actually begun" — NOT on which transport is in use. `useStreamingStt`
-   * flips recording true at the exact moment it has wired the worklet and PCM is
-   * buffering, and only THEN awaits the server's `ready` frame, so:
-   *
-   *   - `recording` true  → real audio exists (buffered, pre-`ready`). `stop()`
-   *     commits it; it sends the stop frame and arms its own force-cleanup.
-   *   - `recording` false → still inside `getUserMedia`/permission. Nothing was
-   *     captured and there is no socket, so `stop()` is a NO-OP and the startup
-   *     would run to completion and go live after the release. Only `cancel()`
-   *     aborts it.
-   *
-   * Keying this on `streamEnabled` instead was too coarse: it committed on the
-   * streaming transport even when the release beat the permission grant, which
-   * let a session open — and transmit post-release audio — for a press the user
-   * had already finished. `cancel()` is also what releases a half-acquired stream
-   * when startup REJECTS, since `useStreamingStt` builds its `AudioContext` and
-   * worklet after the handshake outside any `try` and `useVoiceInput` re-raises
-   * rather than catching.
-   */
-  const startPendingRef = useRef(false)
-  /**
-   * Monotonic per-`start()` sequence, bumped at EVERY call site AND by any
-   * teardown that supersedes a pending startup.
-   *
-   * Lets a late-resolving startup tell "the session I opened" from "a session
-   * someone else opened after me". Without it the settle handler's phase test is
-   * an unconditional "not mine" and stops whatever is live — so a user who
-   * releases and then immediately taps to latch (or clicks the mic button)
-   * inside the `getUserMedia` window gets their new session killed by the old
-   * hold's resolution. `useVoiceInput`'s own re-entrancy guard swallows that
-   * second `start()`, so the FIRST promise is the one that actually goes live,
-   * and leaving it running is what the user asked for.
-   */
-  const startSeqRef = useRef(0)
-  /**
-   * Bumped on every arm AND by `disarm`, so a timer armed by an earlier hold
-   * cannot fire against a later one. Deliberately NOT the guard for the async
-   * `start()` resolution -- `disarm` bumping it is exactly what made that guard
-   * dead; see `beginHold`.
-   */
-  const genRef = useRef(0)
   // Live refs for the voice controls: the document-level listeners are bound
   // once, so reading through refs avoids re-binding them whenever the parent
   // re-renders and hands over new callback identities.
@@ -211,6 +112,41 @@ export function usePushToTalk(voice: VoiceControls, { disabled }: UsePushToTalkO
   cfgRef.current = cfg
   const disabledRef = useRef(disabled)
   disabledRef.current = disabled
+
+  /**
+   * Late-bound seams the session core calls back into. `disarm` and the reset
+   * path are defined below in terms of the core, so they cannot be closed over
+   * at construction time; the core reads whatever this ref holds at call time,
+   * and every render re-points it at the current callbacks.
+   */
+  const coreSeamsRef = useRef({ resetToIdle: () => {}, disarm: (_commit: boolean) => {} })
+
+  /**
+   * The shared session-ownership core. Constructed once — it holds the owner,
+   * the pending-startup flag, the startup sequence, the gesture generation and
+   * the hard-cap timer, all of which must survive re-renders the same way a
+   * ref does.
+   *
+   * The keyboard's parameterization:
+   *   - `isLatched` names the owner kind that outlives its gesture, feeding
+   *     the settle handler's latch branch.
+   *   - `disownPendingOnRelinquish` stays OFF: every teardown here clears the
+   *     owner but deliberately leaves the startup sequence alone, so a startup
+   *     that ignores the teardown and goes live anyway is still caught and
+   *     stopped by its settle handler.
+   */
+  const sessionRef = useRef<PttSession<KeyOwner> | null>(null)
+  if (!sessionRef.current) {
+    sessionRef.current = createPttSession<KeyOwner>({
+      voice: () => voiceRef.current,
+      phase: () => phaseRef.current,
+      setPhase,
+      resetToIdle: () => { coreSeamsRef.current.resetToIdle() },
+      disarm: (commit) => { coreSeamsRef.current.disarm(commit) },
+      isLatched: (owner) => owner === 'latch',
+    })
+  }
+  const session = sessionRef.current
 
   useEffect(() => {
     const onChange = () => setCfg(loadPttConfig())
@@ -226,14 +162,25 @@ export function usePushToTalk(voice: VoiceControls, { disabled }: UsePushToTalkO
 
   const clearTimers = useCallback(() => {
     if (armTimerRef.current) { clearTimeout(armTimerRef.current); armTimerRef.current = null }
-    if (capTimerRef.current) { clearTimeout(capTimerRef.current); capTimerRef.current = null }
-  }, [])
+    session.clearCapTimer()
+  }, [session])
+
+  /**
+   * The reset the core runs on a FAILED startup: timers, generation, phase —
+   * the keyboard has no other per-gesture state to clear.
+   */
+  const resetToIdle = useCallback(() => {
+    clearTimers()
+    session.bumpGeneration()
+    if (phaseRef.current !== 'idle') setPhase('idle')
+  }, [clearTimers, session, setPhase])
+  coreSeamsRef.current.resetToIdle = resetToIdle
 
   /** Leave any armed/holding state, committing (`stop`) or discarding as told. */
   const disarm = useCallback((commit: boolean) => {
     const was = phaseRef.current
     clearTimers()
-    genRef.current++
+    session.bumpGeneration()
     setPhase('idle')
     if (was === 'holding') {
       // Startup still in flight. What that means depends on the path:
@@ -246,15 +193,15 @@ export function usePushToTalk(voice: VoiceControls, { disabled }: UsePushToTalkO
       //     force-cleanup either way, so the stuck-mic ceiling still holds.
       //   - BATCH has no recorder yet, so nothing was captured; `stop()` would
       //     do nothing at all, and only `cancel()` actually aborts the startup.
-      if (startPendingRef.current) {
+      if (session.startPending()) {
         // Clear the OWNER but leave the sequence alone: the settle handler is the
         // backstop for a startup that ignores this teardown and goes live
         // anyway, and bumping the sequence would make it read as stale and skip.
-        ownerRef.current = null
+        session.setOwner(null)
         if (voiceRef.current.recording) voiceRef.current.stop()
         else voiceRef.current.cancel()
       } else {
-        ownerRef.current = null
+        session.setOwner(null)
         // `recording`, not `startPending`, is the boundary that decides whether
         // `stop()` can reach anything — and this branch can be entered with a
         // startup STILL IN FLIGHT that we do not own. A mic-button start leaves
@@ -276,105 +223,11 @@ export function usePushToTalk(voice: VoiceControls, { disabled }: UsePushToTalkO
       // seconds later), so `cancel()` drops that buffer unsent instead of
       // shipping half a keystroke to the transcriber. Batch has no recorder yet,
       // and `cancel()` aborts its acquisition either way.
-      ownerRef.current = null
+      session.setOwner(null)
       voiceRef.current.cancel()
     }
-  }, [clearTimers, setPhase])
-
-  /**
-   * Startup SUCCEEDED — and is the LAST line of defence for a stuck mic, so it
-   * decides from the state that exists NOW rather than from the intent it was
-   * opened with:
-   *
-   *   - owner `'latch'` — a tap-latch or toggle. Meant to outlive the keypress,
-   *     so an idle phase is expected. Leave it running.
-   *   - owner `'gesture'` with a non-idle phase — the key is still down (arming
-   *     or holding). Leave it running; the release path owns the ending.
-   *   - anything else — the owner was cleared by a teardown, or the gesture ended
-   *     while startup was still in flight (no keyup coming, cap timer cleared) —
-   *     is an ORPHAN. Stop it.
-   *
-   * Every teardown in the startup window clears `ownerRef` and deliberately does
-   * NOT touch `seq`, so this handler still runs and can catch a startup that
-   * ignored that teardown and went live regardless.
-   *
-   * The liveness test is the PHASE, not the generation: `disarm` bumps `genRef`,
-   * so a generation comparison here is always false by the time a released hold
-   * resolves; it reads like a guard and is dead code. And it is scoped to `seq`
-   * so it only ever stops the session this call opened.
-   */
-  const settleStart = useCallback((seq: number) => {
-    if (startSeqRef.current !== seq) return
-    startPendingRef.current = false
-    const owner = ownerRef.current
-    if (owner === 'latch') return
-    if (owner === 'gesture' && phaseRef.current !== 'idle') return
-    ownerRef.current = null
-    voiceRef.current.stop()
-  }, [])
-
-  /**
-   * Startup FAILED. Nothing to commit, and a rejection can arrive with resources
-   * already half-acquired: `useStreamingStt` builds its `AudioContext` and worklet
-   * AFTER `getUserMedia` and the socket handshake, outside any `try`, and
-   * `useVoiceInput`'s streaming branch re-raises rather than catching. So a throw
-   * there leaves the mic stream open with no session to stop — `cancel()` is what
-   * tears it down.
-   *
-   * Scoped to `seq`, so a superseded startup's rejection cannot tear down the
-   * session that replaced it. Resets the phase directly rather than through
-   * `disarm`: with no session left there is nothing to commit on a later keyup,
-   * and leaving `phase` at `arming`/`holding` would let the release path try.
-   */
-  const failStart = useCallback((seq: number) => {
-    if (startSeqRef.current !== seq) return
-    startPendingRef.current = false
-    const owner = ownerRef.current
-    ownerRef.current = null
-    clearTimers()
-    genRef.current++
-    if (phaseRef.current !== 'idle') setPhase('idle')
-    if (owner !== null) voiceRef.current.cancel()
-  }, [clearTimers, setPhase])
-
-  /**
-   * Open a session for the press that just started, and track the pending startup
-   * so both a late resolution and a second press can reach it. EVERY `start()` in
-   * this hook goes through here — a call site that skipped it left no way to
-   * reach its own startup.
-   */
-  const launch = useCallback((owner: 'gesture' | 'latch') => {
-    ownerRef.current = owner
-    startPendingRef.current = true
-    const seq = ++startSeqRef.current
-    const started = voiceRef.current.start()
-    if (started && typeof (started as Promise<void>).then === 'function') {
-      void (started as Promise<void>).then(
-        () => { settleStart(seq) },
-        () => { failStart(seq) },
-      )
-    } else {
-      // Synchronous control (or one returning nothing): no startup window to
-      // guard, so leave the owner in place and nothing pending.
-      startPendingRef.current = false
-    }
-  }, [settleStart, failStart])
-
-  /**
-   * The threshold passed, so the press is a HOLD. Capture has been running since
-   * keydown — this only relabels the phase and arms the ceiling. There is no
-   * `start()` here: a second one would be swallowed by `useVoiceInput`'s
-   * re-entrancy guard, and the session opened on keydown is the one that already
-   * has the opening word in it.
-   */
-  const beginHold = useCallback(() => {
-    const gen = ++genRef.current
-    setPhase('holding')
-    // Hard ceiling: a release we never hear about must not hold the mic forever.
-    capTimerRef.current = setTimeout(() => {
-      if (genRef.current === gen && phaseRef.current === 'holding') disarm(true)
-    }, MAX_HOLD_MS)
-  }, [disarm, setPhase])
+  }, [clearTimers, session, setPhase])
+  coreSeamsRef.current.disarm = disarm
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -421,11 +274,11 @@ export function usePushToTalk(voice: VoiceControls, { disabled }: UsePushToTalkO
       // than "ending" a session nobody holds.
       if (phaseRef.current === 'idle'
           && (voiceRef.current.recording
-              || (startPendingRef.current && ownerRef.current !== null))) {
-        const pending = startPendingRef.current
+              || (session.startPending() && session.owner() !== null))) {
+        const pending = session.startPending()
         // Clear the owner so the settle handler stops the session if the startup
         // lands anyway, but leave the sequence alone so that handler still runs.
-        ownerRef.current = null
+        session.setOwner(null)
         if (pending) {
           // Startup still in flight: commit only if capture has actually begun
           // (`recording`), otherwise `stop()` is a no-op and the startup would
@@ -451,7 +304,7 @@ export function usePushToTalk(voice: VoiceControls, { disabled }: UsePushToTalkO
         // hides the cutoff row for it), so the press simply stays `arming` until
         // it is released, joined by another key, or the window loses focus.
         setPhase('arming')
-        launch('gesture')
+        session.launch('gesture')
         return
       }
       setPhase('arming')
@@ -460,10 +313,10 @@ export function usePushToTalk(voice: VoiceControls, { disabled }: UsePushToTalkO
       // the threshold plus the mic (and, on streaming, the Transcribe
       // handshake). Whichever way the gesture resolves, THIS session is the one
       // that serves it — or gets discarded unsent.
-      launch('gesture')
+      session.launch('gesture')
       armTimerRef.current = setTimeout(() => {
         armTimerRef.current = null
-        if (phaseRef.current === 'arming') beginHold()
+        if (phaseRef.current === 'arming') session.beginHold()
       }, holdMs)
     }
 
@@ -480,7 +333,7 @@ export function usePushToTalk(voice: VoiceControls, { disabled }: UsePushToTalkO
       }
       // Released before the threshold — a TAP.
       clearTimers()
-      genRef.current++
+      session.bumpGeneration()
       setPhase('idle')
       if (mode === 'hybrid' || mode === 'toggle') {
         // Latch on by ADOPTING the session this press already opened — no second
@@ -488,11 +341,11 @@ export function usePushToTalk(voice: VoiceControls, { disabled }: UsePushToTalkO
         // opened with) is already in it. Ownership moves from the gesture to the
         // latch, which is what tells a late-resolving startup to leave it alone.
         // Toggle mode arrives here for every release, since it never arms a hold.
-        ownerRef.current = 'latch'
+        session.setOwner('latch')
       } else {
         // Pure push-to-talk: a tap means nothing, so discard. `cancel()` drops
         // the streaming buffer before its `ready` frame — nothing was sent.
-        ownerRef.current = null
+        session.setOwner(null)
         voiceRef.current.cancel()
       }
     }
@@ -513,7 +366,7 @@ export function usePushToTalk(voice: VoiceControls, { disabled }: UsePushToTalkO
       window.removeEventListener('blur', onBlur)
       document.removeEventListener('visibilitychange', onVisibility)
     }
-  }, [beginHold, clearTimers, disarm, launch, setPhase])
+  }, [clearTimers, disarm, session, setPhase])
 
   // Unmounting mid-hold would orphan the timers AND the session. The key-up
   // listener goes away with this effect, so after unmount nothing is left that
@@ -526,9 +379,9 @@ export function usePushToTalk(voice: VoiceControls, { disabled }: UsePushToTalkO
   // `disarm` calls setPhase, and this runs while the component is going away.
   useEffect(() => () => {
     clearTimers()
-    const pending = startPendingRef.current
-    const owner = ownerRef.current
-    ownerRef.current = null
+    const pending = session.startPending()
+    const owner = session.owner()
+    session.setOwner(null)
     if (pending) {
       // Startup still in flight: commit buffered audio only if capture began,
       // otherwise abort it — `stop()` cannot reach a socket that does not exist.
@@ -541,7 +394,7 @@ export function usePushToTalk(voice: VoiceControls, { disabled }: UsePushToTalkO
       if (phaseRef.current === 'arming') voiceRef.current.cancel()
       else voiceRef.current.stop()
     }
-  }, [clearTimers])
+  }, [clearTimers, session])
 
   return { config: cfg, phase, holding: phase === 'holding' }
 }

@@ -104,6 +104,43 @@ class TestSchemaIntrospectionHelpers:
         validation._apply_field_default(data, "agent.provider")
         assert data == {"agent": {"keep": "ok"}}
 
+    def test_apply_field_default_never_repairs_a_fail_closed_path(self) -> None:
+        """Repairing `publish` to defaults IS the #4057 widening: a popped
+        section reads as "operator configured nothing" and the allowlist
+        silently reopens. The malformed value must survive validation so the
+        loader records the degradation and the gate denies — on jsonschema
+        hosts exactly as on hosts without it (where validation is a no-op)."""
+        section = {"publish": []}
+        assert validation._apply_field_default(section, "publish") is False
+        assert section == {"publish": []}
+
+        inner = {"publish": {"allowed_destinations": "deploy-web"}}
+        assert validation._apply_field_default(inner, "publish.allowed_destinations") is False
+        assert inner == {"publish": {"allowed_destinations": "deploy-web"}}
+
+    def test_restrictive_default_publish_fields_are_still_repaired(self) -> None:
+        """The exemption is per-path, NOT a publish subtree rule. For a field
+        whose default is restrictive the repair is the safe direction, and
+        preserving the malformed value can itself widen: a dict-shaped
+        relocate_roots iterates as its keys in the loader's comprehension and
+        would inject '/etc' as an allowed relocate root, where the repaired
+        default [] means home-only."""
+        data = {"publish": {"relocate_roots": {"/etc": False}}}
+        assert validation._apply_field_default(data, "publish.relocate_roots") is True
+        assert data == {"publish": {}}
+
+    def test_every_fail_closed_path_is_a_real_schema_path(self) -> None:
+        """The exemption list must not drift from the schema: a name that stops
+        matching a declared field would silently exempt nothing."""
+        from kiro_crew.config.schema import JSON_SCHEMA
+
+        for dot_path in validation._FAIL_CLOSED_PATHS:
+            node = JSON_SCHEMA
+            for part in dot_path.split("."):
+                props = node.get("properties", {})
+                assert part in props, f"_FAIL_CLOSED_PATHS entry {dot_path!r} not in schema"
+                node = props[part]
+
 
 class TestValidateConfigData:
     """``validate_config_data`` strips invalid values and warns on the loader logger."""

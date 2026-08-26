@@ -33,12 +33,54 @@ export const APP_EXECUTION_DENIED = 'app_execution_denied'
 
 /**
  * The subset of an app row the consent modal needs: identity for the grant,
- * display name for the title, and provenance (repo + source label) so the
+ * display name for the title, and provenance (clone target + source label) so the
  * user can see WHO they are about to trust.
  */
 export type TrustAppTarget = Pick<RegistryApp, 'name' | '_registry' | 'origin'> & {
   displayName?: string
-  repo?: string
+  trustRepository?: string
+}
+
+/** Mirror the backend's credential-free Git coordinate projection. */
+export function credentialFreeRepository(raw?: string): string | undefined {
+  if (!raw) return raw
+  const schemeAt = raw.indexOf('://')
+  if (schemeAt >= 0) {
+    const scheme = raw.slice(0, schemeAt).toLowerCase()
+    const authorityAt = schemeAt + 3
+    const suffixCandidates = ['/', '?', '#']
+      .map(delimiter => raw.indexOf(delimiter, authorityAt))
+      .filter(index => index >= 0)
+    const suffixAt = suffixCandidates.length ? Math.min(...suffixCandidates) : raw.length
+    const authority = raw.slice(authorityAt, suffixAt)
+    const pathAndSuffix = raw.slice(suffixAt)
+    const secretSuffixAt = ['?', '#']
+      .map(delimiter => pathAndSuffix.indexOf(delimiter))
+      .filter(index => index >= 0)
+    const publicPath = pathAndSuffix.slice(
+      0,
+      secretSuffixAt.length ? Math.min(...secretSuffixAt) : pathAndSuffix.length,
+    )
+    const userinfoAt = authority.lastIndexOf('@')
+    if (userinfoAt < 0) return raw.slice(0, suffixAt) + publicPath
+
+    const userinfo = authority.slice(0, userinfoAt)
+    const hostport = authority.slice(userinfoAt + 1)
+    if (scheme === 'ssh' || scheme === 'git+ssh') {
+      const passwordAt = userinfo.indexOf(':')
+      const username = passwordAt >= 0 ? userinfo.slice(0, passwordAt) : userinfo
+      const safeAuthority = username ? `${username}@${hostport}` : hostport
+      return raw.slice(0, authorityAt) + safeAuthority + publicPath
+    }
+    return raw.slice(0, authorityAt) + hostport + publicPath
+  }
+  // A standard SCP username is routing identity and must remain byte-exact.
+  // For a remote-only proof, any colon before the first @ is the backend's
+  // unsupported/ambiguous SCP shape, regardless of the suffix Git may parse.
+  const firstColon = raw.indexOf(':')
+  const firstAt = raw.indexOf('@')
+  if (firstAt > 0 && firstColon >= 0 && firstColon < firstAt) return undefined
+  return raw
 }
 
 /** Pull a machine-readable `code` out of an API rejection, if it carries one. */
@@ -118,7 +160,23 @@ export function useTrustGate(retryEnable: (name: string) => Promise<void>) {
   const [granted, setGranted] = useState(false)
 
   const open = useCallback((app: TrustAppTarget, retry?: (name: string) => Promise<void>) => {
-    setGate({ app, retry: retry ?? retryEnable })
+    const credentialFree = credentialFreeRepository(app.trustRepository)
+    // `trustRepository` is a server-owned opaque consent proof.  A client-side
+    // rewrite would authorize a coordinate the user was not shown and the server
+    // did not issue.  Use the sanitizer only as a defensive validator: if a
+    // compromised/stale response is not already credential-free, fail closed
+    // without rendering or submitting either the secret or a transformed proof.
+    if (credentialFree !== app.trustRepository) {
+      setGate(null)
+      setPending(false)
+      setFailed(false)
+      setGranted(false)
+      return
+    }
+    setGate({
+      app: { ...app, trustRepository: credentialFree },
+      retry: retry ?? retryEnable,
+    })
     setPending(false)
     setFailed(false)
     setGranted(false)
@@ -140,7 +198,7 @@ export function useTrustGate(retryEnable: (name: string) => Promise<void>) {
     // closure, and the catch below has to know whether the grant actually landed.
     let grantLanded = false
     try {
-      await api.trustApp(gate.app.name)
+      await api.trustApp(gate.app.name, gate.app.trustRepository)
       grantLanded = true
       setGranted(true)
       await gate.retry(gate.app.name)
@@ -212,7 +270,7 @@ export function useTrustGate(retryEnable: (name: string) => Promise<void>) {
 /**
  * Return *raw* as an href ONLY if it is a scheme we can hand a user, else `null`.
  *
- * `app.repo` is registry-index content, so it reaches this dialog untrusted. Parsed
+ * Repository text still reaches this dialog from a remote source. Parsed
  * with the URL constructor rather than a regex: a prefix check is defeated by
  * `\tjavascript:`, `JaVaScRiPt:`, and percent/entity encodings that the browser
  * still resolves, whereas `new URL().protocol` is the browser's own normalized
@@ -281,10 +339,10 @@ export default function TrustAppModal({ app, pending, failed, granted, onCancel,
       {app && (
         <div className="flex flex-col gap-3.5 text-[13px]">
           <p className="text-muted leading-relaxed">
-            {i18nT('components.appstore.trustAppModal.scope')}
+            {i18nT('components.appstore.trustAppModal.scope', { app: name })}
           </p>
           <p className="text-text leading-relaxed">
-            {i18nT('components.appstore.trustAppModal.intro')}
+            {i18nT('components.appstore.trustAppModal.intro', { app: name })}
           </p>
           {/* Explicit color-mix rather than a `bg-card/88` opacity modifier:
               theme colors are raw `var(--x)`, so the translucency depends on
@@ -309,9 +367,9 @@ export default function TrustAppModal({ app, pending, failed, granted, onCancel,
           <div className="flex flex-wrap items-center gap-2 text-muted">
             <GitBranch size={14} className="shrink-0" />
             <span className="shrink-0">{i18nT('components.appstore.trustAppModal.source')}</span>
-            {app.repo && (
+            {app.trustRepository && (
               /* Provenance is shown as a LINK only when the URL is one the user can
-                 safely be handed: `app.repo` is index-controlled content, and
+                 safely be handed: the clone target is remote content, and
                  rendering it into `href` unchecked makes `javascript:...` a
                  one-click script-execution vector in the dashboard's own origin —
                  on the very dialog whose job is to gate code execution. So the
@@ -320,19 +378,19 @@ export default function TrustAppModal({ app, pending, failed, granted, onCancel,
                  being hidden, because a weird URL is exactly what the user should
                  see before granting trust. `noreferrer` also keeps the dashboard
                  URL, which carries a session, out of the referrer header. */
-              safeHref(app.repo)
+              safeHref(app.trustRepository)
                 ? (
                   <a
-                    href={safeHref(app.repo) ?? undefined}
+                    href={safeHref(app.trustRepository) ?? undefined}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="font-mono text-[12px] text-accent underline break-all hover:text-accent-hover"
                   >
-                    {app.repo}
+                    {app.trustRepository}
                   </a>
                 )
                 : (
-                  <span className="font-mono text-[12px] text-text break-all">{app.repo}</span>
+                  <span className="font-mono text-[12px] text-text break-all">{app.trustRepository}</span>
                 )
             )}
             <Badge variant="muted">{sourceLabel(app)}</Badge>

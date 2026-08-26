@@ -559,10 +559,18 @@ Two Windows details do not generalise from the other platforms:
   Windows arch is a second entry inside that one file, never a second feed, and
   it also has to contend with `Provider.findFile()` disambiguating entries by
   matching `process.arch` against the URL path.
-- **`quitAndInstall` passes `isSilent` on win32 only.** `NsisUpdater` adds `/S`
-  only when silent, and the installer is assisted (`nsis.oneClick: false`), so
-  without it the app would quit and then wait for the user to click through a
-  setup wizard rather than swapping silently the way macOS and Linux do.
+- **Windows updates are visible but non-interactive.** `quitAndInstall` passes
+  `isSilent=false` and `isForceRunAfter=true`. The assisted installer
+  (`nsis.oneClick: false`) uses update-only hooks in `installer.nsh` to skip the
+  Welcome, install-mode, and Finish decisions, leaving only the native
+  extraction page and its real progress visible. At completion it runs the
+  locked electron-builder `StartApp` contract and exits successfully. The same
+  hooks call `SetSilent normal` for `/S --updated`, so a client released before
+  this behavior change also gets visible progress on its first upgrade into it.
+  The downloaded installer owns this UI contract: a downgrade or channel
+  switch-back to an installer that predates these hooks shows that release's
+  legacy assisted wizard instead, so operators and users must retain the
+  install scope detected by that wizard.
 
 `SUPPORTED_PLATFORMS` is necessary but not sufficient: a channel can lack a
 desktop publish lane entirely, which is what `KNOWN_CHANNELS` and

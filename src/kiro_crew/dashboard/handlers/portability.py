@@ -5,15 +5,30 @@ from __future__ import annotations
 import asyncio
 import logging
 import tempfile
+import uuid
 from pathlib import Path
 
 from aiohttp import web
 from aiohttp.multipart import BodyPartReader
 
+from kiro_crew.dashboard import part_stream
 from kiro_crew.portability import apply_import_zip, create_export_zip, validate_import_zip
 from kiro_crew.sel import sel as _sel_fn  # circular import — sel imports lazily
 
 logger = logging.getLogger(__name__)
+
+#: Ceiling for an uploaded state archive, aligned with the bomb guard that
+#: already governs this path: `portability._MAX_IMPORT_UNCOMPRESSED` admits 2 GiB
+#: *uncompressed*, so a compressed archive under 2 GiB cannot be refused here
+#: without the two limits contradicting each other.
+#:
+#: An earlier revision set this to 512 MB and justified it as restoring a bound
+#: streaming had removed. That was wrong on the facts: the previous
+#: implementation already streamed to disk with no cap at all, so 512 MB was a
+#: NEW restriction that could 413 a legitimate export -- exactly when the source
+#: machine may be gone. The cap exists only so an unbounded upload cannot fill
+#: the disk, and 2 GiB is the largest value consistent with the guard downstream.
+_MAX_IMPORT_BYTES = 2 * 1024**3
 
 
 def _sel():
@@ -27,19 +42,22 @@ async def _read_upload_file(request: web.Request) -> tuple[Path | None, web.Resp
     if part is None or not isinstance(part, BodyPartReader) or part.name != "file":
         return None, web.json_response({"error": "file field required"}, status=400)
 
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+    # A single path rather than a scratch directory: the callers below already
+    # own the returned file and unlink it in their `finally`, so a directory
+    # would be a second thing to clean and nobody is cleaning it.
+    dest = Path(tempfile.gettempdir()) / f"kc_import_{uuid.uuid4().hex}.zip"
     try:
-        while True:
-            chunk = await part.read_chunk(65536)
-            if not chunk:
-                break
-            tmp.write(chunk)
-        tmp.close()
-        return Path(tmp.name), None
-    except Exception:
-        tmp.close()
-        Path(tmp.name).unlink(missing_ok=True)
-        raise
+        await part_stream.stream_part_to_file(part, dest, max_bytes=_MAX_IMPORT_BYTES)
+    except part_stream.PartTooLarge:
+        limit_mb = _MAX_IMPORT_BYTES // (1024 * 1024)
+        return None, web.json_response(
+            {
+                "error": f"archive too large (max {limit_mb} MB)",
+                "code": "import_archive_too_large",
+            },
+            status=413,
+        )
+    return dest, None
 
 
 async def api_portability_export(request: web.Request) -> web.Response:

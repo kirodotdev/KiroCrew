@@ -28,6 +28,10 @@
     "kiro_credit_usage_unavailable": "Kiro credit usage — unavailable",
     "memory_unavailable": "Memory: unavailable",
     "metrics_are_stale_latest_fetch_failed": "Metrics are stale, latest fetch failed",
+    "n_more_one": "{{count}} more",
+    "n_more_other": "{{count}} more",
+    "notification_count_one": "{{count}} notification",
+    "notification_count_other": "{{count}} notifications",
     "resource_critical": "Critical",
     "resource_posture_tooltip_critical": "Host memory is critically low ({{gb}} GB free). Avoid heavy parallel work.",
     "resource_posture_tooltip_tight": "Host memory is tight ({{gb}} GB free). Heavy work may be slower.",
@@ -35,6 +39,8 @@
     "subagent_cap": "cap: {{cap}}",
     "show_fewer_apps": "Show fewer apps",
     "show_less": "Show less",
+    "show_more_apps_one": "Show {{count}} more app",
+    "show_more_apps_other": "Show {{count}} more apps",
     "social_login": "Social login",
     "stale_fetch_failing": "(stale: fetch failing)",
     "starting_update": "Starting update…",
@@ -285,6 +291,7 @@
         "show_in_file_manager": "Show in file manager"
       },
       "searchPanel": {
+        "capped": "(capped)",
         "search_failed": "search failed",
         "search_in": "Search in {{name}}",
         "search_in_2": "Search in {{name}}...",
@@ -378,6 +385,8 @@
         },
         "prList": {
           "closed_merged_prs_are_capped_at_the_100_most_rec": "Closed/merged PRs are capped at the 100 most recently updated — turn on a \"me\" filter for a complete, repo-wide search",
+          "file_changed_one": "{{count}} file changed",
+          "file_changed_other": "{{count}} files changed",
           "loading_the_rest": "Loading the rest…",
           "re_fetch_from": "Re-fetch {{label}} from {{provider}}",
           "refresh": "Refresh {{label}}",
@@ -524,6 +533,10 @@
             "create": "Create",
             "create_the_label_on_github": "Create the {{name}} label on GitHub",
             "creating": "Creating…",
+            "open_issue_one": "{{count}} open issue",
+            "open_issue_other": "{{count}} open issues",
+            "open_with_description_one": "{{description}} — {{count}} open",
+            "open_with_description_other": "{{description}} — {{count}} open",
             "read_only_repo_needs_triage_push_access": "Read-only repo — needs triage/push access",
             "suggest_again": "Suggest again",
             "suggest_new_labels": "Suggest new labels",
@@ -541,10 +554,16 @@
         },
         "taggingView": {
           "analyzing": "Analyzing…",
+          "apply_suggestion_one": "Apply {{count}} suggestion",
+          "apply_suggestion_other": "Apply {{count}} suggestions",
           "applying": "Applying…",
           "available_to_assign": "available to assign",
           "clear_selection": "Clear selection",
           "created_but_settings_not_updated": "\"{{name}}\" was created on GitHub, but this repo's local triage settings could not be updated: {{error}}",
+          "labelled_issue_one": "Labelled {{count}} issue.",
+          "labelled_issue_other": "Labelled {{count}} issues.",
+          "labelled_issue_with_failures_one": "Labelled {{count}} issue; {{failed}} could not be updated (see the rows below).",
+          "labelled_issue_with_failures_other": "Labelled {{count}} issues; {{failed}} could not be updated (see the rows below).",
           "read_only_repo_needs_triage_or_push_access": "Read-only repo — needs triage or push access",
           "select_all": "Select all",
           "suggest_again": "Suggest again ({{n}})",
@@ -887,7 +906,7 @@
         "close": "Close (Esc)",
         "custom": "Custom",
         "delete": "Delete",
-        "deleteConfirm": "Delete appearance pack \"{{name}}\"? This cannot be undone.",
+        "deleteConfirm": "Delete appearance pack “{{name}}”? This cannot be undone.",
         "deleteFailed": "Delete failed",
         "dressUp": "Dress up",
         "edit": "️ Edit",
@@ -1216,6 +1235,12 @@
       "run_named_now": "Run {{name}} now",
       "running": "running"
     },
+    "tailnetMobile": {
+      "automatic_https": "After HTTPS is enabled for this tailnet, Tailscale creates and renews the private certificate automatically.",
+      "setting_up": "Setting up phone access…",
+      "setup_action": "Set up & show QR",
+      "setup_timeout": "Phone access did not reach a ready state. Re-check the setup, then try again."
+    },
     "filePickerMenu": {
       "no_matches_ctrl_enter_sends": "No matching files — Ctrl+Enter sends the message",
       "no_matches_enter_sends": "No matching files — Enter sends the message"
@@ -1302,7 +1327,7 @@
       },
       "categories": {
         "agents_automation": "Agents & Automation",
-        "designer_tools": "Designer Tools",
+        "designer_tools": "Design Tools",
         "developer_tools": "Developer Tools",
         "oncall_ops": "On-call & Ops",
         "other": "Other",
@@ -2109,6 +2134,11 @@
       "command_completions": "Command completions"
     },
     "terminalKeyBar": {
+      "paste": "Paste",
+      "paste_clipboard_empty": "Clipboard is empty",
+      "paste_failed": "Paste failed",
+      "paste_needs_https": "Paste needs a secure (HTTPS) connection",
+      "paste_permission_needed": "Allow clipboard access",
       "terminal_keys": "Terminal keys"
     },
     "themeEditor": {
@@ -2168,9 +2198,11 @@
       "up": "up {{time}}"
     },
     "updateModal": {
-      "restart_update": "Restart & Update",
+      "restart_update": "Install Update & Restart App",
+      "install_restart_timing": "Installing may take several minutes. The app will close and relaunch automatically when the update is complete.",
+      "windows_installer_handoff": "A Windows installation window will show progress.",
       "installing_update": "Installing update…",
-      "installing_update_body": "{{productName}} is stopping the local gateway and installing the update. This can take a minute — don’t quit the app; it will relaunch itself.",
+      "installing_update_body": "{{productName}} is stopping the local gateway and installing the update. This can take several minutes. It will relaunch automatically.",
       "install_failed": "Update failed to install",
       "install_failed_body": "The update could not be applied. {{productName}} is restoring the local gateway — you can keep using this version and retry from Settings > About.",
       "back_to_dashboard": "Back to dashboard",
@@ -2581,6 +2613,8 @@
       "failed_to": "Failed to {{action}}",
       "failed_to_load_app": "Failed to load app",
       "failed_to_uninstall": "Failed to uninstall",
+      "use_cases": "Use cases",
+      "configuration": "Configuration",
       "open_screenshot": "Open screenshot {{n}}",
       "screenshot": "Screenshot {{n}}",
       "install_complete": "Install complete",
@@ -2614,6 +2648,8 @@
       "this_section_could_not_be_displayed": "This section could not be displayed.",
       "uninstall_removes_metadata_and_source": "Installed from Apps — {{productName}} metadata and the downloaded source code will be removed.",
       "uninstall_removes_metadata_secret_and_source": "Installed from Apps — {{productName}} metadata, the app secret, and the downloaded source code will be removed.",
+      "updated_app_one": "Updated {{count}} app.",
+      "updated_app_other": "Updated {{count}} apps.",
       "updating_progress": "Updating {{done}}/{{total}}…"
     },
     "artifactDeployPage": {
@@ -2622,7 +2658,7 @@
       "created_and_registered_profile": "Created + registered profile '{{name}}'.",
       "deploy_artifact": "Deploy {{name}}",
       "deployments_count": "Deployments ({{count}})",
-      "destroy_confirm": "Permanently deletes bucket {{bucket}} and distribution {{distribution}} for '{{name}}'. Cannot be undone.",
+      "destroy_confirm": "DESTROY “{{name}}”? Permanently deletes bucket {{bucket}} and distribution {{distribution}}. Cannot be undone.",
       "destroying": "Destroying '{{name}}' (CloudFront disable can take 5–15 min).",
       "error": "Error: {{error}}",
       "is_the_default_profile": "{{name}} is the default profile",
@@ -2640,13 +2676,13 @@
       "fullstack_also_requires_the_permissions_boundary": "Fullstack also requires the permissions-boundary policy below — create it BEFORE the first deploy (role creation is conditioned on it).",
       "make_default": "Make default",
       "not_reachable": "not reachable",
-      "recall_confirm": "Empties bucket {{bucket}} for '{{name}}' (URL → 404, reversible). Edge caches may serve briefly; already-downloaded content can't be recalled.",
+      "recall_confirm": "Recall “{{name}}”? Empties bucket {{bucket}} (URL → 404, reversible). Edge caches may serve briefly; already-downloaded content can't be recalled.",
       "recalled": "Recalled '{{name}}'.",
       "register": "Register",
       "registered_profile": "Registered profile '{{name}}'.",
       "remove_failed": "remove failed",
       "remove_from_registry": "Remove {{name}} from registry",
-      "remove_profile_confirm": "Removes '{{name}}' from the registry. Your ~/.aws/config is NOT touched.",
+      "remove_profile_confirm": "Remove “{{name}}” from the registry? Your ~/.aws/config is NOT touched.",
       "removed_from_registry_your_aws_config_is_untouche": "Removed from registry (your ~/.aws/config is untouched).",
       "unknown": "unknown",
       "unknown_2": "(unknown)",
@@ -2748,7 +2784,7 @@
       "preview": "Preview: {{slug}}",
       "published": "Published ({{visibility}})",
       "published_sync_issue": "Published (sync issue)",
-      "remove_artifact_confirm": "Remove artifact \"{{slug}}\" from your library?\n\nThis deletes the artifact entry and its version history. If this artifact came from a file on disk or a chat widget, the original is NOT touched — you can re-add it later.",
+      "remove_artifact_confirm": "Remove artifact “{{slug}}” from your library?\n\nThis deletes the artifact entry and its version history. If this artifact came from a file on disk or a chat widget, the original is NOT touched — you can re-add it later.",
       "remove_star_from_artifact": "Remove star from artifact",
       "star_artifact": "Star artifact",
       "starred_click_to_unstar": "Starred — click to unstar",
@@ -3129,7 +3165,7 @@
       "archive_session_one": "Archive {{count}} session",
       "archive_session_other": "Archive {{count}} sessions",
       "default_agent": "Default agent: {{name}}",
-      "delete_folder_confirm": "Delete \"{{name}}\"? Sessions will be ungrouped.",
+      "delete_folder_confirm": "Delete “{{name}}”? Sessions will be ungrouped.",
       "filter_tags": "Filter tags: {{name}}",
       "folder_2": "Folder {{name}}",
       "folder_options_for": "Folder options for {{name}}",
@@ -3767,7 +3803,13 @@
         "pending_enable_click_to_revert": "Pending: enable (click to revert)",
         "pending_uninstall": "{{label}} — pending uninstall",
         "unknown": "Unknown",
-        "servers_scope_tip": "MCP servers across Kiro Crew and your interactive {{provider}}/Kiro globals. The Kiro Crew badge shows if it'll load in Kiro Crew sessions; the Globals badge shows if it's shared to your interactive Kiro global. Click to toggle, then Apply."
+        "servers_scope_tip": "MCP servers across Kiro Crew and your interactive {{provider}}/Kiro globals. The Kiro Crew badge shows if it'll load in Kiro Crew sessions; the Globals badge shows if it's shared to your interactive Kiro global. Click to toggle, then Apply.",
+        "sign_in_required": "Sign-in required",
+        "sign_in_required_help": "This server uses OAuth and nobody has signed in yet. <chatLink>Go to chat</chatLink>, start a new session, and send any message — you'll be asked to approve the sign-in in chat. Then probe to refresh this list.",
+        "oauth_not_a_static_token": "This server signs in with OAuth, so a static Authorization header cannot satisfy it. Remove and re-add this server without the header, enable it, then start a new chat session to sign in.",
+        "sign_in_required_next": "Once you have approved it, use the Probe MCP servers button above this table; this row will then read Signed in.",
+        "signed_in": "Signed in",
+        "signed_in_help": "Kiro CLI holds a sign-in for {{provider}}. The probe runs without that token, so {{productName}} cannot confirm the sign-in is still valid."
       },
       "memoryGraphTab": {
         "all_count": "All ({{count}})",
@@ -3798,8 +3840,8 @@
       },
       "skillsTab": {
         "adds_new_requirements_to": "Adds new requirements to {{target}} — {{description}}",
-        "delete_confirm": "Delete \"{{name}}\"?",
-        "dismiss_confirm": "Dismiss \"{{name}}\"?",
+        "delete_confirm": "Delete “{{name}}”?",
+        "dismiss_confirm": "Dismiss “{{name}}”?",
         "dismiss_all": "Dismiss All",
         "dismiss_all_confirm": "Dismiss all {{count}} pending skills?",
         "loaded_by_2": "Loaded by: {{agents}}",
@@ -3845,7 +3887,7 @@
         "scripts_always_require_review": "Bundled scripts always require manual review, even when skill approval is turned off."
       },
       "steeringTab": {
-        "delete_confirm": "Delete \"{{path}}\"?",
+        "delete_confirm": "Delete “{{path}}”?",
         "edit_2": "Edit {{path}}",
         "no_files_match_query": "No files match “{{query}}”.",
         "select": "Select {{path}}",
@@ -4047,7 +4089,7 @@
         "batch_move_failed_one": "{{count}} of {{total}} job could not be moved",
         "batch_move_failed_other": "{{count}} of {{total}} jobs could not be moved",
         "collapse_folder": "Collapse folder",
-        "confirm_delete_folder": "Delete \"{{name}}\"? Jobs will be ungrouped.",
+        "confirm_delete_folder": "Delete “{{name}}”? Jobs will be ungrouped.",
         "create": "Create",
         "delete_folder": "Delete folder",
         "delete_folder_named": "Delete \"{{name}}\"",
@@ -4089,6 +4131,21 @@
       "truncated_showing_first_200kb": "… truncated (showing first 200KB) …"
     },
     "settings": {
+      "mobileLoginCard": {
+        "sign_in_on_mobile": "Sign in on mobile",
+        "create_a_one_time_link_for_mobile_or_another_browser": "Create a short-lived sign-in link for mobile or another browser. It expires in 5 minutes.",
+        "creating_link": "Creating link…",
+        "create_mobile_sign_in_link": "Create mobile sign-in link",
+        "create_new_mobile_sign_in_link": "Create new link",
+        "mobile_sign_in_link": "Mobile sign-in link",
+        "copy_sign_in_link": "Copy sign-in link",
+        "link_copied": "Link copied",
+        "link_expires_in_minutes": "This link expires in {{minutes}} minutes.",
+        "send_the_copied_link_to_your_mobile_device_then_open_it": "Send the copied link to your mobile device, then open it there.",
+        "dashboard_url_required_to_create_a_mobile_sign_in_link": "The dashboard URL is not configured. Set dashboard.url to create a mobile sign-in link.",
+        "could_not_create_a_sign_in_link_try_again": "Could not create a sign-in link. Try again.",
+        "copy_failed_select_the_link_and_copy_it_manually": "Copy failed. Select the link and copy it manually."
+      },
       "aboutPanel": {
         "diverged": "Diverged",
         "checkout_diverged_from_upstream": "This checkout has diverged from its upstream ({{distance}}). Rebase or merge to update — nothing is applied automatically, so your local commits are safe.",
@@ -4107,7 +4164,8 @@
         "download_failed": "Download failed",
         "download_the_latest_version": "download the latest version",
         "install_failed": "Couldn’t install the update",
-        "installing_quiet_note": "Installing — Kiro Crew will go quiet for a minute or two, then restart itself.",
+        "install_update_restart_app": "Install Update & Restart App",
+        "installing_quiet_note": "Installing — this can take several minutes. {{productName}} will reopen automatically when the update is complete.",
         "manual_install_fallback": "If updating doesn't work, you can {{link}} and reinstall over this copy. Your settings, chats, and files are kept.",
         "published": "published {{when}}",
         "restarting": "Restarting...",
@@ -4558,8 +4616,8 @@
           "revoke_disables": "{{name}} is no longer trusted and has been switched off.",
           "change_failed": "That change did not take effect: {{detail}}",
           "unknown_error": "unknown error",
-          "revoke_confirm_title": "Remove trust from {{name}}?",
-          "revoke_confirm_body": "{{name}} will be switched off and stop working. It stays installed, and you can trust it again later.",
+          "revoke_confirm_title": "Remove trust from “{{name}}”?",
+          "revoke_confirm_body": "“{{name}}” will be switched off and stop working. It stays installed, and you can trust it again later.",
           "revoke_confirm_ok": "Remove trust and switch off",
           "allow_all_confirm_body": "Allowing every third-party app lets any app you install run its own code inside Kiro Crew, with the same access Kiro Crew has — your files, your saved credentials, and the internet. Trusting one app at a time is safer.",
           "allow_all_confirm_ack": "I understand every third-party app I install will be able to run its own code with Kiro Crew's access.",
@@ -4998,6 +5056,9 @@
     }
   },
   "utils": {
+    "agentSwitchFeedback": {
+      "turn_in_flight": "A turn is running — try again when it finishes."
+    },
     "cronUtils": {
       "create": "Create",
       "save": "Save",
@@ -5139,7 +5200,7 @@
     "colChecks": "Checks",
     "colPr": "Pull request",
     "colVerdict": "State",
-    "commitConfirm": "Commit this change to {{branch}} and push it? A published commit cannot be recalled.",
+    "commitConfirm": "Commit this change to “{{branch}}” and push it? A published commit cannot be recalled.",
     "commitFailed": "The commit was refused.",
     "commitFinding": "Commit to the branch",
     "currentRepo": "Working on",

@@ -71,7 +71,7 @@ the branch may simply have inherited.
 | `[changed-values]` | diff | zero tolerance | catalog QA over every value the branch added or changed, all languages |
 | `[key-refs]` | repo | hard zero | a `t('key')` naming a key that does not exist |
 | `[plurals]` | repo | hard zero | an i18nT-adjacent plural suffix concatenated outside the translation call |
-| `[plurals-hardcoded]` | repo | ceiling — fails on growth | the same plural glue with NO `i18nT` in it, fully hardcoded |
+| `[plurals-hardcoded]` | repo | ceiling — fails on growth | the same plural glue with NO `i18nT` in it — template-literal glue, JSX-text glue, string concatenation, or a whole-word ternary |
 | `[pseudolocale]` | repo | hard zero | `en-XA.json` stale relative to its generator |
 | `[dnt]` | repo | hard zero | a do-not-translate term respelt in a shipped catalog |
 | `[manifest-sync]` | repo | hard zero | a built-in `app.json` string and its `en.json` value stopped matching |
@@ -95,7 +95,25 @@ the branch may simply have inherited.
    hard zero (the frozen sites need manual conversion, so a hard zero would have
    failed on arrival and been disabled) and was invisible to the gate entirely —
    the hard-zero tier keys on an adjacent `i18nT` call, so a fully hardcoded
-   literal reported zero to it and the class regrew silently. The ceiling is
+   literal reported zero to it and the class regrew silently. The detector
+   (`website/scripts/lib/hardcoded-plural.mjs`) covers four spellings of the
+   defect, each in all three comparison forms (`> 1`, `!== 1`, inverted `=== 1`),
+   whitespace- and quote-tolerant:
+
+   - **template-literal glue** — `` `${n} noun${n > 1 ? 's' : ''}` ``
+   - **JSX-text glue** — `{n} noun{n > 1 ? 's' : ''}` with no `i18nT`
+   - **string concatenation** — `'noun' + (n > 1 ? 's' : '')`
+   - **whole-word ternary** — `n === 1 ? 'line' : 'lines'`, where the plural arm
+     must be the `s`-suffixed (or `y`→`ies`) form of the singular arm, so a
+     ternary choosing two unrelated words never counts as a plural pair
+
+   Spellings it does NOT cover, named so a miss is triaged as a known gap rather
+   than a malfunction: a JSX-text match never crosses a tag boundary
+   (`<b>{n}</b> noun{…}` is unseen), the concat and template spellings require
+   the noun to be literal text (glue onto a variable or a call result is
+   unseen), a whole-word pair with irregular morphology
+   (`'child' : 'children'`) or multi-word arms is unseen, and any expression
+   containing braces defeats the lexical patterns. The ceiling is
    pinned at `HARDCODED_CEILING` in `website/scripts/i18n-plural-codemod.mjs` and
    ratchets DOWN as sites are converted. What keeps it out of the stored-total
    trap below: it is pinned at the frozen debt's worst point, so main crosses it
@@ -297,6 +315,13 @@ per-file dynamic-site diff, the same shape as `[vs-base]`.
 
 Runs in `frontend-test`, outside the `i18n:check` runner above, because it is a
 plain vitest assertion over the catalog files rather than a diff-scoped gate.
+
+The same job also runs `src/i18n/destructiveConfirm.test.ts`, which is the
+convention detector for quoted operands on destructive confirms (#4821): every
+`confirm` key that interpolates a placeholder must be on the quoted-operand pin,
+an explicit key exemption, or interpolate only names in
+`EXEMPT_CONFIRM_PLACEHOLDER_NAMES`. A brand-new confirm with a bare `{{name}}`
+fails that test even if nobody remembers to extend the pin.
 
 It fails on any key defined **twice inside one object** in any
 `src/i18n/locales/*.json`. Every catalog on disk is covered, so adding a language

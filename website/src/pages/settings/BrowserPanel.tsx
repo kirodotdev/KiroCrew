@@ -308,7 +308,7 @@ export function BrowserPanel() {
             about to drive their logged-in browser.
           */}
           <SettingsCard>
-            <div className="flex items-start gap-3">
+            <div className="flex items-start gap-3" data-setting-label={i18nT('pages.settings.browserPanel.token_label')}>
               <KeyRound size={18} className="text-muted shrink-0 mt-[2px]" />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2 flex-wrap">
@@ -437,7 +437,7 @@ export function BrowserPanel() {
                   {installCommand && (
                     <div className="text-muted text-left max-w-[340px] mt-1">
                       {i18nT('pages.settings.browserPanel.node_no_admin')}
-                      <pre className="mt-1.5 mb-1 whitespace-pre-wrap break-all text-[12px] bg-surface-2 rounded px-2 py-1.5">
+                      <pre className="mt-1.5 mb-1 whitespace-pre-wrap break-all text-[12px] bg-bg-elevated rounded px-2 py-1.5">
                         <code>{installCommand}</code>
                       </pre>
                       {/*

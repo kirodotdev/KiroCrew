@@ -1143,8 +1143,16 @@ def write_pod_config(home_dir: Path, seed: str) -> None:
         return
     sanitized = sanitized_seed_config(Path(seed)) if seed else None
     cfg_data = sanitized if sanitized is not None else {"tunnel": {"enabled": False}}
-    dst_cfg.write_text(json.dumps(cfg_data, indent=2))
-    os.chmod(dst_cfg, stat.S_IRUSR | stat.S_IWUSR)  # 0o600 owner read/write only
+    # Create-only (the exists() guard above): lock the temp down before any
+    # token-bearing payload reaches the published name. write_text then chmod
+    # left the file at its inherited DACL until the chmod returned, and the
+    # chmod itself was a no-op on Windows. atomic_write encodes UTF-8; the
+    # previous write_text call did not pass encoding=.
+    atomic_write(
+        dst_cfg,
+        json.dumps(cfg_data, indent=2),
+        restrict_to_owner=True,
+    )
 
 
 def cleanup_home(cfg: PodConfig, name: str) -> int:

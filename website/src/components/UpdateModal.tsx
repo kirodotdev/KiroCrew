@@ -10,7 +10,7 @@ import type { UpdateState } from '../hooks/useUpdateSubscription'
  * Consumes the shared ['update-state'] query cache populated by the
  * useUpdateSubscription hook (mounted once in App.tsx). When an update has
  * finished downloading we surface this modal so the user can restart-and-
- * install on their terms. "Restart & Update" calls back into Electron, which
+ * install on their terms. "Install Update & Restart App" calls back into Electron, which
  * stops the bundled gateway gracefully before ShipIt swaps the .app bundle,
  * then relaunches.
  *
@@ -53,7 +53,7 @@ export default function UpdateModal() {
   // install() resolves as soon as the install is DISPATCHED — on macOS the
   // platform installer then works for several seconds before the app quits.
   // Keying `disabled` on `isPending` alone lets the button re-arm during that
-  // window, so the user sees a clickable "Restart & Update" followed by an
+  // window, so the user sees a clickable install-and-restart action followed by an
   // unexplained quit — which reads as a crash.
   const installing = installMutation.isPending || installMutation.isSuccess
 
@@ -106,6 +106,7 @@ export default function UpdateModal() {
   // a dismiss affordance — the gateway is being restored by the main process
   // (onInstallFailed), so dismissing returns to a working dashboard.
   const installFailed = update?.state === 'error' && update.phase === 'install'
+  const showsWindowsInstaller = update?.installHandoff === 'windows-installer'
   if ((update?.state === 'installing' || installFailed) && !dismissed) {
     return (
       <div
@@ -137,6 +138,7 @@ export default function UpdateModal() {
             <div className="text-lg font-bold text-text-strong">{i18nT('components.updateModal.installing_update')}</div>
             <p className="text-sm text-muted max-w-sm text-center px-6">
               {i18nT('components.updateModal.installing_update_body')}
+              {showsWindowsInstaller && ` ${i18nT('components.updateModal.windows_installer_handoff')}`}
             </p>
           </>
         )}
@@ -190,7 +192,8 @@ export default function UpdateModal() {
             <p className="mt-2 text-[13px] text-muted whitespace-pre-wrap max-h-40 overflow-auto">{notes}</p>
           )}
           <p className="mt-2 text-[12px] text-muted">
-            {i18nT('components.updateModal.the_app_will_stop_the_local_gateway_install_the')}
+            {i18nT('components.updateModal.install_restart_timing')}
+            {showsWindowsInstaller && ` ${i18nT('components.updateModal.windows_installer_handoff')}`}
           </p>
         </div>
 

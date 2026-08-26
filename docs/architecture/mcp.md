@@ -259,7 +259,9 @@ Probes run from `POST /api/mcp/probe`:
   `declared` for the managed in-process fallback below). Both ride the cache
   into the API payload, so the UI can say *when* a status was true — the caches
   legitimately serve results up to their TTL, and an undated "Online" reads as
-  "now".
+  "now". A remote result may additionally carry **`authChallenge`** and, when
+  the grant lookup produced a verdict, **`authGrantPresent`**. Both ride the
+  same cache and are described with `needs_auth` below.
 - Timeout is `dashboard.mcp_probe_timeout_secs` (default 15s;
   `_PROBE_TIMEOUT_SECS` is the fallback if config is not loaded yet). Results
   are cached for `_PROBE_TTL_SECS` (1800s), after which status reads as
@@ -279,12 +281,95 @@ Probes run from `POST /api/mcp/probe`:
   header gets status `needs_auth` and an empty `error`, not `error`. The probe
   holds no OAuth token, because kiro-cli owns token custody
   ([design-notes/mcp-oauth-ownership.md](design-notes/mcp-oauth-ownership.md)), so
-  that answer carries no verdict on the server: an unauthorized server and one the
-  runtime calls successfully both return it. The dashboard renders `needs_auth` as
-  "Not verified" for that reason — naming an action the user may not need would
-  assert more than the probe observed. A `401` on an entry that DOES carry a static
-  `Authorization` header stays `error`: a supplied credential was rejected, which
-  is a real fault.
+  the status code alone carries no verdict on the server: an unauthorized server
+  and one the runtime calls successfully both return it.
+
+  **Two pieces of evidence split that ambiguity**, and the wording follows what
+  they support rather than the status code. The probe parses the challenge (a
+  Bearer challenge carrying a `scope` list or an https `resource_metadata` URL sets
+  `authChallenge`), and it stats kiro-cli's paired grant artifacts for the url to
+  set `authGrantPresent`. Three wordings follow, one per answer the pair supports:
+
+  | Evidence | Badge | Why |
+  |---|---|---|
+  | challenge, `authGrantPresent` false | **Sign-in required** | "Nobody has signed in" is observed, so the row names the action and states where it happens. |
+  | challenge, `authGrantPresent` true | **Signed in** (muted) | A grant artifact exists. The badge reports THAT, never that the server answers — the probe holds no token, so validity is the one thing it cannot check, and the hover says so. Toned muted rather than warn: amber is the panel's "act now" colour, and a resolved row wearing it is indistinguishable by colour from one that still needs a sign-in. |
+  | no challenge, or `authGrantPresent` absent | **Not verified** | An older gateway, or a bare `401`. Naming any state here would assert more than the probe observed. |
+
+  The middle row is what gives the guided sign-in an ending: without it a user who
+  followed the instruction landed back on the same badge they started from. It is
+  deliberately not "Online" — a stored grant is evidence a sign-in happened, not
+  proof it has not since been revoked, and only a probe carrying the runtime's
+  token could close that gap.
+
+  Reaching that ending is a VISIBLE instruction, not a hover. The panel is served
+  from the probe cache for the whole TTL, so a user returning from a completed
+  sign-in meets a row that still reads "Sign-in required"; if the "probe to
+  refresh" step lived only in the badge's `title` it would reach neither a
+  keyboard nor a touch user, at the moment of highest doubt. The cell carries one
+  clause, and the `title` carries the longer form naming the control and the state
+  the row lands in.
+
+  Grant-key derivation, paired artifact paths, and presence checks live in the
+  leaf `mcp_grant` module. The probe, connection mint, and persisted connection
+  status all consume that shared layout so a kiro-cli cache change cannot make
+  those surfaces disagree with one another. Its origin serialization matches
+  the Rust URL runtime at the byte boundary: Unicode domain names are
+  IDNA-encoded and IPv6 literals retain their brackets before hashing.
+
+  **`grant_presence()` is the single tri-state**, and there is deliberately only
+  one spelling of it. Each paired artifact is stat-ed exactly once and classified
+  by errno — the ENOENT family is a definitive absence, any other `OSError` is
+  "unknowable" — then the pair combines: either artifact definitively absent
+  decides it, any remaining failed stat makes it unknowable, otherwise present.
+  It is **not** built on `Path.is_file()`, and that is load-bearing rather than
+  stylistic: from Python 3.14 that method swallows every `OSError` and answers
+  `False`, so a permission error or a stalled mount would be indistinguishable
+  from "nothing was ever written". This package declares `requires-python >=
+  3.10` with no ceiling, so a build on 3.14 would silently collapse the middle
+  answer and tell the owner of an authorized server to sign in again — the exact
+  harm the three-valued design exists to prevent. Two spellings over the same
+  artifacts is how one of them loses that answer, which is why the probe and the
+  status module resolve through this one function.
+
+  **The grant stat is SEL-audited on whichever answer its caller acts on.** The
+  mint and the status module poll for a grant to *appear*, so only the positive
+  moves anything and only the positive is recorded — auditing each poll would
+  write one critical event per iteration of a single flow. The probe reads once
+  and renders either answer, and an absent pair is exactly what produces
+  "Sign-in required", so it passes `audit_absence=True` and the access leaves a
+  trail as `success` or `missing`. Opting in is the caller's, not the default's,
+  so a future polling caller cannot silently flood the log.
+
+  **Absence in the payload is meaningful, and the UI gates on an explicit `false`.**
+  `authChallenge` is omitted when the probe learned nothing about authorization.
+  `authGrantPresent` is omitted for that reason too, and *also* when the grant
+  lookup could not answer at all — a cache home that raises, such as a permission
+  error or a broken mount. Reporting an unanswerable lookup as `false` would tell
+  the owner of an already-authorized server to sign in again, so the three-valued
+  result is preserved to the wire rather than flattened. Each probe clears both
+  fields before it runs: the probe cache is keyed by NAME, so a row whose url was
+  edited would otherwise inherit the previous endpoint's verdict.
+
+  One degradation is NOT covered by that, and the limit is worth stating. The
+  lookup mirrors kiro-cli's own cache-key derivation and artifact layout, both
+  undocumented internals. If kiro-cli re-keys them, the stat succeeds against a
+  path that is simply absent, so the answer is `false` rather than unanswerable and
+  an authorized server reads "Sign-in required". That row does not recover on its
+  own: a second sign-in mints artifacts under the NEW key while Crew keeps stat-ing
+  the old one, so it goes on asking for a sign-in until the mirror here is
+  corrected. The recorded-hash tests pin the mirror only against itself, so the
+  drift would not fail in-repo either. Detecting it needs an observation of an
+  artifact kiro-cli actually wrote.
+
+  A `401` on an entry that DOES carry a static `Authorization` header stays
+  `error`: a supplied credential was rejected, which is a real fault. The
+  challenge is still recorded there, because "this server wants OAuth, so no
+  static header can satisfy it" is the actionable part of that failure. The GRANT
+  is not: `authGrantPresent` is read only by the "Sign-in required" wording, which
+  is gated on `needs_auth`, so looking it up on an `error` row would run a stat —
+  and let `grant_observed` write a critical SEL event — for an observation nothing
+  reads.
 - A probed stdio child that ignores a closed stdin costs
   `_PROBE_TEARDOWN_WAIT_SECS` twice (graceful wait, then again after SIGKILL)
   before the process-group reap, which is why that budget is a named constant

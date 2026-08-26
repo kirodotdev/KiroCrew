@@ -2139,6 +2139,11 @@ async def test_run_cmd_cancel_with_reaped_child_propagates_cancellation(monkeypa
     )
     monkeypatch.setattr(mod, "create_subprocess_limited", fake_spawn)
     monkeypatch.setattr(mod, "_kill_tree", AsyncMock())
+    # The shared reap helper also signals the tree; intercept it so the fake
+    # pid never reaches a real killpg, and shrink its bound so the reap of a
+    # still-blocking communicate() cannot stall this test.
+    monkeypatch.setattr(mod.platform_compat, "kill_process_tree_async", AsyncMock())
+    monkeypatch.setattr(mod.platform_compat, "REAP_TIMEOUT_SECS", 0.01)
 
     task = asyncio.ensure_future(mod._run_cmd(["/bin/true"]))
     # Bounded so a future early-return in _run_cmd fails fast, not a hang.
@@ -2166,11 +2171,19 @@ async def test_start_run_readline_overrun_kills_process_tree(monkeypatch):
         pid = 424242
         returncode: int | None = None
         stdout = FakeStdout()
+        wait_calls = 0
+        communicate_calls = 0
 
         def kill(self):
             FakeProc.returncode = -9
 
+        async def communicate(self):
+            FakeProc.communicate_calls += 1
+            FakeProc.returncode = FakeProc.returncode or -9
+            return b"", b""
+
         async def wait(self):
+            FakeProc.wait_calls += 1
             FakeProc.returncode = FakeProc.returncode or -9
             return FakeProc.returncode
 
@@ -2182,6 +2195,9 @@ async def test_start_run_readline_overrun_kills_process_tree(monkeypatch):
 
     monkeypatch.setattr(mod.asyncio, "create_subprocess_exec", fake_exec)
     monkeypatch.setattr(mod, "_kill_tree", fake_kill_tree)
+    # The shared reap helper also signals the tree; intercept it so the fake
+    # pid never reaches a real killpg on the host.
+    monkeypatch.setattr(mod.platform_compat, "kill_process_tree_async", AsyncMock())
     FakeProc.returncode = None
 
     # Absolute: the spawn shim execs without a PATH search, so only a bare name
@@ -2198,7 +2214,11 @@ async def test_start_run_readline_overrun_kills_process_tree(monkeypatch):
     assert rec["status"] == "done" and rec["exit_code"] == -1
     assert any("chunk is longer than limit" in line for line in rec["output"])
     assert killed == [424242]  # tree reaped exactly once
-    assert FakeProc.returncode is not None  # proc.kill()/wait() completed
+    assert FakeProc.returncode is not None  # proc.kill() ran
+    # The reap drains pipes via communicate(), never a bare wait() that a
+    # full pipe could hang (#5989).
+    assert FakeProc.communicate_calls == 1
+    assert FakeProc.wait_calls == 0
 
 
 # --- Codex R35 regressions ---

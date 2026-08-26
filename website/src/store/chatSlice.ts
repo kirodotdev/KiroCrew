@@ -2,6 +2,7 @@ import { createSlice, createAsyncThunk, createSelector, type PayloadAction } fro
 import { api } from '../api/client'
 import { addSlotOptimistic, updateSlot, removeSlotOptimistic, markSlotRead, fetchSlots, slotSurfaceKey, sseSlots, sseConnected } from './dashboardSlice'
 import { resolveDefaultColor } from '../utils/sessionColors'
+import { isChatPageSurface } from '../utils/channelOrigin'
 import { isSystemNoticeKind } from '../lib/systemNotice'
 import { gcSessionStorage } from '../utils/storageGc'
 import type { RootState } from './index'
@@ -1215,6 +1216,26 @@ function tsEpoch(ts: string | undefined): number | null {
   return Number.isNaN(ms) ? null : ms
 }
 
+/** THE parser for a transcript `ts` that may be a numeric epoch-SECONDS string
+ *  or an ISO string. Returns epoch MILLISECONDS, or `null` when the value
+ *  cannot be read — the same "decline, not guess" contract `tsEpoch` follows.
+ *
+ *  This is the single spelling of "seconds-or-ISO"; callers that need another
+ *  unit or a non-null sort default convert at the call site rather than
+ *  re-parsing (three hand-rolled copies had already diverged on
+ *  numeric-seconds input — #6004). `tsEpoch` above stays deliberately
+ *  `Date.parse`-only: its prior/warm boundary callers have never accepted a
+ *  numeric-seconds guess, and widening them would change merge behavior.
+ *
+ *  Exported for the unit test that pins this contract. */
+export function transcriptTsMs(ts: string | undefined): number | null {
+  if (!ts) return null
+  const n = Number(ts)
+  if (Number.isFinite(n)) return n * 1000
+  const ms = Date.parse(ts)
+  return Number.isNaN(ms) ? null : ms
+}
+
 /** The ONE writer of a slot's pane transcript and its "has older history" marker.
  *
  *  The two must describe the SAME array. A `true` beside a complete transcript
@@ -1391,16 +1412,60 @@ const isOutOfBandRow = (m: { role: string; kind?: string }): boolean =>
 
 /** What a preserved reasoning block re-attaches to on the server-refreshed list:
  *  a tool call addressed by its server-minted id, or a run of answer text
- *  addressed by its content. */
-type ThinkingAnchor = { tool: string; text?: undefined } | { tool?: undefined; text: string }
+ *  addressed by its content PLUS — when the anchor row carried one — its
+ *  server `ts`. Text alone is not an identity: two turns can produce
+ *  byte-identical answers ("Done."), and a text-only match lets the OLDER
+ *  block steal the newer answer row while the newer block is dropped as
+ *  covered. A ts-carrying anchor therefore matches only the row with the same
+ *  server `ts`; a ts-less anchor (a freshly streamed answer not yet reloaded)
+ *  falls back to text-only matching — and is `confirmed=false` anyway, so a
+ *  miss can never drop it. */
+type ThinkingAnchor = { tool: string; text?: undefined; ts?: undefined } | { tool?: undefined; text: string; ts?: string }
 
 /** Re-insert client-only reasoning (`thinking`) messages into a server-refreshed
  *  message list. The backend never persists reasoning, so a refresh (e.g. the
  *  one fired on chat_done) would otherwise drop the thinking block the instant a
  *  turn finishes. Each preserved block is anchored to the first row that followed
- *  it in the old list and re-inserted just before that row again. Any block whose
- *  anchor isn't found is appended so it is never silently lost. Returns
+ *  it in the old list and re-inserted just before that row again. Returns
  *  `incoming` unchanged (reference-equal) when there is nothing to preserve.
+ *
+ *  A block with NO recorded anchor because nothing followed it in the old list
+ *  (the live turn's in-flight reasoning) is appended at the tail: the tail IS
+ *  its position. A block whose anchor scan was CUT SHORT by a turn-boundary
+ *  user row (a turn stopped mid-reasoning, or one that emitted no tool call
+ *  and no answer text) is also anchorless, but its turn is OVER — it is kept
+ *  at the tail only while the pure server page does not cover that boundary
+ *  row; once it does, the block is dropped like a covered anchored miss
+ *  (#5815), since keeping it stranded one permanent chip per stopped turn
+ *  below unrelated newer turns, re-appended on every refresh. A block whose
+ *  anchor MISSES its lookup is dropped or kept by where the anchor sits
+ *  relative to the region the PURE server page (`coverageSource`) actually
+ *  covers:
+ *
+ *  - **Inside the covered region** (at or before the last `existing` row that
+ *    `incoming` recognizably contains), with a server-confirmed anchor (a
+ *    server-minted tool id, or answer text carrying a server `ts`): the
+ *    snapshot covers that span of history yet does not contain the anchor —
+ *    the block's position is gone (a bounded page: `switchSlot` on an idle
+ *    slot fetches only `OLDER_PAGE_LIMIT` rows, while preserved blocks span
+ *    the whole tab lifetime). DROP it. Appending those used to stack every
+ *    out-of-window block from hours of turns as a wall of bare "Thinking"
+ *    chips at the transcript tail, re-appended on every later refresh
+ *    (#5798). Dropping matches what a full page reload does anyway —
+ *    reasoning is client-only and never survives one.
+ *  - **Past the covered region** (the anchor row is newer than everything the
+ *    snapshot knows): a racing mid-turn refresh (WS reconnect) snapshots the
+ *    server, then a tool frame or more streamed text lands BEFORE the fetch
+ *    fulfills — the anchor is absent from `incoming` because the snapshot is
+ *    older than it, not because history dropped it. KEEP the block (tail
+ *    append; the live turn is the tail). The same applies to an anchor that
+ *    was never server-confirmed (a `streaming` row, or a text row without a
+ *    server `ts`) — its text can grow past what any snapshot holds.
+ *
+ *  Coverage is measured conservatively: the last `existing` row whose identity
+ *  (tool id / `mid` / role+`ts` / role+text) appears in `incoming`. When
+ *  nothing matches, nothing is dropped — declining to guess loses at worst a
+ *  misplaced chip, while guessing wrong deletes live reasoning.
  *
  *  The anchor is the FOLLOWING TOOL CALL's `tool_call_id` when there is one, and
  *  the following answer text only otherwise. A tool id is the sharper key and
@@ -1419,35 +1484,141 @@ type ThinkingAnchor = { tool: string; text?: undefined } | { tool?: undefined; t
  *  sharing one id (🔧 pre-approval + ✅ post-approval, see
  *  `applyToolOutputToMessages`); `used` makes the first win, which is the earlier
  *  row and so the correct side of the pair. */
-function mergePreservedThinking<M extends { role: string; content: string; cls?: string; meta?: Record<string, unknown> }>(
+function mergePreservedThinking<M extends { role: string; content: string; cls?: string; ts?: string; meta?: Record<string, unknown> }>(
   existing: M[],
   incoming: M[],
+  coverageSource: M[] = incoming,
 ): M[] {
   const toolAnchorId = (m: M): string => {
     if (m.role !== 'tool') return ''
     const id = m.meta?.tool_call_id
     return typeof id === 'string' ? id : ''
   }
-  const preserved: Array<{ msg: M; anchor: ThinkingAnchor | null }> = []
+  // Conservative row identity for the coverage cut: the STRONGEST available
+  // class only — tool id, else server-minted `mid`, else role+ts, else
+  // role+trimmed text. Never stacked: a strong-identity row must not also
+  // match on a weaker key, or a duplicate-content sibling (two `🔧 bash`
+  // calls with distinct tool ids) lets an OLDER incoming row text-match a
+  // NEWER existing row and falsely extend coverage past a post-snapshot
+  // anchor — which would drop live reasoning.
+  //
+  // Coverage evidence comes ONLY from `coverageSource` — the PURE fetched
+  // server page, before the reducer re-attaches any client-preserved rows
+  // (live `permission` cards, the finalized `lastLocal` reply on a
+  // switchSlot). A re-attached row matching its own copy in `existing` would
+  // vouch for a span of history the snapshot never actually covered —
+  // advancing the cut past a post-snapshot tool anchor and dropping its live
+  // reasoning. Provenance, not role, is the boundary: every row in the pure
+  // page is server-persisted by construction, so no role filtering is needed
+  // and persisted roles beyond the common five (inject, subagent, …) count
+  // toward coverage instead of silently shortening it.
+  //
+  // Used only to locate the newest `existing` row the snapshot still
+  // contains — never to dedupe rows — so a residual text collision among
+  // identity-less rows can only make coverage read longer, and only among
+  // rows that carry no stronger key.
+  const coverageIds = (m: M): string[] => {
+    const tid = toolAnchorId(m)
+    if (tid) return [`tool:${tid}`]
+    const mid = m.meta?.mid
+    if (typeof mid === 'string' && mid) return [`mid:${mid}`]
+    if (m.ts) return [`ts:${m.role}:${m.ts}`]
+    if (m.content) return [`txt:${m.role}:${m.content.trimEnd()}`]
+    return []
+  }
+  const preserved: Array<{ msg: M; anchor: ThinkingAnchor | null; anchorIdx: number; confirmed: boolean; boundaryIdx: number }> = []
   for (let i = 0; i < existing.length; i++) {
     const m = existing[i]
     if (m.role !== 'thinking' || !m.content) continue
     let anchor: ThinkingAnchor | null = null
+    let anchorIdx = -1
+    let confirmed = false
+    let boundaryIdx = -1
     for (let j = i + 1; j < existing.length; j++) {
       const cand = existing[j]
       const tid = toolAnchorId(cand)
-      if (tid) { anchor = { tool: tid }; break }
-      if (cand.role === 'assistant' || cand.role === 'streaming') { anchor = { text: cand.content.trimEnd() }; break }
+      if (tid) { anchor = { tool: tid }; anchorIdx = j; confirmed = true; break }
+      if (cand.role === 'assistant' || cand.role === 'streaming') {
+        anchor = { text: cand.content.trimEnd(), ts: cand.role === 'assistant' ? cand.ts : undefined }
+        anchorIdx = j
+        // A `streaming` row's text is still growing, and a text row without a
+        // server `ts` has no persisted counterpart yet — either way a racing
+        // refresh can miss this anchor without the block being stale, so only
+        // a server-confirmed anchor makes a lookup miss mean "drop".
+        confirmed = cand.role === 'assistant' && !!cand.ts
+        break
+      }
       // A confirmed steer does not end this block's turn, so the row after it is
-      // still its anchor. Breaking here instead leaves `anchor` null, and an
-      // unanchored block is appended at the tail — below the answer and its
-      // footer — where the forward scan can never reach an anchorable row again,
-      // so it stays there and is re-appended on every later refresh.
-      if (isTurnBoundaryUser(cand)) break
+      // still its anchor. Breaking here instead would record a turn boundary for
+      // a block whose turn is NOT over — misplacing it at the tail, and (once
+      // the page covers the steer row) dropping reasoning that has a real
+      // anchor further down.
+      //
+      // Record WHICH row ended the scan: an anchorless block with a recorded
+      // boundary belongs to a FINISHED turn (stopped mid-reasoning, or a
+      // reasoning-only turn that emitted no tool call and no text), not to the
+      // live tail, and the tail-keep below uses that to decide whether the
+      // block's turn is inside the covered region and therefore over (#5815).
+      //
+      // An OPTIMISTIC bubble of ANY kind breaks the scan (it may be a new turn,
+      // and reading past it could splice that turn's reasoning onto this block)
+      // but NEVER records a boundary and never authorizes a drop. The predicate
+      // is `optimistic` alone, NOT `steer && optimistic`: a plain send is
+      // stamped optimistic too (keyed on its `sendId`, see `appendMessage`), and
+      // it is just as ambiguous. If the client's idle state was stale the server
+      // takes its QUEUE path — persisting no `user` row for that text at all —
+      // while the turn keeps emitting rows; a refresh covering one of those
+      // later rows would then put this unpersisted bubble INSIDE the covered
+      // region and drop the live turn's reasoning above it. A steer bubble is
+      // ambiguous for its own reason: accepted into the running turn (its
+      // `steer_push` echo pending, real anchor one reconciliation away) or raced
+      // `chat_done` onto the new-turn path. Every attempt to resolve either
+      // ambiguity from text identity proved unsound in review (duplicate-text
+      // turns, missed echoes, pages reaching past the bounded cache window), so
+      // this code declines to guess: only a bubble the server has CONFIRMED
+      // (echo reconciled, the flag deleted) is trustworthy as a boundary. The
+      // cost is a narrow residual — a new-turn-path steer's pre-steer chip can
+      // strand at the tail until reload — tracked as #6075, whose sound fix is a
+      // client-minted id persisted through both backend paths, rather than
+      // resolved with weak evidence here.
+      if (isTurnBoundaryUser(cand)) {
+        if (!cand.meta?.optimistic) boundaryIdx = j
+        break
+      }
     }
-    preserved.push({ msg: m, anchor })
+    preserved.push({ msg: m, anchor, anchorIdx, confirmed, boundaryIdx })
   }
   if (!preserved.length) return incoming
+  // Coverage cut: index of the last `existing` row whose identity the PURE
+  // server page contains. Anchors past this index are newer than the snapshot
+  // (a tool frame / streamed text that landed after the fetch was taken) — a
+  // lookup miss for those says the snapshot is old, not that history dropped
+  // them.
+  const incomingIds = new Set<string>()
+  for (const m of coverageSource) for (const id of coverageIds(m)) incomingIds.add(id)
+  let coveredIdx = -1
+  for (let i = existing.length - 1; i >= 0; i--) {
+    if (coverageIds(existing[i]).some(id => incomingIds.has(id))) { coveredIdx = i; break }
+  }
+  // No-overlap fallback: a page sharing NO identity with `existing` is either
+  // an unrelated racing snapshot (keep everything) or a transcript that moved
+  // entirely PAST the stale cache (a long-disconnected session that advanced
+  // beyond the page size) — where keeping everything re-creates the #5798
+  // wall and the appended blocks go permanently anchorless. Server timestamps
+  // disambiguate: a confirmed anchor whose own server ts is OLDER than the
+  // oldest row of the pure page belongs to evicted history — droppable. The
+  // fallback arms ONLY when EVERY pure-page row carries a readable ts: a
+  // single ts-less or unparseable row means the page's true oldest instant is
+  // unknown, and a min over the readable subset could overstate it and drop an
+  // anchor the page actually reaches back past. Decline, not guess.
+  let oldestPageMs: number | null = null
+  if (coveredIdx < 0 && coverageSource.length > 0) {
+    for (const m of coverageSource) {
+      const ms = transcriptTsMs(m.ts)
+      if (ms === null) { oldestPageMs = null; break }
+      if (oldestPageMs === null || ms < oldestPageMs) oldestPageMs = ms
+    }
+  }
   const used = new Set<number>()
   const result: M[] = []
   for (const item of incoming) {
@@ -1459,7 +1630,14 @@ function mergePreservedThinking<M extends { role: string; content: string; cls?:
         if (used.has(p)) continue
         const a = preserved[p].anchor
         if (!a) continue
-        if (tid ? a.tool === tid : a.tool === undefined && a.text === c) {
+        // A text anchor that recorded a server `ts` matches only the row with
+        // that exact `ts` — text alone lets an OLDER duplicate-answer block
+        // ("Done.") steal the newer answer row while the newer block is
+        // dropped as covered. A ts-less anchor (freshly streamed, unreloaded)
+        // keeps text-only matching; it is unconfirmed, so a miss never drops.
+        const textMatches = a.tool === undefined && a.text === c
+          && (a.ts === undefined || a.ts === item.ts)
+        if (tid ? a.tool === tid : textMatches) {
           result.push({ ...preserved[p].msg }); used.add(p); break
         }
       }
@@ -1467,7 +1645,52 @@ function mergePreservedThinking<M extends { role: string; content: string; cls?:
     result.push(item)
   }
   for (let p = 0; p < preserved.length; p++) {
-    if (!used.has(p)) result.push({ ...preserved[p].msg })
+    // The tail keeps: truly anchorless blocks (nothing followed them AT ALL —
+    // the live turn's in-flight reasoning, whose tail IS its position), blocks
+    // whose anchor row was never server-confirmed (a racing mid-turn refresh
+    // can miss those without the block being stale), and blocks whose anchor
+    // sits PAST the coverage cut (newer than everything the snapshot contains
+    // — the snapshot is old, not the block).
+    //
+    // Two shapes are droppable via coverage, both meaning "this block's turn
+    // is over and the snapshot covers it, yet holds no position for the
+    // block":
+    //  - a server-confirmed anchor INSIDE the covered region that missed its
+    //    lookup (bounded page / rewritten history) — dropping it rather than
+    //    stranding it at the tail below unrelated turns is #5798;
+    //  - an anchorless block whose scan was TERMINATED by a turn-boundary
+    //    user row inside the covered region (the turn was stopped
+    //    mid-reasoning, or emitted no tool call and no answer text). The
+    //    boundary row is a persisted user message, so the snapshot covering
+    //    it proves the server's full account of that finished turn — which
+    //    contains no reasoning (reasoning is client-only). Keeping the block
+    //    teleported it to the transcript tail, below unrelated turns, and
+    //    re-appended it there on every later refresh — one permanent stray
+    //    chip per stopped turn (#5815). Dropping matches a page reload.
+    //    A boundary past the cut (or unresolved, coveredIdx < 0 without a
+    //    server-identity eviction proof) keeps the block: the snapshot may
+    //    simply predate it.
+    if (used.has(p)) continue
+    const { anchor, anchorIdx, confirmed, boundaryIdx } = preserved[p]
+    const posIdx = anchor !== null ? anchorIdx : boundaryIdx
+    const posRow = posIdx >= 0 ? existing[posIdx] : undefined
+    const insideCoverage = posIdx >= 0 && posIdx <= coveredIdx
+    // The eviction fallback compares the POSITION row's own `ts` against the
+    // page's oldest instant, so it is only sound when that `ts` is
+    // server-minted. An anchor qualifies by `confirmed` (a server tool id, or
+    // an assistant row carrying a server `ts`). A BOUNDARY does not: a plain
+    // turn-boundary `user` row is the composer's optimistic bubble, appended
+    // locally with `new Date().toISOString()` and only a client `sendId` —
+    // the server-minted `mid` arrives with the echo (ChatPage's send path).
+    // A browser clock running behind the server would read that bubble as
+    // older than every page row and evict LIVE reasoning. So a boundary may
+    // use the fallback only once it carries `mid`; without it, `insideCoverage`
+    // is the only route to a drop, which is over-keep — the safe direction.
+    const posTsIsServer = anchor !== null || typeof posRow?.meta?.mid === 'string'
+    const posMs = posRow && posTsIsServer ? transcriptTsMs(posRow.ts) : null
+    const evicted = coveredIdx < 0 && oldestPageMs !== null && posMs !== null && posMs < oldestPageMs
+    const droppable = (anchor !== null ? confirmed : boundaryIdx >= 0) && (insideCoverage || evicted)
+    if (!droppable) result.push({ ...preserved[p].msg })
   }
   return result
 }
@@ -1781,7 +2004,12 @@ export const resumeFromHistory = createAsyncThunk(
     // Without a cursor this response cannot be paged, so do not advertise more:
     // a zero cursor beside hasMore renders an affordance that loads nothing.
     const cursor = typeof d.next_before === 'number' ? d.next_before : null
-    return { ok: d.ok, key: d.key, nextBefore: cursor ?? 0, messages: filterMessages(d.messages || []), hasMore: cursor !== null && (d.has_more || false), total: d.total || 0 }
+    // `surface` (falling back to `mode`) is returned so a caller resuming from
+    // a surface that cannot display every slot (ChatPage's unified view only
+    // shows default/orchestrator/crew, see isChatPageSurface) can tell a
+    // silently-unusable resume apart from a genuinely failed one (#3624) --
+    // the request succeeds either way, so `ok` alone cannot distinguish them.
+    return { ok: d.ok, key: d.key, surface: d.surface ?? d.mode, nextBefore: cursor ?? 0, messages: filterMessages(d.messages || []), hasMore: cursor !== null && (d.has_more || false), total: d.total || 0 }
   },
 )
 
@@ -2657,7 +2885,7 @@ const chatSlice = createSlice({
         const tail = tailNotInPage(prior.slice(boundedLen), messages)
         // Reasoning is broadcast-only so the wider page never carries it back.
         // Scoped to the REPLACED region: `tail` already keeps the live tail's own.
-        writeSlotPage(state, slot, mergePreservedThinking(prior.slice(0, boundedLen), [...messages, ...tail]), hasMore)
+        writeSlotPage(state, slot, mergePreservedThinking(prior.slice(0, boundedLen), [...messages, ...tail], messages), hasMore)
         retainServerTotal(state, slot, total, running)
         return
       }
@@ -4033,7 +4261,10 @@ const chatSlice = createSlice({
         // Thinking blocks are client-only (never persisted server-side); re-insert
         // them so a switchSlot refresh does not discard the collapsible reasoning
         // trace. Without this, switching tabs and back drops all thinking blocks.
-        next = mergePreservedThinking(existing, next)
+        // Coverage from the PURE fetched page (`messages`): `next` carries the
+        // re-attached finalized `lastLocal` reply, which must not vouch for
+        // history the snapshot never covered.
+        next = mergePreservedThinking(existing, next, messages)
         next = hydrateQueuedBubbles(next, queue)
         // Switching back to an already-loaded slot re-fetches a history that is
         // usually identical; skipping the write keeps every existing reference.
@@ -4070,13 +4301,15 @@ const chatSlice = createSlice({
           const aid = m.meta?.approval_id as string | undefined
           if (aid && !statePerms.has(aid)) statePerms.set(aid, m)
         }
+        // Sort key from a transcript ts via the ONE shared parser (#6004).
+        // `?? 0` keeps unreadable/absent ts sorting first, as before. The
+        // comparator only needs a monotonic key, so the parser's native epoch
+        // ms works directly (the old local copy returned epoch seconds —
+        // scaling every readable key by 1000 preserves the order for every
+        // reachable timestamp).
         const tsNum = (v: unknown): number => {
           const s = v == null ? '' : String(v)
-          if (!s) return 0
-          const n = Number(s)
-          if (Number.isFinite(n)) return n  // numeric epoch
-          const p = Date.parse(s)
-          return Number.isFinite(p) ? p / 1000 : 0  // ISO → epoch seconds
+          return transcriptTsMs(s) ?? 0
         }
         const merged = [...messages.filter(m => m.role !== 'permission'), ...statePerms.values()]
         const mergedWithPastes = mergePreservedPastes(state.messages, merged)
@@ -4087,7 +4320,10 @@ const chatSlice = createSlice({
           : mergedWithPastes
         // Reasoning is client-only (never persisted server-side); re-insert it so
         // a finished turn's thinking block survives this refresh.
-        state.messages = mergePreservedThinking(state.messages, mergePreservedClientTs(state.messages, sorted))
+        // Coverage from the PURE fetched page (`messages`): `sorted` carries
+        // re-injected preserved permission cards, which must not vouch for
+        // history the snapshot never covered.
+        state.messages = mergePreservedThinking(state.messages, mergePreservedClientTs(state.messages, sorted), messages)
         // Re-hydrate queued bubbles through the SAME shared path as
         // switchSlot/warmSlotCache. The merge above is rebuilt from server
         // history + preserved perms/thinking and carries no `queued` bubbles, so
@@ -4216,7 +4452,11 @@ const chatSlice = createSlice({
         // driven by that slot's own chat_done, so rebuilding from server history
         // -- which never holds a thinking row -- dropped every block instead of
         // only misplacing the later ones.
-        const revived = mergePreservedThinking(priorAll, merged)
+        // Coverage from the PURE fetched page (`hydrated` — the payload rows,
+        // before hydrateQueuedBubbles re-attaches client queued bubbles):
+        // `merged` can carry rescued prior-cache rows and queued bubbles, which
+        // must not vouch for history the snapshot never covered.
+        const revived = mergePreservedThinking(priorAll, merged, hydrated)
         // Omitting boundedLen DELETES the marker, while omitting hasMore keeps the
         // OLD value -- and its presence is what stops a late hydrate prepending.
         const warmIsPrefix = base === warmed
@@ -4313,6 +4553,13 @@ const chatSlice = createSlice({
         }
       })
       .addCase(resumeFromHistory.fulfilled, (state, action) => {
+        // A resume that resolved to a surface ChatPage cannot display must not
+        // mutate this slice at all: consuming the history row while the notice
+        // says "can't be opened" reads as data loss, and switching activeSlot
+        // to an undisplayable slot is the silent bounce #3624 exists to stop.
+        // The wire resume itself already happened (the caller's notice handles
+        // telling the user); the row stays reachable in Older Sessions.
+        if (action.payload.ok && !isChatPageSurface(action.payload.surface)) return
         if (action.payload.ok) {
           // The row just became an open tab, so it leaves the Older-sessions
           // pane — that pane is the complement of the tab list, and leaving the

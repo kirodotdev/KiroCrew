@@ -41,6 +41,7 @@ from kiro_crew.embeddings import (
 from kiro_crew.executors import embed_executor, run_in_embed_pool
 from kiro_crew.history import is_incognito_transcript
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.platform_compat import kill_and_reap
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
     cgroup_scope_argv,
@@ -896,8 +897,7 @@ async def _ensure_pip_available() -> tuple[bool, str]:
         try:
             _, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
         except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
+            await kill_and_reap(proc)
             logger.warning("ensurepip bootstrap timed out")
             return False, "pip bootstrap (ensurepip) timed out"
         if proc.returncode != 0:
@@ -1041,8 +1041,7 @@ async def api_memory_enable_embeddings(request: web.Request) -> web.Response:
                     try:
                         _, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
                     except asyncio.TimeoutError:
-                        proc.kill()
-                        await proc.wait()
+                        await kill_and_reap(proc)
                         logger.warning("faiss-cpu install timed out")
                         _embedding_setup_status = {
                             "step": "idle",

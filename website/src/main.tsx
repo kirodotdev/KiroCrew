@@ -26,6 +26,7 @@ import App from './App'
 import { queryClient } from './api/queryClient'
 import ErrorBoundary from './components/ErrorBoundary'
 import DashboardBootstrap from './components/DashboardBootstrap'
+import { installPageZoomSuppression } from './utils/pageZoom'
 import 'katex/dist/katex.min.css'
 import './index.css'
 import './styles/cli-mode.css'
@@ -39,6 +40,12 @@ initRum(__APP_VERSION__)
 // the very first paint is already in the right language; LanguageProvider then
 // reconciles against the server-authoritative config value.
 initI18n()
+
+// Page zoom is off on touch: the shell is an application, not a document. The
+// viewport meta and the root `touch-action` cover Blink/Gecko; this covers
+// WebKit, which ignores both for user gestures. Installed before render so the
+// very first pinch is already suppressed. See utils/pageZoom.ts.
+installPageZoomSuppression()
 
 // Auto-recover from stale lazy-chunk errors after a frontend rebuild.
 // Vite fires `vite:preloadError` on window when a dynamic import() of a
@@ -81,6 +88,13 @@ window.addEventListener('vite:preloadError', (event) => {
 
 // Accessibility: runtime DOM scanning in dev mode (logs violations to console)
 if (import.meta.env.DEV) {
+  // The `meta-viewport` rule is deliberately NOT waived, even though this shell ships
+  // `maximum-scale=1, user-scalable=no` and axe therefore reports a critical WCAG 1.4.4
+  // finding on every dev render. A waiver was written and removed; do not re-add one.
+  // The finding is not noise — it is the only recurring reminder that suppressing page
+  // zoom is an accessibility trade nobody has yet accepted in writing, and "nobody can
+  // action it" was wrong: it is a decision, and a decision stays owed.
+  // See the page-zoom section of website/docs/page-layout.md for the policy.
   import('react-dom').then(ReactDOM => import('@axe-core/react').then(axe => axe.default(React, ReactDOM, 1000)))
 }
 

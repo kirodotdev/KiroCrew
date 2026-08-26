@@ -231,7 +231,9 @@ class TestScriptExecution:
         result, _ = await _run_script_callback(gw, job, {"status": "done", "message": "CR merged"})
         assert "CR merged" in (result or "")
         assert job.last_result == "CR merged"
-        gw.cron_svc.remove_job_async.assert_called_once_with("sj1")
+        gw.cron_svc.remove_job_async.assert_called_once_with(
+            "sj1", actor="cron", source="cron", one_shot_path="cron_gateway"
+        )
 
     @pytest.mark.asyncio
     async def test_done_busy_store_defers_removal_not_dropped(self):
@@ -270,7 +272,9 @@ class TestScriptExecution:
             assert captured_cb is not None
             await captured_cb(job)
 
-        gw.cron_svc.remove_job_async.assert_called_once_with("sj1")
+        gw.cron_svc.remove_job_async.assert_called_once_with(
+            "sj1", actor="cron", source="cron", one_shot_path="cron_gateway"
+        )
         # The removal was queued for deferred drain, not dropped.
         gw.cron_svc.defer_removal.assert_called_once_with("sj1")
 

@@ -55,7 +55,7 @@ export function SecretField({
   const iconBtn = 'w-8 h-8 flex items-center justify-center rounded-md border border-border bg-bg-elevated text-muted hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all disabled:opacity-40 disabled:cursor-not-allowed'
 
   return (
-    <div className="flex flex-col gap-1.5 py-1.5">
+    <div data-setting-label={label} className="flex flex-col gap-1.5 py-1.5">
       <div className="flex items-center gap-1.5">
         <span className="text-[13px] font-semibold text-text">{label}</span>
         {setupLink && (
