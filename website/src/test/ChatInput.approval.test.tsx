@@ -303,17 +303,16 @@ describe('ChatInput approval flow', () => {
     expect(buttons.some(b => b.textContent?.includes('commands'))).toBe(false)
   })
 
-  it('offers only whole-session trust when the server cannot prove a command scope', () => {
+  it('hides trust when the server cannot prove a command scope', () => {
     const state = stateWithApproval()
     const meta = state.chat!.messages[1].meta!
     delete meta.trust_command_grantable
     delete meta.trust_base_grantable
     const store = createTestStore(state)
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
-    fireEvent.click(screen.getByText('Trust'))
-    const buttons = screen.getAllByRole('menuitem')
-    expect(buttons).toHaveLength(1)
-    expect(buttons[0]).toHaveTextContent('Trust all tools')
+    expect(screen.queryByRole('button', { name: 'Trust' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Allow once' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Reject' })).toBeInTheDocument()
   })
 })
 

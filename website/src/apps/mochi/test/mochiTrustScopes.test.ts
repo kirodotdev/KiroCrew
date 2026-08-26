@@ -106,17 +106,20 @@ describe('permissionApprovalFromFrame carries the scope fields', () => {
         tool_title: 'Running: npm test',
         full_command: 'npm test',
         base_command: 'npm',
+        trust_grantable: '1',
       }),
     )
     expect(req).not.toBeNull()
     expect(req?.fullCommand).toBe('npm test')
     expect(req?.baseCommand).toBe('npm')
+    expect(req?.trustGrantable).toBe(true)
   })
 
-  it('leaves them undefined when the gateway sent none, so the card degrades to the single grant', () => {
+  it('leaves trust unavailable when the gateway sent no grant proof', () => {
     const req = permissionApprovalFromFrame(frame({ request_id: 'r1', tool_title: 'T' }))
     expect(req?.fullCommand).toBeUndefined()
     expect(req?.baseCommand).toBeUndefined()
+    expect(req?.trustGrantable).toBeUndefined()
   })
 
   it('extracts the agent-declared purpose from the tool arguments', () => {

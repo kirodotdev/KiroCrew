@@ -615,9 +615,7 @@ class OversizeLineUnrecoverable(Exception):
     """An oversize stdout line exceeded the drain budget without terminating."""
 
 
-async def _drain_oversize_line(
-    reader: asyncio.StreamReader, exc: asyncio.LimitOverrunError
-) -> int:
+async def _drain_oversize_line(reader: asyncio.StreamReader, exc: asyncio.LimitOverrunError) -> int:
     """Discard one oversize line ENTIRELY, leaving the stream on a frame boundary.
 
     Called after ``readuntil(b"\\n")`` raised ``LimitOverrunError``, which consumes
@@ -660,6 +658,7 @@ async def _drain_oversize_line(
         except asyncio.LimitOverrunError as again:
             exc = again
 
+
 # Max consecutive empty reads before checking if process is alive
 _MAX_CONSECUTIVE_EMPTY = 5
 
@@ -696,9 +695,7 @@ def _mentions_skill_file(raw_params: dict | None, command: str | None) -> bool:
             if _SKILL_FILE_BASENAME in value:
                 return True
         elif isinstance(value, (list, tuple)):
-            if any(
-                isinstance(v, str) and _SKILL_FILE_BASENAME in v for v in value
-            ):
+            if any(isinstance(v, str) and _SKILL_FILE_BASENAME in v for v in value):
                 return True
     return False
 
@@ -741,11 +738,7 @@ def format_command_result(result: dict) -> str:
         display = {k: v for k, v in data.items() if k not in ("agent", "model")}
         if display:
             block = json.dumps(display, indent=2)
-            text = (
-                f"{message}\n```json\n{block}\n```"
-                if message
-                else f"```json\n{block}\n```"
-            )
+            text = f"{message}\n```json\n{block}\n```" if message else f"```json\n{block}\n```"
     if not text:
         text = message or ""
     if text:
@@ -1194,9 +1187,7 @@ def _model_is_unentitled(data: str, available_models: Sequence[str] | None) -> s
     return rejected
 
 
-def _is_transient_raw_error(
-    error: object, available_models: Sequence[str] | None = None
-) -> bool:
+def _is_transient_raw_error(error: object, available_models: Sequence[str] | None = None) -> bool:
     """True iff a raw ACP JSON-RPC ``error`` is a retryable transient backend
     failure (Bedrock 5xx / throttle / model-unavailable rollout) rather than an
     auth/validation/unknown error that a retry cannot fix.
@@ -2161,6 +2152,10 @@ class AcpClient:
         self._child_pids: dict[int, ChildRecord] = {}  # pid → (start_time, basename)
         self.last_prompt_stats = AcpPromptStats()
         self._tool_call_inputs: dict[str, str] = {}
+        # Same-key provenance for the redacted display cache.  No removed bytes
+        # are retained here; approval surfaces only need to know that the value
+        # they received was not the complete command the provider requested.
+        self._tool_call_input_redacted: dict[str, bool] = {}
         # Map toolCallId → is_shell, cached from the tool_call notification so
         # the later permission_request event (which carries no kind) can inherit
         # the canonical shell signal. Mirrors _tool_call_inputs lifecycle.
@@ -2277,9 +2272,7 @@ class AcpClient:
         servers — nothing is written to the user's project or to
         ``~/.kiro/agents/``. Empty when the shared gateway is disabled.
         """
-        return pooled_session_servers(
-            self._mcp_gateway_overlay, self._agent, self._channel_id
-        )
+        return pooled_session_servers(self._mcp_gateway_overlay, self._agent, self._channel_id)
 
     def _claude_session_mcp_servers(self) -> list:
         """MCP server array passed to a claude ``session/new`` / ``session/load``.
@@ -2554,9 +2547,7 @@ class AcpClient:
         # backend never loaded (would fault with "Mode '<agent>' not found").
         # Assigned unconditionally so a re-init that omits `modes` clears any
         # stale state rather than guarding on it.
-        self._available_mode_ids, _current_mode, self._modes_advertised = (
-            parse_session_modes(resp)
-        )
+        self._available_mode_ids, _current_mode, self._modes_advertised = parse_session_modes(resp)
 
     def _handle_config_option_update(self, msg: JsonRpcMessage) -> None:
         """Process a config_option_update session notification.
@@ -2867,9 +2858,7 @@ class AcpClient:
         # skip.
         await asyncio.get_running_loop().run_in_executor(
             subprocess_executor(),
-            functools.partial(
-                finish_suspended_spawn, self._process, self._pid, label=_spawn_label
-            ),
+            functools.partial(finish_suspended_spawn, self._process, self._pid, label=_spawn_label),
         )
         self._start_time = await asyncio.get_running_loop().run_in_executor(
             subprocess_executor(), _get_start_time, self._pid
@@ -3309,9 +3298,7 @@ class AcpClient:
                 session_file = ""
                 file_ok = True
             else:
-                session_file = str(
-                    kiro_sessions_dir() / f"{resume_sid}.json"
-                )
+                session_file = str(kiro_sessions_dir() / f"{resume_sid}.json")
                 file_ok = Path(session_file).exists()
             if file_ok:
                 try:
@@ -4255,6 +4242,7 @@ class AcpClient:
         """Shared event dispatch loop for prompts and commands."""
         self.last_prompt_stats = self.last_prompt_stats.carry_over()
         self._tool_call_inputs.clear()
+        self._tool_call_input_redacted.clear()
         self._tool_call_is_shell.clear()
         self._skill_read_noted.clear()
         self._pending_skill_reads.clear()
@@ -5265,11 +5253,15 @@ class AcpClient:
                 if diff_str:
                     input_str = diff_str
             # Redact sensitive content before caching/displaying
+            input_redacted = False
             if input_str:
-                input_str, _ = redact_exfiltration_urls(input_str)
-                input_str, _ = redact_credentials(input_str)
+                safe_input, _ = redact_exfiltration_urls(input_str)
+                safe_input, _ = redact_credentials(safe_input)
+                input_redacted = safe_input != input_str
+                input_str = safe_input
             if tool_call_id and input_str:
                 self._tool_call_inputs[tool_call_id] = input_str
+                self._tool_call_input_redacted[tool_call_id] = input_redacted
             # Cache the STRUCTURED raw params (path/url/command) so the later
             # request_permission event can feed the governance gate's arg-derived
             # scopes (filesystem.write / network.egress). Bounded by the same
@@ -5317,6 +5309,7 @@ class AcpClient:
                 tool_kind=kind,
                 tool_purpose=purpose,
                 tool_input=input_str,
+                tool_input_redacted=input_redacted,
                 tool_call_id=tool_call_id,
                 raw_tool_params=raw_input if isinstance(raw_input, dict) else None,
                 is_shell=is_shell,
@@ -5451,10 +5444,14 @@ class AcpClient:
                     if diff_str:
                         input_str = diff_str
                     break
+        input_redacted = False
         if input_str:
-            input_str, _ = redact_exfiltration_urls(input_str)
-            input_str, _ = redact_credentials(input_str)
+            safe_input, _ = redact_exfiltration_urls(input_str)
+            safe_input, _ = redact_credentials(safe_input)
+            input_redacted = safe_input != input_str
+            input_str = safe_input
             self._tool_call_inputs[tool_use_id] = input_str
+            self._tool_call_input_redacted[tool_use_id] = input_redacted
         # Refresh the cached shell signal only when this refinement carries a
         # kind. A refinement that omits kind must NOT clobber a True cached by
         # the initial tool_call notification (kind is optional on updates).
@@ -5499,6 +5496,7 @@ class AcpClient:
             tool_kind=kind_str,
             tool_purpose=purpose,
             tool_input=input_str,
+            tool_input_redacted=input_redacted,
             tool_call_id=tool_use_id,
             raw_tool_params=raw_input if isinstance(raw_input, dict) else None,
             is_shell=is_shell,
@@ -5577,6 +5575,13 @@ class AcpClient:
         event, recorded = build_permission_event(
             msg,
             tool_input_cache=self._tool_call_inputs,
+            # ``AcpClient`` predates this same-key provenance cache.  Normal
+            # instances initialize it in __init__, while legacy/minimal
+            # constructions (including embedders that allocate with __new__)
+            # may not.  The shared builder treats a missing map/key as
+            # redacted/unknown, so this compatibility fallback stays
+            # fail-closed for durable trust instead of inventing provenance.
+            tool_input_redacted_cache=getattr(self, "_tool_call_input_redacted", None),
             shell_cache=self._tool_call_is_shell,
             raw_params_cache=self._tool_call_params,
             mcp_server_name_cache=self._tool_call_mcp_server,
@@ -5584,9 +5589,7 @@ class AcpClient:
         )
         if recorded is not None:
             self._permission_options[event.request_id] = recorded
-        logger.info(
-            "Permission requested for tool: %s (req=%s)", event.title, event.request_id
-        )
+        logger.info("Permission requested for tool: %s (req=%s)", event.title, event.request_id)
         if logger.isEnabledFor(logging.DEBUG):
             params = msg.params if isinstance(msg.params, dict) else {}
             tool_call = params.get("toolCall", {})
@@ -5604,9 +5607,7 @@ class AcpClient:
         lives on ``AcpPromptStats.backfill_context_window`` (the AcpSessionHandle
         path delegates to the same method, so the two can no longer drift).
         """
-        self.last_prompt_stats.backfill_context_window(
-            pct, self._resolved_model_id or self._model
-        )
+        self.last_prompt_stats.backfill_context_window(pct, self._resolved_model_id or self._model)
 
     def _track_metadata(self, msg: JsonRpcMessage) -> None:
         params = msg.params or {}

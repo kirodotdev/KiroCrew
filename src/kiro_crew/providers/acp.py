@@ -1215,6 +1215,7 @@ class AcpProvider(LLMProvider):
             request_id=e.request_id,
             options=e.options,
             tool_input=e.tool_input,
+            tool_input_redacted=e.tool_input_redacted,
             tool_output=e.tool_output,
             tool_final=e.tool_final,
             usage=e.usage,

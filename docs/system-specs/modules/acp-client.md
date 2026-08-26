@@ -89,6 +89,12 @@ need trusted arguments fail closed.
 
 The host always sends one-shot approvals (`always=False`, the default). KiroCrew — not the agent — owns the trust scope (`slot._trust`, `slot._trust_reads`, `slot._trusted_patterns`, `safety_override`, `channel.trusted`, parent session `approval_policy`). Per-call `session/request_permission` is required so KiroCrew's PreToolUse hooks (`auto_deny_tools`, sensitive-path checks, credential redaction) fire on every tool invocation. The `always=True` path is reserved for a future "skip KiroCrew hooks for this exact tool" feature; no caller passes it today.
 
+The rendered tool-input cache is consumed by the first permission event, but
+structured raw params remain keyed by `toolCallId` for the whole turn. A repeated
+permission for the same call therefore retains the fact that a non-shell MCP tool
+had arguments; it cannot be reclassified as an inputless canonical tool and match
+session durable trust merely because the display cache was already consumed.
+
 The handshake also branches on the backend:
 
 - `protocolVersion` in the `initialize` request: kiro-cli expects the date string `"2025-08-22"`; claude-agent-acp expects an integer (`1`, per the upstream ACP SDK schema).

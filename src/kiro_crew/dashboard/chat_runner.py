@@ -225,14 +225,18 @@ from kiro_crew.sel import sel
 from kiro_crew.session import SessionClosingError, SpeculativeResumeRefused
 from kiro_crew.slack.handler import post_linked_approval, resolve_linked_approval
 from kiro_crew.slack.outbound import PostedOptions
-from kiro_crew.trust_patterns import (
+from kiro_crew.trust_patterns import (  # noqa: F401 -- compatibility re-export
+    _mask_quoted_separators,
     approval_command,
+    approval_display_command,
 )
 from kiro_crew.trust_patterns import extract_base_command as _extract_base_command
 from kiro_crew.trust_patterns import extract_bash_command as _extract_bash_command
 from kiro_crew.trust_patterns import extract_full_command as _extract_full_command
 from kiro_crew.trust_patterns import matches_trusted_pattern as _matches_trusted_pattern
-from kiro_crew.trust_patterns import split_command_segments as _split_command_segments
+from kiro_crew.trust_patterns import (  # noqa: F401 -- compatibility re-export
+    split_command_segments as _split_command_segments,
+)
 from kiro_crew.validation import ValidationError, infer_use_case, validate_ask_user_question
 from kiro_crew.widget_artifacts import register_widgets_off_loop
 
@@ -6505,23 +6509,27 @@ async def _run_chat(
                     )
                     continue
                 # Session-trusted patterns: auto-approve commands matching user globs.
-                # Security: match against the ACTUAL command from tool_input (not
-                # event.title which is LLM-controlled display text). For shell tools,
-                # extract the real command; for non-shell MCP tools (no tool_input),
-                # use event.title as it IS the provider-controlled tool name.
-                # When tool_input exists but isn't recognized as bash, skip pattern
-                # matching entirely (deny-by-default).
-                if slot._trusted_patterns and not _child_low_fidelity:
-                    _tp_cmd = _extract_bash_command(event.tool_input) if event.tool_input else ""
-                    if _tp_cmd:
-                        _tp_command = _tp_cmd
-                    elif not event.tool_input:
-                        _tp_command = event.title
-                    else:
-                        _tp_command = None
+                # Security: shell scope comes from structured tool_input; non-shell
+                # scope comes from the ACP-cached canonical server/tool identity.
+                # event.title is model-authored display prose and is NEVER authority.
+                # Missing identity, unrecognized structured input, or transport
+                # redaction skips matching (deny-by-default). Otherwise a reused title
+                # or collapsed redaction marker could authorize a different tool.
+                if (
+                    slot._trusted_patterns
+                    and not _child_low_fidelity
+                    and not event.tool_input_redacted
+                ):
+                    _tp_command = approval_command(
+                        event.tool_input or "",
+                        is_shell=event.is_shell,
+                        tool_name=event.tool_name,
+                        mcp_server_name=event.mcp_server_name,
+                        raw_tool_params=event.raw_tool_params,
+                    )
                     matched = (
                         _matches_trusted_pattern(_tp_command, slot._trusted_patterns)
-                        if _tp_command is not None
+                        if _tp_command
                         else None
                     )
                     if matched:
@@ -6756,17 +6764,50 @@ async def _run_chat(
                 _safe_title, _ = redact_credentials(_safe_title)
                 perm_meta["tool_title"] = _safe_title
                 perm_meta["is_shell"] = "1" if event.is_shell else ""
-                _canonical = approval_command(
-                    event.title, event.tool_input or "", is_shell=event.is_shell
+                _trust_key = approval_command(
+                    event.tool_input or "",
+                    is_shell=event.is_shell,
+                    tool_name=event.tool_name,
+                    mcp_server_name=event.mcp_server_name,
+                    raw_tool_params=event.raw_tool_params,
                 )
-                _full = _extract_full_command(_canonical)
+                _display_command = approval_display_command(
+                    event.tool_input or "",
+                    is_shell=event.is_shell,
+                    tool_name=event.tool_name,
+                    mcp_server_name=event.mcp_server_name,
+                    raw_tool_params=event.raw_tool_params,
+                )
+                _full = _extract_full_command(_display_command)
                 _safe_full, _ = redact_exfiltration_urls(_full)
                 _safe_full, _ = redact_credentials(_safe_full)
-                _command_grantable = bool(_full) and _safe_full == _full
+                # ``tool_input`` is already display-redacted by both ACP
+                # transports.  Re-running the redactors cannot reveal that
+                # upstream removed secret bytes, so retain and enforce the
+                # transport's boolean provenance as well.  It contains no
+                # secret itself and prevents two different hidden commands
+                # from collapsing to one durable trust pattern.
+                _command_grantable = (
+                    bool(_full)
+                    and bool(_trust_key)
+                    and not event.tool_input_redacted
+                    and _safe_full == _full
+                )
                 if _command_grantable:
                     perm_meta["full_command"] = _safe_full
+                    # Authorization authority stays distinct from the
+                    # wire-compatible display label.  MCP server/tool names may
+                    # both contain ``__``; the internal key component-encodes
+                    # them so two different pairs cannot share a durable grant.
+                    perm_meta["trust_command_key"] = _trust_key
                     perm_meta["trust_command_grantable"] = "1"
-                _base = _extract_base_command(_canonical) if event.is_shell else ""
+                    # A broad per-slot Trust click is still a durable grant.
+                    # Carry an explicit server proof so alternate approval
+                    # surfaces cannot offer it merely because they received a
+                    # pending card.  Redacted/underivable calls intentionally
+                    # omit this bit and remain allow-once/reject only.
+                    perm_meta["trust_grantable"] = "1"
+                _base = _extract_base_command(_trust_key) if event.is_shell else ""
                 _safe_base, _ = redact_exfiltration_urls(_base)
                 _safe_base, _ = redact_credentials(_safe_base)
                 if _command_grantable and _base and _safe_base == _base:

@@ -8,8 +8,6 @@
 # Refresh (after formatting something listed here):
 #   python3 scripts/check_black_formatting.py --update-baseline
 src/kiro_crew/_process_group_supervisor.py
-src/kiro_crew/acp/_dispatch.py
-src/kiro_crew/acp/client.py
 src/kiro_crew/acp/kas_wire.py
 src/kiro_crew/acp/liveness.py
 src/kiro_crew/acp/runtime.py
@@ -434,14 +432,12 @@ test/metrics/test_telemetry_titles.py
 test/metrics/test_turn_metric.py
 test/metrics/test_watchdog_metrics.py
 test/test_acp_backend_kas.py
-test/test_acp_client.py
 test/test_acp_dynamic_config.py
 test/test_acp_error_surface.py
 test/test_acp_liveness.py
 test/test_acp_metadata_fields.py
 test/test_acp_offload.py
 test/test_acp_prompt_blocks.py
-test/test_acp_runtime.py
 test/test_acp_set_mode_all_agents.py
 test/test_acp_spawn_offload.py
 test/test_acp_stale_recovery.py

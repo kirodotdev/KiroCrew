@@ -482,6 +482,11 @@ class AcpEvent:
     request_id: str | int = ""
     options: list[dict[str, str]] = field(default_factory=list)
     tool_input: str = ""
+    #: True when the provider-facing tool input had secret/exfiltration bytes
+    #: removed before it was placed in ``tool_input``.  This is provenance only:
+    #: the original bytes never ride this display event.  Approval surfaces use
+    #: it to refuse a durable command grant for a value the user could not see.
+    tool_input_redacted: bool = False
     tool_output: str = ""
     tool_final: bool = False  # True when this tool_result is the final (status=completed) update
     usage: TurnUsage = field(default_factory=TurnUsage)

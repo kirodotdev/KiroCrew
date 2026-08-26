@@ -1428,11 +1428,22 @@ When the dashboard presents a tool approval prompt, users can now choose from th
 | `yolo` | Global | All tools across all slots (existing behavior, now time-limited) |
 
 Trust patterns are stored per-slot as session-scoped fnmatch globs
-(`slot._trusted_patterns`). Both halves of the decision use the ACTUAL command
-from `tool_input`: the runner derives the pending grant scope from it, and later
-matching evaluates the next call against it. The LLM-controlled display title
-never supplies either scope. For non-shell tools, only a provider-controlled
-title with no structured `tool_input` is grantable.
+(`slot._trusted_patterns`). For shell tools, both halves of the decision use the
+ACTUAL command from `tool_input`: the runner derives the pending grant scope
+from it, and later matching evaluates the next call against it. For non-shell
+tools with no structured input, both halves use the server/tool pair recovered
+by `toolCallId` from the preceding ACP `tool_call` frame's `_meta.kiro` cache.
+The UI retains the ACP-compatible `mcp__<server>__<tool>` display spelling, but
+durable trust uses a separate versioned key whose independently lowercased
+UTF-8 components are hex encoded. This makes the identity injective even when a
+server or tool contains `__`; the wire/display spelling is never authorization
+authority. Structured params remain attached to a repeated permission event;
+their presence disables canonical non-shell grantability and matching, so a
+same-`toolCallId` re-prompt cannot turn an argument-bearing call into an inputless
+one. A missing server/tool identity or a pre-upgrade pending card without the
+internal key fails closed for durable trust while ordinary Allow once and Reject
+remain available. Existing broad `*` trust retains its established semantics;
+legacy ambiguous exact MCP display patterns do not match the new internal keys.
 
 The `pattern` submitted by the dashboard is a consent proof, not authority: it
 must equal the server-derived field on the still-pending approval. Missing,

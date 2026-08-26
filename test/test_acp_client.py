@@ -3343,7 +3343,9 @@ class TestDeriveEditDiff:
     def test_create_content_becomes_addition_diff(self):
         from kiro_crew.acp._dispatch import derive_edit_diff
 
-        diff = derive_edit_diff({"path": "/a/new.py", "command": "create", "fileText": "x = 1\ny = 2\n"})
+        diff = derive_edit_diff(
+            {"path": "/a/new.py", "command": "create", "fileText": "x = 1\ny = 2\n"}
+        )
         assert "+x = 1" in diff
         assert "+y = 2" in diff
         assert "+++ /a/new.py" in diff
@@ -3370,8 +3372,16 @@ class TestDeriveEditDiff:
         letting a TypeError out of difflib abort the whole dispatch mid-turn."""
         from kiro_crew.acp._dispatch import derive_edit_diff
 
-        assert derive_edit_diff({"path": 42, "command": "strReplace", "oldStr": "a", "newStr": "b"}) == ""
-        assert derive_edit_diff({"path": "/a/b", "command": "strReplace", "oldStr": {"x": 1}, "newStr": "b"}) == "--- /a/b\n+++ /a/b\n@@ -0,0 +1 @@\n+b"
+        assert (
+            derive_edit_diff({"path": 42, "command": "strReplace", "oldStr": "a", "newStr": "b"})
+            == ""
+        )
+        assert (
+            derive_edit_diff(
+                {"path": "/a/b", "command": "strReplace", "oldStr": {"x": 1}, "newStr": "b"}
+            )
+            == "--- /a/b\n+++ /a/b\n@@ -0,0 +1 @@\n+b"
+        )
         assert derive_edit_diff({"path": ["/a"], "command": "create", "fileText": "x"}) == ""
         assert derive_edit_diff({"path": "/a/b", "command": "create", "fileText": 7}) == ""
 
@@ -5386,8 +5396,46 @@ class TestBuildPermissionEvent:
         )
         event = client._build_permission_event(msg)
         assert "rm -rf" in event.tool_input
-        # Cache consumed
-        assert "tc-6" not in client._tool_call_inputs
+        # Retained through same-call re-prompts; per-turn clear owns cleanup.
+        assert "tc-6" in client._tool_call_inputs
+
+    def test_cached_tool_input_carries_redaction_provenance(self):
+        """A secret removed before the permission event must leave a boolean
+        provenance bit; the original bytes must not be copied onto the event."""
+        client = AcpClient()
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        tool = JsonRpcMessage(
+            params={
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "title": "Run Command",
+                    "kind": "execute",
+                    "toolCallId": "tc-secret",
+                    "rawInput": {"command": "echo AKIAIOSFODNN7EXAMPLE"},
+                }
+            }
+        )
+        client._extract_tool_event(tool)
+        assert client._tool_call_input_redacted["tc-secret"] is True
+
+        permission = JsonRpcMessage(
+            id=111,
+            method="session/requestPermission",
+            params={
+                "toolCall": {"title": "Run Command", "toolCallId": "tc-secret"},
+                "options": [{"id": "allow_once", "label": "Allow"}],
+            },
+        )
+        event = client._build_permission_event(permission)
+
+        assert event.tool_input_redacted is True
+        assert "AKIAIOSFODNN7EXAMPLE" not in event.tool_input
+        assert "[REDACTED: credential]" in event.tool_input
+        assert client._tool_call_input_redacted["tc-secret"] is True
+        repeated = client._build_permission_event(permission)
+        assert repeated.tool_input_redacted is True
+        assert repeated.tool_input == event.tool_input
 
     def test_fallback_input_from_tool_call(self):
         client = AcpClient()
@@ -5829,9 +5877,7 @@ class TestFormatCommandResult:
         assert '"key"' in result
 
     def test_agent_model_filtered(self):
-        result = format_command_result(
-            {"data": {"agent": "x", "model": "y"}, "message": ""}
-        )
+        result = format_command_result({"data": {"agent": "x", "model": "y"}, "message": ""})
         # Only agent/model → display is empty → falls through to message
         assert result == ""
 
@@ -7891,15 +7937,11 @@ class TestIsTransientRawError:
         # Session expiry with a co-occurring 5xx token: the session-expiry
         # branch must win (checked first).
         assert (
-            _is_transient_raw_error(
-                {"data": "DispatchFailure: session expired", "message": ""}
-            )
+            _is_transient_raw_error({"data": "DispatchFailure: session expired", "message": ""})
             is False
         )
         assert (
-            _is_transient_raw_error(
-                {"data": "ConnectionResetError: not logged in", "message": ""}
-            )
+            _is_transient_raw_error({"data": "ConnectionResetError: not logged in", "message": ""})
             is False
         )
         # A bare 401/403 — the shape an expired session actually arrives in.
@@ -9428,6 +9470,129 @@ class TestAcpClientIsShellSignal:
         assert perm.tool_name == "list_intakes"
         assert perm.mcp_server_name == "beehive:beehive-mcp"
 
+    def test_permission_event_does_not_promote_title_on_identity_cache_miss(self, tmp_path):
+        """Legacy per-session transport fails closed without ``_meta.kiro``."""
+        from kiro_crew.acp.client import AcpClient
+        from kiro_crew.acp.types import JsonRpcMessage
+        from kiro_crew.trust_patterns import approval_command
+
+        client = AcpClient(work_dir=tmp_path)
+        client._extract_tool_event(
+            JsonRpcMessage(
+                method="session/update",
+                params={
+                    "update": {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "tc-1",
+                        "title": "mcp__beehive:beehive-mcp__list_intakes",
+                        "kind": "other",
+                        "rawInput": {},
+                    }
+                },
+            )
+        )
+
+        perm = client._build_permission_event(self._permission_msg())
+
+        assert perm.tool_name == ""
+        assert perm.mcp_server_name == ""
+        assert (
+            approval_command(
+                perm.tool_input,
+                is_shell=perm.is_shell,
+                tool_name=perm.tool_name,
+                mcp_server_name=perm.mcp_server_name,
+            )
+            == ""
+        )
+
+    def test_structured_non_shell_reprompt_keeps_argument_provenance(self, tmp_path):
+        """A repeated MCP permission retains both display and raw provenance."""
+        from kiro_crew.acp.client import AcpClient
+        from kiro_crew.acp.types import JsonRpcMessage
+        from kiro_crew.trust_patterns import approval_command
+
+        client = AcpClient(work_dir=tmp_path)
+        client._extract_tool_event(
+            JsonRpcMessage(
+                method="session/update",
+                params={
+                    "update": {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "tc-1",
+                        "title": "Looking up the record",
+                        "kind": "other",
+                        "rawInput": {"record_id": "sensitive-record"},
+                        "_meta": {
+                            "kiro": {
+                                "toolName": "read_record",
+                                "mcpServerName": "records:primary",
+                            }
+                        },
+                    }
+                },
+            )
+        )
+
+        first = client._build_permission_event(self._permission_msg())
+        repeated = client._build_permission_event(self._permission_msg())
+
+        assert first.tool_input
+        assert repeated.tool_input == first.tool_input
+        assert repeated.raw_tool_params == {"record_id": "sensitive-record"}
+        assert (
+            approval_command(
+                repeated.tool_input,
+                is_shell=repeated.is_shell,
+                tool_name=repeated.tool_name,
+                mcp_server_name=repeated.mcp_server_name,
+                raw_tool_params=repeated.raw_tool_params,
+            )
+            == ""
+        )
+
+    @pytest.mark.parametrize("raw_input", ["/etc/secret", ["/etc/secret"]])
+    def test_non_dict_non_shell_reprompt_cannot_become_durable_tool_trust(
+        self, tmp_path, raw_input
+    ):
+        """String/list rawInput must not become argument-free after one prompt."""
+        from kiro_crew.acp.client import AcpClient
+        from kiro_crew.acp.types import JsonRpcMessage
+        from kiro_crew.trust_patterns import approval_command
+
+        client = AcpClient(work_dir=tmp_path)
+        client._extract_tool_event(
+            JsonRpcMessage(
+                method="session/update",
+                params={
+                    "update": {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "tc-1",
+                        "title": "Reading a path",
+                        "kind": "read",
+                        "rawInput": raw_input,
+                        "_meta": {"kiro": {"toolName": "read_path", "mcpServerName": "files"}},
+                    }
+                },
+            )
+        )
+
+        first = client._build_permission_event(self._permission_msg())
+        repeated = client._build_permission_event(self._permission_msg())
+
+        assert repeated.tool_input == first.tool_input
+        assert repeated.tool_input
+        assert (
+            approval_command(
+                repeated.tool_input,
+                is_shell=repeated.is_shell,
+                tool_name=repeated.tool_name,
+                mcp_server_name=repeated.mcp_server_name,
+                raw_tool_params=repeated.raw_tool_params,
+            )
+            == ""
+        )
+
     def test_end_to_end_long_shell_title_passes_validation(self, tmp_path):
         """The full regression: a 400-char shell title validates only because
         is_shell propagated from tool_call → permission → _validate_tool_name."""
@@ -10082,8 +10247,7 @@ class TestMiseNodeInstallsDir:
 
         monkeypatch.setenv("MISE_DATA_DIR", str(tmp_path / "custom-mise"))
         assert (
-            client_mod._mise_node_installs_dir()
-            == tmp_path / "custom-mise" / "installs" / "node"
+            client_mod._mise_node_installs_dir() == tmp_path / "custom-mise" / "installs" / "node"
         )
 
     def test_xdg_data_home_is_honoured(self, tmp_path, monkeypatch):
@@ -10091,8 +10255,7 @@ class TestMiseNodeInstallsDir:
 
         monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
         assert (
-            client_mod._mise_node_installs_dir()
-            == tmp_path / "xdg" / "mise" / "installs" / "node"
+            client_mod._mise_node_installs_dir() == tmp_path / "xdg" / "mise" / "installs" / "node"
         )
 
     @_POSIX_EXEC_PATHS_ONLY

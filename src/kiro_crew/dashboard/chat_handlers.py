@@ -5734,6 +5734,7 @@ def _deny_trust_pattern(name: str, request_id: str, action: str, code: str) -> w
         "pattern_required": "pattern required for command-scoped trust",
         "pattern_underivable": "the pending tool has no grantable command scope",
         "approval_superseded": "pattern does not match the pending command",
+        "approval_not_slot_owned": "command-scoped trust requires a live slot approval",
     }
     return web.json_response({"error": errors[code], "code": code}, status=400)
 
@@ -5790,6 +5791,16 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
             request_id, fut = pending[0]
         else:
             fut = None
+    # A state-level approval carries only a boolean decision and has no owning
+    # slot, canonical command card, or scoped-pattern store.  Do not let a
+    # durable-trust action fall through to ``resolve_state_approval`` as ``True``:
+    # that would approve the tool after skipping every scope check.  Truly
+    # missing IDs retain the 404 from the common fallback below; this explicit
+    # denial covers a live state owner.
+    if original_action in ("trust", "trust_command", "trust_base") and (not fut or fut.done()):
+        state_fut = state._approval_futures.get(request_id) if request_id else None
+        if state_fut and not state_fut.done():
+            return _deny_trust_pattern(name, request_id, original_action, "approval_not_slot_owned")
     # Trust: auto-approve remaining tools for this slot. The approval policy MUST
     # be keyed by the OWNER's EFFECTIVE session key — a linked cron/workflow or
     # channel-surfaced slot runs under ``linked_session_key``, not
@@ -5798,9 +5809,24 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
     # ``effective_session_key`` is the one derivation shared with ``api_chat_mode``'s
     # grants AND revokes, so an off-switch always addresses the key a grant wrote.
     if action == "trust":
-        owner._trust = True
-        state.sessions.set_approval_policy(effective_session_key(owner), "auto")
-        action = "approved"
+        # A pending-card trust decision may widen the slot only when this exact
+        # live card carries the server's durable-grant proof.  This check MUST
+        # precede every side effect: a forged/expired/state-owned request id
+        # must not leave _trust or the session policy enabled before the common
+        # resolver eventually returns 400/404.  Explicit session-mode changes
+        # use api_chat_mode and remain independent of this card-bound proof.
+        grantable = _get_pattern_from_pending(owner, request_id, "trust_grantable")
+        if not fut or fut.done():
+            # No state-level fallback for a trust grant.  The early state-owner
+            # guard above returns 400; a genuinely missing/expired id keeps the
+            # endpoint's existing 404 below without mutating anything.
+            action = "trust"
+        elif grantable != "1":
+            return _deny_trust_pattern(name, request_id, original_action, "pattern_underivable")
+        else:
+            owner._trust = True
+            state.sessions.set_approval_policy(effective_session_key(owner), "auto")
+            action = "approved"
     # Trust-reads: auto-approve read-only bash commands for this slot
     # Defer setting _trust_reads until after the approval future is consumed
     # to prevent the frontend from seeing trust_reads=true while still pending.
@@ -5813,17 +5839,18 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
         if fut and not fut.done():
             pattern = body.get("pattern", "")
             expected = _get_pattern_from_pending(owner, request_id, "full_command")
+            trust_key = _get_pattern_from_pending(owner, request_id, "trust_command_key")
             grantable = _get_pattern_from_pending(owner, request_id, "trust_command_grantable")
             if not isinstance(pattern, str) or not pattern:
                 return _deny_trust_pattern(name, request_id, original_action, "pattern_required")
-            if grantable != "1" or not expected:
+            if grantable != "1" or not expected or not trust_key:
                 return _deny_trust_pattern(name, request_id, original_action, "pattern_underivable")
             if pattern != expected:
                 return _deny_trust_pattern(name, request_id, original_action, "approval_superseded")
             # ``_trusted_patterns`` is the existing fnmatch store.  Escape every
             # metacharacter so an exact grant for ``rm *.tmp`` cannot authorize
             # ``rm secret.tmp``.
-            owner._trusted_patterns.add(exact_trust_pattern(expected))
+            owner._trusted_patterns.add(exact_trust_pattern(trust_key))
         action = "approved"
     # Trust-base: derive bases from the same canonical pending command, never
     # from the client pattern or model-authored title.

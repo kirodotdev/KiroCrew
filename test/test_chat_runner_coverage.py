@@ -45,6 +45,7 @@ from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.history import ConversationLog
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.security import oauth_url_contains_credential
+from kiro_crew.trust_patterns import canonical_non_shell_trust_key, exact_trust_pattern
 
 # ── Shared helpers ────────────────────────────────────────────────────────
 
@@ -100,6 +101,11 @@ def _permission(
     tool_input: str = "",
     tool_kind: str = "execute",
     request_id: str = "req-cov-1",
+    *,
+    is_shell: bool = True,
+    tool_name: str = "",
+    mcp_server_name: str = "",
+    raw_tool_params: dict | None = None,
 ) -> LLMEvent:
     return LLMEvent(
         kind=EVENT_PERMISSION_REQUEST,
@@ -107,7 +113,10 @@ def _permission(
         tool_kind=tool_kind,
         tool_input=tool_input,
         request_id=request_id,
-        is_shell=True,
+        is_shell=is_shell,
+        tool_name=tool_name,
+        mcp_server_name=mcp_server_name,
+        raw_tool_params=raw_tool_params,
     )
 
 
@@ -1962,19 +1971,19 @@ class TestCommandParsing:
         assert list(restore.values()) == ["|"]
 
     def test_command_substitution_is_denied_by_default(self):
-        assert chat_runner._matches_trusted_pattern("Running: echo $(whoami)", {"echo*"}) is None
+        assert chat_runner._matches_trusted_pattern("echo $(whoami)", {"echo*"}) is None
 
     def test_every_segment_must_match_for_a_chained_command(self):
-        assert chat_runner._matches_trusted_pattern("Running: ls | rm -rf x", {"ls*"}) is None
+        assert chat_runner._matches_trusted_pattern("ls | rm -rf x", {"ls*"}) is None
 
     def test_all_matching_segments_return_joined_patterns(self):
-        matched = chat_runner._matches_trusted_pattern("Running: ls | wc -l", {"ls*", "wc*"})
+        matched = chat_runner._matches_trusted_pattern("ls | wc -l", {"ls*", "wc*"})
 
         assert matched is not None
         assert matched.count(",") == 1
 
     def test_redirect_forms_are_not_treated_as_separators(self):
-        assert chat_runner._matches_trusted_pattern("Running: ls 2>&1", {"ls*"}) is not None
+        assert chat_runner._matches_trusted_pattern("ls 2>&1", {"ls*"}) is not None
 
     def test_an_escaped_quote_does_not_hide_a_real_separator(self):
         """A closing quote followed by `\\'` leaves quoted context, so the `;`
@@ -1985,7 +1994,7 @@ class TestCommandParsing:
         command inherits whatever the first segment was allowed to do. Verified
         against a real shell: `echo 'foo'\\'; cmd` runs `cmd`.
         """
-        command = "Running: echo 'foo'\\'; whoami"
+        command = "echo 'foo'\\'; whoami"
         _, segments = chat_runner._split_command_segments(command) or ("", [])
 
         assert len(segments) == 2, segments
@@ -1997,7 +2006,7 @@ class TestCommandParsing:
         reading: the line is an unterminated quote, which a shell refuses to run
         at all rather than executing a second command, so there is nothing here
         for segmentation to protect against."""
-        command = 'Running: echo "foo\\"; whoami'
+        command = 'echo "foo\\"; whoami'
         _, segments = chat_runner._split_command_segments(command) or ("", [])
 
         assert len(segments) == 1, segments
@@ -2006,7 +2015,7 @@ class TestCommandParsing:
         """`\\;` is an escaped literal to the shell, not a separator -- but the
         allowlist must not approve the tail either way, so segmentation stays
         fail-closed rather than trying to model every escape."""
-        assert chat_runner._matches_trusted_pattern("Running: ls \\; whoami", {"ls*"}) is None
+        assert chat_runner._matches_trusted_pattern("ls \\; whoami", {"ls*"}) is None
 
     def test_a_backslash_inside_single_quotes_stays_literal(self):
         """The shell does not honor escapes inside single quotes, so a trailing
@@ -2017,10 +2026,10 @@ class TestCommandParsing:
         assert masked.endswith("&& wc -l")
 
     def test_base_command_extraction_dedups_across_segments(self):
-        assert chat_runner._extract_base_command("Running: cat a | wc -l | cat b") == "cat,wc"
+        assert chat_runner._extract_base_command("cat a | wc -l | cat b") == "cat,wc"
 
-    def test_full_command_strips_the_display_prefix(self):
-        assert chat_runner._extract_full_command("Running: ls -la") == "ls -la"
+    def test_full_command_preserves_canonical_text(self):
+        assert chat_runner._extract_full_command("Reading /usr/bin/id") == "Reading /usr/bin/id"
 
 
 # ── model backfill / pin guards ───────────────────────────────────────────
@@ -2367,6 +2376,169 @@ class TestRunChatRecoveryLadders:
 
 class TestRunChatAutoApproveRungs:
     @pytest.mark.asyncio
+    async def test_non_shell_trust_matches_cached_server_tool_identity(self, tmp_path):
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        canonical = canonical_non_shell_trust_key("records:primary", "read_record")
+        slot._trusted_patterns = {exact_trust_pattern(canonical)}
+        _set_stream(
+            client,
+            [
+                _permission(
+                    title="Looking up the record",
+                    tool_kind="other",
+                    is_shell=False,
+                    tool_name="read_record",
+                    mcp_server_name="records:primary",
+                ),
+                _complete(),
+            ],
+        )
+
+        await _drive(state, slot)
+
+        client.approve_tool.assert_awaited_once_with("req-cov-1")
+
+    @pytest.mark.asyncio
+    async def test_structured_non_shell_reprompt_never_matches_tool_identity_trust(self, tmp_path):
+        """Consumed display input must not erase argument provenance."""
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        canonical = canonical_non_shell_trust_key("records:primary", "read_record")
+        slot._trusted_patterns = {exact_trust_pattern(canonical)}
+        permission = _permission(
+            title="Looking up the record",
+            tool_input="",
+            tool_kind="other",
+            is_shell=False,
+            tool_name="read_record",
+            mcp_server_name="records:primary",
+            raw_tool_params={"record_id": "sensitive-record"},
+        )
+        _set_stream(client, [permission, _complete()])
+
+        with patch.object(chat_runner, "tool_approval_timeout_secs", return_value=0.0):
+            await _drive(state, slot)
+
+        client.approve_tool.assert_not_awaited()
+        client.reject_tool.assert_awaited_once_with("req-cov-1")
+        (card,) = [m for m in slot.messages if m.get("role") == "permission"]
+        meta = json.loads(card["cls"])
+        assert "full_command" not in meta
+        assert "trust_command_key" not in meta
+        assert "trust_command_grantable" not in meta
+        assert "trust_grantable" not in meta
+
+    @pytest.mark.asyncio
+    async def test_reused_non_shell_title_cannot_match_another_tools_trust(self, tmp_path):
+        """The title is model prose; only the cached ACP identity may match."""
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        slot._trusted_patterns = {
+            exact_trust_pattern(canonical_non_shell_trust_key("records:primary", "read_record"))
+        }
+        _set_stream(
+            client,
+            [
+                _permission(
+                    title="Looking up the record",
+                    tool_kind="other",
+                    is_shell=False,
+                    tool_name="delete_record",
+                    mcp_server_name="records:primary",
+                ),
+                _complete(),
+            ],
+        )
+
+        with patch.object(chat_runner, "tool_approval_timeout_secs", return_value=0.0):
+            await _drive(state, slot)
+
+        client.approve_tool.assert_not_awaited()
+        client.reject_tool.assert_awaited_once_with("req-cov-1")
+
+    @pytest.mark.asyncio
+    async def test_non_shell_identity_collision_cannot_auto_approve_other_tool(self, tmp_path):
+        """One wire-shaped display identity may not imply one trust identity."""
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        granted = canonical_non_shell_trust_key("github", "repo__delete")
+        colliding = canonical_non_shell_trust_key("github__repo", "delete")
+        assert granted != colliding
+        slot._trusted_patterns = {exact_trust_pattern(granted)}
+        _set_stream(
+            client,
+            [
+                _permission(
+                    title="Repository action",
+                    tool_kind="other",
+                    is_shell=False,
+                    tool_name="delete",
+                    mcp_server_name="github__repo",
+                ),
+                _complete(),
+            ],
+        )
+
+        with patch.object(chat_runner, "tool_approval_timeout_secs", return_value=0.0):
+            await _drive(state, slot)
+
+        client.approve_tool.assert_not_awaited()
+        client.reject_tool.assert_awaited_once_with("req-cov-1")
+
+    @pytest.mark.asyncio
+    async def test_non_shell_identity_cache_miss_stays_allow_once_or_reject(self, tmp_path):
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        slot._trusted_patterns = {"*"}
+        _set_stream(
+            client,
+            [
+                _permission(
+                    title="Shared model-authored title",
+                    tool_kind="other",
+                    is_shell=False,
+                ),
+                _complete(),
+            ],
+        )
+
+        def _allow_once_when_registered():
+            future = slot._approval_futures.get("req-cov-1")
+            if future is not None and not future.done():
+                future.set_result("approved")
+
+        state.push_slots_update.side_effect = _allow_once_when_registered
+        await _drive(state, slot)
+
+        (card,) = [m for m in slot.messages if m.get("role") == "permission"]
+        meta = json.loads(card["cls"])
+        assert "full_command" not in meta
+        assert "trust_command_key" not in meta
+        assert "trust_command_grantable" not in meta
+        assert "trust_grantable" not in meta
+        client.approve_tool.assert_awaited_once_with("req-cov-1")
+
+    @pytest.mark.asyncio
+    async def test_redacted_command_never_matches_existing_trust_pattern(self, tmp_path):
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        displayed = "echo [REDACTED: credential]"
+        # This exact pattern can legitimately be granted for a command whose
+        # literal argument is the display marker.  It must not cover a different
+        # command that only became identical after transport redaction.
+        slot._trusted_patterns = {exact_trust_pattern(displayed)}
+        permission = _permission(tool_input=json.dumps({"command": displayed}))
+        permission.tool_input_redacted = True
+        _set_stream(client, [permission, _complete()])
+
+        with patch.object(chat_runner, "tool_approval_timeout_secs", return_value=0.0):
+            await _drive(state, slot)
+
+        client.approve_tool.assert_not_awaited()
+        client.reject_tool.assert_awaited_once_with("req-cov-1")
+
+    @pytest.mark.asyncio
     async def test_browser_cli_presence_does_not_skip_shell_approval(self, tmp_path, monkeypatch):
         from kiro_crew.browser_cli import install
 
@@ -2498,6 +2670,85 @@ class TestRunChatAutoApproveRungs:
 
 
 class TestRunChatApprovalWindow:
+    @pytest.mark.asyncio
+    async def test_non_shell_card_separates_display_from_collision_free_trust_key(self, tmp_path):
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        _set_stream(
+            client,
+            [
+                _permission(
+                    title="Repository action",
+                    tool_input="",
+                    tool_kind="other",
+                    is_shell=False,
+                    tool_name="repo__delete",
+                    mcp_server_name="github",
+                ),
+                _complete(),
+            ],
+        )
+
+        with patch.object(chat_runner, "tool_approval_timeout_secs", return_value=0.0):
+            await _drive(state, slot)
+
+        (card,) = [m for m in slot.messages if m.get("role") == "permission"]
+        meta = json.loads(card["cls"])
+        # Preserve the ACP-compatible UI label while keeping authority in the
+        # injective server-only field.
+        assert meta["full_command"] == "mcp__github__repo__delete"
+        assert meta["trust_command_key"] == canonical_non_shell_trust_key("github", "repo__delete")
+        assert meta["trust_command_key"] != canonical_non_shell_trust_key("github__repo", "delete")
+        assert meta["trust_command_grantable"] == "1"
+        client.reject_tool.assert_awaited_once_with("req-cov-1")
+
+    @pytest.mark.asyncio
+    async def test_redacted_command_still_allows_one_time_approval(self, tmp_path):
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        permission = _permission(tool_input=json.dumps({"command": "echo [REDACTED: credential]"}))
+        permission.tool_input_redacted = True
+        _set_stream(client, [permission, _complete()])
+
+        def _approve_when_registered():
+            future = slot._approval_futures.get("req-cov-1")
+            if future is not None and not future.done():
+                future.set_result("approved")
+
+        state.push_slots_update.side_effect = _approve_when_registered
+
+        await _drive(state, slot)
+
+        client.approve_tool.assert_awaited_once_with("req-cov-1")
+        client.reject_tool.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_redacted_command_is_allow_once_only(self, tmp_path):
+        """Different hidden commands collapse to the same display marker.
+
+        The transport provenance therefore suppresses every durable command
+        scope while leaving the ordinary approval card live.
+        """
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        permission = _permission(tool_input=json.dumps({"command": "echo [REDACTED: credential]"}))
+        permission.tool_input_redacted = True
+        _set_stream(client, [permission, _complete()])
+
+        with patch.object(chat_runner, "tool_approval_timeout_secs", return_value=0.0):
+            await _drive(state, slot)
+
+        (card,) = [m for m in slot.messages if m.get("role") == "permission"]
+        meta = json.loads(card["cls"])
+        assert meta["tool_input"] == '{"command": "echo [REDACTED: credential]"}'
+        assert "full_command" not in meta
+        assert "trust_command_key" not in meta
+        assert "base_command" not in meta
+        assert "trust_command_grantable" not in meta
+        assert "trust_base_grantable" not in meta
+        assert "trust_grantable" not in meta
+        client.reject_tool.assert_awaited_once_with("req-cov-1")
+
     @pytest.mark.asyncio
     async def test_no_remaining_budget_declines_without_waiting(self, tmp_path):
         state, client = _runner_state(tmp_path)

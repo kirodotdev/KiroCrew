@@ -15,20 +15,11 @@ import re
 
 ENV_ASSIGNMENT_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*=")
 
-_TOOL_TITLE_PREFIXES = ("Running: ", "Reading ")
 _REDIRECT_PLACEHOLDER = "\x00REDIR\x00"
 _REDIRECT_RE = re.compile(r"[0-9]*>&[0-9]*|&>>?")
 _COMMAND_SPLIT_RE = re.compile(r"\s*(?:\|\||&&|;|&|\n|\|)\s*")
 _GRANT_SPLIT_RE = re.compile(r"\s*(?:\|\||&&|;|\|)\s*")
 _COMMAND_SUBSTITUTION_RE = re.compile(r"\$\(|`|<\(|>\(")
-
-
-def normalize_tool_name(tool_name: str) -> str:
-    """Strip presentation prefixes from a command or tool name."""
-    for prefix in _TOOL_TITLE_PREFIXES:
-        if tool_name.startswith(prefix):
-            return tool_name[len(prefix) :]
-    return tool_name
 
 
 def extract_bash_command(tool_input: str) -> str:
@@ -43,18 +34,103 @@ def extract_bash_command(tool_input: str) -> str:
     return tool_input if isinstance(tool_input, str) else ""
 
 
-def approval_command(tool_title: str, tool_input: str, *, is_shell: bool) -> str:
-    """Return the server-authoritative command/tool a trust click may bind.
+def canonical_non_shell_tool(mcp_server_name: str, tool_name: str) -> str:
+    """Return the ACP-compatible MCP display identity, or ``""`` on a miss.
+
+    Both values originate in the preceding ``tool_call`` frame's
+    ``_meta.kiro`` object and are recovered by ``toolCallId`` for the later
+    permission frame.  A display title is deliberately not accepted here: it
+    may be model-authored and two different tools may reuse the same prose.
+
+    This wire-shaped value is intentionally DISPLAY ONLY.  ``__`` can occur in
+    either component, so concatenating the pair this way is not injective and
+    must never be stored or matched as durable trust authority.
+    """
+    if not mcp_server_name or not tool_name:
+        return ""
+    return f"mcp__{mcp_server_name}__{tool_name}"
+
+
+def _trust_identity_component(value: str) -> str:
+    """Encode one identity component for case-insensitive durable matching.
+
+    ``matches_trusted_pattern`` historically compares with ``str.lower()``.
+    Normalize with that exact operation before encoding (not ``casefold()``,
+    which would silently widen the established equivalence classes), then use
+    UTF-8 ``surrogatepass`` + lowercase hex.  Hex contains no delimiter, shell
+    separator, or fnmatch metacharacter and remains stable under another
+    ``lower()`` in the matcher.
+    """
+    return value.lower().encode("utf-8", "surrogatepass").hex()
+
+
+def canonical_non_shell_trust_key(mcp_server_name: str, tool_name: str) -> str:
+    """Return an unambiguous internal durable-trust key for one MCP tool.
+
+    The versioned, component-encoded form is injective after the existing
+    case-insensitive normalization.  In particular, ``("github",
+    "repo__delete")`` cannot collide with ``("github__repo", "delete")`` as
+    both did in the display/wire form ``mcp__github__repo__delete``.
+    """
+    if not mcp_server_name or not tool_name:
+        return ""
+    server = _trust_identity_component(mcp_server_name)
+    tool = _trust_identity_component(tool_name)
+    return f"mcp-trust:v1:{server}:{tool}"
+
+
+def approval_command(
+    tool_input: str,
+    *,
+    is_shell: bool,
+    tool_name: str = "",
+    mcp_server_name: str = "",
+    raw_tool_params: dict | None = None,
+) -> str:
+    """Return the server-authoritative INTERNAL key a trust click may bind.
 
     Shell scope comes only from the provider's structured ``tool_input``.  A
-    non-shell event is grantable only when it has no structured input, matching
-    the enforcement path where the provider-controlled title is the identity.
+    non-shell event is grantable only when it has no structured input and both
+    halves of its ACP-cached server/tool identity are present.  Both the rendered
+    ``tool_input`` and the structured params are checked; the structured params
+    persist across a same-call re-prompt even if a provider omits rendered input.
+    Display text is intentionally absent from this API so it cannot become
+    authority later.
     """
     if is_shell:
         return extract_bash_command(tool_input) if tool_input else ""
-    if not tool_input:
-        return normalize_tool_name(tool_title)
+    if not tool_input and not isinstance(raw_tool_params, dict):
+        return canonical_non_shell_trust_key(mcp_server_name, tool_name)
     return ""
+
+
+def approval_display_command(
+    tool_input: str,
+    *,
+    is_shell: bool,
+    tool_name: str = "",
+    mcp_server_name: str = "",
+    raw_tool_params: dict | None = None,
+) -> str:
+    """Return the user-visible consent label for :func:`approval_command`.
+
+    Grantability is deliberately identical, but non-shell display retains the
+    ACP-compatible ``mcp__server__tool`` spelling.  The pending-card handler
+    stores the separately derived internal key, so UI compatibility never
+    becomes authorization authority.
+    """
+    trust_key = approval_command(
+        tool_input,
+        is_shell=is_shell,
+        tool_name=tool_name,
+        mcp_server_name=mcp_server_name,
+        raw_tool_params=raw_tool_params,
+    )
+    if not trust_key:
+        return ""
+    if is_shell:
+        return trust_key
+    return canonical_non_shell_tool(mcp_server_name, tool_name)
 
 
 def _tool_matches(pattern: str, tool_name: str) -> bool:
@@ -107,7 +183,11 @@ def split_command_segments(
     mask_escaped: bool = False,
 ) -> tuple[str, list[str]] | None:
     """Split a command into unquoted shell segments, failing closed."""
-    normalized = normalize_tool_name(command)
+    # ``command`` is the canonical value from structured ``tool_input``.  A
+    # shell can legitimately invoke an executable named ``Reading`` or
+    # ``Running:``, so presentation-prefix removal here would alias two distinct
+    # commands at the authorization boundary.
+    normalized = command
     if _COMMAND_SUBSTITUTION_RE.search(normalized) or "\x00" in normalized:
         return None
     quote_masked, separator_restore = _mask_quoted_separators(normalized, mask_escaped=mask_escaped)
@@ -137,10 +217,9 @@ def split_command_segments(
 def matches_trusted_pattern(command: str, patterns: set[str]) -> str | None:
     """Return the trusted fnmatch pattern covering ``command``, if any.
 
-    The input is command-shaped.  Callers must pass the canonical command from
-    ``tool_input`` rather than wrapping it in a synthetic ``"Running: ..."``
-    title.  Presentation-prefix normalization remains for compatibility with
-    existing callers and tests, but it is not an authority source.
+    The input is the canonical command from ``tool_input``.  Presentation
+    prefixes are never stripped here: they are ordinary executable text at this
+    boundary, not UI decoration.
     """
     split = split_command_segments(command)
     if split is None:
@@ -170,16 +249,25 @@ def extract_base_command(command: str) -> str:
     normalized, segments = split
     bases: list[str] = []
     for segment in segments:
-        parts = segment.strip().split(None, 1)
+        stripped = segment.strip()
+        parts = stripped.split(None, 1)
         if not parts or ENV_ASSIGNMENT_RE.match(parts[0]):
             return ""
-        bases.append(parts[0])
+        base = parts[0]
+        # The comma is our multi-command delimiter.  Quotes or escapes mean the
+        # first whitespace-delimited token is not necessarily the executable;
+        # shell expansion characters can likewise select a different binary at
+        # execution time.  A lossy base grant would then authorize a command the
+        # user never saw, so these shapes remain allow-once only.
+        if any(ch in base for ch in "'\"\\,$`*?[]{}()<>!") or base.startswith(("~", "#")):
+            return ""
+        bases.append(base)
     return ",".join(dict.fromkeys(bases)) if bases else normalized
 
 
 def extract_full_command(command: str) -> str:
-    """Return a command/tool name without a presentation prefix."""
-    return normalize_tool_name(command)
+    """Return the canonical command/tool identity unchanged."""
+    return command
 
 
 def base_consent_pattern(base_command: str) -> str:

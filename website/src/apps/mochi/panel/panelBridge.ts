@@ -390,6 +390,7 @@ export function permissionApprovalFromFrame(
   toolInput?: string
   fullCommand?: string
   baseCommand?: string
+  trustGrantable?: boolean
   purpose?: string
 } | null {
   let meta: unknown
@@ -411,6 +412,7 @@ export function permissionApprovalFromFrame(
     toolInput?: string
     fullCommand?: string
     baseCommand?: string
+    trustGrantable?: boolean
     purpose?: string
   } = { id, tool }
   if (typeof m.tool_input === 'string' && m.tool_input) {
@@ -420,6 +422,9 @@ export function permissionApprovalFromFrame(
   }
   if (typeof m.full_command === 'string' && m.full_command) req.fullCommand = m.full_command
   if (typeof m.base_command === 'string' && m.base_command) req.baseCommand = m.base_command
+  // Proof is server-authored on the pending card. Scope strings are display
+  // values and their absence must never make the pet fall back to broad Trust.
+  if (m.trust_grantable === '1') req.trustGrantable = true
   return req
 }
 
@@ -1268,14 +1273,27 @@ export async function getPendingApprovals(): Promise<Record<string, unknown>[]> 
  * `pattern` scopes a trust grant (`trust_command` / `trust_base`) to one command
  * or one command family; the slot endpoint reads it as `pattern`. Omitted for
  * `approve` / `reject` and for the unscoped `trust` (trust every tool), which
- * carry no pattern.
+ * carry no pattern. `trustGrantable` is the gateway proof carried by this exact
+ * pending card; every durable trust route fails locally without it, while the
+ * server independently verifies the card again before changing policy.
  */
 export async function respondApproval(
   id: string,
   action: string,
   pattern?: string,
+  trustGrantable = false,
 ): Promise<{ ok: boolean; error?: string; staleOwnerSession?: boolean }> {
   const route = approvalRoute(action)
+  if (
+    route.kind === 'slot'
+    && ['trust', 'trust_command', 'trust_base'].includes(route.action)
+    && !trustGrantable
+  ) {
+    // Defense-in-depth for stale/custom renderers: without the gateway proof,
+    // this card may still allow/reject once but cannot manufacture a durable
+    // slot grant through the bridge.
+    return { ok: false, error: 'durable trust is unavailable for this approval' }
+  }
   try {
     const res =
       route.kind === 'approval'

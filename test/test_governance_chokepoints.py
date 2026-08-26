@@ -1369,6 +1369,10 @@ class TestPermissionEventCarriesRawParams:
         client._tool_call_mcp_server = {}
         client._tool_call_tool_name = {}
         client._permission_options = {}
+        # Deliberately omit the newer redaction-provenance cache: minimal and
+        # legacy constructors must remain compatible without weakening the
+        # permission event's authorization provenance.
+        assert not hasattr(client, "_tool_call_input_redacted")
         # Simulate the ToolCall notification caching structured params...
         client._tool_call_params["tc-1"] = {"path": "/etc/passwd", "command": None}
         # ...then the request_permission message referencing the same toolCallId.
@@ -1387,6 +1391,7 @@ class TestPermissionEventCarriesRawParams:
         assert evt.kind == EVENT_PERMISSION_REQUEST
         assert evt.raw_tool_params == {"path": "/etc/passwd", "command": None}
         assert evt.tool_kind == "edit"
+        assert evt.tool_input_redacted is False  # no cached input to distrust
 
 
 def tmp_profile_dir(monkeypatch):

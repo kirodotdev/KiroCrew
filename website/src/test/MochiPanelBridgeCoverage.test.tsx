@@ -1135,11 +1135,11 @@ describe('panelBridge approvals', () => {
 
   it('a scoped trust grant goes to the slot route, carrying its pattern', async () => {
     const bridge = await loadBridge()
-    await bridge.respondApproval('req3', 'trust_command', 'ls -la')
+    await bridge.respondApproval('req3', 'trust_command', 'ls -la', true)
     const [call] = calls('/api/chat/slots/mochi/approve', 'POST')
     expect(bodyOf(call)).toEqual({ action: 'trust_command', request_id: 'req3', pattern: 'ls -la' })
 
-    await bridge.respondApproval('req4', 'trust')
+    await bridge.respondApproval('req4', 'trust', undefined, true)
     expect(bodyOf(calls('/api/chat/slots/mochi/approve', 'POST')[1]).pattern).toBeUndefined()
   })
 

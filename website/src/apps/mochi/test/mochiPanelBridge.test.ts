@@ -498,9 +498,10 @@ describe('mochi panelBridge live events', () => {
       request_id: 'req-9',
       tool_title: 'fs_read',
       tool_input: '/tmp/x',
+      trust_grantable: '1',
     })
     FakeWebSocket.last!.emit('chat_message', { slot: 'mochi', role: 'permission', content: 'fs_read', cls })
-    expect(seen).toEqual([{ id: 'req-9', tool: 'fs_read', toolInput: '/tmp/x' }])
+    expect(seen).toEqual([{ id: 'req-9', tool: 'fs_read', toolInput: '/tmp/x', trustGrantable: true }])
   })
 
   it('does NOT re-open a permission frame already resolved (history replay)', () => {
@@ -544,10 +545,18 @@ describe('mochi panelBridge live events', () => {
     )
     await bridge.respondApproval('a1', 'approve')
     await bridge.respondApproval('a2', 'reject')
-    await bridge.respondApproval('a3', 'trust')
+    await bridge.respondApproval('a3', 'trust', undefined, true)
     expect(calls[0]).toBe('/api/approvals/a1/approve')
     expect(calls[1]).toBe('/api/approvals/a2/reject')
     expect(calls[2]).toBe('/api/chat/slots/mochi/approve')
+  })
+
+  it('respondApproval refuses durable trust without pending-card proof', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(bridge.respondApproval('a3', 'trust')).resolves.toMatchObject({ ok: false })
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('respondApproval reports failure instead of claiming success', async () => {

@@ -708,11 +708,11 @@ describe('ChatPanel trust scopes', () => {
     await renderPanel()
     emit('onApprovalRequest', {
       id: 'req-9', tool: 'execute_bash', toolInput: 'cat x',
-      fullCommand: 'cat x', baseCommand: 'cat',
+      fullCommand: 'cat x', baseCommand: 'cat', trustGrantable: true,
     })
     await userEvent.click(await screen.findByRole('button', { name: 'Trust' }))
     await userEvent.click(screen.getByRole('button', { name: 'Trust all tools' }))
-    expect(respondApproval).toHaveBeenCalledWith('req-9', 'trust', undefined)
+    expect(respondApproval).toHaveBeenCalledWith('req-9', 'trust', undefined, true)
     expect(await screen.findByText('Trusted')).toBeInTheDocument()
   })
 })
