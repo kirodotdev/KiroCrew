@@ -614,9 +614,10 @@ bugs:
   symptom is [issue #1828](https://github.com/kirodotdev/KiroCrew/issues/1828).
 - **Pinch zoom is off.** The installed app behaves like an application, not a
   web page: two-finger pinch and double-tap no longer scale the shell. **To
-  magnify, use the OS Display Zoom setting** (iOS: Settings → Display &
-  Brightness → Display Zoom), which still enlarges everything; in a browser tab
-  Safari's Aa text-size control works too, but it is **not** reachable from the
+  magnify, use the OS display-zoom setting** (iOS: Settings → Display &
+  Brightness → Display Zoom; Android: Settings → Display → Display size and
+  text), which still enlarges everything; in a browser tab Safari's Aa
+  text-size control works too, but it is **not** reachable from the
   installed app, which has no Safari toolbar. Pinch is off because magnifying a
   fixed-height layout whose scrollers are all inner leaves no way to reach the
   topbar and composer it pushes off-screen. The surfaces that need magnifying
