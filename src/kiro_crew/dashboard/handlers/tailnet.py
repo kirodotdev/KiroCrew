@@ -1,10 +1,9 @@
 """Tailnet dashboard-access status — one read-only endpoint for the status card.
 
-Reports what the RUNNING SERVER TRUSTS, never a fresh probe. The distinction is
-the whole design of this module: the MagicDNS name is resolved once during
-gateway startup and that exact value builds the fixed Origin/Host boundary.
-Re-probing later could report a name the running gateway does not accept, so the
-endpoint reads the startup snapshot and makes its staleness explicit.
+Reports what the RUNNING SERVER TRUSTS, never a fresh probe.  The MagicDNS name
+seeds the Origin/Host boundary during startup; if that probe loses a boot race,
+the background recovery task can add one validated origin later.  This endpoint
+reads that same runtime state so it never reports a name the gateway rejects.
 """
 
 from __future__ import annotations
@@ -32,8 +31,8 @@ def _derive_state(*, pinned: bool, enabled: bool, host: str) -> str:
 
     1. ``pinned``  — an administrator's ceiling forbids the derivation.
     2. ``off``     — not pinned, and the operator has not enabled it.
-    3. ``unresolved`` — enabled, but nothing was trusted at startup.
-    4. ``active``  — enabled, and a name is in the startup origin set.
+    3. ``unresolved`` — enabled, but the running gateway trusts no tailnet name.
+    4. ``active``  — enabled, and a name is in the running origin set.
     """
     if pinned:
         return "pinned"
@@ -53,18 +52,18 @@ async def api_tailnet_status(request: web.Request) -> web.Response:
     (flippable) from "off because an administrator pinned it", where the PATCH
     route itself returns 403 — the one case the user cannot lift.
 
-    ``host`` / ``origin`` / ``resolved_at`` come from startup resolution, not
-    from a fresh daemon call.
+    ``host`` / ``origin`` / ``resolved_at`` come from the running request
+    boundary, not from a fresh daemon call.
 
     Read-only, and never 500s: an unreadable config is exactly when the operator
     wants this card. Failure degrades toward "off"/"unresolved" so the UI never
     claims an origin is trusted when we cannot prove it.
     """
-    host = str(request.app.get("tailnet_host") or "")
-    try:
-        resolved_at = int(request.app.get("tailnet_resolved_at") or 0)
-    except (TypeError, ValueError):
-        resolved_at = 0
+    # Tailnet is optional and default-disabled, so keep its module off the
+    # handler-import boot path. This route is the first point that needs it.
+    from kiro_crew.dashboard import tailnet
+
+    host, resolved_at = tailnet.running_tailnet_origin(request.app)
 
     try:
         # to_thread, not a bare load(): KiroCrewConfig.load() stats and reads
@@ -81,8 +80,6 @@ async def api_tailnet_status(request: web.Request) -> web.Response:
         # No audit_tool: this is a pure READ the card refetches, and auditing an
         # inspection would append HMAC-chained SEL rows for a question rather than
         # a decision (see tailnet.is_governance_pinned_off).
-        from kiro_crew.dashboard import tailnet
-
         pinned = await asyncio.to_thread(tailnet.is_governance_pinned_off)
     except Exception:  # pragma: no cover - the probe is itself guarded
         logger.debug("tailnet status: governance probe unavailable", exc_info=True)

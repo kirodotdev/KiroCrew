@@ -366,11 +366,13 @@ the same and the difference is the whole security story:
   At startup the setting reads your own MagicDNS name from the local Tailscale
   daemon and trusts `https://<that name>` as an origin, so you do **not** have to
   look the name up and hand-write `dashboard.url`. The Overview one-click flow
-  performs and waits for the same required restart automatically. If
-  Tailscale is absent, stopped, or MagicDNS is off at startup it contributes
-  nothing and the dashboard starts exactly as before. It does not widen the
-  network bind and does not change authentication — every request still needs a
-  dashboard session.
+  performs and waits for the restart required when it turns the setting on. If
+  Tailscale is absent, stopped, or MagicDNS is off during a later gateway start,
+  the dashboard starts exactly as before and retries in the background, with a
+  delay that grows to one minute. Once the daemon returns a validated name, the
+  running gateway accepts it without another restart. This does not widen the
+  network bind or change authentication — every request still needs a dashboard
+  session.
 
   If you would rather do it by hand, the equivalent is:
   ```bash
@@ -379,11 +381,12 @@ the same and the difference is the whole security story:
   kirocrew restart
   ```
   `dashboard.tailscale.enabled` reads your own MagicDNS name from the local
-  Tailscale daemon once at startup and trusts `https://<that name>` as an origin,
-  so you do **not** have to look the name up and hand-write `dashboard.url`. If
-  Tailscale is absent, stopped, or MagicDNS is off it contributes nothing and the
-  dashboard starts exactly as before. It does not widen the network bind and does
-  not change authentication — every request still needs a dashboard session.
+  Tailscale daemon and trusts `https://<that name>` as an origin, so you do **not**
+  have to look the name up and hand-write `dashboard.url`. A failed startup read
+  contributes nothing initially and is retried in the background; the validated
+  origin is added to the running gateway when Tailscale becomes ready. It does
+  not widen the network bind or change authentication — every request still
+  needs a dashboard session.
 
   Optionally, opt in to **identity-pinned sessions** so the session pin binds to
   your device's daemon-verified tailnet identity instead of the tunnel's shared

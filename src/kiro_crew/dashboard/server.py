@@ -2419,6 +2419,12 @@ def _pending_skill_notification(info: dict) -> tuple[str, str, str, list[dict[st
     return title, body, review_url, actions
 
 
+def _tailnet_origin_enabled() -> bool:
+    """Read the live recovery opt-in; callers offload this blocking config read."""
+
+    return bool(KiroCrewConfig.load().dashboard.tailscale.enabled)
+
+
 async def start_dashboard(
     sessions: SessionManager,
     crons: CronService,
@@ -3097,14 +3103,9 @@ async def start_dashboard(
             "tailnet access enabled: trusting origin https://%s (bind and auth unchanged)",
             _tailnet_host,
         )
-    # Stashed on the app, not left a local, because GET /api/tailnet/status must
-    # report the value the running origin set was actually built from rather than
-    # re-probe the daemon (see handlers/tailnet.py). ``tailnet_resolved_at`` is
-    # stamped unconditionally — it timestamps the resolution ATTEMPT, so an
-    # "unresolved" card can say when we last looked; ``0`` means the derivation
-    # never ran (feature off, or pinned). Both start-up paths set both keys: only
-    # one of them serves this route today, but an earlier round of this feature
-    # already shipped a bug from touching one startup site and not the other.
+    # Keep the initial snapshot on both startup surfaces for compatibility.
+    # Runtime-aware handlers read the mutable state installed below, which can
+    # acquire one validated origin after a Tailscale/Gateway boot race.
     app["tailnet_host"] = _tailnet_host
     app["tailnet_resolved_at"] = int(time.time()) if _tailnet_host else 0
     # The governance-filtered identity-trust value the middleware was built
@@ -3201,6 +3202,17 @@ async def start_dashboard(
                 dashboard_url,
             )
             raise RuntimeError("dashboard_url requires token auth middleware")
+
+    # Register only after the final allowed-origin set is selected.  The startup
+    # hook schedules a sleeping background task and returns immediately, so this
+    # cannot extend listener startup; cleanup owns cancellation before aiohttp
+    # freezes the signal lists in runner.setup().
+    tailnet.install_tailnet_origin_recovery(
+        app,
+        enabled=_ts_cfg.enabled,
+        initial_host=_tailnet_host,
+        load_enabled=_tailnet_origin_enabled,
+    )
 
     # ── Loop stall watchdog shutdown ─────────────────────────────────────────
     # Register the cleanup hook HERE, before ``runner.setup()`` freezes the
@@ -3801,6 +3813,14 @@ async def start_api_server(
     # re-bind a rotated access token to the same verified peer identity).
     app["tailnet_trust"] = _tailnet_trust
     app["local_only"] = local_only
+    # Parity with the full dashboard: headless gateways have the same live
+    # Origin/Host boundary and must recover the same boot race without restart.
+    tailnet.install_tailnet_origin_recovery(
+        app,
+        enabled=_ts_cfg.enabled,
+        initial_host=_tailnet_host,
+        load_enabled=_tailnet_origin_enabled,
+    )
 
     # Per-session internal secret for machine-to-machine (mcp-core, cron) auth.
     # Deferred file write (and parent mkdir) until after the port binds (mirrors

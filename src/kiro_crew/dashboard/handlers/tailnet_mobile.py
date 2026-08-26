@@ -18,15 +18,12 @@ with a name but no published serve means.
 
 Three properties are load-bearing.
 
-**This is a LIVE probe, and the existing status endpoint is not.**
-``GET /api/tailnet/status`` deliberately reports the value resolved once at
-startup, because that is what actually went into the fixed origin allowlist.
-This endpoint reports what the machine can do *next*. The two must stay separate:
-a name that resolves now but was absent at startup is exactly the boot race where
-the origin is NOT trusted, and reporting it as ready would be the
-"checked-but-never-ran shown as a clean result" defect. It gets its own step
-(``restart_gateway``) instead. The one-click UI resumes after the replacement
-gateway is ready, while the security boundary itself changes only at startup.
+**This is a LIVE daemon probe, while the existing status endpoint reports the
+live request boundary.**  They must stay separate: a daemon name is not trusted
+merely because it resolves.  The background recovery path first validates and
+adds it to the running Origin/Host set; only then does this endpoint report the
+name as trusted.  Until that happens the existing fail-closed restart step is
+preserved, including for config changes that still require a restart.
 
 **The QR carries a live credential, so it is minted on demand and never cached.**
 The payload is a URL with a session token in its query string. It is not logged,
@@ -339,7 +336,7 @@ async def _live_state(request: web.Request, port: int) -> _LiveState:
             published = state.published
             serve_detail = state.detail
 
-    startup_host = str(request.app.get("tailnet_host") or "")
+    startup_host = tailnet.running_tailnet_origin(request.app)[0]
     step = _derive_step(
         pinned=pinned,
         probe=probe,

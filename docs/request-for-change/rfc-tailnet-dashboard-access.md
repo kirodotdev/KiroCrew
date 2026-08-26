@@ -304,6 +304,16 @@ strip the trailing dot, add `https://<dnsname>`. `build_allowed_hosts()` derives
 the `Host` allowlist from that same set, so `check_host()` follows with no
 second change — the existing single-source-of-truth property is preserved.
 
+The startup read remains bounded and never blocks listener creation beyond its
+existing timeout. If an explicit opt-in loses a boot race with `tailscaled`, a
+gateway-owned background task retries after 2 seconds with exponential backoff
+capped at 60 seconds. Before adding a later name it re-reads the opt-in, rechecks
+the governance ceiling, and applies the same suffix/structure validation as the
+startup path. It then updates the existing Origin set and the reported runtime
+state together on the event loop; no restart is required, and both the Origin
+and Host barriers observe the same change. Gateway cleanup cancels and awaits
+the task.
+
 This removes the manual `dashboard.url` step and Problem 3's silent `403`.
 
 Two opt-in signals, in order:
@@ -476,7 +486,8 @@ is regenerated on restart.
 - **Fail-closed on ambiguity.** Every unresolvable case returns `None` and falls
   back to token auth. No branch grants access on a partial match.
 - **Denial of service.** Resolution calls a local daemon. Bounded cache, hard
-  timeout, and one resolution per WebSocket upgrade rather than per frame.
+  timeout, one resolution per WebSocket upgrade rather than per frame, and a
+  startup-recovery probe capped at once per minute bound the work.
 - **The tailnet ACL joins the trust boundary.** With `trust_identity` on, a node
   that can reach the Serve endpoint and whose login is allowlisted gets in. This
   is why §3 makes the allowlist mandatory, and it must be stated plainly in the
