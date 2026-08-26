@@ -41,6 +41,7 @@ from pathlib import Path
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import _DEFAULT_PORT, config_dir
 from kiro_crew.instances.constants import TTL_PATTERN
+from kiro_crew.instances.validation import _AWS_PROFILE_RE as _validation_aws_profile_re
 
 logger = logging.getLogger(__name__)
 
@@ -65,8 +66,11 @@ _REMOTE_BIN_RE = re.compile(r"^[A-Za-z0-9._/~\- ]{0,512}\Z")
 # authoritative validation lives with the tunnel manager (validation.py).
 _SSM_TARGET_RE = re.compile(r"^(i|mi)-[a-f0-9]{8,17}\Z")
 # aws_profile: named profile in ~/.aws/config; conservative charset, no shell
-# metacharacters. Empty string means "default credential chain".
-_AWS_PROFILE_RE = re.compile(r"^[A-Za-z0-9_.\-]{0,128}\Z")
+# metacharacters ('+' is legal: IAM entity names permit it, and SSO-derived
+# profiles use "<account>+<permission-set>"). Single source of truth lives in
+# validation.py; the empty "default credential chain" value is handled by the
+# `if self.aws_profile` guard at the check site rather than by the pattern.
+_AWS_PROFILE_RE = _validation_aws_profile_re
 # aws_region: standard AWS region shape (e.g. us-east-1, eu-west-2). Empty
 # string means "use the profile's/environment's default region".
 _AWS_REGION_RE = re.compile(r"^[a-z]{2}(-gov)?-[a-z]+-\d{1,2}\Z|^\Z")
@@ -237,7 +241,10 @@ class Instance:
                     f"hex digits"
                 )
             if self.aws_profile and not _AWS_PROFILE_RE.match(self.aws_profile):
-                raise InvalidInstanceError(f"invalid aws_profile {self.aws_profile!r}")
+                raise InvalidInstanceError(
+                    f"invalid aws_profile {self.aws_profile!r} "
+                    f"(allowed: letters, digits, '.', '_', '+', '-')"
+                )
             if self.aws_region and not _AWS_REGION_RE.match(self.aws_region):
                 raise InvalidInstanceError(f"invalid aws_region {self.aws_region!r}")
             if not _SSM_RUN_AS_RE.match(self.ssm_run_as):

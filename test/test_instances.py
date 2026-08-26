@@ -4102,10 +4102,13 @@ class TestSsmValidation:
         assert validate_aws_profile("") == ""
         assert validate_aws_region("") == ""
         assert validate_aws_profile("my-profile_1.x") == "my-profile_1.x"
+        # '+' is legal in profile names: IAM entity names permit it, and SSO
+        # tooling derives "<account>+<permission-set>" shaped profiles.
+        assert validate_aws_profile("AdminAccess+dev") == "AdminAccess+dev"
         assert validate_aws_region("us-east-1") == "us-east-1"
         assert validate_aws_region("us-gov-west-1") == "us-gov-west-1"
         # Option injection + metacharacters + bogus region shapes are refused.
-        for bad in ("-oProxyCommand=x", "a b", "a;b", "a$(b)"):
+        for bad in ("-oProxyCommand=x", "-dev", "a b", "a;b", "a$(b)", "a$b"):
             with pytest.raises(SsmValidationError):
                 validate_aws_profile(bad)
         for bad in ("useast1", "US-EAST-1", "us-east-1; rm -rf /", "-us-east-1"):
@@ -4227,6 +4230,48 @@ class TestSsmRegistry:
         raw = (tmp_path / "instances.json").read_text(encoding="utf-8")
         for marker in ("AKIA", "ASIA", "aws_secret_access_key", "aws_session_token"):
             assert marker not in raw
+
+    def test_aws_profile_allows_plus_and_rejects_metacharacters(self, tmp_path):
+        """The record check accepts '+' (SSO-derived profile names) but still
+        refuses whitespace and shell metacharacters, mirroring validation.py."""
+        from kiro_crew.instances.registry import InvalidInstanceError
+
+        reg = self._reg(tmp_path)
+        inst = reg.add(
+            name="SSO box",
+            connection_method="ssm",
+            ssm_target="i-0123456789abcdef0",
+            aws_profile="AdminAccess+dev",
+            instance_id="sso",
+        )
+        assert inst.aws_profile == "AdminAccess+dev"
+        assert reg.list()[0].aws_profile == "AdminAccess+dev"
+        for i, bad in enumerate(("a b", "a;b", "a$(b)", "a$b")):
+            with pytest.raises(InvalidInstanceError):
+                reg.add(
+                    name="bad profile",
+                    connection_method="ssm",
+                    ssm_target="i-0123456789abcdef0",
+                    aws_profile=bad,
+                    instance_id=f"bad-{i}",
+                )
+
+    def test_aws_profile_regex_is_single_sourced(self):
+        """The registry's early record check aliases validation.py's pattern.
+
+        There is exactly one AWS-profile charset: registry._AWS_PROFILE_RE is
+        the SAME compiled object as validation._AWS_PROFILE_RE, so the two
+        check sites cannot drift. If someone re-introduces a second copy this
+        identity check fails even when the copies happen to be textually
+        equal. Note the pattern accepts a leading '-' by design: option
+        injection is blocked by the separate startswith('-') guard in
+        validation.validate_aws_profile, not by the character class, and the
+        empty "default chain" value is handled by the `if self.aws_profile`
+        guard at the registry check site.
+        """
+        from kiro_crew.instances import registry, validation
+
+        assert registry._AWS_PROFILE_RE is validation._AWS_PROFILE_RE
 
     def test_ssm_run_as_defaults_and_round_trips(self, tmp_path):
         """A record written before ssm_run_as existed must load as the default.
