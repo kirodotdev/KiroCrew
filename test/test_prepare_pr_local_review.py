@@ -84,13 +84,39 @@ def _opus_text():
     return OPUS_WORKFLOW.read_text(encoding="utf-8")
 
 
+def _stage_gpt_prompts(text, stage):
+    """Write the shared GPT prompt files where the workflow's specs stage them.
+
+    The live workflow splices `.github/review-prompts/gpt-*.md` into its
+    prompt (#5852); the assembler resolves those splices against the staging
+    tree, so the extraction helpers must pre-populate it the way
+    ``stage_files`` does in production - from the repo's own prompt files.
+    """
+    for spec in local_review.extract_prompt_file_specs(text):
+        target = Path(local_review._staged_target(str(stage), spec.dest))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            (PROMPTS_DIR / Path(spec.src).name).read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+
+
 def _gpt_prompt(values=None, stage="/tmp/stage"):
-    """The GPT lane's prompt, extracted from the live workflow."""
+    """The GPT lane's prompt, assembled from the live workflow.
+
+    The staging tree only feeds the assembly (the returned text embeds the
+    ``stage`` path but never reads it again), so it is context-managed and
+    gone by the time this returns - no per-run scratch residue.
+    """
     text = _gpt_text()
     scalars = local_review.block_scalars(text)
     target = local_review._heredoc_target(text)
     block = local_review._run_block_with(scalars, "cat > {} <<".format(target), "gpt")
-    prompt = local_review.extract_heredoc(block, target)
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="gpt-prompt-stage-") as stage_dir:
+        _stage_gpt_prompts(text, stage_dir)
+        prompt = local_review.assemble_prompt_document(block, target, str(stage_dir))
     if values is None:
         return prompt
     prompt = local_review.substitute_sed_placeholders(prompt, text, values)
@@ -169,23 +195,36 @@ def test_gpt_prompt_carries_the_contract_sentinels():
 
 
 def test_gpt_prompt_is_lifted_verbatim_not_paraphrased():
-    """Every extracted line must exist in the workflow file, byte for byte.
+    """Every extracted line must exist in its source, byte for byte.
 
     This is the property the whole script rests on: the local brief is the
-    server's own text, only dedented by the YAML block indent.
+    server's own text - a heredoc line dedented by the YAML block indent, or a
+    line of a shared prompt file spliced in verbatim (#5852).
     """
     prompt = _gpt_prompt()
     raw = _gpt_text()
+    shared = "\n".join(
+        (PROMPTS_DIR / f).read_text(encoding="utf-8")
+        for f in sorted(p.name for p in PROMPTS_DIR.glob("gpt-*.md"))
+    )
     indent = " " * 10  # the `run: |` body indent in the reviewer workflows
-    missing = [line for line in prompt.splitlines() if line.strip() and indent + line not in raw]
-    assert not missing, "extracted lines absent from the workflow: {}".format(missing[:3])
+    missing = [
+        line
+        for line in prompt.splitlines()
+        if line.strip() and indent + line not in raw and line not in shared.splitlines()
+    ]
+    assert not missing, "extracted lines absent from every source: {}".format(missing[:3])
 
 
 def test_gpt_two_passes_and_blocking_budget_come_from_the_workflow():
     text = _gpt_text()
     scalars = local_review.block_scalars(text)
     block = local_review._run_block_with(scalars, "DISCOVERY PASS", "gpt")
-    literals = local_review.quoted_literals(block)
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="gpt-pass-stage-") as stage_dir:
+        _stage_gpt_prompts(text, stage_dir)
+        literals = local_review.prompt_segments(block, stage_dir)
     discovery = local_review.literals_between(
         literals, "DISCOVERY PASS", "DISCOVERY PASS", "discovery"
     )
@@ -248,12 +287,28 @@ def test_opus_wrapper_prompts_extracted_for_every_stage():
         assert "pr.diff" in wrapper.text
 
 
-def test_gpt_lane_has_no_prompt_files_and_opus_lane_has_no_heredoc():
-    """The two shapes are distinguishable, so lane dispatch cannot cross wires."""
+def test_gpt_lane_is_hybrid_and_opus_lane_has_no_heredoc():
+    """Lane dispatch keys on the heredoc target, so the shapes stay disjoint.
+
+    Since #5852 the GPT lane is a HYBRID: it still writes a prompt heredoc
+    (which is what dispatch keys on) but also stages shared prompt files that
+    the heredoc splices in. Its specs carry the workflow's cp bootstrap as a
+    worktree fallback; the Opus lane's specs stay fail-closed (no fallback).
+    """
     assert local_review._heredoc_target(_gpt_text()) is not None
-    assert local_review.extract_prompt_file_specs(_gpt_text()) == []
+    gpt_specs = local_review.extract_prompt_file_specs(_gpt_text())
+    assert [Path(s.src).name for s in gpt_specs] == [
+        "gpt-diff-not-evidence.md",
+        "gpt-review-core.md",
+        "gpt-output-contract.md",
+        "gpt-falsification-mandate.md",
+        "gpt-falsification-verdict.md",
+    ]
+    assert all(s.worktree_src == s.src for s in gpt_specs)
     assert local_review._heredoc_target(_opus_text()) is None
-    assert local_review.extract_prompt_file_specs(_opus_text()) != []
+    opus_specs = local_review.extract_prompt_file_specs(_opus_text())
+    assert opus_specs != []
+    assert all(s.worktree_src is None for s in opus_specs)
 
 
 # --------------------------------------------------------------------------
@@ -1142,23 +1197,61 @@ def test_intent_media_is_stripped():
 # --------------------------------------------------------------------------
 # Mutation checks - a restructured workflow must fail LOUDLY
 # --------------------------------------------------------------------------
-def test_stripped_heredoc_fails_loudly():
-    """Strip the prompt heredoc; extraction must raise, never return a stub."""
+def test_stripped_heredoc_fails_loudly(tmp_path):
+    """Strip the OPENING prompt heredoc; assembly must raise, never a stub.
+
+    The mutation regex deliberately matches only ``cat >`` (one ``>``), so the
+    ``cat >>`` continuations and file splices survive - proving the assembler
+    demands the opener specifically rather than accepting any fragment.
+    """
     text = _gpt_text()
     target = local_review._heredoc_target(text)
     scalars = local_review.block_scalars(text)
     block = local_review._run_block_with(scalars, "cat > {} <<".format(target), "gpt")
     mutated = re.sub(r"cat\s*>\s*\S*prompt\.md\s*<<-?'?EOF'?", "true <<'EOF'", block)
+    _stage_gpt_prompts(text, tmp_path)
     with pytest.raises(local_review.ParityError) as exc:
-        local_review.extract_heredoc(mutated, target)
+        local_review.assemble_prompt_document(mutated, target, str(tmp_path))
     message = str(exc.value)
     assert "no `cat >" in message
     assert "do NOT fall back" in message
 
 
-def test_unclosed_heredoc_fails_loudly():
+def test_worktree_bootstrap_source_cannot_escape_the_worktree(tmp_path):
+    """The cp-bootstrap source is workflow-derived DATA: an absolute path, a
+    `..` walk, or an escaping symlink must raise, never read a host file into
+    the brief (same containment standard as _staged_target)."""
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    outside = tmp_path / "outside.md"
+    outside.write_text("SECRET\n", encoding="utf-8")
+    (worktree / "link.md").symlink_to(outside)
+    for i, src in enumerate(("../outside.md", str(outside), "link.md")):
+        spec = local_review.FileSpec(
+            src="absent-on-base.md", dest="staged/x.md", fallback=None,
+            worktree_src=src,
+        )
+        with pytest.raises(local_review.ParityError) as exc:
+            local_review.stage_files(
+                str(worktree), "0" * 40, str(tmp_path / "stage" / str(i)), [spec]
+            )
+        message = str(exc.value)
+        assert "resolves outside the worktree" in message or "missing on the base" in message, (src, message)
+    # The symlink case must be the containment refusal specifically, not the
+    # missing-file fallback: it exists and opens fine, which is the danger.
+    spec = local_review.FileSpec(
+        src="absent-on-base.md", dest="staged/x.md", fallback=None, worktree_src="link.md",
+    )
     with pytest.raises(local_review.ParityError) as exc:
-        local_review.extract_heredoc("cat > /tmp/p.md <<'EOF'\nbody\n", "/tmp/p.md")
+        local_review.stage_files(str(worktree), "0" * 40, str(tmp_path / "stage2"), [spec])
+    assert "resolves outside the worktree" in str(exc.value)
+
+
+def test_unclosed_heredoc_fails_loudly(tmp_path):
+    with pytest.raises(local_review.ParityError) as exc:
+        local_review.assemble_prompt_document(
+            "cat > /tmp/p.md <<'EOF'\nbody\n", "/tmp/p.md", str(tmp_path)
+        )
     assert "never closed" in str(exc.value)
 
 

@@ -358,7 +358,18 @@ the network and cannot fetch it itself.
 
 Both line reviewers run the same review contract, and severity encodes exactly one
 thing: *does this block the merge*, **never confidence**. There is no
-"possible issue" tier. A finding must state a concrete input or condition that
+"possible issue" tier. The blocks of that contract shared by the two GPT
+workflows — the diff-is-not-evidence clause, the coverage/finding/fix bars, the
+output contract, and the falsification-pass mandate and verdict framing — live in
+shared `.github/review-prompts/gpt-*.md` files rather than as two inline copies,
+so the lanes cannot drift apart on them (#5852). The same-repo lane stages them
+from the PR's **base** commit like the Opus lanes; unlike those lanes it falls
+back to the checked-out copy (with a warning) when a block is absent on the base,
+because a hard gate cannot afford a no-verdict pass and, on a same-repo PR, the
+workflow file itself is already editable by the PR — the fallback adds no attack
+surface the lane did not have. The fork lane's checkout *is* the trusted base
+(the diff is never applied), so it reads the files straight from the tree and
+fails closed if one is missing. A finding must state a concrete input or condition that
 occurs in practice, the call path to the changed line, and an observable wrong
 outcome; anything phrased as "could", "might" or "if a caller were to" is **not a
 finding**, and silence is the correct output. Only two labels exist: **BLOCKING**
