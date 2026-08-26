@@ -5336,15 +5336,15 @@ class ConversationLog:
     def _pause_for_transient_retry(self) -> None:
         """Pause briefly before retrying a transient read, but ONLY off the loop.
 
-        Shared by :meth:`_read_metadata` and :meth:`_read_messages`. Both are
-        reached ON the event loop by ``restore_open_slots_async`` (which keeps
-        the whole restore on the loop deliberately: creating a slot broadcasts
-        through ``asyncio.Queue.put_nowait`` / ``Event.set``, neither
-        thread-safe). A kernel sleep there stops ``_loop_heartbeat`` from petting
-        the LoopStallWatchdog -- whose ``exit_after`` timer then kills the
-        gateway, the exact crash-loop the async restore exists to prevent. So
-        sleep only when NOT on a running loop; on the loop the retry is
-        immediate (a stat plus an open -- cheap enough to be worth taking).
+        Shared by :meth:`_read_metadata` and :meth:`_read_messages`. Since #895
+        the startup restore prefetches both in ``asyncio.to_thread``, so the
+        common bulk-restore caller lands here OFF the loop and gets the patient
+        path. On-loop callers remain (any read reached directly from a coroutine),
+        and for them a kernel sleep stops ``_loop_heartbeat`` from petting the
+        LoopStallWatchdog -- whose ``exit_after`` timer then kills the gateway,
+        the exact crash-loop the async restore exists to prevent. So sleep only
+        when NOT on a running loop; on the loop the retry is immediate (a stat
+        plus an open -- cheap enough to be worth taking).
         """
         on_loop = True
         try:
