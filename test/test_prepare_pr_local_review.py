@@ -76,6 +76,19 @@ def _git(cwd, *args):
     return proc.stdout.strip()
 
 
+def _profile_on_main(root, toml_text):
+    """Commit ``toml_text`` as .prepare-pr.toml on the BASE branch (main).
+
+    Profile resolution is pinned to the base ref, so a profile a test wants
+    honoured must exist there -- a worktree-only or branch-only copy is
+    deliberately ignored."""
+    _git(root, "checkout", "-q", "main")
+    (root / ".prepare-pr.toml").write_text(toml_text, encoding="utf-8")
+    _git(root, "add", ".prepare-pr.toml")
+    _git(root, "commit", "-q", "-m", "profile on base")
+    _git(root, "checkout", "-q", "feature")
+
+
 def _gpt_text():
     return GPT_WORKFLOW.read_text(encoding="utf-8")
 
@@ -558,9 +571,9 @@ def test_cli_exits_40_on_a_contract_that_escapes_the_repo(parity_repo, tmp_path)
     """The escape is refused through the documented exit contract, not a traceback,
     and no brief is written for the offending profile."""
     for bad in ["/etc/passwd", "../../secret.yml", ".github\\workflows\\codex-review.yml"]:
-        (parity_repo / ".prepare-pr.toml").write_text(
+        _profile_on_main(
+            parity_repo,
             "[review]\n[[review.reviewers]]\nname = \"gpt\"\ncontract = {!r}\n".format(bad),
-            encoding="utf-8",
         )
         out_dir = tmp_path / "out-{}".format(abs(hash(bad)))
         proc = subprocess.run(
@@ -629,12 +642,12 @@ def test_a_reviewer_declaring_no_contract_is_skipped_not_failed(parity_repo, tmp
     rubric-only reviewer says it has none - the documented skip. Only a
     non-None non-string is malformed, so the boundary must not slide into
     failing a legitimate mixed profile."""
-    (parity_repo / ".prepare-pr.toml").write_text(
+    _profile_on_main(
+        parity_repo,
         "[review]\n"
         "[[review.reviewers]]\nname = \"gpt\"\n"
         'contract = ".github/workflows/codex-review.yml"\n'
         "[[review.reviewers]]\nname = \"rubric-only\"\nrubric = \"be careful\"\n",
-        encoding="utf-8",
     )
     out_dir = tmp_path / "out"
     summary = local_review.assemble(
@@ -654,9 +667,9 @@ def test_non_string_contract_exits_40_through_the_cli(parity_repo, tmp_path, lit
     A falsy value (``0``, ``false``, ``""``) additionally used to be dropped by
     a truthiness filter, silently reviewing against fewer contracts than the
     profile declared - so it must fail closed here too, not skip."""
-    (parity_repo / ".prepare-pr.toml").write_text(
+    _profile_on_main(
+        parity_repo,
         "[review]\n[[review.reviewers]]\nname = \"gpt\"\ncontract = {}\n".format(literal),
-        encoding="utf-8",
     )
     rc = local_review.main(
         [
@@ -744,11 +757,11 @@ def test_a_string_model_survives_the_type_gate():
 def test_non_string_model_exits_40_through_the_cli(parity_repo, tmp_path, field, literal):
     """The CLI documents EXIT_PARITY for a profile the extractor cannot honour.
     A truthy non-string used to reach ``.lower()`` and exit 1 with a traceback."""
-    (parity_repo / ".prepare-pr.toml").write_text(
+    _profile_on_main(
+        parity_repo,
         "[review]\n[[review.reviewers]]\nname = \"gpt\"\n"
         'contract = ".github/workflows/codex-review.yml"\n'
         "{} = {}\n".format(field, literal),
-        encoding="utf-8",
     )
     rc = local_review.main(
         [
@@ -819,13 +832,13 @@ def test_duplicate_reviewer_names_refuse_before_any_brief_is_written(
     """Two same-named reviewers used to produce two lanes and ONE brief file:
     whichever wrote last handed its contract to both reviewers. Fail closed, and
     leave no half-assembled output behind."""
-    (parity_repo / ".prepare-pr.toml").write_text(
+    _profile_on_main(
+        parity_repo,
         "[review]\n"
         '[[review.reviewers]]\nname = "gpt"\n'
         'contract = ".github/workflows/codex-review.yml"\n'
         '[[review.reviewers]]\nname = "gpt"\n'
         'contract = ".github/workflows/claude-review.yml"\n',
-        encoding="utf-8",
     )
     out_dir = tmp_path / "out"
     with pytest.raises(local_review.ParityError) as exc:
@@ -837,11 +850,11 @@ def test_duplicate_reviewer_names_refuse_before_any_brief_is_written(
 def test_non_string_reviewer_name_exits_40_through_the_cli(parity_repo, tmp_path):
     """The CLI documents EXIT_PARITY for a profile the extractor cannot honour;
     a non-string name must not escape as a traceback and exit 1."""
-    (parity_repo / ".prepare-pr.toml").write_text(
+    _profile_on_main(
+        parity_repo,
         "[review]\n"
         "[[review.reviewers]]\nname = 7\n"
         'contract = ".github/workflows/codex-review.yml"\n',
-        encoding="utf-8",
     )
     rc = local_review.main(
         [
@@ -1082,17 +1095,84 @@ def test_contract_workflow_is_read_from_base_not_from_the_branch(
     assert summary["base_sha"] == _git(parity_repo, "rev-parse", "main")
 
 
+def _fake_origin(root, default="main"):
+    """Give a synthetic repo the remote-tracking refs git's own default-branch
+    record lives in, without a network remote."""
+    for branch in _git(root, "for-each-ref", "--format=%(refname:short)", "refs/heads").split():
+        sha = _git(root, "rev-parse", branch)
+        _git(root, "update-ref", "refs/remotes/origin/{}".format(branch), sha)
+    _git(
+        root,
+        "symbolic-ref",
+        "refs/remotes/origin/HEAD",
+        "refs/remotes/origin/{}".format(default),
+    )
+
+
+def test_default_diff_base_honours_the_profiles_base_branch(parity_repo, tmp_path):
+    """With no --base, the review diff must use the base the REST of the skill
+    uses (push_guard.py, ``gh pr create``), which is the profile's
+    ``base_branch``. Resolving the profile itself still happens against git's
+    own remote-default record, so the branch under review cannot steer the
+    reviewer set - but once the profile IS trusted, ignoring its base_branch
+    would review a non-default-base PR against the wrong tree with no error."""
+    _git(parity_repo, "checkout", "-q", "main")
+    _git(parity_repo, "checkout", "-q", "-b", "release")
+    (parity_repo / "release_only.py").write_text("RELEASE = 1\n", encoding="utf-8")
+    _git(parity_repo, "add", "-A")
+    _git(parity_repo, "commit", "-q", "-m", "release-only commit")
+    _git(parity_repo, "checkout", "-q", "feature")
+    _profile_on_main(
+        parity_repo,
+        "[project]\nbase_branch = \"release\"\n"
+        "[review]\n[[review.reviewers]]\nname = \"gpt\"\n"
+        'contract = ".github/workflows/codex-review.yml"\n',
+    )
+    _fake_origin(parity_repo)
+
+    summary = local_review.assemble(
+        str(parity_repo), None, str(tmp_path / "out"), str(tmp_path / "stage")
+    )
+
+    assert summary["base_ref"] == "origin/release"
+    assert summary["base_sha"] == _git(parity_repo, "merge-base", "HEAD", "origin/release")
+
+
+def test_default_diff_base_falls_back_to_the_remote_default_branch(parity_repo, tmp_path):
+    """A profile that declares no base_branch leaves the diff base at git's own
+    remote-default record - never at a hardcoded ``origin/main`` guess."""
+    _git(parity_repo, "checkout", "-q", "main")
+    _git(parity_repo, "branch", "-m", "main", "trunk")
+    _git(parity_repo, "checkout", "-q", "feature")
+    _git(parity_repo, "checkout", "-q", "trunk")
+    (parity_repo / ".prepare-pr.toml").write_text(
+        "[review]\n[[review.reviewers]]\nname = \"gpt\"\n"
+        'contract = ".github/workflows/codex-review.yml"\n',
+        encoding="utf-8",
+    )
+    _git(parity_repo, "add", ".prepare-pr.toml")
+    _git(parity_repo, "commit", "-q", "-m", "profile without a base_branch")
+    _git(parity_repo, "checkout", "-q", "feature")
+    _fake_origin(parity_repo, default="trunk")
+
+    summary = local_review.assemble(
+        str(parity_repo), None, str(tmp_path / "out"), str(tmp_path / "stage")
+    )
+
+    assert summary["base_ref"] == "origin/trunk"
+
+
 def test_contract_absent_at_base_exits_40_through_the_cli(parity_repo, tmp_path):
     """A workflow that exists only on the branch is not authority. Reading it
     would mean the branch supplied its own contract, so the run fails closed
     with the documented parity exit instead."""
-    late = parity_repo / ".github" / "workflows" / "late-review.yml"
-    shutil.copy(GPT_WORKFLOW, late)
-    (parity_repo / ".prepare-pr.toml").write_text(
+    _profile_on_main(
+        parity_repo,
         "[review]\n[[review.reviewers]]\nname = \"gpt\"\n"
         'contract = ".github/workflows/late-review.yml"\n',
-        encoding="utf-8",
     )
+    late = parity_repo / ".github" / "workflows" / "late-review.yml"
+    shutil.copy(GPT_WORKFLOW, late)
     _git(parity_repo, "add", "-A")
     _git(parity_repo, "commit", "-m", "add a reviewer workflow on the branch only")
 

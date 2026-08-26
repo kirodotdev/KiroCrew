@@ -1237,8 +1237,13 @@ def assemble(
 ) -> dict[str, Any]:
     """Assemble every reviewer brief the profile declares. Raises ParityError."""
     resolve_profile = _load_sibling("_lr_resolve_profile", "resolve_profile.py")
+    # The ref the profile is READ from is settled BEFORE any profile value is
+    # trusted -- the caller's --base, else git's own record of the remote
+    # default branch. Deriving it FROM the profile would read review authority
+    # out of the branch checkout, which is the input this pinning distrusts.
+    profile_ref = base_ref or resolve_profile.default_base_ref(worktree) or "origin/main"
     try:
-        profile = resolve_profile.resolve(worktree)
+        profile = resolve_profile.resolve(worktree, base_ref=profile_ref)
     except (EnvironmentError, ParityError):
         raise
     except Exception as exc:
@@ -1266,7 +1271,14 @@ def assemble(
             "there is no server contract to mirror.".format(profile.get("source"))
         )
 
-    base_ref = base_ref or _default_base_ref(profile)
+    # The diff base honours the profile's `base_branch` so the review scope
+    # matches what push_guard.py and `gh pr create` use. Reading it here is
+    # safe -- the profile itself came from `profile_ref`, not the checkout --
+    # and it keeps one skill from reviewing against a base its own PR will not
+    # target on a repo whose PRs go to a non-default branch.
+    if not base_ref:
+        declared = profile.get("base_branch")
+        base_ref = "origin/{}".format(declared) if declared else profile_ref
     rc, base_sha, _ = run(["git", "merge-base", "HEAD", base_ref], cwd=worktree)
     if rc != 0 or not base_sha.strip():
         raise EnvironmentError(
@@ -1447,11 +1459,6 @@ def _intent_block(worktree: str, run_text: str) -> str:
     return frame_intent(intent, framing, unavailable, truncation, cap)
 
 
-def _default_base_ref(profile: dict[str, Any]) -> str:
-    base = profile.get("base_branch") or "main"
-    return "origin/{}".format(base)
-
-
 def _repo_slug(worktree: str) -> str:
     rc, out, _ = run(["gh", "repo", "view", "--json", "nameWithOwner"], cwd=worktree)
     if rc == 0 and out.strip():
@@ -1483,7 +1490,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         description="Assemble local pre-push reviewer briefs from CI's own review workflows."
     )
     parser.add_argument("--worktree", default=None, help="worktree root (default: git toplevel)")
-    parser.add_argument("--base", default=None, help="base ref (default: profile base branch)")
+    parser.add_argument("--base", default=None, help="base ref (default: remote default branch)")
     parser.add_argument("--out-dir", default=None, help="where the task files land")
     parser.add_argument("--stage-dir", default=None, help="where auxiliary inputs are staged")
     parser.add_argument("--json", action="store_true", help="emit the summary as JSON")

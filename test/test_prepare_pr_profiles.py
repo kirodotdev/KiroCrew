@@ -18,6 +18,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 from skill_script_helpers import load_skill_script
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -58,6 +59,97 @@ def test_generic_fallback_on_empty_repo(tmp_path):
     assert prof["reviewers"] == []
     assert prof["readiness"] == {"status_context": None, "defer_label": None}
     assert prof["single_commit"] is False
+
+
+def test_profile_is_loaded_from_base_ref_not_worktree(tmp_path):
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    profile = tmp_path / ".prepare-pr.toml"
+    profile.write_text("[project]\nsingle_commit = true\n")
+    subprocess.run(["git", "add", ".prepare-pr.toml"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=tmp_path, check=True)
+    profile.write_text("[project]\nsingle_commit = false\n")
+
+    resolved = resolve_profile.resolve(str(tmp_path), base_ref="HEAD")
+
+    assert resolved["source"] == "config"
+    assert resolved["single_commit"] is True
+
+
+def test_branch_only_profile_is_ignored_when_base_has_none(tmp_path):
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    (tmp_path / "README.md").write_text("base\n")
+    subprocess.run(["git", "add", "README.md"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=tmp_path, check=True)
+    (tmp_path / ".prepare-pr.toml").write_text("[project]\nsingle_commit = true\n")
+
+    resolved = resolve_profile.resolve(str(tmp_path), base_ref="HEAD")
+
+    assert resolved["source"] == "generic"
+    assert resolved["single_commit"] is False
+
+
+def test_branch_deleting_a_review_workflow_cannot_drop_the_lane(tmp_path):
+    """Auto-detection is pinned to the base ref too: deleting a review workflow
+    in the checkout must not remove that reviewer from the resolved profile."""
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents=True)
+    (wf / "codex-review.yml").write_text("name: review\n")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=tmp_path, check=True)
+    (wf / "codex-review.yml").unlink()
+
+    resolved = resolve_profile.resolve(str(tmp_path), base_ref="HEAD")
+
+    assert resolved["source"] == "auto-detect"
+    assert [r["name"] for r in resolved["reviewers"]] == ["codex-review"]
+    assert resolved["reviewers"][0]["contract"] == ".github/workflows/codex-review.yml"
+
+
+def test_unresolvable_base_ref_is_a_hard_error(tmp_path):
+    """A base ref that names nothing must fail loudly, never silently hand
+    resolution back to the branch checkout."""
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    (tmp_path / "README.md").write_text("base\n")
+    subprocess.run(["git", "add", "README.md"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=tmp_path, check=True)
+
+    with pytest.raises(RuntimeError, match="cannot resolve base ref"):
+        resolve_profile.resolve(str(tmp_path), base_ref="no-such-ref")
+
+
+def test_cli_without_base_ref_pins_to_the_remote_default_branch(tmp_path):
+    """The documented no-argument invocation must not read reviewer authority
+    from the branch checkout when a remote base exists to pin to."""
+    upstream = tmp_path / "upstream"
+    upstream.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=upstream, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=upstream, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=upstream, check=True)
+    (upstream / ".prepare-pr.toml").write_text("[project]\nsingle_commit = true\n")
+    subprocess.run(["git", "add", ".prepare-pr.toml"], cwd=upstream, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=upstream, check=True)
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "clone", "-q", str(upstream), str(clone)], check=True)
+    (clone / ".prepare-pr.toml").write_text("[project]\nsingle_commit = false\n")
+
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS_DIR / "resolve_profile.py"), str(clone)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    )
+
+    assert json.loads(proc.stdout)["single_commit"] is True
 
 
 def test_autodetect_python_stack(tmp_path):
