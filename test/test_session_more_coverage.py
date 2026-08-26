@@ -538,7 +538,7 @@ class TestBackgroundProviderDispatch:
                 raise RuntimeError("config exploded")
 
         mgr._cfg = SimpleNamespace(agent=_Boom())
-        assert mgr._bg_provider_is_kiro() is True
+        assert mgr._bg_provider_uses_acp_runtime() is True
 
     @pytest.mark.asyncio
     async def test_ensure_background_no_ops_without_a_factory(self, mgr) -> None:

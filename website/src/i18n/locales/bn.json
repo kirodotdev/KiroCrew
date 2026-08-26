@@ -10993,6 +10993,20 @@
         "could_not_create_a_sign_in_link_try_again": "সাইন-ইন লিংক তৈরি করা যায়নি। আবার চেষ্টা করুন।",
         "copy_failed_select_the_link_and_copy_it_manually": "কপি ব্যর্থ হয়েছে। লিংকটি নির্বাচন করে নিজে কপি করুন।"
       },
+      "aiBackendPanel": {
+        "acp_backend": "ACP ব্যাকএন্ড",
+        "ai_backend": "AI ব্যাকএন্ড",
+        "kiro": "Kiro",
+        "codex": "Codex",
+        "kiro_agent_server": "Kiro Agent Server",
+        "choose_which_agent_runtime_handles_new_chats": "নতুন চ্যাট কোন এজেন্ট রানটাইম পরিচালনা করবে তা বেছে নিন।",
+        "codex_description": "অফিসিয়াল Codex ACP অ্যাডাপ্টারের মাধ্যমে Codex CLI ব্যবহার করে। গেটওয়ে হোস্টে দুটিই ইনস্টল করুন, তারপর নিচের কমান্ডটি চালিয়ে সাইন ইন করুন।",
+        "kas_description": "Kiro Agent Server ব্যবহার করে। এটি Kiro-এর ইনস্টলেশন ও সাইন-ইন প্রয়োজনীয়তা অনুসরণ করে।",
+        "kiro_description": "kiro-cli এবং আপনার Kiro সাইন-ইন ব্যবহার করে। এটি ডিফল্ট ব্যাকএন্ড।",
+        "restart_new_chats_description": "এই ব্যাকএন্ড ব্যবহার করতে গেটওয়ে পুনরায় চালু করুন, তারপর একটি নতুন চ্যাট শুরু করুন। বিদ্যমান চ্যাট চলমান অবস্থায় অন্য ব্যাকএন্ডে স্থানান্তরিত হয় না।",
+        "restart_required": "পুনরায় চালু করা প্রয়োজন",
+        "selected_backend_saved": "নির্বাচিত ব্যাকএন্ডটি {{productName}} কনফিগারেশনে সংরক্ষিত হয়েছে।"
+      },
       "aboutPanel": {
         "diverged": "আলাদা হয়ে গেছে",
         "checkout_diverged_from_upstream": "এই চেকআউটটি তার আপস্ট্রিম থেকে আলাদা হয়ে গেছে ({{distance}})। আপডেট করতে rebase বা merge করুন — কিছুই স্বয়ংক্রিয়ভাবে প্রয়োগ হয় না, তাই আপনার লোকাল কমিটগুলি নিরাপদ।",

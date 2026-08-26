@@ -590,15 +590,31 @@ Modular aiohttp package at `127.0.0.1:5476` (configurable). Split into:
   to do. It latches the service signed-out too.
   **Two classes still fail closed** via the blocking guard
   `reject_if_kiro_unverified()`, because neither can use the ACP attempt as its
-  authority: the **poll-driven `kiro-cli` spawn sites** (`/api/models`,
+  authority: the **poll-driven Kiro spawn sites** (`/api/models`,
   `/api/sessions/usage`) have no turn to carry the failure and `kiro-cli`
   auto-opens an interactive browser login when run unauthenticated (and
-  `kiro-cli chat` hangs), so an unverified spawn on a timer opens a window and
-  leaks a process every poll; and the **destructive reruns** (regenerate,
+  `kiro-cli chat` hangs), so an unverified Kiro spawn on a timer opens a window
+  and leaks a process every poll; and the **destructive reruns** (regenerate,
   edit-resend, rewind) have already rewritten durable history by the time a turn
   could fail; and `POST /v1/chat/completions` has no transcript, so an error card
   would surface as a successful empty completion. A missing or invalid service
   fails closed in all three.
+  **The guard is backend-capability gated.**
+  `running_backend_requires_kiro_prerequisite()` reads
+  `request.app["state"].sessions.acp_backend`, the normalized backend captured by
+  `SessionManager` when this gateway started, and returns true only for membership
+  in `ACP_BACKENDS_KIRO_PREREQUISITE`. Missing or malformed runtime state fails
+  toward requiring Kiro. Persisting another backend does not change live guards:
+  a pending Codex switch keeps Kiro readiness active until restart, while a gateway
+  restarted on Codex bypasses those checks even if an older config object remains.
+  Dashboard startup skips prerequisite warm-up entirely for Codex, and
+  per-turn identity-store checks plus signed-out latch updates are limited to
+  `ACP_BACKENDS_KIRO_IDENTITY_STORE`. For Codex, `/api/models` returns the newest
+  active Codex provider's adapter-advertised models plus the `auto` inherit
+  sentinel without spawning `kiro-cli`, while `/api/sessions/usage` returns
+  `{"usage":{"available":false,"backend":"codex"}}` without scheduling a
+  Kiro usage fetch. A Codex auth failure reports `codex login` remediation and
+  never marks the Kiro prerequisite service signed out.
   **These callers authorize on a FRESH probe, not the latch**
   (`kiro_verified_ready` → `KiroPrerequisiteService.verified_ready`, re-probing
   when the latch is older than `_VERIFY_MAX_AGE_SECS` = 30s). The latch is

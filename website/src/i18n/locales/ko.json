@@ -10835,6 +10835,20 @@
         "could_not_create_a_sign_in_link_try_again": "로그인 링크를 만들 수 없습니다. 다시 시도하세요.",
         "copy_failed_select_the_link_and_copy_it_manually": "복사하지 못했습니다. 링크를 선택하고 직접 복사하세요."
       },
+      "aiBackendPanel": {
+        "acp_backend": "ACP 백엔드",
+        "ai_backend": "AI 백엔드",
+        "kiro": "Kiro",
+        "codex": "Codex",
+        "kiro_agent_server": "Kiro Agent Server",
+        "choose_which_agent_runtime_handles_new_chats": "새 채팅을 처리할 에이전트 런타임을 선택하세요.",
+        "codex_description": "공식 Codex ACP 어댑터를 통해 Codex CLI를 사용합니다. 게이트웨이 호스트에 둘 다 설치한 다음 아래 명령을 실행하여 로그인하세요.",
+        "kas_description": "Kiro Agent Server를 사용합니다. Kiro와 동일한 설치 및 로그인 요구 사항이 적용됩니다.",
+        "kiro_description": "kiro-cli와 Kiro 로그인을 사용합니다. 기본 백엔드입니다.",
+        "restart_new_chats_description": "이 백엔드를 사용하려면 게이트웨이를 다시 시작한 다음 새 채팅을 시작하세요. 실행 중인 기존 채팅은 다른 백엔드로 전환되지 않습니다.",
+        "restart_required": "다시 시작 필요",
+        "selected_backend_saved": "선택한 백엔드가 {{productName}} 구성에 저장되었습니다."
+      },
       "aboutPanel": {
         "diverged": "분기됨",
         "checkout_diverged_from_upstream": "이 체크아웃은 업스트림에서 분기되었습니다({{distance}}). rebase 또는 merge로 업데이트하세요 — 아무것도 자동으로 적용되지 않으므로 로컬 커밋은 안전합니다.",

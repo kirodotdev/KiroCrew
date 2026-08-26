@@ -916,13 +916,25 @@ class TestAcpClientBackendSelection:
         from kiro_crew.acp.client import (
             PROTOCOL_VERSION,
             PROTOCOL_VERSION_CLAUDE,
+            PROTOCOL_VERSION_CODEX,
+            CodexAcpClient,
         )
+        from kiro_crew.acp.types import ACP_BACKEND_CODEX
 
-        for backend, expected in (
-            ("", PROTOCOL_VERSION),
-            (ACP_BACKEND_CLAUDE, PROTOCOL_VERSION_CLAUDE),
+        for make_client, backend, expected in (
+            (lambda: AcpClient(work_dir=tmp_path), "", PROTOCOL_VERSION),
+            (
+                lambda: AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE),
+                ACP_BACKEND_CLAUDE,
+                PROTOCOL_VERSION_CLAUDE,
+            ),
+            (
+                lambda: CodexAcpClient(work_dir=tmp_path),
+                ACP_BACKEND_CODEX,
+                PROTOCOL_VERSION_CODEX,
+            ),
         ):
-            client = AcpClient(work_dir=tmp_path, acp_backend=backend)
+            client = make_client()
             client._session_id = "sess-1"  # short-circuit past the new-session call
             sent_params: dict = {}
 

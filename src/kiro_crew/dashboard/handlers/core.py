@@ -24,6 +24,7 @@ from aiohttp.client_exceptions import ClientConnectionResetError
 
 import kiro_crew
 from kiro_crew import beacon, dep_sync, platform_compat
+from kiro_crew.acp.types import ACP_BACKENDS_SELECTABLE
 from kiro_crew.computer_use.types import MAX_SCREENSHOT_MAX_PX as _CU_MAX_SCREENSHOT_MAX_PX
 from kiro_crew.computer_use.types import MAX_TREE_NODES_LIMIT as _CU_MAX_TREE_NODES_LIMIT
 from kiro_crew.computer_use.types import MIN_SCREENSHOT_MAX_PX as _CU_MIN_SCREENSHOT_MAX_PX
@@ -1733,6 +1734,10 @@ _MOVED_CONFIG_FIELDS: dict[str, str] = {
 
 _EDITABLE_CONFIG: dict[str, dict] = {
     "agent.provider": {"type": "enum", "values": ["acp"]},
+    # Harness selection is a startup boundary: the provider factory and warm
+    # sessions capture it. The PATCH response below therefore tells Settings
+    # to offer a restart instead of pretending the running harness changed.
+    "agent.acp_backend": {"type": "enum", "values": sorted(ACP_BACKENDS_SELECTABLE)},
     # Default model for new sessions. Membership can NOT be validated against a
     # fixed list: the real vocabulary is whatever the live kiro-cli advertises
     # (/api/models spawns it to find out), and it spans both canonical registry
@@ -2350,7 +2355,10 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
         except Exception:
             logger.warning("metrics recorder reset after telemetry toggle failed", exc_info=True)
 
-    return web.json_response(_masked_config_dict(cfg))
+    response = _masked_config_dict(cfg)
+    if path_key == "agent.acp_backend":
+        response["restart_required"] = True
+    return web.json_response(response)
 
 
 # ── Local token bootstrap (Electron / local apps) ─────────────────────

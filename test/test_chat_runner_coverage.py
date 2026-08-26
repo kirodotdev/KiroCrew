@@ -33,13 +33,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from chat_test_helpers import _make_ready_kiro_prerequisite
 
+from kiro_crew.acp.client import AcpAuthRequired
 from kiro_crew.acp.types import (
+    ACP_BACKEND_CODEX,
+    ACP_BACKEND_KIRO,
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
     EVENT_TEXT_CHUNK,
     STOP_REASON_STALE_RECOVER,
     STOP_REASON_TOOL_STALL,
 )
+from kiro_crew.config import KiroCrewConfig
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.history import ConversationLog
@@ -131,6 +135,8 @@ def _runner_state(tmp_path, *, hook_store=None, context_builder=None):
     client.context_used_tokens = MagicMock(return_value=0)
     client.last_prompt_stats = None
     client._client = client
+    client.client = client
+    client.pop_pending_oauth_requests = MagicMock(return_value=[])
     client.exit_code = None
     state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
     state._hook_store = hook_store or MagicMock(fire=AsyncMock(return_value=[]))
@@ -161,8 +167,11 @@ def _set_stream(client, events) -> None:
 
 @contextmanager
 def _quiet_sel():
-    """Stub the SEL audit sink so a turn does not write an audit trail."""
-    with patch.object(chat_runner, "sel") as mock_sel:
+    """Stub optional side effects so a turn leaves no audit or summary work."""
+    with (
+        patch.object(chat_runner, "sel") as mock_sel,
+        patch.object(chat_runner, "generate_session_summary", new=AsyncMock()),
+    ):
         mock_sel.return_value = MagicMock()
         yield mock_sel
 
@@ -200,6 +209,59 @@ async def _settle(slot) -> None:
 
 def _errors(slot) -> list[str]:
     return [m.get("content", "") for m in slot.messages if m.get("role") == "error"]
+
+
+class TestRunningBackendIdentityGuards:
+    @staticmethod
+    def _auth_failure(client) -> None:
+        async def _raise(_message):
+            raise AcpAuthRequired("backend authentication required")
+            yield  # pragma: no cover - async-generator shape only
+
+        client.stream = _raise
+        client.stream_command = _raise
+
+    @pytest.mark.asyncio
+    async def test_pending_codex_switch_keeps_running_kiro_identity_guards(self, tmp_path) -> None:
+        state, client = _runner_state(tmp_path)
+        state.sessions.acp_backend = ACP_BACKEND_KIRO
+        pending = KiroCrewConfig()
+        pending.agent.acp_backend = ACP_BACKEND_CODEX
+        self._auth_failure(client)
+        retire = AsyncMock()
+        mark_signed_out = MagicMock()
+
+        with (
+            patch.object(KiroCrewConfig, "load", return_value=pending),
+            patch.object(chat_runner, "_retire_sessions_on_identity_change", retire),
+            patch.object(chat_runner, "_mark_kiro_signed_out", mark_signed_out),
+        ):
+            await _drive(state, _slot())
+
+        retire.assert_awaited_once_with(state, ACP_BACKEND_KIRO)
+        mark_signed_out.assert_called_once_with(state)
+
+    @pytest.mark.asyncio
+    async def test_pending_kiro_switch_does_not_enable_guards_for_running_codex(
+        self, tmp_path
+    ) -> None:
+        state, client = _runner_state(tmp_path)
+        state.sessions.acp_backend = ACP_BACKEND_CODEX
+        pending = KiroCrewConfig()
+        pending.agent.acp_backend = ACP_BACKEND_KIRO
+        self._auth_failure(client)
+        retire = AsyncMock()
+        mark_signed_out = MagicMock()
+
+        with (
+            patch.object(KiroCrewConfig, "load", return_value=pending),
+            patch.object(chat_runner, "_retire_sessions_on_identity_change", retire),
+            patch.object(chat_runner, "_mark_kiro_signed_out", mark_signed_out),
+        ):
+            await _drive(state, _slot())
+
+        retire.assert_awaited_once_with(state, ACP_BACKEND_CODEX)
+        mark_signed_out.assert_not_called()
 
 
 # ── drain_pending_context ─────────────────────────────────────────────────

@@ -29,8 +29,21 @@ own gate model is [computer-use](../system-specs/modules/computer-use.md).
 | `~/.kiro/crew/mcp.json` | User, via the dashboard MCP panel | specific to Kiro Crew additions and per-server tool disables | Kiro Crew gateway only |
 
 `rebuild_agent_config()` writes exactly **one** file, `~/.kiro/agents/kirocrew.json`.
-There is no second rendered agent file and no agent-file renderer for any other
-provider: Kiro Crew is KiroACP-only.
+There is no second rendered agent file. Kiro sessions continue to consume this
+owned Kiro agent spec unchanged.
+
+Codex sessions do not consume that file. `agent.managed_mcp_session_specs()`
+evaluates the same `_MANAGED_MCP_SERVERS` capability gates and materializes the
+launch command, arguments, and managed environment in memory, without reading
+or writing a Kiro agent spec and without adding Kiro enterprise-registry
+markers. `mcp_gateway.session_servers.acp_session_servers()` converts the
+Kiro-shaped map into deterministic ACP descriptors. `AcpClient` composes those
+descriptors with any pooled gateway stubs for both `session/new` and
+`session/load`; a pooled stub wins by server name, malformed or unlaunchable
+entries are omitted, and opt-in servers such as `kirocrew-dashboard` are not
+injected unless separately selected. This direct injection is specific to
+backends that require session descriptors and does not generalize the Kiro
+agent-file path.
 
 ### Provider-global scopes come from the platform seam, not the core
 

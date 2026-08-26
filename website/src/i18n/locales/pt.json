@@ -11149,6 +11149,20 @@
         "could_not_create_a_sign_in_link_try_again": "Não foi possível criar um link de login. Tente novamente.",
         "copy_failed_select_the_link_and_copy_it_manually": "Falha ao copiar. Selecione o link e copie-o manualmente."
       },
+      "aiBackendPanel": {
+        "acp_backend": "Backend ACP",
+        "ai_backend": "Backend de IA",
+        "kiro": "Kiro",
+        "codex": "Codex",
+        "kiro_agent_server": "Kiro Agent Server",
+        "choose_which_agent_runtime_handles_new_chats": "Escolha qual ambiente de agente processa novos chats.",
+        "codex_description": "Usa a Codex CLI por meio do adaptador oficial Codex ACP. Instale ambos no host do gateway e execute o comando abaixo para entrar.",
+        "kas_description": "Usa o Kiro Agent Server. Ele compartilha os requisitos de instalação e login do Kiro.",
+        "kiro_description": "Usa o kiro-cli e seu login do Kiro. Este é o backend padrão.",
+        "restart_new_chats_description": "Reinicie o gateway e, em seguida, inicie um novo chat para usar este backend. Os chats existentes não mudam de backend enquanto estão em execução.",
+        "restart_required": "Reinicialização necessária",
+        "selected_backend_saved": "O backend selecionado foi salvo na configuração do {{productName}}."
+      },
       "aboutPanel": {
         "diverged": "Divergente",
         "checkout_diverged_from_upstream": "Este checkout divergiu do seu upstream ({{distance}}). Faça rebase ou merge para atualizar — nada é aplicado automaticamente, então seus commits locais estão seguros.",

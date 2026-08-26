@@ -252,10 +252,11 @@
       "sensitive": false,
       "tags": [],
       "label": "ACP Backend",
-      "help": "Which ACP agent to drive: '' = kiro-cli (default), 'kas' = kiro-agent. KAS runs chat but has no native subagent progress reporting yet.",
+      "help": "Which ACP agent to drive: '' = kiro-cli (default), 'kas' = kiro-agent, 'codex' = the official @agentclientprotocol/codex-acp adapter.",
       "hasChildren": false,
       "enumValues": [
         "",
+        "codex",
         "kas"
       ],
       "defaultValue": ""

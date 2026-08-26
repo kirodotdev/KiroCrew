@@ -10835,6 +10835,20 @@
         "could_not_create_a_sign_in_link_try_again": "无法创建登录链接。请重试。",
         "copy_failed_select_the_link_and_copy_it_manually": "复制失败。请选择该链接并手动复制。"
       },
+      "aiBackendPanel": {
+        "acp_backend": "ACP 后端",
+        "ai_backend": "AI 后端",
+        "kiro": "Kiro",
+        "codex": "Codex",
+        "kiro_agent_server": "Kiro Agent Server",
+        "choose_which_agent_runtime_handles_new_chats": "选择用于处理新聊天的代理运行时。",
+        "codex_description": "通过官方 Codex ACP 适配器使用 Codex CLI。请在网关主机上安装二者，然后运行下面的命令登录。",
+        "kas_description": "使用 Kiro Agent Server。它与 Kiro 共用安装和登录要求。",
+        "kiro_description": "使用 kiro-cli 和你的 Kiro 登录信息。这是默认后端。",
+        "restart_new_chats_description": "重启网关，然后新建聊天以使用此后端。现有聊天在运行时不会切换后端。",
+        "restart_required": "需要重启",
+        "selected_backend_saved": "所选后端已保存到 {{productName}} 配置。"
+      },
       "aboutPanel": {
         "diverged": "已分叉",
         "checkout_diverged_from_upstream": "此检出已与上游分叉（{{distance}}）。请用 rebase 或 merge 更新——不会自动应用任何更改，你的本地提交是安全的。",

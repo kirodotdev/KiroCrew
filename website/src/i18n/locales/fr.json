@@ -11150,6 +11150,20 @@
         "could_not_create_a_sign_in_link_try_again": "Impossible de créer un lien de connexion. Réessayez.",
         "copy_failed_select_the_link_and_copy_it_manually": "Échec de la copie. Sélectionnez le lien et copiez-le manuellement."
       },
+      "aiBackendPanel": {
+        "acp_backend": "Backend ACP",
+        "ai_backend": "Backend d’IA",
+        "kiro": "Kiro",
+        "codex": "Codex",
+        "kiro_agent_server": "Kiro Agent Server",
+        "choose_which_agent_runtime_handles_new_chats": "Choisissez l’environnement d’agent qui gère les nouvelles discussions.",
+        "codex_description": "Utilise Codex CLI via l’adaptateur Codex ACP officiel. Installez-les sur l’hôte de la passerelle, puis exécutez la commande ci-dessous pour vous connecter.",
+        "kas_description": "Utilise Kiro Agent Server. Les prérequis d’installation et de connexion sont les mêmes que pour Kiro.",
+        "kiro_description": "Utilise kiro-cli et votre connexion Kiro. Il s’agit du backend par défaut.",
+        "restart_new_chats_description": "Redémarrez la passerelle, puis démarrez une nouvelle discussion pour utiliser ce backend. Les discussions existantes ne changent pas de backend en cours d’exécution.",
+        "restart_required": "Redémarrage requis",
+        "selected_backend_saved": "Le backend sélectionné est enregistré dans la configuration de {{productName}}."
+      },
       "aboutPanel": {
         "diverged": "Divergent",
         "checkout_diverged_from_upstream": "Ce checkout a divergé de son upstream ({{distance}}). Faites un rebase ou un merge pour mettre à jour — rien n'est appliqué automatiquement, vos commits locaux sont donc préservés.",

@@ -17,6 +17,7 @@ from aiohttp import web
 
 from kiro_crew import agent_state, model_registry
 from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
+from kiro_crew.acp.types import ACP_BACKEND_CODEX
 from kiro_crew.agent import (
     AGENT_FILENAME,
     clear_model_pin,
@@ -267,7 +268,9 @@ async def api_agent_config(request: web.Request) -> web.Response:
             # other JSON type (list, dict, number) would flow into the sidecar
             # helper as a dict key and crash the endpoint with a 500.
             raw_name = config.get("name")
-            name = raw_name if isinstance(raw_name, str) and raw_name.strip() else installed_path.stem
+            name = (
+                raw_name if isinstance(raw_name, str) and raw_name.strip() else installed_path.stem
+            )
             changed = await asyncio.to_thread(agent_state.lift_and_strip_bookkeeping, config, name)
             if changed:
                 logger.info(
@@ -742,6 +745,7 @@ async def api_agents_installed(request: web.Request) -> web.Response:
     (``resolve_agent_bindings(..., project_dir=...)``), spawn validation, and
     Slack — see ``agent_discovery.project_agent_names``.
     """
+
     # list_agents() does glob + per-file resolve(strict=True) + read_bytes +
     # json.loads over ~/.kiro/agents — blocking filesystem work that, on a large
     # agents dir (network home, many project-registry agents), can stall the
@@ -974,8 +978,11 @@ def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]
             # After "auto", never before it: "auto" is the configured default in
             # the general case and leads the list.
             merged.insert(
-                1 if merged and _normalize_model_key(merged[0].get("model_name", "")) == "auto"
-                else 0,
+                (
+                    1
+                    if merged and _normalize_model_key(merged[0].get("model_name", "")) == "auto"
+                    else 0
+                ),
                 {
                     "model_name": canonical_default,
                     "display_name": canonical_default,
@@ -1013,9 +1020,42 @@ def _wrap_list_models_argv(argv: list[str]) -> tuple[list[str], str | None]:
     return wrap_argv(argv, mode=configured_sandbox_mode(), is_kiro_cli=True)
 
 
+def _codex_models(request: web.Request) -> list[dict]:
+    """Return models advertised by the newest active Codex ACP session."""
+    try:
+        state: DashboardState = request.app["state"]
+        providers = state.sessions.active_providers()
+    except (KeyError, AttributeError):
+        providers = []
+    advertised: list[dict] = []
+    for provider in reversed(providers):
+        try:
+            advertised = provider.available_models()
+        except Exception:
+            continue
+        if advertised:
+            break
+    rows = [
+        {
+            "model_name": entry.get("modelId", ""),
+            "display_name": entry.get("name", "") or entry.get("modelId", ""),
+            "description": entry.get("description", ""),
+        }
+        for entry in advertised
+        if isinstance(entry, dict) and entry.get("modelId")
+    ]
+    if not any(_normalize_model_key(row["model_name"]) == "auto" for row in rows):
+        rows.insert(0, {"model_name": "auto", "display_name": "Auto", "description": ""})
+    return rows
+
+
 async def api_models(request: web.Request) -> web.Response:
-    """GET /api/models — list available models from the live kiro-cli ACP session."""
-    # Signed-out gateways must never reach the spawn below. kiro-cli auto-opens
+    """GET /api/models — list models from the running ACP backend."""
+    state = request.app.get("state")
+    sessions = getattr(state, "sessions", None)
+    if getattr(sessions, "acp_backend", None) == ACP_BACKEND_CODEX:
+        return web.json_response(_codex_models(request))
+    # Signed-out Kiro-family gateways must never reach the spawn below. kiro-cli auto-opens
     # an interactive browser login for ANY subcommand run unauthenticated
     # (--no-interactive does not suppress it, and there is no opt-out env var),
     # and the frontend polls this endpoint every 8s while the model list is
@@ -1888,9 +1928,7 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
             return web.json_response({"error": f"Agent '{name}' already exists"}, status=409)
         model_reason = _model_pin_rejected(model, request, cfg.agent.provider)
         if model_reason:
-            return web.json_response(
-                {"error": model_reason, "code": "invalid_model"}, status=400
-            )
+            return web.json_response({"error": model_reason, "code": "invalid_model"}, status=400)
         cfg.agents[name] = KiroCrewAgentConfig(
             kiro_agent=kiro_agent,
             workspace=body.get("workspace", "default"),

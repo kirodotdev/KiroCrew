@@ -53,10 +53,13 @@ from kiro_crew.acp.liveness import (
 from kiro_crew.acp.prompt_blocks import build_prompt_blocks
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
     ACP_BACKEND_KIRO,
+    ACP_BACKENDS_ADVERTISED_MODEL_GATING,
     ACP_BACKENDS_INTERNAL_SANDBOX,
     ACP_BACKENDS_STEER,
     ACP_CLIENT_CAPABILITIES,
+    CODEX_CLIENT_CAPABILITIES,
     EVENT_AGENT_SWITCHED,
     EVENT_CLEAR_STATUS,
     EVENT_COMPACTION_STATUS,
@@ -108,7 +111,7 @@ from kiro_crew.acp.types import (
     JsonRpcRequest,
     TurnUsage,
 )
-from kiro_crew.agent import ensure_agent_materialized
+from kiro_crew.agent import ensure_agent_materialized, managed_mcp_session_specs
 from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.constants import (
     COMPACT_WAIT_TIMEOUT_SECS,
@@ -124,7 +127,10 @@ from kiro_crew.hooks import (
 )
 from kiro_crew.kiro_cli import resolve_kiro_cli
 from kiro_crew.mcp_gateway.claim import schedule_claim
-from kiro_crew.mcp_gateway.session_servers import pooled_session_servers
+from kiro_crew.mcp_gateway.session_servers import (
+    acp_session_servers,
+    pooled_session_servers,
+)
 from kiro_crew.resource_status import inject_xdist_auto_cap
 from kiro_crew.sandbox import (
     RLIMIT_PROFILE_SESSION_HOST,
@@ -143,14 +149,22 @@ logger = logging.getLogger(__name__)
 CLIENT_NAME = "kirocrew"
 CLIENT_VERSION = "0.1.2"
 _T = TypeVar("_T")
-# kiro-cli uses a date-stamped protocol; claude-agent-acp follows the
-# upstream ACP SDK (numeric integer, currently 1).  See acp.types.
+# kiro-cli uses a date-stamped protocol; the official Claude and Codex
+# adapters follow the upstream ACP SDK's integer protocol version 1.
 PROTOCOL_VERSION = "2025-08-22"
 PROTOCOL_VERSION_CLAUDE = 1
+PROTOCOL_VERSION_CODEX = 1
 DEFAULT_MODEL = "auto"
 
 KIRO_CLI_BIN = "kiro-cli"
 KIRO_CLI_SUBCMD = "acp"
+
+CODEX_ACP_BIN = "codex-acp"
+CODEX_ACP_NPM_PKG = "@agentclientprotocol/codex-acp"
+CODEX_EFFORT_CONFIG_ID = "reasoning_effort"
+CODEX_AUTH_REQUIRED_MESSAGE = (
+    "Codex is not authenticated. Run `codex login` in your terminal, then start a new chat."
+)
 
 CLAUDE_ACP_BIN = "claude-agent-acp"
 # On-disk name of the Claude backend CLI.  The claude-agent-acp adapter
@@ -305,6 +319,92 @@ async def _resolve_kiro_bin_for_spawn() -> str | None:
     """
 
     return await asyncio.to_thread(_resolve_kiro_bin)
+
+
+def _resolve_codex_acp_bin() -> str | None:
+    """Resolve the official Codex ACP adapter already installed on the host.
+
+    Kiro Crew does not download the adapter or add it as a dependency. The
+    operator installs ``@agentclientprotocol/codex-acp`` independently; daemon
+    launches still search the augmented Node PATH and mise's resolved bin.
+    """
+    mise_resolved = _mise_which(CODEX_ACP_BIN)
+    if mise_resolved:
+        return _normalize_exe_casing(mise_resolved)
+    search_path = augmented_path(os.environ.get("PATH", ""))
+    return _normalize_exe_casing(shutil.which(CODEX_ACP_BIN, path=search_path))
+
+
+def _resolve_codex_acp_argv() -> list[str] | None:
+    """Resolve the Codex adapter to subprocess-safe argv.
+
+    npm installs a ``.cmd`` batch launcher on Windows, which CreateProcess
+    cannot execute directly. Resolve that launcher through its package manifest
+    and invoke the declared entry script with Node instead.
+    """
+    launcher = _resolve_codex_acp_bin()
+    if not launcher:
+        return None
+    launcher_path = Path(launcher)
+    if not platform_compat.IS_WINDOWS or launcher_path.suffix.lower() not in {".cmd", ".bat"}:
+        return [launcher]
+
+    # npm scoped-package syntax ("@scope/name"), never a filesystem path -- do
+    # not route this through pathlib/os.path, which would misinterpret the "/".
+    package_parts = tuple(CODEX_ACP_NPM_PKG.split(sep="/"))
+    node_modules_roots = (
+        launcher_path.parent / "node_modules",
+        launcher_path.parent.parent / "node_modules",
+        launcher_path.parent.parent / "lib" / "node_modules",
+    )
+    package_dir = next(
+        (
+            root.joinpath(*package_parts)
+            for root in node_modules_roots
+            if root.joinpath(*package_parts, "package.json").is_file()
+        ),
+        None,
+    )
+    if package_dir is None:
+        return None
+    try:
+        manifest = json.loads((package_dir / "package.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    bin_field = manifest.get("bin") if isinstance(manifest, dict) else None
+    entry_name = bin_field.get(CODEX_ACP_BIN) if isinstance(bin_field, dict) else bin_field
+    if not isinstance(entry_name, str) or not entry_name:
+        return None
+    package_root = package_dir.resolve()
+    entry = (package_root / entry_name).resolve()
+    try:
+        entry.relative_to(package_root)
+    except ValueError:
+        return None
+    if not entry.is_file():
+        return None
+
+    node_candidates = (
+        launcher_path.parent / "node.exe",
+        launcher_path.parent.parent / "node.exe",
+    )
+    for node_candidate in node_candidates:
+        if platform_compat.is_executable_file(node_candidate):
+            node_path = str(node_candidate)
+            return [_normalize_exe_casing(node_path) or node_path, str(entry)]
+    mise_node = _resolve_node_for_script(str(entry))
+    if mise_node:
+        return [mise_node, str(entry)]
+    search_path = augmented_path(os.environ.get("PATH", ""))
+    node_bin = _normalize_exe_casing(shutil.which("node", path=search_path))
+    if node_bin:
+        return [node_bin, str(entry)]
+    return None
+
+
+async def _resolve_codex_acp_argv_for_spawn() -> list[str] | None:
+    """Resolve subprocess-safe Codex argv off the event loop."""
+    return await asyncio.to_thread(_resolve_codex_acp_argv)
 
 
 def _mise_which(tool: str) -> str | None:
@@ -960,22 +1060,25 @@ class AcpModelUnavailable(AcpError):  # noqa: N818
     entitlement.
     """
 
-    def __init__(self, model_id: str, advertised: Sequence[str] | None = None) -> None:
+    def __init__(
+        self,
+        model_id: str,
+        advertised: Sequence[str] | None = None,
+        *,
+        identity_hint: str | None = None,
+    ) -> None:
         self.model_id = model_id
         self.advertised = list(advertised or [])
         usable = ", ".join(self.advertised) if self.advertised else "none advertised"
-        # The identity hint is CONDITIONAL by construction ("if you expected") and
-        # names only a read-only probe. A user genuinely on a free tier is
-        # correctly served by the first sentence and should not be nudged toward
-        # re-authenticating, so this must never read as an instruction to log out:
-        # `whoami` answers "which tier am I actually on" for the user who signed in
-        # to the wrong one, and merely confirms the situation for everyone else.
+        if identity_hint is None:
+            identity_hint = (
+                "If you expected this model to be included in your plan, check which "
+                "account you are signed in as with `kiro-cli whoami` — a Builder ID "
+                "sign-in carries a different entitlement than organization SSO."
+            )
         super().__init__(
             f"The model {model_id!r} is not available on your account. "
-            f"Available models: {usable}. "
-            f"If you expected this model to be included in your plan, check which "
-            f"account you are signed in as with `kiro-cli whoami` — a Builder ID "
-            f"sign-in carries a different entitlement than organization SSO.",
+            f"Available models: {usable}. {identity_hint}",
             transient=False,
         )
 
@@ -1572,22 +1675,24 @@ def _rejected_model_from_error(error: object) -> str | None:
     return m.group(1) if m else None
 
 
-def _raise_acp_error(error: object, available_models: Sequence[str] | None = None) -> None:
+def _raise_acp_error(
+    error: object,
+    available_models: Sequence[str] | None = None,
+    *,
+    auth_required_message: str | None = None,
+) -> None:
     """Format and raise the appropriate AcpError subclass for *error*.
 
-    Delegates formatting to ``_format_acp_error`` and raises either
-    ``AcpPromptBusy`` (when the backend reports a concurrent in-flight prompt)
-    or the generic ``AcpError`` for all other cases.
-
-    *available_models* is passed to BOTH the formatter and the transient
-    classifier so a model-rejection's wording and its retry verdict are decided
-    from the same evidence.
+    ``auth_required_message`` opts a backend into the non-retryable
+    :class:`AcpAuthRequired` contract using the shared session-expiry classifier.
+    Backends that omit it retain their existing error behavior.
     """
     formatted = _format_acp_error(error, available_models)
-    # Detect prompt-busy from the raw error (before formatting rewrites it)
     raw_data = ""
     if isinstance(error, dict):
         raw_data = f"{error.get('data', '')} {error.get('message', '')}"
+    if auth_required_message and _is_session_expired(raw_data):
+        raise AcpAuthRequired(auth_required_message)
     if _PROMPT_BUSY_RE.search(raw_data):
         raise AcpPromptBusy(formatted)
     err = AcpError(formatted, transient=_is_transient_raw_error(error, available_models))
@@ -2254,13 +2359,15 @@ class AcpClient:
         return self.backend == ACP_BACKEND_CLAUDE
 
     @property
+    def _is_codex(self) -> bool:
+        return self.backend == ACP_BACKEND_CODEX
+
+    @property
     def _is_kiro(self) -> bool:
         """True when this client drives kiro-cli (the AcpClient default).
 
-        AcpClient serves exactly two backends — kiro-cli and the dormant claude
-        seam — so this is the positive spelling of the sites that used to read
-        ``not self._is_claude`` (harness-parity H5). KAS runs on AcpRuntime, not
-        AcpClient, so it never reaches this property.
+        AcpClient serves dedicated Kiro, Claude, and Codex paths, so positive
+        identity checks are required at every harness-specific branch.
         """
         return self.backend == ACP_BACKEND_KIRO
 
@@ -2286,6 +2393,23 @@ class AcpClient:
         session would have zero MCP tools.
         """
         return []
+
+    def _codex_session_mcp_servers(self) -> list[dict[str, Any]]:
+        """Managed MCP descriptors for Codex ``session/new|load``.
+
+        Codex does not read Kiro agent specs, so core/cron (and any currently
+        enabled managed capability) are materialized directly in memory. A
+        configured broker stub wins by name, matching Kiro's injected-server
+        precedence without launching duplicate MCP processes.
+        """
+        managed = acp_session_servers(managed_mcp_session_specs())
+        pooled = self._pooled_mcp_servers()
+        by_name = {entry["name"]: entry for entry in managed if entry.get("name")}
+        for entry in pooled:
+            name = entry.get("name")
+            if name:
+                by_name[name] = entry
+        return list(by_name.values())
 
     @property
     def is_ready(self) -> bool:
@@ -2376,10 +2500,22 @@ class AcpClient:
         # instead of calling into here — otherwise the same stale setting that is
         # quietly withheld on a cold start would raise and kill a warm claim,
         # making the outcome depend on whether a pooled process happened to exist.
-        if self._is_kiro and self._model_is_unusable(model_id):
+        if self.backend in ACP_BACKENDS_ADVERTISED_MODEL_GATING and self._model_is_unusable(
+            model_id
+        ):
             _rejected_log, _ = redact_exfiltration_urls(str(model_id))
             _rejected_log, _ = redact_credentials(_rejected_log)
-            raise AcpModelUnavailable(_rejected_log, self._advertised_model_ids())
+            identity_hint = None
+            if self._is_codex:
+                identity_hint = (
+                    "If you expected this model, verify the active Codex account with "
+                    "`codex login status`."
+                )
+            raise AcpModelUnavailable(
+                _rejected_log,
+                self._advertised_model_ids(),
+                identity_hint=identity_hint,
+            )
         if self._is_claude:
             await self.set_config_option("model", model_id)
         else:
@@ -2565,6 +2701,11 @@ class AcpClient:
             logger.debug("ACP config options updated: %d entries", len(config_options))
             self._sync_effort_levels()
 
+    @property
+    def effort_config_id(self) -> str:
+        """ACP config option id controlling reasoning effort for this backend."""
+        return CODEX_EFFORT_CONFIG_ID if self._is_codex else "effort"
+
     def _sync_effort_levels(self) -> None:
         """Push ACP-reported effort levels to the global validation set."""
         levels = self.get_valid_effort_levels()
@@ -2601,13 +2742,13 @@ class AcpClient:
     def get_valid_effort_levels(self) -> list[str]:
         """Return valid effort levels from ACP config, preserving ACP order.
 
-        Parses configOptions for the entry with id="effort" and extracts its
-        options[].value list in the order ACP reported them.
+        Parses the backend's effort config option and extracts its
+        ``options[].value`` list in the order ACP reported it.
         """
         for opt in self._acp_config_options:
             if not isinstance(opt, dict):
                 continue
-            if opt.get("id") == "effort":
+            if opt.get("id") == self.effort_config_id:
                 options = opt.get("options", [])
                 if isinstance(options, list):
                     return [o["value"] for o in options if isinstance(o, dict) and "value" in o]
@@ -2654,10 +2795,272 @@ class AcpClient:
             self._discard_sandbox_cleanup()
             raise
 
-    async def _spawn(self) -> None:
+    async def _codex_spawn(self) -> None:
         """Start the ACP backend subprocess with stdio pipes.
 
         KiroCrew's public core only ever drives the kiro-cli backend. The
+        claude-agent-acp branch below is the dormant protocol seam (see
+        ``ACP_BACKEND_CLAUDE``): the public provider factory never selects it,
+        so it is unreachable here, but an internal companion that re-registers
+        a Claude backend reuses this same client over the seam.
+        """
+        # Off-loop: mkdir is a blocking syscall and the parent dirs may live on
+        # slow storage; the loop must never wait on the kernel here.
+        await asyncio.to_thread(self._work_dir.mkdir, parents=True, exist_ok=True)
+
+        argv: list[str]
+        if self._is_codex:
+            codex_argv = await _resolve_codex_acp_argv_for_spawn()
+            if not codex_argv:
+                raise AcpError(
+                    f"{CODEX_ACP_BIN} not found. Install the official adapter with "
+                    f"'npm i -g {CODEX_ACP_NPM_PKG}'."
+                )
+            argv = codex_argv
+        elif self._is_claude:
+            # Dormant seam — see method docstring. Binary resolution only; the
+            # ~/.claude registration glue (settings.local.json, the MCP-registry
+            # reader) lived in the deleted cc_agent module and is re-added by the
+            # internal companion, not the public core.
+            #
+            # Per-session settings seed: a companion attaches
+            # _write_claude_local_settings (permissions.defaultMode + the
+            # availableModels allowlist that unlocks the 1M-token window). It
+            # MUST run on the PRIMARY spawn path — not only the rare
+            # model-substitution retry at _new_session_following_substitution —
+            # or a claude session collapses to the 200K default. Guarded via
+            # getattr so the public core (no such method) is byte-identical.
+            _seed = getattr(self, "_write_claude_local_settings", None)
+            if callable(_seed):
+                try:
+                    _seed()
+                except (OSError, ValueError, TypeError):
+                    logger.warning("initial seed of settings.local.json failed", exc_info=True)
+            global _claude_acp_argv_cache  # noqa: PLW0603
+            if _claude_acp_argv_cache is _UNRESOLVED:
+                _claude_acp_argv_cache = await asyncio.to_thread(_resolve_claude_acp_bin)
+            claude_argv = _claude_acp_argv_cache
+            if not isinstance(claude_argv, list) or not claude_argv:
+                raise AcpError(
+                    f"{CLAUDE_ACP_BIN} not found. Install it with "
+                    f"'npm i -g {CLAUDE_ACP_NPM_PKG}' (or add it as a project "
+                    f"dependency), or set CLAUDE_AGENT_ACP_BIN to its entry "
+                    f"script."
+                )
+            argv = claude_argv
+        else:
+            try:
+                kiro_bin = await _resolve_kiro_bin_for_spawn()
+            except _KiroExecutableTrustError as exc:
+                raise AcpError(str(exc)) from exc
+            if not kiro_bin:
+                raise AcpError(f"{KIRO_CLI_BIN} not found in PATH")
+            # Self-heal (B): ensure the managed default agent file exists before
+            # this --agent spawn, so kiro-cli registers the mode and step 4's
+            # set_mode succeeds instead of faulting "Mode not found". Best-effort,
+            # off the loop; non-managed agents fall through to the step-4 guard.
+            try:
+                await asyncio.to_thread(ensure_agent_materialized, self._agent)
+            except Exception:
+                logger.warning("pre-spawn agent materialization failed", exc_info=True)
+            argv = [kiro_bin, KIRO_CLI_SUBCMD, "--agent", self._agent]
+
+        # OS-level sandbox: wrap the command to hide sensitive paths.
+        # strip_python_env keeps the host PYTHONPATH/PYTHONHOME out of kiro-cli's
+        # foreign MCP subprocesses (which bundle their own interpreter + deps).
+        # is_kiro_cli is membership in ACP_BACKENDS_INTERNAL_SANDBOX
+        # (harness-parity H7), not "not claude": the flag makes wrap_argv SKIP
+        # Crew's seatbelt on macOS in favour of the harness's own internal
+        # sandbox, so a harness without one must never be granted it by the
+        # absence of another harness.
+        argv, self._sandbox_cleanup = wrap_argv(
+            argv,
+            mode=self._sandbox_mode,
+            strip_python_env=True,
+            is_kiro_cli=self.backend in ACP_BACKENDS_INTERNAL_SANDBOX,
+        )
+        # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server /
+        # tool descendants with pids.max (fork bomb) + memory.max (RSS balloon).
+        # No-op + loud warning where cgroup delegation is unavailable. --scope
+        # execs into the target, so self._pid below is still the real child.
+        # Off-loop: first call probes /proc + /sys and the config read touches
+        # the config dir (mkdir + file read) — blocking syscalls that must not
+        # run on the loop. Guarded: wrap_argv above allocated the sandbox temp
+        # file, so a cancellation here must not orphan it.
+        argv = await self._to_thread_guarding_sandbox(cgroup_scope_argv, argv)
+
+        # Build the child environment (process-group isolation flags are set on
+        # the spawn kwargs below, per-platform).
+        env = {**os.environ}
+        if self._extra_env:
+            env.update(self._extra_env)
+        env["PATH"] = augmented_path(env.get("PATH", ""))
+        if self._is_claude and not env.get("CLAUDE_CODE_EXECUTABLE"):
+            # Dormant seam (see _spawn docstring): the adapter's SDK needs a
+            # native Claude binary we don't vendor and does NOT search PATH for
+            # `claude` itself, so point it at one explicitly when the seam is
+            # driven. Only set when unset so an operator override always wins.
+            claude_exe = _resolve_claude_code_executable()
+            if claude_exe:
+                env["CLAUDE_CODE_EXECUTABLE"] = claude_exe
+            else:
+                logger.warning(
+                    "%s not found on PATH; the claude-agent-acp adapter will "
+                    "fail with 'Claude native binary not found'. Set "
+                    "CLAUDE_CODE_EXECUTABLE.",
+                    CLAUDE_CODE_BIN,
+                )
+        if self._session_key:
+            env["KIROCREW_SESSION_KEY"] = self._session_key
+        else:
+            env.pop("KIROCREW_SESSION_KEY", None)
+        if self._channel_id:
+            env["KIROCREW_CHANNEL_ID"] = self._channel_id
+        else:
+            env.pop("KIROCREW_CHANNEL_ID", None)
+
+        # Resolve SSH_AUTH_SOCK dynamically — the gateway's env may be stale
+        # after an ssh-agent restart — and KRB5CCNAME to a FILE: ccache (the
+        # kernel keyring, the default on some Linux distros, is invisible to
+        # this child, so Kerberos-gated MCP servers fail without it). Covers
+        # the session agent and all ACP-provider subagents, which spawn through
+        # this same path. The same hop settles the CLI's own KIRO_API_KEY:
+        # re-injected from .env for the kiro-cli backend (post-scrub Docker),
+        # actively stripped for a foreign backend, which must never receive it
+        # (see config.loader.inject/strip_kiro_cli_api_key). All of this
+        # glob/stat/reads under /tmp and the data home, so it runs off-loop in
+        # ONE thread hop. Guarded: the sandbox temp file is live, so a
+        # cancellation here must not orphan it.
+        env = await self._to_thread_guarding_sandbox(
+            functools.partial(_resolve_spawn_env, kiro_api_key=self._is_kiro), env
+        )
+        # Match the OS launchers' sensitive + Python env scrub in the parent.
+        # Keep it after _resolve_spawn_env so SSH repair cannot reintroduce a
+        # denied pointer; KIRO_API_KEY remains unavailable to this foreign backend.
+        env = scrub_agent_subprocess_env(env)
+        # Positive-identity marker for the orphan sweep: kiro-cli and every MCP
+        # server it spawns inherit this, so escaped launcher trees (``npx
+        # @playwright/mcp`` -> node) are identifiable as ours.
+        env[KIROCREW_SPAWNED_ENV] = KIROCREW_SPAWNED_VALUE
+        # Per-process scratch containment (#5063) -- see acp/runtime.py's
+        # twin block. Allocated off-loop, fail-open; owner recorded after
+        # spawn; reclamation is liveness-keyed, never age-keyed.
+        self._scratch_dir = None
+        try:
+            self._scratch_dir = await asyncio.to_thread(
+                agent_scratch.allocate_scratch, self._session_key or "session"
+            )
+            env.update(agent_scratch.scratch_env(self._scratch_dir))
+        except OSError:
+            logger.warning(
+                "agent-scratch: could not allocate; spawning with inherited temp",
+                exc_info=True,
+            )
+        # Memory-aware cap for pytest-xdist's ``-n auto``: xdist sizes auto to
+        # the CPU count, ignoring memory, so a full-suite run in an agent turn
+        # can spawn cpu_count workers x ~1 GB each and exhaust the host. xdist
+        # honors PYTEST_XDIST_AUTO_NUM_WORKERS when resolving auto, so seeding
+        # it here bounds ONLY auto resolution — explicit ``-n N``, non-xdist
+        # runs, and venvs without xdist are unaffected. Respects a value
+        # already present in the env; see resource_status.inject_xdist_auto_cap.
+        # Off-loop: resolving the cap reads the raw config, and that read
+        # enters config_dir() (mkdir + file IO + JSON parse) — blocking
+        # syscalls that must not run on the loop. Guarded: the sandbox temp
+        # file is live, so a cancellation here must not orphan it.
+        await self._to_thread_guarding_sandbox(inject_xdist_auto_cap, env)
+
+        # Process-group isolation for clean tree-kill. Pass both flags explicitly
+        # (NOT via **dict unpack — that breaks mypy's Popen overload resolution on
+        # the build fleet). POSIX: start_new_session=True calls setsid so
+        # _kill_process can killpg the whole group; creationflags resolves to 0
+        # (no-op). Windows: no setsid (start_new_session is silently ignored), so
+        # CREATE_NEW_PROCESS_GROUP makes the child tree taskkill /T-reapable and
+        # stops an inherited Ctrl-C propagating into the gateway. The flag comes
+        # from platform_compat (getattr) so referencing it doesn't fail mypy's
+        # [attr-defined] check on Linux where subprocess.* lacks it.
+        self._process = await create_subprocess_limited(
+            *argv,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(self._work_dir),
+            limit=_STDOUT_BUFFER_LIMIT,
+            env=env,
+            start_new_session=platform_compat.IS_POSIX,
+            creationflags=(
+                platform_compat.CREATE_NEW_PROCESS_GROUP
+                | platform_compat._SUBPROCESS_NO_WINDOW
+                | platform_compat.CREATE_SUSPENDED
+            ),
+            profile=RLIMIT_PROFILE_SESSION_HOST,
+        )
+        self._pid = self._process.pid
+        if self._is_codex:
+            _spawn_label = CODEX_ACP_BIN
+        elif self._is_claude:
+            _spawn_label = CLAUDE_ACP_BIN
+        else:
+            _spawn_label = f"{KIRO_CLI_BIN} {KIRO_CLI_SUBCMD}"
+        # Windows resource ceiling, applied while the child is still SUSPENDED,
+        # then resumed. No-op on POSIX (CREATE_SUSPENDED is 0 there). OFFLOADED
+        # because the Windows path reads the config file and walks the process
+        # and thread tables (see the note on finish_suspended_spawn); the child
+        # is frozen until it returns, so this is the one await the spawn cannot
+        # skip.
+        await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(),
+            functools.partial(finish_suspended_spawn, self._process, self._pid, label=_spawn_label),
+        )
+        self._start_time = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), _get_start_time, self._pid
+        )
+        if self._scratch_dir is not None:
+            # Liveness anchor for the scratch sweeps -- see acp/runtime.py's
+            # twin block. Off-loop, fail-open.
+            await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(),
+                functools.partial(agent_scratch.record_owner, self._scratch_dir, self._pid),
+            )
+        logger.info("Spawned %s (PID %d)", _spawn_label, self._pid)
+        # Track root PID and do an early descendant scan.  kiro-cli forks
+        # child processes quickly after launch.  Recording them here means
+        # _kill_process() can clean up even if _initialize_session() fails.
+        from kiro_crew.session import (  # circular: session -> config.loader -> providers.acp -> acp.client
+            _track_child_pids,
+            _track_pid,
+            _track_session_pid,
+        )
+
+        # The PID-file trackers each take an exclusive file lock and do a
+        # read-modify-append under it — blocking syscalls that must not run
+        # on the event loop: ensure_ready() awaits _spawn() from the loop on
+        # every cold start, so a contended or wedged lock holder here would
+        # stall every task including the liveness heartbeat. Ride the same
+        # executor as the descendant scans below.
+        _loop = asyncio.get_running_loop()
+        await _loop.run_in_executor(subprocess_executor(), _track_pid, self._pid)
+        # Separate file for startup cleanup.
+        await _loop.run_in_executor(subprocess_executor(), _track_session_pid, self._pid)
+        await asyncio.sleep(0.3)
+        early_descendants = await _loop.run_in_executor(
+            subprocess_executor(), _get_child_pids, self._pid
+        )
+        if early_descendants:
+            self._child_pids = await _loop.run_in_executor(
+                subprocess_executor(), _capture_child_records, early_descendants
+            )
+            await _loop.run_in_executor(
+                subprocess_executor(), _track_child_pids, self._child_pids, self._pid or 0
+            )
+            logger.info("Early tracking %d descendants of PID %d", len(self._child_pids), self._pid)
+
+        if self._process.stderr:
+            self._stderr_task = asyncio.ensure_future(self._drain_stderr(self._process.stderr))
+
+    async def _spawn(self) -> None:
+        """Start the ACP backend subprocess with stdio pipes.
+
+        Kiro Crew's public core only ever drives the kiro-cli backend. The
         claude-agent-acp branch below is the dormant protocol seam (see
         ``ACP_BACKEND_CLAUDE``): the public provider factory never selects it,
         so it is unreachable here, but an internal companion that re-registers
@@ -2977,7 +3380,12 @@ class AcpClient:
             self._stderr_lines.append(text)
             redacted, _ = redact_exfiltration_urls(text)
             redacted, _ = redact_credentials(redacted)
-            _bin_label = "claude-acp" if self._is_claude else KIRO_CLI_BIN
+            if self._is_codex:
+                _bin_label = CODEX_ACP_BIN
+            elif self._is_claude:
+                _bin_label = "claude-acp"
+            else:
+                _bin_label = KIRO_CLI_BIN
             logger.warning("%s stderr: %s", _bin_label, redacted)
         if suppressed:
             # Flush the residual count once the stream closes so the final burst
@@ -3207,6 +3615,91 @@ class AcpClient:
                 )
         self._child_pids = {}
 
+    async def _codex_new_session_following_substitution(self) -> dict:
+        """Issue ``session/new``; if the gateway substitutes the model, adopt it
+        and re-issue once so a real session is actually created.
+
+        The admin-tier policy advisory ("Model X is restricted ... Using Y
+        instead.") comes back as a ``-32603`` *error frame with no sessionId* --
+        the first attempt creates nothing. ``_wait_for_response`` records the
+        substitute model in ``self._last_substitution_model``; here we pin
+        ``self._model`` to it, re-seed ``settings.local.json`` (the claude
+        backend builds a fresh SettingsManager per session/new, so the new model
+        takes effect), and re-issue. Idempotent and bounded to ONE retry -- if the
+        gateway substitutes again to the same/another restricted id we stop
+        rather than loop. Returns the session/new response dict (possibly still
+        without a sessionId, which the caller treats as a hard failure).
+
+        The claude-backed substitution retry path is the dormant ``_is_claude``
+        seam (kiro-cli never emits this advisory); the public core drives only
+        kiro-cli, so ``mcpServers`` stays ``[]`` and the settings re-seed is
+        best-effort via ``getattr`` — the deleted cc_agent glue is re-added by
+        the internal companion, not the public core.
+        """
+        if self._is_codex:
+            session_mcp_servers = await asyncio.to_thread(self._codex_session_mcp_servers)
+        else:
+            session_mcp_servers = [
+                *self._claude_session_mcp_servers(),
+                *(await asyncio.to_thread(self._pooled_mcp_servers)),
+            ]
+        new_params: dict = {
+            "cwd": str(self._work_dir),
+            # kiro-cli loads servers from --agent; foreign adapters must be
+            # told here because they do not read Kiro's agent spec.
+            "mcpServers": session_mcp_servers,
+        }
+        if self._is_claude:
+            new_params["_meta"] = {"claudeCode": {"options": {}}}
+
+        self._last_substitution_model = None
+        session_id = await self._send_request(METHOD_SESSION_NEW, new_params)
+        session_resp = await self._wait_for_response(session_id, timeout=_INIT_TIMEOUT)
+
+        # Happy path: a real session came back.
+        if session_resp.get("sessionId"):
+            return session_resp
+
+        # Substitution path: the gateway named a model it WILL serve. Adopt it,
+        # re-seed settings so the backend resolves to it, and re-issue once.
+        substitute = self._last_substitution_model
+        if self._is_claude and substitute and substitute != self._model:
+            # Redact the substitute name before logging. It is parsed straight
+            # from the untrusted ACP backend advisory (data.details "Using X
+            # instead") and the gateway log fans out to the dashboard activity
+            # feed and Slack -- mirror the dual-redaction discipline applied
+            # to the source advisory in _wait_for_response.
+            _sub_log, _ = redact_exfiltration_urls(str(substitute))
+            _sub_log, _ = redact_credentials(_sub_log)
+            logger.warning(
+                "ACP session/new returned a substitution advisory with no session; "
+                "adopting gateway-served model %r and retrying session creation.",
+                _sub_log,
+            )
+            self._model = substitute
+            # Re-seed settings.local.json so the fresh SettingsManager the adapter
+            # builds for the retry resolves the substitute model (it merges
+            # settings sources each session/new). The re-seed helper lives in the
+            # internal companion's cc_agent glue; guard so the public core (which
+            # never reaches this dormant _is_claude branch) does not AttributeError.
+            _reseed = getattr(self, "_write_claude_local_settings", None)
+            if callable(_reseed):
+                try:
+                    _reseed()
+                except (OSError, ValueError, TypeError):
+                    # Narrow to realistic re-seed failure modes: OSError covers
+                    # disk / permission errors on the atomic write; ValueError
+                    # and TypeError cover registry / json shape surprises.
+                    # Never let re-seed failure mask the retry -- worst case, the
+                    # adapter resolves to whatever it had cached and we still
+                    # retry session/new on the substitute path.
+                    logger.warning("re-seed of settings.local.json failed", exc_info=True)
+            self._last_substitution_model = None
+            retry_id = await self._send_request(METHOD_SESSION_NEW, new_params)
+            session_resp = await self._wait_for_response(retry_id, timeout=_INIT_TIMEOUT)
+
+        return session_resp
+
     async def _new_session_following_substitution(self) -> dict:
         """Issue ``session/new``; if the gateway substitutes the model, adopt it
         and re-issue once so a real session is actually created.
@@ -3293,6 +3786,194 @@ class AcpClient:
             session_resp = await self._wait_for_response(retry_id, timeout=_INIT_TIMEOUT)
 
         return session_resp
+
+    async def _codex_initialize_session(self) -> None:
+        """Handshake: initialize → session/load or session/new → set_mode → set_model."""
+        # 1. Initialize
+        if self._is_codex:
+            protocol_version: int | str = PROTOCOL_VERSION_CODEX
+            client_capabilities = CODEX_CLIENT_CAPABILITIES
+        elif self._is_claude:
+            protocol_version = PROTOCOL_VERSION_CLAUDE
+            client_capabilities = ACP_CLIENT_CAPABILITIES
+        else:
+            protocol_version = PROTOCOL_VERSION
+            client_capabilities = ACP_CLIENT_CAPABILITIES
+        init_id = await self._send_request(
+            METHOD_INITIALIZE,
+            {
+                "protocolVersion": protocol_version,
+                "clientInfo": {"name": CLIENT_NAME, "version": CLIENT_VERSION},
+                "clientCapabilities": client_capabilities,
+            },
+        )
+        init_resp = await self._wait_for_response(init_id, timeout=_INIT_TIMEOUT)
+        logger.info("ACP initialized (protocol=%s)", init_resp.get("protocolVersion"))
+
+        # Check if kiro-cli supports session/load
+        self._can_load_session = init_resp.get("agentCapabilities", {}).get("loadSession", False)
+
+        # 2. Try session/load if we have a resume ID and kiro-cli supports it
+        self._resumed = False
+        resume_sid = self._resume_session_id
+        self._resume_session_id = None  # consume — no retry loop
+
+        if resume_sid and self._can_load_session:
+            # Only attempt session/load when the prior session transcript
+            # actually exists on disk. Without this guard a stale persisted SID
+            # (e.g. a slot reopened for a brand-new conversation) triggers a
+            # session/load that REPLAYS the old transcript on top of the fresh
+            # system prompt + memory injection — inflating base context to
+            # ~38% on turn 1. kiro-cli stores transcripts at ~/.kiro/sessions/
+            # cli/<sid>.json; a missing transcript falls back to session/new
+            # (a genuinely fresh start).
+            if self._is_claude or self._is_codex:
+                # Foreign adapters own their transcript stores and locate a
+                # session by ID; no Kiro transcript path is involved.
+                session_file = ""
+                file_ok = True
+            else:
+                session_file = str(kiro_sessions_dir() / f"{resume_sid}.json")
+                file_ok = Path(session_file).exists()
+            if file_ok:
+                try:
+                    if self._is_codex:
+                        session_mcp_servers = await asyncio.to_thread(
+                            self._codex_session_mcp_servers
+                        )
+                    else:
+                        session_mcp_servers = [
+                            *self._claude_session_mcp_servers(),
+                            *(await asyncio.to_thread(self._pooled_mcp_servers)),
+                        ]
+                    load_params: dict = {
+                        "sessionId": resume_sid,
+                        "cwd": str(self._work_dir),
+                        "mcpServers": session_mcp_servers,
+                    }
+                    if self._is_claude:
+                        load_params["_meta"] = {"claudeCode": {"options": {}}}
+                    elif self._is_kiro:
+                        load_params["_meta"] = {"_kiro.dev/session_file": session_file}
+                    load_id = await self._send_request(METHOD_SESSION_LOAD, load_params)
+                    load_resp = await self._wait_for_response(load_id, timeout=_INIT_TIMEOUT)
+                    if "modes" in load_resp:
+                        self._session_id = resume_sid
+                        self._resumed = True
+                        self._capture_available_models(load_resp)
+                        self._store_session_config(load_resp)
+                        logger.info("ACP session resumed: %s", resume_sid)
+                except (AcpError, AcpTimeoutError):
+                    logger.info(
+                        "session/load failed for %s, falling back to session/new", resume_sid
+                    )
+            else:
+                logger.info("Session file missing for %s, skipping load", resume_sid)
+
+        # 3. Create new session if load didn't succeed. On the claude backend a
+        # model-substitution advisory comes back as an error frame with NO
+        # sessionId; _new_session_following_substitution adopts the substitute
+        # model and re-issues once so a real session is actually created.
+        if not self._session_id:
+            # Capture the requested model before the helper runs. The helper resets
+            # self._last_substitution_model = None on every return path, so we can't
+            # use it to detect whether substitution happened. Comparing self._model
+            # before vs after is the reliable signal.
+            model_before = self._model
+            session_resp = await self._new_session_following_substitution()
+            self._session_id = session_resp.get("sessionId")
+            self._capture_available_models(session_resp)
+            self._store_session_config(session_resp)
+            if not self._session_id:
+                # Both the initial attempt and the substitution retry failed to
+                # yield a session. Raise a clear, actionable error instead of
+                # letting the next step die on the opaque "Cannot set config
+                # option before session is initialized" guard.
+                # self._model can be backend-derived (the substitute adopted
+                # by _new_session_following_substitution from the ACP advisory),
+                # and AcpError chains through to the dashboard activity feed
+                # and Slack. Dual-redact before interpolating, same discipline
+                # as the logger paths.
+                # Standardize redacted-local naming across this file: the
+                # convention is _<source>_log so the reader sees what was redacted.
+                _model_for_error_log, _ = redact_exfiltration_urls(str(self._model))
+                _model_for_error_log, _ = redact_credentials(_model_for_error_log)
+                raise AcpError(
+                    "session/new returned no sessionId"
+                    + (
+                        f" even after adopting substitute model {_model_for_error_log!r}"
+                        if self._model != model_before
+                        else ""
+                    )
+                    + "; the backend did not create a session."
+                )
+            # self._model can be backend-derived if _new_session_following_substitution
+            # adopted the gateway substitute. Redact it consistently with the
+            # warning-log path so any URL / credential-shaped substitute id never
+            # reaches the dashboard activity feed or Slack unredacted.
+            _model_log, _ = redact_exfiltration_urls(str(self._model))
+            _model_log, _ = redact_credentials(_model_log)
+            logger.info("ACP session created: %s (model=%s)", self._session_id, _model_log)
+        self._last_activity = time.monotonic()
+
+        # Seek to end of JSONL so we only read new tool results.
+        # claude-agent-acp stores sessions via its own SDK, not ~/.kiro/ — skip.
+        if self._session_id and self._is_kiro:
+            _jpath = kiro_sessions_dir() / f"{self._session_id}.jsonl"
+            try:
+                self._jsonl_pos = _jpath.stat().st_size if _jpath.exists() else 0
+            except OSError:
+                self._jsonl_pos = 0
+
+        # 4. Activate agent via set_mode (claude-agent-acp does not support set_mode — skip).
+        #    Guard (A): fire only when the backend advertised this agent, or
+        #    advertised no modes at all (older kiro-cli / fake → attempt,
+        #    backward-compatible). If modes ARE advertised but this agent is
+        #    absent, its ~/.kiro/agents/<agent>.json didn't load — FAIL CLOSED
+        #    with an actionable error rather than silently running kiro-cli's
+        #    default (broader) mode, which for a restricted agent is a privilege
+        #    escalation. Self-heal (B, in _spawn) regenerates the managed default
+        #    so the common case never reaches this branch.
+        if self._is_kiro:
+            if not self._modes_advertised or self._agent in self._available_mode_ids:
+                await self._send_request(
+                    METHOD_SET_MODE,
+                    {"sessionId": self._session_id, "modeId": self._agent},
+                )
+                logger.info("ACP agent activated: %s", self._agent)
+            else:
+                raise AcpError(
+                    f"Agent mode {self._agent!r} is not available on this session "
+                    f"(advertised modes: {self._available_mode_ids or 'none'}); its "
+                    f"~/.kiro/agents/{self._agent}.json is likely missing. Refusing "
+                    f"to run the backend default mode in its place. Run "
+                    f"`kirocrew setup --agent-only` to materialize the agent config."
+                )
+
+        # 5. Set model — override if Kiro Crew config specifies non-default.
+        # Codex owns its advertised-model namespace check here. Keeping this
+        # adapter decision out of _apply_startup_model preserves Kiro's explicit
+        # upstream identity branch (H13).
+        if (
+            self._is_codex
+            and self._model
+            and self._model != DEFAULT_MODEL
+            and self._model_is_unusable(self._model)
+        ):
+            _withheld_log, _ = redact_exfiltration_urls(str(self._model))
+            _withheld_log, _ = redact_credentials(_withheld_log)
+            logger.warning(
+                "ACP model %s is not available to this account; staying on the "
+                "backend default %s (advertised: %s)",
+                _withheld_log,
+                self._resolved_model_id or DEFAULT_MODEL,
+                ", ".join(self._advertised_model_ids()),
+            )
+            self._model = DEFAULT_MODEL
+        await self._apply_startup_model()
+
+        # Drain MCP server init notifications
+        await self._drain_notifications()
 
     async def _initialize_session(self) -> None:
         """Handshake: initialize → session/load or session/new → set_mode → set_model."""
@@ -3668,6 +4349,8 @@ class AcpClient:
                     stderr_tail, _ = redact_exfiltration_urls(stderr_tail)
                     stderr_tail, _ = redact_credentials(stderr_tail)
                 detail = f" — {stderr_tail}" if stderr_tail else ""
+                if self._is_codex and _is_session_expired(stderr_tail):
+                    raise AcpAuthRequired(CODEX_AUTH_REQUIRED_MESSAGE)
                 raise AcpError(f"ACP process exited (code={self._process.returncode}){detail}")
             await asyncio.sleep(0.1)
             return None
@@ -3773,6 +4456,14 @@ class AcpClient:
                             _payload_log,
                         )
                         return msg.result or {}
+                    if self._is_codex:
+                        raw_error = ""
+                        if isinstance(msg.error, dict):
+                            raw_error = (
+                                f"{msg.error.get('data', '')} " f"{msg.error.get('message', '')}"
+                            )
+                        if _is_session_expired(raw_error):
+                            raise AcpAuthRequired(CODEX_AUTH_REQUIRED_MESSAGE)
                     # Dual-redact msg.error before interpolating into the AcpError.
                     # msg.error is the wire-derived JSON-RPC error frame from the ACP
                     # backend; AcpError propagates to the dashboard activity feed and
@@ -4225,7 +4916,13 @@ class AcpClient:
                     self._turn_done.set()
                     return
                 if action == "error":
-                    _raise_acp_error(msg.error, self._advertised_model_ids())
+                    _raise_acp_error(
+                        msg.error,
+                        self._advertised_model_ids(),
+                        auth_required_message=(
+                            CODEX_AUTH_REQUIRED_MESSAGE if self._is_codex else None
+                        ),
+                    )
                 if action == "permission":
                     await self._handle_permission(msg)
                 elif action == "server_request_unknown":
@@ -4344,7 +5041,11 @@ class AcpClient:
                 )
                 return
             if action == "error":
-                _raise_acp_error(msg.error, self._advertised_model_ids())
+                _raise_acp_error(
+                    msg.error,
+                    self._advertised_model_ids(),
+                    auth_required_message=(CODEX_AUTH_REQUIRED_MESSAGE if self._is_codex else None),
+                )
             if action == "permission":
                 yield self._build_permission_event(msg)
             elif action == "server_request_unknown":
@@ -4832,7 +5533,11 @@ class AcpClient:
                 self._turn_done.set()
                 return "".join(output)
             if action == "error":
-                _raise_acp_error(msg.error, self._advertised_model_ids())
+                _raise_acp_error(
+                    msg.error,
+                    self._advertised_model_ids(),
+                    auth_required_message=(CODEX_AUTH_REQUIRED_MESSAGE if self._is_codex else None),
+                )
             if action == "permission":
                 await self._handle_permission(msg)
             elif action == "server_request_unknown":
@@ -5395,9 +6100,8 @@ class AcpClient:
 
         # Path 2: `rawOutput` (arrives with status=completed) — fallback when
         # there were no content blocks (e.g. some tools only emit rawOutput).
-        # kiro-cli tool results land here in two shapes:
-        #   items[].Text  — fs_read contents, shell-style text, etc.
-        #   items[].Json  — structured tool output (use .stdout when present)
+        # Kiro tool results use ``items[]`` while Codex wraps the MCP
+        # CallToolResult under ``result``.
         if not output_parts:
             raw_output = update.get("rawOutput")
             if isinstance(raw_output, dict):
@@ -5415,6 +6119,17 @@ class AcpClient:
                                 output_parts.append(str(j["stdout"])[:4000])
                             else:
                                 output_parts.append(json.dumps(j, default=str)[:4000])
+                if not output_parts:
+                    result = raw_output.get("result")
+                    if isinstance(result, dict):
+                        result_content = result.get("content")
+                        if isinstance(result_content, list):
+                            for block in result_content:
+                                if not isinstance(block, dict) or block.get("type") != "text":
+                                    continue
+                                text = block.get("text")
+                                if text:
+                                    output_parts.append(str(text)[:4000])
 
         if not output_parts:
             return None
@@ -5767,3 +6482,47 @@ class AcpClient:
                 continue
             if msg.method and not msg.id:
                 self._mcp_notifications.append(msg)
+
+
+class CodexAcpClient(AcpClient):
+    """ACP client adapter for the official Codex harness."""
+
+    def __init__(
+        self,
+        work_dir: str | Path | None = None,
+        model: str | None = None,
+        agent: str = CLIENT_NAME,
+        sandbox_mode: str = "auto",
+        session_key: str | None = None,
+        channel_id: str | None = None,
+        extra_env: dict[str, str] | None = None,
+        audit_source: str | None = None,
+        mcp_gateway_overlay: str | Path | None = None,
+        mcp_gateway_settings_mcp_json: str | Path | None = None,
+        mcp_gateway_socket: str | Path | None = None,
+        permission_mode: str | None = None,
+    ) -> None:
+        super().__init__(
+            work_dir=work_dir,
+            model=model,
+            agent=agent,
+            sandbox_mode=sandbox_mode,
+            session_key=session_key,
+            channel_id=channel_id,
+            extra_env=extra_env,
+            acp_backend=ACP_BACKEND_CODEX,
+            audit_source=audit_source,
+            mcp_gateway_overlay=mcp_gateway_overlay,
+            mcp_gateway_settings_mcp_json=mcp_gateway_settings_mcp_json,
+            mcp_gateway_socket=mcp_gateway_socket,
+            permission_mode=permission_mode,
+        )
+
+    async def _spawn(self) -> None:
+        await self._codex_spawn()
+
+    async def _new_session_following_substitution(self) -> dict:
+        return await self._codex_new_session_following_substitution()
+
+    async def _initialize_session(self) -> None:
+        await self._codex_initialize_session()

@@ -52,6 +52,7 @@ from typing import Any
 
 from kiro_crew import hooks, platform_compat
 from kiro_crew._sqlite_compat import sqlite3
+from kiro_crew.acp.types import ACP_BACKENDS_KIRO_PREREQUISITE
 from kiro_crew.agent_files import AGENT_FILENAME
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import CRED_KIRO_API_KEY, read_env_file_credential
@@ -2232,6 +2233,22 @@ class KiroPrerequisiteService:
             try:
                 if self._warm_up_delay > 0:
                     await asyncio.sleep(self._warm_up_delay)
+                # Resolve backend selection inside this already-detached task.
+                # The gateway's socket-bind path must not await config I/O, while
+                # a foreign backend must not run irrelevant Kiro probes.
+                try:
+                    from kiro_crew.config.loader import KiroCrewConfig
+
+                    cfg = await asyncio.to_thread(KiroCrewConfig.load)
+                    if cfg.agent.acp_backend not in ACP_BACKENDS_KIRO_PREREQUISITE:
+                        return
+                except Exception:
+                    # Configuration uncertainty keeps the established fail-closed
+                    # Kiro probe rather than silently waiving the prerequisite.
+                    logger.debug(
+                        "Could not resolve ACP backend for Kiro warm-up",
+                        exc_info=True,
+                    )
                 await self._probe()
             except asyncio.CancelledError:
                 raise

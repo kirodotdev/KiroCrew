@@ -99,6 +99,9 @@ from kiro_crew import model_registry, platform_compat, shutdown_event
 from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_KIRO,
+    ACP_BACKENDS_ACP_RUNTIME,
+    ACP_BACKENDS_KNOWN,
     PROVIDER_LABEL_CLAUDE,
     PROVIDER_LABEL_DEFAULT,
 )
@@ -962,6 +965,17 @@ class SessionManager:
         await sess.semaphore.acquire()
         return True
 
+    @property
+    def acp_backend(self) -> str:
+        """ACP backend captured when this gateway process started.
+
+        A persisted backend change is pending until restart. Runtime safety gates
+        and background dispatch must use this snapshot rather than a newer config
+        value that the current provider factory has not adopted.
+        """
+
+        return self._acp_backend
+
     def active_providers(self) -> list[LLMProvider]:
         """Return the providers of all currently-active sessions.
 
@@ -998,6 +1012,15 @@ class SessionManager:
         provider_factory: ProviderFactory | None = None,
     ):
         self._cfg = cfg
+        try:
+            configured_backend = getattr(cfg.agent, "acp_backend", ACP_BACKEND_KIRO)
+        except Exception:
+            configured_backend = ACP_BACKEND_KIRO
+        self._acp_backend = (
+            configured_backend
+            if isinstance(configured_backend, str) and configured_backend in ACP_BACKENDS_KNOWN
+            else ACP_BACKEND_KIRO
+        )
         self._provider_factory = provider_factory
         self._sessions: dict[str, _Session] = {}
         self._lock = asyncio.Lock()
@@ -1171,6 +1194,9 @@ class SessionManager:
         no conversation to lose.
         """
         cfg = KiroCrewConfig.load()
+        # Backend selection is restart-only. A pending config write must not
+        # hitchhike on a model/effort refresh and hot-switch new sessions.
+        cfg.agent.acp_backend = self._acp_backend
         async with self._pool_fill_lock:
             async with self._lock:
                 self._cfg = cfg
@@ -1198,8 +1224,12 @@ class SessionManager:
         )
 
     async def reload_provider_factory(self) -> None:
-        """Reload provider factory from current config (after provider switch)."""
+        """Reload the provider factory without changing the startup backend."""
         cfg = KiroCrewConfig.load()
+        # Backend selection is restart-only. Session resets may rebuild factories
+        # for other configuration changes, but they must not adopt a persisted
+        # backend that this gateway process did not start with.
+        cfg.agent.acp_backend = self._acp_backend
         stale: list[tuple[str, Any]] = []
         async with self._pool_fill_lock:
             async with self._lock:
@@ -1309,33 +1339,34 @@ class SessionManager:
 
     # ── Warm Pool ──
 
-    def _bg_provider_is_kiro(self) -> bool:
-        """True when the ``kirocrew-lite`` ``_bg`` agent resolves to the kiro
-        (``acp``) backend — the only backend the multiplexed ``AcpRuntime``
-        supports. For non-kiro backends ``_bg`` falls back to the provider-backed
-        ``_Session`` path serialized by ``Semaphore(1)``.
+    def _bg_provider_uses_acp_runtime(self) -> bool:
+        """Whether ``_bg`` may use the multiplexed ``AcpRuntime`` path.
+
+        Harness identity is not enough: dedicated ACP adapters such as Codex
+        still use ``agent.provider == "acp"`` but are explicitly absent from the
+        shared-runtime capability set. They use the provider-backed ``_Session``
+        path instead, which preserves their configured harness.
         """
         try:
             prov = getattr(self._cfg.agent, "provider", "acp") or "acp"
         except Exception:
             prov = "acp"
-        return prov == "acp"
+        return prov == "acp" and self._acp_backend in ACP_BACKENDS_ACP_RUNTIME
 
     async def get_bg_session(self) -> "AcpSessionHandle | _ProviderBgSession":
         """Acquire a ``_bg`` session handle, dispatching by provider backend.
 
-        kiro (``acp``) → ephemeral ``AcpSessionHandle`` on the shared multiplexed
-        ``AcpRuntime`` (each caller gets its own ``sessionId``; runtime creation
-        guarded by ``_bg_runtime_lock``; respawn-once on death). non-kiro →
-        ``_ProviderBgSession`` over the shared ``BACKGROUND_KEY`` ``_Session``
-        serialized by its ``Semaphore(1)``. Caller MUST call ``session.destroy()``
-        in a finally block when done.
+        Backends in ``ACP_BACKENDS_ACP_RUNTIME`` get an ephemeral
+        ``AcpSessionHandle`` on the shared multiplexed runtime. Other backends get
+        a provider-backed ``_ProviderBgSession`` over ``BACKGROUND_KEY``, serialized
+        by its ``Semaphore(1)``. Caller MUST call ``session.destroy()`` in a finally
+        block when done.
         """
-        if not self._bg_provider_is_kiro():
+        if not self._bg_provider_uses_acp_runtime():
             await self._ensure_background()
             sess = self._sessions.get(BACKGROUND_KEY)
             if sess is None:
-                raise RuntimeError("background session unavailable for non-kiro _bg provider")
+                raise RuntimeError("background session unavailable for provider-backed _bg")
             return _ProviderBgSession(sess)
 
         # circular import: session -> acp.runtime -> acp.client -> session

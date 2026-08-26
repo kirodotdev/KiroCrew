@@ -10992,6 +10992,20 @@
         "could_not_create_a_sign_in_link_try_again": "Anmeldelink konnte nicht erstellt werden. Versuchen Sie es erneut.",
         "copy_failed_select_the_link_and_copy_it_manually": "Kopieren fehlgeschlagen. Wählen Sie den Link aus und kopieren Sie ihn manuell."
       },
+      "aiBackendPanel": {
+        "acp_backend": "ACP-Backend",
+        "ai_backend": "KI-Backend",
+        "kiro": "Kiro",
+        "codex": "Codex",
+        "kiro_agent_server": "Kiro Agent Server",
+        "choose_which_agent_runtime_handles_new_chats": "Wähle aus, welche Agent-Laufzeit neue Chats verarbeitet.",
+        "codex_description": "Verwendet die Codex CLI über den offiziellen Codex ACP-Adapter. Installiere beides auf dem Gateway-Host und führe dann zum Anmelden den unten stehenden Befehl aus.",
+        "kas_description": "Verwendet Kiro Agent Server. Es gelten dieselben Installations- und Anmeldeanforderungen wie für Kiro.",
+        "kiro_description": "Verwendet kiro-cli und deine Kiro-Anmeldung. Dies ist das Standard-Backend.",
+        "restart_new_chats_description": "Starte das Gateway neu und beginne dann einen neuen Chat, um dieses Backend zu verwenden. Bestehende Chats werden nicht im laufenden Betrieb migriert.",
+        "restart_required": "Neustart erforderlich",
+        "selected_backend_saved": "Das ausgewählte Backend ist in der {{productName}}-Konfiguration gespeichert."
+      },
       "aboutPanel": {
         "diverged": "Abgewichen",
         "checkout_diverged_from_upstream": "Dieser Checkout ist vom Upstream abgewichen ({{distance}}). Zum Aktualisieren Rebase oder Merge ausführen — nichts wird automatisch angewendet, die lokalen Commits bleiben also erhalten.",

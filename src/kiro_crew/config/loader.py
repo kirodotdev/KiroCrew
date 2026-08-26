@@ -1531,9 +1531,9 @@ class AgentConfig:
         default="",
         metadata=_meta(
             "ACP Backend",
-            "Which ACP agent to drive: '' = kiro-cli (default), 'kas' = kiro-agent. "
-            "KAS runs chat but has no native subagent progress reporting yet.",
-            enum=["", "kas"],
+            "Which ACP agent to drive: '' = kiro-cli (default), 'kas' = kiro-agent, "
+            "'codex' = the official @agentclientprotocol/codex-acp adapter.",
+            enum=["", "codex", "kas"],
         ),
     )
     default_agent: str = field(
