@@ -85,7 +85,15 @@ consuming it, so a repeated permission frame for the same `toolCallId` keeps the
 original tool-call arguments authoritative instead of falling back to the
 permission frame's agent-authored inline input. A genuine miss may carry inline
 data for display, but both provenance flags remain false and consumers that
-need trusted arguments fail closed.
+need trusted arguments fail closed. One identity-scoped carve-out exists
+(`AcpEvent.child_identity_trusted`): a remote MCP tool whose initial
+`tool_call` streams an empty/absent `rawInput` can never resolve args
+provenance, but its engine-authored `_meta.kiro` identity
+(`mcp_server_name`/`tool_name`) is cached independently of the args — so
+grants that authorize BY IDENTITY (trust-all/YOLO, a non-shell trusted
+pattern, the subagent parent policy) honor a child request whose non-shell
+identity resolved, while argument-derived gates (hook auto-approve,
+trust-reads) keep failing closed on `child_low_fidelity`.
 
 The host always sends one-shot approvals (`always=False`, the default). KiroCrew — not the agent — owns the trust scope (`slot._trust`, `slot._trust_reads`, `slot._trusted_patterns`, `safety_override`, `channel.trusted`, parent session `approval_policy`). Per-call `session/request_permission` is required so KiroCrew's PreToolUse hooks (`auto_deny_tools`, sensitive-path checks, credential redaction) fire on every tool invocation. The `always=True` path is reserved for a future "skip KiroCrew hooks for this exact tool" feature; no caller passes it today.
 

@@ -510,7 +510,6 @@ test/test_auto_research_handlers_coverage.py
 test/test_auto_research_onloop_db.py
 test/test_autonudge_dashboard_fire.py
 test/test_autonudge_stop_auth.py
-test/test_background_approval_routing.py
 test/test_bang_command_catchall.py
 test/test_beacon.py
 test/test_beacon_status_endpoint.py

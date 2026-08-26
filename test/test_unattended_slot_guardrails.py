@@ -867,8 +867,10 @@ class TestScopedGrantIsNeverPersisted:
         assert "slot_trusted = _slot_is_trusted(slot)" in src
         # The trust/YOLO gate still branches on _slot_is_trusted's verdict; the
         # low-fidelity qualifier only excludes backend-subagent events whose
-        # command bytes never reached the caches (see chat_runner).
-        assert "if (slot_trusted or yolo_active) and not _child_low_fidelity:" in src
+        # command bytes never reached the caches, with the #6163 carve-out for
+        # a child whose non-shell MCP identity resolved (see chat_runner).
+        assert "if (slot_trusted or yolo_active) and (" in src
+        assert "not _child_low_fidelity or _child_identity_trusted" in src
 
     def test_the_runner_writes_the_policy_through_the_helper(self) -> None:
         """Pins the call site, not just the helper.

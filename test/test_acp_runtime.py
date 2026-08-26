@@ -6679,6 +6679,131 @@ def test_child_low_fidelity_requires_structured_security_context():
     assert ev.child_low_fidelity is False
 
 
+def test_child_identity_trusted_gates_on_resolved_nonshell_identity():
+    """#6163: the identity carve-out fires ONLY for a child whose non-shell
+    MCP identity resolved from the engine-authored caches. Shell, an
+    unresolved shell classification, a missing identity, and non-child
+    events all stay outside it."""
+    from kiro_crew.acp.types import AcpEvent
+
+    # The #6163 shape: remote MCP call, args provenance absent, identity
+    # resolved → low-fidelity BUT identity-trusted.
+    ev = AcpEvent(
+        kind="permission_request",
+        sub_session_id="child-a",
+        is_shell=False,
+        shell_classified=True,
+        mcp_server_name="example-server",
+        tool_name="get-item",
+        raw_tool_params={"itemId": "item-0001"},
+        raw_params_trusted=False,
+    )
+    assert ev.child_low_fidelity is True
+    assert ev.child_identity_trusted is True
+    # Shell tool → never identity-trusted (fail-closed path unchanged).
+    ev = AcpEvent(
+        kind="permission_request",
+        sub_session_id="child-a",
+        is_shell=True,
+        shell_classified=True,
+        mcp_server_name="example-server",
+        tool_name="run",
+    )
+    assert ev.child_identity_trusted is False
+    # Unresolved shell classification: is_shell=False is the MISS default,
+    # not a fact — "non-shell" cannot be asserted, so no carve-out.
+    ev = AcpEvent(
+        kind="permission_request",
+        sub_session_id="child-a",
+        is_shell=False,
+        shell_classified=False,
+        mcp_server_name="example-server",
+        tool_name="get-item",
+    )
+    assert ev.child_identity_trusted is False
+    # Missing either identity half → no carve-out.
+    ev = AcpEvent(
+        kind="permission_request",
+        sub_session_id="child-a",
+        is_shell=False,
+        shell_classified=True,
+        mcp_server_name="",
+        tool_name="get-item",
+    )
+    assert ev.child_identity_trusted is False
+    ev = AcpEvent(
+        kind="permission_request",
+        sub_session_id="child-a",
+        is_shell=False,
+        shell_classified=True,
+        mcp_server_name="example-server",
+        tool_name="",
+    )
+    assert ev.child_identity_trusted is False
+    # Non-child events: the property is child-scoped.
+    ev = AcpEvent(
+        kind="permission_request",
+        is_shell=False,
+        shell_classified=True,
+        mcp_server_name="example-server",
+        tool_name="get-item",
+    )
+    assert ev.child_identity_trusted is False
+
+
+def test_remote_mcp_empty_rawinput_yields_identity_trusted_event():
+    """#6163 end-to-end dispatch regression: a child tool_call streaming
+    EMPTY rawInput (the remote-MCP shape) followed by a permission frame
+    with agent-authored inline input produces an event that is low-fidelity
+    (args unverified) yet identity-trusted (engine-authored _meta.kiro
+    resolved) — the input the trust-all/trusted-pattern carve-out keys on."""
+    from kiro_crew.acp._dispatch import build_permission_event, parse_session_update
+
+    caches: dict = {
+        "tool_input_cache": {},
+        "shell_cache": {},
+        "raw_params_cache": {},
+        "mcp_server_name_cache": {},
+        "tool_name_cache": {},
+    }
+    parse_session_update(
+        {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "tc-6163",
+            "title": "@example-server/get-item",
+            "kind": "other",
+            "rawInput": {},
+            "_meta": {"kiro": {"mcpServerName": "example-server", "toolName": "get-item"}},
+        },
+        cache_scope="child-a",
+        **caches,
+    )
+
+    class _Msg:
+        id = 90
+        method = "session/request_permission"
+        params = {
+            "sessionId": "child-a",
+            "toolCall": {
+                "toolCallId": "tc-6163",
+                "title": "@example-server/get-item",
+                "input": {"itemId": "item-0001"},
+            },
+            "options": [
+                {"optionId": "allow_once", "name": "Allow", "kind": "allow_once"},
+                {"optionId": "reject_once", "name": "Reject", "kind": "reject_once"},
+            ],
+        }
+
+    event, _ = build_permission_event(_Msg(), cache_scope="child-a", **caches)
+    event.sub_session_id = "child-a"
+    assert event.raw_params_trusted is False
+    assert event.child_low_fidelity is True
+    assert event.mcp_server_name == "example-server"
+    assert event.tool_name == "get-item"
+    assert event.child_identity_trusted is True
+
+
 @pytest.mark.asyncio
 async def test_between_turns_child_permission_is_answered_not_queued():
     """With no in-flight prompt nothing consumes the slot queue until the next

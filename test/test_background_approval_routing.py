@@ -223,9 +223,7 @@ class TestOwnedApprovalStillRoutesToItsSlot:
         gateway.dashboard_state._slots = {"slot-other": _slot(running=True)}
 
         with patch("kiro_crew.slack.handler.is_yolo_mode", return_value=False):
-            approve_fn = gateway._interactive_approval(
-                "subagent", slot_resolver=lambda _rid: ""
-            )
+            approve_fn = gateway._interactive_approval("subagent", slot_resolver=lambda _rid: "")
             await approve_fn(_event("req-owned-4"), "")
 
         assert _requested_slot(gateway) == ""
@@ -278,9 +276,7 @@ class TestLowFidelityChildNeverAutoApproved:
         gateway = _make_gateway()
         gateway.dashboard_state._slots = {"slot-1": _slot(running=True, trust=True)}
         gateway.sessions.get_pid = MagicMock(return_value=None)
-        approve_fn = gateway._interactive_approval(
-            "subagent", slot_resolver=lambda _rid: "slot-1"
-        )
+        approve_fn = gateway._interactive_approval("subagent", slot_resolver=lambda _rid: "slot-1")
         assert await approve_fn(_child_lf_event()) is True
         gateway.dashboard_state.request_approval.assert_awaited_once()
 
@@ -299,3 +295,74 @@ class TestLowFidelityChildNeverAutoApproved:
         assert await approve_fn(_event()) is True
         # Parent event: the yolo shortcut answered, no prompt raised.
         gateway.dashboard_state.request_approval.assert_not_awaited()
+
+
+def _child_identity_event(request_id: str = "req-child-id-1") -> LLMEvent:
+    """An identity-trusted CHILD permission event (#6163): args provenance
+    absent (child_low_fidelity) but the engine-authored non-shell MCP
+    identity resolved — the shape a remote-MCP tool_call with empty
+    ``rawInput`` produces."""
+    ev = LLMEvent(
+        kind="permission_request",
+        request_id=request_id,
+        title="@example-server/get-item",
+        sub_session_id="child-a",
+        is_shell=False,
+        shell_classified=True,
+        mcp_server_name="example-server",
+        tool_name="get-item",
+    )
+    assert ev.child_low_fidelity
+    assert ev.child_identity_trusted
+    return ev
+
+
+class TestIdentityTrustedChildTakesIdentityScopedGrants:
+    """#6163: identity-scoped grants (auto_approve_sources, --approval yolo,
+    slot trust, the no-UI default) authorize by identity, so an
+    identity-trusted child takes them like a full-context event — while the
+    title-derived --approval reads shortcut stays gated on child_low_fidelity.
+    """
+
+    @pytest.mark.asyncio
+    async def test_auto_approve_sources_approves_identity_trusted_child(self) -> None:
+        gateway = _make_gateway()
+        gateway._cfg.hooks.get = MagicMock(return_value=["cron"])
+        approve_fn = gateway._interactive_approval("cron")
+        assert await approve_fn(_child_identity_event()) is True
+        gateway.dashboard_state.request_approval.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_yolo_approval_mode_approves_identity_trusted_child(self) -> None:
+        gateway = _make_gateway()
+        gateway._approval_mode = "yolo"
+        approve_fn = gateway._interactive_approval("cron")
+        assert await approve_fn(_child_identity_event()) is True
+        # The yolo shortcut answered — no interactive prompt raised.
+        gateway.dashboard_state.request_approval.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reads_approval_mode_still_gated_for_identity_trusted_child(self) -> None:
+        """'reads' classifies by the model-authored title, so identity trust
+        is NOT sufficient — the request falls through to the prompt."""
+        gateway = _make_gateway()
+        gateway._approval_mode = "reads"
+        approve_fn = gateway._interactive_approval("cron")
+        assert await approve_fn(_child_identity_event()) is True
+        gateway.dashboard_state.request_approval.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_slot_trust_approves_identity_trusted_child(self) -> None:
+        gateway = _make_gateway()
+        gateway.dashboard_state._slots = {"slot-1": _slot(running=True, trust=True)}
+        gateway.sessions.get_pid = MagicMock(return_value=None)
+        approve_fn = gateway._interactive_approval("subagent", slot_resolver=lambda _rid: "slot-1")
+        assert await approve_fn(_child_identity_event()) is True
+        gateway.dashboard_state.request_approval.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_ui_default_approves_identity_trusted_child(self) -> None:
+        gateway = _make_gateway()
+        gateway.dashboard_state = None
+        approve_fn = gateway._interactive_approval("cron")
+        assert await approve_fn(_child_identity_event()) is True

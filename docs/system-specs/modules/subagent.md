@@ -80,10 +80,20 @@ When a subagent's tool call triggers `EVENT_PERMISSION_REQUEST`, approval
 is decided in strict priority order:
 
 1. **Hook deny** — `hooks.on_tool_call()` returns `TOOL_DENY` → reject
-2. **YOLO mode** — `is_yolo()` (live check) → auto-approve
-3. **Parent policy** — `parent_policy == "auto"` (snapshot at spawn) → auto-approve
-4. **Interactive callback** — `on_tool_approval` (races dashboard + Slack, 2h timeout)
-5. **Deny by default** — none of the above matched → reject
+2. **Child fidelity gate** — a child request (`sub_session_id`) whose
+   security context never reached the caches (`child_low_fidelity`) skips
+   every auto-approve step below: it is handed to an interactive approver
+   with an "UNVERIFIED" annotation, or rejected when the consumer is
+   headless. One identity-scoped carve-out (#6163): a non-shell child whose
+   engine-authored MCP identity resolved (`child_identity_trusted`) flows
+   on to steps 3–5 — those grants authorize by identity, not by arguments —
+   while the argument-derived hook auto-approve stays gated on full
+   fidelity, and any interactive approver it reaches still sees an
+   arguments-unverified annotation.
+3. **YOLO mode** — `is_yolo()` (live check) → auto-approve
+4. **Parent policy** — `parent_policy == "auto"` (snapshot at spawn) → auto-approve
+5. **Interactive callback** — `on_tool_approval` (races dashboard + Slack, 2h timeout)
+6. **Deny by default** — none of the above matched → reject
 
 `parent_policy` is resolved once when `_run_inner` starts, using this chain:
 1. Read from parent session via `get_approval_policy(parent_session_key)`

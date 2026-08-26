@@ -61,10 +61,14 @@ def test_downgrade_gate_covers_every_approval_grant_source() -> None:
     source = _RUNNER.read_text(encoding="utf-8")
 
     # The tool-event branch that auto-approves without human confirmation.
+    # The child gate carries the #6163 identity carve-out, so the branch
+    # spans two lines: `if (<grants>) and (not _child_low_fidelity or
+    # _child_identity_trusted):`.
     approval = re.search(
-        r"^\s*if \((?P<cond>[^)]*yolo_active[^)]*)\) and not _child_low_fidelity:",
+        r"^\s*if \((?P<cond>[^)]*yolo_active[^)]*)\) and \(\s*"
+        r"not _child_low_fidelity or _child_identity_trusted\s*\):",
         source,
-        re.MULTILINE,
+        re.MULTILINE | re.DOTALL,
     )
     assert approval, "could not locate the auto-approve tool branch; update this test"
     granting = {name for name in ("slot_trusted", "yolo_active") if name in approval.group("cond")}

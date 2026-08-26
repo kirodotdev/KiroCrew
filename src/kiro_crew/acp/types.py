@@ -628,6 +628,36 @@ class AcpEvent:
             return True
         return False
 
+    @property
+    def child_identity_trusted(self) -> bool:
+        """True for a child event whose non-shell MCP identity is VERIFIED.
+
+        ``child_low_fidelity`` conflates two distinct provenance failures:
+        unverified ARGUMENTS (``raw_params_trusted`` — the tool_call frame's
+        ``rawInput`` never reached the cache) and unverified IDENTITY. For a
+        remote MCP tool the backend's initial ``tool_call`` streams an
+        empty/absent ``rawInput``, so args provenance can never resolve — but
+        the engine-authored ``_meta.kiro`` identity (``mcp_server_name`` /
+        ``tool_name``, cached independently of the args) resolves fine.
+
+        Identity-scoped grants — trust-all / YOLO, a non-shell trusted
+        pattern, the subagent parent policy — authorize BY IDENTITY, not by
+        arguments, exactly as they do for the main agent. A verified identity
+        is therefore sufficient authority for THOSE grants even while the
+        arguments stay unverified. Requiring ``shell_classified`` keeps shell
+        fail-closed: a shell-cache MISS defaults ``is_shell`` to False, so
+        without a resolved classification "non-shell" is a guess, not a fact.
+        Argument-derived gates (hook auto-approve, trust-reads, path scoping)
+        must keep consulting ``child_low_fidelity`` and never this property.
+        """
+        return (
+            bool(self.sub_session_id)
+            and not self.is_shell
+            and self.shell_classified
+            and bool(self.mcp_server_name)
+            and bool(self.tool_name)
+        )
+
 
 @dataclass
 class AcpPromptStats:

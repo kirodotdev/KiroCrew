@@ -6397,6 +6397,28 @@ async def _run_chat(
                 # to the interactive card. A child WITH full context takes the
                 # same branches as the main agent (mode parity).
                 _child_low_fidelity = event.child_low_fidelity
+                # Identity-scoped carve-out (issue #6163): a child whose args
+                # provenance is absent but whose engine-authored MCP identity
+                # resolved from the caches may still take the IDENTITY-scoped
+                # grants below (trusted patterns, trust-all/YOLO) — those
+                # grants authorize by identity, never by arguments, exactly as
+                # they do for the main agent. Argument-derived gates (hook
+                # auto-approve, trust-reads) keep consulting
+                # _child_low_fidelity alone and stay fail-closed.
+                _child_identity_trusted = event.child_identity_trusted
+                if _child_low_fidelity:
+                    # The downgrade itself must be observable (#6163: nothing
+                    # was logged on this path, making per-call prompts in a
+                    # trusted session undiagnosable from logs).
+                    logger.info(
+                        "child permission request low-fidelity: args_trusted=%s "
+                        "identity_trusted=%s server=%r tool=%r request_id=%s",
+                        event.raw_params_trusted,
+                        _child_identity_trusted,
+                        event.mcp_server_name,
+                        event.tool_name,
+                        event.request_id,
+                    )
                 # DISPLAY-ONLY warning for the interactive card: the human
                 # must know the title is ALL there is (the params the gates
                 # would verify are absent, so the displayed text is
@@ -6407,9 +6429,17 @@ async def _run_chat(
                 # TrustDropdown derives its learned patterns from the title,
                 # and a mutated title would store junk pattern entries for
                 # exactly the requests that need the clearest presentation.
+                # When the tool IDENTITY did verify, say so — conflating
+                # "identity unknown" with "arguments unverified" overstates
+                # the risk and trains users to ignore the warning.
                 _child_lf_warning = (
-                    "⚠️ UNVERIFIED child request (security context "
-                    "missing — title is agent-authored): "
+                    (
+                        "⚠️ UNVERIFIED child request arguments (tool identity "
+                        "verified — argument values are agent-authored): "
+                        if _child_identity_trusted
+                        else "⚠️ UNVERIFIED child request (security context "
+                        "missing — title is agent-authored): "
+                    )
                     if _child_low_fidelity
                     else ""
                 )
@@ -6644,9 +6674,8 @@ async def _run_chat(
                 # parent turn. Deny-by-default (CWE-1188): with no active crew this
                 # predicate is False no matter the trust flags, so the tool falls
                 # through to the normal interactive/trust gate below.
-                if (
-                    _native_crew_should_auto_approve(_native_tracker, state, slot)
-                    and not _child_low_fidelity
+                if _native_crew_should_auto_approve(_native_tracker, state, slot) and (
+                    not _child_low_fidelity or _child_identity_trusted
                 ):
                     logger.debug(
                         "Native crew auto-approve: %r (request_id=%s)",
@@ -6689,7 +6718,7 @@ async def _run_chat(
                 # or collapsed redaction marker could authorize a different tool.
                 if (
                     slot._trusted_patterns
-                    and not _child_low_fidelity
+                    and (not _child_low_fidelity or _child_identity_trusted)
                     and not event.tool_input_redacted
                 ):
                     _tp_command = approval_command(
@@ -6815,8 +6844,14 @@ async def _run_chat(
                 # bytes never reached the caches) are excluded from every
                 # auto-approve path and fall through to the interactive card;
                 # children WITH cached bytes take these branches exactly like
-                # the main agent (mode parity).
-                if (slot_trusted or yolo_active) and not _child_low_fidelity:
+                # the main agent (mode parity). One carve-out (#6163): a
+                # non-shell child whose engine-authored MCP identity resolved
+                # (child_identity_trusted) may take this grant — trust-all
+                # authorizes by identity, not by arguments, so unverified
+                # args do not change what the grant asserts.
+                if (slot_trusted or yolo_active) and (
+                    not _child_low_fidelity or _child_identity_trusted
+                ):
                     try:
                         validated_tool = _validate_tool_name(event.title, is_shell=event.is_shell)
                     except ValueError as e:

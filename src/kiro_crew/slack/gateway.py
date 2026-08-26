@@ -1749,6 +1749,17 @@ class GatewayOrchestrator:
             # or a foreign event type) must not accidentally enter the
             # restricted path on a truthy non-bool.
             _child_lf = getattr(event, "child_low_fidelity", False) is True
+            # Identity-scoped carve-out (#6163), mirroring chat_runner: the
+            # blanket grants below (auto_approve_sources, --approval yolo,
+            # YOLO override, slot trust, the no-UI default) authorize by
+            # IDENTITY, never by arguments, so a child whose engine-authored
+            # non-shell MCP identity resolved (child_identity_trusted) may
+            # take them even while its arguments stay unverified.
+            # Title/argument-derived shortcuts (--approval reads) keep gating
+            # on _child_lf alone and stay fail-closed. Strict ``is True`` for
+            # the same reason as _child_lf.
+            _child_identity_ok = getattr(event, "child_identity_trusted", False) is True
+            _child_blocked = _child_lf and not _child_identity_ok
             # Background callers pass the authoritative parent session key. Prefer it
             # over a request-ID resolver because tool permission IDs are opaque UUIDs,
             # unlike spawn approvals (``spawn:<agent_id>``). Treating a tool request ID
@@ -1786,7 +1797,7 @@ class GatewayOrchestrator:
 
             # Per-source auto-approve (e.g. cron, taskrunner, subagent)
             if source in self._cfg.hooks.get("auto_approve_sources", []):
-                if _child_lf:
+                if _child_blocked:
                     # The operator explicitly configured this source to run
                     # UNATTENDED — nobody is watching the interactive window,
                     # so parking a low-fidelity child request there would
@@ -1806,7 +1817,12 @@ class GatewayOrchestrator:
             # CLI --approval flag override (composable test mode).
             # 'yolo' auto-approves all; 'reads' auto-approves read-only tools;
             # 'interactive' falls through to the standard flow.
-            if self._approval_mode in ("yolo", "reads") and not _child_lf:
+            # 'yolo' is identity-scoped (approve everything) so it honors the
+            # identity carve-out; 'reads' classifies by the model-authored
+            # title (_is_read_only_tool), so it stays gated on _child_lf.
+            if self._approval_mode in ("yolo", "reads") and (
+                not _child_lf or (self._approval_mode == "yolo" and _child_identity_ok)
+            ):
                 approve = self._approval_mode == "yolo" or (
                     self._approval_mode == "reads" and _is_read_only_tool(event.title or "")
                 )
@@ -1829,7 +1845,7 @@ class GatewayOrchestrator:
                     return True
 
             # Check both YOLO sources: Slack handler (!yolo on) and dashboard UI
-            if safety_override().is_active() and not _child_lf:
+            if safety_override().is_active() and not _child_blocked:
                 return True
 
             if self.dashboard_state:
@@ -1859,7 +1875,7 @@ class GatewayOrchestrator:
 
                 if _parent_slot_key:
                     _ps = (self.dashboard_state._slots or {}).get(_parent_slot_key)
-                    if _ps and _ps._trust and _child_lf:
+                    if _ps and _ps._trust and _child_blocked:
                         # Slot IS trusted; the fidelity gate is what blocks
                         # the auto-approve. A distinct audit reason — an
                         # auditor reading "not_trusted" for a trusted slot
@@ -2052,7 +2068,7 @@ class GatewayOrchestrator:
                     slot=approval_slot,
                     is_background=is_background,
                 )
-            if _child_lf:
+            if _child_blocked:
                 # No human surface answered and none of the (skipped)
                 # shortcuts may speak for an agent-authored request:
                 # fail closed.

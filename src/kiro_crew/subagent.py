@@ -6029,7 +6029,7 @@ class SubagentManager:
                         client, event.request_id, session_key, event, error="hook_deny"
                     )
                     continue
-                if event.child_low_fidelity:
+                if event.child_low_fidelity and not event.child_identity_trusted:
                     # Backend-internal child origin whose SECURITY context is
                     # absent (structured params missing, unresolved shell
                     # classification, or shell without a recoverable command —
@@ -6042,6 +6042,23 @@ class SubagentManager:
                     # decision to it: that is a human/host judgment, the same
                     # downgrade the dashboard's card provides. Only a truly
                     # headless consumer fails closed.
+                    #
+                    # Identity carve-out (#6163): a non-shell child whose
+                    # engine-authored MCP identity resolved from the caches
+                    # (child_identity_trusted) is NOT downgraded — it flows
+                    # to the ordinary branches below, where identity-scoped
+                    # policy (TOOL_AUTO_APPROVE, parent_policy=auto)
+                    # authorizes by identity exactly as for a full-context
+                    # child. Its arguments remain unverified, which those
+                    # grants never consult.
+                    logger.info(
+                        "child permission request downgraded (low fidelity): "
+                        "args_trusted=%s server=%r tool=%r request_id=%s",
+                        event.raw_params_trusted,
+                        event.mcp_server_name,
+                        event.tool_name,
+                        event.request_id,
+                    )
                     _child_fallback = self._on_tool_approval
                     if self._on_tool_approval_factory or _child_fallback is not None:
                         # The human must know the title is ALL there is: the
@@ -6102,7 +6119,7 @@ class SubagentManager:
                         error="child_origin_no_command_context",
                     )
                     continue
-                if tool_result.action == TOOL_AUTO_APPROVE:
+                if tool_result.action == TOOL_AUTO_APPROVE and not event.child_low_fidelity:
                     await self._approve_and_log(
                         client,
                         event.request_id,
@@ -6122,6 +6139,19 @@ class SubagentManager:
                         info=info,
                     )
                     continue
+                if event.child_low_fidelity and event.child_identity_trusted:
+                    # Identity-trusted fall-through (#6163) headed to an
+                    # INTERACTIVE approver: the ARGUMENTS are still
+                    # unverified, so the human must know the argument values
+                    # are agent-authored. Annotated here — after the
+                    # identity-scoped auto-approve branches — so the SEL
+                    # audit rows those branches write keep the clean
+                    # cache-resolved tool identity, never this prose.
+                    event.title = (
+                        "⚠️ UNVERIFIED child request arguments (tool identity "
+                        f"verified — argument values are agent-authored): "
+                        f"{event.title or '<unknown tool>'}"
+                    )
                 if self._on_tool_approval_factory:
                     approve_cb = self._on_tool_approval_factory(info)
                     info._awaiting_approval = True
