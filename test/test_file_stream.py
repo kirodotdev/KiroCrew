@@ -281,10 +281,11 @@ async def test_binary_media_is_not_affected_by_the_probe(tmp_path, mock_sel):
 async def test_sensitive_path_403(tmp_path, mock_sel):
     f = tmp_path / "demo.mp4"
     f.write_bytes(_MP4_BYTES)
-    # The endpoint imports is_sensitive_path from kiro_crew.security at call
-    # time, so the patch must target the source module, not the files module.
+    # The shared open-and-check prefix reads this module's import-time
+    # is_sensitive_path alias -- one binding for one guard -- so the patch
+    # targets the files module, the same seam every other endpoint's tests use.
     with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)), \
-         patch("kiro_crew.security.is_sensitive_path", return_value=True):
+         patch("kiro_crew.dashboard.handlers.files.is_sensitive_path", return_value=True):
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.get(f"/api/file-stream?path={f}")
             assert resp.status == 403
