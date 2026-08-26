@@ -202,10 +202,26 @@ class TestAnswerOnlyBlock:
 
     def test_answer_only_caps_unavoidable_context_at_one_sentence(self):
         """A hard numeric cap, because "brief" is what ultra already says and
-        the model reads it as a licence to expand.
+        the model reads it as a licence to expand. The cap is stated as a
+        general rule about reasons rather than a list of cases that earn one:
+        the recurring failure is re-deriving a decision already made (chiefly
+        justifying an action the model is confident in), and enumerating that
+        case as its own bullet would need a new bullet for the next one.
         """
         result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        assert "you get ONE sentence. Not two." in result
+        assert "it is ONE sentence" in result
+        assert "never a paragraph" in result
+        assert "re-derivation of a decision you have already made" in result
+
+    def test_answer_only_demands_plain_words_not_only_fewer(self):
+        """Every other rule here governs LENGTH, so a compliant reply can still
+        be four dense, jargon-laden lines -- terse and unreadable. Density is a
+        separate axis and needs its own rule.
+        """
+        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
+        assert "Plain words, short sentences" in result
+        assert "Brevity is not enough" in result
+        assert "jargon that dresses up a simple point" in result
 
     def test_answer_only_names_the_categories_it_removes(self):
         """Enumerated bans, not a vague "be brief" -- each named category is a
@@ -242,16 +258,29 @@ class TestAnswerOnlyBlock:
         assert "this mode is off" in result
         assert "full detail they asked for" in result
 
-    def test_answer_only_explains_high_stakes_decisions_unasked(self):
-        """The second escape hatch, and the one the user cannot trigger: when a
-        recommendation carries real consequences, the reasoning is part of the
-        answer. Waiting to be asked assumes the user already knows enough to
-        know they should ask — which is exactly what is missing when the stakes
-        are highest.
+    def test_unrequested_explanation_is_the_rare_exception(self):
+        """The block previously carried a broad judgement-based licence to
+        explain unasked, and the model reached for it constantly -- the reported
+        symptom was that answer_only still read verbose. The default is now the
+        terse answer plus a one-line offer, and an UNCERTAIN case resolves
+        toward omitting, since an unread explanation costs the reader nothing
+        to ask for and everything to skip.
         """
         result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        assert "Explain in full, unasked" in result
-        assert "cannot decide correctly without the reasoning" in result
+        assert "Explaining in full, unasked, is the rare exception" in result
+        assert "not a lane you look for" in result
+        assert "Assume the user will NOT read an unrequested explanation" in result
+
+    def test_high_stakes_changes_omission_not_length(self):
+        """The one contradiction in the earlier block: it demanded mechanism +
+        failure modes + reversibility (a paragraph) directly under a
+        one-sentence cap, so the two rules disagreed and the longer one won.
+        Recast on a single axis -- stakes govern what may not be OMITTED, never
+        how long the reply is -- the rules become orthogonal and cannot fight.
+        """
+        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
+        assert "High stakes change what you must NOT omit, never the length" in result
+        assert "the mechanism, the failure modes and the reasoning are opt-in" in result
 
     def test_answer_only_names_the_high_stakes_domains(self):
         """Named domains, so the model does not have to infer what "important"
@@ -259,46 +288,44 @@ class TestAnswerOnlyBlock:
         """
         result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
         for domain in (
-            "security posture",
-            "credential or data exposure",
-            "permissions and trust boundaries",
-            "deleting or overwriting data",
+            "destructive",
+            "irreversible",
+            "security",
+            "credentials",
+            "data exposure",
+            "permissions",
             "spend",
-            "hard to undo",
         ):
             assert domain in result, domain
 
-    def test_high_stakes_hatch_is_a_judgement_not_a_checklist(self):
-        """The named domains are examples, not an allowlist — an unlisted but
-        equally consequential decision must still get the explanation.
+    def test_high_stakes_warning_leads_with_the_call(self):
+        """What the user needs first is the decision, not the derivation: the
+        call (or the refusal) plus whether the door swings back. Reasoning that
+        arrives before the verdict is not a decision aid, it is a wall the
+        verdict is buried in.
         """
         result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        assert "a judgement you make, not a category you match" in result
+        assert "lead with the call" in result
+        assert "naming the risk and whether it can be undone" in result
+        assert "That single line is the whole warning" in result
 
-    def test_high_stakes_explanation_lands_before_the_user_chooses(self):
-        """Reasoning delivered after the decision is not a decision aid. The
-        prompt has to say WHEN, not just THAT.
+    def test_high_stakes_silence_is_named_as_the_failure_not_brevity(self):
+        """The failure to guard against is a one-way door handed over without
+        mention. Naming brevity as the failure instead is what produced the
+        unprompted security essays this level exists to prevent.
         """
         result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        assert "how reversible it is" in result
-        assert "BEFORE they choose" in result
-
-    def test_high_stakes_underexplaining_is_named_as_the_worse_failure(self):
-        """Without an explicit ordering the model resolves the conflict toward
-        the mode it was just told to obey, and stays terse where it matters.
-        """
-        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        assert "is a defect here, not brevity" in result
-        assert "Terseness is worth less than a correct decision" in result
+        assert "The defect here is silence about a one-way door" in result
+        assert "not brevity about it" in result
 
     def test_the_stakes_hatch_is_unique_to_answer_only(self):
         """concise and ultra shorten explanation rather than removing it, so
         they need no such override; asserting that keeps the levels distinct.
         """
         answer_only = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        assert "Explain in full, unasked" in answer_only
+        assert "High stakes change what you must NOT omit" in answer_only
         for level in ("concise", "ultra"):
-            assert "Explain in full, unasked" not in _resolve(
+            assert "High stakes change what you must NOT omit" not in _resolve(
                 "{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity=level
             )
 
@@ -349,17 +376,33 @@ class TestAnswerOnlyBlock:
             )
 
     def test_answer_only_keeps_safety_carveout(self):
+        """What survives compression unconditionally is narrower than before:
+        an ordered procedure (a dropped step causes the mistake) and required
+        formats. A risk warning is no longer in this list because it is now
+        governed by the one-line high-stakes rule instead -- present always,
+        long never.
+        """
         result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        assert "security warnings" in result
+        assert "ordered multi-step procedure" in result
+        assert "a dropped step causes the mistake" in result
+        # The risk warning is mandatory but bounded, not exempt from brevity.
         assert "irreversible" in result
-        assert "multi-step" in result
 
     def test_answer_only_never_cuts_a_required_output_format(self):
         result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        assert "Required output formats are sacred" in result
+        assert "any output format the surface REQUIRES" in result
         assert "[OPTIONS:] lines" in result
         assert "diff blocks for file changes" in result
         assert "full PR/MR URLs" in result
+
+    def test_the_required_format_list_is_illustrative_not_closed(self):
+        """The three named formats are only today's set -- per-surface rules and
+        steering files add more. A list the model reads as exhaustive silently
+        authorises dropping anything unlisted, which is the inverse of intent.
+        """
+        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
+        assert "illustrative, not exhaustive" in result
+        assert "brevity never overrides it" in result
 
     def test_answer_only_preserves_the_users_language(self):
         result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
