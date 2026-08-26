@@ -8381,6 +8381,10 @@
         "expand_pinned_prompt": "Angehefteten Zug ausklappen",
         "jump_to_this_turn": "Zu diesem Zug springen"
       },
+      "noticeCard": {
+        "blocked": "Blockiert",
+        "warning": "Warnung"
+      },
       "recoveryCard": {
         "action_not_taken": "Aktion nicht ausgeführt",
         "announced_no_action_continuing": "angekündigt, aber nicht ausgeführt · Fortsetzung automatisch gesendet",

@@ -8381,6 +8381,10 @@
         "expand_pinned_prompt": "पिन किया गया टर्न विस्तृत करें",
         "jump_to_this_turn": "इस टर्न पर जाएँ"
       },
+      "noticeCard": {
+        "blocked": "अवरुद्ध",
+        "warning": "चेतावनी"
+      },
       "recoveryCard": {
         "action_not_taken": "कोई कार्रवाई नहीं की गई",
         "announced_no_action_continuing": "घोषित किया गया लेकिन नहीं किया गया · जारी रखने का अनुरोध अपने-आप भेज दिया गया",

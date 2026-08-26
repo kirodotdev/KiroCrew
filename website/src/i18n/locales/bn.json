@@ -8381,6 +8381,10 @@
         "expand_pinned_prompt": "পিন করা টার্ন প্রসারিত করুন",
         "jump_to_this_turn": "এই টার্নে যান"
       },
+      "noticeCard": {
+        "blocked": "অবরুদ্ধ",
+        "warning": "সতর্কতা"
+      },
       "recoveryCard": {
         "action_not_taken": "কোনো ক্রিয়া করা হয়নি",
         "announced_no_action_continuing": "ঘোষণা করা হয়েছে কিন্তু করা হয়নি · চালিয়ে যাওয়ার অনুরোধ স্বয়ংক্রিয়ভাবে পাঠানো হয়েছে",

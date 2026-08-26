@@ -8261,6 +8261,10 @@
         "expand_pinned_prompt": "固定したターンを展開",
         "jump_to_this_turn": "このターンへ移動"
       },
+      "noticeCard": {
+        "blocked": "ブロック済み",
+        "warning": "警告"
+      },
       "recoveryCard": {
         "action_not_taken": "アクションは実行されませんでした",
         "announced_no_action_continuing": "宣言のみで未実行 · 継続を自動送信しました",

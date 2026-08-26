@@ -8501,6 +8501,10 @@
         "expand_pinned_prompt": "Développer le tour épinglé",
         "jump_to_this_turn": "Aller à ce tour"
       },
+      "noticeCard": {
+        "blocked": "Bloqué",
+        "warning": "Avertissement"
+      },
       "recoveryCard": {
         "action_not_taken": "Action non effectuée",
         "announced_no_action_continuing": "annoncé mais non effectué · reprise envoyée automatiquement",

@@ -8261,6 +8261,10 @@
         "expand_pinned_prompt": "展开置顶轮次",
         "jump_to_this_turn": "跳转到此轮次"
       },
+      "noticeCard": {
+        "blocked": "已拦截",
+        "warning": "警告"
+      },
       "recoveryCard": {
         "action_not_taken": "未执行操作",
         "announced_no_action_continuing": "已声明但未执行 · 已自动发送续接指令",

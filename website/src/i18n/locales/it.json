@@ -8501,6 +8501,10 @@
         "expand_pinned_prompt": "Espandi turno fissato",
         "jump_to_this_turn": "Vai a questo turno"
       },
+      "noticeCard": {
+        "blocked": "Bloccato",
+        "warning": "Avviso"
+      },
       "recoveryCard": {
         "action_not_taken": "Azione non eseguita",
         "announced_no_action_continuing": "annunciato ma non eseguito · continuazione inviata automaticamente",

@@ -8261,6 +8261,10 @@
         "expand_pinned_prompt": "고정한 턴 펼치기",
         "jump_to_this_turn": "이 턴으로 이동"
       },
+      "noticeCard": {
+        "blocked": "차단됨",
+        "warning": "경고"
+      },
       "recoveryCard": {
         "action_not_taken": "작업이 실행되지 않음",
         "announced_no_action_continuing": "예고했지만 실행되지 않음 · 자동으로 후속 요청 전송됨",

@@ -8621,6 +8621,10 @@
         "expand_pinned_prompt": "Развернуть закреплённый ход",
         "jump_to_this_turn": "Перейти к этому ходу"
       },
+      "noticeCard": {
+        "blocked": "Заблокировано",
+        "warning": "Предупреждение"
+      },
       "recoveryCard": {
         "action_not_taken": "Действие не выполнено",
         "announced_no_action_continuing": "объявлено, но не выполнено · продолжение отправлено автоматически",
