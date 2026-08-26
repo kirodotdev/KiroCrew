@@ -81,7 +81,10 @@ export default function DagView({ nodes, edges, onNodeClick, selectedId, pending
 
   return (
     <div className="min-w-0">
-      <div className="overflow-auto rounded-lg" style={{ maxHeight: 480, border: '1px solid var(--border)', background: 'var(--bg-elevated)' }}>
+      {/* Viewport-adaptive cap: grow with the window (leaving ~320px for the page
+          header, tab bar and legend) but never below the 480px the view always had,
+          so short windows keep today's behavior while tall ones show more layers. */}
+      <div className="overflow-auto rounded-lg" style={{ maxHeight: 'max(480px, calc(100vh - 320px))', border: '1px solid var(--border)', background: 'var(--bg-elevated)' }}>
         <svg width={layout.width} height={layout.height}>
         <defs>
           <marker id="arrow" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
