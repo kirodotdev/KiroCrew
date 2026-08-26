@@ -24,9 +24,11 @@ import base64
 import logging
 import os
 import re
+import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Optional
+from pathlib import Path, PureWindowsPath
+from typing import Any, Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +56,49 @@ TRASH_DIR = ".trash"
 def in_trash(path: str) -> bool:
     """True when a vault-relative path lies inside the local trash folder."""
     return TRASH_DIR in path.replace("\\", "/").split("/")
+
+
+def staged_temp_name(name: str) -> str:
+    """Name for the sibling temp a durable write stages beside *name*."""
+    return f"{name}.{uuid.uuid4().hex}.tmp"
+
+
+#: Basenames of temps a save has staged and not yet consumed. A save registers
+#: its temp for the whole of its transaction, so `status()` can tell the temp
+#: THIS process is mid-publish on from a file that merely looks like one.
+#: Nothing else may hide a path: see the reasoning in `status()`.
+#:
+#: Keyed on the BASENAME, not the full path: the name carries a uuid4 hex, which
+#: is unique on its own, and comparing bare names sidesteps every way two
+#: spellings of the same path can differ (case, 8.3 short names, a symlinked
+#: vault root, separator flavour). A missed match here would silently re-open
+#: the bug the filter exists to close, so the comparison must not depend on
+#: canonicalising two paths built by different call sites.
+_inflight_temps: set[str] = set()
+
+
+@contextmanager
+def inflight_temp(tmp: str | os.PathLike[str]) -> Iterator[None]:
+    """Mark *tmp* as this process's in-flight staged temp for the block's life.
+
+    Registration is the ONLY evidence `status()` accepts for hiding a path.
+    The name shape cannot serve: `<name>.<32 hex>.tmp` is what this module
+    produces, not a shape only this module can produce, so a user file wearing
+    it would be withheld from the user's own repository. Ownership is knowable
+    exactly while the transaction that staged the temp is still running, which
+    is the span this context manager covers.
+    """
+    name = PureWindowsPath(os.fspath(tmp)).name
+    _inflight_temps.add(name)
+    try:
+        yield
+    finally:
+        _inflight_temps.discard(name)
+
+
+def is_inflight_temp(path: str) -> bool:
+    """True when *path* names a temp a save in this process is publishing."""
+    return PureWindowsPath(path).name in _inflight_temps
 
 
 # Seconds before a git invocation is abandoned. Network operations (clone,
@@ -618,14 +663,45 @@ async def status(dir_: str, subfolder: Optional[str] = None) -> list[FileChange]
         if rel:
             changes.append(FileChange(path=rel, kind="added"))
 
-    if prefix:
-        changes = [c for c in changes if c.path.startswith(prefix)]
     # The local trash lives inside the vault, so git sees it. Filtering here
     # keeps a trashed note out of the commit message and out of the notes
     # listing's pending badge; `auto_commit` additionally excludes it from the
     # pathspec, because `add -A` stages from the working tree and never consults
     # this list.
-    return [c for c in changes if not in_trash(c.path)]
+    #
+    # A temp a note save is publishing is likewise not user content, and
+    # committing one is worse than a stray file: it is generated data on the
+    # remote under a note-shaped commit message. Only its ADDITION is dropped.
+    # A temp that reached a commit before this filter existed is tracked, and
+    # its removal must stay committable -- otherwise the app could never clean
+    # up the mess the old behaviour made.
+    #
+    # OWNERSHIP, NOT NAME SHAPE, is what authorizes hiding a file. `<name>.<32
+    # hex>.tmp` is the shape this module PRODUCES; it is not a shape only this
+    # module can produce. A user -- or another tool -- may genuinely create a
+    # file with that name, and an earlier revision of this filter excluded it on
+    # the shape alone. That file then vanished from the pending badge, from the
+    # commit, and from the remote, with nothing to tell anyone it had been
+    # dropped. Silently withholding unknown filesystem content from the user's
+    # own git repository is a worse failure than committing a stray temp.
+    #
+    # So only `is_inflight_temp` may hide a path: a temp THIS process currently
+    # knows it is publishing, registered for the whole stage-and-retry
+    # transaction. Everything else is filesystem content and stays visible.
+    #
+    # The consequence is deliberate: an orphan left behind when a cleanup unlink
+    # lost the race becomes VISIBLE once its transaction ends and ownership can
+    # no longer be evidenced. That is the safe direction to fail. Reaping an
+    # aged orphan is a lifecycle problem with its own answer; a permanent
+    # filename-shape exclusion is not that answer, because it cannot tell an
+    # orphan from a file the user put there.
+    return [
+        c
+        for c in changes
+        if (prefix is None or c.path.startswith(prefix))
+        and not in_trash(c.path)
+        and not (c.kind == "added" and is_inflight_temp(c.path))
+    ]
 
 
 def _commit_message(changes: list[FileChange]) -> str:
