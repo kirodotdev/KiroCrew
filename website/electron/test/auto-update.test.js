@@ -1415,6 +1415,18 @@ test("getInfo reports the auto-download preference for the About toggle", () => 
   assert.strictEqual(initAutoUpdate(off.deps).getInfo().autoDownload, false);
 });
 
+test("getInfo reports the actual OS and architecture in About", () => {
+  for (const [osPlatform, osArch, expected] of [
+    ["win32", "x64", "win32-x64"],
+    ["darwin", "arm64", "darwin-arm64"],
+    ["linux", "arm64", "linux-arm64"],
+  ]) {
+    const { deps } = makeDeps({ osPlatform });
+    deps.osArch = osArch;
+    assert.strictEqual(initAutoUpdate(deps).getInfo().platform, expected);
+  }
+});
+
 test("download() with nothing discovered checks first instead of blind-downloading", async () => {
   const { deps, calls } = makeDeps();
   const u = initAutoUpdate(deps);

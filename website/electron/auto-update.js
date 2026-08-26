@@ -483,10 +483,9 @@ function buildFeedBase({ base, channel, variant = "" }) {
  * over the top is the supported recovery and is non-destructive: user data lives
  * in the KiroCrew home directory, never inside the app bundle.
  *
- * Computed HERE rather than in the renderer because the renderer has no
- * trustworthy platform: getInfo()'s `platform` field is a display string that
- * main.js does not currently supply, so it reports its "darwin-arm64" default on
- * every OS. osPlatform is the real one.
+ * Computed HERE rather than in the renderer because the display-oriented
+ * getInfo().platform value is not the updater's routing authority. osPlatform
+ * and osArch are the native values used to select a published artifact.
  *
  * Paths are the documented mutable "latest" aliases (max-age=300).
  *
@@ -669,11 +668,12 @@ function classifyError(err) {
  * @param {typeof import("electron").Notification} deps.Notification
  * @param {() => string} deps.getFlavor        - returns "beta" | "stable"
  * @param {() => Promise<void>} deps.stopGateway - graceful, awaitable gateway stop
- * @param {string} [deps.platform]             - display arch, e.g. "darwin-arm64"
  * @param {string} [deps.osPlatform]           - process.platform override (tests)
  * @param {string} [deps.osArch]               - process.arch override (tests). Picks the
  *   per-arch Linux AppImage for the manual-reinstall link; darwin ignores it
  *   (the DMG is universal).
+ * @param {string} [deps.platform]             - display platform override (tests);
+ *   defaults to `${osPlatform}-${osArch}`
  * @param {string} [deps.resourcesPath]        - process.resourcesPath override
  *   (tests). Used only to classify where the bundle runs FROM, so a
  *   translocated / read-only-volume install can be refused an update lane.
@@ -720,9 +720,9 @@ function initAutoUpdate(deps) {
     // without this the user is left in a live app whose dashboard is dead until
     // they relaunch by hand. main.js re-arms recovery and respawns the gateway.
     onInstallFailed = null,
-    platform = "darwin-arm64",
     osPlatform = process.platform,
     osArch = process.arch,
+    platform = `${osPlatform}-${osArch}`,
     resourcesPath = process.resourcesPath,
     probeBundleWritable = isBundleContainerWritable,
     // Linux install shape + its AppImage writability probe, injected for the
