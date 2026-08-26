@@ -85,6 +85,60 @@ class TestKiroIgnoreSyntax:
         assert m.is_ignored("pkg/snap.md", is_dir=False) is True
         assert m.is_ignored("pkg/a/b/snap.md", is_dir=False) is True
 
+    def test_non_segment_double_star_does_not_cross_a_separator(self):
+        """``**`` crosses separators ONLY as a complete path segment. A ``**``
+        with a non-``/`` neighbour (``a**b``) is not segment-bounded, so git
+        treats it as a single ``*`` that stays within one path segment.
+
+        The discriminator is a pattern whose match depends on the ``**`` NOT
+        crossing ``/``: ``a**b`` matches ``axxb`` but must not match ``ax/xb``.
+        (``a**`` alone cannot show this through ``is_ignored`` -- its match
+        ``ax`` is an ancestor directory of ``ax/xb``, and ignoring a directory
+        ignores its whole subtree, so ``ax/xb`` is ignored regardless of how
+        ``**`` translates. ``a**b`` avoids that: no ancestor of ``ax/xb``
+        matches it, so the separator-crossing behaviour is what is tested.)"""
+        m = _rules("a**")
+        assert m.is_ignored("abc", is_dir=False) is True
+        m2 = _rules("a**b")
+        assert m2.is_ignored("axxb", is_dir=False) is True
+        assert m2.is_ignored("ax/xb", is_dir=False) is False
+
+    def test_double_star_that_starts_a_segment_without_ending_one(self):
+        """A ``**`` that is LEFT-bounded (starts a segment) but not RIGHT-bounded
+        (``logs/**txt``, ``x/**y``) is not a complete segment, so it must stay
+        within one path segment rather than degrade to the cross-separator
+        ``.*``. Regression pin for the right-bound gap: without ``i + 2 == n`` on
+        the segment-``**`` branch, ``logs/**txt`` compiled to ``^logs/.*txt$``
+        and wrongly matched ``logs/a/btxt``.
+
+        Discriminator: a match that depends on ``**`` NOT crossing ``/`` where no
+        ANCESTOR of the deep path independently matches (an ancestor match would
+        ignore the whole subtree and mask the separator-crossing behaviour)."""
+        m = _rules("logs/**txt")
+        assert m.is_ignored("logs/atxt", is_dir=False) is True
+        assert m.is_ignored("logs/a/btxt", is_dir=False) is False
+        m2 = _rules("x/**y")
+        assert m2.is_ignored("x/ay", is_dir=False) is True
+        assert m2.is_ignored("x/a/by", is_dir=False) is False
+        # ``a/**b`` is named in the module docstring as a non-segment example;
+        # pin it too (same right-bound gap, one segment deeper).
+        m3 = _rules("a/**b")
+        assert m3.is_ignored("a/xb", is_dir=False) is True
+        assert m3.is_ignored("a/x/b", is_dir=False) is False
+
+    def test_double_star_slash_that_is_not_left_bounded(self):
+        """The ``**/`` branch must ALSO be left-bounded: ``a**/b`` is not a
+        complete leading segment, so it must not emit the cross-separator
+        ``(?:[^/]+/)*``. Regression pin for the ``**/`` left-bound gap.
+
+        ``a**/b`` should behave as ``a`` + two within-segment ``*`` + ``/b``:
+        it matches ``axx/b`` but not ``ax/x/b`` (the middle ``**`` cannot span a
+        separator). No ancestor of ``ax/x/b`` matches ``a**/b``, so the
+        separator-crossing behaviour is what is under test."""
+        m = _rules("a**/b")
+        assert m.is_ignored("axx/b", is_dir=False) is True
+        assert m.is_ignored("ax/x/b", is_dir=False) is False
+
     def test_negation_the_last_matching_rule_wins(self):
         m = _rules("*.md", "!keep.md")
         assert m.is_ignored("note.md", is_dir=False) is True

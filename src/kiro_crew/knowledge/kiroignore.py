@@ -15,7 +15,10 @@ Syntax is a deliberate SUBSET of gitignore. Supported:
 * any other embedded ``/`` -- also anchors at the root (gitignore's rule); a
   pattern with no separator matches that basename at any depth
 * ``*`` (any run of non-separator characters), ``?`` (one non-separator),
-  ``**`` (crosses separators, including the ``**/`` prefix and ``/**`` suffix)
+  ``**`` -- crosses separators ONLY when it is a complete path segment: the
+  ``**/`` prefix, a ``/**`` suffix, or a bare ``**``. A ``**`` that is not
+  segment-aligned on both sides (``logs/**txt``, ``a**b``, ``a**/b``) is treated
+  as two ordinary ``*`` and stays within a single segment.
 * ``!`` negation -- among the rules that match a given path, the LAST one wins
 * trailing whitespace is stripped
 
@@ -71,11 +74,22 @@ def _translate(pattern: str) -> str:
     out: list[str] = []
     i, n = 0, len(pattern)
     while i < n:
-        if pattern.startswith("**/", i):
-            # Zero or more leading path segments.
+        if pattern.startswith("**/", i) and (i == 0 or pattern[i - 1] == "/"):
+            # A ``**`` that forms a COMPLETE leading path segment (left-bounded by
+            # ``/`` or the start, right-bounded by the ``/`` it consumes) matches
+            # zero or more path segments. A ``**/`` that is NOT segment-aligned on
+            # the left (``a**/b``) is not this form -- it falls through so each
+            # ``*`` degrades to the within-segment ``[^/]*``.
             out.append("(?:[^/]+/)*")
             i += 3
-        elif pattern.startswith("**", i):
+        elif pattern.startswith("**", i) and (i == 0 or pattern[i - 1] == "/") and i + 2 == n:
+            # A ``**`` that forms a COMPLETE path segment -- left-bounded by ``/``
+            # or the start AND right-bounded by the end of the pattern (a bare
+            # ``**`` or a segment-final ``logs/**``) -- crosses separators and
+            # matches everything below that point. A ``**`` that starts a segment
+            # without ending one (``logs/**txt``, ``**a``, ``a/**b``) is NOT this
+            # form: it falls through so each ``*`` degrades to the within-segment
+            # ``[^/]*`` and cannot cross a separator.
             out.append(".*")
             i += 2
         elif pattern[i] == "*":
