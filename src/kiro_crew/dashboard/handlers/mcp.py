@@ -15,8 +15,12 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew import platform_compat
-from kiro_crew.agent import _atomic_json_write, kiro_agents_dir_path, rebuild_agent_config
+from kiro_crew import mcp_quarantine, platform_compat
+from kiro_crew.agent import (
+    _atomic_json_write,
+    kiro_agents_dir_path,
+    rebuild_agent_config,
+)
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import (
     FORWARD_DECLARED_ENV_DEFAULT,
@@ -475,6 +479,88 @@ def _sync_mcp_to_agent_batch_unlocked(names: list[str], enabled: bool) -> None:
         logger.warning("Cannot write agent config %s: %s", path, exc)
 
 
+def _quarantine_verdicts(rows: list[dict[str, Any]]) -> list[tuple[str, str, str]]:
+    """Extract ``(name, status, error)`` triples from probe rows.
+
+    Every server is counted. An earlier revision filtered this to the servers an
+    unmount could safely touch, so no badge could claim an unmount that did not
+    happen -- but nothing is unmounted now, so the count is a plain diagnostic and
+    withholding it from some servers would only hide information.
+
+    A ``declared`` row is DROPPED, though, because its status is not a verdict.
+    When a managed server cannot be probed under the sandbox, discovery lists the
+    tools the package declares and reports ``ok`` with ``probeMode: "declared"``
+    -- its own comment says "nothing verified the server can START". Passing that
+    ``ok`` through would delete a real failure streak without a single successful
+    handshake, so a server broken for a week would look healthy the moment the
+    sandbox went unavailable. Dropping it also means such a round cannot ADD to
+    the count: no handshake was attempted, so there is no outcome either way.
+    This is the same rule that excludes ``needs_auth`` -- only a status that
+    actually reports a handshake attempt may move the counter.
+    """
+    return [
+        (str(r.get("name") or ""), str(r.get("status") or ""), str(r.get("error") or ""))
+        for r in rows
+        if str(r.get("name") or "") and str(r.get("probeMode") or "") != "declared"
+    ]
+
+
+def _arm_reprobe(request: web.Request) -> None:
+    """Create the background re-probe task and keep a strong reference to it.
+
+    Call this LAST in a handler, after every ``await`` it performs. The task can
+    finish quickly, and its done-callback removes itself from
+    ``state._background_tasks`` -- so a handler that creates it and then awaits
+    anything before returning can hand over the loop, let the task complete, and
+    return having erased the only evidence that a reprobe was armed. The caller
+    sets ``_mcp_probe_in_progress`` at its decision point instead, which is what
+    actually prevents a second concurrent probe.
+    """
+    state: DashboardState = request.app["state"]
+    task = asyncio.create_task(_bg_mcp_probe())
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+
+
+def _annotate_quarantine(rows: list[dict[str, Any]]) -> None:
+    """Stamp ``probeFailures`` / ``probeFailing`` onto rows that have a record.
+
+    Applied at RESPONSE time rather than baked into the cached rows, so
+    resetting a server's count shows up on the next poll instead of waiting for a
+    re-probe (a reset the UI cannot see reads as a broken button).
+
+    Servers with no failures on file get neither key, so a healthy fleet's wire
+    shape is byte-identical to before this feature.
+
+    Reads the store, so every caller runs it OFF the event loop -- see the
+    ``asyncio.to_thread`` at each call site, which callers skip entirely for an
+    empty row list.
+    """
+    if not rows:
+        return
+    try:
+        snap = mcp_quarantine.snapshot()
+    except Exception:
+        logger.debug("cannot read MCP quarantine state", exc_info=True)
+        return
+    for row in rows:
+        state = snap.get(str(row.get("name") or ""))
+        if state:
+            row["probeFailures"] = state["fails"]
+            row["probeFailing"] = state["failing"]
+
+
+def _record_probe_verdicts(rows: list[dict[str, Any]]) -> None:
+    """Filter probe rows to eligible servers and fold them into the store.
+
+    One function so ONE ``to_thread`` covers both halves. Passing
+    ``_quarantine_verdicts(rows)`` as an argument to ``to_thread`` evaluated it on
+    the event loop, and that filter reads up to three MCP scope files to decide
+    eligibility -- so the loop paid for those reads on every probe round.
+    """
+    mcp_quarantine.record_verdicts(_quarantine_verdicts(rows))
+
+
 async def _bg_mcp_probe() -> None:
     """Populate the MCP probe cache — SINGLE-FLIGHT.
 
@@ -540,6 +626,9 @@ async def _run_mcp_probe() -> None:
             if isinstance(spec, dict) and spec.get("disabledTools"):
                 d["disabledTools"] = spec["disabledTools"]
             result.append(d)
+        if result:
+            await asyncio.to_thread(_record_probe_verdicts, result)
+            await asyncio.to_thread(_annotate_quarantine, result)
         _mcp_probe_cache[:] = result
         _mcp_probe_ts = time.time()
         logger.info("MCP probe complete: %d servers", len(result))
@@ -566,7 +655,7 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
     # Kick off a background re-probe if the handler cache is stale,
     # so the next request gets fresh results.
     now = time.time()
-    should_reprobe = now - _mcp_probe_ts > _MCP_PROBE_CACHE_SECS and not _mcp_probe_in_progress
+    stale = now - _mcp_probe_ts > _MCP_PROBE_CACHE_SECS
 
     servers = list_servers()
 
@@ -589,20 +678,16 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
     # full spawn fan-out permanently in flight for anyone with one disabled
     # server. Applying probe_all's own filter here keeps the freshness check
     # and the cache contents talking about the same set.
-    if not should_reprobe and not _mcp_probe_in_progress:
+    if not stale:
         for srv in servers:
             if srv.disabled:
                 continue
             if srv.name not in cached_by_name:
-                should_reprobe = True
+                stale = True
                 break
 
-    if should_reprobe:
-        _mcp_probe_in_progress = True
-        state: DashboardState = request.app["state"]
-        task = asyncio.create_task(_bg_mcp_probe())
-        state._background_tasks.add(task)
-        task.add_done_callback(state._background_tasks.discard)
+    # NOTE: the reprobe is decided AND armed at the very end of this handler, not
+    # here. See the block above the return.
 
     # Read global mcp.json for disabled state
     global_mcps: dict[str, Any] = {}
@@ -640,6 +725,32 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
             err, _ = redact_exfiltration_urls(err)
             d["error"] = err
         result.append(d)
+    # Annotated HERE too, not only on the probe endpoints. This is the endpoint
+    # the MCP table loads from, so without it a quarantined server rendered as a
+    # plain failing row until the user happened to press Probe -- the badge
+    # reporting the failure streak, and the only control that resets it, were
+    # both absent on the surface a user actually lands on.
+    if result:
+        await asyncio.to_thread(_annotate_quarantine, result)
+
+    # Decide AND arm the re-probe here, at the very end, all synchronously.
+    #
+    # Three constraints have to hold at once and this is the only ordering that
+    # satisfies all three:
+    #   * nothing may await between the flag TEST and the flag SET, or two
+    #     concurrent requests both arm a probe and a full spawn fan-out runs
+    #     twice,
+    #   * nothing may await between the task being CREATED and the handler
+    #     returning, or a fast probe completes and its done-callback drops it
+    #     from ``_background_tasks`` before the caller can see it was armed,
+    #   * the flag must not be set on a path that fails to create the task, or it
+    #     stays True for the life of the process and no re-probe ever runs again.
+    # Placing the whole decision after the last await makes the test/set/create
+    # sequence atomic on a single-threaded loop, so all three hold by
+    # construction rather than by bookkeeping.
+    if stale and not _mcp_probe_in_progress:
+        _mcp_probe_in_progress = True
+        _arm_reprobe(request)
     return web.json_response(result)
 
 
@@ -738,6 +849,9 @@ async def api_mcp_probe(request: web.Request) -> web.Response:
         if isinstance(spec, dict) and spec.get("disabledTools"):
             d["disabledTools"] = spec["disabledTools"]
         result.append(d)
+    if result:
+        await asyncio.to_thread(_record_probe_verdicts, result)
+        await asyncio.to_thread(_annotate_quarantine, result)
     _mcp_probe_cache[:] = result
     _mcp_probe_ts = time.time()
     return web.json_response(result)
@@ -845,13 +959,7 @@ async def api_mcp_measure_progress(request: web.Request) -> web.Response:
 async def api_mcp_probe_cached(request: web.Request) -> web.Response:
     """GET /api/mcp/probe — return cached probe results (non-blocking)."""
     global _mcp_probe_in_progress
-    now = time.time()
-    if now - _mcp_probe_ts > _MCP_PROBE_CACHE_SECS and not _mcp_probe_in_progress:
-        _mcp_probe_in_progress = True
-        state: DashboardState = request.app["state"]
-        task = asyncio.create_task(_bg_mcp_probe())
-        state._background_tasks.add(task)
-        task.add_done_callback(state._background_tasks.discard)
+    stale = time.time() - _mcp_probe_ts > _MCP_PROBE_CACHE_SECS
 
     result: list[dict] = []
     for cached in _mcp_probe_cache:
@@ -865,7 +973,83 @@ async def api_mcp_probe_cached(request: web.Request) -> web.Response:
         if "headers" in item:
             item["headers"] = redact_mcp_headers(cached_headers)
         result.append(item)
+    # Skipped for an empty cache: the store read is not free, and the await it
+    # would need is a yield point that lets a reprobe task armed just above run
+    # to completion before this handler returns.
+    if result:
+        await asyncio.to_thread(_annotate_quarantine, result)
+    # Decided and armed after the last await -- same three constraints as the
+    # servers endpoint.
+    if stale and not _mcp_probe_in_progress:
+        _mcp_probe_in_progress = True
+        _arm_reprobe(request)
     return web.json_response(result)
+
+
+async def api_mcp_quarantine_clear(request: web.Request) -> web.Response:
+    """POST /api/mcp/quarantine/clear — release an auto-quarantined MCP server.
+
+    Clears the consecutive-failure COUNTER as well as the quarantine flag.
+    Releasing a server but leaving it one failure short of re-quarantine would
+    make the button look broken -- the user would press it, the server would
+    fail once, and it would vanish again.
+
+    Deliberately does NOT touch ``disabled`` in any config file: this clears only
+    the count Kiro Crew accumulated on its own, so a server the user had switched
+    off by hand stays off. It does not mount or unmount anything either -- the
+    server was never unmounted (issue #6171).
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if not isinstance(body, dict):
+        # A JSON array or bare null parses fine and then reaches ``.get`` on the
+        # identifier read, which surfaces as a 500 for what is a malformed
+        # request.
+        return web.json_response(
+            {"error": "body must be a JSON object", "code": "body_not_object"}, status=400
+        )
+    name, err = _string_identifier(body, "name")
+    if err is not None:
+        return err
+    if not name:
+        return web.json_response(
+            {"error": "name is required", "code": "name_required"}, status=400
+        )
+
+    try:
+        removed = await asyncio.to_thread(mcp_quarantine.clear, name)
+    except (OSError, ValueError):
+        # The store could not be read or could not be written, so nothing was
+        # reset. Reporting success here would tell the user the count is clear
+        # while it is still on disk. ValueError covers a payload ``json.dumps``
+        # refuses; records are sanitized on read so that should be unreachable,
+        # and a coded 500 beats an unhandled traceback if it is not.
+        logger.warning("failure-count store unavailable resetting %s", name, exc_info=True)
+        return web.json_response(
+            {
+                "error": "cannot update the probe-failure store",
+                "code": "quarantine_store_write_failed",
+            },
+            status=500,
+        )
+    released = removed is not None
+    if released:
+        sel().log_api_access(
+            caller="dashboard",
+            operation="mcp_probe_failures_reset",
+            outcome="ok",
+            source="dashboard",
+            resources=f"{name} consecutive probe-failure count reset",
+        )
+        # The cached probe rows carry the old annotation; drop the row's keys so
+        # a poll that lands before the next probe does not re-render the badge.
+        for row in _mcp_probe_cache:
+            if row.get("name") == name:
+                row.pop("probeFailing", None)
+                row.pop("probeFailures", None)
+    return web.json_response({"ok": True, "name": name, "released": released})
 
 
 async def api_mcp_sync(request: web.Request) -> web.Response:

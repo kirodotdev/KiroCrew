@@ -10126,7 +10126,11 @@
         "oauth_not_a_static_token": "Dieser Server meldet sich über OAuth an; ein statischer Authorization-Header genügt ihm nicht. Den Server ohne den Header entfernen und erneut hinzufügen, aktivieren und dann in einer neuen Chat-Sitzung anmelden.",
         "sign_in_required_next": "Nach der Genehmigung die Schaltfläche MCP-Server prüfen über dieser Tabelle verwenden; die Zeile zeigt dann Angemeldet.",
         "signed_in": "Angemeldet",
-        "signed_in_help": "Kiro CLI hält eine Anmeldung für {{provider}}. Die Prüfung läuft ohne dieses Token, daher kann {{productName}} nicht bestätigen, dass die Anmeldung noch gültig ist."
+        "signed_in_help": "Kiro CLI hält eine Anmeldung für {{provider}}. Die Prüfung läuft ohne dieses Token, daher kann {{productName}} nicht bestätigen, dass die Anmeldung noch gültig ist.",
+        "probe_failing": "Wiederholt fehlgeschlagen",
+        "probe_failing_help": "{{failures}} aufeinanderfolgende Prufungen fehlgeschlagen. Der Server bleibt eingebunden; dies ist ein Statuswert, keine Anderung.",
+        "reset_failures": "Zahler zurucksetzen",
+        "reset_failures_help": "Setzt den Zahler aufeinanderfolgender Fehler dieses Servers zuruck."
       },
       "memoryGraphTab": {
         "all_count": "Alle ({{count}})",

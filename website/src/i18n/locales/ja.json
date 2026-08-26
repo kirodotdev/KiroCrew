@@ -9978,7 +9978,11 @@
         "oauth_not_a_static_token": "このサーバーは OAuth でサインインするため、静的な Authorization ヘッダーでは接続できません。このサーバーを削除してヘッダーなしで再追加し、有効にしてから、新しいチャットセッションを開始してサインインしてください。",
         "sign_in_required_next": "承認したら、この表の上にある「MCP サーバーをプローブ」ボタンを使用します。行は「サインイン済み」に変わります。",
         "signed_in": "サインイン済み",
-        "signed_in_help": "{{provider}} のサインインは Kiro CLI が保持しています。プローブはそのトークンなしで実行されるため、{{productName}} はサインインが有効なままかどうかを確認できません。"
+        "signed_in_help": "{{provider}} のサインインは Kiro CLI が保持しています。プローブはそのトークンなしで実行されるため、{{productName}} はサインインが有効なままかどうかを確認できません。",
+        "probe_failing": "連続失敗",
+        "probe_failing_help": "{{failures}} 回連続でプローブに失敗しました。サーバーはマウントされたままで、これは状態の表示であり変更ではありません。",
+        "reset_failures": "カウントをリセット",
+        "reset_failures_help": "このサーバーの連続失敗回数をクリアします。"
       },
       "memoryGraphTab": {
         "all_count": "すべて（{{count}}）",

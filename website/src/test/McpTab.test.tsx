@@ -10,6 +10,7 @@ const mockApi = vi.hoisted(() => ({
   mcpProbe: vi.fn(),
   mcpApply: vi.fn(),
   mcpGlobalScopes: vi.fn(),
+  mcpResetProbeFailures: vi.fn(),
 }))
 vi.mock('../api/client', () => ({ api: mockApi }))
 
@@ -340,5 +341,77 @@ describe('McpTab declared-vs-handshake status', () => {
     renderTab()
     await waitFor(() => expect(screen.getByText('Online')).toBeInTheDocument())
     expect(screen.queryByText('Declared')).not.toBeInTheDocument()
+  })
+})
+
+describe('probe-failure count', () => {
+  const failing = (): McpServer => ({
+    ...server('airbnb'),
+    status: 'error',
+    error: 'timeout after 15s',
+    probeFailures: 3,
+    probeFailing: true,
+  })
+
+  it('a quarantined server is labelled, alongside its real probe status', async () => {
+    mockApi.mcpServers.mockResolvedValue([failing()])
+    renderTab()
+    await waitFor(() => expect(screen.getByText('Failing')).toBeInTheDocument())
+    // The status badge is NOT replaced: "error" is still the true reading, and
+    // the error detail under it is keyed on that status.
+    expect(screen.getByText('Error')).toBeInTheDocument()
+  })
+
+  it('the label explains itself with the failure count', async () => {
+    mockApi.mcpServers.mockResolvedValue([failing()])
+    renderTab()
+    const badge = await screen.findByText('Failing')
+    expect(badge.closest('[title]')?.getAttribute('title')).toContain('3')
+  })
+
+  it('a healthy server is neither labelled nor offered a remount', async () => {
+    mockApi.mcpServers.mockResolvedValue([server('alpha')])
+    renderTab()
+    await waitFor(() => expect(screen.getByText('Online')).toBeInTheDocument())
+    expect(screen.queryByText('Failing')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Reset count/ })).not.toBeInTheDocument()
+  })
+
+  it('a failing server below the threshold is not labelled yet', async () => {
+    // probeFailures without `quarantined` is the counting state. Labelling it
+    // would tell the user a server was unmounted while it is still mounted.
+    mockApi.mcpServers.mockResolvedValue([
+      { ...server('airbnb'), status: 'error', probeFailures: 1 },
+    ])
+    renderTab()
+    await waitFor(() => expect(screen.getByText('Error')).toBeInTheDocument())
+    expect(screen.queryByText('Failing')).not.toBeInTheDocument()
+  })
+
+  it('Remount releases the server and refetches', async () => {
+    mockApi.mcpServers.mockResolvedValue([failing()])
+    mockApi.mcpResetProbeFailures.mockResolvedValue({ ok: true, name: 'airbnb', released: true })
+    renderTab()
+    const btn = await screen.findByRole('button', { name: /Reset count/ })
+
+    // After the release the server comes back healthy — asserted through a
+    // refetch rather than an optimistic local edit, because the badge must
+    // disappear only if the backend really remounted it.
+    mockApi.mcpServers.mockResolvedValue([server('airbnb')])
+    fireEvent.click(btn)
+
+    await waitFor(() => expect(mockApi.mcpResetProbeFailures).toHaveBeenCalledWith('airbnb'))
+    await waitFor(() => expect(screen.queryByText('Failing')).not.toBeInTheDocument())
+  })
+
+  it('a failed release leaves the label in place', async () => {
+    mockApi.mcpServers.mockResolvedValue([failing()])
+    mockApi.mcpResetProbeFailures.mockRejectedValue(new Error('rebuild failed'))
+    renderTab()
+    const btn = await screen.findByRole('button', { name: /Reset count/ })
+    fireEvent.click(btn)
+    await waitFor(() => expect(mockApi.mcpResetProbeFailures).toHaveBeenCalled())
+    // Still there: the row reflects the server, not the click.
+    expect(screen.getByText('Failing')).toBeInTheDocument()
   })
 })

@@ -10274,7 +10274,11 @@
         "oauth_not_a_static_token": "Este servidor inicia sesión con OAuth, por lo que una cabecera Authorization estática no le sirve. Quita y vuelve a añadir este servidor sin la cabecera, actívalo y luego inicia una sesión de chat nueva para iniciar sesión.",
         "sign_in_required_next": "Una vez aprobado, usa el botón Sondear servidores MCP situado encima de esta tabla; la fila pasará entonces a Sesión iniciada.",
         "signed_in": "Sesión iniciada",
-        "signed_in_help": "Kiro CLI conserva un inicio de sesión para {{provider}}. El sondeo se ejecuta sin ese token, por lo que {{productName}} no puede confirmar que el inicio de sesión siga siendo válido."
+        "signed_in_help": "Kiro CLI conserva un inicio de sesión para {{provider}}. El sondeo se ejecuta sin ese token, por lo que {{productName}} no puede confirmar que el inicio de sesión siga siendo válido.",
+        "probe_failing": "Con fallos",
+        "probe_failing_help": "{{failures}} sondeos fallidos consecutivos. El servidor sigue montado; es una lectura de estado, no un cambio.",
+        "reset_failures": "Restablecer recuento",
+        "reset_failures_help": "Borra el recuento de fallos consecutivos de este servidor."
       },
       "memoryGraphTab": {
         "all_count": "Todos ({{count}})",

@@ -597,6 +597,13 @@ export interface McpServer {
   /** True when the entry lives in KiroCrew's own mcp.json — the scope the
    *  Edit JSON action reads and writes (consent-disabled rows included). */
   kirocrewManaged?: boolean
+  /** Consecutive failed probes on record. Absent means none — a healthy server
+   *  carries neither this nor `quarantined`. */
+  probeFailures?: number
+  /** True when those failures crossed the threshold and the server is no longer
+   *  mounted into new sessions. Distinct from `enabled`, which is the user's own
+   *  choice and is never overwritten by this. */
+  probeFailing?: boolean
 }
 
 export interface McpApplyChange {

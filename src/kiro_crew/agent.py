@@ -3722,6 +3722,13 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
         for srv, srv_spec in scope.items()
         if isinstance(srv_spec, dict) and srv_spec.get("disabled")
     }
+    # A server the probe has failed N consecutive times is COUNTED and surfaced,
+    # but not unmounted here. The unmount has no safe lever in this file: the
+    # generated agent config is simultaneously the mount decision and the only
+    # home for agent-only configuration, so dropping an entry destroys whatever
+    # lives only there and stamping ``disabled`` makes ``list_servers`` delete the
+    # server's own row. See the follow-up issue linked from
+    # docs/system-specs/features/mcp-probe-quarantine.md.
     for name, spec in itertools.chain(
         extra_shared_mcp.items(), shared_mcp.items(), kirocrew_mcp.items()
     ):

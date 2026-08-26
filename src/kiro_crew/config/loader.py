@@ -1527,6 +1527,20 @@ class AgentConfig:
             "and kirocrew-computer in the registry by those exact names.",
         ),
     )
+    mcp_quarantine_after_failures: int = field(
+        default=3,
+        metadata=_meta(
+            "Failing-Probe Threshold",
+            "Consecutive failed probes before an MCP server is reported as "
+            "persistently failing on its dashboard row. A probe verdict is "
+            "otherwise forgotten between rounds, so a server that failed once on a "
+            "cold cache looked identical to one that has failed forty times. "
+            "Counts only 'error' and 'timeout': a server asking for OAuth sign-in "
+            "is working correctly and is never counted, and one success clears the "
+            "count. This is a health reading only -- the server stays mounted, and "
+            "the dashboard offers a one-click count reset. 0 turns it off.",
+        ),
+    )
     acp_backend: str = field(
         default="",
         metadata=_meta(
@@ -7209,6 +7223,9 @@ class KiroCrewConfig:
                 reasoning_effort=agent_data.get("reasoning_effort", ""),
                 provider=agent_data.get("provider", "acp"),
                 mcp_registry_mode=_safe_bool(agent_data.get("mcp_registry_mode", False), False),
+                mcp_quarantine_after_failures=_safe_int(
+                    agent_data.get("mcp_quarantine_after_failures", 3), 3
+                ),
                 acp_backend=_normalize_acp_backend(agent_data.get("acp_backend")),
                 default_agent=agent_data.get("default_agent", ""),
                 sweep_agents_backups=_safe_bool(

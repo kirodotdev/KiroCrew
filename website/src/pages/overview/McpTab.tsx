@@ -379,6 +379,17 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
     },
   })
 
+  // Release is a REFETCH, not an optimistic edit: the badge has to disappear
+  // because the server actually came back, and the same request rebuilt the
+  // agent config. Painting the row clean locally would claim a remount the
+  // backend may have failed to perform (it answers 500 in that case).
+  const resetFailures = useMutation({
+    mutationFn: (name: string) => api.mcpResetProbeFailures(name),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['mcp-servers'] })
+    },
+  })
+
   const filtered = useMemo(
     () => servers.filter(s => !mcpFilter || (s.name + (s.command || '') + (s.tools || []).join(' ')).toLowerCase().includes(mcpFilter.toLowerCase())),
     [servers, mcpFilter]
@@ -560,8 +571,34 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                       {mcpStatusLabel(s.status, mcpAuthState(s))}
                     </Badge>
                   )}
-                  {!!s.probedAt && (
-                    /* nowrap: the column is narrow enough that "Last probed: 7:47 PM"
+                  {s.probeFailing && (
+                    /* A SECOND badge rather than a replacement status: the probe
+                       status is still the true reading ("error"), and the error
+                       detail below it is keyed on that. This says what was DONE
+                       about it, which is a different fact.
+
+                       The release control sits HERE, next to the badge, not in
+                       the row's action cell. Two reasons, and the design one is
+                       the stronger: a badge that explains a state and the button
+                       that undoes that state belong adjacent. The other is the
+                       `max-two-buttons-per-row` cap -- Edit JSON and Uninstall
+                       already fill the action cell, and a third control there
+                       would need an overflow menu this table does not have. */
+                    <div className="mt-0.5 flex items-center gap-1.5">
+                      <Badge variant="err" title={i18nT('pages.overview.mcpTab.probe_failing_help', { failures: s.probeFailures ?? 0 })}>
+                        {i18nT('pages.overview.mcpTab.probe_failing')}
+                      </Badge>
+                      <button
+                        className="whitespace-nowrap text-[11px] text-accent hover:text-accent-hover cursor-pointer transition-colors disabled:cursor-not-allowed disabled:text-muted"
+                        onClick={() => resetFailures.mutate(s.name)}
+                        disabled={resetFailures.isPending}
+                        title={i18nT('pages.overview.mcpTab.reset_failures_help')}
+                      >
+                        {i18nT('pages.overview.mcpTab.reset_failures')}
+                      </button>
+                    </div>
+                  )}
+                  {!!s.probedAt && (                    /* nowrap: the column is narrow enough that "Last probed: 7:47 PM"
                        wraps to three lines and triples every row's height.
                        The title carries the FULL date+time, so the hover earns
                        its place instead of restating the visible label. */

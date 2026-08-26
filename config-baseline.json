@@ -23,6 +23,7 @@
         "reasoning_effort": "",
         "provider": "acp",
         "mcp_registry_mode": false,
+        "mcp_quarantine_after_failures": 3,
         "acp_backend": "",
         "default_agent": "",
         "sweep_agents_backups": false,
@@ -242,6 +243,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "agent.mcp_quarantine_after_failures",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Failing-Probe Threshold",
+      "help": "Consecutive failed probes before an MCP server is reported as persistently failing on its dashboard row. A probe verdict is otherwise forgotten between rounds, so a server that failed once on a cold cache looked identical to one that has failed forty times. Counts only 'error' and 'timeout': a server asking for OAuth sign-in is working correctly and is never counted, and one success clears the count. This is a health reading only -- the server stays mounted, and the dashboard offers a one-click count reset. 0 turns it off.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 3
     },
     {
       "path": "agent.acp_backend",

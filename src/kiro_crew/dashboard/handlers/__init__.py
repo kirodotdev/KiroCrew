@@ -201,6 +201,7 @@ from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402, F401
     api_mcp_measure_start,
     api_mcp_probe,
     api_mcp_probe_cached,
+    api_mcp_quarantine_clear,
     api_mcp_remove,
     api_mcp_resolve_refresh,
     api_mcp_server_detail,
