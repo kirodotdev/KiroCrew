@@ -43,10 +43,10 @@ const cssHighlights: { set(n: string, h: FindHighlight): void; delete(n: string)
     ? (CSS as unknown as { highlights?: { set(n: string, h: FindHighlight): void; delete(n: string): boolean } }).highlights
     : undefined
 const FIND_HL_SUPPORTED = !!FindHighlightCtor && !!cssHighlights
-// Global registry names. Assumes a single active markdown preview at a time
-// (the panel's findActiveRef already encodes that assumption); a second
-// concurrent preview find would share these names — a harmless visual overlap,
-// never a crash.
+// Global registry names, shared by every mounted panel. Only one panel ever has
+// find open, because the `active` gate refuses the chord in every tab but the
+// visible one — so the names cannot be contended. Were two previews ever to
+// search at once they would overlap visually, never crash.
 const FIND_HL_ALL = 'mc-find'
 const FIND_HL_CURRENT = 'mc-find-current'
 
@@ -193,6 +193,12 @@ interface Props {
   onDiffModeChange?: (diffMode: boolean) => void
   /** Render as a SidePanel tab body (fills parent, no resize handle/border). */
   embedded?: boolean
+  /** Is this panel the VISIBLE tab? A host that keeps background tabs mounted
+   *  and merely hides them has several live panels at once, and each installs
+   *  its own document-level key handlers — so without this every hidden tab
+   *  also answers Cmd+F, Escape and Cmd+S. Hosts that mount a single panel can
+   *  leave this unset. */
+  active?: boolean
   /** File-browser rail (grip + tree column) rendered to the RIGHT of the
    *  content, under the shared full-width header — the file-tab body owns the
    *  rail's data and open handling; this panel only places it. */
@@ -831,7 +837,7 @@ export interface MarkdownPanelHandle {
   requestNavigate: (nav: (stillClean: () => boolean) => void) => void
 }
 
-export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPanel({ filePath, content, onContentChange, onDiskContent, onSave, onClose, liveWatch, onSubmitComments, onRefresh, reserveWidth, initialDiffMode, onDiffModeChange, embedded, savedBaseline, revealLine, onRevealConsumed, browserRail, railOpen, onRailToggle, scrollMemoryKey }: Props, ref) {
+export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPanel({ filePath, content, onContentChange, onDiskContent, onSave, onClose, liveWatch, onSubmitComments, onRefresh, reserveWidth, initialDiffMode, onDiffModeChange, embedded, active = true, savedBaseline, revealLine, onRevealConsumed, browserRail, railOpen, onRailToggle, scrollMemoryKey }: Props, ref) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const ime = useImeGuard()
   const qc = useQueryClient()
@@ -1010,8 +1016,14 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   const findInputRef = useRef<HTMLInputElement>(null)
   const findRangesRef = useRef<Range[]>([])
   // Is this panel the region the cursor is in? Defaults true so Cmd+F right
-  // after opening the doc searches the doc (the reported expectation). Flips
-  // based on where the last pointer-down landed.
+  // after opening the doc searches the doc. Flips based on where the last
+  // pointer-down landed.
+  //
+  // The selector is deliberately unscoped. It answers "did the pointer land in
+  // SOME markdown panel", which every mounted instance answers identically —
+  // and that is sufficient because the `active` gate below already refuses the
+  // chord in every panel but the visible one, and a pointer cannot land inside
+  // a `display:none` sibling.
   const findActiveRef = useRef(true)
 
   useEffect(() => {
@@ -1022,6 +1034,12 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     document.addEventListener('pointerdown', onPointer, true)
     return () => document.removeEventListener('pointerdown', onPointer, true)
   }, [])
+
+  // Becoming the visible tab is itself the signal that the user is looking at
+  // this document — the same reason the ref defaults to true on mount. Without
+  // this, a click in a sibling tab before the switch would leave the now-visible
+  // panel out of its own find region.
+  useEffect(() => { if (active) findActiveRef.current = true }, [active])
 
   // Highlights are external (CSS.highlights), so clearing never touches the
   // React-owned DOM — no reconciliation hazard.
@@ -1110,12 +1128,17 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   // the editor's own find takes over cleanly.
   useEffect(() => { if (editing || diffMode) closeFind() }, [editing, diffMode, closeFind])
 
+  // A backgrounded tab must not keep a find bar the user cannot see, nor hold
+  // the module-global highlight names away from the visible panel.
+  useEffect(() => { if (!active) closeFind() }, [active, closeFind])
+
   // Capture-phase Cmd+F: fires before ChatPage's bubble-phase chat-find. We
   // only steal the key in markdown preview when this panel is the active
   // region; otherwise we let it bubble (chat-find) or let the editor handle it.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!hasCommandModifier(e) || e.key.toLowerCase() !== 'f') return
+      if (!active) return                                   // hidden tab: never claim the key
       if (editing || diffMode || !isMarkdown) return       // editor owns it; non-markdown skip
       if (!findActiveRef.current) return                    // cursor is in chat → let chat-find handle
       e.preventDefault()
@@ -1125,7 +1148,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     }
     document.addEventListener('keydown', onKey, true)
     return () => document.removeEventListener('keydown', onKey, true)
-  }, [editing, diffMode, isMarkdown])
+  }, [active, editing, diffMode, isMarkdown])
 
   const findBar = findOpen ? (
     <div data-mc-mdpanel className="absolute top-2 right-3 z-30 flex items-center gap-1.5 bg-bg-elevated border border-border focus-within:border-accent rounded-lg shadow-md px-2.5 py-1.5 text-[13px]">
@@ -1592,6 +1615,11 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
 
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
+      // A background tab is mounted but invisible, so neither key may reach it:
+      // Escape would close — or raise a discard prompt for — a document the user
+      // cannot see, and Cmd+S would let a hidden dirty editor answer a save the
+      // user aimed at the tab in front of them.
+      if (!active) return
       // While the discard-confirm dialog is open, the keyboard belongs to it.
       // Escape dismisses it via the dialog's own handler (re-running the guard
       // here would re-open the dialog the same keystroke just closed), and the
@@ -1603,7 +1631,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     }
     document.addEventListener('keydown', h)
     return () => document.removeEventListener('keydown', h)
-  }, [guardedClose, editing, dirty, fullscreen, popover, clearHighlightMarks, confirmOpen])
+  }, [active, guardedClose, editing, dirty, fullscreen, popover, clearHighlightMarks, confirmOpen])
 
   const handleChange = useCallback((v: string) => { onContentChange(v); setDirty(true) }, [onContentChange])
   const clearPopover = useCallback(() => { setPopover(null); clearHighlightMarks() }, [clearHighlightMarks])

@@ -4,6 +4,8 @@
  * null-origin iframe cannot survive a remount, so an unmount loses the drawing.
  */
 import { describe, it, expect } from 'vitest'
+import { join } from 'node:path'
+import { readSource } from './readSource'
 import { shouldMountSidePanel, isSidePanelHidden } from '../pages/chat/sidePanelMount'
 
 const S = (activityOpen: boolean, hasLiveAppTab: boolean, searchOpen = false, hasBrowserTab = false) =>
@@ -28,6 +30,44 @@ describe('side panel mount decision', () => {
   it('is never hidden while the user has the panel open and unobstructed', () => {
     expect(isSidePanelHidden(S(true, true))).toBe(false)
     expect(isSidePanelHidden(S(true, false))).toBe(false)
+  })
+
+  /**
+   * A hidden panel still has a SELECTED tab, so tab selection alone is not
+   * "the user can see this". The tab bodies bind document-level keys (Escape
+   * closes the file, Cmd/Ctrl+S writes it to disk), and a closed panel kept
+   * mounted for a live app/browser tab would otherwise answer both from an
+   * editor that is nowhere on screen.
+   *
+   * A source assertion because the composition is one expression in JSX, and
+   * rendering the whole panel to reach it would test the harness more than the
+   * wiring. What must not regress is that `panelHidden` participates at all.
+   */
+  it('composes tab-body visibility from BOTH tab selection and panel visibility', () => {
+    const src = readSource(join(__dirname, '..', 'pages', 'chat', 'SidePanel.tsx'))
+    expect(src).toContain('active={isActive && !panelHidden}')
+    // ...and the flag has to reach the panel from its host, or the guard above
+    // is dead code that always reads undefined.
+    const host = readSource(join(__dirname, '..', 'pages', 'ChatPage.tsx'))
+    expect(host.match(/panelHidden=\{isSidePanelHidden\(/g) ?? []).toHaveLength(2)
+  })
+
+  /**
+   * Every tab body in the keep-mounted branch that binds a document-level key
+   * needs the same signal, not just the file one. `ArtifactPanel` binds Escape
+   * and would otherwise close an artifact that is off screen. `CliPanel` and
+   * `FolderPanel` scope their handlers to their own elements, so they cannot.
+   */
+  it('passes the same visibility signal to the artifact body', () => {
+    const src = readSource(join(__dirname, '..', 'pages', 'chat', 'SidePanel.tsx'))
+    expect(src).toMatch(/<ArtifactPanel\s+embedded\s+active=\{active\}/)
+    const panel = readSource(join(__dirname, '..', 'components', 'ArtifactPanel.tsx'))
+    // The guard, and the flag in the effect's deps so a switch re-binds it. The
+    // prop is aliased to `visible` there because a local `active` in that file
+    // already names the fullscreen icon.
+    expect(panel).toContain('active: visible = true')
+    expect(panel).toContain('if (!visible) return')
+    expect(panel).toContain('}, [visible, fullscreen, onClose])')
   })
 
   describe('find pane claims the dock', () => {

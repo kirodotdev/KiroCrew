@@ -24,6 +24,12 @@ interface Props {
   /** Content captured at open time; the live query overrides it once loaded. */
   content: string
   onClose: () => void
+  /** Is this panel the tab the user can see? A host that keeps background tabs
+   *  mounted and merely hides them — and keeps the whole panel mounted through
+   *  a close — has several live panels at once, each binding document-level
+   *  Escape. Without this, an artifact tab that is off screen closes itself.
+   *  Hosts that mount a single panel can leave this unset. */
+  active?: boolean
   /** Mirror of the local-file submit path: sends a formatted USER message to
    *  the chat session the panel was opened from (panel.slot). When omitted the
    *  submit-to-chat affordance is hidden (read-only embedding). */
@@ -107,7 +113,7 @@ function SubmitBar({ count, submitting, onSubmit, bleed = false }: {
  * `onSubmitComments` (the local-file user-message path) rather than the
  * full-page `iterateWithAgent` navigate — and only for human comments.
  */
-export default memo(function ArtifactPanel({ slug, kind, content, onClose, onSubmitComments, embedded, scrollMemoryKey }: Props) {
+export default memo(function ArtifactPanel({ slug, kind, content, onClose, active: visible = true, onSubmitComments, embedded, scrollMemoryKey }: Props) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const navigate = useNavigate()
   const previewRef = useRef<HTMLDivElement>(null)
@@ -196,6 +202,11 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, onSub
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
+      // A background tab, or any tab in a closed-but-mounted panel, is still
+      // listening — closing it would dismiss an artifact that is nowhere on
+      // screen. Aliased from the `active` prop: a local `active` in this file
+      // already names the fullscreen icon.
+      if (!visible) return
       // Don't hijack Esc while the user is in an editable field (e.g. the
       // add-instruction textarea) — let the field handle it instead of
       // closing/exiting the panel out from under them.
@@ -205,7 +216,7 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, onSub
     }
     document.addEventListener('keydown', h)
     return () => document.removeEventListener('keydown', h)
-  }, [fullscreen, onClose])
+  }, [visible, fullscreen, onClose])
   useEffect(() => {
     if (!fullscreen) return
     document.body.style.overflow = 'hidden'
