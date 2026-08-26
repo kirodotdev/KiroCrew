@@ -102,9 +102,9 @@ class TestIsReadOnlyBash:
         assert is_read_only_bash("python3 --version") is True
         assert is_read_only_bash("java -version") is True
         assert is_read_only_bash("node --version") is True
-        # Bare help probes for non-executor programs pass the probe shape check
-        assert is_read_only_bash("brazil-build --help") is True
-        assert is_read_only_bash("some-tool --help") is True
+        # An arbitrary bare name is agent-chosen, so shape alone cannot approve it.
+        assert is_read_only_bash("brazil-build --help") is False
+        assert is_read_only_bash("some-tool --help") is False
         # Known code executors are denied even in bare --help form, because the
         # flag can land as an operand the interpreter runs
         assert is_read_only_bash("node --help") is False
@@ -243,16 +243,17 @@ class TestIsReadOnlyBash:
     def test_help_probe_still_vouches_for_an_ordinary_probe(self):
         """The positive rule must not cost the cases the classifier exists for.
 
-        A real program name may carry dots, digits, `+` and `-`, so those stay
-        acceptable: `python3.12 --help` and `g++ --help` are probes.
+        Code-owned program names and existing read-only verbs keep their ordinary
+        help probes without admitting a name invented by the agent.
         """
         assert is_read_only_bash("git --help") is True
         assert is_read_only_bash("git status --help") is True
         assert is_read_only_bash("ls --help") is True
         assert is_read_only_bash("cargo build --help") is True
-        assert is_read_only_bash("python3.12 --help") is True
+        assert is_read_only_bash("python3.12 --help") is False
         assert is_read_only_bash("apt-get --help") is True
-        assert is_read_only_bash("g++ --help") is True
+        assert is_read_only_bash("g++ --help") is False
+        assert is_read_only_bash("tidyup --help") is False
 
     def test_help_probe_allowlists_the_subcommand_form(self):
         """The three-token form is the dangerous one, so it is allowlisted.
@@ -269,10 +270,9 @@ class TestIsReadOnlyBash:
         assert is_read_only_bash("node20 payload --help") is False
         assert is_read_only_bash("sh.exe payload --help") is False
         assert is_read_only_bash("g++-13 payload --help") is False
-        # A program not on the allowlist is not BLOCKED — its two-token probe
-        # still works, and only the subcommand form asks for a human.
-        assert is_read_only_bash("python3.12 --help") is True
-        assert is_read_only_bash("g++ --help") is True
+        # A program not on the allowlist asks for a human in both forms.
+        assert is_read_only_bash("python3.12 --help") is False
+        assert is_read_only_bash("g++ --help") is False
         # The allowlisted programs keep their subcommand probe.
         assert is_read_only_bash("git log --help") is True
         assert is_read_only_bash("cargo build --help") is True
@@ -284,14 +284,15 @@ class TestIsReadOnlyBash:
         For an archiver the middle token is a mode letter and the operands are
         files it reads or writes, so the three-token form is not a usage probe:
         `tar xf …` extracts and `zip …` creates. `openssl <cmd>` reads a key the
-        same way. Their two-token probe is unaffected.
+        same way. Their two-token probe also requires a human because the program
+        is not in the usage-probe allowlist.
         """
         assert is_read_only_bash("tar xf --help") is False
         assert is_read_only_bash("tar cf --help") is False
         assert is_read_only_bash("zip -r --help") is False
         assert is_read_only_bash("unzip -l --help") is False
         assert is_read_only_bash("openssl x509 --help") is False
-        assert is_read_only_bash("tar --help") is True
+        assert is_read_only_bash("tar --help") is False
 
     def test_help_probe_rejects_a_program_named_by_path(self):
         """An unlisted binary may ignore `--help` and run its side effect.

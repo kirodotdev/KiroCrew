@@ -48,36 +48,30 @@ logged-in context separate from a throwaway one.
 
 ### Capability model
 
-**Presence of `playwright-cli` on PATH is the capability.** The binary absent
-means the capability does not exist; installing it is the act that grants it.
-There is no toggle, no flag file, and no per-session gesture, because none of
-those could be enforced: the CLI documents that all of its capabilities are
-always available with no gating, and a binary on PATH is reachable from any shell
-turn, so no subset of browsing can be granted or withheld once it is installed.
+**Presence of `playwright-cli` on PATH is availability, not approval.** The binary
+absent means the capability does not exist; installing it makes the command
+available but does not let a shell turn skip the ordinary approval ladder. A
+dashboard session must receive an interactive command grant, a trusted-command
+pattern, or an explicit trust/auto-approve mode before the command runs without a
+prompt.
 
-An install Kiro Crew performs is consent by construction, since the operator
-asked for it. An operator's existing working install is also treated as consent,
-so an operator who already browses is never silently disarmed.
+There is no separate capability toggle or flag file because the CLI exposes no
+capability gating of its own: once an approved shell turn runs the binary, all of
+its verbs are reachable. That limitation does not turn binary presence into
+consent for automatic execution.
 
-#### Accepted risk
+#### Approval boundary
 
-Presence-as-consent has one hole, accepted deliberately and recorded here so it
-is discoverable without reading code.
+An operator's existing working install is discovered and used as-is, but it grants
+no silent execution authority. This keeps unrelated user installs from becoming an
+agent-controlled browser merely because their launcher is on PATH. It also prevents
+an agent from planting a `playwright-cli` shim in a writable PATH directory and
+using the presence probe as its own approval.
 
-An operator who installed `playwright-cli` for their own unrelated work has
-granted nothing, yet the capability is armed on that host. The exposure is
-concrete: `attach --extension` connects to the operator's own running Chrome,
-which carries their live logged-in sessions, so an agent turn can drive a browser
-holding those sessions without the operator having said yes to that.
-
-It cannot be narrowed after the fact. The CLI offers no capability gating to
-subset, and PATH reachability means the restriction cannot be expressed in a tool
-surface either. Two mitigations apply, neither of which reintroduces a gate:
-
-- The consent model is stated in the install guide and in the Settings surface,
-  so it is documented rather than discovered.
-- Browser use is visible after the fact. The dashboard panel showing a live
-  session is itself the disclosure.
+The first command prompts under normal mode. The operator can approve once, trust
+the command pattern for the session, or deliberately enable wider auto-approval.
+The last two choices are ordinary audited trust decisions and remain subject to
+the deny and governance gates.
 
 ### Install flow
 
@@ -169,7 +163,7 @@ a whole-state round trip is heavier than the task needs.
 **Attach.** `attach --extension` connects to the operator's own running Chrome,
 which already holds their logins, so no state file is involved. This is the
 stronger capability of the two: the sessions are the operator's real ones, which
-is what the [accepted risk](#accepted-risk) above is about.
+is why the [approval boundary](#approval-boundary) above is mandatory.
 
 State files hold live session credentials and are written with owner-only
 permissions.
@@ -292,13 +286,13 @@ exposes an interactive takeover surface to the network.
 
 | Control | Implementation |
 |---------|----------------|
-| Capability grant | Presence of `playwright-cli` on PATH; see [Capability model](#capability-model) for what this does and does not cover |
+| Capability availability | Presence of `playwright-cli` on PATH; see [Capability model](#capability-model) for why this is not approval |
 | Dashboard exposure | `show` is bound to `127.0.0.1`; `0.0.0.0` is never passed, because the served view carries remote input |
 | Saved state files | Owner-only permissions; they hold live session credentials |
 | Launch config | Write-protected from the agent on both the file-edit and shell gates, and readable. Deliberately anchored rather than bare-token: the filename is not itself the grant, since the agent can name its own `PLAYWRIGHT_MCP_CONFIG` — so what the entry removes is the durable form (rewriting the config the product installed), and a `cd`-relative write is the accepted residual, exactly as for `.data-home-ready` |
 | Page content | Treated as untrusted input. A URL, instruction, or form target read off a page never decides the next navigation |
-| Attach mode | Operates the operator's real logged-in browser, so it is the strongest form of the capability and the reason the accepted risk is recorded |
-| Approval | Page-scoped verbs run without a prompt; verbs that reach the local machine do not. Matched on the real command from `tool_input`, never the model-authored title. Verb AND flag allowlists, so both `eval` and `screenshot --filename=<path>` keep interactive approval. Logged as `reason: "browser_cli"` |
+| Attach mode | Operates the operator's real logged-in browser, so it is the strongest form of the capability and remains behind shell approval |
+| Approval | Every `playwright-cli` shell command follows the ordinary approval ladder. Presence alone never auto-approves it; only an explicit trusted pattern, session trust, or auto-approve grant can skip the prompt |
 
 ### Platform notes
 

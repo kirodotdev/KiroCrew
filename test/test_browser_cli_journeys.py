@@ -144,7 +144,9 @@ class TestSnapshotDirectoryIsOursAlone:
         stale = snapshots.snapshot_dir() / "page-2026-01-01T00-00-00-000Z.yml"
         stale.write_text("- generic", encoding="utf-8")
         os.utime(stale, (old, old))
-        (snapshots.snapshot_dir() / "page-2026-06-01T00-00-00-000Z.yml").write_text("- generic", encoding="utf-8")
+        (snapshots.snapshot_dir() / "page-2026-06-01T00-00-00-000Z.yml").write_text(
+            "- generic", encoding="utf-8"
+        )
 
         snapshots.prune(max_age_s=60.0)
 
@@ -174,8 +176,8 @@ class TestBothOnboardingPaths:
         state = install.detect()
 
         assert state["installed"] is True
-        # Presence is consent, so browsing is available without any further act by
-        # the operator and without us reinstalling over their copy.
+        # Detection reports capability only; shell approval is enforced by the
+        # dashboard runner and does not reinstall over the operator's copy.
         assert install.available() is True
 
     def test_a_fresh_host_reports_what_is_missing_rather_than_guessing(
@@ -206,10 +208,10 @@ class TestAppTokensCannotArmBrowsing:
 
     The auth middleware only proves the ROUTE is in a calling app's manifest. It
     does not decide whether an app may ARM the browser, and these mutations are
-    exactly the wrong reach for one: the install is what activates browser
-    auto-approval, and the attach token silences the browser's own per-attach
-    prompt -- the last human checkpoint before a program drives a logged-in
-    session. Reads stay open; writes are dashboard-owner only.
+    exactly the wrong reach for one: installation mutates the host, and the attach
+    token silences the browser's own per-attach prompt -- the last human checkpoint
+    before a program drives a logged-in session. Reads stay open; writes are
+    dashboard-owner only.
     """
 
     @staticmethod
@@ -260,8 +262,8 @@ class TestBrowserMutationsAreOwnerOnly:
     """The owner gate covers app tokens AND non-owner dashboard users.
 
     A caller whose app identity is absent (e.g. a Slack-originated !dashboard
-    token) was not refused by the old app-only check, yet the endpoints arm
-    browser auto-approval and write stored credentials. The fix gates on
+    token) was not refused by the old app-only check, yet the endpoints install a
+    host capability and write stored credentials. The fix gates on
     is_owner_dashboard_request, which subsumes the app check and additionally
     refuses non-owner dashboard callers.
     """
@@ -270,8 +272,13 @@ class TestBrowserMutationsAreOwnerOnly:
         """Minimal request stub with __contains__/__getitem__/get."""
 
         def __init__(
-            self, path: str, *, app_claim: str, user: str,
-            owner_id: str = "owner-user-123", body: dict | None = None,
+            self,
+            path: str,
+            *,
+            app_claim: str,
+            user: str,
+            owner_id: str = "owner-user-123",
+            body: dict | None = None,
         ):
             from unittest.mock import MagicMock
 
@@ -302,28 +309,40 @@ class TestBrowserMutationsAreOwnerOnly:
     def _owner_request(cls, path: str, body: dict | None = None):
         """Configured owner: app="" + user matches owner_id."""
         return cls._FakeRequest(
-            path, app_claim="", user="owner-user-123", body=body,
+            path,
+            app_claim="",
+            user="owner-user-123",
+            body=body,
         )
 
     @classmethod
     def _non_owner_request(cls, path: str, body: dict | None = None):
         """Dashboard user who is NOT the owner."""
         return cls._FakeRequest(
-            path, app_claim="", user="other-user-456", body=body,
+            path,
+            app_claim="",
+            user="other-user-456",
+            body=body,
         )
 
     @classmethod
     def _no_identity_request(cls, path: str, body: dict | None = None):
         """Caller with no user identity (empty string)."""
         return cls._FakeRequest(
-            path, app_claim="", user="", body=body,
+            path,
+            app_claim="",
+            user="",
+            body=body,
         )
 
     @classmethod
     def _app_token_request(cls, path: str, body: dict | None = None):
         """An app token caller."""
         return cls._FakeRequest(
-            path, app_claim="some-app", user="", body=body,
+            path,
+            app_claim="some-app",
+            user="",
+            body=body,
         )
 
     def _run(self, handler, req):
@@ -341,9 +360,7 @@ class TestBrowserMutationsAreOwnerOnly:
         with patch.object(msg, "_sel", return_value=sel_mock):
             resp = self._run(
                 msg.api_browser_token_put,
-                self._non_owner_request(
-                    "/api/browser/token", {"token": "x"}
-                ),
+                self._non_owner_request("/api/browser/token", {"token": "x"}),
             )
         assert resp.status == 403
 
@@ -370,9 +387,7 @@ class TestBrowserMutationsAreOwnerOnly:
         # Patch dependencies that run AFTER the gate passes
         with (
             patch.object(msg.browser_cli_token, "set_token"),
-            patch.object(
-                msg.browser_cli_token, "has_token", return_value=True
-            ),
+            patch.object(msg.browser_cli_token, "has_token", return_value=True),
             patch.object(
                 msg.browser_cli_token,
                 "cli_env_overrides",
@@ -381,9 +396,7 @@ class TestBrowserMutationsAreOwnerOnly:
         ):
             resp = self._run(
                 msg.api_browser_token_put,
-                self._owner_request(
-                    "/api/browser/token", {"token": "secret"}
-                ),
+                self._owner_request("/api/browser/token", {"token": "secret"}),
             )
         # 200 means the gate passed (handler ran to completion)
         assert resp.status == 200
@@ -397,9 +410,7 @@ class TestBrowserMutationsAreOwnerOnly:
 
         sel_mock = MagicMock()
         with patch.object(msg, "_sel", return_value=sel_mock):
-            req = self._non_owner_request(
-                "/api/browser/token", {"token": "x"}
-            )
+            req = self._non_owner_request("/api/browser/token", {"token": "x"})
             await msg.api_browser_token_put(req)
 
         sel_mock.log_api_access.assert_called_once()
@@ -425,21 +436,15 @@ class TestBrowserMutationsAreOwnerOnly:
             patch.object(msg, "_sel", return_value=sel_mock),
             patch.object(msg.browser_cli_token, "set_token"),
             patch.object(msg.browser_cli_token, "has_token", return_value=True),
-            patch.object(
-                msg.browser_cli_token, "cli_env_overrides", return_value={}
-            ),
+            patch.object(msg.browser_cli_token, "cli_env_overrides", return_value={}),
         ):
             req = self._owner_request("/api/browser/token", {"token": "x"})
             await msg.api_browser_token_put(req)
 
-        outcomes = [
-            c[1].get("outcome") for c in sel_mock.log_api_access.call_args_list
-        ]
+        outcomes = [c[1].get("outcome") for c in sel_mock.log_api_access.call_args_list]
         assert "allowed" in outcomes, outcomes
         allowed = next(
-            c[1]
-            for c in sel_mock.log_api_access.call_args_list
-            if c[1].get("outcome") == "allowed"
+            c[1] for c in sel_mock.log_api_access.call_args_list if c[1].get("outcome") == "allowed"
         )
         assert allowed["operation"] == "browser_token_set"
         assert allowed["caller"]
@@ -452,9 +457,7 @@ class TestBrowserMutationsAreOwnerOnly:
         from kiro_crew.dashboard.handlers import messaging as msg
 
         sel_mock = MagicMock()
-        req = self._app_token_request(
-            "/api/browser/token", {"token": "x"}
-        )
+        req = self._app_token_request("/api/browser/token", {"token": "x"})
 
         with patch.object(msg, "_sel", return_value=sel_mock):
             await msg.api_browser_token_put(req)
@@ -472,12 +475,13 @@ class TestBrowserMutationsAreOwnerOnly:
 
         req = self._app_token_request("/api/browser/install")
 
-        with patch.object(
-            msg.browser_cli_install,
-            "detect",
-            return_value={"installed": False, "node_ok": True},
-        ), patch.object(
-            msg.browser_cli_token, "has_token", return_value=False
+        with (
+            patch.object(
+                msg.browser_cli_install,
+                "detect",
+                return_value={"installed": False, "node_ok": True},
+            ),
+            patch.object(msg.browser_cli_token, "has_token", return_value=False),
         ):
             resp = self._run(msg.api_browser_install_get, req)
         # 200 — the read endpoint does not enforce ownership
@@ -617,9 +621,7 @@ class TestARecoveredStepIsNotReportedAsAnError:
         from kiro_crew.dashboard.handlers import messaging as msg
 
         monkeypatch.setattr(msg.browser_cli_install, "install", lambda: result)
-        monkeypatch.setattr(
-            msg.browser_cli_install, "detect", lambda: {"installed": True}
-        )
+        monkeypatch.setattr(msg.browser_cli_install, "detect", lambda: {"installed": True})
         monkeypatch.setattr(msg.browser_cli_token, "has_token", lambda: False)
 
         async def _go():
@@ -635,9 +637,7 @@ class TestARecoveredStepIsNotReportedAsAnError:
 
         return asyncio.run(_go())
 
-    def test_a_recovered_with_deps_refusal_leaves_no_error(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
+    def test_a_recovered_with_deps_refusal_leaves_no_error(self, monkeypatch: pytest.MonkeyPatch):
         assert self._last_error(monkeypatch, self._RECOVERED) is None
 
     def test_a_recovered_failure_does_not_mask_the_step_that_decided_the_outcome(
@@ -675,9 +675,7 @@ class TestARecoveredStepIsNotReportedAsAnError:
         assert "sudo dnf install -y nss" in error
         assert "apt-get update" not in error
 
-    def test_a_genuine_failure_still_reports_its_detail(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
+    def test_a_genuine_failure_still_reports_its_detail(self, monkeypatch: pytest.MonkeyPatch):
         """The gate must not swallow a real failure: the remedy the operator
         needs travels in exactly this string."""
         failed = {
@@ -738,11 +736,11 @@ def test_every_browser_route_has_a_deliberate_app_token_stance():
     #                 X-Internal-Secret); no cookie/app caller reaches it at all
     #   "open"     -> deliberately readable by any caller
     EXPECTED = {
-        "api_browser_token_put": "owner",          # writes the attach credential
-        "api_browser_install_start": "owner",      # mutates the machine (npm install)
-        "api_browser_engine_install": "owner",     # mutates the machine (browser download)
-        "api_browser_view_get": "owner",           # returns the unauthenticated dashboard URL
-        "api_browser_view_start": "owner",         # launches the browser AND returns that URL
+        "api_browser_token_put": "owner",  # writes the attach credential
+        "api_browser_install_start": "owner",  # mutates the machine (npm install)
+        "api_browser_engine_install": "owner",  # mutates the machine (browser download)
+        "api_browser_view_get": "owner",  # returns the unauthenticated dashboard URL
+        "api_browser_view_start": "owner",  # launches the browser AND returns that URL
         # Presence/version reporting only. No credential, no URL, no mutation --
         # and an app that cannot read it cannot tell "absent" from "broken".
         "api_browser_install_get": "open",
@@ -754,7 +752,8 @@ def test_every_browser_route_has_a_deliberate_app_token_stance():
     }
 
     found = {
-        name for name, obj in vars(messaging).items()
+        name
+        for name, obj in vars(messaging).items()
         if name.startswith("api_browser_") and inspect.isfunction(obj)
     }
     assert found == set(EXPECTED), (
@@ -771,9 +770,8 @@ def test_every_browser_route_has_a_deliberate_app_token_stance():
         actual = "owner" if owner_gated else "internal" if internal_gated else "open"
         if actual != stance:
             wrong.append(f"{name}: guard={actual} expected={stance}")
-    assert not wrong, (
-        "browser route guard stance does not match the declared intent: "
-        + "; ".join(wrong)
+    assert not wrong, "browser route guard stance does not match the declared intent: " + "; ".join(
+        wrong
     )
 
 
@@ -799,9 +797,9 @@ class TestTokenIsOwnerRestricted:
             len(_args) > 2 and _args[2] is True
         ), "set_token must pass restrict_to_owner=True to atomic_write"
         # restrict_on_error must be "raise" so a failure is loud, not silent.
-        assert kwargs.get("restrict_on_error", "raise") == "raise", (
-            "set_token must fail loud when permissions cannot be applied"
-        )
+        assert (
+            kwargs.get("restrict_on_error", "raise") == "raise"
+        ), "set_token must fail loud when permissions cannot be applied"
         # The old numeric mode must NOT be present.
         assert "mode" not in kwargs, "numeric mode is a Windows no-op; use restrict_to_owner"
 
@@ -874,9 +872,7 @@ class TestStopGuardsAgainstUnownedProcesses:
         with patch.object(view_mod.subprocess, "run") as mock_run:
             view_mod.stop()
 
-        mock_run.assert_not_called(), (
-            "stop() with no owned _proc must NOT issue show --kill"
-        )
+        mock_run.assert_not_called(), ("stop() with no owned _proc must NOT issue show --kill")
 
     def test_stop_with_owned_proc_reaps_child_without_global_kill(
         self, monkeypatch: pytest.MonkeyPatch
@@ -940,9 +936,7 @@ class TestStopGuardsAgainstUnownedProcesses:
         assert view_mod._proc is None
         assert view_mod._info is None
 
-    def test_stop_is_idempotent_across_two_calls(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
+    def test_stop_is_idempotent_across_two_calls(self, monkeypatch: pytest.MonkeyPatch):
         from unittest.mock import MagicMock
 
         from kiro_crew.browser_cli import view as view_mod

@@ -354,7 +354,6 @@ src/kiro_crew/mcp_gateway/verdict_cache.py
 src/kiro_crew/mcp_shared.py
 src/kiro_crew/mcp_tools/apps.py
 src/kiro_crew/mcp_tools/artifacts.py
-src/kiro_crew/mcp_tools/browser.py
 src/kiro_crew/mcp_tools/control.py
 src/kiro_crew/mcp_tools/knowledge.py
 src/kiro_crew/mcp_tools/skills.py
@@ -542,8 +541,6 @@ test/test_bench_scorers.py
 test/test_bench_windows_symlink.py
 test/test_bootstrap.py
 test/test_brand_name_gate.py
-test/test_browser_cli_auto_approve.py
-test/test_browser_cli_journeys.py
 test/test_browser_cli_launch.py
 test/test_browser_cli_snapshots.py
 test/test_browser_cli_view.py
@@ -579,7 +576,6 @@ test/test_chat_folder_app_isolation.py
 test/test_chat_folder_suggest.py
 test/test_chat_nav.py
 test/test_chat_regenerate_cov80.py
-test/test_chat_runner_coverage.py
 test/test_chat_slot_create_folder.py
 test/test_chat_slot_end_wait.py
 test/test_chat_slot_interrupt.py
@@ -899,7 +895,6 @@ test/test_mcp_apps_e2e.py
 test/test_mcp_apps_render.py
 test/test_mcp_artifact_folders.py
 test/test_mcp_artifacts.py
-test/test_mcp_browser_tool.py
 test/test_mcp_call_site_auth_coverage.py
 test/test_mcp_caller.py
 test/test_mcp_core.py
@@ -1260,7 +1255,6 @@ test/test_voice_reply.py
 test/test_wait_countdown_keepalive.py
 test/test_watchdog.py
 test/test_web_verify_downscale.py
-test/test_web_verify_skill.py
 test/test_webapp_preview.py
 test/test_webapp_teardown_card_reset.py
 test/test_webhooks_api.py

@@ -739,8 +739,8 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # group rather than issuing a global ``show --kill``, which would take
         # an operator's independent session down with ours.
         # The agent's OWN browser commands are not spawned by us at all -- it
-        # runs them as ordinary shell tool calls, which the approval path gates
-        # (see chat_runner._is_browser_cli_command).
+        # runs them as ordinary shell tool calls through the standard approval
+        # path.
         "browser_cli/install.py::_run",
         "browser_cli/view.py::_spawn",
         "cli.py::_consolidate_cmd",

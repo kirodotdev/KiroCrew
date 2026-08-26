@@ -64,202 +64,37 @@ generation, `playwright-storage-state.json` assembly, the extension token file,
 `playwright-extension-mode`, `browser-mode-enabled`, the four-value registration
 status, the agent-shadow scan, and the entry-carryover sidecar.
 
-## Consent model
+## Consent and approval model
 
-The current capability gate is tool presence: with Browser Mode off the
-`browser_*` tools are absent, so the capability does not exist for the model.
-That mechanism does not survive the migration, and no CLI feature replaces it:
-capabilities cannot be gated, and a binary on PATH is reachable from any shell
-turn.
+Tool presence means **availability**, not consent to skip approval. The absent
+binary means browsing cannot run; an installed binary means an approved shell
+turn can invoke it. This distinction matters because an existing user install or
+a launcher planted in an agent-writable PATH directory is not a user decision.
 
-**Installation therefore becomes the gate.** Not present means the capability
-does not exist; installing it is the operator's act of granting it. This is the
-only coherent model available, not a preference.
+There is no separate capability toggle: the CLI exposes no internal capability
+gating once a shell command runs. The dashboard therefore enforces consent at the
+ordinary shell approval boundary. Under normal mode each untrusted
+`playwright-cli` command prompts; a trusted-command pattern, session trust, or
+auto-approve mode is the explicit decision that can skip that prompt. The deny
+and governance gates still run first.
 
-**Decided:** an install Kiro Crew performs is consent by construction, the
-operator's existing working setup is treated as consent so a migration never
-silently disarms them, and **presence of `playwright-cli` on PATH is consent**
-whether or not Kiro Crew installed it.
+This keeps migration non-destructive: an operator's existing install is
+discovered and used as-is, while no unrelated install silently arms browser
+auto-approval.
 
-### Accepted risk
+## Approval: ordinary shell commands
 
-Presence-as-consent has one hole, accepted deliberately rather than overlooked.
-An operator who installed `playwright-cli` for their own work has granted nothing,
-yet the capability is armed. It cannot be narrowed after the fact:
+Browser commands no longer have a presence-based auto-approve tier. They follow
+the same approval ladder as every other shell command and derive trusted patterns
+from the real command in `tool_input`, never the model-authored display title.
+The first approval can remain one-shot or establish a session-scoped command
+pattern; broader trust modes remain deliberate, audited user actions.
 
-- The CLI has no capability gating (verbatim: "In the CLI all capabilities are
-  always available -- there's no gating"), so there is no subset to grant.
-- `attach --extension` connects to the operator's own running Chrome, which
-  carries their live logged-in sessions.
-- A binary on PATH is reachable from any shell turn, so nothing in the tool
-  surface can express the restriction.
-
-The exposure is therefore: on such a host, an agent turn can drive a browser
-holding the operator's authenticated sessions without the operator having said
-yes to that. This is the price of removing the toggle, and the toggle is what
-produced the defect class this migration retires.
-
-Two mitigations are cheap and do NOT reintroduce a gate, and should ship with
-Phase 2:
-
-- State it in the docs and in the Settings surface, so presence-as-consent is
-  discoverable rather than a surprise found by reading code.
-- Make browser use visible after the fact. The dashboard panel showing a live
-  session is itself the disclosure, and it is already in Phase 1.
-
-## Approval: which commands run without a prompt
-
-A browsing step is a shell command now, so without an allow path every `open`,
-`click` and `snapshot` raises an approval prompt and browsing is unusable. The
-allow path is deliberately NOT the bundled `auto_approve_tools` list, because
-that list is matched against the tool *title*, which the model writes: an
-injected agent could title `rm -rf /` as "playwright-cli snapshot" and be
-auto-approved. Instead the check sits on the same command-keyed path the user's
-own "always allow" grants use, and reads the real command out of `tool_input`.
-
-The boundary is the page. A verb whose whole effect lands inside the browser
-page or session is auto-approved; a verb that reaches the local machine is not:
-
-| Kept interactive | Why |
-|---|---|
-| `eval`, `run-code` | run attacker-authored code in an authenticated page; with `fetch()` that is a complete exfiltration path |
-| `upload` | sends an arbitrary LOCAL file to the current page |
-| `state-load` | reads an arbitrary local path and injects its cookies into the live session |
-| `state-save <path>`, `video-start <path>` | bare, these write inside the service's output dir; with an argument they are an arbitrary-path write |
-| `install`, `install-browser` | mutate the machine; installing is the dashboard's job, not the agent's |
-| `requests`, `network` | a URL can BE the credential (presigned S3 URL, magic-link); listing URLs prints a credential into context the same way `cookie-list` does |
-| `delete-data` | with `attach`, destroys operator session state (cookies, storage, cache) nothing recovers |
-| `cookie-set`/`-delete`/`-clear`, `localstorage-set`/`-delete`/`-clear`, `sessionstorage-set`/`-delete`/`-clear` | with `attach`, the -set verbs are session fixation (inject a controlled credential the attacker can reuse); the -delete/-clear verbs destroy operator login state nothing recovers |
-| `route`, `unroute`, `network-state-set` | a route intercepts requests and returns forged responses — the agent reads the page via `snapshot`, so a route lets an injected agent control what the NEXT read returns. `unroute` removes a route the operator set intentionally. `network-state-set` toggles offline mode (denial-of-service on the operator's browsing) |
-| `config-print` | prints the session's launch configuration, and the documented way to constrain this browser is a proxy set through `launchOptions.proxy.server` — whose value carries the proxy credential. The verb that reads as a harmless settings dump prints a secret on exactly the setup this design recommends |
-| `close`, `tab-close`, `close-all`, `kill-all` | with `attach` these are the operator's OWN window, tabs and logins; closing them loses unsaved work and nothing recovers it, and `close-all`/`kill-all` do it to every session at once. The agent prompt already tells the model never to close an attached browser, but prose the model is asked to honor is advice rather than a control, and the gate cannot see whether a session is attached or CLI-owned, so it fails closed. `detach` stays approved and is what cleanup needs: it releases the session and leaves the window alone |
-
-Three properties make this hold up rather than merely look careful:
-
-Read the list below as a record of a gate that had to be narrowed five times,
-not as a design that arrived correct. Each entry after the first two was found
-by review, and each was a dimension the previous version had not considered:
-shell redirection, then non-shell tools carrying a `command`, then verbs whose
-return VALUE is the credential, then a positional argument that is a local file.
-The pattern is what matters for anyone extending this: a new dimension is the
-expected case, so the structure fails closed on anything unrecognized, and a new
-CLI verb or flag stays denied until someone lists it deliberately.
-
-- **Allowlists, not denylists**, for both verbs and flags. A verb added by a
-  future CLI release is denied until someone reviews and lists it.
-- **Flags are checked too.** The official docs use `screenshot --filename=<path>`,
-  so a local path can arrive as a flag rather than a positional argument.
-  Skipping unrecognized flags on the way to the verb would auto-approve an
-  arbitrary local write; an unknown flag therefore denies the whole command.
-- **Positionals are checked too, not just flags.** A page verb whose arguments go
-  unread falls through to "approved" on the verb alone. That makes
-  `goto file:///<path>` auto-approved, which is not a page action: the file lands
-  in the page and the next `snapshot` prints it into the agent's context, i.e. an
-  arbitrary local file read behind the one gate whose job is to refuse those. A
-  URI-shaped argument passes only as plain http(s), and only to a host that is
-  neither a local control plane nor link-local.
-- **No local control plane is auto-navigable.** Kiro Crew's own dashboard is
-  served over loopback, and the approval mode, trust settings and YOLO switch all
-  live on it -- so auto-approved navigation plus auto-approved clicks is a path
-  from "browsing is allowed" to "the agent widened its own ceiling", with no
-  human in the loop. The repo already refuses computer-use on its own dashboard
-  for exactly this reason. The rule is therefore the whole loopback range and the
-  loopback names (`localhost`, the reserved `.localhost` suffix) plus the
-  unspecified address, not one port number: a pod's dashboard port is only known
-  at runtime, and one class rule also covers whatever else the operator runs
-  locally -- another admin UI, a notebook server. The cost is one approval prompt
-  when previewing a local dev server, in a scenario where the operator is already
-  watching; public http(s) browsing is untouched.
-- **No non-globally-routable address is auto-navigable.** Private (RFC 1918:
-  10/8, 172.16/12, 192.168/16), CGNAT/shared (100.64/10), multicast, reserved,
-  documentation, and benchmarking ranges are all refused. A `goto
-  http://10.0.0.5/admin` followed by an auto-approved `snapshot` prints internal
-  infrastructure responses into the agent's context -- the same SSRF vector as
-  link-local, aimed at internal services rather than the metadata endpoint.
-  Ranges are tested by `ipaddress`' own `is_global` property (True only for
-  globally-routable addresses), applied to any embedded IPv4 as well as its
-  wrapper. `is_global` subsumes loopback, link-local, unspecified, private,
-  CGNAT/shared, multicast, reserved, documentation, and benchmarking ranges
-  in one predicate without hand-rolled CIDRs.
-- **DNS names are NOT resolved.** Resolving inside the approval predicate is a
-  blocking network call on the hot path AND a DNS-rebinding TOCTOU: a name can
-  answer a public address at approval time then resolve to a private one when the
-  browser re-resolves milliseconds later. The residual risk -- a public name
-  pointing at a private address -- is accepted; browser-side network policy is
-  the correct mitigation layer for that class.
-- **A host must be canonical to be classified.** Non-globally-routable
-  addresses are refused through `ipaddress`' `is_global` property rather than
-  against hard-coded addresses. That alone is not enough:
-  `ipaddress.ip_address("2852039166")` *raises*, so treating an unparseable
-  host as "a DNS name" hands back 169.254.169.254 through its decimal, hex,
-  octal-dotted and short forms, and an IPv6 wrapper's `is_global` may not see
-  through an IPv4 embedding on all versions. A host is accepted as a name only
-  when its final label starts with a letter -- which refuses every numeric
-  spelling without enumerating them -- and an address that embeds an IPv4 one
-  is tested through the embedding as well as the wrapper. Anything
-  unclassifiable costs one prompt.
-- **The approval layer checks a URL; it cannot bind a DESTINATION.** This is a
-  structural limit, not an omission, and it is accepted deliberately. The host
-  rules above run on the URL handed to `goto`. The browser then resolves that
-  name and follows redirects on its own, so a public URL answering
-  `302 Location: http://127.0.0.1:5476/` reaches the dashboard anyway, and a name
-  that resolves public at check time can resolve private at connect time. No
-  amount of parsing closes that: the check and the connection are different
-  events, and re-resolving inside the predicate would add a blocking network call
-  to the approval path while still losing the race.
-
-  What closes it is the layer that acts on the RESOLVED ADDRESS at connection
-  time. Chrome's Local Network Access does exactly that: it classifies by
-  destination address rather than by the initiating page's URL, covers redirect
-  hops, and is enforced by default from Chrome 142. Because it gates on a
-  permission and an automated browser has no user to grant one, the automated
-  case fails closed — which is the behaviour we want. Treat this as the primary
-  mitigation, with the caveat that it is read from Chrome's documentation and
-  issue tracker rather than measured here, and that it depends on the Chrome
-  version the CLI installs.
-
-  An operator wanting belt-and-braces, or running an older Chrome, can pass a PAC
-  file through the CLI's own `browser.launchOptions.args`
-  (`--proxy-pac-url`): PAC is re-evaluated per redirect hop and `isInNet()`
-  compares a literal IP directly, so it refuses a redirect to `127.0.0.1` without
-  needing name resolution. It costs their own loopback dev-server previews unless
-  they carve out a port, and it retains a DNS-rebinding window, because Chromium
-  keeps the full resolved address list and may try an address the PAC decision did
-  not see.
-
-  Two controls are specifically NOT the answer here, both worth naming so nobody
-  reaches for them later. `--host-resolver-rules` acts on name resolution, and a
-  literal-IP redirect never resolves a name, so it cannot see this case at all.
-  And the CLI's own `network.allowedOrigins` / `blockedOrigins` are documented
-  upstream as not a security boundary and as not affecting redirects — using them
-  here would look like a mitigation while changing nothing about the threat.
-- **One splitter, and it must honor escapes.** The segment split (which rejects
-  command substitution and requires every segment of a chained command to pass) is
-  shared with the existing trusted-pattern path rather than written a second time,
-  because a second shell splitter is how a bypass gets introduced. Sharing it also
-  means its quote tracking is load-bearing for every approval path: a closing
-  quote followed by `\'` leaves quoted context, so the separator after it is real,
-  and masking it collapses a two-command line into one approved segment.
-- **Redirections are refused.** A redirection is the SHELL's work, so
-  `playwright-cli snapshot > file` creates or truncates that file before the
-  approved command runs, and the verb allowlist cannot see it: `>` and the path
-  arrive as ordinary tokens. The check is quote-aware, because `click "div >
-  span"` is a legitimate selector. This was found by review, not by design --
-  the first version approved it.
-- **Only a shell tool reaches this path.** `_extract_bash_command` reads a
-  `command` field out of ANY tool input, so without an `is_shell` gate a
-  non-shell tool that carries one (`cron_add`, which can schedule a shell
-  command) would be auto-approved -- turning "browsing is allowed" into
-  "creating a durable scheduled job is allowed".
-
-The install and token endpoints refuse **app tokens** (403 + SEL), because route
-scoping is not capability scoping: an app listing `/api/browser` in its manifest
-would otherwise be able to install the binary that arms auto-approval, or replace
-the attach token that silences the browser's own per-attach prompt.
-
-Every auto-approval is recorded in the security event log with
-`reason: "browser_cli"`, so the decision is auditable after the fact and is
-distinguishable from a grant the user made themselves.
+The install, browser-download, token, and live-view mutations remain
+dashboard-owner-only. Installation mutates the host, the attach token suppresses
+the browser extension's own connection prompt, and the view URL controls a live
+browser session, so an app token or non-owner dashboard user may not perform
+them.
 
 ## Accepted limitation: npm is the only distribution channel
 
@@ -397,6 +232,6 @@ Each phase is its own PR and leaves the tree working.
 
 ## Open decisions
 
-None. All four are settled above: global install only, presence as consent (with
-the accepted risk recorded), the service prunes snapshots, and the agent reads
-snapshot YAML with its own file tools.
+None. All four are settled above: global install only, presence as availability
+with approval enforced at the shell boundary, the service prunes snapshots, and
+the agent reads snapshot YAML with its own file tools.

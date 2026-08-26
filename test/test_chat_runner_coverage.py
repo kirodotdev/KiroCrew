@@ -296,8 +296,9 @@ class TestTurnMetric:
 
     def test_session_source_attribute_is_attached(self):
         recorder = MagicMock()
-        with patch.object(chat_runner, "infer_use_case", return_value="cron"), patch.object(
-            chat_runner, "get_recorder", return_value=recorder
+        with (
+            patch.object(chat_runner, "infer_use_case", return_value="cron"),
+            patch.object(chat_runner, "get_recorder", return_value=recorder),
         ):
             chat_runner._emit_turn_metric(0, "end_turn", "cron:job", elapsed_ms=12)
 
@@ -308,8 +309,9 @@ class TestTurnMetric:
     def test_use_case_failure_does_not_block_the_emit(self):
         """A broken source lookup must still leave the histogram emitted."""
         recorder = MagicMock()
-        with patch.object(chat_runner, "infer_use_case", side_effect=RuntimeError("boom")), patch.object(
-            chat_runner, "get_recorder", return_value=recorder
+        with (
+            patch.object(chat_runner, "infer_use_case", side_effect=RuntimeError("boom")),
+            patch.object(chat_runner, "get_recorder", return_value=recorder),
         ):
             chat_runner._emit_turn_metric(50, "end_turn", "dashboard:x")
 
@@ -363,9 +365,7 @@ class TestPreToolHookVerdicts:
         ],
     )
     def test_block_reason_falls_back_when_no_reason_is_authored(self, results):
-        assert (
-            chat_runner._pre_tool_block_reason(results) == "blocked by a PreToolUse policy hook"
-        )
+        assert chat_runner._pre_tool_block_reason(results) == "blocked by a PreToolUse policy hook"
 
 
 # ── snapshot helpers ──────────────────────────────────────────────────────
@@ -595,12 +595,15 @@ class TestConnectionsManagedNames:
             assert chat_runner._connections_managed_mcp_names() == frozenset()
 
     def test_intersection_of_managed_and_carded(self):
-        with patch.object(
-            chat_runner, "kirocrew_managed_names", return_value={"github", "handmade"}
-        ), patch.object(
-            chat_runner,
-            "get_visible_providers",
-            return_value=[{"slug": "github"}, {"slug": "slack"}],
+        with (
+            patch.object(
+                chat_runner, "kirocrew_managed_names", return_value={"github", "handmade"}
+            ),
+            patch.object(
+                chat_runner,
+                "get_visible_providers",
+                return_value=[{"slug": "github"}, {"slug": "slack"}],
+            ),
         ):
             assert chat_runner._connections_managed_mcp_names() == frozenset({"github"})
 
@@ -1024,11 +1027,10 @@ class TestScheduleWidgetRegistration:
     async def test_widget_and_image_each_schedule_one_task(self, tmp_path):
         state, slot = _state(tmp_path), _slot()
 
-        with patch.object(
-            chat_runner, "register_widgets_off_loop", new=AsyncMock()
-        ) as widgets, patch.object(
-            chat_runner, "register_images_off_loop", new=AsyncMock()
-        ) as images:
+        with (
+            patch.object(chat_runner, "register_widgets_off_loop", new=AsyncMock()) as widgets,
+            patch.object(chat_runner, "register_images_off_loop", new=AsyncMock()) as images,
+        ):
             chat_runner._schedule_widget_registration(
                 state, slot, "<mcwidget>x</mcwidget> ![a](/tmp/a.png)", "1"
             )
@@ -1059,9 +1061,12 @@ class TestExpandPromptMention:
     def test_sensitive_path_is_blocked(self, tmp_path):
         state, slot = _state(tmp_path), _slot()
 
-        with patch.object(
-            chat_runner, "_find_prompt", return_value={"path": "/home/u/.aws/credentials"}
-        ), patch.object(chat_runner, "is_sensitive_path", return_value=True):
+        with (
+            patch.object(
+                chat_runner, "_find_prompt", return_value={"path": "/home/u/.aws/credentials"}
+            ),
+            patch.object(chat_runner, "is_sensitive_path", return_value=True),
+        ):
             assert chat_runner._expand_prompt_mention("@sop", state, slot) == ("@sop", "blocked")
 
     def test_oversized_prompt_is_refused(self, tmp_path):
@@ -1069,18 +1074,24 @@ class TestExpandPromptMention:
         big = tmp_path / "big.md"
         big.write_text("y" * (chat_runner.MAX_PROMPT_BYTES + 1), newline="\n")
 
-        with patch.object(
-            chat_runner, "_find_prompt", return_value={"path": str(big), "fullName": "big"}
-        ), patch.object(chat_runner, "is_sensitive_path", return_value=False):
+        with (
+            patch.object(
+                chat_runner, "_find_prompt", return_value={"path": str(big), "fullName": "big"}
+            ),
+            patch.object(chat_runner, "is_sensitive_path", return_value=False),
+        ):
             assert chat_runner._expand_prompt_mention("@big", state, slot) == ("@big", "too_large")
 
     def test_unreadable_prompt_is_not_found(self, tmp_path):
         state, slot = _state(tmp_path), _slot()
         missing = tmp_path / "gone.md"
 
-        with patch.object(
-            chat_runner, "_find_prompt", return_value={"path": str(missing), "fullName": "gone"}
-        ), patch.object(chat_runner, "is_sensitive_path", return_value=False):
+        with (
+            patch.object(
+                chat_runner, "_find_prompt", return_value={"path": str(missing), "fullName": "gone"}
+            ),
+            patch.object(chat_runner, "is_sensitive_path", return_value=False),
+        ):
             assert chat_runner._expand_prompt_mention("@gone", state, slot) == (
                 "@gone",
                 "not_found",
@@ -1091,9 +1102,12 @@ class TestExpandPromptMention:
         sop = tmp_path / "sop.md"
         sop.write_text("Do the thing\n", newline="\n")
 
-        with patch.object(
-            chat_runner, "_find_prompt", return_value={"path": str(sop), "fullName": "sop"}
-        ), patch.object(chat_runner, "is_sensitive_path", return_value=False):
+        with (
+            patch.object(
+                chat_runner, "_find_prompt", return_value={"path": str(sop), "fullName": "sop"}
+            ),
+            patch.object(chat_runner, "is_sensitive_path", return_value=False),
+        ):
             expanded, status = chat_runner._expand_prompt_mention("@sop extra ask", state, slot)
 
         assert status == "ok"
@@ -1225,9 +1239,7 @@ class TestScheduleEagerSpawn:
     def test_config_load_failure_returns_no_task(self, tmp_path):
         state, slot = _state(tmp_path), _slot()
 
-        with patch.object(
-            chat_runner.KiroCrewConfig, "load", side_effect=RuntimeError("bad toml")
-        ):
+        with patch.object(chat_runner.KiroCrewConfig, "load", side_effect=RuntimeError("bad toml")):
             assert chat_runner.schedule_eager_spawn(state, slot) is None
 
     @pytest.mark.asyncio
@@ -1236,8 +1248,9 @@ class TestScheduleEagerSpawn:
         cfg = MagicMock()
         cfg.session.eager_spawn = True
 
-        with patch.object(chat_runner.KiroCrewConfig, "load", return_value=cfg), patch.object(
-            chat_runner, "_eager_spawn", new=AsyncMock()
+        with (
+            patch.object(chat_runner.KiroCrewConfig, "load", return_value=cfg),
+            patch.object(chat_runner, "_eager_spawn", new=AsyncMock()),
         ):
             first = chat_runner.schedule_eager_spawn(state, slot)
             second = chat_runner.schedule_eager_spawn(state, slot)
@@ -1417,10 +1430,10 @@ class TestStartNextQueuedTurn:
         slot.queue_append("two")
         state.subagents = None
 
-        with patch.object(
-            chat_runner.KiroCrewConfig, "load", side_effect=RuntimeError("bad toml")
-        ), patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()) as spawn, patch.object(
-            chat_runner, "_run_chat", return_value=MagicMock()
+        with (
+            patch.object(chat_runner.KiroCrewConfig, "load", side_effect=RuntimeError("bad toml")),
+            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()) as spawn,
+            patch.object(chat_runner, "_run_chat", return_value=MagicMock()),
         ):
             assert await chat_runner._start_next_queued_turn(state, slot) is True
 
@@ -1444,9 +1457,10 @@ class TestStartNextQueuedTurn:
         slot._stopping = True
         state.subagents = None
 
-        with patch.object(
-            chat_runner, "spawn_guarded_turn", return_value=MagicMock()
-        ), patch.object(chat_runner, "_run_chat", return_value=MagicMock()):
+        with (
+            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()),
+            patch.object(chat_runner, "_run_chat", return_value=MagicMock()),
+        ):
             assert await chat_runner._start_next_queued_turn(state, slot) is True
 
         assert any("Session reset" in err for err in _errors(slot))
@@ -1466,9 +1480,10 @@ class TestStartNextQueuedTurn:
         slot.queue_append("next please")
         state.subagents = None
 
-        with patch.object(
-            chat_runner, "spawn_guarded_turn", return_value=MagicMock()
-        ), patch.object(chat_runner, "_run_chat", return_value=MagicMock()):
+        with (
+            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()),
+            patch.object(chat_runner, "_run_chat", return_value=MagicMock()),
+        ):
             assert await chat_runner._start_next_queued_turn(state, slot) is True
 
         roles = [m["role"] for m in slot.messages]
@@ -1507,9 +1522,10 @@ class TestStartNextQueuedTurn:
         slot2._deferred_notes.append({"content": "held", "cls": "reconcile-note"})
         slot2.queue_append("a plain user message")
         state2.subagents = None
-        with patch.object(
-            chat_runner, "spawn_guarded_turn", return_value=MagicMock()
-        ), patch.object(chat_runner, "_run_chat", return_value=MagicMock()):
+        with (
+            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()),
+            patch.object(chat_runner, "_run_chat", return_value=MagicMock()),
+        ):
             assert await chat_runner._start_next_queued_turn(state2, slot2) is True
         assert slot2._deferred_notes == [], "control: the note should flush off-plan"
 
@@ -1563,9 +1579,12 @@ class TestRunPendingSynthesis:
         async def _boom():
             raise asyncio.TimeoutError
 
-        with patch.object(
-            chat_runner, "spawn_guarded_turn", return_value=asyncio.ensure_future(_boom())
-        ), patch.object(chat_runner, "_run_chat", return_value=MagicMock()):
+        with (
+            patch.object(
+                chat_runner, "spawn_guarded_turn", return_value=asyncio.ensure_future(_boom())
+            ),
+            patch.object(chat_runner, "_run_chat", return_value=MagicMock()),
+        ):
             await chat_runner._run_pending_synthesis(state, slot)
 
         assert slot._pending_synthesis is False
@@ -1599,9 +1618,10 @@ class TestRunPendingSynthesis:
             coro.close()  # never awaited; avoids an un-awaited-coroutine warning
             return asyncio.ensure_future(_ok())
 
-        with patch.object(chat_runner, "spawn_guarded_turn", side_effect=_capture), patch.object(
-            chat_runner, "_run_chat", return_value=MagicMock()
-        ) as run_chat:
+        with (
+            patch.object(chat_runner, "spawn_guarded_turn", side_effect=_capture),
+            patch.object(chat_runner, "_run_chat", return_value=MagicMock()) as run_chat,
+        ):
             await chat_runner._run_pending_synthesis(state, slot)
 
         assert seen.get("rows") == 1, "the row must exist BEFORE the turn is dispatched"
@@ -1686,9 +1706,10 @@ class TestFinishQueueCycle:
         slot._pending_synthesis = True
         state.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
 
-        with patch.object(
-            type(slot), "flush_deferred_notes", return_value=0
-        ) as flush, patch.object(chat_runner, "_run_pending_synthesis", new=AsyncMock()):
+        with (
+            patch.object(type(slot), "flush_deferred_notes", return_value=0) as flush,
+            patch.object(chat_runner, "_run_pending_synthesis", new=AsyncMock()),
+        ):
             chat_runner._finish_queue_cycle(state, slot)
             await asyncio.sleep(0)
 
@@ -1765,9 +1786,10 @@ class TestFinishQueueCycle:
         state, slot = _state(tmp_path), _slot()
         slot._pending_synthesis = False
 
-        with patch.object(
-            type(slot), "flush_deferred_notes", return_value=0
-        ) as flush, patch.object(chat_runner, "maybe_refresh_title", new=AsyncMock()):
+        with (
+            patch.object(type(slot), "flush_deferred_notes", return_value=0) as flush,
+            patch.object(chat_runner, "maybe_refresh_title", new=AsyncMock()),
+        ):
             chat_runner._finish_queue_cycle(state, slot)
             await asyncio.sleep(0)
 
@@ -1914,7 +1936,9 @@ class TestNativeSubagentCards:
         assert buf == ["a" * 10]
 
     def test_done_result_marks_a_truncated_feed(self):
-        out = chat_runner._native_done_result(["z" * (chat_runner.NATIVE_SUBAGENT_DONE_RESULT_CAP + 5)])
+        out = chat_runner._native_done_result(
+            ["z" * (chat_runner.NATIVE_SUBAGENT_DONE_RESULT_CAP + 5)]
+        )
 
         assert out.startswith(chat_runner.NATIVE_SUBAGENT_DONE_TRUNC_MARKER)
 
@@ -2045,7 +2069,9 @@ class TestModelBackfill:
 
 
 class TestPinnedModelWithheld:
-    @pytest.mark.parametrize("model,provider", [("", "kiro"), ("auto", "kiro"), ("x", "claude_code")])
+    @pytest.mark.parametrize(
+        "model,provider", [("", "kiro"), ("auto", "kiro"), ("x", "claude_code")]
+    )
     def test_unpinnable_combinations_are_never_withheld(self, model, provider):
         assert chat_runner._pinned_model_withheld(MagicMock(), model, provider) is False
 
@@ -2341,6 +2367,51 @@ class TestRunChatRecoveryLadders:
 
 class TestRunChatAutoApproveRungs:
     @pytest.mark.asyncio
+    async def test_browser_cli_presence_does_not_skip_shell_approval(self, tmp_path, monkeypatch):
+        from kiro_crew.browser_cli import install
+
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        _set_stream(
+            client,
+            [
+                _permission(
+                    title="Running: playwright-cli snapshot",
+                    tool_input=json.dumps({"command": "playwright-cli snapshot"}),
+                ),
+                _complete(),
+            ],
+        )
+        # Pin the capability as present without consulting or touching the host.
+        monkeypatch.setattr(install, "cli_path", lambda: "/agent-writable/playwright-cli")
+
+        with patch.object(chat_runner, "tool_approval_timeout_secs", return_value=0.0):
+            await _drive(state, slot)
+
+        client.approve_tool.assert_not_awaited()
+        client.reject_tool.assert_awaited_once_with("req-cov-1")
+
+    @pytest.mark.asyncio
+    async def test_browser_cli_explicit_trusted_pattern_still_auto_approves(self, tmp_path):
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        slot._trusted_patterns = {"playwright-cli*"}
+        _set_stream(
+            client,
+            [
+                _permission(
+                    title="Running: playwright-cli snapshot",
+                    tool_input=json.dumps({"command": "playwright-cli snapshot"}),
+                ),
+                _complete(),
+            ],
+        )
+
+        await _drive(state, slot)
+
+        client.approve_tool.assert_awaited_once_with("req-cov-1")
+
+    @pytest.mark.asyncio
     async def test_trusted_pattern_auto_approves_a_matching_command(self, tmp_path):
         state, client = _runner_state(tmp_path)
         slot = _slot()
@@ -2357,8 +2428,7 @@ class TestRunChatAutoApproveRungs:
 
         client.approve_tool.assert_awaited_once_with("req-cov-1")
         assert any(
-            m.get("role") == "tool" and m.get("content", "").startswith("🔧")
-            for m in slot.messages
+            m.get("role") == "tool" and m.get("content", "").startswith("🔧") for m in slot.messages
         )
 
     @pytest.mark.asyncio
@@ -2526,8 +2596,9 @@ class TestRunChatPlanGate:
             ],
         )
 
-        with patch.object(chat_runner, "looks_like_plan", return_value=True), patch.object(
-            chat_runner, "_rephrase_plan_lite", new=AsyncMock(return_value=good)
+        with (
+            patch.object(chat_runner, "looks_like_plan", return_value=True),
+            patch.object(chat_runner, "_rephrase_plan_lite", new=AsyncMock(return_value=good)),
         ):
             await _drive(state, slot)
 
@@ -2586,23 +2657,20 @@ class TestAppAgentDispatchGuard:
         slot._app = "myapp"
         slot.agent = "my-app-agent"
 
-        cold = _bindings(
-            kiro_agent="kirocrew", resolved_alias="default", requested_resolved=False
-        )
+        cold = _bindings(kiro_agent="kirocrew", resolved_alias="default", requested_resolved=False)
         warm = _bindings(
             kiro_agent="my-app-agent",
             resolved_alias="my-app-agent",
             requested_resolved=True,
         )
         refresh = MagicMock()
-        with patch.object(
-            chat_runner, "resolve_agent_bindings", side_effect=[cold, warm]
-        ) as resolve, patch.object(
-            chat_runner, "refresh_materialized_agents", refresh
-        ), patch.object(
-            chat_runner, "subprocess_executor", MagicMock(return_value=None)
-        ), patch.object(
-            chat_runner, "warm_project_agent_names", new=AsyncMock()
+        with (
+            patch.object(
+                chat_runner, "resolve_agent_bindings", side_effect=[cold, warm]
+            ) as resolve,
+            patch.object(chat_runner, "refresh_materialized_agents", refresh),
+            patch.object(chat_runner, "subprocess_executor", MagicMock(return_value=None)),
+            patch.object(chat_runner, "warm_project_agent_names", new=AsyncMock()),
         ):
             await _drive(state, slot)
 
@@ -2625,9 +2693,7 @@ class TestAppAgentDispatchGuard:
         slot._app = "myapp"
         slot.agent = "my-app-agent"
 
-        cold = _bindings(
-            kiro_agent="kirocrew", resolved_alias="default", requested_resolved=False
-        )
+        cold = _bindings(kiro_agent="kirocrew", resolved_alias="default", requested_resolved=False)
         warm = _bindings(
             kiro_agent="my-app-agent",
             resolved_alias="my-app-agent",
@@ -2635,18 +2701,15 @@ class TestAppAgentDispatchGuard:
         )
         refresh = MagicMock()
         reregister = MagicMock(return_value=["my-app-agent"])
-        with patch.object(
-            chat_runner, "resolve_agent_bindings", side_effect=[cold, cold, warm]
-        ) as resolve, patch.object(
-            chat_runner, "refresh_materialized_agents", refresh
-        ), patch(
-            "kiro_crew.apps.bridges.register_app", reregister
-        ), patch(
-            "kiro_crew.apps.manager.is_app_enabled", MagicMock(return_value=True)
-        ), patch.object(
-            chat_runner, "subprocess_executor", MagicMock(return_value=None)
-        ), patch.object(
-            chat_runner, "warm_project_agent_names", new=AsyncMock()
+        with (
+            patch.object(
+                chat_runner, "resolve_agent_bindings", side_effect=[cold, cold, warm]
+            ) as resolve,
+            patch.object(chat_runner, "refresh_materialized_agents", refresh),
+            patch("kiro_crew.apps.bridges.register_app", reregister),
+            patch("kiro_crew.apps.manager.is_app_enabled", MagicMock(return_value=True)),
+            patch.object(chat_runner, "subprocess_executor", MagicMock(return_value=None)),
+            patch.object(chat_runner, "warm_project_agent_names", new=AsyncMock()),
         ):
             await _drive(state, slot)
 
@@ -2667,23 +2730,18 @@ class TestAppAgentDispatchGuard:
         slot._app = "myapp"
         slot.agent = "my-app-agent"
 
-        cold = _bindings(
-            kiro_agent="kirocrew", resolved_alias="default", requested_resolved=False
-        )
+        cold = _bindings(kiro_agent="kirocrew", resolved_alias="default", requested_resolved=False)
         refresh = MagicMock()
         reregister = MagicMock(return_value=[])
-        with patch.object(
-            chat_runner, "resolve_agent_bindings", side_effect=[cold, cold, cold]
-        ) as resolve, patch.object(
-            chat_runner, "refresh_materialized_agents", refresh
-        ), patch(
-            "kiro_crew.apps.bridges.register_app", reregister
-        ), patch(
-            "kiro_crew.apps.manager.is_app_enabled", MagicMock(return_value=True)
-        ), patch.object(
-            chat_runner, "subprocess_executor", MagicMock(return_value=None)
-        ), patch.object(
-            chat_runner, "warm_project_agent_names", new=AsyncMock()
+        with (
+            patch.object(
+                chat_runner, "resolve_agent_bindings", side_effect=[cold, cold, cold]
+            ) as resolve,
+            patch.object(chat_runner, "refresh_materialized_agents", refresh),
+            patch("kiro_crew.apps.bridges.register_app", reregister),
+            patch("kiro_crew.apps.manager.is_app_enabled", MagicMock(return_value=True)),
+            patch.object(chat_runner, "subprocess_executor", MagicMock(return_value=None)),
+            patch.object(chat_runner, "warm_project_agent_names", new=AsyncMock()),
         ):
             await _drive(state, slot)
 
@@ -2710,22 +2768,15 @@ class TestAppAgentDispatchGuard:
         slot._app = "myapp"
         slot.agent = "my-app-agent"
 
-        cold = _bindings(
-            kiro_agent="kirocrew", resolved_alias="default", requested_resolved=False
-        )
+        cold = _bindings(kiro_agent="kirocrew", resolved_alias="default", requested_resolved=False)
         reregister = MagicMock(return_value=["my-app-agent"])
-        with patch.object(
-            chat_runner, "resolve_agent_bindings", side_effect=[cold, cold, cold]
-        ), patch.object(
-            chat_runner, "refresh_materialized_agents", MagicMock()
-        ), patch(
-            "kiro_crew.apps.bridges.register_app", reregister
-        ), patch(
-            "kiro_crew.apps.manager.is_app_enabled", MagicMock(return_value=False)
-        ), patch.object(
-            chat_runner, "subprocess_executor", MagicMock(return_value=None)
-        ), patch.object(
-            chat_runner, "warm_project_agent_names", new=AsyncMock()
+        with (
+            patch.object(chat_runner, "resolve_agent_bindings", side_effect=[cold, cold, cold]),
+            patch.object(chat_runner, "refresh_materialized_agents", MagicMock()),
+            patch("kiro_crew.apps.bridges.register_app", reregister),
+            patch("kiro_crew.apps.manager.is_app_enabled", MagicMock(return_value=False)),
+            patch.object(chat_runner, "subprocess_executor", MagicMock(return_value=None)),
+            patch.object(chat_runner, "warm_project_agent_names", new=AsyncMock()),
         ):
             await _drive(state, slot)
 
@@ -2763,12 +2814,11 @@ class TestAppAgentDispatchGuard:
             resolved_alias="my-app-agent",
             requested_resolved=True,
         )
-        with patch.object(cr, "resolve_agent_bindings", return_value=warm), patch.object(
-            cr, "subprocess_executor", MagicMock(return_value=None)
-        ), patch(
-            "kiro_crew.apps.manager.is_app_enabled", MagicMock(return_value=True)
-        ), patch(
-            "kiro_crew.apps.bridges.register_app", slow_register
+        with (
+            patch.object(cr, "resolve_agent_bindings", return_value=warm),
+            patch.object(cr, "subprocess_executor", MagicMock(return_value=None)),
+            patch("kiro_crew.apps.manager.is_app_enabled", MagicMock(return_value=True)),
+            patch("kiro_crew.apps.bridges.register_app", slow_register),
         ):
             task = asyncio.create_task(
                 cr._recover_app_agent_binding(MagicMock(), slot, project=None)
@@ -2799,19 +2849,14 @@ class TestAppAgentDispatchGuard:
         # Never reached when the bail is present; set so a REMOVED bail would fail
         # on the assertion below (get_or_create awaited) rather than on unpacking.
         state.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
-        cold = _bindings(
-            kiro_agent="kirocrew", resolved_alias="default", requested_resolved=False
-        )
-        with patch.object(chat_runner.asyncio, "sleep", new=AsyncMock()), patch.object(
-            chat_runner, "_consume_pending_reset", new=AsyncMock()
-        ), patch.object(
-            chat_runner, "resolve_agent_bindings", side_effect=[cold, cold, cold]
-        ), patch.object(
-            chat_runner, "refresh_materialized_agents", MagicMock()
-        ), patch(
-            "kiro_crew.apps.bridges.register_app", MagicMock(return_value=[])
-        ), patch.object(
-            chat_runner, "subprocess_executor", MagicMock(return_value=None)
+        cold = _bindings(kiro_agent="kirocrew", resolved_alias="default", requested_resolved=False)
+        with (
+            patch.object(chat_runner.asyncio, "sleep", new=AsyncMock()),
+            patch.object(chat_runner, "_consume_pending_reset", new=AsyncMock()),
+            patch.object(chat_runner, "resolve_agent_bindings", side_effect=[cold, cold, cold]),
+            patch.object(chat_runner, "refresh_materialized_agents", MagicMock()),
+            patch("kiro_crew.apps.bridges.register_app", MagicMock(return_value=[])),
+            patch.object(chat_runner, "subprocess_executor", MagicMock(return_value=None)),
         ):
             await chat_runner._eager_spawn(state, slot)
 

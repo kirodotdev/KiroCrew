@@ -468,19 +468,19 @@ _HELP_FLAGS: frozenset[str] = frozenset(("--help", "--version"))
 # `sh /tmp/evil.sh --help` (path) and `rm -rf ./proj --help` (option) out,
 # while `docker compose --help` and `git rev-parse --help` stay in.
 _HELP_PROBE_SUBCOMMAND_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
-# Programs whose `<program> <subcommand> --help` really is a usage probe.
+# Programs whose help/version forms really are usage probes.
 #
-# An ALLOWLIST, because the three-token form is the dangerous one: the middle
-# token is indistinguishable from an operand here, so a program that treats it as
-# a script RUNS it (`python3.12 payload --help`). The denied-program table cannot
-# answer that — it matches exactly, and the spellings a real system installs
-# (`python3.12`, `perl5.36`, `node20`, `sh.exe`, `g++-13`) are unbounded.
+# An ALLOWLIST for both forms. In the two-token form the program name comes from
+# the agent, not from a user grant, so accepting an arbitrary bare name would let
+# the agent plant that name in a writable PATH directory and execute it without a
+# prompt. In the three-token form the middle token is indistinguishable from an
+# operand, so a program that treats it as a script RUNS it
+# (`python3.12 payload --help`).
 #
 # Membership means: this program's subcommands are a fixed vocabulary it parses
-# itself, so an unknown one is an error rather than a file to execute. A program
-# missing from here is not blocked — its two-token probe still works, and the
-# three-token form falls through to the human prompt.
-_HELP_PROBE_SUBCOMMAND_PROGRAMS: frozenset[str] = frozenset(
+# itself, and its long help/version flags print metadata rather than execute an
+# operand. A program missing from here falls through to the human prompt.
+_HELP_PROBE_PROGRAMS: frozenset[str] = frozenset(
     (
         "git",
         "cargo",
@@ -531,11 +531,11 @@ _HELP_PROBE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
 def _is_help_probe(segment: str) -> bool:
     """True only when *segment* is a genuine usage/version probe.
 
-    Accepts ``<program> --help`` and ``<program> <subcommand> --help``. The
-    check is deliberately shaped as "only vouch for what is recognisably a
-    probe" rather than "reject the executors we know about": the denied-program
-    table cannot enumerate an arbitrary binary, so anything it does not
-    recognise must fail on the shape instead.
+    Accepts allowlisted ``<program> --help`` and
+    ``<program> <subcommand> --help`` forms. The check is deliberately shaped
+    as "only vouch for what is recognisably a probe" rather than "reject the
+    executors we know about": a bare name is agent-chosen and may resolve to a
+    planted executable, so shape alone cannot authorize it.
 
     Rejected, each for its own reason:
 
@@ -544,6 +544,7 @@ def _is_help_probe(segment: str) -> bool:
     * a program named by path (``./payload``, ``/tmp/x``), which the table has
       no knowledge of and which may ignore ``--help`` entirely;
     * a known code executor or hand-off wrapper (``sh``, ``python``, ``sudo``);
+    * a program outside the code-owned usage-probe allowlist;
     * a ``VAR=value`` prefix, which assigns into the command's environment;
     * anything but a bare word between program and flag, which keeps file paths
       and options out;
@@ -552,8 +553,6 @@ def _is_help_probe(segment: str) -> bool:
     A rejected segment falls through to the read-only allowlist and, failing
     that, to the human approval prompt — nothing is newly blocked.
 
-    The old rule was ``segment.endswith("--help")``, which auto-approved any
-    command at all once the token was appended.
     """
     try:
         tokens = shlex.split(segment)
@@ -577,26 +576,10 @@ def _is_help_probe(segment: str) -> bool:
         return False
     if not program_token or program_token in _HELP_PROBE_DENIED_PROGRAMS:
         return False
+    if program_token not in _HELP_PROBE_PROGRAMS:
+        return False
     if len(tokens) == 3:
-        # The subcommand form only accepts the long spellings — short flags like
-        # `-h` collide with real options when an operand is present.
-        if flag not in _HELP_FLAGS:
-            return False
         if not _HELP_PROBE_SUBCOMMAND_RE.match(tokens[1]):
-            return False
-        # The three-token form is ALLOWLISTED, not merely un-denied. In this shape
-        # the middle token is an operand as far as this classifier can tell, so an
-        # interpreter reached by a spelling the denylist does not carry runs it:
-        #
-        #     python3.12 payload --help      perl5.36 payload --help
-        #     node20 payload --help          g++-13 payload --help
-        #
-        # `_HELP_PROBE_DENIED_PROGRAMS` matches EXACTLY, and the variants a real
-        # system installs — version suffixes, `.exe`, `-13` — are unbounded, so no
-        # list of rejects closes this. Naming the programs whose subcommand form is
-        # known to be a usage probe does, and costs only that a program not yet
-        # listed falls through to the human prompt.
-        if program_token not in _HELP_PROBE_SUBCOMMAND_PROGRAMS:
             return False
     return True
 

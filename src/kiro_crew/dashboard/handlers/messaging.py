@@ -2720,9 +2720,8 @@ def _deny_non_owner_browser_request(request: web.Request, operation: str) -> web
 
     The mutations guarded here are security-sensitive:
 
-    * installing the CLI globally ACTIVATES browser auto-approval, so a
-      non-owner could hand the agent an unprompted browser on a host that had
-      none;
+    * installing the CLI globally adds an executable host capability, so a
+      non-owner must not be able to mutate the machine to provide it;
     * the attach token is a stored credential that silences the browser's own
       per-attach approval prompt — the last human checkpoint before a program
       drives the user's logged-in session;
