@@ -10,8 +10,12 @@ import { describe, it, expect, vi } from 'vitest'
 import React from 'react'
 import { render, screen, fireEvent, act } from '@testing-library/react'
 import TaskList from '../apps/spec-builder/components/TaskList'
-import DocView from '../apps/spec-builder/components/DocView'
+import DocView, { type DocComposer } from '../apps/spec-builder/components/DocView'
 import type { SpecDetail, SpecTask } from '../apps/spec-builder/api'
+
+const idleComposer: DocComposer = {
+  sel: null, setSel: () => {}, note: null, setNote: () => {}, draft: '', setDraft: () => {},
+}
 
 const tasks: SpecTask[] = [
   { index: 0, text: 'wire the endpoint', done: true, hash: 'a'.repeat(64) },
@@ -94,12 +98,12 @@ describe('DocView tasks tab', () => {
   } as unknown as SpecDetail
 
   it('renders the checklist as work when a run handler is wired', () => {
-    render(<DocView detail={detail} tab="tasks" addComment={vi.fn()} runTask={vi.fn()} />)
+    render(<DocView detail={detail} tab="tasks" addComment={vi.fn()} composer={idleComposer} runTask={vi.fn()} />)
     expect(screen.getByRole('button', { name: /run task: add the tests/i })).toBeTruthy()
   })
 
   it('keeps non-checklist task document content reachable', () => {
-    render(<DocView detail={detail} tab="tasks" addComment={vi.fn()} runTask={vi.fn()} />)
+    render(<DocView detail={detail} tab="tasks" addComment={vi.fn()} composer={idleComposer} runTask={vi.fn()} />)
 
     fireEvent.click(screen.getByRole('button', { name: 'tasks.md' }))
 

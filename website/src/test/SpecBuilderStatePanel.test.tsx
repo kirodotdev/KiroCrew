@@ -38,7 +38,7 @@ describe('SpecStatePanel decisions', () => {
     const { rerender } = render(<SpecStatePanel detail={detailWith(GATE)} answerDecision={answerDecision} />)
 
     expect(screen.getByText('pending')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'How should “Gate posture” be answered?Refuse by default (recommended)' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Answer “Gate posture” with Refuse by default (recommended)' }))
 
     // The instruction still carries the title and the option verbatim, and now also the
     // decision id and the bare option: the backend records those two and refuses a
@@ -96,7 +96,7 @@ describe('SpecStatePanel decisions', () => {
       />,
     )
     expect(screen.getByText('pending')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'How should “Registry vs enum” be answered?Registry (recommended)' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Answer “Registry vs enum” with Registry (recommended)' })).toBeInTheDocument()
     expect(screen.queryByText('sending…')).not.toBeInTheDocument()
   })
 
