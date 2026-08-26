@@ -63,6 +63,25 @@ const foldedDiffCards = new Set<string>()
 const SLIDE_DURATION = 0.22
 const SLIDE_EASE = [0.4, 0, 0.2, 1] as const
 
+// ── Collapsed label clamp ──
+// A tool title is whatever the transport hands us, and for a shell call that is
+// the WHOLE command — an inline heredoc or a chained one-liner is routinely
+// several kB. Rendered with `break-words` that wrapped to forty-odd lines, so a
+// single folded tool row could be taller than the answer it belongs to, and the
+// reader had to scroll a wall of quoting to reach the next message.
+//
+// A collapsed row is a STATUS line, exactly like ThinkingBlock's folded
+// "Thought process": it says which tool is running and that it is running, and
+// nothing more. So the collapsed label is pinned to one line with an ellipsis
+// and the full text lives one click away in ToolDetails, which already renders
+// the verbatim input. Expanding restores wrapping — the user asked to see it.
+//
+// `truncate` (not `line-clamp-1`) because the label is a plain flex child:
+// line-clamp would force `display: -webkit-box` on it and drop the flex
+// alignment the icon's centering depends on.
+const LABEL_COLLAPSED_CLASS = 'truncate'
+const LABEL_EXPANDED_CLASS = 'break-words'
+
 /**
  * A tool row's secondary status line (shell elapsed time, `wait` countdown).
  *
@@ -662,6 +681,9 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
   // ignores it while pending.
   const effectivelyExpanded = expanded || hasPendingPerm
 
+  // One line while folded, full wrap once opened. See LABEL_COLLAPSED_CLASS.
+  const labelWrapClass = effectivelyExpanded ? LABEL_EXPANDED_CLASS : LABEL_COLLAPSED_CLASS
+
   // Stable per-instance fallback id for framer-motion's `LayoutGroup`. When a
   // pre-persistence historical message has neither `effectiveId` nor
   // `toolCallId`, multiple pills would otherwise share `tool-detail-` and the
@@ -792,11 +814,12 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
         {/* Deterministic vertical centering: the label spans pin leading-5
             (20px), so the 12px icon centers on the first line at exactly
             (20 − 12) / 2 = 4px. items-start keeps the icon on the first line
-            when the label wraps. */}
+            when the label wraps, which only an EXPANDED row now does. */}
         <Icon size={12} className={`shrink-0 ${iconClass}`} style={{ marginTop: '4px' }} />
         {isShimmering ? (
           <motion.span
-            className="break-words min-w-0 leading-5 bg-clip-text"
+            data-testid="tool-pill-label"
+            className={`${labelWrapClass} min-w-0 leading-5 bg-clip-text`}
             style={{
               backgroundImage: `linear-gradient(90deg, ${shimmerBase} 0%, ${shimmerBase} 40%, ${shimmerHighlight} 50%, ${shimmerBase} 60%, ${shimmerBase} 100%)`,
               backgroundSize: '300% 100%',
@@ -807,7 +830,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
             transition={{ duration: 2.4, repeat: Infinity, ease: 'linear' }}
           >{displayLabel}</motion.span>
         ) : (
-          <span className="break-words min-w-0 leading-5 text-muted hover:text-text transition-colors">{displayLabel}</span>
+          <span data-testid="tool-pill-label" className={`${labelWrapClass} min-w-0 leading-5 text-muted hover:text-text transition-colors`}>{displayLabel}</span>
         )}
       </button>
 
