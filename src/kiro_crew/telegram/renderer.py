@@ -186,6 +186,63 @@ def _display_safe(text: str) -> str:
     return safe
 
 
+def _utf16_len(text: str) -> int:
+    """Length of *text* in UTF-16 code units — the unit of Telegram's caps.
+
+    Python counts code points; the Bot API counts UTF-16 units, so every
+    astral character (emoji, most notably) costs 2 against Telegram's 4096
+    while costing 1 against ``len``. The entity machinery in
+    ``telegram/client.py`` already measures in these units; message budgets
+    here historically did not.
+    """
+    return len(text) + sum(1 for ch in text if ord(ch) > 0xFFFF)
+
+
+def _utf16_cut(text: str, limit: int) -> int:
+    """Largest CODE-POINT index whose prefix fits ``limit`` UTF-16 units.
+
+    Returning a code-point index means ``str`` slicing can never bisect a
+    surrogate pair: an astral character either fits whole or is excluded
+    whole. The floor of 2 is load-bearing — at ``limit=1`` a leading astral
+    character (2 units) would cut at index 0, and a caller consuming the
+    text chunk by chunk would stop making progress.
+    """
+    budget = max(2, limit)
+    units = 0
+    for index, ch in enumerate(text):
+        units += 2 if ord(ch) > 0xFFFF else 1
+        if units > budget:
+            return index
+    return len(text)
+
+
+def _utf16_chunks(text: str, limit: int) -> list[str]:
+    """Split ``text`` into pieces of at most ``limit`` UTF-16 units each.
+
+    Prefers newline boundaries so a line (one restored image reference, in
+    the recovery caller) stays whole within one message; a single line
+    larger than the whole budget is hard-cut at a code-point boundary
+    rather than dropped. Boundary newlines are consumed by the split.
+    """
+    chunks: list[str] = []
+    current = ""
+    for line in text.split("\n"):
+        candidate = f"{current}\n{line}" if current else line
+        if _utf16_len(candidate) <= max(2, limit):
+            current = candidate
+            continue
+        if current:
+            chunks.append(current)
+        while _utf16_len(line) > max(2, limit):
+            cut = _utf16_cut(line, limit)
+            chunks.append(line[:cut])
+            line = line[cut:]
+        current = line
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 def md_to_telegram_html_safe(text: str) -> str:
     """Redact against the rendered form, THEN translate markdown to HTML.
 
@@ -1458,12 +1515,22 @@ class TelegramRenderer(Renderer):
         restored = _display_safe(
             "\n".join(f"![{item.alt or 'image'}]({item.path})" for item in files)
         )
-        await self._client.send_message(
-            self._chat_id,
-            f"⚠️ Couldn't upload:\n{restored}"[: self._limit()],
-            message_thread_id=self._thread_id,
-            disable_notification=True,
-        )
+        # One truncated bubble used to keep only what fit under the cap — with
+        # several failed images the LATER references vanished silently. And the
+        # cap itself was measured in code points while Telegram counts UTF-16
+        # units, so emoji-dense alt text passed the slice and bounced at the
+        # API. Chunk the redacted whole by UTF-16 budget instead (redaction
+        # first, so the scanner saw the contiguous text; a chunk is a pure
+        # substring of it). Header rides the first bubble only.
+        header = "⚠️ Couldn't upload:\n"
+        budget = self._limit() - _utf16_len(header)
+        for index, chunk in enumerate(_utf16_chunks(restored, budget)):
+            await self._client.send_message(
+                self._chat_id,
+                f"{header}{chunk}" if index == 0 else chunk,
+                message_thread_id=self._thread_id,
+                disable_notification=True,
+            )
 
     async def _seal_current(
         self,

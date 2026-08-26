@@ -34,6 +34,9 @@ from kiro_crew.telegram.renderer import (
     TelegramApprovalDecider,
     TelegramRenderer,
     _display_safe,
+    _utf16_chunks,
+    _utf16_cut,
+    _utf16_len,
 )
 from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES, TelegramInboundMessage
 
@@ -294,6 +297,70 @@ class TestOutboundImages:
         renderer._buf = ["Here it is."]
         await renderer.on_done()
         assert _AWS_KEY not in "".join(text for text, _ in client.sent)
+
+    @pytest.mark.asyncio
+    async def test_recovery_of_many_failed_uploads_drops_no_reference(self) -> None:
+        # One truncated bubble used to keep only what fit under the cap: with
+        # enough failed images, every reference past it vanished silently.
+        renderer, client = _renderer()
+        renderer.authorize_upload_root("/tmp")
+        client.media_fails = True
+        files = [_png(f"chart-{i:03d}.png") for i in range(200)]
+        renderer._extract_uploads = AsyncMock(  # type: ignore[method-assign]
+            return_value=("Here they are.", files)
+        )
+        renderer._buf = ["Here they are."]
+        await renderer.on_done()
+        landed = "\n".join(text for text, _ in client.sent)
+        for item in files:
+            assert item.path in landed, f"recovery dropped {item.path}"
+        # Every recovery bubble stays within the channel budget, measured in
+        # Telegram's unit.
+        for text, _ in client.sent:
+            assert _utf16_len(text) <= renderer._limit()
+
+    @pytest.mark.asyncio
+    async def test_recovery_respects_telegram_utf16_budget(self) -> None:
+        # Telegram's cap counts UTF-16 code units; the old slice counted code
+        # points. An astral char costs 2 units, so emoji-dense alt text passed
+        # the slice while overflowing the real limit, and the send bounced.
+        renderer, client = _renderer()
+        renderer.authorize_upload_root("/tmp")
+        client.media_fails = True
+        dense = OutboundFile(
+            path="/tmp/chart.png",
+            data=b"\x89PNG\r\n\x1a\n",
+            alt="🚀" * 3000,
+            mime="image/png",
+        )
+        renderer._extract_uploads = AsyncMock(  # type: ignore[method-assign]
+            return_value=("Here.", [dense])
+        )
+        renderer._buf = ["Here."]
+        await renderer.on_done()
+        assert client.sent, "recovery bubbles must land"
+        for text, _ in client.sent:
+            assert _utf16_len(text) <= renderer._limit(), "bubble exceeds the API cap"
+        # Chunked, not truncated: no part of the alt text was dropped.
+        assert sum(text.count("🚀") for text, _ in client.sent) == 3000
+
+    def test_utf16_cut_floor_prevents_zero_progress(self) -> None:
+        # limit=1 with a leading astral char would otherwise cut at index 0
+        # forever; the floor of 2 guarantees any single char makes progress.
+        assert _utf16_cut("🚀abc", 1) >= 1
+        chunks = _utf16_chunks("🚀" * 5, 1)
+        assert "".join(chunks) == "🚀" * 5
+        assert all(_utf16_len(chunk) <= 2 for chunk in chunks)
+
+    def test_utf16_chunks_pack_lines_and_lose_nothing(self) -> None:
+        text = "\n".join(f"![a](/tmp/{i}.png)" for i in range(40))
+        chunks = _utf16_chunks(text, 100)
+        assert len(chunks) > 1, "must actually split for this to test packing"
+        assert all(_utf16_len(chunk) <= 100 for chunk in chunks)
+        # Newline-boundary packing: reassembled lines are exactly the input
+        # lines — nothing dropped, no line bisected.
+        lines = [line for chunk in chunks for line in chunk.split("\n")]
+        assert lines == text.split("\n")
 
     @pytest.mark.asyncio
     async def test_a_length_rotation_holds_a_STRADDLING_reference(self) -> None:
