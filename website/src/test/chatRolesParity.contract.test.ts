@@ -18,6 +18,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { defaultMessageRenderers } from '../app-sdk/messageRenderers'
+import { REASONING_ROLES } from '../pages/chat/groupDisplayItems'
 
 /**
  * Roles ChatPage handles that are deliberately NOT a registry row. Each entry
@@ -55,6 +56,26 @@ function chatPageRoleLiterals(): Set<string> {
   // `messages[i].role === 'x'` (and their !== variants — a negative dispatch
   // still means the code KNOWS the role).
   for (const m of src.matchAll(/\.role\s*[!=]==\s*'([a-z_]+)'/g)) roles.add(m[1])
+  // Reasoning rows dispatch through the shared predicate (isReasoningRole /
+  // hasReasoningContent from pages/chat/groupDisplayItems — the #6406
+  // single-definition consolidation) rather than a role literal. Credit the
+  // shared list's roles ONLY when ChatPage imports BOTH predicates from the
+  // shared module AND both dispatch statements are present. This is a textual
+  // check, not an AST binding check: a comment spelling the exact dispatch
+  // shape could keep the credit alive — accepted, because the companion
+  // predicate-idiom guard below and the reasoningBurst structural scan bound
+  // what ChatPage can contain, and losing either import drops the credit
+  // (the orphan check then reddens). If the dispatch shape is refactored,
+  // update these patterns.
+  const importsShared =
+    /import \{[^}]*\bhasReasoningContent\b[^}]*\} from '\.\/chat\/groupDisplayItems'/.test(src) &&
+    /import \{[^}]*\bisReasoningRole\b[^}]*\} from '\.\/chat\/groupDisplayItems'/.test(src)
+  const dispatchesReasoning =
+    /hasReasoningContent\(\w+\)\)\s*return\s*<ThinkingBlock/.test(src) &&
+    /isReasoningRole\(\w+\)\)\s*return\s*null/.test(src)
+  if (importsShared && dispatchesReasoning) {
+    for (const role of REASONING_ROLES) roles.add(role)
+  }
   return roles
 }
 
@@ -106,14 +127,24 @@ describe('chat role parity (ChatPage renderMessage vs app-sdk registry)', () => 
 
   it('fails closed: every role dispatch in ChatPage uses the shape the extractor parses', () => {
     const src = readFileSync(resolve(__dirname, '../pages/ChatPage.tsx'), 'utf8')
-    // The extractor only understands `<expr>.role ===/!== '<literal>'`. Any
-    // other dispatch idiom — switch(m.role), a lookup map, comparison against
-    // a variable — would be invisible to the parity checks above, so its mere
-    // presence fails this contract. If you add one, extend the extractor in
-    // this file to parse it rather than allowlisting it here.
+    // The extractor understands two idioms: `<expr>.role ===/!== '<literal>'`
+    // and the shared reasoning predicates credited above. Any other dispatch
+    // idiom — switch(m.role), a lookup map, comparison against a variable —
+    // would be invisible to the parity checks above, so its mere presence
+    // fails this contract. If you add one, extend the extractor in this file
+    // to parse it rather than allowlisting it here.
     const comparisons = [...src.matchAll(/\.role\s*[!=]==\s*(\S)/g)]
     const nonLiteral = comparisons.filter(m => m[1] !== "'")
     expect(nonLiteral.map(m => m[0])).toEqual([])
     expect([...src.matchAll(/switch\s*\([^)]*\.role/g)].map(m => m[0])).toEqual([])
+    // Predicate-shaped role dispatch (the #6406 idiom): only the two shared
+    // reasoning predicates are parsed. A future is<X>Role(...) / has<X>Content(...)
+    // helper called in ChatPage is a role dispatch the extractor cannot see,
+    // so its presence fails here until the extractor learns it.
+    const predicateCalls = [...src.matchAll(/\b(is[A-Z]\w*Role|has[A-Z]\w*Content)\s*\(/g)].map(m => m[1])
+    const unknownPredicates = predicateCalls.filter(
+      name => name !== 'isReasoningRole' && name !== 'hasReasoningContent',
+    )
+    expect(unknownPredicates).toEqual([])
   })
 })

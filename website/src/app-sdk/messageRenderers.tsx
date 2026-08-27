@@ -28,6 +28,7 @@ import NudgeCard from '../pages/chat/NudgeCard'
 import NoticeCard from '../pages/chat/NoticeCard'
 import { ErrorCard } from '../pages/chat/ErrorCard'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
+import { REASONING_ROLES } from '../pages/chat/groupDisplayItems'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import MessageErrorBoundary from '../components/MessageErrorBoundary'
 import PastedChip from '../components/PastedChip'
@@ -341,7 +342,10 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
     // permission message is displayed by the group's own summary UI, and
     // system/done/queued carry state rather than something to read here.
     id: 'undrawn',
-    roles: ['thinking', 'system', 'done', 'queued'],
+    // Reasoning roles derive from the shared classification (see
+    // pages/chat/groupDisplayItems.ts) so this default cannot drift from the
+    // surfaces that DO draw them; the lifecycle roles are local to this entry.
+    roles: [...REASONING_ROLES, 'system', 'done', 'queued'],
     render: () => null,
   },
   {
@@ -399,7 +403,7 @@ export function resolveRenderer(
  * is not an extension point today — see the limitation note in
  * docs/app-kit/api-reference.md.
  */
-export const GROUPED_ROLES: readonly string[] = Object.freeze(['thinking', 'permission'])
+export const GROUPED_ROLES: readonly string[] = Object.freeze([...REASONING_ROLES, 'permission'])
 
 /**
  * Host entries sit between the SHAPE-matched defaults and the role-keyed ones.

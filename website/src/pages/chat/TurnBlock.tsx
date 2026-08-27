@@ -7,6 +7,7 @@ import { isWorkflowRunTool } from './WorkflowRunCard'
 import { isSpawnRunTool } from './SubagentRunCard'
 import { isWorkflowCompletionMessage } from './WorkflowCompletionCard'
 import { isSubagentCompletionMessage } from './subagentCompletion'
+import { isReasoningBurst } from './groupDisplayItems'
 import { isDiffToolMessage } from './toolDiff'
 import { OPTION_MARKER_RE } from '../../app-sdk/protocol/optionMarker'
 import { i18nT } from '../../i18n/t'
@@ -202,19 +203,20 @@ function findConclusionIdx(items: TurnItem[]): number {
  */
 function mergeTurnThinking(items: TurnItem[]): TurnItem[] {
   const thinkingPositions: number[] = []
+  const bursts: Extract<TurnItem, { kind: 'single' }>[] = []
   for (let i = 0; i < items.length; i++) {
     const it = items[i]
-    if (it.kind === 'single' && it.msg.role === 'thinking' && it.msg.content) thinkingPositions.push(i)
+    // Shared with the wrap gate that routes multi-burst batches here — see
+    // isReasoningBurst in groupDisplayItems.ts for why there is ONE definition.
+    if (isReasoningBurst(it)) { thinkingPositions.push(i); bursts.push(it) }
   }
   if (thinkingPositions.length === 0) return items
   // A single burst already at the top is the settled, correct shape (the live
   // path and a 1:1 reload both produce it) — leave it, so a plain reasoning
   // turn is not needlessly rewritten.
   if (thinkingPositions.length === 1 && thinkingPositions[0] === 0) return items
-  const first = items[thinkingPositions[0]] as Extract<TurnItem, { kind: 'single' }>
-  const merged = thinkingPositions
-    .map(p => (items[p] as Extract<TurnItem, { kind: 'single' }>).msg.content)
-    .join('\n\n')
+  const first = bursts[0]
+  const merged = bursts.map(b => b.msg.content).join('\n\n')
   const mergedItem: TurnItem = { kind: 'single', msg: { ...first.msg, content: merged }, idx: first.idx }
   const drop = new Set(thinkingPositions)
   // Hoist the merged reasoning to the turn top; every other item keeps its order.

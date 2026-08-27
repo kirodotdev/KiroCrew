@@ -9,6 +9,45 @@ import { isSubagentCompletionMessage } from './subagentCompletion'
 export const GROUPABLE = new Set(['permission'])
 
 /**
+ * The reasoning roles, and what "content-bearing reasoning" means. These are
+ * THE single definition of the classification, shared by every display-layer
+ * site that acts on it:
+ *
+ *  - the wrap gate below (`contentThinkingCount` via `isReasoningBurst`, which
+ *    decides when a batch is routed into a {kind:'turn'} wrapper),
+ *  - the per-turn fold that gate feeds (`mergeTurnThinking` in TurnBlock.tsx,
+ *    which folds a turn's bursts into one hoisted row),
+ *  - ChatPage's `renderMessage` (content-bearing → ThinkingBlock, empty
+ *    placeholder → nothing, via `hasReasoningContent` + `isReasoningRole`),
+ *  - the shared-transcript registry entry (`transcriptRenderers.tsx`, whose
+ *    `roles` key and render guard both derive from here).
+ *
+ * These sites used to keep hand-written copies of the same condition; any
+ * future refinement (a new reasoning role, a whitespace guard, a meta flag)
+ * must happen HERE so the wrap threshold, the fold, and the row renderers can
+ * never drift apart — that drift is exactly how the duplicate
+ * "Thought process" rows of #6376 would regrow. (The store's burst-lifecycle
+ * mechanics in chatSlice are a different concern — they manage streaming
+ * placeholders, not display classification — and deliberately stay separate.)
+ */
+export const REASONING_ROLES = ['thinking'] as const
+
+const REASONING_ROLE_SET: ReadonlySet<string> = new Set(REASONING_ROLES)
+
+/** Is this message a reasoning trace (regardless of whether it has content)?
+ *  Structurally typed so raw-snapshot (wire-shape) surfaces can reuse it. */
+export const isReasoningRole = (msg: { role: string }): boolean =>
+  REASONING_ROLE_SET.has(msg.role)
+
+/** A content-bearing reasoning message; empty placeholders render nothing and never count. */
+export const hasReasoningContent = (msg: { role: string; content: string }): boolean =>
+  isReasoningRole(msg) && !!msg.content
+
+/** Item-level form of {@link hasReasoningContent} for TurnItem scans. */
+export const isReasoningBurst = (t: TurnItem): t is Extract<TurnItem, { kind: 'single' }> =>
+  t.kind === 'single' && hasReasoningContent(t.msg)
+
+/**
  * Roles that OPEN a turn, and are therefore the rows a reader can be anchored to.
  *
  * `nudge` and `subagent` are machine-injected but they ARE the thing that started
@@ -100,7 +139,7 @@ export function groupDisplayItems(messages: ChatMessage[]): GroupedTurns {
   // a separate predicate. Empty placeholder bursts do not count (they render
   // nothing, and mergeTurnThinking ignores them too).
   const contentThinkingCount = (items: TurnItem[]) =>
-    items.reduce((n, t) => n + (t.kind === 'single' && t.msg.role === 'thinking' && t.msg.content ? 1 : 0), 0)
+    items.reduce((n, t) => n + (isReasoningBurst(t) ? 1 : 0), 0)
   const flushTurn = (items: TurnItem[], complete: boolean) => {
     if ((hasWorkingSteps(items) && items.length > 2) || contentThinkingCount(items) >= 2) {
       turns.push({ kind: 'turn', items, complete })

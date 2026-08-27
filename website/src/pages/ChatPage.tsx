@@ -154,7 +154,7 @@ import SubagentProgressBar from './chat/SubagentProgressBar'
 import TaskProgressBar from './chat/TaskProgressBar'
 import SidePanel, { CHAT_PANE_MIN_W, sidePanelFillWidth } from './chat/SidePanel'
 import { useSidePanelDock } from '../hooks/useSidePanelDock'
-import { groupDisplayItems, applyRunningState } from './chat/groupDisplayItems'
+import { groupDisplayItems, applyRunningState, hasReasoningContent, isReasoningRole } from './chat/groupDisplayItems'
 import { setSessionPreviewPending, normalizeUrl, PREVIEW_EXPAND_EVENT, PREVIEW_SNIP_EVENT } from '../components/WebPreviewPanel'
 import { detectPreviewUrl, previewFeedDecision } from '../utils/detectPreviewUrl'
 import { fileLandingSlot } from '../utils/uploadRouting'
@@ -6275,7 +6275,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // Key identity rules (clientTs preference + streaming→assistant role
     // normalization) live in messageRowKey — see its doc comment.
     const key = messageRowKey(m, i)
-    if (m.role === 'thinking') return m.content ? <ThinkingBlock key={key} content={m.content} disclosureKey={key} /> : null
+    // Shared with the wrap gate and fold — see hasReasoningContent in
+    // groupDisplayItems.ts for why there is ONE definition of this condition.
+    if (hasReasoningContent(m)) return <ThinkingBlock key={key} content={m.content} disclosureKey={key} />
+    if (isReasoningRole(m)) return null
     if (m.role === 'tool') {
       // Skip ✅/🚫 completion messages — completion shown via CircleCheckBig icon
       if (!m.content.startsWith('🔧')) return null

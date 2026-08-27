@@ -30,6 +30,7 @@ import SubagentRunCard, { extractSpawnRunLaunch, isSpawnRunTool } from './Subage
 import WorkflowCompletionCard, { isWorkflowCompletionMessage } from './WorkflowCompletionCard'
 import SubagentCompletionCard from './SubagentCompletionCard'
 import { isSubagentCompletionMessage, type ParsedSubagentCompletion } from './subagentCompletion'
+import { REASONING_ROLES, hasReasoningContent } from './groupDisplayItems'
 import { FileCard } from '../../components/FileCard'
 import type { MessageRenderer, MessageRenderContext } from '../../app-sdk/messageRenderers'
 import type { ChatMessage } from '../../types'
@@ -172,8 +173,11 @@ export function createTranscriptRenderers(
       // surface renders it. Opting a grouped role out of the group is not an
       // extension point yet — tracked in #2940.
       id: 'thinking_block',
-      roles: ['thinking'],
-      render: (m, ctx) => (m.content ? ctx.row(<ThinkingBlock content={m.content} disclosureKey={ctx.key} />) : null),
+      // Both the role key and the content guard derive from the shared
+      // reasoning predicate (see groupDisplayItems.ts) so this surface can
+      // never drift from ChatPage's renderer or the gate→fold pipeline.
+      roles: [...REASONING_ROLES],
+      render: (m, ctx) => (hasReasoningContent(m) ? ctx.row(<ThinkingBlock content={m.content} disclosureKey={ctx.key} />) : null),
     },
     {
       // Replaces the default's null with the player / download card.
