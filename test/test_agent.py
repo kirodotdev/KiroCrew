@@ -664,6 +664,89 @@ class TestAllSkillPathsLocalSymlinks:
 class TestResolveKirocrewBin:
     """Tests for lazy kirocrew binary resolution."""
 
+    @pytest.fixture
+    def no_interpreter_scripts(self, tmp_path: Path):
+        """Neutralise the interpreter's-own-prefix resolution step.
+
+        That step answers from the REAL interpreter running this suite, whose
+        prefix legitimately holds a ``bin/kirocrew`` whenever the suite runs
+        inside an install — so it short-circuits resolution before any LATER
+        step can be observed. Tests asserting a later step must point it at an
+        empty prefix; tests asserting the step itself supply their own.
+        """
+        empty = tmp_path / "empty-prefix"
+        empty.mkdir(exist_ok=True)
+        with patch("sys.exec_prefix", str(empty)):
+            yield
+
+    def test_prefers_interpreter_scripts_dir_over_path(self, tmp_path: Path):
+        """A sibling-tree console script beats an unrelated one on PATH.
+
+        A prefix-style runtime can put the package under
+        ``<root>/lib/python3.12/site-packages/`` and the console script under
+        the interpreter prefix ``<root>/python3.12/`` — sibling trees, so the
+        parent walk cannot reach the script. Resolution used to fall through to
+        PATH and pick up whatever ``kirocrew`` an unrelated earlier install had
+        left there, then cache it as the command for the built-in MCP servers.
+
+        The launcher is created through ``_kirocrew_bin_subpath`` rather than at
+        a hardcoded ``bin/kirocrew``, so the layout is the one this OS actually
+        looks for (``Scripts\\kirocrew.exe`` on Windows).
+        """
+        import kiro_crew.agent as agent_mod
+        from kiro_crew.agent import _kirocrew_bin_subpath, _resolve_kirocrew_bin
+
+        root = tmp_path / "runtime"
+        pkg_dir = root / "lib" / "python3.12" / "site-packages" / "kiro_crew"
+        pkg_dir.mkdir(parents=True)
+        (pkg_dir / "__init__.py").write_text("")
+
+        # The console script lives under the interpreter PREFIX, a sibling tree
+        # of the package, not above site-packages.
+        prefix = root / "python3.12"
+        own_bin = _kirocrew_bin_subpath(prefix)
+        own_bin.parent.mkdir(parents=True, exist_ok=True)
+        own_bin.write_text("#!/bin/sh\nexec true\n")
+        own_bin.chmod(0o755)
+
+        # An unrelated install's launcher, earlier on PATH.
+        other = tmp_path / "elsewhere"
+        other.mkdir()
+        path_bin = other / "kirocrew"
+        path_bin.write_text("#!/bin/sh\nexec true\n")
+        path_bin.chmod(0o755)
+
+        mock_mc = unittest.mock.MagicMock()
+        mock_mc.__file__ = str(pkg_dir / "__init__.py")
+
+        # Keep the real validator but confine it to this tmp tree, so a
+        # ``kirocrew`` that happens to exist on the host cannot be selected.
+        _real_works = agent_mod._launcher_works
+
+        def _scoped_works(p: Path) -> bool:
+            return str(p).startswith(str(tmp_path)) and _real_works(p)
+
+        old_val = agent_mod._KIROCREW_BIN
+        try:
+            agent_mod._KIROCREW_BIN = None
+            with ExitStack() as stack:
+                stack.enter_context(patch.dict("sys.modules", {"kiro_crew": mock_mc}))
+                stack.enter_context(
+                    patch("kiro_crew.agent._launcher_works", side_effect=_scoped_works)
+                )
+                stack.enter_context(patch("sys.exec_prefix", str(prefix)))
+                stack.enter_context(
+                    patch(
+                        "shutil.which",
+                        side_effect=lambda c: str(path_bin) if c == "kirocrew" else None,
+                    )
+                )
+                result = _resolve_kirocrew_bin()
+            assert result == str(own_bin)
+            assert result != str(path_bin)
+        finally:
+            agent_mod._KIROCREW_BIN = old_val
+
     def test_finds_bin_in_parent_hierarchy(self, tmp_path: Path):
         """Walks up from package dir to find bin/kirocrew."""
         import kiro_crew.agent as agent_mod
@@ -696,7 +779,7 @@ class TestResolveKirocrewBin:
         finally:
             agent_mod._KIROCREW_BIN = old_val
 
-    def test_falls_back_to_shutil_which(self, tmp_path: Path):
+    def test_falls_back_to_shutil_which(self, tmp_path: Path, no_interpreter_scripts):
         """Falls back to PATH lookup when bin/ not found in hierarchy."""
         import kiro_crew.agent as agent_mod
         from kiro_crew.agent import _resolve_kirocrew_bin
@@ -738,7 +821,7 @@ class TestResolveKirocrewBin:
         finally:
             agent_mod._KIROCREW_BIN = old_val
 
-    def test_returns_kirocrew_when_not_found(self, tmp_path: Path):
+    def test_returns_kirocrew_when_not_found(self, tmp_path: Path, no_interpreter_scripts):
         """Returns 'kirocrew' string when not found anywhere."""
         import kiro_crew.agent as agent_mod
         from kiro_crew.agent import _resolve_kirocrew_bin
@@ -760,7 +843,7 @@ class TestResolveKirocrewBin:
         finally:
             agent_mod._KIROCREW_BIN = old_val
 
-    def test_skips_stale_shutil_which_result(self, tmp_path: Path):
+    def test_skips_stale_shutil_which_result(self, tmp_path: Path, no_interpreter_scripts):
         """Falls through to bare 'kirocrew' when shutil.which returns a
         path that no longer exists (e.g. deleted after Toolbox migration).
         Regression test for scenario where
@@ -796,7 +879,7 @@ class TestResolveKirocrewBin:
         finally:
             agent_mod._KIROCREW_BIN = old_val
 
-    def test_walk_and_path_miss_falls_back_to_bare(self, tmp_path: Path):
+    def test_walk_and_path_miss_falls_back_to_bare(self, tmp_path: Path, no_interpreter_scripts):
         """When the bin walk and PATH both miss, fall back to bare 'kirocrew'.
 
         The public install has no Brazil ``brazil-path run.runtimefarm`` step,
@@ -837,7 +920,7 @@ class TestResolveKirocrewBin:
         finally:
             agent_mod._KIROCREW_BIN = old_val
 
-    def test_brazil_path_failure_falls_through(self, tmp_path: Path):
+    def test_brazil_path_failure_falls_through(self, tmp_path: Path, no_interpreter_scripts):
         """brazil-path raising an exception falls through without crashing."""
         import kiro_crew.agent as agent_mod
         from kiro_crew.agent import _resolve_kirocrew_bin

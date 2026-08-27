@@ -463,8 +463,12 @@ def _resolve_kirocrew_bin() -> str:
        whose bundled interpreter is a python-build-standalone tree exposing a
        launcher at its root, reached by this walk from the bundle's
        ``site-packages``.
-    3. ``shutil.which('kirocrew')`` — respects PATH order.
-    4. Bare ``"kirocrew"`` — last resort, may fail but surfaces the problem
+    3. The running interpreter's own install prefix (``sys.exec_prefix``). Same
+       intent as step 2 — the install this process belongs to — for layouts
+       where the console script is not an ancestor-sibling of the package and
+       the parent walk therefore cannot reach it.
+    4. ``shutil.which('kirocrew')`` — respects PATH order.
+    5. Bare ``"kirocrew"`` — last resort, may fail but surfaces the problem
        instead of caching a known-bad absolute path.
 
     Every candidate is validated with ``is_file()`` and ``os.access(X_OK)``
@@ -519,13 +523,43 @@ def _resolve_kirocrew_bin() -> str:
     except Exception:
         logger.debug("kirocrew bin walk failed", exc_info=True)
 
-    # 3. PATH lookup (also validated)
+    # 3. The running interpreter's own install prefix.
+    #
+    #    Step 2 asks "which install does this process belong to?" but answers it
+    #    by walking the package's PARENTS, so it only sees a console script that
+    #    sits above ``site-packages``. Layouts that put the two in sibling trees
+    #    are invisible to it — a prefix-style runtime can have the package at
+    #    ``<root>/lib/python3.12/site-packages/kiro_crew`` and the script at
+    #    ``<root>/python3.12/bin/kirocrew``, which is not an ancestor of the
+    #    package dir at all. The walk then finds nothing and resolution falls
+    #    through to PATH, where an unrelated ``kirocrew`` from some earlier
+    #    install wins and gets written into ``kirocrew.json`` as the command for
+    #    the built-in MCP servers.
+    #
+    #    ``sys.exec_prefix`` IS the install root for the interpreter actually
+    #    running — the venv root inside a venv, the runtime root otherwise — so
+    #    handing it to :func:`_kirocrew_bin_subpath` yields the same directory
+    #    ``sysconfig.get_path("scripts")`` would, and keeps the per-OS naming
+    #    and the Windows ``.cmd``-over-``.exe`` ranking in one place. Derived
+    #    from ``sys`` (already imported, and immune to import shadowing) rather
+    #    than by importing ``sysconfig`` here: this module is imported during
+    #    ``kiro_crew`` package init, which can run with a user project on
+    #    ``sys.path``, and a project-local ``sysconfig.py`` would then execute.
+    try:
+        candidate = _kirocrew_bin_subpath(Path(sys.exec_prefix))
+        if _usable(candidate):
+            _KIROCREW_BIN = str(candidate)
+            return _KIROCREW_BIN
+    except Exception:
+        logger.debug("kirocrew exec-prefix bin check failed", exc_info=True)
+
+    # 4. PATH lookup (also validated)
     found = shutil.which("kirocrew")
     if found and _usable(found):
         _KIROCREW_BIN = found
         return _KIROCREW_BIN
 
-    # 4. Last resort — don't cache, so a future call can retry
+    # 5. Last resort — don't cache, so a future call can retry
     logger.warning(
         "Could not resolve kirocrew binary to an existing file; "
         "falling back to bare 'kirocrew' (MCP probes may fail)"
