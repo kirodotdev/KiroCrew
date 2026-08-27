@@ -6030,6 +6030,34 @@ class SubagentManager:
                     )
                     continue
                 if event.child_low_fidelity:
+                    # UNCONDITIONAL parent grant + verified canonical MCP
+                    # identity: parent_policy=auto approves regardless of
+                    # event content, and child_mcp_identity_trusted proves a
+                    # real MCP tool_call frame (non-model-authored _meta.kiro
+                    # identity, resolved non-shell) is behind this request —
+                    # only its ARGUMENTS are unverified, which this grant
+                    # never reads. Honor the grant instead of stalling a
+                    # trusted fan-out on an interactive card per call. The
+                    # hook auto-approve below stays fail-closed for these:
+                    # its auto_approve_tools patterns match the agent-authored
+                    # title, which a child could forge.
+                    if parent_policy == "auto" and event.child_mcp_identity_trusted:
+                        await self._approve_and_log(
+                            client,
+                            event.request_id,
+                            session_key,
+                            event,
+                            metadata={
+                                "subagent_id": info.id,
+                                "reason": "parent_policy_auto",
+                                "child_mcp_identity": (
+                                    f"{event.mcp_server_name}/{event.tool_name}"
+                                ),
+                                "child_args_unverified": True,
+                            },
+                            info=info,
+                        )
+                        continue
                     # Backend-internal child origin whose SECURITY context is
                     # absent (structured params missing, unresolved shell
                     # classification, or shell without a recoverable command —

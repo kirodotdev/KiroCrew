@@ -6415,6 +6415,36 @@ async def _run_chat(
                 # to the interactive card. A child WITH full context takes the
                 # same branches as the main agent (mode parity).
                 _child_low_fidelity = event.child_low_fidelity
+                # Verified-identity half of the fidelity split (see
+                # AcpEvent.child_mcp_identity_trusted): a remote MCP server's
+                # tool_call frame streams no rawInput, so args provenance is
+                # unrecoverable — but the _meta.kiro server/tool identity DID
+                # arrive and is non-model-authored. UNCONDITIONAL grant paths
+                # below (trust-all / YOLO / native crew), whose approve decision
+                # consumes no agent-authored event data, honor the grant for
+                # such events; content-matching paths (trusted patterns,
+                # trust-reads) stay gated on the composite fidelity because the
+                # agent-authored title/params ARE their matched input.
+                _child_grant_eligible = not _child_low_fidelity or event.child_mcp_identity_trusted
+                if _child_low_fidelity:
+                    # Diagnostic for a path that is otherwise invisible in
+                    # logs: without it a trust-all session watching its
+                    # subagent stall on an approval card has no log line to
+                    # find (the annotate-and-prompt branch is silent).
+                    logger.info(
+                        "low-fidelity child permission request (child=%s, " "mcp_identity=%s): %s",
+                        event.sub_session_id,
+                        (
+                            f"verified {event.mcp_server_name}/{event.tool_name}"
+                            if event.child_mcp_identity_trusted
+                            else "unverified"
+                        ),
+                        (
+                            "unconditional grants still apply"
+                            if _child_grant_eligible
+                            else "all auto-approve paths skipped"
+                        ),
+                    )
                 # DISPLAY-ONLY warning for the interactive card: the human
                 # must know the title is ALL there is (the params the gates
                 # would verify are absent, so the displayed text is
@@ -6664,7 +6694,7 @@ async def _run_chat(
                 # through to the normal interactive/trust gate below.
                 if (
                     _native_crew_should_auto_approve(_native_tracker, state, slot)
-                    and not _child_low_fidelity
+                    and _child_grant_eligible
                 ):
                     logger.debug(
                         "Native crew auto-approve: %r (request_id=%s)",
@@ -6829,12 +6859,15 @@ async def _run_chat(
                         )
                         continue
                 # Trust mode (per-slot) or YOLO mode (global) — auto-approve.
-                # Low-fidelity child events (backend subagents whose command
-                # bytes never reached the caches) are excluded from every
-                # auto-approve path and fall through to the interactive card;
+                # Both are UNCONDITIONAL grants: the decision consumes no
+                # agent-authored event data, so a low-fidelity child event
+                # with a VERIFIED canonical MCP identity still qualifies
+                # (_child_grant_eligible — arguments unverified, but the grant
+                # never reads them). A child with neither full context nor a
+                # verified identity falls through to the interactive card;
                 # children WITH cached bytes take these branches exactly like
                 # the main agent (mode parity).
-                if (slot_trusted or yolo_active) and not _child_low_fidelity:
+                if (slot_trusted or yolo_active) and _child_grant_eligible:
                     try:
                         validated_tool = _validate_tool_name(event.title, is_shell=event.is_shell)
                     except ValueError as e:

@@ -866,9 +866,11 @@ class TestScopedGrantIsNeverPersisted:
         src = inspect.getsource(chat_runner._run_chat)
         assert "slot_trusted = _slot_is_trusted(slot)" in src
         # The trust/YOLO gate still branches on _slot_is_trusted's verdict; the
-        # low-fidelity qualifier only excludes backend-subagent events whose
-        # command bytes never reached the caches (see chat_runner).
-        assert "if (slot_trusted or yolo_active) and not _child_low_fidelity:" in src
+        # grant-eligibility qualifier only excludes backend-subagent events
+        # whose command bytes never reached the caches AND whose canonical MCP
+        # identity did not resolve either (see chat_runner — a verified
+        # identity keeps the unconditional grant honored).
+        assert "if (slot_trusted or yolo_active) and _child_grant_eligible:" in src
 
     def test_the_runner_writes_the_policy_through_the_helper(self) -> None:
         """Pins the call site, not just the helper.

@@ -93,6 +93,20 @@ is decided in strict priority order:
 Step 3 ensures parentless subagents (e.g. cron jobs) respect the user's
 global approval mode instead of falling through to interactive approval.
 
+**Child-fidelity gate.** A child-origin permission event whose SECURITY context
+is absent (`AcpEvent.child_low_fidelity`: structured params never reached the
+tool_call cache, unresolved shell classification, or a shell without a
+recoverable command) skips steps 2–3 and is handed to the interactive callback
+with an "UNVERIFIED child request" annotation (headless: rejected), because
+every field a shortcut would judge is agent-authored. One carve-out: when the
+event's canonical MCP identity IS verified (`child_mcp_identity_trusted` — the
+`_meta.kiro` server/tool pair resolved from the tool_call cache, resolved
+non-shell; the shape a remote MCP server produces by streaming empty
+`rawInput`), the **unconditional** `parent_policy == "auto"` grant still
+auto-approves: its decision consumes no agent-authored event data, only the
+arguments remain unverified. The hook auto-approve (title-pattern-matched) and
+every content-matching path stay fail-closed on the composite fidelity.
+
 The `is_yolo()` check in the cascade is live (reads current gateway state),
 providing coverage if YOLO is toggled mid-execution.
 

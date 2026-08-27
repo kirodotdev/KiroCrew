@@ -62,7 +62,7 @@ def test_downgrade_gate_covers_every_approval_grant_source() -> None:
 
     # The tool-event branch that auto-approves without human confirmation.
     approval = re.search(
-        r"^\s*if \((?P<cond>[^)]*yolo_active[^)]*)\) and not _child_low_fidelity:",
+        r"^\s*if \((?P<cond>[^)]*yolo_active[^)]*)\) and _child_grant_eligible:",
         source,
         re.MULTILINE,
     )

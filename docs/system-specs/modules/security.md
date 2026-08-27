@@ -1457,6 +1457,24 @@ becoming broad globs. Command parsing and matching live in the shared
 API instead of importing dashboard runner internals or fabricating a
 `Running: ...` title.
 
+**Child-fidelity split: identity vs arguments.** A backend-subagent permission
+event whose structured params never reached the tool_call cache is low-fidelity
+(`AcpEvent.child_low_fidelity`) and is excluded from every content-matching
+auto-approve path — trusted patterns, trust-reads, title-keyed
+`auto_approve_tools` — because the agent-authored title/params ARE the matched
+input. A remote (HTTP) MCP server legitimately streams empty `rawInput` on its
+`tool_call` frames, so every such child call is low-fidelity; but the same
+frame's `_meta.kiro` server/tool identity is cache-provenance and
+non-model-authored. `AcpEvent.child_mcp_identity_trusted` isolates that half
+(requires: child origin, RESOLVED non-shell classification, canonical
+server+tool recovered from cache), and **unconditional** grants — session
+trust-all, global YOLO, `parent_policy=auto`, per-source auto-approve, the
+`--approval yolo` override — honor the grant for identity-verified events: the
+approve decision consumes no agent-authored event data, only the arguments
+remain unverified (the same blindness the interactive card has; the identity
+split changes WHO approves, not what any gate can scan). Shell events never
+qualify: their deny gates need the command bytes the event lacks.
+
 ### SEL Audit Logging (`sel.py`)
 
 See `docs/system-specs/modules/sel.md` for full spec. Every event carries a `source` stamped by `_infer_source`; that function's return vocabulary IS the set of audited surfaces and is published via `sel.audit_sources()` (consumed by the security-posture view, so the count is derived rather than restated here).

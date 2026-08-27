@@ -628,6 +628,44 @@ class AcpEvent:
             return True
         return False
 
+    @property
+    def child_mcp_identity_trusted(self) -> bool:
+        """True for a child MCP event whose IDENTITY is verified even when its
+        arguments are not.
+
+        ``child_low_fidelity`` conflates two independent provenances: the tool's
+        identity and its arguments. A remote (HTTP) MCP server's ``tool_call``
+        frame legitimately streams an empty ``rawInput``, so the params cache
+        stays empty and every such child permission request is low-fidelity —
+        yet the ``_meta.kiro`` server/tool identity from that same frame DID
+        reach the caches and is non-model-authored. This property isolates that
+        verified-identity half so UNCONDITIONAL grant paths — ones whose approve
+        decision consumes no agent-authored event data (session trust-all,
+        global YOLO, ``parent_policy=auto``, per-source auto-approve) — can
+        honor the grant, while every content-matching path (trusted patterns,
+        trust-reads, title-keyed ``auto_approve_tools``) stays gated on the
+        composite ``child_low_fidelity``: for those the agent-authored title or
+        inline params ARE the matched input, and a forged title must never
+        satisfy them.
+
+        Requirements, each fail-closed on its cache: a child origin
+        (``sub_session_id``), a RESOLVED non-shell classification
+        (``shell_classified`` and not ``is_shell`` — an unclassified event
+        defaults to non-shell and must not pass as one; a shell tool's deny
+        gates need the command bytes this event lacks), and the canonical
+        ``mcp_server_name`` + ``tool_name`` pair recovered from the tool_call
+        cache (empty on a miss, and populated only for genuinely MCP-served
+        tools — a host shell/builtin can never carry a server name). A
+        non-child event returns False: parents never need the split.
+        """
+        return bool(
+            self.sub_session_id
+            and self.shell_classified
+            and not self.is_shell
+            and self.mcp_server_name
+            and self.tool_name
+        )
+
 
 @dataclass
 class AcpPromptStats:

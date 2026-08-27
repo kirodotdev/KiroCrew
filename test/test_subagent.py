@@ -2043,6 +2043,104 @@ class TestSubagentUsageRow:
         assert persist.await_args.kwargs["agent"] == "researcher"
 
 
+class TestIdentityTrustedChildParentPolicyAuto:
+    """A low-fidelity child MCP permission event whose canonical identity IS
+    verified (remote server streamed no rawInput — issue #6163) honors an
+    unconditional ``parent_policy=auto`` grant instead of stalling on the
+    interactive downgrade; without the verified identity the same event stays
+    fail-closed.
+    """
+
+    def _manager_and_stream(self, event):
+        from kiro_crew.hooks import ToolHookResult
+        from kiro_crew.subagent import SubagentInfo, SubagentManager
+
+        sessions = _mock_sessions()
+        sessions.get_approval_policy = MagicMock(return_value="auto")
+        provider = sessions.get_or_create.return_value[0]
+
+        async def _stream(*_a, **_kw):
+            yield event
+
+        provider.stream = MagicMock(side_effect=lambda *a, **kw: _stream())
+        provider.approve_tool = AsyncMock()
+        provider.reject_tool = AsyncMock()
+
+        ctx = MagicMock()
+        ctx.build_message = MagicMock(return_value=("msg", None))
+        # ALLOW (not auto-approve): the approval must come from the
+        # parent_policy grant, not the hook shortcut.
+        ctx.hooks.on_tool_call = MagicMock(return_value=ToolHookResult.allow())
+
+        manager = SubagentManager(sessions=sessions, ctx_builder=ctx, default_turn_limit=1)
+        info = SubagentInfo(id="idmcp01", task="t", parent_session_key="dashboard:default")
+        manager._agents["idmcp01"] = info
+        return manager, info, provider
+
+    @staticmethod
+    def _child_mcp_event(**overrides):
+        from kiro_crew.providers.base import EVENT_PERMISSION_REQUEST, LLMEvent
+
+        base: dict = dict(
+            kind=EVENT_PERMISSION_REQUEST,
+            title="@example-server/get-item",
+            request_id=7001,
+            sub_session_id="child-a",
+            shell_classified=True,
+            is_shell=False,
+            mcp_server_name="example-server",
+            tool_name="get-item",
+        )
+        base.update(overrides)
+        return LLMEvent(**base)
+
+    @pytest.mark.asyncio
+    async def test_identity_trusted_child_approved_under_parent_policy_auto(self) -> None:
+        event = self._child_mcp_event()
+        assert event.child_low_fidelity and event.child_mcp_identity_trusted
+        manager, info, provider = self._manager_and_stream(event)
+
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"), patch(
+            "kiro_crew.subagent.update_state"
+        ), patch("kiro_crew.subagent.create_agent_folder", MagicMock(), create=True):
+            await manager._run_inner(info, "subagent:idmcp01")
+
+        provider.approve_tool.assert_awaited_once_with(7001)
+        provider.reject_tool.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_identity_missing_child_still_fails_closed(self) -> None:
+        """Counterfactual: same grant, same event shape, identity caches
+        missed — the request must NOT be auto-approved (headless: rejected)."""
+        event = self._child_mcp_event(mcp_server_name="", tool_name="")
+        assert event.child_low_fidelity and not event.child_mcp_identity_trusted
+        manager, info, provider = self._manager_and_stream(event)
+
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"), patch(
+            "kiro_crew.subagent.update_state"
+        ), patch("kiro_crew.subagent.create_agent_folder", MagicMock(), create=True):
+            await manager._run_inner(info, "subagent:idmcp01")
+
+        provider.approve_tool.assert_not_awaited()
+        provider.reject_tool.assert_awaited_once_with(7001)
+
+    @pytest.mark.asyncio
+    async def test_identity_trusted_child_without_auto_policy_not_approved(self) -> None:
+        """Identity verification is not itself a grant: with no auto policy
+        (and no interactive approver) the event stays fail-closed."""
+        event = self._child_mcp_event()
+        manager, info, provider = self._manager_and_stream(event)
+        manager._sessions.get_approval_policy = MagicMock(return_value="")
+
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"), patch(
+            "kiro_crew.subagent.update_state"
+        ), patch("kiro_crew.subagent.create_agent_folder", MagicMock(), create=True):
+            await manager._run_inner(info, "subagent:idmcp01")
+
+        provider.approve_tool.assert_not_awaited()
+        provider.reject_tool.assert_awaited_once_with(7001)
+
+
 class TestChildEscalationLimit:
     """Child-origin permission escalations get their own volume bound, and the
     bail must ANSWER the triggering request before tombstoning — a return

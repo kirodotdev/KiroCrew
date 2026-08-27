@@ -95,6 +95,15 @@ permission for the same call therefore retains the fact that a non-shell MCP too
 had arguments; it cannot be reclassified as an inputless canonical tool and match
 session durable trust merely because the display cache was already consumed.
 
+A remote (HTTP) MCP server's initial `tool_call` legitimately streams an empty or
+absent `rawInput`, so the params cache stays empty and every child permission
+request for such a tool is low-fidelity (`AcpEvent.child_low_fidelity`). The
+`_meta.kiro` identity caches are written unconditionally from the same frame, so
+the permission event still carries the verified `mcp_server_name`/`tool_name`
+pair; `AcpEvent.child_mcp_identity_trusted` exposes that verified-identity half
+(arguments unverified) for the unconditional grant paths documented in
+`security.md` § Child-fidelity split.
+
 The handshake also branches on the backend:
 
 - `protocolVersion` in the `initialize` request: kiro-cli expects the date string `"2025-08-22"`; claude-agent-acp expects an integer (`1`, per the upstream ACP SDK schema).

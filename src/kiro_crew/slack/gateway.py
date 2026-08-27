@@ -1739,16 +1739,31 @@ class GatewayOrchestrator:
         async def _approve(event: LLMEvent, parent_session_key: str = "") -> bool:
             request_id = str(event.request_id)
             # Low-fidelity CHILD request: the structured security context is
-            # absent, so every field a shortcut below would judge (title,
-            # read-only classification, trust patterns) is agent-authored.
-            # Such a request may ONLY be approved by the human prompt at the
-            # end of this callback — every non-human auto-approve shortcut
-            # (auto_approve_sources, --approval yolo/reads, YOLO override,
-            # slot trust) is skipped for it. Strict ``is True``: real events
+            # absent, so every field a content-matching shortcut below would
+            # judge (title, read-only classification, trust patterns) is
+            # agent-authored. Unless its canonical MCP identity is verified
+            # (``_child_grant_eligible`` below), such a request may ONLY be
+            # approved by the human prompt at the end of this callback —
+            # every non-human auto-approve shortcut (auto_approve_sources,
+            # --approval yolo/reads, YOLO override, slot trust) is skipped
+            # for it. Strict ``is True``: real events
             # (AcpEvent) return a genuine bool; anything else (e.g. a mock
             # or a foreign event type) must not accidentally enter the
             # restricted path on a truthy non-bool.
             _child_lf = getattr(event, "child_low_fidelity", False) is True
+            # Verified-identity half of the fidelity split (see
+            # AcpEvent.child_mcp_identity_trusted): grant-eligible when full
+            # fidelity OR the canonical MCP server/tool identity resolved from
+            # the tool_call cache (arguments unverified). UNCONDITIONAL
+            # shortcuts below — ones whose approve decision consumes no
+            # agent-authored event data (per-source auto-approve, --approval
+            # yolo, the YOLO override, slot trust) — honor their grant for
+            # such events; the 'reads' mode stays gated on the composite
+            # ``_child_lf`` because it MATCHES the agent-authored title.
+            # Same strict ``is True`` rationale as ``_child_lf``.
+            _child_grant_eligible = (not _child_lf) or (
+                getattr(event, "child_mcp_identity_trusted", False) is True
+            )
             # Background callers pass the authoritative parent session key. Prefer it
             # over a request-ID resolver because tool permission IDs are opaque UUIDs,
             # unlike spawn approvals (``spawn:<agent_id>``). Treating a tool request ID
@@ -1786,7 +1801,7 @@ class GatewayOrchestrator:
 
             # Per-source auto-approve (e.g. cron, taskrunner, subagent)
             if source in self._cfg.hooks.get("auto_approve_sources", []):
-                if _child_lf:
+                if not _child_grant_eligible:
                     # The operator explicitly configured this source to run
                     # UNATTENDED — nobody is watching the interactive window,
                     # so parking a low-fidelity child request there would
@@ -1806,9 +1821,14 @@ class GatewayOrchestrator:
             # CLI --approval flag override (composable test mode).
             # 'yolo' auto-approves all; 'reads' auto-approves read-only tools;
             # 'interactive' falls through to the standard flow.
-            if self._approval_mode in ("yolo", "reads") and not _child_lf:
+            # 'yolo' is an UNCONDITIONAL grant (consumes no event data) so a
+            # verified-identity child qualifies; 'reads' classifies the
+            # agent-authored TITLE, so it requires the composite fidelity.
+            if self._approval_mode in ("yolo", "reads") and _child_grant_eligible:
                 approve = self._approval_mode == "yolo" or (
-                    self._approval_mode == "reads" and _is_read_only_tool(event.title or "")
+                    self._approval_mode == "reads"
+                    and not _child_lf
+                    and _is_read_only_tool(event.title or "")
                 )
                 if approve:
                     # Emit a SEL audit event so the audit trail records WHICH
@@ -1829,7 +1849,7 @@ class GatewayOrchestrator:
                     return True
 
             # Check both YOLO sources: Slack handler (!yolo on) and dashboard UI
-            if safety_override().is_active() and not _child_lf:
+            if safety_override().is_active() and _child_grant_eligible:
                 return True
 
             if self.dashboard_state:
@@ -1859,7 +1879,7 @@ class GatewayOrchestrator:
 
                 if _parent_slot_key:
                     _ps = (self.dashboard_state._slots or {}).get(_parent_slot_key)
-                    if _ps and _ps._trust and _child_lf:
+                    if _ps and _ps._trust and not _child_grant_eligible:
                         # Slot IS trusted; the fidelity gate is what blocks
                         # the auto-approve. A distinct audit reason — an
                         # auditor reading "not_trusted" for a trusted slot
