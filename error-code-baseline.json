@@ -1,11 +1,11 @@
 {
   "_comment": "Error responses without a machine-readable `code`, per file. Generated - regenerate with `python test/test_error_code_contract.py --update`. This is both the CI ratchet and the Track B worklist: drive `missing_code` to zero, one PR per file or per directory, moving each frontend consumer in the same PR. Never raise a number to make CI pass. See test/test_error_code_contract.py for what each bucket means and which false negatives it accepts.",
   "_totals": {
-    "missing_code": 1350,
+    "missing_code": 1334,
     "opaque_body": 18,
     "dynamic_status": 43
   },
-  "_compliant": 1196,
+  "_compliant": 1223,
   "files": {
     "apps/builtins/auto_research/handlers.py": {
       "dynamic_status": 1,
@@ -71,9 +71,6 @@
     },
     "dashboard/handlers/artifacts.py": {
       "dynamic_status": 2
-    },
-    "dashboard/handlers/ask_question.py": {
-      "missing_code": 16
     },
     "dashboard/handlers/auth_refresh.py": {
       "missing_code": 8

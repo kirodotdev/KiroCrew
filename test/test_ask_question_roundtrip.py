@@ -1327,3 +1327,254 @@ async def test_non_owner_dashboard_token_cannot_dismiss() -> None:
     resp = await api_ask_question_dismiss(request)
     assert resp.status == 403
     assert st._slots["chat-1"].to_dict()["needs_input"] is True
+
+
+# ── Machine-readable error codes ──
+
+
+class TestErrorCodes:
+    """Every refusal from this module carries a machine-readable ``code``.
+
+    ``error-code-baseline.json`` listed
+    ``dashboard/handlers/ask_question.py`` with ``missing_code: 16``. The module
+    was already part-converted -- the dismiss handler shipped ``invalid_json``,
+    ``invalid_body``, ``missing_slot``, ``missing_card_id`` and
+    ``question_card_not_found`` -- so the wire contract and the spelling were
+    already settled here; the remaining sixteen just had to follow them. That is
+    why this uses ``invalid_body`` rather than the tree-wide ``body_not_object``:
+    inside one module, one spelling.
+
+    The prose is kept and keeps its meaning -- demoted to advisory, not removed
+    -- so a client that only reads ``error`` is unaffected. Backend-only,
+    because neither consumer renders that prose: ``useWebSocket.ts`` awaits
+    ``api.pendingQuestions()`` without reading a failure body, and
+    ``resolveAskAfterSend.ts`` catches ``ApiError`` and branches on
+    ``err.status === 404`` alone. ``POST /api/ask-question`` has no browser
+    caller at all -- it is the MCP tool's leg, and that path decodes through
+    ``mcp_core._http_error_body``, which already parses a top-level ``code``.
+
+    **What the codes deliberately do NOT add.** The two ``403``s answer for
+    different callers -- an app token on an agent-question endpoint, and a
+    non-owner dashboard subject -- and already said so in prose, so distinct
+    codes publish nothing that was hidden. Neither reveals whether any resource
+    exists. The three ``404``s name three different things the CALLER asked for
+    (its own slot, its own card, its own ask id); none is a fail-same standing in
+    for a permission denial, and one of them already carried its own distinct
+    code before this change.
+    """
+
+    # -- the per-file ratchet --
+
+    @staticmethod
+    def _findings():
+        import sys
+        from pathlib import Path
+
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import test_error_code_contract as gate
+
+        return [
+            f for f in gate.scan() if f.path == "dashboard/handlers/ask_question.py"
+        ]
+
+    def test_no_refusal_in_this_module_is_prose_only(self) -> None:
+        missing = sorted(f.lineno for f in self._findings() if f.bucket == "missing_code")
+        assert missing == [], (
+            "these src/kiro_crew/dashboard/handlers/ask_question.py lines refuse "
+            f"with prose and no machine-readable code: {missing}"
+        )
+
+    def test_the_ratchet_can_actually_fail(self) -> None:
+        """Self-check: a scan matching nothing would pass the assertion above vacuously."""
+        coded = [f for f in self._findings() if f.bucket == "compliant"]
+        assert len(coded) == 21, f"scanner reached {len(coded)} coded sites, expected 21"
+        assert all(f.code_value for f in coded)
+
+    # -- POST /api/ask-question (the MCP tool's leg) --
+
+    @staticmethod
+    async def _ask(body, *, slots=None, owner=True, app_token=False, raises=False):
+        from kiro_crew.dashboard.handlers.ask_question import api_ask_question
+
+        st = _state()
+        st._slots = {"chat-1": MagicMock()} if slots is None else slots
+        request = MagicMock()
+        request.app = {"state": st}
+        if app_token:
+            claims = {"app": "some-app", "user": "some-app"}
+            request.__contains__.side_effect = lambda k: k in claims
+            request.__getitem__.side_effect = lambda k: claims[k]
+            request.get = lambda k, d="": claims.get(k, d)
+        elif owner:
+            _as_owner(request)
+        else:
+            _as_owner(request, user="somebody-else")
+
+        async def _json() -> dict:
+            if raises:
+                raise ValueError("not json")
+            return body
+
+        request.json = _json
+        resp = await api_ask_question(request)
+        return resp.status, json.loads(resp.body)
+
+    @pytest.mark.asyncio
+    async def test_an_app_token_is_refused_with_its_own_code(self) -> None:
+        status, body = await self._ask({}, app_token=True)
+        assert status == 403
+        assert body["code"] == "app_token_forbidden"
+        assert body["error"]
+
+    @pytest.mark.asyncio
+    async def test_a_body_that_is_not_json(self) -> None:
+        status, body = await self._ask(None, raises=True)
+        assert status == 400
+        assert body["code"] == "invalid_json"
+
+    @pytest.mark.asyncio
+    async def test_a_body_that_is_not_an_object(self) -> None:
+        status, body = await self._ask(["session_key"])
+        assert status == 400
+        assert body["code"] == "invalid_body"
+
+    @pytest.mark.asyncio
+    async def test_a_body_with_no_session_key(self) -> None:
+        status, body = await self._ask({"questions": _questions()})
+        assert status == 400
+        assert body["code"] == "missing_session_key"
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_slot(self) -> None:
+        status, body = await self._ask(
+            {"session_key": "dashboard:chat-9", "questions": _questions()}, slots={}
+        )
+        assert status == 404
+        assert body["code"] == "slot_not_found"
+
+    @pytest.mark.asyncio
+    async def test_an_invalid_question_payload(self) -> None:
+        status, body = await self._ask(
+            {"session_key": "dashboard:chat-1", "questions": []}
+        )
+        assert status == 400
+        assert body["code"] == "invalid_questions"
+
+    @pytest.mark.asyncio
+    async def test_a_non_integer_timeout_is_a_different_code(self) -> None:
+        """The distinction a caller could not make without matching English: a
+        malformed ``questions`` payload and a malformed ``timeout_secs`` are
+        different client bugs, and both were bare ``400``s."""
+        status, body = await self._ask(
+            {
+                "session_key": "dashboard:chat-1",
+                "questions": _questions(),
+                "timeout_secs": "soon",
+            }
+        )
+        assert status == 400
+        assert body["code"] == "invalid_field_type"
+
+    # -- POST /api/ask-question/{ask_id}/answer --
+
+    @staticmethod
+    async def _answer(body, *, ask_id="ask-1", resolves=False, raises=False):
+        from kiro_crew.dashboard.handlers.ask_question import api_ask_question_answer
+
+        st = _state()
+        st.resolve_question = MagicMock(return_value=resolves)
+        request = MagicMock()
+        request.app = {"state": st}
+        request.match_info = {"ask_id": ask_id}
+        _as_owner(request)
+
+        async def _json() -> dict:
+            if raises:
+                raise ValueError("not json")
+            return body
+
+        request.json = _json
+        resp = await api_ask_question_answer(request)
+        return resp.status, json.loads(resp.body)
+
+    @pytest.mark.asyncio
+    async def test_answer_with_an_empty_answers_object(self) -> None:
+        status, body = await self._answer({"answers": {}})
+        assert status == 400
+        assert body["code"] == "invalid_answers"
+
+    @pytest.mark.asyncio
+    async def test_answer_with_too_many_answers(self) -> None:
+        from kiro_crew.validation import _ASK_MAX_QUESTIONS
+
+        status, body = await self._answer(
+            {"answers": {f"q{i}": "a" for i in range(_ASK_MAX_QUESTIONS + 1)}}
+        )
+        assert status == 400
+        assert body["code"] == "too_many_answers"
+
+    @pytest.mark.asyncio
+    async def test_answer_with_an_over_long_question_key(self) -> None:
+        from kiro_crew.validation import _ASK_MAX_QUESTION_LEN
+
+        status, body = await self._answer(
+            {"answers": {"q" * (_ASK_MAX_QUESTION_LEN + 1): "a"}}
+        )
+        assert status == 400
+        assert body["code"] == "question_key_too_long"
+
+    @pytest.mark.asyncio
+    async def test_answer_with_an_over_long_answer(self) -> None:
+        """Refused, never truncated: a silently sliced answer resolves the wait
+        and clears the card, so the agent proceeds on input the user cannot see
+        was cut. The code makes that refusal dispatchable."""
+        from kiro_crew.validation import _ASK_MAX_ANSWER_LEN
+
+        status, body = await self._answer(
+            {"answers": {"q": "a" * (_ASK_MAX_ANSWER_LEN + 1)}}
+        )
+        assert status == 400
+        assert body["code"] == "answer_too_long"
+
+    @pytest.mark.asyncio
+    async def test_answering_a_question_that_is_gone(self) -> None:
+        status, body = await self._answer({"dismissed": True}, resolves=False)
+        assert status == 404
+        assert body["code"] == "question_not_found"
+
+    # -- the behavioural ratchet --
+
+    @pytest.mark.asyncio
+    async def test_every_refusal_carries_both_a_code_and_its_prose(self) -> None:
+        """No refusal path may regress to prose-only, and none may drop the
+        advisory text an existing client still reads."""
+        from kiro_crew.validation import _ASK_MAX_ANSWER_LEN, _ASK_MAX_QUESTIONS
+
+        seen = []
+        seen.append(await self._ask({}, app_token=True))
+        seen.append(await self._ask(None, raises=True))
+        seen.append(await self._ask(["session_key"]))
+        seen.append(await self._ask({"questions": _questions()}))
+        seen.append(
+            await self._ask(
+                {"session_key": "dashboard:chat-9", "questions": _questions()}, slots={}
+            )
+        )
+        seen.append(await self._ask({"session_key": "dashboard:chat-1", "questions": []}))
+        seen.append(await self._answer(None, raises=True))
+        seen.append(await self._answer(["answers"]))
+        seen.append(await self._answer({"answers": {}}))
+        seen.append(
+            await self._answer(
+                {"answers": {f"q{i}": "a" for i in range(_ASK_MAX_QUESTIONS + 1)}}
+            )
+        )
+        seen.append(
+            await self._answer({"answers": {"q": "a" * (_ASK_MAX_ANSWER_LEN + 1)}})
+        )
+        seen.append(await self._answer({"dismissed": True}))
+
+        for status, body in seen:
+            assert status >= 400, (status, body)
+            assert isinstance(body.get("code"), str) and body["code"], body
+            assert isinstance(body.get("error"), str) and body["error"], body
