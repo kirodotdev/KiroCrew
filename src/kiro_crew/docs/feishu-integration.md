@@ -31,26 +31,45 @@ Lark).
 5. **Publish the app** so your tenant can install it.
 6. **Find your open_id** — the console's API Explorer, or any inbound message
    in the gateway log, shows the sender's `open_id` (it starts with `ou_`).
-7. **Save the credentials** to `~/.kiro/crew/.env`:
-   ```
-   FEISHU_APP_ID=cli_xxxxxxxxxxxx
-   FEISHU_APP_SECRET=your-app-secret
-   ```
-8. **Turn it on** in `~/.kiro/crew/config.json`:
-   ```json
-   "feishu": {
-     "enabled": true,
-     "allowed_open_ids": ["ou_xxxxxxxxxxxxxxxx"]
-   }
-   ```
-9. **Restart:**
+7. **Paste it into Settings** — open **Settings → Channels → Feishu**, put the
+   App ID and App Secret in their fields, add your `open_id` to the allow-list,
+   turn the channel on, and save. Saving writes the two secrets to
+   `~/.kiro/crew/.env` (owner-only, `0600`) and the rest to `config.json`, so
+   there is nothing left to hand-edit.
+8. **Restart:**
    ```bash
    kirocrew restart
    ```
 
-DM the bot in Feishu and it answers. If it stays quiet, look for
-`Feishu WebSocket receiver started` in the gateway log and confirm your
-`open_id` is in `allowed_open_ids`.
+DM the bot in Feishu and it answers. The panel's badge tells you where you are:
+**Needs setup** until both credentials are stored, **Not connected** once they
+are but the receiver is not running, **Connected** when it is.
+
+<details>
+<summary>Prefer to edit the files directly?</summary>
+
+The panel is a front end over the same two files, so this is equivalent:
+
+```
+# ~/.kiro/crew/.env
+FEISHU_APP_ID=cli_xxxxxxxxxxxx
+FEISHU_APP_SECRET=your-app-secret
+```
+
+```json
+// ~/.kiro/crew/config.json
+"feishu": {
+  "enabled": true,
+  "allowed_open_ids": ["ou_xxxxxxxxxxxxxxxx"]
+}
+```
+
+Config writes from the panel are **loopback-only** — a remote or tunnelled
+dashboard session gets a read-only view, because widening who may reach the
+agent is not something a forwarded request should be able to do. On such a
+session, editing the files on the gateway's own machine is the way in.
+
+</details>
 
 ## Who can reach it
 
@@ -103,10 +122,17 @@ Deny-by-default, in both directions:
 | `feishu.allowed_group_ids` | `[]` | Which groups, when `allow_group` is on. |
 | `feishu.soft_threshold_pct` | `80` | Context % that prompts you to `/compact` or `/new`. |
 | `feishu.hard_threshold_pct` | `95` | Context % that forces a compaction. |
+| `feishu.session_folder` | `""` | Sidebar folder for sessions that start here. Empty = unfiled. |
+
+Everything above except `hard_threshold_pct` is editable in **Settings →
+Channels → Feishu**; that one is file-only, because the panel exposes the soft
+threshold as the single number worth tuning and keeps the hard ceiling as a
+safety net.
 
 Credentials come from the environment only (`FEISHU_APP_ID`,
 `FEISHU_APP_SECRET`), matching the console's own naming — they are never written
-into `config.json`.
+into `config.json`. The panel stores them in `.env` and afterwards shows only a
+masked preview: a saved secret can be **replaced or cleared, never read back**.
 
 ## Commands
 
@@ -132,8 +158,17 @@ Known gaps, all follow-up work rather than defects:
 - **Text only.** Non-text messages (images, files, audio) are ignored inbound.
 - **Replies only.** The bot answers an inbound message and cannot start a
   conversation, so it is not a proactive-notification target.
-- **No dashboard Settings panel yet.** Configure it in `config.json`; the other
-  channels' Settings pages are the model for the panel to come.
+- **The panel configures the channel; it does not install it.** `lark-oapi` is an
+  optional extra, and running `pip` from a dashboard action would be a new way to
+  execute code in the gateway's own environment — so the panel names the command
+  and you run it. When the extra is missing, that is exactly what the badge
+  reason says.
+- **Credentials are not verified on save.** A REST tenant-token probe would have
+  to pick a domain (`open.feishu.cn` or `open.larksuite.com`) and would report a
+  false failure for whichever tenant it guessed wrong, so the panel stores what
+  you give it. Nothing is lost: the badge tracks the receiver, and Feishu drops a
+  refused app within seconds of a restart, which turns into **Not connected**
+  with the reason attached.
 - **No auto-reconnect beyond the SDK's own.** `lark-oapi` reconnects
   internally; if it gives up, the gateway logs that the receiver is down and you
   restart.

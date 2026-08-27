@@ -64,6 +64,7 @@ const UNMAPPED_PANELS: Record<string, string> = {
   'ChannelsPanel.tsx': 'list-detail shell routing to per-channel panels; carries no controls of its own',
   'DiscordPanel.tsx': 'thin BotChannelSpec wrapper; BotChannelPanel fans its entries out to channel=discord',
   'TelegramPanel.tsx': 'thin BotChannelSpec wrapper; BotChannelPanel fans its entries out to channel=telegram',
+  'FeishuPanel.tsx': 'thin BotChannelSpec wrapper; BotChannelPanel fans its entries out to channel=feishu',
   'WeComPanel.tsx': 'thin BotChannelSpec wrapper; BotChannelPanel fans its entries out to channel=wecom',
   'ImportPanel.tsx': 'single action button launching the import wizard; no persistent settings',
   'InstanceFormFields.tsx': 'per-instance CRUD form fields (add/edit crew), not global settings',
@@ -262,7 +263,7 @@ describe('settings coverage gate — bare controls', () => {
  */
 const EXPECTED_DYNAMIC_SKIPS: Record<string, { count: number; reason: string }> = {
   'BotChannelPanel.tsx': {
-    count: 14,
+    count: 16,
     reason:
       'labels arrive through BotChannelSpec props (per-channel copy decided by the ' +
       'mounting wrapper); the static-label primitives in the same file fan out per channel',

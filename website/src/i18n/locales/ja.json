@@ -10952,6 +10952,7 @@
         "configuration_is_saved_but_the_channel_is_not_ru": "設定は保存されていますが、チャネルは実行中ではありません。ゲートウェイを再起動して接続します。",
         "enable": "{{channel}} を有効化",
         "forum_topics": "フォーラムトピック",
+        "group_chats": "グループチャット",
         "get_your_bot_token": "ボットトークンを取得",
         "identity_access": "アイデンティティとアクセス",
         "loading": "読み込み中",
@@ -12106,6 +12107,23 @@
         "token_description": "同じ設定ページのBot IDの横に表示されているSecret。",
         "token_label": "WeCom ボットシークレット",
         "token_placeholder": "WeCom ボットシークレットを貼り付け"
+      },
+      "feishuPanel": {
+        "allowlist_description": "ボットへのDMが許可されたFeishuのopen_id。空 = すべて拒否（デフォルト拒否）。",
+        "allow_group_description": "ダイレクトメッセージに加えてグループの会話にも応答します。ボットがグループのメッセージを受け取るのは<mono>@</mono>メンションされたときだけで、下記に登録したグループに限られます。",
+        "allow_group_label": "グループチャットで応答する",
+        "app_id_description": "Feishu開発者コンソールのカスタムアプリのCredentialsページに表示されるApp ID。",
+        "app_id_label": "Feishu アプリ ID",
+        "app_secret_description": "同じCredentialsページでApp IDの隣に表示されるApp Secret。",
+        "app_secret_label": "Feishu アプリシークレット",
+        "app_secret_placeholder": "Feishu アプリシークレットを貼り付け",
+        "description": "カスタムアプリを通してFeishu（飞书）またはLarkからエージェントと対話します。接続は発信WebSocket — コールバックURLまたはオープンポートを管理する必要はありません。",
+        "empty_allowlist_hint": "許可されたopen_idがありません。ボットはすべてのメッセージを拒否します（デフォルト拒否）。下記にFeishuのopen_idを追加してください。",
+        "group_allowlist_description": "ターンを開始できるFeishuグループのchat_id。空 = どのグループにも応答しません。",
+        "group_allowlist_label": "許可するグループチャットID",
+        "group_empty_hint": "グループチャットは有効ですがchat_idが登録されていないため、どのグループにも応答しません。chat_idを追加するか、トグルをオフにしてください。",
+        "guide_body": "Feishu開発者コンソールで<mono>custom app</mono>を作成し、その<mono>Credentials & Basic Info</mono>ページで<mono>App ID</mono>と<mono>App Secret</mono>を確認して、両方を下に貼り付けてください。次にイベントモード<mono>Long connection</mono>を有効にし、<mono>im.message.receive_v1</mono>を購読します。各メンバーの<mono>open_id</mono>を許可リストに追加します。このチャネルにはオプションの依存関係も必要です。ゲートウェイを実行する環境で<mono>pip install \"kirocrew[feishu]\"</mono>を実行し、再起動してください。",
+        "open_developer_console": "Feishu開発者コンソールを開く"
       },
       "webexPanel": {
         "access": "アクセス",

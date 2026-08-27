@@ -15,6 +15,12 @@ export interface SubNavItem<K extends string = string> {
   key: K
   /** Already-localized row label. */
   label: string
+  /** The label is a PRODUCT NAME, not localizable copy (a channel: "WeCom",
+   *  "Feishu", "Microsoft Teams"). Marks it opaque to the i18n render scan,
+   *  which would otherwise read the Latin text in the pseudolocale pass as a
+   *  string that escaped the catalog. Off by default: for every other SubNav
+   *  host the label IS translated copy and must stay measured. */
+  labelOpaque?: boolean
   /** Leading glyph: a lucide icon (rail) or a brand logo (card). */
   icon?: React.ReactNode
   /** Already-localized group header; adjacent items sharing a group render
@@ -184,7 +190,12 @@ export function SettingsSubNav<K extends string>({
           {/* Wraps to two lines rather than truncating: verbose locales inflate
               the longest labels past any fixed rail width. `title` covers the
               pathological case. */}
-          <span className="block text-[13px] font-medium line-clamp-2">{item.label}</span>
+          <span
+            className="block text-[13px] font-medium line-clamp-2"
+            data-i18n-opaque={item.labelOpaque ? '' : undefined}
+          >
+            {item.label}
+          </span>
           {item.summary}
         </span>
         {!twoPane && <ChevronRight size={14} className="text-muted shrink-0" />}

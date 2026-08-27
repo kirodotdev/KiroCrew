@@ -11270,6 +11270,7 @@
         "configuration_is_saved_but_the_channel_is_not_ru": "A configuração foi salva, mas o canal não está em execução. Reinicie o gateway para conectar.",
         "enable": "Ativar o {{channel}}",
         "forum_topics": "Tópicos do fórum",
+        "group_chats": "Conversas em grupo",
         "get_your_bot_token": "Obtenha seu token de bot",
         "identity_access": "Identidade e acesso",
         "loading": "Carregando",
@@ -12424,6 +12425,23 @@
         "token_description": "O Secret exibido ao lado do Bot ID na mesma página de configurações.",
         "token_label": "Secret do bot do WeCom",
         "token_placeholder": "Cole o secret do bot do WeCom"
+      },
+      "feishuPanel": {
+        "allowlist_description": "open_ids do Feishu autorizados a enviar mensagens diretas ao bot. Vazio = negar todos (fail closed).",
+        "allow_group_description": "Serve conversas de grupo além das mensagens diretas. O bot só vê uma mensagem de grupo quando é mencionado com <mono>@</mono>, e apenas nos grupos listados abaixo.",
+        "allow_group_label": "Responder em conversas de grupo",
+        "app_id_description": "O App ID da página Credentials da tua app própria na consola de desenvolvedor do Feishu.",
+        "app_id_label": "App ID do Feishu",
+        "app_secret_description": "O App Secret mostrado ao lado do App ID nessa mesma página Credentials.",
+        "app_secret_label": "App Secret do Feishu",
+        "app_secret_placeholder": "Cola o App Secret do Feishu",
+        "description": "Fala com o teu agente a partir do Feishu (飞书) ou do Lark através de uma app própria. A ligação é um WebSocket de saída — sem URL de callback nem portas abertas para gerir.",
+        "empty_allowlist_hint": "Sem open_ids permitidos: o bot rejeita todas as mensagens (fail closed). Adiciona o teu open_id do Feishu abaixo.",
+        "group_allowlist_description": "chat_ids de grupos do Feishu autorizados a iniciar um turno. Vazio = nenhum grupo é servido.",
+        "group_allowlist_label": "IDs de conversas de grupo permitidos",
+        "group_empty_hint": "As conversas de grupo estão ativas mas nenhum chat_id está listado, por isso nenhum grupo é servido. Adiciona um chat_id ou desliga a opção.",
+        "guide_body": "Na consola de desenvolvedor do Feishu, cria uma <mono>custom app</mono> e abre a página <mono>Credentials & Basic Info</mono> para obter o <mono>App ID</mono> e o <mono>App Secret</mono> — cola ambos abaixo. Depois ativa o modo de eventos <mono>Long connection</mono> e subscreve <mono>im.message.receive_v1</mono>. O <mono>open_id</mono> de cada membro entra na lista de permissões. O canal também precisa da dependência opcional: executa <mono>pip install \"kirocrew[feishu]\"</mono> no ambiente onde corre o gateway e reinicia-o.",
+        "open_developer_console": "Abrir a consola de desenvolvedor do Feishu"
       },
       "webexPanel": {
         "access": "Acesso",

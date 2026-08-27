@@ -4268,6 +4268,7 @@
         "configuration_is_saved_but_the_channel_is_not_ru": "Configuration is saved but the channel is not running. Restart the gateway to connect.",
         "enable": "Enable {{channel}}",
         "get_your_bot_token": "Get your bot token",
+        "group_chats": "Group chats",
         "save_channel_settings": "Save {{channel}} settings",
         "save_failed_is_the_gateway_running": "Save failed. Is the gateway running?",
         "saved": "Saved.",
@@ -4899,6 +4900,23 @@
         "token_description": "The Secret shown next to the Bot ID on the same settings page.",
         "token_label": "WeCom bot secret",
         "token_placeholder": "Paste WeCom bot secret"
+      },
+      "feishuPanel": {
+        "allowlist_description": "Feishu open_ids permitted to DM the bot. Empty = deny all (fail closed).",
+        "allow_group_description": "Serve group conversations as well as direct messages. The bot only sees a group message when it is <mono>@</mono>-mentioned, and only in the groups listed below.",
+        "allow_group_label": "Answer in group chats",
+        "app_id_description": "The App ID from your custom app’s Credentials page in the Feishu developer console.",
+        "app_id_label": "Feishu app ID",
+        "app_secret_description": "The App Secret shown next to the App ID on the same Credentials page.",
+        "app_secret_label": "Feishu app secret",
+        "app_secret_placeholder": "Paste Feishu app secret",
+        "description": "Talk to your agent from Feishu (飞书) or Lark through a custom app. The connection is an outbound WebSocket — no callback URL or open port to manage.",
+        "empty_allowlist_hint": "No allowed open_ids: the bot rejects every message (fail closed). Add your Feishu open_id below.",
+        "group_allowlist_description": "Feishu group chat_ids allowed to drive a turn. Empty = no group is served.",
+        "group_allowlist_label": "Allowed group chat IDs",
+        "group_empty_hint": "Group chats are on but no chat_id is listed, so no group is served. Add a chat_id, or turn the toggle off.",
+        "guide_body": "In the Feishu developer console, create a <mono>custom app</mono> and open its <mono>Credentials & Basic Info</mono> page for the <mono>App ID</mono> and <mono>App Secret</mono> — paste both below. Then enable the <mono>Long connection</mono> event mode and subscribe to <mono>im.message.receive_v1</mono>. Each member’s <mono>open_id</mono> goes in the allow-list. The channel also needs its optional dependency: run <mono>pip install \"kirocrew[feishu]\"</mono> in the environment that runs the gateway, then restart it.",
+        "open_developer_console": "Open Feishu developer console"
       },
       "shortcutsPanel": {
         "preset_double_shift": "Double Shift",

@@ -10952,6 +10952,7 @@
         "configuration_is_saved_but_the_channel_is_not_ru": "설정은 저장되었지만 채널이 실행 중이 아닙니다. 연결하려면 게이트웨이를 재시작하세요.",
         "enable": "{{channel}} 사용",
         "forum_topics": "포럼 주제",
+        "group_chats": "그룹 채팅",
         "get_your_bot_token": "봇 토큰 발급받기",
         "identity_access": "아이덴티티 및 액세스",
         "loading": "불러오는 중",
@@ -12106,6 +12107,23 @@
         "token_description": "같은 설정 페이지에서 Bot ID 옆에 표시되는 Secret입니다.",
         "token_label": "WeCom 봇 시크릿",
         "token_placeholder": "WeCom 봇 시크릿 붙여 넣기"
+      },
+      "feishuPanel": {
+        "allowlist_description": "봇에게 DM을 보낼 수 있는 Feishu open_id. 비어 있으면 = 전체 거부(기본 거부).",
+        "allow_group_description": "다이렉트 메시지 외에 그룹 대화도 처리합니다. 봇은 <mono>@</mono> 멘션된 그룹 메시지만, 그리고 아래에 나열된 그룹에서만 받습니다.",
+        "allow_group_label": "그룹 채팅에서 응답",
+        "app_id_description": "Feishu 개발자 콘솔의 커스텀 앱 Credentials 페이지에 있는 App ID.",
+        "app_id_label": "Feishu 앱 ID",
+        "app_secret_description": "같은 Credentials 페이지에서 App ID 옆에 표시되는 App Secret.",
+        "app_secret_label": "Feishu 앱 시크릿",
+        "app_secret_placeholder": "Feishu 앱 시크릿 붙여넣기",
+        "description": "커스텀 앱을 통해 Feishu(飞书) 또는 Lark에서 에이전트와 대화합니다. 연결은 아웃바운드 WebSocket — 콜백 URL이나 열린 포트를 관리할 필요가 없습니다.",
+        "empty_allowlist_hint": "허용된 open_id가 없습니다: 봇이 모든 메시지를 거부합니다(기본 거부). 아래에 Feishu open_id를 추가하세요.",
+        "group_allowlist_description": "턴을 시작할 수 있는 Feishu 그룹 chat_id. 비어 있으면 = 어떤 그룹도 처리하지 않습니다.",
+        "group_allowlist_label": "허용된 그룹 채팅 ID",
+        "group_empty_hint": "그룹 채팅이 켜져 있지만 chat_id가 하나도 없어 어떤 그룹도 처리되지 않습니다. chat_id를 추가하거나 토글을 끄세요.",
+        "guide_body": "Feishu 개발자 콘솔에서 <mono>custom app</mono>을 만들고 <mono>Credentials & Basic Info</mono> 페이지에서 <mono>App ID</mono>와 <mono>App Secret</mono>을 확인해 아래에 붙여 넣으세요. 그다음 이벤트 모드 <mono>Long connection</mono>을 활성화하고 <mono>im.message.receive_v1</mono>을 구독합니다. 각 구성원의 <mono>open_id</mono>를 허용 목록에 넣습니다. 이 채널에는 선택적 의존성도 필요합니다. 게이트웨이를 실행하는 환경에서 <mono>pip install \"kirocrew[feishu]\"</mono>를 실행한 뒤 재시작하세요.",
+        "open_developer_console": "Feishu 개발자 콘솔 열기"
       },
       "webexPanel": {
         "access": "액세스",

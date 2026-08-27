@@ -147,6 +147,13 @@ class LarkClient:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
         self._closed = False
+        #: Health observer ``(connected, reason)``, set by ``maybe_start_feishu``
+        #: so the Settings badge tracks the receiver instead of guessing from
+        #: "the channel was enabled at boot". Assigned after construction to
+        #: avoid a client<->transport cycle; see ``_notify_state``.
+        self.on_state_change: Callable[[bool, str], None] | None = None
+        self._healthy: bool | None = None
+        self._healthy_reason = ""
 
         # Build the sync REST client once; it is thread-safe for outbound calls.
         try:
@@ -330,21 +337,57 @@ class LarkClient:
             # blocks for the life of the channel. Both exits still get a log
             # line: a RETURN means lark gave up reconnecting, which would
             # otherwise kill the receiver in total silence.
+            #
+            # Both exits also publish an UNHEALTHY transition, from this thread
+            # (``_notify_state`` only calls a plain callback, which assigns two
+            # attributes on DashboardState -- no loop affinity required). Without
+            # it a rejected app id/secret leaves the badge reading "connected"
+            # forever, because the only evidence of refusal is this thread
+            # ending seconds after start().
             try:
                 ws.start()
-            except Exception:
+            except Exception as exc:
                 if not self._closed:
                     logger.exception("Feishu WS loop raised; receiver is down")
+                    self._notify_state(False, f"receiver stopped: {type(exc).__name__}")
                 return
             if not self._closed:
                 logger.error(
                     "Feishu WS loop returned without a close() -- receiver is "
                     "down and will not reconnect; restart the gateway."
                 )
+                self._notify_state(
+                    False,
+                    "receiver stopped (check the app id/secret and that the app "
+                    "has the im:message events subscribed)",
+                )
 
         self._thread = threading.Thread(target=_run, daemon=True, name="feishu-ws")
         self._thread.start()
+        # Healthy on launch, then corrected by _run's exit. start() proves the
+        # thread is up, not that Feishu accepted the app -- but a refused app
+        # ends the thread within seconds, so the badge self-corrects rather than
+        # sitting on an optimistic claim indefinitely.
+        self._notify_state(True, "")
         logger.info("Feishu WebSocket receiver started (app_id=%s)", self._app_id)
+
+    def _notify_state(self, connected: bool, error: str) -> None:
+        """Publish a health transition to the dashboard badge.
+
+        Deduped on the transition (mirrors ``TeamsClient._notify_state``): a
+        repeated identical report must not overwrite the FIRST reason with the
+        same later one. The first call always publishes, because the initial
+        state is unknown rather than healthy.
+        """
+        if self._healthy is connected and error == self._healthy_reason:
+            return
+        self._healthy = connected
+        self._healthy_reason = error
+        if self.on_state_change is not None:
+            try:
+                self.on_state_change(connected, error)
+            except Exception:
+                logger.debug("Feishu on_state_change observer raised", exc_info=True)
 
     async def close(self) -> None:
         """Signal shutdown; the daemon thread exits once the WS closes."""
@@ -364,4 +407,7 @@ class LarkClient:
                 logger.debug("Feishu WS stop failed", exc_info=True)
         # Do not wait: an in-flight REST reply must not hold up shutdown.
         self._executor.shutdown(wait=False)
+        # An intentional shutdown is still "not connected" — with no reason,
+        # because nothing failed.
+        self._notify_state(False, "")
         logger.info("Feishu client closed")

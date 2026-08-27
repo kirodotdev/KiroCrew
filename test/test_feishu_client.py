@@ -724,6 +724,90 @@ class TestStart:
 
 
 # ---------------------------------------------------------------------------
+# Tests: health transitions (on_state_change)
+# ---------------------------------------------------------------------------
+
+
+class TestHealthTransitions:
+    """The Settings badge is driven by these transitions, so they are contract.
+
+    Without them a rejected app id/secret leaves the badge reading "connected"
+    forever: lark-oapi exposes no connect event, and the only evidence of a
+    refusal is the receiver thread ending seconds after start().
+    """
+
+    @pytest.mark.asyncio
+    async def test_start_reports_healthy_then_close_reports_down(self) -> None:
+        from kiro_crew.feishu.client import LarkClient
+
+        client = LarkClient(app_id="a", app_secret="s")
+        seen: list[tuple[bool, str]] = []
+        client.on_state_change = lambda ok, why: seen.append((ok, why))
+
+        await client.start()
+        assert seen[0] == (True, "")
+
+        await client.close()
+        client._thread.join(timeout=1.0)
+        # An intentional shutdown is "not connected" with NO reason: nothing
+        # failed, and inventing one would show a false error in Settings.
+        assert seen[-1] == (False, "")
+
+    @pytest.mark.asyncio
+    async def test_receiver_exit_reports_the_reason(self) -> None:
+        """A receiver that returns on its own is the bad-credential signal."""
+        from kiro_crew.feishu.client import LarkClient
+
+        client = LarkClient(app_id="a", app_secret="s")
+        seen: list[tuple[bool, str]] = []
+        client.on_state_change = lambda ok, why: seen.append((ok, why))
+
+        await client.start()
+        # End the receive loop WITHOUT going through client.close(), so
+        # `_closed` stays False — exactly the shape lark produces for a refused
+        # app: ws.start() returns on its own while the channel still believes it
+        # is running. Driving the stub directly keeps this deterministic rather
+        # than racing its internal timeout.
+        client._ws_client.stop()
+        client._thread.join(timeout=5.0)
+        assert not client._thread.is_alive()
+
+        assert seen[0] == (True, "")
+        assert seen[-1][0] is False
+        assert "receiver stopped" in seen[-1][1]
+
+    def test_transitions_are_deduped_but_the_first_always_publishes(self) -> None:
+        from kiro_crew.feishu.client import LarkClient
+
+        client = LarkClient(app_id="a", app_secret="s")
+        seen: list[tuple[bool, str]] = []
+        client.on_state_change = lambda ok, why: seen.append((ok, why))
+
+        client._notify_state(False, "")
+        client._notify_state(False, "")
+        assert seen == [(False, "")], "the first report publishes even if unhealthy"
+
+        client._notify_state(False, "first reason")
+        client._notify_state(False, "first reason")
+        # A repeat must not overwrite the FIRST reason with an identical later
+        # one, and must not spam the observer.
+        assert seen == [(False, ""), (False, "first reason")]
+
+    def test_an_observer_that_raises_cannot_break_the_receiver(self) -> None:
+        from kiro_crew.feishu.client import LarkClient
+
+        client = LarkClient(app_id="a", app_secret="s")
+
+        def _boom(ok: bool, why: str) -> None:
+            raise RuntimeError("observer blew up")
+
+        client.on_state_change = _boom
+        # Swallowed: the badge is a side channel, and losing it must never take
+        # the channel down with it.
+        client._notify_state(True, "")
+
+
+# ---------------------------------------------------------------------------
 # Tests: close()
 # ---------------------------------------------------------------------------
 

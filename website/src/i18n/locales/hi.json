@@ -11112,6 +11112,7 @@
         "configuration_is_saved_but_the_channel_is_not_ru": "कॉन्फ़िगरेशन सहेजा गया है लेकिन चैनल चालू नहीं है। कनेक्ट करने के लिए गेटवे रीस्टार्ट करें।",
         "enable": "{{channel}} चालू करो",
         "forum_topics": "फ़ोरम विषय",
+        "group_chats": "ग्रुप चैट",
         "get_your_bot_token": "अपना बॉट टोकन लें",
         "identity_access": "पहचान और पहुँच",
         "loading": "लोड हो रहा है:",
@@ -12266,6 +12267,23 @@
         "token_description": "उसी सेटिंग पेज पर Bot ID के बग़ल में दिखने वाला Secret।",
         "token_label": "WeCom बॉट सीक्रेट",
         "token_placeholder": "WeCom बॉट सीक्रेट पेस्ट करें"
+      },
+      "feishuPanel": {
+        "allowlist_description": "वे Feishu open_id जिन्हें बॉट को DM करने की अनुमति है। खाली = सबको मना (फेल क्लोज़्ड)।",
+        "allow_group_description": "डायरेक्ट मैसेज के साथ-साथ ग्रुप बातचीत भी संभालो। बॉट ग्रुप का मैसेज सिर्फ़ तब देखता है जब उसे <mono>@</mono> से मेंशन किया जाए, और सिर्फ़ नीचे सूचीबद्ध ग्रुप में।",
+        "allow_group_label": "ग्रुप चैट में जवाब दो",
+        "app_id_description": "Feishu डेवलपर कंसोल में तुम्हारे कस्टम ऐप के Credentials पेज पर दिया App ID।",
+        "app_id_label": "Feishu ऐप ID",
+        "app_secret_description": "उसी Credentials पेज पर App ID के बगल में दिखने वाला App Secret।",
+        "app_secret_label": "Feishu ऐप सीक्रेट",
+        "app_secret_placeholder": "Feishu ऐप सीक्रेट पेस्ट करो",
+        "description": "एक कस्टम ऐप के ज़रिए Feishu (飞书) या Lark से अपने एजेंट से बात करो। कनेक्शन बाहर जाने वाला WebSocket है — कोई कॉलबैक URL या खुला पोर्ट संभालना नहीं पड़ता।",
+        "empty_allowlist_hint": "कोई अनुमति वाला open_id नहीं: बॉट हर मैसेज ठुकरा देता है (फेल क्लोज़्ड)। नीचे अपना Feishu open_id जोड़ो।",
+        "group_allowlist_description": "वे Feishu ग्रुप chat_id जो एक टर्न शुरू कर सकते हैं। खाली = किसी ग्रुप को नहीं संभाला जाता।",
+        "group_allowlist_label": "अनुमति वाले ग्रुप चैट ID",
+        "group_empty_hint": "ग्रुप चैट चालू है पर कोई chat_id सूची में नहीं है, इसलिए किसी ग्रुप को नहीं संभाला जाता। एक chat_id जोड़ो, या टॉगल बंद करो।",
+        "guide_body": "Feishu डेवलपर कंसोल में एक <mono>custom app</mono> बनाओ और उसका <mono>Credentials & Basic Info</mono> पेज खोलकर <mono>App ID</mono> और <mono>App Secret</mono> लो — दोनों नीचे पेस्ट करो। फिर <mono>Long connection</mono> इवेंट मोड चालू करो और <mono>im.message.receive_v1</mono> सब्सक्राइब करो। हर सदस्य का <mono>open_id</mono> अनुमति-सूची में जाता है। इस चैनल को उसकी वैकल्पिक डिपेंडेंसी भी चाहिए: जिस एनवायरनमेंट में गेटवे चलता है वहाँ <mono>pip install \"kirocrew[feishu]\"</mono> चलाओ, फिर उसे रीस्टार्ट करो।",
+        "open_developer_console": "Feishu डेवलपर कंसोल खोलो"
       },
       "webexPanel": {
         "access": "एक्सेस",

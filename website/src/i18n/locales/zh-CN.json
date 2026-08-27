@@ -10952,6 +10952,7 @@
         "configuration_is_saved_but_the_channel_is_not_ru": "配置已保存，但渠道未在运行。重启网关后即可连接。",
         "enable": "启用 {{channel}}",
         "forum_topics": "论坛话题",
+        "group_chats": "群聊",
         "get_your_bot_token": "获取机器人令牌",
         "identity_access": "身份与访问",
         "loading": "正在加载",
@@ -12106,6 +12107,23 @@
         "token_description": "同一设置页面上 Bot ID 旁显示的 Secret。",
         "token_label": "企业微信机器人密钥",
         "token_placeholder": "粘贴企业微信机器人密钥"
+      },
+      "feishuPanel": {
+        "allowlist_description": "允许私聊机器人的飞书 open_id。留空 = 全部拒绝（失败关闭）。",
+        "allow_group_description": "除私聊外也服务群聊会话。只有在群里被 <mono>@</mono> 提及时机器人才会收到消息，且仅限下方列出的群。",
+        "allow_group_label": "在群聊中回复",
+        "app_id_description": "飞书开放平台控制台中自建应用“凭证与基础信息”页面上的 App ID。",
+        "app_id_label": "飞书 app ID",
+        "app_secret_description": "同一“凭证与基础信息”页面上紧邻 App ID 的 App Secret。",
+        "app_secret_label": "飞书 app secret",
+        "app_secret_placeholder": "粘贴飞书 app secret",
+        "description": "通过自建应用，从飞书或 Lark 与你的代理对话。连接是出站 WebSocket — 无需管理回调 URL 或开放端口。",
+        "empty_allowlist_hint": "没有允许的 open_id：机器人会拒绝所有消息（失败关闭）。在下方添加你的飞书 open_id。",
+        "group_allowlist_description": "允许发起一轮对话的飞书群 chat_id。留空 = 不服务任何群。",
+        "group_allowlist_label": "允许的群 chat ID",
+        "group_empty_hint": "已开启群聊但未列出任何 chat_id，因此不会服务任何群。请添加一个 chat_id，或关闭该开关。",
+        "guide_body": "在飞书开放平台控制台创建一个<mono>自建应用</mono>，打开<mono>凭证与基础信息</mono>页面获取 <mono>App ID</mono> 和 <mono>App Secret</mono>，并把两者粘贴到下方。然后启用<mono>长连接</mono>事件模式，并订阅 <mono>im.message.receive_v1</mono>。每位成员的 <mono>open_id</mono> 填入白名单。该渠道还需要它的可选依赖：在运行网关的环境中执行 <mono>pip install \"kirocrew[feishu]\"</mono>，然后重启网关。",
+        "open_developer_console": "打开飞书开放平台控制台"
       },
       "webexPanel": {
         "access": "访问",

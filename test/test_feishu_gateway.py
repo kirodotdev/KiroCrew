@@ -158,7 +158,12 @@ class TestMaybeStartFeishu:
             result = await maybe_start_feishu(orch)
 
         assert result is None
-        assert any("Failed to start Feishu" in r.message for r in caplog.records)
+        # Its OWN message, not the generic one: a missing optional extra is the
+        # single failure here a user can fix without reading a stack trace, so
+        # both the log and the settings badge name the install command.
+        assert any("needs the lark-oapi extra" in r.getMessage() for r in caplog.records)
+        assert orch.dashboard_state.feishu_connected is False
+        assert 'pip install "kirocrew[feishu]"' in orch.dashboard_state.feishu_connect_error
 
     @pytest.mark.asyncio
     async def test_generic_exception_swallowed(
@@ -175,3 +180,48 @@ class TestMaybeStartFeishu:
 
         assert result is None
         assert any("Failed to start Feishu" in r.message for r in caplog.records)
+        # A non-ImportError failure must still publish a reason; a bare
+        # "not connected" badge sends the user to the logs for no reason.
+        assert orch.dashboard_state.feishu_connected is False
+        assert "RuntimeError: boom" in orch.dashboard_state.feishu_connect_error
+
+    @pytest.mark.asyncio
+    async def test_status_observer_is_wired_before_connect(
+        self, mock_dispatcher, mock_transport_cls, mock_client_cls
+    ) -> None:
+        """The badge follows the client's own transitions, and the observer is
+        attached BEFORE connect() — a transition landing on a missing callback
+        would be swallowed by the client's dedupe and never re-reported."""
+        fake_client = MagicMock()
+        fake_client.on_state_change = None
+        mock_client_cls.return_value = fake_client
+        fake_transport = MagicMock()
+        observed: list[bool] = []
+
+        async def _connect() -> None:
+            # Whatever the client reports at connect time must already have
+            # somewhere to land.
+            observed.append(fake_client.on_state_change is not None)
+
+        fake_transport.connect = _connect
+        mock_transport_cls.return_value = fake_transport
+        mock_dispatcher.return_value = MagicMock()
+
+        orch = _orch()
+        result = await maybe_start_feishu(orch)
+
+        assert result is fake_client
+        assert observed == [True]
+
+        fake_client.on_state_change(True, "")
+        assert orch.dashboard_state.feishu_connected is True
+        assert orch.dashboard_state.feishu_connect_error == ""
+
+        fake_client.on_state_change(False, "receiver stopped: RuntimeError")
+        assert orch.dashboard_state.feishu_connected is False
+        assert orch.dashboard_state.feishu_connect_error == "receiver stopped: RuntimeError"
+
+        # Reasons are clamped so a pathological error string cannot bloat the
+        # settings payload.
+        fake_client.on_state_change(False, "x" * 500)
+        assert len(orch.dashboard_state.feishu_connect_error) == 120

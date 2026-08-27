@@ -4710,7 +4710,8 @@
         "allow_group": false,
         "allowed_group_ids": [],
         "soft_threshold_pct": 80,
-        "hard_threshold_pct": 95
+        "hard_threshold_pct": 95,
+        "session_folder": ""
       }
     },
     {
@@ -4836,6 +4837,22 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 95
+    },
+    {
+      "path": "feishu.session_folder",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "feishu"
+      ],
+      "label": "Session Folder",
+      "help": "Optional sidebar folder for sessions that start on this channel. Empty (the default) leaves them unfiled; any other value is the folder name, created when these settings are saved and marked with the channel's brand mark. A configured folder that no longer exists leaves conversations unfiled until the next save recreates it.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "discord",

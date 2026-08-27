@@ -11430,6 +11430,7 @@
         "configuration_is_saved_but_the_channel_is_not_ru": "Конфигурация сохранена, но канал не запущен. Перезапусти шлюз для подключения.",
         "enable": "Включить {{channel}}",
         "forum_topics": "Темы форума",
+        "group_chats": "Групповые чаты",
         "get_your_bot_token": "Получить токен бота",
         "identity_access": "Идентификация и доступ",
         "loading": "Загрузка",
@@ -12584,6 +12585,23 @@
         "token_description": "Secret, показанный рядом с Bot ID на той же странице настроек.",
         "token_label": "Секрет бота WeCom",
         "token_placeholder": "Вставь секрет бота WeCom"
+      },
+      "feishuPanel": {
+        "allowlist_description": "Идентификаторы open_id Feishu, которым разрешено писать боту. Пусто = запретить всем (запрет по умолчанию).",
+        "allow_group_description": "Обслуживать групповые беседы наряду с личными сообщениями. Бот видит сообщение в группе только при упоминании через <mono>@</mono> и только в перечисленных ниже группах.",
+        "allow_group_label": "Отвечать в групповых чатах",
+        "app_id_description": "App ID со страницы Credentials твоего приложения в консоли разработчика Feishu.",
+        "app_id_label": "ID приложения Feishu",
+        "app_secret_description": "App Secret, показанный рядом с App ID на той же странице Credentials.",
+        "app_secret_label": "Секрет приложения Feishu",
+        "app_secret_placeholder": "Вставь App Secret Feishu",
+        "description": "Общайся с агентом из Feishu (飞书) или Lark через собственное приложение. Соединение — исходящий WebSocket, никаких callback-URL и открытых портов.",
+        "empty_allowlist_hint": "Разрешённых open_id нет: бот отклоняет любое сообщение (запрет по умолчанию). Добавь свой open_id Feishu ниже.",
+        "group_allowlist_description": "Идентификаторы chat_id групп Feishu, которым разрешено запускать ход. Пусто = ни одна группа не обслуживается.",
+        "group_allowlist_label": "Разрешённые ID групповых чатов",
+        "group_empty_hint": "Групповые чаты включены, но ни один chat_id не указан, поэтому ни одна группа не обслуживается. Добавь chat_id или выключи переключатель.",
+        "guide_body": "В консоли разработчика Feishu создай <mono>custom app</mono> и открой её страницу <mono>Credentials & Basic Info</mono> — там <mono>App ID</mono> и <mono>App Secret</mono>, вставь оба ниже. Затем включи режим событий <mono>Long connection</mono> и подпишись на <mono>im.message.receive_v1</mono>. <mono>open_id</mono> каждого участника вносится в список разрешённых. Каналу также нужна необязательная зависимость: выполни <mono>pip install \"kirocrew[feishu]\"</mono> в окружении, где работает шлюз, и перезапусти его.",
+        "open_developer_console": "Открыть консоль разработчика Feishu"
       },
       "webexPanel": {
         "access": "Доступ",

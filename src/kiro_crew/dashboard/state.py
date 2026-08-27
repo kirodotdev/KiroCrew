@@ -4838,6 +4838,22 @@ class DashboardState:
         # error, immediate close on bad credentials, or server kick), empty
         # when connected or never attempted. Read by the settings badge.
         self.wecom_connect_error: str = ""
+        # True only while the Feishu (飞书/Lark) channel's WebSocket receiver
+        # thread is alive (kept truthful by LarkClient.on_state_change, wired in
+        # maybe_start_feishu). Read by the Feishu settings status badge.
+        #
+        # Receiver-liveness, NOT a credential probe: lark-oapi owns the socket
+        # and exposes no connect/subscribe transition to hook, and a REST
+        # tenant-token probe would have to pick a domain (open.feishu.cn vs
+        # open.larksuite.com), reporting a false failure for whichever tenant it
+        # guessed wrong. Liveness still catches rejected credentials, because
+        # lark's ws.start() RETURNS within seconds when the app is refused —
+        # which flips this to False with the reason attached.
+        self.feishu_connected: bool = False
+        # Short reason the Feishu channel is not running — a missing lark-oapi
+        # extra, rejected app credentials, or a receiver thread that died. Empty
+        # when connected or never attempted. Read by the settings badge.
+        self.feishu_connect_error: str = ""
         # True only while the Teams channel's credentials validated this
         # session (kept truthful by TeamsClient.on_state_change). Read by the
         # Teams settings status badge.

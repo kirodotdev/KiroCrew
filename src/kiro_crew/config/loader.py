@@ -5514,6 +5514,18 @@ class FeishuConfig:
             tags=["feishu"],
         ),
     )
+    session_folder: str = field(
+        default="",
+        metadata=_meta(
+            "Session Folder",
+            "Optional sidebar folder for sessions that start on this channel. "
+            "Empty (the default) leaves them unfiled; any other value is the "
+            "folder name, created when these settings are saved and marked with "
+            "the channel's brand mark. A configured folder that no longer exists "
+            "leaves conversations unfiled until the next save recreates it.",
+            tags=["feishu"],
+        ),
+    )
 
     def __post_init__(self) -> None:
         # Shared normalization: clamp both thresholds and guarantee soft <= hard
@@ -7695,6 +7707,7 @@ class KiroCrewConfig:
                 allowed_group_ids=_coerce_opaque_str_ids(feishu_data.get("allowed_group_ids")),
                 soft_threshold_pct=_safe_int(feishu_data.get("soft_threshold_pct", 80), 80),
                 hard_threshold_pct=_safe_int(feishu_data.get("hard_threshold_pct", 95), 95),
+                session_folder=_coerce_session_folder(feishu_data.get("session_folder")),
             ),
             dashboard=DashboardConfig(
                 url=dashboard_data.get("url", ""),

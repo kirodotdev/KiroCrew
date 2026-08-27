@@ -6045,3 +6045,360 @@ async def _wecom_config_save_locked(request: web.Request) -> web.Response:
             "verify_warning": "",
         }
     )
+
+
+# ── Feishu (飞书/Lark) configuration API ──
+# Same two-credential shape as WeCom: FEISHU_APP_ID + FEISHU_APP_SECRET live in
+# config_dir/.env (0600), non-secret config (enabled, allowed_open_ids,
+# allow_group, allowed_group_ids, soft_threshold_pct, session_folder) lives in
+# config.json under the "feishu" key. GET returns masked previews + presence
+# booleans; raw values are write-only. The UI maps FEISHU_APP_SECRET onto the
+# shared panel's primary secret ("bot_token") and FEISHU_APP_ID onto its second
+# credential field ("bot_id").
+#
+# Group access is a SEPARATE axis from the DM allow-list here (unlike WeCom's
+# allow-all switch): allow_group gates group chats at all, and allowed_group_ids
+# names which ones. Both fail closed — allow_group with an empty list serves no
+# group, which is why the panel shows a hint rather than silently doing nothing.
+
+
+def _is_valid_feishu_id(v: str, prefix: str) -> bool:
+    """Feishu opaque-id shape check (linear string ops, no regex).
+
+    Feishu ids are a fixed prefix (``ou_`` for a user open_id, ``oc_`` for a
+    group chat_id) followed by an opaque ASCII alphanumeric body. Only the
+    prefix and the charset are asserted, never a length equality: the body
+    length is not contractual and a stricter check would reject valid ids from a
+    future tenant. ASCII-only on purpose — ``str.isalnum()`` alone admits
+    Unicode digits, which can never match a real Feishu id and would sit in the
+    allow-list looking authoritative. Fail closed on anything else (whitespace,
+    display names, a pasted @-mention, zero-width blobs).
+    """
+    if not v.startswith(prefix) or len(v) > 128:
+        return False
+    body = v[len(prefix) :]
+    if not body:
+        return False
+    return all(ch.isascii() and ch.isalnum() for ch in body)
+
+
+async def api_feishu_config_get(request: web.Request) -> web.Response:
+    """GET /api/feishu/config — read Feishu config + masked credential status."""
+    from kiro_crew.config.loader import (  # noqa: F811
+        CRED_FEISHU_APP_ID,
+        CRED_FEISHU_APP_SECRET,
+        KiroCrewConfig,
+    )
+
+    cfg = KiroCrewConfig.load()
+    creds = cfg.load_credentials()
+    app_id = creds.get(CRED_FEISHU_APP_ID, "")
+    app_secret = creds.get(CRED_FEISHU_APP_SECRET, "")
+    fs = cfg.feishu
+    state: DashboardState = request.app["state"]
+    return web.json_response(
+        {
+            # True only while the WS receiver thread is alive this session —
+            # NOT merely "credentials were present at boot". A refused app ends
+            # that thread within seconds, which flips this back to false.
+            "connected": bool(getattr(state, "feishu_connected", False)),
+            "connect_error": str(getattr(state, "feishu_connect_error", ""))[:120],
+            # allowed_open_ids is part of "configured": the transport fails
+            # closed and rejects every DM while the allow-list is empty, so a
+            # credentialed + enabled channel with no ids is not yet usable.
+            "configured": bool(app_id and app_secret and fs.enabled and fs.allowed_open_ids),
+            # Remote sessions get a read-only view: config edits (PUT) are
+            # loopback-only, so the UI disables all inputs and hides Save.
+            "read_only": not is_direct_local_request(request),
+            # Primary secret slot of the shared panel = FEISHU_APP_SECRET.
+            "bot_token_set": bool(app_secret),
+            "bot_token_preview": _mask_secret(app_secret),
+            # Second credential slot = FEISHU_APP_ID.
+            "bot_id_set": bool(app_id),
+            "bot_id_preview": _mask_secret(app_id),
+            "enabled": bool(fs.enabled),
+            "allowed_user_ids": list(fs.allowed_open_ids),
+            "allow_group": bool(fs.allow_group),
+            "allowed_group_ids": list(fs.allowed_group_ids),
+            "soft_threshold_pct": int(fs.soft_threshold_pct),
+            "session_folder": fs.session_folder,
+        }
+    )
+
+
+async def api_feishu_config_save(request: web.Request) -> web.Response:
+    """PUT /api/feishu/config — persist Feishu secrets (.env) + config (config.json).
+
+    Every Feishu field is read once at gateway startup (credentials, enabled
+    flag, and both allow-lists are consumed when ``maybe_start_feishu`` builds
+    the transport), so any actual change returns ``restart_required``.
+
+    Serialized with every other config.json writer via the repository-wide
+    ``_get_config_lock()`` — this handler read-modify-writes the shared
+    ``.env`` / ``config.json`` stores, so interleaving with ANY other config
+    writer would silently lose writes.
+    """
+    # circular import: agents imports from dashboard.handlers at module load
+    from kiro_crew.dashboard.handlers.agents import _get_config_lock  # noqa: F811
+
+    async with _get_config_lock():
+        return await _feishu_config_save_locked(request)
+
+
+async def _feishu_config_save_locked(request: web.Request) -> web.Response:
+    """Body of the Feishu save; caller holds ``_get_config_lock()``."""
+    from kiro_crew.agent import _atomic_json_write  # noqa: F811
+    from kiro_crew.config.loader import (  # noqa: F811
+        CRED_FEISHU_APP_ID,
+        CRED_FEISHU_APP_SECRET,
+        config_path,
+    )
+
+    caller = request.get("user", "dashboard")
+
+    def _audit_denial(msg: str) -> None:
+        _sel().log_api_access(
+            caller=caller,
+            operation="feishu.config.update",
+            outcome="denied",
+            source="dashboard",
+            error=msg,
+        )
+
+    def _deny(msg: str, *, code: str) -> web.Response:
+        """Reject a bad request. ``code`` is the contract, ``msg`` is advisory.
+
+        400 is a literal rather than a parameter, and the 403/500 replies below
+        are written out at their own call sites for the same reason: a computed
+        status puts a response in the error-code gate's unverifiable
+        ``dynamic_status`` bucket, which the gate caps precisely because hoisting
+        a status out of view looks like refactoring. The dashboard renders
+        ``error`` verbatim into a localized UI, so prose alone would be
+        untranslatable by construction (RFC 9457 3.1.3).
+        """
+        _audit_denial(msg)
+        return web.json_response({"error": msg, "code": code}, status=400)
+
+    # Remote sessions are read-only: config writes are accepted only from the
+    # machine running the gateway, so a remote or tunneled session (even with a
+    # valid dashboard token) cannot widen Feishu access or plant credentials.
+    if not is_direct_local_request(request):
+        message = "read-only from remote sessions (local machine only)"
+        _audit_denial(message)
+        return web.json_response({"error": message, "code": "remote_read_only"}, status=403)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return _deny("invalid JSON", code="invalid_json")
+    if not isinstance(body, dict):
+        return _deny("body must be an object", code="body_not_object")
+
+    # ── Phase 1: validate everything and stage changes. No writes happen until
+    # all validation passes, so a rejected field never leaves partial state. ──
+
+    env_updates: dict[str, str | None] = {}
+    # Two independent credential slots, each with the same set/clear contract
+    # as the single-token channels (clear wins over a simultaneously-sent value).
+    for field_key, clear_key, cred_key, label in (
+        ("bot_token", "bot_token_clear", CRED_FEISHU_APP_SECRET, "app secret"),
+        ("bot_id", "bot_id_clear", CRED_FEISHU_APP_ID, "app ID"),
+    ):
+        clear_flag = body.get(clear_key)
+        if clear_flag is not None and not isinstance(clear_flag, bool):
+            return _deny(f"{clear_key} must be a boolean", code="clear_flag_not_bool")
+        if clear_flag is True:
+            env_updates[cred_key] = None
+            continue
+        raw = body.get(field_key)
+        if isinstance(raw, str):
+            cred_val = raw.strip()
+            if cred_val.startswith(f"{cred_key}="):  # accidental env line paste
+                cred_val = cred_val[len(cred_key) + 1 :].strip()
+            if cred_val:
+                if any(ch.isspace() for ch in cred_val):
+                    return _deny(
+                        f"{label} must not contain whitespace", code="credential_whitespace"
+                    )
+                if len(cred_val) > 256:
+                    return _deny(f"{label} is implausibly long", code="credential_too_long")
+                env_updates[cred_key] = cred_val
+
+    # Config → config.json under "feishu" (staged, applied only after Phase 1).
+    # Off-loop read: a large or slow config.json must not stall the gateway
+    # event loop. Reading under _get_config_lock() keeps the snapshot current
+    # relative to every other config writer.
+    path = config_path()
+
+    def _read_config() -> dict:
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+    def _corrupt_config() -> web.Response:
+        message = "config.json is corrupt"
+        _audit_denial(message)
+        return web.json_response({"error": message, "code": "config_corrupt"}, status=500)
+
+    try:
+        data = await asyncio.to_thread(_read_config)
+    except Exception:
+        return _corrupt_config()
+    # A readable file whose TOP LEVEL is not an object (a hand-edited `[]`) is the
+    # same class of problem as an unreadable one, and gets the same answer: the
+    # alternative is `data.get` raising AttributeError into a 500 with a stack
+    # trace and no indication of what to fix.
+    if not isinstance(data, dict):
+        return _corrupt_config()
+    if not isinstance(data.get("feishu"), dict):
+        data["feishu"] = {}
+    fs_cfg = data["feishu"]
+    staged: dict[str, object] = {}
+    applied: list[str] = []
+
+    for flag_key in ("enabled", "allow_group"):
+        if flag_key in body:
+            val = body.get(flag_key)
+            if not isinstance(val, bool):
+                return _deny(f"{flag_key} must be a boolean", code="flag_not_bool")
+            if val != bool(fs_cfg.get(flag_key, False)):
+                staged[flag_key] = val
+                applied.append(flag_key)
+
+    # Both id lists share one validator, differing only in prefix. The wire name
+    # for the DM list is the shared panel's ``allowed_user_ids``; on disk it is
+    # ``allowed_open_ids``, which is what the transport reads.
+    for wire_key, cfg_key, prefix, what in (
+        ("allowed_user_ids", "allowed_open_ids", "ou_", "Feishu open_id"),
+        ("allowed_group_ids", "allowed_group_ids", "oc_", "Feishu group chat_id"),
+    ):
+        if wire_key not in body:
+            continue
+        raw_ids = body.get(wire_key)
+        if not isinstance(raw_ids, list):
+            return _deny(f"{wire_key} must be a list", code="ids_not_list")
+        new_ids: list[str] = []
+        for item in raw_ids:
+            s = str(item).strip()
+            if not s:
+                continue
+            if not _is_valid_feishu_id(s, prefix):
+                return _deny(f"invalid {what}: {s}", code="invalid_id")
+            if s not in new_ids:
+                new_ids.append(s)
+        if new_ids != list(fs_cfg.get(cfg_key, [])):
+            staged[cfg_key] = new_ids
+            applied.append(cfg_key)
+
+    bad_pct = _threshold_pct_rejection(body, "soft_threshold_pct")
+    if bad_pct is not None:
+        return _deny(bad_pct[1], code=bad_pct[0])
+    if "soft_threshold_pct" in body:
+        pct = int(body["soft_threshold_pct"])
+        if pct != int(fs_cfg.get("soft_threshold_pct", 80)):
+            staged["soft_threshold_pct"] = pct
+            applied.append("soft_threshold_pct")
+
+    if "session_folder" in body:
+        try:
+            new_folder = clean_session_folder(body.get("session_folder"))
+        except ValueError as exc:
+            return _deny(str(exc), code="invalid_session_folder")
+        if new_folder != str(fs_cfg.get("session_folder", "") or ""):
+            staged["session_folder"] = new_folder
+            applied.append("session_folder")
+
+    # No Phase 1.5 credential verification: a REST tenant-token probe would have
+    # to pick a domain (open.feishu.cn vs open.larksuite.com) and would report a
+    # false failure for whichever tenant it guessed wrong. Credentials are stored
+    # as given, and the badge reports receiver liveness after the next restart —
+    # a refused app ends the receiver thread within seconds, so a wrong secret
+    # surfaces as "not connected" with a reason rather than silence.
+
+    # ── Phase 2: commit. All validation passed, so writes are safe. ──
+    _cfg_snapshot: str | None = None
+    if staged:
+        fs_cfg.update(staged)
+        # Snapshot the on-disk config BEFORE writing the new metadata, so that
+        # if the subsequent .env credential write fails we can roll the metadata
+        # back. Restoring config on .env failure keeps the pair consistent (old
+        # credentials + old meta).
+        _cfg_snapshot = await asyncio.to_thread(_read_text_or_none, path)
+        # Off-loop: the atomic write (temp file + fsync + replace) must not
+        # block the gateway event loop.
+        await asyncio.to_thread(_atomic_json_write, path, data)
+
+    if env_updates:
+        # Off-loop: on Windows the owner-only lockdown shells out to icacls,
+        # which must not block the event loop.
+        #
+        # Cancellation guard: see the WeCom save for the full rationale. Only
+        # roll config back when the .env write actually failed, not when
+        # cancellation arrived after the write already committed.
+        _env_write_task_fs: asyncio.Task[None] = asyncio.ensure_future(
+            _write_env_off_loop(env_updates)
+        )
+        try:
+            await asyncio.shield(_env_write_task_fs)
+        except asyncio.CancelledError:
+            await asyncio.gather(_env_write_task_fs, return_exceptions=True)
+            _env_exc_fs = (
+                _env_write_task_fs.exception() if not _env_write_task_fs.cancelled() else None
+            )
+            if _env_exc_fs is not None and staged:
+                if _cfg_snapshot is None:
+                    await asyncio.to_thread(path.unlink, missing_ok=True)
+                else:
+                    await asyncio.to_thread(_atomic_json_write, path, json.loads(_cfg_snapshot))
+            raise
+        except BaseException:
+            # Roll config back so a failed .env write cannot leave the NEW
+            # metadata paired with the OLD credentials on disk.
+            if staged:
+                if _cfg_snapshot is None:
+                    await asyncio.to_thread(path.unlink, missing_ok=True)
+                else:
+                    await asyncio.to_thread(_atomic_json_write, path, json.loads(_cfg_snapshot))
+            raise
+        # Keep the live process environment in sync with the new .env state
+        # (load_credentials() lets os.environ win over .env — see the Slack save
+        # handler for the full rationale).
+        for key, new_val in env_updates.items():
+            if new_val is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = new_val
+
+    # Create the configured session folder now, on this user-initiated save, so
+    # the reconcile path never has to write the folder store. Best-effort: a
+    # failure leaves conversations unfiled until the next save.
+    #
+    # AFTER the credential write, not before: the .env write can fail (or be
+    # cancelled) and the config write above is rolled back when it does, but a
+    # folder that has already been created, renamed or unhidden is NOT rolled
+    # back. Reconciling here means a save that reported failure leaves no durable
+    # folder change behind.
+    _folder_name = stored_folder_name(fs_cfg.get("session_folder"))
+    if _folder_name:
+        _state = request.app.get("state")
+        if _state is not None:
+            await ensure_channel_folder(
+                _state,
+                "feishu",
+                _folder_name,
+                relabel="session_folder" in staged,
+            )
+
+    _sel().log_api_access(
+        caller=caller,
+        operation="feishu.config.update",
+        outcome="ok",
+        source="dashboard",
+        resources=",".join(applied + list(env_updates.keys())),
+    )
+    # The entire Feishu channel config is read once at gateway startup.
+    return web.json_response(
+        {
+            "ok": True,
+            "restart_required": bool(env_updates) or bool(staged.keys() - LIVE_RELOAD_FIELDS),
+            "verify_warning": "",
+        }
+    )

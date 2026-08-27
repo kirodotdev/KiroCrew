@@ -35,6 +35,14 @@ export interface BotChannelConfigData {
   /** Telegram forum per-topic config (optional; only Telegram sends these). */
   allow_forum?: boolean
   allowed_forum_chat_ids?: string[]
+  /**
+   * Group-chat scope (optional; only Feishu sends these). Distinct from
+   * ``allow_forum``: that gates per-TOPIC routing inside one Telegram
+   * supergroup, whereas this gates whole group conversations. Sharing one field
+   * would make the panel's copy lie for whichever channel borrowed the other's.
+   */
+  allow_group?: boolean
+  allowed_group_ids?: string[]
   /** When to answer inside an allow-listed forum topic (optional; Telegram). */
   forum_activation?: string
   /** Sidebar folder this channel's sessions are filed into ("" = off). */
@@ -64,6 +72,8 @@ export interface BotChannelConfigSave {
   allow_forum?: boolean
   allowed_forum_chat_ids?: string[]
   forum_activation?: string
+  allow_group?: boolean
+  allowed_group_ids?: string[]
   session_folder?: string
 }
 
@@ -194,6 +204,29 @@ export interface BotChannelSpec {
     }
   }
   /**
+   * Optional group-chat scope (Feishu group conversations). When present, the
+   * panel renders an allow_group toggle plus a chat-id tag editor. Separate from
+   * ``forum`` on purpose: a Telegram forum topic lives INSIDE one supergroup and
+   * carries its own activation mode, while this is "may this channel serve group
+   * conversations at all, and which ones". Channels that omit it never send
+   * ``allow_group`` or ``allowed_group_ids``.
+   */
+  groupChats?: {
+    toggleLabel: string
+    toggleDescription: ReactNode
+    allowlistLabel: string
+    allowlistDescription: string
+    allowlistPlaceholder: string
+    /** Entry validator; ids are opaque so each channel supplies its own shape. */
+    allowlistValidate?: (v: string) => boolean
+    /**
+     * Hint shown while the toggle is ON and the list is empty. Both fail closed,
+     * so that combination serves no group at all — without the hint the panel
+     * would look configured while doing nothing.
+     */
+    emptyHint: string
+  }
+  /**
    * Optional progress-display toggles rendered in the Behavior card: how much of
    * a running turn the channel shows (the phase-reaction ladder, and whether the
    * model's reasoning is surfaced). Channels that omit it are unaffected and
@@ -230,6 +263,8 @@ type Draft = {
   allow_forum: boolean
   allowed_forum_chat_ids: string[]
   forum_activation: string
+  allow_group: boolean
+  allowed_group_ids: string[]
   /** Whether this channel files its sessions in a folder at all (off = unfiled). */
   session_folder_on: boolean
   /** Folder name, kept while the toggle is off so turning it back on restores it. */
@@ -257,6 +292,11 @@ function draftFrom(c: BotChannelConfigData): Draft {
     voice_replies: !!c.voice_replies,
     allow_forum: !!c.allow_forum,
     allowed_forum_chat_ids: [...(c.allowed_forum_chat_ids ?? [])],
+    // Default OFF like the backend: an absent field means "this channel does
+    // not send it", and defaulting a GROUP-access switch on would widen reach
+    // for a channel that never asked for it.
+    allow_group: !!c.allow_group,
+    allowed_group_ids: [...(c.allowed_group_ids ?? [])],
     // Falls back to the backend's own default rather than to "", which is not a
     // valid mode and would post a value the loader then has to reject.
     forum_activation: c.forum_activation || 'always',
@@ -395,6 +435,10 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
       payload.allow_forum = draft.allow_forum
       payload.allowed_forum_chat_ids = draft.allowed_forum_chat_ids
       if (spec.forum.activation) payload.forum_activation = draft.forum_activation
+    }
+    if (spec.groupChats) {
+      payload.allow_group = draft.allow_group
+      payload.allowed_group_ids = draft.allowed_group_ids
     }
     if (spec.progressDisplay) {
       payload.reactions_enabled = draft.reactions_enabled
@@ -650,6 +694,38 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
                 />
               </div>
             )}
+          </SettingsCard>
+        </SettingsSection>
+      )}
+
+      {/* ── Group chats (optional; Feishu group conversations) ── */}
+      {spec.groupChats && (
+        <SettingsSection title={i18nT('pages.settings.botChannelPanel.group_chats')}>
+          <SettingsCard index={3}>
+            <SettingsToggle
+              label={spec.groupChats.toggleLabel}
+              description={spec.groupChats.toggleDescription}
+              checked={draft.allow_group}
+              onChange={v => upd({ allow_group: v })}
+              disabled={ro}
+            />
+            <div className="border-t border-border mt-4 pt-4">
+              <TagListEditor
+                label={spec.groupChats.allowlistLabel}
+                description={spec.groupChats.allowlistDescription}
+                values={draft.allowed_group_ids}
+                placeholder={spec.groupChats.allowlistPlaceholder}
+                onChange={v => upd({ allowed_group_ids: v })}
+                validate={spec.groupChats.allowlistValidate}
+                readOnly={ro}
+              />
+              {draft.allow_group && draft.allowed_group_ids.length === 0 && (
+                <p className="text-[12px] text-warn mt-2 mb-0 flex items-start gap-1.5">
+                  <AlertTriangle size={13} className="flex-none mt-0.5" />
+                  <span>{spec.groupChats.emptyHint}</span>
+                </p>
+              )}
+            </div>
           </SettingsCard>
         </SettingsSection>
       )}

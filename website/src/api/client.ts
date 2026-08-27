@@ -463,6 +463,45 @@ export interface WeComConfigSave {
   session_folder?: string
 }
 
+/** Feishu (飞书/Lark) config as returned by GET /api/feishu/config (secrets masked). */
+export interface FeishuConfigData {
+  /** Receiver-thread liveness, not a credential probe — see DashboardState. */
+  connected: boolean
+  connect_error: string
+  configured: boolean
+  read_only: boolean
+  /** Primary secret slot = FEISHU_APP_SECRET. */
+  bot_token_set: boolean
+  bot_token_preview: string
+  /** Second credential slot = FEISHU_APP_ID. */
+  bot_id_set: boolean
+  bot_id_preview: string
+  enabled: boolean
+  /** Stored as feishu.allowed_open_ids; the shared panel's user allow-list. */
+  allowed_user_ids: string[]
+  /** Whether group conversations are served at all (fails closed). */
+  allow_group: boolean
+  allowed_group_ids: string[]
+  soft_threshold_pct: number
+  /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
+  session_folder?: string
+}
+
+/** Writable Feishu config fields sent to PUT /api/feishu/config. */
+export interface FeishuConfigSave {
+  bot_token: string
+  bot_token_clear: boolean
+  bot_id: string
+  bot_id_clear: boolean
+  enabled: boolean
+  allowed_user_ids: string[]
+  allow_group: boolean
+  allowed_group_ids: string[]
+  soft_threshold_pct: number
+  /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
+  session_folder?: string
+}
+
 /** Webex config as returned by GET /api/webex/config (secret masked). */
 export interface WebexConfigData {
   connected: boolean
@@ -3168,6 +3207,8 @@ export const api = {
   getTelegramConfig: () => get('/api/telegram/config').then(j) as Promise<TelegramConfigData>,
   saveTelegramConfig: (body: Partial<TelegramConfigSave>) => put('/api/telegram/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,
   getWeComConfig: () => get('/api/wecom/config').then(j) as Promise<WeComConfigData>,
+  getFeishuConfig: () => get('/api/feishu/config').then(j) as Promise<FeishuConfigData>,
+  saveFeishuConfig: (body: Partial<FeishuConfigSave>) => put('/api/feishu/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,
   saveWeComConfig: (body: Partial<WeComConfigSave>) => put('/api/wecom/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,
   // Webex integration config
   getWebexConfig: () => get('/api/webex/config').then(j) as Promise<WebexConfigData>,

@@ -11112,6 +11112,7 @@
         "configuration_is_saved_but_the_channel_is_not_ru": "কনফিগারেশন সেভ হয়েছে কিন্তু চ্যানেলটি চলছে না। সংযোগের জন্য গেটওয়ে রিস্টার্ট করো।",
         "enable": "{{channel}} সক্রিয় করো",
         "forum_topics": "ফোরাম টপিক",
+        "group_chats": "গ্রুপ চ্যাট",
         "get_your_bot_token": "তোমার বট টোকেন নাও",
         "identity_access": "পরিচয় ও অ্যাক্সেস",
         "loading": "লোড হচ্ছে:",
@@ -12266,6 +12267,23 @@
         "token_description": "একই সেটিংস পেজে Bot ID-র পাশে দেখানো Secret।",
         "token_label": "WeCom বট সিক্রেট",
         "token_placeholder": "WeCom বট সিক্রেট পেস্ট করো"
+      },
+      "feishuPanel": {
+        "allowlist_description": "বটকে DM করার অনুমতি আছে যেসব Feishu open_id-এর। খালি = সবাইকে না (ফেল ক্লোজড)।",
+        "allow_group_description": "ডাইরেক্ট মেসেজের পাশাপাশি গ্রুপ আলাপও সামলাও। বট গ্রুপের মেসেজ কেবল তখনই দেখে যখন তাকে <mono>@</mono> দিয়ে মেনশন করা হয়, আর কেবল নিচে তালিকাভুক্ত গ্রুপেই।",
+        "allow_group_label": "গ্রুপ চ্যাটে উত্তর দাও",
+        "app_id_description": "Feishu ডেভেলপার কনসোলে তোমার কাস্টম অ্যাপের Credentials পেজে থাকা App ID।",
+        "app_id_label": "Feishu অ্যাপ ID",
+        "app_secret_description": "একই Credentials পেজে App ID-এর পাশে দেখানো App Secret।",
+        "app_secret_label": "Feishu অ্যাপ সিক্রেট",
+        "app_secret_placeholder": "Feishu অ্যাপ সিক্রেট পেস্ট করো",
+        "description": "একটি কাস্টম অ্যাপের মাধ্যমে Feishu (飞书) বা Lark থেকে তোমার এজেন্টের সঙ্গে কথা বলো। সংযোগটি বাইরের দিকে যাওয়া একটি WebSocket — কোনো কলব্যাক URL বা খোলা পোর্ট সামলাতে হয় না।",
+        "empty_allowlist_hint": "কোনো অনুমোদিত open_id নেই: বট প্রতিটি মেসেজ ফিরিয়ে দেয় (ফেল ক্লোজড)। নিচে তোমার Feishu open_id যোগ করো।",
+        "group_allowlist_description": "যেসব Feishu গ্রুপ chat_id একটি টার্ন চালাতে পারে। খালি = কোনো গ্রুপ সামলানো হয় না।",
+        "group_allowlist_label": "অনুমোদিত গ্রুপ চ্যাট ID",
+        "group_empty_hint": "গ্রুপ চ্যাট চালু আছে কিন্তু কোনো chat_id তালিকায় নেই, তাই কোনো গ্রুপ সামলানো হয় না। একটি chat_id যোগ করো, বা টগলটি বন্ধ করো।",
+        "guide_body": "Feishu ডেভেলপার কনসোলে একটি <mono>custom app</mono> তৈরি করো এবং তার <mono>Credentials & Basic Info</mono> পেজ খুলে <mono>App ID</mono> ও <mono>App Secret</mono> নাও — দুটোই নিচে পেস্ট করো। এরপর <mono>Long connection</mono> ইভেন্ট মোড চালু করো এবং <mono>im.message.receive_v1</mono> সাবস্ক্রাইব করো। প্রত্যেক সদস্যের <mono>open_id</mono> অনুমোদিত তালিকায় যায়। এই চ্যানেলের ঐচ্ছিক ডিপেন্ডেন্সিও দরকার: যে এনভায়রনমেন্টে গেটওয়ে চলে সেখানে <mono>pip install \"kirocrew[feishu]\"</mono> চালাও, তারপর সেটি রিস্টার্ট করো।",
+        "open_developer_console": "Feishu ডেভেলপার কনসোল খোলো"
       },
       "webexPanel": {
         "access": "অ্যাক্সেস",

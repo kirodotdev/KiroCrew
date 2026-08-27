@@ -30,6 +30,7 @@ vi.mock('../pages/settings/DiscordPanel', () => ({ DiscordPanel: () => <div data
 vi.mock('../pages/settings/TelegramPanel', () => ({ TelegramPanel: () => <div data-testid="telegram-panel" /> }))
 vi.mock('../pages/settings/WebexPanel', () => ({ WebexPanel: () => <div data-testid="webex-panel" /> }))
 vi.mock('../pages/settings/WeComPanel', () => ({ WeComPanel: () => <div data-testid="wecom-panel" /> }))
+vi.mock('../pages/settings/FeishuPanel', () => ({ FeishuPanel: () => <div data-testid="feishu-panel" /> }))
 vi.mock('../pages/settings/TeamsPanel', () => ({ TeamsPanel: () => <div data-testid="teams-panel" /> }))
 vi.mock('../pages/settings/WeixinPanel', () => ({ WeixinPanel: () => <div data-testid="weixin-panel" /> }))
 vi.mock('../pages/settings/IMessagePanel', () => ({ IMessagePanel: () => <div data-testid="imessage-panel" /> }))
@@ -45,6 +46,7 @@ vi.mock('../api/client', () => ({
     getTelegramConfig: vi.fn().mockResolvedValue({ connected: false, configured: false }),
     getWebexConfig: vi.fn().mockResolvedValue({ connected: false, configured: false }),
     getWeComConfig: vi.fn().mockRejectedValue(new Error('boom')),
+    getFeishuConfig: vi.fn().mockResolvedValue({ connected: false, configured: false }),
     getWeixinConfig: vi.fn().mockResolvedValue({ connected: false, configured: false }),
     getIMessageConfig: vi.fn().mockResolvedValue({ connected: false, configured: false }),
     getWhatsAppConfig: vi.fn().mockResolvedValue({ connected: false, configured: false }),
@@ -134,7 +136,7 @@ describe('ChannelsPanel — wide (two-pane)', () => {
     renderAt()
     expect(await screen.findByText('Connected')).toBeInTheDocument()       // slack
     expect(await screen.findByText('Not connected')).toBeInTheDocument()   // discord
-    expect((await screen.findAllByText('Needs setup')).length).toBe(6)     // telegram, webex, teams, weixin, imessage, whatsapp
+    expect((await screen.findAllByText('Needs setup')).length).toBe(7)     // telegram, webex, feishu, teams, weixin, imessage, whatsapp
     expect(await screen.findByText('Status unavailable')).toBeInTheDocument() // wecom (fetch error)
   })
 })

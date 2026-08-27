@@ -7,6 +7,7 @@ import { DiscordIcon } from '../../components/DiscordIcon'
 import { TelegramLogo } from '../../components/TelegramLogo'
 import { WebexIcon } from '../../components/WebexIcon'
 import { WeComLogo } from '../../components/WeComLogo'
+import { FeishuLogo } from '../../components/FeishuLogo'
 import { TeamsIcon } from '../../components/TeamsIcon'
 import { WeixinLogo } from '../../components/WeixinLogo'
 import { IMessageIcon } from '../../components/IMessageIcon'
@@ -16,6 +17,7 @@ import { DiscordPanel } from './DiscordPanel'
 import { TelegramPanel } from './TelegramPanel'
 import { WebexPanel } from './WebexPanel'
 import { WeComPanel } from './WeComPanel'
+import { FeishuPanel } from './FeishuPanel'
 import { ChannelDisabledPanel } from './ChannelDisabledPanel'
 import { TeamsPanel } from './TeamsPanel'
 import { WeixinPanel } from './WeixinPanel'
@@ -48,6 +50,7 @@ const CHANNELS: ChannelEntry[] = [
   { key: 'telegram', name: 'Telegram', logo: <TelegramLogo size={20} />, queryKey: 'telegram-config', getConfig: () => api.getTelegramConfig(), Panel: TelegramPanel },
   { key: 'webex', name: 'Webex', logo: <WebexIcon size={20} />, queryKey: 'webex-config', getConfig: () => api.getWebexConfig(), Panel: WebexPanel },
   { key: 'wecom', name: 'WeCom', logo: <WeComLogo size={20} />, queryKey: 'wecom-config', getConfig: () => api.getWeComConfig(), Panel: WeComPanel },
+  { key: 'feishu', name: 'Feishu', logo: <FeishuLogo size={20} />, queryKey: 'feishu-config', getConfig: () => api.getFeishuConfig(), Panel: FeishuPanel },
   { key: 'teams', name: 'Microsoft Teams', logo: <TeamsIcon size={20} />, queryKey: 'teams-config', getConfig: () => api.getTeamsConfig(), Panel: TeamsPanel },
   { key: 'weixin', name: 'WeChat', logo: <WeixinLogo size={20} />, queryKey: 'weixin-config', getConfig: () => api.getWeixinConfig(), Panel: WeixinPanel },
   { key: 'imessage', name: 'iMessage', logo: <IMessageIcon size={20} />, queryKey: 'imessage-config', getConfig: () => api.getIMessageConfig(), Panel: IMessagePanel },
@@ -129,6 +132,10 @@ export function ChannelsPanel() {
     return {
       key: c.key,
       label: c.name,
+      // Every label here is a vendor product name, so it is deliberately NOT in
+      // the catalog; tell the i18n render scan that rather than let it read the
+      // Latin text as a string that escaped translation.
+      labelOpaque: true,
       icon: c.logo,
       dimmed: denied,
       summary: denied ? (
