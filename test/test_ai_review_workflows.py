@@ -721,9 +721,18 @@ class TestFirstPrinciplesReview:
         assert "- name: Fetch PR intent (untrusted data file)" in workflow
         # Fetched BEFORE the OIDC role is assumed, and bounded.
         assert workflow.index("Fetch PR intent") < workflow.index("role-to-assume")
-        assert "head -c 8000" in workflow
+        assert "read($fh, my $b, 8000)" in workflow
         assert "[description TRUNCATED at 8000 bytes]" in workflow
         assert "pr-intent.txt" in workflow
+        # The cap must not pipe into `head -c`, and must not fall back to a second
+        # copy of the body. `head -c` exits as soon as it has its bytes, so the
+        # writer takes SIGPIPE and `pipefail` turns that 141 into a step failure --
+        # on exactly the over-cap body the cap exists to handle. And `iconv -c`
+        # drops INVALID bytes but still exits 1 on an INCOMPLETE sequence at EOF,
+        # so a `|| <raw fallback>` appended a second copy to the partial output
+        # already captured: 15,998 bytes of malformed UTF-8 from an 8000-byte cap.
+        assert "| head -c" not in workflow
+        assert "| iconv" not in workflow
 
     def test_fork_finalize_sweeps_stranded_check_runs(self) -> None:
         # pr-readiness.yml counts ANY non-completed check-run of this name as
@@ -915,7 +924,12 @@ class TestFirstPrinciplesReview:
         same = _workflow("first-principles-review.yml")
         prefetch = _step_script(same, "Prefetch the change as data files")
         assert 'git diff --no-color "$BASE_SHA"...HEAD' in prefetch
-        assert "head -c 8000" in prefetch
+        # The intent is bounded, and NOT by piping into `head -c`: that exits as soon
+        # as it has its bytes, so the writer takes SIGPIPE and `pipefail` turns the
+        # 141 into a step failure -- on exactly the over-cap body the cap exists for.
+        # A 30 KB PR description lost that race and took this lane red.
+        assert "read($fh, my $b, 8000)" in prefetch
+        assert "| head -c" not in prefetch
 
     def test_a_contract_absent_from_the_base_is_not_a_red_check(self) -> None:
         # The contract is read from the base so a change cannot edit the reviewer

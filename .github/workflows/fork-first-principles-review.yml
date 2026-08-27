@@ -313,15 +313,31 @@ jobs:
           # Strip embedded media: a screenshot-heavy body is pure cost to a
           # reviewer that judges prose, and an attachment URL is not intent.
           stripped="$(printf '%s' "$raw" | perl -0777 -pe 's/!\[[^\]]*\]\([^)]*\)/[image removed]/g; s{<img\b[^>]*>}{[image removed]}gi; s{<video\b.*?</video>}{[video removed]}gsi; s{<source\b[^>]*>}{[media removed]}gi; s{https?://\S*user-attachments\S*}{[media removed]}g' 2>/dev/null || printf '%s' "$raw")"
-          # Cap at 8000 bytes; iconv drops a trailing split multibyte character so
-          # the file stays well-formed UTF-8. Mark an over-cap body rather than
+          # Cap at 8000 bytes, dropping a trailing split multibyte character so the
+          # file stays well-formed UTF-8. Mark an over-cap body rather than
           # truncating it silently.
-          capped="$(printf '%s' "$stripped" | head -c 8000 | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null || printf '%s' "$stripped" | head -c 8000)"
-          { printf '%s\n' "$capped"
-            if [ "$(printf '%s' "$stripped" | wc -c)" -gt 8000 ]; then
-              printf '\n[description TRUNCATED at 8000 bytes]\n'
-            fi
-          } > "$INTENT"
+          #
+          # One perl read does the cap, because the two obvious shell spellings both
+          # break on precisely the over-cap input the cap exists for. `printf |
+          # head -c` gives the writer SIGPIPE once `head` has its bytes, and under
+          # `pipefail` that 141 fails the step -- a race below the ~64 KiB pipe
+          # buffer (a 30 KB body lost it) and certain above. And `iconv -c` drops
+          # INVALID bytes but still exits 1 on an INCOMPLETE sequence at EOF, so a
+          # `|| <raw fallback>` appended a second copy to the partial output already
+          # captured: 15,998 bytes of malformed UTF-8 from an 8000-byte cap.
+          full="$(mktemp)"
+          printf '%s' "$stripped" > "$full"
+          perl -e '
+            open(my $fh, "<:raw", $ARGV[0]) or die; read($fh, my $b, 8000);
+            # A lead byte with fewer continuation bytes than it declares is the
+            # tail the cap split; anything else invalid was already in the body.
+            $b =~ s/(?:[\xC2-\xDF]|[\xE0-\xEF][\x80-\xBF]?|[\xF0-\xF4][\x80-\xBF]{0,2})\z//;
+            print $b, "\n";
+          ' "$full" > "$INTENT"
+          if [ "$(wc -c < "$full")" -gt 8000 ]; then
+            printf '\n[description TRUNCATED at 8000 bytes]\n' >> "$INTENT"
+          fi
+          rm -f "$full"
           echo "Wrote PR intent ($(wc -c < "$INTENT") bytes) as a data file."
 
       # The review contract, read from the trusted BASE commit -- the same single
