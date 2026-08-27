@@ -7244,7 +7244,13 @@
       "no_project": "此会话未设置项目文件夹。",
       "refresh": "刷新",
       "title": "Git",
-      "uncommitted": "{{count}} 个未提交"
+      "uncommitted": "{{count}} 个未提交",
+      "repos_count_other": "{{count}} 个仓库",
+      "truncated": "已在 {{count}} 个文件处截断",
+      "commits_unavailable": "多仓库项目不提供提交历史",
+      "repo_skipped": "已跳过",
+      "repos_truncated": "部分仓库未被扫描",
+      "repo_skipped_reason": "为安全起见已跳过 — 此仓库的 git 配置不适合读取"
     },
     "skillsMultiSelect": {
       "add_skill": "Add skill",

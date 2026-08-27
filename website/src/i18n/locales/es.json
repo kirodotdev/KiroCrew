@@ -7462,7 +7462,15 @@
       "no_project": "No hay carpeta de proyecto configurada para esta sesión.",
       "refresh": "Actualizar",
       "title": "Git",
-      "uncommitted": "{{count}} sin confirmar"
+      "uncommitted": "{{count}} sin confirmar",
+      "repos_count_one": "{{count}} repositorio",
+      "repos_count_many": "{{count}} repositorios",
+      "repos_count_other": "{{count}} repositorios",
+      "truncated": "Truncado en {{count}} archivos",
+      "commits_unavailable": "El historial de commits no está disponible en proyectos multirrepositorio",
+      "repo_skipped": "omitido",
+      "repos_truncated": "Algunos repositorios no se analizaron",
+      "repo_skipped_reason": "Omitido por seguridad: la configuración de git de este repositorio no es segura para leer"
     },
     "skillsMultiSelect": {
       "add_skill": "Add skill",

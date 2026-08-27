@@ -223,6 +223,68 @@ describe('PierreWorkspaceTreeImpl — git status lanes', () => {
     expect(onFileOpen).toHaveBeenCalledWith(`${ROOT}/a.ts`)
   })
 
+  it('maps lanes when the roots arrive with Windows separators', async () => {
+    // The backend answers with native separators, so a `/`-shaped prefix test
+    // matches nothing on Windows and every lane silently disappears.
+    vi.mocked(api.projectTree).mockResolvedValue(
+      mkTree({ root: 'C:\\ws', paths: ['src/PkgA/test/x.py'] }),
+    )
+    vi.mocked(api.projectGitStatus).mockResolvedValue(
+      mkStatus(
+        [{ ...mkFile('test/x.py', 'M'), repoRoot: 'C:\\ws\\src\\PkgA' }],
+        { repoRoot: undefined },
+      ),
+    )
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <PierreWorkspaceTreeImpl projectDir="C:\\ws" onFileOpen={vi.fn()} />
+      </QueryClientProvider>,
+    )
+    await waitForTree()
+
+    await waitFor(() =>
+      expect(treeMock.last().calls.gitStatus.at(-1)).toEqual([
+        { path: 'src/PkgA/test/x.py', status: 'modified' },
+      ]),
+    )
+  })
+
+  it('anchors each row on ITS OWN repo when the project dir covers several', async () => {
+    // A workspace of package repos (`<ws>/src/<Pkg>/.git`) gets no
+    // response-level repoRoot, and sibling packages share repo-relative paths.
+    // Anchoring on the project root instead drops the `src/<Pkg>/` segment, so
+    // both rows collapse onto one wrong lane and opening either one misses on
+    // disk.
+    vi.mocked(api.projectTree).mockResolvedValue(
+      mkTree({ root: '/ws', paths: ['src/PkgA/test/x.py', 'src/PkgB/test/x.py'] }),
+    )
+    vi.mocked(api.projectGitStatus).mockResolvedValue(
+      mkStatus(
+        [
+          { ...mkFile('test/x.py', 'M'), repoRoot: '/ws/src/PkgA' },
+          { ...mkFile('test/x.py', 'A'), repoRoot: '/ws/src/PkgB' },
+        ],
+        { repoRoot: undefined },
+      ),
+    )
+    const onFileOpen = vi.fn()
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <PierreWorkspaceTreeImpl projectDir="/ws" onFileOpen={onFileOpen} />
+      </QueryClientProvider>,
+    )
+    await waitForTree()
+
+    await waitFor(() =>
+      expect(treeMock.last().calls.gitStatus.at(-1)).toEqual([
+        { path: 'src/PkgA/test/x.py', status: 'modified' },
+        { path: 'src/PkgB/test/x.py', status: 'added' },
+      ]),
+    )
+    act(() => { treeMock.last().simulateSelection('src/PkgB/test/x.py') })
+    expect(onFileOpen).toHaveBeenCalledWith('/ws/src/PkgB/test/x.py')
+  })
+
   it('maps each porcelain letter onto a lane and drops the ones it has none for', async () => {
     vi.mocked(api.projectTree).mockResolvedValue(mkTree({ paths: ['m', 'a', 'd', 'r', 'c', 'u', 'x'] }))
     vi.mocked(api.projectGitStatus).mockResolvedValue(

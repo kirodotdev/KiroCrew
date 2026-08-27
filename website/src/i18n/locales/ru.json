@@ -7571,7 +7571,16 @@
       "no_project": "Для этого сеанса не задана папка проекта.",
       "refresh": "Обновить",
       "title": "Git",
-      "uncommitted": "{{count}} незакоммичено"
+      "uncommitted": "{{count}} незакоммичено",
+      "repos_count_one": "{{count}} репозиторий",
+      "repos_count_few": "{{count}} репозитория",
+      "repos_count_many": "{{count}} репозиториев",
+      "repos_count_other": "{{count}} репозитория",
+      "truncated": "Усечено на {{count}} файлах",
+      "commits_unavailable": "История коммитов недоступна для проектов с несколькими репозиториями",
+      "repo_skipped": "пропущен",
+      "repos_truncated": "Некоторые репозитории не были просканированы",
+      "repo_skipped_reason": "Пропущен из соображений безопасности — конфигурацию git этого репозитория небезопасно читать"
     },
     "skillsMultiSelect": {
       "add_skill": "Add skill",

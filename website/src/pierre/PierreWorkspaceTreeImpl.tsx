@@ -173,12 +173,23 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
   const statusEntries = useMemo<GitStatusEntry[]>(() => {
     if (!status?.files?.length) return []
     const repoRoot = status.repoRoot
+    const canonRoot = normalizeWindowsPath(root)
     const entries: GitStatusEntry[] = []
     const seen = new Set<string>()
     for (const f of status.files) {
-      const abs = repoRoot ? `${repoRoot}/${f.path}` : `${root}/${f.path}`
-      if (!abs.startsWith(root + '/')) continue
-      const rel = abs.slice(root.length + 1)
+      // A project dir covering SEVERAL repos gets no response-level `repoRoot`:
+      // each row names its own, and sibling repos routinely share a
+      // repo-relative path, so the row's own root is the only correct anchor.
+      // Falling back to the project root drops the intermediate segments
+      // (`<ws>/src/<Pkg>/`), which both mis-nests the lane and makes the
+      // absolute path miss on disk when the row is opened.
+      const owner = f.repoRoot ?? repoRoot ?? root
+      // Windows roots arrive with native separators, so a `/`-shaped prefix test
+      // matches nothing and every lane is dropped. normalizeWindowsPath is a no-op
+      // on POSIX, where a backslash is a legal filename character.
+      const abs = normalizeWindowsPath(`${owner}/${f.path}`)
+      if (!abs.startsWith(canonRoot + '/')) continue
+      const rel = abs.slice(canonRoot.length + 1)
       const mapped = gitStatusFor(f.status)
       // Staged + unstaged rows for one file: first (staged) entry wins; the
       // lane shows one state per row either way.
