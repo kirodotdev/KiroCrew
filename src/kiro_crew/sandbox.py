@@ -1568,10 +1568,15 @@ def _mount_or_die(source, target, flags, what):
 
     So these refuse, matching what the rest of this launcher already does
     when a control cannot be established: both ``unshare`` calls, the
-    seccomp-BPF install, and the hardlink scan all ``sys.exit``. The
-    degrade-open decisions nearby are deliberately narrower -- the tmpfs
-    source-dir fallback and the hardlink scan's budget ceiling -- and
-    neither concerns the hiding itself.
+    seccomp-BPF install, and the hardlink scan all ``sys.exit``. What marks
+    those off from the decisions that DO degrade open is a rule, not a list:
+    a failed hiding mount is the one thing this helper exists to prevent,
+    nothing else here is one, and each of those others argues its case at
+    its own site -- the ``EXPOSE_FILES`` pre-read is one of them, named as
+    an example and not as a roster -- no count is kept here, since the count
+    is what goes stale. Read it narrowly: none is a failed hiding mount, NOT
+    the stronger claim that no credential can end up reachable. A degrade
+    elsewhere is never license to degrade a mount.
 
     ``sandbox_level`` is the explicit opt-out for a host that cannot mount;
     a silent unhidden credential is not.
@@ -2022,7 +2027,10 @@ def main():
         # for). On budget exhaustion the scan deliberately degrades OPEN with
         # a stderr warning rather than failing closed: /tmp on a busy host can
         # exceed any fixed budget from ordinary telemetry/cache churn, and
-        # exiting here would break every sandbox spawn on such hosts.
+        # exiting here would break every sandbox spawn on such hosts. The cost,
+        # plainly: an alias past the budget -- or past the quieter depth limit
+        # below -- is never stat'd, so a second path to a credential inode goes
+        # unchecked even though every mount held.
         #
         # REGULAR FILES ONLY, and that guard is what keeps the walk rare. Linux
         # does not allow a hardlink to a directory, so nlink > 1 says nothing
