@@ -1583,7 +1583,9 @@ def list_trash() -> list[TrashBatch]:
             continue
         parsed = _read_manifest(candidate)
         if parsed is None:
-            logger.debug("trash batch %s has no readable manifest", candidate.name)
+            # %r: the directory name is agent-controlled; repr keeps an embedded
+            # newline from forging additional log records.
+            logger.debug("trash batch %r has no readable manifest", candidate.name)
             continue
         header, entries = parsed
         # The DIRECTORY is the batch's identity. A header that names a different
@@ -1592,8 +1594,9 @@ def list_trash() -> list[TrashBatch]:
         # than resolved in the header's favour.
         claimed = header.get("batch_id")
         if isinstance(claimed, str) and claimed and claimed != candidate.name:
+            # %r on the name: agent-controlled, same forgery risk as above.
             logger.warning(
-                "trash batch %s has a manifest claiming batch id %r; not offering it",
+                "trash batch %r has a manifest claiming batch id %r; not offering it",
                 candidate.name,
                 claimed,
             )

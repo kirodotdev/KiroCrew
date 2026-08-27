@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -800,6 +801,112 @@ class TestBatchIdentityIsTheDirectory:
 
         assert [b.batch_id for b in listed] == [batch.batch_id]
         assert (session_storage.trash_root() / listed[0].batch_id).is_dir()
+
+
+class TestTrashBatchNamesAreLogSafe:
+    """A batch directory name is agent-controlled and can embed a newline; every
+    ``list_trash`` log line that carries it must escape it, or one record forges
+    additional records (refs #6315, the #6281 log-forgery class).
+    """
+
+    _FORGED = "20240101T000000-deadbeef\nWARNING forged: batch cleared by operator"
+
+    @staticmethod
+    def _make_forged_dir(name: str) -> Path:
+        forged = session_storage.trash_root() / name
+        try:
+            forged.mkdir(parents=True)
+        except OSError:
+            pytest.skip("this filesystem refuses a newline in a directory name")
+        return forged
+
+    def test_missing_manifest_log_escapes_the_batch_name(
+        self, stores: tuple[Path, Path], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        self._make_forged_dir(self._FORGED)
+
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.session_storage"):
+            assert session_storage.list_trash() == []
+
+        messages = [
+            record.getMessage()
+            for record in caplog.records
+            if "no readable manifest" in record.getMessage()
+        ]
+        assert messages, "the missing-manifest site did not log at all"
+        # The rendered record stays one line: the name appears repr'd, and the
+        # injected second line never starts a record of its own.
+        assert all("\n" not in message for message in messages)
+        assert any(repr(self._FORGED) in message for message in messages)
+
+    def test_batch_id_disagreement_log_escapes_the_batch_name(
+        self, stores: tuple[Path, Path], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        _, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=8, age_days=40)
+        batch = session_storage.move_to_trash(
+            ["aaaa1111"], reason="manual", index=_index(), now=_NOW
+        )
+        # Renaming the directory makes its manifest header disagree with it,
+        # which is exactly the warning path under test.
+        original = session_storage.trash_root() / batch.batch_id
+        try:
+            original.rename(session_storage.trash_root() / self._FORGED)
+        except OSError:
+            pytest.skip("this filesystem refuses a newline in a directory name")
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session_storage"):
+            assert session_storage.list_trash() == []
+
+        messages = [
+            record.getMessage()
+            for record in caplog.records
+            if "claiming batch id" in record.getMessage()
+        ]
+        assert messages, "the batch-id-disagreement site did not log at all"
+        assert all("\n" not in message for message in messages)
+        assert any(repr(self._FORGED) in message for message in messages)
+
+    def test_both_sites_escape_without_touching_the_filesystem(
+        self,
+        stores: tuple[Path, Path],
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Windows refuses a newline in a real directory name, which would skip
+        the two filesystem tests above on those shards. Injecting the forged
+        name at the manifest-read seam pins both log sites on every platform.
+        """
+        session_storage.trash_root().mkdir(parents=True)
+
+        class _ForgedDir:
+            name = self._FORGED
+
+            @staticmethod
+            def is_dir() -> bool:
+                return True
+
+        manifests: dict[str, tuple[dict[str, object], list[dict[str, object]]] | None] = {
+            "missing": None,
+            "disagreeing": ({"batch_id": "someone-else", "created_at": _NOW}, []),
+        }
+        for label, parsed in manifests.items():
+            caplog.clear()
+            monkeypatch.setattr(session_storage.Path, "iterdir", lambda self: iter([_ForgedDir()]))
+            monkeypatch.setattr(
+                session_storage.platform_compat, "is_link_or_junction", lambda p: False
+            )
+            monkeypatch.setattr(
+                session_storage, "_read_manifest", lambda batch, parsed=parsed: parsed
+            )
+
+            with caplog.at_level(logging.DEBUG, logger="kiro_crew.session_storage"):
+                assert session_storage.list_trash() == []
+
+            rendered = [record.getMessage() for record in caplog.records]
+            carrying = [message for message in rendered if repr(self._FORGED) in message]
+            assert carrying, f"the {label}-manifest site did not log the name repr'd"
+            assert all("\n" not in message for message in rendered)
 
 
 class TestScanCache:
