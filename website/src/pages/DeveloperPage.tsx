@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react'
-import { ScrollText, Monitor, Brain, Archive, Database, Network, Activity, FileCode2, TestTubeDiagonal } from 'lucide-react'
+import { ScrollText, Monitor, Brain, Archive, Database, Network, Activity, FileCode2, TestTubeDiagonal, Cpu } from 'lucide-react'
 import SidePanelLayout from '../components/SidePanelLayout'
 import { ContentSkeleton } from '../components/ui'
 import { LogViewer } from './LogsPage'
@@ -9,6 +9,7 @@ import SessionArchive from './SessionArchive'
 import LocalStorageDebug from './LocalStorageDebug'
 import { McpManagement } from './settings/McpManagement'
 import { KiroCrewCfgTab, AgentCfgTab } from './overview'
+import { AgentBackendTab } from './developer/AgentBackendTab'
 import { FeaturePreviewsTab } from './developer/FeaturePreviewsTab'
 
 /**
@@ -38,6 +39,7 @@ function buildTabs() {
     { key: 'mcp-pool', label: i18nT('pages.developerPage.tabs.mcpPool.label'), icon: <Network size={16} />, description: i18nT('pages.developerPage.tabs.mcpPool.description') },
     { key: 'memory', label: i18nT('pages.developerPage.tabs.memory.label'), icon: <Brain size={16} />, description: i18nT('pages.developerPage.tabs.memory.description') },
     { key: 'config', label: i18nT('pages.developerPage.tabs.config.label'), icon: <FileCode2 size={16} />, description: i18nT('pages.developerPage.tabs.config.description') },
+    { key: 'agent-backend', label: i18nT('pages.developerPage.tabs.agentBackend.label'), icon: <Cpu size={16} />, description: i18nT('pages.developerPage.tabs.agentBackend.description') },
     { key: 'feature-previews', label: i18nT('pages.developerPage.tabs.featurePreviews.label'), icon: <TestTubeDiagonal size={16} />, description: i18nT('pages.developerPage.tabs.featurePreviews.description') },
     { key: 'archive', label: i18nT('pages.developerPage.tabs.archive.label'), icon: <Archive size={16} />, description: i18nT('pages.developerPage.tabs.archive.description') },
   ]
@@ -70,6 +72,7 @@ export default function DeveloperPage() {
             <AgentCfgTab />
           </>
         )}
+        {tab === 'agent-backend' && <AgentBackendTab />}
         {tab === 'feature-previews' && <FeaturePreviewsTab />}
         {tab === 'archive' && <SessionArchive />}
       </>}

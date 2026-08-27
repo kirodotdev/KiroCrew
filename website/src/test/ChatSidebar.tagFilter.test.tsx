@@ -211,7 +211,10 @@ describe('chat sidebar — filter menu Tags section', () => {
     localStorage.setItem('mc-session-tag-filter', JSON.stringify(['t1']))
     const utils = renderSidebar()
     await waitFor(() => expect(utils.queryByText('alpha session')).not.toBeNull())
-    expect(utils.queryByText('beta session')).toBeNull()
+    // The filter settling is what this test is about, so the ABSENCE is the thing
+    // to wait for: alpha appearing only proves the sidebar mounted, and beta can
+    // still be in the tree for a tick after that.
+    await waitFor(() => expect(utils.queryByText('beta session')).toBeNull())
   })
 
   it('ignores a persisted id whose tag no longer exists instead of hiding everything', async () => {

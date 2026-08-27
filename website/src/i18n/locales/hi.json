@@ -9565,6 +9565,20 @@
       "no_checkout_found_action": "नीचे दिया एनवायरनमेंट वेरिएबल सेट करो, या इसे स्थायी बनाने के लिए {{productName}} डेटा डायरेक्टरी (डिफ़ॉल्ट रूप से ~/.kiro/crew) की config.json में dev_fleet.repo_path जोड़ो, फिर गेटवे को पुनः आरंभ करो।"
     },
     "developer": {
+      "agentBackendTab": {
+        "agent_backend": "एजेंट बैकएंड",
+        "claude_code": "Claude Code",
+        "could_not_load_the_agent_backend": "एजेंट बैकएंड लोड नहीं किया जा सका।",
+        "could_not_save_the_agent_backend": "एजेंट बैकएंड सहेजा नहीं जा सका।",
+        "default_all_features_supported": "डिफ़ॉल्ट। सभी सुविधाएँ समर्थित हैं।",
+        "experimental": "प्रयोगात्मक",
+        "kas_kiro_agent": "KAS (kiro-agent)",
+        "kiro_cli": "Kiro CLI",
+        "loading_configuration": "कॉन्फ़िगरेशन लोड हो रहा है…",
+        "new_sessions_use_this_agent_a_session_that_is_al": "नए सत्र इस एजेंट का उपयोग करते हैं। पहले से खुला सत्र उसी एजेंट पर बना रहता है जिससे वह शुरू हुआ था — यहाँ बदलने से चालू सत्र नहीं बदलता।",
+        "not_enabled_in_this_build": "इस बिल्ड में सक्रिय नहीं है",
+        "retry": "पुनः प्रयास करें"
+      },
       "featurePreviewsTab": {
         "inbound_webhook_tokens_registered_contexts_and_r": "इनबाउंड वेबहुक टोकन, पंजीकृत संदर्भ और रन इतिहास. API काम करता है, पेज अभी पूरा नहीं हुआ है.",
         "open_webhooks": "वेबहुक खोलें",
@@ -9574,6 +9588,10 @@
     "developerPage": {
       "developer": "डेवलपर",
       "tabs": {
+        "agentBackend": {
+          "description": "नए सत्र कौन-सा एजेंट शुरू करते हैं — Kiro CLI, Claude Code या KAS",
+          "label": "एजेंट बैकएंड"
+        },
         "archive": {
           "description": "घुमाया/संक्षिप्त किया गया सत्र इतिहास (7 दिन तक रखा जाता है)",
           "label": "संग्रह"

@@ -9863,6 +9863,20 @@
       "no_checkout_found_action": "Задайте переменную окружения ниже или добавьте dev_fleet.repo_path в config.json в каталоге данных {{productName}} (по умолчанию ~/.kiro/crew), чтобы сохранить настройку, затем перезапустите шлюз."
     },
     "developer": {
+      "agentBackendTab": {
+        "agent_backend": "Бэкенд агента",
+        "claude_code": "Claude Code",
+        "could_not_load_the_agent_backend": "Не удалось загрузить бэкенд агента.",
+        "could_not_save_the_agent_backend": "Не удалось сохранить бэкенд агента.",
+        "default_all_features_supported": "По умолчанию. Все функции поддерживаются.",
+        "experimental": "Экспериментальный",
+        "kas_kiro_agent": "KAS (kiro-agent)",
+        "kiro_cli": "Kiro CLI",
+        "loading_configuration": "Загрузка конфигурации…",
+        "new_sessions_use_this_agent_a_session_that_is_al": "Новые сессии используют этого агента. Уже открытая сессия сохраняет того, с которым была начата, — переключение здесь не меняет её посреди сессии.",
+        "not_enabled_in_this_build": "Не включено в этой сборке",
+        "retry": "Повторить"
+      },
       "featurePreviewsTab": {
         "inbound_webhook_tokens_registered_contexts_and_r": "Токены входящих вебхуков, зарегистрированные контексты и история запусков. API работает, но страница не доделана.",
         "open_webhooks": "Открыть вебхуки",
@@ -9872,6 +9886,10 @@
     "developerPage": {
       "developer": "Разработчик",
       "tabs": {
+        "agentBackend": {
+          "description": "Какого агента запускают новые сессии — Kiro CLI, Claude Code или KAS",
+          "label": "Бэкенд агента"
+        },
         "archive": {
           "description": "Ротированная и сжатая история сессий (хранение 7 дней)",
           "label": "Архив"

@@ -9416,6 +9416,20 @@
       "no_checkout_found_action": "请设置下方环境变量，或在 {{productName}} 数据目录（默认为 ~/.kiro/crew）的 config.json 中添加 dev_fleet.repo_path 以长期生效，然后重启网关。"
     },
     "developer": {
+      "agentBackendTab": {
+        "agent_backend": "代理后端",
+        "claude_code": "Claude Code",
+        "could_not_load_the_agent_backend": "无法加载代理后端。",
+        "could_not_save_the_agent_backend": "无法保存代理后端。",
+        "default_all_features_supported": "默认。支持所有功能。",
+        "experimental": "实验性",
+        "kas_kiro_agent": "KAS (kiro-agent)",
+        "kiro_cli": "Kiro CLI",
+        "loading_configuration": "正在加载配置…",
+        "new_sessions_use_this_agent_a_session_that_is_al": "新会话使用此代理。已打开的会话保持启动时所用的代理；在此切换不影响正在进行的会话。",
+        "not_enabled_in_this_build": "此版本中未启用",
+        "retry": "重试"
+      },
       "featurePreviewsTab": {
         "inbound_webhook_tokens_registered_contexts_and_r": "入站 Webhook 令牌、已注册的上下文和运行历史。API 可用，但页面尚未完成。",
         "open_webhooks": "打开 Webhook",
@@ -9425,6 +9439,10 @@
     "developerPage": {
       "developer": "开发者",
       "tabs": {
+        "agentBackend": {
+          "description": "新会话启动哪个代理 — Kiro CLI、Claude Code 或 KAS",
+          "label": "代理后端"
+        },
         "archive": {
           "description": "已轮转/压缩的会话历史（保留 7 天）",
           "label": "归档"

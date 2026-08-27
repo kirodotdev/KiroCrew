@@ -1843,6 +1843,14 @@ _MOVED_CONFIG_FIELDS: dict[str, str] = {
 
 _EDITABLE_CONFIG: dict[str, dict] = {
     "agent.provider": {"type": "enum", "values": ["acp"]},
+    # Which ACP agent drives a session: "" = kiro-cli, "kas" = kiro-agent.
+    # The values MUST stay equal to acp.types.ACP_BACKENDS_SELECTABLE, which is
+    # the set AcpProvider can actually serve a session with. It is duplicated
+    # rather than imported because reaching kiro_crew.acp.types executes the
+    # kiro_crew.acp package init (client + runtime), and this dict is built at
+    # module import — the same cycle config.loader._normalize_acp_backend defers
+    # for. test_agent_backend_editable.py asserts the two never drift.
+    "agent.acp_backend": {"type": "enum", "values": ["", "kas"]},
     # Default model for new sessions. Membership can NOT be validated against a
     # fixed list: the real vocabulary is whatever the live kiro-cli advertises
     # (/api/models spawns it to find out), and it spans both canonical registry
@@ -2403,9 +2411,17 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     # reload_provider_factory() must NOT be used here: it clears _sessions and
     # shuts every provider down, which is correct for a provider switch but
     # would kill in-flight turns just because a default changed.
-    if path_key in ("agent.model", "agent.reasoning_effort") or path_key.startswith(
-        "agent.role_efforts."
-    ):
+    if path_key in (
+        "agent.model",
+        "agent.reasoning_effort",
+        # The ACP backend is captured when the provider factory is built, and a
+        # pre-warmed kiro-cli process must not serve a session that asked for
+        # KAS — refresh_defaults() rebuilds the factory and drains the pool.
+        # NOT reload_provider_factory(): switching the default backend must not
+        # kill in-flight turns on live sessions, which keep the backend they
+        # were started on.
+        "agent.acp_backend",
+    ) or path_key.startswith("agent.role_efforts."):
         state = request.app["state"]
         await state.sessions.refresh_defaults()
         logger.info("%s set to %r — session defaults refreshed", path_key, value)

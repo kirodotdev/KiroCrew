@@ -9714,6 +9714,20 @@
       "no_checkout_found_action": "Imposta la variabile d'ambiente qui sotto, oppure aggiungi dev_fleet.repo_path al config.json nella directory dati di {{productName}} (~/.kiro/crew per impostazione predefinita) per renderla permanente, poi riavvia il gateway."
     },
     "developer": {
+      "agentBackendTab": {
+        "agent_backend": "Backend dell’agente",
+        "claude_code": "Claude Code",
+        "could_not_load_the_agent_backend": "Non è stato possibile caricare il backend dell’agente.",
+        "could_not_save_the_agent_backend": "Impossibile salvare il backend dell’agente.",
+        "default_all_features_supported": "Predefinito. Tutte le funzionalità sono supportate.",
+        "experimental": "Sperimentale",
+        "kas_kiro_agent": "KAS (kiro-agent)",
+        "kiro_cli": "Kiro CLI",
+        "loading_configuration": "Caricamento della configurazione…",
+        "new_sessions_use_this_agent_a_session_that_is_al": "Le nuove sessioni usano questo agente. Una sessione già aperta mantiene quello con cui è stata avviata: cambiarlo qui non la modifica a metà sessione.",
+        "not_enabled_in_this_build": "Non abilitato in questa build",
+        "retry": "Riprova"
+      },
       "featurePreviewsTab": {
         "inbound_webhook_tokens_registered_contexts_and_r": "Token dei webhook in ingresso, contesti registrati e cronologia delle esecuzioni. L’API funziona, ma la pagina non è finita.",
         "open_webhooks": "Apri Webhooks",
@@ -9723,6 +9737,10 @@
     "developerPage": {
       "developer": "Sviluppatore",
       "tabs": {
+        "agentBackend": {
+          "description": "Quale agente avviano le nuove sessioni: Kiro CLI, Claude Code o KAS",
+          "label": "Backend dell’agente"
+        },
         "archive": {
           "description": "Cronologia delle sessioni ruotata/compressa (conservazione di 7 giorni)",
           "label": "Archivio"

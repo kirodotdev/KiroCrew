@@ -9416,6 +9416,20 @@
       "no_checkout_found_action": "아래 환경 변수를 설정하거나, 설정을 유지하려면 {{productName}} 데이터 디렉터리(기본값 ~/.kiro/crew)의 config.json에 dev_fleet.repo_path를 추가한 후 게이트웨이를 다시 시작하세요."
     },
     "developer": {
+      "agentBackendTab": {
+        "agent_backend": "에이전트 백엔드",
+        "claude_code": "Claude Code",
+        "could_not_load_the_agent_backend": "에이전트 백엔드를 불러올 수 없습니다.",
+        "could_not_save_the_agent_backend": "에이전트 백엔드를 저장할 수 없습니다.",
+        "default_all_features_supported": "기본값입니다. 모든 기능이 지원됩니다.",
+        "experimental": "실험적",
+        "kas_kiro_agent": "KAS (kiro-agent)",
+        "kiro_cli": "Kiro CLI",
+        "loading_configuration": "구성을 불러오는 중…",
+        "new_sessions_use_this_agent_a_session_that_is_al": "새 세션은 이 에이전트를 사용합니다. 이미 열려 있는 세션은 시작할 때의 에이전트를 유지하며, 여기서 전환해도 세션 중에는 바뀌지 않습니다.",
+        "not_enabled_in_this_build": "이 빌드에서는 활성화되지 않았습니다",
+        "retry": "다시 시도"
+      },
       "featurePreviewsTab": {
         "inbound_webhook_tokens_registered_contexts_and_r": "수신 웹훅 토큰, 등록된 컨텍스트, 실행 기록입니다. API는 동작하지만 페이지는 아직 완성되지 않았습니다.",
         "open_webhooks": "Webhooks 열기",
@@ -9425,6 +9439,10 @@
     "developerPage": {
       "developer": "개발자",
       "tabs": {
+        "agentBackend": {
+          "description": "새 세션이 시작할 에이전트 — Kiro CLI, Claude Code 또는 KAS",
+          "label": "에이전트 백엔드"
+        },
         "archive": {
           "description": "순환·압축된 세션 기록(7일간 보관)",
           "label": "아카이브"

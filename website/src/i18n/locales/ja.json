@@ -9416,6 +9416,20 @@
       "no_checkout_found_action": "下記の環境変数を設定するか、設定を永続化するには {{productName}} データディレクトリ（既定では ~/.kiro/crew）の config.json に dev_fleet.repo_path を追加し、ゲートウェイを再起動してください。"
     },
     "developer": {
+      "agentBackendTab": {
+        "agent_backend": "エージェントバックエンド",
+        "claude_code": "Claude Code",
+        "could_not_load_the_agent_backend": "エージェントバックエンドを読み込めませんでした。",
+        "could_not_save_the_agent_backend": "エージェントバックエンドを保存できませんでした。",
+        "default_all_features_supported": "デフォルト。すべての機能に対応しています。",
+        "experimental": "実験的",
+        "kas_kiro_agent": "KAS (kiro-agent)",
+        "kiro_cli": "Kiro CLI",
+        "loading_configuration": "設定を読み込んでいます…",
+        "new_sessions_use_this_agent_a_session_that_is_al": "新しいセッションはこのエージェントを使用します。すでに開いているセッションは開始時のエージェントを維持し、ここで切り替えてもセッション中に変わることはありません。",
+        "not_enabled_in_this_build": "このビルドでは有効になっていません",
+        "retry": "再試行"
+      },
       "featurePreviewsTab": {
         "inbound_webhook_tokens_registered_contexts_and_r": "受信 Webhook のトークン、登録済みコンテキスト、実行履歴。API は動作しますが、ページは未完成です。",
         "open_webhooks": "Webhooks を開く",
@@ -9425,6 +9439,10 @@
     "developerPage": {
       "developer": "デベロッパー",
       "tabs": {
+        "agentBackend": {
+          "description": "新しいセッションが起動するエージェント — Kiro CLI、Claude Code、KAS",
+          "label": "エージェントバックエンド"
+        },
         "archive": {
           "description": "ローテーション/圧縮済みセッション履歴（7 日間保持）",
           "label": "アーカイブ"

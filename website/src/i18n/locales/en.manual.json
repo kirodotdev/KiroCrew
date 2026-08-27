@@ -3529,6 +3529,10 @@
     },
     "developerPage": {
       "tabs": {
+        "agentBackend": {
+          "description": "Which agent new sessions start — Kiro CLI, Claude Code, or KAS",
+          "label": "Agent Backend"
+        },
         "archive": {
           "description": "Rotated/compacted session history (7-day retention)",
           "label": "Archive"

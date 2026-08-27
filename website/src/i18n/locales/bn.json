@@ -9565,6 +9565,20 @@
       "no_checkout_found_action": "নিচের এনভায়রনমেন্ট ভেরিয়েবলটি সেট করুন, অথবা স্থায়ী করতে {{productName}} ডেটা ডিরেক্টরির (ডিফল্ট ~/.kiro/crew) config.json-এ dev_fleet.repo_path যোগ করুন, তারপর গেটওয়ে পুনরায় চালু করুন।"
     },
     "developer": {
+      "agentBackendTab": {
+        "agent_backend": "এজেন্ট ব্যাকএন্ড",
+        "claude_code": "Claude Code",
+        "could_not_load_the_agent_backend": "এজেন্ট ব্যাকএন্ড লোড করা যায়নি।",
+        "could_not_save_the_agent_backend": "এজেন্ট ব্যাকএন্ড সংরক্ষণ করা যায়নি।",
+        "default_all_features_supported": "ডিফল্ট। সব বৈশিষ্ট্য সমর্থিত।",
+        "experimental": "পরীক্ষামূলক",
+        "kas_kiro_agent": "KAS (kiro-agent)",
+        "kiro_cli": "Kiro CLI",
+        "loading_configuration": "কনফিগারেশন লোড হচ্ছে…",
+        "new_sessions_use_this_agent_a_session_that_is_al": "নতুন সেশনগুলি এই এজেন্ট ব্যবহার করে। ইতিমধ্যে খোলা সেশন যে এজেন্টে শুরু হয়েছিল সেটিই ধরে রাখে — এখানে বদলালে চলমান সেশন বদলায় না।",
+        "not_enabled_in_this_build": "এই বিল্ডে সক্রিয় নয়",
+        "retry": "আবার চেষ্টা করুন"
+      },
       "featurePreviewsTab": {
         "inbound_webhook_tokens_registered_contexts_and_r": "ইনবাউন্ড ওয়েবহুক টোকেন, নিবন্ধিত কনটেক্সট ও রান ইতিহাস। API কাজ করে, তবে পেজটি এখনও শেষ হয়নি।",
         "open_webhooks": "ওয়েবহুক খুলুন",
@@ -9574,6 +9588,10 @@
     "developerPage": {
       "developer": "ডেভেলপার",
       "tabs": {
+        "agentBackend": {
+          "description": "নতুন সেশন কোন এজেন্ট চালু করে — Kiro CLI, Claude Code বা KAS",
+          "label": "এজেন্ট ব্যাকএন্ড"
+        },
         "archive": {
           "description": "রোটেট/সংক্ষিপ্ত করা সেশন ইতিহাস (7 দিন সংরক্ষণ)",
           "label": "আর্কাইভ"

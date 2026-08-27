@@ -383,7 +383,24 @@ interface SettingsButtonGroupProps {
   description?: string
   hint?: string
   value: string
-  options: { value: string; label: string; icon?: React.ReactNode }[]
+  /** `disabled` on an OPTION keeps the choice visible but unselectable — for a
+   *  value this build knows about but cannot serve. Renders the full vocabulary
+   *  rather than hiding it, so the control does not silently change shape
+   *  between builds and the reader can see what exists.
+   *
+   *  `describedById` is the id of the element stating WHY, wired through as
+   *  `aria-describedby`. Dimming carries "unavailable" visually and through the
+   *  native `disabled` state, but the REASON is usually rendered outside this
+   *  component, where proximity alone associates them — which is no association
+   *  at all for a screen reader. Optional, so a group whose options are all
+   *  selectable stays unchanged. */
+  options: {
+    value: string
+    label: string
+    icon?: React.ReactNode
+    disabled?: boolean
+    describedById?: string
+  }[]
   onChange: (value: string) => void
   disabled?: boolean
   /** Backend config key this button group writes. */
@@ -407,13 +424,14 @@ export function SettingsButtonGroup({ label, description, hint, value, options, 
           Selection is conveyed by elevation + weight, not by hue alone, so it
           survives a theme whose accent is low-contrast — and `aria-pressed`
           carries it to screen readers, which no amount of styling does. */}
-      <div role="group" aria-label={label} className="inline-flex items-center gap-0.5 p-[3px] rounded-lg border border-border bg-bg-accent w-fit">
+      <div role="group" aria-label={label} className="inline-flex flex-wrap items-center gap-0.5 p-[3px] rounded-lg border border-border bg-bg-accent w-fit max-w-full">
         {options.map(o => (
           <button
             key={o.value}
             type="button"
-            disabled={disabled}
+            disabled={disabled || o.disabled}
             aria-pressed={value === o.value}
+            aria-describedby={o.describedById}
             className={`flex items-center gap-1.5 px-3 py-[5px] rounded-md text-[13px] cursor-pointer border transition-colors ${
               value === o.value
                 ? 'bg-bg-elevated text-text-strong border-border-strong shadow-sm font-semibold'
