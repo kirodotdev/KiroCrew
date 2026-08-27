@@ -1894,6 +1894,27 @@ export interface WebhookTestResult {
   error?: string
 }
 
+/** One row of GET /api/members — a global crew as a Crew Members roster entry.
+ *  Crew-record fields (kiro_agent, workspace, memory_store, model, …) are
+ *  spread verbatim from the backend dataclass; only the fields the page reads
+ *  are typed here, and extras pass through untyped by design so a new backend
+ *  field is not a frontend break. */
+export interface MemberRosterRow {
+  /** Crew name — the display identity and the agent the DM thread pins to. */
+  name: string
+  /** Stable path-safe slug deriving the member dir and the slot key. */
+  slug: string
+  /** The pinned DM thread's slot key ('' until first open / unbound). */
+  slot_key: string
+  /** O(1) liveness: the bound slot is mid-turn right now. */
+  running: boolean
+  kiro_agent?: string
+  workspace?: string
+  memory_store?: string
+  model?: string
+  [extra: string]: unknown
+}
+
 export const api = {
   status: () => fetch('/api/status').then(j),
   tunnelStatus: () => fetch('/api/tunnel/status').then(j) as Promise<TunnelStatus>,
@@ -2211,6 +2232,15 @@ export const api = {
     fetch('/api/agents/resolved-model?agent=' + encodeURIComponent(agent)).then(j),
   syncKirocrewAgents: () => post('/api/agents/sync', {}).then(j),
   createKirocrewAgent: (body: object) => post('/api/agents', body).then(j),
+  // Crew Members page — roster of GLOBAL crews with DM-thread binding and the
+  // cheap live-status fields the backend can answer without IO (richer live
+  // detail rides the already-subscribed WS `slots` frames).
+  members: () => fetch('/api/members').then(j) as Promise<{ members: MemberRosterRow[] }>,
+  // Idempotent get-or-create of a member's pinned DM thread. Member slots are
+  // born ONLY through this route (the generic slot-create endpoint refuses
+  // mode="member"), so this is also the only place a member slot key comes from.
+  memberThread: (slug: string) =>
+    post('/api/members/' + encodeURIComponent(slug) + '/thread').then(j) as Promise<{ slot_key: string; slug: string; member: string }>,
   updateKirocrewAgent: (name: string, body: object) =>
     put('/api/agents/' + encodeURIComponent(name), body).then(j),
   deleteKirocrewAgent: (name: string) =>

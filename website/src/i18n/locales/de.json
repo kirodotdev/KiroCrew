@@ -7623,7 +7623,8 @@
     "sessions": "Sitzungen",
     "settings": "Einstellungen",
     "task_runner": "Task Runner",
-    "webhooks": "Webhooks"
+    "webhooks": "Webhooks",
+    "crew_members": "Crew-Mitglieder"
   },
   "pages": {
     "agentsPage": {
@@ -13085,6 +13086,29 @@
     "worldsPopout": {
       "hide_controls": "Steuerung ausblenden",
       "show_controls": "Steuerung anzeigen"
+    },
+    "membersPage": {
+      "agent_template": "Agent-Vorlage",
+      "configuration": "Konfiguration",
+      "details": "Details",
+      "edit_in_crew_manager": "In der Crew-Verwaltung bearbeiten",
+      "empty_roster": "Noch keine Crew-Mitglieder. Lege in der Crew-Verwaltung eine Crew an, um sie hier zu sehen.",
+      "inherited": "Geerbt",
+      "member_count_one": "{{count}} Mitglied",
+      "member_count_other": "{{count}} Mitglieder",
+      "memory_shared_note": "Mitglieder teilen sich derzeit ein Gedächtnis. Was du einem Mitglied sagst, wissen alle.",
+      "memory_store": "Speicher",
+      "model": "Modell",
+      "opening_thread": "Unterhaltung wird geöffnet…",
+      "pick_a_member": "Wähle ein Mitglied, um die Unterhaltung zu öffnen.",
+      "pinned_to": "An {{name}} angeheftet",
+      "roster_load_failed": "Die Mitgliederliste konnte nicht geladen werden.",
+      "slug_collision": "Dieses Mitglied teilt seinen Bezeichner mit {{name}}, dessen Unterhaltung ihn bereits belegt. Benenne eine der Crews um, damit jede ihre eigene Unterhaltung erhält.",
+      "status_idle": "Inaktiv",
+      "status_working": "Arbeitet",
+      "thread_open_failed": "Die Unterhaltung dieses Mitglieds konnte nicht geöffnet werden.",
+      "title": "Crew-Mitglieder",
+      "workspace": "Arbeitsbereich"
     }
   },
   "privacyDisclosure": {

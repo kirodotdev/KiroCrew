@@ -64,6 +64,7 @@ export default function ChatPane({
   onSplitRight,
   onSplitDown,
   onOpenFull,
+  agentLocked,
 }: {
   slotKey: string
   focused?: boolean
@@ -75,6 +76,10 @@ export default function ChatPane({
    *  the earlier-messages row is hidden rather than shown inert. The optional ts
    *  anchors the destination near the pane's oldest message, not the newest. */
   onOpenFull?: (slot: string, anchorTs?: string, anchorMid?: string) => void
+  /** The host declares the slot's agent server-pinned (member DM threads):
+   *  the agent picker is not offered at all, instead of offering a control
+   *  whose every selection the backend 409s. */
+  agentLocked?: boolean
 }) {
   // One instance covers both dropdown filter inputs (never open at once).
   const dispatch = useAppDispatch()
@@ -758,7 +763,7 @@ export default function ChatPane({
           contextPct={contextPct}
           contextUsedTokens={contextTokens?.used}
           contextWindowTokens={contextTokens?.window || provider.getContextWindow(shownModel)}
-          onAgentClick={provider.capabilities.agentTemplates ? (rect) => { setAgentBtnRect(rect); agentDD.setOpen(!agentDD.open) } : undefined}
+          onAgentClick={!agentLocked && provider.capabilities.agentTemplates ? (rect) => { setAgentBtnRect(rect); agentDD.setOpen(!agentDD.open) } : undefined}
           onModelClick={(rect) => { setModelBtnRect(rect); modelDD.setOpen(!modelDD.open) }}
           approvalMode={displayMode}
           followUpOptions={followUpOptions}

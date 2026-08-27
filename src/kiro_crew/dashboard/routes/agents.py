@@ -45,3 +45,6 @@ def register(app: web.Application) -> None:
     # Edition capability plugins (agent-client integrations + drift reconcile)
     app.router.add_get("/api/capability/plugins", handlers.api_capability_plugins_list)
     app.router.add_post("/api/capability/plugins/sync", handlers.api_capability_plugins_sync)
+    # Crew Members (roster + per-member pinned DM thread)
+    app.router.add_get("/api/members", handlers.api_members)
+    app.router.add_post("/api/members/{slug}/thread", handlers.api_member_thread)

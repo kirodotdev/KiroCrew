@@ -77,3 +77,19 @@ describe('slotChannelNamespace', () => {
     }
   })
 })
+
+describe('isChatPageSurface — member exclusion', () => {
+  it('never admits member DM threads into chat-page surfaces', async () => {
+    // This predicate is the ONE gate keeping member-<slug> threads out of the
+    // Sessions sidebar and the resume paths — the Crew Members page is their
+    // only home. Adding 'member' to the admit set silently leaks every DM
+    // thread into Sessions; this pin is what makes that change visible.
+    const { isChatPageSurface } = await import('./channelOrigin')
+    expect(isChatPageSurface('member')).toBe(false)
+    // The admitted set, pinned exactly: growing it is a deliberate act.
+    expect(isChatPageSurface('')).toBe(true)
+    expect(isChatPageSurface(undefined)).toBe(true)
+    expect(isChatPageSurface('orchestrator')).toBe(true)
+    expect(isChatPageSurface('crew')).toBe(true)
+  })
+})

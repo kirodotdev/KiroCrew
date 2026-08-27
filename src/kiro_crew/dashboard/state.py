@@ -6873,6 +6873,26 @@ class DashboardState:
                     f"Slot {name!r} already exists with memory_mode={existing.memory_mode!r}"
                 )
             return existing
+        # member-* keys are RESERVED: a member DM thread is born ONLY through
+        # the member-thread endpoint, which is the one caller passing
+        # mode="member". Enforced HERE — at the single constructor — rather
+        # than at each creation surface (send auto-create, slot-create,
+        # openai-compat, resume, channels), because a squatter minted by ANY
+        # of them lands an ordinary unpinned slot on the member key: every pin
+        # guard conditions on mode=="member", so the squatter bypasses all of
+        # them and 409s the real thread opener forever. ValueError is the
+        # constructor's established refusal (memory_mode above); the HTTP
+        # callers already map it to 409.
+        #
+        # casefold(): transcript filenames derive from the slot key, and on a
+        # case-insensitive filesystem (Windows, default macOS) "Member-radar"
+        # and "member-radar" alias the SAME file — a mixed-case squatter that
+        # slipped a case-sensitive prefix check would corrupt or read the
+        # pinned member thread's history through the alias. Canonical member
+        # keys are always lowercase (member_slot_key builds them from a
+        # validated lowercase slug), so no legitimate caller is affected.
+        if name and name.casefold().startswith("member-") and mode != "member":
+            raise ValueError("member thread slots are created only via the member thread endpoint")
         # A brand-new chat arrives with no name and is auto-minted here; restore
         # and rehydrate always pass the persisted key as ``name`` (and
         # get-existing returns above). Only the mint path is a genuine new

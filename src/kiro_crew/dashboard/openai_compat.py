@@ -22,6 +22,8 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew import members as members_mod
+from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.context import _neutralize_structural_markers
 from kiro_crew.dashboard.chat_runner import _run_chat
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
@@ -266,11 +268,52 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
     completion_id = _make_id()
 
     if slot_id:
+        # App tokens get ONE uniform answer for the whole member-* space,
+        # BEFORE any existence check: an app can never own a member slot, so
+        # the reservation 409 for a missing key next to the ownership 404
+        # for an existing one would let an app enumerate member threads.
+        if request.get("app", "") and _normalize_slot_key(slot_id).startswith(
+            members_mod.DM_SLOT_KEY_PREFIX
+        ):
+            sel().log_api_access(
+                caller=request.get("app", ""),
+                operation="openai_compat.chat",
+                outcome="denied",
+                source="app_isolation",
+                resources=f"slot={slot_id}",
+                error="app cannot access member slots",
+            )
+            return web.json_response(
+                {
+                    "error": {"message": "not found", "type": "invalid_request_error"},
+                    "code": "not_found",
+                },
+                status=404,
+            )
         # Membership must be checked on the canonical (filename-charset) key —
         # get_or_create_slot folds unsafe chars, so a raw slot_id may map to an
         # existing slot even when the raw string is absent from _slots.
         freshly_created = _normalize_slot_key(slot_id) not in state._slots
-        slot = state.get_or_create_slot(slot_id)
+        try:
+            slot = state.get_or_create_slot(slot_id)
+        except ValueError as exc:
+            # The constructor's refusals (member-* key reservation,
+            # memory-mode mismatch) map to a 409 in the OpenAI error shape —
+            # the same translation the send and slot-create paths perform.
+            return web.json_response(
+                {
+                    "error": {
+                        "message": str(exc),
+                        "type": "invalid_request_error",
+                        "code": "member_slot_reserved",
+                    },
+                    # The OpenAI wire shape nests code inside `error`; the
+                    # top-level duplicate is the dashboard/i18n contract
+                    # (test_error_code_contract reads the top-level dict).
+                    "code": "member_slot_reserved",
+                },
+                status=409,
+            )
         # Busy check — prevent concurrent writes to same slot
         if slot.task is not None and not slot.task.done():
             sel().log_api_access(
@@ -285,6 +328,88 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
                 {"error": {"message": f"slot {slot_id!r} is busy", "type": "slot_busy"}},
                 status=409,
             )
+        # Member DM threads are pinned to their crew — the specific refusal
+        # (with its machine-readable code) must fire BEFORE the generic
+        # mismatch below, or a member mismatch surfaces as an ordinary
+        # conflict and the pin is invisible to the caller.
+        if slot.mode == "member" and agent and agent != slot.agent:
+            sel().log_api_access(
+                caller=request.remote or "",
+                operation="openai_compat.chat",
+                outcome="denied",
+                source="member_pin",
+                resources=f"slot={slot_id} agent={agent}",
+                error=f"member thread pinned to {slot.agent}",
+            )
+            return web.json_response(
+                {
+                    "error": {
+                        "message": "member thread agent is pinned",
+                        "type": "invalid_request_error",
+                        "code": "member_thread_agent_pinned",
+                    },
+                    # Top-level duplicate: the dashboard/i18n error-code
+                    # contract reads the top-level dict; OpenAI clients read
+                    # error.code.
+                    "code": "member_thread_agent_pinned",
+                },
+                status=409,
+            )
+        if slot.mode == "member":
+            # Registry-drift fail-closed, mirroring the chat_send path: a
+            # deleted crew's thread must not dispatch — the resolver would
+            # fall back to the default agent and reply under the deleted
+            # member's identity (a caller sending the matching stale agent
+            # name passes the pin check above but still hits this).
+            _member_cfg = await asyncio.to_thread(KiroCrewConfig.load)
+            if slot.agent not in _member_cfg.agents:
+                sel().log_api_access(
+                    caller=request.remote or "",
+                    operation="openai_compat.chat",
+                    outcome="denied",
+                    source="member_pin",
+                    resources=f"slot={slot_id}",
+                    error=f"registry no longer names {slot.agent}",
+                )
+                return web.json_response(
+                    {
+                        "error": {
+                            "message": "this thread's crew no longer exists",
+                            "type": "invalid_request_error",
+                            "code": "member_pin_mismatch",
+                        },
+                        "code": "member_pin_mismatch",
+                    },
+                    status=409,
+                )
+            # Binding-drift fail-closed, also mirroring chat_send: a live
+            # member slot whose dm.json was deleted or corrupted must refuse
+            # the send — dispatching would persist a transcript that restore
+            # skips and thread-open refuses (orphaned the moment the slot
+            # dies). Same rare-send thread-IO budget as the registry check.
+            if slot.key.startswith(members_mod.DM_SLOT_KEY_PREFIX):
+                _member_slug = slot.key[len(members_mod.DM_SLOT_KEY_PREFIX) :]
+                _send_binding = await asyncio.to_thread(members_mod.read_dm_binding, _member_slug)
+                if _send_binding is None or _send_binding.get("member", "") != slot.agent:
+                    sel().log_api_access(
+                        caller=request.remote or "",
+                        operation="openai_compat.chat",
+                        outcome="denied",
+                        source="member_pin",
+                        resources=f"slot={slot_id}",
+                        error="member binding missing or mismatched",
+                    )
+                    return web.json_response(
+                        {
+                            "error": {
+                                "message": "this thread's binding is missing or no longer matches",
+                                "type": "invalid_request_error",
+                                "code": "member_binding_missing",
+                            },
+                            "code": "member_binding_missing",
+                        },
+                        status=409,
+                    )
         # Agent mismatch — deny when slot has an agent and caller supplies a different one
         if slot.agent and slot.agent != agent:
             sel().log_api_access(
@@ -364,6 +489,32 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
     slot.drain()
 
     if agent:
+        if slot.mode == "member" and agent != slot.agent:
+            # Member DM threads are pinned to their crew. Only an EXISTING slot
+            # can be in member mode (a slot this request just created carries
+            # the caller's own mode), so no freshly_created cleanup applies.
+            sel().log_api_access(
+                caller=request.remote or "",
+                operation="openai_compat.chat",
+                outcome="denied",
+                source="member_pin",
+                resources=f"slot={slot.key} agent={agent}",
+                error=f"member thread pinned to {slot.agent}",
+            )
+            return web.json_response(
+                {
+                    "error": {
+                        "message": "member thread agent is pinned",
+                        "type": "invalid_request_error",
+                        "code": "member_thread_agent_pinned",
+                    },
+                    # Top-level duplicate: the dashboard/i18n error-code
+                    # contract reads the top-level dict; OpenAI clients read
+                    # error.code.
+                    "code": "member_thread_agent_pinned",
+                },
+                status=409,
+            )
         slot.agent = agent
     slot.append("user", prompt, "msg msg-u")
 

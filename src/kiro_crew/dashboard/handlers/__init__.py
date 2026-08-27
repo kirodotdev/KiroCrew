@@ -214,6 +214,12 @@ from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402, F401
 from kiro_crew.dashboard.handlers.mcp_apps import (  # noqa: E402, F401
     api_mcp_apps_call,
 )
+
+# ── Crew Members (handlers/members.py) ──
+from kiro_crew.dashboard.handlers.members import (  # noqa: E402, F401
+    api_member_thread,
+    api_members,
+)
 from kiro_crew.dashboard.handlers.memory import (  # noqa: E402, F401
     _get_vector_store,
     _redact_memory_field,

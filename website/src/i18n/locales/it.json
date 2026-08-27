@@ -7733,7 +7733,8 @@
     "sessions": "Sessioni",
     "settings": "Impostazioni",
     "task_runner": "Task Runner",
-    "webhooks": "Webhooks"
+    "webhooks": "Webhooks",
+    "crew_members": "Membri della crew"
   },
   "pages": {
     "agentsPage": {
@@ -13260,6 +13261,30 @@
     "worldsPopout": {
       "hide_controls": "Nascondi i controlli",
       "show_controls": "Mostra i controlli"
+    },
+    "membersPage": {
+      "agent_template": "Modello di agente",
+      "configuration": "Configurazione",
+      "details": "Dettagli",
+      "edit_in_crew_manager": "Modifica nel gestore delle crew",
+      "empty_roster": "Ancora nessun membro. Crea una crew nel gestore per vederla qui.",
+      "inherited": "Ereditato",
+      "member_count_one": "{{count}} membro",
+      "member_count_many": "{{count}} membri",
+      "member_count_other": "{{count}} membri",
+      "memory_shared_note": "I membri condividono attualmente una sola memoria. Ciò che dici a uno lo sanno tutti.",
+      "memory_store": "Archivio memoria",
+      "model": "Modello",
+      "opening_thread": "Apertura della conversazione…",
+      "pick_a_member": "Scegli un membro per aprire la conversazione.",
+      "pinned_to": "Fissato a {{name}}",
+      "roster_load_failed": "Impossibile caricare l'elenco dei membri.",
+      "slug_collision": "Questo membro condivide il proprio identificatore con {{name}}, la cui conversazione lo possiede già. Rinomina una delle crew perché ognuna abbia la propria conversazione.",
+      "status_idle": "Inattivo",
+      "status_working": "Al lavoro",
+      "thread_open_failed": "Impossibile aprire la conversazione di questo membro.",
+      "title": "Membri della crew",
+      "workspace": "Spazio di lavoro"
     }
   },
   "privacyDisclosure": {

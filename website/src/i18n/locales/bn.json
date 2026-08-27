@@ -7623,7 +7623,8 @@
     "sessions": "সেশন",
     "settings": "সেটিংস",
     "task_runner": "Task Runner",
-    "webhooks": "ওয়েবহুক"
+    "webhooks": "ওয়েবহুক",
+    "crew_members": "ক্রু সদস্যরা"
   },
   "pages": {
     "agentsPage": {
@@ -13086,6 +13087,29 @@
     "worldsPopout": {
       "hide_controls": "কন্ট্রোল লুকাও",
       "show_controls": "কন্ট্রোল দেখাও"
+    },
+    "membersPage": {
+      "agent_template": "এজেন্ট টেমপ্লেট",
+      "configuration": "কনফিগারেশন",
+      "details": "বিস্তারিত",
+      "edit_in_crew_manager": "ক্রু ম্যানেজারে সম্পাদনা করুন",
+      "empty_roster": "এখনও কোনো ক্রু সদস্য নেই। ক্রু ম্যানেজারে একটি ক্রু তৈরি করলে এখানে দেখা যাবে।",
+      "inherited": "উত্তরাধিকারসূত্রে",
+      "member_count_one": "{{count}} জন সদস্য",
+      "member_count_other": "{{count}} জন সদস্য",
+      "memory_shared_note": "সদস্যরা বর্তমানে একই মেমরি ভাগ করে। একজনকে বলা কথা সবাই জানে।",
+      "memory_store": "মেমরি স্টোর",
+      "model": "মডেল",
+      "opening_thread": "কথোপকথন খোলা হচ্ছে…",
+      "pick_a_member": "কথোপকথন খুলতে একজন সদস্য বেছে নিন।",
+      "pinned_to": "{{name}}-এ পিন করা",
+      "roster_load_failed": "সদস্য তালিকা লোড করা যায়নি।",
+      "slug_collision": "এই সদস্যের শনাক্তকারী {{name}}-এর সাথে মিলে যায়, যার কথোপকথন ইতিমধ্যে এটির মালিক। প্রত্যেককে নিজস্ব কথোপকথন দিতে একটি ক্রুর নাম পরিবর্তন করুন।",
+      "status_idle": "নিষ্ক্রিয়",
+      "status_working": "কাজ করছে",
+      "thread_open_failed": "এই সদস্যের কথোপকথন খোলা যায়নি।",
+      "title": "ক্রু সদস্যরা",
+      "workspace": "ওয়ার্কস্পেস"
     }
   },
   "privacyDisclosure": {

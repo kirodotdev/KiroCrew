@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 
+from kiro_crew import members as members_mod
 from kiro_crew import model_registry
 from kiro_crew.acp.client import AcpModelUnavailable
 from kiro_crew.agent_discovery import cached_project_agent_names, warm_project_agent_names
@@ -236,6 +237,43 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         if not is_crew_capable_slot_key(_normalize_slot_key(slot_name)):
             requested_mode = ""
 
+    # member-* keys are RESERVED for member DM threads, which are born only
+    # through POST /api/members/{slug}/thread. Auto-creating one here (e.g. a
+    # send racing a gateway restart that dropped the live slot, or an app
+    # token naming the key) would mint an ordinary unpinned slot on the
+    # member key — every pin guard is conditioned on mode=="member", so the
+    # squatter bypasses all of them AND 409s the real thread opener forever.
+    # Refused, not dropped: the caller must re-open through the member route.
+    if slot_name:
+        _requested_key = _normalize_slot_key(slot_name)
+        if _requested_key.casefold().startswith(members_mod.DM_SLOT_KEY_PREFIX):
+            # App tokens get ONE uniform answer for the whole member-* space,
+            # BEFORE any existence check: an app can never own a member slot
+            # (they are born only through the member-thread endpoint), so a
+            # member-specific 409 here for a missing key next to the
+            # ownership 404 for an existing one would let an unauthorized
+            # caller enumerate which member threads exist.
+            if request.get("app", ""):
+                sel().log_api_access(
+                    caller=request.get("app", ""),
+                    operation="chat_send",
+                    outcome="denied",
+                    source="app_isolation",
+                    resources=f"slot={_requested_key}",
+                    error="app cannot access member slots",
+                )
+                return web.json_response(
+                    {"error": "not found", "code": "slot_not_found"}, status=404
+                )
+            if _requested_key not in state._slots:
+                return web.json_response(
+                    {
+                        "error": "member thread slots are created only via the member thread endpoint",
+                        "code": "member_slot_reserved",
+                    },
+                    status=409,
+                )
+
     try:
         slot = state.get_or_create_slot(
             slot_name,
@@ -273,7 +311,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                 resources=f"slot={slot.key}",
                 error="app cannot access unscoped slots",
             )
-            return web.json_response({"error": "not found"}, status=404)
+            return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
         elif request_app != slot._app:
             sel().log_api_access(
                 caller=request_app,
@@ -283,8 +321,73 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                 resources=f"slot={slot.key}",
                 error="app does not own this slot",
             )
-            return web.json_response({"error": "not found"}, status=404)
-    else:
+            return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    # The member-pin refusal sits AFTER the app-ownership 404s (a 409 here
+    # for an app would be an existence oracle for slots it may not see) and
+    # BEFORE the _human_seen attendance mark, so a denied request leaves the
+    # slot exactly as it found it.
+    if slot.mode == "member" and agent and agent != slot.agent:
+        # Member DM threads are pinned to their crew. The generic mismatch
+        # branch below would also refuse this, but the pin deserves its own
+        # machine-readable refusal — and it must hold even for a member slot
+        # whose agent is somehow empty (the elif below would otherwise adopt
+        # the request's agent onto the pinned thread).
+        _emit_agent_assignment(slot.key, agent, outcome="denied_member_pin")
+        return web.json_response(
+            {"error": "member thread agent is pinned", "code": "member_thread_agent_pinned"},
+            status=409,
+        )
+    if slot.mode == "member":
+        # The pin also fails closed against REGISTRY drift, not just against
+        # the request: an agentless send on a thread whose crew was deleted
+        # would otherwise dispatch with a name the resolver no longer knows,
+        # and the fallback agent's reply would land under the deleted
+        # member's identity. Config load is file IO, so it rides a thread
+        # and only on member slots (rare sends), never the ordinary path.
+        _member_cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        if slot.agent not in _member_cfg.agents:
+            sel().log_api_access(
+                caller=request.remote or "",
+                operation="chat_send",
+                outcome="denied",
+                source="member_pin",
+                resources=f"slot={slot.key}",
+                error=f"registry no longer names {slot.agent}",
+            )
+            return web.json_response(
+                {
+                    "error": "this thread's crew no longer exists",
+                    "code": "member_pin_mismatch",
+                },
+                status=409,
+            )
+        # And against BINDING drift: a live slot outlives its on-disk binding
+        # (deleted or corrupted while the tab stayed open). Accepting the send
+        # would persist history that restore and thread-open both refuse —
+        # a transcript stranded the moment the slot dies. Refuse the write
+        # while the read surfaces still work, so the user learns NOW rather
+        # than after the message is composed into an unreachable thread.
+        # Same rare-send IO budget as the registry check above.
+        if slot.key.startswith(members_mod.DM_SLOT_KEY_PREFIX):
+            _member_slug = slot.key[len(members_mod.DM_SLOT_KEY_PREFIX) :]
+            _send_binding = await asyncio.to_thread(members_mod.read_dm_binding, _member_slug)
+            if _send_binding is None or _send_binding.get("member", "") != slot.agent:
+                sel().log_api_access(
+                    caller=request.remote or "",
+                    operation="chat_send",
+                    outcome="denied",
+                    source="member_pin",
+                    resources=f"slot={slot.key}",
+                    error="member binding missing or mismatched",
+                )
+                return web.json_response(
+                    {
+                        "error": "this thread's binding is missing or no longer matches",
+                        "code": "member_binding_missing",
+                    },
+                    status=409,
+                )
+    if not request_app:
         # FIX 1: a dashboard user (no app token) typed into this slot, so a
         # human demonstrably has it open. That restores the full 2h approval
         # window even on an app-owned tab — the deny-fast window is for slots
@@ -3787,6 +3890,17 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
     agent_name = body.get("agent", "")
     if agent_name and not _AGENT_NAME_RE.match(agent_name):
         return web.json_response({"error": "invalid agent name"}, status=400)
+    if slot.mode == "member" and agent_name != slot.agent:
+        # Member DM threads are pinned to their crew: refuse the switch before
+        # any state is touched. A same-name "switch" stays allowed — it is a
+        # session reset, not a re-bind. Audited like every other pin denial
+        # (the send path's guard emits the same event), so a probe against the
+        # pin is visible in the SEL trail.
+        _emit_agent_assignment(slot.key, agent_name, outcome="denied_member_pin")
+        return web.json_response(
+            {"error": "member thread agent is pinned", "code": "member_thread_agent_pinned"},
+            status=409,
+        )
 
     # The whole resolve -> reset -> commit section runs under the slot's
     # lock: the awaits yield the event loop, and an interleaved second switch
@@ -5107,6 +5221,21 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     name = _normalize_slot_key(request.match_info["slot"])
     if not state.conversation_log:
         return web.json_response({"error": "no conversation log"}, status=400)
+    # App tokens get the uniform isolation 404 for member-* keys AT ENTRY —
+    # before the live-slot probe, the folder unhide, the closed-flag clear, or
+    # any transcript read. An app can never own a member slot; running any of
+    # those side effects first would let an unauthorized caller mutate the
+    # member thread's history state even while the resume itself is refused.
+    if name.casefold().startswith(members_mod.DM_SLOT_KEY_PREFIX) and request.get("app", ""):
+        sel().log_api_access(
+            caller=request.get("app", ""),
+            operation="chat_resume",
+            outcome="denied",
+            source="app_isolation",
+            resources=f"slot={name}",
+            error="app cannot access member slots",
+        )
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
     try:
         body = await request.json()
     except Exception:
@@ -5143,6 +5272,58 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     # app token, otherwise leaves it untagged, which is invisible to cross-slot
     # scopes) rather than claiming USER on a conversation we cannot attribute.
     meta = state.conversation_log.get_metadata(history_key)
+
+    # ── Member-thread EARLY refusal, before any persistent mutation ────────
+    # ``_unhide_folder`` and ``clear_closed`` below write durable state. A
+    # resume the member guard is going to 409 anyway must not leave those
+    # side effects behind (a closed member thread silently reopened, its
+    # folder unhidden). This early check refuses the doomed request first;
+    # the full guard further down re-validates right before the slot is
+    # created and remains the authoritative TOCTOU barrier — this one only
+    # keeps rejected resumes side-effect-free.
+    if name.casefold().startswith(members_mod.DM_SLOT_KEY_PREFIX):
+        # casefold to MATCH; slice the ORIGINAL bytes. A mixed-case name
+        # yields a slug with uppercase, which reads as unbound (slugs are
+        # validated lowercase) -> the guard 409s. Fail-closed, and the
+        # constructor's own casefolded reservation is never reached with an
+        # uncaught ValueError.
+        _early_slug = name[len(members_mod.DM_SLOT_KEY_PREFIX) :]
+        _early_binding = await asyncio.to_thread(members_mod.read_dm_binding, _early_slug)
+        if _early_binding is None or history_key != _history_key_for(name):
+            sel().log_api_access(
+                caller=request.remote or "",
+                operation="chat_resume",
+                outcome="denied",
+                source="member_pin",
+                resources=f"slot={name} key={history_key}",
+                error="member binding missing or foreign history key",
+            )
+            return web.json_response(
+                {
+                    "error": "member thread agent is pinned",
+                    "code": "member_thread_agent_pinned",
+                },
+                status=409,
+            )
+    elif str(meta.get("mode", "")) == members_mod.DM_SLOT_MODE:
+        # Same early refusal for the mirror case: a member transcript may not
+        # ride onto an ordinary key, and that rejection must also precede the
+        # mutations. The late twin re-checks against the post-await snapshot.
+        sel().log_api_access(
+            caller=request.remote or "",
+            operation="chat_resume",
+            outcome="denied",
+            source="member_pin",
+            resources=f"slot={name} key={history_key}",
+            error="member transcript on an ordinary key",
+        )
+        return web.json_response(
+            {
+                "error": "a member thread can only be resumed on its own member slot",
+                "code": "member_mode_key_mismatch",
+            },
+            status=409,
+        )
 
     # Read the transcript BEFORE publishing the slot: this await would otherwise
     # expose an empty slot by name, and a concurrent append would land ahead of it.
@@ -5187,6 +5368,22 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
             )
         except Exception:
             logger.warning("Failed to clear closed flag for %s", history_key, exc_info=True)
+        else:
+            # Absorb OUR OWN mutation into the identity baseline: the member
+            # guard further down compares a later snapshot against ``meta``,
+            # and clear_closed just dropped exactly ``closed``/``closed_at``
+            # from the line this baseline was read from. Without this, a
+            # legitimate closed-thread resume trips that barrier — a
+            # guaranteed 409 issued AFTER the reopen durably landed. The two
+            # keys are removed from the LOCAL dict rather than re-reading the
+            # file, so every drift the barrier exists for (delete/recreate,
+            # concurrent edits — anything not these two keys) still differs
+            # from the post-await snapshot and still refuses. clear_closed is
+            # conditional (compare-and-clear, no-op arms), so the snapshot
+            # may retain the keys; the barrier compares the POST-read against
+            # this baseline, and a retained ``closed`` there simply mismatches
+            # and refuses — fail-closed, never fail-open.
+            meta = {k: v for k, v in meta.items() if k not in ("closed", "closed_at")}
 
     # Re-check after the await: a concurrent resume can publish the slot while we
     # are suspended, and the publish below would skip the ownership gate above.
@@ -5297,9 +5494,106 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
             status=409,
         )
 
+    # ── Member-thread pin guard ─────────────────────────────────────────────
+    # Member DM slots are born and re-agented ONLY through
+    # POST /api/members/{slug}/thread. The check is STRUCTURAL, not a metadata
+    # shape check: a member key may only resume its own canonical history
+    # (history metadata lives in the same operator-editable JSONL as the
+    # fields it would restore, so matching on meta.agent/meta.mode would let
+    # two edited keys put an arbitrary transcript under the member's name).
+    # And mode="member" may not ride a transcript onto an ordinary key (an
+    # invisible orphan: absent from Sessions AND from the roster). Checked
+    # BEFORE the slot exists so a refusal cannot strand a fresh non-member
+    # slot on the member key, which would 409 the real thread opener forever.
+    #
+    # ORDERING: the binding await runs FIRST, and the metadata snapshot is
+    # taken synchronously after it — the last operation before the slot is
+    # created. Reading metadata before the await would reopen the
+    # validated-to-publish race: a delete/recreate landing during the await
+    # would hydrate the OLD snapshot against the replacement transcript, and
+    # a later dirty flush would overwrite the replacement.
+    _member_binding: dict | None = None
+    if name.casefold().startswith(members_mod.DM_SLOT_KEY_PREFIX):
+        # Same casefold-to-match / original-bytes-slice as the early guard.
+        _slug = name[len(members_mod.DM_SLOT_KEY_PREFIX) :]
+        _member_binding = await asyncio.to_thread(members_mod.read_dm_binding, _slug)
+        # Re-check the LIVE slot after this await: it is the one suspension
+        # point between the earlier ownership re-checks and the publish
+        # below. A concurrent resume that published during it would otherwise
+        # go unseen — this request would then get_or_create the EXISTING
+        # slot and hydrate the disk transcript onto it a second time,
+        # persisting duplicated history on the next flush.
+        resume_resp = await _live_slot_resume_response(state, request, history_key, name)
+        if resume_resp is not None:
+            return resume_resp
+        if _member_binding is None or history_key != _history_key_for(name):
+            sel().log_api_access(
+                caller=request.remote or "",
+                operation="chat_resume",
+                outcome="denied",
+                source="member_pin",
+                resources=f"slot={name} key={history_key}",
+                error="member binding missing or foreign history key (late barrier)",
+            )
+            return web.json_response(
+                {
+                    "error": "member thread agent is pinned",
+                    "code": "member_thread_agent_pinned",
+                },
+                status=409,
+            )
+    post_read_meta = state.conversation_log.get_metadata(history_key)
+    if _member_binding is not None and post_read_meta != meta:
+        # Identity barrier for the window the binding await opened: the
+        # transcript was read at `meta`-time (with `all_messages`), and this
+        # re-read runs after the await. A delete/recreate landing in between
+        # would pair the OLD messages with the REPLACEMENT metadata, and the
+        # next dirty flush would overwrite the replacement transcript with
+        # them. Equal snapshots bracket the whole window — the pairing is
+        # consistent; any drift refuses, and re-opening reads fresh.
+        sel().log_api_access(
+            caller=request.remote or "",
+            operation="chat_resume",
+            outcome="denied",
+            source="member_pin",
+            resources=f"slot={name} key={history_key}",
+            error="metadata drifted across the binding read",
+        )
+        return web.json_response(
+            {
+                "error": "this thread changed while resuming; open it again",
+                "code": "member_resume_conflict",
+            },
+            status=409,
+        )
+    meta = post_read_meta
+    if _member_binding is None and str(meta.get("mode", "")) == members_mod.DM_SLOT_MODE:
+        sel().log_api_access(
+            caller=request.remote or "",
+            operation="chat_resume",
+            outcome="denied",
+            source="member_pin",
+            resources=f"slot={name} key={history_key}",
+            error="member transcript on an ordinary key (late barrier)",
+        )
+        return web.json_response(
+            {
+                "error": "a member thread can only be resumed on its own member slot",
+                "code": "member_mode_key_mismatch",
+            },
+            status=409,
+        )
+
     slot = state.get_or_create_slot(
         name,
         app=request.get("app", ""),
+        # The BINDING is the pin's authority on a member key — not the
+        # transcript's own metadata (the guard above verified identity
+        # structurally; metadata lives in the same operator-editable file it
+        # would otherwise re-pin from). Passing mode="member" here is also
+        # what admits the key through the constructor's reservation.
+        agent=(_member_binding or {}).get("member", ""),
+        mode=members_mod.DM_SLOT_MODE if _member_binding is not None else "",
         # Resuming an existing channel transcript from History is an adoption of
         # that conversation, so the tab is channel-origin even when the session
         # map can no longer name its session.
@@ -5316,7 +5610,9 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     # request title is used ONLY when no persisted title exists; otherwise the
     # persisted title and its provenance are restored exactly like the
     # chat_persistence loaders (resume is the THIRD hydration path).
-    meta = state.conversation_log.get_metadata(history_key)
+    # Reuse the SNAPSHOT the guard above validated. A second get_metadata here
+    # would re-read the file, and a write between the two reads would hydrate
+    # values the guard never saw (validate-A / hydrate-B).
     raw_persisted_title = meta.get("title")
     # Accept the persisted title only when it is a string: a legacy or
     # hand-corrupted JSONL could carry a non-string here, and redacting it
@@ -5344,14 +5640,20 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     # so the auto-titler can still name it on the next turn.
     if meta.get("created_at"):
         slot.created_at = meta["created_at"]
-    if meta.get("agent"):
-        slot.agent = meta["agent"]
+    # On a member key the pin came from the BINDING at slot creation above and
+    # metadata may not override it (same tamperable file the guard refused to
+    # trust). On an ordinary key, mode="member" may not ride in either — the
+    # guard already 409s that shape, so this arm only defends a same-request
+    # inconsistency.
+    if _member_binding is None:
+        if meta.get("agent"):
+            slot.agent = meta["agent"]
+        if meta.get("mode") and meta["mode"] != members_mod.DM_SLOT_MODE:
+            slot.mode = meta["mode"]
     if meta.get("workspace"):
         slot.workspace = meta["workspace"]
     if meta.get("project"):
         slot.project = meta["project"]
-    if meta.get("mode"):
-        slot.mode = meta["mode"]
     if meta.get("channel_folder_filed"):
         # Resuming from History must carry the filing marker forward, or the
         # next save of this slot drops it and the conversation is re-filed.

@@ -7,7 +7,7 @@
  * Order in this file = order in the rail (within each group). Add new
  * built-in surfaces here; do not add hardcoded badge logic to `App.tsx`.
  */
-import { MessageSquare, Bell, BookOpen, Component, CalendarDays, Settings, ClipboardCheck, Compass, Webhook } from 'lucide-react'
+import { MessageSquare, Bell, BookOpen, Component, CalendarDays, Settings, ClipboardCheck, Compass, Webhook, Users } from 'lucide-react'
 import { createSelector } from '@reduxjs/toolkit'
 import { KiroGhostMark } from '../components/KiroGhostMark'
 import { registerBuiltinSurface, surfaceMachineValue } from './registry'
@@ -41,6 +41,23 @@ registerBuiltinSurface({
   // specific work when the user opens Sessions.
   activitySelector: selectSubagentActivityCount,
   activityLabel: 'subagents in flight',
+})
+
+// Crew Members — one durable, pinned DM thread per crew member. Sits directly
+// under Sessions: both are conversation surfaces, but here the primary object
+// is a NAMED MEMBER rather than a task-shaped session. `slotMode: 'member'`
+// claims the `member-<slug>` slots this page's threads live in, so their
+// unread counts ride this rail item instead of leaking into Sessions
+// (`isChatPageSurface` deliberately does not admit 'member').
+registerBuiltinSurface({
+  navId: 'members',
+  route: '/members',
+  label: surfaceMachineValue('Crew Members'),
+  labelKey: 'nav.crew_members',
+  icon: <Users size={16} />,
+  group: surfaceMachineValue('Main'),
+  slotMode: 'member',
+  badgeLabel: 'unread member threads',
 })
 
 registerBuiltinSurface({

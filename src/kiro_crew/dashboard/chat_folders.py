@@ -56,10 +56,10 @@ def _is_single_emoji(s: str) -> bool:
         o = ord(c)
         return (
             unicodedata.category(c).startswith("So")  # symbol, other
-            or o > 0x1F000                            # supplementary emoji planes
+            or o > 0x1F000  # supplementary emoji planes
             or o in modifiers
-            or 0x1F3FB <= o <= 0x1F3FF                 # skin-tone modifiers
-            or 0x1F1E6 <= o <= 0x1F1FF                 # regional indicators (flags)
+            or 0x1F3FB <= o <= 0x1F3FF  # skin-tone modifiers
+            or 0x1F1E6 <= o <= 0x1F1FF  # regional indicators (flags)
         )
 
     if not all(_emoji_char(c) for c in s):
@@ -100,8 +100,18 @@ _FOLDER_ICON_MODEL = "auto"
 # it, and test_folder_color_palette_matches_frontend_catalog pins the two.
 _FOLDER_COLOR_PALETTE = frozenset(
     {
-        "#ef4444", "#f97316", "#f59e0b", "#84cc16", "#22c55e", "#14b8a6",
-        "#06b6d4", "#3b82f6", "#6366f1", "#8b5cf6", "#ec4899", "#94a3b8",
+        "#ef4444",
+        "#f97316",
+        "#f59e0b",
+        "#84cc16",
+        "#22c55e",
+        "#14b8a6",
+        "#06b6d4",
+        "#3b82f6",
+        "#6366f1",
+        "#8b5cf6",
+        "#ec4899",
+        "#94a3b8",
     }
 )
 
@@ -121,7 +131,7 @@ async def generate_emoji_for_name(state: DashboardState, name: str) -> str:
     """
 
     prompt = (
-        f"Reply with exactly ONE emoji that best represents a project folder named \"{name}\". "
+        f'Reply with exactly ONE emoji that best represents a project folder named "{name}". '
         "No text, no explanation, just the single emoji character."
     )
 
@@ -260,9 +270,7 @@ async def api_chat_folders(request: web.Request) -> web.Response:
     # maintenance_executor, whose fast periodic sweeps — the orphan reaper — must
     # stay responsive and could otherwise be starved by frequent polling.
     loop = asyncio.get_running_loop()
-    folders = await loop.run_in_executor(
-        subprocess_executor(), _folders_with_history_counts, state
-    )
+    folders = await loop.run_in_executor(subprocess_executor(), _folders_with_history_counts, state)
     return web.json_response(folders)
 
 
@@ -275,8 +283,11 @@ def _validate_project_dir(raw: str) -> tuple[str, str | None]:
     resolved = os.path.realpath(os.path.expanduser(raw))
     if is_sensitive_path(resolved):
         sel().log_api_access(
-            caller="dashboard", operation="chat.folder_project_dir",
-            outcome="denied", resources=resolved, error="sensitive path",
+            caller="dashboard",
+            operation="chat.folder_project_dir",
+            outcome="denied",
+            resources=resolved,
+            error="sensitive path",
         )
         return "", "project_dir refers to a sensitive path"
     if not os.path.isdir(resolved):
@@ -512,8 +523,11 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
         )
     if create_err == "forbidden_parent":
         sel().log_api_access(
-            caller=request_app, operation="chat.folder_create",
-            outcome="denied", source="app_isolation", resources=f"parent={parent_id}",
+            caller=request_app,
+            operation="chat.folder_create",
+            outcome="denied",
+            source="app_isolation",
+            resources=f"parent={parent_id}",
             error="app cannot create inside a folder it does not own",
         )
         return web.json_response(
@@ -526,8 +540,11 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
     state.push_slots_update()
     source, caller = _audit_origin(request)
     sel().log_api_access(
-        caller=caller, operation="chat.folder_create",
-        outcome="allowed", source=source, resources=str(folder["id"]),
+        caller=caller,
+        operation="chat.folder_create",
+        outcome="allowed",
+        source=source,
+        resources=str(folder["id"]),
     )
     return web.json_response(folder, status=201)
 
@@ -615,7 +632,10 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
         color_val = str(raw_color).strip().lower() if raw_color is not None else ""
         if color_val and not _is_valid_folder_color(color_val):
             return web.json_response(
-                {"error": "color must be one of the folder palette values", "code": "color_invalid"},
+                {
+                    "error": "color must be one of the folder palette values",
+                    "code": "color_invalid",
+                },
                 status=400,
             )
         changes["color"] = color_val
@@ -641,8 +661,10 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
             dest = next((f for f in folders if f["id"] == new_parent), None)
             if request_app and dest is not None and _folder_owner_app(dest) != request_app:
                 return False, "forbidden_parent"
-        if reparenting and request_app and _subtree_holds_foreign_folder(
-            folders, root_id=fid, request_app=request_app
+        if (
+            reparenting
+            and request_app
+            and _subtree_holds_foreign_folder(folders, root_id=fid, request_app=request_app)
         ):
             # A move takes the whole subtree with it, so a folder the person
             # nested inside this one would be relocated by an app's write. Only
@@ -658,9 +680,7 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
     err = await state.mutate_folders(_apply)
     if err == "not_found":
         # Deleted between the validation above and acquiring the store lock.
-        return web.json_response(
-            {"error": "not found", "code": "folder_not_found"}, status=404
-        )
+        return web.json_response({"error": "not found", "code": "folder_not_found"}, status=404)
     if err in ("not_owned", "forbidden_parent", "foreign_descendant"):
         # Distinguished in the audit, not to the caller: one code for all three
         # keeps the response from reporting which folder was foreign.
@@ -670,8 +690,10 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
             "foreign_descendant": "app cannot move a folder holding one it does not own",
         }[err]
         sel().log_api_access(
-            caller=request_app, operation="chat.folder_update",
-            outcome="denied", source="app_isolation",
+            caller=request_app,
+            operation="chat.folder_update",
+            outcome="denied",
+            source="app_isolation",
             resources=(f"parent={new_parent}" if err == "forbidden_parent" else fid),
             error=_reason,
         )
@@ -701,8 +723,11 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
     state.push_slots_update()
     source, caller = _audit_origin(request)
     sel().log_api_access(
-        caller=caller, operation="chat.folder_update",
-        outcome="allowed", source=source, resources=fid,
+        caller=caller,
+        operation="chat.folder_update",
+        outcome="allowed",
+        source=source,
+        resources=fid,
     )
     return web.json_response(folder)
 
@@ -724,8 +749,11 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
     # cannot go stale while the request runs.
     if request_app and _folder_owner_app(target) != request_app:
         sel().log_api_access(
-            caller=request_app, operation="chat.folder_delete",
-            outcome="denied", source="app_isolation", resources=fid,
+            caller=request_app,
+            operation="chat.folder_delete",
+            outcome="denied",
+            source="app_isolation",
+            resources=fid,
             error="app cannot delete a folder it does not own",
         )
         return web.json_response(
@@ -752,8 +780,11 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
     # cleanup is the person's, who can delete a full folder as they always could.
     if request_app:
         sel().log_api_access(
-            caller=request_app, operation="chat.folder_delete",
-            outcome="denied", source="app_isolation", resources=fid,
+            caller=request_app,
+            operation="chat.folder_delete",
+            outcome="denied",
+            source="app_isolation",
+            resources=fid,
             error="app cannot delete folders",
         )
         return web.json_response(
@@ -797,7 +828,9 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
                 # level, which the sidebar handles, so keep restoring the rest.
                 logger.warning(
                     "folder delete rollback: could not restore slot %s to folder %s",
-                    slot.key, previous, exc_info=True,
+                    slot.key,
+                    previous,
+                    exc_info=True,
                 )
         state.push_slots_update()
 
@@ -818,8 +851,11 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
     state.push_slots_update()
     source, caller = _audit_origin(request)
     sel().log_api_access(
-        caller=caller, operation="chat.folder_delete",
-        outcome="allowed", source=source, resources=fid,
+        caller=caller,
+        operation="chat.folder_delete",
+        outcome="allowed",
+        source=source,
+        resources=fid,
     )
     return web.json_response({"ok": True})
 
@@ -880,9 +916,7 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
                 else "app does not own this slot"
             ),
         )
-        return web.json_response(
-            {"error": "not found", "code": "slot_not_found"}, status=404
-        )
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
     try:
         body = await request.json()
     except Exception:
@@ -908,8 +942,11 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
     state.push_slots_update()
     source, caller = _audit_origin(request)
     sel().log_api_access(
-        caller=caller, operation="chat.slot_folder",
-        outcome="allowed", source=source, resources=name,
+        caller=caller,
+        operation="chat.slot_folder",
+        outcome="allowed",
+        source=source,
+        resources=name,
     )
     return web.json_response({"ok": True, "folder_id": slot.folder_id})
 
@@ -930,8 +967,11 @@ async def api_chat_slot_pin(request: web.Request) -> web.Response:
     await save_slot_off_loop(state, slot, force=True)
     state.push_slots_update()
     sel().log_api_access(
-        caller="dashboard", operation="chat.slot_pin",
-        outcome="allowed", source="dashboard", resources=name,
+        caller="dashboard",
+        operation="chat.slot_pin",
+        outcome="allowed",
+        source="dashboard",
+        resources=name,
     )
     return web.json_response({"ok": True, "pinned": slot.pinned})
 
@@ -968,9 +1008,7 @@ async def api_chat_slot_mode(request: web.Request) -> web.Response:
                 else "app does not own this slot"
             ),
         )
-        return web.json_response(
-            {"error": "not found", "code": "slot_not_found"}, status=404
-        )
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
     try:
         body = await request.json()
     except Exception:
@@ -978,6 +1016,18 @@ async def api_chat_slot_mode(request: web.Request) -> web.Response:
     mode = body.get("mode", "")
     if mode not in _VALID_MODES:
         return web.json_response({"error": "invalid mode"}, status=400)
+    # Member DM threads (mode="member") are pinned to their crew, and every
+    # pin guard is conditioned on this very field — so the mode writer is the
+    # one door that would unlock all of them at once (PATCH mode -> "", then
+    # the agent switch endpoint passes its guard). "member" is deliberately
+    # absent from _VALID_MODES (mode cannot be SET here), and here it cannot
+    # be UNSET either: member slots are born and retired only through the
+    # member-thread endpoint.
+    if slot.mode == "member":
+        return web.json_response(
+            {"error": "member thread mode is locked", "code": "member_mode_locked"},
+            status=409,
+        )
     # Crew keeps its durable queue in a directory named after the slot, and a
     # key that folds to nothing but dots has no such directory (see
     # `CrewStore`). That refusal would otherwise land on the first crew MESSAGE
@@ -993,8 +1043,7 @@ async def api_chat_slot_mode(request: web.Request) -> web.Response:
 
     if mode == "crew" and not is_crew_capable_slot_key(slot.key):
         return web.json_response(
-            {"error": "this session name cannot run crew mode",
-             "code": "crew_unsupported_slot"},
+            {"error": "this session name cannot run crew mode", "code": "crew_unsupported_slot"},
             status=400,
         )
     # Work in SUBAGENTS keeps `slot.running` false the whole time, so that flag
@@ -1018,7 +1067,7 @@ async def api_chat_slot_mode(request: web.Request) -> web.Response:
             # and flips the execution model out from under them.
             busy = bool(subs.has_pending_work_for(effective_session_key(slot)))
         except Exception:
-            busy = True       # fail closed: refuse rather than risk the flip
+            busy = True  # fail closed: refuse rather than risk the flip
     if not busy and slot.mode == "crew":
         # isinstance, not `is not None` — matching gateway.py's own check on this
         # attribute. A stand-in object passes an identity check and then answers
@@ -1031,8 +1080,11 @@ async def api_chat_slot_mode(request: web.Request) -> web.Response:
                 busy = True
     if slot.running or busy:
         sel().log_api_access(
-            caller="dashboard", operation="chat.slot_mode",
-            outcome="denied", source="dashboard", resources=name,
+            caller="dashboard",
+            operation="chat.slot_mode",
+            outcome="denied",
+            source="dashboard",
+            resources=name,
         )
         return web.json_response(
             {"error": "cannot switch mode while session is running"}, status=409
@@ -1045,7 +1097,10 @@ async def api_chat_slot_mode(request: web.Request) -> web.Response:
     await save_slot_off_loop(state, slot, force=True)
     state.push_slots_update()
     sel().log_api_access(
-        caller="dashboard", operation="chat.slot_mode",
-        outcome="allowed", source="dashboard", resources=name,
+        caller="dashboard",
+        operation="chat.slot_mode",
+        outcome="allowed",
+        source="dashboard",
+        resources=name,
     )
     return web.json_response({"ok": True, "mode": slot.mode})

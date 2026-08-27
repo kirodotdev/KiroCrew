@@ -368,7 +368,9 @@ class TestTryLiveModelSwitch:
     @pytest.mark.asyncio
     async def test_success_sends_the_wire_id(self):
         provider = _acp()
-        assert await ch._try_live_model_switch("s1", _ChatSlot("s1"), provider, "sonnet-4.5") is True
+        assert (
+            await ch._try_live_model_switch("s1", _ChatSlot("s1"), provider, "sonnet-4.5") is True
+        )
         provider.client.set_model.assert_awaited_once_with("claude-sonnet-4.5")
 
 
@@ -650,7 +652,9 @@ class TestSlotColor:
     @pytest.mark.asyncio
     async def test_out_of_range_index_is_rejected(self):
         slot = _ChatSlot("s1")
-        status, body = await self._patch(_state(slot), "s1", {"color_index": ch.MAX_COLOR_INDEX + 1})
+        status, body = await self._patch(
+            _state(slot), "s1", {"color_index": ch.MAX_COLOR_INDEX + 1}
+        )
         assert status == 400
         assert str(ch.MAX_COLOR_INDEX) in body["error"]
         assert slot.color_index is None

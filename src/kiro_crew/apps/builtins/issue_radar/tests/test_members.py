@@ -10,6 +10,7 @@ Covers the two pieces of new behaviour:
 Both are pure/local (no ``gh`` calls), matching test_issue_detail.py's approach
 of exercising the reduction + cache directly.
 """
+
 import json
 import shutil
 import tempfile
@@ -73,12 +74,20 @@ class TestListCollaborators(unittest.TestCase):
         self.assertEqual(out, rows)
 
     def test_403_becomes_permission_error(self):
-        with mock.patch.object(gh, "_run_gh_api", side_effect=gh.GhCliError("gh api collaborators failed (exit 1): (HTTP 403)")):
+        with mock.patch.object(
+            gh,
+            "_run_gh_api",
+            side_effect=gh.GhCliError("gh api collaborators failed (exit 1): (HTTP 403)"),
+        ):
             with self.assertRaises(gh.GhPermissionError):
                 gh.list_repo_collaborators("o", "r")
 
     def test_push_access_message_becomes_permission_error(self):
-        with mock.patch.object(gh, "_run_gh_api", side_effect=gh.GhCliError("Must have push access to view repository collaborators.")):
+        with mock.patch.object(
+            gh,
+            "_run_gh_api",
+            side_effect=gh.GhCliError("Must have push access to view repository collaborators."),
+        ):
             with self.assertRaises(gh.GhPermissionError):
                 gh.list_repo_collaborators("o", "r")
 
@@ -114,7 +123,9 @@ class TestMembersCache(unittest.TestCase):
 
     def test_removed_with_repo_on_disconnect(self):
         store.add_connected_repo("o", "r", root=self.tmp)
-        store.write_members_cache("o", "r", [{"login": "alice", "role": "admin"}], source="collaborators", root=self.tmp)
+        store.write_members_cache(
+            "o", "r", [{"login": "alice", "role": "admin"}], source="collaborators", root=self.tmp
+        )
         self.assertIsNotNone(store.read_members_cache("o", "r", self.tmp))
         store.remove_connected_repo("o", "r", root=self.tmp)
         self.assertIsNone(store.read_members_cache("o", "r", self.tmp))
@@ -144,14 +155,27 @@ class TestIssuesCacheSchema(unittest.TestCase):
         # A pre-versioning cache: valid JSON, real issues, but no schema stamp
         # and — crucially — no author_association. Must read as a miss.
         path = store.issues_cache_path("o", "r", self.tmp, "open")
-        atomic_write(path, json.dumps({"owner": "o", "repo": "r", "state": "open",
-                                       "issues": [{"number": 1, "author": "a"}]}))
+        atomic_write(
+            path,
+            json.dumps(
+                {
+                    "owner": "o",
+                    "repo": "r",
+                    "state": "open",
+                    "issues": [{"number": 1, "author": "a"}],
+                }
+            ),
+        )
         self.assertIsNone(store.read_issues_cache("o", "r", self.tmp))
 
     def test_old_schema_number_is_ignored(self):
         path = store.issues_cache_path("o", "r", self.tmp, "open")
-        atomic_write(path, json.dumps({"schema": store.ISSUES_CACHE_SCHEMA - 1,
-                                       "issues": [{"number": 1, "author": "a"}]}))
+        atomic_write(
+            path,
+            json.dumps(
+                {"schema": store.ISSUES_CACHE_SCHEMA - 1, "issues": [{"number": 1, "author": "a"}]}
+            ),
+        )
         self.assertIsNone(store.read_issues_cache("o", "r", self.tmp))
 
 

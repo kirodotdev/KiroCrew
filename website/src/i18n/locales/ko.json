@@ -7513,7 +7513,8 @@
     "sessions": "세션",
     "settings": "설정",
     "task_runner": "Task Runner",
-    "webhooks": "Webhooks"
+    "webhooks": "Webhooks",
+    "crew_members": "크루 멤버"
   },
   "pages": {
     "agentsPage": {
@@ -12910,6 +12911,28 @@
     "worldsPopout": {
       "hide_controls": "컨트롤 숨기기",
       "show_controls": "컨트롤 표시"
+    },
+    "membersPage": {
+      "agent_template": "에이전트 템플릿",
+      "configuration": "구성",
+      "details": "상세",
+      "edit_in_crew_manager": "크루 관리 페이지에서 편집",
+      "empty_roster": "아직 크루 멤버가 없습니다. 크루 관리 페이지에서 만들면 여기에 표시됩니다.",
+      "inherited": "상속됨",
+      "member_count_other": "멤버 {{count}}명",
+      "memory_shared_note": "멤버들은 현재 하나의 메모리를 공유합니다. 한 멤버에게 말한 내용은 모두가 알게 됩니다.",
+      "memory_store": "메모리 스토어",
+      "model": "모델",
+      "opening_thread": "대화를 여는 중…",
+      "pick_a_member": "멤버를 선택해 대화를 시작하세요.",
+      "pinned_to": "{{name}}에 고정됨",
+      "roster_load_failed": "멤버 명단을 불러오지 못했습니다.",
+      "slug_collision": "이 멤버는 {{name}}와(과) 식별자가 같아 대화가 이미 그쪽에 속해 있습니다. 각자 별도의 대화를 가지려면 크루 이름 중 하나를 변경하세요.",
+      "status_idle": "대기 중",
+      "status_working": "작업 중",
+      "thread_open_failed": "이 멤버의 대화를 열 수 없습니다.",
+      "title": "크루 멤버",
+      "workspace": "워크스페이스"
     }
   },
   "privacyDisclosure": {

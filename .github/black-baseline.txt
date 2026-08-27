@@ -105,7 +105,6 @@ src/kiro_crew/apps/builtins/issue_radar/tests/test_gitlab.py
 src/kiro_crew/apps/builtins/issue_radar/tests/test_investigation.py
 src/kiro_crew/apps/builtins/issue_radar/tests/test_issue_detail.py
 src/kiro_crew/apps/builtins/issue_radar/tests/test_issues_first_page.py
-src/kiro_crew/apps/builtins/issue_radar/tests/test_members.py
 src/kiro_crew/apps/builtins/issue_radar/tests/test_pr_actions.py
 src/kiro_crew/apps/builtins/issue_radar/tests/test_pulls.py
 src/kiro_crew/apps/builtins/issue_radar/tests/test_pulls_first_page.py
@@ -207,10 +206,7 @@ src/kiro_crew/dashboard/channel_folders.py
 src/kiro_crew/dashboard/channel_slots.py
 src/kiro_crew/dashboard/chat_auto_tag.py
 src/kiro_crew/dashboard/chat_folder_suggest.py
-src/kiro_crew/dashboard/chat_folders.py
-src/kiro_crew/dashboard/chat_fork.py
 src/kiro_crew/dashboard/chat_nav.py
-src/kiro_crew/dashboard/chat_persistence.py
 src/kiro_crew/dashboard/chat_slack.py
 src/kiro_crew/dashboard/chat_title.py
 src/kiro_crew/dashboard/chat_utils.py
@@ -638,7 +634,6 @@ test/test_dashboard.py
 test/test_dashboard_approval.py
 test/test_dashboard_approval_window.py
 test/test_dashboard_branding.py
-test/test_dashboard_chat_handlers_coverage.py
 test/test_dashboard_chat_rewind.py
 test/test_dashboard_config_gitlab_hosts.py
 test/test_dashboard_cron_approval.py

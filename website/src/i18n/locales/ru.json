@@ -7843,7 +7843,8 @@
     "sessions": "Сессии",
     "settings": "Настройки",
     "task_runner": "Task Runner",
-    "webhooks": "Вебхуки"
+    "webhooks": "Вебхуки",
+    "crew_members": "Участники команды"
   },
   "pages": {
     "agentsPage": {
@@ -13436,6 +13437,31 @@
     "worldsPopout": {
       "hide_controls": "Скрыть управление",
       "show_controls": "Показать управление"
+    },
+    "membersPage": {
+      "agent_template": "Шаблон агента",
+      "configuration": "Конфигурация",
+      "details": "Подробности",
+      "edit_in_crew_manager": "Изменить в менеджере команд",
+      "empty_roster": "Участников пока нет. Создайте команду в менеджере команд, и она появится здесь.",
+      "inherited": "Наследуется",
+      "member_count_few": "{{count}} участника",
+      "member_count_many": "{{count}} участников",
+      "member_count_one": "{{count}} участник",
+      "member_count_other": "{{count}} участника",
+      "memory_shared_note": "Сейчас у участников общая память: то, что вы скажете одному, известно всем.",
+      "memory_store": "Хранилище памяти",
+      "model": "Модель",
+      "opening_thread": "Открываем переписку…",
+      "pick_a_member": "Выберите участника, чтобы открыть переписку.",
+      "pinned_to": "Закреплено за {{name}}",
+      "roster_load_failed": "Не удалось загрузить список участников.",
+      "slug_collision": "Идентификатор этого участника совпадает с {{name}}, за которым уже закреплена переписка. Переименуйте одну из команд, чтобы у каждой была своя переписка.",
+      "status_idle": "Свободен",
+      "status_working": "Работает",
+      "thread_open_failed": "Не удалось открыть переписку этого участника.",
+      "title": "Участники команды",
+      "workspace": "Рабочее пространство"
     }
   },
   "privacyDisclosure": {

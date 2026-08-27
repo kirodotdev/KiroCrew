@@ -7513,7 +7513,8 @@
     "sessions": "会话",
     "settings": "设置",
     "task_runner": "Task Runner",
-    "webhooks": "Webhook"
+    "webhooks": "Webhook",
+    "crew_members": "团队成员"
   },
   "pages": {
     "agentsPage": {
@@ -12910,6 +12911,28 @@
     "worldsPopout": {
       "hide_controls": "隐藏控制项",
       "show_controls": "展开控制项"
+    },
+    "membersPage": {
+      "agent_template": "Agent 模板",
+      "configuration": "配置",
+      "details": "详情",
+      "edit_in_crew_manager": "在团队管理页中编辑",
+      "empty_roster": "还没有团队成员。在团队管理页创建一个 crew 后会显示在这里。",
+      "inherited": "继承",
+      "member_count_other": "{{count}} 位成员",
+      "memory_shared_note": "成员目前共享同一份记忆：告诉一位成员的内容，其他成员也知道。",
+      "memory_store": "记忆存储",
+      "model": "模型",
+      "opening_thread": "正在打开对话…",
+      "pick_a_member": "选择一位成员开始对话。",
+      "pinned_to": "固定对话对象：{{name}}",
+      "roster_load_failed": "无法加载成员名单。",
+      "slug_collision": "该成员与 {{name}} 的标识相同，对话已归属后者。请重命名其中一个 crew 以获得各自独立的对话。",
+      "status_idle": "空闲",
+      "status_working": "工作中",
+      "thread_open_failed": "无法打开该成员的对话。",
+      "title": "团队成员",
+      "workspace": "工作区"
     }
   },
   "privacyDisclosure": {

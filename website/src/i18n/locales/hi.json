@@ -7623,7 +7623,8 @@
     "sessions": "सत्र",
     "settings": "सेटिंग्स",
     "task_runner": "Task Runner",
-    "webhooks": "वेबहुक"
+    "webhooks": "वेबहुक",
+    "crew_members": "क्रू सदस्य"
   },
   "pages": {
     "agentsPage": {
@@ -13086,6 +13087,29 @@
     "worldsPopout": {
       "hide_controls": "नियंत्रण छिपाएँ",
       "show_controls": "नियंत्रण दिखाएँ"
+    },
+    "membersPage": {
+      "agent_template": "एजेंट टेम्पलेट",
+      "configuration": "कॉन्फ़िगरेशन",
+      "details": "विवरण",
+      "edit_in_crew_manager": "क्रू प्रबंधक में संपादित करें",
+      "empty_roster": "अभी कोई क्रू सदस्य नहीं है। क्रू प्रबंधक में एक क्रू बनाएं, वह यहां दिखेगी।",
+      "inherited": "विरासत में मिला",
+      "member_count_one": "{{count}} सदस्य",
+      "member_count_other": "{{count}} सदस्य",
+      "memory_shared_note": "सदस्य वर्तमान में एक ही मेमोरी साझा करते हैं। एक सदस्य को बताई गई बात सभी को पता होती है।",
+      "memory_store": "मेमोरी स्टोर",
+      "model": "मॉडल",
+      "opening_thread": "बातचीत खुल रही है…",
+      "pick_a_member": "बातचीत खोलने के लिए किसी सदस्य को चुनें।",
+      "pinned_to": "{{name}} से पिन किया गया",
+      "roster_load_failed": "सदस्य सूची लोड नहीं हो सकी।",
+      "slug_collision": "इस सदस्य का पहचानकर्ता {{name}} से मेल खाता है, जिसकी बातचीत पहले से इसे रखती है। प्रत्येक को अपनी बातचीत देने के लिए किसी एक क्रू का नाम बदलें।",
+      "status_idle": "निष्क्रिय",
+      "status_working": "कार्यरत",
+      "thread_open_failed": "इस सदस्य की बातचीत नहीं खोली जा सकी।",
+      "title": "क्रू सदस्य",
+      "workspace": "वर्कस्पेस"
     }
   },
   "privacyDisclosure": {

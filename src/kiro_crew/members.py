@@ -28,6 +28,7 @@ from pathlib import Path
 
 from kiro_crew import platform_compat
 from kiro_crew.artifacts import slugify
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import data_home
 from kiro_crew.jsonl_util import rotate_jsonl_at
 
@@ -50,6 +51,29 @@ ACTIVITY_FILE_NAME = "activity.jsonl"
 # also reads this whole file synchronously on every deduped call, so the
 # cap bounds that read as well as the disk.
 _ACTIVITY_LOG_MAX_BYTES = 1024 * 1024
+
+#: Crew-slug -> DM-thread binding inside a member's directory.
+DM_FILE_NAME = "dm.json"
+# Bindings live under the keystone-gated ``trust/`` subtree, NOT inside the
+# member's own directory. The binding IS the thread's identity authority (the
+# resume/send/thread-open guards all defer to it precisely because transcript
+# metadata is operator-editable), so it must not sit on a path the agent's
+# file tools can write: a prompt-injected write that re-points ``member`` at a
+# colliding crew would hand that crew the thread's entire transcript at the
+# next restore. ``trust/`` is already in the sensitive-path floor as a whole
+# directory (like the SEL HMAC key and Spec Builder's decision record), and
+# keystone writers open paths there directly, so the gateway keeps working.
+DM_BINDINGS_DIR_NAME = "member-bindings"
+
+#: Slot ``mode`` tag for member DM threads. The frontend's single
+#: chat-ownership predicate (``isChatPageSurface``) does not admit it, so a
+#: slot born with this mode is excluded from the ordinary Sessions list on
+#: every consumer with no filtering code of its own.
+DM_SLOT_MODE = "member"
+
+#: Slot-key prefix for member DM threads (``member-<slug>``), following the
+#: existing ``<kind>-<id>`` key convention (``chat-<N>-<ts>``, ``cron-<id>``).
+DM_SLOT_KEY_PREFIX = "member-"
 
 # Same shape the artifact store enforces for its slugs: lowercase letters,
 # digits and hyphens, 1-80 chars, no leading or trailing hyphen. Kept here as a
@@ -77,6 +101,25 @@ def members_root() -> Path:
     maintenance (including a destructive leftover sweep) on every call.
     """
     return data_home() / MEMBERS_DIR_NAME
+
+
+def dm_binding_path(slug: str) -> Path:
+    """Absolute path to one member's DM-thread binding, containment-checked.
+
+    Lives under the keystone-gated ``trust/`` subtree (see the note on
+    ``DM_BINDINGS_DIR_NAME``): agent file tools cannot reach it, the gateway
+    opens it directly. One flat ``<slug>.json`` per member — the slug is
+    already validated to a safe charset, so the filename cannot traverse.
+    Does NOT create the directory; :func:`write_dm_binding` does on demand.
+    """
+    validate_slug(slug)
+    root = (data_home() / "trust" / DM_BINDINGS_DIR_NAME).resolve()
+    target = (root / f"{slug}.json").resolve()
+    # Defence in depth behind validate_slug, mirroring member_dir: a symlinked
+    # component must not land the binding outside its trust-rooted directory.
+    if target.parent != root and root not in target.parents:
+        raise MemberSlugError(f"member slug {slug!r} escapes {root}")
+    return target
 
 
 def validate_slug(slug: str) -> str:
@@ -121,6 +164,128 @@ def member_dir(slug: str) -> Path:
     if target != root and root not in target.parents:
         raise MemberSlugError(f"member slug {slug!r} escapes {root}")
     return target
+
+
+def member_slot_key(slug: str) -> str:
+    """Derived, stable chat-slot key for a member's pinned DM thread.
+
+    One slot per member, reused forever. Purely a derivation — nothing is read
+    or written. The dashboard's slot layer normalizes keys to a filename-safe
+    charset, but a validated slug is already inside that charset, so the
+    derived key survives ``_normalize_slot_key`` unchanged; callers must still
+    use the slot layer's RETURNED key as the source of truth.
+    """
+    return DM_SLOT_KEY_PREFIX + validate_slug(slug)
+
+
+def read_dm_binding(slug: str) -> dict | None:
+    """Return a member's DM-thread binding, or ``None`` when absent/unusable.
+
+    Total by contract, like :func:`read_activity`: a bad slug, a missing file,
+    an unreadable file, or a malformed payload all read as "not bound" — the
+    binding is idempotently re-creatable, so degrading to re-creation is
+    always safe and the caller needs no try/except.
+
+    Blocking file IO: call via ``asyncio.to_thread`` from async code.
+    """
+    try:
+        path = dm_binding_path(slug)
+    except (MemberSlugError, OSError, RuntimeError):
+        # member_dir resolves (and may mkdir) real filesystem paths, so an
+        # unreadable directory or a symlink loop surfaces here — the totality
+        # contract above says every such state reads as "not bound", and the
+        # restore paths rely on that to survive any on-disk state at boot.
+        return None
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        # Invalid UTF-8 is the same totality case as an unreadable file: the
+        # binding reads as absent, never as a 500 out of every member API.
+        return None
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    # A binding is only usable if it names the thread's slot and the exact
+    # member it belongs to. Slugification is lossy (two crew names can share
+    # one slug and therefore one dm.json), so the member name inside the
+    # payload — not the directory — is what attributes the thread.
+    if (
+        not isinstance(data, dict)
+        or not isinstance(data.get("slot_key"), str)
+        or not data["slot_key"]
+        or not isinstance(data.get("member"), str)
+        or not data["member"]
+    ):
+        return None
+    # The slot key is a pure derivation of the slug; any other value is a
+    # malformed or tampered binding. Accepting it would let dm.json point the
+    # roster (and the page, which trusts `bound` rows enough to skip the
+    # create POST) at an arbitrary unrelated session. Treat non-canonical as
+    # absent — the thread endpoint then repairs it to the derived key.
+    if data["slot_key"] != member_slot_key(slug):
+        return None
+    # And the member must actually BELONG to this slug: a tampered dm.json in
+    # slug A's directory naming crew B (a real, registered crew whose slug
+    # differs) would otherwise pin A's thread — and A's restored transcript —
+    # to B's identity. Colliding names are fine: every name that slugifies to
+    # this slug passes; anything else reads as absent.
+    if slug_for_name(data["member"]) != slug:
+        return None
+    return data
+
+
+def write_dm_binding(slug: str, *, member: str, slot_key: str) -> dict:
+    """Persist a member's DM-thread binding atomically; return the record.
+
+    ``slot_key`` must be the slug's own derivation — the same canonicality
+    invariant :func:`read_dm_binding` enforces on the way back. Writing any
+    other value would produce a binding that always reads as absent, so the
+    mismatch is a caller bug worth failing loudly on.
+
+    Raises :class:`MemberSlugError` on a bad slug and lets ``OSError``
+    propagate: unlike the advisory activity log, the caller (the thread
+    get-or-create endpoint) must know the binding did not land so it can
+    report failure instead of advertising a thread that will not be found
+    again.
+
+    No fsync, deliberately: the binding is re-derivable — the slot key is a
+    pure function of the slug and the endpoint that writes it is idempotent —
+    so losing it to a crash costs one re-create, while a durability barrier
+    would stall the event-loop thread pool for every thread open. The write
+    itself is atomic (unique temp file + rename), so a torn file is never
+    observable. Not a secret (a slot key and a crew name), so no owner-only
+    permission tightening.
+    """
+    path = dm_binding_path(slug)
+    if slot_key != member_slot_key(slug):
+        raise ValueError(
+            f"non-canonical dm binding slot_key {slot_key!r} for slug {slug!r} "
+            f"(expected {member_slot_key(slug)!r}); such a binding always reads back as absent"
+        )
+    binding = {
+        "member": member,
+        "slug": slug,
+        "slot_key": slot_key,
+        "created_ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # The trust subtree is owner-only everywhere else (sel.py creates it 0o700);
+    # a parents=True mkdir would otherwise leave a default-mode directory chain.
+    # Best-effort: the sensitive-path floor is the real fence, the mode is
+    # defence in depth, and a chmod failure must not cost the thread its binding.
+    for _dir in (path.parent, path.parent.parent):
+        try:
+            platform_compat.restrict_dir_to_owner(_dir)
+        except OSError:
+            logger.debug("could not tighten mode on %s", _dir, exc_info=True)
+    # fsync: the binding is the thread's durability anchor — the orphan-history
+    # guard REFUSES to rebind a slug whose binding is gone while its transcript
+    # survives, so a binding lost to power failure after a transcript flush
+    # would strand that transcript behind member_binding_missing. The binding
+    # must be at least as durable as the transcript it attributes.
+    atomic_write(path, json.dumps(binding, ensure_ascii=False), fsync=True)
+    return binding
 
 
 def record_activity(

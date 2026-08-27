@@ -2596,7 +2596,8 @@
     "sessions": "Sessions",
     "settings": "Settings",
     "task_runner": "Task Runner",
-    "webhooks": "Webhooks"
+    "webhooks": "Webhooks",
+    "crew_members": "Crew Members"
   },
   "pages": {
     "agentsPage": {

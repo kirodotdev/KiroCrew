@@ -7733,7 +7733,8 @@
     "sessions": "Sessões",
     "settings": "Configurações",
     "task_runner": "Task Runner",
-    "webhooks": "Webhooks"
+    "webhooks": "Webhooks",
+    "crew_members": "Membros da equipe"
   },
   "pages": {
     "agentsPage": {
@@ -13260,6 +13261,30 @@
     "worldsPopout": {
       "hide_controls": "Ocultar controles",
       "show_controls": "Mostrar controles"
+    },
+    "membersPage": {
+      "agent_template": "Modelo de agente",
+      "configuration": "Configuração",
+      "details": "Detalhes",
+      "edit_in_crew_manager": "Editar no gerenciador de equipes",
+      "empty_roster": "Ainda não há membros. Crie uma equipe no gerenciador para vê-la aqui.",
+      "inherited": "Herdado",
+      "member_count_one": "{{count}} membro",
+      "member_count_many": "{{count}} membros",
+      "member_count_other": "{{count}} membros",
+      "memory_shared_note": "Os membros compartilham atualmente uma única memória. O que você diz a um deles todos saberão.",
+      "memory_store": "Armazenamento de memória",
+      "model": "Modelo",
+      "opening_thread": "Abrindo a conversa…",
+      "pick_a_member": "Escolha um membro para abrir a conversa.",
+      "pinned_to": "Fixado em {{name}}",
+      "roster_load_failed": "Não foi possível carregar a lista de membros.",
+      "slug_collision": "Este membro compartilha seu identificador com {{name}}, cuja conversa já o possui. Renomeie uma das equipes para que cada uma tenha sua própria conversa.",
+      "status_idle": "Ocioso",
+      "status_working": "Trabalhando",
+      "thread_open_failed": "Não foi possível abrir a conversa deste membro.",
+      "title": "Membros da equipe",
+      "workspace": "Espaço de trabalho"
     }
   },
   "privacyDisclosure": {
