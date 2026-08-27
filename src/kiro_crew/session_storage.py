@@ -935,7 +935,11 @@ def reclaim_block_reason() -> str:
         if _norm(kiro_home()) == home / KIRO_BASE_DIR_NAME:
             _protected, refusals = cotenant_sids()
             if refusals:
-                listed = "; ".join(f"{name} — {why}" for name, why in refusals[:3])
+                # !r, not plain interpolation: the directory name is
+                # agent-influenced and passes no identifier gate, so a newline
+                # or ANSI payload in it would forge a second record the moment
+                # a caller logs this text (the #6281/#6371 forgery class).
+                listed = "; ".join(f"{name!r} — {why}" for name, why in refusals[:3])
                 return (
                     f"{len(refusals)} other instance(s) sharing this kiro-cli session "
                     f"store make reclaiming unsafe ({listed}). Evict them with "
@@ -1578,9 +1582,13 @@ def _move_to_trash_locked(
     cotenant_now, refusals = cotenant_sids()
     if refusals:
         name, why = refusals[0]
+        # name!r, not plain interpolation: the directory name is agent-influenced
+        # and passes no identifier gate, so a newline or ANSI payload in it would
+        # forge a second record the moment a caller logs str(exc) (the
+        # #6281/#6371 forgery class).
         raise SessionStorageError(
             f"{len(refusals)} instance(s) sharing this session store make reclaiming "
-            f"unsafe ({name} — {why}); nothing was moved"
+            f"unsafe ({name!r} — {why}); nothing was moved"
         )
     live_sids = live_sids | cotenant_now
 

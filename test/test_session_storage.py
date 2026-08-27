@@ -2122,6 +2122,64 @@ class TestCotenantNamesAreLogSafe:
             assert all("\n" not in message for message in rendered)
 
 
+class TestCotenantRefusalTextIsForgeSafe:
+    """The raw co-tenant name also exits ``cotenant_sids`` inside the refusals
+    tuples and is interpolated into two downstream refusal-text surfaces. Neither
+    is a log line today, but one caller-side ``logger.warning(str(exc))`` away
+    from re-opening the #6281/#6371 forgery class — so both must carry the name
+    repr'd, exactly like the log sites ``TestCotenantNamesAreLogSafe`` pins
+    (refs #6430).
+    """
+
+    _FORGED = "wt-evil\nWARNING forged: reclaim authorized by operator\x1b[31m"
+    _REFUSALS = ((_FORGED, "its session map could not be parsed"),)
+
+    def test_reclaim_block_reason_escapes_the_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The listed refusals in the block reason render one-line and escaped.
+
+        Injected at the ``cotenant_sids`` seam rather than through the pod root:
+        Windows refuses a newline in a real directory name, and what is under
+        test is the CONSUMER's rendering, not discovery.
+        """
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
+        monkeypatch.delenv("KIROCREW_HOME", raising=False)
+        monkeypatch.delenv("KIRO_HOME", raising=False)
+        monkeypatch.setattr(paths, "_resolved_home", paths._default_home())
+        monkeypatch.setattr(paths, "_config_dir_memo", None)
+        monkeypatch.setattr(session_storage, "cotenant_sids", lambda: (frozenset(), self._REFUSALS))
+
+        reason = session_storage.reclaim_block_reason()
+
+        assert "make reclaiming unsafe" in reason
+        assert repr(self._FORGED) in reason
+        # One line, no raw control bytes: the injected second record and the
+        # ANSI payload both survive only inside the repr's escapes.
+        assert "\n" not in reason
+        assert "\x1b" not in reason
+
+    def test_move_to_trash_refusal_error_escapes_the_name(
+        self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The ``SessionStorageError`` raised at the move renders one-line and
+        escaped, so a caller logging ``str(exc)`` cannot be used to forge a
+        second record.
+        """
+        _, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=64, age_days=40)
+        monkeypatch.setattr(session_storage, "cotenant_sids", lambda: (frozenset(), self._REFUSALS))
+
+        with pytest.raises(SessionStorageError, match="make reclaiming unsafe") as excinfo:
+            session_storage.move_to_trash(["aaaa1111"], reason="manual", index=_index(), now=_NOW)
+
+        text = str(excinfo.value)
+        assert repr(self._FORGED) in text
+        assert "\n" not in text
+        assert "\x1b" not in text
+        assert (kiro_home / "sessions" / "cli" / "aaaa1111.jsonl").is_file()
+
+
 class TestBuckets:
     def test_split_on_the_documented_edges(self, stores: tuple[Path, Path]) -> None:
         _, kiro_home = stores
