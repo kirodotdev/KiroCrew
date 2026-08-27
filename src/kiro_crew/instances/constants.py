@@ -140,6 +140,36 @@ DEFAULT_TOKEN_REFRESH_FRACTION: float = 0.8
 # an unconfirmed token. Kept tight so a tab activation never blocks perceptibly.
 DEFAULT_TOKEN_PROBE_TIMEOUT_SECS: float = 2.0
 
+# Connect timeout (secs) for one generic chat-proxy request over an already-open
+# tunnel (see SshTunnelManager.proxy_request — no SSH spawn). Connect-phase only:
+# the forward terminates on the local loopback, so a healthy tunnel accepts in
+# milliseconds and anything slower means the forward is dead, not busy.
+DEFAULT_PROXY_CONNECT_TIMEOUT_SECS: float = 10.0
+
+# Read-IDLE timeout (secs) for a chat-proxy response. Deliberately NOT a total
+# timeout: a proxied chat turn streams SSE for minutes, so any total budget
+# either kills live turns or is meaninglessly huge. Idle is the right axis —
+# the peer's SSE drain loop emits a keepalive comment every ~30s even when the
+# model is silent, so 120s of true silence means the stream is dead, and the
+# caller gets a clean error instead of a connection that never closes.
+DEFAULT_PROXY_READ_IDLE_TIMEOUT_SECS: float = 120.0
+
+# Cap (bytes) on an inbound request body forwarded through the chat proxy. A
+# chat message plus attachments metadata is a few KB; anything MB-sized headed
+# for a peer is either abuse or a bug, and the hub must not buffer unbounded
+# input on behalf of either side. Mirrors the reply-side discipline of
+# SEARCH_REPLY_MAX_BYTES: bound before buffering.
+PROXY_REQUEST_BODY_MAX_BYTES: int = 2 * 1024 * 1024
+
+# How many times the chat proxy will percent-decode a caller-supplied path
+# before refusing it. The path is decoded to a FIXED POINT so the string the
+# policy inspects is the string the peer will resolve — one decode pass is not
+# enough, because the router already consumed one and `%252e%252e` therefore
+# arrives as `%2e%2e` and reads as clean. Real paths need zero or one pass;
+# a chain deeper than this is only ever an attempt to outrun the decoder, so
+# the bound is a refusal (not a truncation) and keeps the loop finite.
+PROXY_PATH_MAX_DECODE_PASSES: int = 4
+
 # Timeout (secs) for one session-transfer request over an already-open tunnel
 # (POST the bundle to the peer's import endpoint — no SSH spawn). Far larger than
 # the token probe above because this carries a whole conversation: a bundle is

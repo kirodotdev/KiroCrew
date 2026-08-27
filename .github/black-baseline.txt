@@ -245,7 +245,6 @@ src/kiro_crew/dashboard/handlers/webapp_preview.py
 src/kiro_crew/dashboard/handlers/weixin_qr.py
 src/kiro_crew/dashboard/handlers_channel.py
 src/kiro_crew/dashboard/handlers_cloud.py
-src/kiro_crew/dashboard/handlers_instances.py
 src/kiro_crew/dashboard/loop_watchdog.py
 src/kiro_crew/dashboard/port_reclaim.py
 src/kiro_crew/dashboard/routes/skills.py
@@ -297,7 +296,6 @@ src/kiro_crew/history.py
 src/kiro_crew/hooks.py
 src/kiro_crew/image_artifacts.py
 src/kiro_crew/imaging.py
-src/kiro_crew/instances/ssh_tunnel_manager.py
 src/kiro_crew/kiro_prerequisite.py
 src/kiro_crew/knowledge/agent_fetch.py
 src/kiro_crew/knowledge/agent_source.py
@@ -807,7 +805,6 @@ test/test_installer_distro.py
 test/test_installer_node_floor.py
 test/test_installer_shim_and_cleanup.py
 test/test_instance_credential_pairing.py
-test/test_instances.py
 test/test_instances_search_federation.py
 test/test_interactions_shortcut.py
 test/test_ios_simulator_preview_skill.py

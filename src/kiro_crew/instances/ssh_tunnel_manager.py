@@ -74,6 +74,12 @@ from kiro_crew.instances.constants import DEFAULT_MINT_TIMEOUT_SECS as _DEFAULT_
 from kiro_crew.instances.constants import DEFAULT_PROBE_FAILURE_THRESHOLD as _PROBE_FAILS
 from kiro_crew.instances.constants import DEFAULT_PROBE_INTERVAL_SECS as _PROBE_INTERVAL
 from kiro_crew.instances.constants import (
+    DEFAULT_PROXY_CONNECT_TIMEOUT_SECS as _PROXY_CONNECT_TIMEOUT,
+)
+from kiro_crew.instances.constants import (
+    DEFAULT_PROXY_READ_IDLE_TIMEOUT_SECS as _PROXY_READ_IDLE_TIMEOUT,
+)
+from kiro_crew.instances.constants import (
     DEFAULT_RECOVER_BACKOFF_MAX_SECS as _RECOVER_BACKOFF_MAX_SECS,
 )
 from kiro_crew.instances.constants import DEFAULT_SEARCH_PROXY_TIMEOUT_SECS as _SEARCH_PROXY_TIMEOUT
@@ -181,9 +187,7 @@ def _reclaim_identity_key() -> bytes | None:
     return hmac.new(raw, _RECLAIM_SIG_DOMAIN, hashlib.sha256).digest()
 
 
-def _forwarder_identity_sig(
-    key: bytes, instance_id: str, pid: int, start: str, port: int
-) -> str:
+def _forwarder_identity_sig(key: bytes, instance_id: str, pid: int, start: str, port: int) -> str:
     """MAC over one instance's recorded forwarder identity.
 
     Binds the identity to the INSTANCE as well as to the process attributes,
@@ -239,6 +243,21 @@ def _sanitize_banner(text: str) -> str:
     cleaned = redact_credentials(cleaned)[0]
     cleaned = redact_exfiltration_urls(cleaned)[0]
     return cleaned[:200]
+
+
+class ProxyRequestError(Exception):
+    """Typed failure from :meth:`SshTunnelManager.proxy_request`.
+
+    Carries a machine-readable ``code`` (mirrors the ``code`` convention of the
+    federated-search errors) and a suggested ``http_status`` so the route
+    handler can translate a failure without string-matching the message.
+    """
+
+    def __init__(self, code: str, message: str, *, http_status: int = 502) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.http_status = http_status
 
 
 class TunnelState(enum.Enum):
@@ -1492,9 +1511,7 @@ class SshTunnelManager:
             forwarder_start = ""
             forwarder_sig = ""
             if forwarder_pid > 0:
-                started = await asyncio.to_thread(
-                    platform_compat.process_start_time, forwarder_pid
-                )
+                started = await asyncio.to_thread(platform_compat.process_start_time, forwarder_pid)
                 forwarder_start = started or ""
             if forwarder_pid > 0 and forwarder_start:
                 key = await asyncio.to_thread(_reclaim_identity_key)
@@ -1643,9 +1660,7 @@ class SshTunnelManager:
         # it raises is its own business and already logged by its done-callback.
         await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def reconfigure(
-        self, instance_id: str, apply: Callable[[], _T]
-    ) -> _T:
+    async def reconfigure(self, instance_id: str, apply: Callable[[], _T]) -> _T:
         """Tear the tunnel down and rewrite its coordinates as ONE operation.
 
         Editing the host/port/transport of a live instance is two steps that must
@@ -1736,9 +1751,7 @@ class SshTunnelManager:
             # Its coordinates are being rewritten; whatever this recovery read
             # would already be stale. The reconfiguration tears the tunnel down
             # itself, and the user reconnects against the new record.
-            logger.info(
-                "Skipping self-heal for %s: reconfiguration in progress", instance_id
-            )
+            logger.info("Skipping self-heal for %s: reconfiguration in progress", instance_id)
             return
         delay = _recover_backoff_secs(
             self._recover_attempts.get(instance_id, 0) + 1, self._recover_backoff_max
@@ -1823,9 +1836,7 @@ class SshTunnelManager:
             forwarder_start = ""
             forwarder_sig = ""
             if forwarder_pid > 0:
-                started = await asyncio.to_thread(
-                    platform_compat.process_start_time, forwarder_pid
-                )
+                started = await asyncio.to_thread(platform_compat.process_start_time, forwarder_pid)
                 forwarder_start = started or ""
             if forwarder_pid > 0 and forwarder_start:
                 key = await asyncio.to_thread(_reclaim_identity_key)
@@ -2078,6 +2089,115 @@ class SshTunnelManager:
             )
             return False
 
+    @contextlib.asynccontextmanager
+    async def proxy_request(
+        self,
+        instance_id: str,
+        method: str,
+        path: str,
+        *,
+        params: "dict[str, str] | None" = None,
+        data: bytes | None = None,
+        content_type: str = "",
+        timeout: "aiohttp.ClientTimeout | None" = None,
+    ):
+        """Open *path* on a connected peer's gateway; yield the live response.
+
+        The generic carrier for remote-crew chat (design: remote-crew-chat).
+        Runs entirely over the already-open forward — **no SSH spawn** — and
+        follows :meth:`search_sessions_remote`'s credential rules: the token
+        never leaves this object, it travels as the port-scoped cookie so it
+        cannot land in the peer's access log, and a 401/403 gets exactly one
+        transparent re-mint retry.
+
+        Yields the **un-buffered** ``aiohttp.ClientResponse`` so the caller can
+        pump a streaming body (a proxied chat turn streams SSE for minutes);
+        the response and its session are closed when the context exits. The
+        default timeout is connect+read-idle, not total, for the same reason.
+
+        Failures raise :class:`ProxyRequestError` with a machine-readable
+        ``code`` and a suggested ``http_status``, so the route handler can
+        translate without string-matching.
+        """
+        st = self.status(instance_id)
+        if st is None or st.state is not TunnelState.CONNECTED:
+            raise ProxyRequestError(
+                "proxy_peer_not_connected", "instance is not connected", http_status=503
+            )
+        local_port = st.local_port
+        if local_port <= 0:
+            raise ProxyRequestError(
+                "proxy_no_credential",
+                "no live credential for this instance; reconnect it",
+                http_status=503,
+            )
+        url = f"http://{_LOOPBACK}:{int(local_port)}/{path.lstrip('/')}"
+        # Port-scoped cookie name, for the same reason as send_session_bundle:
+        # the peer keys its cookie on the port the CLIENT connected to.
+        cookie_name = f"mc_token_{int(local_port)}"
+        tmo = timeout or aiohttp.ClientTimeout(
+            total=None,
+            sock_connect=_PROXY_CONNECT_TIMEOUT,
+            sock_read=_PROXY_READ_IDLE_TIMEOUT,
+        )
+        reminted = False
+        while True:
+            token = self._tokens.get(instance_id, "")
+            if not token:
+                raise ProxyRequestError(
+                    "proxy_no_credential",
+                    "no live credential for this instance; reconnect it",
+                    http_status=503,
+                )
+            headers = {"Cookie": f"{cookie_name}={token}"}
+            if content_type:
+                headers["Content-Type"] = content_type
+            session = aiohttp.ClientSession(timeout=tmo)
+            try:
+                resp = await session.request(
+                    method,
+                    url,
+                    params=params,
+                    data=data,
+                    headers=headers,
+                    # The tunnel endpoint is the ONLY legitimate target. A
+                    # compromised peer answering 30x would otherwise make
+                    # aiohttp fetch an attacker-chosen URL FROM THE HUB (SSRF
+                    # into its loopback control planes).
+                    allow_redirects=False,
+                )
+            except Exception as e:  # timeout, connection refused, etc.
+                await session.close()
+                logger.info(
+                    "proxy_request to %s failed before a response (%s)",
+                    instance_id,
+                    type(e).__name__,  # never the token or the body
+                )
+                raise ProxyRequestError(
+                    "proxy_peer_unreachable",
+                    f"peer did not answer ({type(e).__name__})",
+                    http_status=502,
+                ) from None
+            if resp.status in (401, 403):
+                resp.release()
+                await session.close()
+                # One re-mint, then it is a credential failure — never streamed
+                # to the caller as a bare peer 401, which would read as "the
+                # chat endpoint said no" instead of "the tunnel credential is
+                # not working" and lose the coded error the UI keys off.
+                if not reminted and await self.refresh_token(instance_id):
+                    reminted = True
+                    continue  # retry once with the fresh credential
+                raise ProxyRequestError(
+                    "proxy_unauthorized", "peer rejected the credential", http_status=502
+                )
+            try:
+                yield resp
+            finally:
+                resp.release()
+                await session.close()
+            return
+
     async def send_session_bundle(self, instance_id: str, bundle: dict) -> tuple[bool, dict]:
         """POST a session-transfer *bundle* to a connected instance's importer.
 
@@ -2197,9 +2317,7 @@ class SshTunnelManager:
                             and bundle.get("bundle_version") == 2
                         ):
                             downgraded = True
-                            bundle = {
-                                k: v for k, v in bundle.items() if k != "layer_b"
-                            }
+                            bundle = {k: v for k, v in bundle.items() if k != "layer_b"}
                             bundle["bundle_version"] = 1
                             logger.info(
                                 "Session transfer to %s: peer refused v2; "

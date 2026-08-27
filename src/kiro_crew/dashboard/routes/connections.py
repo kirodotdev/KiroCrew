@@ -117,6 +117,12 @@ def register(app: web.Application) -> None:
     app.router.add_post(
         "/api/instances/{id}/send-session", handlers_instances.api_instances_send_session
     )
+    # Generic chat proxy — the carrier for the remote-crew chat view. Forwards
+    # a bounded slice of the peer's /api surface over the already-open tunnel;
+    # method/path policy lives in the handler (see api_instances_proxy).
+    app.router.add_route(
+        "*", "/api/instances/{id}/proxy/{path:.*}", handlers_instances.api_instances_proxy
+    )
 
     # Cloud provisioning (owner-only, user-initiated) — provision a Kiro Crew
     # instance in the user's own AWS account as a durable launch job.

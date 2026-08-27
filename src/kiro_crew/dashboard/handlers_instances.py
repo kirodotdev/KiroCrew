@@ -22,7 +22,9 @@ import dataclasses
 import functools
 import logging
 import math
+import re
 from typing import TYPE_CHECKING
+from urllib.parse import unquote
 
 from aiohttp import web
 
@@ -34,6 +36,10 @@ from kiro_crew.dashboard.session_transfer import (
     local_instance_label,
 )
 from kiro_crew.history import SEARCH_MIN_CHARS
+from kiro_crew.instances.constants import (
+    PROXY_PATH_MAX_DECODE_PASSES,
+    PROXY_REQUEST_BODY_MAX_BYTES,
+)
 from kiro_crew.instances.registry import (
     DEFAULT_REMOTE_PORT,
     DuplicateInstanceError,
@@ -43,7 +49,7 @@ from kiro_crew.instances.registry import (
     InvalidInstanceError,
     validate_ttl,
 )
-from kiro_crew.instances.ssh_tunnel_manager import TunnelState
+from kiro_crew.instances.ssh_tunnel_manager import ProxyRequestError, TunnelState
 from kiro_crew.sel import sel
 from kiro_crew.validation import sanitize_string
 
@@ -340,9 +346,7 @@ async def api_instances_update(request: web.Request) -> web.Response:
     current = await asyncio.to_thread(reg.get, instance_id)
     if current is None:
         _audit("update", "denied", request_id=instance_id, error="not found")
-        return web.json_response(
-            {"error": "not found", "code": "instance_not_found"}, status=404
-        )
+        return web.json_response({"error": "not found", "code": "instance_not_found"}, status=404)
     transport_changed = any(
         k in transport_keys and v != getattr(current, k) for k, v in changes.items()
     )
@@ -392,9 +396,7 @@ async def api_instances_update(request: web.Request) -> web.Response:
             )
     except InstanceNotFoundError as e:
         _audit("update", "denied", request_id=instance_id, error=str(e))
-        return web.json_response(
-            {"error": str(e), "code": "instance_not_found"}, status=404
-        )
+        return web.json_response({"error": str(e), "code": "instance_not_found"}, status=404)
     except (InvalidInstanceError, InstancesError) as e:
         _audit("update", "denied", request_id=instance_id, error=str(e))
         return web.json_response({"error": str(e)}, status=400)
@@ -907,3 +909,238 @@ async def api_instances_send_session(request: web.Request) -> web.Response:
             "resume_mode": payload.get("resume_mode", ""),
         }
     )
+
+
+# ── Generic chat proxy ────────────────────────────────────────────────────────
+
+# Response headers forwarded from the peer to the browser — an explicit
+# ALLOWLIST, not a hop-by-hop skip-list. Everything else (Set-Cookie, CSP,
+# CORS, hop-by-hop per RFC 9110 §7.6.1) is dropped: the peer's cookie belongs
+# to the peer's origin, and a compromised peer must not be able to plant
+# headers (or a credential) on the hub origin.
+_PROXY_RESP_ALLOW_HEADERS = frozenset(
+    {
+        "content-type",
+        "cache-control",
+        "x-accel-buffering",  # SSE: the peer disables proxy buffering; keep it
+    }
+)
+
+# Response content types forwarded from the peer. The chat surface speaks JSON
+# and SSE only; anything else — above all text/html — is refused so a
+# compromised peer can never serve active content that executes on the
+# authenticated hub origin.
+_PROXY_RESP_ALLOW_CONTENT_TYPES = frozenset(
+    {
+        "application/json",
+        "text/event-stream",
+    }
+)
+
+_PROXY_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE"})
+
+
+# The separator in a URL path, which is `/` on every platform (RFC 3986) —
+# NOT the filesystem separator. Named rather than inlined because the two are
+# genuinely different things: `pathlib`/`os.path.join` would be the WRONG tool
+# here (on Windows they would emit `\`, which is not a URL separator and would
+# corrupt every proxied request), and the repo's portability scan rightly asks
+# any bare `"/"` split to say which of the two it means.
+_URL_PATH_SEP = "/"
+
+# One path segment the proxy will forward: unreserved characters plus the
+# sub-delims a real endpoint or id uses. Deliberately an ALLOWLIST — it is what
+# makes the rebuilt path safe to send verbatim, because no character in it can
+# introduce a separator, a query, or another encoding layer. `.` is admitted
+# (file-ish ids, version suffixes); a segment that is ONLY dots is rejected
+# separately, since that is traversal rather than a name.
+_PROXY_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._~:@!$&'()*+,;=-]+$")
+
+
+def _proxy_canonical_path(raw: str) -> tuple[str, str]:
+    """Canonicalize *raw* into a forwardable path, or return a denial reason.
+
+    Returns ``(path, "")`` on success and ``("", reason)`` on refusal.
+
+    Built as a CONSTRUCTION, not a series of pattern checks: the earlier
+    denylist shape (reject ``..``, reject an ``api/instances`` prefix) inspected
+    a half-decoded string while the peer resolved the fully-decoded one, so any
+    extra encoding layer — ``api/%252e%252e/api/instances/...``, which the
+    router hands over as ``api/%2e%2e/...`` — passed every check and then
+    normalized back into the control plane the checks existed to protect.
+
+    So: decode to a fixed point FIRST, admit only plainly-named segments, and
+    rebuild the outbound path from exactly the segments that were vetted. The
+    proxy exists for the remote-crew chat surface, not as a general tunnel-HTTP
+    escape hatch, so the vetted shape is narrow on purpose — only the peer's
+    ``/api/`` surface is reachable, and its own ``/api/instances`` control plane
+    is off-limits (proxying into it would let one hub chain through a peer into
+    a third machine's SSH control plane, and recurse through the peer's own
+    proxy route).
+    """
+    path = raw
+    for _ in range(PROXY_PATH_MAX_DECODE_PASSES):
+        decoded = unquote(path)
+        if decoded == path:
+            break
+        path = decoded
+    else:
+        return "", "path encoding is too deeply nested"
+    # After the fixed point a `%` can only be a malformed escape (a well-formed
+    # one would have decoded); refusing it keeps "decoded" honest.
+    if "%" in path:
+        return "", "malformed percent-encoding in path"
+    segments = path.strip(_URL_PATH_SEP).split(_URL_PATH_SEP)
+    for seg in segments:
+        if not seg:
+            return "", "empty path segment"
+        if not seg.strip("."):
+            return "", "path traversal"
+        if not _PROXY_SEGMENT_RE.match(seg):
+            return "", "illegal character in path segment"
+    if segments[0] != "api":
+        return "", "only the peer /api/ surface is proxied"
+    if len(segments) > 1 and segments[1] == "instances":
+        return "", "peer instances control plane is not proxied (no chaining)"
+    return _URL_PATH_SEP.join(segments), ""
+
+
+async def api_instances_proxy(request: web.Request) -> web.StreamResponse:
+    """ANY /api/instances/{id}/proxy/{path} — forward to a connected peer.
+
+    The carrier for the remote-crew chat view (design: remote-crew-chat): the
+    browser talks same-origin to the hub, the hub forwards over the already-open
+    tunnel using the manager-held credential, and the reply — including a
+    minutes-long SSE chat stream — is pumped back chunk-by-chunk. The peer's
+    token never reaches the browser, no browser Origin or cookies are forwarded
+    to the peer (the hub presents as a same-origin loopback client), and the
+    peer's Set-Cookie never reaches the hub origin.
+    """
+    denied = _guard(request, "proxy")
+    if denied is not None:
+        return denied
+    # Owner-only, strictly: `_guard` verifies an authenticated dashboard subject,
+    # but a Slack-invited user who minted a `!dashboard` link is such a subject
+    # too (app == "" with a non-owner identity). The proxy executes on a peer
+    # with the OWNER's manager-held credential, so it requires the positively
+    # identified owner — the same bar api_instances_search_sessions sets, for
+    # the same reason.
+    from kiro_crew.dashboard.handlers.source_providers import (
+        is_owner_dashboard_request,
+        stale_owner_session_response,
+    )
+
+    if not is_owner_dashboard_request(request):
+        _audit("proxy", "denied", error="non-owner identity rejected")
+        stale = stale_owner_session_response(request)
+        if stale is not None:
+            return stale
+        return web.json_response(
+            {"error": "remote-crew proxy is owner-only", "code": "owner_only"}, status=403
+        )
+    state: DashboardState = request.app["state"]
+    instance_id = request.match_info["id"]
+    path = request.match_info.get("path", "")
+    if request.method.upper() not in _PROXY_METHODS:
+        _audit("proxy", "denied", request_id=instance_id, error="method not allowed")
+        return web.json_response(
+            {"error": "method not allowed", "code": "proxy_method_not_allowed"}, status=405
+        )
+    # The forwarded path is the CANONICAL one this returns, never the raw
+    # match_info: vetting one string and sending another is the gap that let a
+    # double-encoded traversal through.
+    path, reason = _proxy_canonical_path(path)
+    if reason:
+        _audit("proxy", "denied", request_id=instance_id, error=reason)
+        return web.json_response({"error": reason, "code": "proxy_path_denied"}, status=400)
+    mgr = getattr(state, "instances_manager", None)
+    if mgr is None:
+        _audit("proxy", "failure", request_id=instance_id, error="manager unavailable")
+        return web.json_response(
+            {"error": "instances manager unavailable", "code": "instances_manager_unavailable"},
+            status=503,
+        )
+
+    # Forward the query WITHOUT the hub's own credential: the browser may
+    # authenticate this request with ?token=<hub token>, and forwarding it
+    # verbatim would hand the peer a replayable credential for THIS gateway.
+    # The peer-side credential is the manager-held cookie; nothing from the
+    # browser's auth material may cross the tunnel.
+    params = {k: v for k, v in request.query.items() if k != "token"}
+
+    # Bound the inbound body BEFORE buffering (mirrors the federated-search
+    # reply cap): the hub must not hold unbounded bytes for either side.
+    body = b""
+    if request.body_exists:
+        chunks: list[bytes] = []
+        received = 0
+        async for chunk in request.content.iter_chunked(65536):
+            received += len(chunk)
+            if received > PROXY_REQUEST_BODY_MAX_BYTES:
+                _audit("proxy", "denied", request_id=instance_id, error="body too large")
+                return web.json_response(
+                    {"error": "request body too large", "code": "proxy_body_too_large"},
+                    status=413,
+                )
+            chunks.append(chunk)
+        body = b"".join(chunks)
+
+    try:
+        async with mgr.proxy_request(
+            instance_id,
+            request.method.upper(),
+            path,
+            params=params,
+            data=body or None,
+            content_type=request.headers.get("Content-Type", ""),
+        ) as upstream:
+            # Content-type gate: JSON and SSE only. A compromised peer must
+            # not serve HTML (or anything active) that would execute on the
+            # authenticated hub origin.
+            upstream_ct = (upstream.headers.get("Content-Type") or "").split(";")[0].strip()
+            if upstream_ct.lower() not in _PROXY_RESP_ALLOW_CONTENT_TYPES:
+                _audit(
+                    "proxy",
+                    "denied",
+                    request_id=instance_id,
+                    error=f"peer content type refused: {upstream_ct or '(none)'}",
+                )
+                return web.json_response(
+                    {
+                        "error": "peer returned a content type the proxy does not forward",
+                        "code": "proxy_content_type_refused",
+                    },
+                    status=502,
+                )
+            resp = web.StreamResponse(status=upstream.status)
+            for key, value in upstream.headers.items():
+                if key.lower() in _PROXY_RESP_ALLOW_HEADERS:
+                    resp.headers[key] = value
+            resp.headers["X-Content-Type-Options"] = "nosniff"
+            await resp.prepare(request)
+            try:
+                async for chunk in upstream.content.iter_any():
+                    await resp.write(chunk)
+            except ConnectionResetError:
+                # Browser went away mid-stream; the peer finishes its turn on
+                # its own (its transcript is authoritative — see design doc).
+                # Deliberately NOT catching asyncio.CancelledError alongside it:
+                # absorbing a cancel would defeat cooperative shutdown.
+                #
+                # RETURN rather than fall through: write_eof() on the transport
+                # that just refused a write raises again, and that second
+                # exception escapes the handler. There is also nothing to audit
+                # as a success — the response never completed.
+                _audit("proxy", "partial", request_id=instance_id, error="client disconnected")
+                return resp
+            await resp.write_eof()
+            _audit("proxy", "success", request_id=instance_id)
+            return resp
+    except ProxyRequestError as e:
+        _audit("proxy", "failure", request_id=instance_id, error=e.code)
+        # Literal statuses on purpose: the error-code contract ratchets
+        # ``status=<expression>`` sites, and the carrier only ever suggests
+        # 503 (not connected / no credential) or 502 (peer-side failure).
+        if e.http_status == 503:
+            return web.json_response({"error": e.message, "code": e.code}, status=503)
+        return web.json_response({"error": e.message, "code": e.code}, status=502)

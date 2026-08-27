@@ -13,6 +13,7 @@ suite needs no asyncio pytest plugin.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -22,6 +23,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -203,9 +205,7 @@ class TestConfig:
         from kiro_crew.config.loader import KiroCrewConfig
 
         cfg_file = tmp_path / "config.json"
-        cfg_file.write_text(
-            json.dumps({"instances": {"connect_timeout_secs": 45.0}})
-        )
+        cfg_file.write_text(json.dumps({"instances": {"connect_timeout_secs": 45.0}}))
         monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: cfg_file)
         cfg = KiroCrewConfig.load()
         assert cfg.instances.connect_timeout_secs == 45.0
@@ -1142,7 +1142,13 @@ class TestSshTunnelArgvCompression:
             return _FakeTunnel(*a, compression=compression, **k)
 
         async def ok_mint(
-            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, timeout_secs=None
+            host,
+            *,
+            remote_bin="",
+            ttl="20h",
+            remote_port=None,
+            embed_parent_port=None,
+            timeout_secs=None,
         ):
             return "SECRET_TOK"
 
@@ -1345,7 +1351,13 @@ class TestSshTunnelManager:
         reg = InstancesRegistry(path=tmp_path / "instances.json")
 
         async def ok_mint(
-            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, timeout_secs=None
+            host,
+            *,
+            remote_bin="",
+            ttl="20h",
+            remote_port=None,
+            embed_parent_port=None,
+            timeout_secs=None,
         ):
             return "SECRET_TOK"
 
@@ -1416,7 +1428,13 @@ class TestSshTunnelManager:
         from kiro_crew.instances.token_mint import TokenMintError
 
         async def bad_mint(
-            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, timeout_secs=None
+            host,
+            *,
+            remote_bin="",
+            ttl="20h",
+            remote_port=None,
+            embed_parent_port=None,
+            timeout_secs=None,
         ):
             raise TokenMintError("nope")
 
@@ -2294,8 +2312,7 @@ class TestHandlers:
         # teardown is a reconfiguration, so it must not claim to be a user
         # disconnect (that flag is what keeps the crew in the switcher).
         assert mgr.disconnected == [("cd-1", True)], (
-            "the stale tunnel was left running, or the teardown claimed to be a "
-            "user disconnect"
+            "the stale tunnel was left running, or the teardown claimed to be a " "user disconnect"
         )
         inst = reg.get("cd-1")
         assert inst is not None and inst.was_connected is True
@@ -2410,9 +2427,7 @@ class TestHandlers:
         assert inst is not None and inst.remote_port == 7999
         assert inst.was_connected is True, "the crew lost its switcher entry"
 
-    def test_update_tears_the_tunnel_down_exactly_once(
-        self, tmp_path, monkeypatch
-    ):
+    def test_update_tears_the_tunnel_down_exactly_once(self, tmp_path, monkeypatch):
         """One teardown, inside the reconfiguration. An extra one after the write
         would hit whatever connected next — i.e. a Connect the user just made on
         the new coordinates."""
@@ -2460,9 +2475,7 @@ class TestHandlers:
         # Only the pre-edit teardown ran; the sweep spared the newer tunnel.
         assert mgr.disconnect_calls == 1
 
-    def test_update_does_not_revive_a_crew_disconnected_mid_edit(
-        self, tmp_path, monkeypatch
-    ):
+    def test_update_does_not_revive_a_crew_disconnected_mid_edit(self, tmp_path, monkeypatch):
         """An explicit Disconnect landing while a transport edit is in flight must
         win. The edit's teardown preserves intent rather than restoring a snapshot
         of it, so the user's disconnect is not overwritten."""
@@ -2871,9 +2884,7 @@ class TestTokenMintGeneric:
             return FakeProc()
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
-        rc, _ = asyncio.run(
-            tm.run_remote_kirocrew("cd-1", "restart", connect_timeout_secs=45.0)
-        )
+        rc, _ = asyncio.run(tm.run_remote_kirocrew("cd-1", "restart", connect_timeout_secs=45.0))
         assert rc == 0
         assert "ConnectTimeout=45" in captured["argv"]
 
@@ -2947,9 +2958,7 @@ class TestTokenMintGeneric:
         assert proc.communicate_calls == 2
         assert proc.wait_calls == 0
 
-    def test_run_remote_kirocrew_timeout_reaps_child_via_communicate_not_wait(
-        self, monkeypatch
-    ):
+    def test_run_remote_kirocrew_timeout_reaps_child_via_communicate_not_wait(self, monkeypatch):
         from kiro_crew.instances import token_mint as tm
 
         proc = self._HangProc()
@@ -3186,7 +3195,13 @@ class TestSelfHealRefreshRestart:
         reg = InstancesRegistry(path=tmp_path / "instances.json")
 
         async def ok_mint(
-            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, timeout_secs=None
+            host,
+            *,
+            remote_bin="",
+            ttl="20h",
+            remote_port=None,
+            embed_parent_port=None,
+            timeout_secs=None,
         ):
             return "TOK"
 
@@ -3411,7 +3426,15 @@ class TestSelfHealRefreshRestart:
         release = asyncio.Event()
         minted = 0
 
-        async def slow_mint(host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, timeout_secs=None):
+        async def slow_mint(
+            host,
+            *,
+            remote_bin="",
+            ttl="20h",
+            remote_port=None,
+            embed_parent_port=None,
+            timeout_secs=None,
+        ):
             nonlocal minted
             minted += 1
             if arm.is_set():
@@ -3467,7 +3490,13 @@ class TestSelfHealRefreshRestart:
         seen: list = []
 
         async def capturing_mint(
-            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, timeout_secs=None
+            host,
+            *,
+            remote_bin="",
+            ttl="20h",
+            remote_port=None,
+            embed_parent_port=None,
+            timeout_secs=None,
         ):
             seen.append(remote_port)
             return "TOK"
@@ -3488,7 +3517,12 @@ class TestSelfHealRefreshRestart:
         calls = {}
 
         async def fake_run(
-            host, sub, *, remote_bin="", marker_port=None, timeout_secs=60.0,
+            host,
+            sub,
+            *,
+            remote_bin="",
+            marker_port=None,
+            timeout_secs=60.0,
             connect_timeout_secs=10.0,
         ):
             calls["a"] = (host, sub, marker_port, connect_timeout_secs)
@@ -3509,9 +3543,7 @@ class TestSelfHealRefreshRestart:
         r = asyncio.run(mgr.restart_remote("ghost"))
         assert not r["ok"]
 
-    def test_diagnose_caps_connect_timeout_at_the_diagnostics_ceiling(
-        self, tmp_path, monkeypatch
-    ):
+    def test_diagnose_caps_connect_timeout_at_the_diagnostics_ceiling(self, tmp_path, monkeypatch):
         """#3579: a user who raised instances.connect_timeout_secs for a
         genuinely slow proxy still wants a diagnosis to resolve in well
         under a minute, not silently inherit the full tunable -- diagnose()
@@ -3710,7 +3742,13 @@ class TestPortMirror:
         _patch_port_probe(monkeypatch, manager_free=port_free)
 
         async def ok_mint(
-            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, timeout_secs=None
+            host,
+            *,
+            remote_bin="",
+            ttl="20h",
+            remote_port=None,
+            embed_parent_port=None,
+            timeout_secs=None,
         ):
             return "TOK"
 
@@ -3838,7 +3876,13 @@ class TestLastError:
         reg = InstancesRegistry(path=tmp_path / "instances.json")
 
         async def ok_mint(
-            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, timeout_secs=None
+            host,
+            *,
+            remote_bin="",
+            ttl="20h",
+            remote_port=None,
+            embed_parent_port=None,
+            timeout_secs=None,
         ):
             return "SECRET_TOK"
 
@@ -3873,7 +3917,13 @@ class TestLastError:
         from kiro_crew.instances.token_mint import TokenMintError
 
         async def bad_mint(
-            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, timeout_secs=None
+            host,
+            *,
+            remote_bin="",
+            ttl="20h",
+            remote_port=None,
+            embed_parent_port=None,
+            timeout_secs=None,
         ):
             raise TokenMintError("nope")
 
@@ -3891,7 +3941,13 @@ class TestLastError:
         calls = {"n": 0}
 
         async def flaky_mint(
-            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, timeout_secs=None
+            host,
+            *,
+            remote_bin="",
+            ttl="20h",
+            remote_port=None,
+            embed_parent_port=None,
+            timeout_secs=None,
         ):
             calls["n"] += 1
             if calls["n"] == 1:
@@ -3911,7 +3967,13 @@ class TestLastError:
         from kiro_crew.instances.token_mint import TokenMintError
 
         async def bad_mint(
-            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, timeout_secs=None
+            host,
+            *,
+            remote_bin="",
+            ttl="20h",
+            remote_port=None,
+            embed_parent_port=None,
+            timeout_secs=None,
         ):
             raise TokenMintError("nope")
 
@@ -3938,7 +4000,13 @@ class TestStatusForRetainedError:
         reg = InstancesRegistry(path=tmp_path / "instances.json")
 
         async def ok_mint(
-            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, timeout_secs=None
+            host,
+            *,
+            remote_bin="",
+            ttl="20h",
+            remote_port=None,
+            embed_parent_port=None,
+            timeout_secs=None,
         ):
             return "SECRET_TOK"
 
@@ -3954,7 +4022,13 @@ class TestStatusForRetainedError:
         from kiro_crew.instances.token_mint import TokenMintError
 
         async def bad_mint(
-            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, timeout_secs=None
+            host,
+            *,
+            remote_bin="",
+            ttl="20h",
+            remote_port=None,
+            embed_parent_port=None,
+            timeout_secs=None,
         ):
             raise TokenMintError("nope")
 
@@ -4010,7 +4084,13 @@ class TestStartupRevive:
         reg = InstancesRegistry(path=tmp_path / "instances.json")
 
         async def ok_mint(
-            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, timeout_secs=None
+            host,
+            *,
+            remote_bin="",
+            ttl="20h",
+            remote_port=None,
+            embed_parent_port=None,
+            timeout_secs=None,
         ):
             return "SECRET_TOK"
 
@@ -4043,7 +4123,15 @@ class TestStartupRevive:
         from kiro_crew.instances.ssh_tunnel_manager import TunnelState
         from kiro_crew.instances.token_mint import TokenMintError
 
-        async def mint(host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, timeout_secs=None):
+        async def mint(
+            host,
+            *,
+            remote_bin="",
+            ttl="20h",
+            remote_port=None,
+            embed_parent_port=None,
+            timeout_secs=None,
+        ):
             if "bad" in host:
                 raise TokenMintError("unreachable")
             return "SECRET_TOK"
@@ -4628,7 +4716,13 @@ class TestSsmTransportSelection:
         from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager
 
         async def ok_mint(
-            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, timeout_secs=None
+            host,
+            *,
+            remote_bin="",
+            ttl="20h",
+            remote_port=None,
+            embed_parent_port=None,
+            timeout_secs=None,
         ):
             return "SSH_TOKEN"
 
@@ -4654,9 +4748,7 @@ class TestSsmTransportSelection:
             (200.0, 120.0, 120.0),
         ],
     )
-    def test_connect_timeout_matrix(
-        self, tmp_path, configured, ssh_expected, ssm_expected
-    ):
+    def test_connect_timeout_matrix(self, tmp_path, configured, ssh_expected, ssm_expected):
         from kiro_crew.config.loader import InstancesConfig
         from kiro_crew.instances.constants import (
             CONNECT_TIMEOUT_CEILING_SECS,
@@ -4735,7 +4827,13 @@ class TestSsmTransportSelection:
         seen = {}
 
         async def capturing_mint(
-            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, timeout_secs=None
+            host,
+            *,
+            remote_bin="",
+            ttl="20h",
+            remote_port=None,
+            embed_parent_port=None,
+            timeout_secs=None,
         ):
             seen["timeout_secs"] = timeout_secs
             return "TOK"
@@ -4768,9 +4866,7 @@ class TestSsmTransportSelection:
             return "SSM_TOKEN"
 
         monkeypatch.setattr(mod, "mint_remote_token_ssm", fake_ssm_mint)
-        monkeypatch.setattr(
-            "kiro_crew.cloud.ssm.session_manager_plugin_installed", lambda: True
-        )
+        monkeypatch.setattr("kiro_crew.cloud.ssm.session_manager_plugin_installed", lambda: True)
 
         def add_ssm(reg, iid, port):
             reg.add(
@@ -4963,7 +5059,13 @@ class TestForwarderPidHints:
         reg = InstancesRegistry(path=tmp_path / "instances.json")
 
         async def ok_mint(
-            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, timeout_secs=None
+            host,
+            *,
+            remote_bin="",
+            ttl="20h",
+            remote_port=None,
+            embed_parent_port=None,
+            timeout_secs=None,
         ):
             return "SECRET_TOK"
 
@@ -5097,7 +5199,13 @@ class TestOrphanForwarderReclaim:
         reg = InstancesRegistry(path=tmp_path / "instances.json")
 
         async def ok_mint(
-            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, timeout_secs=None
+            host,
+            *,
+            remote_bin="",
+            ttl="20h",
+            remote_port=None,
+            embed_parent_port=None,
+            timeout_secs=None,
         ):
             return "SECRET_TOK"
 
@@ -5391,9 +5499,7 @@ class TestOrphanForwarderReclaim:
         finally:
             self._cleanup(proc)
 
-    @pytest.mark.skipif(
-        os.name == "nt", reason="ppid probe of a posix-spawned stand-in"
-    )
+    @pytest.mark.skipif(os.name == "nt", reason="ppid probe of a posix-spawned stand-in")
     @pytest.mark.asyncio
     async def test_recorded_start_mismatch_is_never_signalled(self, tmp_path, monkeypatch):
         """Pid-recycling regression: the recorded pid now belongs to a process
@@ -5487,9 +5593,7 @@ class TestOrphanForwarderReclaim:
             self._cleanup(proc)
 
     @pytest.mark.asyncio
-    async def test_free_port_short_circuits_before_the_identity_check(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_free_port_short_circuits_before_the_identity_check(self, tmp_path, monkeypatch):
         """A free recorded port means nothing leaked: the recorded pid is not
         signalled even when its identity WOULD match (e.g. the pid was
         recycled onto an innocent process while nothing holds the port)."""
@@ -5606,9 +5710,7 @@ class TestOrphanForwarderReclaim:
         argv_answers = iter([True, False])  # pre-TERM ok; re-check: different argv
 
         monkeypatch.setattr(pc, "process_start_time", lambda pid: "identity-A")
-        monkeypatch.setattr(
-            pc, "process_argv_matches_exact", lambda pid, argv: next(argv_answers)
-        )
+        monkeypatch.setattr(pc, "process_argv_matches_exact", lambda pid, argv: next(argv_answers))
         monkeypatch.setattr(pc, "pid_exists", lambda pid: True)
         monkeypatch.setattr(pc, "kill_pid", lambda pid, sig: delivered.append(sig) or True)
         monkeypatch.setattr(stm, "_is_port_free", lambda port, host="127.0.0.1": False)
@@ -5620,3 +5722,423 @@ class TestOrphanForwarderReclaim:
 
         assert outcome == "recycled_during_grace"
         assert delivered == [pc.SIGTERM], "SIGKILL must be withheld on argv change"
+
+
+# ── Generic chat proxy ────────────────────────────────────────────────────────
+
+
+class TestProxyRequest:
+    """SshTunnelManager.proxy_request — the remote-crew chat carrier."""
+
+    def _mgr(self, tmp_path, *, mint=None, factory=_FakeTunnel):
+        from kiro_crew.instances.registry import InstancesRegistry
+        from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager
+
+        reg = InstancesRegistry(path=tmp_path / "instances.json")
+
+        async def ok_mint(
+            host,
+            *,
+            remote_bin="",
+            ttl="20h",
+            remote_port=None,
+            embed_parent_port=None,
+            timeout_secs=None,
+        ):
+            return "SECRET_TOK"
+
+        return reg, SshTunnelManager(
+            reg, base_port=53500, mint_token=mint or ok_mint, tunnel_factory=factory
+        )
+
+    @staticmethod
+    def _fake_session(calls, *, statuses):
+        """A ClientSession stand-in recording request kwargs; statuses pop per call."""
+
+        class _Resp:
+            def __init__(self, status):
+                self.status = status
+
+            def release(self):
+                return None
+
+        class _Sess:
+            def __init__(self, *a, **k):
+                self.closed = False
+
+            async def request(self, method, url, **kwargs):
+                calls.append({"method": method, "url": url, **kwargs})
+                return _Resp(statuses.pop(0))
+
+            async def close(self):
+                self.closed = True
+
+        return _Sess
+
+    @pytest.mark.asyncio
+    async def test_not_connected_raises_typed_error(self, tmp_path):
+        from kiro_crew.instances.ssh_tunnel_manager import ProxyRequestError
+
+        _reg, mgr = self._mgr(tmp_path)
+        with pytest.raises(ProxyRequestError) as ei:
+            async with mgr.proxy_request("nope", "GET", "api/status"):
+                pass
+        assert ei.value.code == "proxy_peer_not_connected"
+        assert ei.value.http_status == 503
+
+    @pytest.mark.asyncio
+    async def test_success_sends_port_scoped_cookie_and_refuses_redirects(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.instances import ssh_tunnel_manager as m
+
+        reg, mgr = self._mgr(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+        st = await mgr.connect("cd-1")
+        calls: list = []
+        monkeypatch.setattr(m.aiohttp, "ClientSession", self._fake_session(calls, statuses=[200]))
+
+        async with mgr.proxy_request(
+            "cd-1", "POST", "/api/chat", params={"a": "b"}, data=b"{}"
+        ) as resp:
+            assert resp.status == 200
+        assert len(calls) == 1
+        call = calls[0]
+        assert call["method"] == "POST"
+        assert call["url"] == f"http://127.0.0.1:{st.local_port}/api/chat"
+        # Credential travels as the PORT-SCOPED cookie, never a bare name.
+        assert call["headers"]["Cookie"] == f"mc_token_{st.local_port}=SECRET_TOK"
+        # SSRF guard: a compromised peer answering 30x must not steer the hub.
+        assert call["allow_redirects"] is False
+
+    @pytest.mark.asyncio
+    async def test_401_gets_exactly_one_remint_retry(self, tmp_path, monkeypatch):
+        from kiro_crew.instances import ssh_tunnel_manager as m
+
+        reg, mgr = self._mgr(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+        await mgr.connect("cd-1")
+        calls: list = []
+        monkeypatch.setattr(
+            m.aiohttp, "ClientSession", self._fake_session(calls, statuses=[401, 200])
+        )
+        remints = []
+
+        async def fake_refresh(instance_id):
+            remints.append(instance_id)
+            mgr._tokens[instance_id] = "FRESH_TOK"
+            return "FRESH_TOK"
+
+        monkeypatch.setattr(mgr, "refresh_token", fake_refresh)
+
+        async with mgr.proxy_request("cd-1", "GET", "api/chat/slots") as resp:
+            assert resp.status == 200
+        assert remints == ["cd-1"]
+        assert len(calls) == 2
+        assert "FRESH_TOK" in calls[1]["headers"]["Cookie"]
+
+    @pytest.mark.asyncio
+    async def test_persistent_401_raises_unauthorized_not_a_loop(self, tmp_path, monkeypatch):
+        from kiro_crew.instances import ssh_tunnel_manager as m
+        from kiro_crew.instances.ssh_tunnel_manager import ProxyRequestError
+
+        reg, mgr = self._mgr(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+        await mgr.connect("cd-1")
+        calls: list = []
+        monkeypatch.setattr(m.aiohttp, "ClientSession", self._fake_session(calls, statuses=[401]))
+
+        async def no_refresh(instance_id):
+            return None
+
+        monkeypatch.setattr(mgr, "refresh_token", no_refresh)
+        with pytest.raises(ProxyRequestError) as ei:
+            async with mgr.proxy_request("cd-1", "GET", "api/chat/slots"):
+                pass
+        assert ei.value.code == "proxy_unauthorized"
+        assert len(calls) == 1  # no retry storm
+
+    @pytest.mark.asyncio
+    async def test_401_after_a_successful_remint_is_still_typed(self, tmp_path, monkeypatch):
+        """The re-mint succeeding does not make the SECOND 401 a normal reply.
+
+        Previously the retry guard was `status in (401, 403) and not reminted`,
+        so once a fresh credential had been minted a second rejection fell
+        through to the caller as a bare peer 401 — the UI would read "the chat
+        endpoint said no" instead of a credential failure, with no coded error.
+        """
+        from kiro_crew.instances import ssh_tunnel_manager as m
+        from kiro_crew.instances.ssh_tunnel_manager import ProxyRequestError
+
+        reg, mgr = self._mgr(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+        await mgr.connect("cd-1")
+        calls: list = []
+        monkeypatch.setattr(
+            m.aiohttp, "ClientSession", self._fake_session(calls, statuses=[401, 401])
+        )
+
+        async def fake_refresh(instance_id):
+            return "FRESH"
+
+        monkeypatch.setattr(mgr, "refresh_token", fake_refresh)
+        with pytest.raises(ProxyRequestError) as ei:
+            async with mgr.proxy_request("cd-1", "GET", "api/chat/slots"):
+                pass
+        assert ei.value.code == "proxy_unauthorized"
+        assert len(calls) == 2  # original + exactly one retry, then stop
+
+    @pytest.mark.asyncio
+    async def test_transport_error_maps_to_unreachable(self, tmp_path, monkeypatch):
+        from kiro_crew.instances import ssh_tunnel_manager as m
+        from kiro_crew.instances.ssh_tunnel_manager import ProxyRequestError
+
+        reg, mgr = self._mgr(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+        await mgr.connect("cd-1")
+
+        class _BoomSess:
+            def __init__(self, *a, **k):
+                pass
+
+            async def request(self, *a, **k):
+                raise asyncio.TimeoutError()
+
+            async def close(self):
+                return None
+
+        monkeypatch.setattr(m.aiohttp, "ClientSession", _BoomSess)
+        with pytest.raises(ProxyRequestError) as ei:
+            async with mgr.proxy_request("cd-1", "GET", "api/status"):
+                pass
+        assert ei.value.code == "proxy_peer_unreachable"
+        assert ei.value.http_status == 502
+
+
+class TestProxyHandlerPolicy:
+    """api_instances_proxy — the policy gates in front of the carrier.
+
+    The streaming pump itself needs a real transport (StreamResponse.prepare),
+    so it is exercised live against a connected peer; every DECISION the
+    handler makes before the pump is covered here.
+    """
+
+    def _req(self, tmp_path, monkeypatch, *, path, method="GET", manager="stub", enabled=True):
+        _enable(tmp_path, monkeypatch, enabled=enabled)
+        # The proxy requires the positively-identified OWNER (same bar as
+        # federated search); the fake request has no real token subject, so
+        # satisfy the gate explicitly. The deny path has its own test below.
+        from kiro_crew.dashboard.handlers import source_providers as sp
+
+        monkeypatch.setattr(sp, "is_owner_dashboard_request", lambda r: True)
+        from kiro_crew.instances.registry import InstancesRegistry
+
+        reg = InstancesRegistry(path=tmp_path / "instances.json")
+        state = _State(reg, manager if manager != "stub" else object())
+        req = _FakeReq(state, match={"id": "cd-1", "path": path})
+        req.method = method
+        return req
+
+    @pytest.mark.asyncio
+    async def test_client_disconnect_midstream_does_not_write_after_reset(
+        self, tmp_path, monkeypatch
+    ):
+        """A browser that drops mid-stream must not produce a SECOND write.
+
+        The pump caught `ConnectionResetError` and then fell through to
+        `write_eof()` on the very transport that had just refused a write — the
+        second exception escaped the handler and crashed the request. The
+        handler now returns from the except block, so exactly one write is
+        attempted after the reset: none.
+        """
+        from kiro_crew.dashboard.handlers_instances import api_instances_proxy
+
+        writes: list[str] = []
+
+        class _Resp:
+            def __init__(self):
+                self.headers: dict = {}
+
+            async def prepare(self, request):
+                return None
+
+            async def write(self, chunk):
+                writes.append("write")
+                raise ConnectionResetError("client went away")
+
+            async def write_eof(self):
+                writes.append("write_eof")  # must never happen after the reset
+                raise ConnectionResetError("transport is gone")
+
+        async def _chunks():
+            yield b"data: hello\n\n"
+
+        class _Mgr:
+            @contextlib.asynccontextmanager
+            async def proxy_request(self, iid, method, path, **kwargs):
+                yield types.SimpleNamespace(
+                    status=200,
+                    headers={"Content-Type": "text/event-stream"},
+                    content=types.SimpleNamespace(iter_any=_chunks),
+                )
+
+        from kiro_crew.dashboard import handlers_instances as hi
+
+        req = self._req(tmp_path, monkeypatch, path="api/chat/stream", manager=_Mgr())
+        req.body_exists = False
+        monkeypatch.setattr(hi.web, "StreamResponse", lambda **kw: _Resp())
+        # Must not raise: the disconnect is terminal, not a crash.
+        await api_instances_proxy(req)
+        assert writes == ["write"]  # no write_eof on the dead transport
+
+        """A Slack-minted dashboard identity passes _guard but must NOT reach
+        the peer: the proxy executes with the owner's manager-held credential."""
+        from kiro_crew.dashboard.handlers import source_providers as sp
+        from kiro_crew.dashboard.handlers_instances import api_instances_proxy
+
+        req = self._req(tmp_path, monkeypatch, path="api/status")
+        monkeypatch.setattr(sp, "is_owner_dashboard_request", lambda r: False)
+        monkeypatch.setattr(sp, "stale_owner_session_response", lambda r: None)
+        resp = await api_instances_proxy(req)
+        assert resp.status == 403
+        assert _body(resp)["code"] == "owner_only"
+
+    @pytest.mark.asyncio
+    async def test_disabled_feature_is_403(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.handlers_instances import api_instances_proxy
+
+        req = self._req(tmp_path, monkeypatch, path="api/status", enabled=False)
+        resp = await api_instances_proxy(req)
+        assert resp.status == 403
+
+    @pytest.mark.asyncio
+    async def test_traversal_is_refused_before_any_url_is_built(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.handlers_instances import api_instances_proxy
+
+        req = self._req(tmp_path, monkeypatch, path="api/../etc/passwd")
+        resp = await api_instances_proxy(req)
+        assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_non_api_path_is_refused(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.handlers_instances import api_instances_proxy
+
+        req = self._req(tmp_path, monkeypatch, path="assets/main.js")
+        resp = await api_instances_proxy(req)
+        assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_peer_instances_plane_is_refused_no_chaining(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.handlers_instances import api_instances_proxy
+
+        req = self._req(tmp_path, monkeypatch, path="api/instances/other/proxy/api/status")
+        resp = await api_instances_proxy(req)
+        assert resp.status == 400
+        assert "chaining" in _body(resp)["error"]
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "api/%2e%2e/api/instances/x",  # one layer: the router already decoded one
+            "api/%252e%252e/api/instances/x",  # two layers
+            "api/%25252e%25252e/api/instances/x",  # three
+            "api/..%2fapi%2finstances/x",  # encoded separator, raw dots
+            "api/%2e%2e%2fapi%2finstances/x",  # both encoded
+        ],
+    )
+    def test_encoded_traversal_cannot_reach_the_control_plane(self, raw):
+        """Every encoding depth resolves to the SAME refusal.
+
+        The denylist shape this replaced inspected a half-decoded string while
+        the peer resolved the fully-decoded one, so `%252e%252e` arrived as
+        `%2e%2e`, matched no rule, and normalized back into `api/instances`.
+        Decoding to a fixed point before vetting is what closes the class —
+        so this is parametrized over depth rather than pinned to one payload.
+        """
+        from kiro_crew.dashboard.handlers_instances import _proxy_canonical_path
+
+        path, reason = _proxy_canonical_path(raw)
+        assert path == ""
+        assert reason
+
+    def test_canonical_path_is_rebuilt_from_vetted_segments(self):
+        """The forwarded path is constructed, not merely approved: a caller
+        cannot get one string past the policy and a different one onto the
+        wire."""
+        from kiro_crew.dashboard.handlers_instances import _proxy_canonical_path
+
+        assert _proxy_canonical_path("/api/chat/slots/") == ("api/chat/slots", "")
+        assert _proxy_canonical_path("api/%63hat/slots") == ("api/chat/slots", "")
+        # `instances` only matters as the FIRST segment under api/ — a session
+        # or resource that merely contains the word is still reachable.
+        assert _proxy_canonical_path("api/chat/instances") == ("api/chat/instances", "")
+
+    @pytest.mark.parametrize(
+        "raw,expect",
+        [
+            ("api//chat", "empty path segment"),
+            ("api/chat%00/x", "illegal character in path segment"),
+            ("api/ch at/x", "illegal character in path segment"),
+            ("api/%zz/x", "malformed percent-encoding in path"),
+            ("api/.../x", "path traversal"),
+        ],
+    )
+    def test_only_plainly_named_segments_are_forwarded(self, raw, expect):
+        from kiro_crew.dashboard.handlers_instances import _proxy_canonical_path
+
+        path, reason = _proxy_canonical_path(raw)
+        assert path == ""
+        assert reason == expect
+
+    @pytest.mark.asyncio
+    async def test_disallowed_method_is_405(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.handlers_instances import api_instances_proxy
+
+        req = self._req(tmp_path, monkeypatch, path="api/status", method="OPTIONS")
+        resp = await api_instances_proxy(req)
+        assert resp.status == 405
+
+    @pytest.mark.asyncio
+    async def test_missing_manager_is_503(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.handlers_instances import api_instances_proxy
+
+        req = self._req(tmp_path, monkeypatch, path="api/status", manager=None)
+        resp = await api_instances_proxy(req)
+        assert resp.status == 503
+
+    @pytest.mark.asyncio
+    async def test_hub_token_is_stripped_from_forwarded_query(self, tmp_path, monkeypatch):
+        """The browser's ?token= is the HUB's credential — it must never
+        cross the tunnel (a peer receiving it holds a replayable credential
+        for this gateway)."""
+        from kiro_crew.dashboard.handlers_instances import api_instances_proxy
+
+        captured: dict = {}
+
+        class _Mgr:
+            @contextlib.asynccontextmanager
+            async def proxy_request(self, iid, method, path, **kwargs):
+                captured.update(kwargs)
+                # Refused content type short-circuits before StreamResponse.prepare,
+                # so the handler stays testable without a real transport.
+                yield types.SimpleNamespace(status=200, headers={"Content-Type": "text/html"})
+
+        req = self._req(tmp_path, monkeypatch, path="api/chat/slots", manager=_Mgr())
+        req.query = {"token": "HUB_SECRET", "limit": "5"}
+        req.body_exists = False
+        resp = await api_instances_proxy(req)
+        assert captured["params"] == {"limit": "5"}  # token stripped
+        # ... and the HTML reply was refused (content-type gate).
+        assert resp.status == 502
+        assert _body(resp)["code"] == "proxy_content_type_refused"
+
+    @pytest.mark.asyncio
+    async def test_error_bodies_carry_machine_readable_codes(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.handlers_instances import api_instances_proxy
+
+        req = self._req(tmp_path, monkeypatch, path="assets/x.js")
+        assert _body(await api_instances_proxy(req))["code"] == "proxy_path_denied"
+        req = self._req(tmp_path, monkeypatch, path="api/status", method="OPTIONS")
+        assert _body(await api_instances_proxy(req))["code"] == "proxy_method_not_allowed"
+        req = self._req(tmp_path, monkeypatch, path="api/status", manager=None)
+        assert _body(await api_instances_proxy(req))["code"] == "instances_manager_unavailable"
