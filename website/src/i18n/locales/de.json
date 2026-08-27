@@ -34,8 +34,6 @@
     "dismiss": "Schließen",
     "dsk": "DSK",
     "expand_sidebar": "Seitenleiste ausklappen",
-    "explore": "Erkunden",
-    "explore_apps": "Apps erkunden",
     "gateway_connected": "Gateway verbunden",
     "gateway_offline": "Gateway offline",
     "gateway_offline_reconnecting": "Gateway offline — wird neu verbunden",
@@ -5262,7 +5260,6 @@
         },
         "pagesProvider": {
           "developer": "Entwickler",
-          "explore": "Erkunden",
           "hooks": "Hooks",
           "kirocrew_agents": "{{productName}}-Agenten",
           "logs": "Protokolle",
@@ -7420,8 +7417,9 @@
   "nav": {
     "agent_capabilities": "Agenten-Fähigkeiten",
     "artifacts": "Artefakte",
-    "explore": "Erkunden",
+    "discover": "Entdecken",
     "knowledge": "Wissen",
+    "library": "Bibliothek",
     "notifications": "Benachrichtigungen",
     "schedule": "Zeitplan",
     "sessions": "Sitzungen",
@@ -7640,13 +7638,12 @@
     },
     "appsPage": {
       "action_failed": "{{action}} für {{name}} fehlgeschlagen",
-      "add_an_app_source_gear_icon_above_or_install_fro": "Fügen Sie eine App-Quelle hinzu (Zahnradsymbol oben) oder installieren Sie aus einem lokalen Pfad.",
+      "add_an_app_source_gear_icon_above_or_install_fro": "Füge eine App-Quelle hinzu (Quellen, oben rechts) oder installiere von einem lokalen Pfad.",
       "agent_one": "{{count}} Agent",
       "agent_other": "{{count}} Agenten",
       "all_apps": "Alle Apps",
       "app_one": "{{count}} App",
       "app_other": "{{count}} Apps",
-      "apps": "Apps",
       "available": "verfügbar",
       "built_in_kirocrew": "Integriert · kirocrew",
       "cancel": "Abbrechen",
@@ -7655,16 +7652,14 @@
       "cron_job_one": "{{count}} Cron-Job",
       "cron_job_other": "{{count}} Cron-Jobs",
       "dependencies": "Abhängigkeiten:",
-      "discover": "Entdecken",
-      "discover_install_and_manage_agentic_apps": "Agentische Apps entdecken, installieren und verwalten",
       "dismiss_message": "Nachricht schließen",
       "failed_to_enable": "{{name}} konnte nicht aktiviert werden",
       "failed_to_load_apps": "Apps konnten nicht geladen werden",
       "failed_to_load_registry": "Registry konnte nicht geladen werden",
       "failed_to_uninstall": "{{name}} konnte nicht deinstalliert werden",
       "failed_to_update": "Aktualisierung fehlgeschlagen: {{names}}",
-      "find_apps_in_the_discover_tab_or_install_from_a": "Finde Apps im Tab „Entdecken“ oder installiere sie über das Quellen-Zahnradsymbol oben aus einem lokalen Pfad.",
-      "hidden_you_can_re_enable_it_from_the_discover_ta": "Deaktiviert. Du kannst sie im Tab „Entdecken“ wieder aktivieren.",
+      "find_apps_in_the_discover_tab_or_install_from_a": "Finde Apps auf der Entdecken-Seite oder installiere sie dort über Quellen von einem lokalen Pfad.",
+      "hidden_you_can_re_enable_it_from_the_discover_ta": "Deaktiviert. Du kannst sie auf der Entdecken-Seite wieder aktivieren.",
       "keep_app_data": "App-Daten behalten",
       "keep_dependency": "Abhängigkeit {{name}} behalten",
       "keep_this_dependency": "Diese Abhängigkeit behalten",
@@ -7673,6 +7668,7 @@
       "kirocrew_registry": "{{productName}}-Registry",
       "library": "Bibliothek",
       "loading_apps": "Apps werden geladen…",
+      "manage_your_installed_apps": "Verwalte deine installierten Apps",
       "name": "Name",
       "no_apps_available": "Keine Apps verfügbar",
       "no_apps_installed_yet": "Noch keine Apps installiert",
@@ -7703,7 +7699,7 @@
       "updated_app_other": "{{count}} Apps aktualisiert.",
       "updating_progress": "Aktualisierung {{done}}/{{total}}…",
       "v": "v",
-      "installed_app_find_in_library_and_enable": "{{name}} installiert. Schalten Sie es unten ein, um es zu aktivieren.",
+      "installed_app_find_in_library_and_enable": "{{name}} installiert. Aktiviere die App in der Bibliothek.",
       "synced_from_its_source_directory": "{{name}} aus dem Quellverzeichnis synchronisiert.",
       "updated_from_the_registry": "{{name}} aus der Registry aktualisiert."
     },
@@ -9368,6 +9364,10 @@
           "label": "Telemetrie"
         }
       }
+    },
+    "discoverPage": {
+      "subtitle": "Agentische Apps durchsuchen und installieren",
+      "title": "Entdecken"
     },
     "embedSettingsPage": {
       "back": "Zurück",

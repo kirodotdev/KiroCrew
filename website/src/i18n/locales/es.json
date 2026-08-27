@@ -34,8 +34,6 @@
     "dismiss": "Descartar",
     "dsk": "DSK",
     "expand_sidebar": "Expandir la barra lateral",
-    "explore": "Explorar",
-    "explore_apps": "Explorar apps",
     "gateway_connected": "Gateway conectado",
     "gateway_offline": "Gateway sin conexión",
     "gateway_offline_reconnecting": "Gateway sin conexión — reconectando",
@@ -5349,7 +5347,6 @@
         },
         "pagesProvider": {
           "developer": "Desarrollador",
-          "explore": "Explorar",
           "hooks": "Hooks",
           "kirocrew_agents": "Agentes de {{productName}}",
           "logs": "Registros",
@@ -7524,8 +7521,9 @@
   "nav": {
     "agent_capabilities": "Capacidades del agente",
     "artifacts": "Artefactos",
-    "explore": "Explorar",
+    "discover": "Descubrir",
     "knowledge": "Conocimiento",
+    "library": "Biblioteca",
     "notifications": "Notificaciones",
     "schedule": "Programación",
     "sessions": "Sesiones",
@@ -7746,7 +7744,7 @@
     },
     "appsPage": {
       "action_failed": "No se pudo {{action}} {{name}}",
-      "add_an_app_source_gear_icon_above_or_install_fro": "Añade un origen de apps (icono de engranaje arriba) o instala desde una ruta local.",
+      "add_an_app_source_gear_icon_above_or_install_fro": "Agrega una fuente de apps (Fuentes, arriba a la derecha) o instala desde una ruta local.",
       "agent_many": "{{count}} agentes",
       "agent_one": "{{count}} agente",
       "agent_other": "{{count}} agentes",
@@ -7754,7 +7752,6 @@
       "app_many": "{{count}} apps",
       "app_one": "{{count}} app",
       "app_other": "{{count}} apps",
-      "apps": "Apps",
       "available": "disponibles",
       "built_in_kirocrew": "Integrada · kirocrew",
       "cancel": "Cancelar",
@@ -7764,16 +7761,14 @@
       "cron_job_one": "{{count}} tarea cron",
       "cron_job_other": "{{count}} tareas cron",
       "dependencies": "Dependencias:",
-      "discover": "Descubrir",
-      "discover_install_and_manage_agentic_apps": "Descubre, instala y gestiona apps con agentes",
       "dismiss_message": "Descartar mensaje",
       "failed_to_enable": "No se pudo activar {{name}}",
       "failed_to_load_apps": "No se pudieron cargar las apps",
       "failed_to_load_registry": "No se pudo cargar el registro",
       "failed_to_uninstall": "No se pudo desinstalar {{name}}",
       "failed_to_update": "No se pudo actualizar: {{names}}",
-      "find_apps_in_the_discover_tab_or_install_from_a": "Encuentra apps en la pestaña Descubrir o instala desde una ruta local con el engranaje de orígenes de arriba.",
-      "hidden_you_can_re_enable_it_from_the_discover_ta": "Desactivada. Puedes volver a habilitarla desde la pestaña Descubrir.",
+      "find_apps_in_the_discover_tab_or_install_from_a": "Encuentra apps en la página Descubrir o instala desde una ruta local mediante Fuentes en esa página.",
+      "hidden_you_can_re_enable_it_from_the_discover_ta": "Deshabilitado. Puedes volver a habilitarlo desde la página Descubrir.",
       "keep_app_data": "Conservar los datos de la app",
       "keep_dependency": "Conservar la dependencia {{name}}",
       "keep_this_dependency": "Conservar esta dependencia",
@@ -7782,6 +7777,7 @@
       "kirocrew_registry": "Registro de {{productName}}",
       "library": "Biblioteca",
       "loading_apps": "Cargando apps…",
+      "manage_your_installed_apps": "Gestiona tus apps instaladas",
       "name": "Nombre",
       "no_apps_available": "No hay apps disponibles",
       "no_apps_installed_yet": "Aún no hay apps instaladas",
@@ -7815,7 +7811,7 @@
       "updated_app_other": "Se actualizaron {{count}} apps.",
       "updating_progress": "Actualizando {{done}}/{{total}}…",
       "v": "v",
-      "installed_app_find_in_library_and_enable": "{{name}} instalado. Actívalo abajo para habilitarlo.",
+      "installed_app_find_in_library_and_enable": "{{name}} instalado. Actívalo en la Biblioteca.",
       "synced_from_its_source_directory": "Se sincronizó {{name}} desde su directorio de origen.",
       "updated_from_the_registry": "Se actualizó {{name}} desde el registro."
     },
@@ -9510,6 +9506,10 @@
           "label": "Telemetría"
         }
       }
+    },
+    "discoverPage": {
+      "subtitle": "Explora e instala apps con agentes",
+      "title": "Descubrir"
     },
     "embedSettingsPage": {
       "back": "Atrás",

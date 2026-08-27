@@ -31,7 +31,12 @@ from kiro_crew.apps.execution import (
     repository_bound_grant_denied,
     shipped_builtin_app_root,
 )
-from kiro_crew.apps.manifest import AppManifest, app_name_error
+from kiro_crew.apps.manifest import (
+    RESERVED_APP_NAME_CODE,
+    AppManifest,
+    app_name_error,
+    is_reserved_app_name,
+)
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import (
     config_dir,
@@ -344,6 +349,22 @@ def _validate_source_path(source: Path) -> list[str]:
     return errors
 
 
+def _reserved_name_code(source: Path) -> str:
+    """Return ``RESERVED_APP_NAME_CODE`` if *source*'s manifest names a reserved app.
+
+    Called on the ``_validate_source_path`` failure path, where the joined prose
+    may bundle several findings — the reserved-name refusal is the one the
+    frontend needs to distinguish (it can offer "pick another name", not just
+    display English). Parses defensively: an unreadable manifest already failed
+    validation for its own reason and carries no code.
+    """
+    try:
+        manifest = AppManifest.from_json_file(source / APP_MANIFEST_FILENAME)
+    except (OSError, ValueError):
+        return ""
+    return RESERVED_APP_NAME_CODE if is_reserved_app_name(manifest.name) else ""
+
+
 def _check_min_version(min_version: str) -> str | None:
     """Return error string if current KiroCrew version is too old, else None."""
     from kiro_crew.apps.version import check_min_version
@@ -538,7 +559,11 @@ def install_app(
             resources=f"source={source!s}",
             error="; ".join(errors),
         )
-        return AppResult(ok=False, error="; ".join(errors))
+        return AppResult(
+            ok=False,
+            error="; ".join(errors),
+            error_code=_reserved_name_code(source),
+        )
 
     manifest = AppManifest.from_json_file(source / APP_MANIFEST_FILENAME)
     name = manifest.name
@@ -1718,7 +1743,12 @@ def register_external_app(
     # AppManifest.validate(); this closes the register_external gap.
     name_error = app_name_error(name)
     if name_error:
-        return AppResult(ok=False, name=name, error=f"invalid app name: {name_error}")
+        return AppResult(
+            ok=False,
+            name=name,
+            error=f"invalid app name: {name_error}",
+            error_code=RESERVED_APP_NAME_CODE if is_reserved_app_name(name) else "",
+        )
 
     # Builtin provenance is assigned only by register_builtin_apps(). Accepting
     # it from self-registration would make the execution exemption caller-controlled.

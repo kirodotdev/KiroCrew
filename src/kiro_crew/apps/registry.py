@@ -60,7 +60,12 @@ from kiro_crew.apps.manager import (
     set_app_provenance,
     update_app,
 )
-from kiro_crew.apps.manifest import AppManifest
+from kiro_crew.apps.manifest import (
+    RESERVED_APP_NAME_CODE,
+    AppManifest,
+    app_name_error,
+    is_reserved_app_name,
+)
 from kiro_crew.sandbox import cgroup_scope_argv, create_subprocess_limited, wrap_argv
 from kiro_crew.sel import sel
 
@@ -6263,6 +6268,27 @@ async def install_from_registry(
     # An already-installed app that carries provenance may only be re-installed
     # (updated) from the source it came from; fresh installs and legacy records
     # keep the historical bare-name lookup. Blocking reads → off the loop.
+    # Reject an inadmissible name BEFORE the registry lookup and any
+    # clone/build/onInstall work. The manifest/self-registration gates repeat
+    # this check, but for a self-managed app they only fire at runtime
+    # self-registration — without this early refusal the install would clone,
+    # build, and run onInstall, then report success while leaving an
+    # unregisterable checkout behind. Name admissibility is independent of
+    # registry contents, so this precedes _resolve_install_entry.
+    name_error = app_name_error(name)
+    if name_error:
+        outcome_early: dict[str, Any] = {
+            "ok": False,
+            "name": name,
+            "error": name_error,
+            "log": "",
+        }
+        # `code` only for the reserved-name refusals — same contract as the
+        # register_external_app path (is_reserved_app_name gates the code there).
+        if is_reserved_app_name(name):
+            outcome_early["code"] = RESERVED_APP_NAME_CODE
+        return outcome_early
+
     entry, pin_error = await asyncio.to_thread(_resolve_install_entry, name)
     if pin_error:
         try:

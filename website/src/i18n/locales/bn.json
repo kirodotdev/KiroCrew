@@ -34,8 +34,6 @@
     "dismiss": "খারিজ করুন",
     "dsk": "DSK",
     "expand_sidebar": "সাইডবার প্রসারিত করো",
-    "explore": "অন্বেষণ",
-    "explore_apps": "অ্যাপ অন্বেষণ করুন",
     "gateway_connected": "গেটওয়ে সংযুক্ত",
     "gateway_offline": "গেটওয়ে অফলাইন",
     "gateway_offline_reconnecting": "গেটওয়ে অফলাইন — আবার কানেক্ট হচ্ছে",
@@ -5262,7 +5260,6 @@
         },
         "pagesProvider": {
           "developer": "ডেভেলপার",
-          "explore": "অন্বেষণ",
           "hooks": "Hooks",
           "kirocrew_agents": "{{productName}} এজেন্ট",
           "logs": "লগ",
@@ -7420,8 +7417,9 @@
   "nav": {
     "agent_capabilities": "এজেন্ট সক্ষমতা",
     "artifacts": "আর্টিফ্যাক্ট",
-    "explore": "এক্সপ্লোর",
+    "discover": "আবিষ্কার",
     "knowledge": "জ্ঞানভান্ডার",
+    "library": "লাইব্রেরি",
     "notifications": "নোটিফিকেশন",
     "schedule": "সময়সূচি",
     "sessions": "সেশন",
@@ -7640,13 +7638,12 @@
     },
     "appsPage": {
       "action_failed": "{{name}}-কে {{action}} করা যায়নি",
-      "add_an_app_source_gear_icon_above_or_install_fro": "একটি অ্যাপ সোর্স যোগ করুন (উপরের গিয়ার আইকন) বা কোনো লোকাল পাথ থেকে ইনস্টল করুন।",
+      "add_an_app_source_gear_icon_above_or_install_fro": "অ্যাপ সোর্স যোগ করুন (উপরে ডানদিকে সোর্স) অথবা লোকাল পাথ থেকে ইনস্টল করুন।",
       "agent_one": "{{count}}টি এজেন্ট",
       "agent_other": "{{count}}টি এজেন্ট",
       "all_apps": "সব অ্যাপ",
       "app_one": "{{count}}টি অ্যাপ",
       "app_other": "{{count}}টি অ্যাপ",
-      "apps": "অ্যাপ",
       "available": "উপলব্ধ",
       "built_in_kirocrew": "বিল্ট-ইন · kirocrew",
       "cancel": "বাতিল",
@@ -7655,16 +7652,14 @@
       "cron_job_one": "{{count}}টি cron জব",
       "cron_job_other": "{{count}}টি cron জব",
       "dependencies": "ডিপেনডেন্সি:",
-      "discover": "আবিষ্কার",
-      "discover_install_and_manage_agentic_apps": "এজেন্টিক অ্যাপ খুঁজুন, ইনস্টল করুন ও পরিচালনা করুন",
       "dismiss_message": "বার্তা বন্ধ করুন",
       "failed_to_enable": "{{name}} চালু করা যায়নি",
       "failed_to_load_apps": "অ্যাপগুলো লোড করা যায়নি",
       "failed_to_load_registry": "রেজিস্ট্রি লোড করা যায়নি",
       "failed_to_uninstall": "{{name}} আনইনস্টল করা যায়নি",
       "failed_to_update": "আপডেট করা যায়নি: {{names}}",
-      "find_apps_in_the_discover_tab_or_install_from_a": "আবিষ্কার ট্যাবে অ্যাপ খুঁজে নাও, বা উপরের সোর্স গিয়ার দিয়ে কোনো লোকাল পাথ থেকে ইনস্টল করো।",
-      "hidden_you_can_re_enable_it_from_the_discover_ta": "নিষ্ক্রিয় করা হয়েছে। আবিষ্কার ট্যাব থেকে আবার সক্রিয় করতে পারো।",
+      "find_apps_in_the_discover_tab_or_install_from_a": "ডিসকভার পেজে অ্যাপ খুঁজুন, অথবা সেই পেজের সোর্স থেকে লোকাল পাথে ইনস্টল করুন।",
+      "hidden_you_can_re_enable_it_from_the_discover_ta": "নিষ্ক্রিয় করা হয়েছে। ডিসকভার পেজ থেকে আবার চালু করতে পারেন।",
       "keep_app_data": "অ্যাপের ডেটা রেখে দিন",
       "keep_dependency": "{{name}} ডিপেনডেন্সি রেখে দাও",
       "keep_this_dependency": "এই ডিপেনডেন্সিটি রেখে দিন",
@@ -7673,6 +7668,7 @@
       "kirocrew_registry": "{{productName}} রেজিস্ট্রি",
       "library": "লাইব্রেরি",
       "loading_apps": "অ্যাপ লোড হচ্ছে…",
+      "manage_your_installed_apps": "আপনার ইনস্টল করা অ্যাপ পরিচালনা করুন",
       "name": "নাম",
       "no_apps_available": "কোনো অ্যাপ উপলব্ধ নেই",
       "no_apps_installed_yet": "এখনও কোনো অ্যাপ ইনস্টল করা হয়নি",
@@ -7703,7 +7699,7 @@
       "updated_app_other": "{{count}}টি অ্যাপ আপডেট হয়েছে।",
       "updating_progress": "আপডেট হচ্ছে {{done}}/{{total}}…",
       "v": "v",
-      "installed_app_find_in_library_and_enable": "{{name}} ইনস্টল হয়েছে। সক্রিয় করতে নিচে এটি চালু করুন।",
+      "installed_app_find_in_library_and_enable": "{{name}} ইনস্টল হয়েছে। লাইব্রেরিতে এটি চালু করুন।",
       "synced_from_its_source_directory": "{{name}} তার সোর্স ডিরেক্টরি থেকে সিঙ্ক করা হয়েছে।",
       "updated_from_the_registry": "{{name}} রেজিস্ট্রি থেকে আপডেট করা হয়েছে।"
     },
@@ -9368,6 +9364,10 @@
           "label": "টেলিমেট্রি"
         }
       }
+    },
+    "discoverPage": {
+      "subtitle": "এজেন্টিক অ্যাপ ব্রাউজ ও ইনস্টল করুন",
+      "title": "আবিষ্কার"
     },
     "embedSettingsPage": {
       "back": "ফিরে যান",

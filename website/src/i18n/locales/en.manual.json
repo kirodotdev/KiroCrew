@@ -1488,7 +1488,6 @@
         },
         "pagesProvider": {
           "developer": "Developer",
-          "explore": "Explore",
           "hooks": "Hooks",
           "kirocrew_agents": "{{productName}} Agents",
           "logs": "Logs",
@@ -2570,8 +2569,9 @@
   "nav": {
     "agent_capabilities": "Agent Capabilities",
     "artifacts": "Artifacts",
-    "explore": "Explore",
+    "discover": "Discover",
     "knowledge": "Knowledge",
+    "library": "Library",
     "notifications": "Notifications",
     "schedule": "Schedule",
     "sessions": "Sessions",
@@ -2627,17 +2627,17 @@
       "action_failed": "Failed to {{action}} {{name}}",
       "all_apps": "All apps",
       "built_in_kirocrew": "Built-in · kirocrew",
-      "discover": "Discover",
       "failed_to_enable": "Failed to enable {{name}}",
       "failed_to_load_apps": "Failed to load apps",
       "failed_to_load_registry": "Failed to load registry",
       "failed_to_uninstall": "Failed to uninstall {{name}}",
       "failed_to_update": "Failed to update: {{names}}",
-      "find_apps_in_the_discover_tab_or_install_from_a": "Find apps in the Discover tab, or install from a local path via the sources gear above.",
-      "hidden_you_can_re_enable_it_from_the_discover_ta": "Disabled. You can re-enable it from the Discover tab.",
+      "find_apps_in_the_discover_tab_or_install_from_a": "Find apps on the Discover page, or install from a local path via Sources there.",
+      "hidden_you_can_re_enable_it_from_the_discover_ta": "Disabled. You can re-enable it from the Discover page.",
       "keep_dependency": "Keep dependency {{name}}",
       "kirocrew_registry": "{{productName}} registry",
       "library": "Library",
+      "manage_your_installed_apps": "Manage your installed apps",
       "no_apps_installed_yet": "No apps installed yet",
       "removing": "Removing…",
       "search_library": "Search library",
@@ -3489,6 +3489,10 @@
           "label": "Telemetry"
         }
       }
+    },
+    "discoverPage": {
+      "subtitle": "Browse and install agentic apps",
+      "title": "Discover"
     },
     "hooksPage": {
       "click_again_to_confirm": "Click again to confirm",

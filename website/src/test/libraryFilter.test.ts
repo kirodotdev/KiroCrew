@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 
-import { keepInLibrary } from '../pages/AppsPage'
+import { keepInLibrary } from '../pages/apps/useAppsData'
 import type { InstalledApp } from '../components/appstore/types'
 
 /**

@@ -7,7 +7,7 @@
  * Order in this file = order in the rail (within each group). Add new
  * built-in surfaces here; do not add hardcoded badge logic to `App.tsx`.
  */
-import { MessageSquare, Bell, BookOpen, Component, CalendarDays, Settings, ClipboardCheck, LayoutGrid, Webhook } from 'lucide-react'
+import { MessageSquare, Bell, BookOpen, Component, CalendarDays, Settings, ClipboardCheck, Compass, Webhook } from 'lucide-react'
 import { createSelector } from '@reduxjs/toolkit'
 import { KiroGhostMark } from '../components/KiroGhostMark'
 import { registerBuiltinSurface, surfaceMachineValue } from './registry'
@@ -122,8 +122,11 @@ registerBuiltinSurface({
   navId: 'apps',
   route: '/apps',
   label: 'Explore',
-  labelKey: 'nav.explore',
-  icon: <LayoutGrid size={16} />,
+  // Renders as "Discover": `surfaceLabel()` resolves `labelKey` first, so the
+  // legacy `label` above is only the missing-catalog fallback (kept verbatim —
+  // a required field whose English value the i18n literal gate freezes).
+  labelKey: 'nav.discover',
+  icon: <Compass size={16} />,
   group: 'Apps',
   // Rendered by App.tsx as the accent link in the "Apps" section-header row
   // (expanded) / an icon row (collapsed) — not a regular rail list item.

@@ -1,5 +1,5 @@
 /**
- * Screenshot harness for the Apps page (hybrid Discover + Library).
+ * Screenshot harness for the Apps page (split Discover page and standalone Library page).
  *
  * Runs the REAL built SPA (website/dist) on a tiny static server with SPA
  * fallback, with every /api/** call and the /api/ws websocket intercepted by
@@ -186,10 +186,17 @@ await page.screenshot({ path: `${OUT}/sources.png` })
 await page.keyboard.press('Escape')
 await settle(600)
 
-// ---- Library (pending updates banner)
-await page.getByText('Library').first().click()
+// ---- Library (standalone page after the split; pending-updates banner)
+await page.goto(`http://127.0.0.1:${PORT}/apps/library`, { waitUntil: 'domcontentloaded' })
 await settle(1400)
 await page.screenshot({ path: `${OUT}/library.png` })
+
+// ---- legacy migration: a stored library tab redirects /apps -> /apps/library
+await page.evaluate(() => sessionStorage.setItem('appstore-tab', 'library'))
+await page.goto(`http://127.0.0.1:${PORT}/apps`, { waitUntil: 'domcontentloaded' })
+await settle(1600)
+console.log('legacy redirect landed on:', page.url())
+await page.screenshot({ path: `${OUT}/legacy-redirect.png` })
 
 console.log('unmatched /api paths:', [...unmatched].join(', ') || 'none')
 await context.close()

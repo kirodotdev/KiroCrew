@@ -34,8 +34,6 @@
     "dismiss": "Ignorer",
     "dsk": "DSK",
     "expand_sidebar": "Développer la barre latérale",
-    "explore": "Explorer",
-    "explore_apps": "Explorer les applications",
     "gateway_connected": "Passerelle connectée",
     "gateway_offline": "Passerelle hors ligne",
     "gateway_offline_reconnecting": "Passerelle hors ligne — reconnexion en cours",
@@ -5349,7 +5347,6 @@
         },
         "pagesProvider": {
           "developer": "Développeur",
-          "explore": "Explorer",
           "hooks": "Hooks",
           "kirocrew_agents": "Agents {{productName}}",
           "logs": "Journaux",
@@ -7524,8 +7521,9 @@
   "nav": {
     "agent_capabilities": "Capacités de l'agent",
     "artifacts": "Artefacts",
-    "explore": "Explorer",
+    "discover": "Découvrir",
     "knowledge": "Connaissances",
+    "library": "Bibliothèque",
     "notifications": "Notifications",
     "schedule": "Planification",
     "sessions": "Sessions",
@@ -7746,7 +7744,7 @@
     },
     "appsPage": {
       "action_failed": "Échec de l’action « {{action}} » sur {{name}}",
-      "add_an_app_source_gear_icon_above_or_install_fro": "Ajoutez une source d'applications (icône d'engrenage ci-dessus) ou installez depuis un chemin local.",
+      "add_an_app_source_gear_icon_above_or_install_fro": "Ajoutez une source d'apps (Sources, en haut à droite) ou installez depuis un chemin local.",
       "agent_many": "{{count}} agents",
       "agent_one": "{{count}} agent",
       "agent_other": "{{count}} agents",
@@ -7754,7 +7752,6 @@
       "app_many": "{{count}} applications",
       "app_one": "{{count}} application",
       "app_other": "{{count}} applications",
-      "apps": "Applications",
       "available": "disponible",
       "built_in_kirocrew": "Intégré · kirocrew",
       "cancel": "Annuler",
@@ -7764,16 +7761,14 @@
       "cron_job_one": "{{count}} tâche cron",
       "cron_job_other": "{{count}} tâches cron",
       "dependencies": "Dépendances :",
-      "discover": "Découvrir",
-      "discover_install_and_manage_agentic_apps": "Découvrez, installez et gérez des applications agentiques",
       "dismiss_message": "Ignorer le message",
       "failed_to_enable": "Échec de l’activation de {{name}}",
       "failed_to_load_apps": "Échec du chargement des applications",
       "failed_to_load_registry": "Échec du chargement du registre",
       "failed_to_uninstall": "Échec de la désinstallation de {{name}}",
       "failed_to_update": "Échec de la mise à jour : {{names}}",
-      "find_apps_in_the_discover_tab_or_install_from_a": "Trouve des applications dans l’onglet Découvrir, ou installe-en depuis un chemin local via l’engrenage des sources ci-dessus.",
-      "hidden_you_can_re_enable_it_from_the_discover_ta": "Désactivée. Tu peux la réactiver depuis l’onglet Découvrir.",
+      "find_apps_in_the_discover_tab_or_install_from_a": "Trouvez des apps sur la page Découvrir, ou installez depuis un chemin local via Sources sur cette page.",
+      "hidden_you_can_re_enable_it_from_the_discover_ta": "Désactivé. Vous pouvez le réactiver depuis la page Découvrir.",
       "keep_app_data": "Conserver les données de l'application",
       "keep_dependency": "Conserver la dépendance {{name}}",
       "keep_this_dependency": "Conserver cette dépendance",
@@ -7782,6 +7777,7 @@
       "kirocrew_registry": "Registre {{productName}}",
       "library": "Bibliothèque",
       "loading_apps": "Chargement des applications…",
+      "manage_your_installed_apps": "Gérez vos applications installées",
       "name": "Nom",
       "no_apps_available": "Aucune application disponible",
       "no_apps_installed_yet": "Aucune application installée pour l’instant",
@@ -7815,7 +7811,7 @@
       "updated_app_other": "{{count}} applications mises à jour.",
       "updating_progress": "Mise à jour {{done}}/{{total}}…",
       "v": "v",
-      "installed_app_find_in_library_and_enable": "{{name}} installé. Activez-le ci-dessous pour l’activer.",
+      "installed_app_find_in_library_and_enable": "{{name}} installé. Activez-le dans la Bibliothèque.",
       "synced_from_its_source_directory": "{{name}} synchronisée depuis son répertoire source.",
       "updated_from_the_registry": "{{name}} mise à jour depuis le registre."
     },
@@ -9510,6 +9506,10 @@
           "label": "Télémétrie"
         }
       }
+    },
+    "discoverPage": {
+      "subtitle": "Parcourez et installez des applications agentiques",
+      "title": "Découvrir"
     },
     "embedSettingsPage": {
       "back": "Retour",

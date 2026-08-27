@@ -34,8 +34,6 @@
     "dismiss": "忽略",
     "dsk": "DSK",
     "expand_sidebar": "展开侧边栏",
-    "explore": "探索",
-    "explore_apps": "探索应用",
     "gateway_connected": "网关已连接",
     "gateway_offline": "网关离线",
     "gateway_offline_reconnecting": "网关离线 — 正在重连",
@@ -5175,7 +5173,6 @@
         },
         "pagesProvider": {
           "developer": "开发者",
-          "explore": "探索",
           "hooks": "钩子",
           "kirocrew_agents": "{{productName}} 代理",
           "logs": "日志",
@@ -7316,8 +7313,9 @@
   "nav": {
     "agent_capabilities": "代理能力",
     "artifacts": "工件",
-    "explore": "探索",
+    "discover": "发现",
     "knowledge": "知识库",
+    "library": "库",
     "notifications": "通知",
     "schedule": "日程",
     "sessions": "会话",
@@ -7534,11 +7532,10 @@
     },
     "appsPage": {
       "action_failed": "{{action}} {{name}} 失败",
-      "add_an_app_source_gear_icon_above_or_install_fro": "添加应用源（上方齿轮图标）或从本地路径安装。",
+      "add_an_app_source_gear_icon_above_or_install_fro": "添加应用来源（右上角“来源”），或从本地路径安装。",
       "agent_other": "{{count}} 个代理",
       "all_apps": "全部应用",
       "app_other": "{{count}} 个应用",
-      "apps": "应用",
       "available": "可用",
       "built_in_kirocrew": "内置 · kirocrew",
       "cancel": "取消",
@@ -7546,16 +7543,14 @@
       "confirm_uninstall": "确认卸载",
       "cron_job_other": "{{count}} 个定时任务",
       "dependencies": "依赖：",
-      "discover": "发现",
-      "discover_install_and_manage_agentic_apps": "发现、安装并管理智能体应用",
       "dismiss_message": "忽略消息",
       "failed_to_enable": "启用 {{name}} 失败",
       "failed_to_load_apps": "加载应用失败",
       "failed_to_load_registry": "加载注册表失败",
       "failed_to_uninstall": "卸载 {{name}} 失败",
       "failed_to_update": "更新失败：{{names}}",
-      "find_apps_in_the_discover_tab_or_install_from_a": "在“发现”标签页查找应用，或通过上方的来源齿轮图标从本地路径安装。",
-      "hidden_you_can_re_enable_it_from_the_discover_ta": "已停用。可以在“发现”标签页重新启用。",
+      "find_apps_in_the_discover_tab_or_install_from_a": "在“发现”页查找应用，或通过该页的“来源”从本地路径安装。",
+      "hidden_you_can_re_enable_it_from_the_discover_ta": "已禁用。你可以在“发现”页重新启用它。",
       "keep_app_data": "保留应用数据",
       "keep_dependency": "保留依赖 {{name}}",
       "keep_this_dependency": "保留此依赖",
@@ -7564,6 +7559,7 @@
       "kirocrew_registry": "{{productName}} 注册表",
       "library": "库",
       "loading_apps": "加载应用…",
+      "manage_your_installed_apps": "管理已安装的应用",
       "name": "名称",
       "no_apps_available": "暂无可用应用",
       "no_apps_installed_yet": "尚未安装任何应用",
@@ -7590,7 +7586,7 @@
       "update_other": "{{count}} 项更新",
       "updating_progress": "正在更新 {{done}}/{{total}}…",
       "v": "v",
-      "installed_app_find_in_library_and_enable": "已安装 {{name}}。在下方打开开关即可启用。",
+      "installed_app_find_in_library_and_enable": "已安装 {{name}}。请在“库”中启用它。",
       "synced_from_its_source_directory": "已从源目录同步 {{name}}。",
       "updated_app_other": "已更新 {{count}} 个应用。",
       "updated_from_the_registry": "已从注册表更新 {{name}}。"
@@ -9226,6 +9222,10 @@
           "label": "遥测"
         }
       }
+    },
+    "discoverPage": {
+      "subtitle": "浏览并安装智能体应用",
+      "title": "发现"
     },
     "embedSettingsPage": {
       "back": "返回",

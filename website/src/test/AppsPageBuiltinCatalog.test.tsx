@@ -46,7 +46,7 @@ vi.mock('../components/SegmentedControl', () => ({
   ),
 }))
 
-import AppsPage from '../pages/AppsPage'
+import AppsPage from '../pages/apps/DiscoverPage'
 
 const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 

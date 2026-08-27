@@ -442,8 +442,11 @@ describe('App routing', () => {
     expect(screen.getByText('Sessions')).toBeInTheDocument()
     expect(screen.getByText('Agent Capabilities')).toBeInTheDocument()
     expect(screen.getByText('Settings')).toBeInTheDocument()
-    // The App Store now rides the Apps section header as an accent link.
-    expect(screen.getByText('Explore')).toBeInTheDocument()
+    // PR1 App Store split: the single 'Explore' entry is gone — the sidebar
+    // now carries TWO App Store rows, Discover (/apps) and Library
+    // (/apps/library).
+    expect(screen.getByText('Discover')).toBeInTheDocument()
+    expect(screen.getByText('Library')).toBeInTheDocument()
     // The bottom-pinned community row: the GitHub mark fronts a "Star us" link
     // plus a "Report issue" BUTTON (it opens the diagnostics flow rather than
     // navigating to the issue list), and the icon-only Discord link. The

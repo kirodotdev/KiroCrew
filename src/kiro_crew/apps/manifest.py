@@ -38,6 +38,21 @@ SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+([+-]|$)")
 # validation AND defense-in-depth at the push endpoint.
 RESERVED_APP_NAMES = frozenset({"system"})
 
+# Dashboard route segments under ``/apps/`` that resolve to a STATIC page
+# instead of the ``/apps/:name`` installed-app catch-all. An app carrying one
+# of these names would be unreachable: its exact URL (``/apps/library``) is
+# claimed by the page, which is registered before the catch-all. ``detail`` and
+# ``migrate`` need no entry here — their routes carry a mandatory second
+# segment (``/apps/detail/:name``), so a bare ``/apps/detail`` still resolves
+# to an app named "detail" via the catch-all.
+RESERVED_ROUTE_APP_NAMES = frozenset({"library"})
+
+#: Wire code for a reserved-name refusal. Callers that turn ``app_name_error``
+#: into a JSON error response set this as ``AppResult.error_code`` (serialized
+#: as ``code``) so the frontend can switch on the failure instead of parsing
+#: English prose (see ``test_error_code_contract.py``).
+RESERVED_APP_NAME_CODE = "reserved_app_name"
+
 # App names that are not safe portable filesystem identities. An app name becomes
 # a directory (``apps/<name>/``, plus ``apps/<name>/data`` at first startup), and
 # Windows reserves these stems as device names by naming contract.
@@ -85,12 +100,27 @@ def app_name_error(name: str) -> str | None:
             f"app name {name!r} is reserved (would shadow the "
             f"{name}.* notification channel namespace)"
         )
+    if name in RESERVED_ROUTE_APP_NAMES:
+        return (
+            f"app name {name!r} is reserved (the dashboard /apps/{name} route is a "
+            f"static page, so the app's own page would be unreachable)"
+        )
     if name in UNPORTABLE_APP_NAMES:
         return (
             f"app name {name!r} is not portable: Windows reserves it as a device name, "
             f"so the app directory is not safe to create there"
         )
     return None
+
+
+def is_reserved_app_name(name: str) -> bool:
+    """Return True if *name* is refused solely because it is reserved.
+
+    Lets callers that translate ``app_name_error`` prose into a JSON error
+    attach the machine-readable ``RESERVED_APP_NAME_CODE`` for exactly the
+    reserved-name refusals, without re-deriving the reservation sets.
+    """
+    return name in RESERVED_APP_NAMES or name in RESERVED_ROUTE_APP_NAMES
 
 
 def _is_rooted_path(rel_path: str) -> bool:

@@ -549,6 +549,11 @@ the user to run locally instead of executing it on the server.
 - `name` must match `/^[a-z0-9]+(?:-[a-z0-9]+)*$/` (kebab-case)
 - `name` must not be `system` (it would shadow the `system.*` notification-channel
   namespace)
+- `name` must not be `library` (the dashboard serves `/apps/library` as a static
+  page — the installed-app management surface — and it registers ahead of the
+  `/apps/:name` route, so an app by that name would have an unreachable page).
+  Refused at every install door, including registry installs before any
+  clone/build work, with the machine-readable error code `reserved_app_name`.
 - `name` must not be a Windows reserved device stem — `con`, `prn`, `aux`, `nul`,
   `com1`–`com9`, `lpt1`–`lpt9` — because the app name becomes a directory and
   Windows resolves those inside every directory. Names that merely resemble one

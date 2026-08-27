@@ -1,9 +1,10 @@
 /**
  * Issue #3689, part 2: one installed-app card whose render throws must NOT
- * unmount the whole /apps route. Each card in the Library list is wrapped in
- * an ErrorBoundary that renders a compact degraded placeholder (app name +
- * i18n'd notice) in place of the broken card, while sibling cards and the
- * page chrome keep rendering.
+ * unmount the whole /apps/library route (PR1 split: the Library list moved
+ * from the old AppsPage tab to LibraryPage). Each card in the Library list is
+ * wrapped in an ErrorBoundary that renders a compact degraded placeholder
+ * (app name + i18n'd notice) in place of the broken card, while sibling cards
+ * and the page chrome keep rendering.
  *
  * InstalledAppCard is mocked to throw for one specific app so the test stays
  * deterministic even after the card's own null-guards are fixed.
@@ -70,7 +71,7 @@ vi.mock('../components/appstore/InstalledAppCard', () => ({
   },
 }))
 
-import AppsPage from '../pages/AppsPage'
+import LibraryPage from '../pages/apps/LibraryPage'
 
 function installed(name: string) {
   return {
@@ -89,9 +90,9 @@ function renderPage(qc?: QueryClient) {
   const client = qc ?? new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={['/apps']}>
+      <MemoryRouter initialEntries={['/apps/library']}>
         <Routes>
-          <Route path="/apps" element={<AppsPage />} />
+          <Route path="/apps/library" element={<LibraryPage />} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -102,7 +103,6 @@ describe('AppsPage per-card error boundary (#3689)', () => {
   let consoleError: ReturnType<typeof vi.spyOn>
 
   beforeEach(() => {
-    sessionStorage.setItem('appstore-tab', 'library')
     listApps.mockResolvedValue([installed('zzq-healthy'), installed('zzq-broken')])
     listRegistry.mockResolvedValue({ apps: [], categoryOrder: [], editorialSections: [] })
     listRegistries.mockResolvedValue([])
@@ -169,7 +169,6 @@ describe('AppsPage per-card error boundary (#3689)', () => {
 
 describe('AppsPage normalizes installed apps at the query boundary (#3706)', () => {
   beforeEach(() => {
-    sessionStorage.setItem('appstore-tab', 'library')
     listRegistry.mockResolvedValue({ apps: [], categoryOrder: [], editorialSections: [] })
     listRegistries.mockResolvedValue([])
     cardMock.apps.length = 0

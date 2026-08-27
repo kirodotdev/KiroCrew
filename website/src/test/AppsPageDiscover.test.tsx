@@ -50,16 +50,21 @@ vi.mock('../components/SegmentedControl', () => ({
   ),
 }))
 
-import AppsPage from '../pages/AppsPage'
+import AppsPage from '../pages/apps/DiscoverPage'
+import LibraryPage from '../pages/apps/LibraryPage'
 
 const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
-function renderPage() {
+function renderPage(path = '/apps') {
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={['/apps']}>
+      <MemoryRouter initialEntries={[path]}>
         <Routes>
           <Route path="/apps" element={<AppsPage />} />
+          {/* Static segment BEFORE the detail param route, mirroring App.tsx's
+              route order: /apps/library must never fall through to a
+              /apps/:name-style catch-all. */}
+          <Route path="/apps/library" element={<LibraryPage />} />
           <Route path="/apps/detail/:name" element={<div data-testid="detail-route" />} />
         </Routes>
       </MemoryRouter>
@@ -160,9 +165,8 @@ describe('AppsPage — hybrid Discover', () => {
 
   it('shows the pending-updates banner on Library and runs Update All', async () => {
     updateApp.mockResolvedValue({ ok: true })
-    renderPage()
-    await screen.findAllByText('FEATURED')
-    fireEvent.click(screen.getByText('Library'))
+    // Library is its own routed page now (PR1 split) — mount it directly.
+    renderPage('/apps/library')
     expect(await screen.findByText('1 update available')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Update All' }))
     await waitFor(() => expect(updateApp).toHaveBeenCalledWith('secretary'))
@@ -171,9 +175,12 @@ describe('AppsPage — hybrid Discover', () => {
   it('persists and migrates the stored tab (installed → library)', async () => {
     sessionStorage.setItem('appstore-tab', 'installed')
     renderPage()
-    // Lands on Library (migrated), which shows the installed management card
+    // The legacy key redirects /apps to /apps/library (REPLACE), which shows
+    // the installed management surface — the pending-updates banner proves
+    // Library content actually rendered, not just a route change.
     expect(await screen.findByText('1 update available')).toBeInTheDocument()
-    expect(sessionStorage.getItem('appstore-tab')).toBe('library')
+    // The key is cleared after migration so the redirect can never fire twice.
+    await waitFor(() => expect(sessionStorage.getItem('appstore-tab')).toBeNull())
   })
 })
 

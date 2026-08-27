@@ -34,8 +34,6 @@
     "dismiss": "Скрыть",
     "dsk": "DSK",
     "expand_sidebar": "Развернуть боковую панель",
-    "explore": "Обзор",
-    "explore_apps": "Обзор приложений",
     "gateway_connected": "Шлюз подключён",
     "gateway_offline": "Шлюз офлайн",
     "gateway_offline_reconnecting": "Шлюз офлайн — переподключение",
@@ -5436,7 +5434,6 @@
         },
         "pagesProvider": {
           "developer": "Разработчик",
-          "explore": "Обзор",
           "hooks": "Хуки",
           "kirocrew_agents": "Агенты {{productName}}",
           "logs": "Логи",
@@ -7628,8 +7625,9 @@
   "nav": {
     "agent_capabilities": "Возможности агента",
     "artifacts": "Артефакты",
-    "explore": "Обзор",
+    "discover": "Обзор",
     "knowledge": "Знания",
+    "library": "Библиотека",
     "notifications": "Уведомления",
     "schedule": "Расписание",
     "sessions": "Сессии",
@@ -7852,7 +7850,7 @@
     },
     "appsPage": {
       "action_failed": "Не удалось {{action}} {{name}}",
-      "add_an_app_source_gear_icon_above_or_install_fro": "Добавьте источник приложений (значок шестерёнки выше) или установите из локального пути.",
+      "add_an_app_source_gear_icon_above_or_install_fro": "Добавьте источник приложений («Источники», справа вверху) или установите из локального пути.",
       "agent_few": "{{count}} агента",
       "agent_many": "{{count}} агентов",
       "agent_one": "{{count}} агент",
@@ -7862,7 +7860,6 @@
       "app_many": "{{count}} приложений",
       "app_one": "{{count}} приложение",
       "app_other": "{{count}} приложения",
-      "apps": "Приложения",
       "available": "доступно",
       "built_in_kirocrew": "Встроенное · kirocrew",
       "cancel": "Отмена",
@@ -7873,16 +7870,14 @@
       "cron_job_one": "{{count}} задание cron",
       "cron_job_other": "{{count}} задания cron",
       "dependencies": "Зависимости:",
-      "discover": "Обзор",
-      "discover_install_and_manage_agentic_apps": "Находите и устанавливайте агентные приложения и управляйте ими",
       "dismiss_message": "Скрыть сообщение",
       "failed_to_enable": "Не удалось включить {{name}}",
       "failed_to_load_apps": "Не удалось загрузить приложения",
       "failed_to_load_registry": "Не удалось загрузить реестр",
       "failed_to_uninstall": "Не удалось удалить {{name}}",
       "failed_to_update": "Не удалось обновить: {{names}}",
-      "find_apps_in_the_discover_tab_or_install_from_a": "Ищи приложения на вкладке «Обзор» или установи из локального пути через шестерёнку источников выше.",
-      "hidden_you_can_re_enable_it_from_the_discover_ta": "Отключено. Снова включить можно на вкладке «Обзор».",
+      "find_apps_in_the_discover_tab_or_install_from_a": "Ищите приложения на странице «Обзор» или установите из локального пути через «Источники» на той странице.",
+      "hidden_you_can_re_enable_it_from_the_discover_ta": "Отключено. Вы можете снова включить его на странице «Обзор».",
       "keep_app_data": "Сохранить данные приложения",
       "keep_dependency": "Сохранить зависимость {{name}}",
       "keep_this_dependency": "Сохранить эту зависимость",
@@ -7891,6 +7886,7 @@
       "kirocrew_registry": "Реестр {{productName}}",
       "library": "Библиотека",
       "loading_apps": "Загрузка приложений…",
+      "manage_your_installed_apps": "Управляйте установленными приложениями",
       "name": "Название",
       "no_apps_available": "Нет доступных приложений",
       "no_apps_installed_yet": "Приложения ещё не установлены",
@@ -7927,7 +7923,7 @@
       "updated_app_other": "Обновлено {{count}} приложения.",
       "updating_progress": "Обновление {{done}}/{{total}}...",
       "v": "v",
-      "installed_app_find_in_library_and_enable": "{{name}} установлено. Включите его ниже, чтобы активировать.",
+      "installed_app_find_in_library_and_enable": "{{name}} установлено. Включите его в Библиотеке.",
       "synced_from_its_source_directory": "{{name}} синхронизировано из исходного каталога.",
       "updated_from_the_registry": "{{name}} обновлено из реестра."
     },
@@ -9652,6 +9648,10 @@
           "label": "Телеметрия"
         }
       }
+    },
+    "discoverPage": {
+      "subtitle": "Просматривайте и устанавливайте агентные приложения",
+      "title": "Обзор"
     },
     "embedSettingsPage": {
       "back": "Назад",

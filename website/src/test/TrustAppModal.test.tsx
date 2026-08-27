@@ -74,7 +74,7 @@ vi.mock('../components/SegmentedControl', () => ({
   ),
 }))
 
-import AppsPage from '../pages/AppsPage'
+import LibraryPage from '../pages/apps/LibraryPage'
 import AppDetailPage from '../pages/AppDetailPage'
 import {
   isTrustDeniedError,
@@ -127,9 +127,9 @@ function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={['/apps']}>
+      <MemoryRouter initialEntries={['/apps/library']}>
         <Routes>
-          <Route path="/apps" element={<AppsPage />} />
+          <Route path="/apps/library" element={<LibraryPage />} />
           <Route path="/apps/detail/:name" element={<div data-testid="detail-route" />} />
         </Routes>
       </MemoryRouter>
@@ -163,12 +163,12 @@ function renderDetailFromGet(name = THIRD_PARTY.name) {
 /**
  * Click Enable on the third-party app.
  *
- * The Library tab is the surface that offers it: FeaturedSpotlight/AppListRow
- * only render Enable for a hidden BUILT-IN, so an installed-but-disabled
- * third-party app is enabled from its installed card (or the detail page).
+ * The Library page (/apps/library) is the surface that offers it:
+ * FeaturedSpotlight/AppListRow only render Enable for a hidden BUILT-IN, so an
+ * installed-but-disabled third-party app is enabled from its installed card
+ * (or the detail page).
  */
 async function clickEnable() {
-  fireEvent.click(await screen.findByRole('button', { name: /appsPage\.library/ }))
   const btn = await screen.findByRole('button', { name: /installedAppCard\.enable$/ })
   fireEvent.click(btn)
   return btn
@@ -225,7 +225,7 @@ describe('isTrustDeniedError', () => {
   })
 })
 
-describe('AppsPage trust gate', () => {
+describe('LibraryPage trust gate', () => {
   it('opens the consent modal when enable is refused with app_execution_denied', async () => {
     enableApp.mockRejectedValue(TRUST_DENIED())
     renderPage()

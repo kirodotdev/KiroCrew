@@ -34,8 +34,6 @@
     "dismiss": "Dispensar",
     "dsk": "DSK",
     "expand_sidebar": "Expandir barra lateral",
-    "explore": "Explorar",
-    "explore_apps": "Explorar apps",
     "gateway_connected": "Gateway conectado",
     "gateway_offline": "Gateway offline",
     "gateway_offline_reconnecting": "Gateway offline — reconectando",
@@ -5349,7 +5347,6 @@
         },
         "pagesProvider": {
           "developer": "Desenvolvedor",
-          "explore": "Explorar",
           "hooks": "Hooks",
           "kirocrew_agents": "Agentes do {{productName}}",
           "logs": "Logs",
@@ -7524,8 +7521,9 @@
   "nav": {
     "agent_capabilities": "Recursos do agente",
     "artifacts": "Artefatos",
-    "explore": "Explorar",
+    "discover": "Descobrir",
     "knowledge": "Conhecimento",
+    "library": "Biblioteca",
     "notifications": "Notificações",
     "schedule": "Agendamentos",
     "sessions": "Sessões",
@@ -7746,7 +7744,7 @@
     },
     "appsPage": {
       "action_failed": "Falha ao {{action}} {{name}}",
-      "add_an_app_source_gear_icon_above_or_install_fro": "Adicione uma fonte de apps (ícone de engrenagem acima) ou instale a partir de um caminho local.",
+      "add_an_app_source_gear_icon_above_or_install_fro": "Adicione uma fonte de apps (Fontes, no canto superior direito) ou instale de um caminho local.",
       "agent_many": "{{count}} agentes",
       "agent_one": "{{count}} agente",
       "agent_other": "{{count}} agentes",
@@ -7754,7 +7752,6 @@
       "app_many": "{{count}} apps",
       "app_one": "{{count}} app",
       "app_other": "{{count}} apps",
-      "apps": "Apps",
       "available": "disponível",
       "built_in_kirocrew": "Integrado · kirocrew",
       "cancel": "Cancelar",
@@ -7764,16 +7761,14 @@
       "cron_job_one": "{{count}} job de cron",
       "cron_job_other": "{{count}} jobs de cron",
       "dependencies": "Dependências:",
-      "discover": "Descobrir",
-      "discover_install_and_manage_agentic_apps": "Descubra, instale e gerencie apps agênticos",
       "dismiss_message": "Descartar mensagem",
       "failed_to_enable": "Falha ao ativar {{name}}",
       "failed_to_load_apps": "Falha ao carregar os apps",
       "failed_to_load_registry": "Falha ao carregar o registro",
       "failed_to_uninstall": "Falha ao desinstalar {{name}}",
       "failed_to_update": "Falha ao atualizar: {{names}}",
-      "find_apps_in_the_discover_tab_or_install_from_a": "Encontre apps na aba Descobrir ou instale a partir de um caminho local pela engrenagem de fontes acima.",
-      "hidden_you_can_re_enable_it_from_the_discover_ta": "Desativado. Você pode reativá-lo na aba Descobrir.",
+      "find_apps_in_the_discover_tab_or_install_from_a": "Encontre apps na página Descobrir ou instale de um caminho local pelas Fontes daquela página.",
+      "hidden_you_can_re_enable_it_from_the_discover_ta": "Desativado. Você pode reativá-lo na página Descobrir.",
       "keep_app_data": "Manter dados do app",
       "keep_dependency": "Manter a dependência {{name}}",
       "keep_this_dependency": "Manter esta dependência",
@@ -7782,6 +7777,7 @@
       "kirocrew_registry": "Registro do {{productName}}",
       "library": "Biblioteca",
       "loading_apps": "Carregando apps…",
+      "manage_your_installed_apps": "Gerencie seus apps instalados",
       "name": "Nome",
       "no_apps_available": "Nenhum app disponível",
       "no_apps_installed_yet": "Nenhum app instalado ainda",
@@ -7815,7 +7811,7 @@
       "updated_app_other": "{{count}} apps atualizados.",
       "updating_progress": "Atualizando {{done}}/{{total}}…",
       "v": "v",
-      "installed_app_find_in_library_and_enable": "{{name}} instalado. Ative-o abaixo para habilitá-lo.",
+      "installed_app_find_in_library_and_enable": "{{name}} instalado. Ative-o na Biblioteca.",
       "synced_from_its_source_directory": "{{name}} sincronizado a partir do diretório de origem.",
       "updated_from_the_registry": "{{name}} atualizado a partir do registro."
     },
@@ -9510,6 +9506,10 @@
           "label": "Telemetria"
         }
       }
+    },
+    "discoverPage": {
+      "subtitle": "Explore e instale apps agênticos",
+      "title": "Descobrir"
     },
     "embedSettingsPage": {
       "back": "Voltar",

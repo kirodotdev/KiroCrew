@@ -11,7 +11,7 @@ import {
   type InstalledApp,
   type RegistryApp,
 } from '../components/appstore/types'
-import { pickFeatured } from '../pages/AppsPage'
+import { pickFeatured } from '../pages/apps/useAppsData'
 
 const app = (over: Partial<RegistryApp>): RegistryApp => ({
   name: 'x', displayName: 'X', description: '', version: '1.0.0',

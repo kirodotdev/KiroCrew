@@ -17,12 +17,12 @@ export type SourceRow = { name: string; label: string; count: number; builtin: b
 export default function CategoryRail({ categories, total, selected, onSelect, sources, onAddSource }: {
   categories: { category: Category; count: number }[]
   total: number
-  selected: Category | 'All'
-  onSelect: (c: Category | 'All') => void
+  selected: Category | 'all'
+  onSelect: (c: Category | 'all') => void
   sources: SourceRow[]
   onAddSource: () => void
 }) {
-  const item = (label: string, count: number, key: Category | 'All') => {
+  const item = (label: string, count: number, key: Category | 'all') => {
     const on = selected === key
     return (
       <button
@@ -43,7 +43,7 @@ export default function CategoryRail({ categories, total, selected, onSelect, so
     <div className="flex flex-col gap-[18px] w-full">
       <div>
         <div className="text-[11px] font-bold tracking-[.1em] text-muted mb-2">{i18nT('components.appstore.categoryRail.categories')}</div>
-        {item(i18nT('components.appstore.categoryRail.all_apps'), total, 'All')}
+        {item(i18nT('components.appstore.categoryRail.all_apps'), total, 'all')}
         {categories.map(({ category, count }) => item(category, count, category))}
       </div>
       <div>

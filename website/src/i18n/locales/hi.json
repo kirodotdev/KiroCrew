@@ -34,8 +34,6 @@
     "dismiss": "खारिज करें",
     "dsk": "DSK",
     "expand_sidebar": "साइडबार विस्तृत करें",
-    "explore": "एक्सप्लोर",
-    "explore_apps": "ऐप्स एक्सप्लोर करें",
     "gateway_connected": "गेटवे कनेक्ट है",
     "gateway_offline": "गेटवे ऑफ़लाइन",
     "gateway_offline_reconnecting": "गेटवे ऑफ़लाइन — फिर से कनेक्ट हो रहा है",
@@ -5262,7 +5260,6 @@
         },
         "pagesProvider": {
           "developer": "डेवलपर",
-          "explore": "एक्सप्लोर",
           "hooks": "हुक",
           "kirocrew_agents": "{{productName}} एजेंट",
           "logs": "लॉग",
@@ -7420,8 +7417,9 @@
   "nav": {
     "agent_capabilities": "एजेंट क्षमताएँ",
     "artifacts": "आर्टिफ़ैक्ट",
-    "explore": "एक्सप्लोर",
+    "discover": "डिस्कवर",
     "knowledge": "ज्ञान",
+    "library": "लाइब्रेरी",
     "notifications": "सूचनाएँ",
     "schedule": "शेड्यूल",
     "sessions": "सत्र",
@@ -7640,13 +7638,12 @@
     },
     "appsPage": {
       "action_failed": "{{name}} को {{action}} करने में विफल",
-      "add_an_app_source_gear_icon_above_or_install_fro": "ऐप स्रोत जोड़ें (ऊपर गियर आइकन) या किसी लोकल पथ से इंस्टॉल करें।",
+      "add_an_app_source_gear_icon_above_or_install_fro": "ऐप सोर्स जोड़ो (ऊपर दाईं ओर सोर्सेज़) या लोकल पाथ से इंस्टॉल करो।",
       "agent_one": "{{count}} एजेंट",
       "agent_other": "{{count}} एजेंट",
       "all_apps": "सभी ऐप्स",
       "app_one": "{{count}} ऐप",
       "app_other": "{{count}} ऐप",
-      "apps": "ऐप्स",
       "available": "उपलब्ध",
       "built_in_kirocrew": "अंतर्निहित · kirocrew",
       "cancel": "रद्द करें",
@@ -7655,16 +7652,14 @@
       "cron_job_one": "{{count}} cron जॉब",
       "cron_job_other": "{{count}} cron जॉब",
       "dependencies": "निर्भरताएँ:",
-      "discover": "डिस्कवर",
-      "discover_install_and_manage_agentic_apps": "एजेंटिक ऐप्स खोजें, इंस्टॉल करें और प्रबंधित करें",
       "dismiss_message": "संदेश बंद करें",
       "failed_to_enable": "{{name}} चालू नहीं हो सका",
       "failed_to_load_apps": "ऐप्स लोड नहीं हो सके",
       "failed_to_load_registry": "रजिस्ट्री लोड नहीं हो सकी",
       "failed_to_uninstall": "{{name}} अनइंस्टॉल नहीं हो सका",
       "failed_to_update": "अपडेट नहीं हो सका: {{names}}",
-      "find_apps_in_the_discover_tab_or_install_from_a": "ऐप्स डिस्कवर टैब में खोजें, या ऊपर दिए सोर्स गियर से किसी स्थानीय पथ से इंस्टॉल करें।",
-      "hidden_you_can_re_enable_it_from_the_discover_ta": "बंद कर दिया गया। इसे डिस्कवर टैब से फिर चालू किया जा सकता है।",
+      "find_apps_in_the_discover_tab_or_install_from_a": "डिस्कवर पेज पर ऐप्स खोजो, या उस पेज के सोर्सेज़ से लोकल पाथ से इंस्टॉल करो।",
+      "hidden_you_can_re_enable_it_from_the_discover_ta": "बंद कर दिया गया। इसे डिस्कवर पेज से दोबारा चालू कर सकते हो।",
       "keep_app_data": "ऐप डेटा रखें",
       "keep_dependency": "डिपेंडेंसी {{name}} रखें",
       "keep_this_dependency": "इस निर्भरता को रखें",
@@ -7673,6 +7668,7 @@
       "kirocrew_registry": "{{productName}} रजिस्ट्री",
       "library": "लाइब्रेरी",
       "loading_apps": "ऐप्स लोड हो रहे हैं…",
+      "manage_your_installed_apps": "अपने इंस्टॉल किए गए ऐप्स प्रबंधित करें",
       "name": "नाम",
       "no_apps_available": "कोई ऐप उपलब्ध नहीं",
       "no_apps_installed_yet": "अभी कोई ऐप इंस्टॉल नहीं है",
@@ -7703,7 +7699,7 @@
       "updated_app_other": "{{count}} ऐप अपडेट किए गए।",
       "updating_progress": "अपडेट हो रहा है {{done}}/{{total}}…",
       "v": "v",
-      "installed_app_find_in_library_and_enable": "{{name}} इंस्टॉल हो गया। सक्रिय करने के लिए इसे नीचे चालू करें।",
+      "installed_app_find_in_library_and_enable": "{{name}} इंस्टॉल हो गया। इसे लाइब्रेरी में चालू करो।",
       "synced_from_its_source_directory": "{{name}} को उसकी सोर्स डायरेक्टरी से सिंक कर दिया गया।",
       "updated_from_the_registry": "{{name}} को रजिस्ट्री से अपडेट कर दिया गया।"
     },
@@ -9368,6 +9364,10 @@
           "label": "टेलीमेट्री"
         }
       }
+    },
+    "discoverPage": {
+      "subtitle": "एजेंटिक ऐप्स ब्राउज़ और इंस्टॉल करें",
+      "title": "डिस्कवर"
     },
     "embedSettingsPage": {
       "back": "वापस",

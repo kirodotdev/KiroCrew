@@ -34,8 +34,6 @@
     "dismiss": "닫기",
     "dsk": "DSK",
     "expand_sidebar": "사이드바 펼치기",
-    "explore": "탐색",
-    "explore_apps": "앱 탐색",
     "gateway_connected": "게이트웨이 연결됨",
     "gateway_offline": "게이트웨이 오프라인",
     "gateway_offline_reconnecting": "게이트웨이 오프라인 — 재연결 중",
@@ -5175,7 +5173,6 @@
         },
         "pagesProvider": {
           "developer": "개발자",
-          "explore": "탐색",
           "hooks": "훅",
           "kirocrew_agents": "{{productName}} 에이전트",
           "logs": "로그",
@@ -7316,8 +7313,9 @@
   "nav": {
     "agent_capabilities": "에이전트 기능",
     "artifacts": "아티팩트",
-    "explore": "탐색",
+    "discover": "탐색",
     "knowledge": "지식",
+    "library": "라이브러리",
     "notifications": "알림",
     "schedule": "스케줄",
     "sessions": "세션",
@@ -7534,11 +7532,10 @@
     },
     "appsPage": {
       "action_failed": "{{name}} {{action}}에 실패했습니다",
-      "add_an_app_source_gear_icon_above_or_install_fro": "앱 소스를 추가하거나(위쪽 톱니바퀴 아이콘) 로컬 경로에서 설치하세요.",
+      "add_an_app_source_gear_icon_above_or_install_fro": "앱 소스를 추가하거나(오른쪽 위 소스) 로컬 경로에서 설치하세요.",
       "agent_other": "에이전트 {{count}}개",
       "all_apps": "모든 앱",
       "app_other": "앱 {{count}}개",
-      "apps": "앱",
       "available": "사용 가능",
       "built_in_kirocrew": "기본 제공 · kirocrew",
       "cancel": "취소",
@@ -7546,16 +7543,14 @@
       "confirm_uninstall": "제거 확인",
       "cron_job_other": "cron 작업 {{count}}개",
       "dependencies": "종속성:",
-      "discover": "탐색",
-      "discover_install_and_manage_agentic_apps": "에이전틱 앱을 탐색하고 설치하고 관리합니다",
       "dismiss_message": "메시지 닫기",
       "failed_to_enable": "{{name}} 활성화에 실패했습니다",
       "failed_to_load_apps": "앱을 불러오지 못했습니다",
       "failed_to_load_registry": "레지스트리를 불러오지 못했습니다",
       "failed_to_uninstall": "{{name}} 제거에 실패했습니다",
       "failed_to_update": "업데이트에 실패했습니다: {{names}}",
-      "find_apps_in_the_discover_tab_or_install_from_a": "[탐색] 탭에서 앱을 찾거나, 위쪽 소스 톱니바퀴로 로컬 경로에서 설치하세요.",
-      "hidden_you_can_re_enable_it_from_the_discover_ta": "비활성화되었습니다. [탐색] 탭에서 다시 활성화할 수 있습니다.",
+      "find_apps_in_the_discover_tab_or_install_from_a": "발견 페이지에서 앱을 찾거나, 해당 페이지의 소스에서 로컬 경로로 설치하세요.",
+      "hidden_you_can_re_enable_it_from_the_discover_ta": "비활성화됨. 발견 페이지에서 다시 활성화할 수 있습니다.",
       "keep_app_data": "앱 데이터 유지",
       "keep_dependency": "종속성 {{name}} 유지",
       "keep_this_dependency": "이 종속성 유지",
@@ -7564,6 +7559,7 @@
       "kirocrew_registry": "{{productName}} 레지스트리",
       "library": "라이브러리",
       "loading_apps": "앱을 불러오는 중…",
+      "manage_your_installed_apps": "설치된 앱을 관리합니다",
       "name": "이름",
       "no_apps_available": "사용 가능한 앱이 없습니다",
       "no_apps_installed_yet": "아직 설치된 앱이 없습니다",
@@ -7590,7 +7586,7 @@
       "update_other": "업데이트 {{count}}개",
       "updating_progress": "업데이트 중 {{done}}/{{total}}…",
       "v": "v",
-      "installed_app_find_in_library_and_enable": "{{name}} 설치됨. 아래에서 켜서 활성화하세요.",
+      "installed_app_find_in_library_and_enable": "{{name}} 설치됨. 라이브러리에서 활성화하세요.",
       "synced_from_its_source_directory": "{{name}}을(를) 소스 디렉터리에서 동기화했습니다.",
       "updated_app_other": "앱 {{count}}개를 업데이트했습니다.",
       "updated_from_the_registry": "{{name}}을(를) 레지스트리에서 업데이트했습니다."
@@ -9226,6 +9222,10 @@
           "label": "텔레메트리"
         }
       }
+    },
+    "discoverPage": {
+      "subtitle": "에이전틱 앱을 둘러보고 설치합니다",
+      "title": "탐색"
     },
     "embedSettingsPage": {
       "back": "뒤로",

@@ -42,7 +42,7 @@ import type { KiroCreditUsage, KiroUsagePayload } from './api/client'
 import { safeSetItem } from './utils/safeStorage'
 import { gcOrphanedStorage } from './utils/storageGc'
 import { isMetricNumber, metricNumber } from './utils/metrics'
-import { Rocket, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, ArrowLeftToLine, LayoutGrid, Fullscreen, SquareTerminal, Bot, Search as SearchIcon } from 'lucide-react'
+import { Rocket, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, ArrowLeftToLine, Compass, LayoutGrid, Fullscreen, SquareTerminal, Bot, Search as SearchIcon } from 'lucide-react'
 import { GithubIcon, DiscordIcon } from './components/BrandIcon'
 import { Toggle } from './components/ui'
 import OnboardingFlow from './components/OnboardingFlow'
@@ -96,7 +96,6 @@ import BottomTerminalPanel, { TerminalDetachedBar } from './components/BottomTer
 import { toggleBottomTerminal, useBottomTerminalOpen, useTerminalPosition } from './hooks/useBottomTerminal'
 import { useTerminalPoppedOut, focusPopout as focusTerminalPopout } from './utils/terminalPopout'
 import { setTerminalEnabledFlag } from './utils/terminalRegistry'
-import AppsPage from './pages/AppsPage'
 import AppPage from './pages/AppPage'
 import AppDetailPage from './pages/AppDetailPage'
 import MigrationPage from './pages/MigrationPage'
@@ -133,6 +132,12 @@ const UpdateFoundModal = lazy(() => import('./components/UpdateFoundModal'))
 // Same boundary, same reason: the pill renders nothing without an update,
 // so its code rides the on-demand chunk instead of the app core.
 const UpdatePill = lazy(() => import('./components/UpdatePill'))
+
+// Route-level code splitting for the App Store split (PR1): Discover and
+// Library are independent surfaces, and neither belongs in the app-core
+// chunk -- each rides its own on-demand chunk fetched on first navigation.
+const DiscoverPage = lazy(() => import('./pages/apps/DiscoverPage'))
+const LibraryPage = lazy(() => import('./pages/apps/LibraryPage'))
 
 const MAX_KIRO_BONUS_GRANT_NAME_CHARS = 100
 const MAX_KIRO_BONUS_CREDITS = 1_000_000
@@ -2198,6 +2203,17 @@ export default function App() {
   // the two cluster refs this used to keep are gone with the measurement.
   const closeMobileNav = isMobile ? () => setMobileNavOpen(false) : undefined
   const activePath = location.pathname
+  // App Store split (PR1): two sidebar entries share the /apps namespace.
+  //  - Library owns /apps/library and everything under it.
+  //  - Discover owns the store root plus the detail/migrate flows — both are
+  //    storefront surfaces reached from Discover cards, not installed-app UI.
+  //  - Installed-app pages (/apps/:name) highlight NEITHER entry: each
+  //    installed app has its own rail row below (sortedAppGroup, prefix
+  //    match), and before the split the store entry already used an exact
+  //    `=== '/apps'` match, so an app page never lit the store link. Keeping
+  //    that mapping means exactly one row lights at a time.
+  const libraryNavActive = activePath === '/apps/library' || activePath.startsWith('/apps/library/')
+  const discoverNavActive = activePath === '/apps' || activePath.startsWith('/apps/detail/') || activePath.startsWith('/apps/migrate/')
   const isChat = activePath === '/chat' || activePath.startsWith('/chat/') || activePath === '/'
   // /webhooks is a full-height rail-and-detail shell (like /capabilities), so it
   // owns its own scrolling and must not sit inside <main>'s scroll container.
@@ -3047,31 +3063,46 @@ export default function App() {
               the big logo alone separates well). */}
           {!effectiveCollapsed && <div aria-hidden="true" className="h-px bg-border shrink-0 mb-[7px]" />}
           {advertisedNavItems.filter(n => n.group === 'Main').map(n => <div key={n.id}>{renderNavRow(n)}</div>)}
-          {/* Apps section header. "Explore" (the App Store) rides the header
-              row in accent when expanded; collapsed it becomes a regular
-              muted icon row like its neighbors. No shared-layout fly-across:
-              the header link simply unmounts and the collapsed row fades in
-              and slides up into place. */}
+          {/* Apps section: the old single "Explore" header link split into two
+              nav rows — Discover (the storefront, /apps) and Library
+              (installed-app management, /apps/library). Expanded keeps the
+              muted "Apps" section label above them; collapsed renders the two
+              rows as regular icon rows like their neighbors. The unread-updates
+              badge rides Discover (navId "apps"), matching where update
+              discovery lives. NavItem carries data-onboarding-nav={navId}, so
+              the onboarding anchor "apps" stays on the Discover row. */}
           {!effectiveCollapsed ? (
-            <div className="nav-section flex items-center justify-between gap-2 pl-3 pr-1 pt-3 pb-1">
-              <span
-                // `overflow-hidden` + `whitespace-nowrap` means this clips
-                // silently once the label grows — which it does in a longer
-                // locale. The `title` keeps the full string reachable instead
-                // of losing the tail with no affordance.
-                title={i18nT('app.apps')}
-                className="text-[13px] font-medium text-muted whitespace-nowrap overflow-hidden"
-              >{i18nT('app.apps')}</span>
-              <Clickable
-                data-onboarding-nav="apps"
-                onClick={() => { closeMobileNav?.(); navigate('/apps') }}
-                className={`flex items-center gap-1.5 px-1.5 py-1 rounded-md cursor-pointer text-[12px] font-medium whitespace-nowrap transition-colors ${activePath === '/apps' ? 'text-accent bg-accent-subtle' : 'text-accent hover:bg-bg-hover'}`}
-                aria-label={i18nT('app.explore_apps')}
-              >
-                <LayoutGrid size={14} className="shrink-0" />
-                {i18nT('app.explore')}
-              </Clickable>
-            </div>
+            <>
+              <div className="nav-section flex items-center pl-3 pr-1 pt-3 pb-1">
+                <span
+                  // `overflow-hidden` + `whitespace-nowrap` means this clips
+                  // silently once the label grows — which it does in a longer
+                  // locale. The `title` keeps the full string reachable instead
+                  // of losing the tail with no affordance.
+                  title={i18nT('app.apps')}
+                  className="text-[13px] font-medium text-muted whitespace-nowrap overflow-hidden"
+                >{i18nT('app.apps')}</span>
+              </div>
+              <NavItem
+                navId="apps"
+                path="/apps"
+                label={i18nT('nav.discover')}
+                icon={<Compass size={16} />}
+                active={discoverNavActive}
+                collapsed={false}
+                onClick={closeMobileNav}
+                badge={<NavBadge navId="apps" collapsed={false} appBadges={appBadges} />}
+              />
+              <NavItem
+                navId="apps-library"
+                path="/apps/library"
+                label={i18nT('nav.library')}
+                icon={<LayoutGrid size={16} />}
+                active={libraryNavActive}
+                collapsed={false}
+                onClick={closeMobileNav}
+              />
+            </>
           ) : (
             <motion.div
               className="mt-4"
@@ -3082,12 +3113,21 @@ export default function App() {
               <NavItem
                 navId="apps"
                 path="/apps"
-                label={i18nT('app.explore_apps')}
-                icon={<LayoutGrid size={16} />}
-                active={activePath === '/apps'}
+                label={i18nT('nav.discover')}
+                icon={<Compass size={16} />}
+                active={discoverNavActive}
                 collapsed
                 onClick={closeMobileNav}
                 badge={<NavBadge navId="apps" collapsed appBadges={appBadges} />}
+              />
+              <NavItem
+                navId="apps-library"
+                path="/apps/library"
+                label={i18nT('nav.library')}
+                icon={<LayoutGrid size={16} />}
+                active={libraryNavActive}
+                collapsed
+                onClick={closeMobileNav}
               />
             </motion.div>
           )}
@@ -3394,7 +3434,11 @@ export default function App() {
             <Route path="/capabilities" element={<CapabilitiesPage />} />
             {/* Instances setup moved into Settings; switching happens via the header tab strip. */}
             <Route path="/instances" element={<Navigate to="/settings/instances" replace />} />
-            <Route path="/apps" element={<AppsPage />} />
+            {/* Static segments (library, detail, migrate) MUST stay registered
+                before the /apps/:name installed-app catch-all -- they are
+                reserved app-name words enforced server-side. */}
+            <Route path="/apps" element={<Suspense fallback={null}><DiscoverPage /></Suspense>} />
+            <Route path="/apps/library" element={<Suspense fallback={null}><LibraryPage /></Suspense>} />
             <Route path="/apps/detail/:name" element={<AppDetailPage />} />
             <Route path="/apps/migrate/:name" element={<MigrationPage />} />
             <Route path="/apps/:name" element={<AppPage />} />

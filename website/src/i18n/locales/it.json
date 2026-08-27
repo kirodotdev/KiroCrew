@@ -34,8 +34,6 @@
     "dismiss": "Ignora",
     "dsk": "DSK",
     "expand_sidebar": "Espandi la barra laterale",
-    "explore": "Esplora",
-    "explore_apps": "Esplora le app",
     "gateway_connected": "Gateway connesso",
     "gateway_offline": "Gateway offline",
     "gateway_offline_reconnecting": "Gateway offline — riconnessione in corso",
@@ -5349,7 +5347,6 @@
         },
         "pagesProvider": {
           "developer": "Sviluppatore",
-          "explore": "Esplora",
           "hooks": "Hook",
           "kirocrew_agents": "Agenti {{productName}}",
           "logs": "Log",
@@ -7524,8 +7521,9 @@
   "nav": {
     "agent_capabilities": "Capacità dell'agente",
     "artifacts": "Artefatti",
-    "explore": "Esplora",
+    "discover": "Scopri",
     "knowledge": "Conoscenze",
+    "library": "Libreria",
     "notifications": "Notifiche",
     "schedule": "Pianificazione",
     "sessions": "Sessioni",
@@ -7746,7 +7744,7 @@
     },
     "appsPage": {
       "action_failed": "Operazione «{{action}}» non riuscita su {{name}}",
-      "add_an_app_source_gear_icon_above_or_install_fro": "Aggiungi un'origine app (icona dell'ingranaggio sopra) o installa da un percorso locale.",
+      "add_an_app_source_gear_icon_above_or_install_fro": "Aggiungi una sorgente di app (Sorgenti, in alto a destra) o installa da un percorso locale.",
       "agent_many": "{{count}} agenti",
       "agent_one": "{{count}} agente",
       "agent_other": "{{count}} agenti",
@@ -7754,7 +7752,6 @@
       "app_many": "{{count}} app",
       "app_one": "{{count}} app",
       "app_other": "{{count}} app",
-      "apps": "App",
       "available": "disponibile",
       "built_in_kirocrew": "Integrata · kirocrew",
       "cancel": "Annulla",
@@ -7764,16 +7761,14 @@
       "cron_job_one": "{{count}} job cron",
       "cron_job_other": "{{count}} job cron",
       "dependencies": "Dipendenze:",
-      "discover": "Scopri",
-      "discover_install_and_manage_agentic_apps": "Scopri, installa e gestisci app agentiche",
       "dismiss_message": "Ignora il messaggio",
       "failed_to_enable": "Impossibile attivare {{name}}",
       "failed_to_load_apps": "Caricamento delle app non riuscito",
       "failed_to_load_registry": "Caricamento del registry non riuscito",
       "failed_to_uninstall": "Impossibile disinstallare {{name}}",
       "failed_to_update": "Impossibile aggiornare: {{names}}",
-      "find_apps_in_the_discover_tab_or_install_from_a": "Trova le app nella scheda Scopri oppure installa da un percorso locale tramite l'ingranaggio delle sorgenti qui sopra.",
-      "hidden_you_can_re_enable_it_from_the_discover_ta": "Disattivata. Puoi riattivarla dalla scheda Scopri.",
+      "find_apps_in_the_discover_tab_or_install_from_a": "Trova le app nella pagina Scopri, oppure installa da un percorso locale tramite Sorgenti in quella pagina.",
+      "hidden_you_can_re_enable_it_from_the_discover_ta": "Disabilitato. Puoi riabilitarlo dalla pagina Scopri.",
       "keep_app_data": "Mantieni i dati dell'app",
       "keep_dependency": "Mantieni la dipendenza {{name}}",
       "keep_this_dependency": "Mantieni questa dipendenza",
@@ -7782,6 +7777,7 @@
       "kirocrew_registry": "Registry {{productName}}",
       "library": "Libreria",
       "loading_apps": "Caricamento delle app…",
+      "manage_your_installed_apps": "Gestisci le tue app installate",
       "name": "Nome",
       "no_apps_available": "Nessuna app disponibile",
       "no_apps_installed_yet": "Nessuna app installata",
@@ -7815,7 +7811,7 @@
       "updated_app_other": "{{count}} app aggiornate.",
       "updating_progress": "Aggiornamento {{done}}/{{total}}…",
       "v": "v",
-      "installed_app_find_in_library_and_enable": "{{name}} installato. Attivalo qui sotto per abilitarlo.",
+      "installed_app_find_in_library_and_enable": "{{name}} installato. Abilitalo nella Libreria.",
       "synced_from_its_source_directory": "{{name}} sincronizzata dalla sua directory di origine.",
       "updated_from_the_registry": "{{name}} aggiornata dal registro."
     },
@@ -9510,6 +9506,10 @@
           "label": "Telemetria"
         }
       }
+    },
+    "discoverPage": {
+      "subtitle": "Sfoglia e installa app agentiche",
+      "title": "Scopri"
     },
     "embedSettingsPage": {
       "back": "Indietro",

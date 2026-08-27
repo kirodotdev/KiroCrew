@@ -81,7 +81,7 @@ vi.mock('../components/appstore/AppListRow', () => ({
   },
 }))
 
-import AppsPage from '../pages/AppsPage'
+import AppsPage from '../pages/apps/DiscoverPage'
 
 /** Minimal registry row; `normalizeRegistryApp` fills the rest. */
 function registryApp(name: string, displayName: string) {
