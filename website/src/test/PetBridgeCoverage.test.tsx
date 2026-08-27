@@ -102,6 +102,7 @@ interface PreloadStub {
   openExternal: ReturnType<typeof vi.fn>
   updateHitbox: ReturnType<typeof vi.fn>
   setMenuHitbox: ReturnType<typeof vi.fn>
+  turnOff: ReturnType<typeof vi.fn>
 }
 
 /** Install the preload bridge the desktop windows have and a browser tab does not. */
@@ -115,6 +116,7 @@ function stubPreload(offBridge = vi.fn()): PreloadStub {
     openExternal: vi.fn(),
     updateHitbox: vi.fn(),
     setMenuHitbox: vi.fn(),
+    turnOff: vi.fn(),
   }
   ;(window as unknown as { crewCompanion?: unknown }).crewCompanion = bridge
   return bridge
@@ -812,22 +814,27 @@ describe('window-level bridge calls', () => {
 })
 
 describe('contextMenuAction', () => {
-  it('"quit" disables the app instead of quitting Kiro Crew itself', async () => {
+  it('"quit" disables the app and then closes the overlay at once', async () => {
     const { calls } = stubFetchAll({ ok: true })
     const bridge = stubPreload()
     petBridge.contextMenuAction!('quit')
-    await Promise.resolve()
+    await new Promise((r) => setTimeout(r, 0))
     expect(calls[0].url).toBe('/api/apps/crew-companion/disable')
     expect(calls[0].method).toBe('POST')
     // Disabling is a gateway call, not a window-level one.
     expect(bridge.contextMenuAction).not.toHaveBeenCalled()
+    // On success the overlay is closed immediately, not left for the reconcile tick.
+    expect(bridge.turnOff).toHaveBeenCalledOnce()
   })
 
-  it('a failed disable request is swallowed', async () => {
+  it('a failed disable leaves the companion up instead of closing it', async () => {
+    const bridge = stubPreload()
     stubFetchAll({ fails: true })
     expect(() => petBridge.contextMenuAction!('quit')).not.toThrow()
-    await Promise.resolve()
-    await Promise.resolve()
+    await new Promise((r) => setTimeout(r, 0))
+    // The disable failed, so the overlay must NOT be closed — better a companion
+    // that stays than one that vanishes with nothing actually turned off.
+    expect(bridge.turnOff).not.toHaveBeenCalled()
   })
 
   it('"gallery" opens the gallery window', () => {

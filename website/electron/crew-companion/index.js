@@ -392,6 +392,21 @@ function initCrewCompanion(deps) {
   ipcMain.handle("crew-companion:open-session", (_event, slotKey) =>
     openDashboardSession(typeof slotKey === "string" ? slotKey : ""));
 
+  // "Turn off companion" (the pet's context menu) disables the app over HTTP — which
+  // updates the dashboard's Apps page too — and then asks us to close the overlay AT
+  // ONCE, so it does not linger until the next reconcile tick. The renderer only
+  // sends this after the disable POST succeeds, so the app is already disabled by
+  // the time we close and the reconcile then keeps it closed. (A reconcile tick
+  // that was already in flight and read "enabled" just before the disable landed
+  // could reopen the overlay for a single tick; it self-heals on the next tick.)
+  ipcMain.on("crew-companion:turn-off", () => {
+    closePanelWindow();
+    closeGalleryWindow();
+    closePetWindow();
+    log("crew-companion: turned off by user — overlays closed immediately");
+  });
+
+
   if (timer) clearInterval(timer);
   timer = setInterval(() => void reconcileOnce(), TICK_MS);
   // A background poll must never be the reason a process cannot exit. Electron's

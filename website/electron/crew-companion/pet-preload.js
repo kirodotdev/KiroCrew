@@ -160,6 +160,15 @@ contextBridge.exposeInMainWorld("crewCompanion", {
   },
 
   /**
+   * "Turn off companion": close the overlay immediately. The renderer sends this
+   * only after the disable POST succeeds, so the app is already disabled and the
+   * reconcile loop will not reopen the overlay.
+   */
+  turnOff() {
+    ipcRenderer.send("crew-companion:turn-off");
+  },
+
+  /**
    * The avatar gallery window opened / closed.
    *
    * The overlay has no other signal — the gallery is its own window — and it needs

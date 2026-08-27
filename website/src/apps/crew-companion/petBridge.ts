@@ -46,6 +46,7 @@ type Preload = {
   openExternal?(url: string): void
   galleryOpen?(): void
   galleryClose?(): void
+  turnOff?(): void
 }
 
 function preload(): Preload | undefined {
@@ -873,16 +874,23 @@ export const petBridge: PetBridge = {
 
   contextMenuAction(action) {
     if (action === 'quit') {
-      // The desktop app quit its own process. Here the companion IS an app, so the
-      // equivalent is disabling it: the overlay goes, the reminders stay, and the
-      // user can bring it back from the Apps page. Quitting Kiro Crew itself would
-      // close the dashboard too, which is not what "dismiss the companion" means.
-      void fetch('/api/apps/crew-companion/disable', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: '{}',
-      }).catch(() => {})
+      // "Turn off companion" = disable the app (over HTTP, which also updates the
+      // dashboard's Apps page via the gateway's teardown), then close the overlay
+      // the instant that succeeds — not on the main process's next ~5s reconcile
+      // tick. Gate the close on success: a failed disable leaves the companion
+      // visible (better than vanishing with nothing actually turned off), and the
+      // reconcile loop remains the backstop.
+      void (async () => {
+        const ok = await fetch('/api/apps/crew-companion/disable', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}',
+        })
+          .then((r) => r.ok)
+          .catch(() => false)
+        if (ok) preload()?.turnOff?.()
+      })()
       return
     }
     if (action === 'gallery') {
