@@ -1854,3 +1854,204 @@ class TestAMalformedKeystoneStillRendersSettings:
         state_file.write_text(json.dumps({"enabled": True, "allowed_apps": "Preview"}))
         with pytest.raises(PolicyStateError):
             enable_state.load_policy_config()
+
+
+# ── Machine-readable error codes ──
+
+
+class TestErrorCodes:
+    """Every refusal from this module carries a machine-readable ``code``.
+
+    The contract gate in ``test/test_error_code_contract.py`` inventories
+    prose-only refusals in ``error-code-baseline.json``; this module held 20 of
+    them. The prose is kept and keeps its meaning -- it is demoted to advisory,
+    not removed -- so a client that only reads ``error`` is unaffected.
+
+    Both of this module's consumers are already built for the code, which is why
+    this conversion is backend-only:
+
+    * the browser panel (``website/src/pages/settings/ComputerUsePanel.tsx``)
+      never renders the server's prose -- its ``onError`` shows a fixed localized
+      string -- so there is no copy to move and no catalog to translate;
+    * the stdio shim reaches ``/invoke`` through ``mcp_core._http_error_body``,
+      which ALREADY parses a top-level ``code``, validates it as
+      ``[a-z0-9_.-]{1,64}`` and passes it on, and the capture thread's
+      ``screencast._post_frame`` discards the response body entirely.
+    """
+
+    # -- the per-file ratchet --
+    #
+    # The repo-wide gate only fails on a NET regression, so it would let a new
+    # prose-only refusal land here behind an unrelated deletion. These two run
+    # the gate's OWN scanner, so the per-file rule cannot drift from it.
+
+    @staticmethod
+    def _findings():
+        import sys
+
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import test_error_code_contract as gate
+
+        return [f for f in gate.scan() if f.path == "dashboard/handlers/computer_use.py"]
+
+    def test_no_refusal_in_this_module_is_prose_only(self) -> None:
+        missing = sorted(f.lineno for f in self._findings() if f.bucket == "missing_code")
+        assert missing == [], (
+            "these src/kiro_crew/dashboard/handlers/computer_use.py lines refuse with "
+            f"prose and no machine-readable code: {missing}"
+        )
+
+    def test_the_ratchet_can_actually_fail(self) -> None:
+        """Self-check: a scan matching nothing would pass the assertion above vacuously."""
+        coded = [f for f in self._findings() if f.bucket == "compliant"]
+        assert len(coded) == 20, f"scanner reached {len(coded)} coded sites, expected 20"
+        assert all(f.code_value for f in coded)
+
+    # -- PUT /api/computer-use/config --
+
+    @staticmethod
+    async def _put(client: TestClient, body) -> tuple[int, dict]:
+        resp = await client.put("/api/computer-use/config", json=body)
+        return resp.status, await resp.json()
+
+    @pytest.mark.asyncio
+    async def test_body_is_not_a_json_object(self, home: Path) -> None:
+        async with _client() as client:
+            status, body = await self._put(client, ["enabled"])
+        assert status == 400
+        assert body["code"] == "body_not_object"
+        assert body["error"]
+
+    @pytest.mark.asyncio
+    async def test_enabled_of_the_wrong_type(self, home: Path) -> None:
+        async with _client() as client:
+            status, body = await self._put(client, {"enabled": "yes"})
+        assert status == 400
+        assert body["code"] == "invalid_field_type"
+
+    @pytest.mark.asyncio
+    async def test_an_integer_limit_of_the_wrong_type(self, home: Path) -> None:
+        async with _client() as client:
+            status, body = await self._put(client, {"max_tree_nodes": "1200"})
+        assert status == 400
+        assert body["code"] == "invalid_field_type"
+
+    @pytest.mark.asyncio
+    async def test_an_integer_limit_out_of_range_is_a_different_code(self, home: Path) -> None:
+        """The distinction a caller could not previously make without matching English.
+
+        A value of the right type that is simply too large is a different refusal
+        from a value of the wrong type, and only the code separates them.
+        """
+        async with _client() as client:
+            status, body = await self._put(client, {"max_tree_nodes": 10**9})
+        assert status == 400
+        assert body["code"] == "value_out_of_range"
+
+    @pytest.mark.asyncio
+    async def test_a_boolean_limit_of_the_wrong_type(self, home: Path) -> None:
+        async with _client() as client:
+            status, body = await self._put(client, {"attach_screenshot": 1})
+        assert status == 400
+        assert body["code"] == "invalid_field_type"
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_app_pattern_list(self, home: Path) -> None:
+        async with _client() as client:
+            status, body = await self._put(client, {"allowed_apps": "Preview"})
+        assert status == 400
+        assert body["code"] == "invalid_app_patterns"
+
+    @pytest.mark.asyncio
+    async def test_a_body_naming_no_known_field(self, home: Path) -> None:
+        async with _client() as client:
+            status, body = await self._put(client, {"nothing_we_know": True})
+        assert status == 400
+        assert body["code"] == "no_known_fields"
+
+    # -- POST /api/computer-use/invoke (machine leg) --
+
+    @pytest.mark.asyncio
+    async def test_invoke_without_a_tool(self, home: Path) -> None:
+        async with _client() as client:
+            resp = await client.post("/api/computer-use/invoke", json={"args": {}})
+            body = await resp.json()
+        assert resp.status == 400
+        assert body["code"] == "tool_required"
+
+    @pytest.mark.asyncio
+    async def test_invoke_with_non_object_args(self, home: Path) -> None:
+        async with _client() as client:
+            resp = await client.post(
+                "/api/computer-use/invoke", json={"tool": "screenshot", "args": ["a"]}
+            )
+            body = await resp.json()
+        assert resp.status == 400
+        assert body["code"] == "invalid_args"
+
+    @pytest.mark.asyncio
+    async def test_the_code_survives_the_shims_own_error_decoder(self, home: Path) -> None:
+        """The code is only worth adding if the shim's decoder keeps it.
+
+        ``mcp_core._http_error_body`` drops any ``code`` that is not a short
+        identifier, so this drives the REAL decoder over this handler's REAL body
+        rather than asserting that the two shapes look compatible.
+        """
+        import io as _io
+        import urllib.error
+
+        from kiro_crew.mcp_core import _http_error_body
+
+        async with _client() as client:
+            resp = await client.post("/api/computer-use/invoke", json={"args": {}})
+            raw = await resp.read()
+
+        decoded = _http_error_body(
+            urllib.error.HTTPError(
+                "http://127.0.0.1/api/computer-use/invoke",
+                400,
+                "Bad Request",
+                {},
+                _io.BytesIO(raw),
+            )
+        )
+        assert decoded["code"] == "tool_required"
+
+    # -- POST /api/computer-use/frame (machine leg) --
+
+    @pytest.mark.asyncio
+    async def test_frame_without_the_internal_secret(self, home: Path) -> None:
+        async with TestClient(TestServer(_frame_app(grant_internal_auth=False))) as client:
+            resp = await client.post("/api/computer-use/frame", json=_VALID_FRAME)
+            body = await resp.json()
+        assert resp.status == 403
+        assert body["code"] == "internal_secret_required"
+
+    @pytest.mark.asyncio
+    async def test_frame_carrying_no_frame_data(self, home: Path) -> None:
+        async with TestClient(TestServer(_frame_app())) as client:
+            resp = await client.post("/api/computer-use/frame", json={"format": "jpeg"})
+            body = await resp.json()
+        assert resp.status == 400
+        assert body["code"] == "no_frame_data"
+
+    # -- the behavioural ratchet --
+
+    @pytest.mark.asyncio
+    async def test_every_config_refusal_carries_both_a_code_and_its_prose(self, home: Path) -> None:
+        """No refusal path may regress to prose-only, and none may drop the advisory
+        text an existing client still reads."""
+        for payload in (
+            ["enabled"],
+            {"enabled": "yes"},
+            {"max_tree_nodes": "1200"},
+            {"max_tree_nodes": 10**9},
+            {"attach_screenshot": 1},
+            {"allowed_apps": "Preview"},
+            {"nothing_we_know": True},
+        ):
+            async with _client() as client:
+                status, body = await self._put(client, payload)
+            assert status == 400, payload
+            assert isinstance(body.get("code"), str) and body["code"], payload
+            assert isinstance(body.get("error"), str) and body["error"], payload
