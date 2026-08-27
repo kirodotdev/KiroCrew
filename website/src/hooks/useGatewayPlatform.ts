@@ -1,6 +1,6 @@
 import { useContext } from 'react'
-import { QueryClient, QueryClientContext, useQuery, skipToken } from '@tanstack/react-query'
-import type { KiroPrerequisiteStatus } from '../api/client'
+import { QueryClient, QueryClientContext, useQuery } from '@tanstack/react-query'
+import { api, type KiroPrerequisiteStatus } from '../api/client'
 
 /** What the gateway host is, for copy that names an OS feature by its real name. */
 export type GatewayPlatform = 'darwin' | 'windows' | 'other'
@@ -29,6 +29,9 @@ export function classifyPlatform(raw: string | undefined | null): GatewayPlatfor
   return 'other'
 }
 
+/** The query the prerequisite gate owns; this hook subscribes without driving it. */
+const PREREQUISITE_QUERY_KEY = ['kiro-prerequisite'] as const
+
 /**
  * Read-only stand-in for a tree that has no `QueryClientProvider`.
  *
@@ -48,17 +51,30 @@ const ORPHAN_TREE_CACHE = new QueryClient()
  * against a Linux gateway must not name Finder. The install command has the same
  * property and is resolved server-side for the same reason.
  *
- * A pure reader — `skipToken` means this hook never fetches. The prerequisite
- * gate wraps the whole dashboard and owns that query, so the value is cached
- * before any page mounts, and this subscription re-renders when the gate
- * refreshes it.
+ * A pure reader: `enabled: false` means this hook never fetches. The
+ * prerequisite gate wraps the whole dashboard and owns that query, so the value
+ * is cached before any page mounts, and this subscription re-renders when the
+ * gate refreshes it.
+ *
+ * The `queryFn` is nevertheless a real fetch, and must stay one. React Query
+ * keeps a single options object per query, so whichever observer mounted last
+ * decides what a refetch driven through the CLIENT — rather than through an
+ * observer — runs. A fetch-less `queryFn` registered here therefore surfaces as
+ * `Missing queryFn` on the gate's query the next time something invalidates it
+ * (the token-refresh scheduler does), which strands the whole dashboard behind
+ * the gate's error screen. Reading the latched state is the cheap mode, so a
+ * refetch that resolves through these options costs no `kiro-cli` spawn.
  *
  * See `classifyPlatform` for why anything unrecognised is generic wording.
  */
 export function useGatewayPlatform(): GatewayPlatform {
   const provided = useContext(QueryClientContext)
   const { data } = useQuery<KiroPrerequisiteStatus>(
-    { queryKey: ['kiro-prerequisite'], queryFn: skipToken },
+    {
+      queryKey: PREREQUISITE_QUERY_KEY,
+      queryFn: () => api.kiroPrerequisite(false),
+      enabled: false,
+    },
     provided ?? ORPHAN_TREE_CACHE,
   )
   return classifyPlatform(data?.platform)
