@@ -38,7 +38,8 @@ const params = new URLSearchParams(location.search)
 const theme = params.get('theme') || 'dark'
 const burstCount = Math.max(2, Number(params.get('bursts') || 6))
 // `?stream=1`: render a RUNNING turn (complete=false) whose single folded row
-// keeps growing, so the recording shows the live "Thinking" shimmer + tail.
+// keeps growing, so the recording shows the live "Thinking" state (pulsing
+// icon + preview tail).
 const stream = params.get('stream') === '1'
 
 document.documentElement.setAttribute('data-theme', theme === 'light' ? 'kiro-light' : 'kiro-dark')

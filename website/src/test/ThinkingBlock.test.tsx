@@ -133,19 +133,20 @@ describe('ThinkingBlock live preview', () => {
     expect(screen.getByRole('button').textContent).not.toContain('Thinking')
   })
 
-  it('carries the streaming shimmer on the label + a pulsing icon while live, and drops both once settled', () => {
+  it('keeps the label static while live — icon pulse is the only motion, and it drops once settled', () => {
     // The folded turn collapses every reasoning burst into ONE row (TurnBlock),
     // so that single row is the only place a running turn can signal "still
-    // thinking". While live the label wears `.streaming-glow` — the same accent
-    // shimmer-sweep the streaming assistant answer uses — and the Sparkles icon
-    // pulses; both must clear the moment the burst settles so a finished block
-    // is visually quiet.
+    // thinking". Liveness is carried by the pulsing Sparkles icon (plus the
+    // live preview tail) — the label itself must NOT wear `.streaming-glow`:
+    // that shimmer is sized for a full streaming sentence, and on a short
+    // label (zh-CN "思考中" is 3 glyphs) its background chip + sweep read as a
+    // smeared highlight. The pulse must still clear the moment the burst
+    // settles so a finished block is visually quiet.
     vi.useFakeTimers()
     const { rerender, container } = render(<ThinkingBlock content="first" />)
     rerender(<ThinkingBlock content="first second" />)
-    const glow = container.querySelector('.streaming-glow')
-    expect(glow).not.toBeNull()
-    expect(glow?.textContent).toContain('Thinking')
+    expect(container.querySelector('.streaming-glow')).toBeNull()
+    expect(screen.getByRole('button').textContent).toContain('Thinking')
     expect(container.querySelector('svg.animate-pulse')).not.toBeNull()
 
     act(() => { vi.advanceTimersByTime(1500) })
@@ -155,8 +156,8 @@ describe('ThinkingBlock live preview', () => {
   })
 
   it('a settled block that merely mounts carries no streaming shimmer', () => {
-    // History restore / virtualizer recycle must not paint the shimmer on an
-    // already-finished block.
+    // History restore / virtualizer recycle must not paint any liveness motion
+    // on an already-finished block.
     const { container } = render(<ThinkingBlock content="settled reasoning" />)
     expect(container.querySelector('.streaming-glow')).toBeNull()
     expect(container.querySelector('svg.animate-pulse')).toBeNull()
