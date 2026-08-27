@@ -21,10 +21,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 
+from kiro_crew import platform_compat
 from kiro_crew.artifacts import slugify
 from kiro_crew.config.paths import data_home
 from kiro_crew.jsonl_util import rotate_jsonl_at
@@ -255,22 +257,44 @@ def read_activity(slug: str, limit: int = 0) -> list[dict]:
     except MemberSlugError:
         return []
     out: list[dict] = []
-    for path in (live.with_name(live.name + ".1"), live):
-        if not path.is_file():
-            continue
-        try:
-            with open(path, encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        row = json.loads(line)
-                    except (ValueError, TypeError):
-                        continue
-                    if isinstance(row, dict):
-                        out.append(row)
-        except OSError:
-            logger.debug("member activity log read failed for %r", slug, exc_info=True)
-            continue
+
+    # Hold a shared (non-blocking) lock on the rotation lock file while
+    # reading both generations.  This prevents a concurrent writer from
+    # rotating the live file into .1 between the two reads, which could
+    # cause records to be missed and duplicate session entries appended.
+    lock_fd: int = -1
+    lock_path = live.with_name(live.name + ".lock")
+    try:
+        lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        if not platform_compat.try_acquire_lock(lock_fd, exclusive=False):
+            # Could not acquire; close and proceed without the lock.
+            os.close(lock_fd)
+            lock_fd = -1
+    except OSError:
+        lock_fd = -1
+
+    try:
+        for path in (live.with_name(live.name + ".1"), live):
+            if not path.is_file():
+                continue
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            row = json.loads(line)
+                        except (ValueError, TypeError):
+                            continue
+                        if isinstance(row, dict):
+                            out.append(row)
+            except OSError:
+                logger.debug("member activity log read failed for %r", slug, exc_info=True)
+                continue
+    finally:
+        if lock_fd != -1:
+            platform_compat.release_lock(lock_fd)
+            os.close(lock_fd)
+
     return out[-limit:] if limit > 0 else out
