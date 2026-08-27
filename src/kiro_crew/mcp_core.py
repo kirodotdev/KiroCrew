@@ -301,6 +301,46 @@ def _invalidate_api_base() -> None:
     _API_UNIX_SOCKET = None
 
 
+def _replay_target(refused_base: str) -> tuple[str, str] | None:
+    """The fresh ``(base, socket_path)`` to replay a refused request to, or ``None``.
+
+    THE replay rule, owned here. A refused connection usually means the resolved
+    base is stale — the gateway came up, or moved, after this tool server booted,
+    and the new port is recorded only in the run marker — so one re-resolution
+    and one replay are worth it. Two conditions end the attempt instead, and both
+    answer ``None``:
+
+    * the re-resolution fell through to the DEFAULT port, which is no evidence at
+      all. A listener there could be any local process, and the request carries
+      the internal secret; the replay exists to chase POSITIVE evidence of a
+      moved gateway, so a no-evidence fall-through never gets to dial.
+    * the re-resolution named the base that was just refused. Replaying an
+      unchanged dead port only doubles the caller's latency to reach the
+      identical failure, and nothing was handed to a live gateway — so the
+      caller's first-attempt error stands as a definite rejection.
+
+    Both halves of the returned pair come from the very resolution whose source
+    was checked (same shape as :func:`_resolve_api_target`): re-resolving again
+    could race a marker disappearing between the check and the dial, and
+    deriving the socket separately let the replay's two transports name
+    different gateways. It is always a FRESH pair, never the refused one — the
+    ownership proof is per attempt.
+
+    Callers keep their own error wording; this owns only the rule, so the two
+    request paths (:func:`_send` and ``mcp_computer._invoke``) cannot drift on
+    when a replay is allowed. ``None`` means "do not replay", not "report this
+    particular text".
+    """
+    _invalidate_api_base()
+    port, source = _resolve_api_port()
+    if source == "default":
+        return None
+    base = f"http://127.0.0.1:{port}"
+    if base == refused_base:
+        return None
+    return base, _socket_path_for(port)
+
+
 # How often a sleeping `wait` polls /api/session-keepalive.
 #
 # Two jobs in one round-trip: keeping the session's activity clock warm (the
@@ -1113,26 +1153,13 @@ def _send(
     except urllib.error.URLError as e:
         if not isinstance(e.reason, (ConnectionRefusedError, socket.gaierror)):
             return _transport_failure(str(e), mark_transport_error)
-        _invalidate_api_base()
-        retry_port, retry_source = _resolve_api_port()
-        if retry_source == "default":
-            # Re-resolution produced NO evidence — the default port is an
-            # unverified guess, and a listener there could be any local
-            # process. Replaying would hand it the internal secret and the
-            # request payload; the replay exists to chase POSITIVE evidence
-            # of a moved gateway, so a no-evidence fall-through ends here.
-            return {"error": str(e)}
-        # Build BOTH halves from the very resolution whose source was just
-        # checked (same shape as _resolve_api_target) — re-resolving again
-        # could race a marker disappearing between the check and the dial, and
-        # deriving the socket separately let the replay's two transports name
-        # different gateways. This is a FRESH pair, never the refused one: the
-        # ownership proof is per attempt.
-        retry_target = (f"http://127.0.0.1:{retry_port}", _socket_path_for(retry_port))
-        retry_base = retry_target[0]
-        if retry_base == base:
-            # Nothing was ever handed to a live gateway, so this is a definite
-            # rejection: no transport ambiguity to report.
+        # THE replay rule lives in _replay_target, shared with
+        # mcp_computer._invoke: None means "do not replay" (no evidence, or the
+        # re-resolution named the same dead base). Nothing was handed to a live
+        # gateway in either case, so the first-attempt refusal stands as a
+        # definite rejection — no transport ambiguity to report.
+        retry_target = _replay_target(base)
+        if retry_target is None:
             return {"error": str(e)}
         try:
             return _once(retry_target)

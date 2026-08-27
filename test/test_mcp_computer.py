@@ -2255,8 +2255,13 @@ class TestTheInvokeCallIsNeverProxied:
             for key in self.PROXY_ENV_KEYS:
                 monkeypatch.delenv(key, raising=False)
             monkeypatch.setenv("HTTP_PROXY", f"http://127.0.0.1:{proxy_port}")
+            # Paired resolution (#4106): an attempt threads (base, socket_path).
+            # The empty socket keeps this case on TCP, which is what the proxy
+            # question is about.
             monkeypatch.setattr(
-                mcp_computer, "_api_base", lambda: f"http://127.0.0.1:{gateway_port}"
+                mcp_computer,
+                "_resolve_api_target",
+                lambda: (f"http://127.0.0.1:{gateway_port}", ""),
             )
             monkeypatch.setattr(mcp_computer, "_internal_secret", lambda: self.CANARY)
 
@@ -2289,8 +2294,13 @@ class TestTheInvokeCallIsNeverProxied:
                 monkeypatch.delenv(key, raising=False)
             monkeypatch.setenv("http_proxy", f"http://127.0.0.1:{proxy_port}")
             monkeypatch.setenv("no_proxy", "localhost")
+            # Paired resolution (#4106): an attempt threads (base, socket_path).
+            # The empty socket keeps this case on TCP, which is what the proxy
+            # question is about.
             monkeypatch.setattr(
-                mcp_computer, "_api_base", lambda: f"http://127.0.0.1:{gateway_port}"
+                mcp_computer,
+                "_resolve_api_target",
+                lambda: (f"http://127.0.0.1:{gateway_port}", ""),
             )
             monkeypatch.setattr(mcp_computer, "_internal_secret", lambda: self.CANARY)
 
