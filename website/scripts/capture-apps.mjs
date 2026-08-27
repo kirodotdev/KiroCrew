@@ -13,7 +13,9 @@
  *   discover.png           spotlight + feature duo + category rail + rows
  *   discover-category.png  category-filtered view (editorial layer collapses)
  *   sources.png            Sources popover (registries + install from path)
- *   library.png            Library tab with pending-updates banner
+ *   library.png            Library page with the updates hint row
+ *   updates.png            Discover Updates sub-tab with a pending update row
+ *   updates-empty.png      Updates sub-tab everything-up-to-date state
  *
  * Usage: node scripts/capture-apps.mjs <outDir>
  */
@@ -186,10 +188,25 @@ await page.screenshot({ path: `${OUT}/sources.png` })
 await page.keyboard.press('Escape')
 await settle(600)
 
-// ---- Library (standalone page after the split; pending-updates banner)
+// ---- Library (standalone page after the split; updates hint row)
 await page.goto(`http://127.0.0.1:${PORT}/apps/library`, { waitUntil: 'domcontentloaded' })
 await settle(1400)
 await page.screenshot({ path: `${OUT}/library.png` })
+
+// ---- Updates sub-tab (deep link; secretary fixture has 1.0.0 -> 1.1.0 pending)
+await page.goto(`http://127.0.0.1:${PORT}/apps/-/updates`, { waitUntil: 'domcontentloaded' })
+await settle(1600)
+await page.screenshot({ path: `${OUT}/updates.png` })
+
+// ---- Updates empty state (drain the pending update from the fixtures, then reload)
+const secretaryReg = registryApps.find(a => a.name === 'secretary')
+secretaryReg.updateAvailable = false
+secretaryReg.installedVersion = '1.1.0'
+await page.goto(`http://127.0.0.1:${PORT}/apps/-/updates`, { waitUntil: 'domcontentloaded' })
+await settle(1400)
+await page.screenshot({ path: `${OUT}/updates-empty.png` })
+secretaryReg.updateAvailable = true
+secretaryReg.installedVersion = '1.0.0'
 
 // ---- legacy migration: a stored library tab redirects /apps -> /apps/library
 await page.evaluate(() => sessionStorage.setItem('appstore-tab', 'library'))

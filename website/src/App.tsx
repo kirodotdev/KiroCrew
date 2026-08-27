@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef, useMemo, createContext, lazy, Suspense, type HTMLAttributes, type ReactNode } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo, useSyncExternalStore, createContext, lazy, Suspense, type HTMLAttributes, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Routes, Route, Navigate, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -123,6 +123,13 @@ import { i18nT } from './i18n/t'
 import { appNavTarget } from './appNav'
 import { resolveSlotOverlays, type SlotOwners } from './apps/overlaySlots'
 import { fmtCompact, fmtPercent } from './i18n/format'
+// Static on purpose, and the tradeoff is real: the sidebar updates badge
+// needs `registryQueryFn` (its own fetch boundary — a badge that only lights
+// after a store-page visit does not do its job), and importing it pulls the
+// store data layer into the eager App chunk. Accepted: the bundle-size gate
+// still passes, and a second raw fetcher under the same query key would win
+// React Query's one-queryFn-per-key registration and poison the cache shape.
+import { countUpdatables, registryQueryFn, type UpdatableInstalledRow } from './pages/apps/useAppsData'
 
 // Lazy on purpose: the update-found popup (its policy module, Trans runtime
 // wiring, and mutation plumbing) is dead weight for every session without an
@@ -1627,6 +1634,44 @@ export default function App() {
     setAppBadges(prev => prev.projects === approvalCount ? prev : { ...prev, projects: approvalCount })
   }, [approvalCount])
 
+  // Pending app-update count for the sidebar Discover badge — the SAME count
+  // the Discover Updates sub-tab shows, via the shared `countUpdatables`
+  // derivation. The registry read is an ACTIVE query on the shared
+  // `registryQueryFn` boundary (one normalize path, so either observer may
+  // fetch and both see the same shape): a passive cache read only ever fires
+  // after a store page has populated the cache, which is the one place the
+  // count is already visible — a badge that cannot appear in a fresh session
+  // does not do its job. `mc:apps-changed` invalidation above refetches it.
+  // `['apps']` stays a passive read: refreshAppNav in this shell already
+  // writes it on every fetch.
+  const { data: registryBadgeData } = useQuery({
+    queryKey: ['registry'],
+    queryFn: registryQueryFn,
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+  })
+  const subscribeQueryCache = useCallback(
+    (onStoreChange: () => void) => queryClient.getQueryCache().subscribe(onStoreChange),
+    [queryClient],
+  )
+  const installedSnapshot = useSyncExternalStore(
+    subscribeQueryCache,
+    () => queryClient.getQueryData<UpdatableInstalledRow[]>(['apps']),
+  )
+  const appUpdatesCount = useMemo(
+    () => countUpdatables(registryBadgeData?.apps, installedSnapshot),
+    [registryBadgeData, installedSnapshot],
+  )
+  // Merged only into the badge map the two Discover rows read — NOT into the
+  // `appBadges` state: that map feeds the tab-title `totalAttention` sum, and
+  // a pending app update is not an attention item the way an approval or an
+  // unread message is. `NavBadge` hides at count 0 (BadgeIndicator renders
+  // null), so an empty count leaves the row badge-free.
+  const discoverBadges = useMemo(
+    () => (appUpdatesCount > 0 ? { ...appBadges, apps: appUpdatesCount } : appBadges),
+    [appBadges, appUpdatesCount],
+  )
+
   const [updating, setUpdating] = useState(false)
   const [showUpdateModal, setShowUpdateModal] = useState(false)
   const [kiroUsageOpen, setKiroUsageOpen] = useState(false)
@@ -2230,7 +2275,7 @@ export default function App() {
   //    `=== '/apps'` match, so an app page never lit the store link. Keeping
   //    that mapping means exactly one row lights at a time.
   const libraryNavActive = activePath === '/apps/library' || activePath.startsWith('/apps/library/')
-  const discoverNavActive = activePath === '/apps' || activePath.startsWith('/apps/detail/') || activePath.startsWith('/apps/migrate/')
+  const discoverNavActive = activePath === '/apps' || activePath.startsWith('/apps/-/') || activePath.startsWith('/apps/detail/') || activePath.startsWith('/apps/migrate/')
   const isChat = activePath === '/chat' || activePath.startsWith('/chat/') || activePath === '/'
   // /webhooks is a full-height rail-and-detail shell (like /capabilities), so it
   // owns its own scrolling and must not sit inside <main>'s scroll container.
@@ -3108,7 +3153,7 @@ export default function App() {
                 active={discoverNavActive}
                 collapsed={false}
                 onClick={closeMobileNav}
-                badge={<NavBadge navId="apps" collapsed={false} appBadges={appBadges} />}
+                badge={<NavBadge navId="apps" collapsed={false} appBadges={discoverBadges} />}
               />
               <NavItem
                 navId="apps-library"
@@ -3135,7 +3180,7 @@ export default function App() {
                 active={discoverNavActive}
                 collapsed
                 onClick={closeMobileNav}
-                badge={<NavBadge navId="apps" collapsed appBadges={appBadges} />}
+                badge={<NavBadge navId="apps" collapsed appBadges={discoverBadges} />}
               />
               <NavItem
                 navId="apps-library"
@@ -3453,8 +3498,12 @@ export default function App() {
             <Route path="/instances" element={<Navigate to="/settings/instances" replace />} />
             {/* Static segments (library, detail, migrate) MUST stay registered
                 before the /apps/:name installed-app catch-all -- they are
-                reserved app-name words enforced server-side. */}
+                reserved app-name words enforced server-side. The '-/' prefix
+                (e.g. /apps/-/updates) needs NO server-side reservation: '-' is
+                not a valid app name, so it can never collide with an installed
+                app -- the reserved set stays frozen at 'library'. */}
             <Route path="/apps" element={<Suspense fallback={null}><DiscoverPage /></Suspense>} />
+            <Route path="/apps/-/updates" element={<Suspense fallback={null}><DiscoverPage /></Suspense>} />
             <Route path="/apps/library" element={<Suspense fallback={null}><LibraryPage /></Suspense>} />
             <Route path="/apps/detail/:name" element={<AppDetailPage />} />
             <Route path="/apps/migrate/:name" element={<MigrationPage />} />

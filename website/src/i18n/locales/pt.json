@@ -7996,6 +7996,10 @@
       "updated_app_many": "{{count}} apps atualizados.",
       "updated_app_one": "{{count}} app atualizado.",
       "updated_app_other": "{{count}} apps atualizados.",
+      "updates_hint_link": "Ver atualizações",
+      "updates_hint_many": "{{count}} atualizações disponíveis",
+      "updates_hint_one": "{{count}} atualização disponível",
+      "updates_hint_other": "{{count}} atualizações disponíveis",
       "updating_progress": "Atualizando {{done}}/{{total}}…",
       "v": "v",
       "installed_app_find_in_library_and_enable": "{{name}} instalado. Ative-o na Biblioteca.",
@@ -9721,7 +9725,18 @@
     },
     "discoverPage": {
       "subtitle": "Explore e instale apps agênticos",
-      "title": "Descobrir"
+      "tab_featured": "Destaques",
+      "tab_updates": "Atualizações",
+      "title": "Descobrir",
+      "updates_badge_label_many": "{{count}} atualizações disponíveis",
+      "updates_badge_label_one": "{{count}} atualização disponível",
+      "updates_badge_label_other": "{{count}} atualizações disponíveis",
+      "updates_empty": "Tudo está atualizado.",
+      "updates_empty_back_to_featured": "Explorar apps em destaque",
+      "version_diff": "v{{from}} → v{{to}}",
+      "updating": "Atualizando…",
+      "updates_check_failed": "Não foi possível verificar atualizações.",
+      "updates_retry": "Tentar novamente"
     },
     "embedSettingsPage": {
       "back": "Voltar",

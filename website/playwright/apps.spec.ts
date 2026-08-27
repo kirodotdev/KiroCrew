@@ -200,3 +200,54 @@ test.describe('App Page — /apps/:name', () => {
     await expect(page.locator('text=is not installed')).toHaveCount(0)
   })
 })
+
+test.describe('Discover Updates sub-tab — /apps/-/updates', () => {
+  // TODO(PR2+): the POPULATED updates list (UpdatesList rows, per-row Update,
+  // Update All progress) is NOT covered here. The e2e gateway boots a fresh
+  // data home where every builtin is installed at its bundled version — equal
+  // to its registry version — so `updateAvailable` is false on every row and
+  // `updatables` is always empty. Covering the populated state needs either a
+  // gateway seed knob (install an app at an older version than the registry
+  // advertises) or /api/apps/registry route interception; neither exists in
+  // this harness and building one is out of scope for PR2. The populated list
+  // and update flows are covered by vitest (useAppUpdates.test.tsx and the
+  // DiscoverPage/UpdatesList suites) instead.
+
+  test('deep-link renders the Updates tab active with the all-current empty state', async ({ page }) => {
+    await page.goto('/apps/-/updates', { waitUntil: 'domcontentloaded' })
+
+    // The route must resolve to DiscoverPage, not fall through to the
+    // /apps/:name AppHost not-found ("is not installed").
+    await expect(page.locator('text=is not installed')).toHaveCount(0)
+
+    // `exact: true` doubles as the hidden-at-zero badge pin: with zero
+    // updatables UnderlineTabs renders no count, so the accessible name is
+    // exactly "Updates" — a leaked "Updates 0" badge would fail this locator.
+    const updatesTab = page.getByRole('tab', { name: 'Updates', exact: true })
+    await expect(updatesTab).toBeVisible({ timeout: 10000 })
+    await expect(updatesTab).toHaveAttribute('aria-selected', 'true')
+
+    // Pinned to the stub gateway's known state (zero updatables — see the
+    // TODO above). If a future harness change seeds an updatable app, this
+    // assertion fails loudly: extend coverage to the populated list then.
+    await expect(page.getByTestId('empty-state-title')).toHaveText('Everything is up to date.', { timeout: 10000 })
+  })
+
+  test('sub-tab switching syncs the URL both ways', async ({ page }) => {
+    await gotoDiscover(page)
+
+    await page.getByRole('tab', { name: 'Updates', exact: true }).click()
+    await page.waitForURL('**/apps/-/updates', { timeout: 10000 })
+    await expect(page.getByTestId('empty-state-title')).toHaveText('Everything is up to date.', { timeout: 10000 })
+    // Switching the sub-tab swaps the content region: the Featured catalog
+    // heading must be unmounted, not merely below the fold.
+    await expect(page.getByRole('heading', { name: 'All apps' })).toHaveCount(0)
+
+    // The empty state's action returns to Featured and normalizes the URL
+    // back to the bare /apps mount.
+    await page.getByRole('button', { name: 'Browse Featured apps' }).click()
+    await page.waitForURL(/\/apps$/, { timeout: 10000 })
+    await expect(page.getByRole('heading', { name: 'All apps' })).toBeVisible({ timeout: 10000 })
+    await expect(page.getByRole('tab', { name: 'Featured', exact: true })).toHaveAttribute('aria-selected', 'true')
+  })
+})

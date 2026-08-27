@@ -7996,6 +7996,10 @@
       "updated_app_many": "{{count}} app aggiornate.",
       "updated_app_one": "{{count}} app aggiornata.",
       "updated_app_other": "{{count}} app aggiornate.",
+      "updates_hint_link": "Vedi aggiornamenti",
+      "updates_hint_many": "{{count}} aggiornamenti disponibili",
+      "updates_hint_one": "{{count}} aggiornamento disponibile",
+      "updates_hint_other": "{{count}} aggiornamenti disponibili",
       "updating_progress": "Aggiornamento {{done}}/{{total}}…",
       "v": "v",
       "installed_app_find_in_library_and_enable": "{{name}} installato. Abilitalo nella Libreria.",
@@ -9721,7 +9725,18 @@
     },
     "discoverPage": {
       "subtitle": "Sfoglia e installa app agentiche",
-      "title": "Scopri"
+      "tab_featured": "In evidenza",
+      "tab_updates": "Aggiornamenti",
+      "title": "Scopri",
+      "updates_badge_label_many": "{{count}} aggiornamenti disponibili",
+      "updates_badge_label_one": "{{count}} aggiornamento disponibile",
+      "updates_badge_label_other": "{{count}} aggiornamenti disponibili",
+      "updates_empty": "È tutto aggiornato.",
+      "updates_empty_back_to_featured": "Sfoglia le app in evidenza",
+      "version_diff": "v{{from}} → v{{to}}",
+      "updating": "Aggiornamento…",
+      "updates_check_failed": "Impossibile verificare gli aggiornamenti.",
+      "updates_retry": "Riprova"
     },
     "embedSettingsPage": {
       "back": "Indietro",

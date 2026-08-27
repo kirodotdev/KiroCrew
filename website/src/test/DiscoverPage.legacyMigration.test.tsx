@@ -25,7 +25,7 @@ vi.mock('../pages/apps/useAppsData', async importOriginal => {
       registry: undefined, registryLoading: false, registryError: null,
       loading: false, registries: [],
       browseApps: [], featuredSections: [], categoryOrder: [], categories: [],
-      sources: [], updateMap: {}, installedApps: [], updatables: [],
+      sources: [], installedApps: [], updatables: [],
       announceAppsChanged: vi.fn(),
     })),
   }

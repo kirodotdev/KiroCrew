@@ -2669,6 +2669,9 @@
       "uninstall_removes_metadata_secret_and_source": "Installed from Apps — {{productName}} metadata, the app secret, and the downloaded source code will be removed.",
       "updated_app_one": "Updated {{count}} app.",
       "updated_app_other": "Updated {{count}} apps.",
+      "updates_hint_link": "View updates",
+      "updates_hint_one": "{{count}} update available",
+      "updates_hint_other": "{{count}} updates available",
       "updating_progress": "Updating {{done}}/{{total}}…"
     },
     "artifactDeployPage": {
@@ -3530,7 +3533,17 @@
     },
     "discoverPage": {
       "subtitle": "Browse and install agentic apps",
-      "title": "Discover"
+      "tab_featured": "Featured",
+      "tab_updates": "Updates",
+      "title": "Discover",
+      "updates_badge_label_one": "{{count}} update available",
+      "updates_badge_label_other": "{{count}} updates available",
+      "updates_empty": "Everything is up to date.",
+      "updates_empty_back_to_featured": "Browse Featured apps",
+      "version_diff": "v{{from}} → v{{to}}",
+      "updating": "Updating…",
+      "updates_check_failed": "Couldn't check for updates.",
+      "updates_retry": "Retry"
     },
     "hooksPage": {
       "click_again_to_confirm": "Click again to confirm",

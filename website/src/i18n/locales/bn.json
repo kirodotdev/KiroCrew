@@ -7878,6 +7878,9 @@
       "update_other": "{{count}}টি আপডেট",
       "updated_app_one": "{{count}}টি অ্যাপ আপডেট হয়েছে।",
       "updated_app_other": "{{count}}টি অ্যাপ আপডেট হয়েছে।",
+      "updates_hint_link": "আপডেট দেখো",
+      "updates_hint_one": "{{count}}টি আপডেট উপলব্ধ",
+      "updates_hint_other": "{{count}}টি আপডেট উপলব্ধ",
       "updating_progress": "আপডেট হচ্ছে {{done}}/{{total}}…",
       "v": "v",
       "installed_app_find_in_library_and_enable": "{{name}} ইনস্টল হয়েছে। লাইব্রেরিতে এটি চালু করুন।",
@@ -9572,7 +9575,17 @@
     },
     "discoverPage": {
       "subtitle": "এজেন্টিক অ্যাপ ব্রাউজ ও ইনস্টল করুন",
-      "title": "আবিষ্কার"
+      "tab_featured": "নির্বাচিত",
+      "tab_updates": "আপডেট",
+      "title": "আবিষ্কার",
+      "updates_badge_label_one": "{{count}}টি আপডেট উপলব্ধ",
+      "updates_badge_label_other": "{{count}}টি আপডেট উপলব্ধ",
+      "updates_empty": "সবকিছু আপ টু ডেট আছে।",
+      "updates_empty_back_to_featured": "ফিচার্ড অ্যাপ ব্রাউজ করুন",
+      "version_diff": "v{{from}} → v{{to}}",
+      "updating": "আপডেট হচ্ছে…",
+      "updates_check_failed": "আপডেট যাচাই করা যায়নি।",
+      "updates_retry": "আবার চেষ্টা করুন"
     },
     "embedSettingsPage": {
       "back": "ফিরে যান",

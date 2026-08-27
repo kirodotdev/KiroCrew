@@ -7996,6 +7996,10 @@
       "updated_app_many": "{{count}} applications mises à jour.",
       "updated_app_one": "{{count}} application mise à jour.",
       "updated_app_other": "{{count}} applications mises à jour.",
+      "updates_hint_link": "Voir les mises à jour",
+      "updates_hint_many": "{{count}} mises à jour disponibles",
+      "updates_hint_one": "{{count}} mise à jour disponible",
+      "updates_hint_other": "{{count}} mises à jour disponibles",
       "updating_progress": "Mise à jour {{done}}/{{total}}…",
       "v": "v",
       "installed_app_find_in_library_and_enable": "{{name}} installé. Activez-le dans la Bibliothèque.",
@@ -9721,7 +9725,18 @@
     },
     "discoverPage": {
       "subtitle": "Parcourez et installez des applications agentiques",
-      "title": "Découvrir"
+      "tab_featured": "À la une",
+      "tab_updates": "Mises à jour",
+      "title": "Découvrir",
+      "updates_badge_label_many": "{{count}} mises à jour disponibles",
+      "updates_badge_label_one": "{{count}} mise à jour disponible",
+      "updates_badge_label_other": "{{count}} mises à jour disponibles",
+      "updates_empty": "Tout est à jour.",
+      "updates_empty_back_to_featured": "Parcourir les apps à la une",
+      "version_diff": "v{{from}} → v{{to}}",
+      "updating": "Mise à jour…",
+      "updates_check_failed": "Impossible de vérifier les mises à jour.",
+      "updates_retry": "Réessayer"
     },
     "embedSettingsPage": {
       "back": "Retour",

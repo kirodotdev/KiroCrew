@@ -7878,6 +7878,9 @@
       "update_other": "{{count}} अपडेट",
       "updated_app_one": "{{count}} ऐप अपडेट किया गया।",
       "updated_app_other": "{{count}} ऐप अपडेट किए गए।",
+      "updates_hint_link": "अपडेट देखो",
+      "updates_hint_one": "{{count}} अपडेट उपलब्ध",
+      "updates_hint_other": "{{count}} अपडेट उपलब्ध",
       "updating_progress": "अपडेट हो रहा है {{done}}/{{total}}…",
       "v": "v",
       "installed_app_find_in_library_and_enable": "{{name}} इंस्टॉल हो गया। इसे लाइब्रेरी में चालू करो।",
@@ -9572,7 +9575,17 @@
     },
     "discoverPage": {
       "subtitle": "एजेंटिक ऐप्स ब्राउज़ और इंस्टॉल करें",
-      "title": "डिस्कवर"
+      "tab_featured": "विशेष",
+      "tab_updates": "अपडेट",
+      "title": "डिस्कवर",
+      "updates_badge_label_one": "{{count}} अपडेट उपलब्ध",
+      "updates_badge_label_other": "{{count}} अपडेट उपलब्ध",
+      "updates_empty": "सब कुछ अप-टू-डेट है।",
+      "updates_empty_back_to_featured": "फ़ीचर्ड ऐप्स ब्राउज़ करें",
+      "version_diff": "v{{from}} → v{{to}}",
+      "updating": "अपडेट हो रहा है…",
+      "updates_check_failed": "अपडेट की जांच नहीं हो सकी।",
+      "updates_retry": "फिर से कोशिश करें"
     },
     "embedSettingsPage": {
       "back": "वापस",

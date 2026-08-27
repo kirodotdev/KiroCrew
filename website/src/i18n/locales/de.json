@@ -7878,6 +7878,9 @@
       "update_other": "{{count}} Aktualisierungen",
       "updated_app_one": "{{count}} App aktualisiert.",
       "updated_app_other": "{{count}} Apps aktualisiert.",
+      "updates_hint_link": "Aktualisierungen anzeigen",
+      "updates_hint_one": "{{count}} Aktualisierung verfügbar",
+      "updates_hint_other": "{{count}} Aktualisierungen verfügbar",
       "updating_progress": "Aktualisierung {{done}}/{{total}}…",
       "v": "v",
       "installed_app_find_in_library_and_enable": "{{name}} installiert. Aktiviere die App in der Bibliothek.",
@@ -9572,7 +9575,17 @@
     },
     "discoverPage": {
       "subtitle": "Agentische Apps durchsuchen und installieren",
-      "title": "Entdecken"
+      "tab_featured": "Empfohlen",
+      "tab_updates": "Aktualisierungen",
+      "title": "Entdecken",
+      "updates_badge_label_one": "{{count}} Aktualisierung verfügbar",
+      "updates_badge_label_other": "{{count}} Aktualisierungen verfügbar",
+      "updates_empty": "Alles ist auf dem neuesten Stand.",
+      "updates_empty_back_to_featured": "Vorgestellte Apps ansehen",
+      "version_diff": "v{{from}} → v{{to}}",
+      "updating": "Wird aktualisiert…",
+      "updates_check_failed": "Nach Updates konnte nicht gesucht werden.",
+      "updates_retry": "Erneut versuchen"
     },
     "embedSettingsPage": {
       "back": "Zurück",

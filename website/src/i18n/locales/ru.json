@@ -8114,6 +8114,11 @@
       "updated_app_many": "Обновлено {{count}} приложений.",
       "updated_app_one": "Обновлено {{count}} приложение.",
       "updated_app_other": "Обновлено {{count}} приложения.",
+      "updates_hint_link": "Посмотреть обновления",
+      "updates_hint_few": "Доступно {{count}} обновления",
+      "updates_hint_many": "Доступно {{count}} обновлений",
+      "updates_hint_one": "Доступно {{count}} обновление",
+      "updates_hint_other": "Доступно {{count}} обновления",
       "updating_progress": "Обновление {{done}}/{{total}}...",
       "v": "v",
       "installed_app_find_in_library_and_enable": "{{name}} установлено. Включите его в Библиотеке.",
@@ -9870,7 +9875,19 @@
     },
     "discoverPage": {
       "subtitle": "Просматривайте и устанавливайте агентные приложения",
-      "title": "Обзор"
+      "tab_featured": "Рекомендуемое",
+      "tab_updates": "Обновления",
+      "title": "Обзор",
+      "updates_badge_label_few": "Доступно {{count}} обновления",
+      "updates_badge_label_many": "Доступно {{count}} обновлений",
+      "updates_badge_label_one": "Доступно {{count}} обновление",
+      "updates_badge_label_other": "Доступно {{count}} обновления",
+      "updates_empty": "Всё обновлено.",
+      "updates_empty_back_to_featured": "Смотреть рекомендуемые приложения",
+      "version_diff": "v{{from}} → v{{to}}",
+      "updating": "Обновление…",
+      "updates_check_failed": "Не удалось проверить обновления.",
+      "updates_retry": "Повторить"
     },
     "embedSettingsPage": {
       "back": "Назад",

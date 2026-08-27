@@ -7766,6 +7766,9 @@
       "uninstall_removes_metadata_secret_and_source": "[Ìñşţàĺĺèð ƒŕøɱ Àþþş — {{productName}} ɱèţàðàţà, ţĥè àþþ şèçŕèţ, àñð ţĥè ðøẁñĺøàðèð şøùŕçè çøðè ẁìĺĺ ƀè ŕèɱøṽèð. ·····························]",
       "updated_app_one": "[Ùþðàţèð {{count}} àþþ. ············]",
       "updated_app_other": "[Ùþðàţèð {{count}} àþþş. ·············]",
+      "updates_hint_link": "[Ṽìèẁ ùþðàţèş ···········]",
+      "updates_hint_one": "[{{count}} ùþðàţè àṽàìĺàƀĺè ···············]",
+      "updates_hint_other": "[{{count}} ùþðàţèş àṽàìĺàƀĺè ················]",
       "updating_progress": "[Ùþðàţìñğ {{done}}/{{total}}… ··········]"
     },
     "artifactDeployPage": {
@@ -12794,7 +12797,17 @@
     },
     "discoverPage": {
       "subtitle": "[Ɓŕøẁşè àñð ìñşţàĺĺ àğèñţìç àþþş ················]",
-      "title": "[Ðìşçøṽèŕ ············]"
+      "tab_featured": "[Ƒèàţùŕèð ············]",
+      "tab_updates": "[Ùþðàţèş ···········]",
+      "title": "[Ðìşçøṽèŕ ············]",
+      "updates_badge_label_one": "[{{count}} ùþðàţè àṽàìĺàƀĺè ···············]",
+      "updates_badge_label_other": "[{{count}} ùþðàţèş àṽàìĺàƀĺè ················]",
+      "updates_empty": "[Èṽèŕýţĥìñğ ìş ùþ ţø ðàţè. ··················]",
+      "updates_empty_back_to_featured": "[Ɓŕøẁşè Ƒèàţùŕèð àþþş ··················]",
+      "version_diff": "[ṽ{{from}} → ṽ{{to}} ········]",
+      "updating": "[Ùþðàţìñğ… ··············]",
+      "updates_check_failed": "[Çøùĺðñ'ţ çĥèçķ ƒøŕ ùþðàţèş. ···················]",
+      "updates_retry": "[Ŕèţŕý ········]"
     },
     "mcpManagement": {
       "assessment": {

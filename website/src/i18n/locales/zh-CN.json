@@ -7759,6 +7759,8 @@
       "uninstall_removes_metadata_secret_and_source": "通过“应用”安装 — 会移除 {{productName}} 元数据、应用密钥和已下载的源代码。",
       "update_all": "全部更新",
       "update_other": "{{count}} 项更新",
+      "updates_hint_link": "查看更新",
+      "updates_hint_other": "有 {{count}} 项更新可用",
       "updating_progress": "正在更新 {{done}}/{{total}}…",
       "v": "v",
       "installed_app_find_in_library_and_enable": "已安装 {{name}}。请在“库”中启用它。",
@@ -9423,7 +9425,16 @@
     },
     "discoverPage": {
       "subtitle": "浏览并安装智能体应用",
-      "title": "发现"
+      "tab_featured": "精选",
+      "tab_updates": "更新",
+      "title": "发现",
+      "updates_badge_label_other": "有 {{count}} 项更新可用",
+      "updates_empty": "所有应用均为最新。",
+      "updates_empty_back_to_featured": "浏览精选应用",
+      "version_diff": "v{{from}} → v{{to}}",
+      "updating": "更新中…",
+      "updates_check_failed": "无法检查更新。",
+      "updates_retry": "重试"
     },
     "embedSettingsPage": {
       "back": "返回",

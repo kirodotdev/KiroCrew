@@ -7759,6 +7759,8 @@
       "uninstall_removes_metadata_secret_and_source": "앱에서 설치됨 — {{productName}} 메타데이터, 앱 시크릿, 다운로드된 소스 코드가 제거됩니다.",
       "update_all": "모두 업데이트",
       "update_other": "업데이트 {{count}}개",
+      "updates_hint_link": "업데이트 보기",
+      "updates_hint_other": "업데이트 {{count}}개 사용 가능",
       "updating_progress": "업데이트 중 {{done}}/{{total}}…",
       "v": "v",
       "installed_app_find_in_library_and_enable": "{{name}} 설치됨. 라이브러리에서 활성화하세요.",
@@ -9423,7 +9425,16 @@
     },
     "discoverPage": {
       "subtitle": "에이전틱 앱을 둘러보고 설치합니다",
-      "title": "탐색"
+      "tab_featured": "추천",
+      "tab_updates": "업데이트",
+      "title": "탐색",
+      "updates_badge_label_other": "업데이트 {{count}}개 사용 가능",
+      "updates_empty": "모든 앱이 최신 상태입니다.",
+      "updates_empty_back_to_featured": "추천 앱 둘러보기",
+      "version_diff": "v{{from}} → v{{to}}",
+      "updating": "업데이트 중…",
+      "updates_check_failed": "업데이트를 확인할 수 없습니다.",
+      "updates_retry": "다시 시도"
     },
     "embedSettingsPage": {
       "back": "뒤로",

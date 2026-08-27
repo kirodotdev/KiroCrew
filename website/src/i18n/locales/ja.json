@@ -7759,6 +7759,8 @@
       "uninstall_removes_metadata_secret_and_source": "アプリからインストール — {{productName}} メタデータ、アプリシークレット、ダウンロードされたソースコードが削除されます。",
       "update_all": "すべて更新",
       "update_other": "{{count}} 更新",
+      "updates_hint_link": "更新を表示",
+      "updates_hint_other": "{{count}} 件の更新があります",
       "updating_progress": "更新中 {{done}}/{{total}}…",
       "v": "v",
       "installed_app_find_in_library_and_enable": "{{name}} をインストールしました。ライブラリで有効にしてください。",
@@ -9423,7 +9425,16 @@
     },
     "discoverPage": {
       "subtitle": "エージェンティックアプリの閲覧とインストール",
-      "title": "発見"
+      "tab_featured": "注目",
+      "tab_updates": "更新",
+      "title": "発見",
+      "updates_badge_label_other": "{{count}} 件の更新があります",
+      "updates_empty": "すべて最新です。",
+      "updates_empty_back_to_featured": "おすすめアプリを見る",
+      "version_diff": "v{{from}} → v{{to}}",
+      "updating": "更新中…",
+      "updates_check_failed": "更新を確認できませんでした。",
+      "updates_retry": "再試行"
     },
     "embedSettingsPage": {
       "back": "戻る",
