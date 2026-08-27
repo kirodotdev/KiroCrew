@@ -40,13 +40,27 @@ BLOCK_SCALAR_INDICATORS = frozenset({">", "|", ">-", "|-", ">+", "|+"})
 # that *starts with* ``---`` (trailing text after the closer is tolerated).
 _COLUMN0_BLOCK_RE = re.compile(r"^---\n(.*?)\n---", re.DOTALL)
 
+# As above, but tolerating CRLF. A steering file authored on Windows has
+# ``---\r\n``, which the LF-only fence above does not match at all — so its
+# declaration was invisible (the tab reported the default mode and the
+# runtime skipped the document entirely) and an edit PREPENDED a second
+# front-matter block instead of rewriting the first.
+_COLUMN0_BLOCK_CRLF_RE = re.compile(r"^---\r?\n(.*?)\r?\n---", re.DOTALL)
+
+# DEFERRED, deliberately: ``column0_fence`` (``SKILL_LOADER``) and
+# ``leading_ws_fence`` (``SKILL_UPDATE``) keep the LF-only grammar, so a
+# Windows-authored SKILL.md still has invisible front matter. Widening them
+# changes what the skills catalog and the update merge ACCEPT — a behaviour
+# change with its own review surface and its own snapshot corpus, which is
+# why each dialect is a separate constant. Steering was fixed here because
+# its own feature depends on the declaration being read at all.
 # Fence extraction for the "leading_ws_fence" dialect: identical, except any
 # whitespace (including blank lines) may precede the opening fence.
 _LEADING_WS_BLOCK_RE = re.compile(r"^\s*---\n(.*?)\n---", re.DOTALL)
 
 # How the frontmatter block is located within the document. Each mode is the
 # fence grammar of the dialects that name it; they are not interchangeable.
-Extraction = Literal["column0_fence", "line_scan", "leading_ws_fence"]
+Extraction = Literal["column0_fence", "column0_fence_crlf", "line_scan", "leading_ws_fence"]
 
 # Whether an indented ``key: value`` line is a field or prose.
 # - "reject_indented": any leading whitespace (space or tab) makes the line
@@ -88,6 +102,19 @@ class FrontmatterDialect:
 # scalars resolved, last duplicate wins.
 SKILL_LOADER = FrontmatterDialect(
     extraction="column0_fence",
+    indent_policy="reject_indented",
+    strip_quotes=True,
+    resolve_block_scalars=True,
+)
+
+# ``dashboard/handlers/steering._head_meta`` — the Steering tab's listing scan.
+# Steering documents are the same markdown-with-front-matter family as SKILL.md,
+# so they accept the same grammar; it is a SEPARATE constant rather than a second
+# reference to ``SKILL_LOADER`` because the two document families have no reason
+# to move together — retuning what the skills catalog accepts must not silently
+# change how a steering document's declared mode is read.
+STEERING_LOADER = FrontmatterDialect(
+    extraction="column0_fence_crlf",
     indent_policy="reject_indented",
     strip_quotes=True,
     resolve_block_scalars=True,
@@ -213,6 +240,163 @@ def split_frontmatter(text: str, dialect: FrontmatterDialect) -> tuple[dict[str,
     return _parse_block_lines(lines, dialect), body
 
 
+def _first_newline_is_crlf(text: str) -> bool:
+    """Does *text* use CRLF? Judged on its FIRST line break, not on any of them.
+
+    A document with mixed endings is already inconsistent; the first break is
+    what its author's editor produced, so matching it is the least surprising
+    choice and keeps a pure-CRLF file pure.
+    """
+    index = text.find("\n")
+    return index > 0 and text[index - 1] == "\r"
+
+
+def render_frontmatter_value(value: str) -> str:
+    """Render *value* as a single-line frontmatter value.
+
+    Quotes only when a bare value would parse back as something else: an empty
+    string, edge whitespace (which every dialect strips), or a character that
+    starts a comment or a nested mapping. A glob like ``src/**/*.ts`` needs no
+    quoting to round-trip, but Kiro's own documentation writes patterns quoted,
+    so a caller that wants them quoted passes them through already-quoted-safe
+    text and gets the same bytes back.
+
+    Raises ``ValueError`` on a newline: a value carrying one would silently
+    become extra frontmatter lines, or close the fence.
+    """
+    if "\n" in value or "\r" in value:
+        raise ValueError("a frontmatter value may not contain a newline")
+    if (
+        value == ""
+        or value != value.strip()
+        or ":" in value
+        or value.lstrip()[:1] in {"#", '"', "'", ">", "|"}
+    ):
+        # No escaping: the parser's ``strip_quotes`` is ``strip("\"'")``, which
+        # removes RUNS of quote characters and understands no escape sequence at
+        # all. Emitting ``\"`` would therefore round-trip as a literal backslash.
+        # Values that cannot survive quoting are rejected by the round-trip check
+        # in :func:`set_frontmatter_fields` instead of being silently mangled.
+        return '"' + value + '"'
+    return value
+
+
+def set_frontmatter_fields(
+    text: str, updates: dict[str, str | None], dialect: FrontmatterDialect
+) -> str:
+    """Return *text* with its frontmatter fields updated.
+
+    *updates* maps key to new value; a ``None`` value REMOVES the key. Keys are
+    written in the order given when they are new, and in place when they already
+    exist, so a document's existing field order survives an edit.
+
+    The BODY is preserved byte for byte. That is the whole point of doing this
+    server-side rather than having an editor splice YAML into a textarea: the
+    body is the user's document, and a rewrite that reflows it — or that eats a
+    trailing newline — is data loss disguised as a settings change.
+
+    Three shapes are handled:
+
+    - No frontmatter yet → one is created above the existing text.
+    - A block that ends up empty (every key removed) → the fence goes with it,
+      rather than leaving a bare ``---`` the renderer would draw as a rule.
+    - An existing key whose value is a YAML block scalar → its indented
+      continuation lines are removed along with the key line, so replacing a
+      folded value cannot orphan the fold.
+
+    Only ``column0_fence`` and ``leading_ws_fence`` are supported; ``line_scan``
+    does not identify its block precisely enough to rewrite it in place.
+    """
+    if dialect.extraction == "line_scan":
+        raise ValueError("set_frontmatter_fields cannot rewrite a line_scan block")
+    # Write the fence with the newline the DOCUMENT already uses. Emitting LF
+    # into a CRLF file would leave it mixed — the same class of damage as
+    # reflowing the body, and just as invisible in a diff viewer.
+    nl = "\r\n" if _first_newline_is_crlf(text) else "\n"
+    lines, body = _extract_block(text, dialect.extraction)
+    if lines is None:
+        additions = [
+            f"{key}: {render_frontmatter_value(value)}"
+            for key, value in updates.items()
+            if value is not None
+        ]
+        if not additions:
+            return text
+        _verify_round_trip(additions, updates, dialect)
+        return f"---{nl}" + nl.join(additions) + f"{nl}---{nl}" + text
+
+    remaining = dict(updates)
+    out: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        index += 1
+        line = line.rstrip("\r")
+        key = line.partition(":")[0].strip() if ":" in line else ""
+        indented = line[:1].isspace()
+        is_field = bool(key) and not (dialect.indent_policy == "reject_indented" and indented)
+        # Consume a block scalar's continuation lines with its key line, so a
+        # replaced or removed folded value leaves nothing behind.
+        continuation: list[str] = []
+        if is_field and dialect.resolve_block_scalars:
+            if line.partition(":")[2].strip() in BLOCK_SCALAR_INDICATORS:
+                while index < len(lines) and (
+                    not lines[index].strip() or lines[index][:1].isspace()
+                ):
+                    # Strip the CR here too: these lines are re-joined with the
+                    # document's newline, so a retained \r would be written back
+                    # as \r\r\n.
+                    continuation.append(lines[index].rstrip("\r"))
+                    index += 1
+        if is_field and key in remaining:
+            value = remaining.pop(key)
+            if value is not None:
+                out.append(f"{key}: {render_frontmatter_value(value)}")
+            # value is None → the key (and any fold) is dropped.
+            continue
+        out.append(line)
+        out.extend(continuation)
+
+    out.extend(
+        f"{key}: {render_frontmatter_value(value)}"
+        for key, value in remaining.items()
+        if value is not None
+    )
+    if not any(line.strip() for line in out):
+        # An empty block: drop the fence, and with it the ONE newline that
+        # separated it from the body. `lstrip` would eat every leading blank
+        # line the document itself opens with — a silent reflow of text this
+        # function promises to preserve byte for byte.
+        if body.startswith("\r\n"):
+            return body[2:]
+        return body[1:] if body.startswith("\n") else body
+    _verify_round_trip(out, updates, dialect)
+    return f"---{nl}" + nl.join(out) + f"{nl}---" + body
+
+
+def _verify_round_trip(
+    block: list[str], updates: dict[str, str | None], dialect: FrontmatterDialect
+) -> None:
+    """Raise unless re-parsing *block* yields exactly what was written.
+
+    The single-line grammar here has no escape sequence — ``strip_quotes`` is
+    ``str.strip("\"'")``, so a value that itself ends in a quote character comes
+    back shorter than it went in. Rather than mangle the caller's value, refuse
+    it: every caller of this writer is serving a user edit, where a rejection is
+    recoverable and a silent truncation is not.
+    """
+    parsed = _parse_block_lines(block, dialect)
+    for key, value in updates.items():
+        if value is None:
+            if key in parsed:
+                raise ValueError(f"frontmatter key {key!r} could not be removed")
+        elif parsed.get(key) != value:
+            raise ValueError(
+                f"frontmatter value for {key!r} cannot be represented in this "
+                f"document format (it would read back as {parsed.get(key)!r})"
+            )
+
+
 def _extract_block(
     text: str, extraction: Extraction, *, want_body: bool = True
 ) -> tuple[list[str] | None, str]:
@@ -222,8 +406,12 @@ def _extract_block(
     was found (the caller promises not to read it); the no-block case still
     returns *text* so ``({}, text)`` stays uniform.
     """
-    if extraction == "column0_fence" or extraction == "leading_ws_fence":
-        pattern = _COLUMN0_BLOCK_RE if extraction == "column0_fence" else _LEADING_WS_BLOCK_RE
+    if extraction in ("column0_fence", "column0_fence_crlf", "leading_ws_fence"):
+        pattern = {
+            "column0_fence": _COLUMN0_BLOCK_RE,
+            "column0_fence_crlf": _COLUMN0_BLOCK_CRLF_RE,
+            "leading_ws_fence": _LEADING_WS_BLOCK_RE,
+        }[extraction]
         match = pattern.match(text)
         if not match:
             return None, text

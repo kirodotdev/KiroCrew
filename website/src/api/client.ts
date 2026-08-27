@@ -2322,8 +2322,19 @@ export const api = {
   // slot is precisely what can move, so it cannot close this on its own.
   createSteering: (name: string, content: string, source?: string, sessionKey?: string, projectKey?: string) =>
     post('/api/steering', { name, content, source }, sessionKey, projectHeader(projectKey)).then(j),
-  updateSteering: (key: string, content: string, sessionKey?: string, projectKey?: string) =>
-    put('/api/steering/' + key.split('/').map(encodeURIComponent).join('/'), { content }, sessionKey, projectHeader(projectKey)).then(j),
+  /** Save a steering file. `declaration` optionally rewrites its front matter
+   *  (mode and pattern) SERVER-side — an empty string on a field removes that
+   *  key. The editor never splices YAML into its own
+   *  textarea: the body is the user's document, and the server's writer
+   *  preserves it byte for byte. */
+  updateSteering: (
+    key: string,
+    content: string,
+    sessionKey?: string,
+    projectKey?: string,
+    declaration?: { inclusion?: string; file_match_pattern?: string },
+  ) =>
+    put('/api/steering/' + key.split('/').map(encodeURIComponent).join('/'), { content, ...(declaration ?? {}) }, sessionKey, projectHeader(projectKey)).then(j),
   deleteSteering: (key: string, sessionKey?: string, projectKey?: string) =>
     del('/api/steering/' + key.split('/').map(encodeURIComponent).join('/'), undefined, sessionKey, projectHeader(projectKey)).then(j),
 

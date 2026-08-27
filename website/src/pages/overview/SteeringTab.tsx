@@ -64,6 +64,142 @@ function sourceLabel(source: string): string {
     : source
 }
 
+/** The document body, with its front matter removed for DISPLAY only.
+ *
+ *  The renderer draws an opening `---` as a horizontal rule and the declarations
+ *  under it as a heading, so a document that declares a mode was shown its own
+ *  YAML as if it were prose — above the title, in the largest type on the pane.
+ *  The mode is already stated by the chip and, for `auto`, by the warning; a
+ *  second raw copy is noise.
+ *
+ *  Display only: `detail.content` is what the editor loads and saves back, so
+ *  stripping there would delete the declaration on the next save. The regex is
+ *  deliberately anchored and non-greedy — it matches a block at the very start
+ *  and stops at the first closing fence, so a `---` used as a rule later in the
+ *  document is untouched. */
+export function steeringBody(content: string): string {
+  return content.replace(/^---\r?\n[\s\S]*?\r?\n---[^\n]*\r?\n?/, '')
+}
+
+/** Did the author spell a mode that is not one? The chip and the detail-pane
+ *  banner both key on this, so they cannot disagree about what counts. */
+export function unrecognizedMode(file: SteeringFile): boolean {
+  const mode = typeof file.inclusion === 'string' ? file.inclusion : ''
+  const declared = typeof file.inclusion_declared === 'string' ? file.inclusion_declared : ''
+  return declared !== '' && declared.toLowerCase() !== mode.toLowerCase()
+}
+
+/** Chip naming a document's declared `inclusion` mode.
+ *
+ *  The mode name itself is NOT translated. `fileMatch` is a literal the author
+ *  types into their own front matter, so a localized chip would name a mode that
+ *  does not appear in the file — the same reason a token the user must type is
+ *  never a catalog value. Only the surrounding explanation is copy.
+ *
+ *  Rendered only when the mode DEPARTS from the default, or when the declared
+ *  spelling is not a mode at all. Every document without front matter resolves to
+ *  `always`, so badging that would put a chip on nearly every row and bury the
+ *  ones worth noticing.
+ *
+ *  An unrecognized spelling shows verbatim in a warning chip rather than being
+ *  silently normalized: the author's own typo is the only thing that explains why
+ *  a document they declared `manual` is loading everywhere. */
+function InclusionChip({ file, showDefault = false }: { file: SteeringFile; showDefault?: boolean }) {
+  // Read both fields defensively rather than trusting the declared type. This
+  // renders inside the list pane, so a missing or non-string field would take
+  // the whole pane down with it — and the chip is the least important thing on
+  // the row. An absent field simply means no chip.
+  const mode = typeof file.inclusion === 'string' ? file.inclusion : ''
+  const declared = typeof file.inclusion_declared === 'string' ? file.inclusion_declared : ''
+  const unrecognized = unrecognizedMode(file)
+  // The list hides a default-mode chip (it would sit on nearly every row);
+  // the detail header shows it, because there the mode is the document's own
+  // property and there is room to state it.
+  if (!showDefault && !unrecognized && (mode === '' || mode === 'always')) return null
+  if (mode === '' && !unrecognized) return null
+  let title: string
+  if (unrecognized) {
+    title = i18nT('pages.overview.steeringTab.inclusion_unrecognized', { declared, fallback: mode })
+  } else if (mode === 'fileMatch' && file.file_match_pattern) {
+    title = i18nT('pages.overview.steeringTab.inclusion_file_match_pattern', { pattern: file.file_match_pattern })
+  } else {
+    title = i18nT('pages.overview.steeringTab.inclusion_mode', { mode })
+  }
+  return (
+    <span
+      title={title}
+      aria-label={title}
+      className={`text-[10px] px-1.5 py-[1px] rounded-full font-mono shrink-0 border max-w-[9rem] truncate ${
+        unrecognized
+          ? 'bg-warn-subtle text-warn border-warn'
+          : 'bg-bg-elevated text-muted border-border'
+      }`}
+    >
+      {unrecognized ? declared : mode}
+    </span>
+  )
+}
+
+/** The four modes Kiro's steering format defines, in the order its docs list
+ *  them. Code constants, never catalog values: each one is a literal the author
+ *  types into their own front matter, so a translated option would name a mode
+ *  that does not exist in the file. */
+const INCLUSION_MODES = ['always', 'fileMatch', 'manual', 'auto'] as const
+
+/** Segmented control over the four modes, plus the pattern field `fileMatch`
+ *  needs. Rendered inside the editor, so the mode is changed where the document
+ *  is changed rather than by hand-typing YAML above the text. */
+function DeclarationEditor({
+  mode, pattern, onMode, onPattern,
+}: {
+  mode: string
+  pattern: string
+  onMode: (next: string) => void
+  onPattern: (next: string) => void
+}) {
+  return (
+    <div className="mb-3 rounded-md border border-border bg-bg-elevated p-3">
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-[11px] font-bold uppercase tracking-wide text-muted">
+          {i18nT('pages.overview.steeringTab.inclusion')}
+        </span>
+        <div role="radiogroup" aria-label={i18nT('pages.overview.steeringTab.inclusion')} className="flex flex-wrap gap-1">
+          {INCLUSION_MODES.map(option => (
+            <button
+              key={option}
+              type="button"
+              role="radio"
+              aria-checked={mode === option}
+              onClick={() => onMode(option)}
+              className={`text-[12px] font-mono px-2 py-[3px] rounded-md border transition-colors focus-ring ${
+                mode === option
+                  ? 'bg-accent-subtle border-accent text-text-strong'
+                  : 'bg-bg border-border text-muted hover:bg-bg-hover'
+              }`}
+            >
+              {option}
+            </button>
+          ))}
+        </div>
+      </div>
+      {mode === 'fileMatch' && (
+        <label htmlFor="steering-file-pattern" className="mt-2.5 flex items-center gap-2 flex-wrap">
+          <span className="text-[11px] font-bold uppercase tracking-wide text-muted">
+            {i18nT('pages.overview.steeringTab.file_pattern')}
+          </span>
+          <input
+            id="steering-file-pattern"
+            value={pattern}
+            onChange={e => onPattern(e.target.value)}
+            aria-label={i18nT('pages.overview.steeringTab.file_pattern')}
+            className="flex-1 min-w-[180px] bg-bg border border-border rounded-md px-2 py-1 text-[12px] font-mono text-text outline-none focus-ring"
+          />
+        </label>
+      )}
+    </div>
+  )
+}
+
 /** Seed body for a new steering file. A function, not a module-level const: the
  *  const would bake in the boot language. Resolved when the create form opens (and
  *  when it resets after a successful create), which is the only time it is used —
@@ -136,6 +272,19 @@ export default function SteeringTab() {
    *  which is why the editor is not simply torn down on a project change:
    *  discarding what the user typed is its own kind of loss. */
   const [draftProjectKey, setDraftProjectKey] = useState<string | undefined>(undefined)
+  // The declaration being edited, captured when the draft loads. Held apart
+  // from `draft` because the server owns the front-matter rewrite: sending the
+  // mode as its own field is what keeps the editor from having to splice YAML
+  // into the text it is showing.
+  const [draftMode, setDraftMode] = useState('')
+  const [draftPattern, setDraftPattern] = useState('')
+  // What the declaration was when the draft loaded. Save sends only the fields
+  // whose control actually moved: the server applies a declaration ON TOP of
+  // the submitted text, so unconditionally sending the seeded values would
+  // silently revert front matter the user had just edited by hand in the
+  // textarea — the mode control winning an argument the user never started.
+  const [baseMode, setBaseMode] = useState('')
+  const [basePattern, setBasePattern] = useState('')
   const [creating, setCreating] = useState(false)
   const [newName, setNewName] = useState('')
   const [newSource, setNewSource] = useState<'user' | 'workspace'>('workspace')
@@ -215,10 +364,24 @@ export default function SteeringTab() {
   })
 
   const updateFile = useMutation({
-    mutationFn: ({ key, content }: { key: string; content: string }) =>
-      api.updateSteering(key, content, slotKey, draftProjectKey ?? projectKey),
-    onSuccess: () => {
+    mutationFn: ({ key, content, declaration }: {
+      key: string
+      content: string
+      declaration?: { inclusion?: string; file_match_pattern?: string }
+    }) =>
+      api.updateSteering(key, content, slotKey, draftProjectKey ?? projectKey, declaration),
+    onSuccess: (res: { content?: string } | undefined, vars) => {
       setEditing(false)
+      // Seed the cache from the WRITE's own response before invalidating. A
+      // refetch can fail or lag, and a second Edit would then re-seed from the
+      // pre-save body and mode and write them back over what was just saved.
+      // The server echoes the stored text for exactly this.
+      if (typeof res?.content === 'string') {
+        queryClient.setQueryData(
+          ['steering-file', vars.key, slotKey, draftProjectKey ?? projectKey],
+          (old: unknown) => (old && typeof old === 'object' ? { ...old, content: res.content } : old),
+        )
+      }
       queryClient.invalidateQueries({ queryKey: ['steering'] })
       queryClient.invalidateQueries({ queryKey: ['steering-file'] })
     },
@@ -288,6 +451,20 @@ export default function SteeringTab() {
     setCreating(open)
   }
 
+  /** The declaration fields the user actually changed, or `undefined`.
+   *
+   *  `undefined` means "leave the front matter alone", which is what lets a
+   *  hand-edit in the textarea survive: the server only rewrites the keys it is
+   *  given. A switch AWAY from `fileMatch` deliberately does not clear the
+   *  pattern — the endpoint edits a declaration, and a glob the author typed is
+   *  theirs to keep. */
+  const changedDeclaration = () => {
+    const out: { inclusion?: string; file_match_pattern?: string } = {}
+    if (draftMode !== baseMode) out.inclusion = draftMode
+    if (draftPattern.trim() !== basePattern.trim()) out.file_match_pattern = draftPattern.trim()
+    return Object.keys(out).length ? out : undefined
+  }
+
   const select = (f: SteeringFile) => { setSelectedKey(f.key); setEditing(false); openDetail() }
 
   const renderRow = (f: SteeringFile) => {
@@ -307,6 +484,7 @@ export default function SteeringTab() {
       >
         <div className="flex items-center gap-1.5 min-w-0">
           <span className="text-[13px] font-semibold text-text truncate flex-1">{f.rel}</span>
+          <InclusionChip file={f} />
           <span className="text-[10px] px-1.5 py-[1px] rounded-full bg-bg-elevated text-muted border border-border font-bold shrink-0">
             {sourceLabel(f.source)}
           </span>
@@ -460,7 +638,9 @@ export default function SteeringTab() {
             ? i18nT(savingConflict
               ? 'pages.overview.steeringTab.conflict_while_editing'
               : 'pages.overview.steeringTab.conflict_list_refreshed')
-            : mutError.message}
+            : parseErrorCode((mutError as { body?: unknown }).body as string | undefined) === 'steering_file_match_needs_pattern'
+              ? i18nT('pages.overview.steeringTab.pattern_required', { mode: 'fileMatch' })
+              : mutError.message}
         </div>
       )}
 
@@ -505,6 +685,7 @@ export default function SteeringTab() {
                     <span className="text-[11px] px-1.5 py-[1px] rounded-full bg-bg-elevated text-muted border border-border font-bold shrink-0">
                       {sourceLabel(selected.source)}
                     </span>
+                    <InclusionChip file={selected} showDefault />
                     {/* The absolute path is reference detail, not identity: it
                         never fits beside the name on a phone and would push the
                         actions off the row. */}
@@ -513,19 +694,47 @@ export default function SteeringTab() {
                   <div className="flex gap-2 shrink-0">
                     {editing ? (<>
                       <Btn onClick={() => setEditing(false)}>{i18nT('pages.overview.steeringTab.cancel')}</Btn>
-                      <Btn primary disabled={!draft.trim() || updateFile.isPending} onClick={() => updateFile.mutate({ key: selected.key, content: draft })}>{i18nT('pages.overview.steeringTab.save')}</Btn>
+                      <Btn primary disabled={!draft.trim() || updateFile.isPending || (draftMode === 'fileMatch' && !draftPattern.trim())} onClick={() => updateFile.mutate({ key: selected.key, content: draft, declaration: changedDeclaration() })}>{i18nT('pages.overview.steeringTab.save')}</Btn>
                     </>) : (<>
-                      <Btn disabled={detail === undefined} onClick={() => { setDraft(detail?.content ?? ''); setDraftProjectKey(projectKey); setEditing(true) }}>{i18nT('pages.overview.steeringTab.edit')}</Btn>
+                      <Btn disabled={detail === undefined} onClick={() => { setDraft(detail?.content ?? ''); setDraftProjectKey(projectKey); setDraftMode(selected.inclusion || 'always'); setDraftPattern(selected.file_match_pattern || ''); /* An unrecognised declaration resolves to `always`, so seeding the BASE
+   from it made picking `always` a no-op and left the warning chip in
+   place — a silent retry loop on the very failure this tab ends. Seed
+   the base as unset so any pick is a change worth sending. */
+                        setBaseMode(unrecognizedMode(selected) ? '' : (selected.inclusion || 'always')); setBasePattern(selected.file_match_pattern || ''); setEditing(true) }}>{i18nT('pages.overview.steeringTab.edit')}</Btn>
                       <Btn danger onClick={() => { if (confirm(i18nT('pages.overview.steeringTab.delete_confirm', { path: selected.rel }))) deleteFile.mutate(selected.key) }}>{i18nT('pages.overview.steeringTab.delete')}</Btn>
                     </>)}
                   </div>
                 </div>
-                <div className="flex-1 min-h-0 overflow-y-auto p-4">
-                  {editing
-                    ? <textarea className={EDITOR_CLASS} aria-label={i18nT('pages.overview.steeringTab.edit_2', { path: selected.rel })} value={draft} onChange={e => setDraft(e.target.value)} />
-                    : detail === undefined
-                      ? <div className="text-muted text-[13px]">{i18nT('pages.overview.steeringTab.loading')}</div>
-                      : <div className="text-sm leading-relaxed"><MarkdownRenderer content={detail.content} /></div>}
+                <div className="flex-1 min-h-0 overflow-y-auto p-4 flex flex-col">
+                  {editing && (
+                    <DeclarationEditor
+                      mode={draftMode}
+                      pattern={draftPattern}
+                      onMode={setDraftMode}
+                      onPattern={setDraftPattern}
+                    />
+                  )}
+                  {!editing && unrecognizedMode(selected) && (
+                    /* The consequence of a typo'd mode is as material as the
+                       `auto` case below, and it was reachable only by hovering
+                       the chip — invisible on touch and to anyone who deep-links
+                       here. */
+                    <div className="mb-3 rounded-md border border-warn bg-warn-subtle p-3">
+                      <p className="text-[12px] leading-relaxed text-warn">
+                        {i18nT('pages.overview.steeringTab.inclusion_unrecognized', {
+                          declared: selected.inclusion_declared,
+                          fallback: selected.inclusion,
+                        })}
+                      </p>
+                    </div>
+                  )}
+                  <div className="flex-1 min-h-0">
+                    {editing
+                      ? <textarea className={EDITOR_CLASS} aria-label={i18nT('pages.overview.steeringTab.edit_2', { path: selected.rel })} value={draft} onChange={e => setDraft(e.target.value)} />
+                      : detail === undefined
+                        ? <div className="text-muted text-[13px]">{i18nT('pages.overview.steeringTab.loading')}</div>
+                        : <div className="text-sm leading-relaxed"><MarkdownRenderer content={steeringBody(detail.content)} /></div>}
+                  </div>
                 </div>
               </div>
             )}

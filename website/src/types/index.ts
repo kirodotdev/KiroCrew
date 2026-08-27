@@ -423,8 +423,22 @@ export interface SteeringFile {
   /** Display path with the home prefix collapsed to ``~``. */
   path: string
   size: number
-  /** First markdown heading, used as a one-line summary. */
+  /** First markdown heading of the document BODY, used as a one-line summary.
+   *  Front matter is excluded, so a document opening with `inclusion:` is
+   *  summarised by its title rather than by its first declaration. */
   description: string
+  /** Declared `inclusion` mode, canonicalised: always one of `always`,
+   *  `fileMatch`, `manual`, `auto`. An absent or unrecognised declaration
+   *  reports `always`, which is both Kiro's documented default and what
+   *  kiro-cli does with a value it does not recognise. */
+  inclusion: string
+  /** The `inclusion` value exactly as written, `''` when the field is absent.
+   *  Differs from `inclusion` only when the author's spelling is not a mode —
+   *  which is the one case worth telling them about. */
+  inclusion_declared: string
+  /** `fileMatchPattern` verbatim, `''` when absent. Only meaningful alongside
+   *  `inclusion: fileMatch`. */
+  file_match_pattern: string
 }
 
 /** Response shape of ``GET /api/steering``. */

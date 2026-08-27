@@ -37,6 +37,7 @@ from aiohttp import web
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor
+from kiro_crew.frontmatter import STEERING_LOADER, set_frontmatter_fields, split_frontmatter
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.security import (
     is_sensitive_path,
@@ -60,6 +61,41 @@ STEERING_FILE_MAX_BYTES = 262_144  # 256 KiB per steering document
 
 # ``user`` → ~/.kiro/steering, ``workspace`` → <project>/.kiro/steering
 STEERING_SOURCES = ("user", "workspace")
+
+# The ``inclusion`` modes the Kiro steering format defines
+# (https://kiro.dev/docs/steering/). The tab REPORTS what each document
+# declares and lets an author change it; what the harness then DOES with the
+# declaration is the harness's own business, documented upstream. Kiro Crew
+# does not act on the value.
+STEERING_INCLUSION_MODES: tuple[str, ...] = ("always", "fileMatch", "manual", "auto")
+
+# What an absent or unrecognized declaration is reported as — Kiro's documented
+# default. ``inclusion_declared`` carries the raw spelling beside it, so a typo
+# can be shown as a typo rather than silently normalized away.
+STEERING_INCLUSION_DEFAULT = "always"
+
+# Case-insensitive lookup that also canonicalizes the spelling, so ``FileMatch``
+# and ``filematch`` both report as the documented ``fileMatch``.
+_INCLUSION_CANONICAL = {mode.lower(): mode for mode in STEERING_INCLUSION_MODES}
+
+# Listing metadata is author-supplied free text (a heading, a declared mode, a
+# glob).  One cap for all of it, so a pathological single line cannot inflate a
+# 500-entry response.
+_STEERING_META_MAX_CHARS = 200
+
+# Request field → front-matter key, for the optional mode edit on ``PUT``.
+# Ordered so a document gaining all four reads the way Kiro's documentation
+# writes them. Only these four are writable: the endpoint edits a document's
+# DECLARATION, and everything else in its front matter belongs to the author.
+# ``name`` and ``description`` are deliberately NOT writable here. They matter —
+# they are what the on-demand index shows the model — but an author sets them by
+# editing the document, and no caller has ever sent them. Accepting a field
+# nothing writes is surface that has to be reasoned about at every review and
+# defended at every security pass, for no behavior.
+STEERING_WRITABLE_FIELDS: tuple[tuple[str, str], ...] = (
+    ("inclusion", "inclusion"),
+    ("file_match_pattern", "fileMatchPattern"),
+)
 
 # Precondition header: the ``project_key`` the client was listed, echoed back
 # on a workspace write so a re-pointed chat slot cannot redirect it. A header
@@ -125,39 +161,98 @@ def steering_roots(project_dir: Path | None = None) -> list[tuple[str, Path]]:
     return out
 
 
-def _first_heading(path: Path, cap: int = 2048) -> str:
-    """Cheap description: the first markdown heading (or first prose line)."""
-    try:
-        with path.open("rb") as f:
-            head = f.read(cap).decode("utf-8", errors="replace")
-    except OSError:
-        return ""
-    for line in head.splitlines():
+def _first_line(text: str) -> str:
+    """Cheap description: the first markdown heading, else the first prose line."""
+    for line in text.splitlines():
         stripped = line.strip()
         if not stripped or stripped == "---":
             continue
         if stripped.startswith("#"):
-            return re.sub(r"^#+\s*", "", stripped).strip()[:200]
-        return stripped[:200]
+            return re.sub(r"^#+\s*", "", stripped).strip()[:_STEERING_META_MAX_CHARS]
+        return stripped[:_STEERING_META_MAX_CHARS]
     return ""
+
+
+def _empty_meta() -> dict[str, str]:
+    """Metadata for a document whose head could not be read."""
+    return {
+        "description": "",
+        "inclusion": STEERING_INCLUSION_DEFAULT,
+        "inclusion_declared": "",
+        "file_match_pattern": "",
+    }
+
+
+def _head_meta(path: Path, cap: int = 2048) -> dict[str, str]:
+    """Listing metadata for one document, from a single bounded head read.
+
+    Returns ``description``, ``inclusion`` (canonical, always one of
+    :data:`STEERING_INCLUSION_MODES`), ``inclusion_declared`` (verbatim, ``""``
+    when the field is absent, so the tab can report a typo as a typo) and
+    ``file_match_pattern``.
+
+    ONE read for all four.  The scan already pays an ``lstat`` + ``resolve`` +
+    ``stat`` per entry over as many as :data:`STEERING_MAX_FILES` documents, so
+    a second open per field would add a whole pass over the slowest half of
+    ``GET /api/steering``.
+
+    The description comes from the document BODY, not from the raw head.  A
+    document opening with front matter used to be summarized as its first
+    declaration — the Steering tab showed ``inclusion: manual`` where the
+    author's title belongs.
+    """
+    try:
+        with path.open("rb") as f:
+            # cap + 1 so a full slice is distinguishable from a file that is
+            # exactly ``cap`` bytes long; only ``cap`` is decoded.
+            raw = f.read(cap + 1)
+    except OSError:
+        return _empty_meta()
+    truncated = len(raw) > cap
+    head = raw[:cap].decode("utf-8", errors="replace")
+    fields, body = split_frontmatter(head, STEERING_LOADER)
+    if not fields:
+        # No parsed fields means no front matter this dialect recognizes, so
+        # the whole slice is body — the behavior this listing had before it
+        # understood front matter at all.  The one exception is a block that
+        # runs PAST the head slice: there is no closing fence to find, the
+        # "body" is the truncated front matter itself, and describing the
+        # document by its first declaration is the bug this function fixes.
+        # Both openers: a CRLF document starts ``---\r\n``, and missing that
+        # let the raw head through — re-exposing ``inclusion:`` as the
+        # description, which is the bug this function exists to fix.
+        opens_fence = head.startswith("---\n") or head.startswith("---\r\n")
+        body = "" if (truncated and opens_fence) else head
+    declared = fields.get("inclusion", "").strip()
+    return {
+        "description": _first_line(body),
+        "inclusion": _INCLUSION_CANONICAL.get(declared.lower(), STEERING_INCLUSION_DEFAULT),
+        "inclusion_declared": declared[:_STEERING_META_MAX_CHARS],
+        "file_match_pattern": (
+            fields.get("fileMatchPattern", "").strip()[:_STEERING_META_MAX_CHARS]
+        ),
+    }
 
 
 def list_steering_blocking(project_dir: Path | None = None) -> dict[str, Any]:
     """Blocking scan of both steering roots — run on the discovery pool.
 
     Returns ``{"files": [...], "roots": [...], "project": "<display path>"}``.
-    Each file entry: ``{key, name, rel, source, path, size, description}``
-    where ``key`` is ``"<source>/<rel>"``.
+    Each file entry: ``{key, name, rel, source, path, size, description,
+    inclusion, inclusion_declared, file_match_pattern}`` where ``key`` is
+    ``"<source>/<rel>"``.
     """
     files: list[dict[str, Any]] = []
     roots: list[dict[str, Any]] = []
     for source, root in steering_roots(project_dir):
         exists = root.is_dir()
-        roots.append({
-            "source": source,
-            "path": _redact_meta(_display_path(root)),
-            "exists": exists,
-        })
+        roots.append(
+            {
+                "source": source,
+                "path": _redact_meta(_display_path(root)),
+                "exists": exists,
+            }
+        )
         if not exists:
             continue
         base = _base_for(source, project_dir)
@@ -198,15 +293,23 @@ def list_steering_blocking(project_dir: Path | None = None) -> dict[str, Any]:
             except OSError:
                 continue
             rel = entry.relative_to(root).as_posix()
-            files.append({
-                "key": f"{source}/{rel}",
-                "name": entry.name,
-                "rel": rel,
-                "source": source,
-                "path": _redact_meta(_display_path(entry)),
-                "size": size,
-                "description": _redact_meta(_first_heading(entry)),
-            })
+            meta = _head_meta(entry)
+            files.append(
+                {
+                    "key": f"{source}/{rel}",
+                    "name": entry.name,
+                    "rel": rel,
+                    "source": source,
+                    "path": _redact_meta(_display_path(entry)),
+                    "size": size,
+                    "description": _redact_meta(meta["description"]),
+                    # ``inclusion`` comes from a closed vocabulary, so it needs no
+                    # redaction; the two free-text fields beside it do.
+                    "inclusion": meta["inclusion"],
+                    "inclusion_declared": _redact_meta(meta["inclusion_declared"]),
+                    "file_match_pattern": _redact_meta(meta["file_match_pattern"]),
+                }
+            )
     return {
         "files": files,
         "roots": roots,
@@ -346,9 +449,7 @@ def _blocked(request: web.Request, operation: str) -> web.Response | None:
 # They return a short error token; the handlers map tokens to HTTP status.
 
 
-def _resolve_and_read_blocking(
-    key: str, project_dir: Path | None
-) -> tuple[str, str, str | None]:
+def _resolve_and_read_blocking(key: str, project_dir: Path | None) -> tuple[str, str, str | None]:
     """Resolve *key* and read it — one transaction, entirely off the event loop.
 
     Returns ``(content, display_path, error token or None)``.
@@ -373,9 +474,7 @@ def _resolve_and_read_blocking(
     display = _redact_meta(_display_path(target))
     parts = _split_key(key)
     root = (
-        next((p for s, p in steering_roots(project_dir) if s == parts[0]), None)
-        if parts
-        else None
+        next((p for s, p in steering_roots(project_dir) if s == parts[0]), None) if parts else None
     )
     if root is None:
         return "", display, "notfound"
@@ -453,6 +552,75 @@ def _update_file_blocking(target: Path, content: str) -> str | None:
     return None
 
 
+class _DeclarationError(ValueError):
+    """A mode edit the endpoint refuses, carrying its machine-readable code."""
+
+    def __init__(self, message: str, code: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def _apply_declaration(content: str, body: dict[str, Any]) -> str:
+    """Apply the request's optional mode edit to *content*'s front matter.
+
+    Absent field → left alone. Empty string → the key is REMOVED, which is how
+    a document goes back to having no declaration at all (implicitly
+    ``always``). Anything else is written verbatim.
+
+    Done server-side rather than by having the editor splice YAML into its own
+    textarea: the body is the user's document, the writer preserves it byte for
+    byte, and a client that got the splice subtly wrong would corrupt a file
+    whose whole purpose is to be read by the agent.
+    """
+    updates: dict[str, str | None] = {}
+    for field, key in STEERING_WRITABLE_FIELDS:
+        if field not in body:
+            continue
+        raw = body[field]
+        if raw is None:
+            raw = ""
+        if not isinstance(raw, str):
+            raise _DeclarationError(f"{field} must be a string", "steering_field_type")
+        value = raw.strip()
+        if len(value) > _STEERING_META_MAX_CHARS:
+            raise _DeclarationError(
+                f"{field} exceeds {_STEERING_META_MAX_CHARS} characters",
+                "steering_field_too_long",
+            )
+        updates[key] = value or None
+    if not updates:
+        return content
+
+    if "inclusion" in updates:
+        declared = updates["inclusion"]
+        if declared is not None and declared.lower() not in _INCLUSION_CANONICAL:
+            raise _DeclarationError(
+                f"unknown inclusion mode {declared!r}; expected one of "
+                + ", ".join(STEERING_INCLUSION_MODES),
+                "steering_unknown_inclusion",
+            )
+        if declared is not None:
+            updates["inclusion"] = _INCLUSION_CANONICAL[declared.lower()]
+
+    try:
+        out = set_frontmatter_fields(content, updates, STEERING_LOADER)
+    except ValueError as exc:
+        raise _DeclarationError(str(exc), "steering_field_unrepresentable") from exc
+
+    # A fileMatch document with no pattern can never match, so it would be
+    # withheld forever with nothing to explain why. Checked against the RESULT,
+    # so a request that only flips the mode passes when the document already
+    # carries a pattern.
+    fields, _ = split_frontmatter(out, STEERING_LOADER)
+    resolved = _INCLUSION_CANONICAL.get(fields.get("inclusion", "").strip().lower(), "")
+    if resolved == "fileMatch" and not fields.get("fileMatchPattern", "").strip():
+        raise _DeclarationError(
+            "fileMatch needs a fileMatchPattern; without one the document never applies",
+            "steering_file_match_needs_pattern",
+        )
+    return out
+
+
 def _delete_file_blocking(target: Path) -> str | None:
     """Unlink *target*; return an error token or None.
 
@@ -500,9 +668,13 @@ async def api_steering(request: web.Request) -> web.Response:
     # _project_precondition().
     result["project_key"] = _project_key(project_dir)
     _sel().log_tool_invocation(
-        session_key='', agent='api', source='dashboard',
-        tool_name='api_steering_list', tool_kind='steering', outcome='ok',
-        metadata={'count': len(result["files"])},
+        session_key="",
+        agent="api",
+        source="dashboard",
+        tool_name="api_steering_list",
+        tool_kind="steering",
+        outcome="ok",
+        metadata={"count": len(result["files"])},
     )
     return web.json_response(result)
 
@@ -637,8 +809,7 @@ def _project_precondition(
             # refreshed list), so the client supplies localized copy keyed off
             # `code` and this text is the diagnostic fallback.
             "error": (
-                "the project this steering file belongs to is no longer the "
-                "active project"
+                "the project this steering file belongs to is no longer the " "active project"
             ),
             "code": "steering_project_changed",
         },
@@ -659,9 +830,13 @@ async def api_steering_detail(request: web.Request) -> web.Response:
 
         def _audit(outcome: str) -> None:
             _sel().log_tool_invocation(
-                session_key='', agent='api', source='dashboard',
-                tool_name='api_steering_read', tool_kind='steering', outcome=outcome,
-                metadata={'key': key},
+                session_key="",
+                agent="api",
+                source="dashboard",
+                tool_name="api_steering_read",
+                tool_kind="steering",
+                outcome=outcome,
+                metadata={"key": key},
             )
 
         # Resolve + read as ONE offloaded transaction: the read needs the
@@ -669,16 +844,16 @@ async def api_steering_detail(request: web.Request) -> web.Response:
         # widen the check-to-use window between resolution and open.
         content, display, err = await _offload(_resolve_and_read_blocking, key, project_dir)
         if err and err.startswith("toolarge:"):
-            _audit('too_large')
+            _audit("too_large")
             size = err.split(":", 1)[1]
             return web.json_response(
                 {"error": f"file too large ({size} bytes; cap {STEERING_FILE_MAX_BYTES})"},
                 status=413,
             )
         if err is not None:
-            _audit('not_found')
+            _audit("not_found")
             return web.json_response({"error": "not found"}, status=404)
-        _audit('ok')
+        _audit("ok")
         # Content is returned verbatim, NOT credential-redacted, and that is
         # deliberate: this response populates the editor and is written straight
         # back on save, so redacting here would overwrite the user's own file
@@ -686,12 +861,14 @@ async def api_steering_detail(request: web.Request) -> web.Response:
         # confidentiality gain, since the recipient is the same local OS user who
         # owns the file. Same reasoning (and same behavior) as api_skill_detail.
         # Listing metadata IS redacted — see _redact_meta().
-        return web.json_response({
-            "key": key,
-            "content": content,
-            "path": display,
-            "source": key.split("/", 1)[0],
-        })
+        return web.json_response(
+            {
+                "key": key,
+                "content": content,
+                "path": display,
+                "source": key.split("/", 1)[0],
+            }
+        )
 
     if request.method == "DELETE":
         denied = _blocked(request, "steering.delete")
@@ -733,6 +910,10 @@ async def api_steering_detail(request: web.Request) -> web.Response:
     content = body.get("content", "")
     if not isinstance(content, str) or not content.strip():
         return web.json_response({"error": "content is required"}, status=400)
+    try:
+        content = _apply_declaration(content, body)
+    except _DeclarationError as exc:
+        return web.json_response({"error": str(exc), "code": exc.code}, status=400)
     if len(content.encode("utf-8")) > STEERING_FILE_MAX_BYTES:
         return web.json_response(
             {"error": f"content too large (cap {STEERING_FILE_MAX_BYTES} bytes)"}, status=413
@@ -752,4 +933,20 @@ async def api_steering_detail(request: web.Request) -> web.Response:
         source="dashboard",
         resources=key,
     )
-    return web.json_response({"ok": True})
+    # Echo the stored text and its resolved declaration. A mode edit rewrites
+    # the front matter server-side, so the editor that sent the OLD text would
+    # otherwise keep showing it and re-send it on the next save, undoing the
+    # change it just made.
+    fields, _ = split_frontmatter(content, STEERING_LOADER)
+    declared = fields.get("inclusion", "").strip()
+    return web.json_response(
+        {
+            "ok": True,
+            "content": content,
+            "inclusion": _INCLUSION_CANONICAL.get(declared.lower(), STEERING_INCLUSION_DEFAULT),
+            "inclusion_declared": declared[:_STEERING_META_MAX_CHARS],
+            "file_match_pattern": fields.get("fileMatchPattern", "").strip()[
+                :_STEERING_META_MAX_CHARS
+            ],
+        }
+    )

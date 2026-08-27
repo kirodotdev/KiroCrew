@@ -191,7 +191,6 @@ ACP_BACKENDS_ACP_RUNTIME = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # kiro-cli's store; it opts in when someone demonstrates that it does. Positive
 # membership rather than "not claude" (harness-parity H5).
 ACP_BACKENDS_KIRO_IDENTITY_STORE = frozenset({ACP_BACKEND_KIRO})
-
 # ── Provider labels ──
 # The backend identity key persisted in the session map. It indexes three
 # things, so every producer must agree on it: resume compatibility

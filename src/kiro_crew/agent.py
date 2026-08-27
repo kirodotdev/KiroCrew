@@ -2277,12 +2277,26 @@ def _refresh_dynamic_fields(config: dict, *, gated_off: "frozenset[str] | None" 
     # it, causing kiro-cli to fall back to the (possibly empty) global file.
     config["includeMcpJson"] = False
 
-    # Seed workspace-relative resources (steering files, AGENTS.md, etc.)
-    # only when the user hasn't customized them.  kiro-cli normalizes
-    # missing ``resources`` to ``[]`` on read, so existing users created
-    # before this field shipped end up with an empty list that prevents
-    # ``.kiro/steering/**/*.md`` and friends from auto-loading.  If the user
-    # has explicitly listed their own resources, leave them alone.
+    # Seed workspace-relative resources (steering files, AGENTS.md, etc.) only
+    # when the user hasn't customized them.  If the user has explicitly listed
+    # their own resources, leave them alone.
+    #
+    # The seeded ``file://.kiro/steering/**/*.md`` entry does NOT decide whether
+    # kiro-cli loads steering: measured against kiro-cli 2.19.1 over ACP
+    # (``acp --agent <name>`` + ``session/set_mode``, the shapes acp/client.py
+    # sends), an agent declaring ``resources: []`` receives exactly the same
+    # documents — both ``<project>/.kiro/steering`` and ``~/.kiro/steering``,
+    # with ``inclusion`` applied — as one carrying the glob.  kiro-cli scans
+    # those directories itself.  So the entry is redundant on the live path,
+    # and the older claim that an empty list "prevents auto-loading" does not
+    # hold on a current kiro-cli.
+    #
+    # It is kept because it is NOT redundant everywhere: it is also the input
+    # to ``context._load_steering_resources()``, the Claude-Code-backend
+    # injector, which has no directory scan of its own and globs this list
+    # against ``$HOME``.  Dropping the entry would silently remove global
+    # steering from that seam.  Removing it belongs with the work that gives
+    # that injector its own roots, not with a cleanup of the kiro path.
     bundled_resources = bundled.get("resources")
     if isinstance(bundled_resources, list) and bundled_resources and not config.get("resources"):
         config["resources"] = list(bundled_resources)

@@ -42,8 +42,8 @@ import { useListDetailView } from '../hooks/useListDetailView'
 
 const FILES = {
   files: [
-    { key: 'user/personal.md', name: 'personal.md', rel: 'personal.md', source: 'user', path: '~/.kiro/steering/personal.md', size: 12, description: 'Personal' },
-    { key: 'workspace/api.md', name: 'api.md', rel: 'api.md', source: 'workspace', path: '~/proj/.kiro/steering/api.md', size: 20, description: 'API standards' },
+    { key: 'user/personal.md', name: 'personal.md', rel: 'personal.md', source: 'user', path: '~/.kiro/steering/personal.md', size: 12, description: 'Personal', inclusion: 'always', inclusion_declared: '', file_match_pattern: '' },
+    { key: 'workspace/api.md', name: 'api.md', rel: 'api.md', source: 'workspace', path: '~/proj/.kiro/steering/api.md', size: 20, description: 'API standards', inclusion: 'always', inclusion_declared: '', file_match_pattern: '' },
   ],
   roots: [{ source: 'user', path: '~/.kiro/steering', exists: true }],
   project: '~/proj',

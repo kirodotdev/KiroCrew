@@ -1,6 +1,8 @@
 # Steering Viewer
 
-The Steering tab under Agent Capabilities lists, reads, creates, edits and deletes the Kiro steering files that are injected into every session.
+The Steering tab under Agent Capabilities lists, reads, creates, edits and deletes Kiro steering files, and lets an author set the `inclusion` mode each one declares.
+
+**Kiro Crew reports and edits the declaration; it does not act on it.** What a mode causes is the harness's own behaviour, it moves between kiro-cli releases (see [kiro-cli steering](../../reference/kiro-cli/steering.md)), and a client that reimplemented any part of it would duplicate whatever the harness does next.
 
 Before this feature steering files were loaded but never surfaced: nothing in the dashboard showed which always-on conventions were in effect.
 
@@ -12,6 +14,38 @@ Two locations are shown, with provenance, because two different mechanisms load 
 |--------|----------|-----------|
 | `user` (Global) | `~/.kiro/steering/**/*.md` | kiro-cli for every session; also what the CC-backend injection in `context.py:_load_steering_resources()` reaches, since its `file://.kiro/steering/**/*.md` resource globs against `$HOME` |
 | `workspace` (Workspace) | `<project>/.kiro/steering/**/*.md` | kiro-cli, because the session subprocess runs with the slot's project directory as cwd |
+
+### Declared inclusion mode
+
+Each listed document carries the `inclusion` mode its own front matter declares, so the tab can show what the author asked for. Three fields, from one bounded head read per document (`_head_meta()`):
+
+- `inclusion` — canonicalized to one of `STEERING_INCLUSION_MODES` (`always`, `fileMatch`, `manual`, `auto`), matched case-insensitively so `FILEMATCH` reports as the documented `fileMatch`.
+- `inclusion_declared` — the value exactly as written, `""` when the field is absent. It differs from `inclusion` only when the spelling is not a mode.
+- `file_match_pattern` — `fileMatchPattern` verbatim; only meaningful beside `inclusion: fileMatch`.
+
+An absent **or unrecognized** declaration reports `STEERING_INCLUSION_DEFAULT` (`always`). That is Kiro's documented default, and it is also what kiro-cli does with a value it does not recognize — measured against 2.19.1 over ACP, a document declaring a nonsense mode is injected like an `always` one. Reporting a typo as a mode of its own would show the author an authoritative-looking state that nothing implements; keeping the raw spelling beside the resolved mode is what lets the tab say *`manaul` is not a mode, it is being read as `always`* — the only thing that explains why a document its author declared `manual` loads into every session.
+
+**Kiro Crew does not act on the value.** On the live ACP path the load decision belongs to kiro-cli, which reads the same front matter itself; this listing is a mirror of the declaration, never a second implementation of it. Measured on 2.19.1 over ACP (`acp --agent <name>` + `session/set_mode`, the shapes `acp/client.py` sends): `always` loads from both roots, `manual` and `fileMatch` are withheld, `fileMatch` never matches even when a file under its pattern is read in the same turn, and an `auto` document loads unconditionally. See [kiro-cli steering](../../reference/kiro-cli/steering.md).
+
+The one-line `description` is taken from the document **body**, not from the raw head. Before this it was the first non-`---` line, so a document opening with front matter was summarized as its first declaration and the tab showed `inclusion: manual` where the author's title belongs. A front-matter block longer than the head slice has no closing fence to find inside it, so there is no body to read and the description is empty — falling back to the raw head would reinstate exactly that bug. `inclusion` needs no redaction (closed vocabulary); the two free-text fields are redacted and capped at `_STEERING_META_MAX_CHARS` like the description.
+
+The mode **name itself is never translated** in the UI. `fileMatch` is a literal the author types into their own front matter, so a localized chip would name a mode that does not appear in the file — the same rule that keeps a token the user must type out of the catalog. Only the surrounding explanation is copy.
+
+### Editing the declaration
+
+`PUT /api/steering/{key}` accepts two optional fields beside `content` — `inclusion` and `file_match_pattern` (`STEERING_WRITABLE_FIELDS`). `name` and `description` are deliberately not writable: they matter (they are what the on-demand index shows the model) but an author sets them by editing the document, and accepting a field nothing writes is surface to defend at every review for no behavior. Absent means "leave alone"; an empty string **removes** that key, which is how a document goes back to declaring nothing at all. Only those two are writable: the endpoint edits a document's *declaration*, and everything else in its front matter belongs to the author.
+
+The rewrite happens **server-side**, through `frontmatter.set_frontmatter_fields()`, and the body is preserved byte for byte. The obvious alternative — have the editor splice YAML into the textarea it is already showing — was rejected: the body is the user's document, a client that got the splice subtly wrong would corrupt the very file whose purpose is to be read by the agent, and every client would have to reimplement it. The writer also folds three cases a naive splice gets wrong: creating a block where there is none, dropping the fence when the last key is removed (rather than leaving a bare `---` the renderer draws as a rule), and consuming a YAML block scalar's continuation lines along with its key.
+
+- **Values are verified to round-trip.** The single-line grammar has no escape sequence — `strip_quotes` is `str.strip` over quote characters, which removes *runs* of them and understands no escape at all — so a value ending in a quote would read back shorter than it went in. `_verify_round_trip()` re-parses what was written and refuses a value that does not survive (`steering_field_unrepresentable`), rather than silently truncating the author's text.
+- **`fileMatch` requires a pattern** (`steering_file_match_needs_pattern`). A patternless `fileMatch` document can never match, so it would be withheld forever with nothing to explain why. Checked against the **result**, so flipping the mode on a document that already carries a pattern is not a rejection. The UI disables Save for the same reason, stating the requirement at the moment it applies rather than after the user has committed.
+- **An unknown mode is refused** (`steering_unknown_inclusion`) and a known one is canonicalized on write, so `FILEMATCH` lands as `fileMatch`.
+- **Only the fields whose control actually moved are sent.** The server applies a declaration ON TOP of the submitted text, so unconditionally sending the seeded values would silently revert front matter the user had just edited by hand in the textarea — the mode control winning an argument the user never started. A switch away from `fileMatch` deliberately does not clear the pattern either: the endpoint edits a declaration, and a glob the author typed is theirs to keep.
+- **A CRLF document is a document.** `STEERING_LOADER` uses a CRLF-tolerant fence, and the writer emits the newline the document already uses. The LF-only fence matched a Windows-authored file not at all, which was two silent failures at once: its declaration was invisible (the tab reported the default mode and the runtime skipped it), and an edit prepended a SECOND front-matter block instead of rewriting the first.
+- **The write's response seeds the cache** before the invalidation. A refetch can fail or lag, and a second Edit would then re-seed from the pre-save body and mode and write them back over what was just saved.
+- **The response echoes the stored text** plus the resolved declaration. Without that, an editor still holding the pre-rewrite body would re-send it on the next save and undo the mode it had just set.
+
+In the UI the mode is a segmented control inside the editor (`DeclarationEditor`), with the pattern field appearing only for `fileMatch`. The tab deliberately carries **no per-mode promise** about what will happen: that belongs to the harness and would go stale the next time it changes. An unrecognized mode does get a detail-pane banner as well as the chip tooltip — that one is a fact about the file, not about the harness, and a tooltip is unreachable on touch. Each mode carries a note stating what **this runtime** does with it, which is deliberately not Kiro IDE's promise — see below.
 
 The active project comes from `_ChatSlot.project` via `handlers/_shared.py:active_project_dir()`, which resolves deterministically: the slot named by the request's `X-Session-Key` if it has a project, else the single project every slot agrees on, else nothing. That last case matters for mutations — with two chats open on different projects there is no defensible "active" project for a settings page, and picking the first-inserted slot would create, overwrite or delete files in the wrong project.
 
@@ -45,19 +79,26 @@ Path policy (`handlers/steering.py`):
 - Every filesystem touch goes through `_offload()`, including `resolve_steering_file()` — resolution is itself `is_dir`/`lstat`/`resolve` metadata work, and on a network-backed project a stat storm alone is enough to stall the loop. Nothing in these handlers stats, reads, writes or unlinks on the event loop.
 - Restricted (incognito / temporary / guest) sessions may read steering but never create, update or delete it (`_is_restricted_session` → 403). Every mutation emits `sel().log_api_access(operation="steering.create|update|delete")`; reads emit `log_tool_invocation(tool_kind="steering")`.
 
-Behavior is pinned by `test/test_steering_api.py`, `website/src/test/SteeringTab.test.tsx` and `website/src/test/ApiClient.coverage.test.tsx` (which scope of write sends the header, and that a user-scoped write does not).
+Behavior is pinned by `test/test_steering_runtime.py`, `test/test_steering_api.py`, `website/src/test/SteeringTab.test.tsx` and `website/src/test/ApiClient.coverage.test.tsx` (which scope of write sends the header, and that a user-scoped write does not).
 
 ## Wiring
 
 - `src/kiro_crew/dashboard/handlers/steering.py` — `steering_roots()`, `list_steering_blocking()`, `resolve_steering_file()`, the blocking transactions `_read_file_blocking` / `_create_file_blocking` / `_update_file_blocking` / `_delete_file_blocking` (all dispatched through `_offload()` onto `discovery_executor()`, the same pool as `/api/skills`), the precondition pair `_project_key()` / `_project_precondition()` with the `STEERING_PROJECT_HEADER` constant, and the handlers `api_steering`, `api_steering_create`, `api_steering_detail`.
 - `src/kiro_crew/dashboard/handlers/_shared.py:active_project_dir(state, session_key="")` — shared, deterministic project-dir resolution; `_resolve_skill_root()` and `api_skills` now route through it too (they previously read a non-existent `slot.project_dir`, so workspace-scoped skills never resolved). `active_project_state()` is the same resolution returning `(project, "set" | "none" | "ambiguous")`, for callers that must explain an absent project rather than only handle one.
 - `src/kiro_crew/dashboard/server.py` — routes `GET/POST /api/steering` registered before the catch-all `GET/PUT/DELETE /api/steering/{key:.+}`.
-- `website/src/pages/overview/SteeringTab.tsx` — list-detail layout (React Query keys `['steering', slotKey]`, `['steering-file', key, slotKey, projectKey]` — `project_key` is part of the file's identity, since `workspace/api.md` names a different file in a different project), `MarkdownRenderer` for view, textarea for edit, `Modal` for create with a scope selector. Workspace writes send the listed `project_key`; an in-progress edit sends the key **captured when the draft loaded**, not the live one, so a draft typed against project A fails the precondition for B (409, draft still on screen) instead of satisfying it and overwriting B's same-named file.
+- `src/kiro_crew/steering_runtime.py` — `steering_roots()` (shared with the handler, so the tab and the agent cannot disagree about which directories hold steering), `load_withheld_docs()`, `build_steering_block()`, `glob_to_regex()`, `tool_call_paths()` and the per-session tracking.
+- `src/kiro_crew/context.py` — `_withheld_steering_block()`, called from `build_message` on every ACP turn.
+- `src/kiro_crew/dashboard/chat_runner.py` — records touched paths in the `EVENT_TOOL_CALL` branch.
+- `src/kiro_crew/frontmatter.py` — `STEERING_LOADER`, `set_frontmatter_fields()`, `render_frontmatter_value()`, the dialect `_head_meta()` parses steering front matter with. A separate constant from `SKILL_LOADER` rather than a second reference to it: the two document families have no reason to move together.
+- `website/src/pages/overview/SteeringTab.tsx` — `InclusionChip` (rendered only when the mode departs from the default, or the declared spelling is not a mode); list-detail layout (React Query keys `['steering', slotKey]`, `['steering-file', key, slotKey, projectKey]` — `project_key` is part of the file's identity, since `workspace/api.md` names a different file in a different project), `MarkdownRenderer` for view, textarea for edit, `Modal` for create with a scope selector. Workspace writes send the listed `project_key`; an in-progress edit sends the key **captured when the draft loaded**, not the live one, so a draft typed against project A fails the precondition for B (409, draft still on screen) instead of satisfying it and overwriting B's same-named file.
 - `website/src/pages/CapabilitiesPage.tsx` — the `steering` tab (Compass icon) between Skills and Hooks.
 - `website/src/api/client.ts` — `steeringFiles`, `steeringFile`, `createSteering`, `updateSteering`, `deleteSteering`; the three write helpers take the project key and set `X-Steering-Project` from it.
 
 ## Non-goals
 
+- Making `auto` behave as Kiro IDE does. kiro-cli injects an `auto` document before Kiro Crew sees the turn and exposes no way to stop it, so the tab warns and offers `manual` instead.
+- Semantic matching of a description. The index hands the model the name and description and lets it decide; there is no embedding step here.
+- Withholding an `always` document, or anything else kiro-cli chose to inject.
 - Editing the agent config's `resources` globs — that already exists at `GET/PUT /api/agent/config`; this tab shows the files those globs reach, not the globs.
 - Showing the truncation state of the 10% `_STEERING_CAP` context budget, or a per-session "what was actually injected" trace.
 - Steering files outside the two standard roots (arbitrary `file://` resources in an agent config are not browsable here).

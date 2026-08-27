@@ -372,3 +372,86 @@ class TestDialectContracts:
         junk_closer = "---\nk: v\n---junk\nbody\n"
         assert split_frontmatter(junk_closer, SKILL_LOADER)[1] == "junk\nbody\n"
         assert split_frontmatter(junk_closer, SKILL_UPDATE)[1] == "junk\nbody\n"
+
+
+def test_removing_the_last_field_keeps_the_body_blank_lines():
+    """The fence takes ONE separator newline with it. `lstrip` would eat every
+    blank line the document itself opens with — a silent reflow of text this
+    writer promises to preserve byte for byte."""
+    from kiro_crew.frontmatter import STEERING_LOADER, set_frontmatter_fields
+
+    doc = "---\ninclusion: manual\n---\n\n\n# Title\n\nbody\n"
+    out = set_frontmatter_fields(doc, {"inclusion": None}, STEERING_LOADER)
+    assert out == "\n\n# Title\n\nbody\n"
+
+
+def test_removing_the_last_field_on_a_body_with_no_blank_line():
+    from kiro_crew.frontmatter import STEERING_LOADER, set_frontmatter_fields
+
+    doc = "---\ninclusion: manual\n---\n# Title\n"
+    assert set_frontmatter_fields(doc, {"inclusion": None}, STEERING_LOADER) == "# Title\n"
+
+
+class TestCrlfSteeringDocuments:
+    """A steering file authored on Windows has ``---\r\n``.
+
+    The LF-only fence did not match it at all, so its declaration was invisible
+    — the tab reported the default mode and the runtime skipped the document —
+    and an edit PREPENDED a second front-matter block instead of rewriting the
+    first.
+    """
+
+    CRLF = "---\r\ninclusion: manual\r\n---\r\n# Title\r\nbody\r\n"
+
+    def _d(self):
+        from kiro_crew.frontmatter import STEERING_LOADER
+
+        return STEERING_LOADER
+
+    def test_the_declaration_is_visible(self):
+        from kiro_crew.frontmatter import split_frontmatter
+
+        assert split_frontmatter(self.CRLF, self._d())[0] == {"inclusion": "manual"}
+
+    def test_an_edit_rewrites_rather_than_prepends(self):
+        from kiro_crew.frontmatter import set_frontmatter_fields
+
+        out = set_frontmatter_fields(self.CRLF, {"inclusion": "always"}, self._d())
+        assert out == "---\r\ninclusion: always\r\n---\r\n# Title\r\nbody\r\n"
+
+    def test_creation_matches_the_document_newline(self):
+        """Emitting LF into a CRLF file leaves it mixed — the same class of
+        damage as reflowing the body, and as invisible in a diff viewer."""
+        from kiro_crew.frontmatter import set_frontmatter_fields
+
+        out = set_frontmatter_fields("# Title\r\nbody\r\n", {"inclusion": "manual"}, self._d())
+        assert out == "---\r\ninclusion: manual\r\n---\r\n# Title\r\nbody\r\n"
+        assert "\n" not in out.replace("\r\n", "")
+
+    def test_removing_the_last_field_takes_one_crlf(self):
+        from kiro_crew.frontmatter import set_frontmatter_fields
+
+        out = set_frontmatter_fields(self.CRLF, {"inclusion": None}, self._d())
+        assert out == "# Title\r\nbody\r\n"
+
+    def test_lf_documents_are_unchanged(self):
+        from kiro_crew.frontmatter import set_frontmatter_fields
+
+        lf = "---\ninclusion: manual\n---\n# Title\nbody\n"
+        out = set_frontmatter_fields(lf, {"inclusion": "always"}, self._d())
+        assert out == "---\ninclusion: always\n---\n# Title\nbody\n"
+        assert "\r" not in out
+
+
+def test_crlf_block_scalar_survives_a_mode_edit():
+    """The folded value's continuation lines are re-joined with the document's
+    newline, so a retained CR would be written back as ``\r\r\n``."""
+    from kiro_crew.frontmatter import STEERING_LOADER, set_frontmatter_fields
+
+    doc = (
+        "---\r\ndescription: >\r\n  folded one\r\n  folded two\r\n"
+        "inclusion: manual\r\n---\r\n# T\r\nbody\r\n"
+    )
+    out = set_frontmatter_fields(doc, {"inclusion": "always"}, STEERING_LOADER)
+    assert "\r\r\n" not in out
+    assert out.count("\r\n") == out.count("\n")

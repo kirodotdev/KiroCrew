@@ -2748,6 +2748,21 @@ class ContextBuilder:
                     "user can see what changed.\n\n"
                 )
 
+        # Steering documents kiro-cli WITHHELD (`manual` / `fileMatch`).
+        #
+        # Injected on the ACP path only, and it is not a duplicate of the
+        # `is_cc` block above: that one re-sends what the kiro backend already
+        # loaded, this one sends what it deliberately did not. kiro-cli honors
+        # `inclusion` and then offers no way to bring a withheld document back
+        # — a `fileMatch` document does not load even when a file under its own
+        # pattern is read in the same turn (measured, 2.19.1). So without this
+        # an author who declares either mode gets a document that never
+        # applies, silently.
+        #
+        # EVERY turn, not just session start: `fileMatch` is a statement about
+        # what the session is working on, and that is not knowable from the
+        # first message. The per-turn cost is one index line per withheld
+        # document; bodies are injected once and then remembered.
         # Post-compaction re-injection: the skills index was lost when the
         # session-start context was compacted. Re-inject it so the model can
         # still discover skills by name/$token/skill_search.

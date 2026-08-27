@@ -43,7 +43,7 @@ vi.mock('../components/MarkdownRenderer', () => ({
   default: ({ content }: { content: string }) => <div data-testid="md">{content}</div>,
 }))
 
-import SteeringTab from '../pages/overview/SteeringTab'
+import SteeringTab, { steeringBody } from '../pages/overview/SteeringTab'
 import { store } from '../store'
 import { setActiveSlot } from '../store/chatSlice'
 
@@ -63,8 +63,8 @@ const SCOPE_HINT = {
 
 const FILES = {
   files: [
-    { key: 'user/personal.md', name: 'personal.md', rel: 'personal.md', source: 'user', path: '~/.kiro/steering/personal.md', size: 12, description: 'Personal' },
-    { key: 'workspace/api.md', name: 'api.md', rel: 'api.md', source: 'workspace', path: '~/proj/.kiro/steering/api.md', size: 20, description: 'API standards' },
+    { key: 'user/personal.md', name: 'personal.md', rel: 'personal.md', source: 'user', path: '~/.kiro/steering/personal.md', size: 12, description: 'Personal', inclusion: 'always', inclusion_declared: '', file_match_pattern: '' },
+    { key: 'workspace/api.md', name: 'api.md', rel: 'api.md', source: 'workspace', path: '~/proj/.kiro/steering/api.md', size: 20, description: 'API standards', inclusion: 'always', inclusion_declared: '', file_match_pattern: '' },
   ],
   roots: [
     { source: 'user', path: '~/.kiro/steering', exists: true },
@@ -135,6 +135,202 @@ describe('SteeringTab', () => {
     expect(screen.getByText('Steering (2)')).toBeInTheDocument()
   })
 
+  it('hides the default-mode chip in the list but states it in the detail header', async () => {
+    // Every document without front matter resolves to `always`, so a chip on
+    // every row would bury the ones that mean something. In the header there is
+    // room, and the mode is the document's own property.
+    renderTab()
+    await waitFor(() => expect(screen.getByText('personal.md')).toBeInTheDocument())
+    const list = screen.getByRole('listbox', { name: 'Steering files' })
+    expect(within(list).queryByText('always')).not.toBeInTheDocument()
+    expect(screen.getAllByText('always').length).toBe(1)
+  })
+
+  it('chips a non-default mode with the token the file actually declares', async () => {
+    // The mode is the author's own literal, not copy: a translated chip would
+    // name a mode that does not appear in their front matter.
+    mockApi.steeringFiles.mockResolvedValue({
+      ...FILES,
+      files: [{ ...FILES.files[0], inclusion: 'manual', inclusion_declared: 'manual' }],
+    })
+    renderTab()
+    await waitFor(() => expect(screen.getByText('personal.md')).toBeInTheDocument())
+    const chips = screen.getAllByText('manual')
+    expect(chips.length).toBeGreaterThan(0)
+    expect(chips[0]).toHaveAttribute('title', 'Inclusion mode: manual')
+  })
+
+  it('names the pattern a fileMatch document is scoped to', async () => {
+    mockApi.steeringFiles.mockResolvedValue({
+      ...FILES,
+      files: [{ ...FILES.files[0], inclusion: 'fileMatch', inclusion_declared: 'fileMatch', file_match_pattern: 'src/**/*.ts' }],
+    })
+    renderTab()
+    await waitFor(() => expect(screen.getByText('personal.md')).toBeInTheDocument())
+    expect(screen.getAllByText('fileMatch')[0]).toHaveAttribute('title', 'Applies to files matching src/**/*.ts')
+  })
+
+  it('shows a typo verbatim and says which mode it is actually read as', async () => {
+    // Normalising the spelling away would hide the only thing that explains why
+    // a document its author declared `manual` is loading into every session.
+    mockApi.steeringFiles.mockResolvedValue({
+      ...FILES,
+      files: [{ ...FILES.files[0], inclusion: 'always', inclusion_declared: 'manaul' }],
+    })
+    renderTab()
+    await waitFor(() => expect(screen.getByText('personal.md')).toBeInTheDocument())
+    const chips = screen.getAllByText('manaul')
+    expect(chips[0]).toHaveAttribute('title', 'manaul is not a known inclusion mode — it is read as always')
+  })
+
+  it('renders a listing that carries no inclusion fields at all', async () => {
+    // The chip sits inside the list pane, so throwing on a missing field would
+    // take the whole pane down over the least important thing on the row.
+    const { inclusion: _i, inclusion_declared: _d, file_match_pattern: _p, ...bare } = FILES.files[0]
+    mockApi.steeringFiles.mockResolvedValue({ ...FILES, files: [bare] })
+    renderTab()
+    await waitFor(() => expect(screen.getByText('personal.md')).toBeInTheDocument())
+  })
+
+  it('offers the four modes in the editor and sends the one picked', async () => {
+    renderTab()
+    await waitFor(() => expect(screen.getByTestId('md')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Edit'))
+    for (const mode of ['always', 'fileMatch', 'manual', 'auto']) {
+      expect(screen.getByRole('radio', { name: mode })).toBeInTheDocument()
+    }
+    fireEvent.click(screen.getByRole('radio', { name: 'manual' }))
+    fireEvent.click(screen.getByText('Save'))
+    await waitFor(() => expect(mockApi.updateSteering).toHaveBeenCalledWith(
+      'user/personal.md', '# Personal\nbody', undefined, 'pk-listed',
+      { inclusion: 'manual' },
+    ))
+  })
+
+  it('asks for a pattern before it will save a fileMatch document', async () => {
+    // A patternless fileMatch document can never match. The server refuses it;
+    // refusing here states the requirement at the moment it applies rather than
+    // after the user has committed.
+    renderTab()
+    await waitFor(() => expect(screen.getByTestId('md')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Edit'))
+    fireEvent.click(screen.getByRole('radio', { name: 'fileMatch' }))
+    expect(screen.getByText('Save')).toBeDisabled()
+    fireEvent.change(screen.getByLabelText('File pattern'), { target: { value: 'src/**/*.ts' } })
+    expect(screen.getByText('Save')).not.toBeDisabled()
+    fireEvent.click(screen.getByText('Save'))
+    await waitFor(() => expect(mockApi.updateSteering).toHaveBeenCalledWith(
+      'user/personal.md', '# Personal\nbody', undefined, 'pk-listed',
+      { inclusion: 'fileMatch', file_match_pattern: 'src/**/*.ts' },
+    ))
+  })
+
+  it('seeds the editor from the mode the document already declares', async () => {
+    mockApi.steeringFiles.mockResolvedValue({
+      ...FILES,
+      files: [{ ...FILES.files[0], inclusion: 'fileMatch', inclusion_declared: 'fileMatch', file_match_pattern: 'lib/**/*.py' }],
+    })
+    renderTab()
+    await waitFor(() => expect(screen.getByTestId('md')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Edit'))
+    expect(screen.getByRole('radio', { name: 'fileMatch' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByLabelText('File pattern')).toHaveValue('lib/**/*.py')
+  })
+
+  it('renders the body without the front matter it declares', async () => {
+    // The renderer draws an opening `---` as a rule and the declarations under
+    // it as a heading, so a document that declares a mode was shown its own YAML
+    // in the largest type on the pane, above its title. The chip already states
+    // the mode.
+    mockApi.steeringFile.mockResolvedValue({
+      key: 'user/personal.md',
+      content: '---\ninclusion: manual\ndescription: Outage recovery.\n---\n# Personal\nbody',
+      path: '~/.kiro/steering/personal.md',
+      source: 'user',
+    })
+    renderTab()
+    await waitFor(() => expect(screen.getByTestId('md')).toBeInTheDocument())
+    expect(screen.getByTestId('md')).toHaveTextContent('# Personal body')
+    expect(screen.getByTestId('md')).not.toHaveTextContent('inclusion: manual')
+  })
+
+  it('still edits the RAW text, front matter included', async () => {
+    // Stripping in the editor would delete the declaration on the next save.
+    const raw = '---\ninclusion: manual\n---\n# Personal\nbody'
+    mockApi.steeringFile.mockResolvedValue({
+      key: 'user/personal.md', content: raw, path: '~/.kiro/steering/personal.md', source: 'user',
+    })
+    renderTab()
+    await waitFor(() => expect(screen.getByTestId('md')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Edit'))
+    expect(screen.getByRole('textbox', { name: /personal\.md/ })).toHaveValue(raw)
+  })
+
+  it('sends no declaration when the mode controls were not touched', async () => {
+    // The server applies a declaration ON TOP of the submitted text, so sending
+    // the seeded values unconditionally would revert front matter the user had
+    // just edited by hand in the textarea.
+    mockApi.steeringFile.mockResolvedValue({
+      key: 'user/personal.md',
+      content: '---\ninclusion: manual\n---\n# Personal\nbody',
+      path: '~/.kiro/steering/personal.md',
+      source: 'user',
+    })
+    mockApi.steeringFiles.mockResolvedValue({
+      ...FILES,
+      files: [{ ...FILES.files[0], inclusion: 'manual', inclusion_declared: 'manual' }],
+    })
+    renderTab()
+    await waitFor(() => expect(screen.getByTestId('md')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Edit'))
+    const box = screen.getByRole('textbox', { name: /personal\.md/ })
+    fireEvent.change(box, { target: { value: '---\ninclusion: always\n---\n# Personal\nbody' } })
+    fireEvent.click(screen.getByText('Save'))
+    await waitFor(() => expect(mockApi.updateSteering).toHaveBeenCalledWith(
+      'user/personal.md', '---\ninclusion: always\n---\n# Personal\nbody',
+      undefined, 'pk-listed', undefined,
+    ))
+  })
+
+  it('sends only the field whose control moved', async () => {
+    mockApi.steeringFiles.mockResolvedValue({
+      ...FILES,
+      files: [{ ...FILES.files[0], inclusion: 'fileMatch', inclusion_declared: 'fileMatch', file_match_pattern: 'a/**/*.ts' }],
+    })
+    renderTab()
+    await waitFor(() => expect(screen.getByTestId('md')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Edit'))
+    fireEvent.change(screen.getByLabelText('File pattern'), { target: { value: 'b/**/*.ts' } })
+    fireEvent.click(screen.getByText('Save'))
+    // The mode did not move, so it is absent — and a pattern the author typed
+    // is not cleared behind their back.
+    await waitFor(() => expect(mockApi.updateSteering).toHaveBeenCalledWith(
+      'user/personal.md', '# Personal\nbody', undefined, 'pk-listed',
+      { file_match_pattern: 'b/**/*.ts' },
+    ))
+  })
+
+  it('seeds the next edit from the write, not from a stale cache', async () => {
+    // A refetch can fail or lag. Re-seeding from the pre-save body would write
+    // it back over what was just saved.
+    mockApi.steeringFile.mockResolvedValueOnce({
+      key: 'user/personal.md', content: '# before', path: '~/.kiro/steering/personal.md', source: 'user',
+    })
+    mockApi.updateSteering.mockResolvedValue({ ok: true, content: '# after' })
+    renderTab()
+    await waitFor(() => expect(screen.getByTestId('md')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Edit'))
+    fireEvent.change(screen.getByRole('textbox', { name: /personal\.md/ }), { target: { value: '# after' } })
+    // From here the refetch FAILS — the scenario this guards: a successful save
+    // whose cache refresh never lands.
+    mockApi.steeringFile.mockRejectedValue(new Error('offline'))
+    fireEvent.click(screen.getByText('Save'))
+    await waitFor(() => expect(mockApi.updateSteering).toHaveBeenCalled())
+    await waitFor(() => expect(screen.getByText('Edit')).not.toBeDisabled())
+    fireEvent.click(screen.getByText('Edit'))
+    expect(screen.getByRole('textbox', { name: /personal\.md/ })).toHaveValue('# after')
+  })
+
   it('auto-selects the first file and renders its markdown', async () => {
     renderTab()
     await waitFor(() => expect(mockApi.steeringFile).toHaveBeenCalledWith('user/personal.md', undefined))
@@ -156,7 +352,7 @@ describe('SteeringTab', () => {
     expect(editor.value).toBe('# Personal\nbody')
     fireEvent.change(editor, { target: { value: '# Personal\nchanged' } })
     fireEvent.click(screen.getByText('Save'))
-    await waitFor(() => expect(mockApi.updateSteering).toHaveBeenCalledWith('user/personal.md', '# Personal\nchanged', undefined, 'pk-listed'))
+    await waitFor(() => expect(mockApi.updateSteering).toHaveBeenCalledWith('user/personal.md', '# Personal\nchanged', undefined, 'pk-listed', undefined))
   })
 
   it('Delete confirms before calling the API', async () => {
@@ -317,7 +513,7 @@ describe('SteeringTab', () => {
     await waitFor(() => expect(screen.getByText('Edit')).toBeEnabled())
     fireEvent.click(screen.getByText('Edit'))
     fireEvent.click(screen.getByText('Save'))
-    await waitFor(() => expect(mockApi.updateSteering).toHaveBeenCalledWith('user/personal.md', '# Personal\nbody', 'dashboard:chat-2', 'pk-listed'))
+    await waitFor(() => expect(mockApi.updateSteering).toHaveBeenCalledWith('user/personal.md', '# Personal\nbody', 'dashboard:chat-2', 'pk-listed', undefined))
   })
 
   it('commits a scope change through the dropdown', async () => {
@@ -478,7 +674,7 @@ describe('SteeringTab', () => {
     fireEvent.click(screen.getByText('Save'))
     await waitFor(() => expect(mockApi.updateSteering).toHaveBeenCalled())
     // pk-A — the project the CONTENT came from — never pk-B.
-    expect(mockApi.updateSteering).toHaveBeenCalledWith('user/personal.md', '# draft from A', undefined, 'pk-A')
+    expect(mockApi.updateSteering).toHaveBeenCalledWith('user/personal.md', '# draft from A', undefined, 'pk-A', undefined)
   })
 
   it('does not serve one project\'s cached body as another project\'s same-named file', async () => {
@@ -684,5 +880,31 @@ describe('SteeringTab', () => {
     expect(alert).not.toHaveTextContent('The active project changed')
     // And no refetch: nothing said the listing was stale.
     expect(mockApi.steeringFiles.mock.calls.length).toBe(listCalls)
+  })
+})
+
+
+describe('steeringBody', () => {
+  it('removes a leading front-matter block', () => {
+    expect(steeringBody('---\ninclusion: manual\n---\n# Title\nbody\n')).toBe('# Title\nbody\n')
+  })
+
+  it('leaves a document without front matter alone', () => {
+    expect(steeringBody('# Title\nbody\n')).toBe('# Title\nbody\n')
+  })
+
+  it('does not eat a horizontal rule later in the document', () => {
+    // Anchored and non-greedy: a `---` used as a rule is not a fence.
+    const doc = '# Title\n\ntext\n\n---\n\nmore\n'
+    expect(steeringBody(doc)).toBe(doc)
+  })
+
+  it('stops at the FIRST closing fence', () => {
+    expect(steeringBody('---\na: 1\n---\n# T\n\n---\n\ntail\n'))
+      .toBe('# T\n\n---\n\ntail\n')
+  })
+
+  it('handles CRLF', () => {
+    expect(steeringBody('---\r\ninclusion: manual\r\n---\r\n# T\r\n')).toBe('# T\r\n')
   })
 })

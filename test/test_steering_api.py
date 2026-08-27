@@ -4,6 +4,8 @@ Covers:
 - ``steering_roots`` / ``list_steering_blocking`` discovery of the global
   ``~/.kiro/steering`` and workspace ``<project>/.kiro/steering`` locations
 - ``resolve_steering_file`` traversal, suffix, symlink and containment guards
+- the listing's ``inclusion`` / ``fileMatchPattern`` metadata, and that front
+  matter is excluded from the one-line description
 - ``GET/POST/PUT/DELETE /api/steering`` end-to-end, including the
   restricted-session write block and SEL audit emission
 
@@ -23,7 +25,10 @@ from aiohttp.test_utils import TestClient, TestServer
 import kiro_crew.dashboard.handlers.steering as steering_mod
 from kiro_crew.dashboard.handlers._shared import active_project_dir, active_project_state
 from kiro_crew.dashboard.handlers.steering import (
+    _STEERING_META_MAX_CHARS,
     STEERING_FILE_MAX_BYTES,
+    STEERING_INCLUSION_DEFAULT,
+    STEERING_INCLUSION_MODES,
     STEERING_MAX_FILES,
     STEERING_PROJECT_HEADER,
     _project_key,
@@ -152,6 +157,104 @@ class TestListing:
         for i in range(STEERING_MAX_FILES + 5):
             _write_steering(root, f"doc{i:04d}.md")
         assert len(list_steering_blocking(None)["files"]) == STEERING_MAX_FILES
+
+
+class TestInclusionMetadata:
+    """The listing reports each document's declared ``inclusion``.
+
+    Kiro Crew does not ACT on the value — on the live ACP path the load
+    decision is kiro-cli's, which reads the same front matter itself. These
+    pin that the tab shows the author what they declared, and that a
+    declaration never masquerades as the document's summary.
+    """
+
+    def _entry(self, home: Path, body: str) -> dict:
+        _write_steering(home / ".kiro" / "steering", "doc.md", body)
+        return list_steering_blocking(None)["files"][0]
+
+    def test_front_matter_does_not_become_the_description(self, fake_home):
+        """The regression this metadata replaced: the tab summarized a document
+        by its first declaration, so a ``manual`` document was described as the
+        string ``inclusion: manual``."""
+        entry = self._entry(fake_home, "---\ninclusion: manual\n---\n# Payroll rules\nbody\n")
+        assert entry["description"] == "Payroll rules"
+
+    @pytest.mark.parametrize("mode", STEERING_INCLUSION_MODES)
+    def test_each_documented_mode_round_trips(self, fake_home, mode):
+        entry = self._entry(fake_home, f"---\ninclusion: {mode}\n---\n# Doc\n")
+        assert entry["inclusion"] == mode
+        assert entry["inclusion_declared"] == mode
+
+    def test_absent_front_matter_reports_the_default(self, fake_home):
+        entry = self._entry(fake_home, "# Plain doc\nbody\n")
+        assert entry["inclusion"] == STEERING_INCLUSION_DEFAULT
+        # Empty, not the resolved mode: the tab distinguishes "declared
+        # nothing" from "declared something unreadable", and only the second is
+        # worth telling the author about.
+        assert entry["inclusion_declared"] == ""
+        assert entry["description"] == "Plain doc"
+
+    def test_unrecognized_mode_reports_default_plus_raw_spelling(self, fake_home):
+        """A typo resolves to the default — matching what kiro-cli does with a
+        value it does not recognize — but the spelling survives, because it is
+        the only thing that explains the behavior to its author."""
+        entry = self._entry(fake_home, "---\ninclusion: manaul\n---\n# Typo\n")
+        assert entry["inclusion"] == STEERING_INCLUSION_DEFAULT
+        assert entry["inclusion_declared"] == "manaul"
+
+    def test_mode_spelling_is_canonicalized(self, fake_home):
+        entry = self._entry(fake_home, "---\ninclusion: FILEMATCH\n---\n# Doc\n")
+        assert entry["inclusion"] == "fileMatch"
+        assert entry["inclusion_declared"] == "FILEMATCH"
+
+    def test_file_match_pattern_is_reported(self, fake_home):
+        entry = self._entry(
+            fake_home,
+            '---\ninclusion: fileMatch\nfileMatchPattern: "src/**/*.ts"\n---\n# Doc\n',
+        )
+        assert entry["file_match_pattern"] == "src/**/*.ts"
+
+    def test_inclusion_in_body_prose_is_not_front_matter(self, fake_home):
+        """A document explaining the modes must not be read as declaring one."""
+        entry = self._entry(
+            fake_home,
+            "# Guide\nSet inclusion: manual to keep a runbook out of every turn.\n",
+        )
+        assert entry["inclusion"] == STEERING_INCLUSION_DEFAULT
+        assert entry["inclusion_declared"] == ""
+
+    def test_truncated_crlf_front_matter_yields_no_description(self, fake_home):
+        """A CRLF document opens ``---\\r\\n``; missing that opener let the raw
+        head through and re-exposed ``inclusion:`` as the description."""
+        filler = "".join(f"pad{i}: {'x' * 80}\r\n" for i in range(60))
+        entry = self._entry(
+            fake_home, f"---\r\ninclusion: manual\r\n{filler}---\r\n# Title\r\n"
+        )
+        assert entry["description"] == ""
+
+    def test_front_matter_past_the_head_slice_yields_no_description(self, fake_home):
+        """With no closing fence inside the slice there is no body to read, and
+        falling back to the raw head would reinstate the exact bug above."""
+        filler = "".join(f"pad{i}: {'x' * 80}\n" for i in range(60))
+        entry = self._entry(fake_home, f"---\ninclusion: manual\n{filler}---\n# Title\n")
+        assert entry["description"] == ""
+
+    def test_free_text_metadata_is_redacted(self, fake_home):
+        """``inclusion``/``fileMatchPattern`` are author-supplied text on the
+        same never-round-tripped path as the description."""
+        leak = "AKIAIOSFODNN7EXAMPLE1234567890abcdefghij"
+        entry = self._entry(
+            fake_home,
+            f"---\ninclusion: fileMatch\nfileMatchPattern: {leak}\n---\n# Doc\n",
+        )
+        assert "AKIAIOSFODNN7EXAMPLE" not in entry["file_match_pattern"]
+
+    def test_free_text_metadata_is_capped(self, fake_home):
+        entry = self._entry(
+            fake_home,
+            "---\ninclusion: fileMatch\nfileMatchPattern: " + "a" * 500 + "\n---\n# Doc\n",
+        )
+        assert len(entry["file_match_pattern"]) == _STEERING_META_MAX_CHARS
 
 
 # ── Key parsing + resolution guards ──
@@ -743,6 +846,142 @@ class TestUpdateDeleteEndpoints:
     async def test_delete_unknown_is_404(self, fake_home):
         async with TestClient(TestServer(_make_app(_state()))) as client:
             assert (await client.delete("/api/steering/user/nope.md")).status == 404
+
+
+class TestDeclarationEdit:
+    """``PUT`` may edit the document's declaration, not just its text.
+
+    The front matter is rewritten server-side so the editor never has to splice
+    YAML into its own textarea — a client that got that subtly wrong would
+    corrupt the file whose whole purpose is to be read by the agent.
+    """
+
+    async def _put(self, client, body):
+        return await client.put("/api/steering/user/doc.md", json=body)
+
+    @pytest.mark.asyncio
+    async def test_sets_a_mode_and_preserves_the_body(self, fake_home):
+        root = fake_home / ".kiro" / "steering"
+        _write_steering(root, "doc.md", "# Payroll\n\nrules  \n\ttabbed\n")
+        async with TestClient(TestServer(_make_app(_state()))) as client:
+            resp = await self._put(
+                client,
+                {"content": "# Payroll\n\nrules  \n\ttabbed\n", "inclusion": "manual"},
+            )
+            data = await resp.json()
+        assert resp.status == 200
+        stored = (root / "doc.md").read_text()
+        assert stored == "---\ninclusion: manual\n---\n# Payroll\n\nrules  \n\ttabbed\n"
+        # The response echoes the rewritten text: an editor still holding the
+        # old body would otherwise re-send it and undo the mode it just set.
+        assert data["content"] == stored
+        assert data["inclusion"] == "manual"
+
+    @pytest.mark.asyncio
+    async def test_empty_value_removes_the_declaration(self, fake_home):
+        root = fake_home / ".kiro" / "steering"
+        _write_steering(root, "doc.md", "---\ninclusion: manual\n---\n# Doc\n")
+        async with TestClient(TestServer(_make_app(_state()))) as client:
+            resp = await self._put(
+                client, {"content": "---\ninclusion: manual\n---\n# Doc\n", "inclusion": ""}
+            )
+            data = await resp.json()
+        assert resp.status == 200
+        assert (root / "doc.md").read_text() == "# Doc\n"
+        assert data["inclusion"] == STEERING_INCLUSION_DEFAULT
+        assert data["inclusion_declared"] == ""
+
+    @pytest.mark.asyncio
+    async def test_file_match_carries_its_pattern(self, fake_home):
+        root = fake_home / ".kiro" / "steering"
+        _write_steering(root, "doc.md", "# Doc\n")
+        async with TestClient(TestServer(_make_app(_state()))) as client:
+            resp = await self._put(
+                client,
+                {
+                    "content": "# Doc\n",
+                    "inclusion": "fileMatch",
+                    "file_match_pattern": "src/**/*.ts",
+                },
+            )
+            data = await resp.json()
+        assert resp.status == 200
+        assert data["file_match_pattern"] == "src/**/*.ts"
+        assert "fileMatchPattern" in (root / "doc.md").read_text()
+
+    @pytest.mark.asyncio
+    async def test_file_match_without_a_pattern_is_refused(self, fake_home):
+        """A patternless fileMatch document can never match, so it would be
+        withheld forever with nothing to explain why."""
+        _write_steering(fake_home / ".kiro" / "steering", "doc.md", "# Doc\n")
+        async with TestClient(TestServer(_make_app(_state()))) as client:
+            resp = await self._put(client, {"content": "# Doc\n", "inclusion": "fileMatch"})
+            data = await resp.json()
+        assert resp.status == 400
+        assert data["code"] == "steering_file_match_needs_pattern"
+
+    @pytest.mark.asyncio
+    async def test_mode_flip_keeps_an_existing_pattern(self, fake_home):
+        """The pattern check reads the RESULT, so flipping the mode back on a
+        document that already carries a pattern is not a rejection."""
+        root = fake_home / ".kiro" / "steering"
+        body = '---\ninclusion: manual\nfileMatchPattern: "src/**/*.ts"\n---\n# Doc\n'
+        _write_steering(root, "doc.md", body)
+        async with TestClient(TestServer(_make_app(_state()))) as client:
+            resp = await self._put(client, {"content": body, "inclusion": "fileMatch"})
+        assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_unknown_mode_is_refused(self, fake_home):
+        _write_steering(fake_home / ".kiro" / "steering", "doc.md", "# Doc\n")
+        async with TestClient(TestServer(_make_app(_state()))) as client:
+            resp = await self._put(client, {"content": "# Doc\n", "inclusion": "manaul"})
+            data = await resp.json()
+        assert resp.status == 400
+        assert data["code"] == "steering_unknown_inclusion"
+
+    @pytest.mark.asyncio
+    async def test_mode_spelling_is_canonicalized_on_write(self, fake_home):
+        root = fake_home / ".kiro" / "steering"
+        _write_steering(root, "doc.md", "# Doc\n")
+        async with TestClient(TestServer(_make_app(_state()))) as client:
+            resp = await self._put(client, {"content": "# Doc\n", "inclusion": "FILEMATCH",
+                                            "file_match_pattern": "*.ts"})
+            data = await resp.json()
+        assert resp.status == 200
+        assert data["inclusion_declared"] == "fileMatch"
+        assert "inclusion: fileMatch" in (root / "doc.md").read_text()
+
+    @pytest.mark.asyncio
+    async def test_a_value_that_cannot_round_trip_is_refused(self, fake_home):
+        """The single-line grammar has no escape sequence, so a value ending in
+        a quote would read back shorter than it went in. Refuse rather than
+        silently truncate the user's text."""
+        _write_steering(fake_home / ".kiro" / "steering", "doc.md", "# Doc\n")
+        async with TestClient(TestServer(_make_app(_state()))) as client:
+            resp = await self._put(
+                client,
+                {
+                    "content": "# Doc\n",
+                    "inclusion": "fileMatch",
+                    "file_match_pattern": 'ends with a quote"',
+                },
+            )
+            data = await resp.json()
+        assert resp.status == 400
+        assert data["code"] == "steering_field_unrepresentable"
+
+    @pytest.mark.asyncio
+    async def test_content_only_put_leaves_front_matter_alone(self, fake_home):
+        """No declaration field in the request means no rewrite at all — the
+        plain save path stays byte-exact."""
+        root = fake_home / ".kiro" / "steering"
+        body = "---\ninclusion: manual\ncustomKey: kept\n---\n# Doc\n"
+        _write_steering(root, "doc.md", body)
+        async with TestClient(TestServer(_make_app(_state()))) as client:
+            resp = await self._put(client, {"content": body})
+        assert resp.status == 200
+        assert (root / "doc.md").read_text() == body
 
 
 class TestRestrictedSessions:
