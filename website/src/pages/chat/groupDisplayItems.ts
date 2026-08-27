@@ -81,8 +81,28 @@ export function groupDisplayItems(messages: ChatMessage[]): GroupedTurns {
       (t.kind === 'single' && (t.msg.role === 'tool' || t.msg.role === 'assistant' || t.msg.role === 'streaming')) ||
       t.kind === 'group'
     )
+  // A batch that carries TWO OR MORE content-bearing reasoning bursts must be
+  // wrapped as a {kind:'turn'}, even when it has no tool/assistant "working
+  // steps" and even when it is short. The per-turn reasoning-burst dedup
+  // (mergeTurnThinking in TurnBlock) — which folds a turn's many `thinking`
+  // bursts into ONE row hoisted above the answer — runs ONLY on {kind:'turn'}
+  // items. Left as loose singles (the else branch), each burst renders as its
+  // own standalone "Thought process" row via ChatPage's renderMessage,
+  // bypassing the dedup entirely: the duplicate-row wall of #6376. This bites a
+  // reasoning-only trailing turn (a monitor/nudge cycle that has only emitted
+  // reasoning so far) and any turn whose reasoning bursts land as a short/
+  // answerless batch — and it became common because finer-grained models (e.g.
+  // claude-opus-5) emit many small bursts per turn. The threshold is TWO: a
+  // single burst renders as exactly one row whether loose or wrapped (nothing
+  // to dedup), so wrapping it would only re-home it needlessly. `thinking` is
+  // deliberately NOT counted in hasWorkingSteps (it is a reasoning trace, not a
+  // working step that gates the "Worked through N steps" collapse), so this is
+  // a separate predicate. Empty placeholder bursts do not count (they render
+  // nothing, and mergeTurnThinking ignores them too).
+  const contentThinkingCount = (items: TurnItem[]) =>
+    items.reduce((n, t) => n + (t.kind === 'single' && t.msg.role === 'thinking' && t.msg.content ? 1 : 0), 0)
   const flushTurn = (items: TurnItem[], complete: boolean) => {
-    if (hasWorkingSteps(items) && items.length > 2) {
+    if ((hasWorkingSteps(items) && items.length > 2) || contentThinkingCount(items) >= 2) {
       turns.push({ kind: 'turn', items, complete })
     } else {
       turns.push(...items)

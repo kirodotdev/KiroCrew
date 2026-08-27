@@ -134,6 +134,58 @@ describe('groupDisplayItems', () => {
     const { turns } = groupDisplayItems([msg('user', 'a'), msg('user', 'b'), msg('user', 'c')])
     expect(turns.filter(isTurn)).toHaveLength(0)
   })
+
+  // #6376: two or more reasoning bursts must be wrapped as a {kind:'turn'} so
+  // TurnBlock's mergeTurnThinking can fold them into ONE "Thought process" row.
+  // Left as loose singles, each burst renders as its own duplicate row.
+  it('wraps a reasoning-only trailing turn into a collapsible turn (no answer/tool yet)', () => {
+    // A monitor/nudge cycle that has only emitted reasoning so far: no tool or
+    // assistant row, so hasWorkingSteps is false — but the bursts must still be
+    // grouped for the dedup, not spread as N loose "Thought process" rows.
+    const { turns, trailingTurnIdx } = groupDisplayItems([
+      msg('nudge', 'keep going'),
+      msg('thinking', 'burst 1'),
+      msg('thinking', 'burst 2'),
+      msg('thinking', 'burst 3'),
+    ])
+    const turnObjs = turns.filter(isTurn)
+    expect(turnObjs).toHaveLength(1)
+    expect(turnObjs[0].items).toHaveLength(3)
+    // The reasoning-only turn is the trailing turn, so the running state can
+    // land on it.
+    expect(trailingTurnIdx).toBeGreaterThanOrEqual(0)
+  })
+
+  it('wraps a two-burst reasoning-only batch that the working-steps rule would NOT catch', () => {
+    // Two reasoning bursts, no tool/assistant row: hasWorkingSteps is false and
+    // there are only 2 items, so the `hasWorkingSteps && length > 2` clause
+    // does NOT fire — this batch wraps ONLY on the burst-count rule, so the test
+    // fails if that rule is removed or its threshold raised (a real
+    // discriminator, unlike a batch that already carries an assistant).
+    const { turns } = groupDisplayItems([
+      msg('thinking', 'first thought'),
+      msg('thinking', 'second thought'),
+    ])
+    expect(turns.filter(isTurn)).toHaveLength(1)
+  })
+
+  it('leaves a SINGLE reasoning burst loose (nothing to dedup)', () => {
+    // One burst renders as exactly one row whether loose or wrapped, so it must
+    // not synthesize a turn — that would needlessly re-home a lone reasoning row
+    // (and regress ChatPage's renderMessage dispatch).
+    const { turns } = groupDisplayItems([msg('thinking', 'just one'), msg('assistant', 'answer')])
+    expect(turns.filter(isTurn)).toHaveLength(0)
+  })
+
+  it('does NOT count empty (placeholder) thinking rows toward the wrap threshold', () => {
+    // A bare "Thinking…" placeholder carries no content; two of them (or one
+    // content burst + a placeholder) must not synthesize a turn — mirrors
+    // mergeTurnThinking, which ignores empty bursts.
+    const { turns } = groupDisplayItems([
+      msg('user', 'u'), msg('thinking', 'one real'), msg('thinking', ''),
+    ])
+    expect(turns.filter(isTurn)).toHaveLength(0)
+  })
 })
 
 describe('applyRunningState', () => {
