@@ -5534,28 +5534,6 @@ class SubagentManager:
         eff_effort = info.reasoning_effort or _subagent_default_effort()
         if eff_effort:
             extra_kwargs["reasoning_effort_override"] = eff_effort
-        if eff_effort:
-            # Judge the drop warning on the same model the factory's effort
-            # gate will see: the kwarg when pinned, else what the session layer
-            # resolves for this agent (crew pin, else non-sentinel global).
-            # Off the loop — the resolver reads config and ~/.kiro/agents, the
-            # same reason get_or_create runs _session_model in an executor.
-            effective_model = await asyncio.to_thread(
-                _spawn_effective_model, info.model, agent or ""
-            )
-            if not effective_model or not model_supports_effort(effective_model):
-                # The provider factory's effort gate will drop this level: only
-                # a concrete, effort-capable model can carry one. Reporting-only
-                # — the kwarg is still passed and the factory stays the single
-                # dropping authority.
-                logger.warning(
-                    "subagent %s: reasoning effort '%s' (%s) will not be applied — "
-                    "model '%s' does not support effort configuration",
-                    info.id,
-                    eff_effort,
-                    "per-call" if info.reasoning_effort else "role pin",
-                    effective_model or "auto",
-                )
         if info.bare:
             extra_kwargs["bare"] = True
         if info.allowed_tools:

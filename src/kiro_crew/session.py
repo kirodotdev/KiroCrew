@@ -334,6 +334,7 @@ POOL_DECISIONS: frozenset[str] = frozenset(
         "bypass_resume",
         "bypass_stateless",
         "bypass_cwd",
+        "bypass_effort",
         "bypass_env",
         "disabled",
         "other",
@@ -2864,6 +2865,17 @@ class SessionManager:
             pool_decision = "bypass_stateless"
         elif cwd_blocks_pool:
             pool_decision = "bypass_cwd"
+        elif extra_factory_kwargs.get("reasoning_effort_override"):
+            # A requested reasoning effort is applied by the provider factory
+            # at construction (the cli.json overlay is written from
+            # effort_per_model at spawn); a pre-warmed provider was built
+            # without the override, and the post-claim fixups re-key and switch
+            # model but never touch effort. Bypass the pool so the override
+            # always reaches the factory — which both delivers the level and
+            # keeps the factory's effort gate the single drop authority
+            # (#6186). Same rationale as the subagent path forcing the
+            # dedicated-process route for a per-spawn effort.
+            pool_decision = "bypass_effort"
         elif extra_env:
             pool_decision = "bypass_env"
         else:

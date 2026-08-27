@@ -597,10 +597,12 @@ class TestEffortDropReason:
         assert "deepseek-3.2" in reason
 
 
-class TestDropWarningLog:
-    """The session-creation gate says out loud what the factory will drop —
-    including the role-pin case the tool result cannot see (the operator who
-    set the pin reads logs, not tool results)."""
+class TestNoSpawnSiteDropWarning:
+    """The spawn path no longer emits its own drop warning (#6186): the
+    provider factory's effort gate (config/loader.py) is the single warning
+    authority, covering spawn, dashboard slot, and cron alike. The tool-result
+    verdict (effort_dropped/effort_applied) remains the caller-facing signal;
+    the operator-facing log line now comes from the gate itself."""
 
     def _run(
         self,
@@ -664,21 +666,15 @@ class TestDropWarningLog:
             if r.levelno == logging.WARNING and "will not be applied" in r.getMessage()
         ]
 
-    def test_per_call_effort_on_auto_warns_and_names_the_source(self, caplog):
+    def test_per_call_effort_on_auto_emits_no_spawn_warning(self, caplog):
         with caplog.at_level(logging.WARNING, logger="kiro_crew.subagent"):
             self._run(info_effort="high")
-        msgs = self._drop_messages(caplog)
-        assert len(msgs) == 1
-        assert "per-call" in msgs[0]
-        assert "'auto'" in msgs[0]
-        assert "'high'" in msgs[0]
+        assert self._drop_messages(caplog) == []
 
-    def test_role_pin_drop_warns_with_pin_source(self, caplog):
+    def test_role_pin_drop_emits_no_spawn_warning(self, caplog):
         with caplog.at_level(logging.WARNING, logger="kiro_crew.subagent"):
             self._run(role_efforts={"subagent": "low"})
-        msgs = self._drop_messages(caplog)
-        assert len(msgs) == 1
-        assert "role pin" in msgs[0]
+        assert self._drop_messages(caplog) == []
 
     def test_capable_model_stays_silent(self, caplog):
         with caplog.at_level(logging.WARNING, logger="kiro_crew.subagent"):
@@ -690,13 +686,13 @@ class TestDropWarningLog:
             self._run()
         assert self._drop_messages(caplog) == []
 
-    def test_kwarg_still_passed_when_warning_fires(self, caplog):
+    def test_kwarg_still_passed_without_a_spawn_warning(self, caplog):
         """Reporting never alters spawning (design Property 2): the factory
         stays the single dropping authority, so the override kwarg must reach
-        session creation even when the warning says it will be dropped."""
+        session creation — and the spawn path adds no warning of its own."""
         with caplog.at_level(logging.WARNING, logger="kiro_crew.subagent"):
             captured = self._run(info_effort="high")
-        assert self._drop_messages(caplog)
+        assert self._drop_messages(caplog) == []
         assert captured.get("reasoning_effort_override") == "high"
 
 

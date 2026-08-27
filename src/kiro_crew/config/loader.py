@@ -8499,6 +8499,11 @@ class KiroCrewConfig:
             _gw_socket = None
             _gw_settings = None
 
+        # Effort-drop warnings already emitted by this factory, keyed by
+        # (resolved model, level) — see the gate below. Benign under threads:
+        # a lost race duplicates one log line, never drops state.
+        _effort_drop_warned: set[tuple[str, str]] = set()
+
         def _acp(
             session_key: str | None = None,
             agent: str | None = None,
@@ -8555,6 +8560,38 @@ class KiroCrewConfig:
             _eff = reasoning_effort_override or base_effort
             if m and _eff and is_valid_effort(_eff) and model_supports_effort(m):
                 _eff_per_model[m] = _eff
+            elif _eff and is_valid_effort(_eff):
+                # Single-authority drop warning: a valid requested effort is
+                # being dropped because the resolved model is empty or not
+                # effort-capable. Every surface (spawn, dashboard slot, cron)
+                # funnels through this factory, so one log at the gate covers
+                # them all and cannot drift from the decision it reports on.
+                # Reporting-only — the overlay simply stays unwritten, exactly
+                # as before. An unresolved model is named "auto" (it IS the
+                # DEFAULT_MODEL sentinel the backend resolves itself), matching
+                # the spawn-side effort_dropped verdict so one drop event reads
+                # as one event across both surfaces.
+                #
+                # An EXPLICIT override always warns: a caller's own request
+                # being dropped is the event this gate exists to surface, and
+                # a config-default drop must not burn its dedupe key first
+                # (Design review on this PR). Only the static config default
+                # (base_effort with no override) dedupes per (model, level) —
+                # it is one unchanging configuration fact that would otherwise
+                # repeat on every provider construction (warm-pool fills and
+                # recycles included); a config change rebuilds the factory and
+                # re-arms it.
+                _dedupe = not reasoning_effort_override
+                if not _dedupe or (m, _eff) not in _effort_drop_warned:
+                    if _dedupe:
+                        _effort_drop_warned.add((m, _eff))
+                    logger.warning(
+                        "reasoning effort '%s' will not be applied (session %s) — "
+                        "model '%s' does not support effort configuration",
+                        _eff,
+                        session_key or "?",
+                        m or "auto",
+                    )
             return AcpProvider(
                 work_dir=wdir,
                 model=m,
