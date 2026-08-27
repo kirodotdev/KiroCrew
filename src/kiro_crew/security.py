@@ -6163,6 +6163,136 @@ _EXTRACT_INTO_TRUST_ROOT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# The destination half above is deliberately left as the DEFAULT verdict, and
+# this carve-out is the only thing that overrides it.  That direction is the
+# whole design: ``-d`` is also ``ls``'s "show the directory entry itself, not its
+# contents", so the flag-only rule refused a read-only listing of the crew home
+# (issue #6021) while the same read spelled ``-l``, ``-lt``, a grep or a Python
+# ``open`` stayed allowed -- the flag character was never the boundary.
+#
+# Two earlier attempts tried to name the WRITERS instead (an archive-program
+# word, then that word in "command position").  Both were rejected because the
+# set of programs that write through ``-c``/``-C``/``-d``/``-D`` is open-ended,
+# so every program not enumerated became a silent permit against the old rule:
+# ``patch -d``, ``git -C ... apply`` and ``make -C`` were re-admitted into the
+# governance trust root, and a quote-split ``t""ar`` defeated the word match.
+# Enumerating writers fails OPEN, which is the wrong direction for this gate.
+#
+# So the exoneration is an allow-list of READ-ONLY listers instead, and it is
+# narrow by construction: a command qualifies only if it has no shell
+# composition at all AND its program is one of these.  Anything else -- an
+# unknown program, a pipeline, a quoted subshell, a redirection -- keeps the
+# destination-half verdict byte-for-byte, so a shape nobody anticipated
+# over-blocks rather than opening the trust root.
+#
+# Every entry here must be a program that cannot WRITE to the directory it is
+# given.  Do not add a program because it "usually" reads: ``find -delete`` and
+# ``install -d`` are why this is a hand-audited list and not a heuristic.
+_TRUST_ROOT_READ_LISTERS: frozenset[str] = frozenset(
+    {
+        "ls",  # -d: the directory entry itself, the reported false positive
+        "stat",
+        "du",
+        "readlink",
+        "basename",
+        "dirname",
+        "wc",
+    }
+)
+# ``file`` is deliberately ABSENT.  It looks like a pure reader but it is not:
+# ``file -C`` compiles a magic database, and ``file -C <crewhome> -m
+# <crewhome>/evil.magic`` writes ``evil.magic.mgc`` INTO the trust root while the
+# destination half matches on the ``-C`` argument.  That is a real write this
+# carve-out would have exonerated.  Every candidate for this set has to be
+# checked for a compile/output mode, not just for its usual reading role.
+
+# The exonerated shape is validated POSITIVELY: every character of the command
+# must come from a set that carries no meaning to any shell.  This replaced a
+# deny-list of metacharacters (``| & ; newline CR backtick < > ( )`` and
+# ``$(``), which lost four rounds in a row -- each review found one more spelling
+# the screen did not enumerate (a quoted program, an ``&`` inside a quoted
+# filename, a bare CR, then a PowerShell parenthesised group that RUNS in
+# argument position with no ``$`` sigil).  Enumerating what is dangerous cannot
+# terminate against an untrusted string and an unknown target shell; enumerating
+# what is INERT does, because a character absent from this set is refused whether
+# or not anyone has thought of a way to abuse it.
+#
+# So the set is deliberately tiny: letters, digits, and the punctuation a path or
+# a flag actually needs.  Everything else is out, including quotes, ``$``,
+# backslash, glob characters and every bracket -- a bare read listing needs none
+# of them.
+#
+# ``$HOME`` is the ONE exception, stripped before the check, because the
+# destination half of this rule enumerates that spelling itself
+# (``_EXTRACT_INTO_TRUST_ROOT_RE`` matches ``$HOME`` alongside ``~``), so
+# refusing it here would leave half of #6021 unfixed.  It is matched only when
+# followed by ``/``, whitespace or end of string, so ``$HOMEX``, ``${HOME}`` and
+# ``$(...)`` all keep their ``$`` and are refused.
+#
+# The residual cost is over-blocking a read whose PATH contains an excluded
+# character -- ``ls -d ~/.kiro/crew/foo(1)``, or a quoted path with a space.
+# Those keep the destination-half refusal exactly as they did at base: an
+# unfixed false positive of the #6021 family, not a new one. Fixing them would
+# mean telling a literal parenthesis from a grouping one inside an untrusted
+# string, which is the inference this rule has stopped making.
+# Named distinctly on purpose: this module already binds ``_HOME_VAR_RE`` further
+# down for the normalizer, with different semantics (it also accepts
+# ``${HOME}``, case-insensitively).  Reusing that name here silently redefined
+# it -- harmless only by accident of definition order -- so this rule carries its
+# own anchored spelling and cannot be moved out from under by an edit to the
+# other one.
+_TRUST_ROOT_HOME_VAR_RE = re.compile(r"\$HOME(?=[/\s]|\Z)")
+_SHELL_INERT_COMMAND_RE = re.compile(r"\A[A-Za-z0-9_@%+=:,./~^ \t-]+\Z")
+
+
+def _is_bare_trust_root_read(command: str) -> bool:
+    """True for a single simple command whose program only READS its argument.
+
+    Fails closed on anything it does not recognise, because the caller treats a
+    False here as "keep the destination-half refusal".
+    """
+    # Positive validation first: if the command carries a character that could
+    # mean anything to a shell, nothing below is trustworthy.
+    if not _SHELL_INERT_COMMAND_RE.match(_TRUST_ROOT_HOME_VAR_RE.sub("", command)):
+        return False
+    # Past that gate the string provably holds no quote, backslash or
+    # metacharacter, so a plain whitespace split IS the tokenisation -- there is
+    # no shlex-versus-shell disagreement left to exploit.
+    tokens = command.split()
+    if not tokens:
+        return False
+    program = tokens[0]
+    # A PATHNAME is never classified, because a basename says nothing about what
+    # the binary is: ``/tmp/ls`` and ``./ls`` end in ``ls`` and can write the
+    # trust root, so accepting them for the convenience of ``/bin/ls`` would
+    # exonerate an attacker-placed executable.  Only a bare command word counts;
+    # a path falls through to the destination-half refusal, which over-blocks a
+    # legitimate ``/bin/ls`` and is the direction this gate must fail in.
+    # A backslash cannot survive the charset above, so only ``/`` needs testing.
+    if "/" in program:
+        return False
+    # A bare word still resolves through PATH at execution time, so this
+    # carve-out cannot pin WHICH binary runs -- no string matcher can.  That is
+    # not a boundary this rule ever held: a planted shim named ``ls`` in an
+    # agent-writable PATH entry executes through every spelling this matcher
+    # never sees (``ls``, ``ls -l <crewhome>``), so refusing exactly the
+    # ``-d <crewhome>`` form defends nothing against it.  PATH integrity is the
+    # write-path policy's boundary, not this matcher's.
+    return program.lower() in _TRUST_ROOT_READ_LISTERS
+
+
+def _extracts_into_trust_root(command: str) -> bool:
+    """True when a command writes INTO the crew data home via a dest flag.
+
+    The destination match (:data:`_EXTRACT_INTO_TRUST_ROOT_RE`) is the verdict;
+    :func:`_is_bare_trust_root_read` is the single narrow exoneration for the
+    read-only listing that flag spelling made indistinguishable from a write.
+    """
+    if not _EXTRACT_INTO_TRUST_ROOT_RE.search(command):
+        return False
+    return not _is_bare_trust_root_read(command)
+
+
 # ── Symlink-staging to a sensitive target via RELATIVE traversal ──
 # The home-anchored ~/$HOME/absolute forms of ``ln -sf ~/.aws/credentials link``
 # are already caught by _build_sensitive_regex (the sensitive path appears as an
@@ -6275,7 +6405,7 @@ def is_sensitive_bash_command(command: str) -> str | None:
     # ── Pass 1: regex fast-path ──
     if _get_sensitive_re().search(command):
         return "Blocked: command accesses sensitive credential path"
-    if _EXTRACT_INTO_TRUST_ROOT_RE.search(command):
+    if _extracts_into_trust_root(command):
         return "Blocked: command extracts into the governance trust-root directory"
     # Block ANY command referencing a sensitive path via relative traversal,
     # regardless of verb.  The home-anchored/absolute forms are already caught

