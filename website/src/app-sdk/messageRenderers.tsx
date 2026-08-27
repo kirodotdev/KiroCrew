@@ -6,11 +6,12 @@
  * or replace one (its own approval UI, its own tool row) without forking the
  * transcript. A host passes extra entries; they win over the defaults.
  *
- * This module must stay free of any store, router, or `pages/`-level import: the
+ * This module must stay free of any store, router, or selector reach: the
  * consumers that most need a shared transcript run outside the dashboard's React
  * root and have no Redux store at all, so a renderer that reaches for a selector
- * is unusable to them. Anything that genuinely needs live app state is supplied
- * BY the host as a registry entry instead.
+ * is unusable to them. Presentational components from `pages/chat/` are fine
+ * (this module already imports several); anything that genuinely needs live app
+ * state is supplied BY the host as a registry entry instead.
  */
 import React, { memo } from 'react'
 import { Clock, LoaderCircle, CircleSlash, CircleAlert, CircleDot, Lock, PanelRight } from 'lucide-react'
@@ -25,6 +26,7 @@ import { renderMcpOAuthMessage } from '../pages/chat/McpOAuthBanner'
 import SubagentCompletionCard from '../pages/chat/SubagentCompletionCard'
 import NudgeCard from '../pages/chat/NudgeCard'
 import NoticeCard from '../pages/chat/NoticeCard'
+import { ErrorCard } from '../pages/chat/ErrorCard'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import MessageErrorBoundary from '../components/MessageErrorBoundary'
@@ -324,11 +326,10 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
   {
     id: 'error',
     roles: ['error'],
-    render: (m, ctx) => ctx.row(
-      <div className="bg-danger-subtle text-danger text-[13px] leading-5 px-3 py-2 rounded-md ring-1 ring-inset forced-colors:border ring-danger/15 self-center animate-scale-in">
-        {m.content}
-      </div>,
-    ),
+    // The shared ErrorCard, deliberately without `onContinue`: omitting the
+    // handler selects its settled (non-continuable) shape, and the app-sdk
+    // surface has no turn to resume, so it must never grow the affordance.
+    render: (m, ctx) => ctx.row(<ErrorCard content={m.content} />),
   },
   {
     id: 'notice',
