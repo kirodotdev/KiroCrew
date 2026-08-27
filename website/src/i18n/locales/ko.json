@@ -10206,7 +10206,14 @@
         "probe_failing": "연속 실패",
         "probe_failing_help": "연속 {{failures}}회 프로브 실패. 서버는 그대로 마운트되어 있으며, 이는 상태 표시이지 변경이 아닙니다.",
         "reset_failures": "횟수 초기화",
-        "reset_failures_help": "이 서버의 연속 실패 횟수를 지웁니다."
+        "reset_failures_help": "이 서버의 연속 실패 횟수를 지웁니다.",
+        "sign_in": "로그인",
+        "sign_in_authorize": "{{name}} 승인",
+        "sign_in_mint_failed": "로그인을 시작할 수 없습니다. 다시 시도하세요.",
+        "sign_in_preparing": "로그인 준비 중…",
+        "sign_in_retry": "다시 시도",
+        "sign_in_row_updates_after_probe": "위의 Probe MCP servers를 사용하여 이 행을 새로 고치세요.",
+        "sign_in_timeout": "로그인이 제시간에 승인 링크를 생성하지 못했습니다. 다시 시도하세요."
       },
       "memoryGraphTab": {
         "all_count": "전체 ({{count}})",

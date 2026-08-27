@@ -10516,7 +10516,14 @@
         "probe_failing": "Con fallos",
         "probe_failing_help": "{{failures}} sondeos fallidos consecutivos. El servidor sigue montado; es una lectura de estado, no un cambio.",
         "reset_failures": "Restablecer recuento",
-        "reset_failures_help": "Borra el recuento de fallos consecutivos de este servidor."
+        "reset_failures_help": "Borra el recuento de fallos consecutivos de este servidor.",
+        "sign_in": "Iniciar sesión",
+        "sign_in_authorize": "Autorizar {{name}}",
+        "sign_in_mint_failed": "No se pudo iniciar el proceso de inicio de sesión. Inténtalo de nuevo.",
+        "sign_in_preparing": "Preparando el inicio de sesión…",
+        "sign_in_retry": "Inténtalo de nuevo",
+        "sign_in_row_updates_after_probe": "Usa «Probe MCP servers» arriba para actualizar esta fila.",
+        "sign_in_timeout": "El inicio de sesión no produjo un enlace de aprobación a tiempo. Inténtalo de nuevo."
       },
       "memoryGraphTab": {
         "all_count": "Todos ({{count}})",

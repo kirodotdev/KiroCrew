@@ -10516,7 +10516,14 @@
         "probe_failing": "En echec",
         "probe_failing_help": "{{failures}} sondages en echec consecutifs. Le serveur reste monte : c'est un releve d'etat, pas une modification.",
         "reset_failures": "Reinitialiser le compteur",
-        "reset_failures_help": "Efface le compteur d'echecs consecutifs de ce serveur."
+        "reset_failures_help": "Efface le compteur d'echecs consecutifs de ce serveur.",
+        "sign_in": "Se connecter",
+        "sign_in_authorize": "Autoriser {{name}}",
+        "sign_in_mint_failed": "Impossible de démarrer la connexion. Réessayez.",
+        "sign_in_preparing": "Préparation de la connexion…",
+        "sign_in_retry": "Réessayer",
+        "sign_in_row_updates_after_probe": "Utilisez « Probe MCP servers » ci-dessus pour actualiser cette ligne.",
+        "sign_in_timeout": "La connexion n’a pas produit de lien d’approbation à temps. Réessayez."
       },
       "memoryGraphTab": {
         "all_count": "Tous ({{count}})",

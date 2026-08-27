@@ -10361,7 +10361,14 @@
         "probe_failing": "लगातार विफल",
         "probe_failing_help": "लगातार {{failures}} जाँच विफल। सर्वर अभी भी माउंट है; यह केवल स्वास्थ्य रीडिंग है, कोई बदलाव नहीं।",
         "reset_failures": "गणना रीसेट करें",
-        "reset_failures_help": "इस सर्वर की लगातार विफलता गणना साफ़ करें।"
+        "reset_failures_help": "इस सर्वर की लगातार विफलता गणना साफ़ करें।",
+        "sign_in": "साइन इन करें",
+        "sign_in_authorize": "{{name}} को अधिकृत करें",
+        "sign_in_mint_failed": "साइन-इन शुरू नहीं हो सका। फिर से कोशिश करें।",
+        "sign_in_preparing": "साइन-इन तैयार किया जा रहा है…",
+        "sign_in_retry": "फिर से कोशिश करें",
+        "sign_in_row_updates_after_probe": "इस पंक्ति को रीफ़्रेश करने के लिए ऊपर दिए गए Probe MCP servers का उपयोग करें।",
+        "sign_in_timeout": "साइन-इन ने समय रहते अनुमोदन लिंक नहीं दिया। फिर से कोशिश करें।"
       },
       "memoryGraphTab": {
         "all_count": "सभी ({{count}})",

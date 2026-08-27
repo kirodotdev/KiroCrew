@@ -10361,7 +10361,14 @@
         "probe_failing": "Wiederholt fehlgeschlagen",
         "probe_failing_help": "{{failures}} aufeinanderfolgende Prufungen fehlgeschlagen. Der Server bleibt eingebunden; dies ist ein Statuswert, keine Anderung.",
         "reset_failures": "Zahler zurucksetzen",
-        "reset_failures_help": "Setzt den Zahler aufeinanderfolgender Fehler dieses Servers zuruck."
+        "reset_failures_help": "Setzt den Zahler aufeinanderfolgender Fehler dieses Servers zuruck.",
+        "sign_in": "Anmelden",
+        "sign_in_authorize": "{{name}} autorisieren",
+        "sign_in_mint_failed": "Die Anmeldung konnte nicht gestartet werden. Erneut versuchen.",
+        "sign_in_preparing": "Anmeldung wird vorbereitet…",
+        "sign_in_retry": "Erneut versuchen",
+        "sign_in_row_updates_after_probe": "Verwende „Probe MCP servers“ oben, um diese Zeile zu aktualisieren.",
+        "sign_in_timeout": "Die Anmeldung hat nicht rechtzeitig einen Freigabelink erzeugt. Erneut versuchen."
       },
       "memoryGraphTab": {
         "all_count": "Alle ({{count}})",

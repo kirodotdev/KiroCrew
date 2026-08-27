@@ -10516,7 +10516,14 @@
         "probe_failing": "Com falhas",
         "probe_failing_help": "{{failures}} sondagens falhadas consecutivas. O servidor continua montado; e uma leitura de estado, nao uma alteracao.",
         "reset_failures": "Reiniciar contagem",
-        "reset_failures_help": "Limpa a contagem de falhas consecutivas deste servidor."
+        "reset_failures_help": "Limpa a contagem de falhas consecutivas deste servidor.",
+        "sign_in": "Entrar",
+        "sign_in_authorize": "Autorizar {{name}}",
+        "sign_in_mint_failed": "Não foi possível iniciar o login. Tente novamente.",
+        "sign_in_preparing": "Preparando o login…",
+        "sign_in_retry": "Tentar novamente",
+        "sign_in_row_updates_after_probe": "Use \"Probe MCP servers\" acima para atualizar esta linha.",
+        "sign_in_timeout": "O login não produziu um link de aprovação a tempo. Tente novamente."
       },
       "memoryGraphTab": {
         "all_count": "Todos ({{count}})",

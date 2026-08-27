@@ -10516,7 +10516,14 @@
         "probe_failing": "Con errori",
         "probe_failing_help": "{{failures}} probe fallite consecutive. Il server resta montato: e una lettura di stato, non una modifica.",
         "reset_failures": "Azzera conteggio",
-        "reset_failures_help": "Azzera il conteggio degli errori consecutivi di questo server."
+        "reset_failures_help": "Azzera il conteggio degli errori consecutivi di questo server.",
+        "sign_in": "Accedi",
+        "sign_in_authorize": "Autorizza {{name}}",
+        "sign_in_mint_failed": "Impossibile avviare l’accesso. Riprova.",
+        "sign_in_preparing": "Preparazione dell’accesso…",
+        "sign_in_retry": "Riprova",
+        "sign_in_row_updates_after_probe": "Usa «Probe MCP servers» qui sopra per aggiornare questa riga.",
+        "sign_in_timeout": "L’accesso non ha prodotto un link di approvazione in tempo. Riprova."
       },
       "memoryGraphTab": {
         "all_count": "Tutti ({{count}})",

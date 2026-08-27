@@ -10206,7 +10206,14 @@
         "probe_failing": "連続失敗",
         "probe_failing_help": "{{failures}} 回連続でプローブに失敗しました。サーバーはマウントされたままで、これは状態の表示であり変更ではありません。",
         "reset_failures": "カウントをリセット",
-        "reset_failures_help": "このサーバーの連続失敗回数をクリアします。"
+        "reset_failures_help": "このサーバーの連続失敗回数をクリアします。",
+        "sign_in": "サインイン",
+        "sign_in_authorize": "{{name}} を承認",
+        "sign_in_mint_failed": "サインインを開始できませんでした。もう一度お試しください。",
+        "sign_in_preparing": "サインインを準備しています…",
+        "sign_in_retry": "もう一度試す",
+        "sign_in_row_updates_after_probe": "上部の「Probe MCP servers」を使ってこの行を更新してください。",
+        "sign_in_timeout": "サインインが時間内に承認リンクを生成しませんでした。もう一度お試しください。"
       },
       "memoryGraphTab": {
         "all_count": "すべて（{{count}}）",

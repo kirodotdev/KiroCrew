@@ -1,21 +1,28 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Lock, ExternalLink, CheckCircle, XCircle, Loader2 } from 'lucide-react'
+import { useState, type ReactNode } from 'react'
+import { Lock, ExternalLink, CheckCircle, XCircle } from 'lucide-react'
 import type { ChatMessage } from '../../types'
 
-import { api, ApiError } from '../../api/client'
-import { queryClient } from '../../api/queryClient'
-import { parseErrorCode } from '../../utils/errorReport'
-import { isValidLoopbackReturnAddress } from '../../utils/loopbackReturnAddress'
 import { i18nT } from '../../i18n/t'
-import { useImeGuard } from '../../hooks/useImeGuard'
+import OAuthRelayAffordance, { isSafeOAuthUrl } from '../../components/OAuthRelayAffordance'
+
 /**
  * Inline banner for kiro-cli MCP OAuth flow. `meta.completed` flips it to the
  * authenticated state; `meta.failed` flips it to the error state.
  */
-function isSafeOAuthUrl(url: string): boolean {
-  if (!url) return false
-  const lower = url.toLowerCase()
-  return lower.startsWith('https://') || lower.startsWith('http://')
+
+/** The chat banner's relay strings — its own `pages.chat.mcpOAuthBanner.*` keys.
+ *  The MCP-table sign-in reuses these same keys rather than duplicating them. */
+function bannerRelayStrings() {
+  return {
+    disclosure: i18nT('pages.chat.mcpOAuthBanner.relay_disclosure'),
+    remoteGatewayHint: i18nT('pages.chat.mcpOAuthBanner.remote_gateway_hint'),
+    completeConnection: i18nT('pages.chat.mcpOAuthBanner.complete_connection'),
+    relaying: i18nT('pages.chat.mcpOAuthBanner.relaying'),
+    codeDelivered: i18nT('pages.chat.mcpOAuthBanner.code_delivered'),
+    deliveryTimeout: i18nT('pages.chat.mcpOAuthBanner.delivery_timeout'),
+    relayFailed: i18nT('pages.chat.mcpOAuthBanner.relay_failed'),
+    relaySuperseded: i18nT('pages.chat.mcpOAuthBanner.relay_superseded'),
+  }
 }
 
 /** Render an mcp_oauth message into a banner, or null if there's nothing to show.
@@ -61,6 +68,10 @@ export default function McpOAuthBanner({
   error?: string
 }) {
   const label = serverName || i18nT('pages.chat.mcpOAuthBanner.mcp_server')
+  // Probe-confirmed grant when `meta.completed` never arrived (gateway hiccup):
+  // the exchange succeeded, so render the same authenticated state that the
+  // meta update would have produced instead of stranding on the relay spinner.
+  const [confirmedSignedIn, setConfirmedSignedIn] = useState(false)
 
   if (failed) {
     return (
@@ -73,7 +84,7 @@ export default function McpOAuthBanner({
     )
   }
 
-  if (completed) {
+  if (completed || confirmedSignedIn) {
     return (
       <div className="flex items-center gap-2 px-4 py-3 rounded-lg ring-1 ring-inset forced-colors:border ring-ok/40 bg-ok/10 text-sm leading-5">
         <CheckCircle className="shrink-0 text-ok lucide-inline" />
@@ -104,150 +115,24 @@ export default function McpOAuthBanner({
       >
         {i18nT('pages.chat.mcpOAuthBanner.authorize')} {label} <ExternalLink className="lucide-inline" size={13} />
       </a>
-      <RelayAffordance serverName={serverName} />
+      <RelayAffordance serverName={serverName} onConfirmedSignedIn={() => setConfirmedSignedIn(true)} />
     </div>
   )
 }
 
-/**
- * The paste-back relay, surfaced where the failure actually presents.
- *
- * On a remote gateway the authorize flow ends by redirecting the user's browser
- * to a `localhost` callback that only exists on the GATEWAY host, so the browser
- * cannot reach it and the tab shows a connection error. The gateway's own
- * loopback listener DID mint the code, though, so pasting the failed callback URL
- * back lets the gateway replay it locally and finish the flow. That affordance
- * previously lived only on the Connections page (issue #4491) — undiscoverable
- * from here, where the banner is the only thing the user sees — and only for
- * curated registry providers, excluding user-added/self-hosted servers. This
- * exposes it inline for every server. It only DELIVERS an already-minted code; it
- * never mints one (parked decision #4286, untouched).
- */
-function RelayAffordance({ serverName }: { serverName: string }) {
-  const ime = useImeGuard()
-  const [open, setOpen] = useState(false)
-  const [returnAddress, setReturnAddress] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [done, setDone] = useState(false)
-  const [error, setError] = useState('')
-  const inputRef = useRef<HTMLInputElement>(null)
-
-  // The delivered state waits for the server's `meta.completed` to flip the
-  // whole banner. If that never arrives (gateway hiccup, refused exchange with
-  // no `failed` emitted), a spinner with no exit is a permanent dead-end — so
-  // after a bounded wait re-open the affordance with a directive message.
-  useEffect(() => {
-    if (!done) return
-    const timer = setTimeout(() => {
-      setDone(false)
-      setOpen(true)
-      setError(i18nT('pages.chat.mcpOAuthBanner.delivery_timeout'))
-    }, 60_000)
-    return () => clearTimeout(timer)
-  }, [done])
-
-  if (done) {
-    // Neutral delivered state, not "authenticated": the relay only DELIVERS the
-    // code — the server finishes the token exchange and flips the whole banner
-    // via `meta.completed`, which is the single source of truth for success.
-    return (
-      <div className="flex items-center gap-2 text-[13px] leading-5 text-text/70">
-        <Loader2 className="shrink-0 lucide-inline animate-spin motion-reduce:animate-none" size={14} aria-hidden="true" />
-        <span role="status">{i18nT('pages.chat.mcpOAuthBanner.code_delivered')}</span>
-      </div>
-    )
-  }
-
-  const runRelay = async () => {
-    const value = returnAddress.trim()
-    if (!value || busy) return
-    // Same client-side pre-check the Connections card runs: a malformed paste
-    // fails locally with the specific shared message instead of a round-trip
-    // collapsing into the generic delivery-failure copy.
-    if (!isValidLoopbackReturnAddress(value)) {
-      setError(i18nT('pages.connectionsPage.invalid_return_address'))
-      return
-    }
-    setBusy(true)
-    setError('')
-    try {
-      await api.mcpOAuthRelay(serverName, value)
-      setDone(true)
-      // The relay just let the server finish authenticating; the infinitely
-      // fresh ['mcp-servers'] cache would otherwise keep showing the pre-auth
-      // state on the Connections page until a manual reload.
-      void queryClient.invalidateQueries({ queryKey: ['mcp-servers'] })
-    } catch (e) {
-      // Branch on the backend's stable `code`, not the human message. A 409
-      // approval_superseded means a newer Authorize invalidated this approval —
-      // pasting the same URL again can never succeed, so point at Authorize.
-      const code = e instanceof ApiError ? parseErrorCode(e.body) : undefined
-      setError(
-        code === 'approval_superseded'
-          ? i18nT('pages.chat.mcpOAuthBanner.relay_superseded')
-          : i18nT('pages.chat.mcpOAuthBanner.relay_failed'),
-      )
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  // The paste-back path only matters after a browser-side callback failure, so
-  // it collapses behind a disclosure instead of competing with Authorize. The
-  // button stays MOUNTED as a real expander — aria-expanded toggles, the panel
-  // can be collapsed again, and focus moves to the input on open rather than
-  // dropping to <body> when the DOM swaps.
+/** The banner's relay affordance: the shared component wired to the banner's own
+ *  strings, with NO onDeadEnd — the whole banner flips on `meta.completed`, so the
+ *  inline directive message is the right terminal state here. `onConfirmedSignedIn`
+ *  covers the one gap that leaves: an exchange that SUCCEEDED while the
+ *  `meta.completed` update never arrived — the bounded-wait probe observes the
+ *  grant and the banner flips to its authenticated state anyway. */
+function RelayAffordance({ serverName, onConfirmedSignedIn }: { serverName: string; onConfirmedSignedIn: () => void }) {
   return (
-    <div className="flex flex-col gap-1.5 pt-1 border-t border-warn/20 mt-1">
-      <button
-        type="button"
-        onClick={() => {
-          setOpen(prev => !prev)
-          if (!open) setTimeout(() => inputRef.current?.focus(), 0)
-        }}
-        aria-expanded={open}
-        className="self-start text-[12px] leading-4 text-text/70 underline decoration-dotted underline-offset-2 cursor-pointer hover:text-text transition-colors"
-      >
-        {i18nT('pages.chat.mcpOAuthBanner.relay_disclosure')}
-      </button>
-      {open && (
-        <>
-          <p className="text-[12px] leading-4 text-text/70">
-            {i18nT('pages.chat.mcpOAuthBanner.remote_gateway_hint')}
-          </p>
-          <div className="flex items-center gap-2">
-            <input
-              ref={inputRef}
-              type="url"
-              autoComplete="off"
-              spellCheck={false}
-              value={returnAddress}
-              onChange={e => setReturnAddress(e.target.value)}
-              {...ime.bindEnter({ onEnter: () => void runRelay() })}
-              placeholder={i18nT('pages.connectionsPage.return_address_placeholder')}
-              aria-label={i18nT('pages.connectionsPage.return_address')}
-              disabled={busy}
-              className="flex-1 min-w-0 px-2 py-1 rounded-md text-[13px] leading-5 font-mono bg-bg text-text ring-1 ring-inset ring-border focus:outline-none focus:ring-accent"
-            />
-            <button
-              type="button"
-              onClick={() => void runRelay()}
-              disabled={!returnAddress.trim() || busy}
-              className="inline-flex items-center gap-1.5 shrink-0 px-3 py-1 rounded-md text-[13px] leading-5 font-semibold bg-accent text-accent-fg cursor-pointer hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {busy && <Loader2 className="lucide-inline animate-spin motion-reduce:animate-none" size={13} aria-hidden="true" />}
-              {busy
-                ? i18nT('pages.chat.mcpOAuthBanner.relaying')
-                : i18nT('pages.chat.mcpOAuthBanner.complete_connection')}
-            </button>
-          </div>
-          {error && (
-            <p className="text-[12px] leading-4 text-danger" role="alert">
-              {error}
-            </p>
-          )}
-        </>
-      )}
-    </div>
+    <OAuthRelayAffordance
+      serverName={serverName}
+      strings={bannerRelayStrings()}
+      onConfirmedSignedIn={onConfirmedSignedIn}
+    />
   )
 }
+

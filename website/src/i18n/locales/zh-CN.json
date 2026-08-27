@@ -10206,7 +10206,14 @@
         "probe_failing": "持续失败",
         "probe_failing_help": "连续 {{failures}} 次探测失败。服务器仍然挂载，这只是健康状态读数，不是变更。",
         "reset_failures": "重置计数",
-        "reset_failures_help": "清除该服务器的连续失败计数。"
+        "reset_failures_help": "清除该服务器的连续失败计数。",
+        "sign_in": "登录",
+        "sign_in_authorize": "授权 {{name}}",
+        "sign_in_mint_failed": "无法启动登录。请重试。",
+        "sign_in_preparing": "正在准备登录…",
+        "sign_in_retry": "重试",
+        "sign_in_row_updates_after_probe": "使用上方的“Probe MCP servers”刷新此行。",
+        "sign_in_timeout": "登录未能及时生成批准链接。请重试。"
       },
       "memoryGraphTab": {
         "all_count": "全部（{{count}}）",

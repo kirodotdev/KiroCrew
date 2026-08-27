@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, act, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { api, ApiError } from '../api/client'
 import McpOAuthBanner from '../pages/chat/McpOAuthBanner'
@@ -23,6 +23,7 @@ vi.mock('../api/client', () => {
     ApiError,
     api: {
       mcpOAuthRelay: vi.fn(),
+      mcpProbe: vi.fn(),
     },
   }
 })
@@ -175,5 +176,40 @@ describe('McpOAuthBanner remote-gateway relay affordance', () => {
     await waitFor(() =>
       expect(screen.getByRole('alert')).toHaveTextContent(/no longer active/i),
     )
+  })
+
+  /** GPT review finding on this PR: a successful exchange whose `meta.completed`
+   *  update never arrives must not strand the banner on the delivered spinner.
+   *  The bounded-wait probe observes the grant and the banner flips to its own
+   *  authenticated state — the same rendering the meta update would produce. */
+  it('flips to authenticated when the probe confirms the grant but meta.completed never arrives', async () => {
+    vi.useFakeTimers()
+    try {
+      mcpOAuthRelay.mockResolvedValueOnce({ ok: true })
+      vi.mocked(api.mcpProbe).mockResolvedValue([
+        { name: 'my-self-hosted-mcp', authGrantPresent: true },
+      ] as never)
+      renderNeedsAuth('my-self-hosted-mcp')
+      // fireEvent (synchronous) rather than userEvent: under fake timers the
+      // only clock this test advances by hand is the 60s bounded wait.
+      fireEvent.click(
+        screen.getByRole('button', { name: /connection error after authorizing/i }),
+      )
+      fireEvent.change(screen.getByRole('textbox'), {
+        target: { value: 'http://127.0.0.1:53017/?code=abc123&state=xyz' },
+      })
+      fireEvent.click(screen.getByRole('button', { name: /complete connection/i }))
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+      expect(screen.getByRole('status')).toHaveTextContent(/code delivered/i)
+
+      // The bounded wait elapses with no meta.completed; the probe sees the grant.
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000) })
+
+      expect(screen.getByText(/authenticated/i)).toBeInTheDocument()
+      // No false delivery-timeout error — the exchange succeeded.
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

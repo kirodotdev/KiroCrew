@@ -10361,7 +10361,14 @@
         "probe_failing": "বারবার ব্যর্থ",
         "probe_failing_help": "টানা {{failures}} বার প্রোব ব্যর্থ। সার্ভারটি এখনও মাউন্ট করা আছে; এটি কেবল স্বাস্থ্যের পাঠ, কোনও পরিবর্তন নয়।",
         "reset_failures": "গণনা রিসেট করুন",
-        "reset_failures_help": "এই সার্ভারের টানা ব্যর্থতার গণনা মুছে দিন।"
+        "reset_failures_help": "এই সার্ভারের টানা ব্যর্থতার গণনা মুছে দিন।",
+        "sign_in": "সাইন ইন করুন",
+        "sign_in_authorize": "{{name}} অনুমোদন করুন",
+        "sign_in_mint_failed": "সাইন-ইন শুরু করা যায়নি। আবার চেষ্টা করুন।",
+        "sign_in_preparing": "সাইন-ইন প্রস্তুত করা হচ্ছে…",
+        "sign_in_retry": "আবার চেষ্টা করুন",
+        "sign_in_row_updates_after_probe": "এই সারিটি রিফ্রেশ করতে উপরের Probe MCP servers ব্যবহার করুন।",
+        "sign_in_timeout": "সাইন-ইন সময়মতো অনুমোদনের লিঙ্ক তৈরি করতে পারেনি। আবার চেষ্টা করুন।"
       },
       "memoryGraphTab": {
         "all_count": "সব ({{count}})",
