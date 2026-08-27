@@ -17,6 +17,7 @@ pins:
 import unittest
 
 from kiro_crew.dashboard.server import _MIXED_INTERNAL_API_PATHS
+from kiro_crew.dashboard.token_auth import internal_path_matches
 from kiro_crew.validation import (
     OPS_MISSION_CONTROL_ALLOWED_CALLS,
     OPS_MISSION_CONTROL_API_SCHEMA,
@@ -137,8 +138,7 @@ class TestGatewayAdmission(unittest.TestCase):
 
     @staticmethod
     def _admitted(path: str, mixed) -> bool:
-        # Mirrors token_auth.middleware's matcher: exact or prefix.
-        return any(path == p or path.startswith(p + "/") for p in mixed)
+        return internal_path_matches(path, mixed)
 
     def test_every_allowlisted_call_is_admitted(self):
         """A pair the schema allows but the gateway 403s is a broken tool."""
