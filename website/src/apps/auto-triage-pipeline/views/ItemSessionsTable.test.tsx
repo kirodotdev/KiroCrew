@@ -26,70 +26,25 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
 
 // ── the mocked seams ──────────────────────────────────────────────────────────
-// `chatSlots` decides whether a slot is still LIVE, and only a live slot offers a
-// send box -- the send endpoint creates a slot it does not recognise rather than
-// refusing, so a retired one must not be sendable. The default answer is permissive
-// so the send tests exercise the send path; the retired path gets its OWN test that
-// overrides this, rather than depending on a fixture name.
-const {
-  sendChat,
-  liveSlotKeys,
-  chatSlots,
-  switchSlotThunk,
-  setActiveSlotAction,
-  unwrap,
-  dispatch,
-  navigate,
-  activeSlot,
-} =
-  vi.hoisted(() => {
-    const liveSlotKeys: string[] = []
-    // The real `switchSlot.pending` assigns `activeSlot` SYNCHRONOUSLY, so the
-    // fake store follows the dispatched switch. A test that wants the operator to
-    // move away mid-flight overwrites `activeSlot.key` after the click.
-    const activeSlot: { key: string | null } = { key: null }
-    return {
-      sendChat: vi.fn(),
-      liveSlotKeys,
-      activeSlot,
-      chatSlots: vi.fn(async () => liveSlotKeys.map((key) => ({ key }))),
-      // switchSlot(slot) returns a thunk action; dispatch(action) returns a promise
-      // with an .unwrap() the component awaits.
-      switchSlotThunk: vi.fn((slot: string) => ({ type: 'chat/switchSlot', slot })),
-      // The plain action creator the failure path dispatches to RELEASE the key.
-      setActiveSlotAction: vi.fn((slot: string | null) => ({
-        type: 'chat/setActiveSlot',
-        payload: slot,
-      })),
-      unwrap: vi.fn<[], Promise<unknown>>(() => Promise.resolve()),
-      dispatch: vi.fn((action: { type?: string; slot?: string }) => {
-        if (action?.type === 'chat/switchSlot' && action.slot) activeSlot.key = action.slot
-        return { unwrap }
-      }),
-      navigate: vi.fn(),
-    }
-  })
-vi.mock('../../../api/client', () => ({ api: { sendChat, chatSlots } }))
-vi.mock('../../../store/chatSlice', () => ({
-  switchSlot: switchSlotThunk,
-  setActiveSlot: setActiveSlotAction,
-}))
-vi.mock('react-redux', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('react-redux')>()
+// Only ONE seam is left: `chatSlots`, which decides whether a slot is still LIVE
+// and therefore whether its key renders as a link. The default answer is permissive
+// so most tests get links; the retired path gets its OWN test that overrides it,
+// rather than depending on a fixture name.
+//
+// There is deliberately no store or navigate mock any more. The key is a plain
+// `<Link>`, so a router is all it needs -- which is also the point of the change:
+// the component no longer dispatches, so there is no dispatch to fake.
+const { liveSlotKeys, chatSlots } = vi.hoisted(() => {
+  const liveSlotKeys: string[] = []
   return {
-    ...actual,
-    useDispatch: () => dispatch,
-    // The component reads the LIVE `activeSlot` to decide whether a failed switch
-    // still owns the chat surface, so the tests need a store they can move.
-    useStore: () => ({ getState: () => ({ chat: { activeSlot: activeSlot.key } }) }),
+    liveSlotKeys,
+    chatSlots: vi.fn(async () => liveSlotKeys.map((key) => ({ key }))),
   }
 })
-vi.mock('react-router-dom', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('react-router-dom')>()
-  return { ...actual, useNavigate: () => navigate }
-})
+vi.mock('../../../api/client', () => ({ api: { chatSlots } }))
 
 import ItemSessionsTable, { cellText, slotKeysOf } from './ItemSessionsTable'
 import type { ItemSession } from '../api'
@@ -124,22 +79,24 @@ function renderTable(
   sessions: ItemSession[],
   opts: { populatedColumns?: string[]; nowMs?: number; live?: string[] } = {},
 ) {
-  // Every rendered slot counts as live unless a test says otherwise, so the send
-  // tests exercise the send path and the retired path is opted into explicitly.
+  // Every rendered slot counts as live unless a test says otherwise, so most tests
+  // get a linked key and the retired path is opted into explicitly.
   liveSlotKeys.length = 0
   liveSlotKeys.push(...(opts.live ?? sessions.map((s) => s.slot)))
   // The table asks the gateway which slots are still live, so it needs a query
   // client. Retries off and no cache carry-over, so one test's answer cannot leak
-  // into the next.
+  // into the next. The router is needed because a live key renders a real <Link>.
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
   return render(
-    <QueryClientProvider client={qc}>
-      <ItemSessionsTable
-        sessions={sessions}
-        populatedColumns={opts.populatedColumns ?? []}
-        nowMs={opts.nowMs ?? 1_000_000_000}
-      />
-    </QueryClientProvider>,
+    <MemoryRouter>
+      <QueryClientProvider client={qc}>
+        <ItemSessionsTable
+          sessions={sessions}
+          populatedColumns={opts.populatedColumns ?? []}
+          nowMs={opts.nowMs ?? 1_000_000_000}
+        />
+      </QueryClientProvider>
+    </MemoryRouter>,
   )
 }
 
@@ -147,8 +104,6 @@ const rowFor = (slot: string) => screen.getByTestId(`atp-session-${slot}`)
 
 afterEach(() => {
   vi.clearAllMocks()
-  unwrap.mockResolvedValue(undefined)
-  activeSlot.key = null
 })
 
 describe('ItemSessionsTable — empty state', () => {
@@ -269,97 +224,55 @@ describe('cellText — unit rendering', () => {
   })
 })
 
-describe('ItemSessionsTable — open session action', () => {
-  it('dispatches switchSlot for the row slot and navigates to /chat', async () => {
+describe('ItemSessionsTable — the session key is the link', () => {
+  it('renders a live key as a real anchor to the chat page deep link', async () => {
+    // A real <a href> is the point: it can be middle-clicked, copied and opened in
+    // a new tab, none of which a button that dispatches can do.
     renderTable([session({ slot: 'chat:live', current: true })])
-    // The action only exists once the live-slot answer has arrived — a retired slot
-    // never gets it, so waiting is part of the contract rather than test patience.
-    const btn = await waitFor(() => within(rowFor('chat:live')).getByText('Open session'))
-    fireEvent.click(btn)
-    await waitFor(() => expect(navigate).toHaveBeenCalledWith('/chat'))
-    expect(switchSlotThunk).toHaveBeenCalledWith('chat:live')
-    expect(dispatch).toHaveBeenCalled()
+    const link = await waitFor(() =>
+      within(rowFor('chat:live')).getByRole('link', { name: 'chat:live' }),
+    )
+    expect(link.getAttribute('href')).toBe('/chat?sid=chat%3Alive')
   })
 
-  it('offers NO open-session action for a retired slot', async () => {
-    // `switchSlot.pending` assigns `activeSlot` synchronously and
-    // `switchSlot.rejected` leaves it assigned, so opening a dead key strands the
-    // chat surface on it — and the send endpoint CREATES an unrecognised slot
-    // rather than refusing. The operator's next message would resurrect the retired
-    // key and bill fresh usage to this pipeline item. The action must be absent, not
-    // merely fail.
+  it('percent-encodes the slot key so a key with reserved characters survives', async () => {
+    // Slot keys carry ':' and can carry '/', both reserved in a query value. Left
+    // raw they would truncate or re-target the link rather than fail loudly.
+    renderTable([session({ slot: 'chat:a/b', current: true })])
+    const link = await waitFor(() =>
+      within(rowFor('chat:a/b')).getByRole('link', { name: 'chat:a/b' }),
+    )
+    expect(link.getAttribute('href')).toBe('/chat?sid=chat%3Aa%2Fb')
+  })
+
+  it('does NOT link a retired key, and says why', async () => {
+    // The chat page resolves `?sid=` only against slots it currently lists, so a
+    // link to a retired key would dead-end on its not-found notice after a timeout.
+    // Withholding the link and naming the reason is the honest form of that answer.
     renderTable([session({ slot: 'chat:dead', current: false })], { live: [] })
     await waitFor(() => expect(chatSlots).toHaveBeenCalled())
     const row = rowFor('chat:dead')
-    await waitFor(() =>
-      expect(within(row).getByText(/has been retired/i)).toBeTruthy(),
-    )
-    expect(within(row).queryByText('Open session')).toBeNull()
-    expect(switchSlotThunk).not.toHaveBeenCalled()
+    await waitFor(() => expect(within(row).getByText(/has been retired/i)).toBeTruthy())
+    expect(within(row).queryByRole('link')).toBeNull()
+    // The key is still READABLE -- only the affordance is withheld.
+    expect(within(row).getByText('chat:dead')).toBeTruthy()
   })
 
-  it('does NOT navigate when a live slot dies between the poll and the click', async () => {
-    // The irreducible race: the row was offered because the slot was live, and the
-    // switch then failed. Navigating anyway would land the operator on the phantom
-    // key, so the slot state is cleared and navigation is abandoned instead.
-    unwrap.mockRejectedValueOnce(new Error('gone'))
-    renderTable([session({ slot: 'chat:live', current: true })])
-    const btn = await waitFor(() => within(rowFor('chat:live')).getByText('Open session'))
-    fireEvent.click(btn)
-    await waitFor(() =>
-      expect(dispatch).toHaveBeenCalledWith({ type: 'chat/clearSlotState' }),
-    )
-    expect(navigate).not.toHaveBeenCalled()
+  it('says the retired session cannot be OPENED, not that commands cannot be sent', async () => {
+    // The old copy described a send box that no longer exists, so it explained a
+    // restriction the row no longer has while leaving the real one unstated.
+    renderTable([session({ slot: 'chat:dead' })], { live: [] })
+    const row = rowFor('chat:dead')
+    await waitFor(() => expect(within(row).getByText(/no longer be opened/i)).toBeTruthy())
+    expect(within(row).queryByText(/commands can be sent/i)).toBeNull()
   })
 
-  it('CLEARS then releases, in that order, when the switch fails', async () => {
-    // Both dispatches are load-bearing and the order is the opposite of the natural
-    // reading. `clearSlotState` does not clear `activeSlot`; it READS it to delete
-    // that slot's pending question:
-    //
-    //     if (state.activeSlot) delete state.pendingQuestions?.[state.activeSlot]
-    //
-    // so it must run while the key still names the dead slot. Releasing first makes
-    // that guard false and orphans the retired slot's pending question forever.
-    //
-    // This test previously asserted the REVERSE order and so pinned the bug in
-    // place. Asserting the order is only useful if the asserted order is the
-    // correct one -- a test can enforce a mistake just as firmly as a rule.
-    unwrap.mockRejectedValueOnce(new Error('gone'))
-    renderTable([session({ slot: 'chat:live', current: true })])
-    const btn = await waitFor(() => within(rowFor('chat:live')).getByText('Open session'))
-    fireEvent.click(btn)
-    await waitFor(() => expect(setActiveSlotAction).toHaveBeenCalledWith(null))
-
-    const calls = dispatch.mock.calls.map(([a]) => a)
-    const iClear = calls.findIndex((a) => a && a.type === 'chat/clearSlotState')
-    const iRelease = calls.findIndex((a) => a && a.type === 'chat/setActiveSlot')
-    expect(iClear).toBeGreaterThanOrEqual(0)
-    expect(iRelease).toBeGreaterThanOrEqual(0)
-    expect(iClear).toBeLessThan(iRelease)
-  })
-
-  it('does NOT clear or release when the operator switched chats before the failure landed', async () => {
-    // Neither dispatch is slot-scoped: `clearSlotState` drops the messages, tool log
-    // and subagents wholesale and deletes whichever slot `activeSlot` names at that
-    // moment. The await is a real round trip, so the operator can open a different
-    // chat before it rejects -- and cleaning up then would wipe the conversation
-    // they just opened, on behalf of a slot this handler no longer owns.
-    let fail: () => void = () => {}
-    unwrap.mockImplementationOnce(
-      () => new Promise((_resolve, reject) => { fail = () => reject(new Error('gone')) }),
-    )
-    renderTable([session({ slot: 'chat:live', current: true })])
-    const btn = await waitFor(() => within(rowFor('chat:live')).getByText('Open session'))
-    fireEvent.click(btn)
-    // The switch is in flight and owns the surface; now the operator moves.
-    await waitFor(() => expect(activeSlot.key).toBe('chat:live'))
-    activeSlot.key = 'chat:elsewhere'
-    fail()
-
-    await waitFor(() => expect(navigate).not.toHaveBeenCalled())
-    expect(dispatch).not.toHaveBeenCalledWith({ type: 'chat/clearSlotState' })
-    expect(setActiveSlotAction).not.toHaveBeenCalled()
+  it('offers NO link while the liveness answer is still unknown', async () => {
+    // Loading and failure are not retirement. Linking optimistically would produce
+    // a dead link; calling it retired would assert something not established.
+    renderTable([session({ slot: 'chat:pending', current: true })], { live: [] })
+    const row = rowFor('chat:pending')
+    expect(within(row).queryByRole('link')).toBeNull()
   })
 })
 
@@ -375,7 +288,9 @@ describe('ItemSessionsTable — liveness is three-state, not two', () => {
     expect(within(row).queryByText(/has been retired/i)).toBeNull()
     expect(within(row).getByText(/checking session/i)).toBeTruthy()
     release([{ key: 'chat:live' }])
-    await waitFor(() => expect(within(rowFor('chat:live')).getByText('Open session')).toBeTruthy())
+    await waitFor(() =>
+      expect(within(rowFor('chat:live')).getByRole('link', { name: 'chat:live' })).toBeTruthy(),
+    )
   })
 
   it('reports liveness as UNAVAILABLE, not as retired, when the probe fails', async () => {
@@ -390,9 +305,8 @@ describe('ItemSessionsTable — liveness is three-state, not two', () => {
       return r
     })
     expect(within(row).queryByText(/has been retired/i)).toBeNull()
-    // Unknown still withholds the write -- it never ENABLES sending.
-    expect(within(row).queryByLabelText('Send an instruction')).toBeNull()
-    expect(within(row).queryByText('Open session')).toBeNull()
+    // Unknown withholds the LINK too -- it never renders one optimistically.
+    expect(within(row).queryByRole('link')).toBeNull()
   })
 })
 

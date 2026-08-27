@@ -31,16 +31,13 @@
 // itself the source of a false claim on every row. Closing the race needs the
 // endpoint to refuse an unknown slot, which is not this app's to change.
 import { useMemo } from 'react'
-import { useDispatch, useStore } from 'react-redux'
-import { useNavigate } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { MessageSquare, Radio } from 'lucide-react'
-import { Btn, Card, EmptyState } from '../../../components/ui'
+import { Card, EmptyState } from '../../../components/ui'
 import { i18nT } from '../../../i18n/t'
 import { fmtPercent } from '../../../i18n/format'
 import { api } from '../../../api/client'
-import { setActiveSlot, switchSlot } from '../../../store/chatSlice'
-import type { AppDispatch, RootState } from '../../../store'
 import type { ItemSession } from '../api'
 import { EMPTY_PLACEHOLDER, formatCredits, formatDuration, formatRelativeTime } from '../lib/format'
 
@@ -139,13 +136,11 @@ function SessionRow({
   session,
   columns,
   nowMs,
-  onOpen,
   liveness,
 }: {
   session: ItemSession
   columns: string[]
   nowMs: number
-  onOpen: (slot: string) => void
   liveness: { state: 'loading' | 'ready' | 'error'; slots: Set<string> }
 }) {
   // Three states, not two. Treating "we do not know yet" as "retired" made every
@@ -173,12 +168,32 @@ function SessionRow({
           <span className="w-3 shrink-0" aria-hidden="true" />
         )}
 
-        <span
-          className="shrink-0 font-mono text-[12px]"
-          style={{ color: C.text, minWidth: '10rem' }}
-        >
-          {session.slot}
-        </span>
+        {/* The KEY is the link -- an operator reading a row is already looking at
+            the session's name, so that is where the affordance belongs, and a real
+            anchor can be middle-clicked, copied and opened in a new tab.
+
+            `?sid=` is the chat page's own deep-link parameter. It resolves ONLY
+            against the slots the gateway currently lists, so this cannot conjure a
+            phantom slot: an unknown key lands on the page's "session not found"
+            notice rather than creating an empty conversation under a retired
+            identity. That guard is what lets the key be a plain link with no
+            dispatch of our own. */}
+        {live ? (
+          <Link
+            to={`/chat?sid=${encodeURIComponent(session.slot)}`}
+            className="shrink-0 font-mono text-[12px] hover:underline"
+            style={{ color: C.accent, minWidth: '10rem' }}
+          >
+            {session.slot}
+          </Link>
+        ) : (
+          <span
+            className="shrink-0 font-mono text-[12px]"
+            style={{ color: C.text, minWidth: '10rem' }}
+          >
+            {session.slot}
+          </span>
+        )}
 
         <span className="shrink-0 text-[12px]" style={{ color: C.dim, minWidth: '7rem' }}>
           {session.model || EMPTY_PLACEHOLDER}
@@ -216,21 +231,15 @@ function SessionRow({
         </span>
 
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
-          {/* A retired slot gets NEITHER action, and the row says why.
-              `Open session` was the more dangerous of the two: `switchSlot.pending`
-              assigns `activeSlot` synchronously and `switchSlot.rejected` does NOT
-              clear it, so navigating on a failed switch left the chat surface
-              pointed at a dead key -- and the send endpoint creates a slot it does
-              not recognise rather than refusing. The operator's next message would
-              recreate the retired key and attribute fresh usage to this pipeline
-              item. Gating on `live` is exactly the condition under which the switch
-              can succeed, so nothing readable is withheld: a slot the gateway does
-              not list has no transcript to open. */}
-          {live ? (
-            <Btn onClick={() => onOpen(session.slot)} className="h-7 px-2 text-[11px]">
-              {i18nT('apps.autoTriagePipeline.global.open_session')}
-            </Btn>
-          ) : retired ? (
+          {/* No action button: the key above IS the link. What remains here is the
+              REASON a row has no link, which only the non-live states need.
+
+              A live row says nothing -- its link is self-evident. A retired one has
+              no transcript the chat page can resolve, and the two unresolved states
+              (probe loading, probe failed) must not borrow the retired wording:
+              saying "retired" while the answer is merely unknown asserts something
+              we have not established. */}
+          {live ? null : retired ? (
             <span className="text-[11px]" style={{ color: C.dim }}>
               {i18nT('apps.autoTriagePipeline.global.session_retired')}
             </span>
@@ -272,19 +281,16 @@ export default function ItemSessionsTable({
   populatedColumns: string[]
   nowMs: number
 }) {
-  const dispatch = useDispatch<AppDispatch>()
-  const store = useStore<RootState>()
-  const navigate = useNavigate()
-
-  // Which of these slots the gateway still knows. The send endpoint CREATES a slot
-  // it does not recognise rather than refusing, so without this an instruction
-  // aimed at a retired session would open a new empty one instead.
+  // Which of these slots the gateway still knows. A retired slot is not offered as
+  // a link: the chat page resolves `?sid=` only against slots it currently lists, so
+  // a link to one would dead-end on "Session not found" after its resolve timeout.
+  // Withholding the link and saying why is the honest form of the same answer.
   //
   // The result is carried as a THREE-state value. An empty set is not "everything
   // is retired": it is also what loading and failure look like, and collapsing
-  // those together made the table state a falsehood about live sessions. Sending
-  // is still withheld unless the answer resolved and named the slot -- unknown
-  // never enables the write -- but it is no longer reported as a retirement.
+  // those together made the table state a falsehood about live sessions. The link
+  // appears only once the answer resolved AND named the slot -- unknown never
+  // renders a link, but it is no longer reported as a retirement either.
   const liveQuery = useQuery({
     queryKey: ['atp', 'live-slots'],
     queryFn: () => api.chatSlots(),
@@ -301,48 +307,6 @@ export default function ItemSessionsTable({
     }),
     [liveQuery.isError, liveQuery.isSuccess, liveQuery.data],
   )
-
-  const open = async (slot: string) => {
-    try {
-      await dispatch(switchSlot(slot)).unwrap()
-    } catch {
-      // `switchSlot.pending` assigns `activeSlot` synchronously and
-      // `switchSlot.rejected` deliberately leaves it assigned, so a failed switch
-      // would strand the chat surface on a key the gateway does not have -- and the
-      // next message sent there would recreate it under the retired identity.
-      //
-      // BOTH dispatches are required and the ORDER is the opposite of what looks
-      // natural. `clearSlotState` does NOT clear `activeSlot`; it clears messages,
-      // the run flags and the paging cursor, and it READS `activeSlot` to delete
-      // that slot's pending question:
-      //
-      //     if (state.activeSlot) delete state.pendingQuestions?.[state.activeSlot]
-      //
-      // So it has to run while the key STILL names the dead slot. Releasing first
-      // makes that guard false and orphans the retired slot's pending question in
-      // the store forever -- which is what an earlier revision of this handler did,
-      // because its comment said "must run while the key is still set" and its code
-      // then dispatched the release first anyway.
-      //
-      // Clear, then release. Reachable only for a slot that died between the
-      // liveness poll and this click; a slot already known to be retired is not
-      // offered the control.
-      //
-      // But clean up ONLY while this click still owns the chat surface. Neither
-      // dispatch is slot-scoped: `clearSlotState` drops the messages, tool log and
-      // subagents wholesale and deletes whichever slot `activeSlot` names NOW, and
-      // the release nulls that key. The await above is a real round trip, so the
-      // operator can switch chats before it rejects -- and then this handler would
-      // wipe the conversation they just opened and drop its pending question, on
-      // behalf of a slot it no longer owns. Read the live key from the store rather
-      // than a render-time copy, which would still name the dead slot.
-      if (store.getState().chat.activeSlot !== slot) return
-      dispatch({ type: 'chat/clearSlotState' })
-      dispatch(setActiveSlot(null))
-      return
-    }
-    navigate('/chat')
-  }
 
   if (sessions.length === 0) {
     return (
@@ -431,7 +395,6 @@ export default function ItemSessionsTable({
           session={session}
           columns={populatedColumns}
           nowMs={nowMs}
-          onOpen={open}
           liveness={liveness}
         />
       ))}
