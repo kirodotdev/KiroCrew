@@ -74,6 +74,7 @@ const { createLivenessMonitor } = require("./gateway-liveness");
 const {
   chooseRecoveryStrategy,
   classifyAdoptedGateway,
+  revealWindowForConnect,
   waitForServiceRebind,
   waitForProcessExit,
   snapshotPortPids,
@@ -2774,11 +2775,11 @@ function startLivenessMonitor(win) {
  * Recover a gateway that is alive-but-unresponsive (wedged event loop). A
  * graceful /api/shutdown can't help — that endpoint runs on the very loop that
  * is frozen — so SIGKILL the child, clear the port, respawn, and re-run the
- * boot flow. showLoadingThenConnect shows the loading screen + status (a visible
- * "restarting" state instead of an eternal spinner) and starts a fresh monitor
- * on success; its own catch handles a restart that fails.
+ * boot flow. showLoadingThenConnect loads the loading screen + status into the
+ * window (without raising it — this is a liveness reconnect, see #6373) and
+ * starts a fresh monitor on success; its own catch handles a restart that fails.
  */
-async function recoverWedgedGateway(win) {
+async function recoverWedgedGateway(win, { userInitiated = false } = {}) {
   // We only OWN (and may kill/respawn) a gateway we spawned. On the reuse path
   // the port-holder is someone else's process — in the remote-tunnel setup it is
   // our own SSH forward, whose backend lives on a remote host. An unresponsive
@@ -2847,7 +2848,12 @@ async function recoverWedgedGateway(win) {
   gatewayStartFailure = null; // re-arm so waitForGateway doesn't fail-fast on the kill we just did
   await startGateway(); // spawn a fresh child before re-waiting
   if (win.isDestroyed() || isQuitting) return;
-  return showLoadingThenConnect(win, BACKEND_URL);
+  // A user-initiated recovery (failed update install — the user clicked
+  // Install and is watching) keeps the raise; a liveness-triggered one stays
+  // silent (#6373). The reconnect fork branches above are liveness-only in
+  // practice (an install only ever stops a gateway we spawned) and stay
+  // silent either way — their needs-user states escalate on their own.
+  return showLoadingThenConnect(win, BACKEND_URL, { reconnect: !userInitiated });
 }
 
 /**
@@ -2863,8 +2869,11 @@ async function recoverWedgedGateway(win) {
 async function reconnectExternalGateway(win) {
   const wc = win.webContents;
   try { wc.loadFile(path.join(__dirname, "loading.html")); } catch { /* window may be mid-teardown */ }
-  if (!win || win.isDestroyed() || isQuitting) return; // loadFile may have thrown on a torn-down window; show() would too
-  win.show();
+  if (!win || win.isDestroyed() || isQuitting) return; // loadFile may have thrown on a torn-down window
+  // Deliberately NO reveal here: this is liveness-triggered, not user-initiated,
+  // so the window must not be raised, focused, or re-surfaced (#6373 — every
+  // tunnel drop stole focus on reconnect). The splash above loads fine into a
+  // background or hidden window.
   sendStatus("Connection lost — waiting for the gateway to come back…");
   for (;;) {
     if (!win || win.isDestroyed() || isQuitting) return;
@@ -2876,7 +2885,7 @@ async function reconnectExternalGateway(win) {
   if (!win || win.isDestroyed() || isQuitting) return;
   glog("liveness: external gateway reachable again — refetching token and reconnecting");
   gatewayStartFailure = null;
-  return showLoadingThenConnect(win, BACKEND_URL);
+  return showLoadingThenConnect(win, BACKEND_URL, { reconnect: true });
 }
 
 // How long recovery waits for an ADOPTED local gateway to answer again before
@@ -2903,7 +2912,7 @@ async function reconnectOrRespawnAdoptedGateway(win) {
   const wc = win.webContents;
   try { wc.loadFile(path.join(__dirname, "loading.html")); } catch { /* window may be mid-teardown */ }
   if (!win || win.isDestroyed() || isQuitting) return;
-  win.show();
+  // Deliberately NO reveal: liveness-triggered, not user-initiated (#6373).
   sendStatus("Gateway stopped responding — waiting for it to recover…");
   const deadline = Date.now() + ADOPTED_RECOVERY_WAIT_MS;
   while (Date.now() < deadline) {
@@ -2911,9 +2920,12 @@ async function reconnectOrRespawnAdoptedGateway(win) {
     let healthy = false;
     try { await checkBackend(HEALTH_URL); healthy = true; } catch { /* still down */ }
     if (healthy) {
+      // The probe just awaited — the window may have been torn down meanwhile,
+      // and showLoadingThenConnect would loadFile against a destroyed window.
+      if (!win || win.isDestroyed() || isQuitting) return;
       glog("liveness: adopted local gateway answering again — reconnecting");
       gatewayStartFailure = null;
-      return showLoadingThenConnect(win, BACKEND_URL);
+      return showLoadingThenConnect(win, BACKEND_URL, { reconnect: true });
     }
     await new Promise((r) => setTimeout(r, 2500));
   }
@@ -2956,11 +2968,13 @@ async function reconnectOrRespawnAdoptedGateway(win) {
       const health = await fetchHealthInfo();
       const decision = decideGatewayAction(app.getVersion(), health, { localOwner: owner });
       const readiness = await fetchGatewayReadiness();
+      // Three awaits since the last check — re-verify before touching the window.
+      if (win.isDestroyed() || isQuitting) return;
       if (decision.action === "reuse" && readiness !== "shutting-down") {
         glog(`liveness: service manager re-bound :${PORT} (owner=${owner}, reason=${decision.reason}, readiness=${readiness}) — reconnecting to the restarted gateway`);
         gatewayOwnership = classifyAdoptedGateway({ reason: decision.reason, localOwner: owner });
         gatewayStartFailure = null;
-        return showLoadingThenConnect(win, BACKEND_URL);
+        return showLoadingThenConnect(win, BACKEND_URL, { reconnect: true });
       }
       glog(`liveness: :${PORT} was re-bound by an unusable holder (owner=${owner}, action=${decision.action}, readiness=${readiness}) — cannot reconnect or spawn over it`);
       return showUnrecoverableGatewayError(win, PORT, "held");
@@ -2974,7 +2988,28 @@ async function reconnectOrRespawnAdoptedGateway(win) {
   gatewayStartFailure = null;
   await startGateway(); // spawn a fresh child (port is confirmed free)
   if (win.isDestroyed() || isQuitting) return;
-  return showLoadingThenConnect(win, BACKEND_URL);
+  return showLoadingThenConnect(win, BACKEND_URL, { reconnect: true });
+}
+
+/**
+ * Reveal a window because recovery reached a state that NEEDS the user (token
+ * prompt, terminal failure dialog). Silent reconnects (#6373) deliberately
+ * leave the window hidden/minimized while self-healing, so an escalation must
+ * do the full reveal the repo's other show paths do: cancel a deferred
+ * tray-hide first (hide-to-tray.js: every show expressing intent to see the
+ * window must, or the pending hide re-hides it — exitImmersiveModes can fire
+ * that very listener), un-minimize, show + focus, and on macOS steal app
+ * activation — the app is in the background by definition here, and without
+ * activation the window rises behind the frontmost app without keyboard
+ * focus (see the global-hotkey summon path). Idempotent on a visible window.
+ */
+function revealForUserDecision(win) {
+  if (!win || win.isDestroyed() || isQuitting) return;
+  cancelPendingTrayHide(win);
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+  if (IS_MAC) app.focus({ steal: true });
 }
 
 /**
@@ -2995,6 +3030,12 @@ async function showUnrecoverableGatewayError(win, port, options = {}) {
     ? { variant: options }
     : options;
   if (!win || win.isDestroyed()) return;
+  // Terminal needs-the-user state: the dialog below is a modal child of `win`,
+  // and a modal child of a hidden parent is ordered out with it. Liveness
+  // paths reach here with the window deliberately un-revealed (#6373's silent
+  // reconnect), so reveal it now — every branch of this dialog requires a
+  // human decision and quits afterwards, so raising is always right here.
+  revealForUserDecision(win);
   let logTail = "";
   try { logTail = tailLines(fs.readFileSync(gatewayLogPath(), "utf8"), 60); } catch { /* no log yet */ }
   const action = await showGatewayErrorDialog(win, {
@@ -3017,7 +3058,7 @@ async function showUnrecoverableGatewayError(win, port, options = {}) {
   if (win === mainWindow) { isQuitting = true; app.quit(); } else { win.destroy(); }
 }
 
-async function showLoadingThenConnect(win, backendUrl = BACKEND_URL) {
+async function showLoadingThenConnect(win, backendUrl = BACKEND_URL, { reconnect = false } = {}) {
   const healthUrl = `${backendUrl}/api/status`;
   const wc = win.webContents;
   // Paint the splash in the user's chosen accent (persisted from a prior session
@@ -3025,7 +3066,9 @@ async function showLoadingThenConnect(win, backendUrl = BACKEND_URL) {
   wc.loadFile(path.join(__dirname, "loading.html"), {
     query: { accent: currentThemeAccent() },
   });
-  win.show();
+  // Cold launch and user-initiated connects raise as before; liveness-recovery
+  // reconnects (reconnect: true) stay silent — no raise, no focus steal (#6373).
+  revealWindowForConnect(win, { reconnect });
 
   try {
     await waitForBackend(win, healthUrl, { watchSpawn: backendUrl === BACKEND_URL });
@@ -3106,6 +3149,14 @@ async function showLoadingThenConnect(win, backendUrl = BACKEND_URL) {
       // `window.close()` in the page would destroy the VIEW and leave a blank
       // shell behind. A keyboard exit has to go through the main process
       // (windowForWebContents) to close the host window.
+      // A prompt is a state that genuinely NEEDS the user, whatever path led
+      // here: a silent reconnect leaves the window hidden (#6373), and even a
+      // cold boot's window can be hidden/minimized by the time a slow install
+      // reaches this point. Reveal unconditionally — idempotent when already
+      // visible. BEFORE exitImmersiveModes: leaving fullscreen fires a
+      // deferred tray-hide's listener, so the cancel inside the reveal must
+      // come first.
+      revealForUserDecision(win);
       exitImmersiveModes(win);
       wc.loadFile(path.join(__dirname, "token-prompt.html"), {
         query: { port: promptPort, kind, host: remoteHost },
@@ -3196,6 +3247,11 @@ async function showLoadingThenConnect(win, backendUrl = BACKEND_URL) {
     }
 
     // Loop so "Reveal Log" can re-show the dialog after opening Finder.
+    // The dialog is a modal child of `win` and needs the user: a hidden parent
+    // orders the modal out with it. Reveal unconditionally, whatever path led
+    // here — a silent reconnect leaves the window hidden (#6373), and even a
+    // cold boot's window can be hidden by now. Idempotent when visible.
+    revealForUserDecision(win);
     for (;;) {
       const action = await showGatewayErrorDialog(win, {
         title, message, logTail, logPath, portConflict, port: PORT, localGatewayOff,
@@ -3236,7 +3292,9 @@ async function showLoadingThenConnect(win, backendUrl = BACKEND_URL) {
         }
         // The dialog, force-stop, and respawn above are all async — the user may
         // have closed the window meanwhile. Re-check before showLoadingThenConnect,
-        // which calls win.show()/loadFile and would throw on a destroyed window.
+        // which reveals the window / calls loadFile and would throw on a destroyed one.
+        // Deliberately NOT flagged as a reconnect: every path here goes through a
+        // dialog button the user just clicked, so the re-entry may raise (#6373).
         if (win.isDestroyed()) return;
         return showLoadingThenConnect(win, backendUrl);
       }
@@ -4115,7 +4173,7 @@ app.whenReady().then(async () => {
       if (!installingUpdate) return; // deferred-quit path: app is quitting anyway
       installingUpdate = false;
       glog("update install failed — restoring gateway and liveness recovery");
-      recoverWedgedGateway(mainWindow).catch((e) => glog(`post-install-failure recovery failed: ${e && e.message}`));
+      recoverWedgedGateway(mainWindow, { userInitiated: true }).catch((e) => glog(`post-install-failure recovery failed: ${e && e.message}`));
     },
     onUpdateState: broadcastUpdateState,
     log: makeUpdaterLogger(glog),

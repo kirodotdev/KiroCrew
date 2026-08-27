@@ -1,8 +1,9 @@
 "use strict";
 //
-// Pure, injectable recovery-strategy decision, extracted from main.js so it can
+// Injectable recovery-strategy decisions, extracted from main.js so they can
 // be unit-tested without Electron (mirrors gateway-liveness.js / gateway-wait.js
-// / gateway-stop.js).
+// / gateway-stop.js). Most exports are pure; revealWindowForConnect drives an
+// injected window and is testable with a fake.
 //
 // PROBLEM: the post-handoff liveness monitor fires onUnresponsive whenever
 // /api/status stops answering. main.js used to react ONE way — assume a wedged
@@ -227,9 +228,37 @@ function unrecoverableGatewayDialog({
   };
 }
 
+/**
+ * Reveal a window for a connect/loading flow, raising ONLY when the user asked
+ * for it. Effectful (it drives the injected window) but injectable, so the
+ * raise-vs-silent rule is unit-testable without Electron.
+ *
+ * Cold launch and user-initiated connects (app start, dialog Retry, a new
+ * connection window) keep the historical raise-and-focus `show()`.
+ *
+ * Liveness-recovery reconnects touch NOTHING: the user did nothing, so the
+ * app must not raise, focus, un-minimize, or re-surface itself (the
+ * remote-tunnel setup reconnects on every screen lock/unlock — see #6373).
+ * The splash and dashboard load fine into a background, minimized, or hidden
+ * window; a window the user hid to tray stays hidden until THEY reopen it.
+ * The escalation rule lives in main.js: silent while self-healing, but any
+ * state that needs input (token prompt, failure dialog, the terminal
+ * unrecoverable-gateway dialog) does a full reveal via revealForUserDecision
+ * at the point it is reached.
+ *
+ * @param {object} win  BrowserWindow-like: show().
+ * @param {object} [o]
+ * @param {boolean} [o.reconnect=false]  true on liveness-recovery paths.
+ */
+function revealWindowForConnect(win, { reconnect = false } = {}) {
+  if (reconnect) return;
+  win.show();
+}
+
 module.exports = {
   chooseRecoveryStrategy,
   classifyAdoptedGateway,
+  revealWindowForConnect,
   GATEWAY_OWNERSHIP_STATES,
   waitForServiceRebind,
   waitForProcessExit,
