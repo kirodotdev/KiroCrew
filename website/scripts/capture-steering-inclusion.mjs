@@ -1,6 +1,6 @@
 /**
- * Capture the Steering tab's inclusion surfaces: the mode chips, the `auto`
- * warning, and the editor's mode control.
+ * Capture the Steering tab's inclusion surfaces: the mode chips and the
+ * editor's mode control.
  *
  * Gateway-free, like every other harness in this folder — it serves the real
  * built SPA and answers `/api/**` from `stub-dashboard-api.mjs`, plus the two
@@ -75,10 +75,6 @@ try {
     await list.waitFor({ timeout: 20000 })
     await page.waitForTimeout(500)
     await list.screenshot({ path: `${OUT}/inclusion-chips-${scheme}.png` })
-
-    await page.getByRole('button', { name: 'Select api-design.md' }).click()
-    await page.waitForTimeout(600)
-    await page.screenshot({ path: `${OUT}/auto-warning-${scheme}.png` })
 
     await page.getByRole('button', { name: 'Select typescript-style.md' }).click()
     await page.waitForTimeout(600)
