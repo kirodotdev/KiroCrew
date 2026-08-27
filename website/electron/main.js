@@ -83,6 +83,7 @@ const {
 const { capturePySpyDump } = require("./pyspy-dump");
 const { createMetricsRecorder, profilingEnabled } = require("./perf-metrics");
 const { createPierrePerfLog } = require("./pierre-perf-log");
+const { createBigAllocLog } = require("./big-alloc-log");
 const { identityFamily, decideGatewayAction, classifyGatewayReadiness, FAMILY_META, HEALTH_IDENTITY_PATH, READY_PATH } = require("./instance-guard");
 const { initMochi, shutdownMochi } = require("./mochi/index");
 const { borrowSessionToken } = require("./mochi-session-token");
@@ -419,6 +420,14 @@ function glog(line) {
 // the window's render-process-gone handler. Holds only plain numbers, bounded to
 // its capacity, and writes nothing until a crash.
 const pierrePerfLog = createPierrePerfLog();
+
+// Sibling of pierrePerfLog for large binary allocations (src/lib/allocWatch.ts):
+// the native log shows the renderer OOMs on the V8 cage with a near-empty JS
+// heap, i.e. on a big ArrayBuffer/TypedArray backing store whose stack V8 could
+// not capture. This buffers the allocation sites reported before each large
+// allocation and flushes them on render-process-gone. Bounded, writes nothing
+// until a crash.
+const bigAllocLog = createBigAllocLog();
 
 // ── Cross-app gateway ownership (shared ~/.kiro/crew, shared port) ─────────
 // The nightly app and the production app are different bundles sharing one
@@ -2356,6 +2365,11 @@ function createWindow() {
     // informative: no highlighting in the last two minutes points away from the
     // Pierre worker pool as the cause.
     for (const line of pierrePerfLog.flush()) glog(line);
+    // Then the large-allocation history: on a cage OOM the last entries name the
+    // binary buffer that pierre-perf's near-empty heap numbers cannot. Also
+    // unconditional, also empty-is-informative (no large allocation in the
+    // lead-up points away from a binary-buffer OOM).
+    for (const line of bigAllocLog.flush()) glog(line);
     rendererRecovery.handleGone(details || {});
   });
 
@@ -4007,6 +4021,23 @@ app.whenReady().then(async () => {
     if (!pierrePerfLog.record(w)) return;
     if (!profilingEnabled(process.env)) return;
     const line = pierrePerfLog.lastLine();
+    if (line) glog(line);
+  });
+
+  // Large binary-allocation reports (src/lib/allocWatch.ts). Buffered in memory
+  // and flushed on render-process-gone next to the crash line — the last entries
+  // name the ArrayBuffer/TypedArray behind a V8 cage OOM, which pierre-perf's
+  // heap numbers show but cannot attribute. Steady state writes nothing (glog has
+  // no rotation); KIROCREW_DEBUG logs each event as it arrives for a live repro.
+  ipcMain.on("big-alloc", (_event, ev) => {
+    // Same primary-renderer discipline as pierre-perf: the flush is triggered by
+    // THIS window's death, so a sibling window's report would be filed under the
+    // wrong process's crash history. Mis-attributed evidence is worse than none.
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (_event.sender !== mainWindow.webContents) return;
+    if (!bigAllocLog.record(ev)) return;
+    if (!profilingEnabled(process.env)) return;
+    const line = bigAllocLog.lastLine();
     if (line) glog(line);
   });
 

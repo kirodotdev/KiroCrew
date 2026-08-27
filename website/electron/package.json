@@ -168,6 +168,7 @@
       "renderer-recovery.js",
       "native-logging.js",
     "pierre-perf-log.js",
+      "big-alloc-log.js",
       "pyspy-dump.js",
       "perf-metrics.js",
       "host-config.js",
