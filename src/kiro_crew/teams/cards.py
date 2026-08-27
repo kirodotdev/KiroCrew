@@ -174,8 +174,28 @@ def resolved_card(*, title: str, outcome: str) -> dict[str, Any]:
     return _card([_text_block(f"`{title}` — {outcome}")], [])
 
 
-#: Digits allowed in a submit's ``index``. See ``parse_submit``.
+#: Digits allowed in a submit's ``index``. See ``_submit_index``.
 _MAX_INDEX_DIGITS = 3
+
+
+def _submit_index(value: Any) -> str | None:
+    """A submit's ``index`` as a bounded digit string, or None when it is not one.
+
+    Teams may return a number as a string depending on the client, so both shapes
+    are accepted and normalized to a digit string.
+
+    Bounded, not just numeric: a caller does a bare ``int()`` on this, and Python
+    raises past ``sys.get_int_max_str_digits()`` (4300) -- which would escape as a
+    traceback and leave a dead button, the exact outcome this module's strictness
+    exists to avoid. No legitimate index can exceed the number of buttons or
+    sessions actually offered, so three digits is generous.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        return None
+    text = str(value)
+    if not text.isdigit() or len(text) > _MAX_INDEX_DIGITS:
+        return None
+    return text
 
 
 def parse_submit(value: Any) -> dict[str, str] | None:
@@ -201,29 +221,16 @@ def parse_submit(value: Any) -> dict[str, str] | None:
             return None
         return {"kc": KIND_APPROVAL, "rid": rid, "nonce": nonce, "decision": decision}
     if kind == KIND_SESSION:
-        index = value.get("index")
-        if isinstance(index, bool) or not isinstance(index, (int, str)):
+        index = _submit_index(value.get("index"))
+        if index is None:
             return None
-        text = str(index)
-        if not text.isdigit() or len(text) > _MAX_INDEX_DIGITS:
-            return None
-        return {"kc": KIND_SESSION, "nonce": nonce, "index": text}
+        return {"kc": KIND_SESSION, "nonce": nonce, "index": index}
     if kind == KIND_OPTION:
         label = value.get("label")
         if not isinstance(label, str) or not label:
             return None
-        index = value.get("index")
-        # Teams may return a number as a string depending on the client, so accept
-        # either shape but normalize to a digit string.
-        if isinstance(index, bool) or not isinstance(index, (int, str)):
+        index = _submit_index(value.get("index"))
+        if index is None:
             return None
-        text = str(index)
-        # Bounded, not just numeric: a caller does a bare ``int()`` on this, and
-        # Python raises past ``sys.get_int_max_str_digits()`` (4300) -- which would
-        # escape as a traceback and leave a dead button, the exact outcome this
-        # module's strictness exists to avoid. No legitimate index can exceed
-        # ``max_buttons``, so three digits is generous.
-        if not text.isdigit() or len(text) > _MAX_INDEX_DIGITS:
-            return None
-        return {"kc": KIND_OPTION, "nonce": nonce, "index": text, "label": label}
+        return {"kc": KIND_OPTION, "nonce": nonce, "index": index, "label": label}
     return None

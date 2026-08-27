@@ -281,7 +281,9 @@ class ServiceUrlStore:
         conversations = data.get("conversations") if isinstance(data, dict) else None
         if not isinstance(conversations, dict):
             return empty
-        identities = data.get("identities") if isinstance(data, dict) else None
+        # ``data`` is a dict by here: any other payload leaves ``conversations``
+        # None and returns above.
+        identities = data.get("identities")
         by_identity = {
             key.lower(): value
             for key, value in (identities or {}).items()

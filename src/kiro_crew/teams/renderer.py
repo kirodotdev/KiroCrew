@@ -253,19 +253,20 @@ class TeamsRenderer(Renderer):
         self._typing_task = asyncio.create_task(self._keep_typing())
 
     async def _keep_typing(self) -> None:
-        """Re-post the typing indicator until the turn ends. Never raises."""
-        try:
-            while not self._finalized:
-                await asyncio.sleep(_TYPING_REFRESH_S)
-                if self._finalized:
-                    return
-                try:
-                    await self._client.send_typing(self._conversation_id, self._service_url)
-                except TeamsSendError:
-                    # A transient failure costs one missed refresh, not the turn.
-                    logger.debug("Teams: typing refresh failed", exc_info=True)
-        except asyncio.CancelledError:
-            raise
+        """Re-post the typing indicator until the turn ends.
+
+        Raises only cancellation, which is how :meth:`_stop_typing` ends the loop.
+        Nothing awaits this task, so a send failure must not escape it.
+        """
+        while not self._finalized:
+            await asyncio.sleep(_TYPING_REFRESH_S)
+            if self._finalized:
+                return
+            try:
+                await self._client.send_typing(self._conversation_id, self._service_url)
+            except TeamsSendError:
+                # A transient failure costs one missed refresh, not the turn.
+                logger.debug("Teams: typing refresh failed", exc_info=True)
 
     async def on_text_chunk(self, text: str) -> None:
         # Buffered: Teams' native streaming is throttled to 1 request/second and

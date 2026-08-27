@@ -24,6 +24,7 @@ from kiro_crew.teams.cards import (
     DECISION_TRUST,
     KIND_APPROVAL,
     KIND_OPTION,
+    KIND_SESSION,
     approval_card,
     options_card,
     parse_submit,
@@ -126,6 +127,25 @@ class TestParseSubmitRefusals:
         for index in (0, "0"):
             parsed = parse_submit({"kc": KIND_OPTION, "nonce": "n", "label": "yes", "index": index})
             assert parsed is not None and parsed["index"] == "0"
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"kc": KIND_OPTION, "nonce": "n", "label": "yes", "index": "1" * 4},
+            {"kc": KIND_SESSION, "nonce": "n", "index": "1" * 4},
+        ],
+    )
+    def test_an_over_long_index_is_refused_for_every_card_kind(self, payload) -> None:
+        """Both kinds hand their index to a bare ``int()``, so both need the bound.
+
+        A chip click reaches ``int()`` in the renderer's ``option_label`` and a
+        picker press reaches it in the dispatcher's session pick, and Python raises
+        past ``sys.get_int_max_str_digits()`` -- which escapes as a traceback and
+        leaves a dead button. The digit ceiling is what keeps that unreachable, and
+        it is one shared check, so a regression in either kind is a regression in
+        both.
+        """
+        assert parse_submit(payload) is None
 
 
 class TestDeciderFailsClosed:

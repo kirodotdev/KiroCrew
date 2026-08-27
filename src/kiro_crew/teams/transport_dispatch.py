@@ -454,10 +454,10 @@ class TeamsDispatcher:
     ) -> None:
         """A message arrived mid-turn: steer the running turn, or queue for after.
 
-        The previous behavior asked the user to resend, which LOST the message --
-        the one outcome a queue exists to prevent. Teams can edit its own
-        activities, so the held message gets the shared collapsing receipt bubble
-        rather than a fire-and-forget notice.
+        A mid-turn message is never dropped and the user is never asked to resend
+        it -- losing it is the one outcome a queue exists to prevent. Teams can
+        edit its own activities, so the held message gets the shared collapsing
+        receipt bubble rather than a fire-and-forget notice.
         """
         assert self.client is not None
         if not self.sessions.is_busy(session_key):
@@ -551,10 +551,16 @@ class TeamsDispatcher:
                 "",
             )
             resolved = bool(session_key)
+            if not resolved:
+                audit_outcome = "denied_stale_card"
+            elif approved:
+                audit_outcome = "approved"
+            else:
+                audit_outcome = "denied"
             sel().log_api_access(
                 caller=identity or "unknown",
                 operation="teams.tool_decision",
-                outcome=("approved" if approved else "denied") if resolved else "denied_stale_card",
+                outcome=audit_outcome,
                 source="teams",
                 resources=f"session={session_key or candidates[0]}",
             )
