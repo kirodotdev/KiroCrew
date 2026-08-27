@@ -4670,13 +4670,19 @@ class SkillsLoader:
         """Remove YAML frontmatter from markdown.
 
         A fence LOCATOR, not a field parser — deliberately outside
-        ``kiro_crew.frontmatter``. Its closer grammar is stricter than
-        ``_parse_frontmatter``'s (``---`` must be followed by a newline), so
-        a ``---junk`` closer parses fields yet strips nothing; editing either
-        grammar means revisiting the other.
+        ``kiro_crew.frontmatter``. Its closer grammar matches
+        ``frontmatter._COLUMN0_BLOCK_RE`` — the ``column0_fence`` extraction
+        that ``frontmatter.SKILL_LOADER`` binds to the skills surface: the
+        closer is the first line after the opener that STARTS with ``---`` —
+        trailing text on the closer line is tolerated and consumed (#6182). Anything
+        the display parser reads as frontmatter must also be stripped here:
+        a stricter closer (the old ``---`` must-be-followed-by-newline
+        grammar) let a ``---junk`` or ``--- `` closer parse fields in the UI
+        while the whole block leaked to the model. Editing either grammar
+        means revisiting the other.
         """
         if content.startswith("---"):
-            match = re.match(r"^---\n.*?\n---\n", content, re.DOTALL)
+            match = re.match(r"^---\n.*?\n---[^\n]*\n?", content, re.DOTALL)
             if match:
                 return content[match.end() :].strip()
         return content

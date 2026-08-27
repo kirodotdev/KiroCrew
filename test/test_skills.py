@@ -2037,3 +2037,73 @@ class TestDisabledAppSkillsAreNotTriggered:
         )
 
         assert loader.get_triggered_skills("find hotspots for me") == ["ai-discover"]
+
+
+class TestStripFrontmatterCloserParity:
+    """#6182: strip_frontmatter's closer must accept everything the display
+    parser's ``column0_fence`` grammar accepts. A closer the parser tolerates
+    but the stripper rejects shows parsed metadata in the UI while the whole
+    frontmatter block leaks to the model."""
+
+    BODY = "# Heading\n\nInstruction text."
+
+    def _doc(self, closer: str) -> str:
+        return f"---\ndescription: test skill\n{closer}\n{self.BODY}"
+
+    def test_strict_closer_still_strips(self) -> None:
+        out = SkillsLoader.strip_frontmatter(self._doc("---"))
+        assert out == self.BODY
+        assert "description:" not in out
+
+    @pytest.mark.parametrize("closer", ["--- ", "---junk", "--- comment text"])
+    def test_lenient_closer_strips_whatever_the_parser_parses(self, closer: str) -> None:
+        """The invariant itself: for the same document, the display parser
+        reads the fields AND the stripper removes the block."""
+        from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
+
+        doc = self._doc(closer)
+        fields = parse_frontmatter(doc, SKILL_LOADER)
+        assert fields.get("description") == "test skill", (
+            "premise broken: the display parser no longer tolerates this "
+            "closer — re-check _COLUMN0_BLOCK_RE before touching the stripper"
+        )
+        out = SkillsLoader.strip_frontmatter(doc)
+        assert "description:" not in out, f"frontmatter leaked past closer {closer!r}"
+        assert out == self.BODY
+
+    def test_closer_at_eof_without_newline_strips(self) -> None:
+        out = SkillsLoader.strip_frontmatter("---\ndescription: test skill\n---")
+        assert out == ""
+
+    def test_no_closer_leaves_content_unchanged(self) -> None:
+        doc = "---\ndescription: dangling opener, no closer"
+        assert SkillsLoader.strip_frontmatter(doc) == doc
+
+    def test_plain_markdown_untouched(self) -> None:
+        assert SkillsLoader.strip_frontmatter(self.BODY) == self.BODY
+
+    def test_dashes_inside_body_do_not_end_early(self) -> None:
+        """A ``---`` ruler AFTER the real closer stays in the body."""
+        doc = f"---\ndescription: test skill\n---\nintro\n---\n{self.BODY}"
+        out = SkillsLoader.strip_frontmatter(doc)
+        assert out.startswith("intro")
+        assert "---" in out
+
+    def test_leading_whitespace_opener_parity_both_sides_reject(self) -> None:
+        """Opener-side guard: today BOTH the display dialect (column0_fence)
+        and the stripper reject a leading-whitespace opener, so nothing
+        parses and nothing strips — parity holds in the reject direction.
+        If the display dialect ever goes lenient on the opener (e.g.
+        switching SKILL_LOADER to leading_ws_fence), the premise assertion
+        here goes red, forcing the stripper's opener to be revisited in the
+        same change instead of silently reopening the #6182 leak."""
+        from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
+
+        doc = f" ---\ndescription: test skill\n---\n{self.BODY}"
+        fields = parse_frontmatter(doc, SKILL_LOADER)
+        assert not fields.get("description"), (
+            "premise broken: the display dialect now tolerates a "
+            "leading-whitespace opener — strip_frontmatter's opener "
+            "(startswith('---')) must be widened in the same change"
+        )
+        assert SkillsLoader.strip_frontmatter(doc) == doc
