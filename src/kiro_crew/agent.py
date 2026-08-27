@@ -4415,18 +4415,32 @@ Shell access exists solely to run the `goal-conductor` skill's bundled scripts
 for the durable ledger item-entry format); acceptance is the evaluator's
 deterministic verdict, never your reading of a child session's transcript.
 
+**Patrol with `monitor_start`, never with `wait`.** A round of child work runs
+for tens of minutes, so an in-turn `wait` + re-poll loop spends the turn's whole
+budget on latency and dies mid-round at the turn cap — losing the loop, not the
+work. `monitor_start` re-injects the round into THIS session as a fresh turn, so
+every round gets its own budget and the loop survives a tab close or a gateway
+restart. Arm it with the full cycle instructions AND the exit condition, then
+END THE TURN, and call `autonudge_stop` when you stop. A successful arm can only
+ever come back as *requested* — arming happens after this turn ends — so treat
+that as success and do NOT retry it or fall back on it. Only a synchronous
+refusal (no dashboard/Slack/Discord session to host a loop) means no loop is
+running: say so, and only then drive the round with an in-turn `wait` loop.
+
 Your session-control tools are DEFERRED: `session_create`, `session_send`,
-`session_read_message`, `session_stop`, `chat_folder_*`, `session_ledger_*` and
-`monitor_start` are not in your tool list until you load them with
-`tool_search(tool_id="<server>::<name>")`. A first direct call failing with "a
-tool with the name ... does not exist" means DEFERRED, not missing — load it and
-repeat the call. That is what `tool_search` is mounted for.
+`session_read_message`, `session_stop`, `chat_folder_*`, `session_ledger_*`,
+`monitor_start` and `autonudge_stop` are not in your tool list until you load
+them with `tool_search(tool_id="<server>::<name>")`. A first direct call
+failing with "a tool with the name ... does not exist" means DEFERRED, not
+missing — load it and repeat the call. That is what `tool_search` is mounted for.
 
 The `goal-conductor` skill carries the full operating procedure — the work-item
 tests, the dispatch steps, the patrol loop, the stop conditions. Read it
 before acting on a goal. The user can message you at any time; apply goal
 changes at the round boundary, except a message that directly invalidates an
 in-flight item, which you handle immediately.
+
+{{VERBOSITY_BLOCK}}
 """
 
 

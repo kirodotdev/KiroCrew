@@ -63,6 +63,34 @@ class TestConductorInstaller:
         assert data["name"] == "kirocrew-conductor"
         assert "work item" in data["prompt"]
 
+    def test_prompt_carries_the_verbosity_placeholder(self, tmp_path, monkeypatch):
+        """The conductor is a custom agent, so it gets its OWN prompt.
+
+        ``build_message`` reads a custom agent's prompt from its spec instead of
+        ``config/prompt.md``, and ``_resolve_prompt_templates`` only expands the
+        token where it appears. Without the token here the user's
+        ``dashboard.verbosity`` setting silently never reaches this agent, so
+        every conductor turn answers at ``default`` length no matter what the
+        person picked. Pinned, not commented, because the omission is invisible.
+        """
+        data = self._install(tmp_path, monkeypatch)
+        assert "{{VERBOSITY_BLOCK}}" in data["prompt"]
+
+    def test_prompt_drives_patrol_with_monitor_start_not_wait(self, tmp_path, monkeypatch):
+        """A patrol round outlives a turn, so the loop must own the turn boundary.
+
+        An in-turn ``wait`` + re-poll loop spends the turn budget on latency and
+        dies at the turn cap mid-round, which loses the loop. Both halves of the
+        contract are pinned: ``monitor_start`` drives the round, and the
+        conductor knows the tool it needs to stop the loop it armed. Whitespace
+        is normalised so re-wrapping the prompt cannot fail this for a
+        formatting reason.
+        """
+        data = self._install(tmp_path, monkeypatch)
+        prompt = " ".join(data["prompt"].split())
+        assert "Patrol with `monitor_start`, never with `wait`" in prompt
+        assert "autonudge_stop" in prompt
+
     def test_no_write_tool_and_shell_not_preapproved(self, tmp_path, monkeypatch):
         """The security properties of the spec, in one place.
 
