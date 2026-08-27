@@ -405,6 +405,11 @@ async def run_gatewayd(
         except asyncio.CancelledError:
             # Normal on shutdown — propagate for the gather() below.
             raise
+        except ConnectionError:
+            # Abrupt peer disconnect (ECONNRESET / EPIPE from a hard-killed
+            # client) is routine — the clean-EOF sibling is already handled
+            # inside _handle_connection — so don't log it as a crash.
+            logger.debug("client disconnected abruptly", exc_info=True)
         except Exception:
             logger.exception("connection handler crashed")
         finally:

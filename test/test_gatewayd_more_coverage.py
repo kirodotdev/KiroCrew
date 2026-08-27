@@ -1023,3 +1023,48 @@ class TestRunGatewaydLifecycle:
             await asyncio.wait_for(daemon, timeout=15)
 
         assert any("connection handler crashed" in rec.message for rec in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_an_abrupt_client_disconnect_is_not_logged_as_a_crash(
+        self, short_sock_dir, monkeypatch, caplog
+    ):
+        socket_path = short_sock_dir / "gw-reset.sock"
+        handled = asyncio.Event()
+
+        async def _reset(*args, **kwargs):
+            handled.set()
+            raise ConnectionResetError(104, "Connection reset by peer")
+
+        monkeypatch.setattr(gw, "_handle_connection", _reset)
+
+        stop_event = asyncio.Event()
+        daemon = asyncio.create_task(
+            gw.run_gatewayd(
+                socket_path,
+                max_backends=2,
+                idle_timeout_secs=300,
+                stop_event=stop_event,
+                target_resolver=_resolver,
+            )
+        )
+        try:
+            for _ in range(500):
+                if socket_path.exists():
+                    break
+                await asyncio.sleep(0.02)
+            assert socket_path.exists(), "the daemon never bound its endpoint"
+            with caplog.at_level(logging.ERROR, logger=gw.logger.name):
+                _, writer = await asyncio.open_unix_connection(str(socket_path))
+                writer.close()
+                await asyncio.wait_for(handled.wait(), timeout=10)
+                # A reset peer is routine: the accept loop still serves.
+                _, writer2 = await asyncio.open_unix_connection(str(socket_path))
+                writer2.close()
+                await asyncio.sleep(0.05)
+        finally:
+            stop_event.set()
+            await asyncio.wait_for(daemon, timeout=15)
+
+        assert not any(
+            "connection handler crashed" in rec.message for rec in caplog.records
+        )
