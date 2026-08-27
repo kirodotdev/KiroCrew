@@ -764,6 +764,21 @@ catalog's OFFLINE SNAPSHOT, not a peer source: a reachable catalog means the
 store renders the published document's list, display copy, AND installable
 inventory; an unreachable one degrades the listing to the seed.
 
+That degradation is silent -- a failed fetch overwrites the on-disk cache with a
+failure sentinel and the seed listing renders with no error -- so the store
+header carries a manual refresh. `POST /api/apps/registry/refresh`
+(`handle_registry_refresh`) drops the on-disk caches of all three published
+documents (catalog, category order, editorial) via each module's
+`forget_cache()`, which clears a stale document and a `_fetchFailedAt` back-off
+sentinel in one unlink. The handler never fetches: the follow-up
+`GET /api/apps/registry` pays the fetch on the cold-start path, so a refresh
+cannot behave differently from the load it repairs. It is a POST rather than a
+query parameter on the GET because cache deletion plus outbound fetches is a
+state change, and a state-changing GET is reachable by cross-site top-level
+navigation behind the CSRF middleware's back. The dashboard's refresh button
+also posts `/api/apps/registries/refresh` (the external-registry index sweep),
+then refetches, so both of the store's sources are rebuilt by one click.
+
 User-configured external registries (`config.registries`) are a separate,
 always-present source: both `list_registry` and `list_catalog_apps` merge them
 through one shared site, `_append_external_registry_apps`, so the online and

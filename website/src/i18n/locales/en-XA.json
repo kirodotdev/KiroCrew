@@ -7876,6 +7876,7 @@
       "installed_app_find_in_library_and_enable": "[Ìñşţàĺĺèð {{name}}. Èñàƀĺè ìţ ìñ Ĺìƀŕàŕý. ·················]",
       "synced_from_its_source_directory": "[Şýñçèð {{name}} ƒŕøɱ ìţş şøùŕçè ðìŕèçţøŕý. ·················]",
       "updated_from_the_registry": "[Ùþðàţèð {{name}} ƒŕøɱ ţĥè ŕèğìşţŕý. ···················]",
+      "refresh_store": "[Ŕèƒŕèşĥ ţĥè şţøŕè ···············]",
       "action_failed": "[Ƒàìĺèð ţø {{action}} {{name}} ··········]",
       "all_apps": "[Àĺĺ àþþş ············]",
       "built_in_kirocrew": "[Ɓùìĺţ-ìñ · ķìŕøçŕèẁ ·················]",

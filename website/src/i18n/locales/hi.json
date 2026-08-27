@@ -8023,7 +8023,8 @@
       "v": "v",
       "installed_app_find_in_library_and_enable": "{{name}} इंस्टॉल हो गया। इसे लाइब्रेरी में चालू करो।",
       "synced_from_its_source_directory": "{{name}} को उसकी सोर्स डायरेक्टरी से सिंक कर दिया गया।",
-      "updated_from_the_registry": "{{name}} को रजिस्ट्री से अपडेट कर दिया गया।"
+      "updated_from_the_registry": "{{name}} को रजिस्ट्री से अपडेट कर दिया गया।",
+      "refresh_store": "स्टोर रीफ़्रेश करें"
     },
     "artifactDeployPage": {
       "0_00_mo": "~$0.00/माह",

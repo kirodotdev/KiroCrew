@@ -5459,7 +5459,8 @@
       "v": "v",
       "installed_app_find_in_library_and_enable": "Installed {{name}}. Enable it in Library.",
       "synced_from_its_source_directory": "Synced {{name}} from its source directory.",
-      "updated_from_the_registry": "Updated {{name}} from the registry."
+      "updated_from_the_registry": "Updated {{name}} from the registry.",
+      "refresh_store": "Refresh the store"
     },
     "artifactDeployPage": {
       "0_00_mo": "~$0.00/mo",

@@ -8142,7 +8142,8 @@
       "v": "v",
       "installed_app_find_in_library_and_enable": "{{name}} installé. Activez-le dans la Bibliothèque.",
       "synced_from_its_source_directory": "{{name}} synchronisée depuis son répertoire source.",
-      "updated_from_the_registry": "{{name}} mise à jour depuis le registre."
+      "updated_from_the_registry": "{{name}} mise à jour depuis le registre.",
+      "refresh_store": "Actualiser la boutique"
     },
     "artifactDeployPage": {
       "0_00_mo": "~0,00 $/mois",

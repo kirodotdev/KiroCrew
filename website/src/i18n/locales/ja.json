@@ -7904,7 +7904,8 @@
       "installed_app_find_in_library_and_enable": "{{name}} をインストールしました。ライブラリで有効にしてください。",
       "synced_from_its_source_directory": "{{name}} をソースディレクトリから同期しました。",
       "updated_app_other": "{{count}} アプリを更新しました。",
-      "updated_from_the_registry": "{{name}} をレジストリから更新しました。"
+      "updated_from_the_registry": "{{name}} をレジストリから更新しました。",
+      "refresh_store": "ストアを更新"
     },
     "artifactDeployPage": {
       "0_00_mo": "~$0.00/月",

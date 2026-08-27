@@ -114,6 +114,18 @@ def _write_failure() -> None:
     _write_cache({_FAILED_KEY: time.time()})
 
 
+def forget_cache() -> None:
+    """Drop the cached document and any failure memory; the next read re-fetches.
+
+    Same contract as ``official_catalog.forget_cache`` -- see there for why a
+    file delete (not a re-fetch) is the whole job.
+    """
+    try:
+        _cache_path().unlink(missing_ok=True)
+    except OSError:
+        logger.debug("could not drop the editorial cache", exc_info=True)
+
+
 def _download() -> dict[str, Any] | None:
     """GET the editorial document through the registry module's fetch seam.
 
@@ -338,4 +350,4 @@ def load_sections(fetcher: Any = None) -> list[dict[str, Any]]:
     return out
 
 
-__all__ = ["load_sections", "MAX_BYTES", "OFFICIAL_EDITORIAL_URL"]
+__all__ = ["forget_cache", "load_sections", "MAX_BYTES", "OFFICIAL_EDITORIAL_URL"]

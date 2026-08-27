@@ -121,6 +121,22 @@ def _write_failure() -> None:
     _write_cache({_FAILED_KEY: time.time()})
 
 
+def forget_cache() -> None:
+    """Drop the cached document AND any failure memory, so the next read re-fetches.
+
+    The server half of the store's manual refresh: deleting the file is the one
+    operation that clears both a stale document (``CACHE_TTL`` not yet expired)
+    and a ``_fetchFailedAt`` sentinel (``FAILURE_TTL`` back-off) in a single
+    step. It never fetches anything itself -- the caller's next read pays the
+    fetch, so a refresh that cannot reach the CDN degrades exactly like a cold
+    start rather than inventing a third failure mode.
+    """
+    try:
+        _cache_path().unlink(missing_ok=True)
+    except OSError:
+        logger.debug("could not drop the official catalog cache", exc_info=True)
+
+
 class _NoRedirects(urllib.request.HTTPRedirectHandler):
     """Refuse to follow a redirect instead of quietly changing origin.
 

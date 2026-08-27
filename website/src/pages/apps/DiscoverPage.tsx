@@ -16,9 +16,10 @@
  * query, category pick, sort, action loading) lives here.
  */
 import { useEffect, useMemo, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom'
-import { AlertTriangle, CheckCircle2, ShoppingBag, X } from 'lucide-react'
-import { EmptyState, PageHeader, SearchInput } from '../../components/ui'
+import { AlertTriangle, CheckCircle2, RefreshCw, ShoppingBag, X } from 'lucide-react'
+import { EmptyState, IconButton, PageHeader, SearchInput } from '../../components/ui'
 import SimpleSelect from '../../components/SimpleSelect'
 import UnderlineTabs, { type UnderlineTab } from '../../components/UnderlineTabs'
 import FeaturedSpotlight from '../../components/appstore/FeaturedSpotlight'
@@ -28,6 +29,7 @@ import TrustAppModal, { isTrustDeniedError } from '../../components/appstore/Tru
 import SourcesPopover from '../../components/appstore/SourcesPopover'
 import { categoryFor, type Category } from '../../components/appstore/categories'
 import type { RegistryApp } from '../../components/appstore/types'
+import { api } from '../../api/client'
 import { i18nT } from '../../i18n/t'
 import { compareText } from '../../i18n/format'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -184,6 +186,31 @@ function DiscoverPageBody() {
     rowUpdatesInPlace: true,
   })
 
+  // Manual store refresh. This exists because the two cache layers degrade
+  // silently -- a failed catalog fetch leaves the store on the seed listing
+  // for up to an hour with nothing the user can do about it from the UI.
+  // Order matters: the POSTs drop the server's document caches (official
+  // documents AND the user's external registries -- both sources the store
+  // renders), then the invalidations rebuild both lists past their staleTime
+  // (same mechanism as TrustAppModal / RegistryManager; awaiting them holds
+  // the spinner until the refetches settle). allSettled, because one source
+  // being unreachable must not stop the refetch from repairing the other.
+  const queryClient = useQueryClient()
+  const [refreshing, setRefreshing] = useState(false)
+  const handleRefresh = async () => {
+    if (refreshing) return
+    setRefreshing(true)
+    try {
+      await Promise.allSettled([api.refreshAppStore(), api.refreshRegistries()])
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['registry'] }),
+        queryClient.invalidateQueries({ queryKey: ['apps'] }),
+      ])
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
   const filteredBrowse = useMemo(() => {
     const q = query.trim().toLowerCase()
     const list = browseApps.filter(a => {
@@ -250,6 +277,17 @@ function DiscoverPageBody() {
               aria-label={i18nT('pages.appsPage.search_apps')}
             />
           )}
+          {/* Manual store refresh — always visible (unlike search): the
+              degraded-catalog state it repairs also starves the Updates
+              worklist, whose update map derives from the same registry rows. */}
+          <IconButton
+            aria-label={i18nT('pages.appsPage.refresh_store')}
+            title={i18nT('pages.appsPage.refresh_store')}
+            onClick={handleRefresh}
+            disabled={refreshing}
+          >
+            <RefreshCw size={15} className={refreshing ? 'animate-spin' : undefined} />
+          </IconButton>
           <SourcesPopover
             open={sourcesOpen}
             onOpenChange={setSourcesOpen}

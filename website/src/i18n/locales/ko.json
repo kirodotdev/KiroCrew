@@ -7904,7 +7904,8 @@
       "installed_app_find_in_library_and_enable": "{{name}} 설치됨. 라이브러리에서 활성화하세요.",
       "synced_from_its_source_directory": "{{name}}을(를) 소스 디렉터리에서 동기화했습니다.",
       "updated_app_other": "앱 {{count}}개를 업데이트했습니다.",
-      "updated_from_the_registry": "{{name}}을(를) 레지스트리에서 업데이트했습니다."
+      "updated_from_the_registry": "{{name}}을(를) 레지스트리에서 업데이트했습니다.",
+      "refresh_store": "스토어 새로고침"
     },
     "artifactDeployPage": {
       "0_00_mo": "~$0.00/월",

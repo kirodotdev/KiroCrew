@@ -7904,7 +7904,8 @@
       "installed_app_find_in_library_and_enable": "已安装 {{name}}。请在“库”中启用它。",
       "synced_from_its_source_directory": "已从源目录同步 {{name}}。",
       "updated_app_other": "已更新 {{count}} 个应用。",
-      "updated_from_the_registry": "已从注册表更新 {{name}}。"
+      "updated_from_the_registry": "已从注册表更新 {{name}}。",
+      "refresh_store": "刷新商店"
     },
     "artifactDeployPage": {
       "0_00_mo": "~$0.00/月",
