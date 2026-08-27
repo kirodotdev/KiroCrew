@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 
 import pytest
@@ -1257,3 +1258,135 @@ class TestRecordSlowCommand:
         lines = (agent_root / "slow_commands.jsonl").read_text(encoding="utf-8").strip().splitlines()
         assert len(lines) == 2
         assert {json.loads(lines[0])["id"], json.loads(lines[1])["id"]} == {"ag1", "ag2"}
+
+
+# ── record_slow_command rotation ─────────────────────────────────────
+
+
+def _slow_log_records(path):
+    if not path.exists():
+        return []
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").strip().splitlines()
+        if line
+    ]
+
+
+class TestRecordSlowCommandRotation:
+    """The log rotates at the size cap — bounded disk, no lost record, no wait.
+
+    Same shape as the ``stub_fallback.jsonl`` rotation in
+    ``mcp_gateway.stub``: O(1) rotate-by-rename before the append, guarded
+    by a non-blocking try-lock, all inside the best-effort ``except OSError``.
+    """
+
+    CAP = 400  # bytes — small enough to cross with a handful of records
+
+    @pytest.fixture(autouse=True)
+    def small_cap(self, monkeypatch):
+        monkeypatch.setattr(
+            "kiro_crew.subagent_persistence._SLOW_LOG_MAX_BYTES", self.CAP
+        )
+
+    def test_rotation_keeps_every_record(self, agent_root):
+        """One rotation: older records land in ``.jsonl.1``, none are lost."""
+        live = agent_root / "slow_commands.jsonl"
+        rotated = agent_root / "slow_commands.jsonl.1"
+        n = 0
+        while not rotated.exists():
+            record_slow_command(f"ag{n}", idle_secs=200)
+            n += 1
+            assert n < 100, "cap never triggered a rotation"
+        # The rotated generation holds the pre-rotation records intact...
+        old_ids = [r["id"] for r in _slow_log_records(rotated)]
+        assert old_ids == [f"ag{i}" for i in range(n - 1)]
+        # ...and the live file holds exactly the one record written after.
+        new_ids = [r["id"] for r in _slow_log_records(live)]
+        assert new_ids == [f"ag{n - 1}"]
+        # Live file restarted under the cap.
+        assert live.stat().st_size < self.CAP
+
+    def test_total_bytes_stay_bounded(self, agent_root):
+        """The property the issue is about: many writes, bounded total disk.
+
+        One rotation alone does not prove boundedness — total bytes across
+        BOTH generations must stay bounded no matter how many records land.
+        """
+        for i in range(300):
+            record_slow_command(f"agent-{i:04d}", idle_secs=200, turns=3)
+        live = agent_root / "slow_commands.jsonl"
+        rotated = agent_root / "slow_commands.jsonl.1"
+        # Each generation may overshoot the cap by at most one record (the
+        # size check runs before the append), so bound each at CAP plus a
+        # generous one-record slack.
+        slack = 200
+        assert live.stat().st_size <= self.CAP + slack
+        assert rotated.exists()
+        assert rotated.stat().st_size <= self.CAP + slack
+        total = live.stat().st_size + rotated.stat().st_size
+        assert total <= 2 * (self.CAP + slack)
+
+    def test_rotation_failure_still_appends(self, agent_root):
+        """Best-effort contract: a failing rotation never drops the record
+        and never propagates into the (event-loop) caller.
+
+        A directory squatting on the rotation target makes ``os.replace``
+        raise a REAL ``OSError`` on both POSIX and Windows — no stdlib
+        patching, which would leak process-wide to concurrent renamers.
+        """
+        live = agent_root / "slow_commands.jsonl"
+        live.write_text("x" * (self.CAP + 10), encoding="utf-8")
+        (agent_root / "slow_commands.jsonl.1").mkdir()
+
+        record_slow_command("ag-after-fail", idle_secs=200)  # must not raise
+        assert (agent_root / "slow_commands.jsonl.1").is_dir()
+        assert "ag-after-fail" in live.read_text(encoding="utf-8")
+
+    def test_lock_open_failure_still_appends(self, agent_root):
+        """A lock-file open failure (fd exhaustion, restrictive dir ACL)
+        degrades to append-without-rotating — never to a dropped record.
+        Fd/disk exhaustion is a leading cause of the very stalls this log
+        diagnoses, so that is exactly when the record must still land.
+
+        A directory squatting on the lock path makes ``os.open(O_RDWR)``
+        raise a REAL ``OSError`` (EISDIR/EACCES) — no stdlib patching."""
+        live = agent_root / "slow_commands.jsonl"
+        live.write_text("x" * (self.CAP + 10), encoding="utf-8")
+        (agent_root / "slow_commands.jsonl.lock").mkdir()
+
+        record_slow_command("ag-no-lock", idle_secs=200)  # must not raise
+        assert not (agent_root / "slow_commands.jsonl.1").exists()
+        assert "ag-no-lock" in live.read_text(encoding="utf-8")
+
+    def test_held_lock_never_blocks_writer(self, agent_root):
+        """A writer that loses the try-lock appends WITHOUT rotating and
+        WITHOUT waiting — a blocking acquire here would stall the gateway
+        event loop (the caller is async ``_maybe_flag_stall``)."""
+        import threading
+
+        from kiro_crew import platform_compat
+
+        live = agent_root / "slow_commands.jsonl"
+        live.write_text("x" * (self.CAP + 10), encoding="utf-8")
+        lock_fd = os.open(
+            agent_root / "slow_commands.jsonl.lock", os.O_CREAT | os.O_RDWR, 0o600
+        )
+        try:
+            assert platform_compat.try_acquire_lock(lock_fd, exclusive=True)
+            done = threading.Event()
+
+            def write():
+                record_slow_command("ag-locked-out", idle_secs=200)
+                done.set()
+
+            t = threading.Thread(target=write, daemon=True)
+            t.start()
+            t.join(timeout=10)
+            assert done.is_set(), "writer blocked on a held rotation lock"
+            # Lock loser appended (over the cap) but did not rotate.
+            assert not (agent_root / "slow_commands.jsonl.1").exists()
+            assert "ag-locked-out" in live.read_text(encoding="utf-8")
+        finally:
+            platform_compat.release_lock(lock_fd)
+            os.close(lock_fd)
