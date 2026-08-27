@@ -16,6 +16,7 @@ import { HistoryTab } from './HistoryTab'
 import { SitesTab } from './SitesTab'
 import { useAppDispatch } from '../../store'
 import { createSlot } from '../../store/chatSlice'
+import { errMessage } from '../../utils/thunkError'
 
 import { i18nT } from '../../i18n/t'
 
@@ -45,7 +46,13 @@ export default function PersonalShopperPage() {
     } catch (e) {
       // Without this the rejection was unhandled and the button just cleared its
       // spinner, so a failed create looked identical to nothing happening.
-      setCreateError(e instanceof Error ? e.message : 'unknown')
+      // `errMessage` and not an `instanceof Error` check: `unwrap()` throws Redux
+      // Toolkit's SERIALIZED error, so the real reason was reachable but was being
+      // discarded in favour of a fallback on every rejection. The fallback is now
+      // the shared localized unexpected-error copy rather than the bare English
+      // word "unknown", since this string is interpolated into a sentence the
+      // user reads.
+      setCreateError(errMessage(e) || i18nT('components.errorBoundary.something_went_wrong'))
     } finally {
       setCreating(false)
     }

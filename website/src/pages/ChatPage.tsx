@@ -222,6 +222,7 @@ import WorkflowProgressBar from './chat/WorkflowProgressBar'
 import { tryQuickSend } from '../lib/quickSend'
 import { rewindWithRollback } from '../lib/rewindCall'
 import { isChatPageSurface } from '../utils/channelOrigin'
+import { errMessage } from '../utils/thunkError'
 
 
 import { i18nT } from '../i18n/t'
@@ -2951,7 +2952,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         alert(i18nT('pages.chatPage.fork_failed_error', { error: result.error || i18nT('pages.chatPage.unknown_error') }))
       }
     } catch (e) {
-      alert(i18nT('pages.chatPage.fork_failed_error', { error: e instanceof Error ? e.message : String(e) }))
+      alert(i18nT('pages.chatPage.fork_failed_error', { error: errMessage(e) || i18nT('pages.chatPage.unknown_error') }))
     }
   }, [activeSlot, dispatch, forkCfg])
 
@@ -2967,7 +2968,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         alert(i18nT('pages.chatPage.plan_from_here_failed_error', { error: result.error || i18nT('pages.chatPage.unknown_error') }))
       }
     } catch (e) {
-      alert(i18nT('pages.chatPage.plan_from_here_failed_error', { error: e instanceof Error ? e.message : String(e) }))
+      alert(i18nT('pages.chatPage.plan_from_here_failed_error', { error: errMessage(e) || i18nT('pages.chatPage.unknown_error') }))
     }
   }, [activeSlot, dispatch, mode, navigate])
 
