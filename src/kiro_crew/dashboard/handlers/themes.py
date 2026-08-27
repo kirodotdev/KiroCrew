@@ -162,11 +162,13 @@ async def api_themes_create(request: web.Request) -> web.Response:
         or _THEME_DEFAULT_EMOJI
     )
 
+    # No NEW filesystem call on the loop: ``_themes_dir()`` returns the
+    # ``config_dir()`` memo resolved at boot, and the mkdir, the collision
+    # stats, and the write all happen inside ``_create_locked`` on a worker
+    # thread. On a UNC/SMB-backed data home a single on-loop stat or mkdir
+    # can block the whole gateway.
     themes_path = _themes_dir()
-    themes_path.mkdir(parents=True, exist_ok=True)
     target = themes_path / f"{slug}.json"
-    if target.exists():
-        return web.json_response({"error": f"theme '{slug}' already exists"}, status=409)
 
     theme_data = {
         "name": name,
@@ -186,6 +188,7 @@ async def api_themes_create(request: web.Request) -> web.Response:
     # record and a dir), the duplicate-slug corruption the installer guards too.
     def _create_locked() -> bool:
         with _theme_install_lock(slug):
+            themes_path.mkdir(parents=True, exist_ok=True)
             if target.exists() or _installed_theme_dir(slug).exists():
                 return False
             _atomic_write_theme_json(

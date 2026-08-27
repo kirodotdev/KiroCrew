@@ -259,8 +259,8 @@ class TestApiThemesCreate:
 
     @pytest.mark.asyncio
     async def test_installed_pack_with_the_same_slug_is_409(self, themes_dir: Path) -> None:
-        # The pre-lock check only sees <slug>.json; the in-lock check is what
-        # refuses a slug already taken by an installed <slug>/ directory.
+        # The in-lock check refuses a slug already taken by an installed
+        # <slug>/ directory, not just an existing <slug>.json record.
         (themes_dir / "sunset").mkdir()
         resp = await th.api_themes_create(
             _request("POST", "/api/themes", body=_theme_body())
@@ -278,6 +278,64 @@ class TestApiThemesCreate:
         )
         assert resp.status == 200
         assert (home / "themes" / "sunset.json").is_file()
+
+
+class TestApiThemesCreateOffLoop:
+    """#6198: the create handler's filesystem work must never run on the loop.
+
+    On a UNC data home ``mkdir``/``exists`` are SMB-backed and can block for
+    as long as the network takes; one such call on the loop stalls every other
+    request the gateway serves. Spy on ``Path.mkdir``/``exists``/``is_dir``/
+    ``is_file`` for the handler's paths (and the data home itself) and assert
+    every call happened on a worker thread — the same discipline #5963 pinned
+    for the detail route's target stats.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("preexisting", [False, True])
+    async def test_filesystem_work_runs_on_a_worker_thread(
+        self, preexisting: bool, themes_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        if preexisting:
+            _write_json(themes_dir / "sunset.json", {"name": "Sunset"})
+        # Build the watched set through the handler's own resolver: the
+        # fixture path is unresolved, while ``_themes_dir()`` goes through
+        # ``config_dir()``'s ``resolve()`` — on Darwin ``/tmp`` is a symlink,
+        # so comparing against the raw fixture path would never match. The
+        # data home itself is watched too, so a cold ``config_dir()``
+        # resolve sneaking onto the loop would also be caught.
+        watched = {
+            th._themes_dir().parent,
+            th._themes_dir(),
+            th._themes_dir() / "sunset.json",
+            th._themes_dir() / "sunset",
+        }
+        loop_thread = threading.get_ident()
+        fs_threads: list[int] = []
+        real_calls = {
+            name: getattr(Path, name) for name in ("mkdir", "exists", "is_dir", "is_file")
+        }
+
+        def _spy(name: str) -> Any:
+            real = real_calls[name]
+
+            def spy(self: Path, *args: Any, **kwargs: Any) -> Any:
+                if self in watched:
+                    fs_threads.append(threading.get_ident())
+                return real(self, *args, **kwargs)
+
+            return spy
+
+        for name in real_calls:
+            monkeypatch.setattr(Path, name, _spy(name))
+
+        resp = await th.api_themes_create(
+            _request("POST", "/api/themes", body=_theme_body())
+        )
+        assert resp.status == (409 if preexisting else 200)
+        assert fs_threads, "expected the handler to touch the filesystem"
+        on_loop = [t for t in fs_threads if t == loop_thread]
+        assert not on_loop, f"{len(on_loop)} filesystem call(s) ran on the event loop"
 
 
 # ── _resolve_local_source ──────────────────────────────────────────────────
