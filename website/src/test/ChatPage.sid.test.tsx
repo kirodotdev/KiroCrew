@@ -39,7 +39,7 @@ vi.mock('../components/SegmentedControl', () => ({ default: () => null }))
 vi.mock('../pages/chat/CollapsibleToolGroup', () => ({ default: () => null }))
 vi.mock('../pages/chat/ActivityViewer', () => ({ default: () => null }))
 vi.mock('../pages/chat/SessionColorPicker', () => ({ default: () => null }))
-vi.mock('../pages/chat', () => ({ ChatFooter: () => null, AssistantMessage: () => null, McpInfoButton: () => null }))
+vi.mock('../pages/chat', () => ({ ChatFooter: () => null, AssistantMessage: () => null, McpInfoButton: () => null, UserMessage: () => null, CronAckBar: () => null, NotificationItem: () => null, PinnedPrompt: () => null }))
 vi.mock('../pages/ChatSidebar', () => ({ default: () => null, SIDEBAR_MIN: 200, SIDEBAR_MAX: 500 }))
 vi.mock('../pages/chat/ChatSettings', () => ({ loadChatConfig: () => ({ contentWidth: 'compact' }), CONTENT_WIDTH: { compact: { messages: '900px', input: '916px' }, comfortable: { messages: '84%', input: '85%' }, full: { messages: '92%', input: '93%' } } }))
 
@@ -76,6 +76,9 @@ Object.defineProperty(window, 'matchMedia', {
 globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) }) as unknown as typeof fetch
 
 import ChatPage from '../pages/ChatPage'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { i18nT } from '../i18n/t'
 import { api } from '../api/client'
 
 /** Slot keys `chatSlotDetail` was asked for — i.e. which sessions got fetched. */
@@ -115,8 +118,12 @@ function renderChatPage(opts: {
   slots?: ChatSlot[]
   /** Render the companion-panel variant on a HOST route (see the noUrlSync suite). */
   hostEmbed?: { noUrlSync?: boolean }
+  /** Transcript already in the store, plus the slot its paging cursor describes. */
+  messages?: RootState['chat']['messages']
+  slotCursorKey?: string | null
 }) {
-  const { route = '/chat', entries, mode, activeSlot = null, slots = [], hostEmbed } = opts
+  const { route = '/chat', entries, mode, activeSlot = null, slots = [], hostEmbed,
+          messages = [], slotCursorKey = null } = opts
   const preload: PreloadState = {
     dashboard: {
       status: { platform: 'darwin' }, connected: true, slots, approvalMode: 'normal',
@@ -125,7 +132,7 @@ function renderChatPage(opts: {
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
     },
     chat: {
-      activeSlot, messages: [], slotRunning: false, slotStopping: false, slotState: 'idle',
+      activeSlot, messages, slotCursorKey, slotRunning: false, slotStopping: false, slotState: 'idle',
       slotStatusDetail: {}, slotHasMore: false, slotOldestIndex: 0, loadingOlder: false,
       lastChunkSeq: undefined, history: [], historyHasMore: false, historyOffset: 0,
       pendingInput: null, slotContextPct: {}, voicePlaying: false, voiceAudio: null,
@@ -185,6 +192,91 @@ const orchSlots = [
   slot('orch-1-100', 'Plan migration', 'orchestrator'),
   slot('orch-2-200', 'Review design', 'orchestrator'),
 ]
+
+/** A ?msg= deep link must survive the slot switch it arrives with. The effect
+ *  reads `state.chat.messages`, which still holds the OUTGOING chat until the
+ *  switch settles — so without a slot-identity gate the target is "not found"
+ *  in the wrong transcript, the one-shot ref is spent, and the jump is lost. */
+describe('ChatPage ?sid= + ?msg= deep link across a slot switch', () => {
+  const slots: ChatSlot[] = [
+    { key: 'chat-1-100', title: 'short chat', agent: 'a', mode: 'chat' } as ChatSlot,
+    { key: 'chat-2-200', title: 'long chat', agent: 'a', mode: 'chat' } as ChatSlot,
+  ]
+  /** A complete window for the chat being LEFT. The deep-link target belongs to
+   *  the requested chat, so it is legitimately absent from this array. */
+  const outgoing = [
+    { role: 'user', content: 'a', ts: '2026-01-01T00:00:00Z' },
+    { role: 'assistant', content: 'b', ts: '2026-01-01T00:00:01Z' },
+  ] as RootState['chat']['messages']
+  const DEEP_LINK = '/chat?sid=chat-2-200&msg=2025-06-01T00%3A00%3A00Z'
+
+  it('does not declare the target unavailable while the requested chat is still activating', async () => {
+    renderChatPage({ route: DEEP_LINK, activeSlot: 'chat-1-100', slots, messages: outgoing, slotCursorKey: 'chat-1-100' })
+    // The outgoing window is complete, so an ungated hand-off hits the dead-end
+    // branch and paints a false notice against a chat the link never named.
+    await new Promise(r => setTimeout(r, 250))
+    // Matched on "no longer", which BOTH unavailability notices still share: a
+    // matcher tied to wording only one of them carries would pass vacuously here.
+    expect(screen.queryByText(/no longer/i)).toBeNull()
+  })
+
+  it('acts on the deep link once the window belongs to the requested chat (control)', async () => {
+    // Target absent from a window whose extent is known, so the hand-off is
+    // correct to make here and the gate must not suppress it.
+    renderChatPage({ route: DEEP_LINK, activeSlot: 'chat-2-200', slots, messages: outgoing, slotCursorKey: 'chat-2-200' })
+    const notice = await screen.findByText(/no longer/i)
+    // Both strings share "no longer", so the pin word is what discriminates:
+    // this reader followed a link and may never have pinned anything.
+    expect(notice.textContent).not.toMatch(/pinned/i)
+  })
+
+  /** A same-tick twin: identical `ts`, different `mid`. The helper falls back to ts
+   *  when the requested mid is absent, which on a bounded page is a DIFFERENT row. */
+  const SAME_TICK = [
+    { role: 'user', content: 'a', ts: '2026-01-01T00:00:00Z' },
+    { role: 'assistant', content: 'twin', ts: '2025-06-01T00:00:00Z', meta: { mid: 'mid-other' } },
+  ] as RootState['chat']['messages']
+
+  it('hands off when the requested mid is off-page, rather than taking a same-ts twin', async () => {
+    // Accepting the twin highlights the wrong message with no signal at all, which is
+    // strictly worse than paging: the mid exists to discriminate exactly this pair.
+    renderChatPage({ route: `${DEEP_LINK}&mid=mid-offpage`, activeSlot: 'chat-2-200', slots, messages: SAME_TICK, slotCursorKey: 'chat-2-200' })
+    expect(await screen.findByText(/no longer/i)).toBeTruthy()
+  })
+
+  it('still resolves a legacy link carrying NO mid, by ts alone', async () => {
+    // Opposite direction: the ts fallback is what the helper documents for older links,
+    // so a guard that also rejected THEM would be worse than the defect it fixes.
+    renderChatPage({ route: DEEP_LINK, activeSlot: 'chat-2-200', slots, messages: SAME_TICK, slotCursorKey: 'chat-2-200' })
+    await new Promise(r => setTimeout(r, 250))
+    expect(screen.queryByText(/no longer/i)).toBeNull()
+  })
+})
+
+/** A transient paging error must not be reported with permanent-deletion copy. The
+ *  `earlier` origin already had a retry string; the `link` origin this PR introduces
+ *  fell through to the not-found writer, so a network blip told a reader following a
+ *  live link that the message was gone. Asserted on source text because the routing
+ *  ternary is shared with the pin path, whose own suite pins it the same way.
+ */
+describe('paging-failure notice by jump origin', () => {
+  const GONE = /no longer/i
+  const src = readFileSync(resolve(__dirname, '../pages/ChatPage.tsx'), 'utf8')
+
+  it('routes the link origin to the retry copy, not to the not-found writer', () => {
+    expect(src).toContain("pendingPinnedJump.origin === 'earlier' || pendingPinnedJump.origin === 'link'")
+    // Positive control for the matcher: the retry string it selects is real copy.
+    expect(i18nT('components.chatPane.earlier_messages_load_failed')).toMatch(/try again/i)
+    expect(i18nT('components.chatPane.earlier_messages_load_failed')).not.toMatch(GONE)
+  })
+
+  it('keeps the not-found copy permanent-phrased, so the pair stays distinguishable', () => {
+    // Negative control: satisfying the test above by making the NOT-FOUND copy
+    // retryable would be a different regression, so it must still read permanent.
+    expect(i18nT('pages.chat.deepLink.message_unavailable')).toMatch(GONE)
+    expect(i18nT('pages.chat.pins.message_unavailable')).toMatch(GONE)
+  })
+})
 
 describe('ChatPage ?sid= URL parameter', () => {
   describe('URL sync on active slot', () => {

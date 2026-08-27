@@ -5,6 +5,7 @@ import {
   loadPanelToggleOverrides,
   matchPanelToggleEvent,
   PANEL_TOGGLE_IDS,
+  PANEL_TOGGLES_SKIPPING_SHELL,
   PANEL_TOGGLE_SHORTCUTS_EVENT,
   PANEL_TOGGLE_SHORTCUTS_KEY,
   resolvePanelToggleBinding,
@@ -38,8 +39,40 @@ describe('defaults', () => {
     expect(DEFAULT_PANEL_TOGGLE_BINDINGS['left-sidebar']).toBeNull()
   })
 
-  it('covers exactly the three known panel ids', () => {
-    expect([...PANEL_TOGGLE_IDS].sort()).toEqual(['left-sidebar', 'session-panel', 'side-panel'])
+  /* The terminal ships unbound for a reason specific to it, not merely to be
+     conservative: PANEL_TOGGLES_SKIPPING_SHELL takes its chord from the PTY by
+     design, so ANY default spends one of the user's shell keystrokes. The obvious
+     pick, Cmd/Ctrl+J (VS Code's Toggle Panel), is ^J on Windows/Linux — readline's
+     accept-line — so a default would close the panel under anyone who pressed it
+     instead of Enter. This assertion is the guard: adding a default here means
+     choosing which shell keystroke to spend for every user, and should be a
+     deliberate, reviewed act rather than a one-line edit. */
+  it('ships the terminal unbound by default (opt-in), spending no shell keystroke', () => {
+    expect(DEFAULT_PANEL_TOGGLE_BINDINGS['terminal']).toBeNull()
+    expect(PANEL_TOGGLES_SKIPPING_SHELL.has('terminal')).toBe(true)
+  })
+
+  it('keeps the bound defaults collision-free against each other', () => {
+    const bound = PANEL_TOGGLE_IDS
+      .map(id => DEFAULT_PANEL_TOGGLE_BINDINGS[id])
+      .filter(c => c !== null)
+      .map(c => JSON.stringify(c))
+    expect(new Set(bound).size).toBe(bound.length)
+  })
+
+  it('covers exactly the four known panel ids', () => {
+    expect([...PANEL_TOGGLE_IDS].sort()).toEqual(['left-sidebar', 'session-panel', 'side-panel', 'terminal'])
+  })
+
+  /* Mirrors VS Code's `terminal.integrated.commandsToSkipShell`: only the commands
+     that must survive terminal focus are listed, and everything else is conceded
+     to the PTY. The terminal toggle qualifies because opening that panel focuses
+     its own shell — conceding there makes the chord one-way. */
+  it('lets ONLY the terminal toggle skip the shell', () => {
+    expect([...PANEL_TOGGLES_SKIPPING_SHELL]).toEqual(['terminal'])
+    for (const id of PANEL_TOGGLE_IDS) {
+      if (id !== 'terminal') expect(PANEL_TOGGLES_SKIPPING_SHELL.has(id)).toBe(false)
+    }
   })
 })
 

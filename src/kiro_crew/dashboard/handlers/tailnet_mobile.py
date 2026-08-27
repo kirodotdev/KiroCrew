@@ -18,15 +18,12 @@ with a name but no published serve means.
 
 Three properties are load-bearing.
 
-**This is a LIVE probe, and the existing status endpoint is not.**
-``GET /api/tailnet/status`` deliberately reports the value resolved once at
-startup, because that is what actually went into the fixed origin allowlist.
-This endpoint reports what the machine can do *next*. The two must stay separate:
-a name that resolves now but was absent at startup is exactly the boot race where
-the origin is NOT trusted, and reporting it as ready would be the
-"checked-but-never-ran shown as a clean result" defect. It gets its own step
-(``restart_gateway``) instead. The one-click UI resumes after the replacement
-gateway is ready, while the security boundary itself changes only at startup.
+**This is a LIVE daemon probe, while the existing status endpoint reports the
+live request boundary.**  They must stay separate: a daemon name is not trusted
+merely because it resolves.  The background recovery path first validates and
+adds it to the running Origin/Host set; only then does this endpoint report the
+name as trusted.  Until that happens the existing fail-closed restart step is
+preserved, including for config changes that still require a restart.
 
 **The QR carries a live credential, so it is minted on demand and never cached.**
 The payload is a URL with a session token in its query string. It is not logged,
@@ -54,7 +51,7 @@ from aiohttp import web
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.dashboard import tailnet, tailnet_serve
 from kiro_crew.dashboard.boot_id import current_boot_id
-from kiro_crew.dashboard.handlers._shared import _is_restricted_session
+from kiro_crew.dashboard.handlers._shared import _caller_bounds, _is_restricted_session
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.token_auth import (
     LINK_WINDOW_SECS,
@@ -339,7 +336,7 @@ async def _live_state(request: web.Request, port: int) -> _LiveState:
             published = state.published
             serve_detail = state.detail
 
-    startup_host = str(request.app.get("tailnet_host") or "")
+    startup_host = tailnet.running_tailnet_origin(request.app)[0]
     step = _derive_step(
         pinned=pinned,
         probe=probe,
@@ -575,10 +572,14 @@ async def api_tailnet_mobile_qr(request: web.Request) -> web.Response:
     backed routes admit, so a bespoke subject would produce a phone session that
     looks fine and is silently denied those routes.
 
-    Refuses unless the derived step is ``ready``. That is the whole precondition
-    set, read from ``_derive_step`` rather than re-checked here: a QR for a URL
-    nothing answers is a support ticket, not a feature, and a QR issued under an
-    administrator's tailnet pin is a credential the ceiling forbids.
+    Refuses unless the derived step is ``ready``. That is the whole machine-state
+    precondition set, read from ``_derive_step`` rather than re-checked here: a
+    QR for a URL nothing answers is a support ticket, not a feature, and a QR
+    issued under an administrator's tailnet pin is a credential the ceiling
+    forbids. On top of the machine state, the CALLER's own session bounds are
+    enforced via ``_shared._caller_bounds`` (the same helper the mobile-link
+    mint uses): the minted token never out-scopes the session authorizing it,
+    and a caller with no lifetime left to lend is refused.
     """
     refusal = _guard(request)
     if refusal is not None:
@@ -641,9 +642,11 @@ async def api_tailnet_mobile_qr(request: web.Request) -> web.Response:
             parsed = parse_duration(raw_ttl)
             if parsed:
                 ttl = parsed
-    # Clamped twice on purpose: this endpoint's own ceiling first, then the
-    # global session ceiling, so neither a caller-supplied value nor a future
-    # raise of MAX_QR_TTL_SECS can exceed what token_auth itself allows.
+    # Clamped by this endpoint's own ceiling first, then the global session
+    # ceiling, so neither a caller-supplied value nor a future raise of
+    # MAX_QR_TTL_SECS can exceed what token_auth itself allows. The caller's
+    # own remaining lifetime is applied further down, after the last awaited
+    # step before the mint, so it cannot go stale while this handler waits.
     ttl = min(ttl, MAX_QR_TTL_SECS, MAX_SESSION_TTL_SECS)
 
     state_obj = request.app.get("state")
@@ -670,8 +673,13 @@ async def api_tailnet_mobile_qr(request: web.Request) -> web.Response:
     # lapses. Kept as a supported shape for an operator who wants the credential
     # bounded by a clock regardless of process lifetime.
     #
-    # Mutually exclusive on purpose: carrying both would mean a session that
-    # neither refreshes nor lasts, which is worse than either.
+    # Mutually exclusive as the DEFAULT shapes on purpose: choosing both for an
+    # unbounded caller would mean a session that neither refreshes nor lasts,
+    # which is worse than either. A BOUNDED caller is different — its carried
+    # claims are merged over the configured shape below, and a token carrying
+    # both ``boot`` and ``no_refresh`` is then the honest intersection: the
+    # session ends at whichever bound is hit first, which is exactly what
+    # "never out-scope the caller" requires.
     #
     # The TTL clamp above is untouched under both shapes. Rotation is what
     # extends a boot-bound session, so no ceiling and no security constant moves.
@@ -692,9 +700,49 @@ async def api_tailnet_mobile_qr(request: web.Request) -> web.Response:
         _until_restart = True
 
     if _until_restart:
-        claims = {"boot": current_boot_id()}
+        shape = {"boot": current_boot_id()}
     else:
-        claims = {"no_refresh": "1"}
+        shape = {"no_refresh": "1"}
+    # The calling session's own bounds cap everything minted below — the same
+    # invariant the sibling mobile-link mint enforces, read through the same
+    # shared helper so the two surfaces cannot drift. A deliberately bounded
+    # owner session (``no_refresh``, or a short remaining ``session_exp``) must
+    # not trade itself for a boot-bound, refresh-chained credential on another
+    # device: behind ``tailscale serve`` every request reaches the gateway from
+    # 127.0.0.1, so the token cannot be device-pinned and its own bounds are the
+    # only limit that holds. A caller with no lifetime left to lend is refused
+    # outright — minting against it would hand out a credential that outlives
+    # the session authorizing it.
+    #
+    # Read AFTER every awaited step above (the request body and the config
+    # load), deliberately: the remaining lifetime is a wall-clock snapshot, and
+    # a client that trickles the request body in controls how long this handler
+    # waits — a snapshot taken before those awaits would let a caller in its
+    # last seconds stretch the mint past its own expiry.
+    carried, ttl_ceiling = _caller_bounds(request)
+    if ttl_ceiling <= 0:
+        await _audit_async(request, "tailnet.mobile.qr", "denied", "caller-session-expired")
+        return web.json_response(
+            {
+                "error": (
+                    "This session has no lifetime left to lend, so no sign-in "
+                    "link can be issued. Sign in again, then scan."
+                ),
+                "code": "caller_session_expired",
+            },
+            status=403,
+        )
+    # The caller's remaining lifetime completes the clamp: a short-lived caller
+    # asking for the default cannot exceed what the authorizing session itself
+    # has left.
+    ttl = min(ttl, ttl_ceiling)
+    # The caller's carried bounds win on conflict and are never dropped: a
+    # ``boot`` claim is carried verbatim rather than re-derived (the same rule
+    # the link→session exchange follows), and a ``no_refresh`` caller stamps the
+    # minted credential ``no_refresh`` regardless of the configured shape, so
+    # the phone session never grows a refresh chain its authorizing session did
+    # not have.
+    claims = {**shape, **carried}
     token = generate_token(owner_id or "local-app", ttl_seconds=ttl, extra=claims)
     url = f"https://{host}/?token={token}"
     try:
@@ -721,8 +769,10 @@ async def api_tailnet_mobile_qr(request: web.Request) -> web.Response:
             # The window in which the LINK must be opened, which is not the
             # session lifetime and is the thing that surprises people: the token
             # stops being redeemable long before the session it would have
-            # created would have expired.
-            "link_window_secs": LINK_WINDOW_SECS,
+            # created would have expired. generate_token clamps the link-click
+            # ``exp`` to the session TTL, so a short-lived caller's link dies
+            # with the ttl it lent — report the live window, not the constant.
+            "link_window_secs": min(LINK_WINDOW_SECS, ttl),
             "host": host,
         }
     )

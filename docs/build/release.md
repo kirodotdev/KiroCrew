@@ -506,6 +506,48 @@ against that pinned key using the same `cli-manifest.py verify` checks the
 installer runs. A channel serving no feed at all is skipped with a warning,
 since publishing is not a regression for it.
 
+### Breaking releases: the forced-update floor
+
+A release that older clients must not keep running against (a feed-schema
+break, a protocol break, a data migration without back-compat) declares a
+**minimum supported version** in [`packaging/MIN_VERSION`](../../packaging/MIN_VERSION):
+one bare release version on its own line (comments and blank lines are
+ignored; more than one value line fails the publish). Every CLI feed manifest
+published from a commit carrying that value embeds it as the optional signed
+`min_version` field.
+
+What each consumer does with it:
+
+- **Running gateways** compare the floor against their own version on the
+  normal feed check — after verifying the manifest's signature against the
+  same pinned key the installer uses (`platform/feed_trust.py`), because the
+  floor coerces the UI and a tampered feed must not be able to hold every
+  dashboard hostage. Versions are folded per channel first (a promoted
+  stable build's `0.3.0rc13` stamp IS the `0.3.0` release). Below the floor,
+  `update_required` turns true on the status frame and
+  `GET /api/update/check`, and the dashboard's proactive update modal drops
+  its snooze/skip/Escape affordances — the prompt stays up until the install
+  is updated. The gateway itself keeps running, and every verification or
+  parse failure degrades to the ordinary dismissible prompt: the floor fails
+  toward freedom, never toward coercion.
+- **The installer** verifies the field's format and otherwise ignores it — it
+  always installs the signed version, which is exactly how a floored install
+  gets satisfied.
+- **The enterprise governance pin** (`updates.min_version` in
+  `security_policy.json`) is independent and OR'd with the feed floor;
+  either alone makes the update mandatory.
+
+Rules for setting the floor:
+
+- Set it to the first version old clients can safely land on — usually the
+  breaking release itself.
+- Never set it in the same release that introduces floor support: clients
+  only learn to read the field after updating once, so a floor only moves
+  clients that already run a floor-aware build.
+- Clear or lower it only to roll back a mistake; installs above the floor are
+  never affected. `cli-manifest.py` refuses a floor above the manifest's own
+  version and any non-bare-release value at publish time.
+
 ### Installing and switching channels
 
 ```bash

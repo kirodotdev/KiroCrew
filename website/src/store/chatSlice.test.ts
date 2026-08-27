@@ -601,3 +601,137 @@ describe('requestSlotReveal / clearSlotReveal — pending reveal request (issue 
     expect(store.getState().chat.revealRequest).toEqual({ key: 'k-b', nonce: 3 })
   })
 })
+
+// ---------------------------------------------------------------------------
+// requestedModel threading — live downgrade flag (#5326)
+// ---------------------------------------------------------------------------
+import {
+  sseSubagentSnapshot,
+  sseSubagentPending,
+  sseSubagentDone,
+} from './chatSlice'
+
+describe('sseSubagentSpawn — requestedModel threading (#5326)', () => {
+  function makeSpawnStore() {
+    return configureStore({
+      reducer: { chat: chatReducer },
+      middleware: (getDefault) => getDefault({ serializableCheck: false, immutableCheck: false }),
+    })
+  }
+
+  it('threads requestedModel from the spawn frame into the new row', () => {
+    const store = makeSpawnStore()
+    store.dispatch(setActiveSlot('active'))
+    store.dispatch(sseSubagentSpawn({
+      slot: 'active', id: 'sa1', task: 't', agent: 'a',
+      model: 'claude-opus-4.7', requested_model: 'claude-opus-4.8',
+    }))
+    expect(store.getState().chat.subagents['sa1'].requestedModel).toBe('claude-opus-4.8')
+  })
+
+  it('leaves requestedModel undefined when the frame omits it', () => {
+    const store = makeSpawnStore()
+    store.dispatch(setActiveSlot('active'))
+    store.dispatch(sseSubagentSpawn({ slot: 'active', id: 'sa2', task: 't', agent: 'a', model: 'gpt-5.6' }))
+    expect(store.getState().chat.subagents['sa2'].requestedModel).toBeUndefined()
+  })
+
+  it('sets requestedModel on a pending→running transition', () => {
+    const store = makeSpawnStore()
+    store.dispatch(setActiveSlot('active'))
+    // Use sseSubagentPending to seed a proper pending row (RTK Immer state is frozen).
+    store.dispatch(sseSubagentPending({ slot: 'active', id: 'sa3', task: 'old task', approval_id: 'ap-1' }))
+    expect(store.getState().chat.subagents['sa3'].status).toBe('pending')
+
+    store.dispatch(sseSubagentSpawn({
+      slot: 'active', id: 'sa3', task: 'new task', agent: 'kirocrew',
+      model: 'claude-opus-4.7', requested_model: 'claude-opus-4.8',
+    }))
+    const row = store.getState().chat.subagents['sa3']
+    expect(row.status).toBe('running')
+    expect(row.requestedModel).toBe('claude-opus-4.8')
+  })
+
+  it('does not clobber existing requestedModel when a later frame omits it', () => {
+    const store = makeSpawnStore()
+    store.dispatch(setActiveSlot('active'))
+    // First spawn sets the value.
+    store.dispatch(sseSubagentSpawn({
+      slot: 'active', id: 'sa4', task: 't', agent: 'a',
+      model: 'claude-opus-4.7', requested_model: 'claude-opus-4.8',
+    }))
+    // A second spawn frame without requested_model must not blank the field.
+    store.dispatch(sseSubagentSpawn({ slot: 'active', id: 'sa4', task: 't', agent: 'a' }))
+    expect(store.getState().chat.subagents['sa4'].requestedModel).toBe('claude-opus-4.8')
+  })
+})
+
+describe('sseSubagentDone — requestedModel threading (#5326)', () => {
+  function makeDoneStore() {
+    return configureStore({ reducer: { chat: chatReducer } })
+  }
+
+  it('rehydrates requestedModel when a completed card is rebuilt from subagent_done alone', () => {
+    // Mirrors the post-reconnect path: clearSubagentsForSnapshot drops the
+    // finished card, then subagent_done rebuilds it. Without requested_model
+    // the amber downgrade chip would silently vanish from a downgraded run.
+    const store = makeDoneStore()
+    store.dispatch(setActiveSlot('active'))
+    store.dispatch(sseSubagentDone({
+      slot: 'active', id: 'sd1', elapsed: 12, outcome: 'completed',
+      model: 'claude-opus-4.7', requested_model: 'claude-opus-4.8',
+    }))
+    const row = store.getState().chat.subagents['sd1']
+    expect(row.model).toBe('claude-opus-4.7')
+    expect(row.requestedModel).toBe('claude-opus-4.8')
+  })
+
+  it('does not clobber an existing requestedModel when the done frame omits it', () => {
+    const store = makeDoneStore()
+    store.dispatch(setActiveSlot('active'))
+    store.dispatch(sseSubagentSpawn({
+      slot: 'active', id: 'sd2', task: 't', agent: 'a',
+      model: 'claude-opus-4.7', requested_model: 'claude-opus-4.8',
+    }))
+    store.dispatch(sseSubagentDone({ slot: 'active', id: 'sd2', elapsed: 5, outcome: 'completed' }))
+    expect(store.getState().chat.subagents['sd2'].requestedModel).toBe('claude-opus-4.8')
+  })
+})
+
+describe('sseSubagentSnapshot — requestedModel threading (#5326)', () => {
+  function makeSnapStore() {
+    return configureStore({
+      reducer: { chat: chatReducer },
+      middleware: (getDefault) => getDefault({ serializableCheck: false, immutableCheck: false }),
+    })
+  }
+
+  it('threads requestedModel from the snapshot frame into the row', () => {
+    const store = makeSnapStore()
+    store.dispatch(setActiveSlot('active'))
+    store.dispatch(sseSubagentSnapshot({
+      slot: 'active', id: 'snap1', task: 't', agent: 'a',
+      model: 'claude-opus-4.7', requested_model: 'claude-opus-4.8',
+      streaming: '', last_tool: '', started: 1000, tool_count: 0,
+    }))
+    expect(store.getState().chat.subagents['snap1'].requestedModel).toBe('claude-opus-4.8')
+  })
+
+  it('preserves existing requestedModel when snapshot omits it (reconnect parity)', () => {
+    const store = makeSnapStore()
+    store.dispatch(setActiveSlot('active'))
+    // First frame sets the value.
+    store.dispatch(sseSubagentSnapshot({
+      slot: 'active', id: 'snap2', task: 't', agent: 'a',
+      model: 'claude-opus-4.7', requested_model: 'claude-opus-4.8',
+      streaming: '', last_tool: '', started: 1000, tool_count: 0,
+    }))
+    // Second snapshot omits requested_model — must preserve the known value.
+    store.dispatch(sseSubagentSnapshot({
+      slot: 'active', id: 'snap2', task: 't', agent: 'a',
+      model: 'claude-opus-4.7',
+      streaming: 'x', last_tool: '', started: 1000, tool_count: 1,
+    }))
+    expect(store.getState().chat.subagents['snap2'].requestedModel).toBe('claude-opus-4.8')
+  })
+})

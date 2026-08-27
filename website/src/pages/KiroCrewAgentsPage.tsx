@@ -27,6 +27,7 @@ import { wakesCrew, crewWakeQueryKey, crewWebhooksQueryKey, webhookBoundToCrew, 
 import type { CronJob } from '../types'
 import type { KiroCrewAgent } from '../components/AgentSelector'
 import { SourceBadge } from '../components/SourceBadge'
+import { errMessage } from '../utils/thunkError'
 
 import { i18nT } from '../i18n/t'
 import ErrorNotice from '../components/ErrorNotice'
@@ -748,8 +749,10 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     } catch (e) {
       // `unwrap()` rethrows Redux Toolkit's SERIALIZED error, which is a plain
       // object carrying `message` rather than a real Error — an `instanceof`
-      // check alone renders it as "[object Object]".
-      const msg = e instanceof Error ? e.message : (e as { message?: string })?.message
+      // check alone renders it as "[object Object]". `errMessage` owns that
+      // extraction for every thunk-boundary reader, so this site cannot drift
+      // from the classifier in `utils/thunkError` that depends on the same fact.
+      const msg = errMessage(e)
       settleFor(epoch, msg || i18nT('pages.kiroCrewAgentsPage.failed_to_update_agent'))
       return
     }

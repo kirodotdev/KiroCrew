@@ -752,6 +752,56 @@ _INSTANCES_FRAME_SRC_EXTRA = " http://*.localhost:*"
 # artifacts. Grant same-origin only; cross-origin remains denied.
 _PERMISSIONS_POLICY = "clipboard-write=(self), clipboard-read=(self)"
 
+# /vendor/* is fetched by sandboxed widget/artifact iframes, which are
+# null-origin (srcdoc/blob) documents and therefore NON-secure contexts. On the
+# default deployment the gateway is plain http on loopback — a "more-private
+# address space" under Chrome's Private Network Access policy — which blocks
+# the iframe's <script src> for the Tailwind runtime unless the load goes
+# through CORS with server approval: the tag carries
+# crossorigin="anonymous" (widgetSrcdoc.ts) and this response carries
+# Access-Control-Allow-Origin. Verified against real Chromium: with the
+# header the runtime loads; without it the load hard-fails (crossorigin
+# makes the header MANDATORY, not additive), the runtime never arrives,
+# Tailwind-classed widgets render unstyled, and the widget loading overlay
+# sits on its hang backstop (blank box), see issue #6181. `*` leaks nothing:
+# /vendor/ holds only public, non-secret static JS (already auth-exempt via
+# token_auth._BYPASS_PREFIXES) and the response carries no credentials or
+# user data.
+_VENDOR_PATH_PREFIX = "/vendor/"
+_VENDOR_CORS_HEADER_VALUE = "*"
+_PNA_REQUEST_HEADER = "Access-Control-Request-Private-Network"
+_PNA_RESPONSE_HEADER = "Access-Control-Allow-Private-Network"
+# Two hours — Chrome caps preflight cache entries at 7200s, so a larger value
+# documents a guarantee the browser does not honour. The vendor files are
+# stable, unversioned assets; caching the approval avoids a preflight per
+# widget for the cap's duration.
+_VENDOR_PREFLIGHT_MAX_AGE_SECS = 7200
+
+
+async def _vendor_preflight_handler(request: web.Request) -> web.Response:
+    """Answer the CORS / Private Network Access preflight for ``/vendor/*``.
+
+    Forward-compat: current Chromium blocks the insecure-initiator load at
+    the CORS layer WITHOUT sending a PNA preflight (verified empirically —
+    the GET-with-Access-Control-Allow-Origin path above is the live fix).
+    Chrome's PNA rollout answers a private-network subresource fetch with a
+    preflight OPTIONS carrying ``Access-Control-Request-Private-Network:
+    true``; ``add_static`` registers GET/HEAD only, so if/when that ships
+    for this initiator class the preflight would 405 and the runtime load
+    would fail closed again. The PNA grant header is echoed only when the
+    request actually asks for it, per the PNA spec's request/response
+    pairing.
+    """
+    headers = {
+        "Access-Control-Allow-Origin": _VENDOR_CORS_HEADER_VALUE,
+        "Access-Control-Allow-Methods": "GET, HEAD",
+        "Access-Control-Max-Age": str(_VENDOR_PREFLIGHT_MAX_AGE_SECS),
+    }
+    if request.headers.get(_PNA_REQUEST_HEADER, "").lower() == "true":
+        headers[_PNA_RESPONSE_HEADER] = "true"
+    return web.Response(status=204, headers=headers)
+
+
 # Content-hashed build output (Vite emits ``/assets/<name>-<hash>.<ext>``;
 # the URL changes whenever the content changes) is safe to cache forever.
 # Everything else — index.html, the SPA shell, /api — keeps the no-store
@@ -905,6 +955,11 @@ def _apply_security_headers(
         ),
     )
     resp.headers.setdefault("Permissions-Policy", _PERMISSIONS_POLICY)
+    # CORS approval for the vendored runtime files fetched by null-origin
+    # sandboxed iframes; pairs with the /vendor OPTIONS preflight handler.
+    # See _VENDOR_PATH_PREFIX for the full Private-Network-Access rationale.
+    if path.startswith(_VENDOR_PATH_PREFIX):
+        resp.headers.setdefault("Access-Control-Allow-Origin", _VENDOR_CORS_HEADER_VALUE)
     # Defense-in-depth browser headers (CWE-1021/693/200/319). All via setdefault
     # so a handler can override. The clickjacking control is CSP ``frame-ancestors``
     # above. X-Frame-Options is origin-exact (SAMEORIGIN) and cannot express the
@@ -1038,6 +1093,12 @@ def _register_dist_static_routes(app: web.Application, dist_dir: Path) -> None:
             show_index=False,
             append_version=False,  # stable URLs, no cache-busting
         )
+        # PNA/CORS preflight, forward-compat: add_static registers GET/HEAD
+        # only, so a private-network preflight OPTIONS would 405 and fail the
+        # widget iframe's runtime load closed if Chrome starts sending one for
+        # this initiator class (today it blocks at the CORS layer without a
+        # preflight — see _vendor_preflight_handler).
+        app.router.add_route("OPTIONS", "/vendor/{tail:.*}", _vendor_preflight_handler)
     # App Store brand assets — builtin app icons + hero images live at
     # dist/app-assets/ and are referenced by absolute url('/app-assets/...')
     # from each builtin's app.json (iconUrl / heroImage / heroImageDark).
@@ -2419,6 +2480,12 @@ def _pending_skill_notification(info: dict) -> tuple[str, str, str, list[dict[st
     return title, body, review_url, actions
 
 
+def _tailnet_origin_enabled() -> bool:
+    """Read the live recovery opt-in; callers offload this blocking config read."""
+
+    return bool(KiroCrewConfig.load().dashboard.tailscale.enabled)
+
+
 async def start_dashboard(
     sessions: SessionManager,
     crons: CronService,
@@ -3097,14 +3164,9 @@ async def start_dashboard(
             "tailnet access enabled: trusting origin https://%s (bind and auth unchanged)",
             _tailnet_host,
         )
-    # Stashed on the app, not left a local, because GET /api/tailnet/status must
-    # report the value the running origin set was actually built from rather than
-    # re-probe the daemon (see handlers/tailnet.py). ``tailnet_resolved_at`` is
-    # stamped unconditionally — it timestamps the resolution ATTEMPT, so an
-    # "unresolved" card can say when we last looked; ``0`` means the derivation
-    # never ran (feature off, or pinned). Both start-up paths set both keys: only
-    # one of them serves this route today, but an earlier round of this feature
-    # already shipped a bug from touching one startup site and not the other.
+    # Keep the initial snapshot on both startup surfaces for compatibility.
+    # Runtime-aware handlers read the mutable state installed below, which can
+    # acquire one validated origin after a Tailscale/Gateway boot race.
     app["tailnet_host"] = _tailnet_host
     app["tailnet_resolved_at"] = int(time.time()) if _tailnet_host else 0
     # The governance-filtered identity-trust value the middleware was built
@@ -3201,6 +3263,17 @@ async def start_dashboard(
                 dashboard_url,
             )
             raise RuntimeError("dashboard_url requires token auth middleware")
+
+    # Register only after the final allowed-origin set is selected.  The startup
+    # hook schedules a sleeping background task and returns immediately, so this
+    # cannot extend listener startup; cleanup owns cancellation before aiohttp
+    # freezes the signal lists in runner.setup().
+    tailnet.install_tailnet_origin_recovery(
+        app,
+        enabled=_ts_cfg.enabled,
+        initial_host=_tailnet_host,
+        load_enabled=_tailnet_origin_enabled,
+    )
 
     # ── Loop stall watchdog shutdown ─────────────────────────────────────────
     # Register the cleanup hook HERE, before ``runner.setup()`` freezes the
@@ -3801,6 +3874,14 @@ async def start_api_server(
     # re-bind a rotated access token to the same verified peer identity).
     app["tailnet_trust"] = _tailnet_trust
     app["local_only"] = local_only
+    # Parity with the full dashboard: headless gateways have the same live
+    # Origin/Host boundary and must recover the same boot race without restart.
+    tailnet.install_tailnet_origin_recovery(
+        app,
+        enabled=_ts_cfg.enabled,
+        initial_host=_tailnet_host,
+        load_enabled=_tailnet_origin_enabled,
+    )
 
     # Per-session internal secret for machine-to-machine (mcp-core, cron) auth.
     # Deferred file write (and parent mkdir) until after the port binds (mirrors

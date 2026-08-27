@@ -451,3 +451,144 @@ def test_a_corrupt_ts_is_skipped_not_ranked(bad: str) -> None:
 def test_all_candidates_corrupt_yields_no_floor(bad: str) -> None:
     """No usable floor means None -- never a bogus value the stamper will drop."""
     assert latest_transcript_ts(bad, bad) is None
+
+
+# ── Restore-read tier: no startup restore read is INLINED on the loop (#895) ──
+#
+# Same failure family as the persist gate above, opposite direction: a READ this
+# time, and the cost is not a dropped write but a stalled event loop. The startup
+# restore drivers call list_sessions() (a glob + stat + first-line read of EVERY
+# session file) and, per session, a metadata read plus a chained transcript walk.
+# On a real home that measured ~13.6s for 76 sessions — and because
+# _loop_heartbeat pets the LoopStallWatchdog FROM A COROUTINE, a blocked loop
+# cannot pet it: the 25s exit_after timer fires, dumps thread stacks and _exit()s
+# the gateway before it ever finishes booting.
+#
+# SCOPE, stated plainly: this gate is SHAPE cover, not the proof. It flags a read
+# spelled directly inside an `async def` body in chat_persistence.py. It would
+# NOT have caught #895's original form, where the async driver drove a synchronous
+# GENERATOR and the reads sat one hop away inside it — and it deliberately does not
+# chase that hop, because following module-local calls transitively lands in
+# _rehydrate_slot_from_history's read fallback (dead when a caller prefetches) and
+# buys false positives that would get suppressed rather than obeyed.
+#
+# What actually pins the property is behavioural, in
+# test_open_slots_persistence.py::test_restore_open_slots_async_reads_off_the_loop
+# and test_session_restore.py's off-loop class: they record the thread each half
+# ran on and fail on the base shape. This gate is the cheap companion that stops
+# a future edit from re-inlining a read straight into a driver.
+#
+# The offloaded shape passes for free — `asyncio.to_thread(_prefetch_recent_session, …)`
+# passes the function as a bare Name, which is not a call at that point.
+#
+# Scoped to chat_persistence.py deliberately. Repo-wide these three methods have
+# many legitimate on-loop callers reading one small metadata line; the invariant
+# being pinned is about the BULK restore path, and a gate that fires everywhere
+# would be turned off rather than obeyed.
+
+_RESTORE_READS = frozenset({"list_sessions", "read_messages_chained", "get_metadata_status"})
+
+
+def find_restore_read_violations(source: str, path: str = "<source>") -> list[tuple[str, int]]:
+    """Return ``(path, lineno)`` for on-loop bulk-restore reads.
+
+    Matches the ATTRIBUTE form only (``conv_log.read_messages_chained(key)``),
+    which is how every real call site spells it — the methods live on
+    ``ConversationLog``, so there is no bare-name form to evade through. A
+    trailing ``# loop-ok: <reason>`` comment suppresses a line that is genuinely
+    safe, and every suppression must state its reason.
+    """
+    tree = ast.parse(source)
+    suppressed = _suppressed_lines(source)
+    out: list[tuple[str, int]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.AsyncFunctionDef):
+            continue
+        for call in _scope_calls(node):
+            func = call.func
+            if not (isinstance(func, ast.Attribute) and func.attr in _RESTORE_READS):
+                continue
+            span = range(call.lineno, (call.end_lineno or call.lineno) + 1)
+            if any(ln in suppressed for ln in span):
+                continue
+            out.append((path, call.lineno))
+    return out
+
+
+def test_no_startup_restore_read_runs_on_the_event_loop() -> None:
+    """chat_persistence's async drivers must prefetch, never read inline."""
+    target = _src_root() / "dashboard" / "chat_persistence.py"
+    assert target.exists(), f"chat_persistence.py not found at {target}"
+    violations = find_restore_read_violations(
+        target.read_text(encoding="utf-8"), str(target)
+    )
+    if violations:
+        detail = "\n".join(f"  {path}:{lineno}" for path, lineno in violations)
+        raise AssertionError(
+            "a bulk-restore disk read is called directly inside an `async def` "
+            "body in chat_persistence.py.\n\n"
+            "list_sessions() scans every session file; read_messages_chained() "
+            "walks a whole transcript across forks. On the event loop that "
+            "starves the LoopStallWatchdog heartbeat, whose exit_after timer "
+            "then kills the gateway mid-boot (#895). Hoist the read:\n"
+            "    meta, msgs = await asyncio.to_thread(_prefetch_recent_session, …)\n"
+            "and keep only the slot mutation on the loop (slot creation "
+            "broadcasts through asyncio.Queue.put_nowait / Event.set, neither "
+            "thread-safe).\n"
+            "If an on-loop read is genuinely correct, add a trailing "
+            "'# loop-ok: <reason>' comment.\n\n"
+            f"{detail}"
+        )
+
+
+def test_restore_read_detector_flags_an_inline_walk() -> None:
+    src = (
+        "async def f(log, key):\n"
+        "    msgs = log.read_messages_chained(key)\n"
+        "    return msgs\n"
+    )
+    assert [v[1] for v in find_restore_read_violations(src)] == [2]
+
+
+def test_restore_read_detector_flags_an_inline_session_scan() -> None:
+    src = "async def f(log):\n    return log.list_sessions()\n"
+    assert [v[1] for v in find_restore_read_violations(src)] == [2]
+
+
+def test_restore_read_detector_accepts_the_offloaded_form() -> None:
+    """``to_thread`` passes the callable as a bare Name — not a call yet."""
+    src = (
+        "import asyncio\n"
+        "async def f(log):\n"
+        "    return await asyncio.to_thread(log.list_sessions)\n"
+    )
+    assert find_restore_read_violations(src) == []
+
+
+def test_restore_read_detector_ignores_a_sync_helper() -> None:
+    """The prefetch helpers themselves are sync — that is the whole point."""
+    src = (
+        "def _prefetch(log, key):\n"
+        "    return log.get_metadata_status(key), log.read_messages_chained(key)\n"
+    )
+    assert find_restore_read_violations(src) == []
+
+
+def test_restore_read_detector_ignores_a_nested_sync_scope() -> None:
+    """A closure handed to a worker thread is a different execution frame."""
+    src = (
+        "import asyncio\n"
+        "async def f(log, key):\n"
+        "    def _read():\n"
+        "        return log.read_messages_chained(key)\n"
+        "    return await asyncio.to_thread(_read)\n"
+    )
+    assert find_restore_read_violations(src) == []
+
+
+def test_restore_read_detector_honors_a_loop_ok_suppression() -> None:
+    src = (
+        "async def f(log, key):\n"
+        "    return log.list_sessions()  # loop-ok: two entries, fixture only\n"
+    )
+    assert find_restore_read_violations(src) == []

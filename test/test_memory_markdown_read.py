@@ -630,9 +630,7 @@ class TestStaleBaselineWriteGuard:
         ms.init()
         ms.write_preferences("# User Preferences\n\n- v1\n")
         baseline = ms.read_preferences()
-        wrote = ms.write_preferences(
-            "# User Preferences\n\n- merged\n", expected_baseline=baseline
-        )
+        wrote = ms.write_preferences("# User Preferences\n\n- merged\n", expected_baseline=baseline)
         assert wrote is True
         assert "- merged" in ms.read_preferences()
 
@@ -642,7 +640,10 @@ class TestStaleBaselineWriteGuard:
         ms.write_projects("# Active Projects\n\n- p1\n")
         baseline = ms.read_projects()
         ms.write_projects("# Active Projects\n\n- user edit\n")
-        assert ms.write_projects("# Active Projects\n\n- merged\n", expected_baseline=baseline) is False
+        assert (
+            ms.write_projects("# Active Projects\n\n- merged\n", expected_baseline=baseline)
+            is False
+        )
         assert "- user edit" in ms.read_projects()
         fresh = ms.read_projects()
         assert ms.write_projects("# Active Projects\n\n- merged\n", expected_baseline=fresh) is True
@@ -681,9 +682,7 @@ class TestLockFileSymlinkGuard:
         except (OSError, NotImplementedError):  # pragma: no cover - Windows CI
             pytest.skip("symlinks not available on this platform")
 
-    def test_planted_write_lock_symlink_fails_closed_target_intact(
-        self, tmp_path: Path
-    ) -> None:
+    def test_planted_write_lock_symlink_fails_closed_target_intact(self, tmp_path: Path) -> None:
         target = tmp_path / "victim.txt"
         target.write_text("precious", encoding="utf-8")
         ms = _store(tmp_path)
@@ -694,9 +693,7 @@ class TestLockFileSymlinkGuard:
             ms.write_preferences("# User Preferences\n\n- attack\n")
         assert target.read_text(encoding="utf-8") == "precious"
 
-    def test_planted_append_lock_symlink_fails_closed_target_intact(
-        self, tmp_path: Path
-    ) -> None:
+    def test_planted_append_lock_symlink_fails_closed_target_intact(self, tmp_path: Path) -> None:
         target = tmp_path / "victim.txt"
         target.write_text("precious", encoding="utf-8")
         ms = _store(tmp_path)
@@ -1003,3 +1000,227 @@ class TestMemoryCliWiring:
 
             main()
         assert mock_cmd.call_args[0][0].include_markdown is False
+
+
+# ── memory search: the markdown layer is reachable by keyword ──
+# The FTS5 index over preferences/projects/daily-history is written on every
+# append and rebuilt by both the heartbeat and the gateway, but nothing ever
+# queried it, and `memory search` resolved to the VECTOR store. These pin the
+# markdown layer as searchable while keeping the old output shape available.
+
+
+class _NoEpisodicVectorStore:
+    """Vector store with exactly the surface ``_memory_cmd`` SEARCH uses.
+
+    Deliberately separate from ``_EmptyVectorStore``, whose docstring pins it to
+    the export surface: widening that stub would make it lie about what it
+    stands in for.
+    """
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def init(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+    def search_episodic(self, **_kwargs: object) -> list:
+        return []
+
+
+class _OneEpisodicVectorStore(_NoEpisodicVectorStore):
+    """Returns a single episodic hit, so the section label is observable."""
+
+    def search_episodic(self, **_kwargs: object) -> list:
+        return [{"text": "shipped the pytest refactor", "importance": 0.7, "tags": "[]"}]
+
+
+def _search_args(**overrides: object) -> argparse.Namespace:
+    base: dict[str, object] = {"mem_action": "search", "query": "", "layer": "all"}
+    base.update(overrides)
+    return argparse.Namespace(**base)
+
+
+class TestMemoryHistorySearch:
+    def test_a_word_written_months_ago_is_findable(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """The point of the feature: recall by content, not by recency window."""
+        ms = _populated_store(tmp_path)
+        ms.rebuild_index()
+        with patch.object(cli_commands, "_markdown_memory_store", lambda: ms):
+            cli_commands._memory_cmd(_search_args(query="pytest", layer="history"))
+        out = capsys.readouterr().out
+        assert "preferences" in out
+        assert "pytest" in out
+
+    def test_history_layer_never_opens_the_vector_store(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """No embedder, no vector DB creation — same contract as ``show``."""
+        ms = _populated_store(tmp_path)
+        ms.rebuild_index()
+
+        def _boom(*_a: object, **_k: object) -> None:
+            raise AssertionError("history search must not construct a vector store")
+
+        with patch.object(cli_commands, "_markdown_memory_store", lambda: ms):
+            with patch.object(cli_commands, "VectorMemoryStore", _boom):
+                cli_commands._memory_cmd(_search_args(query="pytest", layer="history"))
+        assert "pytest" in capsys.readouterr().out
+
+    def test_no_match_says_so_rather_than_printing_nothing(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        ms = _populated_store(tmp_path)
+        ms.rebuild_index()
+        with patch.object(cli_commands, "_markdown_memory_store", lambda: ms):
+            cli_commands._memory_cmd(_search_args(query="zzzznevermentioned", layer="history"))
+        assert "No memory-history matches." in capsys.readouterr().out
+
+    def test_layer_vector_keeps_the_previous_output_exactly(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """Back-compat guard: --layer vector must not gain a history section."""
+        ms = _populated_store(tmp_path)
+        ms.rebuild_index()
+        with patch.object(cli_commands, "_markdown_memory_store", lambda: ms):
+            with patch.object(cli_commands, "VectorMemoryStore", _NoEpisodicVectorStore):
+                cli_commands._memory_cmd(_search_args(query="pytest", layer="vector"))
+        out = capsys.readouterr().out
+        assert "No episodic memories found." in out
+        assert "Daily history" not in out
+        assert "Episodic recall" not in out
+
+    def test_both_sections_are_labelled_when_both_are_printed(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """Unlabelled, the first block of hits reads as the whole answer."""
+        ms = _populated_store(tmp_path)
+        ms.rebuild_index()
+        with patch.object(cli_commands, "_markdown_memory_store", lambda: ms):
+            with patch.object(cli_commands, "VectorMemoryStore", _OneEpisodicVectorStore):
+                cli_commands._memory_cmd(_search_args(query="pytest", layer="all"))
+        out = capsys.readouterr().out
+        assert "Episodic recall" in out
+        assert "Daily history" in out
+
+    def test_layer_vector_stays_unlabelled_even_with_hits(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """Back-compat: the single-section output keeps its previous shape."""
+        ms = _populated_store(tmp_path)
+        ms.rebuild_index()
+        with patch.object(cli_commands, "_markdown_memory_store", lambda: ms):
+            with patch.object(cli_commands, "VectorMemoryStore", _OneEpisodicVectorStore):
+                cli_commands._memory_cmd(_search_args(query="pytest", layer="vector"))
+        out = capsys.readouterr().out
+        assert "shipped the pytest refactor" in out
+        assert "Episodic recall" not in out
+
+    def test_all_layer_still_reaches_history_when_vector_is_empty(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """An empty vector result is not an empty answer under the default."""
+        ms = _populated_store(tmp_path)
+        ms.rebuild_index()
+        with patch.object(cli_commands, "_markdown_memory_store", lambda: ms):
+            with patch.object(cli_commands, "VectorMemoryStore", _NoEpisodicVectorStore):
+                cli_commands._memory_cmd(_search_args(query="pytest", layer="all"))
+        out = capsys.readouterr().out
+        assert "No episodic memories found." in out
+        assert "pytest" in out
+
+
+class TestLiteralFtsQuery:
+    """The words a user types are text, not FTS5 expression syntax.
+
+    Before escaping, ``PROJ-123`` raised inside the sqlite driver and
+    ``MemoryStore.search``'s ``except`` turned it into ``[]``. To a model that
+    reads as "the user never wrote about this", which is the wrong answer for
+    one of the likeliest queries: a ticket id, a filename, a hyphenated term.
+    """
+
+    def _indexed(self, tmp_path: Path) -> MemoryStore:
+        ms = _store(tmp_path)
+        ms.init()
+        ms.write_projects("# Active Projects\n\n- shipped PROJ-123 via cli_commands.py\n")
+        ms.rebuild_index()
+        return ms
+
+    @pytest.mark.parametrize("query", ["PROJ-123", "cli_commands.py", "PROJ-123 cli_commands.py"])
+    def test_syntax_bearing_queries_match_instead_of_silently_missing(
+        self, tmp_path: Path, query: str
+    ) -> None:
+        assert self._indexed(tmp_path).search(query), f"{query!r} found nothing"
+
+    def test_a_genuine_miss_is_still_a_miss(self, tmp_path: Path) -> None:
+        assert self._indexed(tmp_path).search("zzzznevermentioned") == []
+
+    def test_a_bare_operator_is_matched_as_a_word_not_parsed(self, tmp_path: Path) -> None:
+        """``shipped AND`` is invalid FTS5; as literal tokens it is simply absent."""
+        assert self._indexed(tmp_path).search("shipped AND") == []
+
+    def test_a_whitespace_only_query_yields_no_match(self, tmp_path: Path) -> None:
+        assert self._indexed(tmp_path).search("   ") == []
+
+    def test_an_embedded_quote_is_escaped_not_injected(self) -> None:
+        from kiro_crew.memory import _fts5_literal_query
+
+        assert _fts5_literal_query('a "b"') == '"a" """b"""'
+
+
+class TestOneEscapingDialect:
+    """Both FTS5 readers escape through the same primitive.
+
+    Design review's point: a second hand-rolled quoter is how the tree ends up
+    with divergent dialects and one of them wrong again.
+    """
+
+    def test_memory_and_knowledge_share_the_quoting_primitive(self) -> None:
+        from kiro_crew._sqlite_compat import fts5_quote_tokens
+
+        assert fts5_quote_tokens("PROJ-123 hooks.py") == ['"PROJ-123"', '"hooks.py"']
+
+    def test_the_join_differs_on_purpose(self) -> None:
+        """Memory ANDs a deliberate query; knowledge ORs for recall."""
+        from kiro_crew.knowledge.retrieval import HybridRetriever
+        from kiro_crew.memory import _fts5_literal_query
+
+        assert _fts5_literal_query("alpha beta") == '"alpha" "beta"'
+        assert HybridRetriever._sanitize_fts5_query("alpha beta") == '"alpha" OR "beta"'
+
+
+class TestEmptyIndexIsNotAbsence:
+    """An unreadable or unbuilt index must not be reported as "never written"."""
+
+    def test_row_count_distinguishes_empty_from_populated(self, tmp_path: Path) -> None:
+        ms = _store(tmp_path)
+        ms.init()
+        assert ms.index_row_count() == 0
+        ms.write_projects("# Active Projects\n\n- PROJ-123\n")
+        ms.rebuild_index()
+        assert (ms.index_row_count() or 0) > 0
+
+    def test_an_unreadable_index_reports_none_not_zero(self, tmp_path: Path) -> None:
+        ms = _store(tmp_path)
+        ms.init()
+
+        def _boom(*_a: object, **_k: object) -> None:
+            raise RuntimeError("corrupt index")
+
+        with patch.object(type(ms), "_get_db", _boom):
+            assert ms.index_row_count() is None
+
+    def test_an_unbuilt_index_is_reported_as_such_not_as_no_match(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        ms = _store(tmp_path)
+        ms.init()  # initialised but never indexed
+        with patch.object(cli_commands, "_markdown_memory_store", lambda: ms):
+            cli_commands._memory_cmd(_search_args(query="pytest", layer="history"))
+        out = capsys.readouterr().out
+        assert "empty or unavailable" in out
+        assert "No memory-history matches." not in out

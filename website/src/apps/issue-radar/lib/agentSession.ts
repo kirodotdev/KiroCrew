@@ -28,6 +28,7 @@ import { useAppDispatch } from '../../../store'
 import { createSlot, switchSlot, deleteSlot } from '../../../store/chatSlice'
 import { api } from '../../../api/client'
 import { readSendReceipt } from '../../../utils/sendDelivery'
+import { isMissingSlotError } from '../../../utils/thunkError'
 import { issueRadarApi, type InvestigationRecord, type ItemKind, RepoRef } from '../api'
 
 /** One folder per connected repo groups all its sessions. */
@@ -51,12 +52,6 @@ async function resolveFolderId(repo: string): Promise<string> {
 }
 
 /** One request to open (or resume) a session for one provider item. */
-/** True when an error means the slot no longer exists (a 404 from the slot
- * detail fetch), as opposed to a transient failure reaching the gateway. */
-function isMissingSlot(e: unknown): boolean {
-  const msg = e instanceof Error ? e.message : String(e ?? '')
-  return /\b404\b/.test(msg) || /not found/i.test(msg)
-}
 
 export interface OpenSessionArgs {
   repoRef: RepoRef
@@ -111,7 +106,7 @@ export function useAgentSession(): UseAgentSession {
             await dispatch(switchSlot(existing.slot_key)).unwrap()
             resumed = true
           } catch (e) {
-            if (!isMissingSlot(e)) throw e
+            if (!isMissingSlotError(e)) throw e
           }
           if (resumed) {
             const res = await issueRadarApi.saveInvestigation(repoRef, number, {}, kind)

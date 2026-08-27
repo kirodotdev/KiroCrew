@@ -17,30 +17,22 @@ caller's own token bounds (``boot``, ``no_refresh``, remaining ``session_exp``)
 are carried into the minted link so the new session inherits — never exceeds —
 them.
 
-The sibling QR surface does NOT yet carry those bounds:
-``tailnet_mobile._guard`` gates on app-token, owner and restricted-slot only,
-so a ``no_refresh`` or short-``session_exp`` owner session still passes it and
-mints a boot-bound, refresh-chained credential. Extending ``_caller_bounds`` to
-that surface is tracked separately; do not read that guard as closing this
-ceiling.
+The bound-reading half lives in ``_shared._caller_bounds`` because the sibling
+tailnet QR mint (``tailnet_mobile``) enforces the same invariant on its own
+mint; one shared reader keeps the two surfaces from drifting apart.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import time
 
 from aiohttp import web
 
-from kiro_crew.dashboard.handlers._shared import _is_restricted_session
+from kiro_crew.dashboard.handlers._shared import _caller_bounds, _is_restricted_session
 from kiro_crew.dashboard.origin import check_origin
 from kiro_crew.dashboard.token_auth import (
     LINK_WINDOW_SECS,
-    MAX_SESSION_TTL_SECS,
-    _b64url_decode,
-    _cookie_port_from_host,
     generate_token,
 )
 from kiro_crew.dashboard.urls import build_dashboard_url, dashboard_origin
@@ -72,63 +64,6 @@ async def _audit_async(user_id: str, outcome: str, error: str = "") -> None:
     gateway is serving.
     """
     await asyncio.to_thread(_audit, user_id, outcome, error)
-
-
-def _caller_bounds(request: web.Request) -> tuple[dict[str, str], int]:
-    """Read the caller's own session bounds from the token that authenticated it.
-
-    Returns ``(carried_claims, ttl_ceiling_seconds)``. ``ttl_ceiling`` is ``0``
-    when the caller has no lifetime left to lend, which the handler refuses
-    rather than minting against. Claims are carried, never re-derived: ``boot``
-    copied verbatim (same rule as the link→session exchange in ``token_auth``),
-    ``no_refresh`` copied so the recipient session never grows a refresh chain,
-    and the remaining ``session_exp`` becomes the TTL ceiling so a short-lived
-    caller cannot mint a longer-lived credential. Fail-closed on an unreadable
-    payload: a caller whose bounds cannot be established gets a bounded
-    (no-refresh, default-TTL-capped) link rather than an unbounded one.
-
-    **Extraction order must mirror the middleware's, query param before cookie.**
-    Only the credential the middleware actually validated has a verified
-    signature; the other one was never checked. The middleware prefers
-    ``?token=`` (``token_auth`` middleware and ``_extract_and_validate``, both
-    ``request.query.get("token") or request.cookies.get(...)``), so reading the
-    cookie first would let a request that authenticated with a bounded query
-    token have its bounds read from an unverified, attacker-settable cookie —
-    dropping ``no_refresh`` and raising the TTL ceiling to the full maximum,
-    which is precisely the ceiling-escape this function exists to prevent.
-
-    **A non-positive remaining lifetime is never rounded up.** Clamping it to a
-    floor of one second would let a caller whose own session has just run out
-    mint a link that outlives it, and the exchange the recipient performs starts
-    a fresh window — so repeating the mint would walk the expiry forward
-    indefinitely from a session that should already be dead. Report ``0`` and
-    let the caller be refused.
-    """
-    port = request.app.get("port", 7777)
-    cookie_name = f"mc_token_{_cookie_port_from_host(request, port)}"
-    token = request.query.get("token", "") or request.cookies.get(cookie_name, "")
-    carried: dict[str, str] = {}
-    ttl_ceiling = MAX_SESSION_TTL_SECS
-    if not token:
-        # Authenticated without a readable token (unexpected on this surface):
-        # fail closed by bounding the mint rather than trusting it.
-        return {"no_refresh": "1"}, ttl_ceiling
-    try:
-        data = json.loads(_b64url_decode(token.split(".", 1)[0]))
-        boot = str(data.get("boot", ""))
-        if boot:
-            carried["boot"] = boot
-        if str(data.get("no_refresh", "")) == "1":
-            carried["no_refresh"] = "1"
-        session_exp = float(data.get("session_exp", 0.0))
-        if session_exp:
-            remaining = int(session_exp - time.time())
-            if remaining <= 0:
-                return carried, 0
-            ttl_ceiling = min(ttl_ceiling, remaining)
-    except Exception:
-        return {"no_refresh": "1"}, ttl_ceiling
-    return carried, ttl_ceiling
 
 
 async def api_auth_mobile_link(request: web.Request) -> web.Response:
@@ -181,7 +116,12 @@ async def api_auth_mobile_link(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "url": build_dashboard_url(external_origin, token, local_only=False),
-            "expires_in": LINK_WINDOW_SECS,
+            # The live click window: generate_token clamps the link-click
+            # ``exp`` to the session TTL, so a caller lending less than the
+            # nominal window mints a link that dies with its own remaining
+            # lifetime — report that, not the constant, or the UI countdown
+            # overstates how long the link actually works.
+            "expires_in": min(LINK_WINDOW_SECS, ttl_ceiling),
         },
         headers={"Cache-Control": "no-store"},
     )

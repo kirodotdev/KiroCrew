@@ -727,9 +727,18 @@ class LivenessOracle:
         Requires (a) the ENTIRE matched subtree flat on CPU+IO across two
         samples, and (b) at least one process blocked reading a tty or its
         stdin pipe. A socket-blocked read is a network wait (not stuck); a
-        futex/lock wait is ambiguous — both return "" (UNKNOWN-ish: the caller
-        treats a live child without stuck evidence as WORKING, and genuinely
-        ambiguous hangs are bounded by the UNKNOWN timeout class elsewhere).
+        futex/lock wait is ambiguous — both return "".
+
+        Returning "" for a LIVE child means the caller reports WORKING, and a
+        WORKING verdict is NOT bounded by the UNKNOWN timeout class: the
+        dispatch loop short-circuits on it (``session_handle`` defers WORKING
+        unconditionally) BEFORE ``tool_stall_suspect_secs`` /
+        ``tool_stall_hard_cap_secs`` are applied. So a genuinely ambiguous hang
+        — a child alive but wedged on a futex, a socket read, or a hung mount —
+        is deferred for as long as the turn's own wall-clock ceiling allows, not
+        for a watchdog window. That is deliberate (a quiet long build must not
+        be cancelled on a timer) but it is the only path with no window of its
+        own, so it is logged with escalating severity rather than capped.
         """
         subtree = iter_descendants(self._proc, pid)
         moved, move_evidence = self._tree_movement(pid, key_prefix="stuck")

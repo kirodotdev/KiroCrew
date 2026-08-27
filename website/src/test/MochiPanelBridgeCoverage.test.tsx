@@ -740,6 +740,44 @@ describe('panelBridge send', () => {
     await expect(bridge.ensureSlot()).rejects.toThrow(/could not verify/)
   })
 
+  // `agent` is stored VERBATIM by the backend, so it keeps reading `mochi` even
+  // when nothing dispatches that name and the default agent answers instead. The
+  // first gate is blind to that; `effective_agent` is what reports it.
+  it('refuses when the slot resolves to a different effective agent', async () => {
+    route(
+      '/api/chat/slots',
+      { body: { agent: 'mochi', effective_agent: 'kirocrew' } },
+      'POST',
+    )
+    const bridge = await loadBridge()
+    await expect(bridge.ensureSlot()).rejects.toThrow(/resolves to a different agent/)
+    expect(calls('/api/chat?ws=1', 'POST')).toHaveLength(0)
+  })
+
+  it('sends when the effective agent agrees with the request', async () => {
+    route(
+      '/api/chat/slots',
+      { body: { agent: 'mochi', effective_agent: 'mochi' } },
+      'POST',
+    )
+    const bridge = await loadBridge()
+    await expect(bridge.ensureSlot()).resolves.toBeUndefined()
+  })
+
+  // The compatibility half of the gate, and the reason it is a `typeof` check
+  // rather than a truthiness one: "" means "nothing to report" (an unsettled
+  // resolution during boot), and a caller predating the field sends no key at
+  // all. Either read as a mismatch would refuse every send on a healthy install.
+  it.each([
+    ['an empty effective agent', { agent: 'mochi', effective_agent: '' }],
+    ['no effective agent field at all', { agent: 'mochi' }],
+    ['a non-string effective agent', { agent: 'mochi', effective_agent: null }],
+  ])('treats %s as no news and sends', async (_label, body) => {
+    route('/api/chat/slots', { body }, 'POST')
+    const bridge = await loadBridge()
+    await expect(bridge.ensureSlot()).resolves.toBeUndefined()
+  })
+
   it('leaves the latch off when the bind request fails, so the next send retries', async () => {
     route('/api/chat/slots', { ok: false, status: 503 }, 'POST')
     const bridge = await loadBridge()

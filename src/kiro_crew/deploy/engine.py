@@ -189,6 +189,25 @@ def map_access_denied(stderr: str) -> Optional[str]:
     return "the deploy-web IAM policy (see §7)"
 
 
+def _trimmed_stderr(err: str, limit: int = 200) -> str:
+    """CLI stderr, REDACTED and then trimmed -- in that order.
+
+    Order is the whole point. Trimming first can cut a credential in half, and a
+    half token matches no redaction pattern: the fragment then survives every
+    downstream pass (a response body, a SEL audit, a log line) because by the
+    time a redactor sees the string, the evidence that it WAS a credential is
+    gone. Redacting the full text first means the placeholder is what gets
+    trimmed, so the cutoff can only shorten already-safe text.
+
+    Callers may redact again at their own boundary; these passes are idempotent.
+    """
+    from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+
+    text, _ = redact_credentials(err.strip())
+    text, _ = redact_exfiltration_urls(text)
+    return text[:limit]
+
+
 def _checked(args: list[str], profile: str, *, action: str, timeout: int = 30) -> str:
     """Run an aws call, raising AWSError (with AccessDenied mapping) on failure."""
     rc, out, err = run_aws(args, profile, timeout=timeout)
@@ -198,7 +217,7 @@ def _checked(args: list[str], profile: str, *, action: str, timeout: int = 30) -
         # InvalidArgument, etc.) must NOT be reported as a missing permission.
         sid = map_access_denied(err)
         hint = f" — add `{action}` (policy statement `{sid}`) and re-run" if sid else ""
-        raise AWSError(f"{action} failed: {err.strip()[:200]}{hint}", missing_statement=sid)
+        raise AWSError(f"{action} failed: {_trimmed_stderr(err)}{hint}", missing_statement=sid)
     return out
 
 
@@ -506,7 +525,7 @@ def deploy(site_id: str, src_dir: str, profile: str, region: str = DEFAULT_REGIO
             if "BucketAlreadyExists" in err or "BucketAlreadyOwnedByYou" in err:
                 continue
             sid = map_access_denied(err)
-            raise AWSError(f"s3:CreateBucket failed: {err.strip()[:200]}", missing_statement=sid)
+            raise AWSError(f"s3:CreateBucket failed: {_trimmed_stderr(err)}", missing_statement=sid)
         if not bucket:
             raise AWSError("could not allocate a unique bucket name after retries")
 

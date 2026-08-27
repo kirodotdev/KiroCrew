@@ -279,6 +279,45 @@ describe('messageRenderers — cards, pills and banners', () => {
     expect(screen.getByTestId('md').textContent).toContain('[Cron notification from "x"]')
   })
 
+  // A note's [OPTIONS:] marker is consumed into the pill row, so the bubble must not
+  // ALSO print it -- the user would see the same choices twice.
+  it('strips the OPTIONS marker from the text a note bubble renders', () => {
+    renderRow(msg({
+      role: 'inject',
+      cls: 'reconcile-note',
+      content: 'zzq-note-prose [OPTIONS: Fix | Skip]',
+    }))
+    const rendered = screen.getByTestId('md').textContent ?? ''
+    expect(rendered).not.toContain('[OPTIONS:')
+    expect(rendered).toContain('zzq-note-prose')
+  })
+
+  it('keeps the marker verbatim on an inject row that is NOT a note', () => {
+    renderRow(msg({ role: 'inject', content: 'zzq-cron-prose [OPTIONS: Fix | Skip]' }))
+    const rendered = screen.getByTestId('md').textContent ?? ''
+    expect(rendered).toContain('[OPTIONS: Fix | Skip]')
+  })
+
+  // A rehydrated note has no `cls` -- history persists it only for role="system" --
+  // so provenance in `meta` is what keeps the strip alive across a restart.
+  it('strips the marker from a note rehydrated from history without its class', () => {
+    renderRow(msg({
+      role: 'inject',
+      cls: '',
+      content: 'zzq-reloaded-prose [OPTIONS: Fix | Skip]',
+      meta: { noteSession: 'chat-1844-1787619403' },
+    }))
+    const rendered = screen.getByTestId('md').textContent ?? ''
+    expect(rendered).not.toContain('[OPTIONS:')
+    expect(rendered).toContain('zzq-reloaded-prose')
+  })
+
+  it('keeps the marker on a classless inject row carrying no note provenance', () => {
+    renderRow(msg({ role: 'inject', cls: '', content: 'zzq-bare-prose [OPTIONS: Fix | Skip]' }))
+    const rendered = screen.getByTestId('md').textContent ?? ''
+    expect(rendered).toContain('[OPTIONS: Fix | Skip]')
+  })
+
   it('drops an OAuth banner a Connections card already owns', () => {
     const m = msg({ role: 'mcp_oauth', meta: { card_owned: true, oauth_url: 'zzq' } })
     const owned = renderRow(m, { hideCardOwnedOAuth: true })

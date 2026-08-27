@@ -193,6 +193,32 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
     [approveMutation],
   )
 
+  // Batch resolver (Req 4.1-4.4): apply one decision to every pending approval
+  // in a group. Each id goes through the SAME slot-scoped approve endpoint the
+  // single path uses (POST /api/chat/slots/{slot}/approve with request_id) —
+  // Task 4 mandates the slot-scoped path for batches, never the bare id-scoped
+  // one-shot resolve (which matches slot futures by bare id with no session
+  // check). Uses allSettled, NOT a fail-fast loop: a call whose verdict changed
+  // between surfacing and resume (Req 4.3-4.4) is surfaced as an excluded
+  // rejection instead of aborting the batch with earlier ids already approved.
+  // Rejects (so the row rolls back) only if EVERY call failed; a partial
+  // success settles as resolved and refetch reconciles the still-pending rows.
+  const approveBatch = useCallback(
+    async (approvalIds: string[], decision: string) => {
+      const results = await Promise.allSettled(
+        approvalIds.map(id => api.post(`/api/chat/slots/${encodeURIComponent(slotKey)}/approve`, {
+          action: decision,
+          request_id: id,
+        })),
+      )
+      void refetch()
+      const rejected = results.filter(r => r.status === 'rejected')
+      if (rejected.length === approvalIds.length) throw (rejected[0] as PromiseRejectedResult).reason
+      return results
+    },
+    [slotKey, refetch],
+  )
+
   return (
     <div className={`flex flex-col h-full min-h-0 overflow-hidden ${frameless ? '' : 'border border-border rounded-lg bg-bg'}`}>
       {!frameless && (
@@ -211,7 +237,7 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
         {/* canTrust: this embed's approve routes through the slot approve
             endpoint (above), which records standing trust — the one mount
             allowed to offer the tier (#5434). */}
-        <ChatMessageList messages={messages} running={running} onApprove={approve} canTrust />
+        <ChatMessageList messages={messages} running={running} onApprove={approve} onApproveBatch={approveBatch} canTrust />
         <div ref={endRef} />
       </div>
 

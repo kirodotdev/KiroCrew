@@ -28,6 +28,7 @@ export const BUILTIN_COMPONENT_REGISTRY: Record<string, LazyComponent> = {
   '/channels': lazy(() => import('../pages/ChannelPage')),
   '/auto-improvement': lazy(() => import('./auto-improvement/AutoImprovementPage')),
   '/auto-research': lazy(() => import('./auto-research/ResearchLabPage')),
+  '/aws-control': lazy(() => import('./aws-control/AwsControlPage')),
   '/file-explorer': lazy(() => import('./file-explorer/FileExplorerPage')),
   '/code-review-sage': lazy(() => import('./code-review-sage/CodeReviewSagePage')),
   '/workflows': lazy(() => import('./workflows/WorkflowsPage')),

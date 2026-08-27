@@ -106,8 +106,14 @@ vi.mock('../pages/chat', async () => {
       userMsgProps = props
       return React.createElement('div', { 'data-testid': 'user-msg' }, props.content)
     },
-    AssistantMessage: ({ content }: { content: string }) =>
-      React.createElement('div', { 'data-testid': 'assistant-msg' }, content),
+    // The two props the memoized renderMessage derives from the paging cursor, so a
+    // test can see a STALE closure: both go quiet when the flag is read from one.
+    AssistantMessage: ({ content, forkIndex, onLoadEarlier }: { content: string; forkIndex?: number; onLoadEarlier?: () => void }) =>
+      React.createElement('div', {
+        'data-testid': 'assistant-msg',
+        'data-fork-index': forkIndex === undefined ? 'none' : String(forkIndex),
+        'data-can-page': onLoadEarlier ? 'yes' : 'no',
+      }, content),
   }
 })
 vi.mock('react-virtuoso', () => ({ Virtuoso: () => null }))
@@ -898,5 +904,106 @@ describe('ChatPage URL prompt hand-off', () => {
     await waitFor(() => expect(window.location.search).toBe(''))
     expect(prefillWrites()).toHaveLength(0)
     expect(createSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe('ChatPage search scope disclosure', () => {
+  /** Open the find pane the real way -- the Cmd+F handler in useMessageSearch --
+   *  and type a term, so the count span renders. */
+  const openSearchAndType = (term: string) => {
+    act(() => { fireEvent.keyDown(document, { key: 'f', metaKey: true }) })
+    fireEvent.change(screen.getByPlaceholderText('Find in chat…'), { target: { value: term } })
+  }
+
+  it('qualifies the scope while the paging cursor does not describe the active slot', async () => {
+    // switchSlot.pending nulls the cursor key while leaving slotHasMore describing
+    // the outgoing slot, so false here is not this slot's answer (chatSlice:3575).
+    const { store } = renderChatPage([msg('assistant', 'hello there', { ts: 'a1' })], {
+      chat: { slotMessages: {} },
+    })
+    await waitFor(() => expect(shown()).toContain('hello there'))
+    expect(store.getState().chat.slotHasMore).toBe(false)
+    act(() => { store.dispatch({ type: 'chat/switchSlot/pending', meta: { arg: 'chat-1', requestId: 'r-scope' } }) })
+    expect(store.getState().chat.slotCursorKey).toBeNull()
+
+    openSearchAndType('zzz-no-match')
+    await waitFor(() => expect(shown()).toMatch(/in loaded history/i))
+  })
+
+  it('reads as complete once the cursor DOES describe the active slot', async () => {
+    // Opposite direction: the qualifier must not become unconditional, or every
+    // fully-loaded chat claims its search was partial.
+    const { store } = renderChatPage([msg('assistant', 'hello there', { ts: 'a1' })])
+    await waitFor(() => expect(shown()).toContain('hello there'))
+    expect(store.getState().chat.slotCursorKey).toBe('chat-1')
+
+    openSearchAndType('zzz-no-match')
+    await waitFor(() => expect(shown()).toContain('No results'))
+    expect(shown()).not.toMatch(/in loaded history/i)
+  })
+})
+
+/** `renderMessage` is memoized, and a switch BACK to an already-loaded chat is the
+ *  one path that restores the paging cursor while leaving every one of its deps
+ *  untouched. Activating another slot leaves the URL slug behind, so ChatPage's own
+ *  slug effect switches straight back: `switchSlot.pending` installs the target's
+ *  CACHED array — a new reference, so the renderer is rebuilt while the cursor is
+ *  still null — and `fulfilled` then restores the cursor while `sameTranscript`
+ *  skips the `messages` write. With the cursor flag missing from the dep list the
+ *  rebuilt renderer keeps `cursorIsForActiveSlot === false`, so Fork/Plan stay shut
+ *  on a chat that is fully loaded and holds a valid cursor. */
+describe('ChatPage fork affordance — cursor recovery on a switch back', () => {
+  const A = () => msg('assistant', 'alpha transcript', { ts: 'a1' })
+  const B = () => msg('assistant', 'bravo transcript', { ts: 'b1' })
+  /** What the memoized renderer currently believes, read off the row it produced. */
+  const row = () => screen.getAllByTestId('assistant-msg').slice(-1)[0]
+
+  /** Activate another slot through the real reducers. ChatPage's slug effect then
+   *  drives the switch back on its own, which is the sequence under test. */
+  const activateOtherSlot = (store: { dispatch: (a: unknown) => void }) => {
+    act(() => { store.dispatch({ type: 'chat/switchSlot/pending', meta: { arg: 'chat-2', requestId: 'r-to-b' } }) })
+    act(() => {
+      store.dispatch({
+        type: 'chat/switchSlot/fulfilled',
+        meta: { arg: 'chat-2', requestId: 'r-to-b' },
+        payload: { key: 'chat-2', messages: [B()], running: false, hasMore: false, queue: [], nextBefore: 0, total: 1 },
+      })
+    })
+  }
+
+  it('re-opens Fork once the cursor lands on a switch back to an identical transcript', async () => {
+    const { store } = renderChatPage([A()], { chat: { slotMessages: {} } })
+    await waitFor(() => expect(shown()).toContain('alpha transcript'))
+    expect(store.getState().chat.slotCursorKey).toBe('chat-1')
+    expect(row().getAttribute('data-fork-index')).not.toBe('none')
+
+    activateOtherSlot(store)
+
+    // The slug effect's switch back has landed: cursor valid, nothing left to page.
+    await waitFor(() => {
+      expect(store.getState().chat.activeSlot).toBe('chat-1')
+      expect(store.getState().chat.slotCursorKey).toBe('chat-1')
+    })
+    expect(store.getState().chat.slotHasMore).toBe(false)
+    await waitFor(() => expect(shown()).toContain('alpha transcript'))
+
+    // Fork is operable again, and the cursor-gated paging handler came back with it.
+    expect(row().getAttribute('data-fork-index')).not.toBe('none')
+    expect(row().getAttribute('data-can-page')).toBe('yes')
+  })
+
+  it('keeps Fork shut while the cursor genuinely still names the chat we left', async () => {
+    // Opposite direction, so the fix cannot buy an operable Fork by making the trust
+    // predicate unconditional: a frozen fetch holds the switch back genuinely in flight.
+    const { store } = renderChatPage([A()], { chat: { slotMessages: {} } })
+    await waitFor(() => expect(shown()).toContain('alpha transcript'))
+
+    apiMocks.chatSlotDetail = vi.fn(() => new Promise(() => {}))
+    activateOtherSlot(store)
+
+    await waitFor(() => expect(store.getState().chat.slotCursorKey).toBeNull())
+
+    expect(row().getAttribute('data-fork-index')).toBe('none')
+    expect(row().getAttribute('data-can-page')).toBe('no')
   })
 })

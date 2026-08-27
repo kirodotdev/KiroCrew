@@ -133,6 +133,15 @@ function vendorRuntimePlugin(): Plugin {
         const hit = RUNTIMES.find((r) => r.servePath === url)
         if (!hit) return next()
         res.setHeader('Content-Type', 'text/javascript; charset=utf-8')
+        // The consumers of these two files are sandboxed srcdoc iframes — null
+        // origin — whose <script> tags load with crossorigin="anonymous", which
+        // makes this header MANDATORY (without it the load hard-fails at the
+        // CORS layer and dev-mode widgets/sketches render unstyled). Vite's own
+        // cors default cannot supply it: since Vite 6.2 the default is a
+        // localhost-origin allowlist that `Origin: null` does not match. Scoped
+        // to exactly these two public runtime files, mirroring the gateway's
+        // /vendor/-only grant in production.
+        res.setHeader('Access-Control-Allow-Origin', '*')
         res.end(readFileSync(hit.src))
       })
     },

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import React, { type ReactNode } from 'react'
 import type { ChatMessage } from '../types'
 import type { TurnItem } from '../pages/chat/types'
@@ -22,8 +22,9 @@ vi.mock('../pages/chat/UserMessage', () => ({
 }))
 
 vi.mock('../pages/chat/CollapsibleToolGroup', () => ({
-  default: ({ children, count, hasPermission, pendingPermCount, canTrust }: {
+  default: ({ children, count, hasPermission, pendingPermCount, canTrust, onApproveBatch }: {
     children?: ReactNode; count?: number; hasPermission?: boolean; pendingPermCount?: number; canTrust?: boolean
+    onApproveBatch?: (decision: string) => Promise<unknown>
   }) => (
     <div
       data-testid="collapsible-tool-group"
@@ -31,7 +32,11 @@ vi.mock('../pages/chat/CollapsibleToolGroup', () => ({
       data-has-permission={String(hasPermission)}
       data-pending-perm-count={pendingPermCount}
       data-can-trust={String(!!canTrust)}
+      data-has-batch={String(!!onApproveBatch)}
     >
+      {onApproveBatch && (
+        <button data-testid="ctg-batch-approve" onClick={() => { void onApproveBatch('approved') }}>batch</button>
+      )}
       {children}
     </div>
   ),
@@ -385,5 +390,41 @@ describe('ChatMessageList', () => {
       render(<ChatMessageList messages={[handAdded]} running={false} hideCardOwnedOAuth />)
       expect(screen.getByRole('link', { name: /Authorize my-remote/i })).toBeInTheDocument()
     })
+  })
+})
+
+describe('ChatMessageList — batch approval wiring (Req 4.1-4.4)', () => {
+  // The prior bug: onApproveBatch was wired only into hosts that never render
+  // approval buttons. These tests exercise the REAL render path (renderItem)
+  // through the live-approval component, which is where the wiring must land.
+  const perm = (id: string) => msg('permission', 'needs approval', { meta: { approval_id: id } })
+
+  it('wires onApproveBatch across ALL pending ids when a group has >1 pending approval', () => {
+    const onApproveBatch = vi.fn(() => Promise.resolve())
+    render(
+      <ChatMessageList
+        messages={[perm('req-a'), perm('req-b'), perm('req-c')]}
+        running
+        onApprove={() => Promise.resolve()}
+        onApproveBatch={onApproveBatch}
+      />,
+    )
+    const group = screen.getByTestId('collapsible-tool-group')
+    expect(group).toHaveAttribute('data-pending-perm-count', '3')
+    expect(group).toHaveAttribute('data-has-batch', 'true')
+    fireEvent.click(screen.getByTestId('ctg-batch-approve'))
+    // The host receives EVERY pending id, not just the last one.
+    expect(onApproveBatch).toHaveBeenCalledWith(['req-a', 'req-b', 'req-c'], 'approved')
+  })
+
+  it('does not wire a batch handler when the host supplies none', () => {
+    render(
+      <ChatMessageList
+        messages={[perm('req-a'), perm('req-b')]}
+        running
+        onApprove={() => Promise.resolve()}
+      />,
+    )
+    expect(screen.getByTestId('collapsible-tool-group')).toHaveAttribute('data-has-batch', 'false')
   })
 })

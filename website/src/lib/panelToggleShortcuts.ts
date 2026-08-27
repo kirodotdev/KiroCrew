@@ -8,9 +8,9 @@ import {
 } from './quickSearchShortcut'
 
 /**
- * User-rebindable shortcuts that toggle the three dashboard panels: the left
- * navigation rail, the chat session list, and the right-hand activity/side
- * panel.
+ * User-rebindable shortcuts that toggle the four dashboard panels: the left
+ * navigation rail, the chat session list, the right-hand activity/side panel,
+ * and the docked terminal.
  *
  * The chord machinery (recording, matching, platform-neutral `mod`, key-cap
  * rendering) is shared verbatim with {@link ./quickSearchShortcut}; this module
@@ -35,23 +35,37 @@ export const PANEL_TOGGLE_SHORTCUTS_KEY = 'mc-panel-toggle-shortcuts'
 /** Window event dispatched after a binding changes, so live readers refresh. */
 export const PANEL_TOGGLE_SHORTCUTS_EVENT = 'mc-panel-toggle-shortcuts-changed'
 
-export type PanelToggleId = 'left-sidebar' | 'session-panel' | 'side-panel'
+export type PanelToggleId = 'left-sidebar' | 'session-panel' | 'side-panel' | 'terminal'
 
 /** The togglable panels, in display order. */
-export const PANEL_TOGGLE_IDS: readonly PanelToggleId[] = ['left-sidebar', 'session-panel', 'side-panel']
+export const PANEL_TOGGLE_IDS: readonly PanelToggleId[] = ['left-sidebar', 'session-panel', 'side-panel', 'terminal']
 
 /**
  * Factory-default binding per panel. `mod` is the platform primary modifier —
  * Cmd on macOS, Ctrl on Windows/Linux — so the session/side defaults read as ⌘B
- * / ⌘\ on a Mac and Ctrl+B / Ctrl+\ elsewhere. The left sidebar ships UNBOUND
- * (`null`): the user opts in by recording a chord in Settings. The two bound
- * defaults are collision-free against the built-in chords in
- * `useKeyboardShortcuts`.
+ * / ⌘\ on a Mac and Ctrl+B / Ctrl+\ elsewhere. The two bound defaults are
+ * collision-free against the built-in chords in `useKeyboardShortcuts`.
+ *
+ * The left sidebar and the docked terminal both ship UNBOUND (`null`): the user
+ * opts in by recording a chord in Settings.
+ *
+ * The terminal's reason for shipping unbound is specific, and is why no default
+ * is proposed for it. Every plausible default costs a keystroke inside the shell,
+ * because {@link PANEL_TOGGLES_SKIPPING_SHELL} takes its chord from the PTY by
+ * design — that is the whole point of the entry. ⌘J / Ctrl+J, the obvious pick
+ * (VS Code's Toggle Panel, which hosts its integrated terminal), is `^J` on
+ * Windows/Linux, i.e. readline's `accept-line`: a user pressing it instead of
+ * Enter would close the panel mid-command. VS Code's terminal chord proper,
+ * literal `Ctrl+`` on every platform, is not expressible here (`mod` is Cmd on
+ * macOS by definition) and ⌘` is the macOS window cycler. Rather than pick which
+ * shell keystroke to spend on everyone's behalf, the binding is left to the user
+ * who wants it — and who then knows what they traded.
  */
 export const DEFAULT_PANEL_TOGGLE_BINDINGS: Record<PanelToggleId, Chord | null> = {
   'left-sidebar': null,
   'session-panel': { key: 'b', mod: true },
   'side-panel': { key: '\\', mod: true },
+  'terminal': null,
 }
 
 /**
@@ -60,6 +74,23 @@ export const DEFAULT_PANEL_TOGGLE_BINDINGS: Record<PanelToggleId, Chord | null> 
  * falls through to {@link DEFAULT_PANEL_TOGGLE_BINDINGS}.
  */
 export type PanelToggleOverrides = Partial<Record<PanelToggleId, Chord | null>>
+
+/**
+ * The panels whose chord SKIPS THE SHELL — i.e. still fires while an embedded
+ * terminal holds focus, instead of being conceded to the PTY.
+ *
+ * Everything else yields, because a keystroke aimed at a shell belongs to the
+ * shell. The terminal toggle is the exception that has to be made: opening that
+ * panel focuses its own terminal, so conceding there would leave the chord able
+ * to open the panel and never close it.
+ *
+ * This mirrors VS Code's `terminal.integrated.commandsToSkipShell` — a per-COMMAND
+ * allowlist rather than a per-key rule, so the small set of workbench commands
+ * that must survive terminal focus is stated as data next to the bindings it
+ * qualifies. A future panel with the same need joins the set instead of adding a
+ * second special case to the keydown handler.
+ */
+export const PANEL_TOGGLES_SKIPPING_SHELL: ReadonlySet<PanelToggleId> = new Set<PanelToggleId>(['terminal'])
 
 function isPanelToggleId(id: string): id is PanelToggleId {
   return (PANEL_TOGGLE_IDS as readonly string[]).includes(id)
@@ -103,6 +134,7 @@ export function resolvePanelToggleBindings(overrides: PanelToggleOverrides): Rec
     'left-sidebar': resolvePanelToggleBinding('left-sidebar', overrides),
     'session-panel': resolvePanelToggleBinding('session-panel', overrides),
     'side-panel': resolvePanelToggleBinding('side-panel', overrides),
+    'terminal': resolvePanelToggleBinding('terminal', overrides),
   }
 }
 

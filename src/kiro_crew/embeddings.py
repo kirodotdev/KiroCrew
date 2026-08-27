@@ -48,6 +48,7 @@ import urllib.request
 from pathlib import Path
 from typing import Callable, NamedTuple, Protocol
 
+from kiro_crew._ssl_compat import _ssl_context_has_ca_trust
 from kiro_crew.config.loader import config_path
 from kiro_crew.config.paths import config_dir
 from kiro_crew.metrics.provider import get_recorder
@@ -1711,9 +1712,7 @@ def _make_ssl_context() -> ssl.SSLContext:
     ctx = ssl.create_default_context()
     try:
         ctx.load_default_certs()
-        # Verify the defaults work by checking the cert store has entries
-        stats = ctx.cert_store_stats()
-        if stats["x509_ca"] > 0:
+        if _ssl_context_has_ca_trust(ctx):
             return ctx
     except ssl.SSLError:
         pass

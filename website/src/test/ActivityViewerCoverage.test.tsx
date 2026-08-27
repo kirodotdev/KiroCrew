@@ -779,3 +779,79 @@ describe('ActivityViewer — panel behaviour', () => {
     await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/artifacts'))
   })
 })
+
+// ---------------------------------------------------------------------------
+// Live model-downgrade flag (#5326)
+// ---------------------------------------------------------------------------
+describe('ActivityViewer — live model downgrade flag (#5326)', () => {
+  it('shows normal accent chip when requested model matches resolved', () => {
+    renderPanel(
+      <ActivityViewer
+        {...baseProps}
+        view="subagents"
+        subagents={{
+          s1: mkAgent('s1', {
+            status: 'running',
+            model: 'claude-opus-4.8',
+            requestedModel: 'claude-opus-4.8',
+          }),
+        }}
+      />,
+    )
+    const chip = screen.getByTestId('subagent-model')
+    // No amber classes when there is no downgrade.
+    expect(chip.className).not.toContain('text-warn')
+    expect(chip.className).toContain('text-accent')
+  })
+
+  it('renders amber chip when resolved model differs from requested', () => {
+    renderPanel(
+      <ActivityViewer
+        {...baseProps}
+        view="subagents"
+        subagents={{
+          s1: mkAgent('s1', {
+            status: 'running',
+            model: 'claude-opus-4.7',
+            requestedModel: 'claude-opus-4.8',
+          }),
+        }}
+      />,
+    )
+    const chip = screen.getByTestId('subagent-model')
+    expect(chip.className).toContain('text-warn')
+    expect(chip.className).not.toContain('text-accent')
+  })
+
+  it('chip title contains requested and resolved when downgraded', () => {
+    renderPanel(
+      <ActivityViewer
+        {...baseProps}
+        view="subagents"
+        subagents={{
+          s1: mkAgent('s1', {
+            status: 'running',
+            model: 'claude-opus-4.7',
+            requestedModel: 'claude-opus-4.8',
+          }),
+        }}
+      />,
+    )
+    const chip = screen.getByTestId('subagent-model')
+    expect(chip.title).toContain('claude-opus-4.8')
+    expect(chip.title).toContain('claude-opus-4.7')
+  })
+
+  it('shows normal chip when requestedModel is absent', () => {
+    renderPanel(
+      <ActivityViewer
+        {...baseProps}
+        view="subagents"
+        subagents={{ s1: mkAgent('s1', { status: 'running', model: 'gpt-5.6' }) }}
+      />,
+    )
+    const chip = screen.getByTestId('subagent-model')
+    expect(chip.className).toContain('text-accent')
+    expect(chip.className).not.toContain('text-warn')
+  })
+})

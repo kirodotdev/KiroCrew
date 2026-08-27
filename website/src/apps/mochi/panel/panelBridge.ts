@@ -813,7 +813,7 @@ export async function ensureSlot(): Promise<void> {
   // with that foreign agent, and sending the pet's turn into it would hijack and
   // corrupt that session. Verify the returned binding and refuse otherwise; the
   // throw aborts the send (ChatPanel restores the message and shows the error).
-  let bound: { agent?: unknown } = {}
+  let bound: { agent?: unknown; effective_agent?: unknown } = {}
   try {
     bound = await resp.json()
   } catch {
@@ -823,6 +823,24 @@ export async function ensureSlot(): Promise<void> {
     throw new Error(
       `mochi slot "${MOCHI_SLOT}" is bound to another agent ` +
         `(${String(bound.agent) || 'none'}); refusing to send`,
+    )
+  }
+  // Second gate: the slot asks for `mochi` but something else answers it — the
+  // app agent was removed, or its registration has not landed. The first gate
+  // cannot see this, because `agent` is stored VERBATIM by design, so it keeps
+  // reading `mochi` while the default agent takes the turn. Sending anyway would
+  // put the pet's conversation into an agent that has none of its tools and is
+  // very likely the user's own main agent.
+  //
+  // Absent/"" is "no news", NOT a mismatch: the backend reports "" whenever
+  // resolution is unsettled (a cold snapshot during boot), and every caller
+  // predating the field sends nothing at all. Treating that as a mismatch would
+  // refuse every send on a healthy install.
+  const effective = bound.effective_agent
+  if (typeof effective === 'string' && effective !== '' && effective !== MOCHI_AGENT) {
+    throw new Error(
+      `mochi slot "${MOCHI_SLOT}" resolves to a different agent ` +
+        `(${effective}); refusing to send`,
     )
   }
   slotEnsured = true

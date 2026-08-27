@@ -345,6 +345,7 @@ function initMermaid(mermaid: MermaidApi): void {
 import { CodeBlock } from './CodeBlock'
 import { ExcalidrawBlock } from './ExcalidrawBlock'
 import DiagramLightbox from './DiagramLightbox'
+import { usePinchZoom } from '../hooks/usePinchZoom'
 
 /** Forward the `data-sourcepos` attribute from rehypeSourcepos onto the
  *  rendered element. Used in every MD_COMPONENTS override; returns an
@@ -3252,46 +3253,6 @@ const LIGHTBOX_ZOOM_MIN = 1
 const LIGHTBOX_ZOOM_MAX = 5
 const LIGHTBOX_ZOOM_STEP = 0.5
 
-/** Distance between two pointer positions, for the pinch scale factor. */
-function pointerDistance(a: { x: number; y: number }, b: { x: number; y: number }): number {
-  return Math.hypot(a.x - b.x, a.y - b.y)
-}
-
-/** Hold a candidate zoom inside the viewer's bounds. Rounded because a pinch
- *  produces a continuous factor, and an unrounded float would make the
- *  `zoom > LIGHTBOX_ZOOM_MIN` checks (which gate panning and swipe-to-dismiss)
- *  flip on a residue like 1.0000000000000002 after a pinch back down to fit. */
-function clampLightboxZoom(z: number): number {
-  return Math.min(LIGHTBOX_ZOOM_MAX, Math.max(LIGHTBOX_ZOOM_MIN, +z.toFixed(3)))
-}
-
-/** The two contacts that own a pinch: the first two live ones, in insertion order,
- *  plus a `key` identifying that exact pair.
- *
- *  The pair is DERIVED on every read rather than stored as two pointer ids, and
- *  that is the invariant the gesture rests on. Storing ids leaves `pinchRef`
- *  naming a pointer that has since lifted whenever the contact set changes in a
- *  way a `size < 2` test cannot see — a third finger lands, then one of the
- *  original two lifts while two contacts remain. The stored id is then absent
- *  from the map, every later move reads `undefined` for it, and the pinch is dead
- *  until the user lifts everything and starts over. Deriving the pair makes that
- *  state unrepresentable: the pair is always live by construction, and a change
- *  of `key` is the signal to re-seat the baseline. */
-function pinchPair(points: Map<number, { x: number; y: number }>):
-  { key: string; a: { x: number; y: number }; b: { x: number; y: number } } | null {
-  if (points.size < 2) return null
-  const entries = points.entries()
-  const [idA, a] = entries.next().value as [number, { x: number; y: number }]
-  const [idB, b] = entries.next().value as [number, { x: number; y: number }]
-  return { key: `${idA}:${idB}`, a, b }
-}
-
-/** Midpoint of a pinch — the point the zoom is anchored to, so the detail under
- *  the fingers stays under the fingers instead of sliding away from them. */
-function pinchMidpoint(a: { x: number; y: number }, b: { x: number; y: number }) {
-  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }
-}
-
 /** Swipe-to-dismiss (touch only, fit zoom only) tuning.
  *
  *  `SLOP` is the travel a touch must cover before the drag counts as a gesture
@@ -3383,44 +3344,48 @@ export function dispatchLightbox(target: HTMLImageElement): void {
  *  payload and the legacy { src, alt } single-image shape. */
 export function Lightbox() {
   const [state, setState] = useState<LightboxDetail | null>(null)
-  // Zoom (enlarge) factor for the current image. 1 = fit-to-screen; larger
-  // values scale the fit box up so the image overflows into the scrollable
-  // overlay. Reset to 1 whenever the shown image changes (see effect below).
-  const [zoom, setZoom] = useState(1)
-  const zoomIn = useCallback(() => setZoom(z => Math.min(LIGHTBOX_ZOOM_MAX, +(z + LIGHTBOX_ZOOM_STEP).toFixed(2))), [])
-  const zoomOut = useCallback(() => setZoom(z => Math.max(LIGHTBOX_ZOOM_MIN, +(z - LIGHTBOX_ZOOM_STEP).toFixed(2))), [])
-  // Pan offset (px) for dragging an enlarged image around. Only meaningful when
-  // zoom > 1. The image element itself is the drag surface; a small movement
-  // threshold distinguishes a pan-drag from a click (which steps the zoom).
-  const [pan, setPan] = useState({ x: 0, y: 0 })
   const imgRef = useRef<HTMLImageElement>(null)
   const dragRef = useRef({ startX: 0, startY: 0, baseX: 0, baseY: 0, moved: 0, active: false, dragging: false })
   const [dragging, setDragging] = useState(false)
-  // Live zoom for the pointer/clamp closures (avoids stale-closure math in the
-  // fire-and-forget pointer handlers and the post-layout re-clamp effect).
-  const zoomRef = useRef(zoom)
-  zoomRef.current = zoom
-  // Live pan, for the same reason. The pinch handler needs the pan the image is
-  // CURRENTLY rendered at to re-seat its baseline, and a `useCallback([])` closure
-  // would hand it the pan from first render.
-  const panRef = useRef(pan)
-  panRef.current = pan
-  // Clamp a candidate pan so the image can't be flung entirely off-screen. Zoom
-  // is applied as a CSS `scale()` transform, so the *visual* size is the layout
-  // box (offsetWidth/Height) times the current zoom; travel is allowed up to
-  // half that overflow beyond the viewport.
+  // `suppressClick` makes the click that follows a real gesture a no-op, so a
+  // spring-back or a finished pinch does not also close via the backdrop handler.
+  // Declared before the hook because `onPinchEnd` sets it.
+  const suppressClickRef = useRef(false)
+  // Zoom (enlarge) factor and pan offset for the current image, plus the pinch
+  // gesture that drives them. 1 = fit-to-screen; larger values scale the fit box
+  // up so the image overflows the viewport and can be panned. Reset to fit
+  // whenever the shown image changes (see effect below).
   //
-  // `z` is explicit because the pinch clamps against the zoom it is about to SET,
-  // not the one on screen: reading `zoomRef` there would clamp a zoomed-in pan
-  // against the smaller previous box and snap the image back toward centre on
-  // every frame of the gesture.
-  const clampPan = useCallback((x: number, y: number, z: number = zoomRef.current) => {
-    const el = imgRef.current
-    if (!el) return { x, y }
-    const maxX = Math.max(0, (el.offsetWidth * z - window.innerWidth) / 2)
-    const maxY = Math.max(0, (el.offsetHeight * z - window.innerHeight) / 2)
-    return { x: Math.min(maxX, Math.max(-maxX, x)), y: Math.min(maxY, Math.max(-maxY, y)) }
-  }, [])
+  // The gesture lives in `usePinchZoom` because this is not the only surface that
+  // owns its own magnification — `DiagramLightbox` is the other, and shipping the
+  // math twice is how the two diverge.
+  const {
+    zoom, setZoom, pan, setPan, pinching, zoomRef, clampPan,
+    trackPointerDown, trackPointerMove, trackPointerUp, reset: resetZoom,
+  } = usePinchZoom({
+    targetRef: imgRef,
+    min: LIGHTBOX_ZOOM_MIN,
+    max: LIGHTBOX_ZOOM_MAX,
+    onPinchStart: () => {
+      // Both one-finger gestures lose their claim: a dismiss-drag would read the
+      // pinch's vertical component as pull-to-close, and the <img> pan would fight
+      // the scale over the same two contacts.
+      abortSwipeRef.current?.()
+      const d = dragRef.current
+      if (d.active) { d.active = false; d.dragging = false; setDragging(false) }
+    },
+    // A finished pinch is not a tap. Without this the click synthesised after the
+    // last finger lifts reaches the backdrop handler and closes the viewer the
+    // user just spent the gesture zooming into.
+    onPinchEnd: () => { suppressClickRef.current = true },
+  })
+  const zoomIn = useCallback(() => setZoom(z => Math.min(LIGHTBOX_ZOOM_MAX, +(z + LIGHTBOX_ZOOM_STEP).toFixed(2))), [setZoom])
+  const zoomOut = useCallback(() => setZoom(z => Math.max(LIGHTBOX_ZOOM_MIN, +(z - LIGHTBOX_ZOOM_STEP).toFixed(2))), [setZoom])
+  /** `onPinchStart` fires from inside the hook, which is constructed before
+   *  `abortSwipe` exists — the ref is what lets the callback reach the later
+   *  definition without reordering the whole component around it. */
+  const abortSwipeRef = useRef<(() => void) | null>(null)
+
   // End a drag on either pointerup OR pointercancel (touch/pen interrupted, or
   // capture lost) so `active`/`dragging` never latch on with no contact held.
   const endDrag = useCallback((e: React.PointerEvent<HTMLImageElement>) => {
@@ -3446,7 +3411,6 @@ export function Lightbox() {
   // rewrites the gesture's origin and a two-finger zoom attempt walks the image
   // down and closes the viewer the user was zooming into.
   const swipeRef = useRef({ pointerId: -1, startX: 0, startY: 0, active: false, engaged: false })
-  const suppressClickRef = useRef(false)
   // Abandon the in-flight gesture and return the image to rest. Used by the
   // multi-touch bail-out and by pointercancel.
   const abortSwipe = useCallback(() => {
@@ -3456,6 +3420,8 @@ export function Lightbox() {
     s.pointerId = -1
     setSwipeY(0)
   }, [])
+  // Publish it for the hook's `onPinchStart`, which is constructed above this.
+  abortSwipeRef.current = abortSwipe
   // ── pinch-to-zoom (touch, two fingers) ───────────────────────────────────
   // Browser page zoom is off on touch across the shell (viewport meta in
   // index.html, root `touch-action` in index.css, `gesturestart` suppression in
@@ -3466,48 +3432,10 @@ export function Lightbox() {
   // toolbar and keyboard drive, so pan clamping, the reset on image change and
   // the `zoomed` cursor keep working with no parallel code path.
   //
-  // Live contacts are tracked in a map because pointer events carry ONE pointer
-  // each: the second finger's position is only ever knowable from what an
-  // earlier event stored.
-  const pointsRef = useRef(new Map<number, { x: number; y: number }>())
-  // `key` is the identity of the pair the baseline was measured from — '' means no
-  // pinch is armed. Everything else is that baseline: the finger distance, and the
-  // zoom/pan/midpoint the image sat at when the pair was seated. The scale and the
-  // pan are both derived from it, so the gesture is a pure function of the live
-  // contacts and never accumulates drift.
-  const pinchRef = useRef({
-    key: '', startDist: 0, baseZoom: LIGHTBOX_ZOOM_MIN,
-    startMid: { x: 0, y: 0 }, basePan: { x: 0, y: 0 },
-  })
-  const [pinching, setPinching] = useState(false)
-  const endPinch = useCallback(() => {
-    if (pinchRef.current.key === '') return
-    pinchRef.current = {
-      key: '', startDist: 0, baseZoom: LIGHTBOX_ZOOM_MIN,
-      startMid: { x: 0, y: 0 }, basePan: { x: 0, y: 0 },
-    }
-    setPinching(false)
-    // A finished pinch is not a tap. Without this the click synthesised after the
-    // last finger lifts reaches the backdrop handler and closes the viewer the
-    // user just spent the gesture zooming into.
-    suppressClickRef.current = true
-  }, [])
-  /** Measure the baseline for `pair` from what is on screen right now. Called both
-   *  when a pinch begins and whenever the live pair changes identity mid-gesture —
-   *  re-seating from the CURRENT zoom and pan is what makes a finger landing or
-   *  lifting continue the gesture smoothly instead of snapping the image back to
-   *  where the previous pair started. */
-  const seatPinch = useCallback((pair: NonNullable<ReturnType<typeof pinchPair>>) => {
-    const dist = pointerDistance(pair.a, pair.b)
-    // Two contacts at the same point give no baseline to scale against; leave the
-    // pinch unseated and let the next move (or lift) sort the gesture out.
-    if (dist <= 0) return
-    pinchRef.current = {
-      key: pair.key, startDist: dist, baseZoom: zoomRef.current,
-      startMid: pinchMidpoint(pair.a, pair.b), basePan: panRef.current,
-    }
-    setPinching(true)
-  }, [])
+  // The gesture itself is `usePinchZoom` (contact tracking, focal anchoring, pan
+  // clamping); what stays here is only the part that is specific to THIS viewer —
+  // which one-finger gesture yields to a pinch, and what a finished pinch means
+  // for the click that follows.
   const onOverlayPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     // Every click in this subtree is preceded by a pointerdown, so clearing here
     // is what keeps the flag from latching when the click is swallowed upstream
@@ -3518,49 +3446,17 @@ export function Lightbox() {
     // two tracked contacts, and every branch that follows returns early — so
     // recording last would mean the second finger is never seen in exactly the
     // cases (drag live, already zoomed) a pinch is most likely to start from.
-    pointsRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
-    const pair = pinchPair(pointsRef.current)
-    if (pair) {
-      seatPinch(pair)
-      // Both one-finger gestures lose their claim: a dismiss-drag would read the
-      // pinch's vertical component as pull-to-close, and the <img> pan would fight
-      // the scale over the same two contacts.
-      abortSwipe()
-      const d = dragRef.current
-      if (d.active) { d.active = false; d.dragging = false; setDragging(false) }
-      return
-    }
+    // The hook records the contact and, when a pinch seats, calls `onPinchStart`
+    // (which drops the swipe and the <img> drag) and returns true.
+    if (trackPointerDown(e)) return
     if (zoomRef.current > LIGHTBOX_ZOOM_MIN) return // the <img> pan owns this gesture
     // Toolbar taps must stay taps — never start a drag from a control.
     if ((e.target as HTMLElement | null)?.closest('button')) return
     swipeRef.current = { pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, active: true, engaged: false }
-  }, [abortSwipe, seatPinch])
+  }, [trackPointerDown, zoomRef])
   const onOverlayPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    if (pointsRef.current.has(e.pointerId)) pointsRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
-    const pair = pinchPair(pointsRef.current)
-    if (pair) {
-      const p = pinchRef.current
-      // The live pair is not the one the baseline was measured from (a finger
-      // joined or left). Re-seat and wait for the next move rather than scaling
-      // this frame against a distance from a different pair of fingers.
-      if (p.key !== pair.key) { seatPinch(pair); return }
-      const next = clampLightboxZoom(p.baseZoom * (pointerDistance(pair.a, pair.b) / p.startDist))
-      // Anchor the scale at the gesture midpoint. The image renders as
-      // `translate(pan) scale(zoom)` about its centre, so the content sitting under
-      // the midpoint when the pinch was seated is at image-local offset
-      // `(startMid - centre - basePan) / baseZoom`; holding that offset under the
-      // CURRENT midpoint is what keeps a corner detail under the fingers instead of
-      // pushing it away as the image grows around its centre. Using the live
-      // midpoint (not the seated one) also makes two fingers moving together pan.
-      const cx = window.innerWidth / 2
-      const cy = window.innerHeight / 2
-      const anchorX = (p.startMid.x - cx - p.basePan.x) / p.baseZoom
-      const anchorY = (p.startMid.y - cy - p.basePan.y) / p.baseZoom
-      const mid = pinchMidpoint(pair.a, pair.b)
-      setZoom(next)
-      setPan(clampPan(mid.x - cx - anchorX * next, mid.y - cy - anchorY * next, next))
-      return
-    }
+    // A live pinch consumes the move (scale + focal-anchored pan).
+    if (trackPointerMove(e)) return
     const s = swipeRef.current
     if (!s.active || e.pointerId !== s.pointerId) return
     const dx = e.clientX - s.startX
@@ -3576,13 +3472,12 @@ export function Lightbox() {
     // Downward travel tracks the finger 1:1; upward is rubber-banded, since
     // pulling up is not a dismiss but should not feel dead either.
     setSwipeY(dy >= 0 ? dy : dy / 4)
-  }, [clampPan, seatPinch])
+  }, [trackPointerMove])
   const endSwipe = useCallback((e: React.PointerEvent<HTMLDivElement>, cancelled: boolean) => {
-    pointsRef.current.delete(e.pointerId)
-    // A pinch needs two contacts to exist. Ending it on the FIRST lift (rather
-    // than the last) is what stops the finger still down from being re-read as a
+    // The hook drops the contact and ends the pinch on the FIRST lift (rather than
+    // the last), which is what stops the finger still down from being re-read as a
     // one-finger pan whose origin is wherever the pinch happened to leave it.
-    if (pointsRef.current.size < 2) endPinch()
+    trackPointerUp(e)
     const s = swipeRef.current
     if (!s.active || e.pointerId !== s.pointerId) return
     if (cancelled) { abortSwipe(); return }
@@ -3594,7 +3489,7 @@ export function Lightbox() {
     suppressClickRef.current = true
     if (e.clientY - s.startY > LIGHTBOX_DISMISS_DISTANCE) setState(null)
     else setSwipeY(0)
-  }, [abortSwipe, endPinch])
+  }, [abortSwipe, trackPointerUp])
   const onOverlayPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => endSwipe(e, false), [endSwipe])
   const onOverlayPointerCancel = useCallback((e: React.PointerEvent<HTMLDivElement>) => endSwipe(e, true), [endSwipe])
   const onOverlayClick = useCallback(() => {
@@ -3626,7 +3521,6 @@ export function Lightbox() {
   // previous one's zoom. The dismiss offset resets with it — a viewer reopened
   // right after a spring-back must not start half-dragged.
   useEffect(() => {
-    setZoom(LIGHTBOX_ZOOM_MIN)
     setSwipeY(0)
     setSwiping(false)
     swipeRef.current.active = false
@@ -3634,14 +3528,10 @@ export function Lightbox() {
     swipeRef.current.pointerId = -1
     // Contacts do not survive the viewer: closing mid-pinch (or an image change
     // driven from the keyboard while fingers are down) must not leave a stale
-    // pair behind for the next open to scale against.
-    pointsRef.current.clear()
-    pinchRef.current = {
-      key: '', startDist: 0, baseZoom: LIGHTBOX_ZOOM_MIN,
-      startMid: { x: 0, y: 0 }, basePan: { x: 0, y: 0 },
-    }
-    setPinching(false)
-  }, [isOpen, state?.index])
+    // pair behind for the next open to scale against. `resetZoom` clears the
+    // contact map and the pinch baseline along with the zoom and pan.
+    resetZoom()
+  }, [isOpen, state?.index, resetZoom])
   // On any zoom change, recentre at fit and otherwise re-clamp the existing pan
   // to the new (smaller/larger) bounds — zooming out must not strand the image
   // off-screen. Runs post-layout, so offsetWidth already reflects the new box.

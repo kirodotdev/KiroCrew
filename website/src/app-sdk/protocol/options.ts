@@ -1,5 +1,6 @@
 import type { ChatMessage } from '../../types'
 import { isSystemNoticeKind } from '../../lib/systemNotice'
+import { isNoteRow } from '../../lib/noteContract'
 import { OPTION_MARKER_RE } from './optionMarker'
 
 // A plan is recognised by BOTH its header and at least one stage line, so ordinary
@@ -81,6 +82,17 @@ export function deriveFollowUpOptions(
     const m = messages[i]
     if (m.role === 'user' || m.role === 'queued') return { followUpOptions: [], followUpIsPlan: false }
     if (isSystemNoticeKind(m.kind ?? (m.meta?.kind as string | undefined))) continue
+    // A note may carry options, so a zero-token cron can offer an action without an LLM turn.
+    // `isNoteRow` also matches a rehydrated note, whose class the history format drops.
+    if (m.role === 'inject' && isNoteRow(m) && m.content) {
+      const parsed = parseOptions(m.content)
+      if (parsed.options.length) {
+        // NEVER isPlan: a note is not the orchestrator's plan turn, and `followUpIsPlan` is read
+        // only to dispatch /plan-action — so plan-shaped note text would let `Cancel` kill a plan.
+        return { followUpOptions: parsed.options, followUpIsPlan: false }
+      }
+      continue
+    }
     if (m.role === 'assistant' && m.content) {
       const { options, isPlan } = parseOptions(m.content)
       return { followUpOptions: options, followUpIsPlan: isPlan }

@@ -167,6 +167,7 @@ describe('destructive confirmations are translated', () => {
  * destructive confirm that interpolates a user-supplied name, add it here.
  */
 export const QUOTED_OPERAND_CONFIRM_KEYS = [
+  'apps.awsControl.console.delete_confirm', // filename operand, quoted per locale
   'apps.codeReviewSage.components.learningRail.confirm_delete', // quoted since #4653
   'apps.crewCompanion.gallery.deleteConfirm', // ASCII quotes → locale pair #4821
   'apps.meetings.list.deleteConfirm', // already quoted; pin + fr/it glyph fix #4821

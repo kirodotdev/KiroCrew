@@ -38,6 +38,11 @@ boundary, so this module never writes ``chromiumSandbox``. A host that cannot
 run it -- a container without the needed kernel permissions -- needs an operator
 decision, not a default that quietly removes a boundary for everyone. That is
 what :func:`cli_env_overrides` deferring to an operator-set variable is for.
+
+**Session naming lives here too.** The CLI addresses browsers by session name,
+which is the other half of "which browser does a command reach"; keeping both
+variables in one module is what stops the engine and the session from being
+configured through unrelated seams.
 """
 
 from __future__ import annotations
@@ -45,6 +50,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import uuid
+from collections.abc import Mapping
 from pathlib import Path
 
 from kiro_crew.atomic_write import atomic_write
@@ -59,6 +66,14 @@ CONFIG_ENV = "PLAYWRIGHT_MCP_CONFIG"
 #: The engine Kiro Crew provisions and gates on. Kept as one named constant so
 #: the config can never disagree with what ``install-browser`` fetched.
 LAUNCH_ENGINE = "chromium"
+
+#: The variable `playwright-cli` reads to decide which browser session a command
+#: addresses. Its name is fixed by the CLI, not by us.
+SESSION_ENV = "PLAYWRIGHT_CLI_SESSION"
+
+#: Marks a generated name as Kiro Crew's in ``playwright-cli list``, so an
+#: operator can tell an agent's browser from one they opened themselves.
+_SESSION_PREFIX = "kc-"
 
 _CONFIG_FILE = "playwright-cli-config.json"
 
@@ -133,3 +148,43 @@ def cli_env_overrides() -> dict[str, str]:
         return {}
     path = write_config()
     return {CONFIG_ENV: str(path)} if path is not None else {}
+
+
+def browser_session_env(env: Mapping[str, str]) -> dict[str, str]:
+    """Environment additions giving one agent process its own browser session.
+
+    The CLI addresses browsers by session NAME and resolves a command with no
+    name to the literal ``default``, so two agent processes that both run a bare
+    command drive the SAME browser: one navigates the other's page out from
+    under it, and either one's ``close`` leaves the other answering ``The
+    browser 'default' is not open``. A distinct name per process removes the
+    sharing without the agent having to remember ``-s=`` on every command.
+
+    The name is random rather than derived from the session key, because the
+    warm pool spawns a process BEFORE any session claims it: a key-derived name
+    would be wrong for exactly the sessions the pool serves, and handing a
+    per-session value to the spawn as ``extra_env`` would disqualify every
+    session from the pool (a non-empty ``extra_env`` is a pool bypass in
+    :meth:`kiro_crew.session.SessionManager.get_or_create`). Uniqueness per
+    process is the entire requirement; legibility is served by the prefix.
+
+    Empty when the variable is already set to a name we did not generate, the
+    same override doctrine as :func:`cli_env_overrides`: an operator who named a
+    session means one specific browser. Every process then shares that name,
+    which is theirs to choose — including ``attach``-style workflows that need a
+    fixed name. The ``kc-`` prefix is RESERVED for that reason: an operator who
+    wants a fixed shared name must not use it.
+
+    A value carrying that prefix is regenerated rather than preserved, because
+    it is one of ours arriving by INHERITANCE, not by intent. Both spawn paths
+    build the child env as ``{**os.environ}``, so a gateway started from inside
+    an agent process — which this repo's own ``kirocrew-worktree-dev`` skill
+    tells an agent to do via ``./dev-backend.sh`` — would pass its caller's
+    generated name down to every session it hosts. Preserving it there would
+    put every chat on that gateway back on one shared browser and silently
+    no-op the isolation this function exists to provide.
+    """
+    existing = env.get(SESSION_ENV, "").strip()
+    if existing and not existing.startswith(_SESSION_PREFIX):
+        return {}
+    return {SESSION_ENV: f"{_SESSION_PREFIX}{uuid.uuid4().hex[:8]}"}

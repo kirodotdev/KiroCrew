@@ -49,6 +49,19 @@ and of macOS signing/notarization.
   SubjectPublicKeyInfo DER bytes.
 - Signed fields: `algorithm`, `channel`, `key_id`, `pub_date`,
   `python_requires`, `schema`, `sha256`, `version`, and `wheel_url`.
+- Optional signed field: `min_version` — the forced-update floor for a
+  breaking release, declared in `packaging/MIN_VERSION` at publish time. Must
+  be a bare release (`0.6.0`, no prerelease suffix) and must not exceed the
+  manifest's own `version`; both are enforced by
+  `packaging/signing/cli-manifest.py` before signing. The installer verifies
+  its format but does not act on it (it always installs the signed version);
+  running gateways read it from the channel feed and mark the update
+  REQUIRED when their own version sits below the floor — but only after
+  `platform/feed_trust.py` verifies the manifest signature against the same
+  pinned key, because the floor coerces the dashboard UI and an unverified
+  one must degrade to the ordinary dismissible prompt. Absent means no
+  floor, and the canonical payload omits the key entirely so no-floor
+  manifests stay byte-identical to the pre-floor format.
 - Signature field: base64 RSA signature over sorted, compact UTF-8 JSON of all
   signed fields; `signature` itself is excluded.
 - Channel source: `feed/<channel>/latest-cli.json`. Pinned-version source:

@@ -76,6 +76,7 @@ from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exf
 from kiro_crew.slack.format import build_options_blocks, extract_options
 from kiro_crew.slack.outbound import OPTIONS_FALLBACK_TEXT, PostedOptions
 from kiro_crew.spawn_warm import warm_project_agents_for_spawn
+from kiro_crew.subagent import effort_applied_note, effort_drop_reason
 from kiro_crew.subagent_persistence import _agent_dir, read_state
 from kiro_crew.validation import (
     _EMOJI_NAME_RE,
@@ -241,6 +242,32 @@ async def api_spawn(request: web.Request) -> web.Response:
         # reconcile to skip this member.
         return web.json_response({"error": info.error, "counted": True}, status=400)
     resp: dict[str, object] = {"id": info.id, "task": task, "status": "spawned"}
+    # Server-side effort verdict: only this side knows the model the factory's
+    # effort gate will see (explicit per-call value, else the subagent role
+    # pin, else the session chain for the effective agent — a crew's pin, else
+    # a non-sentinel global). Additive, optional key — reporting only, never
+    # changes whether the spawn happened.
+    if reasoning_effort:
+        # Mirror _run_inner's agent inheritance so the verdict judges the same
+        # agent the session will actually use.
+        verdict_agent = agent or (
+            state.sessions.get_agent(parent_session) if parent_session else ""
+        )
+
+        def _effort_verdict() -> tuple[str, str]:
+            d = effort_drop_reason(model, reasoning_effort, verdict_agent)
+            if d:
+                return d, ""
+            return "", effort_applied_note(model, reasoning_effort, verdict_agent)
+
+        # The resolvers read config and glob ~/.kiro/agents — file I/O that
+        # must not run on the gateway event loop (the same reason
+        # get_or_create runs _session_model in an executor).
+        drop, applied = await asyncio.to_thread(_effort_verdict)
+        if drop:
+            resp["effort_dropped"] = drop
+        elif applied:
+            resp["effort_applied"] = applied
     if keep:
         # The conversation id is the FIRST run's id: spawn_continue targets it.
         resp["conversation"] = info.id

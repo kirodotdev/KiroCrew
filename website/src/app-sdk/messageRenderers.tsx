@@ -15,6 +15,8 @@
 import React, { memo } from 'react'
 import { Clock, LoaderCircle, CircleSlash, CircleAlert, CircleDot, Lock, PanelRight } from 'lucide-react'
 import { i18nT } from '../i18n/t'
+import { isNoteRow } from '../lib/noteContract'
+import { parseOptions } from './protocol'
 import { extractToolFilePath } from '../utils/toolFilePath'
 import { isSafePath } from '../utils/safePath'
 import AssistantMessage, { type TurnStats } from '../pages/chat/AssistantMessage'
@@ -22,6 +24,7 @@ import UserMessage from '../pages/chat/UserMessage'
 import { renderMcpOAuthMessage } from '../pages/chat/McpOAuthBanner'
 import SubagentCompletionCard from '../pages/chat/SubagentCompletionCard'
 import NudgeCard from '../pages/chat/NudgeCard'
+import NoticeCard from '../pages/chat/NoticeCard'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import MessageErrorBoundary from '../components/MessageErrorBoundary'
@@ -302,9 +305,12 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
     roles: ['inject'],
     render: (m, ctx) => {
       const cronLabel = (m.meta?.cronLabel as string) || ''
-      const cleanContent = cronLabel
+      const stripped = cronLabel
         ? m.content.replace(/^\[Cron notification from ".*"\]\n/, '').replace(/\n\[End of cron notification\]$/, '')
         : m.content
+      // A note's marker is consumed into the pill row, so rendering it too would show the
+      // same choices twice. Non-note inject rows keep it: there it is prose, not syntax.
+      const cleanContent = isNoteRow(m) ? parseOptions(stripped).text : stripped
       return ctx.wrapper(
         <>
           {cronLabel && <span className="text-muted text-[11px] leading-4 font-medium px-1 mb-1"><Clock size={11} className="inline mr-0.5" />{cronLabel}</span>}
@@ -327,11 +333,7 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
   {
     id: 'notice',
     roles: ['notice'],
-    render: (m, ctx) => ctx.row(
-      <div className="bg-card text-muted text-[13px] leading-5 px-3 py-2 rounded-md ring-1 ring-inset forced-colors:border ring-border self-center animate-scale-in">
-        {m.content}
-      </div>,
-    ),
+    render: (m, ctx) => ctx.row(<NoticeCard content={m.content} />),
   },
   {
     // Grouped and lifecycle-only roles have no row of their own: a thinking or

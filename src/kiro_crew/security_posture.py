@@ -1073,6 +1073,19 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "first can split a credential so only its tail is left to match and the head "
         "survives into the output.",
     ),
+    (
+        "AWS Control error responses",
+        "apps/builtins/aws_control/backend/routes.py",
+        "Error text returned by the aws-control builtin's HTTP surface. The app "
+        "shells out to the AWS CLI (via the deploy engine chokepoint), and a "
+        "failed call's stderr can quote back a `credential_process` command "
+        "line, an SSO URL, a role ARN, or an endpoint override carrying inline "
+        "credentials. Every outbound error string (the `aws_call_failed` "
+        "bodies, the bill card's `fetchError`, backup's `remoteError`, and the "
+        "library `not_pushable` message) funnels through one `_safe_error` "
+        "chokepoint that applies the deploy handlers' credential + "
+        "exfiltration-URL chain before the text reaches the dashboard.",
+    ),
 )
 
 # Modules that call a redactor but are NOT an output egress boundary, so they do
@@ -1104,6 +1117,19 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # egress boundary; the modules that CALL it (mochi routes/hooks) are the
         # registered sinks.
         "apps/builtins/mochi/redact.py",
+        # Redacts artifact names/metadata at the point they are STAGED (the
+        # pushable list and the S3 meta sidecar), before any response exists.
+        # It owns no output of its own — every HTTP response carrying that data
+        # leaves through routes.py, the registered sink for this app.
+        "apps/builtins/aws_control/backend/library.py",
+        # Same shape: scrubs externally-authored S3 object keys/folder names
+        # inside the listing helper. It owns no output — the listing reaches
+        # the dashboard only through routes.py, the registered sink.
+        "apps/builtins/aws_control/backend/storage.py",
+        # Same shape: scrubs profile names and STS-derived account metadata as
+        # the account snapshot is BUILT. It owns no output — the snapshot is
+        # served only through routes.py, the registered sink for this app.
+        "apps/builtins/aws_control/backend/accounts.py",
         # Same shape: hosts _redact_memory_field, the shared recursive scrubber
         # for memory fields. It owns no output of its own — the handler modules
         # that call it (memory.py, cron.py) are the covered surfaces.
@@ -1352,6 +1378,14 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/handlers/agents.py",
         # Pre-publish content scanning (a scan, not an egress of agent output).
         "deploy/handlers.py",
+        # Redacts CLI stderr as an AWSError message is BUILT, before any caller
+        # exists to render it. It has to happen here rather than at the boundary:
+        # this is also where that text is trimmed to a length cap, and trimming
+        # first can cut a credential in half, after which no downstream redactor
+        # can recognise the fragment. The surfaces that render the message
+        # (deploy/handlers.py, the app route modules) are registered sinks and
+        # redact again; these passes are idempotent.
+        "deploy/engine.py",
         "deploy/iam.py",
         "deploy/profiles.py",
         "deploy/scan.py",

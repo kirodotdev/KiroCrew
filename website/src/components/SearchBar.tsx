@@ -21,9 +21,11 @@ interface SearchBarProps {
   goTo?: (i: number) => void
   /** Render inline (fills width, no floating chrome) for use inside the search pane header. */
   docked?: boolean
+  /** True when older history is unloaded, so results cover only the loaded window. */
+  scopeLimited?: boolean
 }
 
-export default function SearchBar({ term, setTerm, matches, currentIdx, next, prev, close, caseSensitive, toggleCaseSensitive, focusNonce, goTo, docked }: SearchBarProps) {
+export default function SearchBar({ term, setTerm, matches, currentIdx, next, prev, close, caseSensitive, toggleCaseSensitive, focusNonce, goTo, docked, scopeLimited }: SearchBarProps) {
   const ime = useImeGuard()
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -118,11 +120,24 @@ export default function SearchBar({ term, setTerm, matches, currentIdx, next, pr
       >
         <CaseSensitive size={15} />
       </button>
-      {term && (
-        <span className="text-muted text-[12px] whitespace-nowrap tabular-nums">
-          {matches.length > 0 ? `${currentIdx + 1} of ${matches.length} results` : i18nT('components.searchBar.no_results')}
-        </span>
-      )}
+      {term && (() => {
+        const count = matches.length > 0
+          ? (scopeLimited
+              ? i18nT('components.searchBar.results_loaded_only', { current: currentIdx + 1, total: matches.length })
+              : `${currentIdx + 1} of ${matches.length} results`)
+          : (scopeLimited
+              ? i18nT('components.searchBar.no_results_loaded_only')
+              : i18nT('components.searchBar.no_results'))
+        return (
+          <>
+            {/* Wraps rather than clips: the tail carries the "in loaded history"
+                qualifier, so a clipped count reads as a complete one. */}
+            <span className="text-muted text-[12px] min-w-0 tabular-nums" title={count}>
+              {count}
+            </span>
+          </>
+        )
+      })()}
       <button onClick={prev} className="p-0.5 rounded text-muted hover:text-text cursor-pointer border-none bg-transparent" title={i18nT('components.searchBar.previous', { mod: platformShortcut('Shift+Enter') })} aria-label={i18nT('components.searchBar.previous_match')}>
         <ChevronUp size={15} />
       </button>

@@ -340,6 +340,35 @@ function MenuBtn({ items }: { items: (MenuItemDef | null)[] }) {
         close()
         return
       }
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Home' || e.key === 'End') {
+        // role="menu" promises arrow-key item navigation (WAI-ARIA menu
+        // pattern) — screen-reader users reach for arrows first (#5851).
+        // Wrap at both ends; Home/End jump to the boundary items.
+        // preventDefault stops the page scrolling behind the open menu.
+        // Modified arrows (Cmd/Ctrl/Alt) are OS/browser shortcuts the menu
+        // pattern assigns no behavior to — let them through untouched.
+        if (e.altKey || e.ctrlKey || e.metaKey) return
+        // An arrow the IME owns is moving through composition candidates,
+        // not menu items — same claim, same reason as the Tab branch below,
+        // and the claim runs BEFORE the preventDefault() and focus move.
+        // (useListKeyboardNav deliberately lets composition arrows through
+        // because its list coexists with a text input; this menu holds no
+        // editable target, so it takes the stricter side.)
+        const focusable = focusableItems()
+        if (focusable.length === 0) return
+        if (!imeLatch.claimKey(e)) return
+        e.preventDefault()
+        if (e.key === 'Home') { focusable[0].focus(); return }
+        if (e.key === 'End') { focusable[focusable.length - 1].focus(); return }
+        const idx = focusable.indexOf(document.activeElement as HTMLDivElement)
+        // Focus outside the item list (edge: it never entered) — treat the
+        // arrow as entry: Down lands on the first item, Up on the last.
+        const next = idx === -1
+          ? (e.key === 'ArrowDown' ? 0 : focusable.length - 1)
+          : (idx + (e.key === 'ArrowDown' ? 1 : -1) + focusable.length) % focusable.length
+        focusable[next].focus()
+        return
+      }
       if (e.key !== 'Tab') return
       // Contain Tab/Shift-Tab within the menu's enabled items — a Tab out of
       // a still-open menu would drop a keyboard user behind it with no

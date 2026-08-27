@@ -268,7 +268,6 @@ src/kiro_crew/dashboard/ws_event_scope.py
 src/kiro_crew/deploy/__init__.py
 src/kiro_crew/deploy/engine.py
 src/kiro_crew/deploy/handlers.py
-src/kiro_crew/deploy/iam.py
 src/kiro_crew/deploy/pricing.py
 src/kiro_crew/deploy/profiles.py
 src/kiro_crew/deploy/render.py
@@ -585,7 +584,6 @@ test/test_cli_desktop.py
 test/test_cli_doctor.py
 test/test_cli_lazy_imports.py
 test/test_cli_logging.py
-test/test_cli_manifest_signature.py
 test/test_cli_server_more_coverage.py
 test/test_close_guard_parity.py
 test/test_cloud_connect.py
@@ -1035,7 +1033,6 @@ test/test_project_alias.py
 test/test_project_git.py
 test/test_project_git_status_log.py
 test/test_prompt_timeout_follows_ceiling.py
-test/test_prompts.py
 test/test_provider_dispatch.py
 test/test_publish_feed_contract.py
 test/test_publish_providers.py

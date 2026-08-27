@@ -50,6 +50,7 @@ import urllib.request
 from pathlib import Path
 from typing import Callable
 
+from kiro_crew._ssl_compat import _ssl_context_has_ca_trust
 from kiro_crew.atomic_write import atomic_write
 
 logger = logging.getLogger("kirocrew.app.pptx-maker")
@@ -225,7 +226,7 @@ def _make_ssl_context() -> ssl.SSLContext:
     ctx = ssl.create_default_context()
     try:
         ctx.load_default_certs()
-        if ctx.cert_store_stats()["x509_ca"] > 0:
+        if _ssl_context_has_ca_trust(ctx):
             return ctx
     except ssl.SSLError:
         pass

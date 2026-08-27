@@ -27,6 +27,13 @@ installed by the caller should just forward into ``stop_event.set()``.
 
 from __future__ import annotations
 
+# System-trust injection is process-local and must run before imports below can
+# create or cache an SSLContext. Environment-only CA settings are inherited
+# from GatewayManager, but Security.framework-backed contexts are not.
+from kiro_crew._ssl_compat import _ensure_ssl_certs
+
+_ensure_ssl_certs()
+
 import argparse
 import asyncio
 import contextlib

@@ -27,7 +27,6 @@ from urllib.parse import urlencode
 from kiro_crew import mcp_core
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.context_management import COMPLETION_KEEP_DEFAULT_CHARS
-from kiro_crew.effort import model_supports_effort
 from kiro_crew.mcp_shared import ToolCancelled, is_tool_cancelled
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -517,6 +516,13 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
 
     agent_ids: list[str] = []
     agent_names: list[str] = []
+    # (subagent id, reason) pairs from the server's effort verdict — the
+    # gateway resolves the effective model (per-call value, else role pin,
+    # else unpinned) and reports when the requested effort cannot apply.
+    effort_drops: list[tuple[str, str]] = []
+    # (subagent id, note) pairs for the delivery mirror: the resolved model and
+    # the family settings key a requested effort is delivered under.
+    effort_applies: list[tuple[str, str]] = []
     agent_tasks: list[str] = []
     errors: list[str] = []
     transport_errors: list[str] = []
@@ -623,21 +629,28 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
         agent_ids.append(d.get("id", "?"))
         agent_names.append(a)
         agent_tasks.append(t)
+        if d.get("effort_dropped"):
+            effort_drops.append((str(d.get("id", "?")), str(d["effort_dropped"])))
+        if d.get("effort_applied"):
+            effort_applies.append((str(d.get("id", "?")), str(d["effort_applied"])))
 
     spawn_lines: list[str] = []
-    # Best-effort effort-capability report (never a rejection — gated on
-    # agent_ids so a total-failure result keeps its "Error:" first line, which
-    # SEL and callers test as a prefix). Only possible when the caller ALSO
-    # pinned a per-call model: with no explicit model the effective model
-    # resolves server-side (role pin / provider default) after this tool has
-    # returned, so this layer cannot know it and stays silent rather than
-    # guessing.
-    if agent_ids and reasoning_effort and model and not model_supports_effort(model):
-        spawn_lines.append(
-            f"ℹ reasoning_effort='{reasoning_effort}' was requested but model "
-            f"'{model}' does not support effort configuration — the level will "
-            "not be applied to these subagent(s)."
-        )
+    # Server-computed effort verdicts (never a rejection — gated on agent_ids
+    # so a total-failure result keeps its "Error:" first line, which SEL and
+    # callers test as a prefix). The gateway resolves the effective model
+    # (per-call value, else the subagent role pin, else unpinned/"auto") at
+    # accept time, so — unlike the old client-side check — this also reports
+    # the default case where no per-call model was passed and the effort
+    # would otherwise be dropped silently.
+    if agent_ids:
+        for drop_id, drop_reason in effort_drops:
+            spawn_lines.append(
+                f"ℹ reasoning_effort='{reasoning_effort}' dropped for {drop_id}: {drop_reason}"
+            )
+        for applied_id, applied_note in effort_applies:
+            spawn_lines.append(
+                f"✓ reasoning_effort='{reasoning_effort}' applied for {applied_id} ({applied_note})"
+            )
     if not parent_session and agent_ids:
         # Orphan alert: without a parent session key the subagents cannot
         # deliver completion events back to this conversation and will

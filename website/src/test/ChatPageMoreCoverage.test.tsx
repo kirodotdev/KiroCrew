@@ -345,21 +345,21 @@ describe('ChatPage row callbacks — fork', () => {
     expect(String(alertSpy.mock.calls[0][0])).toContain('slot is busy')
   })
 
-  it('still alerts when the fork request throws', async () => {
+  it('still alerts when the fork request throws, naming the real reason', async () => {
     apiSpy('forkChatSlot').mockRejectedValue(new Error('network down'))
     await renderTurn()
     await act(async () => { await assistantProps!.onFork!(1) })
     await waitFor(() => expect(alertSpy).toHaveBeenCalled())
     const said = String(alertSpy.mock.calls[0][0])
     expect(said).toContain('Fork failed')
-    // Pinned deliberately: `unwrap()` rejects with a redux-toolkit
+    // Flipped, as this assertion's previous form asked to be: it pinned the
+    // reason being LOST — `unwrap()` rejects with a redux-toolkit
     // SerializedError (a PLAIN OBJECT), so the handler's `e instanceof Error`
-    // test is false and the fallback `String(e)` renders '[object Object]' —
-    // the reason is lost from the alert. Reported, not fixed here; when the
-    // handler learns to read `.message` off a serialized error this assertion
-    // is the one that should flip to the real text.
-    expect(said).toContain('[object Object]')
-    expect(said).not.toContain('network down')
+    // test was false and the `String(e)` fallback rendered '[object Object]'.
+    // The handler now reads the message through `utils/thunkError.errMessage`,
+    // which knows that shape, so the alert carries the real text.
+    expect(said).toContain('network down')
+    expect(said).not.toContain('[object Object]')
   })
 })
 

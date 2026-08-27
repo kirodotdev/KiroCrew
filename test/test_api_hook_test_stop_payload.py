@@ -69,3 +69,47 @@ async def test_non_stop_hook_test_uses_default_payload(tmp_path):
     _args, _kwargs = mock_run.call_args
     hook_event = _args[2] if len(_args) > 2 else _kwargs.get("hook_event")
     assert hook_event is None
+
+
+@pytest.mark.asyncio
+async def test_hook_test_redacts_context_in_sel_metadata(tmp_path):
+    store = ScriptHookStore(tmp_path)
+    hook = store.create(
+        {
+            "name": "audit-hook",
+            "event": HOOK_EVENT_USER_PROMPT_SUBMIT,
+            "matcher": "",
+            "command": "cat",
+        }
+    )
+    secret = "AKIAIOSFODNN7EXAMPLE"
+    context = f"deploy with {secret}"
+    fake_result = type(
+        "R",
+        (),
+        {
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": "",
+            "duration_ms": 1,
+            "error": "",
+            "hook_name": "audit-hook",
+        },
+    )()
+    audit = MagicMock()
+
+    with (
+        patch(
+            "kiro_crew.hooks.run_script_hook",
+            new_callable=AsyncMock,
+            return_value=fake_result,
+        ) as mock_run,
+        patch("kiro_crew.dashboard.handlers.hooks._sel", return_value=audit),
+    ):
+        resp = await api_hook_test(_req_with_store(store, hook.id, context))
+
+    assert resp.status == 200
+    assert mock_run.await_args.args[1] == context
+    metadata = audit.log_tool_invocation.call_args.kwargs["metadata"]
+    assert secret not in metadata["context"]
+    assert "redacted" in metadata["context"].lower()

@@ -275,3 +275,102 @@ def test_gateway_startup_does_not_write_the_config_on_the_event_loop() -> None:
 
     assert "asyncio.to_thread(browser_cli_launch.cli_env_overrides)" in source
     assert "os.environ.update(browser_cli_launch.cli_env_overrides())" not in source
+
+
+def test_browser_session_env_names_the_session_when_unset() -> None:
+    """A nameless CLI command resolves to the shared ``default`` browser."""
+    override = mod.browser_session_env({})
+
+    assert list(override) == [mod.SESSION_ENV]
+    assert override[mod.SESSION_ENV].startswith("kc-")
+    assert override[mod.SESSION_ENV] != mod.SESSION_ENV
+
+
+def test_browser_session_env_is_unique_per_call() -> None:
+    """Uniqueness per process is the whole mechanism.
+
+    Two agent processes handed the same name would drive one browser again,
+    which is the collision this exists to remove.
+    """
+    names = {mod.browser_session_env({})[mod.SESSION_ENV] for _ in range(50)}
+
+    assert len(names) == 50
+
+
+def test_an_operator_set_session_is_never_overridden() -> None:
+    """An operator who named a session means one specific browser."""
+    assert mod.browser_session_env({mod.SESSION_ENV: "chrome"}) == {}
+
+
+def test_an_inherited_generated_name_is_regenerated() -> None:
+    """A name carrying our own prefix arrived by inheritance, not by intent.
+
+    Both spawn paths build the child env as ``{**os.environ}``, so a gateway
+    started from inside an agent process (``./dev-backend.sh``, which this
+    repo's ``kirocrew-worktree-dev`` skill tells an agent to run) inherits its
+    caller's generated name. Preserving it would put every session that
+    gateway hosts back on ONE shared browser -- silently no-opping the
+    isolation, in the flow most likely to hit it.
+    """
+    inherited = f"{mod._SESSION_PREFIX}deadbeef"
+
+    override = mod.browser_session_env({mod.SESSION_ENV: inherited})
+
+    assert override[mod.SESSION_ENV].startswith(mod._SESSION_PREFIX)
+    assert override[mod.SESSION_ENV] != inherited
+
+
+def test_nesting_cannot_collapse_two_processes_onto_one_browser() -> None:
+    """The property the regeneration exists for, stated end to end.
+
+    Two processes spawned under one inheriting gateway must not share a name,
+    however deep the nesting goes.
+    """
+    parent = mod.browser_session_env({})[mod.SESSION_ENV]
+    first = mod.browser_session_env({mod.SESSION_ENV: parent})[mod.SESSION_ENV]
+    second = mod.browser_session_env({mod.SESSION_ENV: parent})[mod.SESSION_ENV]
+
+    assert len({parent, first, second}) == 3
+
+
+def test_a_blank_operator_session_is_not_treated_as_a_choice() -> None:
+    """Matches the config override's convention: whitespace is not a value."""
+    override = mod.browser_session_env({mod.SESSION_ENV: "   "})
+
+    assert override[mod.SESSION_ENV].startswith("kc-")
+
+
+def test_both_agent_spawn_paths_name_their_browser_session() -> None:
+    """Wiring assertion: an unwired helper isolates nothing.
+
+    Kiro Crew spawns an agent through two independent paths -- ``AcpClient``
+    for a session and ``AcpRuntime`` for a subagent -- each building its own
+    child environment, so a fix applied to one leaves the other sharing.
+    """
+    import inspect
+
+    from kiro_crew.acp import client, runtime
+
+    for module in (client, runtime):
+        assert "env.update(browser_session_env(env))" in inspect.getsource(module)
+
+
+def test_the_session_name_does_not_travel_as_extra_env() -> None:
+    """It is applied to the spawn env directly, never through ``extra_env``.
+
+    A non-empty ``extra_env`` disqualifies a session from the warm pool, so
+    routing a per-process value through it would trade instant startup for
+    browser isolation. The pool decision must never see this.
+    """
+    import inspect
+
+    from kiro_crew import session
+
+    assert 'pool_decision = "bypass_env"' in inspect.getsource(session)
+
+    from kiro_crew.acp import client, runtime
+
+    for module in (client, runtime):
+        source = inspect.getsource(module)
+        assert "extra_env.update(browser_session_env" not in source
+        assert "browser_session_env" in source

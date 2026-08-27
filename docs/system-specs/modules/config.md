@@ -490,9 +490,31 @@ finishing second cannot resurrect a deleted agent). A lookup with no snapshot ye
 builds one lazily **only** in a synchronous context; on a running loop it falls
 back for that turn rather than block.
 
+### Effective-agent report (`resolve_effective_agent`)
+`resolve_agent_bindings` stores the REQUESTED agent verbatim and only logs when
+nothing dispatches it, because rewriting the stored name was destructive: the
+resolution behind the rewrite can be momentarily stale while the overwrite is
+permanent. `resolve_effective_agent(agent_name, project_dir)` is the
+non-destructive other half — it names the agent that will actually answer, and
+`""` for "nothing to report".
+
+Two properties, both pinned by tests:
+
+- **No filesystem I/O**, for the same reason rung 2 has none: it is called from
+  `_ChatSlot.to_dict()` for every slots frame on the event loop. It reads only the
+  materialized snapshot, the alias snapshot published by `KiroCrewConfig.load()`
+  (`publish_agent_alias_snapshot`), and `cached_project_agent_names` — never a
+  scan, stat or config re-read.
+- **Fails closed to `""`.** A cold alias snapshot, a cold materialized snapshot
+  and a cold project cache all report no divergence. A false "your agent was
+  substituted" marker sends the user chasing a substitution that never happened,
+  so silence during a boot window is the correct answer, not a guess.
+
+Consumers: the sidebar's session-row marker, and `mochi`'s `ensureSlot`, which
+refuses to send into a slot whose effective agent is someone else.
+
 Known follow-up (#1429): the snapshot makes this module a second home for agent
-discovery beside `apps/registry`, and `_resolve_named_agent_model` below still
-reads that directory without the sensitive-path gate.
+discovery beside `apps/registry`.
 
 ### `KiroCrewConfig.create_provider_factory() -> Callable`
 Returns a factory for LLMProvider instances. Resolves `"auto"` model

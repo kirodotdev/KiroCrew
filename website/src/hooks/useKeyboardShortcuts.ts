@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useRef, useState } from 'react'
+import { useEffect, useCallback, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAppDispatch, useAppStore } from '../store'
 import { switchSlot, deleteSlot, openActivityToTab } from '../store/chatSlice'
@@ -10,6 +10,8 @@ import {
   matchPanelToggleEvent,
   PANEL_TOGGLE_SHORTCUTS_EVENT,
   PANEL_TOGGLE_SHORTCUTS_KEY,
+  PANEL_TOGGLES_SKIPPING_SHELL,
+  type PanelToggleId,
   type PanelToggleOverrides,
 } from '../lib/panelToggleShortcuts'
 import { i18nT } from '../i18n/t'
@@ -600,10 +602,19 @@ interface UseKeyboardShortcutsOpts {
   onToggleLeftSidebar?: () => void
   onToggleSessionPanel?: () => void
   onToggleSidePanel?: () => void
+  /**
+   * Toggle the docked terminal panel. Owned by App rather than dispatched here:
+   * the panel's store is module-level, but the DECISION needs App-only state (the
+   * `dashboard.terminal.enabled` probe, whether the panel is popped out into its
+   * own window, and the active session's project as the shell's cwd). Left
+   * undefined when the terminal is disabled, so the chord no-ops exactly as the
+   * nav row disappears.
+   */
+  onToggleTerminal?: () => void
   disabled?: boolean
 }
 
-export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycleAgent, onCyclePrevAgent, onCycleReasoningEffort, onCyclePrevReasoningEffort, onCycleApprovalMode, onCyclePrevApprovalMode, onCycleModel, onCyclePrevModel, onToggleFocusMode, onToggleLeftSidebar, onToggleSessionPanel, onToggleSidePanel, disabled }: UseKeyboardShortcutsOpts) {
+export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycleAgent, onCyclePrevAgent, onCycleReasoningEffort, onCyclePrevReasoningEffort, onCycleApprovalMode, onCyclePrevApprovalMode, onCycleModel, onCyclePrevModel, onToggleFocusMode, onToggleLeftSidebar, onToggleSessionPanel, onToggleSidePanel, onToggleTerminal, disabled }: UseKeyboardShortcutsOpts) {
   const dispatch = useAppDispatch()
   const navigate = useNavigate()
   const appStore = useAppStore()
@@ -663,6 +674,28 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
     document.addEventListener('beforeinput', onBeforeInput, true)
     return () => document.removeEventListener('beforeinput', onBeforeInput, true)
   }, [])
+
+  /**
+   * Panel-toggle id → the action that toggles it, or `undefined` when the host
+   * passed none.
+   *
+   * `undefined` means NOT BOUND, and both dispatch phases must treat it that way:
+   * a chord with no action behind it is left for the browser, never claimed and
+   * then dropped. `onToggleTerminal` is the case that exists today — App leaves it
+   * undefined while `dashboard.terminal.enabled` is false — and swallowing the key
+   * there would suppress the browser's native Ctrl+J (Downloads) in exchange for
+   * nothing.
+   *
+   * Keying by id also keeps the two phases in step: the capture-phase skip-shell
+   * listener dispatches through this same map, so extending
+   * {@link PANEL_TOGGLES_SKIPPING_SHELL} needs no second per-panel branch.
+   */
+  const panelToggleActions = useMemo<Record<PanelToggleId, (() => void) | undefined>>(() => ({
+    'left-sidebar': onToggleLeftSidebar,
+    'session-panel': onToggleSessionPanel,
+    'side-panel': onToggleSidePanel,
+    'terminal': onToggleTerminal,
+  }), [onToggleLeftSidebar, onToggleSessionPanel, onToggleSidePanel, onToggleTerminal])
 
   const handler = useCallback((e: KeyboardEvent) => {
     const tag = (e.target as HTMLElement)?.tagName
@@ -775,13 +808,22 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
     // terminal. `defaultPrevented` defers to a handler that already claimed the
     // key (e.g. the Pierre editor's capture-phase ⌘S save), so a shared chord
     // saves there rather than also toggling a panel.
+    //
+    // A panel in `PANEL_TOGGLES_SKIPPING_SHELL` keeps its chord even while a
+    // terminal holds focus — see that set for why the terminal toggle must.
+    //
+    // A panel whose host passed no callback is NOT BOUND, so its chord must fall
+    // through untouched rather than be claimed into a no-op: the terminal toggle
+    // is undefined while `dashboard.terminal.enabled` is false, and claiming it
+    // there would `preventDefault()` the browser's own Ctrl+J (Downloads) for a
+    // feature the user turned off.
     const panelToggle = matchPanelToggleEvent(e, panelBindings)
-    if (panelToggle && !e.defaultPrevented && !isTerminalTarget(e.target)) {
+    const panelAction = panelToggle ? panelToggleActions[panelToggle] : undefined
+    if (panelToggle && panelAction && !e.defaultPrevented
+        && (PANEL_TOGGLES_SKIPPING_SHELL.has(panelToggle) || !isTerminalTarget(e.target))) {
       if (!enabled || disabled) return
       e.preventDefault()
-      if (panelToggle === 'left-sidebar') onToggleLeftSidebar?.()
-      else if (panelToggle === 'session-panel') onToggleSessionPanel?.()
-      else onToggleSidePanel?.()
+      panelAction()
       return
     }
 
@@ -942,7 +984,7 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
       navigate(panelMap[code])
       return
     }
-  }, [dispatch, navigate, appStore, onToggleShortcutsModal, onNewChat, onCycleAgent, onCyclePrevAgent, onCycleReasoningEffort, onCyclePrevReasoningEffort, onCycleApprovalMode, onCyclePrevApprovalMode, onCycleModel, onCyclePrevModel, onToggleFocusMode, onToggleLeftSidebar, onToggleSessionPanel, onToggleSidePanel, disabled, enabled, ctrlDigits, panelBindings])
+  }, [dispatch, navigate, appStore, onToggleShortcutsModal, onNewChat, onCycleAgent, onCyclePrevAgent, onCycleReasoningEffort, onCyclePrevReasoningEffort, onCycleApprovalMode, onCyclePrevApprovalMode, onCycleModel, onCyclePrevModel, onToggleFocusMode, panelToggleActions, disabled, enabled, ctrlDigits, panelBindings])
 
   // Escape stops in-progress voice read-back. CAPTURE phase so it runs before the command palette's bubble-phase Escape
   // handler, which stopPropagation()s and would otherwise close the palette while
@@ -965,6 +1007,39 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
     document.addEventListener('keydown', onEsc, true)
     return () => document.removeEventListener('keydown', onEsc, true)
   }, [enabled, appStore])
+
+  // Skip-shell panel toggles (`PANEL_TOGGLES_SKIPPING_SHELL`) need a CAPTURE-phase
+  // listener, and only while a terminal holds focus.
+  //
+  // The bubble-phase block above cannot serve them: xterm.js consumes the keys it
+  // recognises before a document listener runs, and on Windows/Linux a `mod` chord
+  // IS a control code it recognises — Ctrl+J is ^J (line feed). Verified live: the
+  // chord opened the panel, focus landed in the shell, and pressing it again sent a
+  // newline to the PTY instead of closing. VS Code has the same problem and solves
+  // it inside its own terminal key handler (`commandsToSkipShell` is consulted
+  // there, not at the workbench edge); a capture-phase document listener is the
+  // equivalent seam here, and it also stops the keystroke reaching the shell.
+  //
+  // Scoped to terminal targets on purpose: everywhere else the bubble path still
+  // owns these chords, so `defaultPrevented` deference and ordering are unchanged.
+  useEffect(() => {
+    if (!enabled || disabled) return
+    const onSkipShell = (e: KeyboardEvent) => {
+      if (!isTerminalTarget(e.target)) return
+      const id = matchPanelToggleEvent(e, panelBindings)
+      if (!id || !PANEL_TOGGLES_SKIPPING_SHELL.has(id)) return
+      // An unbound panel (no action) is not ours to claim — see
+      // `panelToggleActions`. Checked BEFORE preventDefault so the keystroke
+      // still reaches the shell it was aimed at.
+      const action = panelToggleActions[id]
+      if (!action) return
+      e.preventDefault()
+      e.stopPropagation()
+      action()
+    }
+    document.addEventListener('keydown', onSkipShell, true)
+    return () => document.removeEventListener('keydown', onSkipShell, true)
+  }, [enabled, disabled, panelBindings, panelToggleActions])
 
   useEffect(() => {
     document.addEventListener('keydown', handler)

@@ -37,7 +37,19 @@ SIGNED_FIELDS = {
     "version",
     "wheel_url",
 }
+#: Signed fields a manifest MAY carry. ``min_version`` is the fleet floor for a
+#: breaking release: a running install below it must treat this update as
+#: mandatory. Optional so schema v1 stays backward compatible — every already
+#: published manifest omits it, and consumers that predate the field ignore
+#: unknown keys rather than validating an exact field set (``cli.sh`` is the
+#: one exact-set consumer and tolerates exactly this key).
+OPTIONAL_SIGNED_FIELDS = {"min_version"}
 _VERSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+]{0,127}\Z")
+#: A floor must be a BARE release (``0.6.0``), never a prerelease: it names the
+#: oldest build still supported, and prerelease ordering subtleties (rc vs dev
+#: vs channel stamps) have no place in a value every consumer must compare the
+#: same way.
+_MIN_VERSION_RE = re.compile(r"[0-9]+(?:\.[0-9]+)*\Z")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _PUB_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\Z")
 _KEY_BITS_RE = re.compile(r"Public-Key:\s*\((\d+)\s+bit\)")
@@ -143,11 +155,25 @@ def _require_text(payload: dict[str, Any], key: str, *, max_len: int = 2048) -> 
     return value
 
 
+def _release_core(version: str) -> tuple[int, ...]:
+    """The leading numeric release tuple of *version* (``0.6.0rc3`` -> ``(0, 6, 0)``).
+
+    Used only for the publisher-side coherence check ordering ``min_version``
+    against ``version``; runtime comparison lives in the gateway, which owns the
+    full PEP 440 ordering.
+    """
+    match = re.match(r"[0-9]+(?:\.[0-9]+)*", version)
+    if match is None:
+        raise ManifestError("CLI manifest version has no numeric release core")
+    return tuple(int(chunk) for chunk in match.group().split("."))
+
+
 def _validate_signed_payload(payload: dict[str, Any]) -> dict[str, str]:
-    if set(payload) != SIGNED_FIELDS:
+    present = set(payload)
+    if not SIGNED_FIELDS <= present or present - SIGNED_FIELDS - OPTIONAL_SIGNED_FIELDS:
         raise ManifestError("CLI manifest signed field set does not match schema v1")
 
-    normalized = {key: _require_text(payload, key) for key in SIGNED_FIELDS}
+    normalized = {key: _require_text(payload, key) for key in present}
     if normalized["schema"] != SCHEMA:
         raise ManifestError("unsupported CLI manifest schema")
     if normalized["algorithm"] != ALGORITHM:
@@ -165,6 +191,14 @@ def _validate_signed_payload(payload: dict[str, Any]) -> dict[str, str]:
     ):
         raise ManifestError("invalid CLI manifest key id")
     _require_text(payload, "python_requires", max_len=128)
+    if "min_version" in normalized:
+        floor = normalized["min_version"]
+        if _MIN_VERSION_RE.fullmatch(floor) is None:
+            raise ManifestError("CLI manifest min_version must be a bare release like 0.6.0")
+        # A floor above the very build this manifest offers would demand an
+        # update the feed cannot satisfy — always a publisher typo.
+        if _release_core(floor) > _release_core(normalized["version"]):
+            raise ManifestError("CLI manifest min_version exceeds the manifest version")
 
     wheel_name = f"kirocrew-{normalized['version']}-py3-none-any.whl"
     parsed = urlsplit(normalized["wheel_url"])
@@ -203,9 +237,7 @@ def _validate_target_binding(
 
     version = payload["version"]
     wheel_name = f"kirocrew-{version}-py3-none-any.whl"
-    expected_url = (
-        f"{normalized_base}/cli/{expected_channel}/{version}/{wheel_name}"
-    )
+    expected_url = f"{normalized_base}/cli/{expected_channel}/{version}/{wheel_name}"
     if payload["wheel_url"] != expected_url:
         raise ManifestError("CLI manifest wheel URL does not match the artifact base")
 
@@ -236,6 +268,10 @@ def _payload_command(args: argparse.Namespace) -> None:
         "version": args.version,
         "wheel_url": args.wheel_url,
     }
+    # Absent, not empty: an empty-string field would fail the non-empty text
+    # rule, and the canonical bytes must not change for the no-floor case.
+    if args.min_version:
+        payload["min_version"] = args.min_version
     normalized = _validate_signed_payload(payload)
     _atomic_write(args.output, _canonical_json(normalized))
 
@@ -411,6 +447,11 @@ def _parser() -> argparse.ArgumentParser:
     payload.add_argument("--sha256", required=True)
     payload.add_argument("--python-requires", required=True)
     payload.add_argument("--pub-date", required=True)
+    payload.add_argument(
+        "--min-version",
+        default="",
+        help="optional fleet floor: installs below this bare release must update",
+    )
     payload.add_argument("--public-key", type=Path, required=True)
     payload.add_argument("--output", type=Path, required=True)
     payload.set_defaults(handler=_payload_command)

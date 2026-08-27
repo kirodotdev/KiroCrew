@@ -13,7 +13,7 @@
  *    row could only ever display "Native".
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup } from '@testing-library/react'
+import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { store } from '../store'
@@ -26,12 +26,14 @@ vi.mock('../api/client', () => ({
     sttConfig: vi.fn(),
     saveSttConfig: vi.fn(),
     sttInstall: vi.fn(),
+    restartGateway: vi.fn(),
   },
 }))
 
 const mockApi = api as unknown as {
   sttConfig: ReturnType<typeof vi.fn>
   saveSttConfig: ReturnType<typeof vi.fn>
+  restartGateway: ReturnType<typeof vi.fn>
 }
 
 function payload(over: Record<string, unknown> = {}) {
@@ -88,7 +90,28 @@ describe('SttSettings provider-aware install surface', () => {
     expect(screen.getByText(/kirocrew\[voice\]/)).toBeTruthy()
     // …with the transcribe-specific next step, not the button trailer.
     expect(screen.getByText(/restart the gateway/i)).toBeTruthy()
+    expect(screen.getByRole('button', { name: /restart gateway/i })).toBeTruthy()
     expect(screen.queryByText(/then click install below/i)).toBeNull()
+  })
+
+  it('confirms before restarting and disables the action in flight', async () => {
+    let finish!: () => void
+    mockApi.restartGateway.mockImplementation(() => new Promise<void>(resolve => { finish = resolve }))
+    mount({
+      provider: 'transcribe',
+      prereqs: ["/opt/kirocrew/bin/python -m pip install 'kirocrew[voice]'"],
+    })
+    await loaded()
+
+    const restart = screen.getByTestId('stt-restart-gateway')
+    fireEvent.click(restart)
+    expect(mockApi.restartGateway).not.toHaveBeenCalled()
+    expect(restart).toHaveTextContent(/click again to restart/i)
+
+    fireEvent.click(screen.getByTestId('stt-restart-gateway'))
+    await waitFor(() => expect(mockApi.restartGateway).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.getByTestId('stt-restart-gateway')).toBeDisabled())
+    finish()
   })
 
   it('keeps the Install Whisper button for the whisper provider', async () => {

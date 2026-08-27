@@ -2067,7 +2067,9 @@
     "searchBar": {
       "next": "Next ({{mod}})",
       "no_results": "No results",
-      "previous": "Previous ({{mod}})"
+      "previous": "Previous ({{mod}})",
+      "no_results_loaded_only": "No results in loaded history",
+      "results_loaded_only": "{{current}}/{{total}} results in loaded history"
     },
     "searchResultsList": {
       "assistant": "Assistant",
@@ -2196,6 +2198,10 @@
       "tunnel_is_starting_up": "Tunnel is starting up",
       "tunnel_stopped": "Tunnel stopped",
       "up": "up {{time}}"
+    },
+    "updateFoundModal": {
+      "this_version_is_below_minimum": "This update is required — versions below {{version}} are no longer supported.",
+      "update_required": "Update required"
     },
     "updateModal": {
       "restart_update": "Install Update & Restart App",
@@ -2501,7 +2507,8 @@
       "jump_to_chat_letters": "Jump to chat 10 and beyond (letters follow the badge shown on each row)",
       "toggle_left_sidebar": "Toggle left sidebar",
       "toggle_session_panel": "Toggle session panel",
-      "toggle_side_panel": "Toggle side panel"
+      "toggle_side_panel": "Toggle side panel",
+      "toggle_terminal": "Toggle terminal"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "All slots are occupied",
@@ -2886,7 +2893,12 @@
         "rendered_view": "Rendered view",
         "switch_to_raw_markdown_view": "Switch to raw markdown view",
         "switch_to_rendered_view": "Switch to rendered view",
-        "use_as_plan_count": "Use as Plan ({{count}} steps)"
+        "use_as_plan_count": "Use as Plan ({{count}} steps)",
+        "needs_earlier_history": "Select to load the next page of earlier history",
+        "more_actions": "More actions",
+        "needs_active_chat": "Available once this chat finishes opening",
+        "needs_earlier_history_count_one": "Select to load earlier history — {{count}} earlier message remains",
+        "needs_earlier_history_count_other": "Select to load earlier history — {{count}} earlier messages remain"
       },
       "chatNavPanel": {
         "link": "Link"
@@ -3114,6 +3126,9 @@
         "hide_tool_calls": "Hide tool calls",
         "worked_through_step_one": "Worked through {{count}} step",
         "worked_through_step_other": "Worked through {{count}} steps"
+      },
+      "deepLink": {
+        "message_unavailable": "This message is no longer in this conversation."
       }
     },
     "chatPage": {
@@ -3162,6 +3177,7 @@
       "send_failed_with_error": "Send failed: {{error}}"
     },
     "chatSidebar": {
+      "answered_by": "answered by {{agent}}",
       "archive_session_one": "Archive {{count}} session",
       "archive_session_other": "Archive {{count}} sessions",
       "default_agent": "Default agent: {{name}}",
@@ -4912,7 +4928,8 @@
         "custom_hint": "Use at least one modifier key.",
         "turn_keyboard_shortcuts_on_or_off_globally": "Turn keyboard shortcuts on or off globally — {{mod}} + K (this reference) always works",
         "clear_shortcut": "Clear",
-        "panel_toggles": "Panel toggles"
+        "panel_toggles": "Panel toggles",
+        "skips_shell_hint": "Works inside the terminal too, so your shell stops receiving this key — do not pick Ctrl+C or Ctrl+R."
       },
       "reportProblemCard": {
         "support": "Support",

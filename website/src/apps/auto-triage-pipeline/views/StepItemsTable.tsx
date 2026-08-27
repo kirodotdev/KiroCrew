@@ -129,8 +129,16 @@ function ItemRow({
             #{item.number}
           </span>
 
+          {/* "Not cached", not "Untitled". A missing title means WE do not have it,
+              not that the issue lacks one -- it always has a title on the forge. The
+              two local sources are Issue Radar's on-demand detail cache and the
+              dispatch queue entry, so an issue that was triaged but never dispatched
+              and never opened in Issue Radar has no title here. Every neighbouring
+              field in the expanded row already says "Not cached" for exactly this
+              reason; the title was the one place still asserting a fact about the
+              issue instead of about our knowledge of it. */}
           <span className="min-w-0 flex-1 truncate text-[13px]" style={{ color: C.text }}>
-            {item.title || i18nT('apps.autoTriagePipeline.global.untitled')}
+            {item.title || i18nT('apps.autoTriagePipeline.global.not_cached')}
           </span>
         </button>
 

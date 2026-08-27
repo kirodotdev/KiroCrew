@@ -313,9 +313,32 @@ The corollary is the part to get right. **A surface that must magnify owns its o
 zoom — it does not ask for `pinch-zoom` back.** `touch-action` is intersected from
 the hit-test target up to the root, so a descendant cannot re-grant a behaviour the
 root withheld; declaring `touch-pinch-zoom` there buys a dead gesture, not a working
-one. The image viewer (`Lightbox` in `MarkdownRenderer.tsx`) is the worked example:
-`touch-none` plus a two-pointer distance ratio driving the same `zoom` state its
-toolbar and keyboard drive. Code blocks take the other legitimate route and scroll
+one.
+
+**Count the surfaces this rule binds before believing it holds.** There are **three**
+full-viewport magnify overlays — the image viewer (`Lightbox` in
+`MarkdownRenderer.tsx`), the diagram viewer (`DiagramLightbox.tsx`), and the
+screenshot viewer in `pages/AppDetailPage.tsx` — and when page zoom was first
+switched off only the first owned a gesture. The second silently
+became unmagnifiable by any gesture, because its content is fit-scaled vector whose
+labels are smallest at exactly the state it opens in. The rule read as satisfied
+because the *documented example* obeyed it; nothing had counted the instances. The
+first two
+now share `hooks/usePinchZoom.ts` (contact tracking, focal anchoring, pan clamping),
+so a further such surface gets the gesture by using the hook rather than by
+re-deriving the math — and `touch-none` on the transform target is what opts it out
+of the root's `pan-x pan-y`.
+
+The guard that enforces this sweeps **both** `components/**` and `pages/**`, because
+a magnify overlay can live in either and a population scoped to one directory counts
+instances of a set it has itself narrowed. `AppDetailPage.tsx` is carried in that
+guard as a named, issue-linked exception rather than excluded by the glob: an
+exception a reader can see is a debt with an owner, a glob boundary is not. Giving it
+the gesture is tracked separately because its overlay also owns arrow-key navigation
+between screenshots and click-to-dismiss, so a pinch there has to be reconciled with
+a prev/next seam the other two do not have.
+
+Code blocks take the other legitimate route and scroll
 horizontally instead. And note what is *not* lost — the OS Display Zoom setting sits
 outside the viewport contract and still magnifies anything. A browser tab's own
 text-size control does too, but it is **not** a fallback in the installed app: a

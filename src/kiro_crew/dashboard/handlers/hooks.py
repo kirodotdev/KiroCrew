@@ -289,6 +289,7 @@ async def api_hook_test(request: web.Request) -> web.Response:
     # circular import: kiro_crew.hooks pulls dashboard state at module load, so
     # this handler defers the import to call time (matches _get_hook_store above).
     from kiro_crew.hooks import HOOK_EVENT_STOP, run_script_hook  # noqa: F811
+    from kiro_crew.platform import redact_via_context
 
     store = _get_hook_store(request.app["state"])
     hook_id = request.match_info["hook_id"]
@@ -326,7 +327,7 @@ async def api_hook_test(request: web.Request) -> web.Response:
             "hook_event": hook.event,
             "exit_code": result.exit_code,
             "duration_ms": result.duration_ms,
-            "context": context,
+            "context": redact_via_context(context),
         },
     )
     return web.json_response(

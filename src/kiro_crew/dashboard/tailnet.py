@@ -34,8 +34,9 @@ import subprocess
 import threading
 import time
 from collections import OrderedDict
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from contextlib import suppress
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from kiro_crew import github_runner
 from kiro_crew.dashboard.urls import is_loopback
@@ -57,6 +58,13 @@ logger = logging.getLogger(__name__)
 #: waits through — it must be short, and it must be a real timeout rather than a
 #: hope, because `tailscale status` blocks while the daemon is starting up.
 _CLI_TIMEOUT_SECS = 3.0
+
+#: Background recovery stays cheap even when an explicitly enabled daemon is
+#: unavailable for hours.  The first retry covers the common Windows service /
+#: daemon boot race quickly; the ceiling limits steady-state subprocess work.
+_ORIGIN_RECOVERY_INITIAL_SECS = 2.0
+_ORIGIN_RECOVERY_MAX_SECS = 60.0
+_ORIGIN_RUNTIME_STATE_KEY = "tailnet_origin_state"
 
 #: Where the CLI is accepted from — **vetted absolute paths only, never ``PATH``**.
 #: A ``PATH`` lookup would make the binary itself attacker-selectable: an agent
@@ -586,17 +594,220 @@ async def resolve_tailnet_host(enabled: bool) -> str:
         # Debug-level silence is right for a host that never opted in, but the
         # operator who set ``dashboard.tailscale.enabled`` gets the same bare 403
         # this feature exists to remove, with nothing above debug saying why.
-        # The common cause is a boot race: the gateway resolves once at startup
-        # and tailscaled has not answered yet.
+        # The common cause is a boot race: tailscaled has not answered yet.  The
+        # server owns a bounded background retry after this startup probe.
         logger.warning(
             "dashboard.tailscale.enabled is on, but no tailnet name could be "
             "resolved, so no tailnet origin was added and `tailscale serve` will "
-            "still fail the Origin/Host check. Check `tailscale status`; if the "
-            "daemon was still starting, restart the gateway once it reports "
-            "Running."
+            "still fail the Origin/Host check for now. Background recovery will "
+            "retry without delaying gateway startup; check `tailscale status` if "
+            "it does not become active after the daemon reports Running."
         )
         return ""
     return name
+
+
+# ---------------------------------------------------------------------------
+# Runtime origin recovery — the startup probe above remains the fast path.  An
+# explicitly enabled gateway that loses a boot race can add one validated
+# origin later without mutating aiohttp's frozen application mapping.
+# ---------------------------------------------------------------------------
+
+
+def _origin_resolved_now() -> int:
+    """Epoch timestamp for a successful runtime activation."""
+
+    return int(time.time())
+
+
+@dataclass
+class TailnetOriginState:
+    """Mutable tailnet state stored before aiohttp freezes the app mapping."""
+
+    host: str = ""
+    resolved_at: int = 0
+    load_enabled: Callable[[], bool] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    task: asyncio.Task[None] | None = field(default=None, repr=False, compare=False)
+
+
+def running_tailnet_origin(
+    app: web.Application | Mapping[str, object],
+) -> tuple[str, int]:
+    """Return the origin the running gateway currently trusts.
+
+    The legacy scalar keys remain as an initial snapshot for compatibility with
+    integrations that inspect the app. Runtime-aware callers use the mutable
+    value object so recovery never mutates aiohttp's frozen application mapping.
+    """
+
+    state = app.get(_ORIGIN_RUNTIME_STATE_KEY)
+    if isinstance(state, TailnetOriginState):
+        return state.host, state.resolved_at
+    host = str(app.get("tailnet_host") or "")
+    raw_resolved_at = app.get("tailnet_resolved_at")
+    try:
+        resolved_at = int(raw_resolved_at) if isinstance(raw_resolved_at, (str, int, float)) else 0
+    except (TypeError, ValueError):
+        resolved_at = 0
+    return host, resolved_at
+
+
+async def _origin_configured_enabled(load_enabled: Callable[[], bool]) -> bool | None:
+    """Read the live opt-in off-loop; ``None`` means fail closed and retry."""
+
+    try:
+        return bool(await asyncio.to_thread(load_enabled))
+    except Exception:
+        logger.debug("tailnet origin recovery: config unreadable", exc_info=True)
+        return None
+
+
+async def _origin_governance_pinned(*, audit_tool: str = "") -> bool:
+    """Evaluate the live governance ceiling off-loop, failing closed."""
+
+    try:
+        return await asyncio.to_thread(
+            is_governance_pinned_off,
+            audit_tool=audit_tool,
+        )
+    except Exception:  # pragma: no cover - the underlying probe is itself guarded
+        logger.debug("tailnet origin recovery: governance probe failed", exc_info=True)
+        return True
+
+
+async def _recover_tailnet_origin(app: web.Application, state: TailnetOriginState) -> None:
+    """Retry until one validated origin is activated or the opt-in is removed."""
+
+    load_enabled = state.load_enabled
+    if load_enabled is None:
+        logger.error(
+            "tailnet origin recovery stopped: config loader is unavailable; "
+            "the request boundary remains unchanged"
+        )
+        return
+
+    delay = _ORIGIN_RECOVERY_INITIAL_SECS
+    while True:
+        await asyncio.sleep(delay)
+
+        enabled = await _origin_configured_enabled(load_enabled)
+        if enabled is False:
+            logger.info("tailnet origin recovery stopped because the setting is off")
+            return
+        if enabled is None or await _origin_governance_pinned(audit_tool="tailnet_origin_recover"):
+            delay = min(delay * 2, _ORIGIN_RECOVERY_MAX_SECS)
+            continue
+
+        host = await asyncio.to_thread(self_dns_name)
+        if not host:
+            delay = min(delay * 2, _ORIGIN_RECOVERY_MAX_SECS)
+            continue
+
+        # Re-check both controls immediately before widening the request boundary.
+        # No await occurs between the final decision and the set/state update.
+        enabled = await _origin_configured_enabled(load_enabled)
+        if enabled is False:
+            return
+        if enabled is None or await _origin_governance_pinned(audit_tool="tailnet_origin_recover"):
+            delay = min(delay * 2, _ORIGIN_RECOVERY_MAX_SECS)
+            continue
+
+        allowed_origins = app.get("allowed_origins")
+        if not isinstance(allowed_origins, set):
+            logger.error(
+                "tailnet origin recovery stopped: allowed_origins is unavailable; "
+                "the request boundary remains unchanged"
+            )
+            return
+
+        allowed_origins.add(f"https://{host}")
+        state.host = host
+        state.resolved_at = _origin_resolved_now()
+        logger.info(
+            "tailnet origin recovered in background: trusting https://%s "
+            "(bind and auth unchanged)",
+            host,
+        )
+        return
+
+
+async def _run_origin_recovery_guarded(
+    app: web.Application,
+    state: TailnetOriginState,
+) -> None:
+    """Keep an unexpected recovery failure from becoming an orphaned task error."""
+
+    try:
+        await _recover_tailnet_origin(app, state)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception(
+            "tailnet origin background recovery stopped unexpectedly; "
+            "the request boundary remains unchanged"
+        )
+
+
+async def _start_origin_recovery(app: web.Application) -> None:
+    """aiohttp startup hook: schedule recovery without delaying listener setup."""
+
+    state = app.get(_ORIGIN_RUNTIME_STATE_KEY)
+    if (
+        not isinstance(state, TailnetOriginState)
+        or state.host
+        or (state.task is not None and not state.task.done())
+    ):
+        return
+    state.task = asyncio.create_task(
+        _run_origin_recovery_guarded(app, state),
+        name="tailnet-origin-recovery",
+    )
+
+
+async def _stop_origin_recovery(app: web.Application) -> None:
+    """aiohttp cleanup hook: leave no background task behind."""
+
+    state = app.get(_ORIGIN_RUNTIME_STATE_KEY)
+    if not isinstance(state, TailnetOriginState) or state.task is None:
+        return
+    state.task.cancel()
+    with suppress(asyncio.CancelledError):
+        await state.task
+    state.task = None
+
+
+def install_tailnet_origin_recovery(
+    app: web.Application,
+    *,
+    enabled: bool,
+    initial_host: str,
+    load_enabled: Callable[[], bool],
+) -> None:
+    """Seed runtime state and register recovery for an unresolved opt-in."""
+
+    try:
+        resolved_at = int(app.get("tailnet_resolved_at") or 0) if initial_host else 0
+    except (TypeError, ValueError):
+        resolved_at = 0
+    if initial_host and not resolved_at:
+        resolved_at = _origin_resolved_now()
+    state = TailnetOriginState(
+        host=initial_host,
+        resolved_at=resolved_at,
+        load_enabled=load_enabled,
+    )
+    app[_ORIGIN_RUNTIME_STATE_KEY] = state
+    # Retain the startup snapshot for compatibility. Runtime consumers call
+    # ``running_tailnet_origin`` instead of mutating these keys after app freeze.
+    app["tailnet_host"] = initial_host
+    app["tailnet_resolved_at"] = resolved_at
+    if enabled and not initial_host:
+        app.on_startup.append(_start_origin_recovery)
+        app.on_cleanup.append(_stop_origin_recovery)
 
 
 # ---------------------------------------------------------------------------

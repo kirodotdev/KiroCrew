@@ -145,3 +145,56 @@ describe('ChatEmbed approval rollback (#5524)', () => {
     expect(screen.queryByRole('button', { name: 'Reject' })).toBeNull()
   })
 })
+
+describe('ChatEmbed batch approval (Req 4.1-4.4)', () => {
+  // Two pending approvals in one group -> CollapsibleToolGroup shows the batch
+  // affordance ("Approve all 2") and routes through ChatEmbed.approveBatch,
+  // which POSTs each id to the slot-scoped approve endpoint via allSettled.
+  const TWO_PENDING: ChatMessage[] = [
+    { role: 'permission', content: '', cls: '', ts: '1', meta: { approval_id: 'appr-1', tool_input: 'echo one' } },
+    { role: 'permission', content: '', cls: '', ts: '2', meta: { approval_id: 'appr-2', tool_input: 'echo two' } },
+  ]
+
+  async function mountWithTwoPending() {
+    mockGet.mockResolvedValue({ messages: TWO_PENDING, running: false, title: '' })
+    await act(async () => {
+      renderEmbed()
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    await settleUntil(() => screen.queryByRole('button', { name: /Approve all 2/ }) !== null)
+    expect(screen.getByRole('button', { name: /Approve all 2/ })).toBeInTheDocument()
+  }
+
+  it('routes "Approve all" through the slot endpoint for EVERY pending id', async () => {
+    await mountWithTwoPending()
+
+    await act(async () => {
+      screen.getByRole('button', { name: /Approve all 2/ }).click()
+    })
+    await settleUntil(() => mockPost.mock.calls.length >= 2)
+
+    // Slot-scoped endpoint, one call per pending id (Task 4 transport).
+    expect(mockPost).toHaveBeenCalledWith('/api/chat/slots/slot-1/approve', { action: 'approved', request_id: 'appr-1' })
+    expect(mockPost).toHaveBeenCalledWith('/api/chat/slots/slot-1/approve', { action: 'approved', request_id: 'appr-2' })
+  })
+
+  it('keeps the batch resolved when at least one call succeeds (allSettled, not fail-fast)', async () => {
+    // First id fails, second succeeds: allSettled must NOT abort the batch, and
+    // since not every call failed the row does not roll back.
+    mockPost
+      .mockRejectedValueOnce(new Error('stale'))
+      .mockResolvedValueOnce({})
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    await mountWithTwoPending()
+
+    await act(async () => {
+      screen.getByRole('button', { name: /Reject all 2/ }).click()
+    })
+    await settleUntil(() => mockPost.mock.calls.length >= 2)
+
+    // BOTH ids were attempted despite the first rejecting (no fail-fast abort).
+    expect(mockPost).toHaveBeenCalledWith('/api/chat/slots/slot-1/approve', { action: 'rejected', request_id: 'appr-1' })
+    expect(mockPost).toHaveBeenCalledWith('/api/chat/slots/slot-1/approve', { action: 'rejected', request_id: 'appr-2' })
+    consoleError.mockRestore()
+  })
+})

@@ -76,6 +76,7 @@ def build_subagent_snapshot(a: Any, *, now: float | None = None) -> dict:
         "task": _r(a.task),
         "agent": _r(a.agent),
         "model": a.resolved_model,
+        "requested_model": _r(a.requested_model),
         "streaming": _r(a.streaming_text),
         "last_tool": _r(a.last_tool),
         "tool_count": a.tool_count,
@@ -725,6 +726,7 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                                                 "task": _r(a.task),
                                                 "agent": _r(a.agent),
                                                 "model": a.resolved_model,
+                                                "requested_model": _r(a.requested_model),
                                             },
                                         }
                                     )

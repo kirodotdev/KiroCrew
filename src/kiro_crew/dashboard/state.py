@@ -26,7 +26,12 @@ from aiohttp import web
 
 from kiro_crew.acp.types import STOP_REASON_CANCELLED
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.config.loader import DASHBOARD_PORT, _raw_config, config_dir
+from kiro_crew.config.loader import (
+    DASHBOARD_PORT,
+    _raw_config,
+    config_dir,
+    resolve_effective_agent,
+)
 from kiro_crew.constants import (
     OPTIONS_RE_LINE,
     SUBAGENT_BATCH_COMPLETION_PREFIX,
@@ -4621,6 +4626,19 @@ class _ChatSlot:
             "key": self.key,
             "title": _redact(self.display_title),
             "agent": self.agent,
+            # The REQUESTED binding, verbatim and never rewritten — see the note
+            # in `chat_handlers` on why normalizing it on disk was destructive.
+            #
+            # `effective_agent` is the non-destructive other half of that
+            # decision: the name that will actually answer, and ONLY when it
+            # differs from the request. "" means nothing to report — either the
+            # request is honored, or resolution is not settled (a cold snapshot
+            # during boot). A false "your agent was substituted" marker is worse
+            # than no marker, so the resolver fails closed to "" rather than
+            # guessing, and it reads only in-memory snapshots so this stays free
+            # of filesystem work on the event loop. See
+            # `config.loader.resolve_effective_agent`.
+            "effective_agent": resolve_effective_agent(self.agent, self.project or None),
             "model": self.model,
             "reasoning_effort": self.reasoning_effort,
             "mode": self.mode,
@@ -5401,6 +5419,8 @@ class DashboardState:
         update_commits_behind: int = 0,
         update_last_checked_at: float | None = None,
         update_check_interval_secs: int = 43200,
+        update_required: bool = False,
+        update_min_version: str = "",
     ) -> dict[str, Any]:
         """Core status fields shared by /api/status, SSE, and WebSocket pushes."""
         uptime = int(time.time() - self.start_time)
@@ -5462,6 +5482,14 @@ class DashboardState:
             "update_commits_behind": update_commits_behind,
             "update_last_checked_at": update_last_checked_at,
             "update_check_interval_secs": update_check_interval_secs,
+            # Mandatory-update verdict (enterprise governance pin OR the release
+            # feed's breaking-change floor) plus the floor that triggered it.
+            # The proactive update modal reads these off the status frame and
+            # drops its snooze/skip affordances while required — it must not
+            # depend on the user opening Settings to learn the update is
+            # mandatory.
+            "update_required": update_required,
+            "update_min_version": update_min_version,
             "no_crons": self.no_crons,
             "branch": branch,
             "commit": commit,

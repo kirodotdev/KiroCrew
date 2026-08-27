@@ -1,5 +1,6 @@
 import { i18nT } from '../i18n/t'
 import { parseErrorCode } from './errorReport'
+import { errMessage } from './thunkError'
 
 /**
  * Whether *error* is the gateway's "a turn is in flight" refusal (HTTP 409,
@@ -47,9 +48,17 @@ export function agentSwitchFailureMessage(error: unknown): string {
   if (isTurnInFlightError(error)) {
     return i18nT('utils.agentSwitchFeedback.turn_in_flight')
   }
-  const message = typeof error === 'object' && error !== null
-    ? (error as { message?: unknown }).message
-    : null
-  if (typeof message === 'string' && message.trim()) return message
+  // `errMessage` owns reading a message off a rejection object, including the
+  // plain serialized form a Redux Toolkit thunk boundary produces, so this stops
+  // hand-rolling that cast and cannot drift from the other readers of the shape.
+  //
+  // The `typeof error === 'object'` guard is kept deliberately and is NOT
+  // redundant: `errMessage` also reads a thrown PRIMITIVE as its own message,
+  // which is right for a surface rendering a raw failure string but wrong here.
+  // On this one a bare `'offline'` is an internal artifact rather than copy a
+  // user should be shown, so it must still fall through to the generic line --
+  // see the "no usable text" case in `agentSwitchFeedback.test.ts`.
+  const message = typeof error === 'object' && error !== null ? errMessage(error) : ''
+  if (message.trim()) return message
   return i18nT('components.errorBoundary.something_went_wrong')
 }

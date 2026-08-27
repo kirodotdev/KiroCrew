@@ -92,6 +92,7 @@ from kiro_crew.acp.types import (
     JsonRpcRequest,
 )
 from kiro_crew.agent import ensure_agent_materialized
+from kiro_crew.browser_cli.launch import browser_session_env
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.env import augmented_path, resolve_krb5_ccname
@@ -1045,6 +1046,15 @@ class AcpRuntime:
         # server it spawns inherit this, so escaped launcher trees (``npx
         # @playwright/mcp`` -> node) are identifiable as ours.
         env[KIROCREW_SPAWNED_ENV] = KIROCREW_SPAWNED_VALUE
+        # Own browser session per agent process, matching AcpClient._spawn (see
+        # browser_session_env). Per PROCESS, not per agent: with session sharing
+        # on (the default) an eligible subagent's session is created on the
+        # PARENT's runtime, so a parent and its subagents share this process and
+        # therefore one browser; a task-runner run is a separate family sharing
+        # one run-scoped process. What this buys is isolation BETWEEN families,
+        # which is where the reported corruption came from. The docs tell an
+        # agent sharing a process with a concurrent browser user to pass -s=.
+        env.update(browser_session_env(env))
         # Per-process scratch containment (#5063): the agent's temp AND its
         # prompt-guided work products land in an owned directory instead of
         # the shared system temp dir. Allocated off-loop (mkdir + config read)

@@ -507,6 +507,12 @@ export function buildSketchSrcdoc(html: string, scriptOrigin: string): string {
   const serialized = `<!DOCTYPE html>\n${doc.documentElement.outerHTML}`
   return serialized.replace(
     /<meta name="x-script-placeholder" data-src="([^"]*)">/,
-    (_match, src) => `<script src="${src}"></script>`,
+    // crossorigin="anonymous": this srcdoc is a null-origin sandboxed iframe (a
+    // NON-secure context) and on the default deployment `src` is a loopback
+    // address, so Chrome's Private Network Access posture blocks the load
+    // unless it goes through CORS carrying the gateway's /vendor approval —
+    // the same mechanism as the widget Tailwind runtime (see widgetSrcdoc.ts).
+    // No onerror half here: this frame has no loading overlay to dismiss.
+    (_match, src) => `<script src="${src}" crossorigin="anonymous"></script>`,
   )
 }

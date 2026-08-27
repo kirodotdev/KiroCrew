@@ -2077,8 +2077,18 @@ Examples:
     mem_parser = cli_help.add_command(sub, "memory")
     mem_sub = mem_parser.add_subparsers(dest="mem_action")
     mem_sub.add_parser("list", help="Show semantic memory entries")
-    mem_search = mem_sub.add_parser("search", help="Search episodic memories")
+    mem_search = mem_sub.add_parser("search", help="Search memory (vector + markdown layers)")
     mem_search.add_argument("query", help="Search query text")
+    mem_search.add_argument(
+        "--layer",
+        choices=["vector", "history", "all"],
+        default="all",
+        help=(
+            "Which memory to search: vector (episodic semantic recall), "
+            "history (keyword FTS over preferences/projects/daily history), "
+            "or all (default)"
+        ),
+    )
     mem_show = mem_sub.add_parser(
         "show", help="Show the markdown memory layer (preferences, projects, daily history)"
     )

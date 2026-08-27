@@ -4903,6 +4903,22 @@ _CREW_SECRET_LEAVES: list[str] = [
     # HMAC-gated ``PUT /api/settings``; the app's own backend opens the file
     # directly rather than through this gate, so it keeps working.
     "workspace/md-notebook/settings.json",
+    # The AWS Control builtin's app data directory. ``backup.json`` in here holds
+    # ``nightly``, the bit that AUTHORIZES the app's startup loop to upload the
+    # gateway's memory and workspace to S3 unattended, so a prompt-injected agent
+    # that could write it would schedule an owner-billed export the owner never
+    # asked for -- routing around the owner-only HTTP surface that is supposed to
+    # be the only way to turn it on. Exactly the ``autoSync`` escalation above,
+    # one app over.
+    #
+    # Classified as the whole DIRECTORY, not that one file, for the reason the
+    # ``whatsapp`` entry above is: an atomic write goes through a temporary in the
+    # same directory and is then renamed, so fencing only the final name leaves a
+    # writable path to the same bytes. Its siblings (the cost cache, the library
+    # ledger) have no legitimate file-tool reader either -- the app's own backend
+    # opens every one of them directly rather than through this gate, so the app
+    # keeps working and future state files are covered without a new entry.
+    "apps/aws-control/data",
     "browser-cookies.txt",
     "playwright-storage-state.json",
     # Per-session work ledgers (session_ledger.py). Not credentials, but each

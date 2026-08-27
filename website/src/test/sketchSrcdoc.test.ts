@@ -178,6 +178,19 @@ describe('buildSketchSrcdoc — Mermaid is same-origin and offline', () => {
     expect(out).not.toContain('cdnjs.cloudflare.com')
   })
 
+  it('loads Mermaid via CORS so the null-origin frame passes Chrome PNA', () => {
+    // This srcdoc is a null-origin sandboxed iframe (NON-secure context) and on
+    // the default deployment the runtime src is a loopback address — the same
+    // Private Network Access mechanism that blocked the widget Tailwind
+    // runtime (issue #6181). crossorigin="anonymous" routes the load through
+    // CORS so the gateway's /vendor Access-Control-Allow-Origin approval can
+    // apply; without it the Mermaid load hard-fails on stock deployments.
+    const out = buildSketchSrcdoc('<p>x</p>', ORIGIN)
+    expect(out).toContain(
+      `<script src="${ORIGIN}${MERMAID_RUNTIME_PATH}" crossorigin="anonymous"></script>`,
+    )
+  })
+
   it('pins script-src to that exact file, not to the bare origin', () => {
     // Same least-privilege shape as widgetSrcdoc pinning Tailwind: a script URL
     // is itself an egress channel, so the whole origin must not be allowed.

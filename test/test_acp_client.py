@@ -662,6 +662,72 @@ class TestAcpClientSessionKey:
         await _stop_stderr_drain(client)
 
     @pytest.mark.asyncio
+    async def test_spawn_gives_each_process_its_own_browser_session(self, tmp_path):
+        """Two agent processes must not address the same playwright-cli browser.
+
+        Sharing the CLI's ``default`` session lets one process navigate or close
+        the other's page; the name is per PROCESS, so two spawns differ even for
+        the same session key (a pooled process is spawned before it is claimed).
+        """
+        names = []
+        for _ in range(2):
+            client = AcpClient(work_dir=tmp_path, session_key="same-key")
+            with (
+                patch("kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"),
+                patch(
+                    "kiro_crew.acp.client.wrap_argv",
+                    return_value=(["/usr/bin/kiro-cli", "acp"], None),
+                ),
+                patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+                patch("kiro_crew.session._track_pid"),
+                patch("kiro_crew.session._track_session_pid"),
+            ):
+                mock_proc = MagicMock()
+                mock_proc.pid = 12345
+                mock_proc.returncode = None
+                mock_exec.return_value = mock_proc
+
+                await client._spawn()
+
+                call_kwargs = mock_exec.call_args
+                env = call_kwargs.kwargs.get("env") or call_kwargs[1].get("env")
+                assert env is not None
+                assert env["PLAYWRIGHT_CLI_SESSION"].startswith("kc-")
+                names.append(env["PLAYWRIGHT_CLI_SESSION"])
+
+            await _stop_stderr_drain(client)
+
+        assert names[0] != names[1]
+
+    @pytest.mark.asyncio
+    async def test_spawn_keeps_an_operator_set_browser_session(self, tmp_path, monkeypatch):
+        """An operator who named a session means that one browser."""
+        monkeypatch.setenv("PLAYWRIGHT_CLI_SESSION", "chrome")
+        client = AcpClient(work_dir=tmp_path, session_key="k")
+        with (
+            patch("kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"),
+            patch(
+                "kiro_crew.acp.client.wrap_argv", return_value=(["/usr/bin/kiro-cli", "acp"], None)
+            ),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+            patch("kiro_crew.session._track_pid"),
+            patch("kiro_crew.session._track_session_pid"),
+        ):
+            mock_proc = MagicMock()
+            mock_proc.pid = 12345
+            mock_proc.returncode = None
+            mock_exec.return_value = mock_proc
+
+            await client._spawn()
+
+            call_kwargs = mock_exec.call_args
+            env = call_kwargs.kwargs.get("env") or call_kwargs[1].get("env")
+            assert env is not None
+            assert env["PLAYWRIGHT_CLI_SESSION"] == "chrome"
+
+        await _stop_stderr_drain(client)
+
+    @pytest.mark.asyncio
     async def test_spawn_no_channel_id_env_absent(self, tmp_path):
         client = AcpClient(work_dir=tmp_path, session_key="k", channel_id=None)
         with (

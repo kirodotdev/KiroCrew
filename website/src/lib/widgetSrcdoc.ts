@@ -99,6 +99,21 @@ const HEIGHT_REPORT_SHRINK_MS = 200
  * reproduces the blank-widget symptom the indicator exists to prevent. */
 const OVERLAY_HANG_BACKSTOP_MS = 15000
 
+/** Event fired inside the iframe when the Tailwind runtime <script> fails to
+ * load (network refusal, PNA/CORS block, packaging gap). The loading overlay's
+ * reveal script listens for it and uncovers the widget immediately — a
+ * degraded-but-visible widget beats a blank box sitting on the hang backstop,
+ * regardless of why the runtime failed. */
+const TW_ERROR_EVENT = 'mc-tw-error'
+
+/** Inline onerror body for the runtime <script> tag. Sets a flag (for a reveal
+ * script that starts AFTER the failure already fired) and dispatches
+ * TW_ERROR_EVENT (for one already listening). Static trusted string — never
+ * carries LLM/user content; single-quoted so it embeds in a double-quoted
+ * HTML attribute. */
+const TW_ERROR_INLINE_HANDLER =
+  `window.__mcTwError=1;window.dispatchEvent(new Event('${TW_ERROR_EVENT}'))`
+
 /** Body of the height-reporter script. Defined as a string literal — the only
  * interpolation is the two numeric tuning constants above (never LLM/user
  * content; the LLM `html` never reaches here). Set as a script element via
@@ -688,6 +703,12 @@ export function buildSrcdoc({
       function hide(){el.classList.add('mc-hidden');setTimeout(function(){if(el.parentNode)el.parentNode.removeChild(el)},400);}
       var done=false;
       function finish(){if(done)return;done=true;hide();}
+      // Runtime load failure: uncover immediately (degraded-but-visible beats
+      // a blank box). The flag covers a failure that fired before this script
+      // ran — the runtime is a HEAD script, so its error task can precede any
+      // body script — and the listener covers one that fires after.
+      if(window.__mcTwError){finish();return;}
+      window.addEventListener('${TW_ERROR_EVENT}',finish);
       setTimeout(finish,${OVERLAY_HANG_BACKSTOP_MS});
       var obs=new MutationObserver(function(muts){
         for(var i=0;i<muts.length;i++){
@@ -739,10 +760,25 @@ export function buildSrcdoc({
   // (2) attribute serialization HTML-escapes quotes, so a model byte sequence
   // cannot produce the exact `name="x-script-placeholder"` attribute pair.
   // The non-global replace is a defense-in-depth backstop for that invariant.
+  //
+  // The emitted tag carries two attributes tied to Chrome's Private Network
+  // Access policy (the sandboxed iframe is a null-origin, NON-secure context,
+  // and on the default deployment this src is a loopback address — a
+  // more-private address space):
+  //   - crossorigin="anonymous" routes the load through CORS, the only mode
+  //     that can carry the gateway's Access-Control-Allow-Origin /
+  //     PNA-preflight approval (see _apply_security_headers + the /vendor
+  //     OPTIONS handler in dashboard/server.py).
+  //   - onerror sets the failure flag + fires TW_ERROR_EVENT so the loading
+  //     overlay uncovers the widget IMMEDIATELY instead of sitting on the
+  //     15s hang backstop. An inline handler (not a listener added by a later
+  //     script) is deliberate: a head script's error task can run before any
+  //     body script executes, so only the element's own handler is free of
+  //     that ordering hazard. Static trusted string — no LLM content.
   const serialized = `<!DOCTYPE html>\n${doc.documentElement.outerHTML}`
   return serialized.replace(
     /<meta name="x-script-placeholder" data-src="([^"]*)">/,
-    (_match, src) => `<script src="${src}"></script>`,
+    (_match, src) => `<script src="${src}" crossorigin="anonymous" onerror="${TW_ERROR_INLINE_HANDLER}"></script>`,
   )
 }
 
@@ -773,7 +809,7 @@ function buildSrcdocSSR({ html, themeVars, mode, includeHeightReporter }: BuildS
     // DOM path: a head script blocks parsing, so a style behind it leaves the
     // document unthemed — and painted white — until the script lands.
     `<style>${styleCss}</style>` +
-    `<script src="${TAILWIND_RUNTIME_PATH}"><\/script>` +
+    `<script src="${TAILWIND_RUNTIME_PATH}" crossorigin="anonymous" onerror="${TW_ERROR_INLINE_HANDLER}"><\/script>` +
     `</head><body class="${mode}">` +
     `<!-- SSR fallback: LLM body omitted -->` +
     reporter +

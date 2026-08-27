@@ -5335,8 +5335,12 @@ class WatchdogConfig:
             "for long builds and MCP tools on macOS, where the liveness oracle "
             "degrades (no /proc) and cannot distinguish a live build from a stall, "
             "while still landing inside the turn's own ceiling "
-            "(agent.chat_turn_timeout_secs) so recovery is reachable. A window at or "
-            "past that ceiling is clamped at load with a warning.",
+            "(agent.chat_turn_timeout_secs) so recovery is reachable. Enforcement is "
+            "at handle construction, not config load: a window past the headroom "
+            "fraction of the transport's per-prompt timeout is clamped with a "
+            "warning, while one that merely exceeds agent.chat_turn_timeout_secs is "
+            "warned about but left as set, because the same handle also serves "
+            "callers that pass a larger prompt timeout (review and cron turns).",
         ),
     )
     tool_stall_hard_cap_secs: float = field(
@@ -5345,8 +5349,10 @@ class WatchdogConfig:
             "Hard cap (s)",
             "Absolute ceiling for UNKNOWN-verdict forbearance (e.g. the extended "
             "probably-thinking window). Applies ONLY to UNKNOWN verdicts — never "
-            "to a WORKING session. Default 1h, bounded by the turn ceiling like "
-            "the suspect window.",
+            "to a WORKING session, which is deferred before this cap is consulted "
+            "and is therefore bounded only by the turn's own ceiling. Default 1h, "
+            "clamped against the transport's per-prompt timeout like the suspect "
+            "window.",
         ),
     )
     model_silent_probe_secs: float = field(
@@ -6924,6 +6930,19 @@ class KiroCrewConfig:
             # A publish failure must never make the config unloadable; the
             # search path simply keeps its previous (or empty) contribution.
             logger.warning("Publishing mcp.extra_path_dirs failed: %s", e)
+        # Publish the alias table for the same reason and in the same place: the
+        # display-side resolver (:func:`resolve_effective_agent`) runs on the
+        # event loop for every slots frame, so it must never reach for
+        # config.json itself. Here rather than in _load_resolved so EVERY return
+        # path publishes -- including the degraded-defaults path, which must
+        # overwrite a richer previous snapshot rather than leave the resolver
+        # honoring aliases that no longer load.
+        try:
+            publish_agent_alias_snapshot(cfg)
+        except Exception as e:  # pragma: no cover - defensive
+            # A publish failure must never make the config unloadable; the
+            # resolver simply keeps reporting no divergence.
+            logger.warning("Publishing agent alias snapshot failed: %s", e)
         return cfg
 
     @classmethod
@@ -8294,6 +8313,46 @@ class KiroCrewConfig:
                 pass
         return DEFAULT_MODEL
 
+    def acp_effective_model(
+        self,
+        agent: str | None,
+        model_override: str | None,
+        global_model: str | None = None,
+    ) -> str:
+        """The model id the ACP factory selects — what its effort gate keys on.
+
+        This IS the factory's selection, extracted so the spawn-side effort
+        verdict (``kiro_crew.subagent._spawn_effective_model``) shares the code
+        instead of mirroring it — a mirror that drifts reports a false
+        ``effort_applied``/``effort_dropped`` receipt, worse than silence.
+
+        Precedence: ``model_override`` (an explicit caller model or the value
+        the session layer resolved) > a named agent's own kiro ``model`` pin
+        (``kirocrew`` itself and the no-agent case use the global directly) >
+        the collapsed global. ``global_model`` lets the factory pass its
+        build-time collapsed ``agent.model``; when omitted it is recomputed
+        the same way (``agent.model``, collapsed through
+        :meth:`_resolve_agent_model` when it is the ``auto`` sentinel).
+
+        The result is translated through ``model_registry.to_acp_id`` exactly
+        as the factory does — canonical keys become kiro ids, and ``auto``
+        collapses to ``""`` (``to_acp_id``, NOT ``to_provider_id``: kiro serves
+        the registry aliases as distinct real models — see its docstring).
+        ``""`` means nothing is pinned anywhere: kiro-cli resolves the model
+        itself and the effort overlay cannot be keyed.
+        """
+        if global_model is None:
+            global_model = self.agent.model
+            if global_model == DEFAULT_MODEL:
+                global_model = self._resolve_agent_model()
+        if model_override:
+            m: str = model_override
+        elif not agent or agent == "kirocrew":
+            m = global_model
+        else:
+            m = self._resolve_named_agent_model(agent) or global_model
+        return model_registry.to_acp_id(m) if m else ""
+
     @staticmethod
     def _resolve_named_agent_model(agent: str, agents_dir: Path | None = None) -> str:
         """Return a named agent's own kiro ``model`` field, or ``""`` if none.
@@ -8473,25 +8532,12 @@ class KiroCrewConfig:
             #      silently falling through to the backend's own choice.
             # "" at the end means nothing is pinned anywhere; AcpClient
             # normalizes "" to DEFAULT_MODEL, same as None.
-            if model_override:
-                m = model_override
-            elif not agent or agent == "kirocrew":
-                m = model
-            else:
-                m = self._resolve_named_agent_model(agent) or model
-            # Translation boundary (mirrors the _claude_code factory): the model
-            # may be a canonical registry key (e.g. "opus-4.8-1m" — the wire /
-            # dropdown value after /api/models canonicalization) OR an already-
-            # resolved kiro id. kiro-cli's session/set_model only accepts its own
-            # advertised ids (bare dotted, e.g. "claude-opus-4.8"), so translate
-            # the canonical key to the "acp" id — otherwise it reaches set_model
-            # and kiro rejects it ("The model 'opus-4.8-1m' is not available").
-            # to_acp_id (NOT to_provider_id) resolves ONLY canonical keys: kiro's
-            # native ids and their aliases (claude-haiku-4.5, claude-sonnet-4.5,
-            # …) are DISTINCT real kiro models and must pass through unchanged,
-            # not get folded to Sonnet the way the claude_code path downgrades
-            # them (the claude backend has no Haiku).
-            m = model_registry.to_acp_id(m) if m else m
+            # Selection + to_acp_id translation live in acp_effective_model —
+            # SHARED with the spawn-side effort verdict (subagent.py) so the
+            # reported outcome cannot drift from what this gate actually keys
+            # on. (The translation rationale — why to_acp_id and not
+            # to_provider_id — is documented on that method.)
+            m = self.acp_effective_model(agent, model_override, global_model=model)
             # Thread the slot's effort into a per-model override so the kiro
             # cli.json overlay is written from it at spawn — without this, a
             # kiro cold start (or the handler's reset-then-respawn) would only
@@ -8849,6 +8895,128 @@ def _materialized_kiro_agent(agent_name: str | None, project_dir: str | None = N
     if project_dir and _project_declares_agent(agent_name, project_dir):
         return agent_name
     return ""
+
+
+# Snapshot of the Kiro Crew agent ALIAS table as ONE immutable
+# ``(aliases, default_alias, ready)`` triple — the keys of ``config.agents``, the
+# alias a request falls back to, and whether a load has published yet. Refreshed
+# by every successful :meth:`KiroCrewConfig.load`, exactly like
+# ``_MATERIALIZED_AGENTS`` is refreshed by every scan, and for the same reason:
+# the read path (:func:`resolve_effective_agent`, reached from
+# ``_ChatSlot.to_dict`` for every slot of every slots frame) must do ZERO
+# filesystem work, and ``config.agents`` is otherwise only reachable by
+# re-reading and re-validating ``config.json``.
+#
+# One tuple rather than three globals, and no lock, deliberately: publishing is a
+# single rebind of a single name, so a reader either sees the whole previous
+# triple or the whole new one. Three separate globals would need a lock to stop a
+# reader pairing the new alias set with the old fallback name, and that lock would
+# then be acquired once per slot per frame on the event loop. Immutability is what
+# removes the need for it — never mutate the tuple or the frozenset in place.
+#
+# ``ready=False`` reads as "no opinion", not "nothing configured": the resolver
+# reports no divergence rather than guessing, because a wrong "your agent was
+# substituted" marker is worse than none at all.
+_CONFIG_AGENT_ALIAS_SNAPSHOT: tuple[frozenset[str], str, bool] = (frozenset(), "", False)
+
+
+def publish_agent_alias_snapshot(config: "KiroCrewConfig") -> None:
+    """Publish *config*'s alias table for the filesystem-free display resolver.
+
+    Pure in-memory rebind — safe from anywhere, including the event loop. Called
+    from :meth:`KiroCrewConfig.load` so every successful load refreshes it,
+    including the degraded-defaults path (which must OVERWRITE a richer previous
+    snapshot rather than leave a resolver claiming aliases that no longer load).
+    """
+    global _CONFIG_AGENT_ALIAS_SNAPSHOT
+    aliases = frozenset(str(n) for n in config.agents if isinstance(n, str) and n)
+    default_alias = config.default_agent if config.default_agent in config.agents else ""
+    if not default_alias and aliases:
+        # Mirrors resolve_agent_bindings' defensive branch: an unusable
+        # ``default_agent`` is answered by the first configured alias.
+        default_alias = next(iter(config.agents))
+    _CONFIG_AGENT_ALIAS_SNAPSHOT = (aliases, default_alias, True)
+
+
+def agent_alias_snapshot() -> tuple[frozenset[str], str, bool]:
+    """The published alias table as ``(aliases, default_alias, ready)``."""
+    return _CONFIG_AGENT_ALIAS_SNAPSHOT
+
+
+def resolve_effective_agent(agent_name: str | None, project_dir: str | None = None) -> str:
+    """Name the agent that will actually answer *agent_name*, or ``""``.
+
+    A DISPLAY-side companion to :func:`resolve_agent_bindings`, and deliberately
+    narrower than it. The empty string means **"nothing to report"** — either the
+    requested name is honored, or resolution cannot be settled without touching
+    the filesystem. A non-empty return is a positive claim that a DIFFERENT agent
+    answers this session, which is what the UI renders as a divergence marker.
+
+    Three properties make it safe to call from ``_ChatSlot.to_dict``, which runs
+    on the event loop for every slots frame:
+
+    * **No filesystem access, and no lock.** Only the two in-memory snapshots are
+      read (:func:`agent_alias_snapshot` and ``_MATERIALIZED_AGENTS``) plus the
+      syscall-free project cache. It never scans, stats, or re-reads
+      ``config.json``, so it cannot become a per-frame gateway stall — and because
+      the alias snapshot is one immutable tuple, reading it is a single atomic
+      name load rather than a mutex acquired once per slot per frame.
+    * **Fails closed to "no claim".** A cold alias snapshot, a cold materialized
+      snapshot, or a cold project cache all return ``""``. A false
+      "your agent was substituted" marker is worse than no marker: the user would
+      chase a substitution that never happened, and the honest answer during a
+      boot window is silence.
+    * **Reads nothing back.** The requested name is never rewritten — see the
+      note in ``chat_handlers`` on why storing the resolved name was destructive.
+      This function only describes; the stored binding stays verbatim.
+
+    *project_dir* widens the "honored" set to the session's own ``.kiro`` scope
+    via the cache-only reader, so a project-declared agent is not mislabelled as
+    substituted. A cold cache for that project yields ``""``.
+    """
+    if not agent_name:
+        return ""
+    aliases, default_alias, ready = agent_alias_snapshot()
+    if not ready or not default_alias:
+        return ""
+    if agent_name in aliases:
+        # A Kiro Crew alias resolves to itself (step 1 of resolve_agent_bindings).
+        return ""
+    if not _MATERIALIZED_AGENTS_READY:
+        # Cold snapshot: a materialized kiro agent may well declare this name and
+        # we simply cannot see it yet. Claim nothing.
+        return ""
+    if agent_name in _MATERIALIZED_AGENTS:
+        return ""
+    if project_dir and not _project_scope_excludes(agent_name, project_dir):
+        return ""
+    if default_alias == agent_name:
+        return ""
+    return default_alias
+
+
+def _project_scope_excludes(agent_name: str, project_dir: str) -> bool:
+    """Whether *project_dir* is KNOWN not to declare *agent_name*.
+
+    The conservative half of :func:`_project_declares_agent`: it answers ``True``
+    only from a WARM cache, and makes no syscalls even off the event loop. An
+    uncached project is not evidence of absence, so it answers ``False`` and the
+    caller reports no divergence.
+    """
+    try:
+        # circular import: agent_discovery imports kiro_crew.hooks (the hardened
+        # file-read gate), whose import closure reaches back into
+        # kiro_crew.config.loader — the same cycle documented at length on
+        # :func:`_project_declares_agent`, which defers this identical import for
+        # this identical reason. A module-scope import here would be that cycle.
+        from kiro_crew.agent_discovery import cached_project_agent_names
+
+        names = cached_project_agent_names(project_dir)
+    except Exception:  # noqa: BLE001 — a lookup failure is "no evidence"
+        return False
+    if names is None:
+        return False
+    return agent_name not in names
 
 
 def _read_hardened_agent_spec(path: Path) -> dict | None:

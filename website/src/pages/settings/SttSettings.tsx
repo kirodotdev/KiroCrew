@@ -3,7 +3,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Hourglass, Info, Package } from 'lucide-react'
 import { SettingsCard, SettingsToggle, SettingsSelect, SettingsInput, SettingsButtonGroup, SettingsStepper } from '../../components/settings'
 import { Badge, Btn, FormSkeleton } from '../../components/ui'
-import { api } from '../../api/client'
+import { api, ApiError } from '../../api/client'
+import { RestartGatewayButton } from './AboutPanel'
 import { listMicrophones, getPreferredMicId, setPreferredMicId, acquireMicStream, reportIfMicDenied } from '../../hooks/mic'
 import { isEmbeddedPane } from '../../lib/embedded'
 import { PttTestStrip } from '../../components/PttTestStrip'
@@ -362,6 +363,17 @@ export default function SttSettings({ cardIndex }: {
     },
     onError: (e: Error) => setErr(e.message || i18nT('pages.settings.sttSettings.install_failed')),
   })
+  const [restarting, setRestarting] = useState(false)
+  const restartMut = useMutation({
+    mutationFn: () => api.restartGateway(),
+    onSuccess: () => setRestarting(true),
+    onError: (e: unknown) => {
+      // Restarting normally resets the connection before a response arrives.
+      // Only a structured server rejection is a real failure.
+      if (e instanceof ApiError) setErr(e.message || i18nT('pages.settings.aboutPanel.restart_failed'))
+      else setRestarting(true)
+    },
+  })
 
   const stt = sttQ.data
   if (!stt) return (
@@ -524,7 +536,15 @@ export default function SttSettings({ cardIndex }: {
                     button the default trailer points at is hidden. */}
                 {isTranscribe ? (
                   stt.prereqs.some(c => c.includes('kirocrew[voice]')) && (
-                    <p className="text-muted text-[13px] mt-2">{i18nT('pages.settings.sttSettings.then_restart_the_gateway_so_it_can_import_the_ne')}</p>
+                    <div className="flex flex-wrap items-center gap-2 mt-2">
+                      <p className="text-muted text-[13px]">{i18nT('pages.settings.sttSettings.then_restart_the_gateway_so_it_can_import_the_ne')}</p>
+                      <RestartGatewayButton
+                        pending={restartMut.isPending}
+                        restarting={restarting}
+                        onConfirm={() => restartMut.mutate()}
+                        testId="stt-restart-gateway"
+                      />
+                    </div>
                   )
                 ) : (
                   <p className="text-muted text-[13px] mt-2">{i18nT('pages.settings.sttSettings.then_click_install_below')}</p>

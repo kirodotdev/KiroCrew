@@ -35,6 +35,7 @@ def _agent(**over):
         task="do a thing",
         agent="kirocrew",
         resolved_model="model-1",
+        requested_model="",
         streaming_text="",
         last_tool="Running: sleep 600",
         tool_count=3,
@@ -93,3 +94,28 @@ def test_the_frame_still_redacts_credentials():
     a = _agent(stalled=True, task="curl -H 'Authorization: Bearer sk-ant-api03-SECRETVALUE'")
     data = build_subagent_snapshot(a, now=1000.0)
     assert "sk-ant-api03-SECRETVALUE" not in data["task"]
+
+
+def test_snapshot_includes_requested_model_when_set():
+    """``requested_model`` must appear in the frame so the frontend can
+    render the amber downgrade chip on the live card (#5326)."""
+    a = _agent(requested_model="claude-opus-4.8", resolved_model="claude-opus-4.7")
+    data = build_subagent_snapshot(a, now=1000.0)
+    assert data["requested_model"] == "claude-opus-4.8"
+
+
+def test_snapshot_redacts_a_credential_shaped_requested_model():
+    """The requested pin is caller-supplied (spawn_run.model), so an
+    AKIA-shaped value must be redacted before it reaches the socket (#5326)."""
+    a = _agent(requested_model="AKIAIOSFODNN7EXAMPLE", resolved_model="model-1")
+    data = build_subagent_snapshot(a, now=1000.0)
+    assert "AKIAIOSFODNN7EXAMPLE" not in data["requested_model"]
+
+
+def test_snapshot_requested_model_is_empty_string_when_unset():
+    """An unpinned run must carry ``requested_model: ''`` — not absent —
+    so the frontend guard (only-overwrite-known-with-known) has a value to
+    evaluate rather than having to treat a missing key as a sentinel."""
+    a = _agent(requested_model="")
+    data = build_subagent_snapshot(a, now=1000.0)
+    assert data["requested_model"] == ""
