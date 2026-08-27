@@ -660,19 +660,49 @@ class TeamsClient:
             self._notify_state(False, self.last_error)
 
     async def close(self) -> None:
+        """Shut down, closing BOTH owned sessions whatever the drain does.
+
+        In-flight turns are cancelled and awaited before the sessions they send
+        through are closed -- the transport-shutdown quiescence invariant in
+        ``docs/system-specs/modules/messaging.md``. That drain awaits, so a
+        ``CancelledError`` landing in it (a shutdown while this coroutine is
+        itself being cancelled) would leave ``close()`` before either session
+        close; ``CancelledError`` is a ``BaseException``, so nothing below it
+        runs. Hence the drain gets its own ``try`` and the closes live in the
+        ``finally``.
+
+        The two closes are then nested rather than consecutive, because this
+        client owns two sessions and ``ClientSession.close()`` can raise on a
+        connector whose transport the platform already tore down: as plain
+        consecutive statements, the first failure silently skipped the second.
+        Both still propagate -- a shutdown that swallows the error reports a
+        cleanup it did not perform.
+
+        A leaked session keeps its connector and open sockets for the process
+        lifetime (aiohttp reports "Unclosed client session" at GC), and for the
+        download session also its ``_VettedResolver`` and that resolver's SSRF
+        pin map.
+        """
         self._closed = True
-        handler_tasks = list(self._handler_tasks)
-        for task in handler_tasks:
-            task.cancel()
-        if handler_tasks:
-            await asyncio.gather(*handler_tasks, return_exceptions=True)
-        if self._session is not None and not self._session.closed:
-            await self._session.close()
-            self._session = None
-        if self._download_session is not None and not self._download_session.closed:
-            # Closes the connector, which closes the resolver, which drops the pins.
-            await self._download_session.close()
-            self._download_session = None
+        try:
+            # Snapshot first: a cancelled handler's done-callback mutates the set.
+            handler_tasks = list(self._handler_tasks)
+            for task in handler_tasks:
+                task.cancel()
+            if handler_tasks:
+                # return_exceptions so one handler raising during unwind cannot
+                # abandon the others or skip the session closes below.
+                await asyncio.gather(*handler_tasks, return_exceptions=True)
+        finally:
+            try:
+                if self._session is not None and not self._session.closed:
+                    await self._session.close()
+                    self._session = None
+            finally:
+                if self._download_session is not None and not self._download_session.closed:
+                    # Closes the connector, which closes the resolver, which drops the pins.
+                    await self._download_session.close()
+                    self._download_session = None
 
     def _notify_state(self, connected: bool, error: str) -> None:
         """Publish a health transition to the dashboard badge.
