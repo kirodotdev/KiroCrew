@@ -762,9 +762,44 @@ jobs:
           cp "$NOTARIZED_DMG" "release/KiroCrew-${{ needs.version.outputs.version }}-universal.dmg"
           ls -la release/
 
+      # Only a stable release has a CHANGELOG.md section to show (the stable
+      # gate above already requires one). Insider and nightly tags have no
+      # matching `## [X.Y.Z]` heading -- their base version is still a draft --
+      # so this writes an EMPTY release-notes.md for them: `body_path` is
+      # always set below (an empty file, not an absent input), which sidesteps
+      # relying on undocumented empty-string-vs-unset behavior in the action.
+      # softprops/action-gh-release pre-pends `body`/`body_path` to the
+      # `generate_release_notes` output rather than replacing it, so the
+      # native "New Contributors" block (rendered from this repository's own
+      # commit history, per commit range) still appears after our section --
+      # do not hand-write a contributors list here, see AGENTS.md's changelog
+      # rule for why a hand-written list would duplicate that block.
+      - name: Extract CHANGELOG section for the release body
+        run: |
+          python3 - "${{ needs.version.outputs.channel }}" "${{ needs.version.outputs.base_version }}" <<'PY_EXTRACT'
+          import sys
+          sys.path.insert(0, "src")
+          from kiro_crew.changelog import parse_sections
+
+          channel, base_version = sys.argv[1], sys.argv[2]
+          notes = ""
+          if channel == "stable":
+              markdown = open("CHANGELOG.md", encoding="utf-8").read()
+              sections = [body for version, _date, body in parse_sections(markdown) if version == base_version]
+              if not sections:
+                  raise SystemExit(
+                      f"::error::CHANGELOG.md has no '## [{base_version}]' section; "
+                      "the stable gate should have caught this earlier."
+                  )
+              notes = sections[0] + "\n"
+          with open("release-notes.md", "w", encoding="utf-8") as out:
+              out.write(notes)
+          PY_EXTRACT
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
+          body_path: release-notes.md
           generate_release_notes: true
           prerelease: ${{ needs.version.outputs.channel == 'insider' }}
           files: release/*
