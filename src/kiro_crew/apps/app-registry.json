@@ -16,5 +16,11 @@
     "gitUrl": "https://github.com/LeTeutz/todo-txt",
     "repo": "https://github.com/LeTeutz/todo-txt",
     "branch": "main"
+  },
+  {
+    "name": "kanban",
+    "gitUrl": "https://github.com/nathanyi96/kirocrew-app-kanban",
+    "repo": "https://github.com/nathanyi96/kirocrew-app-kanban",
+    "branch": "main"
   }
 ]
