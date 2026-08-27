@@ -399,6 +399,11 @@ _RECOVERY_SLOT_WAIT_SECS = 60.0
 _REPORT_DRAIN_TIMEOUT = (
     30.0  # max seconds cancel_all() waits for shielded terminal reports to drain
 )
+# Max seconds a cancelled run holds cancellation open for an in-flight per-turn
+# diagnostics write worker (#6306 review): long enough for any healthy fsync,
+# short enough that a wedged FS cannot hold cancel_all()'s untimed gather —
+# bounded shutdown plus recoverable state beats unbounded shutdown.
+_DIAG_DRAIN_TIMEOUT = 5.0
 _STARTUP_TIMEOUT_SECS = 120  # max seconds a subagent may sit pre-first-turn with no runtime before the startup watchdog reaps it
 _ON_DONE_TIMEOUT = 1200.0  # outer cap: max total seconds for semaphore wait + injection
 
@@ -1428,6 +1433,13 @@ class SubagentInfo:
     # One-shot budget for auto-continue after an UNEXPECTED (non-user, non-
     # shutdown) asyncio cancellation — mirrors the main path's cancel recovery.
     _cancel_retry_used: bool = False
+    # True while a cancelled run is draining an in-flight diagnostics write
+    # worker (#6306). _run's unexpected-cancel recovery gate reads it: on
+    # Python 3.10 a second outer cancel can deliver that gate BEFORE the drain
+    # finishes (wait_for's _cancel_and_wait awaits an interruptible bare
+    # future), and scheduling a recovery writer while the worker is live
+    # re-opens the stale-overwrite race the drain exists to close.
+    _diag_drain_active: bool = False
     # True between an unexpected cancellation and the recovery respawn; the
     # _run finally block skips terminal finalization (subagent_done, on_done)
     # while set so the agent is not reported done mid-recovery.
@@ -5061,6 +5073,12 @@ class SubagentManager:
                     not info.user_stopped
                     and not self._shutting_down
                     and not info._cancel_retry_used
+                    # A live diagnostics-write drain means a worker is still
+                    # (or may still be) writing state.json: respawning a
+                    # recovery writer now re-opens the stale-overwrite race
+                    # (#6306; reachable on 3.10 via a second outer cancel
+                    # interrupting wait_for's _cancel_and_wait).
+                    and not info._diag_drain_active
                     and info.tool_count == 0
                 ):
                     # UNEXPECTED cancellation (not user Stop, not shutdown):
@@ -6107,14 +6125,100 @@ class SubagentManager:
                 # increment is parent-scoped.
                 info.last_tool = event.title or ""
                 self._note_tool_dispatch(info, event)
-                # Persist turn state for orphan recovery diagnostics.
-                # Off-loop (to_thread): update_state does a synchronous
-                # fsync, so a slow/NFS FS must not freeze the gateway
-                # heartbeat on every tool-call event (#6288).
-                try:
-                    await asyncio.to_thread(
+                # Persist turn state for orphan recovery diagnostics. Off-loop
+                # (to_thread): update_state does a synchronous fsync, so a slow
+                # FS must not freeze the gateway/heartbeat (#6288; same shape
+                # as the provenance and CC-refinement writes above). Drained on
+                # cancellation: cancelling a to_thread await detaches the
+                # worker, and update_state is an unlocked read-merge-replace,
+                # so a stale detached worker could overwrite newer state
+                # written by a cancel-respawn recovery run. Hold cancellation
+                # open until the worker finishes — but BOUNDED: cancel_all()
+                # gathers run tasks with no timeout, so an unbounded drain on
+                # a wedged FS would hold gateway shutdown forever, and this
+                # module's convention is that bounded shutdown plus
+                # recoverable state beats unbounded shutdown (same posture as
+                # _REPORT_DRAIN_TIMEOUT). On expiry the worker is abandoned
+                # with a warning; the residual stale-write window then only
+                # exists on an FS already wedged past the deadline.
+                # asyncio.wait never cancels its members, so repeated cancels
+                # of this task keep the worker future intact while the drain
+                # loop keeps waiting out the same deadline.
+                _diag_write = asyncio.ensure_future(
+                    asyncio.to_thread(
                         update_state, info.id, turns=turns, last_tool=event.title or ""
                     )
+                )
+                try:
+                    await asyncio.shield(_diag_write)
+                except asyncio.CancelledError:
+                    # Latch for _run's recovery gate: on Python 3.10,
+                    # wait_for's _cancel_and_wait awaits a bare future that a
+                    # SECOND outer cancel can interrupt, delivering _run's
+                    # CancelledError handler while this drain is still in
+                    # flight — before expiry suppression lands. The latch lets
+                    # the gate see the live drain and skip scheduling a
+                    # recovery writer the worker could race (GPT review round
+                    # 4 on #6306). 3.11+ delivers the outer cancel only after
+                    # this child task completes, so there the latch is always
+                    # observed False.
+                    info._diag_drain_active = True
+                    try:
+                        _drain_deadline = time.monotonic() + _DIAG_DRAIN_TIMEOUT
+                        while not _diag_write.done():
+                            _remaining = _drain_deadline - time.monotonic()
+                            if _remaining <= 0:
+                                logger.warning(
+                                    "diagnostics write for %s did not drain in %.0fs on "
+                                    "cancellation — abandoning worker (its write may race "
+                                    "a recovery run's)",
+                                    info.id,
+                                    _DIAG_DRAIN_TIMEOUT,
+                                )
+                                # The abandoned worker is a live stale writer: a
+                                # cancel-respawn recovery run would write fresh
+                                # PID/session state that the zombie's read-merge-
+                                # replace could then roll back. Consume the
+                                # one-shot recovery so this cancellation finalizes
+                                # instead of respawning — losing one best-effort
+                                # auto-continue on an FS already wedged past the
+                                # deadline is strictly cheaper than resurrecting
+                                # stale state (GPT server review round 3 on #6306).
+                                info._cancel_retry_used = True
+
+                                # The zombie may still raise later; retrieve it so
+                                # it never surfaces as an asynchronous "exception
+                                # was never retrieved" warning.
+                                def _log_abandoned_diag(
+                                    fut: "asyncio.Future[Any]", _aid: str = info.id
+                                ) -> None:
+                                    if not fut.cancelled() and fut.exception() is not None:
+                                        logger.debug(
+                                            "Abandoned diagnostics write for %s failed",
+                                            _aid,
+                                            exc_info=fut.exception(),
+                                        )
+
+                                _diag_write.add_done_callback(_log_abandoned_diag)
+                                break
+                            try:
+                                await asyncio.wait({_diag_write}, timeout=_remaining)
+                            except asyncio.CancelledError:
+                                pass  # repeated cancel: keep draining to the deadline
+                        if _diag_write.done() and not _diag_write.cancelled():
+                            # Retrieve (never surfaces as an unretrieved-exception
+                            # warning) and log, matching the CC-refinement sibling.
+                            _diag_exc = _diag_write.exception()
+                            if _diag_exc is not None:
+                                logger.debug(
+                                    "Best-effort diagnostics write failed for %s during "
+                                    "cancel drain",
+                                    info.id,
+                                    exc_info=_diag_exc,
+                                )
+                    finally:
+                        info._diag_drain_active = False
+                    raise
                 except Exception:
                     pass
                 await self._fire_event(
