@@ -637,13 +637,31 @@ async def api_theme_detail(request: web.Request) -> web.Response:
     target = _themes_dir() / f"{safe_slug}.json"
     dir_target = _installed_theme_dir(safe_slug)
 
+    # One stat pass for the whole handler: ``exists()``/``is_dir()`` are
+    # SMB-backed on a UNC data home and can block for as long as the network
+    # takes, so they never run on the event loop — the same off-loop
+    # discipline as the asset routes' ``_resolve_theme_asset``. Both stats
+    # ride a single executor hop because every method branch consumes the
+    # pair as one logical check; the DELETE-dir branch re-checks under the
+    # per-slug install lock off-loop.
+    def _stat_targets() -> tuple[bool, bool]:
+        return target.exists(), dir_target.is_dir()
+
+    loop = asyncio.get_running_loop()
+    target_exists, dir_is_dir = await loop.run_in_executor(
+        discovery_executor(), _stat_targets
+    )
+
     if request.method == "DELETE":
-        if target.exists():
-            await asyncio.get_running_loop().run_in_executor(
-                discovery_executor(), target.unlink
+        if target_exists:
+            # ``missing_ok``: the stat rode an earlier hop, so a concurrent
+            # delete can win the race; deleting an already-gone file is the
+            # outcome the caller asked for, not a 500.
+            await loop.run_in_executor(
+                discovery_executor(), lambda: target.unlink(missing_ok=True)
             )
             return web.json_response({"ok": True})
-        if dir_target.is_dir():
+        if dir_is_dir:
             # Recursive delete of a many-file theme dir is blocking; run off-loop.
             # Acquire the per-slug install lock (same key _do_install stages/swaps
             # under) so we never rmtree mid-reinstall and race its stage→rename;
@@ -653,19 +671,17 @@ async def api_theme_detail(request: web.Request) -> web.Response:
                     if dir_target.is_dir():
                         shutil.rmtree(dir_target, ignore_errors=True)
 
-            await asyncio.get_running_loop().run_in_executor(
-                discovery_executor(), _locked_remove
-            )
+            await loop.run_in_executor(discovery_executor(), _locked_remove)
             return web.json_response({"ok": True})
         return web.json_response({"error": "not found"}, status=404)
 
     if request.method == "PUT":
-        if dir_target.is_dir() and not target.exists():
+        if dir_is_dir and not target_exists:
             return web.json_response(
                 {"error": "installed themes are read-only; reinstall to update"},
                 status=400,
             )
-        if not target.exists():
+        if not target_exists:
             return web.json_response({"error": "not found"}, status=404)
         try:
             body = await request.json()
@@ -702,14 +718,13 @@ async def api_theme_detail(request: web.Request) -> web.Response:
                 _atomic_write_theme_json(target, json.dumps(td, indent=2) + "\n")
                 return td
 
-        theme_data = await asyncio.get_running_loop().run_in_executor(
+        theme_data = await loop.run_in_executor(
             discovery_executor(), _update_locked
         )
         return web.json_response({"ok": True, "theme": theme_data})
 
     # GET — file reads and the validation walk are blocking; run off-loop.
-    loop = asyncio.get_running_loop()
-    if target.exists():
+    if target_exists:
         try:
             raw = await loop.run_in_executor(
                 discovery_executor(), target.read_text, "utf-8"
@@ -718,7 +733,7 @@ async def api_theme_detail(request: web.Request) -> web.Response:
         except (json.JSONDecodeError, OSError):
             return web.json_response({"error": "failed to read theme"}, status=500)
         return web.json_response(data)
-    if dir_target.is_dir():
+    if dir_is_dir:
         summary, err = await loop.run_in_executor(
             discovery_executor(), _validate_theme_dir, dir_target
         )

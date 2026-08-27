@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
@@ -958,6 +959,53 @@ class TestApiThemeDetailSlugGuard:
         resp = await th.api_theme_detail(_detail("GET", slug))
         assert resp.status == 400
         assert _body(resp)["error"] == "invalid theme slug"
+
+
+class TestApiThemeDetailStatsOffLoop:
+    """#5963: the detail handler's target stats must never run on the event loop.
+
+    On a UNC data home each ``exists()``/``is_dir()`` is SMB-backed and can
+    block for as long as the network takes; a stat on the loop stalls every
+    other request the gateway serves. Spy on ``Path.exists``/``Path.is_dir``
+    for the handler's two target paths and assert every such stat happened on
+    a worker thread — the same discipline #5943 pinned for the asset routes'
+    offloaded ``_resolve_theme_asset``.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["GET", "PUT", "DELETE"])
+    async def test_target_stats_run_on_a_worker_thread(
+        self, method: str, themes_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _write_json(themes_dir / "sunset.json", {"name": "Sunset"})
+        # Build the watched set through the handler's own resolver: the
+        # fixture path is unresolved, while ``_themes_dir()`` goes through
+        # ``config_dir()``'s ``resolve()`` — on Darwin ``/tmp`` is a symlink,
+        # so comparing against the raw fixture path would never match.
+        watched = {th._themes_dir() / "sunset.json", th._themes_dir() / "sunset"}
+        loop_thread = threading.get_ident()
+        stat_threads: list[int] = []
+        real_exists, real_is_dir = Path.exists, Path.is_dir
+
+        def spy_exists(self: Path, *args: Any, **kwargs: Any) -> bool:
+            if self in watched:
+                stat_threads.append(threading.get_ident())
+            return real_exists(self, *args, **kwargs)
+
+        def spy_is_dir(self: Path, *args: Any, **kwargs: Any) -> bool:
+            if self in watched:
+                stat_threads.append(threading.get_ident())
+            return real_is_dir(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "exists", spy_exists)
+        monkeypatch.setattr(Path, "is_dir", spy_is_dir)
+
+        body = _theme_body() if method == "PUT" else ...
+        resp = await th.api_theme_detail(_detail(method, "sunset", body=body))
+        assert resp.status == 200
+        assert stat_threads, "expected the handler to stat its target paths"
+        on_loop = [t for t in stat_threads if t == loop_thread]
+        assert not on_loop, f"{len(on_loop)} target stat(s) ran on the event loop"
 
 
 class TestApiThemeDetailDelete:
