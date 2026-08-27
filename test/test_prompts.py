@@ -28,6 +28,7 @@ def _isolate_home(tmp_path, monkeypatch):
     monkeypatch.setattr("kiro_crew.agent._project_dir", lambda: None)
     # Clear prompt cache between tests
     import kiro_crew.dashboard.handlers as h
+
     h._prompt_cache = None
     h._prompt_cache_ts = 0
 
@@ -87,11 +88,16 @@ def _aim_pkg(base, pkg_name, event_id, sops):
 
 
 def _user_prompt(tmp_path, name, content="# Placeholder"):
-    """Create a user prompt in ~/.kiro/prompts/."""
+    """Create a user prompt in ~/.kiro/prompts/.
+
+    Written byte-faithfully (UTF-8, no newline translation): the frontmatter
+    tests assert exact line endings and a BOM, and Windows' default text mode
+    would rewrite ``\\n`` to ``\\r\\n`` and choke on the BOM under cp1252.
+    """
     d = tmp_path / ".kiro" / "prompts"
     d.mkdir(parents=True, exist_ok=True)
     p = d / f"{name}.md"
-    p.write_text(content)
+    p.write_text(content, encoding="utf-8", newline="")
     return p
 
 
@@ -126,13 +132,18 @@ class _State:
 
     def __init__(self):
         self.kiro_prerequisite_service = _make_ready_kiro_prerequisite()
-        self.sessions = type('_MockSessions', (), {
-            'get_slack_link': lambda self, k: ('', ''),
-            'set_slack_link': lambda self, k, t, c: None,
-            'get_or_create': None, 'get_pid': lambda self, k: None,
-            'set_approval_policy': lambda self, k, v: None,
-            'check_context_usage': lambda self, k, c: None,
-        })()
+        self.sessions = type(
+            "_MockSessions",
+            (),
+            {
+                "get_slack_link": lambda self, k: ("", ""),
+                "set_slack_link": lambda self, k, t, c: None,
+                "get_or_create": None,
+                "get_pid": lambda self, k: None,
+                "set_approval_policy": lambda self, k, v: None,
+                "check_context_usage": lambda self, k, c: None,
+            },
+        )()
 
     def push_slots_update(self):
         pass
@@ -183,13 +194,21 @@ class TestExtractSopDescription:
 
 class TestListAimPrompts:
     def test_discovers_sops(self, aim_dir):
-        _aim_pkg(aim_dir, "Pkg-1.0", "1", {
-            "my-sop": "---\nname: my-sop\ndescription: Test SOP\n---\n",
-        })
+        _aim_pkg(
+            aim_dir,
+            "Pkg-1.0",
+            "1",
+            {
+                "my-sop": "---\nname: my-sop\ndescription: Test SOP\n---\n",
+            },
+        )
         r = _list_aim_prompts()
         assert len(r) == 1
         assert (r[0]["name"], r[0]["fullName"], r[0]["source"]) == (
-            "my-sop", "agent-sop:my-sop", "package")
+            "my-sop",
+            "agent-sop:my-sop",
+            "package",
+        )
         assert r[0]["description"] == "Test SOP"
         assert r[0]["package"] == "Pkg-1.0"
 
@@ -224,9 +243,7 @@ class TestListAimPrompts:
         # Default seam ([], the OSS behavior) → no package SOPs discovered.
         from kiro_crew.platform.defaults import DefaultPromptSourceProvider
 
-        monkeypatch.setattr(
-            DefaultPromptSourceProvider, "prompt_source_roots", lambda self: []
-        )
+        monkeypatch.setattr(DefaultPromptSourceProvider, "prompt_source_roots", lambda self: [])
         assert _list_aim_prompts() == []
 
     def test_name_collision(self, aim_dir):
@@ -312,6 +329,98 @@ class TestExpandPromptMention:
         _user_prompt(tmp_path, "huge", "x" * 200_000)
         msg, status = _expand_prompt_mention("@huge", _State(), _Slot())
         assert status == "too_large"
+
+
+# ── YAML frontmatter stripping ──
+
+
+_FM_BODY = "# Review\nDo the review steps."
+_FM_CONTENT = f"---\ntitle: Review SOP\ndescription: secret display metadata\n---\n\n{_FM_BODY}"
+
+
+class TestFrontmatterStrip:
+    def test_frontmatter_stripped_body_only_injected(self, tmp_path):
+        _user_prompt(tmp_path, "fm", _FM_CONTENT)
+        msg, status = _expand_prompt_mention("@fm", _State(), _Slot())
+        assert status == "ok"
+        assert _FM_BODY in msg
+        assert "secret display metadata" not in msg
+        assert "title: Review SOP" not in msg
+
+    def test_no_frontmatter_unchanged(self, tmp_path):
+        content = "# Plain\nNo frontmatter here.\n"
+        _user_prompt(tmp_path, "plain", content)
+        msg, status = _expand_prompt_mention("@plain", _State(), _Slot())
+        assert status == "ok"
+        assert content in msg
+
+    def test_unterminated_frontmatter_preserved(self, tmp_path):
+        content = "---\ntitle: broken\nno terminator follows\n"
+        _user_prompt(tmp_path, "unterm", content)
+        msg, status = _expand_prompt_mention("@unterm", _State(), _Slot())
+        assert status == "ok"
+        # Fail-open: malformed frontmatter must never drop content.
+        assert content in msg
+
+    def test_char_count_matches_injected_length(self, tmp_path):
+        _user_prompt(tmp_path, "fmcount", _FM_CONTENT)
+        slot = _Slot()
+        msg, status = _expand_prompt_mention("@fmcount", _State(), slot)
+        assert status == "ok"
+        info = next(m[1] for m in slot.messages if "Loaded prompt" in m[1])
+        assert f"({len(_FM_BODY):,} chars)" in info
+
+    def test_dot_terminator(self, tmp_path):
+        _user_prompt(tmp_path, "dots", f"---\ndescription: meta\n...\n{_FM_BODY}")
+        msg, status = _expand_prompt_mention("@dots", _State(), _Slot())
+        assert status == "ok"
+        assert _FM_BODY in msg and "description: meta" not in msg
+
+    def test_utf8_bom_tolerated(self, tmp_path):
+        _user_prompt(tmp_path, "bom", f"\ufeff---\ndescription: meta\n---\n{_FM_BODY}")
+        msg, status = _expand_prompt_mention("@bom", _State(), _Slot())
+        assert status == "ok"
+        assert _FM_BODY in msg and "description: meta" not in msg
+
+    def test_crlf_frontmatter_stripped(self, tmp_path):
+        _user_prompt(tmp_path, "crlf", f"---\r\ndescription: meta\r\n---\r\n{_FM_BODY}")
+        msg, status = _expand_prompt_mention("@crlf", _State(), _Slot())
+        assert status == "ok"
+        assert _FM_BODY in msg and "description: meta" not in msg
+
+    def test_closer_with_trailing_space_stripped(self, tmp_path):
+        # The display-side parser (frontmatter._COLUMN0_BLOCK_RE) accepts a
+        # closer that merely STARTS with "---", so this file shows its
+        # description in the prompt library — the strip must agree, or the
+        # metadata leaks to the model anyway.
+        _user_prompt(tmp_path, "trsp", f"---\ndescription: meta\n--- \n{_FM_BODY}")
+        msg, status = _expand_prompt_mention("@trsp", _State(), _Slot())
+        assert status == "ok"
+        assert _FM_BODY in msg and "description: meta" not in msg
+
+    def test_closer_with_trailing_text_stripped(self, tmp_path):
+        _user_prompt(tmp_path, "trjunk", f"---\ndescription: meta\n---junk\n{_FM_BODY}")
+        msg, status = _expand_prompt_mention("@trjunk", _State(), _Slot())
+        assert status == "ok"
+        assert _FM_BODY in msg and "description: meta" not in msg
+
+    def test_opener_with_trailing_text_not_frontmatter(self, tmp_path):
+        # The opener grammar stays strict (exactly "---"), matching the
+        # display parser's ^---\n opener: "---junk" first lines are body.
+        content = f"---junk\ndescription: meta\n---\n{_FM_BODY}"
+        _user_prompt(tmp_path, "openjunk", content)
+        msg, status = _expand_prompt_mention("@openjunk", _State(), _Slot())
+        assert status == "ok"
+        assert content in msg
+
+    def test_thematic_break_mid_file_untouched(self, tmp_path):
+        # A "---" that is NOT the first line is a markdown thematic break,
+        # never frontmatter.
+        content = "# Doc\n\n---\n\nSection two."
+        _user_prompt(tmp_path, "hr", content)
+        msg, status = _expand_prompt_mention("@hr", _State(), _Slot())
+        assert status == "ok"
+        assert content in msg
 
 
 # ── API handlers ──
@@ -422,7 +531,9 @@ class TestRunChatPrompts:
         asyncio.run(_run_chat(s, sl, "/prompts get agent-sop:secret"))
         assert any("blocked" in m[1].lower() for m in sl.messages)
 
-    @pytest.mark.skip(reason="Broken by chat.py split (6d4e4493) — mock setup needs updating for new _run_chat flow.")
+    @pytest.mark.skip(
+        reason="Broken by chat.py split (6d4e4493) — mock setup needs updating for new _run_chat flow."
+    )
     def test_at_prompt_blocked(self, aim_dir, mock_sel, monkeypatch):
         """@mention prompt blocked at read time by chat-level check."""
         _aim_pkg(aim_dir, "Pkg-1.0", "1", {"secret": "# S"})
