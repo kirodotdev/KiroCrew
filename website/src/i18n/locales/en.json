@@ -330,6 +330,10 @@
         "header_resolved": "RESOLVED"
       },
       "global": {
+        "unattributed_label": "EVENTS WITHOUT A REPOSITORY",
+        "unattributed_note": "Recorded before events named their repository, so they cannot be attributed to one.",
+        "repos_label": "REPOSITORIES",
+        "repos_note": "This board folds them together and cannot show them separately yet.",
         "tab_pipeline": "Pipeline",
         "tab_lanes": "Item lanes",
         "tablist_label": "Auto triage pipeline views",

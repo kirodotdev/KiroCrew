@@ -451,6 +451,10 @@
         "header_resolved": "ERLEDIGT"
       },
       "global": {
+        "unattributed_label": "EREIGNISSE OHNE REPOSITORY",
+        "unattributed_note": "Aufgezeichnet, bevor Ereignisse ihr Repository nannten, daher keinem zuordenbar.",
+        "repos_label": "REPOSITORYS",
+        "repos_note": "Diese Tafel fasst sie zusammen und kann sie noch nicht getrennt anzeigen.",
         "tab_pipeline": "Pipeline",
         "tab_lanes": "Vorgangsbahnen",
         "tablist_label": "Ansichten der Auto-Triage-Pipeline",

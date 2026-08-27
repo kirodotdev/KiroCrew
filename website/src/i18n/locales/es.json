@@ -454,6 +454,10 @@
         "header_resolved": "RESUELTO"
       },
       "global": {
+        "unattributed_label": "EVENTOS SIN REPOSITORIO",
+        "unattributed_note": "Registrados antes de que los eventos nombraran su repositorio, por lo que no se pueden atribuir a ninguno.",
+        "repos_label": "REPOSITORIOS",
+        "repos_note": "Este panel los combina y todavía no puede mostrarlos por separado.",
         "tab_pipeline": "Flujo",
         "tab_lanes": "Carriles de elementos",
         "tablist_label": "Vistas del flujo de triaje automático",

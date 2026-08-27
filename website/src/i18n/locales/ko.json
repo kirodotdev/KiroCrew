@@ -448,6 +448,10 @@
         "header_resolved": "해결됨"
       },
       "global": {
+        "unattributed_label": "리포지토리가 없는 이벤트",
+        "unattributed_note": "이벤트가 리포지토리를 명시하기 전에 기록되어 어느 리포지토리에도 귀속할 수 없습니다.",
+        "repos_label": "리포지토리",
+        "repos_note": "이 보드는 이들을 함께 집계하며 아직 개별로 표시할 수 없습니다.",
         "tab_pipeline": "파이프라인",
         "tab_lanes": "항목 레인",
         "tablist_label": "자동 분류 파이프라인 보기",

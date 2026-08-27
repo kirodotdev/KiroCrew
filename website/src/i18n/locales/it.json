@@ -454,6 +454,10 @@
         "header_resolved": "RISOLTO"
       },
       "global": {
+        "unattributed_label": "EVENTI SENZA REPOSITORY",
+        "unattributed_note": "Registrati prima che gli eventi indicassero il loro repository, quindi non attribuibili.",
+        "repos_label": "REPOSITORY",
+        "repos_note": "Questa bacheca li unisce e non può ancora mostrarli separatamente.",
         "tab_pipeline": "Pipeline",
         "tab_lanes": "Corsie degli elementi",
         "tablist_label": "Viste della pipeline di triage automatico",

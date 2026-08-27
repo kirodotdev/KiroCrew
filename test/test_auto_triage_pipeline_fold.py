@@ -755,3 +755,181 @@ def test_register_routes_mounts_only_read_methods() -> None:
         f"{routes.PREFIX}/step",
     ]
     assert "POST" not in methods and "PUT" not in methods and "DELETE" not in methods
+
+
+# ── the repository dimension ──────────────────────────────────────────────────
+# The scheduled jobs stamp `repo` on every event they write. Everything written
+# before that does not carry one and cannot be back-filled, so the load-bearing
+# rule is what happens to those: they belong to EVERY repository's fold, never to
+# none. A reader that dropped them would delete the entire pre-stamp history from
+# a filtered view, which reads as "this pipeline never ran".
+
+
+def _mixed_trail(root: Path) -> None:
+    """A trail shaped like the real one: pre-stamp events plus two repositories."""
+    _write_log(
+        root,
+        [
+            # pre-stamp: no `repo` key at all
+            {"ts": "2026-08-01T00:00:00Z", "event": "triage", "issue": 1},
+            {"ts": "2026-08-01T00:01:00Z", "event": "implement_queued", "issue": 1},
+            # stamped, repository A
+            {"ts": "2026-08-02T00:00:00Z", "event": "triage", "issue": 2, "repo": "acme/alpha"},
+            {
+                "ts": "2026-08-02T00:01:00Z",
+                "event": "implement_queued",
+                "issue": 2,
+                "repo": "acme/alpha",
+            },
+            # stamped, repository B
+            {"ts": "2026-08-03T00:00:00Z", "event": "triage", "issue": 3, "repo": "acme/beta"},
+        ],
+    )
+
+
+def test_the_fold_covers_every_repository(tmp_path: Path) -> None:
+    """There is one mode and this is it: every event counts, whatever it names."""
+    _mixed_trail(tmp_path)
+    result = fold.fold_pipeline(root=tmp_path).to_dict()
+    assert result["totalEvents"] == 5
+    assert result["unattributedEvents"] == 2
+
+
+def test_two_repositories_sharing_a_long_prefix_stay_DISTINCT(tmp_path: Path) -> None:
+    """The census counts identity, so redaction must not decide what is one repository.
+
+    `_printable` truncates at 120 characters. Using it as the dict KEY merged any two
+    repositories whose names share a 120-character prefix into a single entry: their
+    counts combined, the list collapsed to one row, and the view's "more than one
+    repository" condition went false -- so a board mixing two repositories reported
+    itself as unmixed. That is the disclosure this whole change exists to make,
+    silently defeated by its own redaction.
+
+    Counting on the raw value and redacting in `to_dict()` keeps both properties: the
+    identity is exact and nothing unredacted reaches the dashboard. Note the two rows
+    below RENDER identically after truncation -- which is honest, and unlike a merge it
+    still tells the operator there are two.
+    """
+    shared = "acme/" + ("x" * 130)
+    a, b = shared + "-alpha", shared + "-beta"
+    assert a[:120] == b[:120], "fixture must actually collide under truncation"
+    _write_log(
+        tmp_path,
+        [
+            {"ts": "2026-08-02T00:00:00Z", "event": "triage", "issue": 1, "repo": a},
+            {"ts": "2026-08-02T00:01:00Z", "event": "triage", "issue": 2, "repo": a},
+            {"ts": "2026-08-02T00:02:00Z", "event": "triage", "issue": 3, "repo": b},
+        ],
+    )
+
+    census = fold.fold_pipeline(root=tmp_path).to_dict()["repos"]
+    assert len(census) == 2, f"two repositories collapsed into {len(census)} row(s)"
+    assert sorted(row["count"] for row in census) == [1, 2]
+    # And nothing left unredacted: every emitted name is within the printable bound.
+    assert all(len(row["repo"]) <= 120 for row in census)
+
+
+def test_the_census_key_is_REDACTED(tmp_path: Path) -> None:
+    """A census key reaches the dashboard, so it is redacted like every other string.
+
+    The trail is written by agent-driven jobs, so a repository value is
+    attacker-reachable text exactly as an issue title is. This field was the one
+    string the fold handed its routes WITHOUT `_printable`, which also made the
+    module's redaction-sink registration claim more than the code did.
+    """
+    secret = "acme/x-aws_secret_access_key=AKIAIOSFODNN7EXAMPLE"
+    _write_log(
+        tmp_path,
+        [
+            {"ts": "2026-08-02T00:00:00Z", "event": "triage", "issue": 7, "repo": secret},
+            {"ts": "2026-08-02T00:01:00Z", "event": "triage", "issue": 8, "repo": "acme/alpha"},
+        ],
+    )
+
+    census = fold.fold_pipeline(root=tmp_path).to_dict()["repos"]
+    keys = {row["repo"] for row in census}
+
+    # The raw credential-shaped value never reaches the payload...
+    assert secret not in keys
+    assert not any("AKIAIOSFODNN7EXAMPLE" in k for k in keys)
+    # ...and the clean sibling is untouched, so redaction is not blanket mangling.
+    assert "acme/alpha" in keys
+
+
+def test_the_repository_census_counts_every_repository_the_trail_names(tmp_path: Path) -> None:
+    """`repos` answers "what is in here", which is disclosure rather than scoping.
+
+    It is the measurement that makes the missing repository dimension visible: an
+    operator can see the trail mixes two repositories even though no view can yet
+    separate them.
+    """
+    _mixed_trail(tmp_path)
+    census = fold.fold_pipeline(root=tmp_path).to_dict()["repos"]
+    assert {e["repo"]: e["count"] for e in census} == {"acme/alpha": 2, "acme/beta": 1}
+
+
+def test_an_empty_or_non_string_repo_on_an_event_reads_as_unattributed(tmp_path: Path) -> None:
+    """A malformed stamp degrades to "no repository", never to a census row.
+
+    Treating `repo: ""` or `repo: 5` as a value would attribute the event to a
+    repository named by junk, and a view rendering the census would grow a phantom
+    row.
+    """
+    _write_log(
+        tmp_path,
+        [
+            {"ts": "2026-08-02T00:00:00Z", "event": "triage", "issue": 1, "repo": ""},
+            {"ts": "2026-08-02T00:01:00Z", "event": "triage", "issue": 2, "repo": 5},
+            {"ts": "2026-08-02T00:02:00Z", "event": "triage", "issue": 3, "repo": None},
+        ],
+    )
+    result = fold.fold_pipeline(root=tmp_path).to_dict()
+    assert result["unattributedEvents"] == 3
+    assert result["repos"] == []
+
+
+def test_l1_does_NOT_filter_items_by_repository(tmp_path: Path) -> None:
+    """A RATCHET, not a description of a preference.
+
+    Filtering this list by repository is only correct once the dispatch queue is
+    keyed on repository AND number. Today it is keyed on the number alone, and the
+    session lookup behind L2 does the same -- so a filtered list would narrow the
+    ROWS without narrowing the JOINS, and each surviving row would be enriched from
+    whichever repository's entry happens to occupy that number in the queue file.
+    The result reads as a scoped view while showing another repository's metadata,
+    sessions and costs: worse than the unscoped list it replaced, because it looks
+    precise.
+
+    An earlier revision of this branch shipped exactly that filter and this test
+    asserted it. If a later change reintroduces one without re-keying the queue
+    first (issue #6221), this test is the thing that must fail.
+    """
+    _write_log(
+        tmp_path,
+        [
+            {"ts": "2026-08-02T00:00:00Z", "event": "triage", "issue": 11, "repo": "acme/alpha"},
+            {"ts": "2026-08-02T00:01:00Z", "event": "triage", "issue": 22, "repo": "acme/beta"},
+        ],
+    )
+    _write_queue(tmp_path, [])
+    rows = fold.list_step_items("triage", owner="acme", repo="alpha", root=tmp_path)
+    # Both repositories' items, even though only one was named.
+    assert sorted(r.number for r in rows) == [11, 22]
+
+    # And naming a repository with no events at all changes nothing, which is the
+    # same statement from the other side: owner/repo select an issue CACHE, not a
+    # subset of the trail.
+    other = fold.list_step_items("triage", owner="nobody", repo="nothing", root=tmp_path)
+    assert sorted(r.number for r in other) == [11, 22]
+
+
+def test_l1_keeps_a_pre_stamp_item(tmp_path: Path) -> None:
+    """An item whose events predate stamping is never hidden by the L1 listing."""
+    _write_log(
+        tmp_path,
+        [{"ts": "2026-08-01T00:00:00Z", "event": "triage", "issue": 7}],
+    )
+    _write_queue(tmp_path, [])
+    for owner, repo in (("acme", "alpha"), ("nobody", "nothing")):
+        rows = fold.list_step_items("triage", owner=owner, repo=repo, root=tmp_path)
+        assert [r.number for r in rows] == [7], f"{owner}/{repo} lost the pre-stamp item"

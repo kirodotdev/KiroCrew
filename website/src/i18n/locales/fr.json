@@ -454,6 +454,10 @@
         "header_resolved": "RÉSOLU"
       },
       "global": {
+        "unattributed_label": "ÉVÉNEMENTS SANS DÉPÔT",
+        "unattributed_note": "Enregistrés avant que les événements ne nomment leur dépôt, donc non attribuables.",
+        "repos_label": "DÉPÔTS",
+        "repos_note": "Ce tableau les regroupe et ne peut pas encore les afficher séparément.",
         "tab_pipeline": "Pipeline",
         "tab_lanes": "Couloirs d'éléments",
         "tablist_label": "Vues du pipeline de triage automatique",

@@ -94,6 +94,11 @@ def _int_query(request: web.Request, name: str, default: int) -> int:
 async def _handle_overview(request: web.Request) -> web.StreamResponse:
     """GET {PREFIX}/overview — L0: the pipeline and its per-step throughput."""
     hours = _int_query(request, "hours", fold.DEFAULT_RECENT_HOURS)
+    # No `repo` parameter, deliberately. This route answers for every repository the
+    # trail names and discloses the mixture through `repos` + `unattributedEvents`;
+    # it accepts no repository to narrow to, because the queue behind L1/L2 is keyed
+    # on the issue number alone, so a narrowed fold would attribute one repository's
+    # sessions and costs to another (issue #6221).
     try:
         result = await asyncio.to_thread(fold.fold_pipeline, recent_hours=hours)
     except fold.FoldError as exc:
@@ -112,13 +117,18 @@ async def _handle_step(request: web.Request) -> web.StreamResponse:
     """GET {PREFIX}/step?step=&owner=&repo= — L1: the items inside one step.
 
     ``owner``/``repo`` are used ONLY to locate the local issue cache that supplies
-    titles, labels and assignees. They do NOT filter the item list: the pipeline's
-    event trail carries no repository dimension at all, because these scheduled
-    jobs run against one repository by construction. So passing a different
-    owner/repo returns the SAME items with less enrichment, never a different
-    pipeline -- which is also why the L0 overview takes no repo parameter. Anyone
-    reading this as a repo filter would draw exactly the wrong conclusion from a
-    two-repository install.
+    titles, labels and assignees. They do NOT filter the item list: the queue that
+    supplies this list, and the session lookup behind L2, are both keyed on the
+    issue number alone, so filtering here would narrow the rows without narrowing
+    the joins and would surface another repository's sessions and costs under the
+    filtered heading. Passing a different owner/repo returns the SAME items with
+    less enrichment, never a different pipeline -- which is also why the L0
+    overview takes no repo parameter. Anyone reading this as a repo filter would
+    draw exactly the wrong conclusion from a two-repository install.
+
+    Repository selection becomes correct once the queue is keyed on repository and
+    number (issue #6221). Until then L0's ``repos`` census and
+    ``unattributedEvents`` disclose the mixture instead.
     """
     resolved = _repo_params(request)
     if isinstance(resolved, web.Response):

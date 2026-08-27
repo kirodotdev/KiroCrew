@@ -410,6 +410,56 @@ describe('autoTriagePipelineFoldApi.overview', () => {
     expect(parsed.searchParams.get('hours')).toBe('48')
   })
 
+  it('NEVER sends a repo param, because this endpoint has no repository dimension', async () => {
+    // An earlier revision of this branch took a repository here and sent it as a
+    // filter. That is only correct once the dispatch queue is keyed on repository
+    // AND number; today it is keyed on the number alone, so a narrowed fold serves
+    // one repository's sessions and costs under another's name (issue #6221).
+    fetchSpy.mockResolvedValue(jsonResponse({ steps: [] }))
+    await autoTriagePipelineFoldApi.overview()
+    expect(new URL(calledUrl(fetchSpy), 'http://localhost').searchParams.has('repo')).toBe(false)
+
+    // Including when hours IS given, so the parameter cannot ride along on the
+    // one call that does build a query string. Cleared first: `calledUrl` reads the
+    // FIRST recorded call, so without this the assertion below re-inspects the
+    // request above and passes for the wrong reason.
+    fetchSpy.mockClear()
+    fetchSpy.mockResolvedValue(jsonResponse({ steps: [] }))
+    await autoTriagePipelineFoldApi.overview(12)
+    const withHours = new URL(calledUrl(fetchSpy), 'http://localhost')
+    expect(withHours.searchParams.get('hours')).toBe('12')
+    expect(withHours.searchParams.has('repo')).toBe(false)
+  })
+
+  it('coerces the repository census and drops a row with no name', async () => {
+    // A nameless row is what `unattributedEvents` already counts. Kept as an empty
+    // label it would render a blank entry that matches nothing when selected.
+    fetchSpy.mockResolvedValue(
+      jsonResponse({
+        steps: [],
+        unattributedEvents: 4565,
+        repos: [
+          { repo: 'acme/alpha', count: 208 },
+          { repo: '', count: 9 },
+          { count: 3 },
+          'not-an-object',
+        ],
+      }),
+    )
+    const res = await autoTriagePipelineFoldApi.overview()
+    expect(res.unattributedEvents).toBe(4565)
+    expect(res.repos).toEqual([{ repo: 'acme/alpha', count: 208 }])
+  })
+
+  it('defaults the new fields when the server omits them', async () => {
+    // An older gateway does not send them; the view must read 0 and [] rather than
+    // undefined, or a count would render as NaN.
+    fetchSpy.mockResolvedValue(jsonResponse({ steps: [], totalEvents: 7 }))
+    const res = await autoTriagePipelineFoldApi.overview()
+    expect(res.unattributedEvents).toBe(0)
+    expect(res.repos).toEqual([])
+  })
+
   it('coerces a well-formed overview payload, including routed and unmapped arrays', async () => {
     fetchSpy.mockResolvedValue(
       jsonResponse({

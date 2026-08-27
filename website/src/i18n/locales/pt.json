@@ -454,6 +454,10 @@
         "header_resolved": "RESOLVIDO"
       },
       "global": {
+        "unattributed_label": "EVENTOS SEM REPOSITÓRIO",
+        "unattributed_note": "Registrados antes de os eventos nomearem o seu repositório, portanto não atribuíveis.",
+        "repos_label": "REPOSITÓRIOS",
+        "repos_note": "Este painel os combina e ainda não pode exibi-los separadamente.",
         "tab_pipeline": "Pipeline",
         "tab_lanes": "Faixas de itens",
         "tablist_label": "Visualizações do pipeline de triagem automática",

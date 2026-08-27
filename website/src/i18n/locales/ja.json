@@ -448,6 +448,10 @@
         "header_resolved": "解決済み"
       },
       "global": {
+        "unattributed_label": "リポジトリのないイベント",
+        "unattributed_note": "イベントがリポジトリを示すようになる前に記録されたため、どのリポジトリにも帰属できません。",
+        "repos_label": "リポジトリ",
+        "repos_note": "このボードはそれらをまとめて集計し、個別の表示にはまだ対応していません。",
         "tab_pipeline": "パイプライン",
         "tab_lanes": "項目レーン",
         "tablist_label": "自動トリアージパイプラインのビュー",

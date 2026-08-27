@@ -448,6 +448,10 @@
         "header_resolved": "已解决"
       },
       "global": {
+        "unattributed_label": "没有仓库的事件",
+        "unattributed_note": "记录于事件开始标明仓库之前，因此无法归属到任何仓库。",
+        "repos_label": "仓库",
+        "repos_note": "此面板将它们合并展示，暂时无法分开显示。",
         "tab_pipeline": "流水线",
         "tab_lanes": "条目泳道",
         "tablist_label": "自动分诊流水线视图",
