@@ -448,6 +448,17 @@ class _AuthStoreMapping:
     source: Path
     staged_relative: Path
     filenames: tuple[str, ...]
+    # Mappings sharing a group are ALTERNATE locations of ONE store, only one of
+    # which a given host uses. Staging must abort when a matched store cannot be
+    # read, because a staged home with no identity looks signed-out -- but that
+    # rule is right per LOCATION and wrong across alternates, where a stale
+    # leftover in the root this host abandoned would abort staging from the root
+    # it actually uses. Within a group the abort is therefore deferred: it fires
+    # only when NO alternate yielded an identity. ``None`` means "not an
+    # alternate of anything" and keeps the strict per-location rule -- the AWS
+    # SSO cache is a single location holding several token files, and losing any
+    # one of those must still abort.
+    group: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1104,15 +1115,36 @@ def _auth_store_mappings(
                 )
             )
     elif platform_name == "win32":
+        # Both AppData roots, because the installed CLI is observed using either
+        # one and every OTHER reader of this store already covers both: the fence
+        # (``_SENSITIVE_HOME_DIRS``), the trusted live-store list
+        # (``_CLI_SQLITE_DBS``), the logout fingerprint
+        # (``_win32_identity_store_path``) and ``kiro_cli_state_dbs``. Staging
+        # was the last reader still naming Local alone, so on a host whose CLI
+        # keeps its store under Roaming it staged NOTHING and the staged home
+        # looked signed-out. ``LOCALAPPDATA``/``APPDATA`` are honoured for the
+        # source side (that is where this host's real store lives), while the
+        # staged side is the fixed default layout the staged env re-points those
+        # variables at.
         local_app_data = Path(environ.get("LOCALAPPDATA") or home / "AppData" / "Local")
+        roaming_app_data = Path(environ.get("APPDATA") or home / "AppData" / "Roaming")
         for app_name in app_names:
-            mappings.append(
-                _AuthStoreMapping(
-                    source=local_app_data / app_name,
-                    staged_relative=Path("AppData") / "Local" / app_name,
-                    filenames=_AUTH_SQLITE_FILES,
+            for source_root, staged_root in (
+                (local_app_data, "Local"),
+                (roaming_app_data, "Roaming"),
+            ):
+                mappings.append(
+                    _AuthStoreMapping(
+                        source=source_root / app_name,
+                        staged_relative=Path("AppData") / staged_root / app_name,
+                        filenames=_AUTH_SQLITE_FILES,
+                        # The two roots of one product are alternates, so a stale
+                        # store in the unused root cannot abort staging from the
+                        # used one. Distinct ``staged_relative`` values keep them
+                        # from overwriting each other when a host has both.
+                        group=f"win32:{app_name}",
+                    )
                 )
-            )
     else:
         data_home = Path(environ.get("XDG_DATA_HOME") or home / ".local" / "share")
         for app_name in app_names:
@@ -1176,7 +1208,13 @@ def _prepare_auth_workspace(
             platform_compat.chmod_safe(str(root), 0o700)
         else:
             platform_compat.restrict_dir_to_owner(str(root))
+        # Deferred aborts, keyed by group: a group records its failure and is
+        # judged only after every alternate has been attempted.
+        group_staged: dict[str, bool] = {}
+        group_failed: dict[str, str] = {}
         for mapping in _auth_store_mappings(platform_name, home, environ):
+            if mapping.group is not None:
+                group_staged.setdefault(mapping.group, False)
             for pattern in mapping.filenames:
                 for source in mapping.source.glob(pattern):
                     staged_path = root / mapping.staged_relative / source.name
@@ -1184,14 +1222,34 @@ def _prepare_auth_workspace(
                     # every other identity file is a small JSON token copied
                     # under the bounded byte rules. Both abort staging on
                     # failure — never omit a matched store as though absent.
+                    # For a mapping in a GROUP the abort is deferred to the
+                    # group verdict below, because the alternates of one store
+                    # are not each independently required.
                     if source.name == _AUTH_SQLITE_DB:
                         if not _project_identity_database(source, staged_path):
-                            raise OSError(_AUTH_STORE_READ_ERROR)
+                            if mapping.group is None:
+                                raise OSError(_AUTH_STORE_READ_ERROR)
+                            group_failed[mapping.group] = _AUTH_STORE_READ_ERROR
+                            continue
+                        if mapping.group is not None:
+                            group_staged[mapping.group] = True
                         continue
                     content = _read_bounded_regular_file(source)
                     if content is None:
-                        raise OSError(_AUTH_STORE_READ_ERROR)
+                        if mapping.group is None:
+                            raise OSError(_AUTH_STORE_READ_ERROR)
+                        group_failed[mapping.group] = _AUTH_STORE_READ_ERROR
+                        continue
                     _atomic_write_secret_bytes(staged_path, content)
+                    if mapping.group is not None:
+                        group_staged[mapping.group] = True
+
+        # A group that had a readable store in ANY of its alternates is staged.
+        # A group whose every matched store failed is the signed-out-looking
+        # case the strict rule exists for, so it still aborts.
+        for group, message in group_failed.items():
+            if not group_staged.get(group, False):
+                raise OSError(message)
 
         env = dict(base_env)
         env.update(
