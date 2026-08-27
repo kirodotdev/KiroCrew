@@ -1610,8 +1610,127 @@ def _policy(args: argparse.Namespace) -> None:
         for scope in sorted(prof.controls):
             print(f"   • {scope}: {prof.controls[scope]}")
 
+    elif action == "source":
+        _print_policy_source()
+
+    elif action == "fetch":
+        _policy_fetch(force=getattr(args, "force", False))
+
     else:
-        print("Usage: kirocrew policy {show|validate|explain <scope> <item>|profile <name>}")
+        print(
+            "Usage: kirocrew policy {show|validate|explain <scope> <item>|"
+            "profile <name>|source|fetch}"
+        )
+
+
+def _print_policy_source() -> None:
+    """Report whether this host follows a centrally distributed ceiling.
+
+    Prints the source's SCHEME rather than its URL, matching what the dashboard
+    viewer exposes: this command is reachable from a shell the agent may drive, and
+    the endpoint is the fleet's control plane. An operator who needs the URL reads
+    it from the policy file or the environment, out of band.
+    """
+    from kiro_crew.platform.policy_distribution import (
+        POLICY_URL_ENV,
+        distribution_posture,
+        registered_policy_schemes,
+    )
+
+    posture = distribution_posture()
+    if posture.get("error_code"):
+        print(
+            "⚠️  Central policy distribution is misconfigured; see the gateway log "
+            "for the reason and check the 'distribution' block in your policy."
+        )
+        return
+    if not posture.get("configured"):
+        print("Central policy distribution: not configured (this host uses a local policy).")
+        print(
+            f"   Set {POLICY_URL_ENV}, or add a 'distribution' block to the policy, to enable it."
+        )
+        print(f"   Transports available: {', '.join(registered_policy_schemes())}")
+        return
+
+    interval = posture.get("refresh_interval_seconds") or 0
+    print("🌐 Central policy distribution: ACTIVE")
+    print(f"   transport        : {posture.get('source_scheme') or '—'}")
+    print(f"   refresh          : {f'every {interval}s' if interval else 'at boot only'}")
+    print(f"   polling now      : {'yes' if posture.get('refresher_running') else 'no'}")
+    max_age = posture.get("max_cache_age_seconds") or 0
+    print(f"   staleness bound  : {f'{max_age}s' if max_age else 'none'}")
+    print(f"   if unavailable   : {posture.get('on_unavailable')}")
+    if posture.get("cache_present"):
+        print(f"   cached copy      : {posture.get('cache_age_seconds')}s old")
+    else:
+        print("   cached copy      : none (an outage would leave this host with no ceiling)")
+    if posture.get("last_refresh_status"):
+        print(
+            f"   last refresh     : {posture['last_refresh_status']} "
+            f"({posture.get('last_refresh_age_seconds')}s ago)"
+        )
+
+
+def _policy_fetch(*, force: bool) -> None:
+    """Fetch the central policy now, applying it when it is usable.
+
+    Exits non-zero on a refusal or an unreachable source so this is usable as a
+    fleet-verification step in a config-management run: an admin rolling a change
+    needs a check that FAILS on the host that did not take it, not one that prints
+    a warning into a log nobody reads.
+
+    **What it can and cannot claim.** ``refresh_now`` installs the ceiling in the calling
+    process, and this process exits immediately — so a bare "applied" would overclaim: a
+    running gateway is a different process and keeps its own ceiling until its refresher
+    polls. What this command really establishes is that the endpoint serves a document
+    this host accepts, and that the document is now the host's last-known-good. The
+    message says which of those happened and when a running gateway takes it, because a
+    boot-only source (no ``refresh_interval_secs``) has no next cycle to take it on.
+    """
+    from kiro_crew.platform.policy_distribution import (
+        REFRESH_APPLIED,
+        REFRESH_NOT_CONFIGURED,
+        REFRESH_REJECTED,
+        REFRESH_UNCHANGED,
+        effective_refresh_interval,
+        refresh_now,
+    )
+
+    outcome = refresh_now(force=force)
+    if outcome.status == REFRESH_NOT_CONFIGURED:
+        print("Central policy distribution is not configured; nothing to fetch.")
+        return
+    if outcome.status == REFRESH_UNCHANGED:
+        print("✅ The central policy is unchanged; this host is current.")
+        if outcome.detail:
+            print(f"   {outcome.detail}")
+        return
+    if outcome.status == REFRESH_APPLIED:
+        print("✅ Fetched a valid governance ceiling and cached it as this host's own.")
+        if outcome.signature_state:
+            print(f"   provenance: {outcome.signature_state}")
+        interval = effective_refresh_interval()
+        if interval:
+            print(
+                f"   A running gateway adopts it within {interval}s, on its next refresh; "
+                "a newly started one adopts it immediately."
+            )
+        else:
+            print(
+                "   This source is boot-only (no refresh_interval_secs), so a gateway "
+                "already running keeps its current ceiling until it is restarted. Set a "
+                "refresh interval if a push should bind without one."
+            )
+        return
+    # Rejected or unreachable. The running ceiling is untouched either way, which
+    # is worth saying: an operator reading a failure needs to know whether the host
+    # is now ungoverned (it is not).
+    # "was refused", not "refused": the policy is the object of the refusal, not the
+    # thing doing it.
+    label = "was refused" if outcome.status == REFRESH_REJECTED else "could not be reached"
+    print(f"❌ The central policy {label}: {outcome.detail}")
+    print("   The ceiling already in effect is unchanged.")
+    raise SystemExit(1)
 
 
 async def _run_eval(args: argparse.Namespace) -> None:

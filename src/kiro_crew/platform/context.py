@@ -18,6 +18,7 @@ See ``docs/system-specs/modules/platform-context.md``.
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional, Tuple, TypeVar
 
@@ -363,11 +364,51 @@ class PlatformContext:
 # and reset around the test (see the reset_platform_context fixture).
 _ACTIVE: Optional[PlatformContext] = None
 
+# Bumped on EVERY install of ``_ACTIVE``, so a consumer that caches something
+# derived from ``ctx.governance`` can tell that the ceiling underneath it moved.
+#
+# The ceiling was boot-frozen when this counter did not exist, so nothing needed
+# it: a cache built after boot was built against the final answer.  Central
+# policy distribution breaks that — ``policy_distribution`` installs a re-fetched
+# ceiling mid-session — and the one cache that matters,
+# ``governance_profiles.ProfileStore``, folds this into its freshness key.  A
+# boolean "is a fallback declared" cannot carry the fact on its own: swapping one
+# declared fallback for a different one leaves that boolean True on both sides, so
+# the store would keep serving profiles composed against the retired ceiling.
+#
+# Incremented by :func:`_install`, which is the ONLY writer of ``_ACTIVE`` —
+# including the lazy default and the test reset — so no future install site can
+# forget to bump it.
+_GOVERNANCE_GENERATION = 0
+_GENERATION_LOCK = threading.Lock()
+
+
+def _install(ctx: Optional[PlatformContext]) -> None:
+    """Assign ``_ACTIVE`` and bump the generation.  The single writer."""
+    global _ACTIVE, _GOVERNANCE_GENERATION
+    with _GENERATION_LOCK:
+        _ACTIVE = ctx
+        _GOVERNANCE_GENERATION += 1
+
+
+def governance_generation() -> int:
+    """Monotonic counter of how many contexts have been installed this process.
+
+    Read by caches keyed on the active ceiling (see ``_GOVERNANCE_GENERATION``).
+    Opaque and comparison-only: callers may test it for equality with a value they
+    stored, never interpret its magnitude.
+    """
+    with _GENERATION_LOCK:
+        return _GOVERNANCE_GENERATION
+
 
 def set_context(ctx: PlatformContext) -> None:
-    """Install the process-global active context (called once at boot)."""
-    global _ACTIVE
-    _ACTIVE = ctx
+    """Install the process-global active context (called once at boot).
+
+    Also called by ``policy_distribution.apply_ceiling`` when a centrally-fetched
+    policy replaces the ceiling mid-session — the one supported post-boot install.
+    """
+    _install(ctx)
 
 
 def installed_context() -> Optional[PlatformContext]:
@@ -414,7 +455,6 @@ def current_context() -> PlatformContext:
     raise :class:`PlatformCompositionError`.  Defense-in-depth so a future
     swallowing caller cannot reintroduce the silent fail-open.
     """
-    global _ACTIVE
     if _ACTIVE is None:
         # deferred (not a cycle): keep config import off the module-load path so
         # importing kiro_crew.platform stays cheap; only the lazy-default path needs it.
@@ -438,14 +478,18 @@ def current_context() -> PlatformContext:
                 "open-source defaults (fail-closed). Boot did not run or failed "
                 "to compose the companion."
             )
-        _ACTIVE = build_default_context(cfg, profile=PROFILE_STANDALONE)
+        ctx = build_default_context(cfg, profile=PROFILE_STANDALONE)
+        _install(ctx)
+        # Return the value just built rather than re-reading the global: the read
+        # would need a narrowing cast, and another thread could have installed a
+        # different context between the install and the read.
+        return ctx
     return _ACTIVE
 
 
 def reset_context() -> None:
     """Clear the active context (test helper)."""
-    global _ACTIVE
-    _ACTIVE = None
+    _install(None)
 
 
 _T = TypeVar("_T")

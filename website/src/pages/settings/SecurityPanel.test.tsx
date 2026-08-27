@@ -50,7 +50,7 @@ vi.mock('../../api/client', () => ({
 }))
 
 import { api } from '../../api/client'
-import type { GovernancePolicyData, SecurityPostureData, TrustedAppsData } from '../../api/client'
+import type { GovernanceDistributionData, GovernancePolicyData, SecurityPostureData, TrustedAppsData } from '../../api/client'
 import { SecurityPanel, trustFailureMessage, humaniseScopeLeaf } from './SecurityPanel'
 import { i18nT } from '../../i18n/t'
 
@@ -244,6 +244,28 @@ function govGoverned(overrides: Partial<GovernancePolicyData> = {}): GovernanceP
       { scope: 'capabilities.spawn', archetype: 'capability', governed: true, source: 'policy', detail: { enabled: true, inner: { agents: { mode: 'allow', allow_count: 1, deny_count: 0 } } } },
       { scope: 'capabilities.messaging', archetype: 'capability', governed: false, source: 'ungoverned', detail: {} },
     ],
+    ...overrides,
+  }
+}
+
+/** A configured central-distribution posture.
+ *
+ * The defaults describe the state a governed fleet actually runs in — an https
+ * source, a live poller on a 15-minute interval, a warm cache, and a poll that found
+ * nothing to change — so each case below overrides only the field it is about. */
+function govDistribution(overrides: Partial<GovernanceDistributionData> = {}): GovernanceDistributionData {
+  return {
+    configured: true,
+    source_scheme: 'https',
+    refresh_interval_seconds: 900,
+    max_cache_age_seconds: 86400,
+    on_unavailable: 'fail_closed',
+    refresher_running: true,
+    cache_present: true,
+    cache_age_seconds: 120,
+    last_refresh_status: 'unchanged',
+    last_refresh_age_seconds: 30,
+    error_code: '',
     ...overrides,
   }
 }
@@ -877,6 +899,147 @@ describe('SecurityPanel — governance policy viewer', () => {  beforeEach(() =>
 
     await screen.findByText('Policy v1')
     expect(screen.queryByText('Profile scopes not in this build')).not.toBeInTheDocument()
+  })
+})
+
+describe('SecurityPanel — central policy distribution', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(api.deniedCommands as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot())
+    ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockResolvedValue({})
+    ;(api.tailnetStatus as ReturnType<typeof vi.fn>).mockResolvedValue(TAILNET_OFF)
+  })
+
+  it('reports the transport, the poller, the cache age and the last refresh', async () => {
+    ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(
+      govGoverned({ distribution: govDistribution() }),
+    )
+    renderWithProviders(<SecurityPanel />, { route: '/?section=governance' })
+
+    expect(await screen.findByText('Central policy distribution')).toBeInTheDocument()
+    // The SCHEME, never the URL: the producer withholds the endpoint, so a test that
+    // ever finds one here is reporting a leak of the fleet's control plane.
+    expect(screen.getByText('Source: https')).toBeInTheDocument()
+    // Durations go through fmtDuration, so assert the copy plus the magnitude rather
+    // than a unit spelling that is locale-owned.
+    expect(screen.getByText(/Refreshed every/).textContent).toMatch(/15/)
+    expect(screen.getByText(/Cached copy is/).textContent).toMatch(/2/)
+    expect(screen.getByText('Last refresh found no change')).toBeInTheDocument()
+    // A governed host has its ceiling, so the pending caveat must stay off.
+    expect(screen.queryByText(/enterprise ceiling restricts the host surface/)).not.toBeInTheDocument()
+  })
+
+  // The trap this block exists to close: `has_policy: false` + `profile: null` is
+  // BOTH "standalone, nothing governs this machine" and "centrally governed, the
+  // first fetch has not landed". Rendering the reassuring card for the second is
+  // telling an operator their ceiling is off when it is merely late.
+  it('does not claim "no enterprise policy" on a host whose first fetch has not landed', async () => {
+    ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(
+      govNoPolicy({
+        distribution: govDistribution({
+          cache_present: false,
+          cache_age_seconds: null,
+          last_refresh_status: '',
+          last_refresh_age_seconds: null,
+        }),
+      }),
+    )
+    renderWithProviders(<SecurityPanel />, { route: '/?section=governance' })
+
+    expect(await screen.findByText('Central policy distribution')).toBeInTheDocument()
+    expect(screen.getByText(/enterprise ceiling restricts the host surface/)).toBeInTheDocument()
+    // Not merely supplemented — the reassurance must be GONE.
+    expect(screen.queryByText('No enterprise policy in effect')).not.toBeInTheDocument()
+    // And the scope rows render in its place, so the page still says what is enforced.
+    expect(screen.getAllByText('Not restricted').length).toBeGreaterThan(0)
+  })
+
+  it('names the cache age when the copy is days old', async () => {
+    ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(
+      govGoverned({
+        distribution: govDistribution({
+          cache_age_seconds: 3 * 86400,
+          last_refresh_status: 'unreachable',
+          last_refresh_age_seconds: 60,
+        }),
+      }),
+    )
+    renderWithProviders(<SecurityPanel />, { route: '/?section=governance' })
+
+    // dropZero is what keeps three days from rendering as "3d 0h 0m".
+    const cache = await screen.findByText(/Cached copy is/)
+    expect(cache.textContent).toMatch(/3\s* ?d/)
+    expect(cache.textContent).not.toMatch(/0/)
+    expect(screen.getByText('Source was unreachable on the last refresh')).toBeInTheDocument()
+  })
+
+  it('reports a misconfigured declaration even though it is not "configured"', async () => {
+    // The producer answers `configured: false` with an error code: the fleet DID
+    // point this host somewhere, the pins just do not parse. Gating the block on
+    // `configured` alone would drop the one state that most needs saying.
+    ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(
+      govNoPolicy({ distribution: { configured: false, error_code: 'misconfigured' } }),
+    )
+    renderWithProviders(<SecurityPanel />, { route: '/?section=governance' })
+
+    expect(await screen.findByText('Distribution settings could not be read')).toBeInTheDocument()
+    expect(screen.queryByText('No enterprise policy in effect')).not.toBeInTheDocument()
+    // Nothing is known about the transport or the cache, so no badge claims one.
+    expect(screen.queryByText(/Source:/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Cached copy/)).not.toBeInTheDocument()
+  })
+
+  it('survives the unavailable short-circuit that hides every other governance fact', async () => {
+    // `unavailable` collapses the whole viewer to one soft notice, but the fail-safe
+    // snapshot still carries the distribution posture — and a stopped poller plus an
+    // unreachable source is exactly what an operator needs at that moment.
+    ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(
+      govNoPolicy({
+        unavailable: true,
+        distribution: govDistribution({ refresher_running: false, last_refresh_status: 'unreachable' }),
+      }),
+    )
+    renderWithProviders(<SecurityPanel />, { route: '/?section=governance' })
+
+    expect(await screen.findByText(/Governance status is temporarily unavailable/)).toBeInTheDocument()
+    expect(screen.getByText('Central policy distribution')).toBeInTheDocument()
+    expect(screen.getByText(/Background refresh is not running/)).toBeInTheDocument()
+    expect(screen.getByText('Source was unreachable on the last refresh')).toBeInTheDocument()
+    // The pending caveat must NOT fire here: the fail-safe snapshot reports
+    // `has_policy: false` because it could not resolve the ceiling, not because there
+    // is none, so reading it as pending would announce an unrestricted host surface on
+    // a machine whose ceiling is installed and enforcing.
+    expect(screen.queryByText(/enterprise ceiling restricts the host surface/)).not.toBeInTheDocument()
+  })
+
+  it('says a boot-only fetch is boot-only rather than calling the poller stopped', async () => {
+    ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(
+      govGoverned({
+        distribution: govDistribution({ refresh_interval_seconds: 0, refresher_running: false }),
+      }),
+    )
+    renderWithProviders(<SecurityPanel />, { route: '/?section=governance' })
+
+    expect(await screen.findByText('Fetched at startup only')).toBeInTheDocument()
+    expect(screen.queryByText('Background refresh is not running')).not.toBeInTheDocument()
+  })
+
+  it('renders no block, and no empty section, when the payload omits distribution', async () => {
+    ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(govNoPolicy())
+    renderWithProviders(<SecurityPanel />, { route: '/?section=governance' })
+
+    expect(await screen.findByText('No enterprise policy in effect')).toBeInTheDocument()
+    expect(screen.queryByText('Central policy distribution')).not.toBeInTheDocument()
+  })
+
+  it('renders no block when a build without the feature reports configured: false', async () => {
+    ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(
+      govNoPolicy({ distribution: { configured: false } }),
+    )
+    renderWithProviders(<SecurityPanel />, { route: '/?section=governance' })
+
+    expect(await screen.findByText('No enterprise policy in effect')).toBeInTheDocument()
+    expect(screen.queryByText('Central policy distribution')).not.toBeInTheDocument()
   })
 })
 

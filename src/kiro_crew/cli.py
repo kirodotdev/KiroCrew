@@ -1501,6 +1501,20 @@ Examples:
     explain_parser.add_argument("--app", default="", help="App slug (optional)")
     profile_show = policy_sub.add_parser("profile", help="Show a profile by name")
     profile_show.add_argument("name", help="Profile file stem (without .json)")
+    policy_sub.add_parser(
+        "source", help="Show whether this host fetches its policy from a central source"
+    )
+    policy_fetch = policy_sub.add_parser(
+        "fetch", help="Fetch the central policy now and apply it if it is usable"
+    )
+    policy_fetch.add_argument(
+        "--force",
+        action="store_true",
+        # Skips the conditional-request validators. An operator running this by
+        # hand wants to prove the round trip end to end; a 304 tells them nothing
+        # about whether the document they just published reads correctly.
+        help="Ignore the cached validators and re-download the whole document",
+    )
 
     register_perf_parser(sub)
     register_bench_parser(sub)

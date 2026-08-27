@@ -67,6 +67,13 @@ _LEGACY_LAUNCHER_DIR = "/tmp"
 
 # Sensitive directories to hide from the agent subprocess tree.
 # "strict" mode hides all; "standard" mode only hides non-workflow dirs.
+#: The cache leaf, mirroring ``policy_distribution.CACHE_DIR_LEAF``; spelled here so
+#: this module needs no import from the governance engine.  Pinned equal by
+#: ``test_governance_distribution``.
+_POLICY_CACHE_LEAF = "policy_cache"
+#: The data home the ``$HOME``-relative entries below assume.
+_CREW_HOME_DEFAULT = ".kiro/crew"
+
 _STRICT_DIRS: list[str] = [
     ".kiro/crew-auth-staging",
     ".aws",
@@ -86,6 +93,17 @@ _STRICT_DIRS: list[str] = [
     # ``.vault/.vault_key`` and decrypt the store.
     ".kiro/crew/.vault",
     ".kirocrew/.vault",
+    # The centrally-distributed governance ceiling's cache
+    # (``platform/policy_distribution.py``). Bind-mount-hidden in every mode for the
+    # reason the vault above is: ``is_sensitive_path`` is the shared read+write gate for
+    # the agent's in-process tool calls, but a spawned ``python -c`` does an OS
+    # ``open()`` that never routes through it. That matters more here than for the
+    # policy FILE, which this cache copies: on a fleet using the environment channel
+    # there is no ``security_policy.json`` on disk at all, so the cache is the only
+    # on-disk copy of the ceiling — and its metadata records the SOURCE, which the
+    # loader trusts when deciding whether the cache is this host's last-known-good.
+    ".kiro/crew/policy_cache",
+    ".kirocrew/policy_cache",
 ]
 
 _STANDARD_DIRS: list[str] = [
@@ -98,6 +116,17 @@ _STANDARD_DIRS: list[str] = [
     # Secret vault — hidden in every mode (see _STRICT_DIRS note above).
     ".kiro/crew/.vault",
     ".kirocrew/.vault",
+    # The centrally-distributed governance ceiling's cache
+    # (``platform/policy_distribution.py``). Bind-mount-hidden in every mode for the
+    # reason the vault above is: ``is_sensitive_path`` is the shared read+write gate for
+    # the agent's in-process tool calls, but a spawned ``python -c`` does an OS
+    # ``open()`` that never routes through it. That matters more here than for the
+    # policy FILE, which this cache copies: on a fleet using the environment channel
+    # there is no ``security_policy.json`` on disk at all, so the cache is the only
+    # on-disk copy of the ceiling — and its metadata records the SOURCE, which the
+    # loader trusts when deciding whether the cache is this host's last-known-good.
+    ".kiro/crew/policy_cache",
+    ".kirocrew/policy_cache",
 ]
 
 # CC mode: hides all credential dirs including .aws, but selectively exposes
@@ -115,7 +144,70 @@ _CC_DIRS: list[str] = [
     # Secret vault — hidden in every mode (see _STRICT_DIRS note above).
     ".kiro/crew/.vault",
     ".kirocrew/.vault",
+    # The centrally-distributed governance ceiling's cache
+    # (``platform/policy_distribution.py``). Bind-mount-hidden in every mode for the
+    # reason the vault above is: ``is_sensitive_path`` is the shared read+write gate for
+    # the agent's in-process tool calls, but a spawned ``python -c`` does an OS
+    # ``open()`` that never routes through it. That matters more here than for the
+    # policy FILE, which this cache copies: on a fleet using the environment channel
+    # there is no ``security_policy.json`` on disk at all, so the cache is the only
+    # on-disk copy of the ceiling — and its metadata records the SOURCE, which the
+    # loader trusts when deciding whether the cache is this host's last-known-good.
+    ".kiro/crew/policy_cache",
+    ".kirocrew/policy_cache",
 ]
+
+
+def _relocated_policy_cache_dirs() -> list[str]:
+    """The governance cache's RESOLVED path, when it is not under ``$HOME``.
+
+    Every entry in the dir lists above is ``$HOME``-relative and joined with
+    ``Path.home()``, so ``KIROCREW_HOME=/srv/crew`` moves the data home out from under
+    all of them. That limitation is pre-existing and shared with the vault entries, but
+    this one directory must not inherit it: on a fleet using the environment channel
+    there is no ``security_policy.json`` on disk at all, so the cache is the ONLY on-disk
+    copy of the ceiling, and its metadata records the source the next boot trusts. An
+    agent subprocess able to rewrite it on a relocated home could hand itself a ceiling.
+
+    Returns the path only when it differs from the ``$HOME``-relative form the lists
+    already cover, so the default layout gains no duplicate rule.
+
+    **Compared with ``normpath``, not ``realpath``, and that is deliberate.** This runs
+    inside ``_build_launcher_script`` / the seatbelt builder, which run on the event loop
+    for every async spawn — the same reason the launcher pushes its ``isdir`` checks into
+    the child (see the note there): on a stalled NFS home a link-resolving syscall here
+    freezes the gateway and its liveness heartbeat. ``normpath`` is pure string work.
+
+    The cost is precise and one-directional: where the home is a symlink (``/home/u`` →
+    ``/local/home/u`` is ordinary on managed hosts) the two spellings no longer compare
+    equal, so a DEFAULT layout is reported as relocated and the resolved path is masked in
+    addition to the ``$HOME``-relative one. That is a redundant rule for a directory that
+    should be masked either way, never a missing one — the comparison was only ever
+    de-duplication. Never raises: a data home that cannot be resolved yields nothing and
+    the ``$HOME``-relative entry still applies.
+    """
+    try:
+        resolved = os.path.normpath(os.path.join(str(config_dir()), _POLICY_CACHE_LEAF))
+        default = os.path.normpath(
+            os.path.join(str(Path.home()), _CREW_HOME_DEFAULT, _POLICY_CACHE_LEAF)
+        )
+    except Exception:  # pragma: no cover - defensive; a spawn must not fail on this
+        logger.debug("could not resolve the policy-cache path for sandbox masking", exc_info=True)
+        return []
+    return [] if resolved == default else [resolved]
+
+
+def _is_policy_cache_dir(path: str) -> bool:
+    """Whether *path* is a governance-cache directory, by leaf name.
+
+    Matched on the leaf rather than against a resolved path so it holds for every
+    spelling the dir lists carry — the ``$HOME``-relative default, the legacy
+    ``~/.kirocrew`` entry that the deny lists must keep covering, and the relocated
+    form from :func:`_relocated_policy_cache_dirs` — without a filesystem call on the
+    spawn path.
+    """
+    return os.path.basename(path.rstrip("/" + os.sep)) == _POLICY_CACHE_LEAF
+
 
 # CC mode: files to expose read-only inside otherwise-hidden dirs.
 # After hiding the parent dir, these are recreated with original content.
@@ -219,6 +311,32 @@ _AGENT_DENIED_ENV_KEYS: list[str] = [
     "JIRA_API_TOKEN",
     "JIRA_TOKEN_",
     "KIROCREW_OWNER_ID",
+    # The central-governance fetch configuration — see
+    # ``platform/policy_distribution.py``. The URL is listed as well as the header,
+    # deliberately:
+    #
+    # * ``KIROCREW_POLICY_HEADERS`` is a live bearer credential for the fleet's own
+    #   control plane, and with it an agent could read the ceiling document that the
+    #   ``is_sensitive_path`` keystone exists to keep it from reading on disk;
+    # * ``KIROCREW_POLICY_URL`` is credential-bearing in its own right whenever the
+    #   fleet uses a pre-signed object URL, where the signature rides in the query
+    #   string — and even unsigned it names the control plane, which the SEL, the
+    #   policy viewer and ``RefreshOutcome.detail`` all deliberately withhold.
+    #
+    # Spelled as CONCRETE NAMES rather than a ``KIROCREW_POLICY_`` prefix, because this
+    # list has consumers with two different matching rules: the spawn scrubs here use
+    # ``startswith``, but ``cron_script._CRON_ENV_DENY`` tests exact membership and
+    # ``mcp_cron`` builds ``\b``-anchored regexes from it, and a prefix entry silently
+    # matches nothing in either. ``test_governance_distribution`` pins these against
+    # ``POLICY_DISTRIBUTION_ENV_VARS``, which owns the set, so a variable added there
+    # cannot quietly stay agent-readable.
+    "KIROCREW_POLICY_URL",
+    "KIROCREW_POLICY_HEADERS",
+    "KIROCREW_POLICY_REFRESH_SECS",
+    "KIROCREW_POLICY_TIMEOUT_SECS",
+    "KIROCREW_POLICY_MAX_CACHE_AGE_SECS",
+    "KIROCREW_POLICY_ON_UNAVAILABLE",
+    "KIROCREW_POLICY_CACHE_ONLY",
 ]
 
 
@@ -1475,12 +1593,22 @@ def _build_launcher_script(
         env_prefixes = env_prefixes + list(_PYTHON_ENV_PREFIXES)
     hide_ssh = sandbox_level == "strict"
     hidden_dirs = [os.path.join(home, d) for d in dirs]
+    hidden_dirs.extend(_relocated_policy_cache_dirs())
     hidden_dirs.extend(os.path.abspath(path) for path in extra_hidden_dirs)
-    hidden_dirs = [
-        path
-        for path in hidden_dirs
-        if not _hidden_path_contains_visible_path(path, extra_visible_dirs)
+    unhidden = [
+        path for path in hidden_dirs if _hidden_path_contains_visible_path(path, extra_visible_dirs)
     ]
+    hidden_dirs = [path for path in hidden_dirs if path not in unhidden]
+    # The governance cache is READ-ONLY whenever it is exposed at all, and that is a
+    # property of the directory rather than of the caller's request: `extra_visible_dirs`
+    # otherwise cancels a target's whole rule set, so the one caller that legitimately
+    # needs to READ the ceiling (`apps/backend.py`, which boots in cache-only mode and
+    # resolves the fleet ceiling from this file) would get WRITE with it. That is the
+    # dangerous direction — the metadata records the source the next boot trusts, so a
+    # same-UID process that can rewrite the pair picks the ceiling for every later boot,
+    # and an app backend is arbitrary third-party code. Deciding it here means a future
+    # caller cannot re-open the hole by passing this path.
+    readonly_dirs = [path for path in unhidden if _is_policy_cache_dir(path)]
     # A caller-supplied hidden path may be a FILE, and the two launcher loops hide
     # each kind differently: a directory gets an empty dir bind-mounted over it, a file
     # gets an empty temp file. The dir loop is guarded by `if os.path.isdir(target)`, so
@@ -1504,6 +1632,7 @@ def _build_launcher_script(
     # macOS is unaffected either way: its rule is `(deny file-read* (subpath …))`, and a
     # subpath rule covers a plain file.
     dirs_json = json.dumps(list(dict.fromkeys(hidden_dirs)))
+    readonly_json = json.dumps(list(dict.fromkeys(readonly_dirs)))
     files_json = json.dumps(
         list(dict.fromkeys([os.path.join(home, f) for f in files] + hidden_dirs))
     )
@@ -1538,6 +1667,8 @@ import tempfile
 
 _CLONE_NEWUSER = 0x10000000
 _CLONE_NEWNS   = 0x00020000
+_MS_RDONLY     = 1
+_MS_REMOUNT    = 32
 _MS_BIND       = 4096
 _MS_REC        = 16384
 _MS_PRIVATE    = 1 << 18
@@ -1588,6 +1719,7 @@ def _mount_or_die(source, target, flags, what):
 REAL_UID = {uid}
 REAL_GID = {gid}
 SENSITIVE_DIRS = {dirs_json}
+READONLY_DIRS = {readonly_json}
 SENSITIVE_FILES = {files_json}
 EXPOSE_FILES = {expose_json}
 ENV_PREFIXES = {env_prefixes_json}
@@ -1732,6 +1864,20 @@ def main():
                 per_dir_empty = tempfile.mkdtemp(dir=_tmpfs_src).encode()
                 _mount_or_die(per_dir_empty, target, _MS_BIND,
                               "hiding credential directory %s" % d)
+
+        # Exposed-but-read-only dirs (the governance cache): bind the real dir over
+        # itself, then remount that bind MS_RDONLY. Both steps are load-bearing --
+        # MS_RDONLY is ignored on the initial MS_BIND, so without the remount this
+        # loop would grant exactly the write access it exists to withhold. Allowed
+        # in our own user+mount namespace because we created the bind ourselves.
+        for d in READONLY_DIRS:
+            target = d.encode()
+            if os.path.isdir(target):
+                _mount_or_die(target, target, _MS_BIND,
+                              "exposing read-only directory %s" % d)
+                _mount_or_die(target, target,
+                              _MS_REMOUNT | _MS_BIND | _MS_RDONLY,
+                              "sealing read-only directory %s" % d)
 
         # Restore selectively exposed files into the now-empty mounts
         for src_path, filename in EXPOSE_FILES:
@@ -2193,9 +2339,18 @@ def _build_seatbelt_profile(
     expose_files = _CC_EXPOSE_FILES if sandbox_level == "cc" else []
     expose_abs = {os.path.join(home, f) for f in expose_files}
     rules: list[str] = []
-    for d in dirs:
-        target = os.path.join(home, d)
+    for target in [os.path.join(home, d) for d in dirs] + _relocated_policy_cache_dirs():
         if _hidden_path_contains_visible_path(target, extra_visible_dirs):
+            # An exposed governance cache stays READ-only: keep the write and hardlink
+            # denies and drop only the read deny. `extra_visible_dirs` otherwise cancels
+            # the target's whole rule set, which would hand the one caller that needs to
+            # read the ceiling (`apps/backend.py` in cache-only mode) the ability to
+            # rewrite it — and the metadata records the source the next boot trusts, so
+            # that is the dangerous direction. Mirrors READONLY_DIRS on Linux.
+            if _is_policy_cache_dir(target):
+                sealed = target.replace('"', '\\"')
+                rules.append(f'(deny file-write* (subpath "{sealed}"))')
+                rules.append(f'(deny file-link (subpath "{sealed}"))')
             continue
         escaped = target.replace('"', '\\"')
         # Check if any exposed files live under this dir
@@ -2208,6 +2363,16 @@ def _build_seatbelt_profile(
             rules.append(f'(deny file-read* (require-all (subpath "{escaped}") {exceptions}))')
         else:
             rules.append(f'(deny file-read* (subpath "{escaped}"))')
+        if _is_policy_cache_dir(target):
+            # Seatbelt denies READS above; the Linux path bind-mounts an empty dir, which
+            # blocks both directions. For the governance cache the WRITE is the more
+            # dangerous one — its metadata records the source the next boot trusts, so a
+            # planted document plus provenance is a ceiling of the writer's choosing —
+            # so macOS gets an explicit write deny too. Scoped to this directory rather
+            # than applied to every entry: widening the others is a separate change with
+            # its own blast radius (a write deny on ``.aws`` would break tools that
+            # legitimately refresh a cached token).
+            rules.append(f'(deny file-write* (subpath "{escaped}"))')
         # Deny creating a HARDLINK whose target is under this dir.
         # Seatbelt's file-read* deny is path-based, so a hardlink at a
         # non-denied path (e.g. /tmp) reads the same inode past the deny rule.

@@ -8412,6 +8412,24 @@ class GatewayOrchestrator:
 
     async def _shutdown(self) -> None:
         """Graceful cleanup of all services."""
+        # Stop polling the central policy source, so a fetch in flight cannot
+        # install a ceiling into a context the rest of this teardown is dismantling.
+        # The join budget is deliberately small: the thread waits on an Event, so
+        # setting it wakes an idling refresher immediately and the join costs
+        # nothing, while a refresher mid-fetch must not spend the shutdown budget
+        # that saves active chat slots (this whole method runs under
+        # GRACEFUL_SHUTDOWN_SECS). It is a daemon thread, so anything still running
+        # after that dies at exit anyway.
+        with contextlib.suppress(Exception):
+            from kiro_crew.platform.policy_distribution import stop_refresher
+
+            # ``stop_refresher`` JOINS a thread, which is a blocking call and must
+            # not run on the event loop. Offloaded with its own deadline so a
+            # refresher mid-fetch cannot eat the GRACEFUL_SHUTDOWN_SECS budget that
+            # saves active chat slots; it is a daemon thread, so whatever is still
+            # running after that dies at exit anyway.
+            await asyncio.wait_for(asyncio.to_thread(stop_refresher, 0.5), timeout=1.5)
+
         # Disarm the loop-stall watchdog FIRST, before any of the teardown below.
         # close_all()/cancel_all() deliberately kill every kiro-cli child, which
         # is exactly the os.waitpid reaping burst that can wedge the loop for
@@ -10043,6 +10061,57 @@ class GatewayOrchestrator:
                 "home": str(data_home()),
             }
             print(f"KIROCREW_READY:{json.dumps(ready_payload)}", flush=True)
+
+        # ── Central governance-policy refresh ──
+        # Started HERE, after readiness, not on the boot path: the
+        # no-new-work-on-gateway-boot-path rule applies, and nothing about this
+        # loop needs to exist before the gateway can serve. Boot has already
+        # established the ceiling from the same source (the load tier does that),
+        # so this only keeps it current.
+        #
+        # A detached daemon thread, NOT awaited, for the reason the beacon is: the
+        # fetch is blocking urllib and must never sit on the event loop. It is a
+        # no-op unless a policy or the environment names a source AND an interval,
+        # and it waits one full interval before its first poll, so a fleet
+        # restarting together does not stampede the admin's endpoint.
+        #
+        # This is what makes an admin's push land on a running fleet: a changed
+        # document is validated through the same floor gates boot applies and then
+        # installed in place. One that fails them is refused and the running
+        # ceiling is kept, so a bad push cannot take down hosts already up.
+        #
+        # ``_test_mode`` skips it so the offline E2E gate never makes an outbound
+        # request.
+        if not self._test_mode:
+            with contextlib.suppress(Exception):
+                from kiro_crew.agent import (
+                    prime_ceiling_projection,
+                    reproject_for_ceiling_change,
+                )
+                from kiro_crew.dashboard.tailnet_serve import (
+                    revoke_if_governance_now_pins_off,
+                )
+                from kiro_crew.platform.policy_distribution import (
+                    register_post_install_hook,
+                    start_refresher,
+                )
+
+                # Hooks are registered BEFORE the poller starts, so the first installed
+                # ceiling already re-derives what was materialised from the previous one.
+                # Most governed controls are live evaluations and need nothing here. These two
+                # are the exceptions: a published tailnet origin, whose gate fires when
+                # publish is CALLED and so does not retract what is already serving, and the
+                # agent config's ``allowedTools``, which kiro-cli reads from the FILE — so a
+                # list written under a looser ceiling keeps auto-approving what the fleet has
+                # since forbidden.
+                _tailnet_port = self._dashboard_port
+                register_post_install_hook(lambda: revoke_if_governance_now_pins_off(_tailnet_port))
+                # Seeded BEFORE the poller starts: the first poll can itself install a new
+                # ceiling, and a baseline taken on the hook's first call would record that
+                # generation and skip the rebuild it needed.
+                prime_ceiling_projection()
+                register_post_install_hook(reproject_for_ceiling_change)
+                await asyncio.to_thread(start_refresher)
 
         # AutoNudge must run after dashboard init — _fire callback dereferences
         # self.dashboard_state. In --no-dashboard mode the guard inside _fire

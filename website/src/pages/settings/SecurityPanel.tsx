@@ -8,12 +8,12 @@ import { Badge, Btn, Input, Toggle, Checkbox } from '../../components/ui'
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
 import Modal from '../../components/Modal'
 import InfoTip from '../../components/InfoTip'
-import { api, ApiError, type DeniedCommandsData, type DeniedCommandRule, type DeniedUserRule, type GovernancePolicyData, type GovernanceScope, type GovernanceScopeDetail, type SecurityPostureData, type TailnetStatusData, type TrustedAppsData } from '../../api/client'
+import { api, ApiError, type DeniedCommandsData, type DeniedCommandRule, type DeniedUserRule, type GovernanceDistributionData, type GovernancePolicyData, type GovernanceScope, type GovernanceScopeDetail, type SecurityPostureData, type TailnetStatusData, type TrustedAppsData } from '../../api/client'
 import { PostureDisclosureRow, CODE_BASE as POSTURE_CODE_BASE } from './PostureDisclosure'
 import { MobileLoginCard } from './MobileLoginCard'
 
 import { i18nT } from '../../i18n/t'
-import { fmtDateFields, fmtList, fmtTime, fmtTimeNumeric, toDate, compareText } from '../../i18n/format'
+import { fmtDateFields, fmtDuration, fmtList, fmtTime, fmtTimeNumeric, fmtUnit, toDate, compareText } from '../../i18n/format'
 import ErrorNotice from '../../components/ErrorNotice'
 /* ── Security feature registry ──
  *
@@ -1037,6 +1037,141 @@ function TailnetOriginCard() {
   )
 }
 
+/**
+ * Catalog KEY per central-distribution refresh outcome, and per posture error code.
+ *
+ * Flat `Record`s of full literal keys indexed inline at the `i18nT()` call, the same
+ * shape and for the same reason as `TAILNET_STATE_KEY` above: that is the form
+ * `scripts/check-i18n-keys.mjs` resolves statically, so a key rendered here is a key
+ * it can prove exists.
+ *
+ * Keyed by `string` rather than by the union, and read through an `in` guard, because
+ * these enums are produced by the backend: a value this build has no copy for must
+ * render NOTHING, never a raw backend token standing in for English.
+ */
+const DISTRIBUTION_REFRESH_KEY: Record<string, string> = {
+  applied: 'pages.settings.securityPanel.distribution_refresh_applied',
+  unchanged: 'pages.settings.securityPanel.distribution_refresh_unchanged',
+  rejected: 'pages.settings.securityPanel.distribution_refresh_rejected',
+  unreachable: 'pages.settings.securityPanel.distribution_refresh_unreachable',
+  not_configured: 'pages.settings.securityPanel.distribution_refresh_not_configured',
+}
+
+/** Badge tone for the two refresh outcomes an operator has to act on. Everything
+ *  else falls to the muted default below, deliberately: a green badge is a health
+ *  verdict, and this block reports facts. */
+const DISTRIBUTION_REFRESH_VARIANT: Record<string, 'err' | 'warn'> = {
+  rejected: 'err',
+  unreachable: 'warn',
+}
+
+/**
+ * A coarse interval or age, in the units an operator reads at a glance.
+ *
+ * Days/hours/minutes and no seconds: the poll interval has a 60-second floor and a
+ * cache age is judged against a staleness bound measured in hours, so seconds are
+ * noise on both. `dropZero` is what keeps three days from rendering as `3d 0h 0m`.
+ * Below a minute falls back to seconds, so a cache written moments ago does not read
+ * as `0m` — which on this row would look like a broken measurement.
+ */
+function fmtCoarseSecs(secs: number): string {
+  const s = Math.max(0, Math.floor(secs))
+  if (s < 60) return fmtUnit(s, 'second', { maximumFractionDigits: 0 })
+  return fmtDuration(
+    [
+      [Math.floor(s / 86400), 'day'],
+      [Math.floor((s % 86400) / 3600), 'hour'],
+      [Math.floor((s % 3600) / 60), 'minute'],
+    ],
+    { dropZero: true, maximumFractionDigits: 0 },
+  )
+}
+
+/**
+ * Where the ceiling itself comes from, when an admin publishes one centrally.
+ *
+ * READ-ONLY like the rest of this viewer, and for a stronger reason: the source is
+ * declared in the file-authored policy or in per-machine environment, so a control
+ * here could only ever lie about being able to change it.
+ *
+ * It reports facts and no verdict — the transport, whether the poll loop is alive in
+ * this process, how old the last-known-good copy is, what the most recent refresh did,
+ * and whether the declaration could be resolved at all. Deliberately no "healthy"
+ * badge, by the same rule the section rail follows: a summary that renders its own
+ * verdict keeps asserting it while the read behind it is failing.
+ *
+ * `pending` is the state the rest of the viewer cannot express. A host configured to
+ * fetch a central ceiling whose first fetch has not landed reports `has_policy: false`
+ * and `profile: null`, which is indistinguishable from an ungoverned machine
+ * everywhere else on this page.
+ */
+function PolicyDistributionBlock({ posture, pending }: { posture: GovernanceDistributionData; pending: boolean }) {
+  const interval = posture.refresh_interval_seconds ?? 0
+  const age = posture.cache_age_seconds
+  const status = posture.last_refresh_status ?? ''
+  const errorCode = posture.error_code ?? ''
+  return (
+    <div className="border-b border-border pb-2 mb-2">
+      <div className="flex items-center gap-1.5">
+        <Lock size={11} className="lucide-inline text-muted" />
+        <span className="text-[11px] font-semibold uppercase tracking-[.04em] text-muted">{i18nT('pages.settings.securityPanel.distribution_title')}</span>
+        <InfoTip text={i18nT('pages.settings.securityPanel.distribution_tip')} />
+      </div>
+      <div className="mt-1 flex items-center gap-2 flex-wrap">
+        {/* The SCHEME, never the URL — the producer withholds the endpoint because
+            this page is reachable by the agent's own browser tooling, and it is the
+            fleet's control plane. A scheme still answers what an operator asks here:
+            is the channel encrypted, or is this a local mount.
+            Rendered verbatim rather than through a key map, unlike the two enums
+            below: the transport registry is extensible, so a map would be incomplete
+            by construction and would silently blank out an edition's own scheme. It
+            is an identifier in a mono badge, not copy — there is nothing to
+            translate. */}
+        {posture.source_scheme && (
+          <Badge variant="muted"><Network size={11} className="lucide-inline" /> {i18nT('pages.settings.securityPanel.distribution_source', { scheme: posture.source_scheme })}</Badge>
+        )}
+        {posture.configured && (
+          <Badge variant="muted">
+            <Clock size={11} className="lucide-inline" />{' '}
+            {/* Three distinct facts, not one with two spellings: no interval means
+                boot-only fetching (still centrally governed), an interval with no live
+                loop means a pushed change will NOT bind until the next restart, and a
+                live loop is the state the feature promises. */}
+            {interval <= 0
+              ? i18nT('pages.settings.securityPanel.distribution_boot_only')
+              : posture.refresher_running
+                ? i18nT('pages.settings.securityPanel.distribution_polling', { interval: fmtCoarseSecs(interval) })
+                : i18nT('pages.settings.securityPanel.distribution_polling_stopped')}
+          </Badge>
+        )}
+        {posture.configured && (
+          <Badge variant={posture.cache_present ? 'muted' : 'warn'}>
+            <Package size={11} className="lucide-inline" />{' '}
+            {/* The cache is what keeps a host governed through an outage, so its
+                absence is the fact worth a warn tone: this machine has no fallback
+                if the source goes away. */}
+            {posture.cache_present && typeof age === 'number'
+              ? i18nT('pages.settings.securityPanel.distribution_cache_age', { age: fmtCoarseSecs(age) })
+              : i18nT('pages.settings.securityPanel.distribution_cache_none')}
+          </Badge>
+        )}
+        {status in DISTRIBUTION_REFRESH_KEY && (
+          <Badge variant={DISTRIBUTION_REFRESH_VARIANT[status] ?? 'muted'}>{i18nT(DISTRIBUTION_REFRESH_KEY[status])}</Badge>
+        )}
+        {errorCode === 'misconfigured' && (
+          <Badge variant="warn"><AlertTriangle size={11} className="lucide-inline" /> {i18nT('pages.settings.securityPanel.distribution_error_misconfigured')}</Badge>
+        )}
+      </div>
+      {pending && (
+        <div className="text-[12px] text-warn mt-1.5 flex items-start gap-1.5 leading-relaxed">
+          <AlertTriangle size={13} className="lucide-inline shrink-0 mt-0.5" />
+          <span>{i18nT('pages.settings.securityPanel.distribution_awaiting_policy')}</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function GovernancePolicyViewer() {
   const { data, isLoading, isError } = useQuery<GovernancePolicyData>({
     queryKey: ['governance-policy'],
@@ -1055,6 +1190,16 @@ function GovernancePolicyViewer() {
   // the backend returns via `unavailable`. Enforcement is server-side and
   // unaffected either way; this only governs what the viewer claims.
   const unavailable = isError || data?.unavailable
+
+  // Central distribution reports itself on BOTH the normal and the fail-safe
+  // snapshot, so it survives `unavailable` — a host whose governance resolution
+  // glitched still knows where its ceiling is fetched from, and that is exactly when
+  // an operator needs to be told. A misconfigured declaration reports
+  // `configured: false` (the fleet DID point this host somewhere, the pins just do not
+  // parse), so the block renders on either signal or the one state that most needs
+  // saying is the one that disappears.
+  const distribution = data?.distribution
+  const distributionConfigured = !!distribution && (distribution.configured || !!distribution.error_code)
 
   const byScope = useMemo(() => {
     const m = new Map<string, GovernanceScope>()
@@ -1112,6 +1257,23 @@ function GovernancePolicyViewer() {
           </div>
         </div>
 
+        {/* Rendered OUTSIDE the branch tree below, not inside one arm of it. Every
+            arm is a claim about the ceiling, and where the ceiling comes from
+            qualifies all three of them: the soft "temporarily unavailable" notice, the
+            reassuring "no enterprise policy" card, and the governed rows. Putting it
+            here is what keeps `unavailable` from swallowing a distribution state the
+            payload did report. */}
+        {distributionConfigured && distribution && (
+          // `pending` is gated on `!unavailable` because the fail-safe snapshot sets
+          // `has_policy: false` UNCONDITIONALLY — it is what the backend answers when it
+          // could not resolve the ceiling at all, not a report that there is none. Read
+          // as pending it would tell an operator no enterprise ceiling restricts the
+          // host surface on a machine whose ceiling is installed and enforcing, which is
+          // the same false reassurance the term below exists to remove, in the other
+          // direction.
+          <PolicyDistributionBlock posture={distribution} pending={!unavailable && !data?.has_policy} />
+        )}
+
         {isLoading ? (
           <div className="text-[12px] text-muted py-2">{i18nT('pages.settings.securityPanel.loading_governance_policy')}</div>
         ) : unavailable ? (
@@ -1119,7 +1281,14 @@ function GovernancePolicyViewer() {
             <AlertTriangle size={14} className="lucide-inline text-warn shrink-0 mt-0.5" />
             <span className="text-[12px] text-muted leading-relaxed">{i18nT('pages.settings.securityPanel.governance_status_is_temporarily_unavailable_enf')}</span>
           </div>
-        ) : !data?.has_policy && !data?.profile && unknownScopeRows.length === 0 ? (
+        ) : /* `!distributionConfigured` is a load-bearing term, not a tidy-up. A host
+              pointed at a central ceiling whose first fetch has not landed reports
+              `has_policy: false` and `profile: null`, so without it this arm renders a
+              reassuring "no enterprise policy in effect" — with a green shield — for a
+              machine that is supposed to have one and could not get it. It yields to
+              the scope rows instead, which say every scope is unrestricted, and the
+              distribution block above says why. */
+          !data?.has_policy && !data?.profile && unknownScopeRows.length === 0 && !distributionConfigured ? (
           <div className="flex items-start gap-2.5 py-3 mt-1 rounded-md bg-bg-elevated border border-border px-3">
             <ShieldCheck size={16} className="lucide-inline text-ok shrink-0 mt-0.5" />
             <div>

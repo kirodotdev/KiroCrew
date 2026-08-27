@@ -116,6 +116,20 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "credential + exfiltration-URL chain immediately before print.",
     ),
     (
+        "Central policy fetch failures",
+        "platform/policy_distribution.py",
+        "The failure text of a central governance-policy fetch, which reaches TWO "
+        "surfaces: `kirocrew policy fetch` on stdout and a `logger` line (durable, "
+        "and served to the dashboard by `GET /api/logs`). The bytes are not ours -- a "
+        "malformed document reaches the message through a parser error, and `json`'s "
+        "errors quote the offending text, so an endpoint that echoes back the "
+        "request's `Authorization` header (its own request reflected, a proxy error "
+        "page) would carry that credential to both surfaces. Every detail goes "
+        "through `_sanitize_detail`, which applies the shared credential + "
+        "exfiltration-URL chain and additionally elides the operator-configured "
+        "source URL and its bare hostname.",
+    ),
+    (
         "AWS identity-probe failures",
         "aws_consent.py",
         "The stderr of a failed `aws sts get-caller-identity`, run to show the "

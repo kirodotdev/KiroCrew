@@ -3772,6 +3772,139 @@ def local_user_id() -> int:
     return zlib.crc32(sid.encode("utf-8"))
 
 
+def stat_writable_by_current_user(st: os.stat_result) -> bool:
+    """Could a process running as this account write the file *st* describes?
+
+    Answered from the mode bits of an ALREADY-STATTED object rather than a path, so a
+    caller that has an open handle gets an answer about the object it actually read
+    instead of about whatever the name resolves to a moment later.
+
+    Used to refuse an agent-writable governance source
+    (``platform/policy_distribution.py``): a distribution source the account Kiro Crew
+    runs as can rewrite is one an agent subprocess can rewrite, because it runs as the
+    same uid.
+
+    **POSIX only, and off POSIX it answers ``True`` — unknown counts as writable.**
+    Windows permissions are an ACL, not three mode triples, so ``st_mode``'s group/other
+    bits carry no usable answer there and ``st_uid``/``st_gid`` are synthesised. The
+    honest answer is "cannot tell", and for this predicate that has to round to
+    ``True``: the caller refuses a writable source, so a ``False`` here does not abstain,
+    it ASSERTS the source is safe and admits every Windows ``file://`` source unchecked —
+    including one an agent just planted. ``True`` costs a Windows operator the
+    ``file://`` channel (``https://`` is unaffected) until the DACL can be read, which
+    belongs with the other ``_icacls`` work rather than here. It is also the safe
+    direction for a future caller who inverts the test to decide where to WRITE.
+
+    Lives in this module because ``os.getuid`` / ``os.getgroups`` do not exist on
+    Windows, and the POSIX shims are this module's job.
+    """
+    if not IS_POSIX:
+        return True
+    # Root writes anything, whatever the mode says. Checked first because for a
+    # privileged process every remaining test below is moot.
+    if 0 in (os.getuid(), os.geteuid()):
+        return True
+    if st.st_mode & stat.S_IWOTH:
+        return True
+    # OWNERSHIP alone, not the write bit. An owner may `chmod` its own file, so a `0444`
+    # file this account owns is one this account can make writable and then rewrite —
+    # which is the whole move the threat model describes, since the agent subprocess runs
+    # as the same uid. Requiring `S_IWUSR` here accepted exactly the source an agent could
+    # take over with one `chmod`. The same reasoning covers a directory in the ancestor
+    # walk: owning it means being able to unlink and recreate what is inside.
+    #
+    # Real AND effective. The kernel checks the effective pair, but this predicate answers
+    # "could this account write it", and a process holding a real id can regain it.
+    if st.st_uid in (os.getuid(), os.geteuid()):
+        return True
+    # Group ownership does NOT imply the same power — only the owner and root may chmod —
+    # so here the write bit is the question, and `os.getgroups()` is the SUPPLEMENTARY
+    # list: POSIX leaves it unspecified whether the effective gid appears in it. It
+    # usually does, because `initgroups` puts it there at login, but a process that
+    # reached its gid through `setegid`, or one in a container built without that step,
+    # has a primary group the supplementary list never mentions. Testing membership alone
+    # therefore called a group-writable file we CAN replace safe.
+    gids = {os.getgid(), os.getegid(), *os.getgroups()}
+    if st.st_mode & stat.S_IWGRP and st.st_gid in gids:
+        return True
+    return False
+
+
+#: Whether ``os.access`` accepts ``effective_ids`` here — it needs ``faccessat``. Resolved
+#: once, at import: it is a property of the platform, not of a call, and computing it from
+#: ``os.access``'s own identity per call would silently disable the ACL arm for any caller
+#: that had substituted the function.
+_ACCESS_HONOURS_EFFECTIVE_IDS = os.access in os.supports_effective_ids
+
+
+def path_writable_by_current_user(path: str | os.PathLike) -> bool:
+    """Could this account replace the file at *path* — by any route?
+
+    Checks the file AND every ancestor directory, because file mode alone is the wrong
+    question: a ``0444`` file inside a directory this account can write is replaceable
+    (unlink and recreate, or rename the parent aside), so an agent could publish a
+    read-only file of its own choosing and pass a leaf-only check.
+
+    Walks upward to the root and stops at the first writable component, so the answer is
+    "there exists a way in" rather than "the leaf looks fine". Two chains are walked, the path
+    as WRITTEN and the path as RESOLVED, because a source reached through a symlink is
+    re-pointable by anyone who can write the LINK's parent — which the resolved chain never
+    visits. A component that cannot be
+    statted is skipped rather than treated as writable: an unreadable ancestor is not
+    evidence of write access, and failing closed on it would refuse legitimate sources
+    under directories this account cannot enumerate.
+
+    Each component is tested TWICE: against the mode bits, and against the kernel's own
+    answer via ``os.access(..., effective_ids=True)``. The second is not redundant, it is
+    the only one that sees a **POSIX ACL**. A named-user entry (``user:me:w`` on a file
+    owned by someone else) does not appear in ``st_mode`` at all — the group bits show the
+    ACL *mask*, not that entry — so a mode-only check reports "not writable" for a source
+    this account can in fact rewrite, which is the whole failure this predicate exists to
+    catch. ``faccessat(AT_EACCESS)`` evaluates the full ACL, so it answers correctly. The
+    two are OR'd because each sees something the other cannot: ``os.access`` answers about
+    the *effective* ids only, while the mode check also covers the real pair.
+
+    POSIX only, and ``True`` off POSIX, for the reason
+    :func:`stat_writable_by_current_user` gives: a source whose write permissions cannot
+    be read is not a source that has been shown to be safe.
+    """
+    if not IS_POSIX:
+        return True
+    # BOTH chains: the path as WRITTEN and the path as RESOLVED. Resolving first and walking
+    # only the target was the gap — a source reached through a symlink was judged entirely by
+    # the (root-owned, read-only) file at the end of it, while the link itself sat in a
+    # directory this account could write. Re-pointing a symlink needs no permission on the
+    # link and none on the target: it needs write on the link's PARENT, which only the lexical
+    # chain visits. A symlink's own mode bits are meaningless on Linux (0777 and ignored), so
+    # nothing is judged by them; what matters is the directories, and both chains contribute
+    # some the other does not.
+    starts = [Path(path).absolute()]
+    try:
+        resolved = Path(path).resolve()
+    except OSError:
+        resolved = starts[0]
+    if resolved != starts[0]:
+        starts.append(resolved)
+    seen: set[Path] = set()
+    for start in starts:
+        current = start
+        while current not in seen:
+            seen.add(current)
+            try:
+                if stat_writable_by_current_user(os.stat(current)):
+                    return True
+                if _ACCESS_HONOURS_EFFECTIVE_IDS and os.access(
+                    current, os.W_OK, effective_ids=True
+                ):
+                    return True
+            except OSError:
+                pass
+            if current.parent == current:
+                break
+            current = current.parent
+    return False
+
+
 def restrict_to_owner(path: str | os.PathLike) -> None:
     """Fail-loud owner-only lockdown of a secret-bearing file.
 

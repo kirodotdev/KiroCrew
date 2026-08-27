@@ -4968,6 +4968,18 @@ _CREW_SECRET_LEAVES: list[str] = [
     "app_admission.json",
     "security_policy.json",
     "profiles",
+    # The centrally-distributed ceiling's last-known-good cache
+    # (``platform/policy_distribution.py``). Gated as a DIRECTORY, and the reason
+    # is not just that it holds a copy of the policy: the sidecar metadata records
+    # the SOURCE the copy came from, and the loader honours that source when
+    # deciding whether the cache is this host's last-known-good. An agent able to
+    # write here could publish itself a ceiling AND the provenance to make the next
+    # boot adopt it — a full escape from ``security_policy.json`` being unwritable,
+    # around the side. Read matters as much as write: the cache is a verbatim copy
+    # of the policy the trust-root entry above exists to keep unreadable, so
+    # leaving it open would hand over the exact deny patterns an evasion needs.
+    # policy_distribution.py opens both files directly, not through this gate.
+    "policy_cache",
     "admission_policy.json",
     "denied_commands.json",
     # The cron store. It holds access-control state, not just scheduling data:
