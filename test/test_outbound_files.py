@@ -697,3 +697,123 @@ class TestOutboundFile:
         f = OutboundFile(path="/tmp/a.png", data=b"x", alt="a", mime="image/png")
         with pytest.raises(Exception):
             f.path = "/etc/shadow"  # type: ignore[misc]
+
+
+class TestLinkedAncestorGate:
+    """On Windows, a destination beneath a linked ANCESTOR must be refused
+    BEFORE ``is_symlink()`` -- that leaf probe is an lstat that resolves every
+    ancestor, so the probe itself would traverse the link and open the SMB
+    connection the lexical UNC screen exists to prevent (#5962)."""
+
+    def _windows(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import types
+
+        from kiro_crew.messaging import outbound_files as module
+
+        # Patch ONLY the module's view of os -- patching the global os.name
+        # would make pathlib dispatch WindowsPath on a POSIX test host.
+        monkeypatch.setattr(module, "os", types.SimpleNamespace(name="nt", path=os.path))
+
+    def test_linked_ancestor_is_refused_before_the_leaf_lstat(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ordering IS the property: BOTH downstream probes are wired to
+        explode -- is_sensitive_path builds realpath()/resolve() candidate
+        forms, so running it first would resolve the chain just like the
+        is_symlink lstat would. A regression that probes first fails loudly."""
+        from kiro_crew.messaging import outbound_files as module
+
+        p = _png(tmp_path)
+        self._windows(monkeypatch)
+        monkeypatch.setattr(module, "first_linked_ancestor", lambda _p: str(tmp_path))
+
+        def _boom_lstat(self: Path) -> bool:  # pragma: no cover
+            raise AssertionError("is_symlink ran before the ancestor walk")
+
+        def _boom_sensitive(_p: str) -> bool:  # pragma: no cover
+            raise AssertionError("is_sensitive_path ran before the ancestor walk")
+
+        monkeypatch.setattr(Path, "is_symlink", _boom_lstat)
+        monkeypatch.setattr(module, "is_sensitive_path", _boom_sensitive)
+        got = module._inspect(str(p), p, "alt", 10_000, None, None)
+        assert isinstance(got, Rejection)
+        assert got.reason == REASON_SYMLINK
+        # The reply matches the leaf case on purpose: which ancestor is a
+        # link is filesystem layout the caller supplied a path to guess at.
+        assert got.detail == "symlinks are not uploaded"
+
+    def test_bypassing_the_guard_restores_the_upload(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Mutation check: with the walk reporting no link, the same file is
+        inspected and accepted -- the refusal above is attributable to the
+        guard, not to some other screen."""
+        from kiro_crew.messaging import outbound_files as module
+
+        p = _png(tmp_path)
+        self._windows(monkeypatch)
+        monkeypatch.setattr(module, "first_linked_ancestor", lambda _p: None)
+        got = module._inspect(str(p), p, "alt", 10_000, None, None)
+        assert isinstance(got, OutboundFile)
+        assert got.path == str(p)
+
+    def test_the_walk_is_not_consulted_on_posix(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On POSIX stat-ing through a symlink is harmless and the real guard
+        is the sensitive-path check; an unconditional walk would refuse
+        uploads from a symlinked temp dir (macOS /tmp)."""
+        if os.name == "nt":
+            pytest.skip("gate is active on Windows by design")
+        from kiro_crew.messaging import outbound_files as module
+
+        def _boom(_p: object) -> None:  # pragma: no cover
+            raise AssertionError("ancestor walk ran on POSIX")
+
+        monkeypatch.setattr(module, "first_linked_ancestor", _boom)
+        p = _png(tmp_path)
+        got = module._inspect(str(p), p, "alt", 10_000, None, None)
+        assert isinstance(got, OutboundFile)
+
+    def test_unc_shaped_expansion_is_refused_lexically(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `~` that expands to a roaming-profile UNC home surfaces a UNC
+        shape the raw text did not have; the expanded form must be screened
+        (still lexically) before the path reaches any inspecting caller."""
+        from kiro_crew.messaging import outbound_files as module
+
+        self._windows(monkeypatch)
+
+        class _ExpandsToUnc:
+            def __init__(self, raw: str) -> None:
+                self._raw = raw
+
+            def expanduser(self) -> Path:
+                return Path("//evil-host/share/x.png")
+
+        monkeypatch.setattr(module, "Path", _ExpandsToUnc)
+        assert module.local_destination("~/x.png") is None
+
+    def test_a_leaf_link_is_refused_before_any_resolving_call(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The walk deliberately excludes the leaf, and the all-platform
+        is_symlink() refusal is junction-blind and runs after
+        is_sensitive_path (whose candidate forms resolve the leaf) -- so on
+        Windows the leaf needs its own junction-aware check first."""
+        from kiro_crew.messaging import outbound_files as module
+
+        p = _png(tmp_path)
+        self._windows(monkeypatch)
+        monkeypatch.setattr(module, "first_linked_ancestor", lambda _p: None)
+        monkeypatch.setattr(module, "is_link_or_junction", lambda _p: True)
+
+        def _boom_sensitive(_p: str) -> bool:  # pragma: no cover
+            raise AssertionError("is_sensitive_path ran before the leaf link check")
+
+        monkeypatch.setattr(module, "is_sensitive_path", _boom_sensitive)
+        got = module._inspect(str(p), p, "alt", 10_000, None, None)
+        assert isinstance(got, Rejection)
+        assert got.reason == REASON_SYMLINK
+        assert got.detail == "symlinks are not uploaded"

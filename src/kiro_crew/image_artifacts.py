@@ -56,6 +56,7 @@ from kiro_crew.messaging.outbound_files import (
     strip_url_syntax,
     unescape_md,
 )
+from kiro_crew.platform_compat import first_linked_ancestor, is_link_or_junction
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.widget_slug import derive_widget_slug
 
@@ -114,6 +115,23 @@ def _local_file(raw_path: str) -> Path | None:
     """
     p = local_destination(raw_path)
     if p is None:
+        return None
+    # A linked ANCESTOR defeats local_destination's lexical UNC screen: the
+    # destination is not itself UNC-shaped -- only the link's target is --
+    # and is_file()/is_sensitive_path below both resolve every ancestor, so
+    # the probe itself would traverse the link and open the SMB connection.
+    # Same guard as the upload-side consumer (_inspect in outbound_files);
+    # local_destination stays lexical by contract, so each consumer screens
+    # its own probes. Windows-only: on POSIX stat-ing through a symlink is
+    # harmless. Reference wiring:
+    # dashboard/handlers/themes.py::_resolve_local_source.
+    if os.name == "nt" and first_linked_ancestor(p) is not None:
+        return None
+    # The LEAF gets the junction-aware check the walk deliberately excludes:
+    # is_file() below FOLLOWS a final-component link, so a leaf
+    # symlink/junction targeting a UNC share is the same probe. lstat-based,
+    # never follows.
+    if os.name == "nt" and is_link_or_junction(p):
         return None
     try:
         if not p.is_file():

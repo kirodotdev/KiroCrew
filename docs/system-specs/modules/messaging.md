@@ -1462,7 +1462,12 @@ answer is not permission: a raised evaluation and a `Decision` without
   primitive rather than a usability question (`task run ~/.ssh/id_rsa`). Both
   grammars route through `hooks.validate_file_path`, which applies the Windows UNC
   trusted-root check before resolving (a `realpath` on a UNC path is itself the
-  outbound SMB probe), canonicalizes through every symlink, and refuses a resolved
+  outbound SMB probe) to the raw and anchored forms, refuses a path with a
+  linked ancestor on Windows (the walk or the resolve would itself be the
+  probe), screens a Windows leaf link's own target (readlink, a local
+  metadata read) so a link aimed at an untrusted UNC share is refused while
+  benign leaf symlinks still resolve, canonicalizes through every symlink on
+  POSIX, and refuses a resolved
   target under a sensitive root, so an innocent-looking path that resolves into a
   blocked root is refused through the link. The **canonical** path is what reaches
   `runner.start_background`, not the raw argument, because validating one string and

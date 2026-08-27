@@ -37,7 +37,7 @@ from kiro_crew.hooks import (
     unc_probe_allowed,
 )
 from kiro_crew.metrics.db_metrics import timed, timed_query
-from kiro_crew.platform_compat import file_lock, is_link_or_junction
+from kiro_crew.platform_compat import file_lock, first_linked_ancestor, is_link_or_junction
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -186,7 +186,8 @@ class MemoryStore:
         surface enforces in :meth:`_read_root_guard`: no filesystem syscall
         may touch a path whose workspace, memory-root, or history-dir
         component is a link/junction (or an untrusted UNC workspace on
-        Windows).
+        Windows; on Windows the workspace's ancestor chain is walked too,
+        while POSIX ancestors are deliberately excluded — see the read gate).
 
         The write surface previously accumulated point defenses (hardened
         temp files, symlink-safe lock opens) while each writer still trusted
@@ -594,17 +595,28 @@ class MemoryStore:
         """Single admission gate for the structured read surface.
 
         INVARIANT: no filesystem syscall in this surface may touch a path
-        that has not passed this gate, and no component of a touched path may
-        be a link. That one property makes the whole finding class
+        that has not passed this gate, and no component of a touched path
+        may be a link -- on Windows including ancestors; on POSIX ancestors
+        are deliberately excluded (see the gate comment below). That one
+        property makes the whole REPARSE-POINT finding class
         (symlink/junction escapes, UNC credential probes, special-file reads)
-        unreachable instead of patching instances:
+        unreachable instead of patching instances. A mapped network drive or
+        ``subst`` target (a ``Z:`` drive letter bound to a network share) is
+        a residual outside this class: not UNC-shaped, no reparse point
+        anywhere, resolved only at ``realpath`` time. The gates here do not
+        screen it.
+
+        Two gates enforce the invariant:
 
         1. Windows UNC gate — purely LEXICAL, evaluated before any syscall
            (``stat``/``glob``/``exists`` on a UNC path is itself the outbound
            SMB credential probe). Mirrors ``hooks.validate_file_path``.
         2. Reparse-point gate — the memory root and history dir must not be
            symlinks or Windows junctions (``lstat``-based check that never
-           traverses the link). Leaf files get the same check in
+           traverses the link). On Windows the workspace's ANCESTOR chain is
+           walked root-first before any leaf lstat runs, because an lstat
+           resolves every ancestor even when it does not follow the final
+           component. Leaf files get the same check in
            :meth:`_guarded_entry`, so every component of every touched path
            is verified link-free.
         """
@@ -613,13 +625,31 @@ class MemoryStore:
             logger.warning("memory read refused (untrusted UNC workspace): %s", root)
             self._audit_read_refusal("unc_workspace", root, "untrusted UNC workspace")
             return False
-        # The workspace leaf is checked FIRST: a workspace swapped for a
-        # link/junction would make the two descendant checks below traverse it
-        # and validate paths inside the link's target instead of the admitted
-        # tree. lstat-based, so the link itself is never followed. (Linked
-        # ANCESTORS of the workspace are deliberately not rejected — resolving
-        # the whole chain would refuse legitimate setups like a symlinked
-        # /home, and those components are not agent-writable.)
+        # On Windows a linked ANCESTOR of the workspace defeats the lexical
+        # UNC gate above: the workspace path is not itself UNC-shaped -- only
+        # the link's target is -- and the lstat-based leaf checks below
+        # resolve every ancestor, so the probe itself would traverse the link
+        # and open the SMB connection. The walk is root-first and runs before
+        # any leaf lstat. On POSIX linked ancestors remain deliberately
+        # unrejected: resolving the whole chain would refuse legitimate
+        # setups like a symlinked /home, those components are not
+        # agent-writable, and stat-ing through a symlink is harmless there --
+        # the same Windows-only rationale as the themes wiring
+        # (dashboard/handlers/themes.py::_resolve_local_source). The walk
+        # assumes the operator-configured workspace is absolute (every
+        # in-tree constructor passes one); a relative workspace would walk
+        # only the components the path itself names.
+        if os.name == "nt" and first_linked_ancestor(self._workspace) is not None:
+            logger.warning("memory read refused (workspace ancestor is a link): %s", root)
+            self._audit_read_refusal(
+                "workspace_linked_ancestor", root, "a workspace ancestor is a link"
+            )
+            return False
+        # The workspace leaf is checked FIRST among the lstat probes: a
+        # workspace swapped for a link/junction would make the two descendant
+        # checks below traverse it and validate paths inside the link's
+        # target instead of the admitted tree. lstat-based, so the link
+        # itself is never followed.
         if (
             is_link_or_junction(self._workspace)
             or is_link_or_junction(self._memory_dir)

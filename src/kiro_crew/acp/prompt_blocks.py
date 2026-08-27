@@ -44,6 +44,7 @@ from kiro_crew.imaging import (  # noqa: F401 -- constants re-exported, see comm
     MAX_IMAGE_EDGE_PX,
     downscale_image_block,
 )
+from kiro_crew.platform_compat import first_linked_ancestor, is_link_or_junction
 
 logger = logging.getLogger(__name__)
 
@@ -175,7 +176,29 @@ def build_prompt_blocks(
             path = Path(raw)
             suffix = path.suffix.lower()
             mime = IMAGE_MEDIA_TYPES.get(suffix)
-            if mime is None or not path.is_file():
+            if mime is None:
+                # Unreachable for regex-produced candidates today (_PATH_RE's
+                # suffix group and IMAGE_MEDIA_TYPES share one key set), kept
+                # as the lexical backstop should the two ever drift.
+                continue
+            # A linked ANCESTOR defeats the lexical UNC screen above: the
+            # candidate is not itself UNC-shaped -- only the link's target is
+            # -- and is_file()/stat() below resolve every ancestor, so the
+            # probe itself would traverse the link and open the SMB
+            # connection. Windows-only for the same reason as the UNC gate:
+            # on POSIX stat-ing through a symlink is harmless. Reference
+            # wiring: dashboard/handlers/themes.py::_resolve_local_source.
+            if os.name == "nt" and first_linked_ancestor(path) is not None:
+                seen.add(raw)
+                continue
+            # The LEAF gets the junction-aware check the walk deliberately
+            # excludes: is_file() below FOLLOWS a final-component link, so a
+            # leaf symlink/junction targeting a UNC share is the same probe.
+            # lstat-based, so the link itself is never followed.
+            if os.name == "nt" and is_link_or_junction(path):
+                seen.add(raw)
+                continue
+            if not path.is_file():
                 continue
             try:
                 size = path.stat().st_size
