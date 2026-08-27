@@ -564,6 +564,30 @@ describe('switching back keeps a paged-in window above the bounded page', () => 
     expect(chat.slotOldestIndex).toBe(8)
   })
 
+  it('excludes a client-only permission card from the kept head\u2019s server-row count', async () => {
+    // `permission` is in the backend's `_TRANSIENT_ROLES` and `_build_message_entry_uncached`
+    // returns None for it, so it occupies NO server offset and must not shift the cursor.
+    const PERM: Row = {
+      role: 'permission', content: 'Allow this tool?', cls: 'msg msg-permission',
+      ts: '2026-01-01T00:01:09Z', meta: { approval_id: 'a1', resolved: 'accepted' },
+    }
+    const chat = await switchBack([M('m8', 8), PERM, M('m9', 9), ...PAGE], PAGE)
+    // Two SERVER rows kept (m8, m9), so 10 - 2. Counting the card gives 7 and the
+    // next "load earlier" fetches before row 7, skipping genuine row 7 entirely.
+    expect(chat.slotOldestIndex).toBe(8)
+  })
+
+  it('still counts error and mcp_oauth rows, which the server DOES persist', async () => {
+    // NEGATIVE CONTROL for the exclusion above: neither role appears in
+    // `_TRANSIENT_ROLES`, so both are written to history and hold a real offset.
+    const ERR: Row = { role: 'error', content: 'boom', cls: 'msg msg-error', ts: '2026-01-01T00:01:08Z' }
+    const OAUTH: Row = { role: 'mcp_oauth', content: 'authorize', cls: 'msg msg-oauth', ts: '2026-01-01T00:01:09Z' }
+    const chat = await switchBack([M('m8', 8), ERR, OAUTH, M('m9', 9), ...PAGE], PAGE)
+    // Four kept rows all persist, so 10 - 4. Widening the permission exclusion to
+    // these two would read 8 here and strand two rows the reader already has.
+    expect(chat.slotOldestIndex).toBe(6)
+  })
+
   it('declines to keep a head whose rows carry no identity', async () => {
     // OPPOSITE direction: no mid means decline, so an unidentifiable head must
     // not be PREPENDED. Head-only: the trailing-reply reattach may still append.

@@ -6143,6 +6143,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // so decide only once this window is known to belong to the target chat.
     if (initialSidRef.current && initialSidRef.current !== activeSlot) return
     if (!cursorIsForActiveSlot) return
+    // The captured pair predates the mount effect that dispatches `switchSlot`, whose
+    // `pending` nulls the cursor key even on a same-key switch -- so read it live.
+    const liveChat = store.getState().chat
+    if (liveChat.slotCursorKey !== liveChat.activeSlot) return
     const resolved = resolveMsgIndex(messages, targetTs, targetMid)
     // A mid that is merely OFF-PAGE falls back to ts in the helper, and that is a
     // DIFFERENT row of the same tick -- treat it as unresolved so the hand-off runs.

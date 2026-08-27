@@ -1307,9 +1307,11 @@ function olderHeadAbovePage(
 
 /** How many rows of a kept older head came from SERVER history, for shifting the
  *  paging cursor. The cursor is a row OFFSET, so client-only rows must not count
- *  toward it. `thinking` is already held out by the caller. */
+ *  toward it. `thinking` is already held out by the caller. `permission` is in the
+ *  backend's `_TRANSIENT_ROLES` and is never persisted, so it holds no offset --
+ *  unlike `error`/`mcp_oauth`, which ARE written to history and must keep counting. */
 function serverRowCount(rows: ChatMessage[]): number {
-  return rows.filter(m => m.role !== 'queued' && m.role !== 'streaming').length
+  return rows.filter(m => m.role !== 'queued' && m.role !== 'streaming' && m.role !== 'permission').length
 }
 
 /** The `(hasMore, cursor)` pair to install after keeping an older head above a
