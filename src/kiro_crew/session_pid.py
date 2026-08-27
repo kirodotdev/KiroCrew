@@ -1458,6 +1458,113 @@ def _is_sweepable_orphan_work(pid: int, cmdline: bytes, age_seconds: float) -> b
     return _env_has_kirocrew_marker(pid)
 
 
+# PIDs already reported by the untracked-runtime detector, so a persisting
+# orphan costs ONE log line rather than one line per sweep. Replaced wholesale
+# at the end of each scan with the set still detected, which bounds the set by
+# the live orphan count and re-arms the report if the PID disappears and a
+# later process reappears under the same detection.
+_reported_untracked_agent_pids: set[int] = set()
+
+
+# Per tracking file, the index of the colon-field naming the process a reaper
+# actually TERMINATES for that entry. Only that field counts as tracked: the
+# other one names the OWNER whose death makes the entry reapable
+# (``_sweep_pid_entries`` skips a session entry while its gateway lives;
+# ``_cleanup_orphaned_mcp_servers`` kills the child once its parent is gone), and
+# an owner is never reclaimed *through* the entry that names it. Counting an
+# owner field would let a stale entry whose owner has died and had its PID
+# recycled silently suppress a genuine leak report — exactly the silence issue
+# #2930 is about. A bare line names its own process, whichever file it is in.
+_REAPABLE_PID_FIELD: tuple[tuple[str, int], ...] = (
+    ("session", 1),  # kiro_session_pids.txt: <gateway_pid>:<child_pid>[:start-id]
+    ("child", 0),  # kiro_pids.txt: <child_pid>:<parent_pid>
+)
+
+
+def _tracked_agent_pids() -> set[int]:
+    """PIDs a reaper can terminate, per both tracking files.
+
+    Both files are read because a runtime absent from BOTH is exactly what
+    :func:`_is_untracked_managed_agent_orphan` reports, and each reaper keys off
+    only one of them. Within a line only the reapable field counts — see
+    :data:`_REAPABLE_PID_FIELD` for which, and why the owner field does not. A
+    session entry's third field is a start-time identity, numeric on Linux, and
+    is never read as a PID.
+
+    Deliberately read WITHOUT either file lock. Readers cannot tear: rewrites
+    go through :func:`_rewrite_pid_file` (temp file + rename, so a reader sees
+    either the whole old or the whole new content) and tracking appends are
+    single short lines. Locking here would put a lock acquisition inside the
+    sweep's per-scan path for a purely diagnostic read. Any read failure yields
+    the entries found so far — the detector is report-only, so the worst
+    outcome is one spurious or one missing log line, never a kill.
+    """
+    tracked: set[int] = set()
+    paths = (_session_pid_file_path(), _pid_file_path())
+    for path, (_label, reapable_index) in zip(paths, _REAPABLE_PID_FIELD):
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError:
+            continue  # absent or unreadable — nothing this file can claim
+        for line in raw.split():
+            fields = line.split(":")
+            index = 0 if len(fields) == 1 else reapable_index
+            if index >= len(fields):
+                continue  # truncated entry — no reapable field to read
+            try:
+                value = int(fields[index])
+            except ValueError:
+                continue  # malformed or partially-appended line
+            if value > 0:
+                tracked.add(value)
+    return tracked
+
+
+def _is_untracked_managed_agent_orphan(pid: int, cmdline: bytes, tracked_pids: set[int]) -> bool:
+    """REPORT-ONLY: a managed agent runtime that no reaper can reach.
+
+    Every existing reaper declines this process, which is why a leaked runtime
+    has no reproduction:
+
+    * :func:`cleanup_orphaned_sessions` and :func:`_periodic_pid_sweep` iterate
+      ``kiro_session_pids.txt`` and cannot see a PID the file never recorded.
+    * :func:`_is_sweepable_orphan_mcp` declines it — a runtime argv is not an
+      MCP entrypoint.
+    * :func:`_is_sweepable_orphan_work` NEGATIVE-gates
+      :data:`_MANAGED_AGENT_MARKERS` (runtimes are owned by their tracked-PID
+      lifecycle, not by the marker sweep) and separately requires a test-runner
+      argv.
+
+    Positive identity is the conjunction of: reparenting to init/``systemd
+    --user`` — guaranteed by the caller, which only iterates
+    :func:`_our_orphan_pids`, so ownership is not re-derived here — an argv0
+    basename naming a managed runtime (:data:`_MANAGED_AGENT_MARKERS`), the
+    ``KIROCREW_SPAWNED`` environ marker (:func:`_env_has_kirocrew_marker`,
+    Linux-only and fail-closed elsewhere), and absence from BOTH PID files
+    (:func:`_tracked_agent_pids`). Peer gateways and CLIs
+    (:data:`_GATEWAY_MARKERS`) are excluded: they are not agent runtimes and
+    are never tracked as such.
+
+    This grants NO kill authority and is wired to nothing that terminates — a
+    hit only logs. Blast radius is therefore zero, which is what makes the
+    detector safe to ship ahead of a maintainer's ruling on whether an
+    untracked runtime may be reaped at all. It also means a cross-data-home
+    false positive (a second install's live runtime, tracked in ITS config dir
+    and so absent from ours) is diagnostic noise rather than a wrong kill.
+    """
+    if not cmdline:
+        return False  # kernel thread / zombie — no argv to identify
+    normalized = cmdline.replace(b"\x00", b" ")
+    if any(marker in normalized for marker in _GATEWAY_MARKERS):
+        return False
+    basename = _work_orphan_basename(cmdline)
+    if not any(marker.encode() in basename for marker in _MANAGED_AGENT_MARKERS):
+        return False
+    if pid in tracked_pids:
+        return False  # a reaper can already reach it
+    return _env_has_kirocrew_marker(pid)
+
+
 def _work_orphan_session_leader_alive(pid: int) -> bool:
     """True when *pid*'s session LEADER still exists as a session leader.
 
@@ -1492,12 +1599,25 @@ def find_orphan_mcp_candidates(active_pids: set[int]) -> list[int]:
 
     Returns candidate PIDs. Caller should re-verify against fresh active PIDs
     before killing (two-phase pattern to eliminate races).
+
+    Also REPORTS — never returns as a candidate — any untracked managed-agent
+    runtime orphan (:func:`_is_untracked_managed_agent_orphan`). That class is
+    unreachable by every reaper, so it would otherwise leak silently with no
+    reproduction; the report deliberately carries no kill authority, which is
+    why such a PID is excluded from ``candidates``.
     """
     candidates: list[int] = []
     my_pid = os.getpid()
     now = time.time()
 
-    for pid in _our_orphan_pids():
+    orphan_pids = _our_orphan_pids()
+    # Read once per scan, not per PID: the files are small but the scan is not.
+    # Empty on Windows and on any run with no orphans, so the diagnostic read is
+    # skipped entirely in the common case.
+    tracked_pids = _tracked_agent_pids() if orphan_pids else set()
+    untracked_seen: set[int] = set()
+
+    for pid in orphan_pids:
         if pid == my_pid or pid in active_pids:
             continue
         try:
@@ -1535,6 +1655,26 @@ def find_orphan_mcp_candidates(active_pids: set[int]) -> list[int]:
             continue
         if pid_age < _ORPHAN_MIN_AGE_SECONDS:
             continue
+        # Report-only arm. Placed AFTER the age gate so a runtime whose tracking
+        # append has not landed yet is never reported: the gate is orders of
+        # magnitude wider than the spawn-to-append window. Reported PIDs are
+        # deliberately NOT appended to ``candidates`` — this arm has no kill
+        # authority (see the predicate's docstring).
+        if _is_untracked_managed_agent_orphan(pid, cmdline, tracked_pids):
+            untracked_seen.add(pid)
+            if pid not in _reported_untracked_agent_pids:
+                # %r, not %s: argv0 is set by the process itself, so a newline
+                # in it would forge whole log lines in gateway.log and through
+                # /api/logs. repr escapes control characters.
+                logger.error(
+                    "Leaked agent runtime pid=%s (argv0 %r, age %.0fs): reparented "
+                    "to init/systemd with a KIROCREW_SPAWNED environ marker but "
+                    "recorded in NEITHER PID file, so no reaper can reclaim it. "
+                    "Not terminated — report only.",
+                    pid,
+                    _work_orphan_basename(cmdline).decode("utf-8", "replace"),
+                    pid_age,
+                )
         if not (
             _is_sweepable_orphan_mcp(pid, cmdline)
             or _is_sweepable_orphan_gatewayd(cmdline)
@@ -1542,6 +1682,11 @@ def find_orphan_mcp_candidates(active_pids: set[int]) -> list[int]:
         ):
             continue
         candidates.append(pid)
+
+    # Keep only what is still detected, so a persisting orphan stays deduped
+    # while a vanished PID re-arms the report for a future process.
+    _reported_untracked_agent_pids.clear()
+    _reported_untracked_agent_pids.update(untracked_seen)
 
     return candidates
 
