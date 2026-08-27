@@ -6528,7 +6528,9 @@
       "updating": "[Ùþðàţìñğ… ··············]",
       "updating_and_restarting": "[Ùþðàţìñğ àñð ŕèşţàŕţìñğ… ·················]",
       "version_is_available": "[{{productName}} <0>{{version}}</0> ìş àṽàìĺàƀĺè. ··············]",
-      "you_can_update_anytime_from_settings_about": "[Ùþðàţè àñýţìɱè ƒŕøɱ Şèţţìñğş → Àƀøùţ. ···················]"
+      "you_can_update_anytime_from_settings_about": "[Ùþðàţè àñýţìɱè ƒŕøɱ Şèţţìñğş → Àƀøùţ. ···················]",
+      "this_version_is_below_minimum": "[Ţĥìş ùþðàţè ìş ŕèǫùìŕèð — ṽèŕşìøñş ƀèĺøẁ {{version}} àŕè ñø ĺøñğèŕ şùþþøŕţèð. ·······················]",
+      "update_required": "[Ùþðàţè ŕèǫùìŕèð ··············]"
     },
     "updateModal": {
       "dismiss": "[Ðìşɱìşş ···········]",

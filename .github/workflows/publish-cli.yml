@@ -173,11 +173,26 @@ jobs:
           # source commit instead.
           SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")
           PUB_DATE=$(date -u -d "@${SOURCE_DATE_EPOCH}" +%Y-%m-%dT%H:%M:%SZ)
+          # The forced-update floor, declared in packaging/MIN_VERSION (comments
+          # and blank lines ignored; at most one value line). Empty means no
+          # floor and the signed payload omits the field entirely, keeping the
+          # manifest byte-identical to the pre-floor format. More than one value
+          # line is a merge artifact and must fail the publish, not pick a line.
+          MIN_VERSION=$(grep -v '^[[:space:]]*#' packaging/MIN_VERSION | grep -v '^[[:space:]]*$' || true)
+          if [ "$(printf '%s\n' "$MIN_VERSION" | grep -c .)" -gt 1 ]; then
+            echo "::error::packaging/MIN_VERSION carries more than one value line."
+            exit 1
+          fi
+          # Trim ONLY leading/trailing whitespace. Internal whitespace must
+          # SURVIVE to the validator so a malformed declaration like '0. 6.0'
+          # fails the publish loudly instead of being silently folded into a
+          # well-formed floor nobody declared.
+          MIN_VERSION=$(printf '%s' "$MIN_VERSION" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
           python3 packaging/signing/cli-manifest.py payload \
             --channel "$CHANNEL" --version "$WHEEL_VERSION" \
             --wheel-url "${CDN_BASE}/cli/${CHANNEL}/${WHEEL_VERSION}/${WHEEL_NAME}" \
             --sha256 "$SHA256" --python-requires "$PYREQ" \
-            --pub-date "$PUB_DATE" \
+            --pub-date "$PUB_DATE" --min-version "$MIN_VERSION" \
             --public-key "$PUBLIC_KEY" --output "$PAYLOAD"
           python3 packaging/signing/cli-manifest.py kms-sign \
             --payload "$PAYLOAD" --key-arn "$KEY_ARN" \

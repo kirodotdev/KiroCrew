@@ -2197,6 +2197,10 @@
       "tunnel_stopped": "Tunnel stopped",
       "up": "up {{time}}"
     },
+    "updateFoundModal": {
+      "this_version_is_below_minimum": "This update is required — versions below {{version}} are no longer supported.",
+      "update_required": "Update required"
+    },
     "updateModal": {
       "restart_update": "Install Update & Restart App",
       "install_restart_timing": "Installing may take several minutes. The app will close and relaunch automatically when the update is complete.",

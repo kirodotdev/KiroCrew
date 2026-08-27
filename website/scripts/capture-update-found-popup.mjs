@@ -27,6 +27,9 @@ const MODAL_SCENES = [
   { scene: 'command', lang: 'en', theme: 'dark', expect: 'cli.sh' },
   { scene: 'command', lang: 'zh-CN', theme: 'dark', expect: 'cli.sh' },
   { scene: 'apply', lang: 'en', theme: 'dark', expect: 'Update now' },
+  { scene: 'required', lang: 'en', theme: 'dark', expect: 'no longer supported' },
+  { scene: 'required', lang: 'zh-CN', theme: 'dark', expect: '不再受支持' },
+  { scene: 'required-command', lang: 'en', theme: 'dark', expect: 'cli.sh' },
 ]
 
 const PILL_SCENES = [

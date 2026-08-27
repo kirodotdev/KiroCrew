@@ -274,6 +274,158 @@ class TestWheelInstallCheck:
         assert info["check_status"] == "succeeded"  # optional field, not a hard failure
 
 
+class TestFeedMinVersion:
+    """The feed's optional ``min_version`` floor drives the mandatory-update verdict.
+
+    The floor coerces the UI, so unlike the rest of the manifest it is honored
+    only when the manifest signature verifies (``platform/feed_trust.py``,
+    stubbed here — its own crypto behaviour is pinned by ``test_feed_trust``).
+    Every failure — malformed, inconsistent, unverified — DROPS the floor
+    (never a failed check) and degrades to the ordinary dismissible prompt.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _verified_signature(self, monkeypatch):
+        """Default the signature to VERIFIED so each test exercises one axis;
+        the unverified case overrides this explicitly."""
+        from kiro_crew.platform import feed_trust
+
+        monkeypatch.setattr(feed_trust, "verify_manifest_signature", lambda _m: True)
+
+    def test_install_below_the_floor_is_required(self, monkeypatch):
+        _stub_feed(monkeypatch, body=_manifest(version="0.6.0", min_version="0.6.0"))
+        monkeypatch.setattr(updates, "_local_version", "0.5.2")
+        asyncio.run(updates._do_update_check())
+
+        info = updates.get_update_info()
+        assert info["feed_min_version"] == "0.6.0"
+        fields = updates.status_update_fields()
+        assert fields["update_required"] is True
+        assert fields["update_min_version"] == "0.6.0"
+
+    def test_prerelease_of_the_floor_is_still_below_it(self, monkeypatch):
+        _stub_feed(monkeypatch, body=_manifest(version="0.6.0", min_version="0.6.0"))
+        monkeypatch.setattr(updates, "_local_version", "0.6.0rc3")
+        asyncio.run(updates._do_update_check())
+        assert updates.status_update_fields()["update_required"] is True
+
+    def test_install_at_the_floor_is_not_required(self, monkeypatch):
+        _stub_feed(monkeypatch, body=_manifest(version="0.7.0", min_version="0.6.0"))
+        monkeypatch.setattr(updates, "_local_version", "0.6.0")
+        asyncio.run(updates._do_update_check())
+
+        info = updates.get_update_info()
+        assert info["feed_min_version"] == "0.6.0"  # kept: display may still want it
+        fields = updates.status_update_fields()
+        assert fields["update_required"] is False
+        assert fields["update_min_version"] == ""
+
+    def test_absent_floor_is_never_required(self, monkeypatch):
+        _stub_feed(monkeypatch, body=_manifest(version="0.7.0"))
+        monkeypatch.setattr(updates, "_local_version", "0.1.0")
+        asyncio.run(updates._do_update_check())
+
+        assert "feed_min_version" not in updates.get_update_info()
+        assert updates.status_update_fields()["update_required"] is False
+
+    @pytest.mark.parametrize("bad", ["0.6.0rc1", "v0.6.0", "abc", "", 7, None])
+    def test_malformed_floor_is_dropped_not_fatal(self, monkeypatch, bad):
+        _stub_feed(monkeypatch, body=_manifest(version="0.7.0", min_version=bad))
+        monkeypatch.setattr(updates, "_local_version", "0.1.0")
+        asyncio.run(updates._do_update_check())
+
+        info = updates.get_update_info()
+        assert "feed_min_version" not in info
+        assert info["check_status"] == "succeeded"  # optional field, not a hard failure
+        assert updates.status_update_fields()["update_required"] is False
+
+    def test_floor_above_the_offered_version_is_dropped(self, monkeypatch):
+        """A floor the feed itself cannot satisfy is inconsistent, so it must
+        not force an update loop that never terminates."""
+        _stub_feed(monkeypatch, body=_manifest(version="0.6.0", min_version="0.7.0"))
+        monkeypatch.setattr(updates, "_local_version", "0.1.0")
+        asyncio.run(updates._do_update_check())
+
+        assert "feed_min_version" not in updates.get_update_info()
+        assert updates.status_update_fields()["update_required"] is False
+
+    def test_unverified_signature_drops_the_floor_not_the_check(self, monkeypatch):
+        """The floor coerces the UI, so a manifest whose signature does not
+        verify contributes NO floor — while the ordinary (non-coercive) update
+        verdict still succeeds, exactly the pre-floor posture."""
+        from kiro_crew.platform import feed_trust
+
+        monkeypatch.setattr(feed_trust, "verify_manifest_signature", lambda _m: False)
+        _stub_feed(monkeypatch, body=_manifest(version="0.6.0", min_version="0.6.0"))
+        monkeypatch.setattr(updates, "_local_version", "0.1.0")
+        asyncio.run(updates._do_update_check())
+
+        info = updates.get_update_info()
+        assert "feed_min_version" not in info
+        assert info["update_available"] is True
+        assert info["check_status"] == "succeeded"
+        assert updates.status_update_fields()["update_required"] is False
+
+    def test_promoted_stable_stamp_satisfies_its_own_floor(self, monkeypatch, tmp_path):
+        """Promotion never re-stamps: the stable feed offers ``0.3.0rc13``
+        meaning the ``0.3.0`` release. A floor of ``0.3.0`` must neither be
+        dropped as above-the-offered-version nor force the very build it
+        names."""
+        (tmp_path / "channel").write_text("stable\n")
+        _stub_feed(
+            monkeypatch,
+            body=_manifest(
+                channel="stable",
+                version="0.3.0rc13",
+                min_version="0.3.0",
+            ),
+        )
+        # An install already running the promoted stable build.
+        monkeypatch.setattr(updates, "_local_version", "0.3.0rc13")
+        asyncio.run(updates._do_update_check())
+
+        info = updates.get_update_info()
+        assert info["feed_min_version"] == "0.3.0"  # floor kept, not dropped
+        assert updates.status_update_fields()["update_required"] is False
+
+        # An older stable install IS forced.
+        monkeypatch.setattr(updates, "_local_version", "0.2.0rc7")
+        asyncio.run(updates._do_update_check())
+        assert updates.status_update_fields()["update_required"] is True
+
+    def test_governance_pin_alone_also_reads_required(self, monkeypatch):
+        """The two authorities are OR'd: the enterprise pin needs no feed floor."""
+        _stub_feed(monkeypatch, body=_manifest(version="0.7.0"))
+        monkeypatch.setattr(updates, "_local_version", "0.1.0")
+        monkeypatch.setattr(updates, "update_required", lambda _v: True)
+        monkeypatch.setattr(updates, "min_version", lambda: "0.5.0")
+        asyncio.run(updates._do_update_check())
+
+        fields = updates.status_update_fields()
+        assert fields["update_required"] is True
+        assert fields["update_min_version"] == "0.5.0"
+
+    @pytest.mark.parametrize(
+        ("governance", "feed", "shown"),
+        [
+            ("0.5.0", "0.6.0", "0.6.0"),  # feed floor is higher — it binds
+            ("0.6.0", "0.5.0", "0.6.0"),  # governance floor is higher
+        ],
+    )
+    def test_both_floors_show_the_higher_one(self, monkeypatch, governance, feed, shown):
+        """Naming the lower floor would send the user to a version that still
+        sits below the other authority's floor."""
+        _stub_feed(monkeypatch, body=_manifest(version="0.7.0", min_version=feed))
+        monkeypatch.setattr(updates, "_local_version", "0.1.0")
+        monkeypatch.setattr(updates, "update_required", lambda _v: True)
+        monkeypatch.setattr(updates, "min_version", lambda: governance)
+        asyncio.run(updates._do_update_check())
+
+        fields = updates.status_update_fields()
+        assert fields["update_required"] is True
+        assert fields["update_min_version"] == shown
+
+
 class TestWheelInstallFailuresAreHonest:
     """Every failure must set ``error`` and leave ``checked`` False."""
 

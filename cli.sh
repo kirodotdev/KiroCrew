@@ -381,6 +381,10 @@ expected = {
     "algorithm", "channel", "key_id", "pub_date", "python_requires",
     "schema", "sha256", "signature", "version", "wheel_url",
 }
+# Signed-but-optional: a breaking release adds a fleet floor. The signature
+# still covers it (it stays in the canonical payload below), so the set check
+# tolerates exactly this key and nothing else.
+optional = {"min_version"}
 
 def no_duplicates(pairs):
     value = {}
@@ -395,7 +399,9 @@ try:
     if len(raw) > 65536:
         raise ValueError("oversized manifest")
     manifest = json.loads(raw.decode("utf-8"), object_pairs_hook=no_duplicates)
-    if not isinstance(manifest, dict) or set(manifest) != expected:
+    if not isinstance(manifest, dict):
+        raise ValueError("unexpected fields")
+    if not expected <= set(manifest) or set(manifest) - expected - optional:
         raise ValueError("unexpected fields")
     if not all(isinstance(value, str) and value for value in manifest.values()):
         raise ValueError("invalid field type")
@@ -446,8 +452,9 @@ expected_fields = {
     "algorithm", "channel", "key_id", "pub_date", "python_requires",
     "schema", "sha256", "version", "wheel_url",
 }
+optional_fields = {"min_version"}
 try:
-    if set(payload) != expected_fields:
+    if not expected_fields <= set(payload) or set(payload) - expected_fields - optional_fields:
         raise ValueError
     if payload["channel"] != expected_channel:
         raise ValueError
@@ -455,6 +462,12 @@ try:
     if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+]{0,127}", version) is None:
         raise ValueError
     if pinned_version and version != pinned_version:
+        raise ValueError
+    # The floor is metadata for RUNNING installs; this installer always
+    # installs the signed version itself, so format is all it checks.
+    if "min_version" in payload and re.fullmatch(
+        r"[0-9]+(?:\.[0-9]+)*", payload["min_version"]
+    ) is None:
         raise ValueError
     if re.fullmatch(r"[0-9a-f]{64}", payload["sha256"]) is None:
         raise ValueError

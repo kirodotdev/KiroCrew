@@ -1000,6 +1000,18 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # Must NOT be sandboxed: the answer is about the real checkout's own
         # metadata.
         "platform/update_capability.py::_git_toplevel",
+        # Feed-manifest signature verification gating the forced-update floor.
+        # One fixed argv (`openssl dgst -sha256 -verify …`) whose binary comes
+        # from platform_compat.trusted_system_bin (a vetted absolute path,
+        # never PATH — asserted by test_feed_trust's PATH-shim test), no
+        # shell, a 10s timeout, and no cwd. The untrusted manifest bytes
+        # travel as FILE CONTENT inside a private TemporaryDirectory; the
+        # three path arguments are that directory's own literals, so nothing
+        # agent- or network-influenced ever reaches argv. Must NOT be
+        # sandboxed: the spawn's whole purpose is to REJECT tampered input,
+        # and every failure (openssl missing included) already fails safe to
+        # "no floor".
+        "platform/feed_trust.py::verify_manifest_signature",
         "mcp_shared.py::_get_ppid",
         # File-manager launchers for the dashboard's reveal action. The
         # command is an absolute literal resolved in this module (never a bare

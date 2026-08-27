@@ -34,6 +34,7 @@ from kiro_crew.git_divergence import (
     DivergenceUnreadable,
     count_divergence,
 )
+from kiro_crew.platform import feed_trust
 from kiro_crew.platform.update_capability import (
     CHECK_DEFERRED,
     CHECK_FAILED,
@@ -151,6 +152,10 @@ _FEED_TIMEOUT_SECS = 15
 
 _VERSION_RE = re.compile(r"^[A-Za-z0-9._+!-]{1,64}$")
 _PUB_DATE_RE = re.compile(r"^[0-9TZ:.\-]{1,32}$")
+#: The feed's forced-update floor must be a bare release (``0.6.0``) — the
+#: publisher enforces the same shape, so anything else here is tampering or
+#: hand-editing and is dropped rather than compared.
+_MIN_VERSION_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)*$")
 
 # Error codes for ``_update_info["error_code"]``. The dashboard maps these to
 # localized copy, so they are a contract: add, never silently repurpose. Defined
@@ -205,6 +210,56 @@ def _display_local_version() -> str:
     return _display_version(_local_version, str(_update_info.get("channel") or ""))
 
 
+def _feed_requires_update() -> bool:
+    """Is this install below the release feed's forced-update floor?
+
+    Reads the floor a prior ``_check_release_feed`` stored — a plain dict read,
+    so this stays off the event loop. ``_is_newer`` returning ``None`` (an
+    unparseable local version) reads as NOT required: a floor must never force
+    an update it cannot prove is needed.
+
+    The local version is folded per channel before the comparison (the same
+    rule as ``_display_version``): a promoted STABLE build keeps its soaked
+    candidate's prerelease stamp (``0.3.0rc13`` IS the ``0.3.0`` release), so
+    comparing the raw stamp against a bare floor of ``0.3.0`` would force an
+    update onto the very build the floor names. On insider/nightly the stamp
+    is a real prerelease and stays significant.
+    """
+    floor = _update_info.get("feed_min_version")
+    if not isinstance(floor, str) or not floor:
+        return False
+    local = _display_version(_local_version, str(_update_info.get("channel") or ""))
+    return _is_newer(floor, local) is True
+
+
+def _effective_update_required() -> bool:
+    """Mandatory-update verdict: the governance pin OR the release feed floor.
+
+    Two independent authorities, one consumer contract. The enterprise pin
+    (``security_policy.json``) binds managed fleets; the feed floor binds every
+    feed-checkable install when a release declares a breaking floor. Either one
+    alone makes the update mandatory — tightest wins, matching the governance
+    model everywhere else.
+    """
+    return update_required(_local_version) or _feed_requires_update()
+
+
+def _effective_min_version() -> str:
+    """The floor to SHOW next to a mandatory update (``""`` when none applies).
+
+    When both authorities pin, the HIGHER floor wins the display slot: it is
+    the one the install must actually reach, and naming the lower would tell
+    the user a version that still leaves them below the other authority's
+    floor. An incomparable pair (unparseable governance pin) falls back to
+    whichever authority is enforcing.
+    """
+    governance_floor = min_version() if update_required(_local_version) else ""
+    feed_floor = str(_update_info.get("feed_min_version") or "") if _feed_requires_update() else ""
+    if governance_floor and feed_floor:
+        return feed_floor if _is_newer(feed_floor, governance_floor) is True else governance_floor
+    return governance_floor or feed_floor
+
+
 def status_update_fields() -> dict[str, object]:
     """The update fields ``/api/status`` and the WebSocket push both carry.
 
@@ -244,6 +299,13 @@ def status_update_fields() -> dict[str, object]:
         "update_commits_behind": behind if isinstance(behind, int) else 0,
         "update_last_checked_at": _last_update_check or None,
         "update_check_interval_secs": _UPDATE_CHECK_INTERVAL,
+        # Mandatory-update verdict (governance pin OR feed floor) plus the floor
+        # that triggered it, on the hot path because the proactive update popup
+        # reads the status frame, not the check endpoint — a forced prompt must
+        # not depend on the user opening Settings first. Both reads are
+        # in-memory (boot-frozen governance + the cached check result).
+        "update_required": _effective_update_required(),
+        "update_min_version": _effective_min_version(),
     }
 
 
@@ -262,9 +324,13 @@ async def api_update_check(request: web.Request) -> web.Response:
             "current_version": _display_local_version(),
             "auto_update": cfg.auto_update,
             # Surface the pin so the dashboard can say WHY an update is mandatory
-            # rather than showing a bare button.
+            # rather than showing a bare button. ``minimum_version_enforced``
+            # stays governance-only (its historical meaning); the combined
+            # verdict and the feed floor ride ``update_required`` /
+            # ``feed_min_version`` (the latter via ``_update_info`` above).
             "minimum_version_enforced": min_version(),
-            "update_required": update_required(_local_version),
+            "update_required": _effective_update_required(),
+            "update_min_version": _effective_min_version(),
         }
     )
 
@@ -856,15 +922,19 @@ async def _check_release_feed(capability: UpdateCapability) -> None:
     Matching by exclusion rather than an ``== "wheel"`` allowlist is deliberate:
     an allowlist would skip every already-released CLI install.
 
-    **Security posture — the manifest is UNTRUSTED display metadata.** This
-    function deliberately does not verify its RSA signature: that check lives in
-    ``cli.sh``, which pins the key offline and is the only thing that installs
-    bytes. So nothing actionable is taken from the payload — ``wheel_url``,
-    ``sha256`` and ``signature`` are read by nobody here, and the recommended
-    command is composed locally from the already-validated channel name. A
-    tampered feed can therefore nag the user or hide an update; it cannot
-    redirect an install. Verifying the signature in Python becomes necessary only
-    if the gateway itself ever installs, which it does not.
+    **Security posture — the manifest is UNTRUSTED display metadata, with one
+    verified exception.** This function does not verify the manifest's RSA
+    signature for the ordinary update verdict: that check lives in ``cli.sh``,
+    which pins the key offline and is the only thing that installs bytes. So
+    nothing actionable is taken from the payload — ``wheel_url``, ``sha256``
+    and ``signature`` are read by nobody here, and the recommended command is
+    composed locally from the already-validated channel name. A tampered feed
+    can therefore nag the user or hide an update; it cannot redirect an
+    install. The exception is the optional ``min_version`` floor: it coerces
+    the UI (a non-dismissible prompt), so it is honored only after
+    ``platform/feed_trust.py`` verifies the signature against the same pinned
+    key — and every verification failure degrades to the ordinary dismissible
+    prompt, never toward coercion.
     """
     channel = _release_channel()
     feed_base, _artifact_base = _cdn_bases()
@@ -933,6 +1003,43 @@ async def _check_release_feed(capability: UpdateCapability) -> None:
     pub_date = manifest.get("pub_date")
     if isinstance(pub_date, str) and _PUB_DATE_RE.match(pub_date):
         extra["latest_pub_date"] = pub_date
+    # Optional forced-update floor. Unlike every other field this one COERCES
+    # the UI (a non-dismissible prompt), so it is honored only when the
+    # manifest's RSA signature verifies against the same offline key cli.sh
+    # pins — a tampered feed must not be able to hold the dashboard hostage
+    # while the signed installer (correctly) refuses the tampered bytes.
+    # Malformed, inconsistent, or UNVERIFIED values are DROPPED, never fatal:
+    # every failure degrades to the ordinary dismissible prompt. Offloaded —
+    # verification shells out to openssl.
+    floor = manifest.get("min_version")
+    if isinstance(floor, str) and _MIN_VERSION_RE.match(floor):
+        if _is_newer(floor, _display_version(remote_version, channel)) is True:
+            # A floor above the very version the feed offers demands an update
+            # the feed cannot satisfy — inconsistent, so ignore it. The offered
+            # version is folded per channel first: a promoted stable build's
+            # manifest says ``0.3.0rc13`` while meaning the ``0.3.0`` release.
+            logger.warning("Release feed %s min_version %s exceeds its version", url, floor)
+        elif not await asyncio.to_thread(feed_trust.verify_manifest_signature, manifest):
+            logger.warning(
+                "Release feed %s carries min_version %s but its signature does "
+                "not verify — ignoring the forced-update floor",
+                url,
+                floor,
+            )
+        else:
+            extra["feed_min_version"] = floor
+            # The enforcement surface is the dashboard modal, which a headless
+            # install never opens — leave evidence in the log so an operator
+            # tailing a below-floor gateway learns the update is mandatory.
+            if _is_newer(floor, _display_version(_local_version, channel)) is True:
+                logger.warning(
+                    "This install (%s) is below the release feed's minimum "
+                    "supported version %s — the update is mandatory",
+                    _local_version,
+                    floor,
+                )
+    elif floor is not None:
+        logger.warning("Release feed %s carries an unusable min_version", url)
     # No ``changes``: the manifest carries no changelog, and the CHANGELOG.md
     # bundled into the wheel describes the version already INSTALLED, not the new
     # one. The dashboard's "view full changelog" disclosure covers the gap

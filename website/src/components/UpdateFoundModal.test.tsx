@@ -348,3 +348,59 @@ describe('UpdateFoundModal — gateway source', () => {
     expect(container.firstChild).toBeNull()
   })
 })
+
+describe('UpdateFoundModal — mandatory update (update_required)', () => {
+  const requiredStatus = {
+    update_available: true as const,
+    update_latest_version: '8.8.8',
+    update_can_apply: true,
+    update_required: true,
+    update_min_version: '8.0.0',
+  }
+
+  it('opens past a persisted skip and drops every dismissal affordance', async () => {
+    // A skip verdict for this very version must not hold: no snooze/skip can
+    // apply to a mandatory update.
+    withNudgeConfig({ version: '8.8.8', skipped: true })
+    await mount(undefined, gatewayStore(requiredStatus))
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+
+    expect(screen.getByTestId('update-required-note')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: i18nT('components.updateFoundModal.dismiss') }))
+      .not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: i18nT('components.updateFoundModal.remind_me_tomorrow') }))
+      .not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: i18nT('components.updateFoundModal.skip_this_version') }))
+      .not.toBeInTheDocument()
+    // The primary action survives — a forced prompt with no way forward would
+    // just be a lock screen.
+    expect(byName('components.updateFoundModal.update_now')).toBeInTheDocument()
+  })
+
+  it('neither Escape nor a backdrop click closes it', async () => {
+    await mount(undefined, gatewayStore(requiredStatus))
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(dialog()).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('presentation'))
+    expect(dialog()).toBeInTheDocument()
+    // Nothing was persisted either: a forced prompt must not write snooze
+    // records the next (voluntary) prompt would then honour.
+    expect(mockedApi.patchConfig).not.toHaveBeenCalled()
+  })
+
+  it('names the floor that made the update mandatory', async () => {
+    await mount(undefined, gatewayStore(requiredStatus))
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    expect(screen.getByTestId('update-required-note').textContent).toContain('8.0.0')
+  })
+
+  it('required without a candidate version never opens (nothing to offer)', async () => {
+    const { container } = await mount(undefined, gatewayStore({
+      update_available: false, update_latest_version: '', update_required: true,
+      update_min_version: '8.0.0',
+    }))
+    expect(container.firstChild).toBeNull()
+  })
+})

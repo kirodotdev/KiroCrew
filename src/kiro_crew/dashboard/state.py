@@ -5401,6 +5401,8 @@ class DashboardState:
         update_commits_behind: int = 0,
         update_last_checked_at: float | None = None,
         update_check_interval_secs: int = 43200,
+        update_required: bool = False,
+        update_min_version: str = "",
     ) -> dict[str, Any]:
         """Core status fields shared by /api/status, SSE, and WebSocket pushes."""
         uptime = int(time.time() - self.start_time)
@@ -5462,6 +5464,14 @@ class DashboardState:
             "update_commits_behind": update_commits_behind,
             "update_last_checked_at": update_last_checked_at,
             "update_check_interval_secs": update_check_interval_secs,
+            # Mandatory-update verdict (enterprise governance pin OR the release
+            # feed's breaking-change floor) plus the floor that triggered it.
+            # The proactive update modal reads these off the status frame and
+            # drops its snooze/skip affordances while required — it must not
+            # depend on the user opening Settings to learn the update is
+            # mandatory.
+            "update_required": update_required,
+            "update_min_version": update_min_version,
             "no_crons": self.no_crons,
             "branch": branch,
             "commit": commit,

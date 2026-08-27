@@ -58,6 +58,14 @@ export interface StatusData {
   update_commits_behind?: number
   update_last_checked_at?: number | null
   update_check_interval_secs?: number
+  /**
+   * Mandatory-update verdict: true when this install sits below either the
+   * enterprise governance pin or the release feed's breaking-change floor.
+   * The proactive update modal drops its snooze/skip affordances while true.
+   */
+  update_required?: boolean
+  /** The floor that made the update mandatory (bare release, '' when none). */
+  update_min_version?: string
   update_progress?: { step: string; detail: string } | null
   version?: string
   /**

@@ -14,6 +14,8 @@
  *   desktop  — Electron `found` payload → Download primary action
  *   command  — gateway wheel install → copyable installer command
  *   apply    — gateway git checkout → Update now primary action
+ *   required — mandatory update (feed floor): no dismissal affordances
+ *   required-command — mandatory update on a wheel install
  *   pill / pill-downloading / pill-downloaded — the top-bar pill states
  * Plus ?theme=dark|light and ?lang=en|zh-CN.
  */
@@ -96,6 +98,19 @@ if (scene === 'desktop') {
 } else if (scene === 'apply') {
   store.dispatch(sseStatus({
     update_available: true, update_latest_version: '0.5.0', update_can_apply: true,
+  } as StatusData))
+} else if (scene === 'required') {
+  // Mandatory update: below the release feed's breaking-change floor. The
+  // modal must render with no dismissal affordances and name the floor.
+  store.dispatch(sseStatus({
+    update_available: true, update_latest_version: '0.6.0', update_can_apply: true,
+    update_required: true, update_min_version: '0.6.0',
+  } as StatusData))
+} else if (scene === 'required-command') {
+  store.dispatch(sseStatus({
+    update_available: true, update_latest_version: '0.6.0', update_can_apply: false,
+    update_command: 'curl -fsSL https://download.crew.kiro.dev/cli.sh | sh',
+    update_required: true, update_min_version: '0.6.0',
   } as StatusData))
 } else if (scene.startsWith('pill')) {
   store.dispatch(setDesktopUpdateAvailable(true))

@@ -586,7 +586,6 @@ test/test_cli_desktop.py
 test/test_cli_doctor.py
 test/test_cli_lazy_imports.py
 test/test_cli_logging.py
-test/test_cli_manifest_signature.py
 test/test_cli_server_more_coverage.py
 test/test_close_guard_parity.py
 test/test_cloud_connect.py

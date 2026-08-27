@@ -128,9 +128,7 @@ def _run_helper(
 
 def _write_canonical_json(path: Path, value: dict[str, object]) -> None:
     path.write_bytes(
-        (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode(
-            "ascii"
-        )
+        (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode("ascii")
     )
 
 
@@ -141,12 +139,14 @@ def _build_manifest(
     *,
     channel: str = CHANNEL,
     artifact_base: str = CDN_BASE,
+    min_version: str = "",
 ) -> Path:
     payload = root / "payload.json"
     signature = root / "signature.bin"
     manifest = root / "cli-manifest.json"
     digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
     wheel_url = f"{artifact_base.rstrip('/')}/cli/{channel}/{VERSION}/{WHEEL_NAME}"
+    extra_args = ("--min-version", min_version) if min_version else ()
     _run_helper(
         "payload",
         "--channel",
@@ -161,6 +161,7 @@ def _build_manifest(
         ">=3.10",
         "--pub-date",
         "2026-08-01T00:00:00Z",
+        *extra_args,
         "--public-key",
         str(key.public),
         "--output",
@@ -229,6 +230,80 @@ def test_helper_builds_a_canonical_independently_verifiable_manifest(
         text=True,
     )
     assert verified.returncode == 0, verified.stderr
+
+
+def test_optional_min_version_is_signed_and_round_trips(
+    tmp_path: Path, test_key: SigningKey
+) -> None:
+    """The forced-update floor rides INSIDE the signed payload: a manifest built
+    with one carries it, the signature covers it (tampering it invalidates the
+    envelope), and `verify` accepts the result."""
+    wheel = tmp_path / WHEEL_NAME
+    wheel.write_bytes(b"signed wheel bytes")
+    manifest_path = _build_manifest(tmp_path, test_key, wheel, min_version="1.2.0")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["min_version"] == "1.2.0"
+
+    verified = _run_helper(
+        "verify",
+        "--manifest",
+        str(manifest_path),
+        "--public-key",
+        str(test_key.public),
+        "--expected-channel",
+        CHANNEL,
+        "--artifact-base",
+        CDN_BASE,
+    )
+    assert verified.returncode == 0, verified.stderr
+
+    # Flip the floor after signing: the canonical payload changes, so the
+    # existing signature must no longer verify.
+    manifest["min_version"] = "0.0.1"
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    tampered = _run_helper(
+        "verify",
+        "--manifest",
+        str(manifest_path),
+        "--public-key",
+        str(test_key.public),
+        "--expected-channel",
+        CHANNEL,
+        "--artifact-base",
+        CDN_BASE,
+        check=False,
+    )
+    assert tampered.returncode != 0
+
+
+def test_manifest_without_min_version_omits_the_field(tmp_path: Path, test_key: SigningKey) -> None:
+    """No floor means NO field — the canonical bytes must stay identical to the
+    pre-floor manifest format, or every no-floor release would re-sign
+    differently and break byte-identical publish retries."""
+    wheel = tmp_path / WHEEL_NAME
+    wheel.write_bytes(b"signed wheel bytes")
+    manifest_path = _build_manifest(tmp_path, test_key, wheel)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert "min_version" not in manifest
+
+
+@pytest.mark.parametrize("bad", ["1.2.0rc1", "v1.2.0", "abc", "1.2.0-insider.1"])
+def test_min_version_must_be_a_bare_release(tmp_path: Path, test_key: SigningKey, bad: str) -> None:
+    wheel = tmp_path / WHEEL_NAME
+    wheel.write_bytes(b"signed wheel bytes")
+    with pytest.raises(subprocess.CalledProcessError):
+        _build_manifest(tmp_path, test_key, wheel, min_version=bad)
+
+
+def test_min_version_above_the_manifest_version_is_refused(
+    tmp_path: Path, test_key: SigningKey
+) -> None:
+    """A floor the manifest's own version cannot satisfy would force an update
+    loop the feed can never resolve — always a publisher typo."""
+    wheel = tmp_path / WHEEL_NAME
+    wheel.write_bytes(b"signed wheel bytes")
+    with pytest.raises(subprocess.CalledProcessError):
+        _build_manifest(tmp_path, test_key, wheel, min_version="9.9.9")
 
 
 def test_helper_refuses_to_assemble_a_tampered_payload(
@@ -493,6 +568,26 @@ def test_installer_verifies_signature_and_digest_before_installing(
     assert "Verified SHA-256." in result.stdout
 
 
+def test_installer_accepts_a_manifest_carrying_a_min_version_floor(
+    tmp_path: Path, test_key: SigningKey
+) -> None:
+    """A breaking release's feed carries the optional signed ``min_version``
+    floor — and the installer is exactly the tool an out-of-date install runs
+    to satisfy it, so refusing such a manifest would strand every client the
+    floor exists to move."""
+    wheel = tmp_path / WHEEL_NAME
+    wheel.write_bytes(b"verified wheel")
+    manifest = _build_manifest(tmp_path, test_key, wheel, min_version="1.2.0")
+    cdn = _stage_cdn(tmp_path, manifest, wheel)
+    script = _patched_installer(tmp_path, test_key)
+
+    result, _curl_marker, install_marker = _run_installer(script, tmp_path / "run", cdn)
+
+    assert result.returncode == 0, result.stderr
+    assert install_marker.exists()
+    assert "Verified signed manifest." in result.stdout
+
+
 @pytest.mark.parametrize("pinned", [False, True])
 def test_installer_refuses_when_signed_manifest_is_missing(
     tmp_path: Path, test_key: SigningKey, pinned: bool
@@ -691,9 +786,7 @@ def test_kms_signer_requires_matching_non_exportable_key_and_verifies_output(
                 "PublicKey": base64.b64encode(public_der).decode("ascii"),
             }
         if args[:2] == ["kms", "sign"]:
-            return {
-                "Signature": base64.b64encode(signature.read_bytes()).decode("ascii")
-            }
+            return {"Signature": base64.b64encode(signature.read_bytes()).decode("ascii")}
         raise AssertionError(f"unexpected AWS CLI arguments: {args}")
 
     monkeypatch.setattr(helper, "_run_aws_json", fake_aws_json)
@@ -814,9 +907,7 @@ def test_verify_refuses_a_valid_manifest_from_another_artifact_host(
 ) -> None:
     wheel = tmp_path / WHEEL_NAME
     wheel.write_bytes(b"wrong-host-wheel")
-    manifest = _build_manifest(
-        tmp_path, test_key, wheel, artifact_base="https://attacker.invalid"
-    )
+    manifest = _build_manifest(tmp_path, test_key, wheel, artifact_base="https://attacker.invalid")
 
     refused = _verify_manifest(manifest, test_key)
 
@@ -840,9 +931,7 @@ def test_installer_publish_refuses_an_unconfigured_trust_root() -> None:
     names = [step.get("name") for step in steps]
 
     guard = next(
-        step
-        for step in steps
-        if step.get("name") == "Refuse to publish an unconfigured trust root"
+        step for step in steps if step.get("name") == "Refuse to publish an unconfigured trust root"
     )
     assert "CLI_MANIFEST_KEY_ID" in guard["run"]
     assert "UNCONFIGURED" in guard["run"]
@@ -916,12 +1005,8 @@ def test_publish_workflow_gates_all_artifact_work_before_side_effects() -> None:
     ):
         assert _workflow_step(name)["if"] == complete_config
 
-    promote = (
-        "${{ env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY && inputs.promote }}"
-    )
-    fresh_build = (
-        "${{ env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY && !inputs.promote }}"
-    )
+    promote = "${{ env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY && inputs.promote }}"
+    fresh_build = "${{ env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY && !inputs.promote }}"
     assert _workflow_step("Verify immutable promotion bundle")["if"] == promote
     assert _workflow_step("Attest wheel provenance")["if"] == fresh_build
     assert _workflow_step("Verify promoted wheel provenance")["if"] == promote
