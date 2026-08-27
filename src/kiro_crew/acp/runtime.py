@@ -67,6 +67,7 @@ from kiro_crew.acp.session_handle import (
     AcpRuntimeProtocol,
     AcpSessionHandle,
     _load_watchdog_settings,
+    parse_advertised_models,
 )
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
@@ -315,6 +316,16 @@ _DROP_NO_SESSION = "-"
 # string: an absent `method`, or a value of the wrong JSON type (see
 # _drop_key_part).
 _DROP_KEY_PLACEHOLDER = "?"
+
+# Entitlement probe (probe_advertised_models). The probe session carries no MCP
+# servers and activates no mode, so it is far cheaper than a real session start;
+# the timeout is still generous because the probe runs exactly when something is
+# already wrong (a rejection is being revalidated) and a loaded host must not
+# turn a recoverable verdict into a spurious probe failure.
+_ENTITLEMENT_PROBE_TIMEOUT = 30.0
+# A fresh answer is reused for this window so a burst of rejections (several
+# chats revalidating at once) costs one round-trip, not one per rejection.
+_ENTITLEMENT_PROBE_TTL_SECS = 20.0
 
 
 KIRO_CLI_BIN = "kiro-cli"
@@ -718,6 +729,11 @@ class AcpRuntime:
         # Empty until the handshake completes, so callers fail CLOSED and send
         # text-only rather than guessing a modality the agent never advertised.
         self._prompt_capabilities: dict = {}
+        # Entitlement probe state (probe_advertised_models): single-flight lock
+        # plus a short-TTL cache of the last non-empty answer.
+        self._entitlement_probe_lock = asyncio.Lock()
+        self._entitlement_probe_at = 0.0
+        self._entitlement_probe_result: list[dict[str, str]] = []
         self._dead = False
         self._last_activity: float = 0.0
         self._stderr_lines: list[str] = []
@@ -2773,6 +2789,64 @@ class AcpRuntime:
 
         logger.info("Created session %s on runtime PID %d", session_id, self._pid or 0)
         return handle
+
+    async def probe_advertised_models(self) -> list[dict[str, str]]:
+        """Fetch a fresh advertised-model (entitlement) snapshot from this backend.
+
+        A session's ``availableModels`` is captured once, from its own
+        ``session/new`` response, and the backend resolves that answer from the
+        account state it holds at that instant — a lookup racing a token refresh
+        or a cold start can answer with the default (free-tier) set. A long-lived
+        session holding such an answer refuses models the account actually has,
+        and nothing ever corrects it. This re-asks the question on the SAME live
+        process with a throwaway minimal session (no MCP servers, no mode
+        activation), terminated before returning.
+
+        Single-flight + short TTL: concurrent callers share one probe, and a
+        fresh non-empty answer is reused for :data:`_ENTITLEMENT_PROBE_TTL_SECS`
+        so a burst of rejections costs one round-trip.
+
+        Returns the normalized advertised list, or ``[]`` when the probe fails
+        or advertises nothing. An empty return is NOT evidence about
+        entitlement — callers must keep whatever snapshot they already hold.
+        """
+        async with self._entitlement_probe_lock:
+            now = time.monotonic()
+            if (
+                self._entitlement_probe_result
+                and now - self._entitlement_probe_at < _ENTITLEMENT_PROBE_TTL_SECS
+            ):
+                return list(self._entitlement_probe_result)
+            if not self._initialized or self._dead or self._process is None:
+                return []
+            params = build_session_new_params(self._work_dir, mcp_servers=[])
+            session_id = ""
+            self._session_inits_in_flight += 1
+            try:
+                try:
+                    resp = await self._send_and_await(
+                        METHOD_SESSION_NEW, params, timeout=_ENTITLEMENT_PROBE_TIMEOUT
+                    )
+                    session_id = str(resp.get("sessionId") or "")
+                finally:
+                    # Close the init scope even on failure so staged init
+                    # notifications from this probe never leak into a later
+                    # real session's queue.
+                    self._finish_session_init(session_id)
+            except Exception:
+                logger.debug("entitlement probe session/new failed", exc_info=True)
+                return []
+            try:
+                fresh = parse_advertised_models(resp)
+            finally:
+                if session_id:
+                    # Evict the probe session from the shared process; never
+                    # raises (best-effort by contract).
+                    await self.terminate_session(session_id)
+            if fresh:
+                self._entitlement_probe_result = list(fresh)
+                self._entitlement_probe_at = time.monotonic()
+            return fresh
 
     async def load_session(
         self,

@@ -363,6 +363,26 @@ _MCP_DRAIN_REPORT_ACTIONS = frozenset(
 _SENTINEL = object()
 
 
+def parse_advertised_models(resp: dict[str, Any]) -> list[dict[str, str]]:
+    """The normalized advertised-model list from a ``session/new``/``session/load``
+    response (``[]`` when the backend advertised nothing).
+
+    Accepts both response shapes: a ``models`` object
+    ``{availableModels: [...], currentModelId}`` and a bare list under either
+    key. Normalization matches :meth:`AcpSessionHandle._normalize_models`, so a
+    probe's answer and a session-init snapshot are directly comparable.
+    """
+    models = resp.get("models") or resp.get("availableModels")
+    if isinstance(models, dict):
+        avail = models.get("availableModels", [])
+        if isinstance(avail, list):
+            return AcpSessionHandle._normalize_models(avail)
+        return []
+    if isinstance(models, list):
+        return AcpSessionHandle._normalize_models(models)
+    return []
+
+
 class AcpRuntimeError(Exception):
     """Base error for AcpRuntime operations."""
 
@@ -413,6 +433,11 @@ class AcpRuntimeProtocol(Protocol):
         ...
 
     async def send_request(self, method: str, params: dict[str, Any]) -> int:
+        ...
+
+    async def probe_advertised_models(self) -> list[dict[str, str]]:
+        """Fresh advertised-model snapshot from a throwaway ``session/new``
+        (``[]`` = probe failed / advertised nothing — never evidence)."""
         ...
 
     async def send_notification(self, method: str, params: dict[str, Any]) -> None:
@@ -1689,6 +1714,28 @@ class AcpSessionHandle:
                 "description": str(m.get("description") or ""),
             })
         return captured
+
+    async def refresh_available_models(self) -> list[dict[str, str]]:
+        """Re-resolve the advertised-model snapshot against the live backend.
+
+        ``_available_models`` is otherwise written once, from this session's own
+        ``session/new`` — an answer the backend resolved from the account state
+        it held at that instant. When that answer was degraded (a lookup racing
+        a token refresh answers with the default tier), the session refuses
+        models the account actually has, for its whole life. Every consumer of
+        entitlement — the explicit-pick refusal, the prompt-time pin withhold,
+        the dashboard picker filter — reads through this handle's snapshot, so
+        one refresh heals them all.
+
+        The snapshot is replaced only by a NON-EMPTY probe result: a failed or
+        empty probe is not evidence about entitlement, so the prior snapshot is
+        kept. Returns the probe result either way, so callers can distinguish
+        "revalidated" from "could not revalidate".
+        """
+        fresh = await self._runtime.probe_advertised_models()
+        if fresh:
+            self._available_models = list(fresh)
+        return fresh
 
     def _sync_effort_levels(self) -> None:
         """Push ACP-reported effort levels to the global validation set (parity

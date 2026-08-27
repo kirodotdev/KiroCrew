@@ -3891,6 +3891,15 @@ class TestAcpRuntimeLoadSession:
             return out
 
         builders = {**_builders(rt_mod), **_builders(client_mod)}
+        # Exempt: builders whose session exists only to read the session/new
+        # response and is terminated before any prompt. Such a session never
+        # calls a tool, so pooled broker stubs would add per-probe MCP boot
+        # churn without pooling anything. Everything a REAL conversation runs
+        # through must stay in the ratchet.
+        _NEVER_PROMPTS = {"probe_advertised_models"}
+        for name in _NEVER_PROMPTS:
+            assert name in builders, f"{name} no longer issues session/new — remove its exemption"
+            builders.pop(name)
         # The four known builders; a new one is included automatically.
         assert {
             "create_session",
@@ -7567,3 +7576,184 @@ def test_store_session_config_leaves_model_empty_when_ambiguous():
     )
     assert handle._resolved_model_id == ""
     assert handle.served_model == ""
+
+
+# ── probe_advertised_models (entitlement revalidation) ──
+
+
+_PROBE_RESP = {
+    "sessionId": "probe-1",
+    "models": {
+        "currentModelId": "claude-opus-5",
+        "availableModels": [
+            {"modelId": "auto", "name": "auto"},
+            {"modelId": "claude-opus-5", "name": "claude-opus-5"},
+        ],
+    },
+}
+
+
+@pytest.mark.asyncio
+async def test_probe_returns_fresh_set_and_terminates_probe_session():
+    """The probe re-asks entitlement with a throwaway minimal session/new
+    (mcpServers present-but-empty — kiro-cli treats a missing field as
+    malformed), reads the advertised set, and evicts the probe session so it
+    never accumulates in the shared process."""
+    rt, _, _ = _make_runtime()
+    rt._send_and_await = AsyncMock(side_effect=[_PROBE_RESP, {}])  # type: ignore[method-assign]
+    fresh = await rt.probe_advertised_models()
+    assert [m["modelId"] for m in fresh] == ["auto", "claude-opus-5"]
+    calls = rt._send_and_await.call_args_list
+    assert calls[0].args[0] == METHOD_SESSION_NEW
+    assert calls[0].args[1]["mcpServers"] == []
+    assert calls[1].args[0] == METHOD_SESSION_TERMINATE
+    assert calls[1].args[1] == {"sessionId": "probe-1"}
+    # Init scope closed — staged init notifications cannot leak into a later
+    # real session.
+    assert rt._session_inits_in_flight == 0
+
+
+@pytest.mark.asyncio
+async def test_probe_failure_returns_empty_and_closes_init_scope():
+    """A failed probe is not evidence: it returns [] (caller keeps its prior
+    snapshot) and must not leave the init-notification scope open."""
+    rt, _, _ = _make_runtime()
+    rt._send_and_await = AsyncMock(  # type: ignore[method-assign]
+        side_effect=AcpRuntimeError("boom")
+    )
+    assert await rt.probe_advertised_models() == []
+    assert rt._session_inits_in_flight == 0
+
+
+@pytest.mark.asyncio
+async def test_probe_advertising_nothing_returns_empty_but_still_terminates():
+    """A session/new that omits models yields [] — and the probe session is
+    still evicted, and the empty answer is NOT cached (the next call probes
+    again rather than repeating a non-answer)."""
+    rt, _, _ = _make_runtime()
+    rt._send_and_await = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[{"sessionId": "probe-2"}, {}, {"sessionId": "probe-3"}, {}]
+    )
+    assert await rt.probe_advertised_models() == []
+    assert rt._send_and_await.call_args_list[1].args[0] == METHOD_SESSION_TERMINATE
+    assert await rt.probe_advertised_models() == []
+    news = [c for c in rt._send_and_await.call_args_list if c.args[0] == METHOD_SESSION_NEW]
+    assert len(news) == 2
+
+
+@pytest.mark.asyncio
+async def test_probe_result_reused_within_ttl():
+    """A fresh non-empty answer is served from cache inside the TTL, so a burst
+    of rejections costs one round-trip."""
+    rt, _, _ = _make_runtime()
+    rt._send_and_await = AsyncMock(side_effect=[_PROBE_RESP, {}])  # type: ignore[method-assign]
+    first = await rt.probe_advertised_models()
+    second = await rt.probe_advertised_models()
+    assert second == first
+    # One session/new + one terminate total: the second call never hit the wire.
+    assert rt._send_and_await.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_probe_single_flight_concurrent_callers_share_one_probe():
+    rt, _, _ = _make_runtime()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_send(method, params, timeout=None):
+        if method == METHOD_SESSION_NEW:
+            started.set()
+            await release.wait()
+            return dict(_PROBE_RESP)
+        return {}
+
+    rt._send_and_await = AsyncMock(side_effect=slow_send)  # type: ignore[method-assign]
+    t1 = asyncio.ensure_future(rt.probe_advertised_models())
+    t2 = asyncio.ensure_future(rt.probe_advertised_models())
+    await started.wait()
+    release.set()
+    r1, r2 = await asyncio.gather(t1, t2)
+    assert r1 == r2 != []
+    news = [c for c in rt._send_and_await.call_args_list if c.args[0] == METHOD_SESSION_NEW]
+    assert len(news) == 1
+
+
+@pytest.mark.asyncio
+async def test_probe_on_dead_or_uninitialized_runtime_returns_empty():
+    rt, _, _ = _make_runtime()
+    rt._dead = True
+    assert await rt.probe_advertised_models() == []
+    rt2, _, _ = _make_runtime()
+    rt2._initialized = False
+    assert await rt2.probe_advertised_models() == []
+
+
+# ── AcpSessionHandle.refresh_available_models ──
+
+
+@pytest.mark.asyncio
+async def test_refresh_replaces_snapshot_on_nonempty_probe():
+    """One refresh heals every consumer of the handle's snapshot: the fresh
+    probe answer replaces the session-init availableModels in place."""
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    handle.store_session_config(
+        {
+            "models": {
+                "availableModels": [
+                    {"modelId": "claude-sonnet-4"},
+                    {"modelId": "claude-sonnet-4.5"},
+                ]
+            }
+        }
+    )
+    fresh_set = [
+        {"modelId": "auto", "name": "auto", "description": ""},
+        {"modelId": "claude-opus-5", "name": "claude-opus-5", "description": ""},
+    ]
+    rt.probe_advertised_models = AsyncMock(return_value=fresh_set)  # type: ignore[method-assign]
+    fresh = await handle.refresh_available_models()
+    assert fresh == fresh_set
+    assert [m["modelId"] for m in handle.available_models] == [
+        "auto",
+        "claude-opus-5",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_refresh_keeps_snapshot_on_empty_probe():
+    """A failed/empty probe is not evidence — the prior snapshot survives so a
+    flaky probe can never WIDEN or clear entitlement."""
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    handle.store_session_config({"models": {"availableModels": [{"modelId": "claude-sonnet-4"}]}})
+    rt.probe_advertised_models = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    assert await handle.refresh_available_models() == []
+    assert [m["modelId"] for m in handle.available_models] == ["claude-sonnet-4"]
+
+
+class TestParseAdvertisedModels:
+    """Both response shapes normalize identically, so a probe answer and a
+    session-init snapshot are directly comparable."""
+
+    def test_models_object_shape(self):
+        from kiro_crew.acp.session_handle import parse_advertised_models
+
+        out = parse_advertised_models(_PROBE_RESP)
+        assert [m["modelId"] for m in out] == ["auto", "claude-opus-5"]
+        assert all(set(m) == {"modelId", "name", "description"} for m in out)
+
+    def test_bare_list_shape(self):
+        from kiro_crew.acp.session_handle import parse_advertised_models
+
+        out = parse_advertised_models({"availableModels": [{"modelId": "claude-sonnet-4"}]})
+        assert [m["modelId"] for m in out] == ["claude-sonnet-4"]
+
+    def test_absent_or_malformed_yields_empty(self):
+        from kiro_crew.acp.session_handle import parse_advertised_models
+
+        assert parse_advertised_models({}) == []
+        assert parse_advertised_models({"models": {"availableModels": "nope"}}) == []
+        assert parse_advertised_models({"models": 7}) == []
