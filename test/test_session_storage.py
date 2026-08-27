@@ -2147,3 +2147,113 @@ class TestTrashLocation:
     ) -> None:
         report = session_storage.measure(_index(), now=_NOW)
         assert report.trash_same_filesystem is True
+
+
+class TestSingleTrashPass:
+    """Each payload build reads each trash manifest exactly once.
+
+    ``list_trash`` is uncached and reads every batch manifest per call, so a
+    payload builder that calls it once for the totals (inside ``measure``) and
+    again for the wire array pays double I/O — and could ship totals that
+    contradict the array beside them if a stage/empty lands between the calls.
+    Both builders thread one list through ``measure(batches=...)`` instead,
+    mirroring the ``units=`` parameter and the counting test above.
+    """
+
+    @staticmethod
+    def _two_batches(kiro_home: Path) -> None:
+        """Two batches with DISTINCT created_at stamps, so an ordering assertion
+        on the payload array is falsifiable rather than satisfied by any order."""
+        _cli_half(kiro_home, "aaaa1111", log_bytes=64, age_days=40)
+        _cli_half(kiro_home, "bbbb2222", log_bytes=64, age_days=40)
+        session_storage.move_to_trash(["aaaa1111"], reason="manual", index=_index(), now=_NOW - 60)
+        session_storage.move_to_trash(["bbbb2222"], reason="manual", index=_index(), now=_NOW)
+
+    @staticmethod
+    def _counted_manifest_reads(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+        """Count via ``_read_manifest``: it is the per-batch cost, and it is hit
+        through the module global, so it sees every ``list_trash`` pass no matter
+        which module's imported name made the call."""
+        reads: list[Path] = []
+        real = session_storage._read_manifest
+
+        def counted(batch: Path):
+            reads.append(batch)
+            return real(batch)
+
+        monkeypatch.setattr(session_storage, "_read_manifest", counted)
+        return reads
+
+    def test_report_payload_reads_each_manifest_exactly_once(
+        self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.dashboard.handlers import session_storage as handler
+
+        _, kiro_home = stores
+        self._two_batches(kiro_home)
+        reads = self._counted_manifest_reads(monkeypatch)
+
+        payload = handler._report_payload()
+
+        assert len(reads) == 2, "one payload build must read each batch manifest once"
+        assert len(set(reads)) == 2
+        # Newest first is list_trash's own contract; asserting it on the wire
+        # array proves the hoisted list reaches the payload unreordered. The
+        # helper gives the batches distinct stamps so this can actually fail.
+        assert [b["created_at"] for b in payload["trash"]["batches"]] == [_NOW, _NOW - 60]
+        assert len(payload["trash"]["batches"]) == 2
+        assert payload["trash"]["bytes"] == sum(b["bytes"] for b in payload["trash"]["batches"])
+
+    def test_inventory_payload_reads_each_manifest_exactly_once(
+        self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from types import SimpleNamespace
+
+        from kiro_crew.dashboard.handlers import session_storage as handler
+
+        _, kiro_home = stores
+        self._two_batches(kiro_home)
+        reads = self._counted_manifest_reads(monkeypatch)
+
+        # Explicit empty stubs, not a MagicMock: a bare mock answers
+        # running_session_keys() and list_sessions() via magic-method defaults,
+        # which silently weakens the test if either callee grows a real check.
+        state = SimpleNamespace(
+            running_session_keys=lambda: frozenset(),
+            conversation_log=SimpleNamespace(list_sessions=lambda: []),
+        )
+        payload = handler._inventory_payload(state)
+
+        assert len(reads) == 2, "one payload build must read each batch manifest once"
+        assert len(set(reads)) == 2
+        assert len(payload["trash"]["batches"]) == 2
+        assert payload["trash"]["bytes"] == sum(b["bytes"] for b in payload["trash"]["batches"])
+
+    def test_measure_without_batches_still_enumerates_the_trash(
+        self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The default path is load-bearing: every existing ``measure(index)``
+        caller relies on it enumerating the trash itself."""
+        _, kiro_home = stores
+        self._two_batches(kiro_home)
+        reads = self._counted_manifest_reads(monkeypatch)
+
+        report = session_storage.measure(_index(), now=_NOW)
+
+        assert report.trash_batches == 2
+        assert report.trash_bytes > 0
+        assert len(reads) == 2, "measure() with no batches= must do its own pass"
+
+    def test_measure_uses_the_handed_over_batches_without_a_second_pass(
+        self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _, kiro_home = stores
+        self._two_batches(kiro_home)
+        batches = session_storage.list_trash()
+        reads = self._counted_manifest_reads(monkeypatch)
+
+        report = session_storage.measure(_index(), now=_NOW, batches=batches)
+
+        assert report.trash_batches == 2
+        assert report.trash_bytes == sum(b.bytes for b in batches)
+        assert reads == [], "a handed-over list must not trigger another manifest pass"

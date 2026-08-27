@@ -657,6 +657,7 @@ def measure(
     *,
     now: float | None = None,
     units: list[SessionUnit] | None = None,
+    batches: list[TrashBatch] | None = None,
 ) -> StorageReport:
     """Measure session storage and report what is reclaimable.
 
@@ -664,6 +665,12 @@ def measure(
     rather than paying for a second pass. The inventory screen needs both the rows
     and these totals, and they must describe the same instant anyway — computing
     them from one pass makes agreement structural instead of coincidental.
+
+    *batches* is the same bargain for the trash, with one sharpening: unlike the
+    units fallback, which is answered from a 30s scan cache, ``list_trash`` reads
+    every batch manifest uncached on each call — so a caller that already has the
+    list should always hand it over, and a payload that lists the batches beside
+    these totals must not let the two describe different instants.
     """
     clock = time.time() if now is None else now
     units = _scan_units(index, cached=True) if units is None else units
@@ -671,7 +678,7 @@ def measure(
     # Sub-floor sessions are neither active nor offered: reporting them as
     # reclaimable would promise bytes no threshold can actually move.
     reclaimable = [u for u in units if not u.active and u.age_days(clock) >= MIN_RECLAIM_AGE_DAYS]
-    batches = list_trash()
+    batches = list_trash() if batches is None else batches
     report = StorageReport(
         total_bytes=sum(u.bytes for u in units),
         total_sessions=len(units),

@@ -175,7 +175,11 @@ async def _json_body(request: web.Request) -> dict[str, Any] | None:
 
 def _report_payload() -> dict[str, Any]:
     index = _build_index()
-    report = measure(index)
+    # One trash pass serves both the totals inside measure() and the wire array
+    # below: list_trash reads every batch manifest per call, and two calls could
+    # bracket a concurrent stage/empty and ship totals that contradict the array.
+    batches = list_trash()
+    report = measure(index, batches=batches)
     return {
         "total_bytes": report.total_bytes,
         "total_sessions": report.total_sessions,
@@ -203,7 +207,7 @@ def _report_payload() -> dict[str, Any]:
                     "sessions": batch.sessions,
                     "bytes": batch.bytes,
                 }
-                for batch in list_trash()
+                for batch in batches
             ],
         },
     }
@@ -679,7 +683,10 @@ def _inventory_payload(state: DashboardState) -> dict[str, Any]:
     # The same pass answers both halves of the screen. Measuring separately would
     # re-enumerate a store that reaches half a million files, and would let the
     # totals describe a different instant than the rows printed beneath them.
-    report = measure(index, units=units)
+    # The trash gets the identical treatment: one list_trash() pass feeds both
+    # the totals and the batches array, for the same one-instant reason.
+    batches = list_trash()
+    report = measure(index, units=units, batches=batches)
 
     # Replay-only units — subagent runs — are what a long-lived install accumulates
     # by the hundred thousand, and this screen folds every one of them into a single
@@ -779,7 +786,7 @@ def _inventory_payload(state: DashboardState) -> dict[str, Any]:
                     "sessions": batch.sessions,
                     "bytes": batch.bytes,
                 }
-                for batch in list_trash()
+                for batch in batches
             ],
         },
     }
