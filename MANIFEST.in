@@ -35,6 +35,7 @@ recursive-include src/kiro_crew/apps *.json
 # for apps ported from third-party work; Apache-2.0 attribution must ship.
 recursive-include src/kiro_crew/apps *.md
 recursive-include src/kiro_crew/eval/scenarios *.json
+recursive-include src/kiro_crew/eval/bench/data *.json
 recursive-include src/kiro_crew/docs *.md
 recursive-include src/kiro_crew/tests_fixtures *
 

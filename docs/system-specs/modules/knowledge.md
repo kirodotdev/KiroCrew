@@ -45,7 +45,7 @@ This is the boundary the agent's write path (§2b) captures against: verbatim, l
 
 ## Success criteria
 
-The Knowledge Library's job — surface the exact, cited chunk when memory's recall falls short — is judged on **two tiers**. No dedicated harness for either exists in-tree yet (see "What is measured today"); this section defines the target so a retrieval change (recency weighting, a reranker, content-typed TTL) can be judged against a fixed bar rather than by eye.
+The Knowledge Library's job — surface the exact, cited chunk when memory's recall falls short — is judged on **two tiers**. Tier 1 now has a deterministic in-tree harness (`kirocrew bench kb-retrieval`, see "What is measured today"); no Tier 2 harness exists in-tree yet. This section defines the target so a retrieval change (recency weighting, a reranker, content-typed TTL) can be judged against a fixed bar rather than by eye.
 
 ### Tier 1 — intrinsic retrieval quality
 
@@ -88,7 +88,9 @@ The code computes and floors a retrieval **score**, but no Tier-1/Tier-2 metric 
 - Results below `min_score = 0.012` are dropped by the tool caller (`mcp_tools/knowledge.py`), not inside the retriever.
 - `kirocrew eval` ships four scenarios (`smoke_test`, `memory_recall_basic`, `lesson_application`, `context_accumulation`) scored per-assertion (`contains` / `regex` / `judge`) with an optional 1–5 LLM judge (`eval/judge.py`, pass ≥ 3.0). All four are clean single-fact teach→recall or accumulate→summarize flows; none exercises correction / contradiction / retraction / time-bound / reinforcement / hypothetical, and none reports recall@k, MRR, or task-lift.
 
-The gap is therefore a **KB-scoped golden set over the query classes above, plus an A/B task-lift harness** — the precondition for tuning recency, adding a reranker, or content-typed TTL against evidence rather than intuition.
+- `kirocrew bench kb-retrieval` is the Tier-1 ruler: it scores a frozen golden set (`eval/bench/data/kb_golden_v1.json`, hand-authored, covering the query classes above) against a real `KnowledgeStore` + `HybridRetriever` and reports recall@k / MRR@k / nDCG@k per class, plus `abstention_rate`. It measures **bare `HybridRetriever.search`** — the tool-caller `min_score` floor above is deliberately not applied — so its numbers describe the raw retriever, not the agent-visible MCP surface; a floor change at the tool caller will not move them.
+
+The remaining gap is therefore an **A/B task-lift harness** (Tier 2), plus a floor-aware variant of the Tier-1 ruler if the agent-visible surface is ever to be scored directly — the precondition for tuning recency, adding a reranker, or content-typed TTL against evidence rather than intuition.
 
 ## Key Files
 

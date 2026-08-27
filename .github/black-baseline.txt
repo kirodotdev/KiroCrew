@@ -475,7 +475,6 @@ test/test_bench_round18.py
 test/test_bench_round5.py
 test/test_bench_round6.py
 test/test_bench_round9.py
-test/test_bench_safepath.py
 test/test_bench_scorers.py
 test/test_bench_windows_symlink.py
 test/test_bootstrap.py
