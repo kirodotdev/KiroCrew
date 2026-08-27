@@ -1038,6 +1038,33 @@ class TestFromChat:
         runner.delete_run.assert_awaited_once()
         assert list(runner._work_dir.glob("plan_*")) == []
 
+    @pytest.mark.asyncio
+    async def test_cancelled_new_plan_is_rolled_back(self, tmp_path: Path) -> None:
+        runner = _runner(tmp_path)
+        update_started = asyncio.Event()
+
+        async def block_update(_task_id: str, _steps: list[Any]) -> TaskRun:
+            update_started.set()
+            await asyncio.Future()
+
+        runner.update_plan = AsyncMock(side_effect=block_update)
+        request_task = asyncio.create_task(
+            api_taskrunner_from_chat(
+                _request(_state(runner), json_body={"steps": [{"title": "first"}]})
+            )
+        )
+        await asyncio.wait_for(update_started.wait(), timeout=1)
+        created = next(iter(runner._runs.values()))
+        created.workflow_run_id = "workflow-orphan-candidate"
+        request_task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await request_task
+
+        runner.delete_run.assert_awaited_once_with(created.task_id)
+        assert runner._runs == {}
+        assert list(runner._work_dir.glob("plan_*")) == []
+
 
 # ── refine ──
 

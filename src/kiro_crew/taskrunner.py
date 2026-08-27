@@ -625,7 +625,15 @@ class TaskRunner:
                 source=workflow_source or None,
             )
             self._runs[task_id] = run
-            await self._apersist_runs()
+            persist_task = asyncio.create_task(self._apersist_runs())
+            try:
+                await asyncio.shield(persist_task)
+            except BaseException:
+                # The off-thread atomic write cannot be cancelled once it has
+                # started. Drain it before rollback so its stale snapshot cannot
+                # land after the project and linked workflow have been removed.
+                await asyncio.shield(persist_task)
+                raise
             committed = True
             return run
         except BaseException:
@@ -633,6 +641,17 @@ class TaskRunner:
                 if self._runs.get(task_id) is run:
                     self._runs.pop(task_id, None)
                 self._run_session_keys.pop(task_id, None)
+                cleanup_persist = asyncio.create_task(self._apersist_runs())
+                try:
+                    await asyncio.shield(cleanup_persist)
+                except asyncio.CancelledError:
+                    await asyncio.shield(cleanup_persist)
+                except Exception:
+                    logger.warning(
+                        "Failed to persist cancelled plan removal for %s",
+                        task_id,
+                        exc_info=True,
+                    )
                 await asyncio.shield(self._workflow_delete_link(run))
                 if created_task_dir:
                     try:

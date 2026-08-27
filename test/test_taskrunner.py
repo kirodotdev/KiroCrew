@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import kiro_crew.taskrunner as taskrunner_module
 from conftest import requires_git
 from kiro_crew.task_models import PROGRESS_FILE
 from kiro_crew.taskrunner import (
@@ -165,6 +167,70 @@ class TestWorkflowRunIntegration:
         assert runner._runs == {}
         assert workflows.list_runs() == []
         assert WorkflowService(sessions=sessions, store=workflow_store).list_runs() == []
+        assert list(tmp_path.glob("plan_*")) == []
+
+    @pytest.mark.asyncio
+    async def test_cancelled_plan_drains_persist_before_rollback(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        sessions = _make_mock_sessions()
+        workflow_store = WorkflowRunStore(tmp_path / "workflow-store")
+        workflows = WorkflowService(sessions=sessions, store=workflow_store)
+        runner = TaskRunner(
+            sessions=sessions,
+            auto_test=False,
+            work_dir=tmp_path,
+            workflow_service=workflows,
+        )
+        runner._decompose = AsyncMock(
+            return_value=[Step(index=1, title="Implement", description="make the change")]
+        )
+        persist_started = threading.Event()
+        allow_persist = threading.Event()
+        persist_finished = threading.Event()
+        lifecycle: list[str] = []
+        original_atomic_write = taskrunner_module.atomic_write
+        first_write = True
+
+        def block_first_write(path, content, *, fsync=False):  # type: ignore[no-untyped-def]
+            nonlocal first_write
+            if first_write and path == runner._runs_path():
+                first_write = False
+                lifecycle.append("persist_started")
+                persist_started.set()
+                assert allow_persist.wait(timeout=5)
+                lifecycle.append("persist_finished")
+                persist_finished.set()
+            original_atomic_write(path, content, fsync=fsync)
+
+        original_delete = runner._workflow_delete_link
+
+        async def observe_delete(run: TaskRun) -> None:
+            lifecycle.append("workflow_deleted")
+            await original_delete(run)
+
+        monkeypatch.setattr(taskrunner_module, "atomic_write", block_first_write)
+        runner._workflow_delete_link = observe_delete  # type: ignore[method-assign]
+
+        planning = asyncio.create_task(runner.plan("implement the feature"))
+        assert await asyncio.to_thread(persist_started.wait, 2)
+        planning.cancel()
+
+        async def release_after_rollback_gets_one_turn() -> None:
+            await asyncio.sleep(0)
+            allow_persist.set()
+
+        release = asyncio.create_task(release_after_rollback_gets_one_turn())
+        with pytest.raises(asyncio.CancelledError):
+            await planning
+        await release
+        assert await asyncio.to_thread(persist_finished.wait, 2)
+
+        assert lifecycle.index("persist_finished") < lifecycle.index("workflow_deleted")
+        assert runner._runs == {}
+        assert workflows.list_runs() == []
+        assert WorkflowService(sessions=sessions, store=workflow_store).list_runs() == []
+        assert json.loads((tmp_path / "runs.json").read_text(encoding="utf-8")) == []
         assert list(tmp_path.glob("plan_*")) == []
 
     @pytest.mark.asyncio

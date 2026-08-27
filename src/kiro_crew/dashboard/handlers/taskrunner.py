@@ -690,15 +690,20 @@ async def api_taskrunner_from_chat(request: web.Request) -> web.Response:
                 name=state.task_runner._auto_name(original_input),
             )
             state.task_runner._runs[new_id] = run
-            await state.task_runner._workflow_begin(run)
             try:
+                await state.task_runner._workflow_begin(run)
                 run = await state.task_runner.update_plan(new_id, steps)
-            except ValueError:
-                await state.task_runner.delete_run(new_id)
+            except BaseException:
+                cleanup_task = asyncio.create_task(state.task_runner.delete_run(new_id))
                 try:
-                    task_dir.rmdir()
-                except OSError:
-                    logger.warning("Failed to remove rejected chat plan directory %s", task_dir)
+                    await asyncio.shield(cleanup_task)
+                except asyncio.CancelledError:
+                    await asyncio.shield(cleanup_task)
+                finally:
+                    try:
+                        task_dir.rmdir()
+                    except OSError:
+                        logger.warning("Failed to remove rejected chat plan directory %s", task_dir)
                 raise
     except ValueError as exc:
         return web.json_response({"error": str(exc)}, status=400)
