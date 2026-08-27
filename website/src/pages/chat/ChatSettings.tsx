@@ -112,6 +112,7 @@ export interface DashboardConfig {
   quick_send: boolean
   session_grid: boolean
   tail_fork_enabled: boolean
+  cross_session_send: boolean
   link_previews: boolean
   mcp_app_panel: boolean
   auto_open_git_panel: boolean

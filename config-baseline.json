@@ -5671,6 +5671,7 @@
         "prevent_sleep": false,
         "quick_send": false,
         "session_grid": false,
+        "cross_session_send": false,
         "mcp_app_panel": false,
         "auto_open_git_panel": false,
         "terminal": {
@@ -6103,6 +6104,20 @@
       "tags": [],
       "label": "Session Grid (Split View)",
       "help": "Opt-in: enable terminal-style split view to run multiple chat sessions side by side.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.cross_session_send",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Cross-Session Send",
+      "help": "Opt-in: send messages from one chat session to another (split view button and send_to_session tool).",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false

@@ -3495,7 +3495,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
                 session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
             )
             return web.json_response({"error": "request body must be a JSON object"}, status=400)
-        _allowed = {"restore_sessions", "restore_window_minutes", "merge_queued_messages", "widget_density", "use_builtin_browser", "verbosity", "quick_send", "session_grid", "tail_fork_enabled", "link_previews", "mcp_app_panel", "auto_open_git_panel", "folder_suggestions_enabled"}
+        _allowed = {"restore_sessions", "restore_window_minutes", "merge_queued_messages", "widget_density", "use_builtin_browser", "verbosity", "quick_send", "session_grid", "tail_fork_enabled", "link_previews", "mcp_app_panel", "auto_open_git_panel", "folder_suggestions_enabled", "cross_session_send"}
         # One-release backward-compat shim for removed key; delete after all clients update.
         deprecated_ignored_keys = {"tail_fork_head_handling"}
         # Read-only keys the GET exposes: both settings surfaces save with
@@ -3651,6 +3651,16 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
                     {"error": "session_grid must be a boolean"}, status=400
                 )
             updates["session_grid"] = val
+        if "cross_session_send" in body:
+            val = body["cross_session_send"]
+            if not isinstance(val, bool):
+                _sel().log_tool_invocation(
+                    session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
+                )
+                return web.json_response(
+                    {"error": "cross_session_send must be a boolean"}, status=400
+                )
+            updates["cross_session_send"] = val
         if "mcp_app_panel" in body:
             val = body["mcp_app_panel"]
             if not isinstance(val, bool):
@@ -3763,6 +3773,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "verbosity": cfg.dashboard.verbosity,
             "quick_send": cfg.dashboard.quick_send,
             "session_grid": cfg.dashboard.session_grid,
+            "cross_session_send": cfg.dashboard.cross_session_send,
             "mcp_app_panel": cfg.dashboard.mcp_app_panel,
             "auto_open_git_panel": cfg.dashboard.auto_open_git_panel,
             "tail_fork_enabled": cfg.dashboard.tail_fork_enabled,

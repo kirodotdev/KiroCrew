@@ -3145,6 +3145,13 @@ class DashboardConfig:
             "Opt-in: enable terminal-style split view to run multiple chat sessions side by side.",
         ),
     )
+    cross_session_send: bool = field(
+        default=False,
+        metadata=_meta(
+            "Cross-Session Send",
+            "Opt-in: send messages from one chat session to another (split view button and send_to_session tool).",
+        ),
+    )
     mcp_app_panel: bool = field(
         default=False,
         metadata=_meta(
@@ -7771,6 +7778,7 @@ class KiroCrewConfig:
                 prevent_sleep=_safe_bool(dashboard_data.get("prevent_sleep"), False),
                 quick_send=dashboard_data.get("quick_send", False),
                 session_grid=dashboard_data.get("session_grid", False),
+                cross_session_send=dashboard_data.get("cross_session_send", False),
                 mcp_app_panel=dashboard_data.get("mcp_app_panel", False),
                 auto_open_git_panel=_safe_bool(dashboard_data.get("auto_open_git_panel"), False),
                 widget_density=dashboard_data.get("widget_density", "more"),
