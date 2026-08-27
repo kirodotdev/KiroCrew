@@ -1478,6 +1478,18 @@ class TestPullRuns(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res.status, 502)
         self.assertEqual(_body(res)["code"], "provider_error")
 
+    async def test_the_502_body_withholds_the_raw_cli_diagnostic(self):
+        raw = "gh api repos/o/r/actions/runs failed (exit 1): connection refused"
+        with _connected(), mock.patch.object(
+            gh, "list_pr_workflow_runs", side_effect=gh.GhCliError(raw)
+        ):
+            res = await self._call({"owner": "o", "repo": "r", "sha": SHA})
+        body = _body(res)
+        self.assertEqual(body["error"], "upstream provider error")
+        self.assertNotIn(raw, body["error"])
+        self.assertNotIn("gh ", body["error"])
+        self.assertNotIn("exit ", body["error"])
+
 
 class TestPullRunAction(unittest.IsolatedAsyncioTestCase):
     async def _call(self, body: dict):
