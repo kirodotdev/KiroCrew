@@ -194,7 +194,12 @@ afterEach(() => {
 async function mountApp(): Promise<void> {
   render(<ChatApp />)
   await waitFor(() => {
-    expect(screen.getByTestId('stub-pinned-panel').getAttribute('data-pet')).not.toBe('')
+    // The component's initial value is already the non-empty string "Mochi".
+    // Waiting only for non-empty therefore returned before getMochiConfig's
+    // resolved promise committed, and the following Nimbus assertion raced it
+    // under a loaded shard. Wait for the configured value itself on both rails.
+    expect(screen.getByTestId('stub-pinned-panel').getAttribute('data-pet')).toBe('Nimbus')
+    expect(screen.getByTestId('stub-watch-panel').getAttribute('data-pet')).toBe('Nimbus')
   }, { timeout: 5_000 })
 }
 
@@ -279,7 +284,21 @@ describe('Mochi ChatApp — view selection', () => {
 
 describe('Mochi ChatApp — pet name', () => {
   it('passes the stored name to both rails', async () => {
-    await mountApp()
+    let resolveConfig!: (value: { petName: string }) => void
+    api.getMochiConfig.mockReturnValue(new Promise(resolve => { resolveConfig = resolve }))
+
+    let mountFinished = false
+    const mounted = mountApp().then(() => { mountFinished = true })
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+
+    // Prove the helper did not mistake the component's non-empty default for a
+    // completed config read. This makes the old `.not.toBe('')` predicate fail
+    // deterministically instead of only when a busy shard delays the microtask.
+    expect(pinnedPanel().getAttribute('data-pet')).toBe('Mochi')
+    expect(mountFinished).toBe(false)
+
+    await act(async () => { resolveConfig({ petName: 'Nimbus' }) })
+    await mounted
 
     expect(pinnedPanel().getAttribute('data-pet')).toBe('Nimbus')
     expect(watchPanel().getAttribute('data-pet')).toBe('Nimbus')
