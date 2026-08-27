@@ -7746,6 +7746,42 @@ class TestRunChatModelRefusal:
         return state
 
     @pytest.mark.asyncio
+    async def test_stale_recover_notice_is_tagged_and_emits_one_frame(self, tmp_path, monkeypatch):
+        """The LIVE frame must carry the retry tag, and there must be exactly one."""
+        from kiro_crew.acp.types import STOP_REASON_STALE_RECOVER
+        from kiro_crew.dashboard.chat_utils import TRANSIENT_RETRY_KIND
+        from kiro_crew.providers.base import EVENT_COMPLETE, LLMEvent
+
+        events = [LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_STALE_RECOVER)]
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = self._make_mock_client(events)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "hello")
+
+        _notices = [
+            m
+            for m in slot.messages
+            if m.get("role") == "error" and "Recovering a stalled turn" in m.get("content", "")
+        ]
+        assert _notices, "stale-recovery notice not emitted"
+        assert all((m.get("meta") or {}).get("kind") == TRANSIENT_RETRY_KIND for m in _notices)
+        # slot.append already emits ONE tagged chat_message; an explicit frame here is an
+        # untagged duplicate, and a client rendering it re-offers the executing choice.
+        _dupes = [
+            c
+            for c in state.broadcast_ws.call_args_list
+            if c.args
+            and c.args[0] == "chat_message"
+            and isinstance(c.args[1], dict)
+            and "Recovering a stalled turn" in str(c.args[1].get("content", ""))
+        ]
+        assert not _dupes, f"untagged explicit chat_message duplicate(s): {_dupes}"
+
+    @pytest.mark.asyncio
     async def test_refusal_shows_declined_card_and_does_not_retry(self, tmp_path, monkeypatch):
         from kiro_crew.acp.types import STOP_REASON_REFUSAL
         from kiro_crew.providers.base import EVENT_COMPLETE, LLMEvent
@@ -14021,6 +14057,24 @@ class TestAcpProcessDiedRecovery:
         assert slot._prompt_busy_retries == 0
         error_msgs = [m for m in slot.messages if m.get("role") == "error"]
         assert any("Connection lost" in m.get("content", "") for m in error_msgs)
+        # A recovery IS queued here, so the notice must be tagged: an untagged row is
+        # indistinguishable from a terminal failure and re-offers an executing choice.
+        from kiro_crew.dashboard.chat_utils import TRANSIENT_RETRY_KIND
+
+        _retrying = [m for m in error_msgs if "retrying" in m.get("content", "").lower()]
+        assert _retrying, "no retrying notice to inspect"
+        assert all((m.get("meta") or {}).get("kind") == TRANSIENT_RETRY_KIND for m in _retrying)
+        # LIVE path: slot.append already emits one tagged chat_message, so an explicit
+        # frame here would be an untagged duplicate that re-arms the pills mid-backoff.
+        _dupes = [
+            c
+            for c in state.broadcast_ws.call_args_list
+            if c.args
+            and c.args[0] == "chat_message"
+            and isinstance(c.args[1], dict)
+            and "retrying" in str(c.args[1].get("content", "")).lower()
+        ]
+        assert not _dupes, f"untagged explicit chat_message frame(s): {_dupes}"
 
     @pytest.mark.asyncio
     async def test_acperror_already_in_progress_uses_busy_counter(self, tmp_path: Path) -> None:
@@ -14083,6 +14137,11 @@ class TestAcpProcessDiedRecovery:
         assert any("Connection lost" in m.get("content", "") for m in error_msgs)
         assert any("please retry" in m.get("content", "").lower() for m in error_msgs)
         assert not slot._queue, "depth>0 must not re-queue"
+        # Discriminating control: nothing is queued, so this notice is genuinely terminal
+        # and must NOT be tagged -- tagging it would hide pills a user still needs.
+        from kiro_crew.dashboard.chat_utils import TRANSIENT_RETRY_KIND
+
+        assert all((m.get("meta") or {}).get("kind") != TRANSIENT_RETRY_KIND for m in error_msgs)
 
 
 class TestEmptyResponseRetry:
@@ -14640,6 +14699,21 @@ class TestRunChatTransientRetry:
         assert not any(t.startswith("❌") for t in self._err_texts(slot))
         # The transient branch fired (status surfaced) ...
         assert any("Backend hiccup" in t for t in self._err_texts(slot))
+        # ... and the notice is TAGGED, which is the only thing telling the UI a
+        # recovery is pending; without it a stale pill re-runs the queued choice.
+        from kiro_crew.dashboard.chat_utils import TRANSIENT_RETRY_KIND
+
+        _hiccups = [
+            m
+            for m in slot.messages
+            if m.get("role") == "error" and "Backend hiccup" in m.get("content", "")
+        ]
+        assert _hiccups, "no hiccup row to inspect"
+        assert all((m.get("meta") or {}).get("kind") == TRANSIENT_RETRY_KIND for m in _hiccups)
+        # Negative control: a TERMINAL error row must NOT carry the tag, or the
+        # discriminator would classify every failure as a pending retry.
+        slot.append("error", "❌ terminal for the control", "msg msg-err")
+        assert (slot.messages[-1].get("meta") or {}).get("kind") != TRANSIENT_RETRY_KIND
         # ... and the live session was NOT reset.
         state.sessions.reset.assert_not_awaited()
         # Budget reset to 0 after the successful turn.

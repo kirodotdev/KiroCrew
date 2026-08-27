@@ -4,6 +4,7 @@ import { addSlotOptimistic, updateSlot, removeSlotOptimistic, markSlotRead, fetc
 import { resolveDefaultColor } from '../utils/sessionColors'
 import { isChatPageSurface } from '../utils/channelOrigin'
 import { isSystemNoticeKind } from '../lib/systemNotice'
+import { isStopEvent } from '../lib/stopEvent'
 import { gcSessionStorage } from '../utils/storageGc'
 import type { RootState } from './index'
 import type { ChatMessage, ChatSlot, SessionInfo, SubagentActivity, ToolActivity, WorkflowRunSummary } from '../types'
@@ -2689,19 +2690,6 @@ export const selectContinuable = (state: RootState): boolean => {
   }
   return false
 }
-
-/**
- * True when *m* is the card recorded because the USER pressed Stop.
- *
- * Two forms exist and both are load-bearing: the websocket path sets `kind` AND
- * `meta.kind` (see the stop_event branch in the message reducer), while a
- * transcript rehydrated from disk carries only the JSON-encoded `cls` that
- * `parse_cls_meta()` unpacks into `meta`. `ChatPage` and `ChatMessageList`
- * already test both; this is the same predicate named once so a fourth caller
- * cannot check only half of it.
- */
-export const isStopEvent = (m: ChatMessage): boolean =>
-  m.kind === 'stop_event' || (m.meta as { kind?: string } | undefined)?.kind === 'stop_event'
 
 /**
  * True when the transcript SHOWS the last turn ending without the assistant
