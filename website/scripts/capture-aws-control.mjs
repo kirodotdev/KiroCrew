@@ -14,37 +14,11 @@
  * Usage: node scripts/capture-aws-control.mjs <outDir>
  */
 import { chromium } from 'playwright'
-import { mkdirSync, readFileSync, statSync } from 'node:fs'
-import { createServer } from 'node:http'
-import { extname, join, resolve, sep } from 'node:path'
+import { mkdirSync } from 'node:fs'
+import { serveDist } from './lib/serve-dist.mjs'
 
 const OUT = process.argv[2] || '/tmp/aws-control-shots'
-const PORT = 6813
-const DIST = new URL('../dist', import.meta.url).pathname
 mkdirSync(OUT, { recursive: true })
-
-const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2', '.json': 'application/json' }
-const isFile = (p) => { try { return statSync(p).isFile() } catch { return false } }
-const server = createServer((req, res) => {
-  const path = decodeURIComponent(new URL(req.url, 'http://x').pathname)
-  if (path === '/logo.png') {
-    res.writeHead(200, { 'content-type': 'image/png' })
-    res.end(readFileSync(join(DIST, 'icon-192.png')))
-    return
-  }
-  let file = resolve(DIST, '.' + path)
-  if (!file.startsWith(resolve(DIST) + sep) && file !== resolve(DIST)) {
-    res.writeHead(403); res.end(); return
-  }
-  if (path === '/' || !isFile(file)) file = join(DIST, 'index.html') // SPA fallback
-  try {
-    const body = readFileSync(file)
-    res.writeHead(200, { 'content-type': MIME[extname(file)] || 'application/octet-stream' })
-    res.end(body)
-  } catch {
-    res.writeHead(404); res.end()
-  }
-})
 
 // ---- fixtures -------------------------------------------------------------
 // Three accounts so the list reads as a list, with one degraded key so the
@@ -139,7 +113,7 @@ async function answer(route) {
 }
 
 // ---- run ------------------------------------------------------------------
-await new Promise((r) => server.listen(PORT, '127.0.0.1', r))
+const { srv: server, base } = await serveDist()
 const browser = await chromium.launch()
 const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, deviceScaleFactor: 2 })
 await page.route('**/api/**', answer)
@@ -152,7 +126,7 @@ await page.addInitScript(() => {
   localStorage.setItem('mc-theme-mode', 'dark')
 })
 
-await page.goto(`http://127.0.0.1:${PORT}/aws-control`, { waitUntil: 'domcontentloaded' })
+await page.goto(`${base}/aws-control`, { waitUntil: 'domcontentloaded' })
 await page.waitForTimeout(1200)
 await page.screenshot({ path: `${OUT}/home.png`, fullPage: false })
 console.log('shot home')
