@@ -16,6 +16,7 @@ grows into a subsystem should become a spec under
 | [mcp-entry-provenance.md](mcp-entry-provenance.md) | Which entries in a shared MCP config file a sync may rewrite: the write-authorship marker and its four outcomes. |
 | [mcp-gateway-claim-push.md](mcp-gateway-claim-push.md) | Event-driven caller identity for pooled MCP stubs. |
 | [mcp-gateway-oversize-response.md](mcp-gateway-oversize-response.md) | Handling an MCP tool response that exceeds the gateway read buffer. |
+| [oversized-image-session-wedge.md](oversized-image-session-wedge.md) | Why one oversized screenshot fails every later turn, which capture path escapes the inline-image caps, and how to repair a wedged transcript. |
 | [mcp-stub-decoupling.md](mcp-stub-decoupling.md) | Why the stub is emitted for every server, and why per-connection backends stay outside the pooling budget. |
 | [profiling.md](profiling.md) | The debug-only stack sampler and desktop app metrics. |
 | [tool-stall-watchdog-placement.md](tool-stall-watchdog-placement.md) | Which stall checks belong in the ACP read loop and which must be judged out of band. |

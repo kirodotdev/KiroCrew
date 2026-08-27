@@ -870,3 +870,28 @@ def test_attaching_a_screenshot_preserves_EVERY_other_snapshot_field(spool: Path
         if f.name in image_fields:
             continue
         assert getattr(result, f.name) == getattr(snap, f.name), f.name
+
+
+class TestScreenshotCeilingCannotOutgrowTheInlineImageCap:
+    """The capture ceiling is bounded by what the model can actually be shown.
+
+    A capture is written to disk and its path handed back to the agent, which
+    can then open it with the native read tool. The provider rejects the whole
+    request once a many-image conversation carries any image over
+    ``MAX_IMAGE_EDGE_PX``, and history is replayed every turn, so one oversized
+    capture wedges every later turn. A ceiling above the inline cap therefore
+    lets a configured value guarantee session death -- and it fails LATE, on an
+    unrelated turn, long after the capture that caused it.
+
+    Pinned as a relationship rather than a literal so raising either constant
+    reddens here, which is the drift that produced the original defect.
+    """
+
+    def test_the_ceiling_is_within_the_inline_image_cap(self) -> None:
+        from kiro_crew.imaging import MAX_IMAGE_EDGE_PX
+
+        assert MAX_SCREENSHOT_MAX_PX <= MAX_IMAGE_EDGE_PX
+
+    def test_the_default_and_floor_still_sit_under_the_ceiling(self) -> None:
+        """Lowering the ceiling must not invert the floor/default/ceiling order."""
+        assert MIN_SCREENSHOT_MAX_PX <= DEFAULT_SCREENSHOT_MAX_PX <= MAX_SCREENSHOT_MAX_PX

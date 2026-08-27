@@ -427,7 +427,18 @@ DEFAULT_ATTACH_SCREENSHOT = True
 DEFAULT_SCREENSHOT_MAX_PX = 1280
 DEFAULT_SCREENSHOT_JPEG_QUALITY = 55
 MIN_SCREENSHOT_MAX_PX = 320
-MAX_SCREENSHOT_MAX_PX = 4096
+# Ceiling deliberately equal to the inline-image cap (kiro_crew.imaging
+# MAX_IMAGE_EDGE_PX), NOT to any display resolution. A capture is written to
+# disk and its path is advertised back to the agent (see render.py's
+# SCREENSHOT_NOTE), so the agent can open it with the native read tool -- and
+# the provider rejects the ENTIRE request once a many-image conversation
+# carries any image over that cap. Because history is replayed every turn, one
+# oversized capture wedges every later turn, not just its own. A ceiling above
+# the cap therefore lets a configured value guarantee session death later,
+# while looking fine in a short session that has not yet accumulated enough
+# images to count as many-image -- the worst possible split between cause and
+# symptom. Raising it back is not a knob, it is a trap.
+MAX_SCREENSHOT_MAX_PX = 2000
 SCREENSHOT_DIR_NAME = "kirocrew-computer-shots"
 SCREENSHOT_FILE_PREFIX = "shot-"
 SCREENSHOT_FILE_SUFFIX = ".jpeg"
