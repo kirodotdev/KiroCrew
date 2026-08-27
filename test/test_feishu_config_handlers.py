@@ -98,7 +98,12 @@ def test_save_persists_credentials_and_config(tmp_path: Path, monkeypatch) -> No
     env_text = env.read_text(encoding="utf-8")
     assert f"FEISHU_APP_ID={APP_ID}" in env_text
     assert f"FEISHU_APP_SECRET={APP_SECRET}" in env_text
-    assert (env.stat().st_mode & 0o077) == 0
+    if os.name != "nt":
+        # POSIX-only: group/other must hold no bits on a file carrying secrets.
+        # Windows locks the same file down with an ACL (icacls) instead, where
+        # st_mode reports 0o666 no matter what the ACL says -- so asserting mode
+        # bits there tests a mechanism the platform does not use.
+        assert (env.stat().st_mode & 0o077) == 0
     assert os.environ["FEISHU_APP_ID"] == APP_ID
     assert os.environ["FEISHU_APP_SECRET"] == APP_SECRET
     cfg = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
@@ -419,8 +424,252 @@ def test_a_failed_credential_write_leaves_no_folder_behind(tmp_path: Path, monke
     assert status >= 500, status
     # The whole point: the folder was never touched.
     assert calls == []
-    # And the config write was rolled back with it, so nothing durable remains.
-    assert not (tmp_path / "config.json").exists()
+    # And our config write was rolled back, so nothing durable remains from a save
+    # that reported failure. The file itself SURVIVES: the rollback restores the
+    # `feishu` section only, because unlinking the config to undo our own section
+    # would take every other channel's settings with it.
+    cfg_path = tmp_path / "config.json"
+    if cfg_path.exists():
+        assert "feishu" not in json.loads(cfg_path.read_text(encoding="utf-8"))
+
+
+def test_a_malformed_stored_value_does_not_crash_the_save(tmp_path: Path, monkeypatch) -> None:
+    """`null` stored where a list or an int belongs must still be repairable.
+
+    `dict.get(key, default)` substitutes the default only for an ABSENT key, so a
+    hand-edited `null` returns None and used to reach `list(None)` / `int(None)`
+    — a 500 from the exact request that would have fixed the file.
+    """
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    cfg = tmp_path / "config.json"
+    cfg.write_text(
+        json.dumps(
+            {
+                "feishu": {
+                    "allowed_open_ids": None,
+                    "allowed_group_ids": None,
+                    "soft_threshold_pct": None,
+                    "session_folder": None,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    status_body, _env = _client_put(
+        mod,
+        monkeypatch,
+        tmp_path,
+        {
+            "allowed_user_ids": [OPEN_ID],
+            "allowed_group_ids": [CHAT_ID],
+            "soft_threshold_pct": 75,
+        },
+    )
+    status, _body = status_body
+    assert status == 200
+    out = json.loads(cfg.read_text(encoding="utf-8"))
+    assert out["feishu"]["allowed_open_ids"] == [OPEN_ID]
+    assert out["feishu"]["allowed_group_ids"] == [CHAT_ID]
+    assert out["feishu"]["soft_threshold_pct"] == 75
+
+
+def test_a_stored_bool_threshold_is_not_read_as_a_number(tmp_path: Path, monkeypatch) -> None:
+    """`bool` is an `int` subclass, so a stored `true` must not compare as 1.
+
+    Otherwise saving the default 80 over a stored `true` would look like a change
+    from 1 and report restart_required for a value the user never had.
+    """
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"feishu": {"soft_threshold_pct": True}}), encoding="utf-8")
+    status_body, _env = _client_put(mod, monkeypatch, tmp_path, {"soft_threshold_pct": 80})
+    status, _body = status_body
+    assert status == 200
+    # 80 is the default the guard falls back to, so this is a no-op write rather
+    # than "changed from 1 to 80".
+    out = json.loads(cfg.read_text(encoding="utf-8"))
+    assert out["feishu"]["soft_threshold_pct"] is True
+
+
+def test_get_reads_the_config_off_the_event_loop(tmp_path: Path, monkeypatch) -> None:
+    """The panel polls this every 15s, so its filesystem reads must not run on the
+    gateway's event loop thread, where they would stall every other task."""
+    import threading
+
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    env = tmp_path / ".env"
+    env.write_text(f"FEISHU_APP_ID={APP_ID}\n", encoding="utf-8")
+    monkeypatch.setattr(loader, "env_path", lambda: env)
+    monkeypatch.setattr(loader, "config_path", lambda: tmp_path / "config.json")
+    monkeypatch.setattr(mod, "is_direct_local_request", lambda req: True)
+
+    read_threads: list[int] = []
+    real_load = loader.KiroCrewConfig.load
+
+    def _spy_load(*a, **kw):
+        read_threads.append(threading.get_ident())
+        return real_load(*a, **kw)
+
+    monkeypatch.setattr(loader.KiroCrewConfig, "load", _spy_load)
+
+    loop_thread: list[int] = []
+
+    async def _run():
+        loop_thread.append(threading.get_ident())
+        app = web.Application()
+        app["state"] = type("S", (), {})()
+        app.router.add_get("/api/feishu/config", mod.api_feishu_config_get)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/api/feishu/config")
+            return resp.status
+
+    status = asyncio.run(_run())
+    assert status == 200
+    assert read_threads, "the handler never read the config at all"
+    assert loop_thread, "could not identify the loop thread"
+    assert all(
+        t != loop_thread[0] for t in read_threads
+    ), f"config read ran on the event loop thread ({read_threads} vs {loop_thread})"
+
+
+def test_save_waits_on_the_cross_process_config_lock(tmp_path: Path, monkeypatch) -> None:
+    """A writer in another PROCESS must not be able to interleave with the save.
+
+    The in-process asyncio lock the caller holds cannot see another process, so the
+    save goes through ``update_config_locked``, which takes an advisory lock on the
+    sidecar ``<config>.lock``. Holding that lockfile here — the same way a second
+    process would — must block the save until it is released, which is the property
+    the in-process lock alone cannot provide.
+    """
+    import threading
+
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    import kiro_crew.dashboard.handlers.messaging as mod
+    from kiro_crew.platform_compat import file_lock
+
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({"feishu": {"enabled": False}}), encoding="utf-8")
+    env = tmp_path / ".env"
+    env.write_text("", encoding="utf-8")
+    monkeypatch.setattr(loader, "env_path", lambda: env)
+    monkeypatch.setattr(loader, "config_path", lambda: cfg_path)
+    monkeypatch.setattr(mod, "is_direct_local_request", lambda req: True)
+
+    holding = threading.Event()
+    release = threading.Event()
+    observed_while_held: list[bool] = []
+
+    def _hold_the_sidecar() -> None:
+        lock_path = cfg_path.parent / (cfg_path.name + ".lock")
+        fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            with file_lock(fd):
+                holding.set()
+                release.wait(timeout=10)
+                # Still unwritten at this point iff the save is genuinely waiting.
+                observed_while_held.append(
+                    json.loads(cfg_path.read_text(encoding="utf-8"))["feishu"]["enabled"]
+                )
+        finally:
+            os.close(fd)
+
+    async def _run():
+        app = web.Application()
+        app["state"] = type("S", (), {})()
+        app.router.add_put("/api/feishu/config", mod.api_feishu_config_save)
+        async with TestClient(TestServer(app)) as client:
+            worker = threading.Thread(target=_hold_the_sidecar, daemon=True)
+            worker.start()
+            assert holding.wait(timeout=10), "could not take the sidecar lock"
+
+            save = asyncio.ensure_future(client.put("/api/feishu/config", json={"enabled": True}))
+            # Give the save a real chance to (wrongly) win the race.
+            await asyncio.sleep(0.4)
+            assert not save.done(), "the save did not wait for the sidecar lock"
+
+            release.set()
+            resp = await save
+            worker.join(timeout=10)
+            return resp.status
+
+    status = asyncio.run(_run())
+    assert status == 200
+    # The lock holder saw the OLD value, so the write really landed after release.
+    assert observed_while_held == [False], observed_while_held
+    assert json.loads(cfg_path.read_text(encoding="utf-8"))["feishu"]["enabled"] is True
+
+
+def test_rollback_keeps_a_concurrent_edit_it_does_not_own(tmp_path: Path, monkeypatch) -> None:
+    """A failed save must undo only what it wrote, not a concurrent writer's edit.
+
+    Sequence: we write `enabled` and `allow_group`, another process then changes
+    `allow_group`, and our .env write fails. Rolling the whole section back would
+    discard their change; the rollback compares per key, so `enabled` reverts and
+    `allow_group` keeps THEIR value.
+    """
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    cfg = tmp_path / "config.json"
+    cfg.write_text(
+        json.dumps({"feishu": {"enabled": False, "allow_group": False}}), encoding="utf-8"
+    )
+
+    real_update = loader.update_config_locked
+    calls: list[int] = []
+
+    def _interleave(*a, **kw):
+        result = real_update(*a, **kw)
+        calls.append(len(calls))
+        if len(calls) == 1:
+            # Stand in for `kirocrew config set feishu.allow_group true` landing
+            # after our write and before our rollback.
+            data = json.loads(cfg.read_text(encoding="utf-8"))
+            data["feishu"]["allow_group"] = "set-by-someone-else"
+            cfg.write_text(json.dumps(data), encoding="utf-8")
+        return result
+
+    async def _boom(updates):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(mod, "update_config_locked", _interleave, raising=False)
+    monkeypatch.setattr(loader, "update_config_locked", _interleave)
+    monkeypatch.setattr(mod, "_write_env_off_loop", _boom)
+
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    env = tmp_path / ".env"
+    env.write_text("", encoding="utf-8")
+    monkeypatch.setattr(loader, "env_path", lambda: env)
+    monkeypatch.setattr(loader, "config_path", lambda: cfg)
+    monkeypatch.setattr(mod, "is_direct_local_request", lambda req: True)
+
+    async def _run():
+        app = web.Application()
+        app["state"] = type("S", (), {})()
+        app.router.add_put("/api/feishu/config", mod.api_feishu_config_save)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.put(
+                "/api/feishu/config",
+                json={"enabled": True, "allow_group": True, "bot_token": APP_SECRET},
+            )
+            return resp.status
+
+    status = asyncio.run(_run())
+    assert status >= 500, status
+
+    out = json.loads(cfg.read_text(encoding="utf-8"))["feishu"]
+    # Ours: reverted. Theirs: untouched.
+    assert out["enabled"] is False
+    assert out["allow_group"] == "set-by-someone-else"
 
 
 def test_id_shape_validator() -> None:

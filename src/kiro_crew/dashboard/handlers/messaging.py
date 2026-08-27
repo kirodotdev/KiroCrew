@@ -6090,8 +6090,17 @@ async def api_feishu_config_get(request: web.Request) -> web.Response:
         KiroCrewConfig,
     )
 
-    cfg = KiroCrewConfig.load()
-    creds = cfg.load_credentials()
+    # Off-loop: both calls are synchronous filesystem reads (config.json, then
+    # .env) and the settings panel polls this endpoint every 15s, so on slow or
+    # contended storage they would stall every other task on the gateway loop
+    # rather than just this request. Read as ONE unit of work: the credential
+    # read is a method on the config object, and splitting them into two hops
+    # would let the two files be read either side of a concurrent save.
+    def _read() -> "tuple[KiroCrewConfig, dict]":
+        loaded = KiroCrewConfig.load()
+        return loaded, loaded.load_credentials()
+
+    cfg, creds = await asyncio.to_thread(_read)
     app_id = creds.get(CRED_FEISHU_APP_ID, "")
     app_secret = creds.get(CRED_FEISHU_APP_SECRET, "")
     fs = cfg.feishu
@@ -6147,11 +6156,12 @@ async def api_feishu_config_save(request: web.Request) -> web.Response:
 
 async def _feishu_config_save_locked(request: web.Request) -> web.Response:
     """Body of the Feishu save; caller holds ``_get_config_lock()``."""
-    from kiro_crew.agent import _atomic_json_write  # noqa: F811
     from kiro_crew.config.loader import (  # noqa: F811
         CRED_FEISHU_APP_ID,
         CRED_FEISHU_APP_SECRET,
+        ConfigReadError,
         config_path,
+        update_config_locked,
     )
 
     caller = request.get("user", "dashboard")
@@ -6254,6 +6264,27 @@ async def _feishu_config_save_locked(request: web.Request) -> web.Response:
     staged: dict[str, object] = {}
     applied: list[str] = []
 
+    def _stored_list(key: str) -> list:
+        """Stored value only when it really is a list, else empty.
+
+        ``dict.get(key, default)`` substitutes the default only for an ABSENT key:
+        a hand-edited ``"allowed_open_ids": null`` returns None and would reach
+        ``list(None)``, raising into a 500 from the save that is the way to repair
+        the file. Mirrors the loader, which already coerces this shape for the
+        runtime.
+        """
+        value = fs_cfg.get(key)
+        return value if isinstance(value, list) else []
+
+    def _stored_int(key: str, default: int) -> int:
+        """Stored value only when it really is an int, else the default.
+
+        ``bool`` is excluded deliberately: it is an ``int`` subclass, so a stored
+        ``true`` would otherwise compare as the threshold 1.
+        """
+        value = fs_cfg.get(key)
+        return value if isinstance(value, int) and not isinstance(value, bool) else default
+
     for flag_key in ("enabled", "allow_group"):
         if flag_key in body:
             val = body.get(flag_key)
@@ -6284,7 +6315,7 @@ async def _feishu_config_save_locked(request: web.Request) -> web.Response:
                 return _deny(f"invalid {what}: {s}", code="invalid_id")
             if s not in new_ids:
                 new_ids.append(s)
-        if new_ids != list(fs_cfg.get(cfg_key, [])):
+        if new_ids != _stored_list(cfg_key):
             staged[cfg_key] = new_ids
             applied.append(cfg_key)
 
@@ -6293,7 +6324,7 @@ async def _feishu_config_save_locked(request: web.Request) -> web.Response:
         return _deny(bad_pct[1], code=bad_pct[0])
     if "soft_threshold_pct" in body:
         pct = int(body["soft_threshold_pct"])
-        if pct != int(fs_cfg.get("soft_threshold_pct", 80)):
+        if pct != _stored_int("soft_threshold_pct", 80):
             staged["soft_threshold_pct"] = pct
             applied.append("soft_threshold_pct")
 
@@ -6314,17 +6345,80 @@ async def _feishu_config_save_locked(request: web.Request) -> web.Response:
     # surfaces as "not connected" with a reason rather than silence.
 
     # ── Phase 2: commit. All validation passed, so writes are safe. ──
-    _cfg_snapshot: str | None = None
+    #
+    # Through ``update_config_locked``, not ``write_config_atomically``: it holds an
+    # advisory lock on the sidecar ``<path>.lock`` for the entire read-modify-write,
+    # so a concurrent ``kirocrew config set`` in ANOTHER PROCESS cannot land between
+    # our read and our write. ``_get_config_lock()`` (held by the caller) only
+    # serializes writers inside this one, and loader.py names that combination the
+    # required path for a new config.json mutation.
+    #
+    # ``staged`` is applied to the config as re-read INSIDE the lock rather than to
+    # the snapshot taken during validation, so a concurrent edit to an unrelated
+    # section is preserved instead of being replaced by our older copy.
+    prior_feishu: dict | None = None
+
+    def _apply_staged(fresh: dict) -> dict:
+        nonlocal prior_feishu
+        section = fresh.get("feishu")
+        # Captured HERE because this is the only point at which the pre-mutation
+        # state is known to be current.
+        prior_feishu = dict(section) if isinstance(section, dict) else None
+        if not isinstance(section, dict):
+            section = {}
+            fresh["feishu"] = section
+        section.update(staged)
+        return fresh
+
+    def _restore_feishu(fresh: dict) -> dict:
+        """Undo the keys THIS request wrote, and only where we still own them.
+
+        Two narrower than the obvious form, both deliberate. Rewriting the file
+        from a whole-file snapshot would revert whatever a concurrent writer
+        landed; restoring the whole ``feishu`` SECTION would still discard a
+        concurrent ``kirocrew config set feishu.*`` that arrived between our write
+        and this rollback. So the comparison is per key: a key whose stored value
+        is no longer the value we wrote has been changed by someone else since,
+        and reverting it would destroy their edit to undo ours.
+        """
+        section = fresh.get("feishu")
+        if not isinstance(section, dict):
+            # Nothing of ours left to undo (the section is gone or was replaced
+            # wholesale by another writer).
+            return fresh
+        before = prior_feishu if isinstance(prior_feishu, dict) else {}
+        for key, written in staged.items():
+            if section.get(key) != written:
+                continue  # not ours any more
+            if key in before:
+                section[key] = before[key]
+            else:
+                section.pop(key, None)
+        # Drop a section that only ever existed because we created it, so a failed
+        # first-time save leaves no empty scaffold behind.
+        if prior_feishu is None and not section:
+            fresh.pop("feishu", None)
+        return fresh
+
+    async def _rollback_config() -> None:
+        try:
+            await asyncio.to_thread(
+                functools.partial(update_config_locked, path, mutate=_restore_feishu)
+            )
+        except Exception:
+            # A rollback that cannot run must not mask the original failure the
+            # caller is already raising; the mismatch is logged instead.
+            logger.exception("Feishu config rollback failed; config may lead .env")
+
     if staged:
-        fs_cfg.update(staged)
-        # Snapshot the on-disk config BEFORE writing the new metadata, so that
-        # if the subsequent .env credential write fails we can roll the metadata
-        # back. Restoring config on .env failure keeps the pair consistent (old
-        # credentials + old meta).
-        _cfg_snapshot = await asyncio.to_thread(_read_text_or_none, path)
-        # Off-loop: the atomic write (temp file + fsync + replace) must not
-        # block the gateway event loop.
-        await asyncio.to_thread(_atomic_json_write, path, data)
+        # Off-loop: the locked read-modify-write does file IO and may block on a
+        # concurrent holder of the lock, neither of which belongs on the loop.
+        try:
+            await asyncio.to_thread(
+                functools.partial(update_config_locked, path, mutate=_apply_staged)
+            )
+        except ConfigReadError:
+            return _corrupt_config()
 
     if env_updates:
         # Off-loop: on Windows the owner-only lockdown shells out to icacls,
@@ -6344,19 +6438,13 @@ async def _feishu_config_save_locked(request: web.Request) -> web.Response:
                 _env_write_task_fs.exception() if not _env_write_task_fs.cancelled() else None
             )
             if _env_exc_fs is not None and staged:
-                if _cfg_snapshot is None:
-                    await asyncio.to_thread(path.unlink, missing_ok=True)
-                else:
-                    await asyncio.to_thread(_atomic_json_write, path, json.loads(_cfg_snapshot))
+                await _rollback_config()
             raise
         except BaseException:
             # Roll config back so a failed .env write cannot leave the NEW
             # metadata paired with the OLD credentials on disk.
             if staged:
-                if _cfg_snapshot is None:
-                    await asyncio.to_thread(path.unlink, missing_ok=True)
-                else:
-                    await asyncio.to_thread(_atomic_json_write, path, json.loads(_cfg_snapshot))
+                await _rollback_config()
             raise
         # Keep the live process environment in sync with the new .env state
         # (load_credentials() lets os.environ win over .env — see the Slack save
@@ -6376,7 +6464,11 @@ async def _feishu_config_save_locked(request: web.Request) -> web.Response:
     # folder that has already been created, renamed or unhidden is NOT rolled
     # back. Reconciling here means a save that reported failure leaves no durable
     # folder change behind.
-    _folder_name = stored_folder_name(fs_cfg.get("session_folder"))
+    # The staged value when we changed it, else what was already stored: `fs_cfg`
+    # is the VALIDATION snapshot and is no longer mutated in place, since the
+    # authoritative update now happens inside the lock.
+    _effective_folder = staged.get("session_folder", fs_cfg.get("session_folder"))
+    _folder_name = stored_folder_name(_effective_folder)
     if _folder_name:
         _state = request.app.get("state")
         if _state is not None:

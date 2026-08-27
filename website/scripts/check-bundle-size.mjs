@@ -51,7 +51,11 @@ export const CHUNK_BUDGETS = {
   // `t()` no longer pull the other twelve catalogs in behind them. Sized for the
   // English catalog plus headroom; a jump here means a non-English catalog, or a
   // library, reached the runtime module.
-  t: 700 * KB, // measured 641 KB
+  // Re-measured 2026-08-27 at 702 KB: the previous `measured 641 KB` note was
+  // ~60 KB stale, which left main sitting a few hundred bytes under its own
+  // ceiling, so any PR adding an English string tripped this gate rather than
+  // the new library or surface it exists to catch.
+  t: 740 * KB, // measured 702 KB
 
   // Pierre editor implementation (PR #4072 replaced Monaco, whose
   // 'editor.api2' chunk this entry set used to carry) -- the code-editor
