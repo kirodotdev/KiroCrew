@@ -57,6 +57,20 @@ describe('buildSrcdoc loading indicator', () => {
     expect(out).toContain('setTimeout(finish,15000)')
   })
 
+  it('uncovers immediately when the runtime load fails, before the backstop', () => {
+    // A PNA/CORS-blocked or missing runtime means the "compiled <style>"
+    // reveal signal never comes; without a failure path the overlay conflates
+    // "compiling" with "never coming" and blanks the widget for the full 15s
+    // (issue #6181). The flag check covers a failure that fired before the
+    // reveal script ran (the runtime is a HEAD script, its error task can
+    // precede any body script); the listener covers one that fires after.
+    const out = buildSrcdoc({
+      html: '<p>hi</p>', ...base, showLoadingOverlay: true, loadingLabel: 'x',
+    })
+    expect(out).toContain('if(window.__mcTwError){finish();return;}')
+    expect(out).toContain("window.addEventListener('mc-tw-error',finish)")
+  })
+
   it('pins the indicator to the TOP, never centred', () => {
     // The height reporter grows the frame to the content height (measured up to
     // 1781px), so a centred indicator lands below the fold — mounted but

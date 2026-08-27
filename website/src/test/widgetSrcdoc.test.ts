@@ -96,10 +96,27 @@ describe('widgetSrcdoc', () => {
     // the invariant explicitly.
     const malicious = '<meta name="x-script-placeholder" data-src="https://evil.example/pwn.js">'
     const out = buildSrcdoc({ html: malicious, themeVars: {}, mode: 'dark' })
-    // The trusted Tailwind script SHOULD exist (from the head placeholder)
-    expect(out).toContain('<script src="http://localhost:6776/vendor/tailwindcss-browser.js"></script>')
+    // The trusted Tailwind script SHOULD exist (from the head placeholder),
+    // carrying the CORS + failure-signal attributes (see the PNA test below).
+    expect(out).toContain(
+      '<script src="http://localhost:6776/vendor/tailwindcss-browser.js" crossorigin="anonymous"',
+    )
     // The model's attempted injection must NOT become a <script> tag —
     // it remains as an inert <meta> in the body (no executable consequence).
     expect(out).not.toContain('<script src="https://evil.example/pwn.js">')
+  })
+
+  it('loads the runtime via CORS and signals a load failure (PNA)', () => {
+    // The sandboxed iframe is a null-origin NON-secure context, and on the
+    // default deployment the runtime src is a loopback address — Chrome's
+    // Private Network Access policy blocks that load unless it goes through
+    // CORS (crossorigin="anonymous") so the gateway's Access-Control-Allow-*
+    // approval can apply (issue #6181).
+    const out = buildSrcdoc({ html: '<p>hi</p>', themeVars: {}, mode: 'dark' })
+    expect(out).toContain('crossorigin="anonymous"')
+    // A failed load must announce itself so the loading overlay can uncover
+    // the widget immediately instead of hanging on the 15s backstop.
+    expect(out).toContain('window.__mcTwError=1')
+    expect(out).toContain('mc-tw-error')
   })
 })
