@@ -1744,6 +1744,39 @@ export interface KiroCreditUsage {
   startUrl?: string
 }
 
+export interface KasLoginStatus {
+  authenticated: boolean
+  /** Provider of the active sign-in (e.g. 'google', 'github', 'builder_id'), null when signed out. */
+  provider: string | null
+  /** Human-readable account identity (email / profile ARN), null when signed out. */
+  identity: string | null
+  /**
+   * How a sign-in can return to this gateway. 'loopback' means the browser and
+   * the gateway share a machine, so the OAuth callback lands directly on a
+   * local port; 'device' means the gateway is remote and the user instead
+   * approves a short code in their own browser (no callback required).
+   */
+  transport: 'loopback' | 'device'
+}
+
+export interface KasLoginDeviceSession {
+  /** Handle for polling this sign-in attempt. */
+  login_id: string
+  /** The short code the user types into the verification page. */
+  user_code: string
+  /** The page (opened on ANY device) where the code is entered. */
+  verification_uri_complete: string
+  /** ISO-8601 UTC instant the code stops working. */
+  expires_at: string
+}
+
+export interface KasLoginPollResult {
+  status: 'pending' | 'authorized' | 'expired' | 'error'
+  /** Machine-readable failure code — error responses carry one too. */
+  code?: string
+  error?: string
+}
+
 export interface AgentImportCategory {
   id: string
   label: string
@@ -2010,6 +2043,17 @@ export const api = {
   // cross-site triggerable and would leave no audit record.
   repairKiroPrerequisiteSpecs: () =>
     post('/api/kiro-prerequisite/repair-specs').then(j) as Promise<KiroPrerequisiteStatus>,
+  // KAS-mode in-product sign-in (no kiro-cli, no terminal). Status is a cheap
+  // read; every step that changes sign-in state is a POST for the same
+  // CSRF/audit reasons as the spec repair above. Error responses carry a
+  // machine-readable `code` field alongside the human message.
+  kasLoginStatus: () => get('/api/kas-login').then(j) as Promise<KasLoginStatus>,
+  kasLoginBeginDevice: (provider: string) =>
+    post('/api/kas-login/device', { provider }).then(j) as Promise<KasLoginDeviceSession>,
+  kasLoginPoll: (login_id: string) =>
+    post('/api/kas-login/poll', { login_id }).then(j) as Promise<KasLoginPollResult>,
+  kasLoginLogout: (identity: string) =>
+    post('/api/kas-login/logout', { identity }).then(j) as Promise<KasLoginStatus>,
   onboardingImportScan: () =>
     get('/api/onboarding/import/scan').then(j) as Promise<AgentImportScanResponse>,
   onboardingImportApply: (body: AgentImportApplyRequest) =>

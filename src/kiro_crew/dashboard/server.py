@@ -3330,6 +3330,16 @@ async def start_dashboard(
 
     app.on_cleanup.append(_kiro_prerequisite_shutdown)
 
+    async def _kas_login_shutdown(app_: web.Application) -> None:
+        # Releases the service's aiohttp session IF a KAS request created it. It is
+        # lazily built on first use (never at boot), so an app that never served a
+        # KAS request has nothing to close.
+        service = app_.get("kas_login_service")
+        if service is not None:
+            await service.close()
+
+    app.on_cleanup.append(_kas_login_shutdown)
+
     # ── Instances (multi-instance management) ────────────────────────────────
     # Register the opt-in instances startup/cleanup hooks HERE, before
     # ``runner.setup()`` freezes the app's signal lists. See
@@ -4012,6 +4022,16 @@ async def start_api_server(
         await app_["kiro_prerequisite_service"].close()
 
     app.on_cleanup.append(_kiro_prerequisite_shutdown)
+
+    async def _kas_login_shutdown(app_: web.Application) -> None:
+        # Releases the service's aiohttp session IF a KAS request created it. It is
+        # lazily built on first use (never at boot), so an app that never served a
+        # KAS request has nothing to close.
+        service = app_.get("kas_login_service")
+        if service is not None:
+            await service.close()
+
+    app.on_cleanup.append(_kas_login_shutdown)
 
     # Prevent-sleep shutdown hook — registered before runner.setup freezes the
     # signal lists; the poll itself is armed after the port binds (below). This

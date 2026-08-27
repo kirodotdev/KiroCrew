@@ -36,6 +36,7 @@ agent loads only the one it needs.
 | [governance.md](governance.md) | The two-level governance model, the scope catalog, and the PreToolUse gate. |
 | [platform-context.md](platform-context.md) | The Composed Platform Providers seam, edition resolution, and signed-plugin admission. |
 | [computer-use.md](computer-use.md) | Native desktop GUI automation, its keystone opt-in, and the in-band refusals. |
+| [kas-auth.md](kas-auth.md) | KAS-mode auth: the Kiro OIDC login/refresh/storage lifecycle Kiro Crew runs itself when there is no kiro-cli. |
 
 ## Agents and orchestration
 

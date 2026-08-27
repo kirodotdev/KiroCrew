@@ -5164,6 +5164,17 @@ _CREW_SECRET_LEAVES: list[str] = [
     # #2351). The verb-independent sensitive-path backstop covers a scripted
     # ``python -c "open('~/.kiro/crew/.vault/...')"`` too.
     ".vault",
+    # KAS-mode auth token store. In the KAS-embedded runtime Kiro Crew performs the
+    # Kiro OIDC lifecycle itself (there is no kiro-cli), and persists the resulting
+    # access/refresh tokens as ``0600`` files under this dir. They are live bearer
+    # credentials for the model service, so — like every other credential store —
+    # they sit behind the shared read+write floor: an auto-approved or sandboxed
+    # agent must not be able to read the token back or overwrite it. The auth
+    # module's own store opens these paths directly rather than through this gate,
+    # so login/refresh keep working. Fence the whole ``kas`` dir (not just
+    # ``kas/auth``): fencing only the leaf would let the agent rename ``kas`` and
+    # then read the relocated token store from outside the fence.
+    "kas",
 ]
 _SENSITIVE_HOME_DIRS += [
     f"{prefix}/{leaf}" for prefix in _CREW_HOME_PREFIXES for leaf in _CREW_SECRET_LEAVES

@@ -107,6 +107,24 @@ class SecretVault:
         async with self._lock:
             await asyncio.to_thread(self._set_sync, name, value)
 
+    def set_sync(self, name: str, value: str) -> None:
+        """Store or overwrite a secret, synchronously.
+
+        For callers already off the event loop (worker threads, sync storage
+        layers). Safe without the asyncio lock: every mutation serializes on the
+        cross-process flock inside ``_write_store``, which also covers threads
+        in this process (each acquisition uses its own fd).
+        """
+        self._set_sync(name, value)
+
+    def delete_sync(self, name: str) -> None:
+        """Remove a secret synchronously. No-op if it does not exist.
+
+        Same locking rationale as ``set_sync``. Failures (e.g. an unwritable
+        store) propagate to the caller.
+        """
+        self._delete_sync(name)
+
     async def set_if_absent(self, name: str, value: str) -> Optional[dict[str, str]]:
         """Store ``value`` under ``name`` ONLY if the key is not already present.
 
