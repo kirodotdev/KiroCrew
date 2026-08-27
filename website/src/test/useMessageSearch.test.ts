@@ -319,6 +319,41 @@ describe('useMessageSearch keyboard shortcuts', () => {
       document.body.removeChild(root)
     }
   })
+
+  it('Ctrl/Cmd+F is ignored when another surface already answered the chord', () => {
+    const { result } = renderHook(() => useMessageSearch(messages, 'slot-1'))
+    // Pierre's editor binds cmdOrCtrl+f on its own content element and calls
+    // preventDefault() without stopPropagation(), so this document-level
+    // handler still sees the event. Opening chat search here would stack a
+    // transcript-scoped find on top of the editor's own find panel.
+    const inner = document.createElement('div')
+    document.body.appendChild(inner)
+    inner.addEventListener('keydown', e => { e.preventDefault() })
+    try {
+      act(() => {
+        inner.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', metaKey: true, bubbles: true, cancelable: true }))
+      })
+      expect(result.current.isOpen).toBe(false)
+    } finally {
+      document.body.removeChild(inner)
+    }
+  })
+
+  it('still opens chat search when no other surface claimed the chord', () => {
+    const { result } = renderHook(() => useMessageSearch(messages, 'slot-1'))
+    // Control for the case above: an unclaimed chord must still reach chat
+    // search, so the bail cannot be satisfied by an always-yield handler.
+    const inner = document.createElement('div')
+    document.body.appendChild(inner)
+    try {
+      act(() => {
+        inner.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', metaKey: true, bubbles: true, cancelable: true }))
+      })
+      expect(result.current.isOpen).toBe(true)
+    } finally {
+      document.body.removeChild(inner)
+    }
+  })
 })
 
 describe('close() hands focus back to the composer', () => {

@@ -112,6 +112,12 @@ export function useMessageSearch(messages: ChatMessage[], activeSlot: string | n
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (hasCommandModifier(e) && e.key === 'f') {
+        // Yield to a surface that already answered the chord. In an edit
+        // session Pierre binds cmdOrCtrl+f on its own content element and calls
+        // preventDefault() without stopPropagation(), so this document-level
+        // handler still runs; opening chat search here would stack a
+        // transcript-scoped find on top of the editor's own find panel.
+        if (e.defaultPrevented) return
         // Yield Cmd/Ctrl+F to app surfaces that own their own in-file find
         // (e.g. the file explorer). Without this, an in-file search hijacks
         // the key and opens the chat message-search pane instead. This
