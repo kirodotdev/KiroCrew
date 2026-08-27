@@ -90,11 +90,11 @@ const rowIdentity = (m: ChatMessage, i: number): string =>
  *
  * Three messages short-circuit the scan:
  *  - a `user` message ends the previous turn, so its options no longer apply →
- *    return none.
+ *    return none. UNLESS the turn it began failed: see `sawError` below.
  *  - a `queued` message means the user already acted (Quick Send while the
  *    slot was busy). The optimistic user bubble was suppressed, but the intent
  *    is identical — hide options immediately so they don't linger until the
- *    queue drains.
+ *    queue drains. Same failed-turn exception applies.
  *  - a `compaction` notice is skipped. Auto-compaction appends a
  *    "✅ Conversation compacted" message with the `assistant` role but tagged
  *    `kind="compaction"` (see `chat_utils._broadcast_compaction_result`). It
@@ -102,6 +102,17 @@ const rowIdentity = (m: ChatMessage, i: number): string =>
  *    real options-bearing turn it follows and the buttons would vanish after a
  *    compaction. The marker is read from `kind` (live websocket path) or
  *    `meta.kind` (history-reload path).
+ *
+ * A `user`/`queued` row is only a valid stop because it means "the user has
+ * answered, so the question is closed". A row whose turn FAILED answered
+ * nothing — the question is still open and the choices still apply — but the
+ * row stays in the feed forever, so an unconditional stop hid the pills
+ * permanently and the user had to retype the choice by hand. `sawError` tracks
+ * an error row seen while scanning backward and lets exactly ONE such row be
+ * crossed, re-arming per error so repeated failed attempts each get crossed.
+ * `error` is the single role to key on: the backend routes every terminal turn
+ * error through one `slot.append("error", …)` call site, so matching the role
+ * covers every cause — timeout, transport, refusal — with no message parsing.
  *
  * `questionPending` suppresses the pills while an `ask_question` card is on
  * screen for the same slot, so the user is never offered the same choice twice
@@ -118,9 +129,19 @@ export function deriveFollowUpOptions(
   questionPending = false,
 ): FollowUpDerivation {
   if (isStreaming || questionPending) return { followUpOptions: [], followUpIsPlan: false, followUpSourceKey: null }
+  // Errors were already transparent here (no branch matched them); the flag is
+  // what makes that transparency mean something.
+  let sawError = false
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]
-    if (m.role === 'user' || m.role === 'queued') return { followUpOptions: [], followUpIsPlan: false, followUpSourceKey: null }
+    if (m.role === 'error') { sawError = true; continue }
+    if (m.role === 'user' || m.role === 'queued') {
+      if (!sawError) return { followUpOptions: [], followUpIsPlan: false, followUpSourceKey: null }
+      // Cross this failed turn and keep looking. Re-armed only by another error,
+      // so a SUCCESSFUL turn further back still stops the scan.
+      sawError = false
+      continue
+    }
     if (isSystemNoticeKind(m.kind ?? (m.meta?.kind as string | undefined))) continue
     // A note may carry options, so a zero-token cron can offer an action without an LLM turn.
     // `isNoteRow` also matches a rehydrated note, whose class the history format drops.
