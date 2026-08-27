@@ -22,15 +22,17 @@ vi.mock('../pages/chat/UserMessage', () => ({
 }))
 
 vi.mock('../pages/chat/CollapsibleToolGroup', () => ({
-  default: ({ children, count, hasPermission, pendingPermCount, canTrust, onApproveBatch }: {
+  default: ({ children, count, hasPermission, pendingPermCount, canTrust, onApproveBatch, permissionMetas }: {
     children?: ReactNode; count?: number; hasPermission?: boolean; pendingPermCount?: number; canTrust?: boolean
     onApproveBatch?: (decision: string) => Promise<unknown>
+    permissionMetas?: Record<string, unknown>[]
   }) => (
     <div
       data-testid="collapsible-tool-group"
       data-count={count}
       data-has-permission={String(hasPermission)}
       data-pending-perm-count={pendingPermCount}
+      data-perm-metas-count={permissionMetas ? permissionMetas.length : undefined}
       data-can-trust={String(!!canTrust)}
       data-has-batch={String(!!onApproveBatch)}
     >
@@ -279,6 +281,24 @@ describe('ChatMessageList', () => {
       // All permissions are resolved, so has-permission should be false
       expect(group.getAttribute('data-has-permission')).toBe('false')
       expect(group.getAttribute('data-pending-perm-count')).toBe('0')
+    })
+
+    it('passes one meta per pending perm so the count promise stays honest (#6404)', () => {
+      // A pending perm with NO meta must still contribute a metas entry, so
+      // permissionMetas.length === pendingPermCount and CollapsibleToolGroup can
+      // render its "No preview available" placeholder for it — otherwise the
+      // "Review all N" note would promise more rows than render (silent-row gap).
+      const msgs: ChatMessage[] = [
+        msg('user', 'Run them'),
+        msg('permission', 'Allow A?', { meta: { approval_id: 'a1' } }),
+        msg('permission', 'Allow B?'),
+        msg('permission', 'Allow C?', { meta: { approval_id: 'a3' } }),
+        msg('assistant', 'Done'),
+      ]
+      render(<ChatMessageList messages={msgs} running={false} />)
+      const group = screen.getByTestId('collapsible-tool-group')
+      expect(group.getAttribute('data-pending-perm-count')).toBe('3')
+      expect(group.getAttribute('data-perm-metas-count')).toBe('3')
     })
 
     it('threads canTrust to the group, and withholds it by default (#5434)', () => {

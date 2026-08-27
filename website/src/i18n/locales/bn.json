@@ -8490,7 +8490,8 @@
       "collapsibleToolGroup": {
         "approval_needed": "অনুমোদন প্রয়োজন",
         "approvals_pending": "অনুমোদন বাকি",
-        "batch_preview_note": "{{count}}টি অপেক্ষমাণ কলের মধ্যে সর্বশেষটি; সবগুলো একসাথে সমাধান করা হবে।",
+        "batch_preview_all": "নিচে {{count}}টি অপেক্ষমাণ কল পর্যালোচনা করুন — সবগুলো একসাথে সমাধান করা হবে।",
+        "batch_preview_none": "এই কলের জন্য কোনো প্রিভিউ উপলব্ধ নেই।",
         "approve": "অনুমোদন করুন",
         "approve_all": "সব {{count}}টি অনুমোদন করুন",
         "approved": "অনুমোদিত",

@@ -8364,7 +8364,8 @@
       "collapsibleToolGroup": {
         "approval_needed": "需要审批",
         "approvals_pending": "项待审批",
-        "batch_preview_note": "{{count}} 个待处理调用中的最新一个；将一并处理。",
+        "batch_preview_all": "请在下方查看全部 {{count}} 个待处理调用；将一并处理。",
+        "batch_preview_none": "此调用没有可用的预览。",
         "approve": "批准",
         "approve_all": "全部批准 ({{count}})",
         "approved": "已批准",

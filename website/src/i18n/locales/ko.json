@@ -8364,7 +8364,8 @@
       "collapsibleToolGroup": {
         "approval_needed": "승인 필요",
         "approvals_pending": "승인 대기 중",
-        "batch_preview_note": "대기 중인 {{count}}건 중 최신 항목입니다. 모두 함께 처리됩니다.",
+        "batch_preview_all": "아래에서 대기 중인 {{count}}건의 호출을 모두 검토하세요. 모두 함께 처리됩니다.",
+        "batch_preview_none": "이 호출에 대한 미리 보기를 사용할 수 없습니다.",
         "approve": "승인",
         "approve_all": "모두 승인 ({{count}})",
         "approved": "승인됨",

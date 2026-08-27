@@ -8616,7 +8616,8 @@
       "collapsibleToolGroup": {
         "approval_needed": "Se requiere aprobación",
         "approvals_pending": "aprobaciones pendientes",
-        "batch_preview_note": "La más reciente de {{count}} llamadas pendientes; todas se resolverán juntas.",
+        "batch_preview_all": "Revisa a continuación las {{count}} llamadas pendientes: todas se resolverán juntas.",
+        "batch_preview_none": "No hay vista previa disponible para esta llamada.",
         "approve": "Aprobar",
         "approve_all": "Aprobar las {{count}}",
         "approved": "Aprobado",

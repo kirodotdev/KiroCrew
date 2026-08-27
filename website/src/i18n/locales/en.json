@@ -5810,7 +5810,8 @@
       "collapsibleToolGroup": {
         "approval_needed": "Approval needed",
         "approvals_pending": "approvals pending",
-        "batch_preview_note": "Showing the most recent of {{count}} pending calls; all will be resolved together.",
+        "batch_preview_all": "Review all {{count}} pending calls below — all will be resolved together.",
+        "batch_preview_none": "No preview available for this call.",
         "approve": "Approve",
         "approve_all": "Approve all {{count}}",
         "approved": "Approved",

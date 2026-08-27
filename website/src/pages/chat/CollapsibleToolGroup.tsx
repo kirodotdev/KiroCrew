@@ -16,6 +16,14 @@ interface CollapsibleToolGroupProps {
   children: ReactNode
   /** Permission message meta — used to extract command preview when approval pending. */
   permissionMeta?: Record<string, unknown>
+  /**
+   * Meta for EVERY pending permission in this group. When batching (>1 pending
+   * + a batch handler), the row previews all N commands one `<pre>` each so the
+   * human sees every call "Approve all N" will resolve — closing the
+   * approve-unseen gap where only `permissionMeta` (the newest) was shown. For
+   * a single pending approval this is unused; the row previews `permissionMeta`.
+   */
+  permissionMetas?: Record<string, unknown>[]
   /** Number of pending permission messages in this group (shown as indicator when > 1). */
   pendingPermCount?: number
   /** Callback for approve/reject (and trust, only when `canTrust`) — same as PermissionMessage.onApprove.
@@ -70,7 +78,7 @@ function extractPreview(meta?: Record<string, unknown>): string {
 }
 
 /** Collapsible row that wraps tool/thinking/permission messages — always collapsed unless autoExpand. */
-const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExpand, disclosureKey, hasPermission, isRunning, children, permissionMeta, pendingPermCount, onApprove, onApproveBatch, canTrust, onViewActivity, activityOpen }: CollapsibleToolGroupProps) {
+const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExpand, disclosureKey, hasPermission, isRunning, children, permissionMeta, permissionMetas, pendingPermCount, onApprove, onApproveBatch, canTrust, onViewActivity, activityOpen }: CollapsibleToolGroupProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [expanded, setExpanded] = useRowDisclosure(disclosureKey, !!autoExpand)
   const userToggled = useRef(false)
@@ -108,6 +116,22 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExp
 
   const preview = needsAttention ? sanitizeLlmOutput(extractPreview(permissionMeta)) : ''
   const truncated = preview.length > 150 ? preview.slice(0, 150) + '…' : preview
+
+  // Per-call previews for batch mode: one row per pending call, so the row shows
+  // EVERY command "Approve all N" will resolve — in FULL, not truncated (a
+  // truncated preview could hide a destructive suffix on a command with a benign
+  // prefix at the human-vetting boundary). Each <pre> is height-bounded +
+  // scrollable (below), so the full text never breaks layout. A meta with no
+  // derivable command is NOT dropped — it renders a placeholder row (text: '')
+  // so the rendered row count always equals pendingPermCount; dropping it would
+  // let "Review all N" promise more rows than it shows and let a preview-less
+  // call be approved sight-unseen (the exact gap this fix closes).
+  const batchPreviews: string[] = needsAttention && permissionMetas && permissionMetas.length > 1
+    ? permissionMetas.map(m => sanitizeLlmOutput(extractPreview(m)))
+    : []
+  // The full list is rendered inside a bounded, scrollable container (below), so
+  // EVERY pending command stays reachable — no call is hidden from "Approve all
+  // N" — while the Approve/Reject row stays above the fold on a large fan-out.
 
   // Dispatch an approval decision, optimistically reflecting it locally and rolling
   // back on failure. Logs failures for diagnostics via the error console.
@@ -163,12 +187,27 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExp
           gating this row on !expanded left the expanded pending group with no
           actionable buttons — a dead end exactly while the agent is parked
           waiting on the user (#5487). */}
-      {needsAttention && (onApprove || onApproveBatch) && truncated && (
+      {needsAttention && (onApprove || onApproveBatch) && (isBatch ? batchPreviews.length > 0 : !!truncated) && (
         <div className="mt-1 ml-4 pl-3 shadow-[inset_2px_0_0_0_theme(colors.amber.400)] forced-colors:border-l-2">
-          {isBatch && (
-            <div className="text-[12px] leading-5 text-muted mb-1">{i18nT('pages.chat.collapsibleToolGroup.batch_preview_note', { count: pendingPermCount })}</div>
+          {isBatch ? (
+            <>
+              {/* Batch: preview EVERY pending call so "Approve all N" is not a
+                  blind approval — the human sees each command being resolved. */}
+              <div className="text-[12px] leading-5 text-muted mb-1">{i18nT('pages.chat.collapsibleToolGroup.batch_preview_all', { count: pendingPermCount })}</div>
+              {/* Every pending command renders; the container is height-bounded and
+                  scrolls, so nothing is hidden AND the buttons stay above the fold
+                  even on a large fan-out. */}
+              <div className="max-h-[15em] overflow-y-auto mb-2">
+                {batchPreviews.map((p, i) => (
+                  p
+                    ? <pre key={i} className="bg-bg-hover rounded-md px-3 py-2 text-[13px] leading-5 font-mono overflow-x-auto whitespace-pre-wrap break-all max-h-[4.5em] overflow-y-auto mb-2 last:mb-0"><ToolInputText text={p} /></pre>
+                    : <div key={i} className="bg-bg-hover rounded-md px-3 py-2 text-[13px] leading-5 italic text-muted mb-2 last:mb-0">{i18nT('pages.chat.collapsibleToolGroup.batch_preview_none')}</div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <pre className="bg-bg-hover rounded-md px-3 py-2 text-[13px] leading-5 font-mono overflow-x-auto whitespace-pre-wrap break-all max-h-[4.5em] overflow-y-auto mb-2"><ToolInputText text={truncated} /></pre>
           )}
-          <pre className="bg-bg-hover rounded-md px-3 py-2 text-[13px] leading-5 font-mono overflow-x-auto whitespace-pre-wrap break-all max-h-[4.5em] overflow-y-auto mb-2"><ToolInputText text={truncated} /></pre>
         </div>
       )}
       {needsAttention && (onApprove || onApproveBatch) && (

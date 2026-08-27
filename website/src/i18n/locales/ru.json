@@ -8742,7 +8742,8 @@
       "collapsibleToolGroup": {
         "approval_needed": "Требуется подтверждение",
         "approvals_pending": "ожидают подтверждения",
-        "batch_preview_note": "Последний из {{count}} ожидающих вызовов; все будут обработаны вместе.",
+        "batch_preview_all": "Просмотрите ниже все {{count}} ожидающих вызовов — все будут обработаны вместе.",
+        "batch_preview_none": "Предпросмотр для этого вызова недоступен.",
         "approve": "Разрешить",
         "approve_all": "Разрешить все ({{count}})",
         "approved": "Разрешено",

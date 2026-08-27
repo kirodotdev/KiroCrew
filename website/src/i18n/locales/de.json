@@ -8490,7 +8490,8 @@
       "collapsibleToolGroup": {
         "approval_needed": "Genehmigung erforderlich",
         "approvals_pending": "Genehmigungen ausstehend",
-        "batch_preview_note": "Neuester von {{count}} ausstehenden Aufrufen; alle werden zusammen bearbeitet.",
+        "batch_preview_all": "Prüfe unten alle {{count}} ausstehenden Aufrufe – alle werden zusammen bearbeitet.",
+        "batch_preview_none": "Für diesen Aufruf ist keine Vorschau verfügbar.",
         "approve": "Genehmigen",
         "approve_all": "Alle {{count}} genehmigen",
         "approved": "Genehmigt",

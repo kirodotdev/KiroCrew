@@ -8490,7 +8490,8 @@
       "collapsibleToolGroup": {
         "approval_needed": "स्वीकृति आवश्यक",
         "approvals_pending": "स्वीकृतियाँ लंबित",
-        "batch_preview_note": "{{count}} लंबित कॉल में से सबसे नई; सभी एक साथ हल की जाएंगी।",
+        "batch_preview_all": "नीचे सभी {{count}} लंबित कॉल की समीक्षा करें — सभी एक साथ हल की जाएंगी।",
+        "batch_preview_none": "इस कॉल के लिए कोई पूर्वावलोकन उपलब्ध नहीं है।",
         "approve": "स्वीकृत करें",
         "approve_all": "सभी {{count}} स्वीकृत करें",
         "approved": "स्वीकृत",
