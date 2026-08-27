@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import functools
 import hashlib
 import json
 import logging
@@ -537,6 +538,41 @@ async def _safe_close(writer: asyncio.StreamWriter) -> None:
         await writer.wait_closed()
     except Exception:
         pass
+
+
+#: Invariant fragment of gatewayd's ``_TargetUnknown`` message. This is a FROZEN
+#: WIRE CONTRACT, not an implementation detail to be tidied: the daemon that
+#: sends it may be an old surviving process whose text can never be changed, so
+#: matching is the only classifier available for it. Only the stable leading
+#: clause is matched -- the remedy clause after it names an env prefix that HAS
+#: already changed across versions (``MC_MCP_TARGET_`` -> ``KIROCREW_MCP_TARGET_``).
+#: A test pins this against the live gatewayd string so the two cannot drift.
+TARGET_UNKNOWN_REASON = "no target mapping for server"
+
+
+def must_degrade_unknown_target(reason: str) -> bool:
+    """Should an UNTAGGED rejection still be treated as fallback-eligible?
+
+    A current daemon tags an unknown target ``fallback: true`` and this never
+    fires. It exists for the daemon that CANNOT tag it, which is precisely the
+    population the tag was added for: ``GatewayManager`` adopts any process
+    answering ``pong`` with no version handshake, so a daemon that outlived a
+    package upgrade serves brand-new stubs while predating every wire field
+    added since. Its target map is frozen at its own spawn, so it is also the
+    daemon most likely to be missing a server -- the tag would arrive exactly
+    where it cannot be sent.
+
+    Without this the PR's own fix is inert for the reported case: upgrade, old
+    daemon survives, adoption, untagged target-unknown, stub exits, and the
+    server's whole tool surface disappears from the session anyway.
+
+    Deliberately narrow. It matches ONLY the unknown-target class, so a genuine
+    spawn failure stays terminal and does not become a per-session crash-loop --
+    which is the reason the terminal path exists. Same shape as
+    :func:`must_degrade_unshareable`: the stub cannot verify the daemon's
+    version, so it reasons from what the daemon said.
+    """
+    return TARGET_UNKNOWN_REASON in (reason or "")
 
 
 def must_degrade_unshareable(poolable: bool, capabilities: list[str]) -> bool:
@@ -1397,11 +1433,25 @@ _FALLBACK_LOG_MAX_BYTES = 1024 * 1024
 
 
 def log_fallback(
-    reason: str, stub_uuid: str, pool_label: str, args: argparse.Namespace
+    reason: str,
+    stub_uuid: str,
+    pool_label: str,
+    args: argparse.Namespace,
+    *,
+    terminal: bool = False,
 ) -> None:
     """Append one JSON record to the fallback audit log. OS errors are
     swallowed — logging failure must never block the exec that keeps
-    kiro-cli working."""
+    kiro-cli working.
+
+    ``terminal=True`` marks a record as a stub that DIED rather than degraded.
+    Both events belong in this one log — same rotation, one place for an operator
+    to look — but they must not be added together: :func:`fallback_counts` feeds
+    gatewayd's ``stats``, and a fallback rate that silently includes terminals
+    misreports whether pooling is engaging. The split is driven by this
+    structured field, never by parsing the ``reason`` prefix, and a record
+    written before the field existed has no key and so still counts as a
+    fallback — which is what it was."""
     try:
         log_path = _fallback_log_path()
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1412,6 +1462,7 @@ def log_fallback(
             "stub_uuid": stub_uuid,
             "pool_label": pool_label,
             "reason": reason,
+            "terminal": bool(terminal),
             "server": args.server,
             "agent": args.agent,
             "channel_id": args.channel_id or "",
@@ -1449,13 +1500,23 @@ def fallback_counts() -> dict[str, Any]:
     to read a process tree.
 
     Returns ``{"window_secs": ..., "total": n, "by_server": {name: n},
-    "by_reason": {reason: n}}``. Never raises — an unreadable or torn log
+    "by_reason": {reason: n}, "terminal_total": n,
+    "terminal_by_server": {name: n}}``. Never raises — an unreadable or torn log
     yields the counts of whatever parsed.
+
+    ``total`` / ``by_server`` / ``by_reason`` count DEGRADATIONS only. A record
+    flagged ``terminal`` is a stub that died instead of degrading, which is a
+    different event with a different remedy, so it is tallied separately rather
+    than inflating the fallback rate this function exists to report. Records
+    predating the flag have no key and count as fallbacks, which is what they
+    were.
     """
     cutoff = time.time() - _FALLBACK_COUNT_WINDOW_SECS
     total = 0
     by_server: dict[str, int] = {}
     by_reason: dict[str, int] = {}
+    terminal_total = 0
+    terminal_by_server: dict[str, int] = {}
     live = _fallback_log_path()
     for path in (live.with_suffix(".jsonl.1"), live):
         try:
@@ -1470,8 +1531,14 @@ def fallback_counts() -> dict[str, Any]:
                     ts = rec.get("ts")
                     if not isinstance(ts, (int, float)) or ts < cutoff:
                         continue
-                    total += 1
                     server = str(rec.get("server") or rec.get("pool_label") or "?")
+                    if rec.get("terminal") is True:
+                        terminal_total += 1
+                        terminal_by_server[server] = (
+                            terminal_by_server.get(server, 0) + 1
+                        )
+                        continue
+                    total += 1
                     by_server[server] = by_server.get(server, 0) + 1
                     reason = str(rec.get("reason") or "?")
                     by_reason[reason] = by_reason.get(reason, 0) + 1
@@ -1482,11 +1549,18 @@ def fallback_counts() -> dict[str, Any]:
         "total": total,
         "by_server": by_server,
         "by_reason": by_reason,
+        "terminal_total": terminal_total,
+        "terminal_by_server": terminal_by_server,
     }
 
 
 async def alog_fallback(
-    reason: str, stub_uuid: str, pool_label: str, args: argparse.Namespace
+    reason: str,
+    stub_uuid: str,
+    pool_label: str,
+    args: argparse.Namespace,
+    *,
+    terminal: bool = False,
 ) -> None:
     """Run :func:`log_fallback` in a worker thread.
 
@@ -1495,7 +1569,11 @@ async def alog_fallback(
     it runs off the event loop, and awaiting it guarantees the record is on
     disk before the caller proceeds to ``fallback_exec`` (which replaces the
     process image and would otherwise race the write)."""
-    await asyncio.to_thread(log_fallback, reason, stub_uuid, pool_label, args)
+    await asyncio.to_thread(
+        functools.partial(
+            log_fallback, reason, stub_uuid, pool_label, args, terminal=terminal
+        )
+    )
 
 
 def fallback_exec(args: argparse.Namespace) -> None:
@@ -1722,12 +1800,34 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
                 isinstance(ready, dict)
                 and ready.get("type") == "rejected"
                 and not ready.get("fallback")
+                # A legacy daemon cannot send the tag, so an untagged
+                # target-unknown is routed to the fallback-exec path below
+                # rather than killing the server. See
+                # ``must_degrade_unknown_target``.
+                and not must_degrade_unknown_target(str(ready.get("reason") or ""))
             ):
-                # Terminal rejection (unknown target / genuine spawn failure):
-                # the gateway says this server cannot run. Surface the failure
-                # instead of exec'ing — matches the lazy path and avoids
-                # per-session crash-loops of a broken backend.
+                # Terminal rejection (genuine spawn failure): the gateway says
+                # this server cannot run. Surface the failure instead of
+                # exec'ing — matches the lazy path and avoids per-session
+                # crash-loops of a broken backend.
+                #
+                # Audited BEFORE returning, and this is the whole point of the
+                # record. A terminal exit writes no fallback record by
+                # definition, and this ``logger.error`` goes to the stub's own
+                # stderr, which kiro-cli swallows — so the pre-fix failure mode
+                # was a server whose entire tool surface vanished from a session
+                # while every durable log showed only a healthy ``registered``
+                # line. On the daemon side a terminal and a served stub were
+                # indistinguishable after the fact. The ``terminal:`` prefix
+                # keeps these separable from real fallbacks in
+                # ``stub_fallback_counts()``, which the gateway folds into its
+                # ``stats`` reply.
                 await _safe_close(writer)
+                await alog_fallback(
+                    f"terminal:{ready.get('reason') or 'ensure_backend_rejected'}",
+                    payload["stub_uuid"], pool_label, args,
+                    terminal=True,
+                )
                 logger.error(
                     "gateway terminally rejected ensure_backend (%s); not falling back pool=%s",
                     ready.get("reason"), pool_label,

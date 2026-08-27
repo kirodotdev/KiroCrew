@@ -1299,6 +1299,46 @@ def _declared_env_to_forward(pool_key: PoolKey) -> dict[str, str]:
     return _declared_non_secret_env(pool_key)
 
 
+#: The canonical target-env prefix. ``MC_MCP_TARGET_`` is the legacy spelling
+#: :func:`env_target_resolver` still accepts, so both normalize to this stem set.
+_TARGET_ENV_PREFIXES = ("KIROCREW_MCP_TARGET_", "MC_MCP_TARGET_")
+
+
+def resolvable_target_stems(env: Optional[dict[str, str]] = None) -> list[str]:
+    """The set of target-env STEMS this daemon can resolve, sorted.
+
+    A stem is the env key with its prefix and any ``__<command_args_hash>``
+    suffix removed -- e.g. both ``KIROCREW_MCP_TARGET_KIROCREW_CORE`` and
+    ``KIROCREW_MCP_TARGET_KIROCREW_CORE__61774e20...`` yield ``KIROCREW_CORE``.
+
+    Reported on the ``pong`` reply so an adopting :class:`GatewayManager` can
+    tell whether an incumbent daemon's env still covers the servers the current
+    config wants stubbed. This is the ONLY way to see that: the daemon's target
+    map is baked into its process env at spawn (``manager._spawn_once``) and a
+    frozen :class:`GatewaySpec` is never re-applied to an adopted survivor, so a
+    daemon that predates a ``stub_servers`` change serves a stale map forever.
+
+    Deliberately reports STEMS rather than server names. Recovering a name would
+    mean undoing ``upper().replace("-", "_")``, which is lossy -- ``my-server``
+    and ``my_server`` normalize identically (the rewriter warns about exactly
+    that collision). Both sides comparing stems needs no such guess.
+    """
+    source = os.environ if env is None else env
+    stems: set[str] = set()
+    for key in source:
+        for prefix in _TARGET_ENV_PREFIXES:
+            if not key.startswith(prefix):
+                continue
+            stem = key[len(prefix) :]
+            # Strip the args-disambiguated suffix so a hashed-only entry still
+            # reports the server it serves.
+            stem = stem.split("__", 1)[0]
+            if stem:
+                stems.add(stem)
+            break
+    return sorted(stems)
+
+
 def env_target_resolver(pool_key: PoolKey) -> Optional[tuple[str, list[str], dict[str, str], str]]:
     """Look up ``KIROCREW_MCP_TARGET_<SERVER>`` in the process env and return the
     spawn tuple, or ``None`` if no mapping is set.
@@ -2129,7 +2169,10 @@ async def _handle_connection(
     # uses this to confirm the daemon is serving before returning from
     # ``start()``.
     if register.get("type") == "ping":
-        await _write_json_line(writer, {"type": "pong"})
+        # ``targets`` lets the pinger detect a STALE incumbent before adopting
+        # it. Absent on a pre-#6xxx daemon, which the adoption gate treats as
+        # unverifiable rather than assuming coverage.
+        await _write_json_line(writer, {"type": "pong", "targets": resolvable_target_stems()})
         return
 
     # Metrics short-circuit: return a point-in-time pool snapshot (backends,
@@ -2579,12 +2622,43 @@ async def _handle_connection(
                         # + create_task overhead so the metric stays true to name.
                         _acquire_ms = (time.monotonic() - _acquire_t0) * 1000.0
                     except _TargetUnknown as exc:
-                        _audit_pool_rejected(
+                        # An unknown target here means THIS DAEMON'S env has no
+                        # mapping -- which, at the pre-flight, can only be map
+                        # drift: a stub exists at all only because the rewriter
+                        # wrapped that server, and the stub is holding the real
+                        # ``--target-command`` on its own argv. A genuinely
+                        # unrunnable target fails later, as BackendUnavailable.
+                        # So this is fallback-ELIGIBLE: no real MCP frame has
+                        # been forwarded yet, so the stub can exec the target
+                        # directly and lose nothing but pooling.
+                        #
+                        # Loud, and named: the pre-fix behaviour was a bare
+                        # ``rejected`` with no ``fallback`` key, which the stub
+                        # reads as terminal (stub.py) -- it died in 0.2s having
+                        # logged only to a stderr nobody captures, so a whole
+                        # server's tools vanished from the session with no
+                        # attributable record anywhere. See
+                        # docs/architecture/design-notes/mcp-stub-decoupling.md.
+                        logger.warning(
+                            "ensure_backend: no target mapping for %s -- this "
+                            "daemon's target env predates the current "
+                            "stub_servers set (target map is baked at spawn and "
+                            "an adopted daemon never re-applies it). Replying "
+                            "fallback-eligible so the stub degrades to a "
+                            "per-session exec; pooling and the strict session "
+                            "key are LOST for this connection. Daemon stems: %s",
+                            pool_key.human_readable(),
+                            ",".join(resolvable_target_stems()) or "(none)",
+                        )
+                        _audit_pool_fallback(
                             caller.session_key if caller else "",
                             pool_key.human_readable(),
                             str(exc),
                         )
-                        await _write_json_line(writer, {"type": "rejected", "reason": str(exc)})
+                        await _write_json_line(
+                            writer,
+                            {"type": "rejected", "reason": str(exc), "fallback": True},
+                        )
                         return
                     except (BackendUnavailable, PoolAtCapacity) as exc:
                         logger.info(
@@ -2681,6 +2755,20 @@ async def _handle_connection(
                     # create_task overhead.
                     _lazy_elapsed_ms = (time.monotonic() - _lazy_t0) * 1000.0
                 except _TargetUnknown as exc:
+                    # Same drift as the pre-flight site, but NOT fallback-tagged:
+                    # only a pre-ensure_backend stub reaches this path and it has
+                    # already forwarded a real MCP frame, so an exec fallback
+                    # would lose that frame. Terminal is correct here -- what was
+                    # missing is saying so anywhere durable.
+                    logger.warning(
+                        "lazy-spawn: no target mapping for %s -- this daemon's "
+                        "target env predates the current stub_servers set. "
+                        "Terminal (a real frame was already forwarded, so an "
+                        "exec fallback would drop it): this server's tools will "
+                        "be ABSENT for the session. Daemon stems: %s",
+                        pool_key.human_readable(),
+                        ",".join(resolvable_target_stems()) or "(none)",
+                    )
                     _audit_pool_rejected(
                         caller.session_key if caller else "",
                         pool_key.human_readable(),

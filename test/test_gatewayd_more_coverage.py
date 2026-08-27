@@ -255,7 +255,23 @@ class TestControlFrames:
     async def test_ping_is_answered_with_pong_and_closes(self, peer_ok):
         writer = _FakeWriter()
         await _handle(_ScriptedReader({"type": "ping"}, {"type": "ping"}), writer, _fake_pool())
-        assert writer.frames() == [{"type": "pong"}]
+        frames = writer.frames()
+        assert len(frames) == 1
+        assert frames[0]["type"] == "pong"
+
+    @pytest.mark.asyncio
+    async def test_pong_reports_the_target_map_so_an_adopter_can_check_it(
+        self, peer_ok, monkeypatch
+    ):
+        """``GatewayManager`` adopts any process answering ``pong`` without a
+        version handshake, and adoption is the one path that never applies the
+        spec's ``mcp_target_env``. Without this field the adopter cannot tell a
+        daemon that predates a ``stub_servers`` change from a current one, which
+        is how a stale daemon silently removed a whole server's tools."""
+        monkeypatch.setenv("KIROCREW_MCP_TARGET_KIROCREW_CORE", "kirocrew mcp-core")
+        writer = _FakeWriter()
+        await _handle(_ScriptedReader({"type": "ping"}), writer, _fake_pool())
+        assert "KIROCREW_CORE" in writer.frames()[0]["targets"]
 
     @pytest.mark.asyncio
     async def test_stats_merges_the_warm_pool_hit_tally(self, peer_ok, monkeypatch):
@@ -572,10 +588,16 @@ class TestEnsureBackendRejections:
         "exc,expected_reason,fallback,audit",
         [
             (
+                # Fallback-ELIGIBLE: at the pre-flight no real MCP frame has
+                # been forwarded, and an unknown target here can only be map
+                # drift (a stub exists only because the rewriter wrapped that
+                # server, and it holds the real --target-command on its argv).
+                # Tagging it terminal is what killed the server outright instead
+                # of degrading it to a per-session exec.
                 gw._TargetUnknown("no target mapping for server 'demo-mcp'"),
                 "no target mapping for server 'demo-mcp'",
-                False,
-                "_audit_pool_rejected",
+                True,
+                "_audit_pool_fallback",
             ),
             (
                 BackendUnavailable("circuit breaker OPEN"),

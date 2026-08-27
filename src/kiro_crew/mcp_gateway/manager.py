@@ -26,7 +26,7 @@ import signal
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from kiro_crew import platform_compat
 from kiro_crew.config.paths import config_dir
@@ -184,12 +184,17 @@ class GatewayManager:
         # survivor from a prior gateway), adopt it instead of spawning a
         # competitor. gatewayd's flock guard already makes a duplicate spawn
         # a clean no-op, but adopting skips the wasted spawn/exit churn.
-        if await self._ping_once():
+        incumbent = await self._ping_payload()
+        if incumbent is not None:
             self._adopted = True
             logger.info(
                 "mcp-gateway: a healthy daemon already owns %s — adopting "
                 "(no spawn)", self._spec.socket_path,
             )
+            # Adoption skips _spawn_once, which is the ONLY place
+            # spec.mcp_target_env is applied. Check the incumbent actually
+            # covers what this spec would have given it, and say so if not.
+            self._report_adoption_drift(incumbent)
             # Supervise even when adopting: the adopted daemon may be a
             # prior-gateway survivor with no other watchdog in this process.
             # The watchdog's adopted branch re-checks liveness by ping and
@@ -394,10 +399,95 @@ class GatewayManager:
         """Public liveness probe: ``True`` iff the daemon replies pong."""
         return await self._ping_once()
 
+    def _required_target_stems(self) -> set[str]:
+        """Target-env stems the CURRENT config wants this daemon to serve.
+
+        Derived from the spec's own ``mcp_target_env`` -- the mapping the
+        rewriter just computed for the live ``stub_servers`` set -- so it needs
+        no second config read and cannot disagree with what a spawn would apply.
+        Stems, not server names: see ``gatewayd.resolvable_target_stems``.
+        """
+        stems: set[str] = set()
+        for key in self._spec.mcp_target_env:
+            for prefix in ("KIROCREW_MCP_TARGET_", "MC_MCP_TARGET_"):
+                if key.startswith(prefix):
+                    stem = key[len(prefix):].split("__", 1)[0]
+                    if stem:
+                        stems.add(stem)
+                    break
+        return stems
+
+    def _report_adoption_drift(self, pong: dict) -> bool:
+        """Warn when an incumbent daemon's target map does not cover this spec.
+
+        Returns ``True`` iff drift was found. Reports rather than refuses, and
+        that split is deliberate: refusing adoption cannot actually replace the
+        incumbent, because gatewayd's flock guard makes a competing spawn a
+        clean no-op -- the stale daemon would keep the socket and we would have
+        traded a warning for an outage. What makes the drift SAFE is the
+        gatewayd-side change that answers an unknown target at the
+        ensure_backend pre-flight with ``fallback: true``, so a stub degrades to
+        a per-session exec instead of dying. This method's job is to make the
+        cost of that degradation visible, since it is real: pooling and the
+        strict session key are lost for every server the incumbent cannot serve.
+
+        The drift is otherwise invisible and self-perpetuating: the target map is
+        baked into the daemon's process env at ``_spawn_once`` and a frozen
+        ``GatewaySpec`` is never re-applied to a survivor, so a daemon that
+        predates a ``stub_servers`` change serves a stale map for as long as it
+        holds the socket -- observed in the field as a 25-day-old daemon that
+        silently removed ``kirocrew-core``'s entire tool surface from every
+        session. Automatic replacement needs a reap seam an adopted manager does
+        not have (it owns no PID) and is tracked separately.
+        """
+        required = self._required_target_stems()
+        if not required:
+            return False
+        reported = pong.get("targets")
+        if not isinstance(reported, list):
+            # A daemon too old to report coverage. Unverifiable, not proven bad
+            # -- but it is exactly the pre-upgrade survivor class that carries a
+            # stale map, so say so instead of assuming coverage.
+            logger.warning(
+                "mcp-gateway: incumbent daemon on %s does not report its target "
+                "map (pre-upgrade daemon), so its coverage of %d configured "
+                "stub target(s) cannot be verified. If a stubbed server's tools "
+                "are missing from sessions, this daemon is the first thing to "
+                "replace.",
+                self._spec.socket_path, len(required),
+            )
+            return True
+        missing = sorted(required - {s for s in reported if isinstance(s, str)})
+        if not missing:
+            return False
+        logger.warning(
+            "mcp-gateway: incumbent daemon on %s is STALE -- its target map is "
+            "missing %s. Its env was baked when it spawned and an adopted daemon "
+            "never re-applies a new one, so these servers' stubs will degrade to "
+            "per-session exec: their tools keep working, but pooling and the "
+            "strict session key are LOST. Replace the daemon to restore them.",
+            self._spec.socket_path, ", ".join(missing),
+        )
+        return True
+
+    async def _ping_payload(self) -> Optional[dict]:
+        """The daemon's ``pong`` payload, or ``None`` if it did not answer one.
+
+        Split out of :meth:`_ping_once` so the adoption gate can read the
+        coverage report the reply carries without changing the boolean contract
+        the five other call sites rely on.
+        """
+        msg = await self._ping_raw()
+        return msg if isinstance(msg, dict) and msg.get("type") == "pong" else None
+
     async def _ping_once(self) -> bool:
         """Return ``True`` iff the daemon replies ``{"type":"pong"}`` within
         ``_PING_TIMEOUT_SECS``. Any transport or parse error → ``False``.
         """
+        return (await self._ping_payload()) is not None
+
+    async def _ping_raw(self) -> Optional[dict]:
+        """One ping round-trip; the decoded reply, or ``None`` on any failure."""
         try:
             reader, writer = await asyncio.wait_for(
                 transport.connect(
@@ -408,25 +498,25 @@ class GatewayManager:
             )
         except (asyncio.TimeoutError, OSError) as exc:
             logger.warning("mcp-gateway ping connect failed: %s", exc)
-            return False
+            return None
         try:
             writer.write(b'{"type":"ping"}\n')
             try:
                 await asyncio.wait_for(writer.drain(), timeout=_PING_TIMEOUT_SECS)
             except (asyncio.TimeoutError, ConnectionError):
-                return False
+                return None
             try:
                 line = await asyncio.wait_for(
                     reader.readuntil(b"\n"), timeout=_PING_TIMEOUT_SECS,
                 )
             except (asyncio.TimeoutError, asyncio.IncompleteReadError,
                     asyncio.LimitOverrunError):
-                return False
+                return None
             try:
                 msg = json.loads(line.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError):
-                return False
-            return isinstance(msg, dict) and msg.get("type") == "pong"
+                return None
+            return msg if isinstance(msg, dict) else None
         finally:
             try:
                 writer.close()
