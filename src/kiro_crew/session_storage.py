@@ -1227,7 +1227,7 @@ def _unlisted_files(batch: Path) -> list[Path]:
                 unlisted.append(path)
     if failures:
         raise SessionStorageError(
-            f"could not read all of {batch.name}, so it is not known whether it "
+            f"could not read all of {batch.name!r}, so it is not known whether it "
             f"holds files nothing lists: {failures[0]}"
         )
     return unlisted
@@ -1244,12 +1244,12 @@ def _discard_restored_batch(batch: Path, header: dict[str, Any]) -> None:
         leftovers = _unlisted_files(batch)
     except SessionStorageError as exc:
         # Not knowing is treated exactly like finding leftovers: keep the batch.
-        logger.warning("keeping trash batch %s: %s", batch.name, exc)
+        logger.warning("keeping trash batch %r: %s", batch.name, exc)
         _rewrite_manifest(batch, header, [])
         return
     if leftovers:
         logger.warning(
-            "keeping trash batch %s: %d staged file(s) are absent from its manifest, "
+            "keeping trash batch %r: %d staged file(s) are absent from its manifest, "
             "so removing it would delete the only copy",
             batch.name,
             len(leftovers),
@@ -1528,7 +1528,7 @@ def _move_to_trash_locked(
                 try:
                     _append_entry(manifest, {"uid": uid, "files": files})
                 except OSError:
-                    logger.warning("could not record session %s in the manifest; rolling back", uid)
+                    logger.warning("could not record session %r in the manifest; rolling back", uid)
                     try:
                         manifest.truncate(mark)
                         manifest.seek(mark)
@@ -1669,7 +1669,7 @@ def _restore_locked(batch_id: str, uids: list[str] | None = None) -> int:
                 # A record we cannot read is a file we cannot place. Restoring the
                 # rest would leave the session split with that file staged and
                 # unreferenced, so the whole session stays put.
-                logger.warning("manifest record for %s is not an object", uid)
+                logger.warning("manifest record for %r is not an object", uid)
                 blocked = True
                 break
             rel = str(record.get("rel") or "")
@@ -1710,7 +1710,7 @@ def _restore_locked(batch_id: str, uids: list[str] | None = None) -> int:
                     # entry retained — restoring the rest would splice two
                     # generations of one session together.
                     logger.warning(
-                        "session %s was recreated while being restored; leaving it " "staged",
+                        "session %r was recreated while being restored; leaving it " "staged",
                         uid,
                     )
                     lost_race = True
@@ -1721,7 +1721,7 @@ def _restore_locked(batch_id: str, uids: list[str] | None = None) -> int:
                 remaining.append(entry)
                 continue
         except OSError:
-            logger.warning("could not fully restore session %s", uid, exc_info=True)
+            logger.warning("could not fully restore session %r", uid, exc_info=True)
             # Without this the session is split *and* wedged: the files that did
             # move are gone from the batch while the manifest still lists them, so
             # every later retry fails its own "staged file present" check and the
@@ -1901,7 +1901,7 @@ def _incomplete_if_present(batch: Path) -> str | None:
     """
     try:
         if batch.exists():
-            logger.warning("emptying %s did not remove it", batch.name)
+            logger.warning("emptying %r did not remove it", batch.name)
             return SKIP_INCOMPLETE
     except OSError:
         return SKIP_INCOMPLETE
@@ -2016,7 +2016,7 @@ def _empty_trash_locked(
         except OSError:
             continue
         if resolved == root or not resolved.is_relative_to(root):
-            logger.warning("refusing to empty %s: outside the trash root", target)
+            logger.warning("refusing to empty %r: outside the trash root", target)
             _skipped(SKIP_OUTSIDE_ROOT)
             continue
         # A batch can hold files no manifest line mentions, left by an interruption
@@ -2028,12 +2028,12 @@ def _empty_trash_locked(
         except SessionStorageError as exc:
             # Skip, not abort: one unreadable batch must not make the whole trash
             # un-emptyable. Skipping deletes nothing, which is the safe direction.
-            logger.warning("refusing to empty %s: %s", target.name, exc)
+            logger.warning("refusing to empty %r: %s", target.name, exc)
             _skipped(SKIP_UNREADABLE)
             continue
         if leftovers:
             logger.warning(
-                "refusing to empty %s: %d staged file(s) are absent from its "
+                "refusing to empty %r: %d staged file(s) are absent from its "
                 "manifest, so this would delete the only copy",
                 target.name,
                 len(leftovers),

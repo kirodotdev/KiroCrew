@@ -909,6 +909,284 @@ class TestTrashBatchNamesAreLogSafe:
             assert all("\n" not in message for message in rendered)
 
 
+class TestUntrustedNamesAreLogSafeOutsideListTrash:
+    """The forgery primitive of :class:`TestTrashBatchNamesAreLogSafe`, at the
+    sibling sites outside ``list_trash`` (refs #6344, the #6281 class).
+
+    Two operands carry it, and they are not equally reachable. A manifest-supplied
+    ``uid`` is read off disk with no validation, so its sites take a forged value
+    end to end. A batch DIRECTORY name reaches its sites only through
+    :func:`_batch_dir`, whose id pattern rejects a newline, so those conversions
+    are defence in depth and are pinned at the seam each helper already offers —
+    which is also what keeps them covered on Windows shards, where a hostile
+    directory name cannot be created at all.
+    """
+
+    _FORGED_UID = "aaaa1111\nWARNING forged: session restored by operator"
+    _FORGED_NAME = "20240101T000000-deadbeef\nWARNING forged: batch cleared by operator"
+
+    @staticmethod
+    def _staged(kiro_home: Path) -> tuple[str, Path]:
+        _cli_half(kiro_home, "aaaa1111", log_bytes=8, age_days=40)
+        batch = session_storage.move_to_trash(
+            ["aaaa1111"], reason="manual", index=_index(), now=_NOW
+        )
+        return batch.batch_id, session_storage.trash_root() / batch.batch_id
+
+    @classmethod
+    def _forge_uid(cls, batch: Path, *, files: object | None = None) -> None:
+        """Rewrite the batch's one manifest entry under a forged uid.
+
+        The uid is JSON-escaped on the way to disk, so the manifest itself stays
+        one line — the forgery only materializes if a log renders the value raw.
+        """
+        manifest = batch / session_storage.MANIFEST_NAME
+        lines = manifest.read_text(encoding="utf-8").splitlines()
+        entry = json.loads(lines[1])
+        entry["uid"] = cls._FORGED_UID
+        if files is not None:
+            entry["files"] = files
+        manifest.write_text(f"{lines[0]}\n{json.dumps(entry)}\n", encoding="utf-8")
+
+    @staticmethod
+    def _carrying(caplog: pytest.LogCaptureFixture, needle: str) -> list[str]:
+        return [record.getMessage() for record in caplog.records if needle in record.getMessage()]
+
+    def _assert_escaped(self, messages: list[str], value: str, site: str) -> None:
+        assert messages, f"the {site} site did not log at all"
+        # One record stays one record: the value appears repr'd, so the injected
+        # second line never starts a record of its own.
+        assert all("\n" not in message for message in messages)
+        assert any(repr(value) in message for message in messages)
+
+    def test_a_forged_uid_is_escaped_when_a_manifest_record_is_not_an_object(
+        self, stores: tuple[Path, Path], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        _, kiro_home = stores
+        batch_id, batch = self._staged(kiro_home)
+        self._forge_uid(batch, files=["not-an-object"])
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session_storage"):
+            assert session_storage.restore(batch_id) == 0
+
+        self._assert_escaped(
+            self._carrying(caplog, "is not an object"), self._FORGED_UID, "unreadable-record"
+        )
+
+    def test_a_forged_uid_is_escaped_when_the_session_was_recreated(
+        self,
+        stores: tuple[Path, Path],
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        _, kiro_home = stores
+        batch_id, batch = self._staged(kiro_home)
+        self._forge_uid(batch)
+        # The occupant-wins branch: the session came back between the preflight
+        # and the move, so the batch keeps its entry.
+        monkeypatch.setattr(session_storage, "_move_file_exclusive", lambda src, dst: False)
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session_storage"):
+            assert session_storage.restore(batch_id) == 0
+
+        self._assert_escaped(
+            self._carrying(caplog, "was recreated while being restored"),
+            self._FORGED_UID,
+            "lost-race",
+        )
+
+    def test_a_forged_uid_is_escaped_when_the_restore_cannot_finish(
+        self,
+        stores: tuple[Path, Path],
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        _, kiro_home = stores
+        batch_id, batch = self._staged(kiro_home)
+        self._forge_uid(batch)
+
+        def _refuse(src: Path, dst: Path) -> bool:
+            raise OSError("the store is read-only")
+
+        monkeypatch.setattr(session_storage, "_move_file_exclusive", _refuse)
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session_storage"):
+            assert session_storage.restore(batch_id) == 0
+
+        self._assert_escaped(
+            self._carrying(caplog, "could not fully restore session"),
+            self._FORGED_UID,
+            "restore-failed",
+        )
+
+    def test_the_manifest_rollback_site_escapes_the_session_id(
+        self,
+        stores: tuple[Path, Path],
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """This uid comes from the caller's validated list, so the conversion is
+        defence in depth; the test pins it rather than claiming reachability.
+        """
+        _, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=8, age_days=40)
+
+        def _refuse(handle: object, entry: dict[str, object]) -> None:
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(session_storage, "_append_entry", _refuse)
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session_storage"):
+            with pytest.raises(SessionStorageError):
+                session_storage.move_to_trash(
+                    ["aaaa1111"], reason="manual", index=_index(), now=_NOW
+                )
+
+        self._assert_escaped(
+            self._carrying(caplog, "could not record session"), "aaaa1111", "manifest-rollback"
+        )
+
+    def test_the_discard_and_incomplete_sites_escape_the_batch_name(
+        self,
+        stores: tuple[Path, Path],
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Both keep-the-batch branches and the still-on-disk branch, at the
+        ``_unlisted_files`` seam — no hostile directory has to exist on disk.
+        """
+        forged = session_storage.trash_root() / self._FORGED_NAME
+        # Neither branch may write: the point under test is the log line.
+        monkeypatch.setattr(session_storage, "_rewrite_manifest", lambda *a, **k: None)
+
+        def _refuse(batch: Path) -> list[Path]:
+            raise SessionStorageError(f"could not read all of {batch.name!r}")
+
+        monkeypatch.setattr(session_storage, "_unlisted_files", _refuse)
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session_storage"):
+            session_storage._discard_restored_batch(forged, {})
+        self._assert_escaped(
+            self._carrying(caplog, "keeping trash batch"), self._FORGED_NAME, "unreadable-scan"
+        )
+
+        caplog.clear()
+        monkeypatch.setattr(
+            session_storage, "_unlisted_files", lambda batch: [forged / "orphan.jsonl"]
+        )
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session_storage"):
+            session_storage._discard_restored_batch(forged, {})
+        self._assert_escaped(
+            self._carrying(caplog, "keeping trash batch"), self._FORGED_NAME, "leftover-files"
+        )
+
+        caplog.clear()
+
+        class _ForgedBatch:
+            name = self._FORGED_NAME
+
+            @staticmethod
+            def exists() -> bool:
+                return True
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session_storage"):
+            assert (
+                session_storage._incomplete_if_present(_ForgedBatch())
+                == session_storage.SKIP_INCOMPLETE
+            )
+        self._assert_escaped(
+            self._carrying(caplog, "did not remove it"), self._FORGED_NAME, "still-present"
+        )
+
+    def test_the_empty_trash_sites_escape_what_they_name(
+        self,
+        stores: tuple[Path, Path],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The three refusals in the sweep, at the ``_batch_dir`` seam."""
+        session_storage.trash_root().mkdir(parents=True, exist_ok=True)
+        forged = session_storage.trash_root() / self._FORGED_NAME
+
+        class _Batch:
+            batch_id = "20240101T000000-deadbeef"
+
+        monkeypatch.setattr(session_storage, "list_trash", lambda: [_Batch()])
+        monkeypatch.setattr(session_storage, "_batch_dir", lambda batch_id: forged)
+
+        def _refuse(batch: Path) -> list[Path]:
+            raise SessionStorageError("could not read all of it")
+
+        monkeypatch.setattr(session_storage, "_unlisted_files", _refuse)
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session_storage"):
+            assert session_storage.empty_trash() == 0
+        self._assert_escaped(
+            self._carrying(caplog, "refusing to empty"), self._FORGED_NAME, "unreadable-batch"
+        )
+
+        caplog.clear()
+        monkeypatch.setattr(
+            session_storage, "_unlisted_files", lambda batch: [forged / "orphan.jsonl"]
+        )
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session_storage"):
+            assert session_storage.empty_trash() == 0
+        self._assert_escaped(
+            self._carrying(caplog, "refusing to empty"), self._FORGED_NAME, "leftover-files"
+        )
+
+        # The outside-the-root refusal names the PATH, so its repr is the Path's.
+        caplog.clear()
+        outside = tmp_path / self._FORGED_NAME
+        monkeypatch.setattr(session_storage, "_batch_dir", lambda batch_id: outside)
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session_storage"):
+            assert session_storage.empty_trash() == 0
+        messages = self._carrying(caplog, "outside the trash root")
+        assert messages, "the outside-the-root site did not log at all"
+        assert all("\n" not in message for message in messages)
+        assert any(repr(outside) in message for message in messages)
+
+    def test_the_unreadable_scan_error_escapes_the_batch_name(
+        self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The two refusal sites render this exception with ``%s``, so the name has
+        to be escaped where the exception is BUILT or the escape at the log site is
+        undone by the text it carries.
+        """
+        forged = session_storage.trash_root() / self._FORGED_NAME
+
+        # The error carries a hostile .filename, which is the half the batch-name
+        # escape does not cover: its string form is interpolated into the same
+        # message.
+        planted = OSError(13, "Permission denied", str(forged / self._FORGED_NAME))
+
+        # ``session_storage.os`` is the global module, so this patch is also seen
+        # by ``shutil.rmtree`` during fixture teardown (which passes ``topdown=``
+        # on Windows).  Accept the real signature and divert only the walk of the
+        # forged batch, delegating every other call to the genuine ``os.walk``.
+        real_walk = os.walk
+
+        def _walk(top, *args, onerror=None, **kwargs):  # type: ignore[no-untyped-def]
+            if Path(top) == forged:
+                assert callable(onerror)
+                onerror(planted)
+                return iter(())
+            return real_walk(top, *args, onerror=onerror, **kwargs)
+
+        monkeypatch.setattr(session_storage.os, "walk", _walk)
+        monkeypatch.setattr(session_storage, "_manifest_rels", lambda batch: [])
+
+        with pytest.raises(SessionStorageError) as raised:
+            session_storage._unlisted_files(forged)
+
+        # Both halves of the message are newline-free: the name because this call
+        # site reprs it, and the interpolated OSError because ``OSError.__str__``
+        # reprs its own ``.filename``. The second half is why the error operand is
+        # correctly left as %s at the sites that render it.
+        assert "\n" not in str(raised.value)
+        assert repr(self._FORGED_NAME) in str(raised.value)
+        assert "Permission denied" in str(raised.value)
+
+
 class TestScanCache:
     """The cache must save disk without ever answering a refusal from stale state."""
 
