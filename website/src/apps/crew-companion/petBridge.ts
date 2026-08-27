@@ -47,11 +47,48 @@ type Preload = {
   galleryOpen?(): void
   galleryClose?(): void
   turnOff?(): void
+
+  // ── Single-active-overlay + cross-display drag hand-off ─────────────────────
+  // The main process picks ONE active display and drives these; every other
+  // overlay is told inactive so only one companion is ever drawn.
+  onSetActive?(cb: (active: boolean, x?: number, y?: number, isDragging?: boolean) => void): () => void
+  dragStart?(offsetX: number, offsetY: number): void
+  dragEnd?(): void
+  dragMouseUp?(): void
+  onDragUpdate?(cb: (x: number, y: number) => void): () => void
+  onDragEnded?(cb: (x: number, y: number) => void): () => void
+  onDragListenMouseUp?(cb: () => void): () => void
+  petReady?(): void
+  onSetOwner?(cb: (isOwner: boolean) => void): () => void
+  reportBubbleState?(bubble: unknown, slot?: unknown, seq?: unknown): void
+  onRenderBubble?(cb: (bubble: unknown, playReaction?: boolean) => void): () => void
+  bubbleAction?(action: unknown): void
+  onBubbleAction?(cb: (action: unknown) => void): () => void
+  reportWindowCommand?(cmd: unknown): void
+  onWindowCommand?(cb: (cmd: unknown) => void): () => void
+  onRehydrateSlot?(cb: (slot: unknown) => void): () => void
 }
 
 function preload(): Preload | undefined {
   return (window as unknown as { crewCompanion?: Preload }).crewCompanion
 }
+
+/**
+ * True when the Electron preload bridge is present — i.e. this page is an overlay or
+ * the brain window, driven by main. False in a plain browser tab, where the lone page
+ * must be both the view and the producer (no main to tell it its role).
+ */
+export function hasCompanionBridge(): boolean {
+  return preload() !== undefined
+}
+
+// Plain-browser fallback state: with no preload there is no main process to relay the
+// producer's bubble to the view, or a user action back to the producer. These hold
+// the in-page callbacks so reportBubbleState/bubbleAction can echo directly, the same
+// round-trip main performs between the brain window and the active overlay.
+let localRenderBubble: ((b: unknown, playReaction?: boolean) => void) | null = null
+let localBubbleAction: ((a: unknown) => void) | null = null
+let localWindowCommand: ((cmd: unknown) => void) | null = null
 
 /** The detail payload, named so call sites need no indexed-access type. */
 /**
@@ -93,10 +130,25 @@ export interface PackDetail {
 export interface PetBridge {
   getWindowPosition?: () => Promise<{ x: number; y: number } | null>
   savePosition?: (x: number, y: number) => void
+  /** Main -> overlay: this display is (in)active; x,y,isDragging ride a live hand-off. */
+  onSetActive?: (cb: (active: boolean, x?: number, y?: number, isDragging?: boolean) => void) => () => void
   dragStart?: (offsetX: number, offsetY: number) => void
   dragEnd?: () => void
+  /** Renderer -> main: the drag's mouseup fired on this overlay. */
+  dragMouseUp?: () => void
   onDragUpdate?: (cb: (x: number, y: number) => void) => (() => void) | undefined
   onDragEnded?: (cb: (x: number, y: number) => void) => (() => void) | undefined
+  /** Main -> overlay at drag-start: attach a window mouseup that calls dragMouseUp. */
+  onDragListenMouseUp?: (cb: () => void) => () => void
+  petReady?: () => void
+  onSetOwner?: (cb: (isOwner: boolean) => void) => () => void
+  reportBubbleState?: (bubble: unknown, slot?: unknown, seq?: unknown) => void
+  onRenderBubble?: (cb: (bubble: unknown, playReaction?: boolean) => void) => () => void
+  bubbleAction?: (action: unknown) => void
+  onBubbleAction?: (cb: (action: unknown) => void) => () => void
+  reportWindowCommand?: (cmd: unknown) => void
+  onWindowCommand?: (cb: (cmd: unknown) => void) => () => void
+  onRehydrateSlot?: (cb: (slot: unknown) => void) => () => void
   /**
    * Report the companion's and bubble's hitboxes to the main process.
    *
@@ -453,21 +505,81 @@ export const petBridge: PetBridge = {
   },
 
   /**
-   * Cross-display drag hooks.
+   * Single-active-overlay + cross-display drag hand-off.
    *
-   * In the desktop app the main process polled the cursor so a drag could carry the
-   * pet onto another monitor. Here each display has its own overlay, so a drag is
-   * handled entirely within the one the pointer is in — these stay undefined and the
-   * hook's optional calls (`api?.dragStart?.()`) simply do nothing, which is the
-   * single-display path it already supports.
-   *
-   * Left named and documented rather than deleted so the gap is visible: without
-   * them, dragging the companion to a second monitor stops at the screen edge.
+   * The main process now picks ONE active display and drives these, so only that
+   * overlay draws a companion and a drag can carry the pet onto another monitor.
+   * Each delegates to the preload bridge; subscribes hand back its unsubscribe, or a
+   * no-op when the page is open in an ordinary browser with no bridge.
    */
-  dragStart: undefined,
-  dragEnd: undefined,
-  onDragUpdate: undefined,
-  onDragEnded: undefined,
+  onSetActive(cb) {
+    return preload()?.onSetActive?.(cb) ?? (() => {})
+  },
+  dragStart(offsetX, offsetY) {
+    preload()?.dragStart?.(offsetX, offsetY)
+  },
+  dragEnd() {
+    preload()?.dragEnd?.()
+  },
+  dragMouseUp() {
+    preload()?.dragMouseUp?.()
+  },
+  onDragUpdate(cb) {
+    return preload()?.onDragUpdate?.(cb) ?? (() => {})
+  },
+  onDragEnded(cb) {
+    return preload()?.onDragEnded?.(cb) ?? (() => {})
+  },
+  onDragListenMouseUp(cb) {
+    return preload()?.onDragListenMouseUp?.(cb) ?? (() => {})
+  },
+  petReady() {
+    preload()?.petReady?.()
+  },
+  onSetOwner(cb) {
+    return preload()?.onSetOwner?.(cb) ?? (() => {})
+  },
+  reportBubbleState(bubble, slot, seq) {
+    const p = preload()
+    if (p) { p.reportBubbleState?.(bubble, slot, seq); return }
+    // No main to relay through: echo the producer's bubble straight to the view
+    // in-page (the plain-browser dev path), so it renders and reacts.
+    localRenderBubble?.(bubble, true)
+  },
+  onRenderBubble(cb) {
+    const p = preload()
+    if (p) return p.onRenderBubble?.(cb) ?? (() => {})
+    localRenderBubble = cb
+    return () => { if (localRenderBubble === cb) localRenderBubble = null }
+  },
+  bubbleAction(action) {
+    const p = preload()
+    if (p) { p.bubbleAction?.(action); return }
+    localBubbleAction?.(action)
+  },
+  onBubbleAction(cb) {
+    const p = preload()
+    if (p) return p.onBubbleAction?.(cb) ?? (() => {})
+    localBubbleAction = cb
+    return () => { if (localBubbleAction === cb) localBubbleAction = null }
+  },
+  reportWindowCommand(cmd) {
+    const p = preload()
+    if (p) { p.reportWindowCommand?.(cmd); return }
+    // No main to relay through (plain-browser dev path): run it in-page.
+    localWindowCommand?.(cmd)
+  },
+  onWindowCommand(cb) {
+    const p = preload()
+    if (p) return p.onWindowCommand?.(cb) ?? (() => {})
+    localWindowCommand = cb
+    return () => { if (localWindowCommand === cb) localWindowCommand = null }
+  },
+  onRehydrateSlot(cb) {
+    // Only meaningful with a main process (brain restart). The plain-browser page
+    // never crash-restarts a separate producer, so there is nothing to rehydrate.
+    return preload()?.onRehydrateSlot?.(cb) ?? (() => {})
+  },
 
   // Walk commands are renderer-driven for now (the wander calls walkPath directly),
   // so the main process emits none of these yet. Left undefined and documented, like

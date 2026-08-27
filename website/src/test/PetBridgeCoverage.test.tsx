@@ -851,14 +851,28 @@ describe('contextMenuAction', () => {
   })
 })
 
-describe('cross-display hooks are deliberately absent', () => {
-  // Left undefined and documented rather than deleted, so the ported hooks'
-  // `api?.on*?.()` guards resolve to no-ops on a single display.
-  it('drag and walk hooks are undefined so the hooks degrade to no-ops', () => {
-    expect(petBridge.dragStart).toBeUndefined()
-    expect(petBridge.dragEnd).toBeUndefined()
-    expect(petBridge.onDragUpdate).toBeUndefined()
-    expect(petBridge.onDragEnded).toBeUndefined()
+describe('cross-display drag hooks delegate to the preload bridge', () => {
+  // The main process now elects one active overlay and carries a drag between
+  // displays, so these are live delegates. With no bridge in this environment they
+  // must degrade safely: sends are no-ops and subscribes hand back a no-op remover.
+  it('drag sends are safe no-ops and subscribes return a remover without a bridge', () => {
+    expect(petBridge.dragStart).toBeInstanceOf(Function)
+    expect(petBridge.dragEnd).toBeInstanceOf(Function)
+    expect(petBridge.dragMouseUp).toBeInstanceOf(Function)
+    expect(() => petBridge.dragStart?.(1, 2)).not.toThrow()
+    expect(() => petBridge.dragEnd?.()).not.toThrow()
+    expect(() => petBridge.dragMouseUp?.()).not.toThrow()
+    expect(petBridge.onSetActive?.(() => {})).toBeInstanceOf(Function)
+    expect(petBridge.onDragUpdate?.(() => {})).toBeInstanceOf(Function)
+    expect(petBridge.onDragEnded?.(() => {})).toBeInstanceOf(Function)
+    expect(petBridge.onDragListenMouseUp?.(() => {})).toBeInstanceOf(Function)
+  })
+})
+
+describe('walk hooks are deliberately absent', () => {
+  // Left undefined and documented rather than deleted, so useWalking's
+  // `api?.on*?.()` guards resolve to no-ops until the main process drives them.
+  it('walk hooks are undefined so the hook degrades to no-ops', () => {
     expect(petBridge.onWalk).toBeUndefined()
     expect(petBridge.onWalkPath).toBeUndefined()
     expect(petBridge.onWalkCancel).toBeUndefined()

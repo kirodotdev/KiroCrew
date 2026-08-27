@@ -149,6 +149,20 @@ export function watchSessions(opts: SessionWatchOptions): () => void {
    */
   const stoppedSlots = new Set<string>()
 
+  /*
+   * Slots we have already raised the pending-approval bubble for.
+   *
+   * The `approval` frame is a point event with no replay, so one broadcast while the
+   * owner is between sockets (a crash-replaced brain reconnecting) is lost. The `slots`
+   * frame, by contrast, carries each slot's live `pending_approval` and arrives on
+   * every connect — so a missed approval is RECOVERABLE by reconciling from it. This
+   * set dedupes the two sources: the live frame marks the slot here, so the slots
+   * reconcile never double-raises it, and a slot whose `pending_approval` goes false is
+   * cleared so a later approval on it raises again. (A completion `chat_done` has no
+   * such persistent flag, so its own gap is not recoverable this way.)
+   */
+  const surfacedApprovals = new Set<string>()
+
   let socket: WebSocket | null = null
   let stopped = false
   let retryMs = RECONNECT_MIN_MS
@@ -240,7 +254,7 @@ export function watchSessions(opts: SessionWatchOptions): () => void {
         // running is an ASSUMED start: we joined mid-turn.
         const list = Array.isArray(data) ? data : (data.slots as unknown[]) ?? []
         for (const entry of list) {
-          const s = entry as { key?: unknown; running?: unknown; title?: unknown; stopping?: unknown }
+          const s = entry as { key?: unknown; running?: unknown; title?: unknown; stopping?: unknown; pending_approval?: unknown }
           if (typeof s.key !== 'string') continue
           if (typeof s.title === 'string') titles.set(s.key, s.title)
           if (s.running === true) markStart(s.key, true)
@@ -254,6 +268,21 @@ export function watchSessions(opts: SessionWatchOptions): () => void {
            * ending was chosen, not earned.
            */
           if (s.stopping === true) stoppedSlots.add(s.key)
+          /*
+           * Recover a pending approval whose live `approval` frame was lost while the
+           * owner was between sockets (brain restart). `pending_approval` is persistent
+           * backend state, so the first `slots` frame after reconnect still shows it;
+           * raise it once, deduped against the live path via surfacedApprovals, and
+           * clear the mark when it goes false so a future approval re-raises.
+           */
+          if (s.pending_approval === true) {
+            if (!surfacedApprovals.has(s.key)) {
+              surfacedApprovals.add(s.key)
+              opts.onApproval?.({ slot: s.key, title: titles.get(s.key) ?? '' })
+            }
+          } else if (s.pending_approval === false) {
+            surfacedApprovals.delete(s.key)
+          }
         }
         break
       }
@@ -275,6 +304,7 @@ export function watchSessions(opts: SessionWatchOptions): () => void {
         // waiting — the title comes from the same table `onDone` reads, since the
         // frame itself has no human name.
         if (typeof data.slot === 'string') {
+          surfacedApprovals.add(data.slot)
           opts.onApproval?.({ slot: data.slot, title: titles.get(data.slot) ?? '' })
         }
         break
@@ -348,7 +378,18 @@ export function watchSessions(opts: SessionWatchOptions): () => void {
     ws.onopen = () => { retryMs = RECONNECT_MIN_MS }
     ws.onmessage = (ev) => handle(String(ev.data))
     // Both paths reconnect: a gateway restart closes cleanly, a network drop errors.
-    ws.onclose = () => { socket = null; failInFlight(); schedule() }
+    ws.onclose = () => {
+      socket = null
+      // Drop the approval dedupe set: across a reconnect it can no longer be trusted
+      // (an approval may have resolved and a NEW one gone pending on the same slot
+      // while we were disconnected, with no intervening pending_approval:false frame
+      // to clear the mark). The first slots frame after reconnect re-derives it from
+      // live pending_approval; a still-pending approval's re-raise is absorbed by the
+      // sticky-hold guard in onApproval.
+      surfacedApprovals.clear()
+      failInFlight()
+      schedule()
+    }
     ws.onerror = () => { try { ws.close() } catch { /* already closing */ } }
   }
 

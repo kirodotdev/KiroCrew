@@ -121,14 +121,14 @@ describe('useMouseForward — reports the companion and bubble rects', () => {
   const dragging = { current: false } as MutableRefObject<boolean>
 
   it('reports the companion box, and no bubble, at rest', () => {
-    renderHook(() => useMouseForward({ pos: { x: 100, y: 120 }, bubbleRect: null, dragging }))
+    renderHook(() => useMouseForward({ pos: { x: 100, y: 120 }, bubbleRect: null, dragging, isActive: true }))
     expect(update).toHaveBeenCalledWith({ x: 100, y: 120, w: PET_W, h: PET_H }, null)
   })
 
   it('reports the bubble rect once a bubble is showing', () => {
     const { rerender } = renderHook(
       ({ bubbleRect }: { bubbleRect: Rect | null }) =>
-        useMouseForward({ pos: { x: 100, y: 120 }, bubbleRect, dragging }),
+        useMouseForward({ pos: { x: 100, y: 120 }, bubbleRect, dragging, isActive: true }),
       { initialProps: { bubbleRect: null as Rect | null } },
     )
     update.mockClear()
@@ -137,5 +137,13 @@ describe('useMouseForward — reports the companion and bubble rects', () => {
       { x: 100, y: 120, w: PET_W, h: PET_H },
       { x: 60, y: 20, w: 240, h: 70 + BUBBLE_HIT_PAD },
     )
+  })
+
+  it('an inactive overlay clears its hitbox once and sends nothing at rest', () => {
+    renderHook(() => useMouseForward({ pos: { x: 100, y: 120 }, bubbleRect: null, dragging, isActive: false }))
+    // The one send is the null clear, so the main process stops treating this
+    // background display as interactive.
+    expect(update).toHaveBeenCalledTimes(1)
+    expect(update).toHaveBeenCalledWith(null, null)
   })
 })

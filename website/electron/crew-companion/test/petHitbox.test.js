@@ -28,6 +28,11 @@ function stubElectron() {
       this.destroyed = false;
       this.ignoreMouse = null;
       this._events = {};
+      this.webContents = {
+        __win: this,
+        on: (ev, cb) => { if (ev === "did-finish-load") cb(); },
+        send: () => {},
+      };
       created.push(this);
     }
     setFocusable() {}
@@ -38,6 +43,7 @@ function stubElectron() {
     once(ev, cb) { this._events[ev] = cb; }
     on(ev, cb) { this._events[ev] = cb; }
     showInactive() {}
+    isVisible() { return false; }
     isDestroyed() { return this.destroyed; }
     destroy() { this.destroyed = true; }
     // The overlay lives at its display's origin; the poll converts screen->local
@@ -46,12 +52,14 @@ function stubElectron() {
   }
 
   const electron = {
+    app: { getPath: () => require("os").tmpdir(), on() {} },
     BrowserWindow: FakeWindow,
     screen: {
       getAllDisplays: () => [
         { id: 1, bounds: { x: 0, y: 0, width: 1440, height: 900 } },
         { id: 2, bounds: { x: 1440, y: 0, width: 1920, height: 1080 } },
       ],
+      getPrimaryDisplay: () => ({ id: 1, bounds: { x: 0, y: 0, width: 1440, height: 900 } }),
       // Not used by the direct toggle tests, but present so the poll never throws.
       getCursorScreenPoint: () => ({ x: -1, y: -1 }),
     },

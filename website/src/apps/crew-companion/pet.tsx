@@ -31,7 +31,7 @@ import { PENDING_PATH, PRESENCE_PATH } from './constants'
 import { nudgeTextFor } from './nudgeKeys'
 import { PetAvatar, type PetState } from './PetAvatar'
 import { usePlayfulMotion } from './usePlayfulMotion'
-import { petBridge } from './petBridge'
+import { petBridge, hasCompanionBridge } from './petBridge'
 import { watchSessions } from './sessionWatch'
 import { randomCelebrateProp, type GhostAccessory } from './ghostAccessories'
 
@@ -219,6 +219,39 @@ function Companion() {
   /** Where the press began, for the tap-vs-drag test in onClick. */
   const clickDownPt = useRef<{ x: number; y: number } | null>(null)
   const [panelOpen, setPanelOpen] = useState(false)
+  // Which display draws the companion. The main process elects ONE active overlay
+  // and tells every other it is inactive, so only one ghost is ever shown. Starts
+  // FALSE and waits for set-active(true): openPetWindow always elects exactly one
+  // active display and re-sends the flag after load, so a secondary monitor never
+  // briefly flashes the pet before its set-active(false) arrives (the very
+  // one-ghost-per-screen regression this change removes).
+  // A plain browser has no preload bridge and no main process to elect an active
+  // overlay or an owner, so the lone page defaults to BOTH (view + producer);
+  // otherwise it waits for main to assign the roles.
+  const [isActive, setIsActive] = useState(() => !hasCompanionBridge())
+  // Mirror isActive into a ref so the mount-armed pending poll reads the CURRENT
+  // value without re-arming: only the active overlay may drain the shared reminder
+  // cursor, or an inactive one would advance it past a fire it never shows.
+  const isActiveRef = useRef(isActive)
+  isActiveRef.current = isActive
+  // The notification OWNER role, set by the main process (the hidden brain window is
+  // the only owner). Only the owner runs the WebSocket + reminder poll + slot
+  // machine. Decoupled from isActive so the avatar-drawing overlay and the producer
+  // are independent; in a plain browser the lone page is both.
+  const [isOwner, setIsOwner] = useState(() => !hasCompanionBridge())
+  const isOwnerRef = useRef(isOwner)
+  isOwnerRef.current = isOwner
+  // Owner → main: report the single resolved bubble (or null). The owner does NOT
+  // render its own bubble; main relays it to whichever overlay is active, which sets
+  // `bubble` from the render-bubble push. One producer, one source of truth.
+  const emitBubble = useCallback((next: Bubble | null) => {
+    // Report the producer's recovery state (slot snapshot + local sequence) with the
+    // render bubble: a crash-replaced brain reloads with slotRef=null and localSeqRef
+    // reset to 0, so main hands both back to rehydrate the live slot AND continue the
+    // negative local sequence — a reset sequence would reuse a seq and make the active
+    // overlay's React key collide, retaining a stale dismissal timer.
+    petBridge.reportBubbleState?.(next, slotRef.current, localSeqRef.current)
+  }, [])
   // Peek/dock state the drag hook drives when the companion is left at a screen edge.
   // Centralised in useEdgeHide so `setIsPeeking` updates `isPeekingRef` SYNCHRONOUSLY
   // — useDrag reads that ref inside its mouse handlers, so a render-lagged ref (the
@@ -238,7 +271,7 @@ function Companion() {
    */
   const { mood, setMood, clearPersistentMood } = useMood()
 
-  const { pos, setPos, onMouseDown, dragging, posReady, isDragging } = useDrag(
+  const { pos, setPos, onMouseDown, dragging, dragPollingStarted, posReady, isDragging } = useDrag(
     {
       x: Math.max(0, window.innerWidth - PET_PX - 28),
       y: Math.max(0, window.innerHeight - PET_PX - 96),
@@ -256,6 +289,61 @@ function Companion() {
     getGrip: () => dragGrip({}),
     },
   )
+
+  // The main process elects the active overlay. On a live drag hand-off onto this
+  // display it also passes the local landing point and that the gesture is still
+  // held, so we adopt the drag in flight instead of the pet popping in at rest.
+  useEffect(() => {
+    const off = petBridge.onSetActive?.((active, x, y, isDragging) => {
+      // DEACTIVATION must land synchronously (not wait for the line-217 render
+      // mirror): a poll awaiting /pending on this overlay when it is handed off has
+      // to see the inactive state at its post-await gate, or the now-hidden overlay
+      // would commit the shared cursor past a reminder it never showed and the newly
+      // active display would skip it (data loss). Activation stays render-driven —
+      // its backlog drain is timing-sensitive and must not run a render early.
+      if (!active) isActiveRef.current = false
+      setIsActive(active)
+      if (active) {
+        if (isDragging && typeof x === 'number' && typeof y === 'number') {
+          // Adopt the drag main is already polling: mark polling started so this
+          // overlay does not fire a SECOND dragStart, and take the entry point. The
+          // bubble is NOT touched here — main pushes the owner's current bubble via
+          // render-bubble on activation, so there is nothing to carry or clear.
+          dragging.current = true
+          dragPollingStarted.current = true
+          setPos({ x, y })
+        }
+      } else {
+        // Handed off to another display: drop our local drag state so useDrag's 2s
+        // stuck-timer (or a stray mouseup) can't fire a late dragEnd or save stale
+        // coordinates for a drag this overlay no longer owns.
+        dragging.current = false
+        dragPollingStarted.current = false
+      }
+    })
+    // Our listener is attached now — tell main we're ready so it (re)sends this
+    // overlay's active state. The main-process initial send may have fired before
+    // this effect mounted (e.g. a slow theme load), which would otherwise leave the
+    // active overlay hidden forever.
+    petBridge.petReady?.()
+    return off
+  }, [dragging, dragPollingStarted, setPos])
+
+  // At drag-start the main process broadcasts onDragListenMouseUp; while it holds we
+  // watch for the mouseup and report it back, so a drag that ends over this overlay
+  // is caught even though the gesture began on another display.
+  useEffect(() => {
+    let onUp: (() => void) | null = null
+    const detach = () => {
+      if (onUp) { window.removeEventListener('mouseup', onUp); onUp = null }
+    }
+    const off = petBridge.onDragListenMouseUp?.(() => {
+      detach()
+      onUp = () => { petBridge.dragMouseUp?.(); detach() }
+      window.addEventListener('mouseup', onUp)
+    })
+    return () => { off?.(); detach() }
+  }, [])
 
   /**
    * Playful idle motion — the ported `usePlayfulMotion` hook. ONE rAF loop mutates
@@ -393,7 +481,6 @@ function Companion() {
    * cannot be dismissed.
    */
   const cursorRef = useRef(readStoredCursor())
-  const dismissRef = useRef<number | null>(null)
   /**
    * The live "tell me when sessions are done" preference.
    *
@@ -507,24 +594,13 @@ function Companion() {
 
 
   const dismiss = useCallback(() => {
-    if (dismissRef.current !== null) {
-      window.clearTimeout(dismissRef.current)
-      dismissRef.current = null
-    }
-    /**
-     * Dismissing frees the slot — for STICKY bubbles too.
-     *
-     * A sticky bubble has no ✕ and never auto-expires, but the whole bubble is a
-     * dismiss target, so the user can still acknowledge one. Holding the slot after
-     * that was a real bug: the bubble left the screen while the slot stayed taken for
-     * up to STICKY_HOLD_MS, silently swallowing every notification that followed.
-     *
-     * A deliberate dismissal IS the acknowledgement the hold was waiting for, so it
-     * releases the slot rather than leaving the 90s cap to do it.
-     */
-    slotRef.current = null
+    // The ✕ (and a tap on a sticky bubble) lives on the ACTIVE overlay, but the slot
+    // is owned by the owner overlay, so route the dismissal to it through main. Clear
+    // the local view optimistically so the bubble leaves at once rather than after
+    // the round-trip; main will push the owner's resulting null shortly after.
     setBubble(null)
     setPlacement(null)
+    petBridge.bubbleAction?.('dismiss')
   }, [])
 
   /**
@@ -618,7 +694,76 @@ function Companion() {
     }, CELEBRATE_MS + CELEBRATE_PROP_HOLD_MS)
   }, [])
 
-  useEffect(() => watchSessions({
+  // Owner role: the main process elects exactly one owner overlay to run production.
+  useEffect(() => petBridge.onSetOwner?.(setIsOwner) ?? undefined, [])
+
+  // Rehydrate the slot after a brain crash: main replays the last reported slot to the
+  // replacement owner on pet-ready, before it resumes producing, so a live bubble's
+  // count/timestamp survive the restart and its resolution still clears the right slot.
+  useEffect(
+    () =>
+      petBridge.onRehydrateSlot?.((recovery) => {
+        const r = (recovery ?? {}) as { slot?: PendingBubble | null; seq?: number }
+        slotRef.current = r.slot ?? null
+        // Continue the negative local sequence where the crashed brain left off, so a
+        // freshly-reloaded producer never reissues a seq the active overlay still keys.
+        if (typeof r.seq === 'number') localSeqRef.current = r.seq
+      }) ?? undefined,
+    [],
+  )
+
+  // Window commands (Open panel / Change avatar) are drained from /pending by the
+  // owner (the hidden brain) but relayed here so the ACTIVE overlay opens them at
+  // the avatar's real screen position; main sends only to the active overlay.
+  useEffect(
+    () =>
+      petBridge.onWindowCommand?.((cmd) => {
+        if (cmd === 'panel') openPanelRef.current()
+        else if (cmd === 'gallery') window.crewCompanion?.galleryOpen?.()
+      }) ?? undefined,
+    [],
+  )
+
+  // Owner: a bubble action performed on the ACTIVE overlay, relayed here by main. A
+  // dismiss frees the slot (the resolve path is the socket's onApprovalResolved).
+  useEffect(
+    () =>
+      petBridge.onBubbleAction?.((action) => {
+        if (action === 'dismiss') {
+          slotRef.current = null
+          emitBubble(null)
+        }
+      }) ?? undefined,
+    [emitBubble],
+  )
+
+  // Display: render whatever the owner (the hidden brain window, relayed by main)
+  // pushes. The avatar's reaction plays HERE — on the active overlay that draws the
+  // avatar, not on the hidden owner — but ONLY when main flags this as a freshly
+  // reported bubble. A re-push on activation or a display hand-off arrives with
+  // playReaction=false, so the reaction is never replayed for a bubble the
+  // previously-active overlay already reacted to.
+  useEffect(
+    () =>
+      petBridge.onRenderBubble?.((b, playReaction) => {
+        const next = b as Bubble | null
+        setBubble(next)
+        if (!next) { setPlacement(null); return }
+        if (!playReaction) return
+        const k = next.kind
+        if (k === 'session-error') { react('error', 2_000); setMood('scared') }
+        else if (k === 'approval' || k === 'session-input') { bumpReaction(); setMood('curious') }
+        else if (k === 'break' || k === 'break-breathe' || k === 'reminder') { /* ambient: no reaction */ }
+        else { react('done', 2_400); setMood('happy'); celebrateWithProp() }
+      }) ?? undefined,
+    [react, setMood, bumpReaction, celebrateWithProp],
+  )
+
+  useEffect(() => {
+    // Only the elected owner runs the WebSocket producer; every other overlay is a
+    // pure view fed by the render-bubble push above.
+    if (!isOwner) return
+    return watchSessions({
     isSilent: () => sessionAlertsRef.current === false,
     // The backend rang: drain now rather than at the next tick of the poll.
     onFireQueued: () => pollNowRef.current?.(),
@@ -659,7 +804,7 @@ function Companion() {
       // Local, negative sequence numbers: these bubbles have no backend fire behind
       // them, and a positive number could collide with a real fire's seq.
       localSeqRef.current -= 1
-      setBubble({
+      emitBubble({
         seq: localSeqRef.current,
         kind: result.pending?.kind ?? kind,
         text: result.show,
@@ -668,14 +813,9 @@ function Companion() {
         // lead somewhere, so it leads to the most recent one.
         slot,
       })
-      if (failed) {
-        react('error', 2_000)
-        setMood('scared')
-      } else {
-        react('done', 2_400)
-        setMood('happy')
-        celebrateWithProp()
-      }
+      // The avatar's hop + mood play on the ACTIVE overlay when this bubble is pushed
+      // to it (see onRenderBubble), keyed on its kind — not here, because the owner
+      // may be a hidden, non-active overlay.
     },
     /*
      * A tool is BLOCKED on your OK — raise the sticky approval bubble.
@@ -718,7 +858,7 @@ function Companion() {
       // Local, negative sequence: no backend fire sits behind this bubble, and a
       // positive number could collide with a real fire's seq.
       localSeqRef.current -= 1
-      setBubble({
+      emitBubble({
         seq: localSeqRef.current,
         kind: result.pending?.kind ?? kind,
         text: result.show,
@@ -727,9 +867,6 @@ function Companion() {
         // carries '' here and is surfaced on the dashboard's own approvals feed.
         slot,
       })
-      // Curious, not alarmed: activeAnimFor turns a curious mood into the head-cock.
-      bumpReaction()
-      setMood('curious')
     },
     /*
      * Blocked work answered elsewhere frees the slot at once.
@@ -739,10 +876,15 @@ function Companion() {
      * something already decided.
      */
     onApprovalResolved: () => {
-      if (slotRef.current?.sticky) slotRef.current = null
-      setBubble((b) => (b && isSticky(b.kind) ? null : b))
+      // Only a sticky approval is cleared by an external resolve; a routine bubble
+      // holding the slot is left alone.
+      if (slotRef.current?.sticky) {
+        slotRef.current = null
+        emitBubble(null)
+      }
     },
-  }), [react, setMood, celebrateWithProp, bumpReaction])
+    })
+  }, [emitBubble, isOwner])
 
   /** Presence: silence is read as "nobody is there", so this must not stop. */  useEffect(() => {
     void post(PRESENCE_PATH)
@@ -755,6 +897,10 @@ function Companion() {
     let stopped = false
 
     const poll = async () => {
+      // Only the notification OWNER drains reminders — there is exactly one, so no
+      // other overlay can advance the shared cursor concurrently. A non-owner resumes
+      // draining if it is later elected owner.
+      if (!isOwnerRef.current) return
       try {
         const since = cursorRef.current
         const r = await fetch(`${PENDING_PATH}?since=${since}`, {
@@ -782,6 +928,17 @@ function Companion() {
           if (stopped) return
         }
 
+        // Commit-safety invariant: act on this response ONLY if this overlay is STILL
+        // the owner and the stored cursor has not moved past what we fetched from. A
+        // single owner means no concurrent poll can advance it, but a reload can leave
+        // our in-memory cursor behind the stored one; bail FORWARD-only, so a failed
+        // localStorage write (stored cursor LOWER than ours) does not deadlock
+        // delivery — proceeding re-attempts the write.
+        if (!isOwnerRef.current || readStoredCursor() > since) return
+
+        // Window commands the dashboard page recorded (Open panel / Change
+        // avatar). The page has no bridge of its own, so it enqueues the intent
+
         // Window commands the dashboard page recorded (Open panel / Change
         // avatar). The page has no bridge of its own, so it enqueues the intent
         // in the backend and this overlay — which does hold the bridge — carries
@@ -791,8 +948,10 @@ function Companion() {
           if (f.kind !== 'command') continue
           const ts = Date.parse(f.at)
           if (Number.isFinite(ts) && Date.now() - ts > COMMAND_FRESH_MS) continue
-          if (f.text === 'panel') openPanelRef.current()
-          else if (f.text === 'gallery') window.crewCompanion?.galleryOpen?.()
+          // The poll runs on the OWNER (the hidden brain window), but a window
+          // command must open next to the AVATAR, so relay it to the active overlay
+          // to execute with its own on-screen position rather than the brain's.
+          petBridge.reportWindowCommand?.(f.text)
         }
 
         /*
@@ -870,7 +1029,7 @@ function Companion() {
           if (held?.sticky && now - held.at < STICKY_HOLD_MS) return
           commitCursor(latest.seq)
           slotRef.current = { text, sticky: false, count: 1, at: now, kind }
-          setBubble({ seq: latest.seq, kind, text })
+          emitBubble({ seq: latest.seq, kind, text })
           return
         }
 
@@ -885,32 +1044,9 @@ function Companion() {
         commitCursor(latest.seq)
         slotRef.current = result.pending
         const shownKind = result.pending?.kind ?? kind
-        setBubble({ seq: latest.seq, kind: shownKind, text: result.show })
-        // A finish is a celebration; a failure or something blocked is a shake. Both
-        // settle back to idle so the companion does not sit in a reaction.
-        // The body reacts AND the mood changes, because the mood is what the eyes
-        // read — a body nod alone left the face blank, which is why the companion
-        // looked unmoved by its own notifications. Transient, so it auto-resets.
-        if (shownKind === 'session-error') {
-          react('error', 2_000)
-          setMood('scared')
-        } else if (shownKind === 'approval' || shownKind === 'session-input') {
-          /*
-           * Waiting on YOU is not a failure.
-           *
-           * These three kinds used to share the alarmed error shake, which made
-           * "something broke" and "I need your OK" look identical. The source cocks
-           * the head instead — curious, not alarmed — and the mood is what drives it,
-           * so no `react` here: `activeAnimFor` turns a curious mood into the head-cock.
-           */
-          bumpReaction()
-          setMood('curious')
-        } else {
-          react('done', 2_400)
-          setMood('happy')
-          // Every finish gets the flourish, not just the ones arriving over the socket.
-          celebrateWithProp()
-        }
+        emitBubble({ seq: latest.seq, kind: shownKind, text: result.show })
+        // The avatar's reaction plays on the ACTIVE overlay when this bubble is
+        // pushed to it (see onRenderBubble), keyed on the bubble's kind.
       } catch {
         /* keep polling */
       }
@@ -926,6 +1062,18 @@ function Companion() {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only: starts poll loop once, deps are stable refs/callbacks
   }, [])
+
+  // When this overlay becomes the notification owner, drain any reminders that queued
+  // before it took over right away, instead of waiting up to a full poll interval.
+  useEffect(() => {
+    if (isOwner) {
+      // Refresh from the stored cursor before draining: a freshly elected owner (or a
+      // reload) may hold a stale in-memory cursor that would re-show an already-shown
+      // reminder.
+      cursorRef.current = readStoredCursor()
+      pollNowRef.current?.()
+    }
+  }, [isOwner])
 
 
   // ── Local aliveness ─────────────────────────────────────────────────────
@@ -947,8 +1095,10 @@ function Companion() {
       setIsPeeking(false)
       setHideEdge(null)
     }
-    // Persist through the same petX/petY config path a drag uses.
-    petBridge.savePosition?.(finalPos.x, finalPos.y)
+    // Persist through the same petX/petY config path a drag uses — but only while
+    // active. A hop begun before a hand-off can end after deactivation (which sets
+    // isActiveRef synchronously); saving then would overwrite the new owner's spot.
+    if (isActiveRef.current) petBridge.savePosition?.(finalPos.x, finalPos.y)
   }, [setHideEdge, setIsPeeking])
 
   const { isWalking, walkDir, walkTilt, cancelWalk, walkPath } =
@@ -963,8 +1113,10 @@ function Companion() {
    */
   const reducedMotion =
     window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+  // Only the active overlay owns the avatar; an inactive view must stay still, or
+  // its idle hop would call savePosition and clobber the active display's position.
   const settled =
-    posReady && !dragging.current && !isWalking && !isPeeking &&
+    isActive && posReady && !dragging.current && !isWalking && !isPeeking &&
     menuAt === null && !reducedMotion
 
   // Built-in ghost: small in-place hop / brief mood flicker.
@@ -1047,7 +1199,7 @@ function Companion() {
   // menu reports its own rect separately (PetContextMenu → petBridge.setMenuHitbox).
   // `placement` is null until the bubble is measured, so the bubble rect is reported
   // once it lands.
-  useMouseForward({ pos, bubbleRect: placement?.rect ?? null, dragging })
+  useMouseForward({ pos, bubbleRect: placement?.rect ?? null, dragging, isActive })
 
   // Playful motion runs only when the companion is settled — not while it is being
   // dragged, walking, or docked at an edge. Set every render so the rAF loop sees
@@ -1082,7 +1234,7 @@ function Companion() {
 
   return (
     <div className="cc-pet-layer">
-      {menuAt ? (
+      {isActive && menuAt ? (
         <div className="cc-menu-host">
           <PetContextMenu
             x={menuAt.x}
@@ -1093,7 +1245,7 @@ function Companion() {
         </div>
       ) : null}
 
-      {bubble ? (
+      {isActive && bubble ? (
         <div
           ref={bubbleHostRef}
           className="cc-bubble-host"
@@ -1134,6 +1286,7 @@ function Companion() {
       ) : null}
 
       {/* The only element that accepts input; everything else is click-through. */}
+      {isActive ? (
       <div
         className="cc-pet"
         onMouseDown={(e) => {
@@ -1253,6 +1406,7 @@ function Companion() {
           />
         </div>
       </div>
+      ) : null}
     </div>
   )
 }

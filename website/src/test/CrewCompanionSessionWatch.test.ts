@@ -29,6 +29,7 @@ function fakeSocket() {
 
 interface Harness {
   done: SessionDone[]
+  approvals: { slot: string; title: string }[]
   send: (type: string, data: unknown) => void
   stop: () => void
   socket: ReturnType<typeof fakeSocket>
@@ -39,16 +40,19 @@ interface Harness {
 function harness(): Harness {
   const socket = fakeSocket()
   const done: SessionDone[] = []
+  const approvals: { slot: string; title: string }[] = []
   let t = 1_000_000
   let silent = false
   const stop = watchSessions({
     onDone: (d) => done.push(d),
+    onApproval: (a) => approvals.push(a),
     isSilent: () => silent,
     now: () => t,
     connect: () => socket as unknown as WebSocket,
   })
   return {
     done,
+    approvals,
     socket,
     stop,
     send: (type, data) => socket.onmessage?.({ data: JSON.stringify({ type, data }) }),
@@ -457,5 +461,49 @@ describe('session completion → bubble', () => {
     h.socket.close()
     expect(spy).not.toHaveBeenCalled()
     spy.mockRestore()
+  })
+})
+
+describe('pending-approval recovery across a brain restart', () => {
+  it('recovers a pending approval from the slots frame when its live approval frame was missed', () => {
+    /*
+     * The `approval` frame is push-only with no replay, so one broadcast while the
+     * owner is between sockets (a crash-replaced brain reconnecting) is lost. But
+     * `pending_approval` is persistent backend state carried on every `slots` frame,
+     * so the first frame after reconnect still shows it — recover it there.
+     */
+    const h = harness()
+    h.send('slots', { slots: [{ key: 'chat-1', title: 'Deploy', pending_approval: true }] })
+    expect(h.approvals).toEqual([{ slot: 'chat-1', title: 'Deploy' }])
+    // A later frame with the SAME pending approval must not raise it a second time.
+    h.send('slots', { slots: [{ key: 'chat-1', title: 'Deploy', pending_approval: true }] })
+    expect(h.approvals).toHaveLength(1)
+    // Once it clears and a fresh approval appears, it raises again.
+    h.send('slots', { slots: [{ key: 'chat-1', title: 'Deploy', pending_approval: false }] })
+    h.send('slots', { slots: [{ key: 'chat-1', title: 'Deploy', pending_approval: true }] })
+    expect(h.approvals).toHaveLength(2)
+  })
+
+  it('does not double-raise when the live approval frame and the slots reconcile both carry it', () => {
+    const h = harness()
+    h.send('approval', { slot: 'chat-1' })
+    h.send('slots', { slots: [{ key: 'chat-1', title: 'Deploy', pending_approval: true }] })
+    expect(h.approvals).toHaveLength(1)
+  })
+
+  it('re-surfaces a still-pending approval after a reconnect clears the dedupe set', () => {
+    /*
+     * The dedupe mark normally clears on a `pending_approval:false` frame. A reconnect
+     * can strand it: an approval resolves and a NEW one goes pending on the same slot
+     * while disconnected, with no false frame between. Clearing the set on disconnect
+     * lets the first post-reconnect frame re-derive truth, so the new approval is not
+     * suppressed as a duplicate of the resolved one.
+     */
+    const h = harness()
+    h.send('slots', { slots: [{ key: 'chat-1', title: 'Deploy', pending_approval: true }] })
+    expect(h.approvals).toHaveLength(1)
+    h.socket.close() // disconnect clears the dedupe set
+    h.send('slots', { slots: [{ key: 'chat-1', title: 'Deploy', pending_approval: true }] })
+    expect(h.approvals).toHaveLength(2)
   })
 })

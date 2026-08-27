@@ -29,6 +29,13 @@ function stubElectron() {
       this.loadedUrl = "";
       this.shown = false;
       this._events = {};
+      this.sent = [];
+      // did-finish-load fires synchronously so the activation handshake in
+      // createOverlayFor runs and its set-active sends are observable.
+      this.webContents = {
+        on: (ev, cb) => { if (ev === "did-finish-load") cb(); },
+        send: (ch, ...args) => this.sent.push({ ch, args }),
+      };
       created.push(this);
     }
     setFocusable(v) { this.focusable = v; }
@@ -39,23 +46,38 @@ function stubElectron() {
     once(ev, cb) { this._events[ev] = cb; }
     on(ev, cb) { this._events[ev] = cb; }
     showInactive() { this.shown = true; }
+    isVisible() { return this.shown; }
     isDestroyed() { return this.destroyed; }
     destroy() { this.destroyed = true; }
   }
 
   const dockCalls = { setActivationPolicy: [], dockShow: 0 };
 
+  const displays = [
+    { id: 1, bounds: { x: 0, y: 0, width: 1440, height: 900 } },
+    { id: 2, bounds: { x: 1440, y: 0, width: 1920, height: 1080 } },
+  ];
+
+  // Mutable so a test can move the cursor between displays and drive a drag tick.
+  let cursor = { x: 0, y: 0 };
+
+  // A UNIQUE temp dir per stub so the persisted pet-position file (getPath() +
+  // crew-companion-pet-position.json) cannot leak drag/display state across runs.
+  const userDataDir = require("fs").mkdtempSync(
+    require("path").join(require("os").tmpdir(), "cc-pet-test-"),
+  );
   const electron = {
     app: {
+      getPath: () => userDataDir,
+      on() {},
       setActivationPolicy: (p) => dockCalls.setActivationPolicy.push(p),
       dock: { show: () => { dockCalls.dockShow += 1; } },
     },
     BrowserWindow: FakeWindow,
     screen: {
-      getAllDisplays: () => [
-        { id: 1, bounds: { x: 0, y: 0, width: 1440, height: 900 } },
-        { id: 2, bounds: { x: 1440, y: 0, width: 1920, height: 1080 } },
-      ],
+      getAllDisplays: () => displays,
+      getPrimaryDisplay: () => displays[0],
+      getCursorScreenPoint: () => cursor,
     },
     ipcMain: {
       on: (ch, cb) => { ipcHandlers[ch] = cb; },
@@ -70,7 +92,10 @@ function stubElectron() {
     contextBridge: { exposeInMainWorld: () => {} },
     ipcRenderer: { send: () => {} },
   };
-  electron.BrowserWindow.fromWebContents = () => created[created.length - 1];
+  // Resolve the sender's own window when given one (matching real Electron), else
+  // fall back to the last-created window for tests that pass a bare sender.
+  electron.BrowserWindow.fromWebContents = (sender) =>
+    created.find((w) => w.webContents === sender) ?? created[created.length - 1];
 
   const realResolve = Module._resolveFilename;
   Module._resolveFilename = function (request, ...rest) {
@@ -84,6 +109,8 @@ function stubElectron() {
     ipcHandlers,
     dockCalls,
     ipcInvokers,
+    setCursor(x, y) { cursor = { x, y }; },
+    addDisplay(d) { displays.push(d); },
     restore() {
       Module._resolveFilename = realResolve;
       delete require.cache.electron;
@@ -419,8 +446,8 @@ test("showing an overlay re-asserts the host's Dock presence on macOS", () => {
     const { overlay } = loadModules();
     overlay.setOverlayTarget("http://localhost:5476", "");
     overlay.openPetWindow();
-    // Fire the ready-to-show that real Electron fires once the page is ready.
-    stub.created[0]._events["ready-to-show"]();
+    // The overlay's did-finish-load handler (the stub fires it synchronously) shows
+    // the window and re-asserts the Dock during openPetWindow.
 
     // Showing the accessory-shaped overlay demotes the app to a Dock-less
     // accessory; the overlay must put the host straight back in the Dock, or
@@ -858,6 +885,414 @@ test("the turn-off IPC closes every overlay immediately", () => {
     stub.ipcHandlers["crew-companion:turn-off"]();
     assert.strictEqual(overlay.petWindowCount(), 0, "overlay closed immediately on turn-off");
     index.shutdownCrewCompanion();
+  } finally {
+    stub.restore();
+  }
+});
+
+test("a transfer to a display with no live overlay is a no-op — the avatar stays put", () => {
+  const stub = stubElectron();
+  try {
+    const { overlay } = loadModules();
+    overlay.setOverlayTarget("http://localhost:5476", "");
+    overlay.openPetWindow(); // active = display 1
+    const winA = stub.created[0];
+    winA.sent.length = 0;
+    // A monitor hot-plugged after startup: an id with no overlay in the map. The
+    // transfer must NOT deactivate the current overlay (that would blank the avatar).
+    overlay.transferActiveToDisplay(999, 10, 10, false);
+    assert.ok(
+      !winA.sent.some((m) => m.ch === "crew-companion:set-active" && m.args[0] === false),
+      "the current overlay is not deactivated for a display that has no overlay",
+    );
+  } finally {
+    stub.restore();
+  }
+});
+
+test("pet-ready replies to the requesting overlay with its active state", () => {
+  const stub = stubElectron();
+  try {
+    const { overlay } = loadModules();
+    overlay.setOverlayTarget("http://localhost:5476", "");
+    overlay.openPetWindow();
+    overlay.registerOverlayIpc();
+    // The stub's fromWebContents resolves to the last-created window; clear its log,
+    // then fire the readiness handshake and assert main answered with a set-active.
+    const last = stub.created[stub.created.length - 1];
+    last.sent.length = 0;
+    stub.ipcHandlers["crew-companion:pet-ready"]({ sender: {} });
+    assert.ok(
+      last.sent.some((m) => m.ch === "crew-companion:set-active"),
+      "pet-ready triggers a set-active reply to the requesting overlay",
+    );
+    overlay.stopHitboxPoll();
+  } finally {
+    stub.restore();
+  }
+});
+
+test("only ONE display's overlay is told to render the avatar; the rest are inactive", () => {
+  const stub = stubElectron();
+  try {
+    const { overlay } = loadModules();
+    overlay.setOverlayTarget("http://localhost:5476", "");
+    overlay.openPetWindow();
+
+    // This is the two-ghosts fix at the main-process seam: the avatar lives on one
+    // display, so exactly one overlay receives set-active(true) and every other
+    // receives set-active(false).
+    const activeOn = stub.created.filter((w) =>
+      w.sent.some((m) => m.ch === "crew-companion:set-active" && m.args[0] === true),
+    );
+    const inactiveOn = stub.created.filter((w) =>
+      w.sent.some((m) => m.ch === "crew-companion:set-active" && m.args[0] === false),
+    );
+    assert.strictEqual(activeOn.length, 1, "exactly one avatar across all displays");
+    assert.strictEqual(
+      inactiveOn.length,
+      stub.created.length - 1,
+      "every other overlay is explicitly inactive",
+    );
+  } finally {
+    stub.restore();
+  }
+});
+
+test("the notification owner is a single hidden brain window, not a visible overlay", () => {
+  const stub = stubElectron();
+  try {
+    const { overlay } = loadModules();
+    overlay.setOverlayTarget("http://localhost:5476", "");
+    overlay.openPetWindow();
+    // Exactly one window is told it owns notifications, and it is a hidden (show:false)
+    // window with no display bounds — the brain — not one of the per-display overlays.
+    // The brain runs the producer; its app-lifetime is what removes the owner hand-off.
+    const owners = stub.created.filter((w) =>
+      w.sent.some((m) => m.ch === "crew-companion:set-owner" && m.args[0] === true),
+    );
+    assert.strictEqual(owners.length, 1, "exactly one notification owner");
+    assert.notStrictEqual(owners[0].opts.transparent, true, "the owner is the non-overlay brain window");
+  } finally {
+    stub.restore();
+  }
+});
+
+test("a crash-replaced brain is rehydrated with the live slot on pet-ready", () => {
+  const stub = stubElectron();
+  try {
+    const { overlay } = loadModules();
+    overlay.setOverlayTarget("http://localhost:5476", "");
+    overlay.openPetWindow();
+    overlay.registerOverlayIpc();
+    const isBrain = (w) =>
+      w.opts.transparent !== true &&
+      w.sent.some((m) => m.ch === "crew-companion:set-owner" && m.args[0] === true);
+    const brain = stub.created.find(isBrain);
+    assert.ok(brain, "the brain window exists");
+    // The brain reports a live slot (two completions collapsed into a count) + its
+    // current negative local sequence.
+    const slot = { text: "2 jobs finished", sticky: false, count: 2, at: 111 };
+    stub.ipcHandlers["crew-companion:bubble-state"](
+      { sender: brain.webContents },
+      { seq: -3, kind: "session-done", text: "2 jobs finished" },
+      slot,
+      -3,
+    );
+    // Crash the brain — the 'closed' handler recreates a replacement (render-process-gone
+    // is not observable through the webContents stub, but both call the same recreate).
+    brain.destroyed = true;
+    brain._events.closed();
+    const replacement = stub.created.filter(isBrain).pop();
+    assert.ok(replacement && replacement !== brain, "a replacement brain was created");
+    replacement.sent.length = 0;
+    // On pet-ready the replacement must be handed the cached slot AND sequence, so the
+    // live count survives the restart and the replacement never reissues seq -3.
+    stub.ipcHandlers["crew-companion:pet-ready"]({ sender: replacement.webContents });
+    const rehydrate = replacement.sent.find((m) => m.ch === "crew-companion:rehydrate-slot");
+    assert.ok(rehydrate, "the replacement brain is sent rehydrate-slot");
+    assert.deepStrictEqual(rehydrate.args[0].slot, slot, "rehydrated with the cached slot");
+    assert.strictEqual(rehydrate.args[0].seq, -3, "rehydrated with the cached local sequence");
+    overlay.stopHitboxPoll();
+  } finally {
+    stub.restore();
+  }
+});
+
+test("a late 'closed' from a replaced overlay does not evict the live replacement", () => {
+  const stub = stubElectron();
+  try {
+    const { overlay } = loadModules();
+    overlay.setOverlayTarget("http://localhost:5476", "");
+    overlay.openPetWindow();
+    const d1 = (w) => w.opts.transparent === true && w.opts.x === 0; // display 1 (bounds.x=0)
+    assert.strictEqual(stub.created.filter(d1).length, 1, "one overlay for display 1 initially");
+    const orig = stub.created.filter(d1)[0];
+    // Display 1's overlay closes; its slot empties and a reconcile reopens a replacement.
+    orig.destroyed = true;
+    orig._events.closed();
+    overlay.openPetWindow();
+    assert.strictEqual(stub.created.filter(d1).length, 2, "a replacement opened for display 1");
+    // The ORIGINAL overlay's 'closed' now fires late (it raced the reconcile). It must
+    // not evict the live replacement: if it did, the slot would empty and the next
+    // reconcile would open a THIRD overlay for display 1.
+    orig._events.closed();
+    overlay.openPetWindow();
+    assert.strictEqual(
+      stub.created.filter(d1).length,
+      2,
+      "stale close left the replacement in place (no third overlay created)",
+    );
+    overlay.stopHitboxPoll();
+  } finally {
+    stub.restore();
+  }
+});
+
+test("a window command arriving before the active overlay is ready is delivered on pet-ready", () => {
+  const stub = stubElectron();
+  try {
+    const { overlay } = loadModules();
+    overlay.setOverlayTarget("http://localhost:5476", "");
+    overlay.openPetWindow();
+    overlay.registerOverlayIpc();
+    const isBrain = (w) =>
+      w.opts.transparent !== true &&
+      w.sent.some((m) => m.ch === "crew-companion:set-owner" && m.args[0] === true);
+    const brain = stub.created.find(isBrain);
+    const active = stub.created.find(
+      (w) => w.opts.transparent === true &&
+        w.sent.some((m) => m.ch === "crew-companion:set-active" && m.args[0] === true),
+    );
+    assert.ok(brain && active, "brain and an active overlay exist");
+    active.sent.length = 0;
+    // The brain drains two window commands before the active overlay has sent pet-ready
+    // (its onWindowCommand listener is not mounted yet). Both must survive, in order.
+    stub.ipcHandlers["crew-companion:window-command"]({ sender: brain.webContents }, "panel");
+    stub.ipcHandlers["crew-companion:window-command"]({ sender: brain.webContents }, "gallery");
+    assert.ok(
+      !active.sent.some((m) => m.ch === "crew-companion:window-command"),
+      "the commands are held, not sent to the still-loading overlay",
+    );
+    // The active overlay finishes mounting and reports pet-ready — both held commands
+    // must now be delivered, in the order they arrived.
+    stub.ipcHandlers["crew-companion:pet-ready"]({ sender: active.webContents });
+    const delivered = active.sent
+      .filter((m) => m.ch === "crew-companion:window-command")
+      .map((m) => m.args[0]);
+    assert.deepStrictEqual(delivered, ["panel", "gallery"], "both held commands delivered in order");
+    overlay.stopHitboxPoll();
+  } finally {
+    stub.restore();
+  }
+});
+
+test("unplugging the active display re-elects a surviving overlay as active", () => {
+  const stub = stubElectron();
+  try {
+    const { overlay } = loadModules();
+    overlay.setOverlayTarget("http://localhost:5476", "");
+    overlay.openPetWindow(); // overlays for displays 1 and 2; one is active
+    // Overlays are transparent full-screen windows; the hidden brain is not.
+    const overlaysCreated = stub.created.filter((w) => w.opts.transparent === true);
+    // Find the overlay currently drawing the avatar (told set-active(true) on reveal).
+    const activeWin = overlaysCreated.find((w) =>
+      w.sent.some((m) => m.ch === "crew-companion:set-active" && m.args[0] === true),
+    );
+    assert.ok(activeWin, "an overlay is active after open");
+    const survivor = overlaysCreated.find((w) => w !== activeWin);
+    survivor.sent.length = 0;
+    // Unplug the active display: its overlay closes. A survivor must become active so
+    // the avatar and every relayed bubble still land on a live screen.
+    activeWin.destroyed = true;
+    if (activeWin._events.closed) activeWin._events.closed();
+    const reactivated = survivor.sent.some(
+      (m) => m.ch === "crew-companion:set-active" && m.args[0] === true,
+    );
+    assert.ok(reactivated, "a surviving overlay is re-elected active");
+  } finally {
+    stub.restore();
+  }
+});
+
+test("a window command queued for a still-loading active overlay drains to a re-elected survivor", () => {
+  const stub = stubElectron();
+  try {
+    const { overlay } = loadModules();
+    overlay.setOverlayTarget("http://localhost:5476", "");
+    overlay.openPetWindow(); // overlays for displays 1 and 2; one active
+    overlay.registerOverlayIpc();
+    const isBrain = (w) =>
+      w.opts.transparent !== true &&
+      w.sent.some((m) => m.ch === "crew-companion:set-owner" && m.args[0] === true);
+    const brain = stub.created.find(isBrain);
+    const overlaysCreated = stub.created.filter((w) => w.opts.transparent === true);
+    const activeWin = overlaysCreated.find((w) =>
+      w.sent.some((m) => m.ch === "crew-companion:set-active" && m.args[0] === true),
+    );
+    const survivor = overlaysCreated.find((w) => w !== activeWin);
+    assert.ok(brain && activeWin && survivor, "brain, active, and survivor overlays exist");
+    // The survivor has finished mounting (pet-ready → ready); the active overlay has
+    // NOT, so a window command for it must queue rather than deliver.
+    stub.ipcHandlers["crew-companion:pet-ready"]({ sender: survivor.webContents });
+    survivor.sent.length = 0;
+    stub.ipcHandlers["crew-companion:window-command"]({ sender: brain.webContents }, "panel");
+    assert.ok(
+      !survivor.sent.some((m) => m.ch === "crew-companion:window-command"),
+      "the command is held while the active overlay is still loading",
+    );
+    // The active display is unplugged: its overlay closes and the ready survivor is
+    // re-elected active. The queued command must drain to it, not stay stranded.
+    activeWin.destroyed = true;
+    if (activeWin._events.closed) activeWin._events.closed();
+    const delivered = survivor.sent
+      .filter((m) => m.ch === "crew-companion:window-command")
+      .map((m) => m.args[0]);
+    assert.deepStrictEqual(delivered, ["panel"], "queued command drains to the re-elected survivor");
+    overlay.stopHitboxPoll();
+  } finally {
+    stub.restore();
+  }
+});
+
+test("adding a display preserves the active overlay instead of re-electing it", () => {
+  const stub = stubElectron();
+  try {
+    const { overlay } = loadModules();
+    overlay.setOverlayTarget("http://localhost:5476", "");
+    overlay.openPetWindow();
+    const overlaysBefore = stub.created.filter((w) => w.opts.transparent === true);
+    const activeWin = overlaysBefore.find((w) =>
+      w.sent.some((m) => m.ch === "crew-companion:set-active" && m.args[0] === true),
+    );
+    assert.ok(activeWin, "an overlay is active after open");
+    activeWin.sent.length = 0;
+    // Hot-plug a monitor and re-run openPetWindow — exactly what the display-added
+    // listener does. The already-active overlay must stay active (no set-active(true)
+    // churn, no deactivation), and the new display's overlay must open inactive.
+    stub.addDisplay({ id: 3, bounds: { x: 3360, y: 0, width: 1280, height: 720 } });
+    overlay.openPetWindow();
+    const stillActive = !activeWin.sent.some(
+      (m) => m.ch === "crew-companion:set-active" && m.args[0] === false,
+    );
+    assert.ok(stillActive, "the active overlay was not deactivated by the display add");
+    const newOverlay = stub.created.find(
+      (w) => w.opts.transparent === true && w.opts.x === 3360,
+    );
+    assert.ok(newOverlay, "an overlay opened on the new display");
+    const newIsInactive = newOverlay.sent.some(
+      (m) => m.ch === "crew-companion:set-active" && m.args[0] === false,
+    );
+    assert.ok(newIsInactive, "the new display's overlay opened inactive");
+  } finally {
+    stub.restore();
+  }
+});
+
+test("dragging the avatar across the boundary hands it off — still exactly one avatar", () => {
+  const stub = stubElectron();
+  try {
+    const { overlay } = loadModules();
+    overlay.setOverlayTarget("http://localhost:5476", "");
+    overlay.openPetWindow(); // cursor at (0,0) -> active display 1
+    const [winA, winB] = stub.created;
+
+    // A drag begins on display 1; then the cursor moves onto display 2 and one tick runs.
+    overlay.startDragPolling(10, 10);
+    stub.setCursor(2000, 500); // inside display 2's bounds
+    overlay.dragPollOnce();
+
+    // The avatar handed off: display 1 told inactive, display 2 told active — so it
+    // lives on exactly one screen, the one the cursor dragged it to.
+    assert.ok(
+      winA.sent.some((m) => m.ch === "crew-companion:set-active" && m.args[0] === false),
+      "old display told inactive on crossing",
+    );
+    assert.ok(
+      winB.sent.some((m) => m.ch === "crew-companion:set-active" && m.args[0] === true),
+      "new display told active on crossing",
+    );
+
+    // Ending the drag restores click-through on every overlay (the hitbox poll makes
+    // the active one interactive again once the renderer reports a real rect).
+    overlay.stopDragPolling();
+    assert.deepStrictEqual(winA.ignoreMouse, { ignore: true, opts: { forward: true } });
+    assert.deepStrictEqual(winB.ignoreMouse, { ignore: true, opts: { forward: true } });
+  } finally {
+    stub.restore();
+  }
+});
+
+test("a readiness reply DURING a drag carries the drag state, not a bare activation", () => {
+  const stub = stubElectron();
+  try {
+    const { overlay } = loadModules();
+    overlay.setOverlayTarget("http://localhost:5476", "");
+    overlay.openPetWindow(); // active = display 1
+    const [, winB] = stub.created;
+    overlay.registerOverlayIpc();
+
+    // Drag the avatar onto display 2, so display 2 is now the active one and a drag
+    // is in progress. Target winB's own webContents so the reply is unambiguous
+    // regardless of the hidden brain window's creation order.
+    overlay.startDragPolling(10, 10);
+    stub.setCursor(2000, 500);
+    overlay.dragPollOnce();
+    winB.sent.length = 0;
+
+    // A slow renderer only now finishes mounting and sends pet-ready. The reply must
+    // NOT be a bare set-active(true): that would make the renderer activate at-rest
+    // and clear the carried bubble. It must carry isDragging=true so the renderer
+    // adopts the in-flight drag and keeps the reminder.
+    stub.ipcHandlers["crew-companion:pet-ready"]({ sender: winB.webContents });
+    const reply = winB.sent.find(
+      (m) => m.ch === "crew-companion:set-active" && m.args[0] === true,
+    );
+    assert.ok(reply, "readiness during a drag re-activates the requesting overlay");
+    assert.strictEqual(reply.args[3], true, "the reply carries isDragging=true");
+    assert.strictEqual(typeof reply.args[1], "number", "and the live drag x");
+    assert.strictEqual(typeof reply.args[2], "number", "and the live drag y");
+
+    overlay.stopDragPolling();
+    overlay.stopHitboxPoll();
+  } finally {
+    stub.restore();
+  }
+});
+
+test("a drag over a display with NO overlay streams to the active overlay, not fs", () => {
+  const stub = stubElectron();
+  try {
+    const { overlay } = loadModules();
+    overlay.setOverlayTarget("http://localhost:5476", "");
+    overlay.openPetWindow(); // overlays for displays 1 and 2
+    // A monitor hot-plugged after enable: present to the OS but with no overlay in
+    // the map (nothing opens one for it).
+    stub.addDisplay({ id: 3, bounds: { x: 3360, y: 0, width: 1280, height: 720 } });
+
+    overlay.startDragPolling(10, 10);
+    for (const w of stub.created) w.sent.length = 0;
+    stub.setCursor(3800, 300); // inside display 3, which has no overlay
+    overlay.dragPollOnce();
+
+    // No hand-off to a non-existent overlay, and the active overlay keeps getting a
+    // clamped drag-update (the avatar tracks the cursor on its own display) instead
+    // of the loop no-oping and hammering savePetPos on the main thread.
+    assert.ok(
+      !stub.created.some((w) =>
+        w.sent.some((m) => m.ch === "crew-companion:set-active" && m.args[0] === false),
+      ),
+      "no overlay is deactivated for a display that has no overlay",
+    );
+    assert.ok(
+      stub.created.some((w) =>
+        w.sent.some((m) => m.ch === "crew-companion:drag-update"),
+      ),
+      "the active overlay still receives a clamped drag-update",
+    );
+
+    overlay.stopDragPolling();
+    overlay.stopHitboxPoll();
   } finally {
     stub.restore();
   }
