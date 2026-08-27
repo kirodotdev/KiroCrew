@@ -24,7 +24,7 @@
 const path = require("path");
 const { BrowserWindow, ipcMain, screen } = require("electron");
 const { companionPageUrl } = require("./pageUrl");
-const { isPetWindow } = require("./petOverlay");
+const { isPetWindow, assertHostStaysInDock } = require("./petOverlay");
 
 /** True when the window belongs to the companion (an overlay, or the gallery). */
 function isCompanionWindow(win) {
@@ -102,6 +102,7 @@ function openPanelWindow(petRect) {
     panelWin.setBounds(bounds);
     panelWin.showInactive();
     panelWin.focus();
+    assertHostStaysInDock();
     panelWin.webContents.send("crew-companion:panel-opened", placement.side);
     return panelWin;
   }
@@ -138,6 +139,7 @@ function openPanelWindow(petRect) {
       panelWin.show();
       panelWin.focus();
       panelWin.webContents.send("crew-companion:panel-opened", placement.side);
+      assertHostStaysInDock();
     }
   });
 

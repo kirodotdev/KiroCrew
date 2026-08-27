@@ -41,7 +41,13 @@ function stubElectron() {
     destroy() { this.destroyed = true; }
   }
 
+  const dockCalls = { setActivationPolicy: [], dockShow: 0 };
+
   const electron = {
+    app: {
+      setActivationPolicy: (p) => dockCalls.setActivationPolicy.push(p),
+      dock: { show: () => { dockCalls.dockShow += 1; } },
+    },
     BrowserWindow: FakeWindow,
     screen: {
       getAllDisplays: () => [
@@ -65,6 +71,7 @@ function stubElectron() {
   return {
     created,
     ipcHandlers,
+    dockCalls,
     restore() {
       Module._resolveFilename = realResolve;
       delete require.cache.electron;
@@ -386,6 +393,31 @@ test("the overlay registers the cursor-hitbox channels the renderer reports to",
     );
 
     overlay.stopHitboxPoll();
+  } finally {
+    stub.restore();
+  }
+});
+
+test("showing an overlay re-asserts the host's Dock presence on macOS", () => {
+  // macOS-only behaviour: assertHostStaysInDock no-ops off darwin, so there is
+  // nothing to assert there.
+  if (process.platform !== "darwin") return;
+  const stub = stubElectron();
+  try {
+    const { overlay } = loadModules();
+    overlay.setOverlayTarget("http://localhost:5476", "");
+    overlay.openPetWindow();
+    // Fire the ready-to-show that real Electron fires once the page is ready.
+    stub.created[0]._events["ready-to-show"]();
+
+    // Showing the accessory-shaped overlay demotes the app to a Dock-less
+    // accessory; the overlay must put the host straight back in the Dock, or
+    // opening the companion makes Kiro Crew's Dock icon disappear.
+    assert.ok(
+      stub.dockCalls.setActivationPolicy.includes("regular"),
+      "activation policy re-asserted to regular after showing the overlay",
+    );
+    assert.ok(stub.dockCalls.dockShow >= 1, "app.dock.show() called after showing the overlay");
   } finally {
     stub.restore();
   }

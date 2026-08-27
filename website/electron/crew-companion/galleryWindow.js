@@ -16,6 +16,7 @@
 const path = require("path");
 const { BrowserWindow, ipcMain, shell } = require("electron");
 const { companionPageUrl } = require("./pageUrl");
+const { assertHostStaysInDock } = require("./petOverlay");
 
 /** Transparent gutter for the card's own shadow. */
 const GALLERY_PAD = 24;
@@ -72,6 +73,7 @@ function openGalleryWindow() {
     // Already open — bring it forward rather than opening a second copy.
     galleryWin.show();
     galleryWin.focus();
+    assertHostStaysInDock();
     if (onOpened) onOpened();
     return galleryWin;
   }
@@ -98,7 +100,10 @@ function openGalleryWindow() {
 
   galleryWin.loadURL(companionPageUrl(baseUrl, "gallery.html", credential));
   galleryWin.once("ready-to-show", () => {
-    if (galleryWin && !galleryWin.isDestroyed()) galleryWin.show();
+    if (galleryWin && !galleryWin.isDestroyed()) {
+      galleryWin.show();
+      assertHostStaysInDock();
+    }
     if (onOpened) onOpened();
   });
   galleryWin.setAlwaysOnTop(true, "modal-panel");

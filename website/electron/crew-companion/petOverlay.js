@@ -15,7 +15,7 @@
  */
 
 const path = require("path");
-const { BrowserWindow, screen, ipcMain } = require("electron");
+const { app, BrowserWindow, screen, ipcMain } = require("electron");
 const { companionPageUrl } = require("./pageUrl");
 
 /** @type {Map<number, Electron.BrowserWindow>} display id -> overlay */
@@ -49,6 +49,26 @@ function setOverlayLogger(fn) {
 function setOverlayTarget(url, token) {
   baseUrl = url || "";
   credential = token || "";
+}
+
+/**
+ * Keep the HOST app in the Dock (macOS).
+ *
+ * macOS flips a window-owning app to the accessory activation policy — which drops
+ * its Dock icon — when it shows a window shaped like this overlay (frameless,
+ * transparent, always-on-top). Re-assert "regular" and the Dock icon right after
+ * showing, so opening the companion never makes Kiro Crew vanish from the Dock.
+ * Mirrors Mochi's assertHostStaysInDock (mochi/petOverlays.js), which carries the
+ * same note; the crew-companion overlay was missing it.
+ */
+function assertHostStaysInDock() {
+  if (process.platform !== "darwin") return;
+  try {
+    app.setActivationPolicy?.("regular");
+    app.dock?.show?.();
+  } catch {
+    /* older Electron / already regular */
+  }
 }
 
 function createOverlayFor(display) {
@@ -111,7 +131,11 @@ function createOverlayFor(display) {
 
   win.loadURL(companionPageUrl(baseUrl, "pet.html", credential));
   win.once("ready-to-show", () => {
-    if (!win.isDestroyed()) win.showInactive();
+    if (win.isDestroyed()) return;
+    win.showInactive();
+    // Showing this accessory-shaped window demotes the app to a Dock-less accessory
+    // on macOS; put the host back in the Dock (see assertHostStaysInDock).
+    assertHostStaysInDock();
   });
   win.on("closed", () => {
     for (const [id, w] of overlays) if (w === win) overlays.delete(id);
@@ -296,6 +320,7 @@ function registerOverlayIpc() {
 }
 
 module.exports = {
+  assertHostStaysInDock,
   broadcastToPets,
   isPetWindow,
   openPetWindow,
