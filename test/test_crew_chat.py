@@ -1354,7 +1354,7 @@ class TestDeliveryFailureKeepsTheResult:
     async def test_a_successful_post_still_clears(self) -> None:
         orch = _orch()
         slot = _slot()
-        with patch.object(orch, "_post", return_value=True):
+        with patch.object(orch, "_post", return_value=True), _slot_save():
             await orch._queue_forward(slot, "result body")
         await orch._store("s1").wait_writes()
         assert CrewStore("s1").forwards == []
@@ -2585,7 +2585,7 @@ class TestReviewFixes:
             on_disk.append([f["body"] for f in fresh.forwards])
             return True          # `_post` reports delivery; this one succeeded
 
-        with patch.object(orch, "_post", side_effect=_spy) as post:
+        with patch.object(orch, "_post", side_effect=_spy) as post, _slot_save():
             await orch._queue_forward(slot, "result body")
         post.assert_called_once()
         assert seen == [["result body"]]                  # in the store DURING the post
@@ -2605,7 +2605,7 @@ class TestReviewFixes:
         slot = _slot()
         state.get_slot = MagicMock(return_value=slot)
         orch = _orch(state=state)
-        with patch.object(orch, "_post", return_value=True) as post:
+        with patch.object(orch, "_post", return_value=True) as post, _slot_save():
             orch._store("s1")     # _reconcile SCHEDULES the replay (it is sync)
             # Poll until the drain task completes (forwards cleared) instead of
             # a fixed sleep that flakes on loaded CI runners (#4914).
