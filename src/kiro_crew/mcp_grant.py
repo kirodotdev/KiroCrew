@@ -175,7 +175,12 @@ async def grant_observed(mcp_url: str, *, audit_absence: bool = False) -> bool |
         # ``safe_read_file_internal``'s vocabulary, so one outcome word means the
         # same thing across the SEL surface: the pair is there, definitively is
         # not, or could not be looked at.
-        outcome = "success" if present is True else "missing" if present is False else "unreadable"
+        if present is True:
+            outcome = "success"
+        elif present is False:
+            outcome = "missing"
+        else:
+            outcome = "unreadable"
         recorded = await asyncio.to_thread(
             _hooks.emit_internal_read_audit, _GRANT_PRESENCE_READ_ID, outcome
         )
