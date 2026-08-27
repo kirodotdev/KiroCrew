@@ -1277,36 +1277,81 @@ def _append_entry(handle: IO[str], entry: dict[str, Any]) -> None:
     handle.flush()
 
 
-def _read_manifest(batch: Path) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
-    """Parse a batch manifest into its header and session entries.
+def _manifest_records(handle: IO[str], batch: Path) -> Iterator[dict[str, Any]]:
+    """Yield each JSON object line of an open manifest, header first.
 
-    A trailing partial line (a crash mid-append) is skipped rather than failing
-    the whole batch: every complete line before it describes real moved files that
-    must stay restorable.
+    Blank and non-dict lines are skipped silently; a line that fails to parse —
+    including a trailing partial line from a crash mid-append — is skipped and
+    counted, with one aggregated warning once the file is exhausted, so a corrupted
+    manifest is visible in the log without failing the whole batch: every complete
+    line before it describes real moved files that must stay restorable.
     """
-    try:
-        raw = (batch / MANIFEST_NAME).read_text(encoding="utf-8")
-    except OSError:
-        return None
-    header: dict[str, Any] | None = None
-    entries: list[dict[str, Any]] = []
-    for line in raw.splitlines():
+    skipped = 0
+    for line in handle:
         line = line.strip()
         if not line:
             continue
         try:
             record = json.loads(line)
         except ValueError:
+            skipped += 1
             continue
         if not isinstance(record, dict):
             continue
-        if header is None:
-            header = record
-            continue
-        entries.append(record)
+        yield record
+    if skipped:
+        logger.warning("trash manifest in %s: skipped %d unparseable line(s)", batch.name, skipped)
+
+
+def _read_manifest(batch: Path) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+    """Parse a batch manifest into its header and session entries.
+
+    Streams the file line by line rather than materialising it as one string; the
+    entries list itself is still O(sessions), which the two callers that rewrite or
+    enumerate the manifest genuinely need. Callers that need only aggregates should
+    use :func:`_summarize_manifest` instead.
+    """
+    header: dict[str, Any] | None = None
+    entries: list[dict[str, Any]] = []
+    try:
+        with (batch / MANIFEST_NAME).open(encoding="utf-8") as handle:
+            for record in _manifest_records(handle, batch):
+                if header is None:
+                    header = record
+                    continue
+                entries.append(record)
+    except OSError:
+        return None
     if header is None or header.get("schema") != MANIFEST_SCHEMA:
         return None
     return header, entries
+
+
+def _summarize_manifest(batch: Path) -> tuple[dict[str, Any], int, int] | None:
+    """The manifest's header plus (session count, staged byte total).
+
+    A batch can hold six figures of sessions, and the trash listing needs only
+    these two aggregates — so they are accumulated during the same single streamed
+    pass :func:`_read_manifest` makes, without ever holding the parsed entries.
+    Guards match :func:`_read_manifest` exactly: same skipped-line tolerance, same
+    schema rejection, and ``None`` on an unreadable manifest.
+    """
+    header: dict[str, Any] | None = None
+    sessions = 0
+    staged_bytes = 0
+    try:
+        with (batch / MANIFEST_NAME).open(encoding="utf-8") as handle:
+            for record in _manifest_records(handle, batch):
+                if header is None:
+                    header = record
+                    continue
+                sessions += 1
+                staged_bytes += _entry_bytes(record)
+    except OSError:
+        return None
+    if header is None or header.get("schema") != MANIFEST_SCHEMA:
+        return None
+    return header, sessions, staged_bytes
 
 
 def _rewrite_manifest(batch: Path, header: dict[str, Any], entries: list[dict[str, Any]]) -> None:
@@ -1588,11 +1633,11 @@ def list_trash() -> list[TrashBatch]:
         # listed as a real batch and the sweep would delete through it.
         if platform_compat.is_link_or_junction(candidate) or not candidate.is_dir():
             continue
-        parsed = _read_manifest(candidate)
+        parsed = _summarize_manifest(candidate)
         if parsed is None:
             logger.debug("trash batch %s has no readable manifest", candidate.name)
             continue
-        header, entries = parsed
+        header, sessions, staged_bytes = parsed
         # The DIRECTORY is the batch's identity. A header that names a different
         # batch would make a targeted empty delete the batch it named instead of
         # the one it came from, so a disagreement is treated as corruption rather
@@ -1611,8 +1656,8 @@ def list_trash() -> list[TrashBatch]:
                 batch_id=candidate.name,
                 created_at=float(created) if isinstance(created, (int, float)) else 0.0,
                 reason=str(header.get("reason") or ""),
-                sessions=len(entries),
-                bytes=sum(_entry_bytes(e) for e in entries),
+                sessions=sessions,
+                bytes=staged_bytes,
             )
         )
     batches.sort(key=lambda b: b.created_at, reverse=True)
