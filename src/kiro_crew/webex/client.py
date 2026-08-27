@@ -71,6 +71,19 @@ def truncate_utf8(text: str, max_bytes: int = WEBEX_MAX_TEXT) -> str:
 # backoff curve so it cannot hot-loop with zero delay. Mirrors WeComClient.
 _MIN_HEALTHY_CONN_SECS = 5.0
 
+# Minimum quiet time between unparseable-frame WARNINGs on one connection
+# (repeats inside the window log at DEBUG; a reconnect starts a fresh window —
+# bounded to roughly one WARNING per _MIN_HEALTHY_CONN_SECS in the worst
+# close-and-reconnect case, and reconnect churn is already surfaced by
+# _run_loop's own disconnect warnings). A peer interleaving non-JSON frames
+# must not flood WARNING at socket rate, while the window re-arms so genuine
+# corruption later on a long-lived connection still surfaces.
+_UNPARSEABLE_WARN_INTERVAL_SECS = 60.0
+
+# Seam for tests: patching time.monotonic itself would perturb asyncio's own
+# loop.time() process-wide.
+_monotonic = time.monotonic
+
 # How many recently-dispatched message ids to remember for deduplication.
 #
 # The device WebSocket redelivers an activity that was not acknowledged, and a
@@ -713,15 +726,57 @@ class WebexClient:
             self.ready.set()
             self.last_error = ""
             self._notify_state(True, "")
+            last_warn = float("-inf")  # rate-limits the unparseable-frame WARNING
             try:
                 async for msg in ws:
-                    if msg.type == aiohttp.WSMsgType.TEXT:
+                    if msg.type in (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY):
+                        # Mercury delivers activity events as BINARY frames whose
+                        # payload is UTF-8 encoded JSON; TEXT frames carry the
+                        # same shape. Decode explicitly so a malformed BINARY
+                        # frame hits the same guarded drop path as malformed TEXT.
                         try:
-                            self._handle_frame(json.loads(msg.data))
-                        except json.JSONDecodeError:
-                            logger.warning("Webex WS: unparseable frame (%d bytes)", len(msg.data))
-                        except Exception:
-                            logger.exception("Webex WS: frame handler error; dropping frame")
+                            raw = (
+                                msg.data.decode("utf-8")
+                                if isinstance(msg.data, (bytes, bytearray))
+                                else msg.data
+                            )
+                            frame = json.loads(raw)
+                        except (ValueError, RecursionError):
+                            # ValueError covers JSONDecodeError and
+                            # UnicodeDecodeError (both subclasses) AND the
+                            # plain ValueError json.loads raises for an
+                            # over-long integer literal (int()'s digit limit,
+                            # Python 3.10.7+/3.11+) — well-formed JSON syntax,
+                            # so no JSONDecodeError precedes it. RecursionError:
+                            # json.loads recurses per nesting level, so a
+                            # deeply nested frame is unparseable input, not a
+                            # handler bug. The log is content-free (byte
+                            # length only, never the frame) and rate-limited:
+                            # a peer interleaving non-JSON frames must not
+                            # amplify into WARNING at socket rate, while a
+                            # quiet period re-arms the WARNING so later
+                            # corruption on a long-lived connection surfaces.
+                            size = (
+                                len(msg.data)
+                                if isinstance(msg.data, (bytes, bytearray))
+                                else len(msg.data.encode("utf-8", "replace"))
+                            )
+                            now = _monotonic()
+                            if now - last_warn >= _UNPARSEABLE_WARN_INTERVAL_SECS:
+                                last_warn = now
+                                logger.warning("Webex WS: unparseable frame (%d bytes)", size)
+                            else:
+                                logger.debug("Webex WS: unparseable frame (%d bytes)", size)
+                        else:
+                            # Dispatch OUTSIDE the parse guard: an exception
+                            # raised by the handler (even a JSONDecodeError
+                            # from some nested parse) is a handler bug and
+                            # must keep its traceback, not be misreported as
+                            # an unparseable frame.
+                            try:
+                                self._handle_frame(frame)
+                            except Exception:
+                                logger.exception("Webex WS: frame handler error; dropping frame")
                     elif msg.type in (
                         aiohttp.WSMsgType.CLOSED,
                         aiohttp.WSMsgType.CLOSING,

@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
+import logging
+import sys
 from typing import Any
 
+import aiohttp
 import pytest
 
 from kiro_crew.messaging.split import chunk_utf8_bytes
@@ -1301,3 +1305,287 @@ class TestCardActionHydration:
         await asyncio.gather(*c._handler_tasks)
 
         assert [p["messageId"] for p in sent] == ["act-1"]
+
+
+class TestReadLoopFrameDispatch:
+    """The Mercury read loop must dispatch BINARY frames, not only TEXT.
+
+    Mercury delivers activity events as BINARY WebSocket frames whose payload
+    is UTF-8 encoded JSON; a TEXT-only dispatch silently drops every inbound
+    message while the channel still shows as connected (issue #6222).
+    """
+
+    @staticmethod
+    def _serve(
+        monkeypatch: pytest.MonkeyPatch, c: WebexClient, messages: list[aiohttp.WSMessage]
+    ) -> list[Any]:
+        """Wire _connect_and_serve to a fake socket yielding ``messages``.
+
+        Returns the list that collects every payload reaching _handle_frame.
+        """
+        handled: list[Any] = []
+
+        class FakeWs:
+            def __init__(self) -> None:
+                self._it = iter(messages)
+
+            async def send_json(self, payload: dict) -> None:
+                pass
+
+            def __aiter__(self) -> "FakeWs":
+                return self
+
+            async def __anext__(self) -> aiohttp.WSMessage:
+                try:
+                    return next(self._it)
+                except StopIteration:
+                    raise StopAsyncIteration
+
+        class FakeWsCtx:
+            async def __aenter__(self) -> FakeWs:
+                return FakeWs()
+
+            async def __aexit__(self, *exc: Any) -> None:
+                pass
+
+        class FakeSession:
+            def ws_connect(self, *a: Any, **kw: Any) -> FakeWsCtx:
+                return FakeWsCtx()
+
+        async def fake_ensure_session() -> FakeSession:
+            return FakeSession()
+
+        async def fake_ws_url() -> str:
+            return "wss://mercury.example.test/ws"
+
+        c.bot_email = "bot@example.test"  # skip _fetch_me
+        monkeypatch.setattr(c, "_ensure_session", fake_ensure_session)
+        monkeypatch.setattr(c, "_get_websocket_url", fake_ws_url)
+        monkeypatch.setattr(c, "_handle_frame", handled.append)
+        return handled
+
+    @pytest.mark.asyncio
+    async def test_binary_frame_reaches_handler_same_as_text(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        c = _client()
+        # Non-ASCII payload, dumped raw: pins that the BINARY branch decodes
+        # UTF-8 specifically (an .decode("ascii")/"latin-1" regression would
+        # corrupt every real Mercury frame carrying non-ASCII message text).
+        payload = {**_frame(), "note": "café🐾"}
+        encoded = json.dumps(payload, ensure_ascii=False)
+        handled = self._serve(
+            monkeypatch,
+            c,
+            [
+                aiohttp.WSMessage(aiohttp.WSMsgType.TEXT, encoded, None),
+                aiohttp.WSMessage(aiohttp.WSMsgType.BINARY, encoded.encode("utf-8"), None),
+            ],
+        )
+
+        await c._connect_and_serve()
+
+        # Both frames decode to the same activity payload.
+        assert handled == [payload, payload]
+
+    @pytest.mark.asyncio
+    async def test_malformed_binary_frame_does_not_crash_the_loop(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        c = _client()
+        good = _frame()
+        bad_frames = [
+            # Invalid UTF-8 bytes; invalid JSON bytes; invalid JSON text. All
+            # must be dropped on the same guarded unparseable path, never
+            # abort the read loop.
+            aiohttp.WSMessage(aiohttp.WSMsgType.BINARY, b"\xff\xfe\xfa", None),
+            aiohttp.WSMessage(aiohttp.WSMsgType.BINARY, b"not json", None),
+            aiohttp.WSMessage(aiohttp.WSMsgType.TEXT, "not json", None),
+            # Pathologically nested JSON: json.loads recurses per level and
+            # converts the overflow to RecursionError via Py_EnterRecursiveCall
+            # (never a hard crash). Depth is deliberately large — the C scanner
+            # on modern CPython tolerates thousands of levels, so a small depth
+            # parses fine and tests nothing.
+            aiohttp.WSMessage(aiohttp.WSMsgType.BINARY, b"[" * 50000 + b"]" * 50000, None),
+        ]
+        # An over-long integer literal is well-formed JSON syntax whose int()
+        # conversion raises plain ValueError (digit limit, 3.10.7+/3.11+), NOT
+        # JSONDecodeError. Sized from the runtime limit; skipped where the
+        # interpreter has no limit (pre-3.10.7 or explicitly disabled).
+        digits = getattr(sys, "get_int_max_str_digits", lambda: 0)()
+        if digits:
+            bad_frames.append(
+                aiohttp.WSMessage(
+                    aiohttp.WSMsgType.BINARY, b'{"data":{"n":' + b"9" * (digits + 1) + b"}}", None
+                )
+            )
+        handled = self._serve(
+            monkeypatch,
+            c,
+            bad_frames
+            + [aiohttp.WSMessage(aiohttp.WSMsgType.BINARY, json.dumps(good).encode("utf-8"), None)],
+        )
+
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.webex.client"):
+            await c._connect_and_serve()
+
+        # The loop survived the malformed frames and delivered the valid one.
+        assert handled == [good]
+        # Every bad frame took the UNPARSEABLE branch, not the handler-error one.
+        unparseable = [r for r in caplog.records if "unparseable" in r.getMessage()]
+        assert len(unparseable) == len(bad_frames)
+        assert "frame handler error" not in caplog.text
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "mtype",
+        [aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSING, aiohttp.WSMsgType.ERROR],
+    )
+    async def test_close_frame_still_ends_the_loop(
+        self, monkeypatch: pytest.MonkeyPatch, mtype: aiohttp.WSMsgType
+    ) -> None:
+        c = _client()
+        handled = self._serve(
+            monkeypatch,
+            c,
+            [
+                aiohttp.WSMessage(mtype, None, None),
+                aiohttp.WSMessage(
+                    aiohttp.WSMsgType.BINARY, json.dumps(_frame()).encode("utf-8"), None
+                ),
+            ],
+        )
+
+        await c._connect_and_serve()
+
+        # CLOSED/CLOSING/ERROR breaks out before the later frame is ever read.
+        assert handled == []
+
+    @pytest.mark.asyncio
+    async def test_unparseable_warning_is_content_free_and_not_amplified(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The drop-path log never contains frame content, and repeats demote.
+
+        Mercury frames can carry message bodies and the connection's own
+        bearer-token shape, so the log must record only the byte length. And a
+        peer interleaving non-JSON frames must not flood WARNING at socket
+        rate: within the warn interval, repeats go to DEBUG — and a new
+        connection starts with a re-armed WARNING.
+        """
+        c = _client()
+        secret = "sk-live-UNPARSEABLE-SECRET-blob"
+        text_secret = "sk-live-TEXT-FRAME-SECRET-blob"
+        bad = [
+            aiohttp.WSMessage(
+                aiohttp.WSMsgType.BINARY, f"<<<not-json>>> {secret}".encode("utf-8"), None
+            ),
+            # TEXT-path secret + 3 x '€' (9 UTF-8 bytes): pins that TEXT
+            # content never leaks either, and that byte (not char) counts are
+            # logged.
+            aiohttp.WSMessage(aiohttp.WSMsgType.TEXT, f"€€€ {text_secret}", None),
+        ]
+
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.webex.client"):
+            self._serve(monkeypatch, c, bad)
+            await c._connect_and_serve()
+            # Second connection lifecycle: the WARNING must re-arm.
+            self._serve(monkeypatch, c, bad)
+            await c._connect_and_serve()
+
+        # The frame content (including secrets, on both branches) never
+        # reaches logs.
+        assert secret not in caplog.text
+        assert text_secret not in caplog.text
+        # Safe metadata remains: the UTF-8 BYTE length, even for TEXT frames
+        # ('€' is 1 char but 3 bytes, so a char count would read differently).
+        assert "unparseable frame" in caplog.text
+        text_bytes = len(f"€€€ {text_secret}".encode("utf-8"))
+        assert f"({text_bytes} bytes)" in caplog.text
+        records = [r for r in caplog.records if "unparseable" in r.getMessage()]
+        warnings = [r for r in records if r.levelno == logging.WARNING]
+        debugs = [r for r in records if r.levelno == logging.DEBUG]
+        # Per connection: exactly one WARNING (first frame) and one DEBUG
+        # (the in-window repeat) — a fresh connection re-arms the WARNING.
+        assert len(warnings) == 2
+        assert len(debugs) == 2
+
+    @pytest.mark.asyncio
+    async def test_unparseable_warning_rearms_after_quiet_window(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The WARNING is a time-window rate limit, not a one-shot latch.
+
+        With a deterministic clock at the DEFAULT interval: first frame warns,
+        an in-window repeat demotes to DEBUG, and a frame after the quiet
+        window re-arms the WARNING — corruption late on a long-lived
+        connection still surfaces. Patches the module's ``_monotonic`` seam
+        (never ``time.monotonic`` itself, which asyncio's ``loop.time()``
+        shares).
+        """
+        c = _client()
+        w = webex_client._UNPARSEABLE_WARN_INTERVAL_SECS
+        clock = iter([100.0, 100.0 + w - 0.1, 100.0 + w])  # warn, in-window, elapsed
+        monkeypatch.setattr(webex_client, "_monotonic", lambda: next(clock))
+        self._serve(
+            monkeypatch,
+            c,
+            [
+                aiohttp.WSMessage(aiohttp.WSMsgType.BINARY, b"not json", None),
+                aiohttp.WSMessage(aiohttp.WSMsgType.BINARY, b"still not json", None),
+                aiohttp.WSMessage(aiohttp.WSMsgType.BINARY, b"nope", None),
+            ],
+        )
+
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.webex.client"):
+            await c._connect_and_serve()
+
+        levels = [
+            logging.getLevelName(r.levelno)
+            for r in caplog.records
+            if "unparseable" in r.getMessage()
+        ]
+        assert levels == ["WARNING", "DEBUG", "WARNING"]
+
+    @pytest.mark.asyncio
+    async def test_handler_error_does_not_crash_the_loop(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A raising handler logs its traceback and the loop keeps serving.
+
+        The handler-bug path must stay distinct from the unparseable-frame
+        path: it keeps `logger.exception` (traceback preserved), and the next
+        frame is still dispatched.
+        """
+        c = _client()
+        good = _frame()
+        encoded = json.dumps(good).encode("utf-8")
+        self._serve(
+            monkeypatch,
+            c,
+            [
+                aiohttp.WSMessage(aiohttp.WSMsgType.BINARY, encoded, None),
+                aiohttp.WSMessage(aiohttp.WSMsgType.BINARY, encoded, None),
+            ],
+        )
+        calls: list[Any] = []
+
+        def boom_then_ok(frame: Any) -> None:
+            calls.append(frame)
+            if len(calls) == 1:
+                raise RuntimeError("handler bug")
+
+        monkeypatch.setattr(c, "_handle_frame", boom_then_ok)
+
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.webex.client"):
+            await c._connect_and_serve()
+
+        # The loop survived and delivered the second frame.
+        assert calls == [good, good]
+        # Logged as a handler error WITH the traceback (logger.exception) —
+        # never as "unparseable".
+        errors = [r for r in caplog.records if "frame handler error" in r.getMessage()]
+        assert len(errors) == 1
+        assert errors[0].exc_info is not None
+        assert errors[0].exc_info[0] is RuntimeError
+        assert "unparseable" not in caplog.text
