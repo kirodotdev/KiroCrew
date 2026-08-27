@@ -940,7 +940,6 @@ test/test_meetings_dictionary.py
 test/test_meetings_providers.py
 test/test_meetings_routes.py
 test/test_meetings_session.py
-test/test_members.py
 test/test_memory_benchmark_workflow.py
 test/test_memory_selfheal.py
 test/test_merge_queued_messages.py

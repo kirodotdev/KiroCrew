@@ -16,9 +16,9 @@ import tempfile
 import time
 from pathlib import Path
 
-from kiro_crew import platform_compat
 from kiro_crew.acp.types import PROVIDER_LABEL_DEFAULT
 from kiro_crew.config.paths import data_home, kiro_sessions_dir
+from kiro_crew.jsonl_util import rotate_jsonl_at
 from kiro_crew.providers.cleanup import _is_safe_path
 
 logger = logging.getLogger(__name__)
@@ -283,37 +283,17 @@ def record_slow_command(agent_id: str, **fields: object) -> None:
     try:
         base.mkdir(parents=True, exist_ok=True)
         log_path = base / "slow_commands.jsonl"
-        # Rotation is guarded by a NON-BLOCKING try-lock on a sibling lock
-        # file: only the holder rotates, so two writers hitting the size cap
-        # together cannot both rotate (the second would replace ``.1`` with
-        # the first's fresh live file, discarding a generation). A loser
-        # appends without rotating — never waits, so no call can stall the
-        # event loop — and the next writer rotates. Worst case the live file
-        # overshoots the cap by a few racing records.
-        #
-        # The whole lock+rotate step has its own handler so that ANY of its
-        # failures — the lock file unopenable (fd exhaustion, read-only or
+        # Rotation (shared helper): O(1) rotate-by-rename at the cap, guarded
+        # by a non-blocking try-lock so two writers hitting the cap together
+        # cannot both rotate, and a loser never waits — no call can stall the
+        # gateway event loop. The helper is best-effort by contract: ANY of
+        # its failures — the lock file unopenable (fd exhaustion, read-only or
         # ACL-restricted dir), a fresh-boot missing log, a Windows sharing
         # violation rejecting the rename — degrades to appending without
         # rotating. Fd/disk exhaustion is a leading cause of the very stalls
         # this log diagnoses, so a rotation failure must never cost the
         # record; only a failure of the append itself may.
-        try:
-            lock_fd = os.open(
-                log_path.with_suffix(".jsonl.lock"), os.O_CREAT | os.O_RDWR, 0o600
-            )
-            try:
-                locked = platform_compat.try_acquire_lock(lock_fd, exclusive=True)
-                try:
-                    if locked and log_path.stat().st_size >= _SLOW_LOG_MAX_BYTES:
-                        os.replace(log_path, log_path.with_suffix(".jsonl.1"))
-                finally:
-                    if locked:
-                        platform_compat.release_lock(lock_fd)
-            finally:
-                os.close(lock_fd)
-        except OSError:
-            pass
+        rotate_jsonl_at(log_path, _SLOW_LOG_MAX_BYTES)
         with open(log_path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry, default=str) + "\n")
     except OSError:

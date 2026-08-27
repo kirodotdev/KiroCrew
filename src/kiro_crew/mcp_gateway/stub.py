@@ -34,6 +34,7 @@ from typing import Any, Optional
 
 from kiro_crew import platform_compat
 from kiro_crew.executors import subprocess_executor
+from kiro_crew.jsonl_util import rotate_jsonl_at
 from kiro_crew.mcp_caller import CallerContext, _parent_pid
 from kiro_crew.mcp_gateway import transport
 from kiro_crew.mcp_gateway.hashing import hash_command, hash_effective_env
@@ -979,36 +980,17 @@ def log_fallback(
             "channel_id": args.channel_id or "",
             "target_command": args.target_command,
         }
-        # Rotation is guarded by a NON-BLOCKING try-lock on a sibling lock
-        # file: only the holder rotates, so two stubs hitting the size cap
-        # together can no longer both rotate (the second would replace ``.1``
-        # with the first's fresh live file, discarding a generation). A loser
-        # appends without rotating — never waits, so no log_fallback call can
-        # stall its stub's event loop — and the next writer rotates. Worst
-        # case the live file overshoots the cap by a few racing records.
-        lock_fd = os.open(
-            log_path.with_suffix(".jsonl.lock"), os.O_CREAT | os.O_RDWR, 0o600
-        )
-        locked = False
-        try:
-            locked = platform_compat.try_acquire_lock(lock_fd, exclusive=True)
-            if locked:
-                try:
-                    if log_path.stat().st_size >= _FALLBACK_LOG_MAX_BYTES:
-                        os.replace(log_path, log_path.with_suffix(".jsonl.1"))
-                except OSError:
-                    # Missing file (fresh boot) or a Windows sharing violation
-                    # (another process holds the log open, so the rename is
-                    # rejected). Rotation is best-effort; the append below must
-                    # still happen — letting this propagate to the outer
-                    # handler would silently DROP the record.
-                    pass
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(record, separators=(",", ":")) + "\n")
-        finally:
-            if locked:
-                platform_compat.release_lock(lock_fd)
-            os.close(lock_fd)
+        # Rotation (shared helper): O(1) rotate-by-rename at the cap, guarded
+        # by a non-blocking try-lock so two stubs hitting the cap together
+        # cannot both rotate, and a loser never waits — no log_fallback call
+        # can stall its stub's event loop. The helper is best-effort by
+        # contract (a missing file, a Windows sharing violation, or an
+        # unopenable lock file degrades to not rotating), so the append below
+        # always still runs; only a failure of the append itself may drop the
+        # record, caught by this function's own handler.
+        rotate_jsonl_at(log_path, _FALLBACK_LOG_MAX_BYTES)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, separators=(",", ":")) + "\n")
     except OSError:
         pass
 

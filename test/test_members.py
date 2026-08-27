@@ -92,7 +92,9 @@ class TestMemberDir:
 
 class TestRecordActivity:
     def test_writes_a_pointer_entry(self):
-        assert record_activity("Code Review", "dashboard_chat-1", "persistent", project="/repo", via="chat")
+        assert record_activity(
+            "Code Review", "dashboard_chat-1", "persistent", project="/repo", via="chat"
+        )
         rows = read_activity("code-review")
         assert len(rows) == 1
         assert rows[0]["session"] == "dashboard_chat-1"
@@ -116,7 +118,9 @@ class TestRecordActivity:
         ]
 
     def test_entry_carries_no_content_only_pointers(self):
-        record_activity("Code Review", "dashboard_chat-1", "persistent", project="/repo", via="chat")
+        record_activity(
+            "Code Review", "dashboard_chat-1", "persistent", project="/repo", via="chat"
+        )
         assert set(read_activity("code-review")[0]) == {"ts", "member", "session", "project", "via"}
 
     def test_appends_rather_than_overwrites(self):
@@ -215,7 +219,9 @@ class TestRecordActivity:
     def test_reports_failure_instead_of_raising(self, monkeypatch):
         # Total by contract: the call sites have no guard, and one of them
         # (mcp_core) has no logger, so a raise here would surface as a tool error.
-        monkeypatch.setattr("kiro_crew.members.member_dir", lambda _s: (_ for _ in ()).throw(OSError("boom")))
+        monkeypatch.setattr(
+            "kiro_crew.members.member_dir", lambda _s: (_ for _ in ()).throw(OSError("boom"))
+        )
         assert record_activity("M", "s1", "persistent") is False
 
 
@@ -255,3 +261,111 @@ class TestReadActivity:
         for i in range(5):
             record_activity("M", f"s{i}", "persistent")
         assert [r["session"] for r in read_activity("m", limit=2)] == ["s3", "s4"]
+
+
+class TestRecordActivityRotation:
+    """The activity log rotates at the size cap — bounded disk, no lost record.
+
+    Mirrors the ``slow_commands.jsonl`` rotation tests in
+    ``test_subagent_persistence.py``: the shared ``rotate_jsonl_at`` helper
+    runs before the append, lock-guarded because this log is append-only from
+    multiple processes.
+    """
+
+    CAP = 400  # bytes — small enough to cross with a handful of records
+
+    @pytest.fixture(autouse=True)
+    def small_cap(self, monkeypatch):
+        monkeypatch.setattr("kiro_crew.members._ACTIVITY_LOG_MAX_BYTES", self.CAP)
+
+    def test_rotation_keeps_every_record(self):
+        """One rotation: older records land in ``.jsonl.1`` and stay visible
+        through :func:`read_activity`, which spans both generations."""
+        live = member_dir("m") / ACTIVITY_FILE_NAME
+        rotated = live.with_name(live.name + ".1")
+        n = 0
+        while not rotated.exists():
+            assert record_activity("M", f"s{n}", "persistent")
+            n += 1
+            assert n < 100, "cap never triggered a rotation"
+        # The rotated generation holds the pre-rotation records intact...
+        old = [
+            json.loads(row)
+            for row in rotated.read_text(encoding="utf-8").splitlines()
+            if row.strip()
+        ]
+        assert [r["session"] for r in old] == [f"s{i}" for i in range(n - 1)]
+        # ...the live file holds exactly the one record written after...
+        live_rows = [
+            json.loads(row) for row in live.read_text(encoding="utf-8").splitlines() if row.strip()
+        ]
+        assert [r["session"] for r in live_rows] == [f"s{n - 1}"]
+        assert live.stat().st_size < self.CAP
+        # ...and the PUBLIC reader still returns the full history, oldest
+        # first: rotation must not hide records from consumers.
+        assert [r["session"] for r in read_activity("m")] == [f"s{i}" for i in range(n)]
+
+    def test_read_activity_limit_spans_generations(self):
+        """``limit`` counts across both generations, newest last."""
+        live = member_dir("m") / ACTIVITY_FILE_NAME
+        rotated = live.with_name(live.name + ".1")
+        n = 0
+        while not rotated.exists():
+            assert record_activity("M", f"s{n}", "persistent")
+            n += 1
+            assert n < 100, "cap never triggered a rotation"
+        got = read_activity("m", limit=n)
+        assert [r["session"] for r in got] == [f"s{i}" for i in range(n)]
+
+    def test_dedupe_survives_rotation(self):
+        """A member/session pair whose entry was rotated aside must STILL be
+        suppressed: the dedupe probe reads both generations, so rotation
+        cannot re-inflate the counts it protects."""
+        live = member_dir("m") / ACTIVITY_FILE_NAME
+        rotated = live.with_name(live.name + ".1")
+        assert record_activity("M", "dedup-me", "persistent", via="chat", dedupe_session=True)
+        n = 0
+        while not rotated.exists():
+            assert record_activity("M", f"filler-{n}", "persistent")
+            n += 1
+            assert n < 100, "cap never triggered a rotation"
+        # The original entry now lives only in the rotated generation.
+        assert "dedup-me" in rotated.read_text(encoding="utf-8")
+        assert "dedup-me" not in live.read_text(encoding="utf-8")
+        assert (
+            record_activity("M", "dedup-me", "persistent", via="chat", dedupe_session=True) is False
+        )
+
+    def test_total_bytes_stay_bounded(self):
+        """The property the issue is about: many appends, bounded total disk.
+
+        One rotation alone does not prove boundedness — total bytes across
+        BOTH generations must stay bounded no matter how many records land.
+        """
+        for i in range(300):
+            record_activity("M", f"session-{i:04d}", "persistent")
+        live = member_dir("m") / ACTIVITY_FILE_NAME
+        rotated = live.with_name(live.name + ".1")
+        # Each generation may overshoot the cap by at most one record (the
+        # size check runs before the append), so bound each at CAP plus a
+        # generous one-record slack.
+        slack = 200
+        assert live.stat().st_size <= self.CAP + slack
+        assert rotated.exists()
+        assert rotated.stat().st_size <= self.CAP + slack
+        assert live.stat().st_size + rotated.stat().st_size <= 2 * (self.CAP + slack)
+
+    def test_rotation_failure_still_appends(self):
+        """Best-effort contract: a failing rotation never drops the record and
+        never breaks the ``record_activity`` return contract. A directory
+        squatting on the rotation target makes ``os.replace`` raise a REAL
+        ``OSError`` on both POSIX and Windows — no stdlib patching."""
+        record_activity("M", "seed", "persistent")
+        live = member_dir("m") / ACTIVITY_FILE_NAME
+        with open(live, "a", encoding="utf-8") as fh:
+            fh.write("x" * (self.CAP + 10) + "\n")
+        live.with_name(live.name + ".1").mkdir()
+
+        assert record_activity("M", "after-fail", "persistent") is True
+        assert live.with_name(live.name + ".1").is_dir()
+        assert "after-fail" in live.read_text(encoding="utf-8")
