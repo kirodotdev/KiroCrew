@@ -480,6 +480,24 @@ def _is_unknown_agent_refusal(err: str, agent: str) -> bool:
     return bool(agent) and err.startswith(f"agent {agent!r} not found")
 
 
+def _collapse_effort_verdicts(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Group (subagent id, verdict text) pairs into (id list, verdict text) rows.
+
+    ``reasoning_effort`` and ``model`` are batch-wide, so a wide fan-out
+    usually yields the IDENTICAL verdict for every member — rendering it once
+    per subagent injects N copies of the same line into the calling agent's
+    context (#6185). Collapse each group of 2+ ids sharing a verdict into one
+    row naming all of them ("a1, a2, a3"); a verdict unique to one subagent
+    keeps its own row, so mixed batches keep full per-id attribution. Groups
+    preserve first-seen dispatch order, and ids keep their dispatch order
+    within a group, so the collapsed output remains deterministic.
+    """
+    grouped: dict[str, list[str]] = {}
+    for sid, text in pairs:
+        grouped.setdefault(text, []).append(sid)
+    return [(", ".join(ids), text) for text, ids in grouped.items()]
+
+
 def spawn_run(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, SPAWN_RUN_SCHEMA)
 
@@ -643,13 +661,13 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
     # the default case where no per-call model was passed and the effort
     # would otherwise be dropped silently.
     if agent_ids:
-        for drop_id, drop_reason in effort_drops:
+        for drop_ids, drop_reason in _collapse_effort_verdicts(effort_drops):
             spawn_lines.append(
-                f"ℹ reasoning_effort='{reasoning_effort}' dropped for {drop_id}: {drop_reason}"
+                f"ℹ reasoning_effort='{reasoning_effort}' dropped for {drop_ids}: {drop_reason}"
             )
-        for applied_id, applied_note in effort_applies:
+        for applied_ids, applied_note in _collapse_effort_verdicts(effort_applies):
             spawn_lines.append(
-                f"✓ reasoning_effort='{reasoning_effort}' applied for {applied_id} ({applied_note})"
+                f"✓ reasoning_effort='{reasoning_effort}' applied for {applied_ids} ({applied_note})"
             )
     if not parent_session and agent_ids:
         # Orphan alert: without a parent session key the subagents cannot

@@ -117,34 +117,41 @@ class TestSpawnRunToolForwarding:
         assert all(b["reasoning_effort"] == "max" for b in bodies)
 
 
+def _run_tool_with_server_verdicts(
+    args: dict[str, Any], responses: list[dict]
+) -> tuple[list[dict], str]:
+    """Run spawn_run against a fake gateway answering from *responses*."""
+    from kiro_crew import mcp_core
+
+    bodies: list[dict] = []
+    answers = iter(responses)
+
+    def _fake_post(path: str, body: dict) -> dict:
+        if path == "/api/spawn":
+            bodies.append(body)
+            return next(answers)
+        return {"id": "a1"}
+
+    with (
+        patch.object(mcp_core, "_post", side_effect=_fake_post),
+        patch.object(mcp_core, "_resolve_session_key", return_value="dashboard:chat-1"),
+        patch.object(mcp_core, "sel", MagicMock()),
+    ):
+        result = mcp_core._call_tool_inner("spawn_run", args)
+    return bodies, result
+
+
 class TestUnsupportedModelReport:
     """Effort on an incapable model is REPORTED, never a rejection. The
     verdict comes from the SERVER (which knows the resolved model), carried
     on the /api/spawn response as ``effort_dropped`` — the tool renders one
-    attributed line per affected subagent."""
+    attributed line per distinct verdict (identical verdicts collapse,
+    see TestVerdictCollapse)."""
 
     def _run_tool_with_server_verdict(
         self, args: dict[str, Any], responses: list[dict]
     ) -> tuple[list[dict], str]:
-        """Run spawn_run against a fake gateway answering from *responses*."""
-        from kiro_crew import mcp_core
-
-        bodies: list[dict] = []
-        answers = iter(responses)
-
-        def _fake_post(path: str, body: dict) -> dict:
-            if path == "/api/spawn":
-                bodies.append(body)
-                return next(answers)
-            return {"id": "a1"}
-
-        with (
-            patch.object(mcp_core, "_post", side_effect=_fake_post),
-            patch.object(mcp_core, "_resolve_session_key", return_value="dashboard:chat-1"),
-            patch.object(mcp_core, "sel", MagicMock()),
-        ):
-            result = mcp_core._call_tool_inner("spawn_run", args)
-        return bodies, result
+        return _run_tool_with_server_verdicts(args, responses)
 
     def test_server_verdict_is_rendered_and_spawn_still_happens(self):
         bodies, result = self._run_tool_with_server_verdict(
@@ -217,6 +224,82 @@ class TestUnsupportedModelReport:
             )
         assert result.startswith("Error:")
         assert "does not support effort" not in result
+
+
+class TestVerdictCollapse:
+    """Identical per-subagent verdicts collapse into ONE line on wide
+    fan-outs (#6185). ``reasoning_effort`` and ``model`` are batch-wide, so
+    every member of a wide batch usually gets the identical verdict — one
+    line per subagent injects N copies of the same text into the calling
+    agent's context. Differing verdicts keep their own attributed lines so
+    mixed batches lose no attribution; a 1-wide batch renders exactly as
+    before."""
+
+    def test_identical_verdicts_collapse_to_one_line_naming_all_ids(self):
+        n = 5
+        bodies, result = _run_tool_with_server_verdicts(
+            {"tasks": [f"t{i}" for i in range(n)], "reasoning_effort": "high"},
+            [{"id": f"a{i}", "effort_dropped": "same-reason"} for i in range(n)],
+        )
+        assert len(bodies) == n
+        ids = ", ".join(f"a{i}" for i in range(n))
+        assert f"dropped for {ids}: same-reason" in result
+        assert result.count("same-reason") == 1
+
+    def test_differing_verdicts_keep_per_id_lines(self):
+        """All-distinct verdicts (per-member agent pins can differ within one
+        batch) render exactly as before the collapse — one attributed line
+        each. Three members so this pin is not a duplicate of the two-member
+        attribution test above."""
+        bodies, result = _run_tool_with_server_verdicts(
+            {"tasks": ["x", "y", "z"], "reasoning_effort": "max"},
+            [
+                {"id": "a1", "effort_dropped": "reason-one"},
+                {"id": "a2", "effort_dropped": "reason-two"},
+                {"id": "a3", "effort_dropped": "reason-three"},
+            ],
+        )
+        assert len(bodies) == 3
+        assert "dropped for a1: reason-one" in result
+        assert "dropped for a2: reason-two" in result
+        assert "dropped for a3: reason-three" in result
+
+    def test_single_subagent_output_is_unchanged(self):
+        bodies, result = _run_tool_with_server_verdicts(
+            {"task": "x", "reasoning_effort": "high"},
+            [{"id": "a1", "effort_dropped": "solo-reason"}],
+        )
+        assert len(bodies) == 1
+        assert "dropped for a1: solo-reason" in result
+
+    def test_partial_overlap_collapses_the_shared_group_and_keeps_the_rest(self):
+        """2 identical + 1 different: the pair collapses, the odd one keeps
+        its own line — full attribution either way."""
+        _, result = _run_tool_with_server_verdicts(
+            {"tasks": ["x", "y", "z"], "reasoning_effort": "low"},
+            [
+                {"id": "a1", "effort_dropped": "shared"},
+                {"id": "a2", "effort_dropped": "unique"},
+                {"id": "a3", "effort_dropped": "shared"},
+            ],
+        )
+        assert "dropped for a1, a3: shared" in result
+        assert "dropped for a2: unique" in result
+        assert result.count("shared") == 1
+        # First-seen group order and in-group dispatch order are documented
+        # guarantees of _collapse_effort_verdicts — pin them so a dict/sorted
+        # swap cannot silently break the deterministic-output promise.
+        assert result.index("dropped for a1, a3: shared") < result.index("dropped for a2: unique")
+
+    def test_identical_applied_notes_collapse_too(self):
+        n = 3
+        _, result = _run_tool_with_server_verdicts(
+            {"tasks": [f"t{i}" for i in range(n)], "reasoning_effort": "xhigh"},
+            [{"id": f"a{i}", "effort_applied": "same-note"} for i in range(n)],
+        )
+        ids = ", ".join(f"a{i}" for i in range(n))
+        assert f"applied for {ids} (same-note)" in result
+        assert result.count("same-note") == 1
 
 
 class TestApiSpawnHandler:
@@ -809,24 +892,7 @@ class TestAppliedLineRendering:
     """The tool renders the server's effort_applied note per subagent."""
 
     def _run(self, args: dict[str, Any], responses: list[dict]) -> tuple[list[dict], str]:
-        from kiro_crew import mcp_core
-
-        bodies: list[dict] = []
-        answers = iter(responses)
-
-        def _fake_post(path: str, body: dict) -> dict:
-            if path == "/api/spawn":
-                bodies.append(body)
-                return next(answers)
-            return {"id": "a1"}
-
-        with (
-            patch.object(mcp_core, "_post", side_effect=_fake_post),
-            patch.object(mcp_core, "_resolve_session_key", return_value="dashboard:chat-1"),
-            patch.object(mcp_core, "sel", MagicMock()),
-        ):
-            result = mcp_core._call_tool_inner("spawn_run", args)
-        return bodies, result
+        return _run_tool_with_server_verdicts(args, responses)
 
     def test_applied_line_renders_with_id_and_key(self):
         bodies, result = self._run(
