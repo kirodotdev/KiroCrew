@@ -10,6 +10,7 @@ import type { ChatMessage, ChatSlot, SessionInfo, SubagentActivity, ToolActivity
 import { SOFT_STOP_DEBOUNCE_MS, SPAWN_LAUNCH_MARKER } from '../pages/chat/types'
 import { mergePreservedPastes } from '../utils/pasteTokens'
 import { safeSetItem } from '../utils/safeStorage'
+import { errMessage, type StatusRejection } from '../utils/thunkError'
 import { jsonEqual } from '../utils/structuralEqual'
 import type { McpAppRenderPayload } from '../lib/mcpAppSrcdoc'
 import { i18nT } from '../i18n/t'
@@ -1413,9 +1414,13 @@ function seedContextUsage(
   if (context.window) state.slotContextTokens[k] = { used: context.used, window: context.window }
 }
 
-export const switchSlot = createAsyncThunk(
+export const switchSlot = createAsyncThunk<
+  Awaited<ReturnType<typeof fetchSlotDetail>>,
+  string,
+  { rejectValue: StatusRejection }
+>(
   'chat/switchSlot',
-  async (key: string, { dispatch, getState }) => {
+  async (key, { dispatch, getState, rejectWithValue }) => {
     // Safe unconditionally: this fetch resets the pane's messages and cursor, so
     // any older page still in flight is superseded even when the key is unchanged.
     _abortLoadOlder?.()
@@ -1434,7 +1439,22 @@ export const switchSlot = createAsyncThunk(
     // can omit `slotRun` entirely, and throwing here would skip the fetch.
     const state = (getState() as { chat: ChatState }).chat
     const streaming = (state.slotRun?.[key]?.state ?? 'idle') !== 'idle'
-    return fetchSlotDetail(key, streaming ? undefined : OLDER_PAGE_LIMIT)
+    try {
+      return await fetchSlotDetail(key, streaming ? undefined : OLDER_PAGE_LIMIT)
+    } catch (e) {
+      // A thrown error crosses the thunk boundary as `miniSerializeError(e)`,
+      // which keeps string fields only -- `ApiError.status` (a number) never
+      // reaches the consumer, which left `isMissingSlotError` matching prose
+      // (#6199). Reject with a structured payload instead: `unwrap()` throws a
+      // `rejectWithValue` payload verbatim, status intact. The check is
+      // STRUCTURAL rather than `instanceof ApiError` because store tests
+      // replace the `../api/client` module wholesale, and an `instanceof`
+      // against a class the mock does not export throws inside this very
+      // handler (see utils/agentSwitchFeedback.ts for the precedent).
+      const status = (e as { status?: unknown } | null)?.status
+      if (typeof status === 'number') return rejectWithValue({ status, message: errMessage(e) })
+      throw e
+    }
   },
 )
 

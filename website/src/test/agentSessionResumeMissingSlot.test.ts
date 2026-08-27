@@ -125,6 +125,27 @@ describe('Issue Radar resume — a serialized rejection still names a missing sl
     await open()
     expect(createdSlot()).toBe(true)
   })
+
+  // `switchSlot` now rejects via `rejectWithValue`, and `unwrap()` throws that
+  // payload VERBATIM — `{ status, message }`, numbers intact — so the flow no
+  // longer depends on prose once a status is present. Both directions:
+
+  it('falls through to a fresh session on a structured 404 payload', async () => {
+    harness({ status: 404, message: 'HTTP 404: no such slot' })
+    const record = await open()
+    expect(createdSlot()).toBe(true)
+    expect(record).toEqual({ slot_key: 'slot-new' })
+  })
+
+  it('does NOT replace the session on a non-404 whose prose says "not found"', async () => {
+    // The regression #6199 fixes: a 500 quoting "not found" used to read as a
+    // dead slot and overwrite a session that was still alive. The structured
+    // status must outrank the message.
+    harness({ status: 500, message: 'agent "foo" not found' })
+    const record = await open()
+    expect(createdSlot()).toBe(false)
+    expect(record).toBeNull()
+  })
 })
 
 /**
@@ -147,6 +168,32 @@ describe('isMissingSlotError — the shared thunk-boundary rule', () => {
   it('reads a real Error, unchanged from before', () => {
     expect(isMissingSlotError(new Error('HTTP 404'))).toBe(true)
     expect(isMissingSlotError(new Error('boom'))).toBe(false)
+  })
+
+  it('classifies on a structured status, message not consulted', () => {
+    // Status alone decides: no "404"/"not found" hint in the prose is needed…
+    expect(isMissingSlotError({ status: 404, message: 'gone' })).toBe(true)
+    expect(isMissingSlotError({ status: 404, message: '' })).toBe(true)
+    // …and the payload stays readable by every message-based caller.
+    expect(errMessage({ status: 404, message: 'gone' })).toBe('gone')
+  })
+
+  it('a structured non-404 status VETOES the prose match (the #6199 regression)', () => {
+    // Before the status survived the boundary, both of these misread as "the
+    // slot is gone" and replaced a live session. The regex may only speak for
+    // rejections that carry no status at all.
+    expect(isMissingSlotError({ status: 500, message: 'agent "foo" not found' })).toBe(false)
+    expect(isMissingSlotError({ status: 502, message: 'HTTP 404 while proxying upstream' })).toBe(false)
+    // A raw ApiError-shaped object that never crossed a thunk behaves the same.
+    expect(isMissingSlotError(Object.assign(new Error('model not found'), { status: 500 }))).toBe(false)
+    expect(isMissingSlotError(Object.assign(new Error('nope'), { status: 404 }))).toBe(true)
+  })
+
+  it('ignores a non-numeric status field and falls back to prose', () => {
+    // Only a NUMERIC status is the wire contract; a string 'status' from some
+    // unrelated shape must not suppress the fallback.
+    expect(isMissingSlotError({ status: 'rejected', message: 'not found' })).toBe(true)
+    expect(isMissingSlotError({ status: '500', message: 'not found' })).toBe(true)
   })
 
   it('refuses anything that is not a missing slot, so a live session is safe', () => {
