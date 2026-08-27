@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import re
 
+from kiro_crew.constants import AWS_PROFILE_NAME_RE
+
 # Host charset: letters, digits, dot, hyphen, underscore, and a single optional
 # ``user@`` prefix. No whitespace, no shell metacharacters. Length-bounded.
 _HOST_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]*\Z")
@@ -53,10 +55,14 @@ _DEFAULT_SSM_RUN_AS = "ec2-user"
 # '+' is included because IAM entity names permit it and it flows into
 # generated profile names (e.g. SSO-derived "<account>+<permission-set>");
 # it is not a shell metacharacter and the value is only ever passed as a
-# discrete ``--profile <value>`` argv element. This is the single source of
-# truth for the charset: registry.py aliases this compiled pattern for its
-# early record check.
-_AWS_PROFILE_RE = re.compile(r"^[A-Za-z0-9_.+-]{1,128}\Z")
+# discrete ``--profile <value>`` argv element. The shape is
+# constants.AWS_PROFILE_NAME_RE — the single source of truth (#6063) —
+# aliased rather than re-spelled here; registry.py in turn aliases this
+# module's name for its early record check. Behavior-neutral swap: the old
+# local copy admitted a leading '-' in the class and relied on the explicit
+# startswith('-') check in validate_aws_profile; the shared shape rejects it
+# in the pattern as well.
+_AWS_PROFILE_RE = AWS_PROFILE_NAME_RE
 
 # aws_region: standard AWS region shape (e.g. us-east-1, us-gov-west-1).
 _AWS_REGION_RE = re.compile(r"^[a-z]{2}(-gov)?-[a-z]+-\d{1,2}\Z")

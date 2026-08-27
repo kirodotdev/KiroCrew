@@ -107,14 +107,24 @@ def ensure_lambda_oac(profile, region):
 
 def _validate_args(profile: str, region: str, dist_id: str, slug: str) -> None:
     """Validate all argv before any aws call. Exit 2 on mismatch."""
-    _PROFILE_RE = re.compile(r"^[a-zA-Z0-9._:/+-]+$")
+    # VERBATIM copy of kiro_crew.constants.AWS_PROFILE_NAME_PATTERN (#6063):
+    # this script runs standalone (no package import), so the shared shape is
+    # embedded literally and byte-equality is enforced by the drift guard in
+    # test/test_aws_profile_charset.py. No leading '-' (option-shaped), '+'
+    # admitted (IAM Identity Center names), \Z rejects trailing newlines,
+    # length capped at 128.
+    _PROFILE_RE = re.compile(r"^[A-Za-z0-9_.+][A-Za-z0-9_.+-]{0,127}\Z")
     _REGION_RE = re.compile(r"^[a-z]{2}-[a-z]+-\d+$")
     _DIST_ID_RE = re.compile(r"^[A-Z0-9]{13,14}$")
     _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 
     errors = []
     if profile and not _PROFILE_RE.match(profile):
-        errors.append(f"--profile: invalid format: {profile!r}")
+        errors.append(
+            f"--profile: invalid format: {profile!r} (allowed: letters, digits, "
+            "'.', '_', '+', '-'; no leading '-'; max 128 chars — ':' and '/' "
+            "are no longer accepted)"
+        )
     if not _REGION_RE.match(region):
         errors.append(f"--region: not a valid AWS region: {region!r}")
     if not _DIST_ID_RE.match(dist_id):

@@ -31,7 +31,7 @@ from typing import Any
 # no native library is loaded on any platform. Aliased so the schema block below
 # reads as "the computer-use vocabulary" rather than bare names.
 from kiro_crew.computer_use import types as _cu_types
-from kiro_crew.constants import WINDOWS_DEVICE_STEMS
+from kiro_crew.constants import AWS_PROFILE_NAME_RE, WINDOWS_DEVICE_STEMS
 
 # Reasoning-effort vocabulary: ``effort.py`` is the single source of truth for
 # the valid levels; EFFORT_VALUES additionally admits ``""`` ("unset — defer to
@@ -1454,12 +1454,13 @@ def _validate_artifact_save(cleaned: dict) -> None:
 
 # Shared slug pattern (matches _ARTIFACT_SLUG_RE + deploy slug validation).
 _WM_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
-# '+' admitted for IAM Identity Center derived profiles
+# constants.AWS_PROFILE_NAME_RE — the single source of truth (#6063): '+'
+# admitted for IAM Identity Center derived profiles
 # ("<account>+<permission-set>", #6051); first char excludes '-' so a stored
 # profile is never option-shaped when it later reaches `--profile <value>`
 # argv. \Z is load-bearing here: this path matches the raw value WITHOUT a
 # strip, so the old $ anchor let a trailing-newline value through.
-_WM_PROFILE_RE = re.compile(r"^[A-Za-z0-9_.+][A-Za-z0-9_.+-]{0,127}\Z")
+_WM_PROFILE_RE = AWS_PROFILE_NAME_RE
 _WM_URL_RE = re.compile(r"^https?://.{1,2048}$")
 _WM_LIFECYCLE_STATUSES = {"draft", "deploying", "live", "error", "expired"}
 _WM_LIST_CAP = 50

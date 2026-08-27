@@ -224,6 +224,36 @@ WINDOWS_DEVICE_STEMS = frozenset(
     | {f"lpt{n}" for n in range(1, 10)}
 )
 
+# AWS named-profile name shape — the SINGLE SOURCE OF TRUTH (#6063). The
+# charset lived as seven hand-copied compiled patterns, and the copies
+# reintroduced the missing-'+' defect twice (#6042, #6055). Every in-package
+# validator now derives from these; the two standalone artifact-deploy scripts
+# (which cannot import the package) embed AWS_PROFILE_NAME_PATTERN verbatim
+# under a byte-equality drift guard in test/test_aws_profile_charset.py.
+#
+# Semantics (settled by #6051/#6055):
+# * '+' admitted — IAM Identity Center derives "<account>+<permission-set>"
+#   profile names.
+# * The first char excludes '-' so a stored name is never option-shaped when it
+#   later reaches a discrete ``--profile <value>`` argv element.
+# * \Z anchor — '$' matches just before a trailing newline; \Z rejects it.
+#   Call sites that match a raw (unstripped) value rely on this.
+# * Length capped at 128 inside the pattern, matching the FieldSpec
+#   ``max_len=128`` the deploy boundaries enforce.
+#
+# A site with a DELIBERATE semantic difference (e.g. aws_consent.py's wider
+# legacy continuation charset) derives its character class from these
+# fragments rather than re-spelling them. COMPOSE FROM AWS_PROFILE_FIRST_CHARS
+# ONLY (it carries no literal '-', so extra chars may follow it safely, e.g.
+# rf"[{AWS_PROFILE_FIRST_CHARS}@=-]"). AWS_PROFILE_CHARS ends with a literal
+# '-' and is safe ONLY in terminal position — appending anything after it
+# turns the trailing '-' into a RANGE (e.g. "+-@" spans 0x2B-0x40, silently
+# admitting '/', ':' and ';'). test_aws_profile_charset.py pins this contract.
+AWS_PROFILE_FIRST_CHARS = "A-Za-z0-9_.+"
+AWS_PROFILE_CHARS = "A-Za-z0-9_.+-"
+AWS_PROFILE_NAME_PATTERN = f"^[{AWS_PROFILE_FIRST_CHARS}][{AWS_PROFILE_CHARS}]{{0,127}}\\Z"
+AWS_PROFILE_NAME_RE = re.compile(AWS_PROFILE_NAME_PATTERN)
+
 # The product wordmark, figlet `small`. ONE definition on purpose: copy-pasting
 # it into cli.py and cli_chat.py risks a rename leaving a stale product name in
 # the two most-seen surfaces (bare `kirocrew`, the chat REPL). Import it; never
