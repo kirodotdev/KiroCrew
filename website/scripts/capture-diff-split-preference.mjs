@@ -138,8 +138,7 @@ function pngSize(path) {
   return { w: b.readUInt32BE(16), h: b.readUInt32BE(20) }
 }
 
-/** Chromium resolution lives in ./lib/chromium-executable.mjs (shared with
- *  capture-diff-split-narrow.mjs; same strategy as capture-pierre-chat-diffs.mjs). */
+/** Chromium resolution lives in ./lib/chromium-executable.mjs (shared across the capture harnesses). */
 
 
 async function main() {

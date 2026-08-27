@@ -46,12 +46,12 @@
  * Usage: node scripts/capture-pierre-misc-surfaces.mjs [outDir]
  */
 import { chromium } from 'playwright'
-import { mkdirSync, readFileSync, existsSync, readdirSync } from 'node:fs'
-import { join, dirname, resolve } from 'node:path'
+import { mkdirSync, readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { homedir } from 'node:os'
 import { serveDist } from './lib/serve-dist.mjs'
 import { logPageProblems, stubDashboardApi, json } from './lib/stub-dashboard-api.mjs'
+import { chromiumExecutable } from './lib/chromium-executable.mjs'
 
 const OUT = process.argv[2] || '../temp-screenshots/pierre-diffs'
 /** Repo root, derived from this script's own location: the fixtures show a real
@@ -343,33 +343,7 @@ function pngSize(path) {
   return { w: b.readUInt32BE(16), h: b.readUInt32BE(20) }
 }
 
-/**
- * Chromium to drive.
- *
- * `website/node_modules/playwright` pins one browser revision, but this machine's
- * `~/.cache/ms-playwright` may only hold builds fetched by a DIFFERENT playwright
- * (the globally installed `@playwright/cli`, say) — in which case a bare
- * `chromium.launch()` dies with "Executable doesn't exist at …chromium_headless_shell-<pinned>".
- * So: honour `PLAYWRIGHT_CHROMIUM` if set, else fall back to the newest cached
- * headless shell, else let playwright resolve its own pin and report its own error.
- * (Same resolution as capture-pierre-chat-diffs.mjs.)
- */
-function chromiumExecutable() {
-  if (process.env.PLAYWRIGHT_CHROMIUM) return process.env.PLAYWRIGHT_CHROMIUM
-  const cache = join(homedir(), '.cache', 'ms-playwright')
-  if (!existsSync(cache)) return undefined
-  const rev = d => parseInt((/-(\d+)$/.exec(d) || [])[1] || '0', 10)
-  const candidates = readdirSync(cache)
-    .filter(d => d.startsWith('chromium_headless_shell-') || d.startsWith('chromium-'))
-    .sort((a, b) => rev(b) - rev(a))
-    .map(d => [
-      join(cache, d, 'chrome-headless-shell-linux64', 'chrome-headless-shell'),
-      join(cache, d, 'chrome-linux64', 'chrome'),
-      join(cache, d, 'chrome-linux', 'chrome'),
-    ])
-    .flat()
-  return candidates.find(existsSync)
-}
+/** Chromium resolution lives in ./lib/chromium-executable.mjs (shared across the capture harnesses). */
 
 async function main() {
   const { srv, base } = await serveDist()

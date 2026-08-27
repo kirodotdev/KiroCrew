@@ -12,12 +12,12 @@
  * Usage: node scripts/capture-pierre-caret-align.mjs <outDir> <label> [split|unified]
  */
 import { chromium } from 'playwright'
-import { mkdirSync, readFileSync, existsSync, readdirSync } from 'node:fs'
+import { mkdirSync, readFileSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { homedir } from 'node:os'
 import { serveDist } from './lib/serve-dist.mjs'
 import { logPageProblems, stubDashboardApi, json } from './lib/stub-dashboard-api.mjs'
+import { chromiumExecutable } from './lib/chromium-executable.mjs'
 
 const OUT = process.argv[2] || '../temp-screenshots/caret-align'
 const LABEL = process.argv[3] || 'frame'
@@ -78,21 +78,7 @@ function pngSize(path) {
   return { w: b.readUInt32BE(16), h: b.readUInt32BE(20) }
 }
 
-function chromiumExecutable() {
-  if (process.env.PLAYWRIGHT_CHROMIUM) return process.env.PLAYWRIGHT_CHROMIUM
-  const cache = join(homedir(), '.cache', 'ms-playwright')
-  if (!existsSync(cache)) return undefined
-  const rev = d => parseInt((/-(\d+)$/.exec(d) || [])[1] || '0', 10)
-  return readdirSync(cache)
-    .filter(d => d.startsWith('chromium_headless_shell-') || d.startsWith('chromium-'))
-    .sort((a, b) => rev(b) - rev(a))
-    .flatMap(d => [
-      join(cache, d, 'chrome-headless-shell-linux64', 'chrome-headless-shell'),
-      join(cache, d, 'chrome-linux64', 'chrome'),
-      join(cache, d, 'chrome-linux', 'chrome'),
-    ])
-    .find(existsSync)
-}
+/** Chromium resolution lives in ./lib/chromium-executable.mjs (shared across the capture harnesses). */
 
 /** Shadow-piercing probe: caret rect, nearest row rect, and the padding that
  *  Pierre's `#getLineY` adds on top of an `offsetTop` that already carries it. */
