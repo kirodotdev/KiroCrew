@@ -91,6 +91,30 @@ class TestConductorInstaller:
         assert "Patrol with `monitor_start`, never with `wait`" in prompt
         assert "autonudge_stop" in prompt
 
+    def test_prompt_names_the_tools_it_expects_to_be_used(self, tmp_path, monkeypatch):
+        """The charter mounts whole servers, so the prompt must name what it wants.
+
+        ``@kirocrew-core`` puts ~70 tools in front of this agent. Naming only the
+        session-control ones left the rest unaddressed, which is how a conductor
+        talks itself into running a work item in its own turn. Both directions are
+        pinned: the tools the four jobs need, and the four that would end-run the
+        no-write property by executing the work here.
+        """
+        prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
+        for named in (
+            "session_create",
+            "session_ledger_record",
+            "monitor_update",
+            "resource_status",
+            "ask_question",
+            "skill_search",
+            "tool_search",
+        ):
+            assert named in prompt, named
+        for forbidden in ("spawn_run", "spawn_sub_agents", "workflow_run", "task_run"):
+            assert forbidden in prompt, forbidden
+        assert "never goes to" in prompt
+
     def test_no_write_tool_and_shell_not_preapproved(self, tmp_path, monkeypatch):
         """The security properties of the spec, in one place.
 
@@ -247,6 +271,7 @@ class TestConductorInstaller:
         assert data["allowedTools"] == [
             "session",
             "report",
+            "tool_search",
             "@kirocrew-dashboard/chat_folder_tree",
             "@kirocrew-dashboard/chat_folder_create",
             "@kirocrew-dashboard/session_create",
@@ -349,6 +374,7 @@ class TestConductorInstaller:
         assert data["allowedTools"] == [
             "session",
             "report",
+            "tool_search",
             "@kirocrew-dashboard/chat_folder_tree",
             "@kirocrew-dashboard/chat_folder_create",
             "@kirocrew-dashboard/session_create",
