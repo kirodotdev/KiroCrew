@@ -438,7 +438,7 @@ describe('ChatSidebar — sidebarCollision routing', () => {
     expect(ids).toEqual(['f2', 'f4'])
   })
 
-  it('a SESSION drag resolves to whatever droppable the pointer is inside', () => {
+  it('a SESSION drag resolves to whatever droppable the pointer is inside (single-candidate case; containment re-ranking across NESTED candidates is pinned in dndCollisionDepth.test.tsx, whose fakes carry real nodes)', () => {
     renderSidebar()
     const ids = collide({
       active: { type: 'session', key: SLOT_LOOSE },
