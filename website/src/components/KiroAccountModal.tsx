@@ -253,7 +253,7 @@ function CreditUsage({ usage }: { usage: KiroAccountUsage }) {
         <div className="mb-2 flex items-baseline gap-2">
           <span className="text-2xl font-bold text-text">{fmtNumber(usage.used)}</span>
           <span className="text-sm text-muted">/ {fmtNumber(usage.limit)} {i18nT('app.credits')}</span>
-          <span className="ml-auto rounded-md bg-accent px-2 py-0.5 text-[12px] font-medium text-white">
+          <span className="ml-auto rounded-md bg-accent px-2 py-0.5 text-[12px] font-medium text-accent-fg">
             {fmtPercent(pct / 100)}
           </span>
         </div>
