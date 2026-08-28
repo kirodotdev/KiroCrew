@@ -18,8 +18,6 @@ import logging
 
 from aiohttp import web
 
-from kiro_crew.platform.agentcore_inspect import inspect_snapshot, synchronize_target
-
 logger = logging.getLogger(__name__)
 
 OP_GET = "agentcore.gateway.get"
@@ -79,13 +77,68 @@ def _refuse_non_owner(request: web.Request, operation: str) -> web.Response | No
     return None
 
 
-async def api_agentcore_gateway_get(request: web.Request) -> web.Response:
-    """GET /api/agentcore/gateway — live catalog + checks."""
-    refused = _refuse_non_owner(request, OP_GET)
+def _refuse_disabled_capability(request: web.Request, operation: str) -> web.Response | None:
+    """Fail closed when the effective ceiling does not permit AgentCore."""
+    from kiro_crew.platform.governance_profiles import HOST_SESSION_KEY, governance_permits
+
+    try:
+        decision = governance_permits(
+            "capabilities.agentcore",
+            "",
+            session_key=HOST_SESSION_KEY,
+            fail_closed=True,
+            log_warning=False,
+        )
+    except Exception:
+        _audit(request, operation=operation, outcome="denied", error="governance_unavailable")
+        return web.json_response(
+            {"error": "AgentCore identity is disabled", "code": "agentcore_disabled"},
+            status=403,
+        )
+    if not bool(getattr(decision, "permitted", False)):
+        _audit(request, operation=operation, outcome="denied", error="capability_disabled")
+        return web.json_response(
+            {"error": "AgentCore identity is disabled", "code": "agentcore_disabled"},
+            status=403,
+        )
+    return None
+
+
+async def _audit_async(
+    request: web.Request,
+    *,
+    operation: str,
+    outcome: str,
+    resources: str = "",
+    error: str = "",
+) -> None:
+    """SEL first-use can mkdir; keep that off the event loop."""
+    await asyncio.to_thread(
+        _audit,
+        request,
+        operation=operation,
+        outcome=outcome,
+        resources=resources,
+        error=error,
+    )
+
+
+async def _owner_gate(request: web.Request, operation: str) -> web.Response | None:
+    refused = await asyncio.to_thread(_refuse_non_owner, request, operation)
     if refused is not None:
         return refused
+    return await asyncio.to_thread(_refuse_disabled_capability, request, operation)
+
+
+async def api_agentcore_gateway_get(request: web.Request) -> web.Response:
+    """GET /api/agentcore/gateway — live catalog + checks."""
+    refused = await _owner_gate(request, OP_GET)
+    if refused is not None:
+        return refused
+    from kiro_crew.platform.agentcore_inspect import inspect_snapshot
+
     payload = await asyncio.to_thread(inspect_snapshot, include_tools=True)
-    _audit(
+    await _audit_async(
         request,
         operation=OP_GET,
         outcome="success",
@@ -96,11 +149,13 @@ async def api_agentcore_gateway_get(request: web.Request) -> web.Response:
 
 async def api_agentcore_gateway_verify(request: web.Request) -> web.Response:
     """POST /api/agentcore/gateway/verify — same snapshot, operator-asked."""
-    refused = _refuse_non_owner(request, OP_VERIFY)
+    refused = await _owner_gate(request, OP_VERIFY)
     if refused is not None:
         return refused
+    from kiro_crew.platform.agentcore_inspect import inspect_snapshot
+
     payload = await asyncio.to_thread(inspect_snapshot, include_tools=True)
-    _audit(
+    await _audit_async(
         request,
         operation=OP_VERIFY,
         outcome="success",
@@ -111,37 +166,42 @@ async def api_agentcore_gateway_verify(request: web.Request) -> web.Response:
 
 async def api_agentcore_gateway_sync(request: web.Request) -> web.Response:
     """POST /api/agentcore/gateway/sync — SynchronizeGatewayTargets one target."""
-    refused = _refuse_non_owner(request, OP_SYNC)
+    refused = await _owner_gate(request, OP_SYNC)
     if refused is not None:
         return refused
     try:
         body = await request.json()
     except Exception:
-        _audit(request, operation=OP_SYNC, outcome="denied", resources="invalid_json")
+        await _audit_async(request, operation=OP_SYNC, outcome="denied", resources="invalid_json")
         return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     if not isinstance(body, dict):
-        _audit(request, operation=OP_SYNC, outcome="denied", resources="body_not_object")
+        await _audit_async(
+            request, operation=OP_SYNC, outcome="denied", resources="body_not_object"
+        )
         return web.json_response(
             {"error": "request body must be a JSON object", "code": "invalid_json"},
             status=400,
         )
     raw = body.get("target_id")
     if not isinstance(raw, str) or not raw.strip():
-        _audit(request, operation=OP_SYNC, outcome="denied", resources="bad_target")
+        await _audit_async(request, operation=OP_SYNC, outcome="denied", resources="bad_target")
         return web.json_response(
             {"error": "target_id is required", "code": "invalid_target"},
             status=400,
         )
+    from kiro_crew.platform.agentcore_inspect import synchronize_target
+
     result = await asyncio.to_thread(synchronize_target, raw.strip())
     code = str(result.get("code") or "aws_error")
     if code == "accepted":
-        _audit(request, operation=OP_SYNC, outcome="success", resources=raw.strip())
+        await _audit_async(request, operation=OP_SYNC, outcome="success", resources=raw.strip())
         return web.json_response(result)
-    status = 403 if code == "aws_denied" else 400
-    if code in {"aws_error", "not_found"}:
-        status = 502 if code == "aws_error" else 404
-    _audit(request, operation=OP_SYNC, outcome="denied", resources=code)
-    return web.json_response(
-        {"error": "could not sync this Gateway target", "code": code, **result},
-        status=status,
-    )
+    await _audit_async(request, operation=OP_SYNC, outcome="denied", resources=code)
+    error = "could not sync this Gateway target"
+    if code == "aws_denied":
+        return web.json_response({"error": error, "code": "aws_denied"}, status=403)
+    if code == "not_found":
+        return web.json_response({"error": error, "code": "not_found"}, status=404)
+    if code == "aws_error":
+        return web.json_response({"error": error, "code": "aws_error"}, status=502)
+    return web.json_response({"error": error, "code": code}, status=400)

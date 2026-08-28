@@ -4103,10 +4103,19 @@ class TestAcpRuntimeLoadSession:
             "_initialize_session",
         } <= builders.keys(), f"expected builders missing from scan: {sorted(builders)}"
         for name, body in builders.items():
-            assert "pooled_session_servers" in body or "_pooled_mcp_servers" in body, (
+            assert (
+                "pooled_session_servers" in body
+                or "_pooled_mcp_servers" in body
+                or "_mcp_servers_for_session" in body
+            ), (
                 f"{name} issues session/new or session/load but never consults "
                 "the pooled broker stubs — it would un-pool its sessions (#3528)"
             )
+        wrapper = inspect.getsource(rt_mod._mcp_servers_for_session)
+        assert "pooled_session_servers" in wrapper, (
+            "_mcp_servers_for_session must still consult the pooled broker so "
+            "Gateway inject cannot un-pool session/new"
+        )
 
 
 @pytest.mark.asyncio

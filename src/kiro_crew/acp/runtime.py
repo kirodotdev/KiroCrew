@@ -65,6 +65,7 @@ from kiro_crew.acp.session_handle import (
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKENDS_AGENTCORE_GATEWAY,
     ACP_BACKENDS_INTERNAL_SANDBOX,
     ACP_BACKENDS_KIRO_IDENTITY_STORE,
     ACP_CLIENT_CAPABILITIES,
@@ -128,6 +129,33 @@ __all__ = [
 
 
 # ── AcpRuntime ──
+
+def _mcp_servers_for_session(
+    overlay: str | None,
+    agent: str | None,
+    *,
+    session_key: str = "",
+    backend: str = ACP_BACKEND_KIRO,
+    crew_agent: str = "",
+) -> list[dict[str, Any]]:
+    """Pooled broker stubs plus the session-injected AgentCore Gateway.
+
+    Shared by ``create_session`` and ``load_session`` so the Kiro
+    ``AcpRuntime`` path (the default dashboard/channel transport) receives
+    the same Gateway inject as ``AcpClient._pooled_mcp_servers``. Empty
+    ``session_key`` or a backend outside
+    :data:`ACP_BACKENDS_AGENTCORE_GATEWAY` keeps the pooled list unchanged.
+    """
+    servers = pooled_session_servers(overlay, agent)
+    if session_key and backend in ACP_BACKENDS_AGENTCORE_GATEWAY:
+        from kiro_crew.platform.agentcore_gateway import session_gateway_servers
+
+        servers = [
+            *servers,
+            *session_gateway_servers(session_key, agent=crew_agent or agent or ""),
+        ]
+    return servers
+
 
 _T = TypeVar("_T")
 
@@ -2652,6 +2680,7 @@ class AcpRuntime:
         agent: str | None = None,
         mcp_servers: list[dict[str, Any]] | None = None,
         crew_agent: str | None = None,
+        session_key: str = "",
     ) -> AcpSessionHandle:
         """Create a new ACP session on this runtime. Returns a session handle.
 
@@ -2661,6 +2690,12 @@ class AcpRuntime:
         if not self._initialized:
             raise AcpRuntimeError("Runtime not initialized — call spawn() first")
 
+        # Session identity, not the runtime's. A shared-runtime child
+        # (subagent / task step) must inject Gateway under ITS profile;
+        # using ``self._crew_agent`` would let a restricted child inherit
+        # the parent's permit.
+        _crew = crew_agent if crew_agent is not None else self._crew_agent
+
         # Inject the shared gateway's broker stubs unless the caller supplied an
         # explicit list. A session-injected server outranks the same-named entry
         # in the agent spec, so this is what actually pools the servers — no file
@@ -2669,7 +2704,12 @@ class AcpRuntime:
             # Resolve the overlay off the event loop: the lookup stats/reads
             # files, and blocking the loop stalls every other session's I/O.
             mcp_servers = await asyncio.to_thread(
-                pooled_session_servers, self._mcp_gateway_overlay, agent or self._agent
+                _mcp_servers_for_session,
+                self._mcp_gateway_overlay,
+                agent or self._agent,
+                session_key=session_key,
+                backend=self._acp_backend,
+                crew_agent=_crew or "",
             )
         # The agent to run: an explicit request, else the runtime default. KAS
         # has no --agent spawn flag, so its default must be BOTH injected (below)
@@ -2713,7 +2753,6 @@ class AcpRuntime:
         # config change, and the handle constructor is synchronous. The crew
         # identity is canonical (a cfg.agents key) — the kiro ``agent`` name
         # is a different namespace and is not stored on the handle.
-        _crew = crew_agent if crew_agent is not None else self._crew_agent
         _wd = await asyncio.to_thread(_load_watchdog_settings, _crew)
         handle = AcpSessionHandle(
             session_id=session_id,
@@ -2858,6 +2897,7 @@ class AcpRuntime:
         cwd: str | Path | None = None,
         agent: str | None = None,
         crew_agent: str | None = None,
+        session_key: str = "",
     ) -> AcpSessionHandle:
         """Resume a prior session via session/load — mirrors AcpClient.
 
@@ -2883,9 +2923,15 @@ class AcpRuntime:
         # silently un-pooling the session for the rest of its life. Resolved off
         # the event loop — the overlay lookup stats and reads files. Empty when
         # the shared gateway is disabled, so non-pooled installs still send [].
+        _crew = crew_agent if crew_agent is not None else self._crew_agent
         active_agent = agent or self._agent
         mcp_servers = await asyncio.to_thread(
-            pooled_session_servers, self._mcp_gateway_overlay, active_agent
+            _mcp_servers_for_session,
+            self._mcp_gateway_overlay,
+            active_agent,
+            session_key=session_key,
+            backend=self._acp_backend,
+            crew_agent=_crew or "",
         )
         load_params: dict[str, Any] = {
             "sessionId": resume_sid,
@@ -2962,7 +3008,6 @@ class AcpRuntime:
 
         # Mirrors create_session: a resumed session gets the same
         # canonical-crew watchdog snapshot, resolved off-loop.
-        _crew = crew_agent if crew_agent is not None else self._crew_agent
         _wd = await asyncio.to_thread(_load_watchdog_settings, _crew)
         handle = AcpSessionHandle(
             session_id=resume_sid,

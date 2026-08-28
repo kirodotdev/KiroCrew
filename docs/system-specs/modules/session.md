@@ -360,11 +360,28 @@ pass `{channel_type, provider_user_id}` the same way without a second
 session key. `tool_input` cannot supply `subject` / `userId` —
 `reject_tool_input_identity` refuses those kwargs.
 
-Workload Gateway MCP is injected at rebuild (URL-only) and again on
-`session/new` as the live loopback SigV4 listen URL. The unsigned
-https Gateway hostname is never injected. The principal must already
-be known *before* `session/new` so a later login sidecar can attach
-on the first human turn. Login inbound sidecars are a later stack PR.
+Workload Gateway MCP is injected only on `session/new` as the live
+loopback SigV4 listen URL. The default Kiro transport is `AcpRuntime`
+(`create_session` / `load_session`); `AcpClient._pooled_mcp_servers`
+is the same inject for the leftover client path. It is never written
+into the agent file.
+The unsigned https Gateway hostname is never injected. Rebuild
+retracts a persisted `agentcore-gateway` row only when it is a
+managed AgentCore Gateway hostname (`*.gateway.bedrock-agentcore.<region>.amazonaws.com`);
+an operator URL-only or command-shaped entry under that name stays.
+Each hop re-checks the calling session's profile ∩ policy **after
+the request body is read, immediately before signing**, so a stalled
+upload cannot keep a permit that was revoked mid-body. It signs only
+when the composed posture is `workload`, and requires **this hop's**
+proxy upstream (not the process-wide replacement listener) to still
+match the ceiling Gateway URL — a stalled request on A cannot
+authorize against B and then sign to A. Shared-runtime
+children (`create_session` / `load_session`) inject Gateway under
+the session's `crew_agent` argument, not the parent runtime's
+identity; subagent and task-runner callers pass the child agent. `login` uses JWT
+inbound, not instance IAM. The principal must already be known *before*
+`session/new` so a later login sidecar can attach on the first human
+turn. Login inbound sidecars are a later stack PR.
 
 ## Stop Orchestration
 

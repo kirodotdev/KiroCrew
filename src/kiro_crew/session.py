@@ -1738,7 +1738,12 @@ class SessionManager:
         # I/O (get_subagent_runtime spawn + create_session) is kept OUTSIDE the
         # global lock to avoid pinning it across subprocess/RPC work.
         runtime = await self._get_or_bootstrap_run_runtime(parent_session_key, agent=agent, cwd=cwd)
-        handle = await runtime.create_session(cwd=cwd or None, agent=agent or None)
+        handle = await runtime.create_session(
+            cwd=cwd or None,
+            agent=agent or None,
+            crew_agent=agent or "",
+            session_key=key,
+        )
         provider = AcpSessionProvider(handle, runtime)
 
         dup: LLMProvider | None = None

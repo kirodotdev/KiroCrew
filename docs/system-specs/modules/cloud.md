@@ -112,7 +112,11 @@ create/delete/tag verbs — never `InvokeGateway`. The extra can fetch
 `GetWorkloadAccessToken*` on the box. Workload `gateway_mcp_spec`
 rewrites onto a localhost SigV4 proxy so kiro-cli can `InvokeGateway`
 (preferred listen port `18765`, overridable with
-`KIROCREW_AGENTCORE_PROXY_PORT`). The extra does not create the
+`KIROCREW_AGENTCORE_PROXY_PORT`). A failure after that hop has
+flushed response headers closes the connection; it does not emit a
+second 502 onto the MCP body. Inbound reads are socket-timed and the
+listener admits at most ``PROXY_MAX_INFLIGHT`` concurrent handlers so
+an incomplete upload cannot pin a thread forever. The extra does not create the
 Gateway or its targets — the operator supplies an existing MCP URL.
 
 See-and-configure on the dashboard is a later stack PR

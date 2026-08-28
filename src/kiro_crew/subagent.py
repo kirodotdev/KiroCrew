@@ -6545,6 +6545,8 @@ class SubagentManager:
         handle = await runtime.create_session(
             cwd=cwd or None,
             agent=agent or None,
+            crew_agent=agent or "",
+            session_key=session_key,
         )
         provider = AcpSessionProvider(handle, runtime)
         # This consumer implements the low-fidelity child downgrade (interactive

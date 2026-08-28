@@ -913,18 +913,39 @@ def _extra_mcp_servers() -> dict[str, dict]:
     return dict(extra) if extra else {}
 
 
+def _is_managed_gateway_leftover(spec: Any) -> bool:
+    """True only for a persisted AgentCore Gateway URL leftover.
+
+    Inject never writes a ``command`` under the reserved name. A
+    command-shaped server is the operator's and must survive rebuild.
+    A URL-only row is a leftover only when the URL is an AgentCore
+    Gateway hostname; other remotes under the reserved name stay.
+    A non-object entry is not a positively matched leftover.
+    """
+    if not isinstance(spec, dict):
+        return False
+    command = spec.get("command")
+    if isinstance(command, str) and command.strip():
+        return False
+    from kiro_crew.platform.agentcore_sigv4 import is_agentcore_gateway_url
+
+    url = spec.get("url")
+    return isinstance(url, str) and is_agentcore_gateway_url(url)
+
+
 def _merge_edition_mcp(mcp: dict[str, Any]) -> None:
-    """Merge edition extras + the AgentCore Gateway rebuild contribution.
+    """Merge edition extras and retract a persisted managed Gateway entry.
 
     Extras are ADD-only (setdefault) after secret keys are stripped so a
     companion ``Authorization`` header cannot land in kirocrew.json. The
-    Gateway server itself is ours: workload posture assigns a URL-only spec;
-    any other posture retracts a leftover entry. Login withhold of other
-    remotes is a later PR.
+    Gateway is session-injected, never written into the agent file, so a
+    profile that disabled AgentCore cannot inherit it from ``--agent``.
+    Only a positively identified leftover (an AgentCore Gateway URL
+    with no command) is retracted. Other URL-only remotes under the
+    reserved name stay. Login withhold of other remotes is a later PR.
     """
     from kiro_crew.platform.agentcore_gateway import (
         GATEWAY_SERVER_NAME,
-        rebuild_gateway_contribution,
         strip_secret_spec_keys,
     )
 
@@ -932,10 +953,8 @@ def _merge_edition_mcp(mcp: dict[str, Any]) -> None:
         if name == GATEWAY_SERVER_NAME or not isinstance(spec, dict):
             continue
         mcp.setdefault(name, strip_secret_spec_keys(spec))
-    contribution = rebuild_gateway_contribution()
-    if GATEWAY_SERVER_NAME in contribution:
-        mcp[GATEWAY_SERVER_NAME] = contribution[GATEWAY_SERVER_NAME]
-    else:
+    leftover = mcp.get(GATEWAY_SERVER_NAME)
+    if leftover is None or _is_managed_gateway_leftover(leftover):
         mcp.pop(GATEWAY_SERVER_NAME, None)
 
 

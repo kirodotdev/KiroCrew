@@ -31,6 +31,7 @@ from kiro_crew.platform.agentcore_aws import (
     resolved_posture,
     resolved_workload_name,
 )
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +133,10 @@ def inspect_snapshot(*, include_tools: bool = True) -> dict[str, Any]:
             SNAPSHOT_UNUSABLE_URL, posture=posture, url=url, workload_name=workload_name
         )
 
-    client = _control_client(ref["region"])
+    try:
+        client = _control_client(ref["region"])
+    except _ControlClientError as exc:
+        return _empty_snapshot(exc.code, posture=posture, url=url, workload_name=workload_name)
     if client is None:
         return _empty_snapshot(
             SNAPSHOT_EXTRA_MISSING, posture=posture, url=url, workload_name=workload_name
@@ -203,7 +207,10 @@ def synchronize_target(target_id: str) -> dict[str, Any]:
     ref = parse_gateway_ref(url)
     if ref is None:
         return {"code": SNAPSHOT_UNUSABLE_URL, "target_id": cleaned}
-    client = _control_client(ref["region"])
+    try:
+        client = _control_client(ref["region"])
+    except _ControlClientError as exc:
+        return {"code": exc.code, "target_id": cleaned}
     if client is None:
         return {"code": SNAPSHOT_EXTRA_MISSING, "target_id": cleaned}
     try:
@@ -265,6 +272,14 @@ def _empty_tools(skip: str) -> dict[str, Any]:
     return {"reachable": False, "skip_reason": skip, "items": [], "via": None}
 
 
+class _ControlClientError(Exception):
+    """boto3 client construction failed (profile, region, creds)."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
+
 def _control_client(region: str) -> Any | None:
     try:
         import boto3
@@ -273,7 +288,10 @@ def _control_client(region: str) -> Any | None:
     kwargs: dict[str, str] = {}
     if region:
         kwargs["region_name"] = region
-    return boto3.client(CONTROL_CLIENT, **kwargs)
+    try:
+        return boto3.client(CONTROL_CLIENT, **kwargs)
+    except Exception as exc:
+        raise _ControlClientError(_classify_aws_error(exc)) from exc
 
 
 def _classify_aws_error(exc: BaseException) -> str:
@@ -672,11 +690,16 @@ def _mcp_post(
     host = (urlparse(url).hostname or "").lower()
     if host not in _LOCAL_MCP_HOSTS:
         raise ValueError("inspect MCP post is localhost-only (SigV4 proxy)")
+    from kiro_crew.platform.agentcore_sigv4 import proxy_auth_headers
+    from kiro_crew.platform.governance_profiles import HOST_SESSION_KEY
+
+    auth = proxy_auth_headers(HOST_SESSION_KEY)
+    if not auth:
+        raise RuntimeError("SigV4 proxy auth token is missing")
+    headers.update(auth)
     request = urllib.request.Request(url, data=body, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
-            request, timeout=TOOLS_LIST_TIMEOUT_SECS
-        ) as resp:
+        with urllib.request.urlopen(request, timeout=TOOLS_LIST_TIMEOUT_SECS) as resp:  # nosemgrep
             return dict(resp.headers.items()), resp.read()
     except urllib.error.HTTPError as exc:
         if exc.code in {401, 403}:
@@ -713,6 +736,10 @@ def _scrub(payload: dict[str, Any]) -> dict[str, Any]:
             }
         if isinstance(value, list):
             return [walk(item) for item in value]
+        if isinstance(value, str):
+            cleaned, _urls = redact_exfiltration_urls(value)
+            cleaned, _creds = redact_credentials(cleaned)
+            return cleaned
         return value
 
     return walk(payload)

@@ -1006,7 +1006,9 @@ class TestNewConversation:
         await provider.new_conversation()
 
         # Fresh session/new on the SAME runtime (cwd+agent from the runtime).
-        runtime.create_session.assert_awaited_once_with(cwd="/tmp/ws", agent="kirocrew")
+        runtime.create_session.assert_awaited_once_with(
+            cwd="/tmp/ws", agent="kirocrew", session_key=""
+        )
         # Handle swapped to the fresh session → next prompt starts clean.
         assert provider._handle is new_handle
         assert provider.session_id == "fresh-session-2"

@@ -194,6 +194,13 @@ ACP_BACKENDS_ACP_RUNTIME = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # (harness-parity H5).
 ACP_BACKENDS_KIRO_IDENTITY_STORE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 
+# Backends allowed to receive the AgentCore SigV4 Gateway inject on
+# session/new. Workload posture signs with the instance role; a harness
+# that is not a member must not inherit that bearer (harness-parity H6/H7).
+# KAS and the dormant Claude seam are not members — they have no reviewed
+# inject path. Stated as opt-in membership, never ``not is_claude``.
+ACP_BACKENDS_AGENTCORE_GATEWAY = frozenset({ACP_BACKEND_KIRO})
+
 # ── Provider labels ──
 # The backend identity key persisted in the session map. It indexes three
 # things, so every producer must agree on it: resume compatibility

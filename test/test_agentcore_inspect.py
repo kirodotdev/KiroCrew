@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import inspect as pyinspect
 import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+import kiro_crew
 from kiro_crew.dashboard.handlers import agentcore_inspect as handler
 from kiro_crew.platform import agentcore_inspect as inspect
 
@@ -120,6 +126,51 @@ def test_snapshot_unusable_url(monkeypatch: pytest.MonkeyPatch) -> None:
     _isolate(monkeypatch, url="https://example.test/mcp")
     snap = inspect.inspect_snapshot()
     assert snap["code"] == inspect.SNAPSHOT_UNUSABLE_URL
+
+
+def test_snapshot_classifies_control_client_init_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _isolate(monkeypatch)
+
+    def _boom(_region: str) -> None:
+        raise inspect._ControlClientError(inspect.SNAPSHOT_AWS_ERROR)
+
+    monkeypatch.setattr(inspect, "_control_client", _boom)
+    snap = inspect.inspect_snapshot()
+    assert snap["code"] == inspect.SNAPSHOT_AWS_ERROR
+
+
+def test_synchronize_classifies_control_client_init_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _isolate(monkeypatch)
+
+    def _boom(_region: str) -> None:
+        raise inspect._ControlClientError(inspect.SNAPSHOT_AWS_ERROR)
+
+    monkeypatch.setattr(inspect, "_control_client", _boom)
+    result = inspect.synchronize_target("t1")
+    assert result["code"] == inspect.SNAPSHOT_AWS_ERROR
+
+
+def test_control_client_wraps_construction_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Boom(Exception):
+        pass
+
+    fake = type(
+        "Boto",
+        (),
+        {
+            "client": staticmethod(
+                lambda *_a, **_k: (_ for _ in ()).throw(Boom("profile not found"))
+            )
+        },
+    )
+    monkeypatch.setitem(sys.modules, "boto3", fake)
+    with pytest.raises(inspect._ControlClientError) as caught:
+        inspect._control_client("us-east-1")
+    assert caught.value.code == inspect.SNAPSHOT_AWS_ERROR
 
 
 def test_snapshot_ok_lists_targets_and_tools(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -473,6 +524,15 @@ def test_snapshot_scrubs_token_keys(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "token" not in inspect.inspect_snapshot()["gateway"]
 
 
+def test_scrub_redacts_credential_strings() -> None:
+    from kiro_crew.platform.agentcore_inspect import _scrub
+
+    secret = "AKIAIOSFODNN7EXAMPLE"
+    out = _scrub({"description": f"tool {secret} docs"})
+    dumped = json.dumps(out)
+    assert secret not in dumped
+
+
 class _Req:
     def __init__(self, body: Any = None, *, app: str | None = None, owner: bool = True) -> None:
         self._body = body
@@ -497,14 +557,18 @@ def _handler_isolate(monkeypatch: pytest.MonkeyPatch) -> None:
         "_refuse_non_owner",
         lambda request, operation: None,
     )
+    monkeypatch.setattr(
+        handler,
+        "_refuse_disabled_capability",
+        lambda request, operation: None,
+    )
 
 
 @pytest.mark.asyncio
 async def test_handler_get_returns_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
     _handler_isolate(monkeypatch)
     monkeypatch.setattr(
-        handler,
-        "inspect_snapshot",
+        "kiro_crew.platform.agentcore_inspect.inspect_snapshot",
         lambda include_tools=True: {"code": "ok", "targets": [], "tools": {"items": []}},
     )
     resp = await handler.api_agentcore_gateway_get(_Req())
@@ -521,8 +585,86 @@ async def test_handler_app_token_refused(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 @pytest.mark.asyncio
+async def test_handler_refuses_when_capability_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(handler, "_audit", lambda *a, **k: None)
+    monkeypatch.setattr(handler, "_refuse_non_owner", lambda request, operation: None)
+
+    class _Denied:
+        permitted = False
+
+    monkeypatch.setattr(
+        "kiro_crew.platform.governance_profiles.governance_permits",
+        lambda *a, **k: _Denied(),
+    )
+    resp = await handler.api_agentcore_gateway_get(_Req())
+    assert resp.status == 403
+    assert json.loads(resp.text)["code"] == "agentcore_disabled"
+
+
+@pytest.mark.asyncio
 async def test_handler_sync_requires_target_id(monkeypatch: pytest.MonkeyPatch) -> None:
     _handler_isolate(monkeypatch)
     resp = await handler.api_agentcore_gateway_sync(_Req({}))
     assert resp.status == 400
     assert json.loads(resp.text)["code"] == "invalid_target"
+
+
+def test_dashboard_handlers_import_does_not_load_inspect(tmp_path: Path) -> None:
+    """Gateway boot imports ``dashboard.handlers``; the catalog stays lazy."""
+    src = str(Path(kiro_crew.__file__).resolve().parents[1])
+    env = dict(os.environ)
+    env["PYTHONPATH"] = src + os.pathsep + env.get("PYTHONPATH", "")
+    env.pop("COV_CORE_SOURCE", None)
+    env.pop("COVERAGE_PROCESS_START", None)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import json, sys\n"
+            "import kiro_crew.dashboard.handlers  # noqa: F401\n"
+            "print(json.dumps({\n"
+            "  'inspect': 'kiro_crew.dashboard.handlers.agentcore_inspect' in sys.modules,\n"
+            "  'platform': 'kiro_crew.platform.agentcore_inspect' in sys.modules,\n"
+            "}))\n",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=tmp_path,
+        env=env,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert payload["inspect"] is False
+    assert payload["platform"] is False
+
+
+def test_system_routes_lazy_load_inspect() -> None:
+    from kiro_crew.dashboard.routes import system as routes
+
+    src = pyinspect.getsource(routes.register)
+    assert "handlers.api_agentcore_gateway_get" not in src
+    assert "_lazy_agentcore" in src
+
+
+def test_inspect_handlers_offload_owner_gate_and_audit() -> None:
+    """SEL first-use mkdirs; owner + audit must not run on the loop."""
+    gate = pyinspect.getsource(handler._owner_gate)
+    audit = pyinspect.getsource(handler._audit_async)
+    assert "asyncio.to_thread(_refuse_non_owner" in gate
+    assert "asyncio.to_thread(_refuse_disabled_capability" in gate
+    assert "asyncio.to_thread(" in audit
+    for fn in (
+        handler.api_agentcore_gateway_get,
+        handler.api_agentcore_gateway_verify,
+        handler.api_agentcore_gateway_sync,
+    ):
+        src = pyinspect.getsource(fn)
+        assert "await _owner_gate(" in src
+        assert "await _audit_async(" in src
+        assert "_refuse_non_owner(" not in src
+        assert "_audit(" not in src.replace("_audit_async(", "")
