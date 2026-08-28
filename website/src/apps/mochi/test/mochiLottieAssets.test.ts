@@ -1,12 +1,16 @@
 /**
- * Lottie clips must be free of EXPRESSIONS to render at all.
+ * Lottie clips must be free of EXPRESSIONS to render fully.
  *
- * lottie-web compiles an expression with `eval()`, and the dashboard CSP ships
- * `script-src 'self' 'unsafe-inline'` with no `'unsafe-eval'` — so an expression
- * throws mid-build and the slot paints nothing. Three of the four built-in Kiro
- * Ghost clips carried a redundant `loopOut()` and were therefore invisible, while
- * the one without an expression rendered fine; the pack read as "broken" rather
- * than "one Lottie feature is unavailable".
+ * Mochi loads the LIGHT lottie player (see renderer/LottieRenderer.tsx), which
+ * ships no expression support at all — an expression is ignored, so motion that
+ * depended on one silently does not play. Historically, when this app still
+ * loaded the full player, it was worse: the expression compiler's `eval()`
+ * threw under the dashboard CSP (`script-src 'self' 'unsafe-inline'`, no
+ * `'unsafe-eval'`) mid-build and the slot painted nothing. Three of the four
+ * built-in Kiro Ghost clips carried a redundant `loopOut()` and were therefore
+ * invisible, while the one without an expression rendered fine; the pack read
+ * as "broken" rather than "one Lottie feature is unavailable". Either way —
+ * throw then, ignore now — an expression in a shipped clip is a defect.
  *
  * Two pins here: the SHIPPED assets stay expression-free (so this cannot regress
  * when the art is re-exported from After Effects, which adds `loopOut()` freely),
@@ -59,9 +63,34 @@ function countDataXKeys(node: unknown): number {
   return 0
 }
 
+/** Every node carrying a non-empty `ef` array — a Lottie SVG effect. */
+function findEffects(node: unknown, path = ''): string[] {
+  if (Array.isArray(node)) {
+    return node.flatMap((item, i) => findEffects(item, `${path}[${i}]`))
+  }
+  if (node !== null && typeof node === 'object') {
+    const obj = node as Record<string, unknown>
+    const here = Array.isArray(obj.ef) && obj.ef.length > 0 ? [`${path}.ef`] : []
+    return [
+      ...here,
+      ...Object.entries(obj).flatMap(([k, v]) => findEffects(v, `${path}.${k}`)),
+    ]
+  }
+  return []
+}
+
 describe('built-in Lottie packs', () => {
   it.each(CLIPS)('%s carries no expressions', (_name, clip) => {
     expect(findExpressions(clip)).toEqual([])
+  })
+
+  it.each(CLIPS)('%s carries no SVG effects', (_name, clip) => {
+    // The light player ships no SVG effect renderers, so an effect on a
+    // shipped clip would render skipped — the one visible regression class the
+    // light-player switch knowingly accepts for IMPORTED packs must never
+    // apply to the built-in art. After Effects adds effects as freely as it
+    // adds `loopOut()`, so pin it against re-exports.
+    expect(findEffects(clip)).toEqual([])
   })
 
   it.each(CLIPS)('%s keeps its non-expression x keys', (_name, clip) => {

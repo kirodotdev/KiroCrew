@@ -4,7 +4,24 @@
  * when animationData changes. Notifies parent via onReady callback.
  */
 import React, { useEffect, useRef } from 'react'
-import lottie from 'lottie-web'
+/*
+ * The LIGHT player, deliberately — the same call crew-companion's renderer
+ * makes, for the same reason. The package-main build compiles animation
+ * expressions with a direct `eval()`, and the JSON reaching `loadAnimation`
+ * here includes imported appearance packs — third-party authored — running in
+ * the gateway's origin. Nothing mochi draws needs expressions (SVG renderer
+ * only, expressions stripped below), so the smaller player removes the sink
+ * rather than shipping it disarmed.
+ *
+ * Known tradeoff, accepted with eyes open: the light build also registers no
+ * SVG EFFECT renderers (tint, drop shadow, blur, mattes…). The shipped clips
+ * carry none (pinned in mochiLottieAssets.test.ts); an imported pack that
+ * uses them still loads and draws, minus those effects, with a console
+ * breadcrumb naming the cause (see countEffects). crew-companion accepted the
+ * same tradeoff for the same third-party content class. The type-only import
+ * stays on the package root: types live there, not under build/player/.
+ */
+import lottie from 'lottie-web/build/player/lottie_light'
 import type { AnimationItem } from 'lottie-web'
 
 interface LottieRendererProps {
@@ -18,24 +35,32 @@ interface LottieRendererProps {
 /**
  * Remove Lottie EXPRESSIONS from a parsed clip, returning how many went.
  *
- * lottie-web compiles an expression with `eval()` (lottie.js — search
- * `_expression_function`), and the dashboard CSP is `script-src 'self'
- * 'unsafe-inline'` with NO `'unsafe-eval'`. So an expression does not merely
- * misbehave under this policy — it THROWS, the clip never finishes building, and
- * the slot paints nothing. That is what made three of the four Kiro Ghost clips
- * render as empty boxes while the fourth (the only one with no expression) was
- * fine: `idle`, `walking`, `thinking`, `working` were blank and `error` /
- * `offline` worked, which reads like "the pack is broken" rather than "one
- * feature is unavailable".
+ * This file imports the LIGHT player, which has no expression support at all —
+ * the expression compiler (an `eval()` in the full build; lottie.js — search
+ * `_expression_function`) simply is not shipped. The light player IGNORES an
+ * expression rather than throwing, so without this strip a clip that leaned on
+ * one would silently animate less, with nothing in the console naming the
+ * cause. Stripping keeps the count in hand so the warning below can say
+ * exactly what was dropped and why.
  *
- * Stripping loses NOTHING that could have run: under this CSP no expression can
- * ever evaluate. A clip whose motion depended on one animates less; a clip whose
- * expression was redundant (`loopOut()` over a track that already spans the comp,
- * which is what the shipped ghost used) is unchanged. Both beat invisible.
+ * The concrete history, from when this app still loaded the full player under
+ * the dashboard CSP (`script-src 'self' 'unsafe-inline'`, no `'unsafe-eval'`):
+ * the compiler's `eval` THREW mid-build and the slot painted nothing, which
+ * made three of the four Kiro Ghost clips render as empty boxes while the
+ * fourth (the only one with no expression) was fine: `idle`, `walking`,
+ * `thinking`, `working` were blank and `error` / `offline` worked, which reads
+ * like "the pack is broken" rather than "one feature is unavailable".
  *
- * Widening the CSP with `'unsafe-eval'` is the alternative and is rejected: it
- * would hand every script on the page a code-execution primitive to make a
- * companion bob.
+ * Stripping loses NOTHING that could have run: the light player evaluates no
+ * expression anyway. A clip whose motion depended on one animates less; a clip
+ * whose expression was redundant (`loopOut()` over a track that already spans
+ * the comp, which is what the shipped ghost used) is unchanged. Both beat
+ * silent divergence.
+ *
+ * Loading the full player (or widening the CSP with `'unsafe-eval'`) to make
+ * expressions work is the alternative and is rejected: it would wire an
+ * attacker-authored pack's strings to a code-execution primitive in the
+ * gateway's origin, to make a companion bob.
  *
  * Only a STRING `x` is an expression. A numeric/array/object `x` is a coordinate
  * or a bezier easing handle and MUST survive — deleting those would corrupt every
@@ -57,6 +82,40 @@ function stripExpressions(node: unknown): number {
   }
   return removed
 }
+
+/**
+ * Count effect-bearing nodes (a non-empty `ef` array) in a parsed clip.
+ *
+ * The light player registers NO SVG effect implementations (tint, fill,
+ * stroke, drop shadow, gaussian blur, mattes, transform — nine classes in the
+ * full build, zero here), so an effect-bearing pack draws with those effects
+ * skipped. The full player did render them, which makes this the one visible
+ * difference an imported pack can hit after the light-player switch — the
+ * shipped clips carry none (pinned in mochiLottieAssets.test.ts). Nothing is
+ * deleted and the clip still loads; this count only feeds the console
+ * breadcrumb below, same philosophy as stripExpressions: degrade loudly,
+ * never silently.
+ */
+function countEffects(node: unknown): number {
+  if (Array.isArray(node)) {
+    return node.reduce<number>((n, item) => n + countEffects(item), 0)
+  }
+  if (node !== null && typeof node === 'object') {
+    const obj = node as Record<string, unknown>
+    const here = Array.isArray(obj.ef) && obj.ef.length > 0 ? 1 : 0
+    // A counted `ef` holds effect objects whose parameters are themselves `ef`
+    // arrays — recursing into it would count one drop shadow as 2+. Prune at
+    // the counted key so the breadcrumb's number means "effect-bearing nodes".
+    return Object.entries(obj).reduce<number>(
+      (n, [key, v]) => (here === 1 && key === 'ef' ? n : n + countEffects(v)),
+      here,
+    )
+  }
+  return 0
+}
+
+/** Clips (bytes + head, the pair the other logs key on) already warned about. */
+const warnedEffectClips = new Set<string>()
 
 const LottieRendererInner: React.FC<LottieRendererProps> = ({
   animationData,
@@ -110,15 +169,36 @@ const LottieRendererInner: React.FC<LottieRendererProps> = ({
 
     let anim: AnimationItem
     try {
-      // Before loading, not after: an expression throws during the build, so
-      // there is no post-hoc recovery — see stripExpressions.
+      // Before loading, not after: `loadAnimation` consumes the parsed object,
+      // so the strip must land first to count what was dropped — see
+      // stripExpressions.
       const stripped = stripExpressions(parsed)
       if (stripped > 0) {
         // eslint-disable-next-line no-console
         console.warn(
-          `[mochi] removed ${stripped} lottie expression(s) — they cannot run under ` +
-            'the dashboard CSP (no unsafe-eval) and would render the clip blank',
+          `[mochi] removed ${stripped} lottie expression(s) — the light lottie ` +
+            'player has no expression support, so motion that depended on them ' +
+            'will not play',
         )
+      }
+      const effectNodes = countEffects(parsed)
+      if (effectNodes > 0) {
+        // Once per distinct clip, not per load: unlike the expression warn
+        // (which fires only when something was stripped), this fires for ANY
+        // effect-bearing pack — and PetWidget swaps animationData on every pet
+        // state change while GalleryPanel mounts one renderer per tile, which
+        // would repeat an identical line until it crowds out the three
+        // genuinely diagnostic messages this file exists to make findable.
+        const clipKey = `${animationData.length}:${animationData.slice(0, 40)}`
+        if (!warnedEffectClips.has(clipKey)) {
+          warnedEffectClips.add(clipKey)
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[mochi] clip carries ${effectNodes} effect-bearing node(s) — the light ` +
+              'lottie player ships no SVG effect renderers, so they will draw ' +
+              'without those effects',
+          )
+        }
       }
       anim = lottie.loadAnimation({
         container,

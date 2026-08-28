@@ -44,7 +44,6 @@ src/apps/mochi/mochiLanguage.tsx 0.0   # 0/16
 src/apps/mochi/panel/MochiSnipHost.tsx 0.0   # 0/48
 src/apps/mochi/pet/main.tsx 0.0   # 0/21
 src/apps/mochi/snip/main.tsx 0.0   # 0/54
-src/apps/mochi/src/renderer/LottieRenderer.tsx 32.7   # 16/49
 src/apps/mochi/src/renderer/PetdexImporter.tsx 0.0   # 0/40
 src/apps/mochi/src/renderer/SpriteRenderer.tsx 39.6   # 19/48
 src/apps/mochi/src/shared/appearanceTypes.ts 8.7   # 6/69
