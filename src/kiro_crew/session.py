@@ -101,10 +101,10 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_ACP_RUNTIME,
-    ACP_BACKENDS_SELECTABLE,
     PROVIDER_LABEL_CLAUDE,
     PROVIDER_LABEL_DEFAULT,
 )
+from kiro_crew.acp_backends import selectable_backends
 from kiro_crew.agent import kiro_agents_dir_path
 from kiro_crew.agent_discovery import spec_model
 from kiro_crew.config import KiroCrewConfig
@@ -384,12 +384,21 @@ _MAX_CONCURRENT_COLD_STARTS = 4
 # session as agent-less.
 BACKGROUND_AGENT = "kirocrew-lite"
 
+
 # Backends the _bg runtime path may spawn under: runtime-capable AND
 # operator-selectable. Identical sets today, so the intersection is pure
 # defense-in-depth — a future runtime-capable preview harness that is not yet
 # selectable must not be spawnable by the background path from a config object
 # that skipped the loader's _normalize_acp_backend.
-_BG_RUNTIME_BACKENDS = ACP_BACKENDS_ACP_RUNTIME & ACP_BACKENDS_SELECTABLE
+#
+# Computed per call, not frozen at import: selectability lives in the
+# ``acp_backends`` registry, which an edition extends during boot via
+# ``register_selectable_backend`` — strictly after this module is imported. A
+# module-level intersection would snapshot the baseline and permanently exclude
+# a backend the operator did register.
+def _bg_runtime_backends() -> frozenset[str]:
+    return ACP_BACKENDS_ACP_RUNTIME & selectable_backends()
+
 
 # Heartbeat session key — used by HeartbeatService.  Spawned with the full
 # ``kirocrew`` agent so polled tasks can call read-only MCP tools (CR/ticket
@@ -1386,7 +1395,7 @@ class SessionManager:
         backend outside that set falls through to the provider-backed
         ``_Session`` path serialized by ``Semaphore(1)``.
         """
-        return self._configured_bg_backend() in _BG_RUNTIME_BACKENDS
+        return self._configured_bg_backend() in _bg_runtime_backends()
 
     async def _reap_drained_bg_runtimes_locked(self) -> None:
         """Kill and drop parked runtimes whose last live handle has drained.
@@ -1598,7 +1607,7 @@ class SessionManager:
                 # runtime under such a backend would misapply its credential /
                 # sandbox classification, so that caller is served through the
                 # provider path below instead.
-                runtime_capable = configured_backend in _BG_RUNTIME_BACKENDS
+                runtime_capable = configured_backend in _bg_runtime_backends()
                 # Recycle a healthy-but-stale runtime (aged out or grown past
                 # its RSS threshold — see AcpRuntime._is_stale()) before the
                 # normal is_alive() respawn check. Only recycle when zero

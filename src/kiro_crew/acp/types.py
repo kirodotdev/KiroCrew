@@ -7,6 +7,19 @@ import re as _re
 from dataclasses import dataclass, field
 from typing import Any
 
+# Backend identifiers + the selectable registry live in the leaf module
+# ``kiro_crew.acp_backends`` (it imports nothing from this package, which is what
+# lets the config loader and the dashboard read them). Re-exported here so every
+# existing ``from kiro_crew.acp.types import ACP_BACKEND_*`` call site is
+# unchanged — see the "ACP Backend Identifiers" section below for why they moved.
+from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing importers
+    ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_KAS,
+    ACP_BACKEND_KIRO,
+    ACP_BACKENDS_KNOWN,
+    selectable_backends,
+)
+
 # ── ACP Event Kinds ──
 
 EVENT_TEXT_CHUNK = "text_chunk"
@@ -105,28 +118,19 @@ ACP_CLIENT_CAPABILITIES: dict = {
 }
 
 # ── ACP Backend Identifiers ──
-
-ACP_BACKEND_CLAUDE = "claude"
-ACP_BACKEND_KAS = "kas"
-# The kiro-cli backend is spelled as the empty string throughout, so name it
-# rather than leaving every call site to infer it from "not claude".
-ACP_BACKEND_KIRO = ""
-# Membership gate for the ``acp_backend`` kwarg. An unrecognized value would
-# otherwise fall through every ``_is_<backend>`` check and silently spawn
-# kiro-cli, so provider construction rejects it instead.
-ACP_BACKENDS_KNOWN = frozenset(
-    {
-        ACP_BACKEND_KIRO,
-        ACP_BACKEND_CLAUDE,
-        ACP_BACKEND_KAS,
-    }
-)
-# What an operator may actually persist in ``agent.acp_backend``, which is a
-# narrower question than what the code understands: ``ACP_BACKEND_CLAUDE`` is a
-# dormant seam reached by its own provider, not something to select here. Config
-# resolution degrades an unselectable value to the default, so a typo costs a log
-# line rather than a gateway that will not start.
-ACP_BACKENDS_SELECTABLE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+# DEFINED in :mod:`kiro_crew.acp_backends` and re-exported from the import block
+# at the top of this module, so the ~19 existing
+# ``from kiro_crew.acp.types import ACP_BACKEND_*`` call sites are unchanged.
+#
+# The definitions had to move out of this package: importing anything under
+# ``kiro_crew.acp`` executes its ``__init__`` (client + runtime), so the loader's
+# field metadata and the dashboard's PATCH allowlist could not read them and each
+# kept a literal copy of the selectable list instead. ``acp_backends`` imports
+# nothing from this package, so it can be the single code owner.
+#
+# The selectable set is no longer a constant either: it is a REGISTRY an edition
+# extends (``register_selectable_backend``). A frozen ``ACP_BACKENDS_SELECTABLE``
+# snapshot here would be read before boot registration and silently miss it.
 
 # ── Capability membership (harness-parity H6, H7) ──
 # Every capability a backend may claim is an OPT-IN set here, never a negation at

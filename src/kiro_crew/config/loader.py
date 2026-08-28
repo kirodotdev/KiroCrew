@@ -30,6 +30,16 @@ from urllib.parse import urlsplit as _urlsplit
 
 from kiro_crew import __version__, model_registry, platform_compat, windows_acl
 
+# Leaf module (stdlib only) owning "which ACP backend can this build serve": the
+# registry an edition extends at boot. Importable at module scope precisely because
+# it does NOT reach ``kiro_crew.acp`` — the package init (client + runtime) imports
+# this module, which is the cycle the old ``acp.types`` import had to defer for.
+#
+# The one gate stays where the pre-registry code already gated — inside
+# ``_normalize_acp_backend`` on the way out of config.json. Only what it reads
+# changed: the registry, instead of a frozen literal.
+from kiro_crew.acp_backends import resolve_selected_backend
+
 # Leaf module (stdlib + platform_compat only) — no import cycle with config.
 from kiro_crew.atomic_write import atomic_write
 
@@ -1637,7 +1647,16 @@ class AgentConfig:
             "ACP Backend",
             "Which ACP agent to drive: '' = kiro-cli (default), 'kas' = kiro-agent. "
             "KAS runs chat but has no native subagent progress reporting yet.",
-            enum=["", "kas"],
+            # Deliberately NO ``enum``. A literal here was frozen at import and fed
+            # two import-time structures (``JSON_SCHEMA`` and ``SCHEMA_REGISTRY``),
+            # both strictly earlier than an edition registering a backend at boot.
+            # That made the enum actively harmful rather than merely stale —
+            # ``validate_config_data`` DELETES an out-of-enum value before the
+            # loader ever sees it, so a registered backend was stripped from
+            # config.json on the way in. ``resolve_selected_backend`` is now the
+            # single gate (it logs the reason it degrades), and
+            # ``GET /api/config/schema`` supplies the live values the dashboard
+            # renders. See harness-parity H4.
         ),
     )
     default_agent: str = field(
@@ -4660,38 +4679,18 @@ def _normalize_jail(value: object) -> str:
 
 
 def _normalize_acp_backend(value: object) -> str:
-    """Coerce a persisted ``agent.acp_backend`` to a selectable backend.
+    """Coerce a persisted ``agent.acp_backend`` to a backend this build can serve.
 
-    Anything not selectable — an unknown value, or a backend the code understands
-    but cannot yet serve a session with — normalizes to the default (kiro-cli)
-    with a warning rather than propagating: ``AcpProvider`` rejects an unknown
-    backend by raising, and a value that is merely incomplete would instead fail
-    on the operator's first message. Both must degrade to the working default at
-    startup, with the reason in the log.
+    Delegates to :func:`kiro_crew.acp_backends.resolve_selected_backend`, which owns
+    the selectable registry, so the load path, the dashboard PATCH allowlist and the
+    schema endpoint cannot disagree about which harnesses exist.
 
-    The import is deferred because it cannot be done at module scope: reaching
-    ``kiro_crew.acp.types`` executes the ``kiro_crew.acp`` package init, which
-    imports the ACP client and runtime, which import this module — and this
-    module is imported first by the gateway and desktop entrypoints.
+    The import is at module scope rather than deferred: ``acp_backends`` is a leaf
+    that imports nothing from ``kiro_crew.acp``, so it does not reproduce the
+    package-init cycle (``kiro_crew.acp.__init__`` -> client + runtime -> this
+    module) that the old local import of ``acp.types`` existed to dodge.
     """
-    from kiro_crew.acp.types import (
-        ACP_BACKEND_KIRO,
-        ACP_BACKENDS_KNOWN,
-        ACP_BACKENDS_SELECTABLE,
-    )
-
-    if isinstance(value, str) and value in ACP_BACKENDS_SELECTABLE:
-        return value
-    if value not in (None, ""):
-        known_but_unusable = isinstance(value, str) and value in ACP_BACKENDS_KNOWN
-        logger.warning(
-            "Ignoring agent.acp_backend %r (%s); using the default backend. "
-            "Selectable values: %s",
-            value,
-            "not usable yet" if known_but_unusable else "unknown",
-            ", ".join(repr(b) for b in sorted(ACP_BACKENDS_SELECTABLE)),
-        )
-    return ACP_BACKEND_KIRO
+    return resolve_selected_backend(value)
 
 
 def _validate_activation(value: str) -> str:

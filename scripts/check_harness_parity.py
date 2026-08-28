@@ -65,8 +65,9 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCAN_ROOTS = ("src/kiro_crew/",)
 SCAN_SUFFIX = ".py"
 
-# This gate and its test spell every forbidden form out literally, and
-# acp/types.py is the vocabulary's home rather than a consumer of it.
+# This gate and its test spell every forbidden form out literally, and the
+# vocabulary module (VOCABULARY_PATH below) is the vocabulary's home rather than a
+# consumer of it.
 SKIP_PATHS = frozenset(
     {
         "scripts/check_harness_parity.py",
@@ -75,7 +76,17 @@ SKIP_PATHS = frozenset(
 )
 
 # The one module allowed to DEFINE harness identifiers and membership sets.
-VOCABULARY_PATH = "src/kiro_crew/acp/types.py"
+#
+# Moved out of ``acp/types.py`` deliberately: importing anything under
+# ``kiro_crew.acp`` executes that package's ``__init__`` (client + runtime), so the
+# config loader and the dashboard could not read the vocabulary and each kept a
+# literal copy of the selectable list instead — the drift this rule exists to
+# prevent, reached by obeying it. ``acp_backends`` imports nothing from
+# ``kiro_crew.acp``, so every consumer can name the constants instead of copying
+# them. The invariant is unchanged: exactly ONE module defines them, and
+# ``acp/types.py`` now re-exports from here (an import, not an assignment, so it
+# does not match this rule).
+VOCABULARY_PATH = "src/kiro_crew/acp_backends.py"
 
 SUPPRESSION = re.compile(r"harness-ok")
 

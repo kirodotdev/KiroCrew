@@ -88,6 +88,14 @@ class ProviderRegistry(Protocol):
         """Register any extra ACP backends (no-op in the public edition).
 
         Consumed at boot by ``bootstrap_context`` after the context installs.
+
+        An implementation MUST also call
+        ``acp_backends.register_selectable_backend(<id>)`` for anything an operator
+        should be able to choose. Registering the provider alone leaves the harness
+        runnable but unreachable: the dashboard's backend switch, its PATCH
+        allowlist and the config load path all derive from that registry, so an
+        unregistered id renders as "not enabled in this build" and is coerced back
+        to the default on load.
         """
         ...
 

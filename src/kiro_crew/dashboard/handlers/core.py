@@ -22,6 +22,7 @@ from aiohttp.client_exceptions import ClientConnectionResetError
 
 import kiro_crew
 from kiro_crew import beacon, platform_compat, stt
+from kiro_crew.acp_backends import selectable_backend_values
 from kiro_crew.computer_use.types import MAX_SCREENSHOT_MAX_PX as _CU_MAX_SCREENSHOT_MAX_PX
 from kiro_crew.computer_use.types import MAX_TREE_NODES_LIMIT as _CU_MAX_TREE_NODES_LIMIT
 from kiro_crew.computer_use.types import MIN_SCREENSHOT_MAX_PX as _CU_MIN_SCREENSHOT_MAX_PX
@@ -1485,16 +1486,28 @@ _MOVED_CONFIG_FIELDS: dict[str, str] = {
 }
 
 
+def _selectable_acp_backends() -> list[str]:
+    """The ``agent.acp_backend`` values this build can actually be switched to.
+
+    A thin alias for ``acp_backends.selectable_backend_values`` so the allowlist
+    entry below reads in this module's vocabulary; the answer itself comes from the
+    one code owner, which the config load path and the schema endpoint also use —
+    three independent derivations is how the old literal list drifted.
+    """
+    return selectable_backend_values()
+
+
 _EDITABLE_CONFIG: dict[str, dict] = {
     "agent.provider": {"type": "enum", "values": ["acp"]},
     # Which ACP agent drives a session: "" = kiro-cli, "kas" = kiro-agent.
-    # The values MUST stay equal to acp.types.ACP_BACKENDS_SELECTABLE, which is
-    # the set AcpProvider can actually serve a session with. It is duplicated
-    # rather than imported because reaching kiro_crew.acp.types executes the
-    # kiro_crew.acp package init (client + runtime), and this dict is built at
-    # module import — the same cycle config.loader._normalize_acp_backend defers
-    # for. test_agent_backend_editable.py asserts the two never drift.
-    "agent.acp_backend": {"type": "enum", "values": ["", "kas"]},
+    # ``values_fn`` rather than a literal, because the set WIDENS after this module
+    # is imported: an edition registers a backend from
+    # ``ProviderRegistry.register_acp_backends`` at boot, and the old literal left
+    # it rejected here with a misleading "invalid value". Resolved per request
+    # against the one code owner, so this can no longer drift from what
+    # ``AcpProvider`` will actually serve — which is what the parity test used to
+    # stand in for.
+    "agent.acp_backend": {"type": "enum", "values_fn": _selectable_acp_backends},
     # Default model for new sessions. Membership can NOT be validated against a
     # fixed list: the real vocabulary is whatever the live kiro-cli advertises
     # (/api/models spawns it to find out), and it spans both canonical registry
@@ -1793,8 +1806,13 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
 
     # Validate value
     if spec["type"] == "enum":
-        if value not in spec["values"]:
-            return _deny(f"invalid value, must be one of {spec['values']}", f"{path_key}={value}")
+        # ``values_fn`` (the same hook the ``str`` branch already carries) is for an
+        # enum whose membership is not knowable at import: it can widen after boot
+        # when an edition registers a backend. A static ``values`` list would be
+        # read before that happened.
+        allowed = list(spec["values_fn"]()) if "values_fn" in spec else spec["values"]
+        if value not in allowed:
+            return _deny(f"invalid value, must be one of {allowed}", f"{path_key}={value}")
     elif spec["type"] == "int":
         try:
             value = int(value)

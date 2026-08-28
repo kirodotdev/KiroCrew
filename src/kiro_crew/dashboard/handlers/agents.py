@@ -17,6 +17,7 @@ from aiohttp import web
 
 from kiro_crew import agent_state, model_registry
 from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
+from kiro_crew.acp_backends import selectable_backend_values
 from kiro_crew.agent import (
     AGENT_FILENAME,
     clear_model_pin,
@@ -432,7 +433,9 @@ async def api_agent_config(request: web.Request) -> web.Response:
             # other JSON type (list, dict, number) would flow into the sidecar
             # helper as a dict key and crash the endpoint with a 500.
             raw_name = config.get("name")
-            name = raw_name if isinstance(raw_name, str) and raw_name.strip() else installed_path.stem
+            name = (
+                raw_name if isinstance(raw_name, str) and raw_name.strip() else installed_path.stem
+            )
 
             # Governance floor on the WHOLE-object write path: this handler
             # persists the request's config verbatim, so a dashboard PUT could
@@ -594,6 +597,26 @@ async def api_default_agent(request: web.Request) -> web.Response:
 # ── Config Schema ──
 
 
+_CONFIG_SCHEMA_ACP_BACKEND = "agent.acp_backend"
+
+
+def _supply_live_enum(entry: dict) -> None:
+    """In place: give ``agent.acp_backend`` the values this build can actually serve.
+
+    The field carries no static ``enum`` on purpose (see ``AgentConfig``): an
+    edition registers its backends at boot, strictly after ``SCHEMA_REGISTRY`` is
+    built, so a frozen list could only be wrong — it would call a registered
+    backend "not enabled in this build" while the PATCH allowlist accepted it.
+
+    Resolved from the same owner as the PATCH allowlist and the config load path,
+    so the three cannot disagree. One binding today, so it is spelled once rather
+    than made a registry; turn it into a path -> callable map when a second
+    dynamic enum appears.
+    """
+    if entry.get("path") == _CONFIG_SCHEMA_ACP_BACKEND:
+        entry["enumValues"] = selectable_backend_values()
+
+
 async def api_config_schema(request: web.Request) -> web.Response:
     """GET /api/config/schema — return config schema entries."""
     entries = SCHEMA_REGISTRY
@@ -616,6 +639,7 @@ async def api_config_schema(request: web.Request) -> web.Response:
         d = config_entry_to_dict(entry)
         if entry.sensitive or dataclasses.is_dataclass(d.get("defaultValue")):
             d["defaultValue"] = None
+        _supply_live_enum(d)
         result.append(d)
 
     return web.json_response({"entries": result})
@@ -976,6 +1000,7 @@ async def api_agents_installed(request: web.Request) -> web.Response:
     (``resolve_agent_bindings(..., project_dir=...)``), spawn validation, and
     Slack — see ``agent_discovery.project_agent_names``.
     """
+
     # list_agents() does glob + per-file resolve(strict=True) + read_bytes +
     # json.loads over ~/.kiro/agents — blocking filesystem work that, on a large
     # agents dir (network home, many project-registry agents), can stall the
@@ -1232,8 +1257,11 @@ def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]
             # After "auto", never before it: "auto" is the configured default in
             # the general case and leads the list.
             merged.insert(
-                1 if merged and _normalize_model_key(merged[0].get("model_name", "")) == "auto"
-                else 0,
+                (
+                    1
+                    if merged and _normalize_model_key(merged[0].get("model_name", "")) == "auto"
+                    else 0
+                ),
                 {
                     "model_name": canonical_default,
                     "display_name": canonical_default,
@@ -2150,9 +2178,7 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
             return web.json_response({"error": f"Agent '{name}' already exists"}, status=409)
         model_reason = _model_pin_rejected(model, request, cfg.agent.provider)
         if model_reason:
-            return web.json_response(
-                {"error": model_reason, "code": "invalid_model"}, status=400
-            )
+            return web.json_response({"error": model_reason, "code": "invalid_model"}, status=400)
         cfg.agents[name] = KiroCrewAgentConfig(
             kiro_agent=kiro_agent,
             workspace=body.get("workspace", "default"),

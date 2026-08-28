@@ -46,7 +46,8 @@ const statusId = (value: string) => `agent-backend-status-${value || 'kiro'}`
  *
  * Every agent the code knows about is listed, but only the ones this build can
  * actually run are selectable — that set is read from `GET /api/config/schema`
- * (`enumValues`), which the backend derives from the same field metadata
+ * (`enumValues`), which the backend resolves per request from
+ * `acp_backends.selectable_backend_values()`, the same owner
  * `PATCH /api/config/kirocrew` validates against. So the enabled options and the
  * values the wire accepts cannot disagree, and a build that ships another agent
  * lights it up here with no frontend change.

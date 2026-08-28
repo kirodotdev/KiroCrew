@@ -23,6 +23,7 @@ from dataclasses import fields
 
 import pytest
 
+from kiro_crew import acp_backends
 from kiro_crew.acp import client as acp_client
 from kiro_crew.acp import runtime as acp_runtime
 from kiro_crew.acp.types import (
@@ -32,7 +33,6 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_INTERNAL_SANDBOX,
     ACP_BACKENDS_KNOWN,
-    ACP_BACKENDS_SELECTABLE,
     ACP_BACKENDS_SESSION_SHARING,
     ACP_BACKENDS_STEER,
     ACP_CLIENT_CAPABILITIES,
@@ -40,6 +40,10 @@ from kiro_crew.acp.types import (
     PROVIDER_LABEL_CLAUDE,
     PROVIDER_LABEL_DEFAULT,
     PROVIDER_LABEL_KAS,
+)
+from kiro_crew.acp_backends import (
+    BASELINE_SELECTABLE_BACKENDS,
+    selectable_backends,
 )
 from kiro_crew.config.loader import AgentConfig, _normalize_acp_backend
 from kiro_crew.providers import acp as providers_acp
@@ -77,8 +81,14 @@ def test_kiro_is_always_selectable() -> None:
 
     Every other member is a policy decision; this one is the floor. Without it
     an operator can persist a configuration in which no harness is selectable.
+
+    Reads the registry, not a frozen constant: the selectable set is now extended
+    at boot by an edition, so a snapshot taken at import would not be the set the
+    dashboard offers. The floor is a property of the BASELINE, which is what makes
+    it independent of whatever an edition registers on top.
     """
-    assert ACP_BACKEND_KIRO in ACP_BACKENDS_SELECTABLE
+    assert ACP_BACKEND_KIRO in BASELINE_SELECTABLE_BACKENDS
+    assert ACP_BACKEND_KIRO in selectable_backends()
 
 
 def test_provider_enum_is_acp_only() -> None:
@@ -97,26 +107,86 @@ def test_unselectable_backend_degrades_to_kiro(persisted: object) -> None:
 
     Includes the non-string shapes a hand-edited config.json can hold: a gate
     that raises here turns a typo into a gateway that will not boot.
+
+    ``claude`` is in the list on purpose: it is a KNOWN id that this build does not
+    register, and the one gate reads the registry, so it degrades like any other
+    unselectable value. Registering it is what makes it survive.
     """
     resolved = _normalize_acp_backend(persisted)
-    assert resolved in ACP_BACKENDS_SELECTABLE
-    if persisted not in ACP_BACKENDS_SELECTABLE:
+    assert resolved in selectable_backends()
+    if persisted not in selectable_backends():
         assert resolved == ACP_BACKEND_KIRO
 
 
-def test_enum_and_selectability_are_separate() -> None:
-    """H4: the config enum is the survival domain, not the selection domain.
+def test_registering_a_backend_makes_it_survive_load() -> None:
+    """H3 + H8: the gate reads the registry per call, so registration is the seam.
 
-    ``validate_config_data`` DELETES an out-of-enum value before the loader sees
-    it, and the degrade log only fires on a non-empty value — so a preview
-    harness missing from the enum vanishes with no log line at all. Everything
-    the enum admits must therefore still pass ``_normalize_acp_backend``.
+    This is the whole point of the registry: an edition calls
+    ``register_selectable_backend`` and the SAME persisted value that degraded a
+    moment ago now survives, with no second gate and no code change anywhere else.
+    Ordering is the edition's to get right -- registration must precede the first
+    config load.
     """
-    enum = _field_enum("acp_backend")
-    assert isinstance(enum, list) and enum, "acp_backend must declare an enum"
-    assert ACP_BACKEND_KIRO in enum
-    for value in enum:
-        assert _normalize_acp_backend(value) in ACP_BACKENDS_SELECTABLE
+    assert _normalize_acp_backend(ACP_BACKEND_CLAUDE) == ACP_BACKEND_KIRO
+    before = set(acp_backends._selectable)
+    try:
+        acp_backends.register_selectable_backend(ACP_BACKEND_CLAUDE)
+        assert _normalize_acp_backend(ACP_BACKEND_CLAUDE) == ACP_BACKEND_CLAUDE
+    finally:
+        acp_backends._selectable.clear()
+        acp_backends._selectable.update(before)
+    assert _normalize_acp_backend(ACP_BACKEND_CLAUDE) == ACP_BACKEND_KIRO
+
+
+def test_config_load_never_reads_the_platform_context(monkeypatch) -> None:
+    """H3: the load path must not reach the platform context, at all.
+
+    ``current_context()``'s lazy branch LOADS CONFIG, so any lookup that reaches it
+    from inside ``KiroCrewConfig.load()`` re-enters that load and recurses to the
+    stack limit — and a broad ``except`` around it does not save the caller, it
+    downgrades the crash to a silently wrong backend.
+
+    Nothing in the current load path reaches it, which is exactly why this guard is
+    worth pinning: the natural next feature here is a per-deployment policy on which
+    backend may run, and resolving a policy is precisely the call that would
+    reintroduce the cycle.
+
+    RECORDS the reach with a spy rather than raising on it. A raising stub cannot
+    prove this: ``resolve_selected_backend``'s callers catch broadly, so an
+    ``AssertionError`` is swallowed and the fallback returns the value the test
+    would then assert — passing against the very implementation it rejects.
+    """
+    from kiro_crew.platform import context as pc
+
+    reached: list = []
+    monkeypatch.setattr(pc, "current_context", lambda: reached.append("current_context"))
+    monkeypatch.setattr(pc, "installed_context", lambda: reached.append("installed_context"))
+
+    for value in ("", "kas", "byo-harness", "claude", None, 7):
+        assert _normalize_acp_backend(value) in ACP_BACKENDS_KNOWN
+
+    assert reached == [], f"config normalization reached the platform context: {reached}"
+
+
+def test_selectability_has_one_logged_gate() -> None:
+    """H4: ``resolve_selected_backend`` is the ONLY gate, and it logs.
+
+    This replaces the previous two-mechanism guarantee, deliberately. The old
+    contract kept a static ``enum`` on the field as a second, SILENT gate:
+    ``validate_config_data`` deletes an out-of-enum value before the loader sees
+    it, and the degrade log only fires on a non-empty value, so a backend an
+    edition had legitimately registered was stripped from config.json with no log
+    line at all — the exact failure the old H4 text described as a hazard and did
+    not prevent. Removing the enum makes the logged degrade the single gate.
+
+    Pinned here rather than left to prose because re-adding ``enum=`` would look
+    like a harmless tidy-up and would silently restore the strip.
+    """
+    assert _field_enum("acp_backend") is None, (
+        "acp_backend must NOT declare a static enum: it is frozen at import, "
+        "before an edition registers its backends, and validate_config_data "
+        "deletes out-of-enum values silently"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +293,10 @@ def test_capability_sets_are_subsets_of_known_backends() -> None:
     typo that silently grants nothing at worst.
     """
     for name, members in (
-        ("ACP_BACKENDS_SELECTABLE", ACP_BACKENDS_SELECTABLE),
+        # The registry, not a constant: ``register_selectable_backend`` already
+        # refuses an unknown id, so this is the belt to that braces — a member
+        # arriving some other way still has to be a backend the code recognizes.
+        ("selectable_backends()", selectable_backends()),
         ("ACP_BACKENDS_SESSION_SHARING", ACP_BACKENDS_SESSION_SHARING),
         ("ACP_BACKENDS_STEER", ACP_BACKENDS_STEER),
         ("ACP_BACKENDS_INTERNAL_SANDBOX", ACP_BACKENDS_INTERNAL_SANDBOX),

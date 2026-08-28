@@ -269,10 +269,7 @@
       "label": "ACP Backend",
       "help": "Which ACP agent to drive: '' = kiro-cli (default), 'kas' = kiro-agent. KAS runs chat but has no native subagent progress reporting yet.",
       "hasChildren": false,
-      "enumValues": [
-        "",
-        "kas"
-      ],
+      "enumValues": null,
       "defaultValue": ""
     },
     {

@@ -44,7 +44,10 @@ class DefaultProviderRegistry:
     def register_acp_backends(self) -> None:
         # The public edition registers no extra ACP backends.  The companion
         # re-registers a Claude backend here via the acp/client.py:_is_claude
-        # seam.
+        # seam, and pairs it with
+        # ``acp_backends.register_selectable_backend(ACP_BACKEND_CLAUDE)`` so the
+        # dashboard switch, the PATCH allowlist and the config load path all see
+        # it — the provider alone is runnable but unreachable.
         return None
 
 
