@@ -136,6 +136,7 @@ function renderSidebar(connected: boolean, opts: { withHistory?: boolean } = {})
 
 describe('ChatSidebar – offline guards', () => {
   beforeEach(() => {
+    localStorage.setItem('mc-session-stale-collapse-ms', '0')
     switchSlotMock.mockClear()
     resumeFromHistoryMock.mockClear()
   })

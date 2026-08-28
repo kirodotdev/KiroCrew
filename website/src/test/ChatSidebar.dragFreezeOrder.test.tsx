@@ -146,6 +146,7 @@ function renderedOrder(): string[] {
 describe('ChatSidebar – sidebar row order is held during a dnd-kit drag', () => {
   beforeEach(() => {
     localStorage.clear()
+    localStorage.setItem('mc-session-stale-collapse-ms', '0')
     dnd.handlers = {}
   })
 

@@ -13,7 +13,7 @@
  *
  * Mock setup mirrors ChatSidebar.sourceLinkChip.test.tsx.
  */
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -99,6 +99,11 @@ function renderSidebar() {
 /** The row that owns a given title. No source_links in the fixtures, so the only
  *  <img> a row can hold is the origin glyph. */
 const row = (title: string) => screen.getByText(title).closest('.session-row') as HTMLElement
+
+// Fixtures here carry fixed old timestamps; keep the stale-session collapse
+// off so every row stays queryable (its own behavior is pinned in
+// ChatSidebar.staleCollapse.test.tsx).
+beforeEach(() => localStorage.setItem('mc-session-stale-collapse-ms', '0'))
 
 describe('ChatSidebar – channel-origin glyph', () => {
   it('badges a channel-origin session with that channel brand mark', () => {

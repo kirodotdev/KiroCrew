@@ -116,7 +116,13 @@ function renderSidebar(slots: any[] = SLOTS, folders: ChatFolder[] = []) {
   return { store, rerenderWith: (s: any[]) => utils.rerender(tree(s)), ...utils }
 }
 
-beforeEach(() => localStorage.clear())
+// Fixtures here carry fixed old timestamps; keep the stale-session collapse
+// off so every row stays queryable (its own behavior is pinned in
+// ChatSidebar.staleCollapse.test.tsx).
+beforeEach(() => {
+  localStorage.clear()
+  localStorage.setItem('mc-session-stale-collapse-ms', '0')
+})
 afterEach(() => vi.clearAllMocks())
 
 describe('chat sidebar — published shortcut order', () => {

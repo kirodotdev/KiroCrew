@@ -139,6 +139,7 @@ describe('ChatSidebar – active-session search preserves backend relevance orde
   beforeEach(() => {
     sessionsSearchMock.mockClear()
     localStorage.clear()
+    localStorage.setItem('mc-session-stale-collapse-ms', '0')
   })
 
   it('renders search results in backend order, not re-sorted by pin/date', async () => {

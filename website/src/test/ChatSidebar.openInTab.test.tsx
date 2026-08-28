@@ -130,6 +130,7 @@ function auxClick(el: HTMLElement, button: number) {
 
 describe('ChatSidebar – open-as-tab gestures', () => {
   beforeEach(() => {
+    localStorage.setItem('mc-session-stale-collapse-ms', '0')
     switchSlotMock.mockClear()
     macPlatform = false
   })

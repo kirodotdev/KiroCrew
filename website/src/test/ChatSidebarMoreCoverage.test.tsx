@@ -326,6 +326,7 @@ const BAND_TOP_EDGE = { x: 20, y: 2 }
 
 beforeEach(() => {
   localStorage.clear()
+  localStorage.setItem('mc-session-stale-collapse-ms', '0')
   localStorage.setItem(HIDDEN_FOLDERS_LS_KEY, JSON.stringify([HIDDEN_FOLDER_ID]))
   cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false, defaultAutopilot: false }
   mocks.chatFolders.mockResolvedValue(FOLDERS)
