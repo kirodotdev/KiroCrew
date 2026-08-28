@@ -360,9 +360,11 @@ pass `{channel_type, provider_user_id}` the same way without a second
 session key. `tool_input` cannot supply `subject` / `userId` —
 `reject_tool_input_identity` refuses those kwargs.
 
-Gateway inbound attach (sidecar / SigV4) is a later stack PR. The
-principal must already be known *before* `session/new` so that layer
-can write the sidecar first.
+Workload Gateway MCP is injected at rebuild (URL-only) and again on
+`session/new` as the live loopback SigV4 listen URL. The unsigned
+https Gateway hostname is never injected. The principal must already
+be known *before* `session/new` so a later login sidecar can attach
+on the first human turn. Login inbound sidecars are a later stack PR.
 
 ## Stop Orchestration
 

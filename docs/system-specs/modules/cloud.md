@@ -109,11 +109,11 @@ optional `KIROCREW_AGENTCORE_GATEWAY_URL` from `--agentcore-gateway-url`.
 Default `none` is the historical launch. Destroying the stack deletes the
 identity. The launcher Policy.json grows only the control-plane
 create/delete/tag verbs — never `InvokeGateway`. The extra can fetch
-`GetWorkloadAccessToken*` on the box. A later stack PR rewrites
-workload `gateway_mcp_spec` onto a localhost SigV4 proxy so kiro-cli
-can `InvokeGateway`; this PR does not start that proxy and does not
-inject MCP. The extra does not create the Gateway or its targets —
-the operator supplies an existing MCP URL.
+`GetWorkloadAccessToken*` on the box. Workload `gateway_mcp_spec`
+rewrites onto a localhost SigV4 proxy so kiro-cli can `InvokeGateway`
+(preferred listen port `18765`, overridable with
+`KIROCREW_AGENTCORE_PROXY_PORT`). The extra does not create the
+Gateway or its targets — the operator supplies an existing MCP URL.
 
 See-and-configure on the dashboard is a later stack PR
 (`GET`/`PUT /api/agentcore/identity`, Settings → Security → Agent identity).

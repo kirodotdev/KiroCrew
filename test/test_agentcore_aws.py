@@ -38,15 +38,6 @@ def test_importing_the_module_does_not_import_boto3() -> None:
         assert "boto3" not in sys.modules
 
 
-def test_importing_the_module_does_not_import_sigv4() -> None:
-    sys.modules.pop("kiro_crew.platform.agentcore_aws", None)
-    sys.modules.pop("kiro_crew.platform.agentcore_sigv4", None)
-    import kiro_crew.platform.agentcore_aws as aws_mod
-
-    aws_mod.AwsAgentIdentityProvider().gateway_mcp_spec()
-    assert "kiro_crew.platform.agentcore_sigv4" not in sys.modules
-
-
 def test_opted_in_requires_name_and_flag_or_posture(monkeypatch) -> None:
     from kiro_crew.platform import agentcore_aws as aws_mod
 
@@ -183,8 +174,9 @@ def test_gateway_mcp_spec_requires_https(monkeypatch) -> None:
     assert provider.gateway_mcp_spec() == {"url": "https://gw.example.test/mcp"}
 
 
-def test_gateway_mcp_spec_workload_returns_https_hostname(monkeypatch) -> None:
+def test_gateway_mcp_spec_workload_uses_sigv4_proxy(monkeypatch) -> None:
     from kiro_crew.platform import agentcore_aws as aws_mod
+    from kiro_crew.platform import agentcore_sigv4 as sigv4
 
     provider = aws_mod.AwsAgentIdentityProvider()
     monkeypatch.setattr(aws_mod, "_effective_governance_ceiling", lambda: None)
@@ -192,9 +184,25 @@ def test_gateway_mcp_spec_workload_returns_https_hostname(monkeypatch) -> None:
     monkeypatch.setenv(aws_mod.ENV_GATEWAY_URL, "https://gw.example.test/mcp")
     monkeypatch.setattr(aws_mod, "authored_gateway_url", lambda: "")
     monkeypatch.setattr(aws_mod, "authored_posture", lambda: None)
-    # This PR does not start a SigV4 proxy. Workload still returns the
-    # https hostname; a later PR rewrites it onto localhost.
-    assert provider.gateway_mcp_spec() == {"url": "https://gw.example.test/mcp"}
+    monkeypatch.setattr(
+        sigv4,
+        "ensure_workload_proxy",
+        lambda url: "http://127.0.0.1:9/mcp" if url.startswith("https://") else None,
+    )
+    assert provider.gateway_mcp_spec() == {"url": "http://127.0.0.1:9/mcp"}
+
+
+def test_gateway_mcp_spec_workload_fails_closed_without_proxy(monkeypatch) -> None:
+    from kiro_crew.platform import agentcore_aws as aws_mod
+    from kiro_crew.platform import agentcore_sigv4 as sigv4
+
+    provider = aws_mod.AwsAgentIdentityProvider()
+    monkeypatch.setenv(aws_mod.ENV_POSTURE, "workload")
+    monkeypatch.setenv(aws_mod.ENV_GATEWAY_URL, "https://gw.example.test/mcp")
+    monkeypatch.setattr(aws_mod, "authored_gateway_url", lambda: "")
+    monkeypatch.setattr(aws_mod, "authored_posture", lambda: None)
+    monkeypatch.setattr(sigv4, "ensure_workload_proxy", lambda _url: None)
+    assert provider.gateway_mcp_spec() is None
 
 
 def test_resolved_gateway_url_prefers_policy_over_env(monkeypatch) -> None:

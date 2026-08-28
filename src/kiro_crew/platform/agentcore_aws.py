@@ -13,9 +13,8 @@ process that never opted in.
 
 A workload access token is first-party Identity material. It is never the
 Gateway inbound credential and never appears in ``status()``. Workload
-``gateway_mcp_spec()`` returns the https Gateway hostname. A later PR
-rewrites that URL onto a localhost SigV4 proxy; this module must not
-import that proxy.
+``gateway_mcp_spec()`` returns a localhost SigV4 proxy URL, not the
+unsigned Gateway hostname.
 """
 
 from __future__ import annotations
@@ -460,8 +459,15 @@ class AwsAgentIdentityProvider:
         url = resolved_gateway_url()
         if not url.startswith("https://"):
             return None
-        # Workload inbound is IAM. A later PR rewrites this onto a localhost
-        # SigV4 proxy; this PR must not import that module.
+        # Workload inbound is IAM. kiro-cli cannot SigV4, so the spec URL
+        # is the localhost proxy — never the unsigned Gateway hostname.
+        from kiro_crew.platform.agentcore_sigv4 import ensure_workload_proxy
+
+        if resolved_posture() == "workload":
+            listen = ensure_workload_proxy(url)
+            if not listen:
+                return None
+            return {"url": listen}
         return {"url": url}
 
     async def annotate_principal(self, principal: SessionPrincipal) -> SessionPrincipal:
