@@ -6023,6 +6023,127 @@ class TestProxyRequest:
         assert ei.value.http_status == 502
 
 
+class TestPeerRequestSharedDance:
+    """The derivation shared by the three peer-request methods.
+
+    `proxy_request`, `send_session_bundle` and `search_sessions_remote` each
+    make an authenticated call to a CONNECTED peer over the open forward. The
+    part that is identical — connected-only, loopback target, port-scoped cookie
+    name, credential read per attempt — lives in `_peer_target` /
+    `_peer_cookie_header` so it is stated once. What is NOT shared is each
+    method's error contract, and that is what these tests pin.
+    """
+
+    def _mgr(self, tmp_path):
+        from kiro_crew.instances.registry import InstancesRegistry
+        from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager
+
+        reg = InstancesRegistry(path=tmp_path / "instances.json")
+
+        async def ok_mint(host, **kwargs):
+            return "SECRET_TOK"
+
+        return reg, SshTunnelManager(
+            reg, base_port=53700, mint_token=ok_mint, tunnel_factory=_FakeTunnel
+        )
+
+    @pytest.mark.asyncio
+    async def test_peer_target_is_the_single_source_of_the_port_scoped_cookie(self, tmp_path):
+        """One derivation, not three: loopback URL + `mc_token_{port}`.
+
+        The port scope is load-bearing — the peer keys its cookie on the port the
+        CLIENT connected to, so two remotes both serving 7777 through different
+        forwards must not collide, and a bare `mc_token` would 403 every call.
+        """
+        reg, mgr = self._mgr(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+        st = await mgr.connect("cd-1")
+
+        url, cookie_name = mgr._peer_target("cd-1", "/api/chat/slots")
+        assert url == f"http://127.0.0.1:{st.local_port}/api/chat/slots"
+        assert cookie_name == f"mc_token_{st.local_port}"
+        # Leading slash is optional — callers pass both spellings.
+        assert mgr._peer_target("cd-1", "api/chat/slots")[0] == url
+
+    def test_peer_cookie_header_refuses_when_no_credential(self, tmp_path):
+        from kiro_crew.instances.ssh_tunnel_manager import _PeerUnavailable
+
+        _reg, mgr = self._mgr(tmp_path)
+        with pytest.raises(_PeerUnavailable) as ei:
+            mgr._peer_cookie_header("cd-1", "mc_token_1")
+        assert ei.value.kind == "no_credential"
+
+    @pytest.mark.asyncio
+    async def test_each_caller_keeps_its_own_not_connected_code(self, tmp_path):
+        """The shared helper must NOT flatten the three error families.
+
+        `proxy_*`, `transfer_*` and `search_*` belong to three separate route
+        contracts pinned by test_error_code_contract.py. Deriving them from the
+        helper's `kind` would be tidier and wrong — this is the drift guard that
+        catches it, and it is the reason the codes are literals at each site.
+        """
+        from kiro_crew.instances.ssh_tunnel_manager import ProxyRequestError
+
+        _reg, mgr = self._mgr(tmp_path)
+
+        with pytest.raises(ProxyRequestError) as ei:
+            async with mgr.proxy_request("nope", "GET", "api/chat"):
+                pass
+        assert ei.value.code == "proxy_peer_not_connected"
+
+        ok, payload = await mgr.send_session_bundle("nope", {"bundle_version": 2})
+        assert (ok, payload["code"]) == (False, "transfer_peer_not_connected")
+
+        ok, payload = await mgr.search_sessions_remote("nope", "q", 10)
+        assert (ok, payload["code"]) == (False, "search_peer_not_connected")
+
+    @pytest.mark.asyncio
+    async def test_each_caller_keeps_its_own_no_credential_code(self, tmp_path):
+        """Same split for the missing-credential condition, on a LIVE tunnel."""
+        from kiro_crew.instances.ssh_tunnel_manager import ProxyRequestError
+
+        reg, mgr = self._mgr(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+        await mgr.connect("cd-1")
+        mgr._tokens.pop("cd-1", None)  # connected, but the credential is gone
+
+        with pytest.raises(ProxyRequestError) as ei:
+            async with mgr.proxy_request("cd-1", "GET", "api/chat"):
+                pass
+        assert ei.value.code == "proxy_no_credential"
+        assert ei.value.http_status == 503
+
+        ok, payload = await mgr.send_session_bundle("cd-1", {"bundle_version": 2})
+        assert (ok, payload["code"]) == (False, "transfer_no_credential")
+
+        ok, payload = await mgr.search_sessions_remote("cd-1", "q", 10)
+        assert (ok, payload["code"]) == (False, "search_no_credential")
+
+    def test_proxy_request_exposes_no_timeout_override(self):
+        """The timeout policy is a property of the method, not a per-call choice.
+
+        It is connect+read-idle rather than total because a proxied chat turn
+        streams for minutes and a total cap would sever it. Nothing ever passed
+        the old override, so the parameter only invited a caller to break that
+        for itself; this pins the subtraction.
+        """
+        import inspect
+
+        from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager
+
+        params = inspect.signature(SshTunnelManager.proxy_request).parameters
+        assert "timeout" not in params
+        assert set(params) == {
+            "self",
+            "instance_id",
+            "method",
+            "path",
+            "params",
+            "data",
+            "content_type",
+        }
+
+
 class TestProxyHandlerPolicy:
     """api_instances_proxy — the policy gates in front of the carrier.
 
