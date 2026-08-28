@@ -39,6 +39,7 @@ from kiro_crew.config.loader import (
     KiroCrewAgentConfig,
     KiroCrewConfig,
     _safe_color,
+    inject_kiro_cli_api_key,
     normalize_agent_model,
     read_config_for_update,
     resolve_agent_bindings,
@@ -1364,6 +1365,12 @@ async def api_models(request: web.Request) -> web.Response:
             env = {**os.environ}
             env["PATH"] = augmented_path(env.get("PATH", ""))
             _resolve_ssh_auth_sock(env)
+            # The Docker entrypoint removes credentials from the long-lived
+            # gateway environment.  This fixed-argv child is the official
+            # kiro-cli and KIRO_API_KEY is its own model credential, so settle
+            # the same single key the interactive ACP spawn receives.  Keep
+            # the protected .env read off the gateway loop.
+            await asyncio.to_thread(inject_kiro_cli_api_key, env)
             env = scrub_agent_subprocess_env(env)
             proc = await create_subprocess_limited(
                 *argv,
