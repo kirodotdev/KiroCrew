@@ -127,6 +127,36 @@ class TestChannelEndpoint:
         # lane's verdict as this lane's answer.
         assert len(checked) == 1
 
+    def test_switch_response_carries_the_folded_display_sibling(self, _isolated_channel_home):
+        """The switch response is the check contract re-run against the new
+        lane, and the panel adopts it wholesale — so it must carry the same
+        display-only ``latest_version_display`` sibling as ``api_update_check``
+        (folded on stable, verbatim elsewhere) or a switch would blank the
+        clean display back to the raw promoted stamp."""
+        update_layout.set_release_channel("insider")
+
+        async def _fake_check() -> None:
+            # What the real re-check leaves behind after a stable switch finds
+            # the promoted candidate: the raw stamp, never pre-folded.
+            updates._set_update_info(
+                update_available=True, latest_version="0.4.0rc14", channel="stable"
+            )
+
+        try:
+            with (
+                patch.object(updates, "detect_install_layout", return_value=self._feed_layout()),
+                patch.object(updates, "_do_update_check", _fake_check),
+            ):
+                resp = asyncio.run(updates.api_update_channel(_request({"channel": "stable"})))
+
+            assert resp.status == 200
+            body = json.loads(resp.text)
+            # Raw for arm/apply, folded for humans — per the NEW channel.
+            assert body["latest_version"] == "0.4.0rc14"
+            assert body["latest_version_display"] == "0.4.0"
+        finally:
+            updates._set_update_info()
+
     def test_the_switch_never_reads_the_channel_file_on_the_event_loop(
         self, _isolated_channel_home
     ):

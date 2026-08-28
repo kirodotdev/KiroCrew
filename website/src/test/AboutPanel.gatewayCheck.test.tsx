@@ -79,6 +79,26 @@ describe('AboutPanel gateway update check', () => {
     store.dispatch(sseStatus({ ...BLANK_STATUS } as never))
   })
 
+  it('the version chip shows the folded running version, raw fallback for an older gateway', async () => {
+    // A promoted stable build's bytes keep the RC stamp; the gateway folds it
+    // into `version_display` and the chip must render THAT, never the raw
+    // `version` (which stays raw for the SPA's reload-on-upgrade comparison).
+    stubFetch({ check_status: 'succeeded', update_available: false, error_code: null })
+    store.dispatch(sseStatus({
+      ...BLANK_STATUS, version: '0.4.0rc14', version_display: '0.4.0',
+    } as never))
+    mountWeb()
+    expect(await screen.findByText('v0.4.0')).toBeTruthy()
+    expect(screen.queryByText('v0.4.0rc14')).toBeNull()
+    cleanup()
+
+    // An older gateway sends no `version_display`: the chip falls back to the
+    // raw version rather than rendering an empty chip.
+    store.dispatch(sseStatus({ ...BLANK_STATUS, version: '0.4.0rc14' } as never))
+    mountWeb()
+    expect(await screen.findByText('v0.4.0rc14')).toBeTruthy()
+  })
+
   it('a check that could not run reports the failure, not "up to date"', async () => {
     stubFetch({ check_status: 'failed', update_available: null, error_code: 'feed_unreachable', managed_by: 'kirocrew' })
     mountWeb()
@@ -296,6 +316,52 @@ describe('AboutPanel gateway update check', () => {
     // The Update button would 409 on this layout, so it must not be offered.
     expect(screen.queryByRole('button', { name: /^Update/ })).toBeNull()
     expect(screen.getByRole('button', { name: /copy command/i })).toBeTruthy()
+  })
+
+  it('the available-version line shows the folded display value, keeping the raw stamp off screen', async () => {
+    // A promoted stable candidate keeps its rc stamp in latest_version (that is
+    // what arm/apply key on); the check response carries the folded sibling
+    // latest_version_display for the human-facing line. The manual-check
+    // handler must adopt it -- this is the path the About panel's "a new
+    // version (vX) is available" text renders from.
+    stubFetch({
+      check_status: 'succeeded',
+      update_available: true,
+      error_code: null,
+      managed_by: 'kirocrew',
+      can_apply: false,
+      channel: 'stable',
+      latest_version: '0.4.0rc14',
+      latest_version_display: '0.4.0',
+      remediation: { kind: 'command', message: '', command: 'kirocrew update' },
+    })
+    mountWeb()
+    await pressCheck()
+
+    await waitFor(() => {
+      const body = document.body.textContent || ''
+      expect(body).toContain('(v0.4.0)')
+      expect(body).not.toContain('0.4.0rc14')
+    })
+  })
+
+  it('falls back to the raw version when an older gateway omits the display sibling', async () => {
+    stubFetch({
+      check_status: 'succeeded',
+      update_available: true,
+      error_code: null,
+      managed_by: 'kirocrew',
+      can_apply: false,
+      channel: 'stable',
+      latest_version: '0.4.0rc14',
+      remediation: { kind: 'command', message: '', command: 'kirocrew update' },
+    })
+    mountWeb()
+    await pressCheck()
+
+    await waitFor(() => {
+      expect(document.body.textContent || '').toContain('(v0.4.0rc14)')
+    })
   })
 
   it('a command-managed gateway shows the policy note, never installer copy', async () => {

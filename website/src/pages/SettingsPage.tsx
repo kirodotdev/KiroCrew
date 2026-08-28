@@ -93,7 +93,10 @@ function buildTabs() {
 const SETTINGS_BASE_PATH = '/settings'
 
 export default function SettingsPage() {
-  const version = useAppSelector(s => s.dashboard.status?.version) || '—'
+  // Folded for display on the stable channel (`version_display`), raw
+  // `version` fallback for a gateway that predates the field. Display-only:
+  // nothing here compares or arms on it.
+  const version = useAppSelector(s => s.dashboard.status?.version_display || s.dashboard.status?.version) || '—'
   useSettingHighlight()
   const navigate = useNavigate()
   const location = useLocation()

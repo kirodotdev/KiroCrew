@@ -37,6 +37,12 @@ export interface StatusData {
    */
   update_latest_version?: string
   /**
+   * DISPLAY-ONLY fold of `update_latest_version` (clean base on the stable
+   * channel). The popup's snooze/skip keys and every arm path keep reading
+   * the raw field. Optional: an older gateway does not send it.
+   */
+  update_latest_version_display?: string
+  /**
    * The release channel this INSTALL follows (the `channel` file `cli.sh` wrote).
    * "" when the layout has no channel at all — a git checkout tracks a remote, a
    * desktop bundle and a container are updated by something else — which is what
@@ -69,6 +75,15 @@ export interface StatusData {
   update_min_version?: string
   update_progress?: { step: string; detail: string } | null
   version?: string
+  /**
+   * The RUNNING build's version folded for display — the clean base on the
+   * stable channel (`0.4.0` for bytes stamped `0.4.0rc14`), the raw version
+   * on every other channel. DISPLAY-ONLY sibling of `version` above, which
+   * stays raw because the SPA compares it across pushes to force a reload
+   * over a gateway upgrade. Optional: an older gateway does not send it —
+   * fall back to `version`.
+   */
+  version_display?: string
   /**
    * Which release lane these bytes came from. The gateway resolves it (see
    * `src/kiro_crew/release_channel.py`) rather than leaving the dashboard to
@@ -136,6 +151,23 @@ export interface UpdateCheckResult {
   requires_restart?: boolean
   channel?: string
   latest_version?: string
+  /**
+   * DISPLAY-ONLY sibling of `latest_version`, folded to the clean release
+   * version on the stable channel (a promoted candidate keeps its insider/rc
+   * stamp in the bytes, e.g. "0.4.0rc14" for the "0.4.0" release). Never pass
+   * this to `InAppUpdateFlow`'s `version` prop, `/api/update/arm`, or a
+   * snooze/skip key — those must use the raw `latest_version`, which is
+   * compared byte-for-byte against the installed build's own never-folded
+   * `__version__` during apply.
+   */
+  latest_version_display?: string
+  /**
+   * Copyable upgrade command ("" when none). Carried by the channel-switch
+   * response (POST /api/update/channel, which answers with this same contract
+   * re-run against the new lane); the check endpoint itself carries the
+   * command inside `remediation` instead.
+   */
+  update_command?: string
   changes?: string
   check_status?: 'unchecked' | 'checking' | 'succeeded' | 'failed' | 'deferred'
   update_available?: boolean | null

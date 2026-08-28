@@ -19,6 +19,7 @@ import { copyToClipboard } from '../../utils/clipboard'
 import { i18nT } from '../../i18n/t'
 import { fmtDateTimeNumeric, fmtList, fmtRelative } from '../../i18n/format'
 import type { UpdateState } from '../../hooks/useUpdateSubscription'
+import { foldStableStamp } from '../../utils/displayVersion'
 
 /** Human-readable transfer rate for the progress label. */
 function formatRate(bps: number): string {
@@ -586,7 +587,16 @@ export function AboutPanel() {
     onSettled: () => queryClient.invalidateQueries({ queryKey: ['update-info'] }),
   })
 
-  const version = info?.version || gatewayVersion || '—'
+  // The version chip's DISPLAY text. For a gateway install the fold is the
+  // backend's (`version_display`, raw `version` fallback for a gateway that
+  // predates the field); for a desktop build it is computed locally, because
+  // the Electron-reported version never crosses the gateway. Every functional
+  // reader (`versionLooksPrerelease`, the updater compare gate, the SPA's
+  // reload-on-upgrade comparison) keeps its raw source.
+  const gatewayVersionDisplay = useAppSelector(s => s.dashboard.status?.version_display) || ''
+  const versionDisplay = info?.version
+    ? foldStableStamp(info.version, info.channel)
+    : (gatewayVersionDisplay || gatewayVersion || '—')
   const channel = info?.channel
   const updatesDisabled = info?.disabled
   // An externally-managed install (a distro/enterprise package) has no channel
@@ -785,6 +795,9 @@ export function AboutPanel() {
   // changelog confirm because applying restarts the gateway.
   const [gwChanges, setGwChanges] = useState('')
   const [gwTarget, setGwTarget] = useState('')
+  // Display-only sibling of gwTarget, folded to the clean release version on
+  // stable. Never fed to InAppUpdateFlow or /api/update/arm.
+  const [gwTargetDisplay, setGwTargetDisplay] = useState('')
   const [gwFound, setGwFound] = useState(false)
   // Commit distance from the tracked upstream, straight from the check payload.
   // Only a git checkout ever reports non-zero values; both stay 0 elsewhere.
@@ -830,6 +843,9 @@ export function AboutPanel() {
       // read as a fallback only because it is what some older payloads carried.
       const target = d?.latest_version || d?.version
       if (target) setGwTarget(String(target))
+      // Same contract as the channel-switch handler below: adopt the
+      // display-only folded sibling (empty when the gateway predates it).
+      setGwTargetDisplay(typeof d?.latest_version_display === 'string' ? d.latest_version_display : '')
       // Derive availability from the check response itself, not only the redux
       // status flag (which refreshes on a slower WS status push). Otherwise a
       // check that finds an update could still show "You're on the latest
@@ -899,7 +915,7 @@ export function AboutPanel() {
       // one and fall back to the generic line when it did not.
       setGwChannelError(e instanceof ApiError ? (e.message || '') : '')
     },
-    onSuccess: (d: any) => {
+    onSuccess: (d) => {
       // The response is the re-run check against the new channel, so adopt it
       // wholesale rather than leaving the previous lane's verdict on screen.
       //
@@ -918,6 +934,7 @@ export function AboutPanel() {
       setGwCommand(typeof d?.update_command === 'string' ? d.update_command : '')
       setGwCommandCopied(false)
       setGwTarget(typeof d?.latest_version === 'string' ? d.latest_version : '')
+      setGwTargetDisplay(typeof d?.latest_version_display === 'string' ? d.latest_version_display : '')
       if (typeof d?.can_apply === 'boolean') setGwSelfUpdatable(d.can_apply)
     },
   })
@@ -1024,7 +1041,7 @@ export function AboutPanel() {
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2.5 flex-wrap">
               <span className="text-[19px] font-extrabold tracking-tight text-text-strong">{botName || 'Kiro Crew'}</span>
-              <span className="text-[12px] font-mono font-semibold text-accent rounded-full px-2.5 py-0.5 border" style={ACCENT_TINT}>{i18nT('pages.settings.aboutPanel.v')}{version}</span>
+              <span className="text-[12px] font-mono font-semibold text-accent rounded-full px-2.5 py-0.5 border" style={ACCENT_TINT}>{i18nT('pages.settings.aboutPanel.v')}{versionDisplay}</span>
               {!isDesktop && (heroDiverged
                 // Diverged outranks BOTH other verdicts: `update_available` is
                 // false here BY DESIGN (the no-auto-apply property), and a
@@ -1385,7 +1402,7 @@ export function AboutPanel() {
               <>
                 {showUpdate && (
                   <p className="text-sm text-muted flex items-center gap-1.5">
-                    <ArrowUp size={13} className="lucide-inline text-accent" /> {i18nT('pages.settings.aboutPanel.a_new_version')}{gwTarget ? ` (v${gwTarget})` : ''} {i18nT('pages.settings.aboutPanel.is_available')}
+                    <ArrowUp size={13} className="lucide-inline text-accent" /> {i18nT('pages.settings.aboutPanel.a_new_version')}{(gwTargetDisplay || gwTarget) ? ` (v${gwTargetDisplay || gwTarget})` : ''} {i18nT('pages.settings.aboutPanel.is_available')}
                   </p>
                 )}
                 {showManualUpdate ? (

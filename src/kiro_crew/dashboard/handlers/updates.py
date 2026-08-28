@@ -289,7 +289,23 @@ def status_update_fields() -> dict[str, object]:
         # endpoint (which runs a full check per request). Empty until a check
         # has found a newer build. The changelog text stays OFF this hot-path
         # subset — consumers fetch it on demand.
+        #
+        # RAW, never folded: this is the same string ``InAppUpdateFlow``,
+        # ``api_update_arm``, and the snooze/skip persisted-record key key on —
+        # the shadow-venv apply step compares it byte-for-byte against the
+        # installed ``kiro_crew.__version__``, which is never folded either
+        # (promotion never re-stamps the bytes). For a display-only clean
+        # version, use ``update_latest_version_display`` below (or the
+        # ``/api/update/check`` endpoint's ``latest_version_display``).
         "update_latest_version": str(_update_info.get("latest_version") or ""),
+        # DISPLAY-ONLY fold of the candidate above (clean base on the stable
+        # channel), consumed by the proactive update popup's "vX is available"
+        # text. The popup's per-version snooze/skip records and every arm
+        # path keep keying on the RAW `update_latest_version`.
+        "update_latest_version_display": _display_version(
+            str(_update_info.get("latest_version") or ""),
+            str(_update_info.get("channel") or ""),
+        ),
         "update_channel": str(_update_info.get("channel") or ""),
         # The panel needs WHO manages the update to speak honestly: a
         # command-managed host must not render the self-managed installer
@@ -315,6 +331,17 @@ def status_update_fields() -> dict[str, object]:
         # gates its Update button on this, never on managed_by alone — that
         # value also covers bare source installs whose arm would 409.
         "update_can_arm": bool(_update_info.get("can_arm")),
+        # The RUNNING build's version folded for display (clean base on the
+        # stable channel), so the About page's version chip can show `0.4.0`
+        # instead of the promoted candidate's baked-in `0.4.0rc14` stamp.
+        # DISPLAY-ONLY sibling of the raw `version` the WS frame and
+        # /api/status carry: that one is functional — the SPA compares it
+        # across pushes to force a reload over a gateway upgrade, and folding
+        # it would collapse e.g. `0.4.1rc1` -> `0.4.1` and `0.4.1rc2` ->
+        # `0.4.1`, masking the very upgrade the reload detection exists to
+        # catch. Falls back to the raw version until a check has resolved the
+        # channel (`_display_local_version` keys on it; only stable folds).
+        "version_display": _display_local_version(),
     }
 
 
@@ -331,6 +358,16 @@ async def api_update_check(request: web.Request) -> web.Response:
         {
             **_update_info,
             "current_version": _display_local_version(),
+            # DISPLAY-ONLY sibling of the raw `latest_version` above (unpacked
+            # via `**_update_info`) — folds a promoted stable candidate's
+            # insider/rc stamp to the clean release it means. `latest_version`
+            # itself MUST stay raw: it is what `InAppUpdateFlow` and
+            # `api_update_arm` arm against, compared byte-for-byte against the
+            # installed build's own never-folded `__version__`.
+            "latest_version_display": _display_version(
+                str(_update_info.get("latest_version") or ""),
+                str(_update_info.get("channel") or ""),
+            ),
             "auto_update": cfg.auto_update,
             # Surface the pin so the dashboard can say WHY an update is mandatory
             # rather than showing a bare button. ``minimum_version_enforced``
@@ -2037,6 +2074,13 @@ async def api_update_channel(request: web.Request) -> web.Response:
             # name (same helper, same https pin as the check's own path).
             "channel": stored,
             "update_command": wheel_update_command(stored),
+            # Same display-only sibling as api_update_check: this response IS
+            # the re-run check the panel adopts wholesale, so it must carry the
+            # folded version too or a channel switch would blank the clean
+            # display back to the raw stamp.
+            "latest_version_display": _display_version(
+                str(_update_info.get("latest_version") or ""), stored
+            ),
         }
     )
 

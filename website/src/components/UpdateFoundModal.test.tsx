@@ -276,6 +276,37 @@ describe('UpdateFoundModal — desktop source', () => {
 })
 
 describe('UpdateFoundModal — gateway source', () => {
+  it('prints the folded display version but keys snooze/skip on the raw stamp', async () => {
+    // A promoted stable candidate: the popup's text must show the clean
+    // release, while the persisted per-version verdict keys on the raw stamp
+    // (folding the key would make dismissing `0.4.0` swallow the next
+    // release's rc candidate too).
+    mockedApi.checkUpdate.mockResolvedValue({ changes: '' } as never)
+    let resolvePatch: (v: unknown) => void = () => {}
+    mockedApi.patchConfig.mockReturnValue(new Promise(r => { resolvePatch = r }) as never)
+    await mount(undefined, gatewayStore({
+      update_available: true, update_latest_version: '0.4.0rc14',
+      update_latest_version_display: '0.4.0', update_command: 'x-update',
+    }))
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    expect(screen.getByText('0.4.0')).toBeInTheDocument()
+    expect(screen.queryByText('0.4.0rc14')).not.toBeInTheDocument()
+    fireEvent.click(byName('components.updateFoundModal.skip_this_version'))
+    await waitFor(() => expect(mockedApi.patchConfig).toHaveBeenCalledTimes(1))
+    expect(mockedApi.patchConfig).toHaveBeenCalledWith('dashboard.update_nudge',
+      expect.objectContaining({ version: '0.4.0rc14', skipped: true }))
+    await act(async () => { resolvePatch({}) })
+  })
+
+  it('falls back to the raw version when an older gateway sends no display field', async () => {
+    mockedApi.checkUpdate.mockResolvedValue({ changes: '' } as never)
+    await mount(undefined, gatewayStore({
+      update_available: true, update_latest_version: '0.4.0rc14', update_command: 'x-update',
+    }))
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    expect(screen.getByText('0.4.0rc14')).toBeInTheDocument()
+  })
+
   it('opens with Update now when the gateway can apply in-process', async () => {
     mockedApi.checkUpdate.mockResolvedValue({ changes: 'zzq gw notes' } as never)
     await mount(undefined, gatewayStore({

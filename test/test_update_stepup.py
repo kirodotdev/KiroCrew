@@ -177,6 +177,33 @@ class TestArmEndpoint:
             update_stepup.clear_pending()
             updates._set_update_info()
 
+    async def test_arms_the_raw_promoted_stamp_not_a_folded_display_value(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A promoted stable candidate's `_update_info["latest_version"]` still
+        carries its insider/rc stamp (promotion never re-stamps the bytes). The
+        pending request's `version` MUST be that exact stamp -- the shadow-venv
+        apply step later compares it byte-for-byte against the installed
+        build's own never-folded `__version__`. Arming a display-folded value
+        (e.g. "0.4.0" instead of "0.4.0rc14") would make apply fail every time
+        on the stable channel."""
+        from kiro_crew.platform import wheel_engine
+
+        monkeypatch.setattr(wheel_engine, "running_from_managed_venv", lambda: True)
+        monkeypatch.setattr(updates, "resolve_provider", lambda: None)
+        updates._set_update_info(
+            update_available=True, latest_version="0.4.0rc14", channel="stable"
+        )
+        try:
+            resp = await updates.api_update_arm(_request())
+            assert resp.status == 200
+            on_disk = update_stepup.read_pending()
+            assert on_disk is not None
+            assert on_disk.version == "0.4.0rc14"
+        finally:
+            update_stepup.clear_pending()
+            updates._set_update_info()
+
     async def test_policy_managed_host_refuses_arm(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from kiro_crew.platform import wheel_engine
 

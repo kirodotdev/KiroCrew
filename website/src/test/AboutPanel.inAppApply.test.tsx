@@ -113,6 +113,32 @@ describe('AboutPanel in-app update (arm + approve)', () => {
     expect(document.body.innerHTML).not.toMatch(/[0-9a-f]{64}/)
   })
 
+  it('arms the exact promoted stamp on stable, never a folded display version', async () => {
+    // A promoted stable candidate's own update_latest_version still carries
+    // its insider/rc stamp (promotion never re-stamps the bytes). The In-App
+    // Update flow's version prop, and the arm POST it sends, must be that raw
+    // stamp -- the shadow-venv apply step later compares it byte-for-byte
+    // against the installed build's own never-folded __version__. Arming a
+    // cosmetically-folded "0.4.0" instead of "0.4.0rc14" would make apply
+    // fail on the stable channel every time.
+    const spy = stubFetch()
+    store.dispatch(sseStatus({
+      ...ARMABLE_STATUS,
+      update_latest_version: '0.4.0rc14',
+      update_channel: 'stable',
+    } as never))
+    mountWeb()
+
+    const btn = await screen.findByRole('button', { name: /update to v0\.4\.0rc14/i })
+    fireEvent.click(btn)
+
+    await screen.findByTestId('in-app-update-armed')
+    const armPost = spy.mock.calls.find(
+      c => String(c[0]).includes('/api/update/arm') && (c[1] as { method?: string })?.method === 'POST',
+    )
+    expect(armPost).toBeTruthy()
+  })
+
   it('does not render the flow when the backend did not probe the shape', async () => {
     stubFetch()
     store.dispatch(sseStatus({
