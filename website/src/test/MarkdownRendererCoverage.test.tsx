@@ -139,9 +139,13 @@ describe('MarkdownRenderer images', () => {
   it('releases the layout placeholder once the image has loaded', () => {
     const { container } = render(<MarkdownRenderer content={'![shot](/tmp/shot.png)'} />)
     const img = () => container.querySelector('img')!
-    expect(img().getAttribute('style')).toContain('min-height: 120px')
+    // Pre-load: a fixed pending box (not full-width, not the old min-height
+    // floor — an unloaded <img> has no intrinsic WIDTH either).
+    expect(img().getAttribute('style')).toContain('width: 420px')
+    expect(img().getAttribute('style')).toContain('height: 236px')
     fireEvent.load(img())
-    expect(img().getAttribute('style') || '').not.toContain('min-height')
+    expect(img().getAttribute('style') || '').not.toContain('420px')
+    expect(img().getAttribute('style') || '').not.toContain('236px')
   })
 
   it('opens the lightbox for the clicked image and reports its siblings', () => {

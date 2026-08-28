@@ -76,19 +76,18 @@ describe('streaming image layout-shift regression (gap #1)', () => {
 })
 
 describe('learned image dimensions (exact reserve on remount)', () => {
-  // The 120px min-height floor bounds the first-ever load, but a transcript
+  // The fixed pending box bounds the first-ever load, but a transcript
   // image REMOUNTS whenever the virtualized window scrolls back over it — a
-  // 400-600px screenshot re-realizes (natural - 120)px of shift on every
+  // 400-600px screenshot re-realizes the box-vs-natural difference on every
   // remount. Recording naturalWidth/Height on load (imageDims, keyed by
-  // resolved URL) lets the next mount reserve the exact aspect box via
-  // width/height attributes.
+  // resolved URL) lets the next mount reserve the exact aspect box.
   it('records natural dimensions on load and reserves them exactly on the next mount', () => {
     localStorage.clear()
     const md = '![shot](https://example.com/learned-shot.png)'
     const first = render(<MarkdownRenderer content={md} />)
     const img1 = first.container.querySelector('img') as HTMLImageElement
     expect(img1).not.toBeNull()
-    // First mount: no learned dims yet -> heuristic floor, no width/height attrs.
+    // First mount: no learned dims yet -> heuristic pending box, no width/height attrs.
     expect(img1.hasAttribute('width')).toBe(false)
     Object.defineProperty(img1, 'naturalWidth', { configurable: true, get: () => 780 })
     Object.defineProperty(img1, 'naturalHeight', { configurable: true, get: () => 1688 })
@@ -111,8 +110,9 @@ describe('learned image dimensions (exact reserve on remount)', () => {
     expect(img2.className).toContain('mc-img-reserve')
     expect(img2.getAttribute('style') ?? '').toContain('--mc-img-w: 780')
     expect(img2.getAttribute('style') ?? '').toContain('--mc-img-h: 1688')
-    // The heuristic floor must yield to the exact reserve (no stacked minHeight).
-    expect(img2.style.minHeight === '' || img2.style.minHeight === undefined || img2.style.minHeight !== '120px').toBe(true)
+    // The heuristic pending box must yield to the exact reserve (no stacked fixed box).
+    expect(img2.style.width).not.toBe('420px')
+    expect(img2.style.height).not.toBe('236px')
     second.unmount()
   })
 
@@ -127,9 +127,10 @@ describe('learned image dimensions (exact reserve on remount)', () => {
     first.unmount()
     const second = render(<MarkdownRenderer content={md} />)
     const img2 = second.container.querySelector('img') as HTMLImageElement
-    // Nothing learned -> heuristic floor, no exact-reserve style.
+    // Nothing learned -> heuristic pending box, no exact-reserve style.
     expect(img2.style.aspectRatio === '' || img2.style.aspectRatio === undefined).toBe(true)
-    expect(img2.style.minHeight).toBe('120px')
+    expect(img2.style.width).toBe('420px')
+    expect(img2.style.height).toBe('236px')
     second.unmount()
   })
 })
@@ -176,5 +177,74 @@ describe('sent-prompt image alignment (coupled with the bubble shrink-wrap)', ()
     expect(img.className).not.toContain('ms-auto')
     expect(img.className).toContain('max-w-[min(100%,760px)]')
     normal.unmount()
+  })
+})
+
+
+describe('loading skeleton (fixed pending box + pulse overlay)', () => {
+  // The pending box is FIXED-size, never full-width: an unloaded <img> has no
+  // intrinsic size (max-w is only a cap), so before this it collapsed to a
+  // 0-wide border sliver; and a full-width band overstates the pending
+  // content when a message carries several images. The overlay is a SIBLING
+  // painted over the transparent img — never a wrapper — so the img's layout
+  // contract (ms-auto on the IMG, definite caps, no shrink-to-fit parent)
+  // keeps its shape between loading and loaded.
+  it('reserves a fixed (not full-width) box before first load', () => {
+    localStorage.clear()
+    const { container } = render(
+      <MarkdownRenderer content={'![shot](https://example.com/pending-box.png)'} />,
+    )
+    const img = container.querySelector('img') as HTMLImageElement
+    expect(img.style.width).toBe('420px')
+    expect(img.style.height).toBe('236px')
+  })
+
+  it('uses the compact thumbnail caps as the compact pending box', () => {
+    localStorage.clear()
+    const { container } = render(
+      <MarkdownRenderer content={'![shot](https://example.com/pending-box-c.png)'} compactImages />,
+    )
+    const img = container.querySelector('img') as HTMLImageElement
+    expect(img.style.width).toBe('240px')
+    expect(img.style.height).toBe('180px')
+  })
+
+  it('shows a decorative pulse overlay while loading and removes it on load', () => {
+    localStorage.clear()
+    const { container } = render(
+      <MarkdownRenderer content={'![shot](https://example.com/skeleton.png)'} />,
+    )
+    const img = container.querySelector('img') as HTMLImageElement
+    // Overlay: an aria-hidden sibling (decorative), never wrapping the img.
+    const overlay = container.querySelector('span[aria-hidden="true"].pointer-events-none')
+    expect(overlay).not.toBeNull()
+    expect(overlay!.contains(img)).toBe(false)
+    expect(overlay!.querySelector('.animate-pulse')).not.toBeNull()
+    Object.defineProperty(img, 'naturalWidth', { configurable: true, get: () => 800 })
+    Object.defineProperty(img, 'naturalHeight', { configurable: true, get: () => 450 })
+    fireEvent.load(img)
+    expect(container.querySelector('span[aria-hidden="true"].pointer-events-none')).toBeNull()
+    // The pending box is released with the overlay: loaded layout is natural.
+    expect(img.style.width).toBe('')
+    expect(img.style.height).toBe('')
+  })
+
+  it('compact overlay aligns to the end edge, matching the ms-auto img', () => {
+    localStorage.clear()
+    const { container } = render(
+      <MarkdownRenderer content={'![shot](https://example.com/skeleton-c.png)'} compactImages />,
+    )
+    const overlay = container.querySelector('span[aria-hidden="true"].pointer-events-none')!
+    expect(overlay.className).toContain('end-0')
+    expect(overlay.className).not.toContain('start-0')
+  })
+
+  it('an SVG gets no skeleton overlay (definite width basis already)', () => {
+    localStorage.clear()
+    const { container } = render(
+      <MarkdownRenderer content={'![d](https://example.com/diagram.svg)'} />,
+    )
+    expect(container.querySelector('img')).not.toBeNull()
+    expect(container.querySelector('span[aria-hidden="true"].pointer-events-none')).toBeNull()
   })
 })

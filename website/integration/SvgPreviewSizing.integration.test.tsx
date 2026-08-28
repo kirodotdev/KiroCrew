@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect } from 'vitest'
-import { render } from '@testing-library/react'
+import { render, fireEvent } from '@testing-library/react'
 import MarkdownRenderer from '../src/components/MarkdownRenderer'
 
 /**
@@ -22,10 +22,16 @@ describe('MarkdownRenderer SVG preview sizing', () => {
     })
   })
 
-  it('does not force a fixed width on raster images (keeps intrinsic sizing)', () => {
+  it('does not force a PERMANENT fixed width on raster images (keeps intrinsic sizing after load)', () => {
     const { container } = render(<MarkdownRenderer content={'![image](/u/photo.png)'} softBreaks />)
     const img = container.querySelector('img') as HTMLImageElement
     expect(img).toBeTruthy()
+    // Pre-load a raster image holds the fixed PENDING box (not the SVG's
+    // definite width basis — that one persists because an SVG never reports
+    // natural dimensions to release against).
+    expect(img.style.width).toBe('420px')
+    fireEvent.load(img)
+    // On load the pending box is released: intrinsic sizing takes over.
     expect(img.style.width).toBe('')
   })
 })
