@@ -4,11 +4,12 @@ The sibling suite (``test_tailnet_origin.py``) pins the opposite property — th
 the READ path swallows everything and degrades to "contributes nothing". Here the
 weighting is inverted, because a publish that fails silently is the bug:
 
-* :class:`TestFailureReporting` pins that the daemon's own stderr reaches the
-  caller **verbatim**, and that the two refusals with different remedies
-  (permission vs. daemon down) are told apart. The classifier matches on upstream
-  wording we do not own, so the tests assert the raw text is present regardless of
-  whether the classification lands.
+* :class:`TestFailureReporting` pins that the daemon's own output reaches the
+  caller **verbatim** — stderr first, stdout when the reason lives there, and a
+  timeout's captured streams too — and that the two refusals with different
+  remedies (permission vs. daemon down) are told apart. The classifier matches on
+  upstream wording we do not own, so the tests assert the raw text is present
+  regardless of whether the classification lands.
 * :class:`TestGovernance` pins the ASYMMETRY that makes the ceiling coherent:
   publishing is refused when pinned and does not spawn the CLI at all, while
   *withdrawing* is never gated — a fail-closed control that could not un-expose a
@@ -66,7 +67,12 @@ def _patch_cli(**run_kwargs):
     )
 
 
-def _patch_cli_write_fails(returncode: int = 1, stderr: str = "", exc: BaseException | None = None):
+def _patch_cli_write_fails(
+    returncode: int = 1,
+    stderr: str = "",
+    stdout: str = "",
+    exc: BaseException | None = None,
+):
     """CLI installed; `serve status` SUCCEEDS with a free mount, the WRITE fails.
 
     A single mock answering every invocation identically is not how a daemon behaves —
@@ -81,7 +87,7 @@ def _patch_cli_write_fails(returncode: int = 1, stderr: str = "", exc: BaseExcep
             return _proc("{}")
         if exc is not None:
             raise exc
-        return _proc(returncode=returncode, stderr=stderr)
+        return _proc(stdout=stdout, returncode=returncode, stderr=stderr)
 
     return (
         patch.object(tailnet_serve, "_cli_path", return_value=_CLI),
@@ -251,6 +257,181 @@ class TestFailureReporting:
             result = tailnet_serve.publish(_PORT)
         assert result.code == "no_cli"
         assert not result.ok
+
+
+class TestTimeoutOutputIsNotDiscarded:
+    """The timeout's captured streams ARE the diagnosis, so they must survive it.
+
+    On a tailnet where Serve is not enabled (the default), ``tailscale serve``
+    prints the enablement URL to stdout and then blocks waiting for the
+    capability — a timeout is the only reachable outcome, and dropping the
+    exception's ``.stdout``/``.stderr`` rendered the one actionable line as a
+    bare "did not respond in time".
+    """
+
+    _URL = "https://login.tailscale.com/f/serve?node=nTEST"
+
+    @staticmethod
+    def _timeout_exc(
+        stdout: str | bytes | None = None, stderr: str | bytes | None = None
+    ) -> subprocess.TimeoutExpired:
+        return subprocess.TimeoutExpired("tailscale", 15, output=stdout, stderr=stderr)
+
+    def test_run_returns_the_captured_streams(self) -> None:
+        cli, run = _patch_cli(side_effect=self._timeout_exc(stdout="from out", stderr="from err"))
+        with cli, run:
+            rc, out, err = tailnet_serve._run(["serve"], 1.0)
+        assert (rc, out, err) == (-2, "from out", "from err")
+
+    def test_none_streams_become_empty_strings(self) -> None:
+        """A timeout that captured nothing must not grow a dangling suffix."""
+        cli, run = _patch_cli(side_effect=self._timeout_exc())
+        with cli, run:
+            rc, out, err = tailnet_serve._run(["serve"], 1.0)
+        assert (rc, out, err) == (-2, "", "")
+
+    def test_bytes_streams_are_decoded(self) -> None:
+        """POSIX raises the exception below the text layer, so streams arrive as bytes.
+
+        An invalid sequence (a multibyte character split by the deadline) must
+        degrade to a replacement character, never to a decode error that eats the
+        rest of the reason.
+        """
+        cli, run = _patch_cli(
+            side_effect=self._timeout_exc(stdout=self._URL.encode() + b"\xff", stderr=b"warn")
+        )
+        with cli, run:
+            rc, out, err = tailnet_serve._run(["serve"], 1.0)
+        assert rc == -2
+        assert self._URL in out
+        assert "\ufffd" in out
+        assert err == "warn"
+
+    def test_publish_timeout_surfaces_the_enablement_url(self) -> None:
+        cli, run = _patch_cli_write_fails(exc=self._timeout_exc(stdout=self._URL))
+        with cli, run, patch.object(
+            tailnet_serve, "is_governance_pinned_off", return_value=False
+        ):
+            result = tailnet_serve.publish(_PORT)
+        assert result.code == "timeout"
+        # The ambiguity warning is kept — the config may still have applied.
+        assert "may still have applied" in result.detail
+        assert self._URL in result.detail
+
+    def test_publish_timeout_without_output_has_no_dangling_suffix(self) -> None:
+        cli, run = _patch_cli_write_fails(exc=self._timeout_exc())
+        with cli, run, patch.object(
+            tailnet_serve, "is_governance_pinned_off", return_value=False
+        ):
+            result = tailnet_serve.publish(_PORT)
+        assert result.code == "timeout"
+        assert "it printed" not in result.detail
+
+    def test_unpublish_timeout_surfaces_output(self) -> None:
+        cli, run = _patch_cli(side_effect=self._timeout_exc(stderr="context deadline exceeded"))
+        with cli, run, patch.object(
+            tailnet_serve, "serve_state", return_value=ServeState(True, True, "ours")
+        ):
+            result = tailnet_serve.unpublish(_PORT)
+        assert result.code == "timeout"
+        assert "did not respond in time" in result.detail
+        assert "context deadline exceeded" in result.detail
+
+    def test_serve_state_timeout_surfaces_output(self) -> None:
+        cli, run = _patch_cli(side_effect=self._timeout_exc(stdout="partial status text"))
+        with cli, run:
+            state = tailnet_serve.serve_state(_PORT)
+        assert state.published is None
+        assert "did not respond in time" in state.detail
+        assert "partial status text" in state.detail
+
+
+class TestStdoutCarriedReasons:
+    """A fast non-zero exit whose reason went to stdout must not report blank.
+
+    Upstream does not reserve stderr for its refusals, and ``detail`` built from
+    stderr alone rendered a stdout-only message as the bare fallback string.
+    """
+
+    def test_a_stdout_only_reason_reaches_the_detail(self) -> None:
+        cli, run = _patch_cli_write_fails(stdout="Serve is not enabled; visit https://x")
+        with cli, run, patch.object(
+            tailnet_serve, "is_governance_pinned_off", return_value=False
+        ):
+            result = tailnet_serve.publish(_PORT)
+        assert not result.ok
+        assert "Serve is not enabled; visit https://x" in result.detail
+
+    def test_a_stdout_only_reason_feeds_classification(self) -> None:
+        cli, run = _patch_cli_write_fails(stdout="access denied: serve config")
+        with cli, run, patch.object(
+            tailnet_serve, "is_governance_pinned_off", return_value=False
+        ):
+            result = tailnet_serve.publish(_PORT)
+        assert result.code == "no_permission"
+
+    def test_stderr_leads_when_both_streams_carry_text(self) -> None:
+        cli, run = _patch_cli_write_fails(stderr="the refusal", stdout="the context")
+        with cli, run, patch.object(
+            tailnet_serve, "is_governance_pinned_off", return_value=False
+        ):
+            result = tailnet_serve.publish(_PORT)
+        assert "the refusal" in result.detail
+        assert "the context" in result.detail
+        assert result.detail.index("the refusal") < result.detail.index("the context")
+
+    def test_stdout_never_flips_a_correct_stderr_classification(self) -> None:
+        """Classification reads the leading stream, never the concatenation.
+
+        Incidental stdout text containing "operator" beside a daemon-down stderr
+        would otherwise flip the code to ``no_permission`` and attach a sudo /
+        --operator remedy to a stopped daemon — a confidently wrong hint, which is
+        the defect class this module exists to avoid. The verbatim detail still
+        carries both streams.
+        """
+        cli, run = _patch_cli_write_fails(
+            stderr="tailscaled is not running",
+            stdout="run `tailscale set --operator=$USER` to allow serve",
+        )
+        with cli, run, patch.object(
+            tailnet_serve, "is_governance_pinned_off", return_value=False
+        ):
+            result = tailnet_serve.publish(_PORT)
+        assert result.code == "daemon_unavailable"
+        assert "tailscaled is not running" in result.detail
+
+    def test_recovered_output_is_capped_not_dumped(self) -> None:
+        """A status read that dies mid-document must not paste multi-KB JSON.
+
+        The leading slice survives (the actionable line comes first), the tail is
+        elided — a raw serve-config dump in a refusal string is worse for the
+        operator than no detail at all.
+        """
+        blob = "x" * 5000
+        cli, run = _patch_cli(return_value=_proc(blob, returncode=1))
+        with cli, run:
+            state = tailnet_serve.serve_state(_PORT)
+        assert len(state.detail) < 1200
+        assert state.detail.endswith("…")
+
+    def test_unpublish_keeps_a_stdout_only_reason(self) -> None:
+        def _dispatch(argv, *_a, **_k):
+            if argv[1:4] == ["serve", "status", "--json"]:
+                return _proc(_doc(f"http://127.0.0.1:{_PORT}"))
+            return _proc(stdout="cannot remove: reason on stdout", returncode=1)
+
+        cli, run = _patch_cli(side_effect=_dispatch)
+        with cli, run:
+            result = tailnet_serve.unpublish(_PORT)
+        assert not result.ok
+        assert "cannot remove: reason on stdout" in result.detail
+
+    def test_serve_state_keeps_a_stdout_only_reason(self) -> None:
+        cli, run = _patch_cli(return_value=_proc("health warning on stdout", returncode=1))
+        with cli, run:
+            state = tailnet_serve.serve_state(_PORT)
+        assert state.published is None
+        assert "health warning on stdout" in state.detail
 
 
 class TestSpawnHardening:

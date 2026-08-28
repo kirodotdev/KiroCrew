@@ -23,10 +23,13 @@ Two consequences of never having seen this daemon's real output on a live tailne
 (this repo's dev host has no Tailscale) shape the code, and both are deliberate
 rather than provisional:
 
-**The daemon's own stderr is always passed through verbatim.** ``code`` is a
+**The daemon's own output is always passed through verbatim.** ``code`` is a
 best-effort classification for the UI to branch on; ``detail`` carries what
-Tailscale actually said. If the classification is wrong or the phrasing changes
-upstream, the operator still sees the real reason instead of our guess at it.
+Tailscale actually said — stderr first, but stdout too, because upstream prints
+some of its most actionable messages there (the Serve enablement URL among
+them), and a timeout hands over whatever was captured before the deadline. If
+the classification is wrong or the phrasing changes upstream, the operator
+still sees the real reason instead of our guess at it.
 
 **Published-state detection does not depend on the JSON schema.** Rather than
 reading key paths from ``tailscale serve status --json`` that are unverified here,
@@ -97,9 +100,9 @@ class ServeResult:
     """Outcome of a publish/unpublish attempt.
 
     ``code`` is for branching, ``detail`` is for the human. ``detail`` includes
-    the daemon's own stderr whenever there was any, because this module's whole
-    reason to exist separately from the read path is that it must not invent a
-    reason or hide the real one.
+    the daemon's own output whenever there was any — stderr first, stdout when it
+    carries the reason — because this module's whole reason to exist separately
+    from the read path is that it must not invent a reason or hide the real one.
     """
 
     ok: bool
@@ -133,6 +136,51 @@ class ServeState:
     detail: str
 
 
+def _stream_text(stream: str | bytes | None) -> str:
+    """Normalize a ``TimeoutExpired`` stream attribute to ``str``.
+
+    ``subprocess.run(text=True)`` decodes the streams on the success path, but a
+    ``TimeoutExpired`` carries whatever ``communicate`` had at the deadline:
+    ``None`` when nothing was captured, ``bytes`` on POSIX (the exception is
+    raised below the text layer), ``str`` on Windows (``run`` re-reads the pipes
+    after killing the child). Decoded with ``errors="replace"`` because the
+    deadline can split a multibyte sequence, and a mangled character beats a
+    dropped reason.
+    """
+    if stream is None:
+        return ""
+    if isinstance(stream, bytes):
+        return stream.decode("utf-8", errors="replace")
+    return stream
+
+
+#: Ceiling on how much recovered daemon output is spliced into a ``detail``
+#: string. The interesting part (a refusal, the Serve enablement URL) leads the
+#: stream, while the pathological case — a status read that timed out mid-way
+#: through a multi-KB JSON document — would otherwise turn a one-line refusal
+#: into a raw dump in the CLI and the mobile handler's JSON response.
+_DETAIL_MAX_CHARS = 1000
+
+
+def _daemon_output(*, out: str, err: str) -> str:
+    """Whatever the daemon said, wherever it said it.
+
+    stderr leads because that is where failure text belongs, but upstream prints
+    some of its most actionable messages to STDOUT — on a tailnet where Serve is
+    not enabled, ``tailscale serve`` prints the enablement URL there and then
+    blocks — so stdout is kept too: it follows stderr when both carry text and
+    stands alone when stderr is empty. Building ``detail`` from stderr alone
+    dropped exactly that URL. Keyword-only, because with two same-typed string
+    parameters a swapped call site would silently invert the precedence.
+    """
+    err = (err or "").strip()
+    out = (out or "").strip()
+    text = f"{err}\n{out}" if err and out else (err or out)
+    if len(text) > _DETAIL_MAX_CHARS:
+        return text[:_DETAIL_MAX_CHARS] + " …"
+    return text
+
+
 def _run(args: list[str], timeout: float) -> tuple[int, str, str]:
     """Run the CLI. Returns ``(returncode, stdout, stderr)``.
 
@@ -141,7 +189,10 @@ def _run(args: list[str], timeout: float) -> tuple[int, str, str]:
     different words to the operator:
 
     * ``-1`` — no binary at any vetted path. "Tailscale is not installed here."
-    * ``-2`` — timed out.
+    * ``-2`` — timed out, with whatever the child wrote before the deadline in
+      ``stdout``/``stderr``. On a Serve-disabled tailnet the command prints the
+      enablement URL and then blocks forever, so the timeout is the only
+      reachable outcome and the captured output IS the diagnosis.
     * ``-3`` — the binary exists but could not be launched (``OSError``), with the
       OS's own message in ``stderr``. Collapsing this into ``-1`` told the operator
       "tailscale was not found" about a binary that is right there — the misleading
@@ -167,25 +218,28 @@ def _run(args: list[str], timeout: float) -> tuple[int, str, str]:
             check=False,
             env=scrub_env(),
         )
-    except subprocess.TimeoutExpired:
-        return -2, "", ""
+    except subprocess.TimeoutExpired as exc:
+        return -2, _stream_text(exc.stdout), _stream_text(exc.stderr)
     except (OSError, subprocess.SubprocessError) as exc:
         logger.debug("tailscale %s failed to run: %s", " ".join(args), exc)
         return -3, "", str(exc)
     return proc.returncode, proc.stdout or "", proc.stderr or ""
 
 
-def _classify(stderr: str) -> ResultCode:
+def _classify(output: str) -> ResultCode:
     """Best-effort code for a non-zero exit. Never the only thing reported.
 
     Matching on message text is inherently fragile — upstream owns this wording
     and can change it — so this only ever *adds* a hint on top of the verbatim
-    stderr the caller also surfaces. The two codes worth separating are the ones
-    with different remedies: a permission problem needs ``sudo`` or an
-    ``--operator`` grant, while an unreachable daemon needs it started or logged
-    in.
+    output the caller also surfaces. Callers feed it the LEADING stream only
+    (stderr, or stdout when stderr is empty), never the concatenation: with both
+    streams in view, incidental stdout text containing "operator" would flip a
+    daemon-down failure to ``no_permission`` and attach a confidently wrong
+    remedy. The two codes worth separating are the ones with different remedies:
+    a permission problem needs ``sudo`` or an ``--operator`` grant, while an
+    unreachable daemon needs it started or logged in.
     """
-    low = stderr.lower()
+    low = output.lower()
     if any(
         s in low
         for s in ("access denied", "permission denied", "must be run as root", "operator")
@@ -283,14 +337,18 @@ def serve_state(port: int) -> ServeState:
             None, None, "The tailscale CLI was not found in a standard install location."
         )
     if rc == -2:
-        return ServeState(None, None, "The tailscale CLI did not respond in time.")
+        said = _daemon_output(out=out, err=err)
+        detail = "The tailscale CLI did not respond in time."
+        if said:
+            detail += f" Before the deadline it printed: {said}"
+        return ServeState(None, None, detail)
     if rc == -3:
         return ServeState(
             None, None, f"The tailscale CLI could not be launched: {(err or '').strip()}"
         )
     if rc != 0:
         return ServeState(
-            None, None, (err or "").strip() or f"tailscale serve status exited {rc}"
+            None, None, _daemon_output(out=out, err=err) or f"tailscale serve status exited {rc}"
         )
     try:
         doc = json.loads(out or "")
@@ -413,7 +471,7 @@ def publish(port: int, *, audit_tool: str = "tailnet_publish") -> ServeResult:
             f"sure, run `tailscale serve --bg --https={SERVE_HTTPS_PORT} "
             f"http://127.0.0.1:{port}` yourself.",
         )
-    rc, _out, err = _run(
+    rc, out, err = _run(
         ["serve", "--bg", f"--https={SERVE_HTTPS_PORT}", f"http://127.0.0.1:{port}"],
         _WRITE_TIMEOUT_SECS,
     )
@@ -426,12 +484,18 @@ def publish(port: int, *, audit_tool: str = "tailnet_publish") -> ServeResult:
             "yourself and set dashboard.url instead.",
         )
     if rc == -2:
-        return ServeResult(
-            False,
-            "timeout",
+        # The most common way to land here is a Serve-disabled tailnet: the CLI
+        # prints the enablement URL to stdout and then blocks waiting for the
+        # capability, so the captured output carries the one thing the operator
+        # needs and the timeout heading alone would hide it.
+        said = _daemon_output(out=out, err=err)
+        detail = (
             "tailscale serve did not respond in time. It may still have applied — "
-            "check `kirocrew tailnet status` before retrying.",
+            "check `kirocrew tailnet status` before retrying."
         )
+        if said:
+            detail += f" Before the deadline it printed: {said}"
+        return ServeResult(False, "timeout", detail)
     if rc == -3:
         return ServeResult(
             False,
@@ -440,8 +504,8 @@ def publish(port: int, *, audit_tool: str = "tailnet_publish") -> ServeResult:
             + (err or "").strip(),
         )
     if rc != 0:
-        code = _classify(err)
-        said = (err or "").strip()
+        said = _daemon_output(out=out, err=err)
+        code = _classify(err.strip() or out.strip())
         hint = ""
         if code == "no_permission":
             # The single most likely refusal on Linux, and the one an operator
@@ -560,7 +624,7 @@ def unpublish(port: int, *, audit_tool: str = "tailnet_unpublish") -> ServeResul
             f"you are sure, run `tailscale serve --https {SERVE_HTTPS_PORT} "
             f"--set-path={SERVE_MOUNT} off` yourself.",
         )
-    rc, _out, err = _run(
+    rc, out, err = _run(
         [
             "serve",
             "--https",
@@ -573,14 +637,19 @@ def unpublish(port: int, *, audit_tool: str = "tailnet_unpublish") -> ServeResul
     if rc == -1:
         return ServeResult(False, "no_cli", "The tailscale CLI was not found; nothing to do.")
     if rc == -2:
-        return ServeResult(False, "timeout", "tailscale serve did not respond in time.")
+        said = _daemon_output(out=out, err=err)
+        detail = "tailscale serve did not respond in time."
+        if said:
+            detail += f" Before the deadline it printed: {said}"
+        return ServeResult(False, "timeout", detail)
     if rc == -3:
         return ServeResult(
             False, "failed", "The tailscale CLI could not be launched: " + (err or "").strip()
         )
     if rc != 0:
-        code = _classify(err)
-        return ServeResult(False, code, (err or "").strip() or f"tailscale serve exited {rc}")
+        said = _daemon_output(out=out, err=err)
+        code = _classify(err.strip() or out.strip())
+        return ServeResult(False, code, said or f"tailscale serve exited {rc}")
     return ServeResult(
         True, "ok", "The dashboard is no longer published on this machine's tailnet."
     )
