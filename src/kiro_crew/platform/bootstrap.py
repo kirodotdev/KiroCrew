@@ -176,22 +176,11 @@ def bootstrap_context(cfg: "KiroCrewConfig") -> PlatformContext:
     ctx = build_default_context(cfg, profile=profile)
     if profile == PROFILE_STANDALONE:
         # IaC extra: swap only agent_identity. Does not flip the profile to
-        # a companion and does not import boto3 unless the extra opted in.
-        # A configured policy/env posture also pips kirocrew[agentcore]
-        # into this interpreter so a box that skipped CFN --agentcore still
-        # vends after restart (or on this boot when pip succeeds in time).
-        from kiro_crew.platform.agentcore_aws import (
-            EXTRA_CODE_OK,
-            ensure_extra,
-            extra_available,
-            opted_in,
-            try_aws_agent_identity,
-        )
-
-        if opted_in() and not extra_available():
-            extra_code = ensure_extra()
-            if extra_code != EXTRA_CODE_OK:
-                logger.warning("AgentCore extra not installed at boot: %s", extra_code)
+        # a companion and does not import boto3 unless the extra is already
+        # installed (``kirocrew[agentcore]`` / ``install.sh --agentcore``).
+        # Boot does not pip — a missing extra attaches on a later restart
+        # after the existing install path lands it.
+        from kiro_crew.platform.agentcore_aws import try_aws_agent_identity
 
         aws_identity = try_aws_agent_identity()
         if aws_identity is not None:

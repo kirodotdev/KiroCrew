@@ -140,6 +140,11 @@ Parameters:
     Type: String
     Default: ""
     MaxLength: 512
+    # Unquoted user-data heredoc interpolates this into Environment=. Reject
+    # `$`, backticks, parentheses, whitespace, quotes, and `@` so a direct
+    # `aws cloudformation deploy` cannot land `$(command)` or
+    # `https://user:secret@host` in the unit file.
+    AllowedPattern: "^$|^https://[A-Za-z0-9._~:/%!=+&,-]{1,504}$"
     Description: >-
       MCP URL of an existing Amazon Bedrock AgentCore Gateway this crew
       should call. Empty means identity is created but no Gateway spec is
@@ -252,7 +257,6 @@ Resources:
             Effect: Allow
             Action:
               - bedrock-agentcore:GetWorkloadAccessToken
-              - bedrock-agentcore:GetWorkloadAccessTokenForUserId
             Resource:
               - !Sub "arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:workload-identity-directory/default"
               - !GetAtt CrewWorkloadIdentity.WorkloadIdentityArn
@@ -266,7 +270,6 @@ Resources:
               - bedrock-agentcore:GetGateway
               - bedrock-agentcore:ListGatewayTargets
               - bedrock-agentcore:GetGatewayTarget
-              - bedrock-agentcore:SynchronizeGatewayTargets
             Resource: !Sub "arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:gateway/*"
           - Sid: DenyJwtPathOnWorkloadPosture
             Effect: Deny
@@ -294,7 +297,6 @@ Resources:
               - bedrock-agentcore:GetGateway
               - bedrock-agentcore:ListGatewayTargets
               - bedrock-agentcore:GetGatewayTarget
-              - bedrock-agentcore:SynchronizeGatewayTargets
             Resource: !Sub "arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:gateway/*"
           - Sid: DenyUserIdAndIamGateway
             Effect: Deny
@@ -696,6 +698,9 @@ Resources:
 
           # System-level unit so the gateway survives reboots and runs as ec2-user.
           KIROCREW_BIN=$(sudo -u $RUN_USER bash -lc 'command -v kirocrew || echo $HOME/.local/bin/kirocrew')
+          # systemd expands % as specifiers in Environment=; double them so a
+          # percent-encoded Gateway URL survives daemon-reload.
+          AC_GW_ESC=$(printf '%s' '${AgentCoreGatewayUrl}' | sed 's/%/%%/g')
           cat > /etc/systemd/system/kirocrew.service <<UNIT
           [Unit]
           Description=KiroCrew AI Agent Gateway
@@ -715,7 +720,7 @@ Resources:
           Environment=KIROCREW_PORT=${DashboardPort}
           Environment=KIROCREW_AGENTCORE_POSTURE=${AgentCorePosture}
           Environment=KIROCREW_AGENTCORE_WORKLOAD_NAME=${AgentCoreWorkloadName}
-          Environment=KIROCREW_AGENTCORE_GATEWAY_URL=${AgentCoreGatewayUrl}
+          Environment=KIROCREW_AGENTCORE_GATEWAY_URL=$AC_GW_ESC
 
           [Install]
           WantedBy=multi-user.target

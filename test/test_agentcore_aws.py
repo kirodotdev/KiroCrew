@@ -53,7 +53,7 @@ def test_opted_in_requires_name_and_flag_or_posture(monkeypatch) -> None:
     monkeypatch.delenv(aws_mod.ENV_WORKLOAD, raising=False)
     monkeypatch.delenv(aws_mod.ENV_AWS, raising=False)
     monkeypatch.delenv(aws_mod.ENV_POSTURE, raising=False)
-    monkeypatch.setattr(aws_mod, "authored_posture", lambda: None)
+    monkeypatch.setattr(aws_mod, "_effective_governance_ceiling", lambda: None)
     assert aws_mod.opted_in() is False
 
     monkeypatch.setenv(aws_mod.ENV_WORKLOAD, "kirocrew-kc-abc")
@@ -72,14 +72,39 @@ def test_opted_in_requires_name_and_flag_or_posture(monkeypatch) -> None:
 
 def test_opted_in_from_policy_posture_without_env_name(monkeypatch) -> None:
     from kiro_crew.platform import agentcore_aws as aws_mod
+    from kiro_crew.platform.governance import parse_policy
 
     monkeypatch.delenv(aws_mod.ENV_WORKLOAD, raising=False)
     monkeypatch.delenv(aws_mod.ENV_AWS, raising=False)
     monkeypatch.delenv(aws_mod.ENV_POSTURE, raising=False)
-    monkeypatch.setattr(aws_mod, "authored_posture", lambda: "login")
+    ceiling = parse_policy(
+        {
+            "version": 1,
+            "boot": {"fail_closed": True},
+            "capabilities": {"agentcore": {"enabled": True, "posture": "login"}},
+        }
+    )
+    monkeypatch.setattr(aws_mod, "_effective_governance_ceiling", lambda: ceiling)
     monkeypatch.setattr(aws_mod, "authored_workload_name", lambda: "")
     assert aws_mod.opted_in() is True
     assert aws_mod.resolved_workload_name() == ""
+
+
+def test_opted_in_ignores_home_file_when_fleet_ceiling_disables(monkeypatch) -> None:
+    from kiro_crew.platform import agentcore_aws as aws_mod
+    from kiro_crew.platform.governance import parse_policy
+
+    monkeypatch.setenv(aws_mod.ENV_POSTURE, "workload")
+    monkeypatch.setattr(aws_mod, "authored_posture", lambda: "login")
+    fleet = parse_policy(
+        {
+            "version": 1,
+            "boot": {"fail_closed": True},
+            "capabilities": {"agentcore": {"enabled": False}},
+        }
+    )
+    monkeypatch.setattr(aws_mod, "_effective_governance_ceiling", lambda: fleet)
+    assert aws_mod.opted_in() is False
 
 
 def test_resolved_workload_name_launch_env_uses_rfc_default(monkeypatch) -> None:
@@ -87,6 +112,7 @@ def test_resolved_workload_name_launch_env_uses_rfc_default(monkeypatch) -> None
 
     monkeypatch.delenv(aws_mod.ENV_WORKLOAD, raising=False)
     monkeypatch.setenv(aws_mod.ENV_POSTURE, "workload")
+    monkeypatch.setattr(aws_mod, "_effective_governance_ceiling", lambda: None)
     monkeypatch.setattr(aws_mod, "authored_posture", lambda: None)
     monkeypatch.setattr(aws_mod, "authored_workload_name", lambda: "")
     assert aws_mod.resolved_workload_name() == aws_mod.DEFAULT_WORKLOAD_NAME
@@ -96,6 +122,7 @@ def test_resolved_workload_name_prefers_policy_over_env(monkeypatch) -> None:
     from kiro_crew.platform import agentcore_aws as aws_mod
 
     monkeypatch.setenv(aws_mod.ENV_WORKLOAD, "kirocrew")
+    monkeypatch.setattr(aws_mod, "_effective_governance_ceiling", lambda: None)
     monkeypatch.setattr(aws_mod, "authored_workload_name", lambda: "kirocrew-e2e")
     assert aws_mod.resolved_workload_name() == "kirocrew-e2e"
     monkeypatch.setattr(aws_mod, "authored_workload_name", lambda: "")
@@ -125,6 +152,7 @@ def test_try_aws_returns_none_when_boto3_missing(monkeypatch) -> None:
 def test_status_has_no_token_material(monkeypatch) -> None:
     from kiro_crew.platform import agentcore_aws as aws_mod
 
+    monkeypatch.setattr(aws_mod, "_effective_governance_ceiling", lambda: None)
     monkeypatch.setenv(aws_mod.ENV_WORKLOAD, "kirocrew-kc-abc")
     monkeypatch.setenv(aws_mod.ENV_POSTURE, "workload")
     monkeypatch.setenv(aws_mod.ENV_GATEWAY_URL, "https://gw.example.test/mcp")
@@ -143,6 +171,7 @@ def test_gateway_mcp_spec_requires_https(monkeypatch) -> None:
     from kiro_crew.platform import agentcore_aws as aws_mod
 
     provider = aws_mod.AwsAgentIdentityProvider()
+    monkeypatch.setattr(aws_mod, "_effective_governance_ceiling", lambda: None)
     monkeypatch.delenv(aws_mod.ENV_GATEWAY_URL, raising=False)
     monkeypatch.delenv(aws_mod.ENV_POSTURE, raising=False)
     monkeypatch.setattr(aws_mod, "authored_gateway_url", lambda: "")
@@ -158,6 +187,7 @@ def test_gateway_mcp_spec_workload_returns_https_hostname(monkeypatch) -> None:
     from kiro_crew.platform import agentcore_aws as aws_mod
 
     provider = aws_mod.AwsAgentIdentityProvider()
+    monkeypatch.setattr(aws_mod, "_effective_governance_ceiling", lambda: None)
     monkeypatch.setenv(aws_mod.ENV_POSTURE, "workload")
     monkeypatch.setenv(aws_mod.ENV_GATEWAY_URL, "https://gw.example.test/mcp")
     monkeypatch.setattr(aws_mod, "authored_gateway_url", lambda: "")
@@ -171,6 +201,7 @@ def test_resolved_gateway_url_prefers_policy_over_env(monkeypatch) -> None:
     from kiro_crew.platform import agentcore_aws as aws_mod
 
     monkeypatch.setenv(aws_mod.ENV_GATEWAY_URL, "https://env.example.test/mcp")
+    monkeypatch.setattr(aws_mod, "_effective_governance_ceiling", lambda: None)
     monkeypatch.setattr(aws_mod, "authored_gateway_url", lambda: "https://policy.example.test/mcp")
     assert aws_mod.resolved_gateway_url() == "https://policy.example.test/mcp"
     monkeypatch.setattr(aws_mod, "authored_gateway_url", lambda: "")
@@ -181,10 +212,61 @@ def test_resolved_posture_prefers_policy_over_env(monkeypatch) -> None:
     from kiro_crew.platform import agentcore_aws as aws_mod
 
     monkeypatch.setenv(aws_mod.ENV_POSTURE, "workload")
+    monkeypatch.setattr(aws_mod, "_effective_governance_ceiling", lambda: None)
     monkeypatch.setattr(aws_mod, "authored_posture", lambda: "login")
     assert aws_mod.resolved_posture() == "login"
     monkeypatch.setattr(aws_mod, "authored_posture", lambda: None)
     assert aws_mod.resolved_posture() == "workload"
+
+
+def test_resolved_identity_uses_fleet_ceiling_not_home_peek(monkeypatch) -> None:
+    from kiro_crew.platform import agentcore_aws as aws_mod
+    from kiro_crew.platform.governance import parse_policy
+
+    monkeypatch.setenv(aws_mod.ENV_POSTURE, "workload")
+    monkeypatch.setenv(aws_mod.ENV_GATEWAY_URL, "https://env.example.test/mcp")
+    monkeypatch.setenv(aws_mod.ENV_WORKLOAD, "env-workload")
+    monkeypatch.setattr(aws_mod, "authored_posture", lambda: "login")
+    monkeypatch.setattr(aws_mod, "authored_gateway_url", lambda: "https://home.example.test/mcp")
+    monkeypatch.setattr(aws_mod, "authored_workload_name", lambda: "home-workload")
+    fleet = parse_policy(
+        {
+            "version": 1,
+            "boot": {"fail_closed": True},
+            "capabilities": {"agentcore": {"enabled": False}},
+        }
+    )
+    monkeypatch.setattr(aws_mod, "_effective_governance_ceiling", lambda: fleet)
+    assert aws_mod.resolved_posture() == ""
+    assert aws_mod.resolved_gateway_url() == ""
+    assert aws_mod.resolved_workload_name() == ""
+
+
+def test_resolved_identity_reads_composed_ceiling_fields(monkeypatch) -> None:
+    from kiro_crew.platform import agentcore_aws as aws_mod
+    from kiro_crew.platform.governance import parse_policy
+
+    monkeypatch.setattr(aws_mod, "authored_posture", lambda: "workload")
+    monkeypatch.setattr(aws_mod, "authored_gateway_url", lambda: "https://home.example.test/mcp")
+    monkeypatch.setattr(aws_mod, "authored_workload_name", lambda: "home-workload")
+    fleet = parse_policy(
+        {
+            "version": 1,
+            "boot": {"fail_closed": True},
+            "capabilities": {
+                "agentcore": {
+                    "enabled": True,
+                    "posture": "login",
+                    "gateway_url": "https://fleet.example.test/mcp",
+                    "workload_name": "fleet-workload",
+                }
+            },
+        }
+    )
+    monkeypatch.setattr(aws_mod, "_effective_governance_ceiling", lambda: fleet)
+    assert aws_mod.resolved_posture() == "login"
+    assert aws_mod.resolved_gateway_url() == "https://fleet.example.test/mcp"
+    assert aws_mod.resolved_workload_name() == "fleet-workload"
 
 
 def test_vend_workload_access_token_uses_standalone_api(monkeypatch) -> None:
@@ -387,7 +469,7 @@ def test_ensure_extra_reports_install_failed(monkeypatch) -> None:
     assert aws_mod.ensure_extra() == aws_mod.EXTRA_CODE_FAILED
 
 
-def test_bootstrap_installs_extra_when_opted_in(monkeypatch) -> None:
+def test_bootstrap_does_not_pip_extra_when_opted_in(monkeypatch) -> None:
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.platform import agentcore_aws as aws_mod
     from kiro_crew.platform import bootstrap
@@ -403,7 +485,7 @@ def test_bootstrap_installs_extra_when_opted_in(monkeypatch) -> None:
     monkeypatch.setattr(bootstrap, "resolve_profile", lambda *a, **k: "standalone")
     bootstrap._reset_boot_state()
     bootstrap.bootstrap_context(KiroCrewConfig.load())
-    assert calls == ["ensure"]
+    assert calls == []
 
 
 def test_normalize_agentcore_gateway_url() -> None:

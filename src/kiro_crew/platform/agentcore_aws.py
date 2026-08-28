@@ -2,13 +2,14 @@
 
 The public ``DefaultAgentIdentityProvider`` stays a no-op. Bootstrap
 imports this module on standalone boot and attaches the adapter only
-when :func:`opted_in` is true (home-policy or env posture
-``workload``/``login``, or a named workload plus
-``KIROCREW_AGENTCORE_AWS=1``). A configured posture also
-:func:`ensure_extra` so ``kirocrew[agentcore]`` lands in the gateway
-interpreter without a CFN ``--agentcore`` flag. ``boto3`` is loaded
-inside methods so ``import kiro_crew.platform.agentcore_aws`` does not
-pull AWS into a process that never opted in.
+when :func:`opted_in` is true (composed-ceiling posture
+``workload``/``login``, or — with no ceiling — env posture or a
+named workload plus ``KIROCREW_AGENTCORE_AWS=1``) **and**
+``kirocrew[agentcore]`` is already installed. Boot does not pip;
+:func:`ensure_extra` stays on the Settings PUT / install.sh path.
+``boto3`` is loaded inside methods so
+``import kiro_crew.platform.agentcore_aws`` does not pull AWS into a
+process that never opted in.
 
 A workload access token is first-party Identity material. It is never the
 Gateway inbound credential and never appears in ``status()``. Workload
@@ -169,12 +170,18 @@ def authored_workload_name() -> str:
 
 
 def resolved_posture() -> str:
-    """Policy posture first (Settings), else launch env.
+    """Effective ceiling first; home/env only when no ceiling exists.
 
-    URL and workload name already prefer the home file so leftover
-    systemd ``KIROCREW_AGENTCORE_POSTURE=workload`` cannot hide a
-    Settings ``login`` from catalog, probe, and ``gateway_mcp_spec``.
+    A loaded fleet / central / home document is the only posture source
+    once present — a home-file peek must not outrank a ceiling that
+    disabled AgentCore or pinned a different posture.
     """
+    from kiro_crew.platform.governance import agentcore_posture
+
+    ceiling = _effective_governance_ceiling()
+    if ceiling is not None:
+        stored = agentcore_posture(ceiling)
+        return stored if stored in _CONFIGURED_POSTURES else ""
     authored = authored_posture()
     if authored:
         return authored
@@ -183,12 +190,12 @@ def resolved_posture() -> str:
 
 
 def resolved_gateway_url() -> str:
-    """Policy URL first (Settings / hand-edited policy), else launch env.
+    """Effective ceiling first; home/env only when no ceiling exists."""
+    from kiro_crew.platform.governance import agentcore_gateway_url
 
-    A crew that configures the Gateway in Settings must not stay stuck on
-    a leftover systemd URL. Env is the CFN fallback when the home file
-    has no URL yet.
-    """
+    ceiling = _effective_governance_ceiling()
+    if ceiling is not None:
+        return agentcore_gateway_url(ceiling)
     authored = authored_gateway_url()
     if authored:
         return authored
@@ -202,31 +209,55 @@ def resolved_gateway_url() -> str:
         return ""
 
 
-def opted_in() -> bool:
-    """True when policy or env has configured AgentCore identity.
+def _effective_governance_ceiling() -> Any:
+    """Composed security ceiling, or ``None`` when no policy document loaded.
 
-    A workload name alone must not flip a test host. A configured posture
-    (home file or ``KIROCREW_AGENTCORE_POSTURE``) is enough — Settings
-    does not set the systemd name. The explicit AWS flag still requires
-    a name so a leftover ``KIROCREW_AGENTCORE_AWS=1`` is inert.
+    ``load_security_policy`` already walks fleet env → central → home.
+    Boot opt-in must use that document, not a home-file peek that can
+    enable AgentCore after a fleet ceiling disabled it.
     """
-    if authored_posture() in _CONFIGURED_POSTURES:
-        return True
+    from kiro_crew.platform.governance import load_security_policy
+
+    try:
+        return load_security_policy()
+    except Exception:
+        return None
+
+
+def opted_in() -> bool:
+    """True when the effective ceiling or launch env configured AgentCore.
+
+    A loaded policy document is the only opt-in source: fleet
+    ``KIROCREW_SECURITY_POLICY`` / central distribution outrank the home
+    file, so a home ``enabled: true`` cannot install the extra when the
+    administrator disabled it. Launch env (CFN systemd) is consulted only
+    when there is no ceiling. A leftover ``KIROCREW_AGENTCORE_AWS=1``
+    still requires a workload name.
+    """
+    from kiro_crew.platform.governance import agentcore_posture
+
+    ceiling = _effective_governance_ceiling()
+    if ceiling is not None:
+        return agentcore_posture(ceiling) in _CONFIGURED_POSTURES
     if _env(ENV_POSTURE).lower() in _CONFIGURED_POSTURES:
         return True
     return env_flag_enabled(ENV_AWS) and bool(_env(ENV_WORKLOAD))
 
 
 def resolved_workload_name() -> str:
-    """Policy name first (Settings), else launch env.
+    """Effective ceiling first; home/env only when no ceiling exists.
 
-    A crew that names ``kirocrew-e2e`` in Settings must not stay stuck on
-    leftover ``KIROCREW_AGENTCORE_WORKLOAD_NAME=kirocrew`` and vend against
-    an identity that does not exist. Settings-only empty stays unnamed
-    (catalog ``not_named``) — inventing ``kirocrew`` here is how a named
-    identity in the account is never the one we vend. Launch env posture
-    still uses the RFC default when CFN omitted the systemd name.
+    A crew that names ``kirocrew-e2e`` in the ceiling must not vend
+    against leftover ``KIROCREW_AGENTCORE_WORKLOAD_NAME=kirocrew``.
+    Ceiling-present but unnamed stays unnamed (catalog ``not_named``).
+    Launch env posture still uses the RFC default when CFN omitted the
+    systemd name and no ceiling is loaded.
     """
+    from kiro_crew.platform.governance import agentcore_workload_name
+
+    ceiling = _effective_governance_ceiling()
+    if ceiling is not None:
+        return agentcore_workload_name(ceiling)
     authored = authored_workload_name()
     if authored:
         return authored

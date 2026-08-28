@@ -86,7 +86,6 @@ _AGENTCORE_INSPECT_ACTIONS = [
     "bedrock-agentcore:GetGateway",
     "bedrock-agentcore:ListGatewayTargets",
     "bedrock-agentcore:GetGatewayTarget",
-    "bedrock-agentcore:SynchronizeGatewayTargets",
 ]
 _INSTANCE_POSTURES = frozenset({"workload", "login"})
 
@@ -230,7 +229,6 @@ def agentcore_instance_policy_document(posture: str) -> dict[str, Any]:
                     "Effect": "Allow",
                     "Action": [
                         "bedrock-agentcore:GetWorkloadAccessToken",
-                        "bedrock-agentcore:GetWorkloadAccessTokenForUserId",
                     ],
                     "Resource": list(_AGENTCORE_WORKLOAD_RESOURCES),
                 },
@@ -273,11 +271,11 @@ def agentcore_instance_policy_document(posture: str) -> dict[str, Any]:
 
 
 def _gateway_inspect_statement() -> dict[str, Any]:
-    """Read + optional Sync on any Gateway the operator pastes.
+    """Read-only inspect on any Gateway the operator pastes.
 
     Invoke stays on ``kirocrew-*``. Settings catalog needs Get/List/GetTarget
-    on ``gateway/*`` so an existing Gateway URL is inspectable. Sync refreshes
-    a DEFAULT listing-mode target; it is not InvokeGateway.
+    on ``gateway/*`` so an existing Gateway URL is inspectable. Sync is a
+    mutating control-plane verb and is not granted here.
     """
     return {
         "Sid": "AgentCoreGatewayInspect",
@@ -314,7 +312,6 @@ def agentcore_boundary_policy_document(
             "Effect": "Allow",
             "Action": [
                 "bedrock-agentcore:GetWorkloadAccessToken",
-                "bedrock-agentcore:GetWorkloadAccessTokenForUserId",
                 "bedrock-agentcore:GetWorkloadAccessTokenForJWT",
                 "bedrock-agentcore:InvokeGateway",
             ],
@@ -592,6 +589,10 @@ def policy_document() -> dict[str, Any]:
             "Resource": f"arn:aws:iam::*:role/{ROLE_NAME_PREFIX}*",
             "Condition": {
                 "ArnLike": {
+                    # Successor is allowed here only as a *reference*:
+                    # IamInstanceBoundaryCreateOnce cannot mint that name,
+                    # so a leaked launcher credential cannot invent the
+                    # document it then attaches.
                     "iam:PermissionsBoundary": [
                         f"arn:aws:iam::*:policy/{BOUNDARY_NAME}",
                         f"arn:aws:iam::*:policy/{AGENTCORE_BOUNDARY_NAME}",
@@ -749,10 +750,21 @@ def policy_document() -> dict[str, Any]:
                 "iam:GetPolicy",
                 "iam:GetPolicyVersion",
             ],
-            "Resource": [
-                f"arn:aws:iam::*:policy/{BOUNDARY_NAME}",
-                f"arn:aws:iam::*:policy/{AGENTCORE_BOUNDARY_NAME}",
+            "Resource": f"arn:aws:iam::*:policy/{BOUNDARY_NAME}",
+        },
+        {
+            # The AgentCore successor boundary is administrator-pre-created
+            # (``kirocrew cloud iam-boundary``). The launcher may only *read*
+            # it so source verification can refuse a permissive document.
+            # CreatePolicy here would let a leaked launcher credential mint
+            # that name, then CreateRole against it.
+            "Sid": "IamAgentCoreBoundaryRead",
+            "Effect": "Allow",
+            "Action": [
+                "iam:GetPolicy",
+                "iam:GetPolicyVersion",
             ],
+            "Resource": f"arn:aws:iam::*:policy/{AGENTCORE_BOUNDARY_NAME}",
         },
         {
             # Attach/detach are split out and constrained by iam:PolicyARN to the

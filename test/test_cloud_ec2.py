@@ -164,6 +164,19 @@ class TestTemplate:
         assert "KIROCREW_AGENTCORE_WORKLOAD_NAME" in text
         assert "KIROCREW_AGENTCORE_GATEWAY_URL" in text
         assert "AgentCoreGatewayUrl:" in text
+        # userinfo credentials must not survive CloudFormation validation.
+        gw_pat = re.search(
+            r"AgentCoreGatewayUrl:.*?AllowedPattern: \"([^\"]+)\"",
+            text,
+            re.S,
+        )
+        assert gw_pat is not None
+        assert "@" not in gw_pat.group(1)
+        # systemd treats % as specifiers; !Sub expands the URL first, then
+        # sed doubles % so Environment= keeps a percent-encoded path intact.
+        assert "AC_GW_ESC=$(printf '%s' '${AgentCoreGatewayUrl}' | sed 's/%/%%/g')" in text
+        assert "Environment=KIROCREW_AGENTCORE_GATEWAY_URL=$AC_GW_ESC" in text
+        assert "Environment=KIROCREW_AGENTCORE_GATEWAY_URL=${AgentCoreGatewayUrl}" not in text
         assert "install.sh --voice $AC_EXTRA" in text
         assert "CrewWorkloadIdentity:" in text
         assert "AgentCoreWorkloadInstancePolicy:" in text
@@ -230,6 +243,7 @@ class TestTemplate:
             "KirocrewRef",
             "AllowSshCidr",
             "AgentCoreWorkloadName",
+            "AgentCoreGatewayUrl",
         ):
             block = _re.search(rf"  {param}:\n(?:    .+\n)+", text)
             assert block, f"parameter {param} missing"

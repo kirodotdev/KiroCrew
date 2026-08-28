@@ -180,14 +180,10 @@ src/kiro_crew/channel.py
 src/kiro_crew/channel_history.py
 src/kiro_crew/channel_transcript_migration.py
 src/kiro_crew/cli_bench.py
-src/kiro_crew/cli_cloud.py
 src/kiro_crew/cli_desktop.py
 src/kiro_crew/cli_server.py
 src/kiro_crew/cli_setup.py
 src/kiro_crew/cloud/connect.py
-src/kiro_crew/cloud/ec2.py
-src/kiro_crew/cloud/launch_engine.py
-src/kiro_crew/cloud/launch_job.py
 src/kiro_crew/config/paths.py
 src/kiro_crew/config/schema.py
 src/kiro_crew/config/validation.py
@@ -240,7 +236,6 @@ src/kiro_crew/dashboard/handlers/tunnel.py
 src/kiro_crew/dashboard/handlers/webapp_preview.py
 src/kiro_crew/dashboard/handlers/weixin_qr.py
 src/kiro_crew/dashboard/handlers_channel.py
-src/kiro_crew/dashboard/handlers_cloud.py
 src/kiro_crew/dashboard/loop_watchdog.py
 src/kiro_crew/dashboard/port_reclaim.py
 src/kiro_crew/dashboard/routes/skills.py
@@ -573,9 +568,6 @@ test/test_cli_lazy_imports.py
 test/test_cli_logging.py
 test/test_close_guard_parity.py
 test/test_cloud_connect.py
-test/test_cloud_ec2.py
-test/test_cloud_handlers.py
-test/test_cloud_launch_job.py
 test/test_collection_status_endpoint.py
 test/test_completion_result_read_off_loop.py
 test/test_computer_use_apps.py

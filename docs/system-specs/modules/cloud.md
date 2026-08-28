@@ -14,7 +14,10 @@ launch | list | status | connect | tunnel | login | logout | stop | start | dest
 ```
 
 (`iam-boundary` is the one-time admin step that pre-creates the immutable
-instance permissions boundary — see the security model below.)
+instance permissions boundary — see the security model below.
+`iam-boundary --agentcore` creates `kirocrew-ec2-boundary-agentcore`.
+The launcher can CreatePolicy only on the original name; the successor
+must be admin-pre-created before an AgentCore launch.)
 `iam-policy` prints the launcher document only. The labeled instance-role
 sibling is `kirocrew cloud iam-policy --instance --posture workload|login`
 and `GET /api/cloud/iam-policy?instance=1&posture=` — never merged into the
@@ -77,7 +80,7 @@ claim that a hostile in-process agent is fully contained.
 |--------|------|
 | `aws.py` | The single `run_aws` chokepoint — fixed argv, no shell, sandbox-wrapped, `--profile` only (never boto3, never a raw key). `checked`/`checked_json`; `AccessDenied → exact IAM action` mapping; `env_credentials_hint()`. |
 | `ec2.py` | `deploy`/`status`/`stop`/`start`/`destroy` via `aws cloudformation` + `ec2`; AZ- **and egress-**aware `discover_network` + `resolve_explicit_subnet` (`--subnet` pin, same guarantees); tag-based stateless discovery; `_validate_cidr`. `find_stack` verifies BOTH `kirocrew:managed=true` AND `kirocrew:instance==<tag>` before status/stop/start/destroy touch a stack — so a same-prefix managed stack with a different instance tag can't be acted on by the wrong `--tag`. |
-| `iam.py` | Least-privilege launcher policy generator (applied by the user, never by Kiro Crew) + read-only reachability check + the **content-fixed instance permissions-boundary document** (`boundary_policy_document`/`boundary_arn`) and its constants (`BOUNDARY_NAME`). The launcher document never carries `InvokeGateway` / `GetWorkloadAccessToken*` / inspect verbs (`GetGateway`, `ListGatewayTargets`, `SynchronizeGatewayTargets`). A labeled sibling `agentcore_instance_policy_document(posture)` is the instance-role fragment (`workload` or `login`) and includes a read+sync inspect SID on `gateway/*` so a later catalog surface can inspect an operator-pasted Gateway; `AGENTCORE_BOUNDARY_NAME` (`kirocrew-ec2-boundary-agentcore`) is the successor union ceiling plus `AgentCoreInspectCeiling`. |
+| `iam.py` | Least-privilege launcher policy generator (applied by the user, never by Kiro Crew) + read-only reachability check + the **content-fixed instance permissions-boundary document** (`boundary_policy_document`/`boundary_arn`) and its constants (`BOUNDARY_NAME`). The launcher document never carries `InvokeGateway` / `GetWorkloadAccessToken*` / inspect verbs (`GetGateway`, `ListGatewayTargets`, `GetGatewayTarget`). A labeled sibling `agentcore_instance_policy_document(posture)` is the instance-role fragment (`workload` or `login`) and includes a read-only inspect SID on `gateway/*` so a later catalog surface can inspect an operator-pasted Gateway. Workload Allow is `GetWorkloadAccessToken` only; `GetWorkloadAccessTokenForUserId` stays on the login Deny. `SynchronizeGatewayTargets` is not granted. `AGENTCORE_BOUNDARY_NAME` (`kirocrew-ec2-boundary-agentcore`) is the successor union ceiling plus `AgentCoreInspectCeiling`. |
 | `ssm.py` | SSM `send-command` run-and-poll (base64-wrapped remote scripts) + `start-session` port-forward; `port_is_free` / `wait_for_local_port`. |
 | `login.py` | `kiro-cli` device-code / social sign-in on the box over SSM, plus `logout` — the account switch. `login` short-circuits on an existing session, so `logout` is what makes a different Kiro account reachable without a hand-run SSM command. It kills any still-polling background `kiro-cli login` **and** any live `kiro-cli acp` runtime **before** signing out (otherwise the login re-authenticates the old account, and an ACP runtime keeps serving the old account's in-memory credential until its next 401), removes the login log/PID/FIFO (they hold the previous device-code URL + code, which must never be re-shown as a fresh prompt), and confirms the result with `is_logged_in` rather than the exit code — `kiro-cli logout` exits non-zero when there was no session to drop, which is still the requested state. That confirmation fails CLOSED: it requires a positive signed-out sentinel (`__NOAUTH__`), so an SSM timeout or transport error — where the session may still be active — reports failure rather than a false "signed out". The same fail-closed applies to the cleanup command itself: if that SSM invocation doesn't return `Success`, the kills it was meant to do can't be trusted and logout reports failure without probing. The CLI warns the operator that in-flight chats/cron sessions are stopped (their runtimes are killed). |
 | `connect.py` | SSM port-forward + token mint + open browser; Instances-registry integration; `redact_token`. |
@@ -287,9 +290,11 @@ exits non-zero.
     the legitimate first launch, seeding a permissive boundary at that name. That
     is materially smaller than the old "author an arbitrary boundary at any time"
     hole. Operators who want it gone entirely run `kirocrew cloud iam-boundary`
-    once as an admin, then drop the `IamInstanceBoundaryCreateOnce` statement from
-    the applied launcher policy (the launcher then only *references* the ARN, with
-    no `CreatePolicy` grant). The agent-shell deny-list also blocks
+    once as an admin (and `iam-boundary --agentcore` for the successor,
+    which the launcher cannot CreatePolicy), then drop the
+    `IamInstanceBoundaryCreateOnce` statement from the applied launcher
+    policy (the launcher then only *references* the ARN, with no
+    `CreatePolicy` grant). The agent-shell deny-list also blocks
     `aws iam create-policy`/`create-policy-version`.
   The instance role's inline `s3:GetObject` is still pinned to the **derived**
   launcher path (`kirocrew-src-${AccountId}-${Region}/${StackTag}/…`), not the
