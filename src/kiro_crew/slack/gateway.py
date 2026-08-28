@@ -10164,6 +10164,15 @@ class GatewayOrchestrator:
             if _shutting_down:
                 print("\n👻 Force exit!")
                 cleanup_orphaned_sessions()
+                # os._exit skips atexit, so the log queue's drain hook never
+                # runs — flush the queued gateway.log tail here, bounded so a
+                # wedged disk cannot hang the force exit.
+                try:
+                    from kiro_crew.cli import _stop_log_queue_listener
+
+                    _stop_log_queue_listener(timeout=2.0)
+                except Exception:
+                    pass  # force exit must never be blocked by logging
                 os._exit(0)
             _shutting_down = True
             shutdown_event.set()
