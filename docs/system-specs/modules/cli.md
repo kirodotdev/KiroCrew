@@ -1006,6 +1006,15 @@ that must not change, because the SPA's per-origin `localStorage` is keyed on it
    already has it to install it. That case carries SEL
    `reason=<tool>_outside_trusted_dirs`, distinct from `<tool>_not_found`, so
    the two are separable in the audit log.
+   When the trusted lookup tool exists but returns no pid, stop makes one
+   fixed-loopback `POST /api/shutdown` request carrying the gateway generation's
+   local secret. That handler independently requires loopback origin and a
+   constant-time secret match, then triggers the same graceful shutdown event as
+   SIGTERM. The acknowledgement body is capped at 4 KiB before JSON parsing;
+   excessive nesting is treated as malformed input. A successful acknowledgement
+   ends the stop command; a missing secret, refusal, malformed response, or
+   transport failure retains the ordinary no-gateway diagnostic. This fallback never converts the pid sidecar into
+   authority to signal a process.
 3. `platform_compat.process_command_line(pid)` to verify it's a KiroCrew process —
    `/proc/<pid>/cmdline` (Linux), `ps -o command=` (macOS), `Win32_Process.CommandLine`
    via WMI (Windows). The Windows venv `kirocrew.exe` re-execs `python.exe`, so the
@@ -1038,12 +1047,19 @@ that must not change, because the SPA's per-origin `localStorage` is keyed on it
      on Windows) to detect a running gateway. If found — OR if the lookup
      tool is absent (`not listening_pid_tool_available()`, so a missing
      tool is not mistaken for a dead gateway) — run the existing `_stop`
-     kill-by-port path. If not (e.g. the user runs `restart` after a
-     crash), skip the stop step rather than erroring — the user expects to
-     end up with a running gateway either way. The `_stop` call is wrapped
-     in a `try / except SystemExit` so a TOCTOU race (gateway exits between
-     the listener check and `_stop`'s own lookup → `_stop` calls
-     `sys.exit(1)`) does not abort the restart before the spawn.
+     path. When the trusted lookup tool exists but returns no pid, restart
+     independently attempts the authenticated shutdown request. An acknowledged
+     request always refuses the immediate replacement and tells the operator to
+     retry after shutdown completes: neither an absent pid sidecar nor a live
+     same-user pid from that sidecar can prove singleton-lock release, because a
+     stale pid may be recycled and exit before the incumbent. The second restart
+     sees no incumbent and safely starts the replacement.
+   - If no incumbent evidence exists (e.g. the user runs `restart` after a
+     crash), skip the stop step rather than erroring — the user expects to end
+     up with a running gateway either way. The `_stop` call is wrapped in a
+     `try / except SystemExit` so a TOCTOU race (gateway exits between the
+     listener check and `_stop`'s own lookup → `_stop` calls `sys.exit(1)`)
+     does not abort the restart before the spawn.
    - Spawn a detached `kirocrew gateway` via `subprocess.Popen`, stdin set
      to `subprocess.DEVNULL`, and stdout + stderr redirected to
      `~/.kiro/crew/gateway.log` (the same file the `kirocrew logs` command
