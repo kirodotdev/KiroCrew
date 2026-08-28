@@ -1129,6 +1129,13 @@ class TestRunProbe:
         # environment is built from nothing instead of filtered down.
         for name in ("GH_TOKEN", "GITHUB_TOKEN", "KUBECONFIG", "NPM_TOKEN"):
             monkeypatch.setenv(name, f"leaked-{name}")
+        # `GRADLE_OPTS` is named in the allowlist below because the sandbox launcher
+        # writes it, so a marker in the parent is what keeps the check honest: naming
+        # the variable alone would let a future filtered-inherit hand the child the
+        # parent's value under an allowed name. The launcher APPENDS to whatever it
+        # finds, so an inherited value survives into the child and trips the
+        # `leaked-` assertion below.
+        monkeypatch.setenv("GRADLE_OPTS", "leaked-GRADLE_OPTS")
         # HOME keeps the `leaked-` marker but must be an ABSOLUTE path: on hosts
         # where the userns sandbox is unavailable the probe child runs unsandboxed
         # and inherits pytest's CWD (the repo root), and the workspace resolver
@@ -1141,12 +1148,20 @@ class TestRunProbe:
         assert out is not None
         assert "leaked-" not in out
         # And the allowlist really is minimal. The extras are not ours: the sandbox
-        # launcher injects its own markers (`KIROCREW_*`, `GIT_SSH_COMMAND`) and the
-        # shell adds `PWD`/`SHLVL`/`_`, so they are named rather than blanket-allowed
-        # — a NEW name appearing here should fail this and be looked at.
+        # launcher injects its own markers (`KIROCREW_*`, `GIT_SSH_COMMAND`,
+        # `GRADLE_OPTS`) and the shell adds `PWD`/`SHLVL`/`_`, so they are named
+        # rather than blanket-allowed — a NEW name appearing here should fail this
+        # and be looked at.
         ours = {"TERM", "NO_COLOR", "PAGER", "GIT_PAGER", "PATH", "LANG", "LC_ALL", "LC_CTYPE"}
+        # `GRADLE_OPTS` carries no inherited value: the launcher's guard appends
+        # `-Dorg.gradle.daemon=false` to whatever the ALLOWLISTED env holds, and the
+        # allowlist never carries it, so the child sees only the flag the launcher
+        # wrote. That the launcher always writes it is pinned from the shipped
+        # launcher source by
+        # test_sandbox_gradle_daemon.py::test_sets_the_flag_when_gradle_opts_is_absent.
         sandbox_injected = {"KIROCREW_HOST_PID", "KIROCREW_SANDBOX_ACTIVE",
-                            "KIROCREW_SANDBOX_LEVEL", "KIROCREW_SPAWNED", "GIT_SSH_COMMAND"}
+                            "KIROCREW_SANDBOX_LEVEL", "KIROCREW_SPAWNED",
+                            "GIT_SSH_COMMAND", "GRADLE_OPTS"}
         shell_added = {"PWD", "SHLVL", "_"}
         # macOS injects __CF_USER_TEXT_ENCODING into every spawned process
         # unconditionally (CoreFoundation per-user encoding preference). This is
