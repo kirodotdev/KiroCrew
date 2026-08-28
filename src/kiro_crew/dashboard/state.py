@@ -33,6 +33,7 @@ from kiro_crew.config.loader import (
     resolve_effective_agent,
 )
 from kiro_crew.constants import (
+    CRON_NOTIFY_PREFIX,
     OPTIONS_RE_LINE,
     SUBAGENT_BATCH_COMPLETION_PREFIX,
     SUBAGENT_COMPLETION_PREFIX,
@@ -2132,7 +2133,7 @@ NEW_SESSION_TITLE = "New Session…"
 _SLOT_KEY_TITLE_RE = re.compile(r"(?:dashboard_)?chat-\d+-\d+$")
 
 # Cron notification wrapper format — used by handlers.py (create), chat.py (detect), ChatPage.tsx (render)
-CRON_NOTIFY_PREFIX = "[Cron notification from "
+# CRON_NOTIFY_PREFIX is imported from constants (platform/core must not import this layer).
 CRON_NOTIFY_END = "[End of cron notification]"
 CRON_NOTIFY_RE = re.compile(rf'^{re.escape(CRON_NOTIFY_PREFIX)}"(.*)"\]')
 # Both sub-agent markers, for the checks that must treat either shape as a system

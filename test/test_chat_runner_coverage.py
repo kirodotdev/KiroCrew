@@ -2248,6 +2248,41 @@ class TestRunChatLocalCommands:
         assert any("No prompts found" in m.get("content", "") for m in slot.messages)
 
 
+# ── _run_chat: AgentCore principal (injected envelopes are not a user) ────
+
+
+class TestRunChatInjectedPrincipal:
+    @pytest.mark.asyncio
+    async def test_cron_wrapped_message_does_not_bind_dashboard_owner(self, tmp_path):
+        state, client = _runner_state(tmp_path)
+        state.owner_id = "alice"
+        slot = _slot()
+        _set_stream(client, [_complete()])
+
+        with patch.object(chat_runner, "publish_turn_identity", new=AsyncMock()) as pub:
+            await _drive(state, slot, '[Cron notification from "job"]\nbuild failed')
+
+        pub.assert_awaited()
+        kwargs = pub.await_args.kwargs
+        assert not kwargs.get("surface")
+        assert not kwargs.get("raw_id")
+
+    @pytest.mark.asyncio
+    async def test_ordinary_user_message_still_binds_dashboard_owner(self, tmp_path):
+        state, client = _runner_state(tmp_path)
+        state.owner_id = "alice"
+        slot = _slot()
+        _set_stream(client, [_complete()])
+
+        with patch.object(chat_runner, "publish_turn_identity", new=AsyncMock()) as pub:
+            await _drive(state, slot, "please fix the build")
+
+        pub.assert_awaited()
+        kwargs = pub.await_args.kwargs
+        assert kwargs.get("surface") == "dashboard"
+        assert kwargs.get("raw_id") == "alice"
+
+
 # ── _run_chat: recovery ladders ───────────────────────────────────────────
 
 

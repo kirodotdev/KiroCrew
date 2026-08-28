@@ -282,6 +282,7 @@ send time.
 |--------|---------|
 | `start_pool(blocking=True)` | Pre-spawn warm + background sessions. `blocking=False` for non-blocking mode. |
 | `get_or_create(key, agent=None, approval_policy="", speculative=False, speculative_resume=False)` | Returns `(LLMProvider, is_new, resumed)`. Uses warm pool for new sessions (default agent only). Sessions with a resume mapping skip warm pool (cold start needed for `session/load`). A `reasoning_effort_override` also skips the warm pool (`bypass_effort`): a pre-warmed provider was built without the override and post-claim fixups never touch effort, so the override must reach a fresh provider-factory call to be delivered — which also keeps the factory's effort gate the single authority reporting a dropped level. Every decision is counted via `_record_pool_decision` (`kirocrew.session.pool.decision`) with the single disqualifying reason, so the pool's hit rate and the frequency of the `bypass_resume` case are observable. Non-default agents skip warm pool and resolve their model by precedence via `_model_fallback()` — caller model > per-agent pin > global default: `model=None` (defer to kiro's agent-JSON resolution) only when the agent pins its own model, otherwise the global default, unless that default is the `"auto"` sentinel (also `None`). The per-agent pin is resolved off the event loop via `run_in_executor` using `_resolve_named_agent_model`; blank agents inherit the global, and `kirocrew` is excluded (tracks the global). `approval_policy` is persisted on the new `_Session` — callers (e.g. subagent) pass parent policy so the session inherits it. `speculative=True` (eager spawn) pre-creates ahead of a real first turn: the one-shot `_Session.first_turn` observation — a single three-member `FirstTurnState` enum (`NOTHING_ARMED` / `FRESH` / `RESUMED`), so a resume marker on an already-claimed session is unrepresentable rather than forbidden by convention — is registered ARMED (`FRESH`) and never consumed by speculative callers, and a resumable key raises `SpeculativeResumeRefused` — unless `speculative_resume=True` (resume prefetch) opts in, in which case the speculative creator performs the `session/load` and registers the observation as `RESUMED` when the load restored the transcript. The observation is consumed in one read-then-clear by the first real claimant under the per-session semaphore (fast path and won-race path alike), with the returned booleans derived from it at the return boundary — so that turn observes `(is_new=True, resumed=True)` exactly as if it had resumed itself, preserving its history-injection decision. |
+| `set_principal(key, principal)` / `get_principal(key)` | Bind / read the core-derived AgentCore `SessionPrincipal` on a live `_Session`. No-op / `None` when the session is not live. Does not invent a session key. See [AgentCore session principal](#agentcore-session-principal). |
 | `check_context_usage(key, provider)` | Returns %. Triggers compaction at configured threshold (default 70%), warns one `CONTEXT_WARN_MARGIN_PCT` below it. |
 | `compact_if_needed(key)` | Awaitable twin of the `check_context_usage` trigger for callers that must not start their next turn while a compaction is pending (the task runner's between-steps check, #4686). Same gates in the same order — both entry points consume the shared `_compaction_gate_decision` ladder, the single owner of the gate order (its docstring documents each rung) — then AWAITS `_compact_session`. Returns the outcome: `"absent"`, `"reset"` (the settled verdict on the prior attempt was ineffective-and-still-critical and the promoted escalation reset the session here, awaited), `"cc_managed"` (checked before the threshold, mirroring `check_context_usage`), `"below_threshold"`, `"unconfirmed"`, `"in_progress"`, `"cooldown"`, `"ok"`, `"busy"`, `"recycled"`, `"failed"`. A `"busy"` decline means a turn holds the semaphore — the caller leaves the session alone and retries later, never falls back to a direct `provider.compact()`. |
 | `record_success(key)` / `record_failure(key)` | Circuit breaker tracking. |
@@ -296,6 +297,53 @@ send time.
 | `drain_active_turns(timeout=None)` | Best-effort co-operative drain that brings in-flight prompts to a safe turn boundary **before** teardown, so kiro-cli closes its native turn and releases its session lock (`~/.kiro/sessions/cli/<uuid>.json`) on the subsequent SIGTERM — otherwise the next gateway's `session/load` hits "active in another process" and the slot returns empty completions (the Make-Live empty-response incident, #200). For each registered session with an **unfinished** turn (native turn-done not yet acked — independent of cancel state, so an already-cancelled-but-not-acked turn is still drained), it issues a graceful `session/cancel` and waits (bounded) for the ack; a turn already cancelled (`cancel()` → `"no_turn"`) is waited on directly via `wait_turn_done`. The whole operation is bounded by `timeout` (`None` → `_DRAIN_ACTIVE_TURNS_TIMEOUT_SECS`, default 5.0s; internal cap is `timeout+1.0`); on timeout it logs and returns so the caller falls through to the SIGTERM-first kill path — never hangs teardown, never raises. `timeout <= 0` disables the drain. Returns the count of unfinished turns (observability/tests). Only registered user sessions are drained; the warm pool holds never-prompted processes. |
 | `begin_turn(key)` | **Synchronous** pre-dispatch gate against the lease-dispatch race (#200 / Codex HIGH). A caller holds the per-session semaphore *lease* from `get_or_create` through the whole turn, but the native turn only opens on the first `provider.stream(...)` iteration; the `get_or_create` `_closing` gate cannot revoke a lease already issued before `close_all` set `_closing`. Callers (dashboard `chat_runner`, Slack handler) MUST call `begin_turn` synchronously — **no `await` between it and the `async for` stream drive** — so the `_closing` read and the stream's turn registration (`AcpClient.stream_events` clears `_turn_done` before its first `await`) form one yield-free span, strictly ordered w.r.t. `close_all`'s `_closing` set: the turn is either registered before the drain snapshot (and drained) or the caller aborts. Raises `SessionClosingError` (a `RuntimeError`) when closing; the caller's `finally` releases the lease. Deliberately NOT `async`/lock-guarded (an `await` would reopen the race). |
 | `warm_pool_size` | Property: number of warm sessions available. |
+
+## AgentCore session principal
+
+The trusted caller for AgentCore token vending is a `SessionPrincipal`
+(`platform.interfaces`). Core code is the only writer of `subject`. A
+tool argument, a client body, or an injected `[Cron notification]` /
+`[Subagent completion event]` envelope is never a user.
+
+`platform.agent_identity.derive_session_principal(surface, raw_id,
+session_key)` builds `subject` as `{surface}+{raw_id}` so
+`slack+U0123` and `dashboard+U0123` cannot collide. `session_key` is
+the existing session address — this layer does not invent a second
+key. `user_jwt` stays `None` until a companion annotates.
+
+| Surface | `subject` |
+|---|---|
+| Dashboard | `dashboard+{owner}` (companion IdP sub, else the local OSS owner) |
+| Slack / Discord / … | `{channel}+{provider_user_id}` |
+| CLI | `cli+{os_user}` |
+| Cron / TaskRunner | `cron+{job_owner}` |
+| Subagent | inherit parent `subject`; child's `session_key` |
+| Injected cron / subagent-completion envelopes | **not a user** — `is_injected_envelope` is true; `derive_session_principal_for_injected` returns `None`. A normal user message raises `ValueError` so a silent `None` cannot look like "skip bind". |
+
+The session-start hook is `messaging.identity.publish_turn_identity`.
+Every turn-running surface already calls it with the existing
+`session_key` (pid sidecar). When the caller also knows the surface
+and a core-derived `raw_id`, the same function binds the principal:
+
+1. `derive_session_principal` from those three fields.
+2. `annotate_principal` through `async_safe_context_call`, fallback =
+   the core principal unchanged. A companion may set `user_jwt`. A
+   rewrite of `subject` (or `surface` / `session_key`) is ignored.
+3. `SessionManager.set_principal` stores the result on the live
+   `_Session`. The field survives `adopt_provider` (it names the
+   caller, not the transcript).
+
+Existing callers that omit `surface` / `raw_id` stay byte-identical:
+only the pid sidecar is written. Dashboard chat (`chat_runner._run_chat`)
+is the first wired caller: `surface="dashboard"`,
+`raw_id=state.owner_id` or the local OS user. When the turn text is an
+injected envelope, `principal_bind_kwargs` omits those kwargs so the
+envelope cannot bind `dashboard+{owner}`. Channel dispatchers can pass
+`{channel_type, provider_user_id}` the same way without a second
+session key. `tool_input` cannot supply `subject` / `userId` —
+`reject_tool_input_identity` refuses those kwargs.
+
+Gateway inbound attach (sidecar / SigV4) is a later stack PR.
 
 ## Stop Orchestration
 

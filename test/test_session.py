@@ -1110,6 +1110,46 @@ class TestApprovalPolicy:
         await mgr.close_all()
 
 
+class TestPrincipal:
+    """set_principal / get_principal on SessionManager."""
+
+    def test_get_principal_missing_session_is_none(self, cfg):
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        assert mgr.get_principal("nonexistent") is None
+
+    def test_set_principal_missing_session_is_noop(self, cfg):
+        from kiro_crew.platform.interfaces import SessionPrincipal
+
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        principal = SessionPrincipal(
+            surface="dashboard",
+            subject="dashboard+alice",
+            session_key="nonexistent",
+            user_jwt=None,
+        )
+        mgr.set_principal("nonexistent", principal)
+        assert mgr.get_principal("nonexistent") is None
+
+    @pytest.mark.asyncio
+    async def test_principal_survives_adopt_provider(self, cfg):
+        from kiro_crew.platform.interfaces import SessionPrincipal
+
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("dashboard:1")
+        mgr.release("dashboard:1")
+        principal = SessionPrincipal(
+            surface="dashboard",
+            subject="dashboard+alice",
+            session_key="dashboard:1",
+            user_jwt=None,
+        )
+        mgr.set_principal("dashboard:1", principal)
+        sess = mgr._sessions["dashboard:1"]
+        sess.adopt_provider(_mock_provider_factory()())
+        assert mgr.get_principal("dashboard:1") is principal
+        await mgr.close_all()
+
+
 class TestGetAgent:
     """Tests for get_agent() on SessionManager."""
 

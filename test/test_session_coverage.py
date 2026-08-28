@@ -251,6 +251,7 @@ class TestAdoptProvider:
         """Everything reset describes the OLD transcript. ``agent`` and
         ``approval_policy`` describe the session's role, so they must carry."""
         old, new = _stub_provider(), _stub_provider()
+        principal = object()
         sess = _Session(
             provider=old,
             agent="researcher",
@@ -261,6 +262,7 @@ class TestAdoptProvider:
             provider_switch_replay=True,
             needs_context_reinjection=True,
             first_turn=FirstTurnState.RESUMED,
+            principal=principal,
         )
 
         sess.adopt_provider(new)
@@ -274,6 +276,7 @@ class TestAdoptProvider:
         assert sess.first_turn is FirstTurnState.FRESH, "a replacement is fresh, not resumed"
         assert sess.agent == "researcher"
         assert sess.approval_policy == "auto"
+        assert sess.principal is principal, "principal names the caller, not the transcript"
 
     @pytest.mark.parametrize(
         "start", [FirstTurnState.NOTHING_ARMED, FirstTurnState.FRESH]

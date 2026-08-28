@@ -8,7 +8,10 @@ they need a marker the model and the frontend can both recognise.
 **The user may not be present.** Process the envelope and act; do not answer it as
 though someone is waiting for a conversational reply.
 
-Every prefix is defined once, in `src/kiro_crew/dashboard/state.py`, so the
+Every prefix is defined once. Cron and subagent-completion openers live in
+`src/kiro_crew/constants.py` so platform/core can import them without the
+dashboard layer; `src/kiro_crew/dashboard/state.py` re-exports them next to
+`CRON_NOTIFY_END` / `CRON_NOTIFY_RE` and the other transcript markers so the
 frontend has one list to mirror and no second copy can drift. Classification is by
 `str.startswith` on the resolved prefix, never by a loose regex.
 
