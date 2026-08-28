@@ -1997,14 +1997,18 @@ function ChatSidebar({
   // an unanswered question, unread output — and a row the user JUST moved,
   // which must stay visible at its destination whatever its age. The collapse
   // de-noises settled work; a row that needs the user is not settled.
-  const isStaleExempt = (s: Slot): boolean =>
+  // Memoized (not just for render cost): the reveal-in-sidebar effect below
+  // consults it to decide whether the target row needs its dormant section
+  // pre-expanded, so it must be a listable effect dependency.
+  const isStaleExempt = useCallback((s: Slot): boolean =>
     pinned.has(s.key) || s.key === activeSlot || runningSet.has(s.key)
     || (subagentCounts[s.key] ?? 0) > 0 || !!s.pending_approval
     || !!s.needs_input || unreadSet.has(s.key)
     // Read-time expiry: an entry only counts while younger than one heartbeat
     // interval, so correctness never depends on the prune timer having fired
     // (the timer is gated on the feature being on; the writer is not).
-    || (staleRecentlyMoved.get(s.key) ?? 0) > Date.now() - STALE_COLLAPSE_TICK_MS
+    || (staleRecentlyMoved.get(s.key) ?? 0) > Date.now() - STALE_COLLAPSE_TICK_MS,
+  [pinned, activeSlot, runningSet, subagentCounts, unreadSet, staleRecentlyMoved])
   const splitStale = (list: Slot[]): StaleSplit<Slot> => {
     // Inert while the list is narrowed: a search or status chip must reach
     // every match (the same invariant that sends the folder filter inert
@@ -2689,8 +2693,9 @@ function ChatSidebar({
       for (const s of stale) next.add(slotFolders[s.key] || 'root')
       return next
     })
-    // isStaleExempt/slotFolders are render-fresh closures; keying the effect on
-    // them would re-fire it every render. The transition is what matters.
+    // Deliberately keyed on the narrowed→clear transition alone: the bridge
+    // must fire exactly when the narrow ends, not whenever the collapse
+    // inputs it reads happen to change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [listNarrowed])
 
@@ -3078,6 +3083,21 @@ function ChatSidebar({
     // Reveal means "show me this row", so drop every filter hiding the target
     // rather than scrolling to nothing (#912 D5). Registered in one list above.
     for (const dim of revealBlockingFilters) if (dim.hides(slot)) dim.clear(slot)
+    // The stale-session collapse is a per-container disclosure, not a filter
+    // dimension (clearing a dimension drops it everywhere; a reveal should
+    // open ONE dormant section, not all of them), so it is handled here
+    // rather than in the registry: pre-expand the target's container when the
+    // row is stale-collapsible, or the retry loop below scrolls to a row that
+    // never rendered (#6479). Gated on the collapse being ACTIVE (same gate
+    // as the narrow-bridge consumer above): with the feature off or under a
+    // non-date sort the row renders anyway, and the write would leave that
+    // container's section pre-opened whenever the collapse next re-engages.
+    // Deliberately NOT gated on `listNarrowed`: the filter clearing two lines
+    // up has not committed yet, so it would still read true here.
+    if (staleCollapseMs > 0 && sortKey === 'date-desc' && !isStaleExempt(slot)) {
+      const container = slotFolders[key] || 'root'
+      setStaleExpanded(prev => (prev.has(container) ? prev : new Set(prev).add(container)))
+    }
     if (slot.folder_id) {
       // Expand all collapsed ancestor folders. Cycle-guarded: a hand-edited
       // folders.json can contain a parent_id loop and must not hang the tab.
@@ -3136,7 +3156,7 @@ function ChatSidebar({
       revealFlashTimersRef.current = [t1, t2]
     }
     tryScroll()
-  }, [revealRequest, dispatch, slots, folders, revealBlockingFilters, updateFolderMutation])
+  }, [revealRequest, dispatch, slots, folders, revealBlockingFilters, updateFolderMutation, isStaleExempt, slotFolders, staleCollapseMs, sortKey])
   const renameCommit = useCallback((id: string, name: string) => {
     if (name.trim()) updateFolderMutation.mutate({ id, body: { name: name.trim() } })
     setEditingId(null)
