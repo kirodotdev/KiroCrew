@@ -421,7 +421,7 @@ class GitHubPRRecipe:
         the morning-collection workflow keeps working offline.
         """
         self.pr_queue_dir.mkdir(parents=True, exist_ok=True)
-        (self.pr_queue_dir / f"{fingerprint}.diff").write_text(diff or "")
+        (self.pr_queue_dir / f"{fingerprint}.diff").write_text(diff or "", encoding="utf-8")
         body_path = self.pr_queue_dir / f"{fingerprint}.pr.md"
         # The title and body are agent-authored PROSE, so unlike the diff they can be
         # redacted without breaking anything the gate proved — a rewritten sentence is
@@ -436,14 +436,16 @@ class GitHubPRRecipe:
             summary = _redact_prose(summary)
             description = _strip_leading_h1(_redact_prose(description))
         except ProseRedactionUnavailable as exc:
-            body_path.write_text(f"# {summary}\n\n{_strip_leading_h1(description)}\n")
+            body_path.write_text(
+                f"# {summary}\n\n{_strip_leading_h1(description)}\n", encoding="utf-8"
+            )
             logger.warning(
                 "PR draft degraded to queue for %s: %s — prose was not published",
                 fingerprint,
                 exc,
             )
             return f"QUEUED:{fingerprint}"
-        body_path.write_text(f"# {summary}\n\n{description}\n")
+        body_path.write_text(f"# {summary}\n\n{description}\n", encoding="utf-8")
 
         if shutil.which("gh") is None:
             logger.info("gh CLI not on PATH — PR queued at %s", body_path)

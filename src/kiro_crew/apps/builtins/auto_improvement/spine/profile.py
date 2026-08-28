@@ -642,12 +642,12 @@ class StubPRRecipe:
         parent_ref: str | None = None,
     ) -> str:
         self.queue_dir.mkdir(parents=True, exist_ok=True)
-        (self.queue_dir / f"{fingerprint}.diff").write_text(diff or "")
+        (self.queue_dir / f"{fingerprint}.diff").write_text(diff or "", encoding="utf-8")
         # `.pr.md` to match the real recipe and the display reader (routes/commit read
         # `<fp>.pr.md`); the stub's copy is never displayed, but keeping the name in step
         # avoids teaching a future maintainer the wrong convention.
         (self.queue_dir / f"{fingerprint}.pr.md").write_text(
-            f"# stub CR: {summary}\n\n{description}\n"
+            f"# stub CR: {summary}\n\n{description}\n", encoding="utf-8"
         )
         return f"QUEUED:{fingerprint}"
 
