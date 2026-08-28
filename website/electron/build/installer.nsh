@@ -219,8 +219,23 @@ FunctionEnd
 ; already a Kiro Crew install, which is exactly the case the executable check
 ; admits. An update that cannot prove ownership falls through to the ordinary
 ; fresh-install ownership path instead of adopting the directory.
+;
+; $KiroAppExeName is also tested for non-emptiness, BEFORE it is appended.
+; FileExists matches a directory as readily as a file, so an empty name collapses
+; the ownership proof into `FileExists "$KiroInstallDir\"` -- a bare directory
+; test, which is the same "reduce this test to a bare directory path and let the
+; bypass fire for a directory we do not own" outcome the Var declaration warns
+; about, reached by a different route. That warning covers the
+; ${APP_EXECUTABLE_FILENAME} include-time hazard; this covers the variable simply
+; never having been assigned, since only customInit assigns it. Without the test,
+; every safety property here rests on customInit having run first -- true on both
+; call paths today, and not something a page callback inserted ahead of it should
+; be able to quietly invalidate. The cost of being wrong is not a failed update:
+; the generated uninstaller removes $INSTDIR recursively, so adopting a directory
+; we did not create deletes whatever the user already had there.
 Function KiroEnsureAppInstallDir
   ${If} $KiroVisibleUpdate == 1
+  ${AndIf} $KiroAppExeName != ""
   ${AndIf} ${FileExists} "$KiroInstallDir\$KiroAppExeName"
     Return
   ${EndIf}

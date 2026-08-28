@@ -382,7 +382,7 @@ describe("first-download installer design contract", () => {
     );
     assert.match(
       ensureInstallDir,
-      /^Function KiroEnsureAppInstallDir\n\$\{If\} \$KiroVisibleUpdate == 1\n\$\{AndIf\} \$\{FileExists\} "\$KiroInstallDir\\\$KiroAppExeName"\nReturn\n\$\{EndIf\}\n/,
+      /^Function KiroEnsureAppInstallDir\n\$\{If\} \$KiroVisibleUpdate == 1\n\$\{AndIf\} \$KiroAppExeName != ""\n\$\{AndIf\} \$\{FileExists\} "\$KiroInstallDir\\\$KiroAppExeName"\nReturn\n\$\{EndIf\}\n/,
       "an update must return before any install-dir nesting can run, and only for a root it can prove is ours"
     );
     // The update bypass must stay conditional on that ownership proof. `--updated`
@@ -394,6 +394,20 @@ describe("first-download installer design contract", () => {
       /\$\{If\} \$KiroVisibleUpdate == 1\nReturn/.test(ensureInstallDir),
       false,
       "the update bypass must require proof the install root is ours, not return unconditionally"
+    );
+    // The name must be proven non-empty BEFORE it is appended. IfFileExists
+    // matches a directory as readily as a file, so an empty $KiroAppExeName
+    // collapses the ownership proof into a bare directory test -- the same
+    // failure the ${APP_EXECUTABLE_FILENAME} assertion below exists to prevent,
+    // reached by a different route: the variable never having been assigned at
+    // all. Only customInit assigns it, so without this the whole guard rests on
+    // customInit having run first, and a future page callback inserted ahead of
+    // it would silently turn the ownership proof back into "does this directory
+    // exist".
+    assert.match(
+      ensureInstallDir,
+      /\$\{AndIf\} \$KiroAppExeName != ""/,
+      "the ownership test must reject an empty executable name before appending it"
     );
     // The ownership test must read the executable name from a VARIABLE, never the
     // ${APP_EXECUTABLE_FILENAME} define. That define lives in the template's
