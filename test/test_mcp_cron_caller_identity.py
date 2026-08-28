@@ -417,3 +417,67 @@ def test_remove_all_never_sweeps_an_ownerless_row() -> None:
     after = CronService(base_dir=mcp_cron.config_dir())
     assert after.get_job(kept.id) is not None
     assert after.get_job(mine) is None
+
+
+# --- 6: the scoping decision has to be legible in the ANSWER ----------------
+
+
+def test_a_scoped_empty_list_does_not_read_as_an_empty_registry() -> None:
+    """The distinction the whole of #6447 is about.
+
+    Bob owns nothing, Alice owns a job. Bob's answer must not be the string a
+    caller gets when the registry is genuinely empty, because that reads as
+    "nothing is scheduled" and sends the reader looking for a broken store. The
+    inequality below is the actual invariant; the wording can change freely
+    underneath it.
+    """
+    _as_session("dashboard:alice")
+    _add_job(f"alice-{uuid.uuid4().hex[:8]}")
+
+    _as_session("dashboard:bob")
+    out = _call_tool_inner("cron_list", {})
+
+    assert out != "No cron jobs."
+    assert out == mcp_cron._SCOPED_EMPTY
+    # It has to leave the reader somewhere to go, or it only relabels the dead end.
+    assert "cron list" in out and "Schedule page" in out
+
+
+def test_a_genuinely_empty_registry_still_says_so() -> None:
+    """The other half of the same invariant: two states, two strings.
+
+    Without this, collapsing both branches back onto one message would still pass
+    the test above.
+    """
+    _as_session("dashboard:alice")
+    assert _call_tool_inner("cron_list", {}) == "No cron jobs."
+
+
+def test_an_unidentified_caller_is_told_its_scope_is_empty_not_the_store() -> None:
+    """The branch where the MOST is withheld gets the clearest answer.
+
+    ``caller=None`` on a pooled connection withholds every row, so this caller is
+    the one most likely to misread an empty list as an empty registry.
+    """
+    _as_session("dashboard:owner")
+    _add_job(f"owned-{uuid.uuid4().hex[:8]}")
+
+    set_current_caller(None)
+    out = _call_tool_inner("cron_list", {})
+
+    assert out == mcp_cron._SCOPED_EMPTY
+    assert out != "No cron jobs."
+
+
+def test_the_tool_description_warns_that_the_list_is_scoped() -> None:
+    """A caller should not have to hit the empty case to learn the rule.
+
+    The message fixes the symptom after the fact; the description is what stops a
+    caller concluding "no scheduled work exists" from a filtered result it never
+    knew was filtered.
+    """
+    spec = next(t for t in mcp_cron._list_tools() if t["name"] == "cron_list")
+    desc = spec["description"]
+
+    assert "SCOPED TO THE CALLING SESSION" in desc
+    assert "not that none are scheduled" in desc

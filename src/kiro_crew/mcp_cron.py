@@ -958,7 +958,12 @@ def _list_tools() -> list[dict[str, Any]]:
                 'full last_error/last_result). Pass ids=["<job_id>", ...] '
                 "to fetch full bodies for only those jobs (drill-in "
                 "pattern after a compact list). ids takes precedence over "
-                "verbose."
+                "verbose. SCOPED TO THE CALLING SESSION: only jobs this "
+                "session owns are listed, so an empty result means none are "
+                "owned HERE, not that none are scheduled. Jobs owned by "
+                "another session, or created without one (the CLI, the "
+                "onboarding importer), are managed with `kirocrew cron list` "
+                "or on the dashboard Schedule page."
             ),
             "inputSchema": {
                 "type": "object",
@@ -1671,6 +1676,34 @@ def _check_cron_job_ownership(svc: "CronService", job_id: str) -> str | None:
     return None
 
 
+#: The answer when rows exist but none are in the caller's scope, kept DISTINCT
+#: from the store-is-empty ``"No cron jobs."``.
+#:
+#: One string served both states until #6447, and a filtered result reading
+#: "nothing is scheduled" is actively misleading: an operator whose 15 jobs were
+#: all enabled and running on schedule read it and concluded this server was
+#: pointed at a different store. The scoping decision was legible only in the SEL
+#: row that records it (``kept=0 withheld=N``), and an audit log is the right
+#: place to keep that record, not the only place to explain it.
+#:
+#: ``dashboard/handlers/cron.py`` already documents the invariant this sentence
+#: states -- "cron_list only shows a session its own jobs, so a job whose key is
+#: empty ... [is] manageable only from this page or the CLI". The knowledge was
+#: written down; the message a caller actually sees just did not carry it.
+#:
+#: Deliberately WITHOUT a count of what was withheld. :data:`_UNOWNED` exists
+#: because an identified session is not necessarily the operator, and "N jobs
+#: exist that you may not see" discloses the admin surface's volume to exactly
+#: that principal. Naming the two surfaces that CAN reach those rows discloses
+#: nothing further: both already require the operator's own machine.
+_SCOPED_EMPTY = (
+    "No cron jobs owned by this session. Jobs owned by another session, or "
+    "created without one (the CLI and the onboarding importer), are outside "
+    "this session's scope and are not listed here. Manage those with "
+    "`kirocrew cron list` or on the dashboard Schedule page."
+)
+
+
 def _owned_by(jobs: list[CronJob], session_key: str) -> list[CronJob]:
     """The jobs *session_key* may reach -- for reading and for writing alike.
 
@@ -1709,7 +1742,9 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             session_key = _authz_session_key()
             jobs = _audit_list_scope(_owned_by(jobs, session_key), jobs, session_key)
             if not jobs:
-                return "No cron jobs."
+                # NOT the store-empty string above: rows exist, they are just out
+                # of scope. See _SCOPED_EMPTY for why the two must differ.
+                return _SCOPED_EMPTY
         # Drill-in: ids filter forces full bodies for matching jobs only.
         if ids_filter:
             id_set = set(ids_filter)
