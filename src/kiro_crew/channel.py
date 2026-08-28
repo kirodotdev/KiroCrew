@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 
 logger = logging.getLogger(__name__)
@@ -482,14 +483,32 @@ class ChannelManager:
         self._load_all()
 
     def _save_channel(self, channel: Channel) -> None:
-        """Persist channel state to disk."""
+        """Persist channel state to disk.
+
+        Routed through the shared :func:`atomic_write` helper rather than a
+        hand-rolled temp-write-and-rename. The hand-rolled form derived its temp
+        name from the destination (``<id>.json.tmp``), so two writers persisting
+        the same channel raced on one filename: the loser could publish a
+        half-written payload, or fail outright when its rename found the temp
+        already moved. It also missed the helper's bounded retry for the Windows
+        rename window, where a scanner holding the temp file makes a correct
+        write lose its payload.
+
+        Durability and permission semantics are deliberately unchanged: no
+        ``fsync`` (the pre-existing best-effort contract for channel state) and
+        no explicit ``mode``, so the file still lands at the umask default.
+        ``json.dumps`` is ASCII-only by default, so the helper's UTF-8 encoding
+        puts the same bytes on disk as the previous locale-default text handle.
+
+        ``os.makedirs`` stays OUTSIDE the ``try`` on purpose. The helper creates
+        the parent itself, so this call is now belt-and-braces -- but moving
+        directory creation inside the ``try`` would newly swallow a "cannot
+        create the channels directory" failure that callers see raised today.
+        """
         os.makedirs(self._CHANNELS_DIR, exist_ok=True)
         path = os.path.join(self._CHANNELS_DIR, f"{channel.id}.json")
-        tmp = path + ".tmp"
         try:
-            with open(tmp, "w") as f:
-                json.dump(channel.serialize(), f)
-            os.replace(tmp, path)
+            atomic_write(path, json.dumps(channel.serialize()))
         except Exception:
             logger.exception("Failed to save channel %s", channel.id)
 

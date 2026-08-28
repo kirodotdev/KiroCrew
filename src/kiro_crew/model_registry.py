@@ -37,6 +37,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.atomic_write import atomic_write
+
 logger = logging.getLogger(__name__)
 
 _REGISTRY_FILE = Path(__file__).resolve().parent / "model_registry.json"
@@ -228,8 +230,18 @@ def persist_kiro_windows() -> None:
 
     Separated from :func:`refresh_kiro_windows` so an async caller can offload
     ONLY this filesystem step to an executor while keeping the in-memory update
-    synchronous. Atomic (tmp + ``os.replace``); a persist failure is logged, not
-    raised — the in-memory cache is authoritative for this process either way.
+    synchronous. Atomic via the shared :func:`kiro_crew.atomic_write.atomic_write`
+    helper; a persist failure is logged, not raised — the in-memory cache is
+    authoritative for this process either way.
+
+    The helper replaces a hand-rolled temp-write-and-rename whose temp name was
+    derived from the destination (``model_windows.json.tmp``), so two processes
+    persisting the cache raced on one filename, and which missed the helper's
+    bounded retry for the Windows rename window. Durability and permission
+    semantics are unchanged: no ``fsync`` (best-effort by contract, per the note
+    above) and no explicit ``mode``, so the sidecar still lands at the umask
+    default. The helper creates the parent directory itself and raises ``OSError``
+    on failure — the same class the ``except`` below already absorbed.
 
     Thread-safety: this runs on an executor thread while ``refresh_kiro_windows``
     mutates ``_KIRO_WINDOWS`` on the event-loop thread. Snapshot with ``dict(...)``
@@ -240,11 +252,7 @@ def persist_kiro_windows() -> None:
     try:
         snapshot = dict(_KIRO_WINDOWS)  # atomic under the GIL; safe vs. concurrent mutation
         path = _kiro_windows_cache_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(snapshot, f)
-        tmp.replace(path)
+        atomic_write(path, json.dumps(snapshot))
     except OSError:  # pragma: no cover - disk full / perms
         logger.debug("Could not persist kiro window cache", exc_info=True)
 
