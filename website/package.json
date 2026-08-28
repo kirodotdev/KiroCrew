@@ -154,6 +154,7 @@
     "@inquirer/type": "4.0.4",
     "@mermaid-js/parser": "1.2.0",
     "@mswjs/interceptors": "0.41.3",
+    "@pierre/theming": "1.0.1",
     "@smithy/types": "4.13.1",
     "@tanstack/query-core": "5.96.0",
     "@types/node": "24.13.3",
