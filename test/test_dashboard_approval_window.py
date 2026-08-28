@@ -17,6 +17,7 @@ import asyncio
 import inspect
 import logging
 import re
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -51,6 +52,52 @@ def cfg(monkeypatch: pytest.MonkeyPatch):
         )
 
     return _apply
+
+
+@pytest.fixture(autouse=True)
+def _isolate_turn_deadline():
+    """Give every test a clean ``_TURN_DEADLINE`` and put the outside value back.
+
+    Residue travels through the main-thread context: an un-reset ``set()`` made
+    there is inherited by every later test in the worker, because each async
+    test's task context is copied from it (an async test's own writes die with
+    its task copy — a leak seen at test start was already in the parent
+    context). Baselining to ``None`` here is what makes this module's
+    ``get() is None`` assertions deterministic under any ordering; restoring
+    the snapshot afterwards keeps the fixture honest about state it did not
+    create. Deliberately a sync fixture: an async one would run inside a copied
+    task context and its writes would be discarded with it.
+
+    Save/restore is by VALUE, not ``reset(token)``, mirroring
+    ``turn_dispatch._bounded_turn``: test and shutdown harnesses may resume
+    finalization in a copied Context (notably Windows xdist); ``reset(token)``
+    then raises and can take down the whole worker because tokens are
+    context-bound. The sites below follow the same pattern for the same reason.
+    """
+    prev = td._TURN_DEADLINE.get()
+    td._TURN_DEADLINE.set(None)
+    try:
+        yield
+    finally:
+        td._TURN_DEADLINE.set(prev)
+
+
+def test_token_based_restore_stays_banned_in_this_module() -> None:
+    """No test here may restore ``_TURN_DEADLINE`` through a ContextVar token.
+
+    The isolation fixture above masks exactly the failure it fixes: with every
+    test baselined to ``None``, the ``get() is None`` assertions can no longer
+    catch a reintroduced token-based restore — the pattern that leaves the var
+    set (or kills the worker) when finalization resumes in a copied Context,
+    per the rationale at turn_dispatch.py:350-356. Pin the ban at the source
+    level instead of relying on convention.
+    """
+    src = inspect.getsource(sys.modules[__name__])
+    needle = "_TURN_DEADLINE" + ".reset("
+    assert needle not in src, (
+        "restore _TURN_DEADLINE by value (set the captured previous value), "
+        "never through a ContextVar token"
+    )
 
 
 class TestDefaultsAreShort:
@@ -139,11 +186,12 @@ class TestPerSlotWindowIsAlsoBudgetBounded:
         cfg(window=600, turn=7200)
         loop = asyncio.get_running_loop()
         state = SimpleNamespace(approval_timeout_for=lambda _s: 7200.0)
-        token = td._TURN_DEADLINE.set(loop.time() + 300.0)
+        prev = td._TURN_DEADLINE.get()
+        td._TURN_DEADLINE.set(loop.time() + 300.0)
         try:
             got = self._window(state, object())
         finally:
-            td._TURN_DEADLINE.reset(token)
+            td._TURN_DEADLINE.set(prev)
         assert got == pytest.approx(300.0 - APPROVAL_TURN_MARGIN_SECS, abs=1.0)
 
     @pytest.mark.asyncio
@@ -153,11 +201,12 @@ class TestPerSlotWindowIsAlsoBudgetBounded:
         cfg(window=600, turn=7200)
         loop = asyncio.get_running_loop()
         state = SimpleNamespace(approval_timeout_for=lambda _s: 180.0)
-        token = td._TURN_DEADLINE.set(loop.time() + 5.0)
+        prev = td._TURN_DEADLINE.get()
+        td._TURN_DEADLINE.set(loop.time() + 5.0)
         try:
             assert self._window(state, object()) == 0.0
         finally:
-            td._TURN_DEADLINE.reset(token)
+            td._TURN_DEADLINE.set(prev)
 
 
 class TestStallSignalReachesTheLoop:
@@ -341,11 +390,12 @@ class TestArmTimeBudget:
         cfg(window=600, turn=7200)
         loop = asyncio.get_running_loop()
         # 300s left of a 2h turn: a 600s window would outlive it.
-        token = td._TURN_DEADLINE.set(loop.time() + 300.0)
+        prev = td._TURN_DEADLINE.get()
+        td._TURN_DEADLINE.set(loop.time() + 300.0)
         try:
             got = td.tool_approval_timeout_secs()
         finally:
-            td._TURN_DEADLINE.reset(token)
+            td._TURN_DEADLINE.set(prev)
         assert got == pytest.approx(300.0 - APPROVAL_TURN_MARGIN_SECS, abs=1.0)
 
     @pytest.mark.asyncio
@@ -353,21 +403,23 @@ class TestArmTimeBudget:
         """Under the margin there is no window that can both wait and report."""
         cfg(window=600, turn=7200)
         loop = asyncio.get_running_loop()
-        token = td._TURN_DEADLINE.set(loop.time() + 5.0)
+        prev = td._TURN_DEADLINE.get()
+        td._TURN_DEADLINE.set(loop.time() + 5.0)
         try:
             assert td.tool_approval_timeout_secs() == 0.0
         finally:
-            td._TURN_DEADLINE.reset(token)
+            td._TURN_DEADLINE.set(prev)
 
     @pytest.mark.asyncio
     async def test_early_prompt_keeps_the_configured_window(self, cfg) -> None:
         cfg(window=600, turn=7200)
         loop = asyncio.get_running_loop()
-        token = td._TURN_DEADLINE.set(loop.time() + 7200.0)
+        prev = td._TURN_DEADLINE.get()
+        td._TURN_DEADLINE.set(loop.time() + 7200.0)
         try:
             assert td.tool_approval_timeout_secs() == 600.0
         finally:
-            td._TURN_DEADLINE.reset(token)
+            td._TURN_DEADLINE.set(prev)
 
     def test_absent_deadline_falls_back_to_the_ceiling_bound(self, cfg) -> None:
         """Paths that don't go through _bounded_turn must still get a window."""
@@ -406,6 +458,30 @@ class TestArmTimeBudget:
         with pytest.raises(ValueError):
             await td._bounded_turn(_boom(), 120.0)
         assert td._TURN_DEADLINE.get() is None
+
+    @pytest.mark.asyncio
+    async def test_bounded_turn_restores_the_previous_deadline_by_value(self) -> None:
+        """A non-None prior deadline comes back after the turn — not None.
+
+        Pins the restore-by-value contract documented in ``_bounded_turn``
+        (turn_dispatch.py): the finally writes back the CAPTURED previous
+        value. No other test armed a non-None prior value, so the two
+        ``get() is None`` neighbours above only ever exercised the None case —
+        which is how a residue inherited from another test's context read as
+        this module's product bug (#6440).
+        """
+        prev = td._TURN_DEADLINE.get()
+        armed = asyncio.get_running_loop().time() + 999.0
+        td._TURN_DEADLINE.set(armed)
+        try:
+
+            async def _turn() -> str:
+                return "done"
+
+            assert await td._bounded_turn(_turn(), 120.0) == "done"
+            assert td._TURN_DEADLINE.get() == armed
+        finally:
+            td._TURN_DEADLINE.set(prev)
 
 
 class TestNoBudgetCard:
