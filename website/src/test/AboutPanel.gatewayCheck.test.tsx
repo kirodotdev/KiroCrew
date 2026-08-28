@@ -298,6 +298,52 @@ describe('AboutPanel gateway update check', () => {
     expect(screen.getByRole('button', { name: /copy command/i })).toBeTruthy()
   })
 
+  it('the available-version line shows the folded display value, keeping the raw stamp off screen', async () => {
+    // A promoted stable candidate keeps its rc stamp in latest_version (that is
+    // what arm/apply key on); the check response carries the folded sibling
+    // latest_version_display for the human-facing line. The manual-check
+    // handler must adopt it -- this is the path the About panel's "a new
+    // version (vX) is available" text renders from.
+    stubFetch({
+      check_status: 'succeeded',
+      update_available: true,
+      error_code: null,
+      managed_by: 'kirocrew',
+      can_apply: false,
+      channel: 'stable',
+      latest_version: '0.4.0rc14',
+      latest_version_display: '0.4.0',
+      remediation: { kind: 'command', message: '', command: 'kirocrew update' },
+    })
+    mountWeb()
+    await pressCheck()
+
+    await waitFor(() => {
+      const body = document.body.textContent || ''
+      expect(body).toContain('(v0.4.0)')
+      expect(body).not.toContain('0.4.0rc14')
+    })
+  })
+
+  it('falls back to the raw version when an older gateway omits the display sibling', async () => {
+    stubFetch({
+      check_status: 'succeeded',
+      update_available: true,
+      error_code: null,
+      managed_by: 'kirocrew',
+      can_apply: false,
+      channel: 'stable',
+      latest_version: '0.4.0rc14',
+      remediation: { kind: 'command', message: '', command: 'kirocrew update' },
+    })
+    mountWeb()
+    await pressCheck()
+
+    await waitFor(() => {
+      expect(document.body.textContent || '').toContain('(v0.4.0rc14)')
+    })
+  })
+
   it('a command-managed gateway shows the policy note, never installer copy', async () => {
     // A check-only policy pin: an update is available but there is no in-app
     // apply. The self-managed installer instructions would tell the user to

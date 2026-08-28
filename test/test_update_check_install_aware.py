@@ -57,6 +57,15 @@ def _manifest(**overrides: object) -> bytes:
     return json.dumps(body).encode()
 
 
+def _request() -> MagicMock:
+    """A request stub for ``api_update_check``: only ``.app["state"]`` is read."""
+    req = MagicMock()
+    state = MagicMock()
+    state._background_tasks = set()
+    req.app = {"state": state}
+    return req
+
+
 def _stub_feed(monkeypatch, *, status: int = 200, body: bytes | None = None, exc=None):
     """Replace the single network seam. Records the URL that was requested."""
     seen: dict[str, str] = {}
@@ -273,6 +282,71 @@ class TestWheelInstallCheck:
         assert "latest_pub_date" not in info
         assert info["check_status"] == "succeeded"  # optional field, not a hard failure
 
+
+class TestAvailableUpdateDisplayFold:
+    """The promoted-stable display fold on the available-update version.
+
+    Backported to the 0.4.1 hotfix line: only the display sibling, none of
+    the later feed-floor machinery."""
+
+    def test_available_update_on_stable_stays_raw_for_arm_but_folds_for_display(
+        self, monkeypatch, tmp_path
+    ):
+        """The feed check's `_update_info["latest_version"]` MUST stay the raw
+        stamp (``0.4.0rc14``): `api_update_arm` arms against it verbatim, and
+        the shadow-venv apply step compares it byte-for-byte against the
+        installed build's own `__version__`, which is never folded either
+        (promotion never re-stamps the bytes). A folded value there would make
+        every stable in-app apply fail with a version mismatch.
+
+        The clean release version for the About panel comes from a SEPARATE
+        display-only field on the `/api/update/check` response,
+        `latest_version_display`, folded the same way `_display_local_version`
+        folds the running build."""
+        (tmp_path / "channel").write_text("stable\n")
+        _stub_feed(
+            monkeypatch,
+            body=_manifest(channel="stable", version="0.4.0rc14"),
+        )
+        monkeypatch.setattr(updates, "_local_version", "0.3.0")
+        asyncio.run(updates._do_update_check())
+
+        info = updates.get_update_info()
+        assert info["channel"] == "stable"
+        assert info["check_status"] == "succeeded"
+        assert info["latest_version"] == "0.4.0rc14"  # RAW -- what arm/apply use
+
+        resp = asyncio.run(updates.api_update_check(_request()))
+        payload = json.loads(resp.body.decode())
+        assert payload["latest_version"] == "0.4.0rc14"  # still raw on the wire
+        assert payload["latest_version_display"] == "0.4.0"  # folded for display
+
+        # Same fold applies on the unparseable-local-version failure branch,
+        # and `latest_version` there stays raw too.
+        monkeypatch.setattr(updates, "_local_version", "not-a-version")
+        asyncio.run(updates._do_update_check())
+        info = updates.get_update_info()
+        assert info["check_status"] == "failed"
+        assert info["latest_version"] == "0.4.0rc14"
+        resp = asyncio.run(updates.api_update_check(_request()))
+        payload = json.loads(resp.body.decode())
+        assert payload["latest_version_display"] == "0.4.0"
+
+        # An insider feed keeps its full stamp everywhere -- the fold is
+        # stable-only, both raw and display agree.
+        (tmp_path / "channel").write_text("insider\n")
+        _stub_feed(
+            monkeypatch,
+            body=_manifest(channel="insider", version="0.4.0-insider.14"),
+        )
+        monkeypatch.setattr(updates, "_local_version", "0.3.0")
+        asyncio.run(updates._do_update_check())
+        info = updates.get_update_info()
+        assert info["channel"] == "insider"
+        assert info["latest_version"] == "0.4.0-insider.14"
+        resp = asyncio.run(updates.api_update_check(_request()))
+        payload = json.loads(resp.body.decode())
+        assert payload["latest_version_display"] == "0.4.0-insider.14"
 
 class TestWheelInstallFailuresAreHonest:
     """Every failure must set ``error`` and leave ``checked`` False."""

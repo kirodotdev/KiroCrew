@@ -547,6 +547,9 @@ export function AboutPanel() {
   // changelog confirm because applying restarts the gateway.
   const [gwChanges, setGwChanges] = useState('')
   const [gwTarget, setGwTarget] = useState('')
+  // Display-only sibling of gwTarget, folded to the clean release version on
+  // stable. Never fed to InAppUpdateFlow or /api/update/arm.
+  const [gwTargetDisplay, setGwTargetDisplay] = useState('')
   const [gwFound, setGwFound] = useState(false)
   // Commit distance from the tracked upstream, straight from the check payload.
   // Only a git checkout ever reports non-zero values; both stay 0 elsewhere.
@@ -592,6 +595,9 @@ export function AboutPanel() {
       // read as a fallback only because it is what some older payloads carried.
       const target = d?.latest_version || d?.version
       if (target) setGwTarget(String(target))
+      // Same contract as the channel-switch handler below: adopt the
+      // display-only folded sibling (empty when the gateway predates it).
+      setGwTargetDisplay(typeof d?.latest_version_display === 'string' ? d.latest_version_display : '')
       // Derive availability from the check response itself, not only the redux
       // status flag (which refreshes on a slower WS status push). Otherwise a
       // check that finds an update could still show "You're on the latest
@@ -661,7 +667,7 @@ export function AboutPanel() {
       // one and fall back to the generic line when it did not.
       setGwChannelError(e instanceof ApiError ? (e.message || '') : '')
     },
-    onSuccess: (d: any) => {
+    onSuccess: (d) => {
       // The response is the re-run check against the new channel, so adopt it
       // wholesale rather than leaving the previous lane's verdict on screen.
       //
@@ -680,6 +686,7 @@ export function AboutPanel() {
       setGwCommand(typeof d?.update_command === 'string' ? d.update_command : '')
       setGwCommandCopied(false)
       setGwTarget(typeof d?.latest_version === 'string' ? d.latest_version : '')
+      setGwTargetDisplay(typeof d?.latest_version_display === 'string' ? d.latest_version_display : '')
       if (typeof d?.can_apply === 'boolean') setGwSelfUpdatable(d.can_apply)
     },
   })
@@ -1146,7 +1153,7 @@ export function AboutPanel() {
               <>
                 {showUpdate && (
                   <p className="text-sm text-muted flex items-center gap-1.5">
-                    <ArrowUp size={13} className="lucide-inline text-accent" /> {i18nT('pages.settings.aboutPanel.a_new_version')}{gwTarget ? ` (v${gwTarget})` : ''} {i18nT('pages.settings.aboutPanel.is_available')}
+                    <ArrowUp size={13} className="lucide-inline text-accent" /> {i18nT('pages.settings.aboutPanel.a_new_version')}{(gwTargetDisplay || gwTarget) ? ` (v${gwTargetDisplay || gwTarget})` : ''} {i18nT('pages.settings.aboutPanel.is_available')}
                   </p>
                 )}
                 {showManualUpdate ? (

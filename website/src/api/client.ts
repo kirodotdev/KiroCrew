@@ -2738,7 +2738,7 @@ export const api = {
    * check compares against; it never installs anything, so the response is the
    * re-run check against the NEW channel.
    */
-  setUpdateChannel: (channel: string) => post('/api/update/channel', { channel }).then(j),
+  setUpdateChannel: (channel: string) => post('/api/update/channel', { channel }).then(j) as Promise<UpdateCheckResult>,
   /**
    * Restart the gateway without updating. The connection drops as the process
    * image is replaced, so callers must treat a network failure after a 200 as

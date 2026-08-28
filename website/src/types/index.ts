@@ -125,6 +125,23 @@ export interface UpdateCheckResult {
   requires_restart?: boolean
   channel?: string
   latest_version?: string
+  /**
+   * DISPLAY-ONLY sibling of `latest_version`, folded to the clean release
+   * version on the stable channel (a promoted candidate keeps its insider/rc
+   * stamp in the bytes, e.g. "0.4.0rc14" for the "0.4.0" release). Never pass
+   * this to `InAppUpdateFlow`'s `version` prop, `/api/update/arm`, or a
+   * snooze/skip key — those must use the raw `latest_version`, which is
+   * compared byte-for-byte against the installed build's own never-folded
+   * `__version__` during apply.
+   */
+  latest_version_display?: string
+  /**
+   * Copyable upgrade command ("" when none). Carried by the channel-switch
+   * response (POST /api/update/channel, which answers with this same contract
+   * re-run against the new lane); the check endpoint itself carries the
+   * command inside `remediation` instead.
+   */
+  update_command?: string
   changes?: string
   check_status?: 'unchecked' | 'checking' | 'succeeded' | 'failed' | 'deferred'
   update_available?: boolean | null
