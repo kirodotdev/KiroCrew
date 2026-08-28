@@ -31,7 +31,7 @@ function loadWorker(): Record<string, (e: unknown) => void> {
     delete: async () => {},
   }
   // The shell path calls fetch(...).catch(...), so the stub must be thenable.
-  // eslint-disable-next-line no-new-func
+   
   new Function('self', 'caches', 'fetch', readFileSync(SW_PATH, 'utf8'))(
     fakeSelf, fakeCaches, () => Promise.resolve({}),
   )
