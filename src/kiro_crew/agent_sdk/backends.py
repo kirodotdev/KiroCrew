@@ -75,6 +75,8 @@ with no row here.
      - pre-session registry query (membership gate on the ``acp_backend`` kwarg)
    * - ``ACP_BACKENDS_SESSION_MCP_ARRAY``
      - driver-internal (which channel carries the MCP server list)
+   * - ``ACP_BACKENDS_AGENTCORE_GATEWAY``
+     - driver-internal (whether the per-session AgentCore Gateway inject is offered)
    * - ``ACP_BACKENDS_SESSION_SHARING``
      - pre-session registry query (subagent session allocation)
    * - ``ACP_BACKENDS_MEMBER_DISPATCH``
