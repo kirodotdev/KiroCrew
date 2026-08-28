@@ -3564,7 +3564,12 @@ class TestDoctorMcpTools:
         this reason; a diagnostic command silently undoing it would be a complete
         Plane-A bypass.  The ``tools`` entry is still repaired — that only makes the
         server's tools reachable, never pre-approved.
+
+        The spec gate is pinned OPEN: this guard is about what doctor does to a
+        server it repairs, and a closed gate (the CI default — feature disabled)
+        would skip the repair entirely and assert nothing.
         """
+        from kiro_crew import agent
         from kiro_crew.cli_doctor import _doctor_mcp_tools
 
         agent_path = tmp_path / "kirocrew.json"
@@ -3576,8 +3581,13 @@ class TestDoctorMcpTools:
         data["allowedTools"] = []
         agent_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
+        gated_open = dict(agent._MANAGED_MCP_SERVERS["kirocrew-computer"])
+        gated_open["spec_gate"] = lambda: True
         issues: list[str] = []
-        with self._mock_probe({}):
+        with (
+            patch.dict(agent._MANAGED_MCP_SERVERS, {"kirocrew-computer": gated_open}),
+            self._mock_probe({}),
+        ):
             _doctor_mcp_tools(agent_path, issues)
 
         updated = json.loads(agent_path.read_text(encoding="utf-8"))
@@ -3594,13 +3604,22 @@ class TestDoctorMcpTools:
         A user who deliberately added the ref owns that decision; silently
         reverting their config on a diagnostic run would be its own surprise. The
         two rules are independent and both matter.
+
+        Gate pinned OPEN like the mint test above: the preservation rule is
+        exercised on the path where doctor walks the full entry.
         """
+        from kiro_crew import agent
         from kiro_crew.cli_doctor import _doctor_mcp_tools
 
         agent_path = tmp_path / "kirocrew.json"
         _healthy_agent_file(agent_path)
+        gated_open = dict(agent._MANAGED_MCP_SERVERS["kirocrew-computer"])
+        gated_open["spec_gate"] = lambda: True
         issues: list[str] = []
-        with self._mock_probe({}):
+        with (
+            patch.dict(agent._MANAGED_MCP_SERVERS, {"kirocrew-computer": gated_open}),
+            self._mock_probe({}),
+        ):
             _doctor_mcp_tools(agent_path, issues)
         updated = json.loads(agent_path.read_text(encoding="utf-8"))
         assert "@kirocrew-computer" in updated["allowedTools"]
@@ -3718,6 +3737,246 @@ class TestDoctorMcpTools:
         # persists the coerced empty config over the user's original file.
         assert agent_path.read_text() == content
         assert "Auto-fixed" not in out
+
+
+class TestDoctorMcpSpecGate:
+    """Doctor's MCP checks consult the same ``spec_gate`` emission does (#6548).
+
+    Spec emission (``agent.build_agent_config`` / ``_refresh_dynamic_fields``)
+    deliberately omits — and retracts — the ``mcpServers`` entry of a managed
+    server whose ``spec_gate`` is closed (feature disabled, or no driver for
+    this platform). Before this gate, doctor demanded the entry's presence
+    unconditionally, so every non-macOS host reported an unfixable
+    ``@kirocrew-computer: missing from mcpServers`` and `kirocrew setup` could
+    never clear it: the two sides drifted because only one consulted the gate.
+
+    Each test pins the gate through the same registry doctor resolves it from
+    (``agent._MANAGED_MCP_SERVERS``), so the resolution seam is exercised too,
+    and no test depends on the host's real enable-state or platform.
+    """
+
+    def _mock_probe(self, seen: list[str]):
+        """Patch ``probe_server`` to record which servers doctor launches."""
+        from kiro_crew.mcp_discovery import McpServerInfo
+
+        async def fake(target: McpServerInfo) -> McpServerInfo:
+            seen.append(target.name)
+            target.status = "ok"
+            target.tools = []
+            target.error = ""
+            return target
+
+        return patch("kiro_crew.cli_doctor.probe_server", side_effect=fake)
+
+    def _pin_gate(self, gate):
+        """Return a patch pinning ``kirocrew-computer``'s spec gate to *gate*."""
+        from kiro_crew import agent
+
+        pinned = dict(agent._MANAGED_MCP_SERVERS["kirocrew-computer"])
+        pinned["spec_gate"] = gate
+        return patch.dict(agent._MANAGED_MCP_SERVERS, {"kirocrew-computer": pinned})
+
+    def _config_without_computer(self, path: Path) -> None:
+        """Servers as spec emission writes them on a gated-off host: every
+        managed always-on server EXCEPT the gated one, refs for all of them
+        (emission deliberately leaves the ``tools`` ref alone when it retracts
+        the entry, so ref-present-entry-absent is the designed steady state)."""
+        from kiro_crew.mcp_cleanup import ALWAYS_ON_BIN_MCP_SERVERS
+
+        present = [n for n in ALWAYS_ON_BIN_MCP_SERVERS if n != "kirocrew-computer"]
+        _write_agent_config(
+            path,
+            tools=[f"@{n}" for n in ALWAYS_ON_BIN_MCP_SERVERS],
+            allowed=[f"@{n}" for n in present],
+            servers={
+                n: {"command": sys.executable, "args": [f"mcp-{n.split('-', 1)[1]}"]}
+                for n in present
+            },
+        )
+
+    def test_gate_closed_absent_entry_is_informational_not_an_issue(self, tmp_path, capsys):
+        """Gate closed + entry absent = the healthy state on this host.
+
+        The exact #6548 report: no hard error, no ``issues`` entry (so doctor
+        exits 0), no auto-mount of the ref, and the line says WHY the server is
+        absent rather than looking like a silent skip.
+        """
+        from kiro_crew.cli_doctor import _doctor_mcp_tools
+
+        agent_path = tmp_path / "kirocrew.json"
+        self._config_without_computer(agent_path)
+        before = agent_path.read_text(encoding="utf-8")
+        issues: list[str] = []
+        probed: list[str] = []
+        with self._pin_gate(lambda: False), self._mock_probe(probed):
+            _doctor_mcp_tools(agent_path, issues)
+        out = capsys.readouterr().out
+        assert "@kirocrew-computer: ℹ️  gated off on this host" in out
+        assert "feature disabled or no driver" in out
+        assert "@kirocrew-computer: ❌" not in out
+        assert issues == []
+        # Nothing mounted, minted, or probed for the gated-off server — and the
+        # stale ref emission leaves behind is not reported as "half a grant".
+        assert "kirocrew-computer" not in probed
+        assert "referenced in tools but absent" not in out
+        assert agent_path.read_text(encoding="utf-8") == before
+
+    def test_gate_open_absent_entry_keeps_the_hard_error(self, tmp_path, capsys):
+        """Gate open + entry absent is still a broken install and MUST fail."""
+        from kiro_crew.cli_doctor import _doctor_mcp_tools
+
+        agent_path = tmp_path / "kirocrew.json"
+        self._config_without_computer(agent_path)
+        issues: list[str] = []
+        with self._pin_gate(lambda: True), self._mock_probe([]):
+            _doctor_mcp_tools(agent_path, issues)
+        out = capsys.readouterr().out
+        assert "@kirocrew-computer: ❌ missing from mcpServers (re-run `kirocrew setup`)" in out
+        assert "@kirocrew-computer config" in issues
+
+    def test_gate_raising_is_treated_as_open(self, tmp_path, capsys):
+        """A gate that raises PAST ITS OWN HANDLING must not silence the error.
+
+        This pins the helper's contract-level fail direction — deliberately
+        the opposite of emission's ``_gated_off_servers()`` (which treats a
+        raising gate as closed, because its open position spawns a backend):
+        here "closed" is what suppresses the error, so a gate the helper
+        cannot evaluate reports the missing entry. Note the shipped
+        computer-use gate catches its own internal errors and ANSWERS False,
+        so this path covers registry/contract failures and any future gate
+        without an internal handler; the shipped gate's swallowed-error case
+        is pinned separately below.
+        """
+        from kiro_crew.cli_doctor import _doctor_mcp_tools
+
+        def explode() -> bool:
+            raise RuntimeError("gate unreadable")
+
+        agent_path = tmp_path / "kirocrew.json"
+        self._config_without_computer(agent_path)
+        issues: list[str] = []
+        with self._pin_gate(explode), self._mock_probe([]):
+            _doctor_mcp_tools(agent_path, issues)
+        out = capsys.readouterr().out
+        assert "@kirocrew-computer: ❌ missing from mcpServers" in out
+        assert "@kirocrew-computer config" in issues
+        assert "gated off" not in out
+
+    def test_shipped_gate_swallowing_internal_errors_reads_as_closed(self, tmp_path, capsys):
+        """The shipped gate's own fail-closed answer is reported as-is.
+
+        ``agent._computer_use_spec_gate`` catches its internal errors and
+        answers False (its documented posture: an unreadable keystone must
+        never hand out the desktop), so doctor cannot distinguish "unreadable
+        internals" from "policy closed" through the boolean — and reporting
+        closed is the emission-CONSISTENT answer: in that same state the entry
+        genuinely is omitted from every emitted spec, so the ℹ️ line describes
+        what the system actually does. This test pins that DELIVERED semantic
+        so the helper's docstring cannot silently overclaim again; if the
+        gate's exception contract ever changes, this test and the one above
+        say exactly which behavior moved.
+        """
+        from kiro_crew.cli_doctor import _doctor_mcp_tools
+
+        agent_path = tmp_path / "kirocrew.json"
+        self._config_without_computer(agent_path)
+        issues: list[str] = []
+        with (
+            patch(
+                "kiro_crew.computer_use.enable_state.is_enabled",
+                side_effect=RuntimeError("keystone unreadable"),
+            ),
+            self._mock_probe([]),
+        ):
+            # No _pin_gate: the REAL registry gate runs, swallows the raise,
+            # and answers False — the exact production shape.
+            _doctor_mcp_tools(agent_path, issues)
+        out = capsys.readouterr().out
+        assert "@kirocrew-computer: ℹ️  gated off on this host" in out
+        assert issues == []
+
+    def test_gate_closed_stale_entry_is_not_mounted_or_probed(self, tmp_path, capsys):
+        """A leftover entry from when the gate was open must not deepen the hole.
+
+        Doctor must not mount its ref into ``tools`` (kiro-cli would spawn a
+        backend emission decided against), must not probe it (nothing should
+        launch), and must not count it as an issue — the next config refresh
+        retracts it.
+        """
+        from kiro_crew.cli_doctor import _doctor_mcp_tools
+        from kiro_crew.mcp_cleanup import ALWAYS_ON_BIN_MCP_SERVERS
+
+        agent_path = tmp_path / "kirocrew.json"
+        present = list(ALWAYS_ON_BIN_MCP_SERVERS)
+        _write_agent_config(
+            agent_path,
+            tools=[f"@{n}" for n in present if n != "kirocrew-computer"],
+            allowed=[],
+            servers={
+                n: {"command": sys.executable, "args": [f"mcp-{n.split('-', 1)[1]}"]}
+                for n in present
+            },
+        )
+        issues: list[str] = []
+        probed: list[str] = []
+        with self._pin_gate(lambda: False), self._mock_probe(probed):
+            _doctor_mcp_tools(agent_path, issues)
+        out = capsys.readouterr().out
+        assert "stale mcpServers entry" in out
+        assert issues == []
+        assert "kirocrew-computer" not in probed
+        # The other always-on servers were still probed — the skip is scoped.
+        assert "kirocrew-core" in probed and "kirocrew-cron" in probed
+        updated = json.loads(agent_path.read_text(encoding="utf-8"))
+        assert "@kirocrew-computer" not in updated["tools"]
+        assert "@kirocrew-computer" not in updated["allowedTools"]
+
+    def test_governance_denominator_skips_an_absent_gated_off_server(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The MCP Governance section applies the same rule to its marker count.
+
+        On a governed non-macOS host the gated-off server has no entry to mark,
+        so counting it as expected would re-create the same unfixable
+        "re-run `kirocrew setup --agent-only`" loop in this section.
+        """
+        from kiro_crew import cli_doctor
+        from kiro_crew.mcp_cleanup import ALWAYS_ON_BIN_MCP_SERVERS
+
+        monkeypatch.setattr(cli_doctor, "mcp_governance_may_apply", lambda: True)
+
+        class _Agent:
+            mcp_registry_mode = True
+
+        class _Cfg:
+            agent = _Agent()
+
+        monkeypatch.setattr(cli_doctor.KiroCrewConfig, "load", staticmethod(lambda: _Cfg()))
+        spec_path = tmp_path / "kirocrew.json"
+        spec_path.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        n: {"command": "kirocrew", "args": [f"mcp-{n.split('-', 1)[1]}"], "type": "registry"}
+                        for n in ALWAYS_ON_BIN_MCP_SERVERS
+                        if n != "kirocrew-computer"
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        issues: list[str] = []
+        with self._pin_gate(lambda: False):
+            cli_doctor._doctor_mcp_governance(spec_path, issues)
+        out = capsys.readouterr().out
+        assert issues == []
+        assert "markers missing" not in out
+        # The gate-open direction keeps the failure: a genuinely missing
+        # always-on server still reads as unmarked.
+        issues2: list[str] = []
+        with self._pin_gate(lambda: True):
+            cli_doctor._doctor_mcp_governance(spec_path, issues2)
+        assert issues2 == ["MCP registry markers"]
 
 
 class TestDoctorStt:

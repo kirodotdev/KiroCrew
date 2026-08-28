@@ -18,6 +18,7 @@ import urllib.request
 from pathlib import Path
 
 from kiro_crew import __version__ as _mc_version
+from kiro_crew import agent as _agent
 from kiro_crew import agent_state, dep_sync, diagnostics, platform_compat, sandbox, stt
 from kiro_crew._bootstrap import _source_checkout_root
 from kiro_crew.acp.client import KIRO_CLI_BIN
@@ -480,17 +481,85 @@ def _format_model_pin_problem(name: str, pin: str, correction: str) -> tuple[str
     )
 
 
-def _doctor_mcp_tools(agent_path: Path, issues: list[str]) -> None:
+def _spec_gate_closed(name: str) -> bool:
+    """Whether *name*'s spec-emission gate reports CLOSED right now.
+
+    Spec emission consults each managed server's ``spec_gate``
+    (``agent._MANAGED_MCP_SERVERS``): a closed gate means the ``mcpServers``
+    entry is deliberately omitted from every emitted spec — and retracted from
+    an existing one on refresh — so on such a host the entry's absence is the
+    HEALTHY state, not a broken install. Doctor's static checks must consult
+    the same predicate or the two sides drift apart, producing the unfixable
+    "missing from mcpServers (re-run `kirocrew setup`)" loop on every host
+    where the gate is closed (#6548). Resolving the gate through the registry
+    keeps them pinned together: a future server gaining a gate needs no edit
+    here, and a server without one reports open, exactly as emission treats it.
+
+    The ``except`` covers gate-CONTRACT failures only — a registry entry that
+    is not a dict, or a gate callable that raises past its own handling. For
+    those, the fail direction is deliberately the OPPOSITE of emission's
+    ``agent._gated_off_servers()``: there, a gate that raises is treated as
+    closed, because the open position hands out a backend the operator may not
+    want running; here it reports NOT closed, because "closed" is what
+    silences the missing-entry error. Each side fails toward its own safe
+    state. Note the scope honestly: the shipped computer-use gate catches its
+    own internal errors and ANSWERS ``False`` (its documented fail-closed
+    posture — an unreadable keystone must never hand out the desktop), so an
+    unreadable keystone is indistinguishable from policy-closed through the
+    boolean, by the gate's own design. That answer is still the
+    emission-CONSISTENT one to report: in that state the entry genuinely is
+    omitted from every emitted spec, so the ℹ️ line describes what the system
+    actually does, even when the underlying cause is a broken enable-state
+    read rather than a decision.
+
+    Never loads a native driver: the computer-use gate reads only the enable
+    keystone and platform flags (see ``agent._computer_use_spec_gate``), which
+    is what makes it safe to evaluate on doctor's diagnostic path.
+    """
+    try:
+        spec = _agent._MANAGED_MCP_SERVERS.get(name) or {}
+        gate = spec.get("spec_gate")
+        if gate is None:
+            return False
+        return not gate()
+    except Exception:
+        logger.debug("spec gate for %s unreadable; doctor treats it as open", name, exc_info=True)
+        return False
+
+
+def _doctor_gated_off_mcps() -> frozenset[str]:
+    """Doctor's per-run snapshot of managed servers whose spec gate is closed.
+
+    Evaluated ONCE per doctor run and threaded into both MCP sections, for the
+    same reason ``agent._gated_off_servers()`` snapshots once per rebuild: the
+    reads are cheap, agreeing is the point. A keystone flip landing between
+    the `MCP Tools` and `MCP Governance` sections would otherwise produce a
+    self-contradicting report — one saying "gated off by design", the other
+    "markers missing — re-run `kirocrew setup --agent-only`". Not reused from
+    ``_gated_off_servers()`` itself because the two snapshots fail in opposite
+    directions on an unreadable gate (see :func:`_spec_gate_closed`).
+    """
+    return frozenset(name for name in _MANAGED_MCPS if _spec_gate_closed(name))
+
+
+def _doctor_mcp_tools(
+    agent_path: Path, issues: list[str], *, gated_off: "frozenset[str] | None" = None
+) -> None:
     """Render the `MCP Tools` section of `kirocrew doctor`.
 
     Two passes scoped to the managed servers (`kirocrew-core`,
     `kirocrew-cron`, `kirocrew-computer`):
 
-    1. Static sanity check of the agent config: each server must be present
-       in ``mcpServers`` and ``tools``. Missing ``tools`` entries — and
-       ``allowedTools`` entries for every server outside
-       :data:`_NO_BLANKET_ALLOW_MCPS` — are auto-appended and the file is
-       rewritten atomically. A missing ``mcpServers`` entry cannot be
+    1. Static coherence check of the agent config: each always-on server whose
+       ``spec_gate`` is open — or that has no gate — must be present in
+       ``mcpServers`` and ``tools``. A gated-off server (feature disabled, or
+       no driver for this platform) is deliberately absent from every emitted
+       spec, so its absence is reported as informational, never as an issue —
+       and a stale entry left from when the gate was open is neither mounted
+       into ``tools`` nor probed (see :func:`_spec_gate_closed`). Missing
+       ``tools`` entries — and ``allowedTools`` entries for every server
+       outside :data:`_NO_BLANKET_ALLOW_MCPS` — are auto-appended and the file
+       is rewritten atomically. A missing ``mcpServers`` entry cannot be
        auto-added because the command path is install-specific.
     2. Live handshake probe via :func:`mcp_discovery.probe_server`. Reports
        per-server status with tool count on success, and on failure shows
@@ -520,8 +589,11 @@ def _doctor_mcp_tools(agent_path: Path, issues: list[str]) -> None:
     config_changed = False
 
     probe_targets = []
+    if gated_off is None:
+        gated_off = _doctor_gated_off_mcps()
     for name in _MANAGED_MCPS:
         ref = f"@{name}"
+        gate_closed = name in gated_off
         if name not in mcps:
             # An opt-in set is granted per agent, so its absence from THIS spec is
             # the normal state, not a broken install. Say nothing and probe
@@ -537,6 +609,27 @@ def _doctor_mcp_tools(agent_path: Path, issues: list[str]) -> None:
                         "— add the server entry, or drop the ref"
                     )
                 continue
+            if gate_closed:
+                # Spec emission consults this same gate and deliberately omits
+                # the entry, so absence is the healthy state here — the hard
+                # error below would be unfixable ("re-run setup" writes the
+                # same gated spec back). Informational, never an issue. A stale
+                # `@ref` in ``tools`` is NOT the opt-in "half a grant" warning:
+                # emission deliberately leaves the ref alone when it retracts
+                # the entry (a dangling ref mounts nothing, and dropping it
+                # would destroy a grant the user may have narrowed by hand), so
+                # ref-present-entry-absent is the designed steady state on a
+                # gated-off host and advising "add the server entry" would
+                # defeat the gate. No governance-ceiling revoke is needed on
+                # this path either: with no ``mcpServers`` entry kiro-cli has
+                # nothing to launch, so a leftover ``allowedTools`` ref cannot
+                # auto-approve anything — the stale-ENTRY branch below is the
+                # one window where a grant is live, and the revoke runs there.
+                print(
+                    f"  {ref}: ℹ️  gated off on this host (feature disabled or "
+                    "no driver for this platform) — absent from mcpServers by design"
+                )
+                continue
             print(f"  {ref}: ❌ missing from mcpServers (re-run `kirocrew setup`)")
             issues.append(f"{ref} config")
             continue
@@ -550,7 +643,21 @@ def _doctor_mcp_tools(agent_path: Path, issues: list[str]) -> None:
             if name not in _OPT_IN_MCPS:
                 issues.append(f"{ref} config")
             continue
-        if ref not in tools and name not in _OPT_IN_MCPS:
+        if gate_closed:
+            # A stale entry from before the gate closed (feature turned off, or
+            # a config copied from a host that has a driver). The next config
+            # refresh retracts it; until then doctor must not deepen the hole:
+            # no mounting the ref (kiro-cli would spawn a backend emission
+            # decided against), no minting `allowedTools`, no probe (nothing
+            # SHOULD launch). The governance-ceiling revoke below still runs —
+            # the entry is live in this spec until the retraction, so an
+            # auto-approve exemption would be real for exactly that window.
+            print(
+                f"  {ref}: ℹ️  gated off on this host (feature disabled or no "
+                "driver for this platform) — stale mcpServers entry is "
+                "retracted on the next `kirocrew setup` or gateway start"
+            )
+        elif ref not in tools and name not in _OPT_IN_MCPS:
             # Mounting an opt-in server IS granting it: the `@` ref is what makes
             # kiro-cli load it. Doctor repairs a broken always-on mount, but it
             # must never hand an agent a set the user did not assign.
@@ -606,13 +713,20 @@ def _doctor_mcp_tools(agent_path: Path, issues: list[str]) -> None:
             # enabled still prompts on every call — say it once, here, so
             # `kirocrew doctor` explains it.
             print(f"  {ref}: 🔒 auto-approve withheld by security policy — calls will prompt")
-        elif ref not in allowed and name not in _NO_BLANKET_ALLOW_MCPS:
+        elif ref not in allowed and name not in _NO_BLANKET_ALLOW_MCPS and not gate_closed:
             # Computer use is never blanket-allowed here: see _NO_BLANKET_ALLOW_MCPS.
             # A pre-existing user-made grant is left alone (doctor never REMOVES a
-            # decision the user owns); doctor simply never mints one.
+            # decision the user owns); doctor simply never mints one. A gated-off
+            # server never gets one minted either: granting auto-approve to a
+            # server emission has decided against is the wrong direction.
             allowed.append(ref)
             config_changed = True
 
+        if gate_closed:
+            # Nothing should launch: no emitted spec defines this server, so a
+            # handshake probe would spawn a backend for a capability that is off
+            # or has no driver here — and report its result either way.
+            continue
         spec = mcps[name]
         probe_targets.append(
             McpServerInfo(
@@ -687,7 +801,9 @@ def _doctor_mcp_tools(agent_path: Path, issues: list[str]) -> None:
 # Non-secret rows kiro-cli writes when the signed-in identity came from IAM
 # Identity Center. Presence is the signal; the values (a start URL and a region)
 # are never read into a message, and no token key is touched.
-def _doctor_mcp_governance(agent_path: Path, issues: list[str]) -> None:
+def _doctor_mcp_governance(
+    agent_path: Path, issues: list[str], *, gated_off: "frozenset[str] | None" = None
+) -> None:
     """Render the `MCP Governance` section of `kirocrew doctor`.
 
     Speaks up in two situations: governance can reach this identity (Identity
@@ -725,10 +841,20 @@ def _doctor_mcp_governance(agent_path: Path, issues: list[str]) -> None:
     # would report every governed install as half-marked; dropping the always-on
     # ones from the denominator would make a spec that declares NOTHING — a
     # malformed or emptied ``mcpServers`` — read as fully marked, which is the
-    # exact failure this section exists to catch.
-    expected = list(_ALWAYS_ON_MCPS) + [
-        name for name in _OPT_IN_MCPS if isinstance(servers.get(name), dict)
-    ]
+    # exact failure this section exists to catch. One exception, same rule as
+    # the MCP Tools section above: an always-on server whose spec gate is
+    # closed is deliberately absent from every emitted spec, so demanding a
+    # registry marker for it would re-create the unfixable "re-run setup" loop
+    # (#6548). A STALE entry still counts while it exists — kiro-cli drops an
+    # unmarked entry at session assembly, so the marker matters for exactly as
+    # long as the entry does.
+    if gated_off is None:
+        gated_off = _doctor_gated_off_mcps()
+    expected = [
+        name
+        for name in _ALWAYS_ON_MCPS
+        if isinstance(servers.get(name), dict) or name not in gated_off
+    ] + [name for name in _OPT_IN_MCPS if isinstance(servers.get(name), dict)]
     marked = sorted(
         name
         for name in expected
@@ -2525,10 +2651,14 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     # ── MCP Tools ──
     print("\nMCP Tools")
     if agent_path.exists():
-        _doctor_mcp_tools(agent_path, issues)
+        # One gate snapshot for both sections, so a keystone flip landing
+        # between them cannot make the report contradict itself (see
+        # _doctor_gated_off_mcps).
+        gated_off = _doctor_gated_off_mcps()
+        _doctor_mcp_tools(agent_path, issues, gated_off=gated_off)
         # After the probe, deliberately: the probe reporting green is the exact
         # condition this section exists to explain.
-        _doctor_mcp_governance(agent_path, issues)
+        _doctor_mcp_governance(agent_path, issues, gated_off=gated_off)
 
     # ── Python Runtime ──
     print("\nRuntime")

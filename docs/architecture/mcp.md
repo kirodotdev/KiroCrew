@@ -147,6 +147,11 @@ and asymmetrically on purpose:
 - `_refresh_dynamic_fields()` **retracts** an entry a previous pass wrote while
   the gate was open, because a skip-only refresh would mean turning a feature off
   never reclaims the process turning it on started;
+
+`kirocrew doctor` is a third, read-only consumer: its MCP sections resolve the
+same registry gate (`cli_doctor._spec_gate_closed`) so a gated-off server's
+absence reads as informational rather than as a missing entry — the drift where
+doctor demanded what emission deliberately omitted was #6548.
 **The `@server` refs in `tools` / `allowedTools` are left exactly as they are.**
 Withholding the entry is the whole control: a `@server` ref resolves against the
 agent's own `mcpServers` plus the global `mcp.json`, so with no entry in either
@@ -192,7 +197,8 @@ signed in to, not a user preference, and because the client's filter is
 symmetric: outside registry mode a marked entry is the one that gets dropped.
 `command`/`args` stay either way, since the registry path is not the only
 consumer of this spec (doctor's handshake probe and the CC sidecar sync both
-launch from it). See
+launch from it — though doctor skips the probe for a server whose spec gate is
+closed, since no emitted spec defines it). See
 [../guides/enterprise-mcp-governance.md](../guides/enterprise-mcp-governance.md).
 
 `kirocrew-computer` carries **no `autoApprove` key and none may ever be added.**
