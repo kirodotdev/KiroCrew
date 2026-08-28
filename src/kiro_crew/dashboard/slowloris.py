@@ -70,7 +70,15 @@ class SlowlorisRequestHandler(web.RequestHandler):
         self._srh_disarmed = False
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
-        super().connection_made(transport)
+        try:
+            super().connection_made(transport)
+        except OSError:
+            # On macOS a socket that raced closed between accept() and
+            # connection_made makes setsockopt raise OSError (Errno 22).
+            # Drop the doomed connection cleanly instead of crash-dumping.
+            transport.close()
+            self._srh_disarmed = True
+            return
         if self._srh_timeout and self._srh_timeout > 0:
             self._srh_handle = self._loop.call_later(
                 self._srh_timeout, self._srh_expire

@@ -121,3 +121,41 @@ def test_start_paths_use_hardened_runner() -> None:
     # fixed closing paren) so passing extra kwargs — e.g.
     # max_field_size=_MAX_HEADER_FIELD_SIZE — still satisfies the invariant.
     assert src.count("build_hardened_runner(app") == 2
+
+
+@pytest.mark.asyncio
+async def test_connection_made_oserror_closes_transport_and_disarms() -> None:
+    """If super().connection_made raises OSError the transport is closed cleanly.
+
+    On macOS a socket that raced closed between accept() and connection_made
+    causes setsockopt (inside aiohttp's tcp_keepalive) to raise OSError.
+    The guard must close the transport, mark the handler disarmed, and never
+    arm the deadline timer.
+    """
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    app = await _make_app()
+    runner = build_hardened_runner(app, header_read_timeout=5.0)
+    await runner.setup()
+    try:
+        server = runner.server
+        handler = server()
+
+        transport = MagicMock()
+        transport.close = MagicMock()
+
+        # Patch the parent class connection_made to raise OSError, simulating
+        # a macOS race where the socket is already dead.
+        with patch.object(
+            web.RequestHandler, "connection_made", side_effect=OSError(22, "Invalid argument")
+        ):
+            handler.connection_made(transport)
+
+        # The transport must have been closed.
+        transport.close.assert_called_once()
+        # The handler must be disarmed so the deadline timer is never armed.
+        assert handler._srh_disarmed is True
+        # No timer handle should be set.
+        assert handler._srh_handle is None
+    finally:
+        await runner.cleanup()
