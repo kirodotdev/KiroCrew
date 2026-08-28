@@ -64,18 +64,54 @@ rebuild that hopes for reproducibility. The mechanism:
   channel-sticky.
 - **Stable DISPLAYS a clean base version even though the bytes keep the RC
   stamp.** The embedded version cannot change under promotion, so the remedy is
-  at the read layer: `_display_version()` in
-  `src/kiro_crew/dashboard/handlers/updates.py` folds the running version to its
-  bare `X.Y.Z` on the **stable** channel only (insider/nightly keep the full
-  stamp), so About and the Releases page show `0.4.0`, not `0.4.0rc3` /
-  `0.4.0-insider.3`. It is DISPLAY-ONLY — every version *comparison* still reads
-  the raw `__version__`, so it cannot cause an update loop —
-  `test/test_stable_version_display.py` is the regression gate. **This fix must
-  ride in the RC bytes**: promotion never rebuilds, so a display change added
-  after the RC is cut can never reach the promoted stable. Land it before the RC
-  is cut, or stable shows the RC stamp with no in-band remedy.
+  at the read layer, and it is a CONTRACT over every surface, not a fix at two
+  spots — the 0.4.0 promotion shipped with only the running-version fold wired,
+  and users then reported the raw stamp on four other surfaces one by one (the
+  About panel's available-update line, the version chip, the Settings footer,
+  and the proactive update popup), each needing its own hotfix.
+
+  The contract:
+
+  - *Fold rule*: `_display_version()` in
+    `src/kiro_crew/dashboard/handlers/updates.py` folds a version to its bare
+    `X.Y.Z` on the **stable** channel only (insider/nightly keep the full
+    stamp, where the prerelease number is meaningful information). The SPA
+    mirror for desktop-reported versions that never cross the gateway is
+    `website/src/utils/displayVersion.ts` — keep it the ONLY TypeScript
+    spelling.
+  - *Every RAW version field is functional and must never be folded in place*:
+    `__version__` and the status frame's `version` (the SPA compares it across
+    pushes to force a reload over a gateway upgrade), `latest_version` /
+    `update_latest_version` (the arm target `verify_shadow_venv` compares
+    byte-for-byte, and the update popup's per-version snooze/skip keys),
+    Electron's `info.version` (`versionLooksPrerelease` derives the update lane
+    from the `-` suffix), and every `_is_newer` / floor comparison. Folding one
+    of these in place broke the entire stable in-app apply path once (caught in
+    review); folding the snooze key would make dismissing `0.4.0` swallow the
+    next release's rc candidate.
+  - *Display therefore always reads a folded SIBLING field, never the raw one*:
+    `version_display` and `update_latest_version_display` on the status frame,
+    `latest_version_display` on `/api/update/check` and the channel-switch
+    response, `current_version` on the check response. **Any NEW surface that
+    prints a version to the user must consume one of these (with a raw
+    fallback for older gateways) or add its own sibling — never render a raw
+    field directly.** A UI review that sees `status?.version`,
+    `update_latest_version`, or `info?.version` in display JSX should treat it
+    as a bug.
+
+  `test/test_stable_version_display.py`, the `version_display` /
+  `update_latest_version_display` tests in
+  `test/test_dashboard_status_snapshot.py`, and the AboutPanel /
+  UpdateFoundModal / SettingsPage frontend tests are the regression gates.
+  **The whole fold family must ride in the RC bytes**: promotion never
+  rebuilds, so a display change added after the RC is cut can never reach the
+  promoted stable. Land it before the RC is cut, or stable shows the RC stamp
+  with no in-band remedy.
 - **Hot patches follow the same rule**: at least one recorded RC before the
-  bare patch tag.
+  bare patch tag. A hot patch is the NEXT three-segment version (`0.4.0` →
+  `0.4.1`): the release workflow's Derive-Version step rejects a four-segment
+  base like `0.4.0.1` outright, and re-using the shipped version is impossible —
+  its published keys are immutable.
 
 ### Runbook: promoting an RC to stable
 
@@ -84,6 +120,12 @@ anything a stable user will see must already be in the RC that gets promoted** �
 there is no build step at stable-tag time to add it.
 
 1. **Before the RC is cut — bake the fix in.**
+   - *Version drop PR*: merge the PR that changes `__version__` from
+     `X.Y.Z-rc.N` to the bare `X.Y.Z` in all three version files — step 1 of
+     the three-step sequence in "Version numbering policy". **This PR is what
+     makes the next RC a promotion candidate**; the 0.4.0 promotion was nearly
+     tagged before it existed because this step lived only in the policy
+     section, not here. The checklist in step 2 below verifies it landed.
    - *CHANGELOG*: the release branch already carries `## [X.Y.Z] — <date>` (no
      `[Unreleased]`, enforced by the changelog gate). Confirm at cut time.
    - *Version display*: the base-version fold above must be merged to `main`
@@ -92,8 +134,14 @@ there is no build step at stable-tag time to add it.
 2. **Cut the RC — verify content, not PR status.** On the target commit confirm:
    `github-release` has an `if:`; `CHANGELOG.md` line 5 is `## [X.Y.Z]` with zero
    non-bare-release `##` headings; exactly one `### Contributors`;
-   `__version__ = "X.Y.Z"`; the bytecode/pycache test fix is present; the
-   base-version fold is present (stable About shows `X.Y.Z`); no existing bare
+   `__version__ = "X.Y.Z"` **in all three version files** (`src/kiro_crew/__init__.py`,
+   `pyproject.toml`, `website/electron/package.json` — the 0.4.0 promotion was
+   nearly tagged on a commit still declaring `0.4.0-rc.9` because only the tag
+   name was checked); the bytecode/pycache test fix is present; the display-fold
+   contract above is fully present (run the regression gates:
+   `test_stable_version_display.py` + the `version_display` tests — a stamped
+   stable build must show `X.Y.Z` on the version chip, the Settings footer, the
+   available-update line, AND the update popup); no existing bare
    `vX.Y.Z` tag. Then tag `vX.Y.Z-insider.N`.
 3. **Soak.** Ship the RC on insider and let real users run it. **Do not push any
    byte-affecting change to the release branch between soak and promote** — the
