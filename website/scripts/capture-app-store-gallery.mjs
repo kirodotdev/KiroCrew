@@ -30,7 +30,6 @@ const VIEWPORT = { width: 1280, height: 800 }
 // screenshots. They are copied byte-for-byte; no mock artwork is substituted.
 const SEEDED_CAPTURES = {
   'auto-improvement': fileURLToPath(new URL('../../temp-screenshots/auto-improvement/01-dashboard.png', import.meta.url)),
-  'auto-triage-pipeline': fileURLToPath(new URL('../../temp-screenshots/auto-triage-pipeline/app-01-populated.png', import.meta.url)),
   'command-bar': fileURLToPath(new URL('../../temp-screenshots/command-bar/2-command-bar-root.png', import.meta.url)),
   'crew-companion': fileURLToPath(new URL('../../temp-screenshots/crew-companion/dashboard-app-page.png', import.meta.url)),
   mochi: fileURLToPath(new URL('../public/app-assets/mochi/shot-1-gallery.png', import.meta.url)),
@@ -40,7 +39,6 @@ const APPS = [
   ['agent-worlds', 'agent_worlds', 'worlds', '/worlds'],
   ['auto-improvement', 'auto_improvement', 'auto-improvement', '/auto-improvement'],
   ['auto-research', 'auto_research', 'auto-research', '/auto-research'],
-  ['auto-triage-pipeline', 'auto_triage_pipeline', 'auto-triage-pipeline', '/auto-triage-pipeline'],
   ['channels', 'channels', 'channels', '/channels'],
   ['code-review-sage', 'code_review_sage', 'code-review-sage', '/code-review-sage'],
   ['command-bar', 'command_bar', 'command-bar', '/chat'],
@@ -97,7 +95,6 @@ const FIXTURES = {
   '/api/apps/auto-improvement/config': { configured: false, target_url: '', branch: '' },
   '/api/apps/auto-improvement/status': { status: 'idle', findings: [], history: [] },
   '/api/apps/auto-research/questions': { questions: [], sessions: [] },
-  '/api/apps/auto-triage-pipeline/runs': { runs: [] },
   '/api/apps/code-review-sage/runs': { runs: [], pool: null, reviewer: null },
   '/api/apps/code-review-sage/repos': { repos: [] },
   '/api/apps/code-review-sage/settings': { settings: {}, models: [], efforts: [], namespaces: [] },

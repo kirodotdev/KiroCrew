@@ -8,7 +8,7 @@
  * with a `http_<status>` fallback when there is no usable code. Asserting only
  * "fetch was called" would let a wrong path or a dropped `confirm:true` slip by.
  *
- * Fetch-mocking idiom copied from the sibling `../auto-triage-pipeline/api.test.ts`:
+ * Fetch-mocking idiom copied from the sibling `../issue-radar/pipeline/api.test.ts`:
  * spy on `globalThis.fetch`, resolve a real `Response`, restore after each.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'

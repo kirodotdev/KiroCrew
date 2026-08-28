@@ -358,13 +358,6 @@
       }
     },
     "autoTriagePipeline": {
-      "manifest": {
-        "description": "Kiro Crew 自身の自動トリアージパイプラインを 3 階層で見る読み取り専用ビュー。6 つのステップとその処理量、ステップ内の Issue、各 Issue のエージェントセッションの費用を表示します。",
-        "display_name": "Kiro Crew 自動トリアージパイプライン",
-        "page_label": "自動トリアージパイプライン",
-        "use_case_1": "Issue Radar のクルー作業がデリバリーパイプライン全体のどこで滞留、再オープン、待機しているかを確認します。",
-        "configuration_1": "Issue Radar でリポジトリを接続し、クルー台帳にフェーズイベントを蓄積させます。その後、このアプリを有効にしてピッカーからそのリポジトリを選択します。"
-      },
       "pipeline": {
         "subtitle": "クルーの作業アイテムごとに 1 レーン、全フェーズを横断表示 — 各アイテムのフェーズと、どこで詰まっているかがひと目でわかります。",
         "refresh": "パイプラインを更新",
@@ -395,10 +388,6 @@
         "empty_row_2": "色で状態がひと目でわかります: 編集中、チェック待ち、完了。",
         "empty_row_3": "滞留ラベルは各フェーズでの経過時間を示すため、詰まったアイテムが目立ちます。",
         "empty_footer": "Issue Radar で crew を設定してパイプラインを開始します。",
-        "no_repo_title": "接続されたリポジトリがありません",
-        "no_repo_body": "パイプラインは接続されたリポジトリの crew 作業項目ごとに 1 本のレーンを描画します。まだリポジトリが接続されていません — 接続すると、その crew 作業項目がここに表示されます。",
-        "repo_picker_label": "リポジトリを切り替え",
-        "repo_picker_prefix": "リポジトリ",
         "legend_editing": "編集中",
         "legend_waiting": "待機中",
         "legend_released": "リリース済み",
@@ -442,16 +431,14 @@
         "header_awaiting_ci": "CI待ち",
         "header_addressing_review": "レビュー対応",
         "header_awaiting_merge": "マージ待ち",
-        "header_resolved": "解決済み"
+        "header_resolved": "解決済み",
+        "page_label": "自動トリアージパイプライン"
       },
       "global": {
         "unattributed_label": "リポジトリのないイベント",
-        "unattributed_note": "イベントがリポジトリを示すようになる前に記録されたため、どのリポジトリにも帰属できません。",
+        "unattributed_note": "イベントがリポジトリを記録するようになる前に書かれたため、どのリポジトリにも帰属できません。以下の各ステップの数にも含まれていません。",
         "repos_label": "リポジトリ",
-        "repos_note": "このボードはそれらをまとめて集計し、個別の表示にはまだ対応していません。",
-        "tab_pipeline": "パイプライン",
-        "tab_lanes": "項目レーン",
-        "tablist_label": "自動トリアージパイプラインのビュー",
+        "repos_note": "記録には他のリポジトリのイベントも含まれます。このボードは上で選択したリポジトリのみを表示します。",
         "title": "パイプライン",
         "subtitle": "トリアージパイプラインの各ステップと、そこにある項目、これまでに処理した数",
         "refresh": "更新",
@@ -515,7 +502,10 @@
         "total_sessions": "セッション",
         "toggle_detail": "項目 #{{number}} の詳細を表示",
         "liveness_checking": "セッションを確認中",
-        "liveness_unknown": "セッションの状態を取得できません"
+        "liveness_unknown": "セッションの状態を取得できません",
+        "tab_pipeline": "パイプライン",
+        "tab_lanes": "項目レーン",
+        "tablist_label": "自動トリアージパイプラインのビュー"
       }
     },
     "channels": {
@@ -2392,7 +2382,8 @@
         "registry": {
           "overview": "概要",
           "tagging": "タグ付け",
-          "graph": "グラフ"
+          "graph": "グラフ",
+          "pipeline": "パイプライン"
         },
         "settings": {
           "generalSettings": {
@@ -2597,6 +2588,10 @@
           "empty_unavailable_title": "依存データを取得できません",
           "empty_unavailable_blurb": "依存グラフを読み込めませんでした。このリポジトリで deps ルートが未有効の可能性があります。利用可能になったら再試行してください。",
           "retry": "再試行"
+        },
+        "pipelineDashboard": {
+          "github_only": "トリアージパイプラインは GitHub リポジトリのみ対応しています",
+          "github_only_hint": "スケジュールジョブは GitHub のみを読み書きするため、このボードにこのリポジトリのパイプラインデータはありません。"
         }
       },
       "welcomeCarousel": {

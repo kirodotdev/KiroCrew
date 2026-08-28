@@ -364,13 +364,6 @@
       }
     },
     "autoTriagePipeline": {
-      "manifest": {
-        "description": "Una vista de solo lectura en tres niveles de la canalizacion de triaje automatico de Kiro Crew: los seis pasos y su rendimiento, las incidencias dentro de un paso y el coste de las sesiones de agente de cada incidencia.",
-        "display_name": "Pipeline de auto-triaje de Kiro Crew",
-        "page_label": "Pipeline de auto-triaje",
-        "use_case_1": "Detecta dónde se acumula, se reabre o queda en espera el trabajo del equipo de Issue Radar en todo el pipeline de entrega.",
-        "configuration_1": "Conecta un repositorio en Issue Radar y deja que su registro del equipo recopile eventos de fase; después activa esta app y elige ese repositorio."
-      },
       "pipeline": {
         "subtitle": "Un carril por elemento de trabajo de la crew, en todas las fases: mira en qué fase está cada elemento y dónde se acumulan.",
         "refresh": "Actualizar la pipeline",
@@ -401,10 +394,6 @@
         "empty_row_2": "El color indica el estado de un vistazo: una crew editando, esperando una comprobación o terminada.",
         "empty_row_3": "Las etiquetas de permanencia muestran cuánto lleva un elemento en cada fase, para que uno atascado destaque.",
         "empty_footer": "Configura crews en Issue Radar para iniciar el pipeline.",
-        "no_repo_title": "Ningún repositorio conectado",
-        "no_repo_body": "El pipeline dibuja una vía por cada elemento de trabajo del crew de un repositorio conectado. Todavía no hay ningún repositorio conectado — conecta uno para ver aquí sus elementos de trabajo del crew.",
-        "repo_picker_label": "Cambiar de repositorio",
-        "repo_picker_prefix": "Repo",
         "legend_editing": "Editando",
         "legend_waiting": "Esperando",
         "legend_released": "Publicado",
@@ -448,16 +437,14 @@
         "header_awaiting_ci": "ESPERA CI",
         "header_addressing_review": "REVISIÓN",
         "header_awaiting_merge": "ESPERA FUSIÓN",
-        "header_resolved": "RESUELTO"
+        "header_resolved": "RESUELTO",
+        "page_label": "Pipeline de auto-triaje"
       },
       "global": {
         "unattributed_label": "EVENTOS SIN REPOSITORIO",
-        "unattributed_note": "Registrados antes de que los eventos nombraran su repositorio, por lo que no se pueden atribuir a ninguno.",
+        "unattributed_note": "Registrados antes de que los eventos nombraran su repositorio, por lo que no se pueden atribuir a ninguno, y no se cuentan en los pasos siguientes.",
         "repos_label": "REPOSITORIOS",
-        "repos_note": "Este panel los combina y todavía no puede mostrarlos por separado.",
-        "tab_pipeline": "Flujo",
-        "tab_lanes": "Carriles de elementos",
-        "tablist_label": "Vistas del flujo de triaje automático",
+        "repos_note": "El registro también contiene eventos de los demás. Este panel muestra solo el repositorio seleccionado arriba.",
         "title": "Flujo",
         "subtitle": "Cada paso del flujo de triaje, qué hay en cada uno y cuánto ha movido",
         "refresh": "Actualizar",
@@ -529,7 +516,10 @@
         "total_sessions": "Sesiones",
         "toggle_detail": "Mostrar detalles del elemento #{{number}}",
         "liveness_checking": "Comprobando la sesión",
-        "liveness_unknown": "Estado de la sesión no disponible"
+        "liveness_unknown": "Estado de la sesión no disponible",
+        "tab_pipeline": "Flujo",
+        "tab_lanes": "Carriles de elementos",
+        "tablist_label": "Vistas del flujo de triaje automático"
       }
     },
     "channels": {
@@ -2450,7 +2440,8 @@
         "registry": {
           "overview": "Resumen",
           "tagging": "Etiquetado",
-          "graph": "Grafo"
+          "graph": "Grafo",
+          "pipeline": "Flujo"
         },
         "settings": {
           "generalSettings": {
@@ -2665,6 +2656,10 @@
           "empty_unavailable_title": "Datos de dependencias no disponibles",
           "empty_unavailable_blurb": "No se pudo cargar el grafo. Puede que la ruta deps aún no esté habilitada para este repositorio. Reintenta cuando lo esté.",
           "retry": "REINTENTAR"
+        },
+        "pipelineDashboard": {
+          "github_only": "El canal de triaje solo funciona con repositorios de GitHub",
+          "github_only_hint": "Sus tareas programadas solo leen y escriben en GitHub, por lo que este panel no tiene datos de canal para este repositorio."
         }
       },
       "welcomeCarousel": {

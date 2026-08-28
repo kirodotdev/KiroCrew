@@ -364,13 +364,6 @@
       }
     },
     "autoTriagePipeline": {
-      "manifest": {
-        "description": "Uma visao somente leitura em tres niveis do pipeline de triagem automatica do Kiro Crew: os seis passos e sua vazao, as issues dentro de um passo e o custo das sessoes de agente de cada issue.",
-        "display_name": "Pipeline de auto-triagem do Kiro Crew",
-        "page_label": "Pipeline de auto-triagem",
-        "use_case_1": "Veja onde o trabalho da equipe do Issue Radar está se acumulando, sendo reaberto ou aguardando em todo o pipeline de entrega.",
-        "configuration_1": "Conecte um repositório no Issue Radar e deixe o ledger da equipe coletar eventos de fase; depois ative este app e escolha esse repositório."
-      },
       "pipeline": {
         "subtitle": "Uma faixa por item de trabalho do crew, em todas as fases — veja em que fase está cada item e onde eles estão se acumulando.",
         "refresh": "Atualizar o pipeline",
@@ -401,10 +394,6 @@
         "empty_row_2": "A cor mostra o estado num relance: um crew editando, aguardando uma verificação ou concluído.",
         "empty_row_3": "Os rótulos de permanência mostram quanto tempo um item ficou em cada fase, destacando os que travaram.",
         "empty_footer": "Configure crews no Issue Radar para iniciar o pipeline.",
-        "no_repo_title": "Nenhum repositório conectado",
-        "no_repo_body": "O pipeline desenha uma faixa por item de trabalho do crew de um repositório conectado. Nenhum repositório está conectado ainda — conecte um para ver aqui seus itens de trabalho do crew.",
-        "repo_picker_label": "Trocar de repositório",
-        "repo_picker_prefix": "Repo",
         "legend_editing": "Editando",
         "legend_waiting": "Aguardando",
         "legend_released": "Liberado",
@@ -448,16 +437,14 @@
         "header_awaiting_ci": "AGUARDA CI",
         "header_addressing_review": "REVISÃO",
         "header_awaiting_merge": "AGUARDA MERGE",
-        "header_resolved": "RESOLVIDO"
+        "header_resolved": "RESOLVIDO",
+        "page_label": "Pipeline de auto-triagem"
       },
       "global": {
         "unattributed_label": "EVENTOS SEM REPOSITÓRIO",
-        "unattributed_note": "Registrados antes de os eventos nomearem o seu repositório, portanto não atribuíveis.",
+        "unattributed_note": "Registrados antes de os eventos nomearem seu repositório, portanto não podem ser atribuídos a nenhum, e não são contados nas etapas abaixo.",
         "repos_label": "REPOSITÓRIOS",
-        "repos_note": "Este painel os combina e ainda não pode exibi-los separadamente.",
-        "tab_pipeline": "Pipeline",
-        "tab_lanes": "Faixas de itens",
-        "tablist_label": "Visualizações do pipeline de triagem automática",
+        "repos_note": "O registro também contém eventos dos outros. Este painel mostra apenas o repositório selecionado acima.",
         "title": "Pipeline",
         "subtitle": "Cada etapa do pipeline de triagem, o que está em cada uma e o quanto já movimentou",
         "refresh": "Atualizar",
@@ -529,7 +516,10 @@
         "total_sessions": "Sessões",
         "toggle_detail": "Mostrar detalhes do item #{{number}}",
         "liveness_checking": "Verificando a sessão",
-        "liveness_unknown": "Status da sessão indisponível"
+        "liveness_unknown": "Status da sessão indisponível",
+        "tab_pipeline": "Pipeline",
+        "tab_lanes": "Faixas de itens",
+        "tablist_label": "Visualizações do pipeline de triagem automática"
       }
     },
     "channels": {
@@ -2450,7 +2440,8 @@
         "registry": {
           "overview": "Visão geral",
           "tagging": "Etiquetagem",
-          "graph": "Grafo"
+          "graph": "Grafo",
+          "pipeline": "Pipeline"
         },
         "settings": {
           "generalSettings": {
@@ -2665,6 +2656,10 @@
           "empty_unavailable_title": "Dados de dependências indisponíveis",
           "empty_unavailable_blurb": "Não foi possível carregar o grafo. A rota deps pode ainda não estar habilitada para este repositório. Tente novamente quando estiver.",
           "retry": "TENTAR DE NOVO"
+        },
+        "pipelineDashboard": {
+          "github_only": "O pipeline de triagem funciona apenas com repositórios do GitHub",
+          "github_only_hint": "Suas tarefas agendadas leem e escrevem somente no GitHub, portanto este painel não tem dados de pipeline para este repositório."
         }
       },
       "welcomeCarousel": {

@@ -240,13 +240,6 @@
       }
     },
     "autoTriagePipeline": {
-      "manifest": {
-        "description": "A read-only, three-level view of Kiro Crew's own auto-triage pipeline: the six steps and their throughput, the issues inside a step, and what each issue's agent sessions cost.",
-        "display_name": "Kiro Crew Auto Triage Pipeline",
-        "page_label": "Auto Triage Pipeline",
-        "use_case_1": "See where Issue Radar crew work is accumulating, reopening, or waiting across the full delivery pipeline.",
-        "configuration_1": "Connect a repository in Issue Radar and let its crew ledger collect phase events, then enable this app and choose that repository from the picker."
-      },
       "pipeline": {
         "subtitle": "One lane per crew work item, across every phase — see which phase each item is in and where items are piling up.",
         "refresh": "Refresh the pipeline",
@@ -277,10 +270,6 @@
         "empty_row_2": "Colour tells you the state at a glance: a crew editing, waiting on a check, or done.",
         "empty_row_3": "Dwell labels show how long an item has sat in each phase, so a stuck item stands out.",
         "empty_footer": "Set up crews in Issue Radar to start the pipeline.",
-        "no_repo_title": "No repository connected",
-        "no_repo_body": "The pipeline draws one lane per crew work item for a connected repository. No repository is connected yet — connect one to see its crew work items here.",
-        "repo_picker_label": "Switch repository",
-        "repo_picker_prefix": "Repo",
         "legend_editing": "Editing",
         "legend_waiting": "Waiting",
         "legend_released": "Released",
@@ -324,16 +313,14 @@
         "header_awaiting_ci": "AWAIT CI",
         "header_addressing_review": "ADDR REV",
         "header_awaiting_merge": "AWAIT MRG",
-        "header_resolved": "RESOLVED"
+        "header_resolved": "RESOLVED",
+        "page_label": "Auto Triage Pipeline"
       },
       "global": {
         "unattributed_label": "EVENTS WITHOUT A REPOSITORY",
-        "unattributed_note": "Recorded before events named their repository, so they cannot be attributed to one.",
+        "unattributed_note": "Recorded before events named their repository, so they cannot be attributed to one — and are not counted in the steps below.",
         "repos_label": "REPOSITORIES",
-        "repos_note": "This board folds them together and cannot show them separately yet.",
-        "tab_pipeline": "Pipeline",
-        "tab_lanes": "Item lanes",
-        "tablist_label": "Auto triage pipeline views",
+        "repos_note": "The trail also holds events from the others. This board shows only the repository selected above.",
         "title": "Pipeline",
         "subtitle": "Every step of the triage pipeline, what is sitting in each, and what it has moved",
         "refresh": "Refresh",
@@ -401,7 +388,10 @@
         "total_sessions": "Sessions",
         "toggle_detail": "Show details for item #{{number}}",
         "liveness_checking": "Checking session",
-        "liveness_unknown": "Session status unavailable"
+        "liveness_unknown": "Session status unavailable",
+        "tab_pipeline": "Pipeline",
+        "tab_lanes": "Item lanes",
+        "tablist_label": "Auto triage pipeline views"
       }
     },
     "channels": {

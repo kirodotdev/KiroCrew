@@ -574,7 +574,8 @@
         },
         "registry": {
           "overview": "Overview",
-          "tagging": "Tagging"
+          "tagging": "Tagging",
+          "pipeline": "Pipeline"
         },
         "crews": {
           "desk": {
@@ -729,6 +730,10 @@
           "sub_paused": "Paused — not taking new issues",
           "rail_sort": "Sort",
           "rail_filters": "Filters"
+        },
+        "pipelineDashboard": {
+          "github_only": "The triage pipeline runs on GitHub repositories",
+          "github_only_hint": "Its scheduled jobs read and write GitHub only, so this board has no pipeline data for this repository."
         }
       },
       "api": {

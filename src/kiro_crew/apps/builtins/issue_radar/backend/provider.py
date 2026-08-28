@@ -157,7 +157,10 @@ def key_from_parts(owner: str, repo: str, provider: object = None, host: object 
     )
 
 
-_GITHUB_URL_HOSTS = frozenset({"github.com", "www.github.com"})
+#: The hosts that ARE public GitHub. Public because the pipeline routes refuse a
+#: repository on any other host, and a second list there would be a second thing to
+#: keep in step with this one.
+GITHUB_URL_HOSTS = frozenset({"github.com", "www.github.com"})
 _AZURE_URL_HOSTS = frozenset({"dev.azure.com"})
 # Azure's legacy per-organization form. Matched as a HOST SUFFIX on the parsed
 # hostname (never as a substring of the URL), so ``myorg.visualstudio.com``
@@ -174,7 +177,7 @@ def _provider_for_url_host(host: str) -> str:
     malformed github.com URL, which stays GitHub-specific instead of becoming a
     confusing "not a GitLab host".
     """
-    if host in _GITHUB_URL_HOSTS:
+    if host in GITHUB_URL_HOSTS:
         return GITHUB
     if host in _AZURE_URL_HOSTS or host.endswith(_AZURE_LEGACY_HOST_SUFFIX):
         return AZURE

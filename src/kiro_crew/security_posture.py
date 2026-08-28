@@ -1145,7 +1145,7 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "Auto Triage Pipeline dashboard strings",
-        "apps/builtins/auto_triage_pipeline/backend/pipeline_fold.py",
+        "apps/builtins/issue_radar/backend/pipeline_fold.py",
         "Every string this read-only fold hands to its routes -- issue titles, "
         "assignee and author logins, labels, event names, slot keys -- funnels "
         "through one `_printable` helper before serialization, and the routes render "

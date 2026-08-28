@@ -361,13 +361,6 @@
       }
     },
     "autoTriagePipeline": {
-      "manifest": {
-        "description": "Eine schreibgeschuetzte, dreistufige Ansicht von Kiro Crews eigener Auto-Triage-Pipeline: die sechs Schritte und ihr Durchsatz, die Issues in einem Schritt und die Kosten der Agent-Sitzungen je Issue.",
-        "display_name": "Kiro Crew Auto-Triage-Pipeline",
-        "page_label": "Auto-Triage-Pipeline",
-        "use_case_1": "Erkenne über die gesamte Bereitstellungspipeline hinweg, wo sich Crew-Arbeit aus Issue Radar staut, erneut geöffnet wurde oder wartet.",
-        "configuration_1": "Verbinde ein Repository in Issue Radar und lass dessen Crew-Ledger Phasenereignisse sammeln; aktiviere dann diese App und wähle das Repository aus."
-      },
       "pipeline": {
         "subtitle": "Eine Spur pro Arbeitselement der Crew, über alle Phasen – sieh, in welcher Phase jedes Element steckt und wo sich Elemente stauen.",
         "refresh": "Pipeline aktualisieren",
@@ -398,10 +391,6 @@
         "empty_row_2": "Die Farbe zeigt den Status auf einen Blick: eine Crew, die bearbeitet, auf eine Prüfung wartet oder fertig ist.",
         "empty_row_3": "Verweildauer-Labels zeigen, wie lange ein Element in jeder Phase saß, damit ein hängendes Element auffällt.",
         "empty_footer": "Richten Sie crews in Issue Radar ein, um die Pipeline zu starten.",
-        "no_repo_title": "Kein Repository verbunden",
-        "no_repo_body": "Die Pipeline zeichnet eine Spur pro crew-Arbeitselement für ein verbundenes Repository. Es ist noch kein Repository verbunden — verbinden Sie eines, um dessen crew-Arbeitselemente hier zu sehen.",
-        "repo_picker_label": "Repository wechseln",
-        "repo_picker_prefix": "Repo",
         "legend_editing": "Bearbeiten",
         "legend_waiting": "Warten",
         "legend_released": "Freigegeben",
@@ -445,16 +434,14 @@
         "header_awaiting_ci": "CI-WARTEN",
         "header_addressing_review": "REVIEW",
         "header_awaiting_merge": "MERGE-WARTEN",
-        "header_resolved": "ERLEDIGT"
+        "header_resolved": "ERLEDIGT",
+        "page_label": "Auto-Triage-Pipeline"
       },
       "global": {
         "unattributed_label": "EREIGNISSE OHNE REPOSITORY",
-        "unattributed_note": "Aufgezeichnet, bevor Ereignisse ihr Repository nannten, daher keinem zuordenbar.",
+        "unattributed_note": "Aufgezeichnet, bevor Ereignisse ihr Repository benannten, daher keinem zuordenbar — und nicht in den Schritten unten mitgezählt.",
         "repos_label": "REPOSITORYS",
-        "repos_note": "Diese Tafel fasst sie zusammen und kann sie noch nicht getrennt anzeigen.",
-        "tab_pipeline": "Pipeline",
-        "tab_lanes": "Vorgangsbahnen",
-        "tablist_label": "Ansichten der Auto-Triage-Pipeline",
+        "repos_note": "Die Spur enthält auch Ereignisse der anderen. Dieses Board zeigt nur das oben ausgewählte Repository.",
         "title": "Pipeline",
         "subtitle": "Jeder Schritt der Triage-Pipeline, was in ihm liegt und was er bewegt hat",
         "refresh": "Aktualisieren",
@@ -522,7 +509,10 @@
         "total_sessions": "Sitzungen",
         "toggle_detail": "Details für Element #{{number}} anzeigen",
         "liveness_checking": "Sitzung wird geprüft",
-        "liveness_unknown": "Sitzungsstatus nicht verfügbar"
+        "liveness_unknown": "Sitzungsstatus nicht verfügbar",
+        "tab_pipeline": "Pipeline",
+        "tab_lanes": "Vorgangsbahnen",
+        "tablist_label": "Ansichten der Auto-Triage-Pipeline"
       }
     },
     "channels": {
@@ -2443,7 +2433,8 @@
         "registry": {
           "overview": "Übersicht",
           "tagging": "Verschlagwortung",
-          "graph": "Graph"
+          "graph": "Graph",
+          "pipeline": "Pipeline"
         },
         "settings": {
           "generalSettings": {
@@ -2653,6 +2644,10 @@
           "empty_unavailable_title": "Abhängigkeitsdaten nicht verfügbar",
           "empty_unavailable_blurb": "Der Abhängigkeitsgraph konnte nicht geladen werden. Die deps-Route ist für dieses Repository womöglich noch nicht aktiv. Danach erneut versuchen.",
           "retry": "ERNEUT VERSUCHEN"
+        },
+        "pipelineDashboard": {
+          "github_only": "Die Triage-Pipeline läuft nur mit GitHub-Repositorys",
+          "github_only_hint": "Ihre geplanten Jobs lesen und schreiben ausschließlich GitHub, daher hat dieses Board keine Pipeline-Daten für dieses Repository."
         }
       },
       "welcomeCarousel": {

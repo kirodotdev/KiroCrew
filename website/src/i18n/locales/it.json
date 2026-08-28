@@ -364,13 +364,6 @@
       }
     },
     "autoTriagePipeline": {
-      "manifest": {
-        "description": "Una vista in sola lettura a tre livelli della pipeline di triage automatico di Kiro Crew: i sei passi e il loro flusso, le issue dentro un passo e il costo delle sessioni agente di ogni issue.",
-        "display_name": "Pipeline di auto-triage Kiro Crew",
-        "page_label": "Pipeline di auto-triage",
-        "use_case_1": "Individua dove il lavoro della squadra di Issue Radar si accumula, viene riaperto o resta in attesa nell'intera pipeline di consegna.",
-        "configuration_1": "Collega un repository in Issue Radar e lascia che il relativo registro della squadra raccolga gli eventi di fase, quindi attiva questa app e seleziona quel repository."
-      },
       "pipeline": {
         "subtitle": "Una corsia per elemento di lavoro della crew, in tutte le fasi: vedi in quale fase si trova ogni elemento e dove si accumulano.",
         "refresh": "Aggiorna la pipeline",
@@ -401,10 +394,6 @@
         "empty_row_2": "Il colore indica lo stato a colpo d’occhio: una crew che modifica, in attesa di un controllo o completata.",
         "empty_row_3": "Le etichette di permanenza mostrano quanto è rimasto un elemento in ciascuna fase, così un elemento bloccato risalta.",
         "empty_footer": "Configura le crew in Issue Radar per avviare la pipeline.",
-        "no_repo_title": "Nessun repository collegato",
-        "no_repo_body": "La pipeline disegna una corsia per ogni elemento di lavoro del crew di un repository collegato. Nessun repository è ancora collegato — collegane uno per vedere qui i suoi elementi di lavoro del crew.",
-        "repo_picker_label": "Cambia repository",
-        "repo_picker_prefix": "Repo",
         "legend_editing": "In modifica",
         "legend_waiting": "In attesa",
         "legend_released": "Rilasciato",
@@ -448,16 +437,14 @@
         "header_awaiting_ci": "ATTESA CI",
         "header_addressing_review": "REVISIONE",
         "header_awaiting_merge": "ATTESA UNIONE",
-        "header_resolved": "RISOLTO"
+        "header_resolved": "RISOLTO",
+        "page_label": "Pipeline di auto-triage"
       },
       "global": {
         "unattributed_label": "EVENTI SENZA REPOSITORY",
-        "unattributed_note": "Registrati prima che gli eventi indicassero il loro repository, quindi non attribuibili.",
+        "unattributed_note": "Registrati prima che gli eventi indicassero il loro repository, quindi non attribuibili a nessuno, e non conteggiati nei passaggi sottostanti.",
         "repos_label": "REPOSITORY",
-        "repos_note": "Questa bacheca li unisce e non può ancora mostrarli separatamente.",
-        "tab_pipeline": "Pipeline",
-        "tab_lanes": "Corsie degli elementi",
-        "tablist_label": "Viste della pipeline di triage automatico",
+        "repos_note": "La traccia contiene anche eventi degli altri. Questa scheda mostra solo il repository selezionato sopra.",
         "title": "Pipeline",
         "subtitle": "Ogni passo della pipeline di triage, cosa si trova in ciascuno e quanto ha smaltito",
         "refresh": "Aggiorna",
@@ -529,7 +516,10 @@
         "total_sessions": "Sessioni",
         "toggle_detail": "Mostra i dettagli dell'elemento #{{number}}",
         "liveness_checking": "Verifica della sessione",
-        "liveness_unknown": "Stato della sessione non disponibile"
+        "liveness_unknown": "Stato della sessione non disponibile",
+        "tab_pipeline": "Pipeline",
+        "tab_lanes": "Corsie degli elementi",
+        "tablist_label": "Viste della pipeline di triage automatico"
       }
     },
     "channels": {
@@ -2450,7 +2440,8 @@
         "registry": {
           "overview": "Panoramica",
           "tagging": "Etichettatura",
-          "graph": "Grafo"
+          "graph": "Grafo",
+          "pipeline": "Pipeline"
         },
         "settings": {
           "generalSettings": {
@@ -2665,6 +2656,10 @@
           "empty_unavailable_title": "Dati delle dipendenze non disponibili",
           "empty_unavailable_blurb": "Impossibile caricare il grafo. La route deps potrebbe non essere ancora attiva per questo repository. Riprova quando lo sarà.",
           "retry": "RIPROVA"
+        },
+        "pipelineDashboard": {
+          "github_only": "La pipeline di triage funziona solo con repository GitHub",
+          "github_only_hint": "I suoi processi pianificati leggono e scrivono solo su GitHub, quindi questa bacheca non ha dati di pipeline per questo repository."
         }
       },
       "welcomeCarousel": {

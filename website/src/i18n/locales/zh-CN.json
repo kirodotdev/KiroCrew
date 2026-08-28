@@ -358,13 +358,6 @@
       }
     },
     "autoTriagePipeline": {
-      "manifest": {
-        "description": "以只读方式查看 Kiro Crew 自动分诊流水线，分三层：六个步骤及其吞吐、某一步骤内有哪些 issue，以及每个 issue 在 agent 会话上花了多少。",
-        "display_name": "Kiro Crew 自动分诊流水线",
-        "page_label": "自动分诊流水线",
-        "use_case_1": "查看 Issue Radar 的 crew 工作在完整交付流水线中的积压、重开和等待位置。",
-        "configuration_1": "在 Issue Radar 中连接仓库，让 crew 账本收集阶段事件，然后启用此应用并从选择器中选择该仓库。"
-      },
       "pipeline": {
         "subtitle": "每个 crew 工作项一条泳道，横跨所有阶段 — 一眼看清每项处于哪个阶段、在哪里堆积。",
         "refresh": "刷新流水线",
@@ -395,10 +388,6 @@
         "empty_row_2": "颜色一眼呈现状态：crew 编辑中、等待检查或已完成。",
         "empty_row_3": "停留标签显示各阶段的耗时，卡住的工作项会更醒目。",
         "empty_footer": "在 Issue Radar 中设置 crew 以启动流水线。",
-        "no_repo_title": "未连接任何仓库",
-        "no_repo_body": "流水线会为已连接仓库的每个 crew 工作项绘制一条泳道。目前尚未连接任何仓库——连接一个即可在此查看其 crew 工作项。",
-        "repo_picker_label": "切换仓库",
-        "repo_picker_prefix": "仓库",
         "legend_editing": "编辑中",
         "legend_waiting": "等待中",
         "legend_released": "已发布",
@@ -442,16 +431,14 @@
         "header_awaiting_ci": "等待 CI",
         "header_addressing_review": "评审处理",
         "header_awaiting_merge": "等待合并",
-        "header_resolved": "已解决"
+        "header_resolved": "已解决",
+        "page_label": "自动分诊流水线"
       },
       "global": {
         "unattributed_label": "没有仓库的事件",
-        "unattributed_note": "记录于事件开始标明仓库之前，因此无法归属到任何仓库。",
+        "unattributed_note": "在事件开始记录所属仓库之前写入，因此无法归属到任何仓库，也不计入下方各步骤的数字。",
         "repos_label": "仓库",
-        "repos_note": "此面板将它们合并展示，暂时无法分开显示。",
-        "tab_pipeline": "流水线",
-        "tab_lanes": "条目泳道",
-        "tablist_label": "自动分诊流水线视图",
+        "repos_note": "记录中还包含其他仓库的事件。此看板仅显示上方所选的仓库。",
         "title": "流水线",
         "subtitle": "分诊流水线的每个步骤、每个步骤里有什么，以及各自已处理的数量",
         "refresh": "刷新",
@@ -515,7 +502,10 @@
         "total_sessions": "会话",
         "toggle_detail": "显示条目 #{{number}} 的详情",
         "liveness_checking": "正在检查会话",
-        "liveness_unknown": "无法获取会话状态"
+        "liveness_unknown": "无法获取会话状态",
+        "tab_pipeline": "流水线",
+        "tab_lanes": "条目泳道",
+        "tablist_label": "自动分诊流水线视图"
       }
     },
     "channels": {
@@ -2348,7 +2338,8 @@
         "registry": {
           "overview": "概览",
           "tagging": "打标签",
-          "graph": "依赖图"
+          "graph": "依赖图",
+          "pipeline": "流水线"
         },
         "settings": {
           "generalSettings": {
@@ -2553,6 +2544,10 @@
           "empty_unavailable_title": "依赖数据不可用",
           "empty_unavailable_blurb": "依赖图加载失败。该仓库的 deps 后端路由可能尚未启用，可用后重试。",
           "retry": "重试"
+        },
+        "pipelineDashboard": {
+          "github_only": "分流流水线仅支持 GitHub 仓库",
+          "github_only_hint": "其定时任务只读写 GitHub，因此此看板没有该仓库的流水线数据。"
         }
       },
       "welcomeCarousel": {
