@@ -388,6 +388,10 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
     return (
       <div className={`flex-1 min-w-0 min-h-0 flex flex-col ${fixed ? 'overflow-hidden' : 'overflow-y-auto'}`}>
         {!subDrilled && <NavBackBar label={title} onBack={backToRoot} />}
+        {/* No top inset here: NavBackBar above owns the gap beneath itself, at
+          * every level of the push stack. A `pt-*` on this header would stack
+          * on that margin and land this level's title 24px down while the
+          * SubNav's own level sat at 12px. */}
         {!subDrilled && (
         <div data-testid="mobile-detail-header" className="flex items-end justify-between gap-4 px-4 pb-2 shrink-0">
           <div>

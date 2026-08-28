@@ -34,6 +34,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import SidePanelLayout, { type SidePanelTab } from '../components/SidePanelLayout'
+import { NavBackBar } from '../components/NavBackBar'
 import { SettingsSection } from '../components/settings'
 
 const mobile = vi.hoisted(() => ({ value: false }))
@@ -82,6 +83,59 @@ describe('SidePanelLayout — the narrow pane clears the tab strip border', () =
     renderPage({ url: '/page?tab=form' })
     const header = screen.getByTestId('mobile-detail-header')
     expect(header.className.split(/\s+/)).toContain('pb-2')
+  })
+
+  it('clears the back bar above it, so nothing renders on the hairline', () => {
+    // NavBackBar owns the gap BENEATH itself, at every level of the push stack,
+    // so no host supplies one and the two levels cannot drift apart. Without it
+    // whatever follows the bar renders on its hairline: measured at 390px, the
+    // tab title 0px from the hairline to its cap height, and at the SubNav level
+    // the leading element's own BORDER on the line.
+    //
+    // A margin, not padding: the bar is sticky, so the gap belongs to its FLOW
+    // position and content still scrolls under the wash.
+    const { container } = render(<NavBackBar label="Settings" onBack={() => {}} />)
+    const bar = container.firstElementChild as HTMLElement
+    const classes = bar.className.split(/\s+/)
+    expect(classes, 'the bar owns the gap under itself').toContain('mb-3')
+    expect(classes.filter(c => /^(?:[a-z-]+:)?p[bty]-/.test(c)),
+      'and owns it as a margin, so a sticky bar does not stop content short of the wash')
+      .toEqual([])
+  })
+
+  it('does not re-own that gap on the tab header below the bar', () => {
+    // The second half of "one owner": a `pt-*` here would stack on the bar's
+    // margin and land this level's title 24px down while the SubNav's own level
+    // sat at 12px. pb-2 stays — that gap is this header's own, below its title.
+    mobile.value = true
+    renderPage({ url: '/page?tab=form' })
+    const header = screen.getByTestId('mobile-detail-header')
+    const classes = header.className.split(/\s+/)
+    expect(classes.filter(c => /^(?:[a-z-]+:)?p[ty]-/.test(c)),
+      'the bar above already spaces this header').toEqual([])
+    expect(classes, 'the gap below the title is still this header\'s').toContain('pb-2')
+  })
+
+  it('leaves the SubNav level to the same owner, adding no inset of its own', async () => {
+    // At the SubNav's own level the pane's `pt-1` is deliberately CANCELLED
+    // (`-mt-1` on the bar) so the wash reaches the pane top, which is why this
+    // level had no gap at all before the bar owned one. Read from source: the
+    // bleed classes are the contract, and mounting a real SubNav host needs the
+    // whole query/router stack for a class assertion.
+    const { readFile } = await import('node:fs/promises')
+    const { join } = await import('node:path')
+    const src = await readFile(join(__dirname, '..', 'components', 'SettingsSubNav.tsx'), 'utf8')
+    // `[\s\S]*?`, not `[^>]*`: the props include `onBack={() => select(null)}`
+    // and a `>` inside an arrow function truncates a negated-bracket match.
+    const bar = src.match(/<NavBackBar[\s\S]*?className=\{([^}]*)\}/)
+    expect(bar, 'SettingsSubNav should still pass the bar a className').toBeTruthy()
+    // Forbid a POSITIVE top inset only. `-mt-1` is legitimate and load-bearing
+    // here — it cancels the pane's own `pt-1` so the bar's wash reaches the pane
+    // top — so the lookbehind is what separates the cancellation from a second
+    // owner of the gap. (`\b` alone matches inside `-mt-1`, since the boundary
+    // falls between the hyphen and the `m`.)
+    expect(bar![1], 'the bleed cancels the pane inset; it must not add a new one')
+      .not.toMatch(/(?<![-\w])(?:pt|mt)-[\d.]/)
   })
 
   it('leaves the desktop pane flush, since the header already spaces it', () => {

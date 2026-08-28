@@ -13,7 +13,17 @@ import { COARSE_TOUCH_TARGET } from './subNavParams'
  *  The chevron lands 10px from the content edge (16px inset − 6px optical
  *  pull) at every level; a host whose pane already pads horizontally bleeds
  *  the bar back out via `className` (e.g. `-mx-4`) so the wash stays
- *  full-width. */
+ *  full-width.
+ *
+ *  THE BAR OWNS THE GAP BENEATH ITSELF (`mb-3`), at every level, so a host
+ *  never has to supply one and the two levels cannot drift apart. Without it
+ *  whatever follows renders ON the hairline: measured at 390px, the tab title
+ *  0px from the hairline to its cap height, and at the SubNav level the
+ *  leading element's own BORDER on the line — two lines touching, with
+ *  nothing to read as separation. A margin rather than padding because the bar
+ *  is sticky: the gap belongs to the bar's FLOW position, so content still
+ *  scrolls under the wash instead of stopping short of it.
+ */
 export function NavBackBar({ label, onBack, className = '' }: {
   /** The PARENT level's title — iOS labels back with where you came from. */
   label: string
@@ -21,7 +31,7 @@ export function NavBackBar({ label, onBack, className = '' }: {
   className?: string
 }) {
   return (
-    <div className={`sticky top-0 z-10 shrink-0 px-4 backdrop-blur-md bg-[color-mix(in_srgb,var(--bg)_90%,transparent)] shadow-[0_1px_0_var(--border)] ${className}`}>
+    <div className={`sticky top-0 z-10 shrink-0 mb-3 px-4 backdrop-blur-md bg-[color-mix(in_srgb,var(--bg)_90%,transparent)] shadow-[0_1px_0_var(--border)] ${className}`}>
       <button
         type="button"
         onClick={onBack}
