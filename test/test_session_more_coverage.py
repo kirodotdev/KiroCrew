@@ -38,6 +38,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kiro_crew import platform_compat
+from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.messaging.link import UNBIND_REASON_UNSPECIFIED, ChannelLink
 from kiro_crew.session import (
@@ -528,17 +529,36 @@ class TestEvictStaleSession:
 
 
 class TestBackgroundProviderDispatch:
-    def test_an_unreadable_provider_setting_defaults_to_the_kiro_backend(self, mgr) -> None:
+    def test_an_unreadable_backend_setting_defaults_to_the_kiro_backend(self, mgr) -> None:
         """``_bg`` must keep working when the config object cannot answer — the
         alternative is losing chat titles and consolidation to a config edge."""
 
         class _Boom:
             @property
-            def provider(self):
+            def acp_backend(self):
                 raise RuntimeError("config exploded")
 
         mgr._cfg = SimpleNamespace(agent=_Boom())
-        assert mgr._bg_provider_is_kiro() is True
+        assert mgr._bg_backend_supports_runtime() is True
+
+    def test_a_non_string_backend_defaults_to_the_kiro_backend(self, mgr) -> None:
+        """A non-string value degrades to the floor backend for dispatch,
+        mirroring the loader's ``_normalize_acp_backend`` posture."""
+        mgr._cfg = SimpleNamespace(agent=SimpleNamespace(acp_backend=object()))
+        assert mgr._bg_backend_supports_runtime() is True
+
+    def test_a_runtime_incapable_backend_falls_through_to_the_provider_path(self, mgr) -> None:
+        """A backend outside ACP_BACKENDS_ACP_RUNTIME must dispatch to the
+        provider-backed ``_Session`` path even while agent.provider reads
+        "acp" — the predicate is keyed on acp_backend, never on provider."""
+        mgr._cfg = SimpleNamespace(
+            agent=SimpleNamespace(provider="acp", acp_backend=ACP_BACKEND_CLAUDE)
+        )
+        assert mgr._bg_backend_supports_runtime() is False
+
+    def test_the_kas_backend_is_runtime_capable(self, mgr) -> None:
+        mgr._cfg = SimpleNamespace(agent=SimpleNamespace(acp_backend=ACP_BACKEND_KAS))
+        assert mgr._bg_backend_supports_runtime() is True
 
     @pytest.mark.asyncio
     async def test_ensure_background_no_ops_without_a_factory(self, mgr) -> None:

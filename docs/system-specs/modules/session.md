@@ -39,22 +39,49 @@ Callers: heartbeat callback, taskrunner lesson extraction.
 
 ### Multiplexed _bg runtime
 
-`get_bg_session()` acquires a `_bg` handle, dispatching by provider backend and
-returning `AcpSessionHandle | _ProviderBgSession`. Provider dispatch is via
-`_bg_provider_is_kiro()`, which resolves the `kirocrew-lite` agent backend:
+`get_bg_session()` acquires a `_bg` handle, dispatching by `agent.acp_backend`
+and returning `AcpSessionHandle | _ProviderBgSession`. Dispatch is via
+`_bg_backend_supports_runtime()` — positive membership in
+`ACP_BACKENDS_ACP_RUNTIME`, never an inequality (harness parity):
 
-- **kiro (`acp`)** — the only backend the multiplexed `AcpRuntime` supports.
-  Each caller (title generation, suggestions, folders, nav) gets its **own**
-  ephemeral `sessionId` multiplexed on a single shared `_bg_runtime` (an
-  `AcpRuntime`, kiro-cli only), created lazily under `_bg_runtime_lock`.
+- **runtime-capable backend** (`ACP_BACKENDS_ACP_RUNTIME`) — each caller (title
+  generation, suggestions, folders, nav) gets its **own** ephemeral `sessionId`
+  multiplexed on a single shared `_bg_runtime` (an `AcpRuntime` spawned under
+  the CONFIGURED backend), created lazily under `_bg_runtime_lock`.
   `create_session()` runs **outside** the lock so independent callers aren't
   serialized. The runtime is respawned-and-retried once on `AcpRuntimeDead`
   (`max_retries=1`, 2 attempts total).
-- **non-kiro** — falls back to a `_ProviderBgSession` over the shared
-  `BACKGROUND_KEY` `_Session`, serialized by its `Semaphore(1)`. `AcpRuntime` is
-  kiro-only, so any non-kiro backend must use the provider path. In the public
-  KiroCrew edition `agent.provider` is fixed to `acp`, so this branch is the
-  dormant fallback for the reserved `ACP_BACKEND_CLAUDE` seam only.
+- **any other backend** — falls back to a `_ProviderBgSession` over the shared
+  `BACKGROUND_KEY` `_Session`, serialized by its `Semaphore(1)`. In the public
+  Kiro Crew edition `agent.provider` is fixed to `acp` and only kiro and KAS are
+  selectable, so this branch is the dormant fallback for the reserved
+  `ACP_BACKEND_CLAUDE` seam only.
+
+A backend switch displaces the cached `_bg_runtime`. The displacement policy
+has ONE implementation, `_displace_bg_runtime_locked()`, reached from
+`_retire_stale_backend_bg_runtime()` and from the mismatch check inside
+`get_bg_session()`'s runtime branch: a runtime whose `acp_backend` no longer
+matches config is killed if idle, and **parked on `_draining_bg_runtimes` if it
+has live or initializing handles** — parked runtimes never receive a new
+session (only `_bg_runtime` is offered to callers), their in-flight work
+finishes untouched (killing mid-turn would abort an in-flight title
+generation), and `_reap_drained_bg_runtimes_locked()` kills each once its last
+handle drains. Either way the slot is freed, so the very next background call
+runs under the configured backend even while the old runtime is still
+draining. Parked runtimes stay shielded from the orphan-PID sweep
+(`_companion_runtime_pids`), block the account-identity sweep's completeness
+(`_retire_kiro_bg_runtime`) while they drain, and are reaped by a periodic
+watchdog hook (`bg_drain_reap`) as the backstop for an idle gateway where no
+other trigger runs. `close_all()` detaches both holders atomically under
+`_bg_runtime_lock` and kills the detached snapshot; its counterpart `_closing`
+gate in `get_bg_session()` refuses to spawn or park once shutdown has started.
+Note there is currently no dashboard edit surface for
+`agent.acp_backend` (a file/CLI edit lands at the next gateway start, where
+`_cfg` is fresh); `refresh_defaults()` re-reads config, so any invocation of it
+picks up a backend change, and a future edit surface gets retirement for free
+by routing through it like the other `agent.*` defaults. The provider-path
+retirement trigger is dormant in the public edition for the same reason the
+`ACP_BACKEND_CLAUDE` branch is: every selectable backend is runtime-capable.
 
 Both paths yield `AcpEvent` through the shared
 `acp/_dispatch.parse_session_update` parser, so there is no behavioral drift

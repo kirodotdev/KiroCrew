@@ -30,6 +30,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, ACP_BACKEND_KIRO
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import KiroCrewAgentConfig
 from kiro_crew.messaging.link import ChannelLink
@@ -384,8 +385,11 @@ class TestProviderBgSession:
 
 class TestGetBgSessionNonKiro:
     @pytest.mark.asyncio
-    async def test_non_kiro_backend_gets_the_provider_backed_adapter(self, cfg) -> None:
-        cfg.agent.provider = "claude_code"
+    async def test_non_runtime_backend_gets_the_provider_backed_adapter(self, cfg) -> None:
+        # A backend the multiplexed AcpRuntime cannot serve must fall through
+        # to the provider path even though agent.provider is still "acp" (a
+        # one-member enum) — dispatch is keyed on acp_backend, not provider.
+        cfg.agent.acp_backend = ACP_BACKEND_CLAUDE
         mgr = SessionManager(cfg)
         sess = _register(mgr, BACKGROUND_KEY, provider=_StreamingProvider())
 
@@ -399,12 +403,35 @@ class TestGetBgSessionNonKiro:
     async def test_missing_background_session_is_a_named_error(self, cfg) -> None:
         """Silently returning None here surfaces much later as an
         AttributeError inside a chat-title turn."""
-        cfg.agent.provider = "bedrock"
+        cfg.agent.acp_backend = ACP_BACKEND_CLAUDE
         mgr = SessionManager(cfg)
 
         with patch.object(mgr, "_ensure_background", AsyncMock()):
             with pytest.raises(RuntimeError, match="background session unavailable"):
                 await mgr.get_bg_session()
+
+    @pytest.mark.asyncio
+    async def test_provider_path_retires_a_drained_runtime_left_by_a_switch(self, cfg) -> None:
+        """After a switch to a backend the runtime cannot serve, the runtime
+        branch is never taken again — so the provider path itself must finish
+        a retirement that refresh_defaults deferred while handles were live."""
+        cfg.agent.acp_backend = ACP_BACKEND_CLAUDE
+        mgr = SessionManager(cfg)
+        _register(mgr, BACKGROUND_KEY, provider=_StreamingProvider())
+
+        stranded = AsyncMock()
+        stranded.acp_backend = ACP_BACKEND_KIRO  # spawned before the switch
+        stranded.has_active_or_initializing_sessions = lambda: False
+        stranded.kill = AsyncMock()
+        stranded.pid = 555
+        mgr._bg_runtime = stranded
+
+        with patch.object(mgr, "_ensure_background", AsyncMock()):
+            handle = await mgr.get_bg_session()
+
+        assert isinstance(handle, _ProviderBgSession)
+        stranded.kill.assert_awaited_once()
+        assert mgr._bg_runtime is None
 
 
 # ── Registry reads ───────────────────────────────────────────────────────────
