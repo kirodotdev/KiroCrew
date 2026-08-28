@@ -1878,6 +1878,29 @@ _KEY_OPEN_NAMESPACES = frozenset({"capabilities"})
 # (require_isolation, env_scrub_prefixes) kept raw under a reserved scope.
 _SANDBOX_FLAGS_SCOPE = "sandbox._flags"
 
+# The EXHAUSTIVE set of non-governed ``sandbox`` boot flags that may ride raw
+# under ``_SANDBOX_FLAGS_SCOPE``.  Anything else under ``sandbox`` fails closed
+# like every other fixed-child namespace (filesystem, folders, network).
+#
+# Why an allowlist rather than blanket tolerance: ``sandbox.min_level`` is the
+# ordinal floor with the widest blast radius in the catalog, and the reserved
+# scope is WRITE-ONLY — nothing reads it back.  Blanket tolerance therefore
+# turned a one-character typo into silent total loss of the floor:
+# ``{"sandbox": {"min_levl": "strict"}}`` parsed clean, reported OK from
+# ``kirocrew policy validate``, rendered as a governed scope in
+# ``kirocrew policy show``, and left ``sandbox.min_level`` absent — so
+# ``sandbox._governance_sandbox_floor()`` read "ungoverned" and clamped nothing.
+# Green validation with zero enforcement is precisely the failure class this
+# model exists to prevent, so an unrecognized child must be loud.
+#
+# Why not reject EVERY non-``min_level`` child: these two names are documented
+# in-code above as reserved, and a deployed policy may already carry one.
+# Rejecting them would abort boot on a policy that parses today, converting a
+# diagnostic gap into an availability regression.  Keeping the two known names
+# accepted costs nothing (they are inert either way) and confines the new
+# strictness to names nobody has been told are valid.
+_SANDBOX_RESERVED_FLAGS = frozenset({"require_isolation", "env_scrub_prefixes"})
+
 # Scope aliases: the provider doc names the profile's path scopes ``folders.read``/
 # ``folders.write`` but the policy names them ``filesystem.read``/``.write`` (App.
 # A.3 note + the worked example). They are the SAME path ceiling — both resolve
@@ -2042,8 +2065,11 @@ def _parse_controls(
                 dotted = f"{key}.{sub}"
                 if dotted in SCOPE_CATALOG:
                     take(dotted, sub_raw)
-                elif key == "sandbox":
-                    # Non-governed boot flags ride raw under a reserved scope.
+                elif key == "sandbox" and sub in _SANDBOX_RESERVED_FLAGS:
+                    # A KNOWN non-governed boot flag rides raw under a reserved
+                    # scope.  The membership test is what keeps a typo'd
+                    # ``min_level`` from being swallowed here instead of
+                    # reaching the fail-closed raise below.
                     controls.setdefault(_SANDBOX_FLAGS_SCOPE, {})  # type: ignore[arg-type]
                     controls[_SANDBOX_FLAGS_SCOPE][sub] = sub_raw  # type: ignore[index]
                 else:

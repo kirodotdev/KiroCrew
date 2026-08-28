@@ -378,6 +378,55 @@ class TestLoader:
         with pytest.raises(PlatformCompositionError):
             parse_policy(_policy_body(bogus_scope={"mode": "allow"}))
 
+    def test_typod_sandbox_child_fails_closed(self):
+        """A typo'd ``min_level`` must RAISE, not vanish into the reserved scope.
+
+        ``sandbox`` used to accept ANY child into the write-only
+        ``sandbox._flags`` scope, so ``min_levl`` parsed clean and left the
+        floor absent — green validation, zero enforcement, on the ordinal with
+        the widest blast radius.  The message names the key so the operator can
+        see WHICH key was rejected.
+        """
+        with pytest.raises(PlatformCompositionError) as exc:
+            parse_policy(_policy_body(sandbox={"min_levl": "strict"}))
+        assert "sandbox.min_levl" in str(exc.value)
+        assert "fail-closed" in str(exc.value)
+
+    def test_typod_sandbox_child_does_not_silently_drop_the_floor(self):
+        """The regression's CONSEQUENCE: it must not parse to an absent floor.
+
+        Pinned separately from the raise so a future change that re-tolerates
+        the key cannot pass by merely raising somewhere else — what must never
+        happen again is a ceiling that reports success while
+        ``sandbox.min_level`` is unset.
+        """
+        try:
+            ceiling = parse_policy(_policy_body(sandbox={"min_levl": "strict"}))
+        except PlatformCompositionError:
+            return
+        pytest.fail(f"parsed clean with sandbox.min_level={ceiling.get('sandbox.min_level')!r}")
+
+    def test_reserved_sandbox_boot_flags_still_parse(self):
+        """The compatibility half: the documented reserved flags must still load."""
+        ceiling = parse_policy(
+            _policy_body(
+                sandbox={
+                    "min_level": "strict",
+                    "require_isolation": True,
+                    "env_scrub_prefixes": ["AWS_SECRET"],
+                }
+            )
+        )
+        assert isinstance(ceiling.get("sandbox.min_level"), OrdinalControl)
+        flags = ceiling.controls["sandbox._flags"]
+        assert flags == {"require_isolation": True, "env_scrub_prefixes": ["AWS_SECRET"]}
+
+    def test_sandbox_min_level_alone_still_parses(self):
+        """The overwhelmingly common shape must be untouched by the new check."""
+        ceiling = parse_policy(_policy_body(sandbox={"min_level": "strict"}))
+        assert isinstance(ceiling.get("sandbox.min_level"), OrdinalControl)
+        assert "sandbox._flags" not in ceiling.controls
+
 
 # ──────────────────────────────────────────────────────────────────────────
 # Policy / Profile parsing
