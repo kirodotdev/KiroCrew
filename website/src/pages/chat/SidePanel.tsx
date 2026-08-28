@@ -547,29 +547,48 @@ export default function SidePanel({
       ) : null}
       {/* Tab strip — the row scrolls by touch/wheel; a chip is reordered by
           dragging it (press and hold first on touch, see useLongPressReorder).
-          Per Figma "left-nav" (7328:10637): the row is a rounded elevated card
-          (bg-elevated, 12px radius, 8px padding) floating above the content,
-          not a flat bordered bar. side-panel-strip punches the strip out of the
-          Electron window-drag region (see index.css) so chips receive events. */}
-      <div className="side-panel-strip flex items-center gap-1.5 shrink-0 p-2 rounded-tl-xl bg-bg-elevated">
+          Browser-tab construction: the strip is an elevated band whose chips
+          BOTTOM-ALIGN (items-end, pb-0) so the active chip's background runs
+          straight into the panel body below — the strip/body seam is what the
+          tab shape fuses across, in both dock placements (right dock and
+          bottom dock render this same row above their content).
+          side-panel-strip punches the strip out of the Electron window-drag
+          region (see index.css) so chips receive events. */}
+      <div className="side-panel-strip flex items-end gap-1.5 shrink-0 px-2 pt-2 pb-0 min-h-10 rounded-tl-xl bg-bg-elevated">
         {/* Pinned views (Changes / Files / Artifacts): always present, fixed at
-            the front, non-closable, not draggable, compact. Wrapped in a
-            tight-gap group so the three sit closer together than the strip's
-            default spacing. */}
-        <div className="flex items-center gap-1.5 shrink-0">
+            the front, non-closable, not draggable, compact. The group's 8px gap
+            matches the active chip's corner-piece width, so a piece lands in the
+            gap instead of over a neighbour. */}
+        <div className="flex items-end gap-2 shrink-0">
           {pinnedTabs.map(t => (
             <TabChip key={t.id} tab={t} active={t.id === activeId} closable={false} pinned onSelect={() => setActive(t.id)} onClose={() => {}} />
           ))}
         </div>
+        {/* Chrome's separator rule, extended to the pinned↔dynamic divider: a
+            hairline adjacent to the ACTIVE chip goes transparent. The active
+            chip's 8px corner piece travels across this 6px gap, and a divider
+            slicing through it reads as a detached blob on any theme where --bg
+            differs from --bg-elevated (glaring on light). Transparent rather
+            than unmounted, so activating an adjacent tab cannot shift the row
+            by the divider's layout width. The dynamic group's own separators
+            already follow the same suppression rule. */}
         {pinnedTabs.length > 0 && dynamicTabs.length > 0 && (
-          <span aria-hidden="true" className="w-px h-5 bg-border shrink-0" />
+          <span
+            aria-hidden="true"
+            data-testid="strip-divider"
+            className={`w-px h-5 shrink-0 self-center relative z-10 ${
+              pinnedTabs[pinnedTabs.length - 1].id === activeId || dynamicTabs[0].id === activeId
+                ? 'bg-transparent'
+                : 'bg-border'
+            }`}
+          />
         )}
         <Reorder.Group
           axis="x"
           values={dynamicTabs}
           onReorder={(next) => setOrder([...pinnedTabs, ...next])}
           role="tablist"
-          className="flex items-center gap-2 min-w-0 overflow-x-auto scrollbar-none list-none m-0 p-0"
+          className="flex items-end gap-2 min-w-0 overflow-x-auto scrollbar-none list-none m-0 p-0 px-2"
         >
           {dynamicTabs.map((t, i) => (
             <DraggableTabItem
@@ -594,7 +613,7 @@ export default function SidePanel({
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
-              className="flex items-center justify-center w-7 h-7 shrink-0 rounded-md text-muted hover:text-text hover:bg-bg-hover data-[state=open]:bg-bg-hover data-[state=open]:text-text transition-colors bg-transparent border-none cursor-pointer"
+              className="flex items-center justify-center w-7 h-7 shrink-0 self-center rounded-md text-muted hover:text-text hover:bg-bg-hover data-[state=open]:bg-bg-hover data-[state=open]:text-text transition-colors bg-transparent border-none cursor-pointer"
               title={i18nT('pages.chat.sidePanel.open_side_panel_tab')}
               aria-label={i18nT('pages.chat.sidePanel.open_side_panel_tab')}
             >
@@ -629,8 +648,8 @@ export default function SidePanel({
         {/* Panel chrome, trailing edge. Collapse (frequent) stays a one-tap
             button; the rarely-used dock toggle moves into a ⋯ menu so the two
             panel-square glyphs are never adjacent look-alikes. */}
-        <span aria-hidden="true" className="w-px h-5 bg-border shrink-0" />
-        <div className="flex items-center gap-0.5 shrink-0">
+        <span aria-hidden="true" className="w-px h-5 bg-border shrink-0 self-center relative z-10" />
+        <div className="flex items-center gap-0.5 shrink-0 self-center">
         {canDockBottom && !isMobile && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -1069,7 +1088,7 @@ function DraggableTabItem({ tab, active, separator, instantLayout, onSelect, onC
       {...itemProps}
       // The ring is the only feedback a press-and-hold gets before the finger
       // moves; without it an armed drag looks identical to a missed one.
-      className={`relative shrink-0 list-none rounded-md ${dragging ? 'ring-1 ring-accent' : ''}`}
+      className={`relative shrink-0 list-none rounded-t-md rounded-b-none ${dragging ? 'ring-1 ring-accent' : ''}`}
       // Reorder.Item's layout prop can't be disabled (true | "position"
       // only) — instead make the layout correction instant while resizing so
       // chips track the panel edge 1:1. Otherwise use a tight spring (high
@@ -1107,14 +1126,20 @@ function TabChip({ tab, active, onSelect, onClose, closable = true, pinned = fal
       // label is also shown.
       aria-label={pinned ? tab.title : undefined}
       title={pinned && !showLabel ? tab.title : undefined}
-      // Figma "Side Navigation" chip: 28px tall, 6px corners (not a full pill),
-      // 8px padding, 4px icon↔label gap. Active = neutral fill (--border) + accent
-      // text; inactive = muted, brightening on hover. Icon-only (inactive pinned)
-      // collapses to a square (w-7, centered) so the trio reads as an even set.
-      className={`group relative flex items-center gap-1 h-7 rounded-md cursor-pointer shrink-0 select-none transition-colors ${
-        showLabel ? `max-w-[240px] ${closable ? 'pl-2 pr-1' : 'px-2'}` : 'w-7 justify-center px-0'
+      // Browser-tab chip: 32px tall, top corners only (8px), bottom edge fused
+      // into the panel body. Active = the body's own background (--bg) plus a
+      // top/side hairline (--border, bottom open) so the silhouette survives a
+      // custom theme where --bg and --bg-elevated are equal; the ::before/::after
+      // corner pieces carry a matching 1px arc in their gradient, so the hairline
+      // FOLLOWS the outward curve instead of running straight through it (see
+      // .side-tab-active in index.css). Inactive = muted text with a hover wash.
+      // Icon-only (inactive pinned) collapses to a square (w-8, centered).
+      // This deliberately supersedes the earlier Figma "Side Navigation" pill
+      // spec (28px, 6px all-corner radius, --border active fill).
+      className={`group relative isolate flex items-center gap-1 h-8 rounded-t-md rounded-b-none border cursor-pointer shrink-0 select-none transition-colors ${
+        showLabel ? `max-w-[240px] ${closable ? 'pl-2 pr-1' : 'px-2'}` : 'w-8 justify-center px-0'
       } ${
-        active ? 'bg-border text-accent' : 'text-muted hover:text-text hover:bg-bg-elevated'
+        active ? 'side-tab-active bg-bg text-accent border-x-border border-t-border border-b-transparent' : 'side-tab-inactive border-transparent text-muted hover:text-text'
       }`}
     >
       <span className="shrink-0">{KIND_ICON[tab.kind]}</span>

@@ -2067,6 +2067,35 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
    without fighting hover/active background states, which now use the standard
    neutral tokens (hover:bg-bg-hover, bg-accent-subtle when active). */
 .session-row{--_sc:var(--session-color,transparent);--session-muted:var(--muted)}
+/* Browser-tab demo: the side panel's ACTIVE tab chip fuses with the panel body
+   below it — same background (--bg), no bottom radius, and Chrome's inverted
+   bottom corners painted in the body colour so the elevated strip appears to
+   curve into the tab. */
+.side-tab-active::before,.side-tab-active::after{
+  /* Offsets resolve against the chip's PADDING box, and the chip carries a 1px
+     border: bottom:-1px lands the pieces on the border-box bottom (the strip's
+     seam). Each piece is 9px wide so it also COVERS the chip's own side border
+     over the flare's height — otherwise the straight hairline runs down through
+     the curve as a visible stub. The radial gradient paints three bands: the
+     concave strip region (transparent), a 1px --border arc that CONTINUES the
+     side hairline around the curve, and the --bg wedge that fuses with the
+     panel body. The circle centre sits 1px in from the outer edge so the arc's
+     top lands exactly on the hairline's column — no jog at the junction. */
+  content:'';position:absolute;bottom:-1px;width:9px;height:8px;
+  pointer-events:none}
+.side-tab-active::before{
+  left:-9px;
+  background:radial-gradient(circle at 1px 0,transparent 7px,var(--border) 7px 8px,var(--bg) 8px)}
+.side-tab-active::after{
+  right:-9px;
+  background:radial-gradient(circle at calc(100% - 1px) 0,transparent 7px,var(--border) 7px 8px,var(--bg) 8px)}
+/* Inactive chips: the hover wash floats INSET from the body seam (Chrome-style)
+   so a hovered tab cannot read as fused/selected the way the active tab does.
+   The chip carries isolation:isolate, so z-index:-1 keeps the wash behind the
+   chip's icon/label but above the strip surface. */
+.side-tab-inactive:hover::before{
+  content:'';position:absolute;left:0;right:0;top:2px;bottom:4px;
+  border-radius:8px;background:var(--bg-hover);z-index:-1}
 /* Reveal-in-sidebar confirmation: an accent outline the reveal handler holds
    briefly and then fades (ChatSidebar reveal effect, issue #912). Outline, not
    background, because the revealed row is usually the active one and already
