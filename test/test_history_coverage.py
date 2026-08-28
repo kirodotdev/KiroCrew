@@ -298,6 +298,98 @@ class TestReadTailMessages:
             assert log._read_tail_messages(path, 5, None) == []
 
 
+class TestReadFileChangeMessages:
+    def test_skips_large_irrelevant_rows_and_never_warms_message_cache(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        log = _log(tmp_path)
+        path = log._path("large")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        change = {
+            "role": "assistant",
+            "content": "done",
+            "ts": "2026-08-25T18:00:00Z",
+            "meta": {"file_changes": [{"path": "/tmp/report.md"}]},
+        }
+        _write(
+            path,
+            _jsonl(
+                {"_type": "metadata"},
+                {"role": "assistant", "content": "x" * 1_000_000},
+                change,
+            ),
+        )
+
+        real_loads = H.json.loads
+        parsed_sizes: list[int] = []
+
+        def tracking_loads(value, *args, **kwargs):
+            parsed_sizes.append(len(value))
+            return real_loads(value, *args, **kwargs)
+
+        monkeypatch.setattr(H.json, "loads", tracking_loads)
+        rows = log.read_file_change_messages("large")
+
+        assert rows == [
+            {
+                "ts": "2026-08-25T18:00:00Z",
+                "meta": {"file_changes": [{"path": "/tmp/report.md"}]},
+            }
+        ]
+        assert len(parsed_sizes) == 1
+        assert parsed_sizes[0] < 1_000
+        assert len(log._msg_cache) == 0
+
+        def unexpected_parse(*_args, **_kwargs):
+            pytest.fail("unchanged projection should come from its lightweight cache")
+
+        monkeypatch.setattr(H.json, "loads", unexpected_parse)
+        assert log.read_file_change_messages("large") is rows
+
+    def test_changed_file_replaces_cached_projection(self, tmp_path: Path) -> None:
+        log = _log(tmp_path)
+        path = log._path("changed")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        first = {
+            "role": "assistant",
+            "ts": "2026-08-25T18:00:00Z",
+            "meta": {"file_changes": [{"path": "/tmp/old.md"}]},
+        }
+        second = {
+            "role": "assistant",
+            "ts": "2026-08-25T18:01:00Z",
+            "meta": {"file_changes": [{"path": "/tmp/new-report.md"}]},
+        }
+        _write(path, _jsonl({"_type": "metadata"}, first))
+        assert log.read_file_change_messages("changed")[0]["meta"] == first["meta"]
+
+        _write(path, _jsonl({"_type": "metadata"}, second))
+
+        assert log.read_file_change_messages("changed") == [
+            {"ts": second["ts"], "meta": second["meta"]}
+        ]
+
+    def test_session_write_invalidates_cached_projection(self, tmp_path: Path) -> None:
+        log = _log(tmp_path)
+        _write(
+            log._path("written"),
+            _jsonl(
+                {"_type": "metadata"},
+                {
+                    "role": "assistant",
+                    "content": "first",
+                    "meta": {"file_changes": [{"path": "/tmp/first.md"}]},
+                },
+            ),
+        )
+        assert log.read_file_change_messages("written")
+        assert "written" in log._file_change_cache
+
+        log.append("written", "assistant", "no document change")
+
+        assert "written" not in log._file_change_cache
+
+
 class TestLastMessagePreview:
     def test_missing_file(self, tmp_path: Path) -> None:
         assert _log(tmp_path).last_message_preview("nope") == ""

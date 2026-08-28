@@ -396,6 +396,13 @@ The page opens on the **All** view by default. The Starred/All selection is
 persisted per-browser (`localStorage['mc-artifacts-pinned-only']`), so a user
 who last chose **Starred** resumes there on their next visit.
 
+The firehose reads lightweight history projections: each JSONL file is streamed
+as bytes, lines without the serialized `"file_changes"` key are skipped without
+JSON parsing, and only `ts` plus `meta.file_changes` are retained in a bounded
+file-stamp cache. It never routes through the full parsed-message cache, so a
+dashboard refetch cannot pin or repeatedly decode the complete transcript
+corpus while looking for document paths.
+
 Materialization is authorization-gated: the requested path must appear in the
 recorded chat `file_changes` (never an arbitrary client path), and the read is
 routed through the `hooks.safe_read_file_bytes` keystone. `source` is recorded

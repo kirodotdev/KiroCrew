@@ -146,6 +146,30 @@ def test_scan_session_docs_survives_malformed_history():
     assert [e["path"] for e in out] == ["/tmp/doc.md"]
 
 
+def test_scan_session_docs_prefers_lightweight_history_projection():
+    """The production projection must bypass the full transcript reader."""
+
+    class _ProjectedLog:
+        def list_sessions(self):
+            return [{"key": "dashboard_ok", "modified": 5.0, "title": "ok"}]
+
+        def read_file_change_messages(self, key):
+            assert key == "dashboard_ok"
+            return [
+                {
+                    "ts": "2026-08-25T18:00:00Z",
+                    "meta": {"file_changes": [{"path": "/tmp/projected.md"}]},
+                }
+            ]
+
+        def read_messages(self, key):
+            raise AssertionError(f"full transcript read for {key}")
+
+    assert [e["path"] for e in h._collect_session_docs(_ProjectedLog(), {})] == [
+        "/tmp/projected.md"
+    ]
+
+
 def test_recorded_doc_identities_skips_missing_and_relative(tmp_path):
     doc = _write_doc(tmp_path, "present.md")
     ids = h._recorded_doc_identities(_FakeLog([doc, "relative/x.md", str(tmp_path / "absent.md")]))

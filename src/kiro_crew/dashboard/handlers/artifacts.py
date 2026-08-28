@@ -745,7 +745,14 @@ def _collect_session_docs(
             modified = 0.0
         session_title = sess.get("title") or key
         try:
-            msgs = conversation_log.read_messages(key)
+            file_change_reader = getattr(
+                conversation_log, "read_file_change_messages", None
+            )
+            msgs = (
+                file_change_reader(key)
+                if callable(file_change_reader)
+                else conversation_log.read_messages(key)
+            )
         except Exception:  # noqa: BLE001 — skip an unreadable session, keep scanning
             continue
         for m in msgs:

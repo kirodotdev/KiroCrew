@@ -1830,6 +1830,14 @@ _METADATA_READ_RETRY_SECS = 0.02
 _V = TypeVar("_V")
 
 
+class _FileChangeCacheEntry(NamedTuple):
+    """Lightweight projection of one unchanged transcript revision."""
+
+    stamp: tuple[int, int, int, int]
+    generation: int
+    messages: list[dict]
+
+
 class _LRUCache(Generic[_V]):
     """A tiny bounded LRU cache with a dict-compatible surface.
 
@@ -2173,6 +2181,12 @@ class ConversationLog:
         #: staleness (an append bumps the file mtime, so the entry is
         #: recomputed on the next call). Own ``_LRUCache`` → own internal lock.
         self._recent_cache: _LRUCache[tuple[float, list[dict]]] = _LRUCache(cache_max)
+        #: Bounded memo of lightweight message projections containing only
+        #: ``ts`` and ``meta.file_changes``. The Artifacts "All" view scans
+        #: every session, so routing it through ``_msg_cache`` retains the full
+        #: parsed transcript corpus. The file stamp includes inode and size in
+        #: addition to nanosecond mtime so rotations and atomic rewrites miss.
+        self._file_change_cache: _LRUCache[_FileChangeCacheEntry] = _LRUCache(cache_max)
         #: Bounded memo of ``(mtime, gen, doc_chars, casefolded_blob)`` per
         #: session, consumed only by :meth:`search_sessions`. ``gen`` is the
         #: invalidation generation (:meth:`_cache_gen`) the entry was folded
@@ -4160,6 +4174,74 @@ class ConversationLog:
         """
         return self._read_messages(key)
 
+    def read_file_change_messages(self, key: str) -> list[dict]:
+        """Return lightweight rows that carry ``meta.file_changes``.
+
+        Transcript lines without the serialized key are skipped as raw bytes;
+        only candidate lines are decoded and parsed. This keeps the Artifacts
+        session-document scan proportional in memory to the file-change rows,
+        not to every message and tool result in every session, and never warms
+        :attr:`_msg_cache`.
+
+        The returned list may be the shared cached object; callers must treat it
+        as read-only. An unreadable file propagates ``OSError`` so a caller can
+        distinguish it from a valid session with no document changes.
+        """
+        path = self._path(key)
+        gen = self._cache_gen(key)
+        try:
+            before = path.stat()
+        except FileNotFoundError:
+            self._file_change_cache.pop(key, None)
+            return []
+        stamp = (before.st_mtime_ns, before.st_size, before.st_ino, before.st_dev)
+        cached = self._file_change_cache.get(key)
+        if (
+            cached is not None
+            and cached.stamp == stamp
+            and cached.generation == self._cache_gen(key)
+        ):
+            return cached.messages
+
+        messages: list[dict] = []
+        with open(path, "rb") as handle:
+            for raw in handle:
+                if b'"file_changes"' not in raw:
+                    continue
+                try:
+                    data = json.loads(raw)
+                except ValueError:
+                    continue
+                if not isinstance(data, dict) or data.get("_type") == "metadata":
+                    continue
+                meta = data.get("meta")
+                if not isinstance(meta, dict):
+                    continue
+                file_changes = meta.get("file_changes")
+                if not isinstance(file_changes, list):
+                    continue
+                messages.append(
+                    {
+                        "ts": data.get("ts"),
+                        "meta": {"file_changes": file_changes},
+                    }
+                )
+
+        try:
+            after = path.stat()
+        except OSError:
+            return messages
+        after_stamp = (after.st_mtime_ns, after.st_size, after.st_ino, after.st_dev)
+        if after_stamp == stamp:
+            self._publish_if_current(
+                self._file_change_cache,
+                key,
+                _FileChangeCacheEntry(stamp, gen, messages),
+                key=key,
+                gen=gen,
+            )
+        return messages
+
     def read_messages_chained(self, key: str) -> list[dict]:
         """Read messages from all session files sharing the same ``tab_id``.
 
@@ -5259,6 +5341,7 @@ class ConversationLog:
         for ident in idents:
             self._msg_cache.pop(ident, None)
             self._meta_cache.pop(ident, None)
+            self._file_change_cache.pop(ident, None)
             # The tab_id memo's mtime guard cannot see a write that goes through
             # this class, because those restore the pre-write mtime. This pop is
             # what does -- under every spelling, for the same reason as the rest:
