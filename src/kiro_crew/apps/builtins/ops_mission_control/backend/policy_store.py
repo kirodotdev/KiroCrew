@@ -191,7 +191,7 @@ def _write(data: dict[str, Any]) -> None:
     # at ``policy_path()`` at all. The unlink the old code ran on lockdown
     # failure existed to remove a NEW file already PUBLISHED at a wide DACL;
     # that state is unreachable now, and keeping the unlink would instead
-    # delete the PREVIOUS, healthy governance ceiling on one transient icacls
+    # delete the PREVIOUS, healthy governance ceiling on one transient lockdown
     # failure — silently resetting the operator's autonomy policy.
     atomic_write(policy_path(), payload, restrict_to_owner=True)
 

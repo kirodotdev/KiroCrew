@@ -39,9 +39,9 @@ async def _owner_only(request: web.Request, operation: str) -> web.Response | No
     if is_owner_dashboard_request(request):
         return None
     # Off the loop: the FIRST sel() of a process CONSTRUCTS the log (trust-dir
-    # creation, key validation, on Windows an icacls subprocess), so on a fresh
-    # gateway whose first secrets request is non-owner this would otherwise
-    # stall every other request. Same reasoning as agents._require_owner.
+    # creation, key validation — blocking file IO), so on a fresh gateway whose
+    # first secrets request is non-owner this would otherwise stall every other
+    # request. Same reasoning as agents._require_owner.
     caller = str(request.get("user") or "unknown")
     try:
         await asyncio.to_thread(

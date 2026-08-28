@@ -1352,7 +1352,7 @@ async def _handle_get_config(_request: web.Request) -> web.Response:
 
     cfg = await asyncio.to_thread(_load_config)
     # In a worker thread: the admission path can initialize the SEL audit log,
-    # which shells out on a fresh Windows gateway.
+    # which is blocking file IO on a fresh gateway.
     enabled = await asyncio.to_thread(admits_cloud_deployment, "aws")
     if isinstance(cfg, dict):
         cfg = {**cfg, "cloudDeploymentEnabled": enabled}
@@ -2294,8 +2294,9 @@ def _cloud_gated(handler):
     previously-permitted deployment left behind.
 
     Runs the check in a worker thread: the admission path can initialize the SEL
-    audit log, which on a fresh Windows gateway shells ``icacls`` and would
-    otherwise stall the event loop for every request.
+    audit log, which on a fresh gateway does blocking file IO (trust-dir
+    creation, key validation) and would otherwise stall the event loop for
+    every request.
     """
 
     @functools.wraps(handler)

@@ -661,7 +661,7 @@ class TestPolicyLockdownOrdering(_HomeIsolated):
     inside ``atomic_write`` happens BEFORE the rename, so a transient lockdown
     or write failure can no longer reach — let alone delete — the previous,
     healthy ceiling (the old post-publish ``restrict_to_owner`` + unlink-on-
-    OSError shape silently reset the operator's autonomy policy on one icacls
+    OSError shape silently reset the operator's autonomy policy on one lockdown
     failure).
     """
 

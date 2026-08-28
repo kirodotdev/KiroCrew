@@ -918,11 +918,11 @@ class VectorMemoryStore:
         just created.
 
         Missing files are skipped BY AN EXISTENCE CHECK, not by catching the failure:
-        on Windows ``restrict_to_owner`` shells out, so a missing path raises plain
-        ``OSError`` (icacls exits non-zero) rather than ``FileNotFoundError``, which
-        only ever comes from the POSIX ``os.chmod``. Catching alone would spawn up to
-        five futile ``icacls`` processes on a clean init and log a false "may be
-        readable by other users" warning for each, twice per init. The race between
+        on Windows ``restrict_to_owner`` raises plain ``OSError`` for a missing path
+        (the in-process DACL write's failure is translated to ``OSError``) rather
+        than ``FileNotFoundError``, which only ever comes from the POSIX
+        ``os.chmod``. Catching alone would log a false "may be readable by other
+        users" warning for each missing file, twice per init. The race between
         the check and the call is benign: a file that appears in between is created by
         SQLite or FAISS inside the already-tightened directory, so it inherits
         owner-only access on both platforms and the next init covers it regardless.
@@ -951,7 +951,7 @@ class VectorMemoryStore:
         # pass below repairs what already EXISTS, which a tightened parent cannot do:
         # Windows grants *Bypass Traverse Checking* to Everyone by default, so a
         # pre-lockdown file stays reachable through it. Full reasoning -- the sidecar
-        # file set, the every-init rationale, the Windows icacls cost, the fail-soft
+        # file set, the every-init rationale, the Windows lockdown cost, the fail-soft
         # contract -- lives in docs/guides/windows-install.md, "The memory store".
         #
         # SCOPE: with the default `db_path` this directory IS the data home
@@ -1007,10 +1007,13 @@ class VectorMemoryStore:
         # no-op on Windows. Cost, file set and fail-soft contract:
         # docs/guides/windows-install.md, "The memory store".
         #
-        # CALLER CONTRACT: an async caller must offload this. The Windows path shells
-        # out to icacls, so calling ``init()`` directly on an event loop freezes it
-        # for seconds. All async callers now offload: ``eval.runner``,
-        # ``slack.gateway`` and ``cli_server._run_task`` via ``asyncio.to_thread``
+        # CALLER CONTRACT: an async caller must offload this. ``init()`` is
+        # blocking end to end — the sqlite connect, the schema migrations, and
+        # this lockdown pass (in-process on Windows since the advapi32
+        # conversion, but still filesystem work that can stall on a slow
+        # volume) — so calling it directly on an event loop stalls every task.
+        # All async callers now offload: ``eval.runner``, ``slack.gateway`` and
+        # ``cli_server._run_task`` via ``asyncio.to_thread``
         # (#5389); ``dashboard/handlers/memory.py``'s standalone fallback routes
         # through ``_get_vector_store_async``, which offloads the init-bearing
         # path (#5221).

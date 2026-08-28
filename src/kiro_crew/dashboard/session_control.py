@@ -1064,8 +1064,8 @@ def _audit(
 
     Dispatched OFF the loop when one is running, mirroring
     ``update_metadata_off_loop``. ``log_tool_invocation`` only enqueues, but the
-    FIRST ``sel()`` of a process CONSTRUCTS the log -- trust-dir creation, key
-    validation, and on Windows an ``icacls`` subprocess -- and this can genuinely
+    FIRST ``sel()`` of a process CONSTRUCTS the log -- trust-dir creation and
+    key validation, blocking file IO -- and this can genuinely
     be that first call: ``sel_audit_middleware`` logs AFTER ``await handler(...)``,
     so on a fresh gateway the first authenticated request constructs the log
     inside whatever handler runs first. Offloading here covers every call site
@@ -1096,8 +1096,8 @@ def _sel_off_loop(write: "Callable[[], None]", what: str) -> None:
     to be found separately, having been missed while the other two were fixed.
 
     Two failure modes, both handled: a loop-blocking construct (a ``sel()`` that
-    creates the trust dir, validates keys, and on Windows shells out to
-    ``icacls``), and a construct that RAISES, which unguarded turns a 403 into a
+    creates the trust dir and validates keys — blocking file IO), and a construct
+    that RAISES, which unguarded turns a 403 into a
     500 -- losing the refusal in order to report it. An audit that cannot be
     written must never change what the caller is told.
     """
@@ -1137,9 +1137,9 @@ async def stop_target(
     # Prewarmed BEFORE `authorize_target`, and that ordering is load-bearing.
     # `stop_slot_turn`'s IDLE branch logs to the SEL with no await before it, so on
     # a fresh gateway a first `session_stop` against an idle slot would CONSTRUCT
-    # the log on the loop -- trust-dir creation, key validation, and on Windows an
-    # `icacls` subprocess. Constructing it off-loop first makes that call a cheap
-    # cache hit. Per-request, not a boot step: prewarming at startup is what
+    # the log on the loop -- trust-dir creation and key validation, blocking file
+    # IO. Constructing it off-loop first makes that call a cheap cache hit.
+    # Per-request, not a boot step: prewarming at startup is what
     # `no-new-work-on-gateway-boot-path` forbids, and a background task would only
     # narrow the race rather than close it.
     #

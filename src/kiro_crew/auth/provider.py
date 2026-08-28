@@ -49,8 +49,8 @@ class KasAuthProvider:
         # KIRO_API_KEY is a headless bypass matching KAS's EnvAuthProvider: a raw bearer
         # with no refresh and no profile ARN (region falls back us-east-1).
         api_key = os.environ.get("KIRO_API_KEY")
-        # Vault reads do file IO and (on Windows) restrict_to_owner's icacls
-        # subprocess inside key checks — off the event loop.
+        # Vault reads do file IO (plus owner-only key checks) — off the
+        # event loop.
         token = await asyncio.to_thread(self._store.resolve)
         if token is None:
             if api_key:

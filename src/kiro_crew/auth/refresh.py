@@ -93,15 +93,15 @@ async def ensure_fresh(
     async with identity_lock:
         # Re-check after awaiting the in-process lock: a sibling coroutine may have
         # refreshed while we waited, making both the flock and the HTTP call moot.
-        # Vault reads do file IO (and Windows icacls in key checks) — off-loop.
+        # Vault reads do file IO (plus owner-only key checks) — off-loop.
         current = await asyncio.to_thread(store.load, token.identity)
         if current is not None and not current.is_expired():
             return current
 
         def _open_refresh_lock() -> int:
-            # lock_path runs make_owner_only_dir (a synchronous icacls subprocess on
-            # Windows, up to seconds) and os.open is blocking IO — the whole lock-file
-            # setup stays off the event loop.
+            # lock_path runs make_owner_only_dir (blocking filesystem work; the
+            # Windows DACL is applied in-process) and os.open is blocking IO — the
+            # whole lock-file setup stays off the event loop.
             lock_path = store.lock_path(token.identity)
             lock_path.parent.mkdir(parents=True, exist_ok=True)
             return os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
@@ -117,7 +117,7 @@ async def ensure_fresh(
                 if current is not None and not current.is_expired():
                     return current
                 refreshed = await _refresh(current or token, session=session)
-                # store.save may spawn a Windows icacls subprocess (DACL) — off-loop.
+                # store.save does blocking file IO (owner-only lockdown included) — off-loop.
                 await asyncio.to_thread(store.save, refreshed)
                 return refreshed
             finally:

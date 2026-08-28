@@ -42,8 +42,8 @@ from sage_lib.review_driver import _all_delivered  # noqa: E402
 async def _noop_save() -> None:
     """Stand-in for ``routes._save_runs``, which is a coroutine.
 
-    The registry write is offloaded to a worker thread because its owner-only
-    lockdown spawns ``icacls`` on Windows, so a plain ``lambda: None`` stub is
+    The registry write is offloaded to a worker thread because it is blocking
+    file IO (see ``_write_runs``), so a plain ``lambda: None`` stub is
     not awaitable and the patched call site would raise instead of no-op.
     """
 
@@ -146,9 +146,10 @@ class TestRunsPersistence(unittest.TestCase):
         self.assertIn("e5", runs.read_text(encoding="utf-8"))
 
     def test_the_lockdown_never_runs_on_the_event_loop(self):
-        """The owner-only lockdown spawns ``icacls`` on Windows, so persisting the
-        registry must not block the single gateway loop -- a freeze there stalls
-        every chat turn and the liveness heartbeat, not just this write.
+        """Persisting the registry is blocking file IO (the owner-only lockdown
+        itself is now in-process — ``platform_compat``), and it must not run on
+        the single gateway loop -- a stall there delays every chat turn and the
+        liveness heartbeat, not just this write.
 
         Asserted structurally rather than by timing, so it holds regardless of how
         fast the syscall happens to be on this host. The thread is RECORDED and
@@ -171,8 +172,8 @@ class TestRunsPersistence(unittest.TestCase):
         self.assertIn("write", seen, "_write_runs was never reached")
         self.assertNotEqual(
             seen["write"], seen["loop"],
-            "_write_runs ran on the event-loop thread; the icacls spawn inside it "
-            "would freeze the gateway")
+            "_write_runs ran on the event-loop thread; the blocking file IO inside "
+            "it would stall the gateway")
 
 
 class TestRecordReviewedDelivery(unittest.TestCase):

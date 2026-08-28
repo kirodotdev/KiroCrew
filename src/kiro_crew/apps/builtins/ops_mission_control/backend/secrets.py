@@ -230,7 +230,7 @@ class KeystoneFileBackend:
         # failure existed to remove a NEW store already PUBLISHED at a wide
         # DACL; that state is unreachable now, and keeping the unlink would
         # instead delete the PREVIOUS, healthy, already-locked-down store —
-        # every stored provider token — on one transient icacls failure.
+        # every stored provider token — on one transient lockdown failure.
         atomic_write(self._path, payload, restrict_to_owner=True)
 
     # -- SecretBackend -----------------------------------------------------

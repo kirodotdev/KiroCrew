@@ -183,9 +183,10 @@ def _unregister_notification_channels(request: web.Request, name: str) -> None:
 def _sync_builtin_config(name: str, *, enabled: bool) -> None:
     """Update config.json for a builtin app so gateway reads the right state on restart.
 
-    Blocking: performs a file-locked read-modify-write of config.json and, on
-    Windows, spawns ``icacls`` (``restrict_to_owner``). Callers on the event
-    loop must offload this through ``asyncio.to_thread``.
+    Blocking: performs a file-locked read-modify-write of config.json and then,
+    on Windows, applies the owner-only lockdown (``restrict_to_owner``,
+    in-process — but a possible SMB round-trip on a network-homed data home).
+    Callers on the event loop must offload this through ``asyncio.to_thread``.
     """
     cfg_key, _ = _BUILTIN_SERVICE_APPS.get(name, (None, None))
     if cfg_key is None:
@@ -209,13 +210,17 @@ def _sync_builtin_config(name: str, *, enabled: bool) -> None:
         raise OSError(f"Could not read config.json: {exc}") from exc
     if not platform_compat.IS_POSIX:  # pragma: no cover — exercised on Windows CI
         # POSIX mode bits are meaningless on Windows, so the preserved mode
-        # protects nothing there, and the shared helpers deliberately apply
-        # no DACL themselves because they are also called from loop-reachable
-        # paths (restrict_to_owner spawns icacls, a blocking subprocess).
-        # This caller runs off-loop (to_thread), so it applies the owner
-        # lockdown here: config.json can hold inline credentials. Warn rather
-        # than raise — the settings write itself succeeded, and the callers
-        # must still notify the service of the new enabled state.
+        # protects nothing there. update_config_locked's write path
+        # (write_config_atomically) applies the owner-only DACL itself on a
+        # LOCAL volume, but deliberately skips it on a network-homed data home
+        # (it can be reached from the event loop, and a DACL write to a UNC or
+        # mapped-drive path costs an unbounded SMB round-trip). This caller
+        # runs off-loop (to_thread), so it can afford that round-trip and
+        # applies the lockdown unconditionally — on a network-homed data home
+        # this is the only lockdown config.json gets, and config.json can hold
+        # inline credentials. Warn rather than raise — the settings write
+        # itself succeeded, and the callers must still notify the service of
+        # the new enabled state.
         try:
             platform_compat.restrict_to_owner(config_path())
         except OSError:
@@ -475,7 +480,7 @@ async def handle_publish_providers(request: web.Request) -> web.Response:
     # Gate 1 — platform: advertising a destination whose every mutating route
     # refuses is worse than not advertising it. In a worker thread with the
     # registry read below: the admission path can initialize the SEL audit log,
-    # which shells out on a fresh Windows gateway.
+    # which is blocking file IO on a fresh gateway.
     admits_cloud = await asyncio.to_thread(admits_cloud_deployment, "aws")
 
     # Gate 2 — operator: governance ceiling ∩ publish.allowed_destinations. Only
@@ -1572,8 +1577,10 @@ async def handle_enable_app(request: web.Request) -> web.Response:
         origin = info.get("origin", "")
         if origin == "builtin" and name in _BUILTIN_SERVICE_APPS:
             try:
-                # to_thread: the sync helper does file I/O and, on Windows,
-                # spawns icacls — neither may run on the event loop.
+                # to_thread: the sync helper does a file-locked read-modify-write
+                # of config.json and, on Windows, applies the owner-only lockdown
+                # (a possible SMB round-trip on a network-homed data home) —
+                # neither may run on the event loop.
                 await asyncio.to_thread(_sync_builtin_config, name, enabled=True)
             except OSError as exc:
                 logger.warning("Failed to sync config.json for %s: %s", name, exc)
@@ -1666,8 +1673,10 @@ async def handle_disable_app(request: web.Request) -> web.Response:
         origin = info.get("origin", "")
         if origin == "builtin" and name in _BUILTIN_SERVICE_APPS:
             try:
-                # to_thread: the sync helper does file I/O and, on Windows,
-                # spawns icacls — neither may run on the event loop.
+                # to_thread: the sync helper does a file-locked read-modify-write
+                # of config.json and, on Windows, applies the owner-only lockdown
+                # (a possible SMB round-trip on a network-homed data home) —
+                # neither may run on the event loop.
                 await asyncio.to_thread(_sync_builtin_config, name, enabled=False)
             except OSError as exc:
                 logger.warning("Failed to sync config.json for %s: %s", name, exc)

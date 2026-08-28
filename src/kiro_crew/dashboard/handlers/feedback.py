@@ -293,7 +293,7 @@ async def api_feedback_submit(request: web.Request) -> web.Response:
     kiro_crew_version, _ = redact_exfiltration_urls(kiro_crew_version)
     kiro_crew_version, _ = redact_credentials(kiro_crew_version)
     # Off the event loop: install_id() may create the id file and set
-    # owner-only permissions (a subprocess on Windows) on first use.
+    # owner-only permissions (blocking file IO) on first use.
     user_id = await asyncio.to_thread(_survey_identity)
 
     payload = {

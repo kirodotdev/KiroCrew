@@ -307,7 +307,7 @@ class TestSecretStoreLockdownOrdering(unittest.TestCase):
     inside ``atomic_write`` happens BEFORE the rename, so a transient lockdown
     or write failure can no longer reach — let alone delete — the previous,
     healthy store (the old post-publish ``restrict_to_owner`` + unlink-on-
-    OSError shape destroyed every stored provider token on one icacls failure).
+    OSError shape destroyed every stored provider token on one lockdown failure).
     """
 
     def setUp(self):
@@ -340,7 +340,7 @@ class TestSecretStoreLockdownOrdering(unittest.TestCase):
         )
 
     def test_a_failed_lockdown_preserves_the_previous_store(self):
-        """One transient icacls failure must not delete every stored token."""
+        """One transient lockdown failure must not delete every stored token."""
         from unittest import mock
 
         self.backend.put("pagerduty", "api_token", "u+secretvalue")

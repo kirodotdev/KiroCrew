@@ -518,7 +518,7 @@ def prepare_dir(socket_path: str | os.PathLike[str]) -> None:
     """
     parent = Path(socket_path).parent
     # Called by attribute so the hermetic-test stub in conftest can intercept
-    # the Windows icacls path.
+    # the Windows DACL path.
     platform_compat.make_owner_only_dir(parent)
 
 

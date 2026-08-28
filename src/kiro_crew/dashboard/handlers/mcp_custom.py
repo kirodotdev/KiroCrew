@@ -542,8 +542,8 @@ async def api_mcp_custom_update(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": _oauth_err, "code": "oauth_field_not_editable"}, status=400
             )
-        # Same offload rationale as the add path: the store write applies an
-        # owner-only DACL via a subprocess on Windows.
+        # Same offload rationale as the add path: the store write is blocking
+        # file IO (owner-only lockdown included, in-process on Windows).
         replaced = await _mcp._offload_config_write(_replace_kirocrew_spec, name, spec)
     if not replaced:
         return web.json_response({"error": f"server '{name}' not found"}, status=404)

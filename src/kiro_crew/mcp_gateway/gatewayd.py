@@ -319,9 +319,10 @@ async def run_gatewayd(
     """
     socket_path = Path(socket_path)
     # Off the event loop for the same reason as the manager's call: the
-    # owner-only step shells out to icacls on Windows. Startup is the least
-    # contended moment in this process, but the daemon's signal handlers and
-    # supervising ping are already live, so it is offloaded here too.
+    # owner-only step is blocking filesystem work (the Windows DACL is applied
+    # in-process). Startup is the least contended moment in this process, but
+    # the daemon's signal handlers and supervising ping are already live, so it
+    # is offloaded here too.
     await asyncio.to_thread(transport.prepare_dir, socket_path)
     # Singleton guard (race-free): acquire an exclusive advisory lock on a
     # lockfile beside the endpoint BEFORE probing/unlinking/binding. Without it,

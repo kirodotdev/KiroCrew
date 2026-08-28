@@ -151,9 +151,11 @@ def _runs_file() -> Path:
 def _write_runs(payload: str) -> None:
     """Blocking half of :func:`_save_runs` — never call this on the event loop.
 
-    The owner-only lockdown spawns ``icacls`` on Windows, so this whole function
-    is a blocking syscall sequence and belongs in a worker thread (the same
-    reason ``_write_review_section`` and ``store.remove_run_dir`` are offloaded).
+    This whole function is a blocking syscall sequence — mkdir, temp creation,
+    lockdown (in-process per ``platform_compat``), payload write, replace — and
+    filesystem calls can stall on a slow volume, so it belongs in a worker
+    thread (the same reason ``_write_review_section`` and
+    ``store.remove_run_dir`` are offloaded).
     """
     f = _runs_file()
     f.parent.mkdir(parents=True, exist_ok=True)

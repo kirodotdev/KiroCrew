@@ -565,8 +565,9 @@ def _write_backup_exclusively(path: Path, backup_path: Path) -> None:
             handle.flush()
             os.fsync(handle.fileno())
     except BaseException:
-        # The lockdown is fail-loud and shells out to icacls on Windows, so it
-        # can raise while we still hold the raw fd. Close it before unlinking:
+        # The lockdown is fail-loud (in-process on Windows, but any failure
+        # raises), so it can raise while we still hold the raw fd. Close it before
+        # unlinking:
         # Windows refuses to remove a file with an open handle, and a stranded
         # empty sidecar would make every later --apply raise BackupExistsError --
         # a permanent block produced by a failure that changed nothing.

@@ -3641,8 +3641,8 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
 
     # ── Phase 2: commit. All validation passed, so writes are safe. ──
     if env_updates:
-        # Off-loop: on Windows the owner-only lockdown shells out to icacls,
-        # which must not block the event loop.
+        # Off-loop: the .env write is blocking file IO (lock, temp write,
+        # owner-only lockdown, replace) and must not block the event loop.
         await _write_env_off_loop(env_updates)
         # Keep the live process environment in sync with the new .env state.
         # load_credentials() lets os.environ win over .env, so without this a
@@ -4068,8 +4068,8 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
                 relabel="session_folder" in staged,
             )
     if env_updates:
-        # Off-loop: on Windows the owner-only lockdown shells out to icacls,
-        # which must not block the event loop.
+        # Off-loop: the .env write is blocking file IO (lock, temp write,
+        # owner-only lockdown, replace) and must not block the event loop.
         await _write_env_off_loop(env_updates)
         # Keep the live process environment in sync with the new .env state
         # (load_credentials() lets os.environ win over .env — see the Slack
@@ -4451,8 +4451,8 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
                 relabel="session_folder" in staged,
             )
     if env_updates:
-        # Off-loop: on Windows the owner-only lockdown shells out to icacls,
-        # which must not block the event loop.
+        # Off-loop: the .env write is blocking file IO (lock, temp write,
+        # owner-only lockdown, replace) and must not block the event loop.
         await _write_env_off_loop(env_updates)
         # Keep the live process environment in sync with the new .env state
         # (load_credentials() lets os.environ win over .env — see the Slack
@@ -4588,8 +4588,8 @@ async def api_teams_activity(request: web.Request) -> web.Response:
     throttled_source = "" if is_proxied_request(request) else source
     if throttled_source and webhooks.auth_throttle_blocked(throttled_source):
         # Off the loop: the first ``sel()`` of a process CONSTRUCTS the log
-        # (trust-dir creation, key validation, an icacls subprocess on Windows),
-        # and this route can be the first request a fresh gateway ever serves.
+        # (trust-dir creation, key validation — blocking file IO), and this
+        # route can be the first request a fresh gateway ever serves.
         await asyncio.to_thread(
             lambda: _sel().log_api_access(
                 caller=source,
@@ -5093,8 +5093,9 @@ async def api_teams_config_save(request: web.Request) -> web.Response:
                     relabel="session_folder" in changes,
                 )
         if env_updates:
-            # Off-loop: restrict_to_owner spawns whoami/icacls subprocesses on
-            # Windows, which would stall the gateway loop if run inline.
+            # Off-loop: the .env write is blocking file IO (lock, temp write,
+            # owner-only lockdown, replace) that would stall the gateway loop
+            # if run inline.
             #
             # Cancellation guard: _write_env_off_loop shields + drains its
             # worker, so a CancelledError from it means the .env write has
@@ -5430,8 +5431,8 @@ async def api_webex_config_save(request: web.Request) -> web.Response:
                     relabel="session_folder" in changes,
                 )
         if env_updates:
-            # Off-loop: on Windows the owner-only lockdown shells out to icacls,
-            # which must not block the event loop.
+            # Off-loop: the .env write is blocking file IO (lock, temp write,
+            # owner-only lockdown, replace) and must not block the event loop.
             #
             # Cancellation guard: see Teams save for the full rationale. Only
             # roll config back when the .env write actually failed, not when
@@ -6021,8 +6022,8 @@ async def _wecom_config_save_locked(request: web.Request) -> web.Response:
                 relabel="session_folder" in staged,
             )
     if env_updates:
-        # Off-loop: on Windows the owner-only lockdown shells out to icacls,
-        # which must not block the event loop.
+        # Off-loop: the .env write is blocking file IO (lock, temp write,
+        # owner-only lockdown, replace) and must not block the event loop.
         #
         # Cancellation guard: see Teams save for the full rationale. Only
         # roll config back when the .env write actually failed, not when
@@ -6515,8 +6516,8 @@ async def _feishu_config_save_locked(request: web.Request) -> web.Response:
             return _corrupt_config()
 
     if env_updates:
-        # Off-loop: on Windows the owner-only lockdown shells out to icacls,
-        # which must not block the event loop.
+        # Off-loop: the .env write is blocking file IO (lock, temp write,
+        # owner-only lockdown, replace) and must not block the event loop.
         #
         # Cancellation guard: see the WeCom save for the full rationale. Only
         # roll config back when the .env write actually failed, not when

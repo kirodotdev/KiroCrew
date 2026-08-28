@@ -1846,9 +1846,8 @@ async def require_owner_dashboard_request(
         return None
 
     # Off the loop: the FIRST sel() of a process CONSTRUCTS the log (trust-dir
-    # creation, key validation, on Windows an icacls subprocess), so on a fresh
-    # gateway whose first mutating request is non-owner this would stall every
-    # other request.
+    # creation, key validation — blocking file IO), so on a fresh gateway whose
+    # first mutating request is non-owner this would stall every other request.
     caller = str(request.get("user") or "unknown")
     try:
         from kiro_crew.sel import sel as _sel

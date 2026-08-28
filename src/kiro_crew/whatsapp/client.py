@@ -273,8 +273,8 @@ class WhatsAppClient:
         # after the restriction failed would pair the device and leave that
         # credential readable by any other local principal, which is exactly the
         # case a warning nobody reads does not cover.
-        # Off the loop: on Windows these resolve a SID and shell out to `icacls`,
-        # which is a subprocess on the one event loop that also carries every other
+        # Off the loop: these are blocking filesystem calls (the Windows DACL is
+        # applied in-process), and the one event loop also carries every other
         # channel and the liveness heartbeat. Still awaited rather than
         # fire-and-forget, because pairing must not begin until the credential's
         # directory is actually locked down.

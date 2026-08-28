@@ -1716,7 +1716,7 @@ def _build_snapshot(
             # success. Failing here leaves the temp for the handler below to remove and
             # publishes nothing, which is what makes the "abort rather than ship an
             # under-protected archive" promise true by construction. POSIX applies chmod
-            # 0o600; Windows applies an owner-only DACL via icacls, and a
+            # 0o600; Windows applies an owner-only DACL in-process, and a
             # same-directory rename carries the explicit ACE with the file.
             platform_compat.restrict_to_owner(str(tmp_tar))
             tmp_tar.rename(outfile)
@@ -2421,8 +2421,8 @@ def _lock_down_restored(path: Path, component: str) -> None:
     restrict_to_owner (fail-loud), NOT chmod_safe (which swallows OSError): security
     files include sel_hmac.key. Mirrors the create path's deliberate fail-loud
     lockdown -- better to abort than silently land a restored secret group- or
-    world-readable. POSIX applies chmod 0o600; Windows applies an owner-only DACL via
-    icacls. The freshly copied file is unlinked on failure so the abort this promises
+    world-readable. POSIX applies chmod 0o600; Windows applies an owner-only DACL
+    in-process. The freshly copied file is unlinked on failure so the abort this promises
     actually removes the exposed artifact, instead of leaving the restored secret
     under the destination's inherited DACL after the OSError propagates.
     """
