@@ -282,6 +282,23 @@ class TestLaunch:
         assert resp.status == 202
         assert seen["tid"] != loop_tid, "create() ran on the event loop thread"
 
+    async def test_create_rejects_dashboard_agentcore_posture(self, tmp_path):
+        resp = await hc.api_cloud_launch_create(
+            _req(
+                "POST",
+                "/api/cloud/launch",
+                state=_state(tmp_path),
+                body={
+                    "profile": "dev",
+                    "region": "us-east-1",
+                    "size_key": "balanced",
+                    "agentcore_posture": "workload",
+                },
+            )
+        )
+        assert resp.status == 400
+        assert _body(resp)["code"] == "dashboard_agentcore_posture_forbidden"
+
     async def test_create_bad_gateway_url_400(self, tmp_path):
         resp = await hc.api_cloud_launch_create(
             _req(

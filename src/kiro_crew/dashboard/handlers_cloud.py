@@ -272,7 +272,8 @@ async def api_cloud_launch_get(request: web.Request) -> web.Response:
 async def api_cloud_launch_create(request: web.Request) -> web.Response:
     """POST /api/cloud/launch — start a launch job.
 
-    Body: {profile, region, size_key, agentcore_posture?, agentcore_gateway_url?}.
+    Body: {profile, region, size_key, agentcore_gateway_url?}.
+    Dashboard launch stays ``none`` — pass ``--agentcore-posture`` on the CLI.
     """
     denied = _guard(request, "launch_create")
     if denied is not None:
@@ -287,18 +288,16 @@ async def api_cloud_launch_create(request: web.Request) -> web.Response:
             {"error": "body must be an object", "code": "invalid_body"}, status=400
         )
     size_key = str(body.get("size_key") or "").strip()
-    try:
-        agentcore_posture = iam.normalize_agentcore_posture(
-            str(body.get("agentcore_posture") or "none")
-        )
-    except ValueError:
+    raw_posture = body.get("agentcore_posture")
+    if raw_posture not in (None, "", "none"):
         return web.json_response(
             {
-                "error": "agentcore_posture must be none, workload, or login",
-                "code": "invalid_agentcore_posture",
+                "error": "dashboard launch stays none; pass --agentcore-posture on the CLI",
+                "code": "dashboard_agentcore_posture_forbidden",
             },
             status=400,
         )
+    agentcore_posture = "none"
     try:
         agentcore_gateway_url = iam.normalize_agentcore_gateway_url(
             str(body.get("agentcore_gateway_url") or "")

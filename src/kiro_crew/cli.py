@@ -1928,6 +1928,11 @@ Examples:
         help="Pre-create the immutable instance permissions boundary (admin, one-time)",
     )
     _cloud_creds_opts(_c_boundary)
+    _c_boundary.add_argument(
+        "--agentcore",
+        action="store_true",
+        help="Create the AgentCore successor boundary (kirocrew-ec2-boundary-agentcore)",
+    )
     _c_doctor = cloud_sub.add_parser("doctor", help="Check cloud prerequisites + AWS reachability")
     _cloud_creds_opts(_c_doctor)
 

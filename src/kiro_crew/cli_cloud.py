@@ -362,8 +362,9 @@ def _cloud_iam_boundary(args: argparse.Namespace) -> int:
     from kiro_crew.cloud import source as source_mod
 
     profile, region = _resolve(args)
+    name = iam.AGENTCORE_BOUNDARY_NAME if getattr(args, "agentcore", False) else None
     try:
-        arn = source_mod.ensure_instance_boundary(profile, region)
+        arn = source_mod.ensure_instance_boundary(profile, region, name=name)
     except AWSError as exc:
         ui.fail(str(exc))
         if exc.missing_action:
@@ -466,7 +467,10 @@ def handle_cloud(args: argparse.Namespace) -> int:
         ui.detail("stop|start  Pause / resume (save cost)")
         ui.detail("destroy     Remove everything from AWS")
         ui.detail("iam-policy  Print the least-privilege IAM policy to apply")
-        ui.detail("iam-boundary Pre-create the immutable instance permissions boundary (admin)")
+        ui.detail(
+            "iam-boundary Pre-create the immutable instance permissions "
+            "boundary (admin; --agentcore for the successor)"
+        )
         ui.detail("doctor      Check cloud prerequisites + AWS reachability")
         return 0
     fn = _DISPATCH.get(action)
