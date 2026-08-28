@@ -1228,6 +1228,106 @@ class TestThrottleFallbackCronWiring:
         setattr(provider, TURN_FALLBACK_ATTR, ("only-one",))
         assert _annotate_model_fallback("text", provider) == "text"
 
+    def test_gateway_annotator_is_the_shared_body(self):
+        """DRIFT PIN (#5447 item 4): the gateway name must BE the shared
+        helper next to TURN_FALLBACK_ATTR — not a re-spelled copy."""
+        from kiro_crew.llm_helpers import annotate_model_fallback
+        from kiro_crew.slack.gateway import _annotate_model_fallback
+
+        assert _annotate_model_fallback is annotate_model_fallback
+
+    @pytest.mark.asyncio
+    async def test_chain_exhaustion_story_reaches_the_failure_alert(self):
+        """#5447 item 1: a cron turn failing after the chain exhausted must
+        alert with the WHOLE walk (the story the walk attached to the
+        exception), not just the last candidate's error — on BOTH the
+        dashboard notify and the Slack DM legs, and even when the backend
+        error is verbose enough to hit the detail cap (a real ACP throttle
+        payload routinely exceeds it)."""
+        from kiro_crew.acp.client import AcpError
+        from kiro_crew.llm_helpers import FALLBACK_STORY_ATTR
+
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(model="")
+        # The Slack DM leg: slack client present, no channel delivery.
+        gw.slack = MagicMock()
+        gw.slack.post_message = AsyncMock()
+        gw._open_dm_with_retry = AsyncMock(return_value="D123")
+        gw._deliver_cron_to_channel = AsyncMock(return_value=False)
+
+        # Verbose error: longer than _CRON_FAILURE_DETAIL_CAP so the story
+        # would be sliced away if it were appended after the cap.
+        exc = AcpError("Internal error: API Error: " + "x" * 700)
+        setattr(
+            exc, FALLBACK_STORY_ATTR, "primary-m throttled; fallbacks fb-1, fb-2 also unavailable"
+        )
+
+        captured_cb = None
+        provider_mock = MagicMock()
+        gw.sessions.get_or_create = AsyncMock(return_value=(provider_mock, True, False))
+        _embed_mock = AsyncMock(return_value=("full prompt", None))
+        _stream_mock = AsyncMock(side_effect=exc)
+
+        with (
+            patch("kiro_crew.slack.gateway.CronService") as mock_cron_cls,
+            patch("kiro_crew.slack.gateway.run_in_embed_pool", _embed_mock),
+            patch("kiro_crew.slack.gateway.stream_and_collect", _stream_mock),
+            patch("kiro_crew.slack.gateway.sel"),
+            patch("kiro_crew.slack.gateway.build_cron_session_context") as mock_ctx,
+        ):
+            mock_ctx.return_value = (f"cron:{job.id}", job.message)
+
+            def capture_cron(on_job=None, **kw):
+                nonlocal captured_cb
+                captured_cb = on_job
+                svc = MagicMock()
+                svc.start = AsyncMock()
+                svc.remove_job_async = AsyncMock(return_value=True)
+                return svc
+
+            mock_cron_cls.create = AsyncMock(side_effect=capture_cron)
+            await gw._init_cron()
+            assert captured_cb is not None
+            with pytest.raises(AcpError):
+                await captured_cb(job)
+
+            # Same backend error, DIFFERENT walk (a candidate momentarily
+            # unadvertised changes the story): the dedup hash keys on the
+            # story-free error text, so the repeat is suppressed instead of
+            # re-paging the user.
+            exc2 = AcpError("Internal error: API Error: " + "x" * 700)
+            setattr(
+                exc2, FALLBACK_STORY_ATTR, "primary-m throttled; fallbacks fb-2 also unavailable"
+            )
+            _stream_mock.side_effect = exc2
+            with pytest.raises(AcpError):
+                await captured_cb(job)
+
+        bodies = [
+            str(c.args[2]) for c in gw.dashboard_state.notify.call_args_list if len(c.args) >= 3
+        ]
+        assert any(
+            "primary-m throttled" in b and "fb-1, fb-2 also unavailable" in b for b in bodies
+        ), f"expected the chain story in a failure alert, got {bodies!r}"
+        # The delivered detail stays bounded by the cap even with the story
+        # appended (the budget trims the error part). +60 absorbs the fixed
+        # "❌ Job failed:\n" / "❌ Job failed (suppressed — same error):\n"
+        # prefixes around exc_detail — the bound under test is exc_detail's.
+        from kiro_crew.slack.gateway import _CRON_FAILURE_DETAIL_CAP
+
+        for b in bodies:
+            assert len(b) <= _CRON_FAILURE_DETAIL_CAP + 60, f"unbounded alert body: {len(b)} chars"
+        # The Slack DM — the surface a user actually gets paged on — carries
+        # the story too.
+        slack_texts = [str(c.args[1]) for c in gw.slack.post_message.call_args_list]
+        assert any(
+            "primary-m throttled" in t and "also unavailable" in t for t in slack_texts
+        ), f"expected the chain story in the Slack alert, got {slack_texts!r}"
+        # The second run took the dup-suppress path (story-free hash), with a
+        # bounded body that still carries its own walk.
+        assert any("suppressed — same error" in b for b in bodies), bodies
+        assert any("fb-2 also unavailable" in b for b in bodies), bodies
+
 
 class TestExecutePreservesCallbackStatus:
     """CronService._execute must not clobber a failure the callback reported by

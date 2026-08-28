@@ -66,11 +66,13 @@ from kiro_crew.hooks import (
 )
 from kiro_crew.llm_helpers import (
     FALLBACK_CANDIDATE_ATTEMPTS,
+    FALLBACK_STORY_ATTR,
     TRANSIENT_RETRIES,
-    TURN_FALLBACK_ATTR,
     FallbackState,
     acp_error_is_transient,
     advance_fallback_candidate,
+    annotate_model_fallback,
+    append_fallback_story,
     configured_fallback_chain,
     provider_fallback_active,
     transient_retry_delay,
@@ -5113,7 +5115,14 @@ class SubagentManager:
             logger.info("Subagent %s cancelled", info.id)
         except Exception as exc:
             if not info.reaped:
-                info.error = _describe_exception(exc)
+                # Story appended INSIDE the cap: info.error reaches a WS frame
+                # and the Subagents panel, so the rendered total stays bounded
+                # by _MAX_ERROR_DETAIL_LEN exactly as before — and the budget
+                # trims the ERROR text, never the story, so a verbose chain
+                # cannot push the walk out of the terminal error.
+                info.error = append_fallback_story(
+                    _describe_exception(exc), exc, budget=_MAX_ERROR_DETAIL_LEN
+                )
                 info.done = True
                 Stats().inc_subagent_failed()
                 self._write_tombstone(info, "error")
@@ -5879,12 +5888,7 @@ class SubagentManager:
                         # llm_helpers Case 2.75 for the rationale.
                         if not _fb_state.chain:
                             raise
-                        if (
-                            _fb_state.active is not None
-                            and _fb_state.attempts < FALLBACK_CANDIDATE_ATTEMPTS
-                        ):
-                            _fb_state.attempts += 1
-                        else:
+                        if not _fb_state.should_retry_active():
                             _cand = await advance_fallback_candidate(
                                 client,
                                 _fb_state,
@@ -5892,12 +5896,8 @@ class SubagentManager:
                                 log_suffix=f", id={info.id}",
                             )
                             if _cand is None:
-                                if _fb_state.walked:
-                                    _story = (
-                                        f"{_fb_state.primary or 'the selected model'} "
-                                        f"throttled; fallbacks "
-                                        f"{', '.join(_fb_state.walked)} also unavailable"
-                                    )
+                                _story = _fb_state.exhaustion_story()
+                                if _story:
                                     logger.warning(
                                         "model fallback: chain exhausted (%s) for "
                                         "subagent %s; surfacing original error",
@@ -5905,7 +5905,7 @@ class SubagentManager:
                                         info.id,
                                     )
                                     try:
-                                        exc._kc_fallback_story = _story  # type: ignore[attr-defined]
+                                        setattr(exc, FALLBACK_STORY_ATTR, _story)
                                     except Exception:
                                         pass
                                 raise
@@ -6418,22 +6418,10 @@ class SubagentManager:
             cleaned, _ = redact_credentials(cleaned)
         # Model-fallback visibility (agent.fallback_model): a run served by a
         # fallback model must say so in the delivered result — same contract as
-        # the cron/heartbeat annotation and the dashboard notice card. Model
-        # ids come from config (LLM-reachable via MCP), so they pass the same
-        # redaction as the result body.
-        _fb_marker = getattr(client, TURN_FALLBACK_ATTR, None)
-        if _fb_marker:
-            try:
-                _fb_primary, _fb_candidate = _fb_marker
-                _fb_line = (
-                    f"⚠️ Model '{_fb_primary}' throttled; this run was served by "
-                    f"fallback '{_fb_candidate}'."
-                )
-                _fb_line, _ = redact_exfiltration_urls(_fb_line)
-                _fb_line, _ = redact_credentials(_fb_line)
-                cleaned = f"{_fb_line}\n\n{cleaned}" if cleaned else _fb_line
-            except Exception:
-                logger.debug("fallback annotation failed", exc_info=True)
+        # the cron/heartbeat annotation and the dashboard notice card. One
+        # shared spelling (llm_helpers.annotate_model_fallback) redacts the
+        # config-sourced model ids the same way as the result body.
+        cleaned = annotate_model_fallback(cleaned, client)
         info.result = cleaned or "_No response._"
         # Cap disk file and trim memory — gateway decides how much to show based on mode.
         if info.result_path:

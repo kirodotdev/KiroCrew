@@ -287,7 +287,6 @@ src/kiro_crew/eval/scenario.py
 src/kiro_crew/frontend.py
 src/kiro_crew/gateway_shutdown_budget.py
 src/kiro_crew/github_runner.py
-src/kiro_crew/heartbeat.py
 src/kiro_crew/history.py
 src/kiro_crew/hooks.py
 src/kiro_crew/image_artifacts.py
@@ -774,7 +773,6 @@ test/test_handlers_files_upload.py
 test/test_handlers_mcp_coverage.py
 test/test_handlers_memory_coverage.py
 test/test_heartbeat_atomic_merge.py
-test/test_heartbeat_cycle_recycle.py
 test/test_heartbeat_prompt_deliver.py
 test/test_heartbeat_retention.py
 test/test_heartbeat_sel_prune_offload.py

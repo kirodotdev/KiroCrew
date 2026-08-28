@@ -20,6 +20,7 @@ from kiro_crew import platform_compat, shutdown_event
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.executors import maintenance_executor
+from kiro_crew.llm_helpers import append_fallback_story
 from kiro_crew.memory import MemoryStore, workspace_dir
 from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.sel import sel
@@ -171,9 +172,7 @@ class HeartbeatService:
 
         if self._tick % _FTS_REBUILD_TICKS == 0:
             loop = asyncio.get_running_loop()
-            count = await loop.run_in_executor(
-                maintenance_executor(), self._memory.rebuild_index
-            )
+            count = await loop.run_in_executor(maintenance_executor(), self._memory.rebuild_index)
             logger.info("FTS index rebuilt: %d files", count)
 
         if self._tick % _PRUNE_TICKS == 0:
@@ -244,8 +243,15 @@ class HeartbeatService:
                 )
                 for (task_text, deliver), result in zip(tasks, results):
                     if isinstance(result, BaseException):
+                        # A chain-exhaustion failure carries the fallback story
+                        # on the exception; this log line is the heartbeat's
+                        # terminal error text, so append it here — the walk
+                        # must not be reported as just the last candidate's
+                        # failure (llm_helpers.FALLBACK_STORY_ATTR).
                         logger.warning(
-                            "Heartbeat task failed: %s", task_text[:80], exc_info=result,
+                            "Heartbeat task failed: %s",
+                            append_fallback_story(task_text[:80], result),
+                            exc_info=result,
                         )
                         keep.append((task_text, deliver))
                     elif _should_keep(result):
@@ -258,7 +264,10 @@ class HeartbeatService:
                 # between this final read and os.replace. The entire durable
                 # transaction runs off the gateway event-loop thread.
                 appended_count = await asyncio.to_thread(
-                    _rewrite_heartbeat_locked, path, tasks, keep,
+                    _rewrite_heartbeat_locked,
+                    path,
+                    tasks,
+                    keep,
                 )
                 if appended_count:
                     logger.info(

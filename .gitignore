@@ -97,6 +97,11 @@ kirocrew-data.tar.gz
 # deliverables (e.g. temp-screenshots/) are unaffected. (`*.log` is already ignored above.)
 .pr-body.md
 .r*-logs/
+# Staged blind-review artifacts (prepare-pr review lanes point subagents at
+# .review-<n>.diff files) and the autofix work-dir heartbeat — scratch, never
+# a deliverable, and a `git add -A` would otherwise sweep them into the PR.
+.review-*.diff
+.heartbeat
 
 # AI attribution tracking data
 .attribution/

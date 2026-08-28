@@ -166,10 +166,11 @@ from kiro_crew.history import ConversationLog, HistoryConsolidator
 from kiro_crew.hooks import HookManager, HooksConfig, hooks_config_from_config_dict
 from kiro_crew.learn import LessonStore
 from kiro_crew.llm_helpers import (
-    TURN_FALLBACK_ATTR,
     PromptBusyExhaustedError,
     ToolApprovalPolicy,
     acp_error_is_transient,
+    annotate_model_fallback,
+    append_fallback_story,
     configured_fallback_chain,
     provider_fallback_active,
     provider_last_turn_usage,
@@ -1096,32 +1097,11 @@ def _vet_at_claim_then(
     return fn(*args)
 
 
-def _annotate_model_fallback(text: str, provider: Any) -> str:
-    """Prepend the throttle-fallback warning to a delivered unattended result.
-
-    Unattended surfaces (cron/heartbeat) have no chat card to announce a
-    fallback swap on, so the delivered result text itself carries the warning —
-    the same visibility contract as the interactive notice card, and the same
-    pattern as the acquire-time ``_annotate_model_downgrade``. The marker is
-    read from :data:`TURN_FALLBACK_ATTR` (set by ``stream_and_collect``'s
-    fallback walk) and left in place: the swap is sticky for the session, so
-    every run served by the fallback repeats the warning until the restore
-    probe moves the session back. Model ids come from config, which is
-    LLM-reachable via MCP — redact before they reach Slack/dashboard.
-    """
-    fb = getattr(provider, TURN_FALLBACK_ATTR, None)
-    if not fb:
-        return text
-    try:
-        primary, candidate = fb
-    except Exception:
-        return text
-    safe_primary = redact_credentials(redact_exfiltration_urls(str(primary))[0])[0]
-    safe_candidate = redact_credentials(redact_exfiltration_urls(str(candidate))[0])[0]
-    return (
-        f"⚠️ Model '{safe_primary}' throttled; this run was served by fallback "
-        f"'{safe_candidate}'.\n\n" + text
-    )
+# One spelling of the fallback-served warning for every unattended surface
+# (issue #5447 item 4): the body lives next to TURN_FALLBACK_ATTR in
+# llm_helpers; this module-level name is kept for the cron/heartbeat call
+# sites and their tests.
+_annotate_model_fallback = annotate_model_fallback
 
 
 async def _cron_stream_with_posttoken_resume(
@@ -4772,10 +4752,28 @@ class GatewayOrchestrator:
                 if getattr(job, "_acp_retried", False):
                     raise
                 # ── Failure dedup: suppress repeated identical crash notifications ──
-                exc_summary = f"{type(exc).__name__}: {exc}"
-                exc_summary, _ = redact_exfiltration_urls(exc_summary)
-                exc_summary, _ = redact_credentials(exc_summary)
-                fh = _result_hash(exc_summary)
+                # A chain-exhaustion failure carries the fallback story on the
+                # exception (llm_helpers.FALLBACK_STORY_ATTR); append it so the
+                # alert names the whole walk, not just the last candidate's
+                # error.
+                # Redact over the FULL error text BEFORE any truncation — a cap
+                # applied first can cut a credential at the boundary, leaving a
+                # fragment the redaction regexes no longer match. The story is
+                # redacted+capped centrally in fallback_story_of.
+                _exc_text = f"{type(exc).__name__}: {exc}"
+                _exc_text, _ = redact_exfiltration_urls(_exc_text)
+                _exc_text, _ = redact_credentials(_exc_text)
+                # Delivery detail: the budget trims the ERROR part to leave the
+                # story room (a verbose backend error must not evict the walk),
+                # floored at half the cap — an oversized story trims its own
+                # tail past that point instead of evicting the error.
+                exc_detail = append_fallback_story(_exc_text, exc, budget=_CRON_FAILURE_DETAIL_CAP)
+                # Dedup hashes the STORY-FREE error text: the walk can differ
+                # between two occurrences of the same backend error (a
+                # candidate momentarily unadvertised changes `walked`; a
+                # skipped walk has no story at all), and a hash keyed on it
+                # would miss the duplicate and re-page the user.
+                fh = _result_hash(_exc_text)
                 is_dup = fh == job.last_failure_hash
                 if is_dup and time.time() - job.last_failure_at < _FAILURE_REMINDER_SECS:
                     # record_failure() is the counter's sole owner: a suppressed
@@ -4807,7 +4805,7 @@ class GatewayOrchestrator:
                             self.dashboard_state.notify(
                                 "cron",
                                 title,
-                                f"❌ Job failed (suppressed — same error):\n{exc_summary}",
+                                f"❌ Job failed (suppressed — same error):\n{exc_detail}",
                                 meta={"job_id": job.id, "failure_hash": fh},
                             )
                     except Exception:
@@ -4844,7 +4842,7 @@ class GatewayOrchestrator:
                         self.dashboard_state.notify(
                             "cron",
                             alert_title,
-                            f"❌ Job failed:\n{exc_summary[:_CRON_FAILURE_DETAIL_CAP]}",
+                            f"❌ Job failed:\n{exc_detail}",
                             meta={"job_id": job.id, "failure_hash": fh},
                         )
                 except Exception:
@@ -4869,9 +4867,7 @@ class GatewayOrchestrator:
                 # made the DM the only failure surface that still withheld what
                 # the caller already knows. Escaped and fence-neutralized for the
                 # same reasons as the script/command alert.
-                safe_reason = escape_mrkdwn(exc_summary[:_CRON_FAILURE_DETAIL_CAP]).replace(
-                    "```", "'''"
-                )
+                safe_reason = escape_mrkdwn(exc_detail).replace("```", "'''")
                 if is_dup:
                     # +1: this run's failure is recorded below, after the
                     # awaited Slack attempt, so the display count must include
@@ -4902,12 +4898,12 @@ class GatewayOrchestrator:
                     channel_fail_msg = (
                         f"⏰ Cron: {job.name} ❌ Job still failing on {host}"
                         f" ({job.consecutive_failures + 1} consecutive failures)"
-                        f" — check logs.\n{exc_summary[:_CRON_FAILURE_DETAIL_CAP]}"
+                        f" — check logs.\n{exc_detail}"
                     )
                 else:
                     channel_fail_msg = (
                         f"⏰ Cron: {job.name} ❌ Job failed on {host} — check logs.\n"
-                        f"{exc_summary[:_CRON_FAILURE_DETAIL_CAP]}"
+                        f"{exc_detail}"
                     )
                 channel_fail_msg, _ = redact_exfiltration_urls(channel_fail_msg)
                 channel_fail_msg, _ = redact_credentials(channel_fail_msg)

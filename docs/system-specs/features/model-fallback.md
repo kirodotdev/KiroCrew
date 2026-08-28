@@ -51,21 +51,34 @@ skip rules and marker semantics cannot diverge:
 
 Each candidate gets `FALLBACK_CANDIDATE_ATTEMPTS` (2: initial + one ~2s retry) —
 deliberately not a fresh full budget, because throttle events are frequently
-cell-scoped and model-agnostic. A non-transient error mid-chain propagates
-immediately. Chain exhaustion surfaces the original error class with the chain's
-story attached (`_kc_fallback_story`).
+cell-scoped and model-agnostic. The budget lives in one place: the in-walk
+surfaces consume it via `FallbackState.should_retry_active`, and the dashboard's
+counter rewind derives from the same constant
+(`fallback_rewound_transient_budget()`). A non-transient error mid-chain
+propagates immediately. Chain exhaustion surfaces the original error class with
+the chain's story attached (`FALLBACK_STORY_ATTR`, built by
+`FallbackState.exhaustion_story`); the unattended surfaces append it to their
+terminal error text via `append_fallback_story` — the cron failure alert, the
+sub-agent `info.error`, and the heartbeat failure log — so an unattended failure
+names the whole walk, not just the last candidate's error. The story is
+redacted and capped centrally in `fallback_story_of` (`_FALLBACK_STORY_CAP`):
+walked ids originate in config (LLM-reachable via MCP, advertised check fails
+open), and consumers like the heartbeat log apply no redaction of their own.
 
 ## Surfaces
 
 - **`stream_and_collect`** (Case 2.75; cron and heartbeat pass the chain via
   `fallback_models=configured_fallback_chain()`): walks in-place and re-prompts.
   Delivered results are prefixed with a redacted warning line
-  (`_annotate_model_fallback`, `slack/gateway.py`).
+  (`annotate_model_fallback`, one body in `llm_helpers` next to
+  `TURN_FALLBACK_ATTR`, used by the cron/heartbeat delivery and the sub-agent
+  completion path).
 - **Dashboard** (`chat_runner`): the pre-token exhaustion branch swaps, appends a
   persisted notice card ("⚠️ X is throttled — running on Y until X recovers."),
   and re-queues the same message on the same live session
   (`SYNTHETIC_RECOVERY_KIND`). The per-candidate budget rides the existing
-  transient counter (`TRANSIENT_RETRIES - 1` rewind = one in-branch retry).
+  transient counter, rewound to `fallback_rewound_transient_budget()` (derived
+  from the same `FALLBACK_CANDIDATE_ATTEMPTS` constant = one in-branch retry).
   Nested turns (`_prompt_depth > 0`) get no fallback. Chain exhaustion falls
   through to the unchanged terminal branch with the story prepended.
 - **Sub-agents** (`subagent._stream_with_transient_retry`): same walk on the
@@ -80,7 +93,8 @@ one `set_model(primary)` — quiet on success (log only; recovery is the expecte
 state), staying on the fallback on transient failure, and dropping a stale
 marker without touching the model when the session moved on by other means.
 
-The dashboard mirrors this with slot state (`_active_fallback_model`,
+The dashboard's slot probe (`_probe_fallback_restore_for_slot_locked`) wraps the
+same `probe_fallback_restore` body with slot-held state (`_active_fallback_model`,
 `_fallback_primary_model`) and one extra rule: **an explicit user pick is never
 overridden.** Picks are detected by a generation counter
 (`slot._model_pick_gen`) bumped ONLY by the explicit set-model surfaces

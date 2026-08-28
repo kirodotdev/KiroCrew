@@ -61,10 +61,7 @@ class TestOnCycleEndCallback:
             order.append("cycle_end")
 
         heartbeat_file.write_text(
-            "# Heartbeat Tasks\n\n"
-            "- [ ] task A\n"
-            "- [ ] task B\n"
-            "- [ ] task C\n",
+            "# Heartbeat Tasks\n\n" "- [ ] task A\n" "- [ ] task B\n" "- [ ] task C\n",
             encoding="utf-8",
         )
 
@@ -107,9 +104,73 @@ class TestOnCycleEndCallback:
         assert cycle_end_called == [True]
 
     @pytest.mark.asyncio
+    async def test_failure_log_carries_the_fallback_story(self, heartbeat_file, caplog):
+        """#5447 item 1: the heartbeat's terminal error text (its failure log
+        line — heartbeat failures are kept + retried, never delivered) names
+        the WHOLE fallback walk carried on the exception, not just the last
+        candidate's error."""
+        import logging
+
+        from kiro_crew.llm_helpers import FALLBACK_STORY_ATTR
+
+        async def _on_task(text, deliver):
+            exc = RuntimeError("backend throttle 500")
+            setattr(
+                exc,
+                FALLBACK_STORY_ATTR,
+                "primary-m throttled; fallbacks fb-1, fb-2 also unavailable",
+            )
+            raise exc
+
+        heartbeat_file.write_text(
+            "# Heartbeat Tasks\n\n- [ ] some task\n",
+            encoding="utf-8",
+        )
+
+        svc = HeartbeatService(
+            memory=MagicMock(),
+            on_task=_on_task,
+        )
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.heartbeat"):
+            await svc._process_heartbeat_file()
+
+        failed = [
+            r.getMessage() for r in caplog.records if "Heartbeat task failed" in r.getMessage()
+        ]
+        assert failed, "expected the failure log line"
+        assert any("fb-1, fb-2 also unavailable" in m for m in failed)
+
+    @pytest.mark.asyncio
+    async def test_storyless_failure_log_is_unchanged(self, heartbeat_file, caplog):
+        """No story on the exception ⇒ the log line is exactly the task text
+        (byte-for-byte pre-#5447 shape)."""
+        import logging
+
+        async def _on_task(text, deliver):
+            raise RuntimeError("plain boom")
+
+        heartbeat_file.write_text(
+            "# Heartbeat Tasks\n\n- [ ] some task\n",
+            encoding="utf-8",
+        )
+
+        svc = HeartbeatService(
+            memory=MagicMock(),
+            on_task=_on_task,
+        )
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.heartbeat"):
+            await svc._process_heartbeat_file()
+
+        failed = [
+            r.getMessage() for r in caplog.records if "Heartbeat task failed" in r.getMessage()
+        ]
+        assert failed == ["Heartbeat task failed: some task"]
+
+    @pytest.mark.asyncio
     async def test_callback_failure_does_not_crash_loop(self, heartbeat_file):
         """A raising on_cycle_end must NOT propagate — the cycle is over,
         and the periodic loop must keep ticking."""
+
         async def _on_task(text, deliver):
             return None
 

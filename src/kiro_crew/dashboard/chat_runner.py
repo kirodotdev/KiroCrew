@@ -179,10 +179,9 @@ from kiro_crew.llm_helpers import (
     acp_error_is_transient,
     advance_fallback_candidate,
     configured_fallback_chain,
-    provider_active_model,
-    provider_raw_model,
+    fallback_rewound_transient_budget,
+    probe_fallback_restore,
     record_interaction_event,
-    resolve_substitute_set_model,
     run_bg_oneliner,
     transient_retry_delay,
 )
@@ -965,69 +964,47 @@ async def _probe_fallback_restore_for_slot(slot: Any, client: Any) -> None:
 
 
 async def _probe_fallback_restore_for_slot_locked(slot: Any, client: Any) -> None:
-    """Body of the restore probe; caller holds ``slot._model_pick_lock``."""
+    """Body of the restore probe; caller holds ``slot._model_pick_lock``.
+
+    Thin slot-state adapter over the SHARED probe body
+    (:func:`llm_helpers.probe_fallback_restore` — the same
+    probe/witness/clear sequencing the unattended surfaces use, so the two
+    cannot diverge). Only the slot-specific pieces live here:
+
+    - ``state``: the sticky fallback record is slot-held, not the provider
+      marker.
+    - ``stale``: an explicit user pick made AFTER the swap bumps the pick
+      generation — including a pick of the fallback model itself, which
+      neither the served model nor slot.model can distinguish from our own
+      swap (the automatic provider backfill also writes the served fallback
+      into an unpinned slot's model, so comparing slot.model VALUES would
+      misread the backfill as a pick and permanently abandon restoration). An
+      explicit pick must never be overridden by a restore.
+    - ``clear``: slot fields and the provider marker drop as one logical
+      record (:func:`_clear_fallback_sticky_state`).
+    - ``on_restored``: heal slot.model if the automatic backfill wrote the
+      fallback into an unpinned slot while the fallback was active —
+      slot.model is re-sent as a set_model override on resume, so leaving the
+      fallback id there would re-pin the fallback after the primary
+      recovered. No explicit pick happened (``stale`` checked first), so the
+      snapshot is the honest value.
+    """
     candidate = slot._active_fallback_model
     if not candidate:
         return
-    primary = slot._fallback_primary_model
-    current = provider_active_model(client)
-    _moved_off = current and current.strip().lower() != candidate.strip().lower()
-    # An explicit user pick made AFTER the swap bumps the pick generation —
-    # including a pick of the fallback model itself, which neither the served
-    # model nor slot.model can distinguish from our own swap (the automatic
-    # provider backfill also writes the served fallback into an unpinned
-    # slot's model, so comparing slot.model VALUES would misread the backfill
-    # as a pick and permanently abandon restoration). An explicit pick must
-    # never be overridden by a restore.
-    _user_repicked = slot._model_pick_gen != slot._fallback_pick_gen
-    if _moved_off or _user_repicked or not primary:
-        # Session moved off our fallback by other means (explicit pick, reset)
-        # or the primary was never known — the sticky state is stale.
-        _clear_fallback_sticky_state(slot, client)
-        return
-    set_model_fn = resolve_substitute_set_model(client)
-    if set_model_fn is None:
-        return
-    try:
-        await set_model_fn(primary)
-    except Exception as exc:
-        logger.info(
-            "model fallback: primary %s still unavailable on slot %s (%s); staying on %s",
-            primary,
-            slot.key,
-            exc,
-            candidate,
-        )
-        return
-    # Witness the restore before heal+clear (same check as
-    # llm_helpers.probe_fallback_restore): a non-raising set_model(primary)
-    # can be a silent no-op when resolve collapses the target to "". Clearing
-    # sticky state while still ON the fallback re-opens the backfill
-    # permanent-pin door this state exists to close. Keep everything and
-    # retry at the next genuine turn start.
-    _raw = provider_raw_model(client)
-    if _raw and candidate and _raw.strip().lower() == str(candidate).strip().lower():
-        logger.info(
-            "model fallback: restore to %s was a silent no-op on slot %s (still on %s); "
-            "keeping fallback",
-            primary,
-            slot.key,
-            candidate,
-        )
-        return
-    # Heal slot.model if the automatic backfill wrote the fallback into an
-    # unpinned slot while the fallback was active: slot.model is re-sent as a
-    # set_model override on resume, so leaving the fallback id there would
-    # re-pin the fallback after the primary recovered. No explicit pick
-    # happened (checked above), so the snapshot is the honest value.
-    if (slot.model or "") != slot._fallback_slot_model:
-        slot.model = slot._fallback_slot_model
-    _clear_fallback_sticky_state(slot, client)
-    logger.warning(
-        "model fallback: restored %s -> %s (reason=primary-recovered, surface=dashboard, slot=%s)",
-        candidate,
-        primary,
-        slot.key,
+
+    def _heal_backfilled_slot_model() -> None:
+        if (slot.model or "") != slot._fallback_slot_model:
+            slot.model = slot._fallback_slot_model
+
+    await probe_fallback_restore(
+        client,
+        surface="dashboard",
+        state=(slot._fallback_primary_model, candidate),
+        stale=slot._model_pick_gen != slot._fallback_pick_gen,
+        clear=lambda: _clear_fallback_sticky_state(slot, client),
+        on_restored=_heal_backfilled_slot_model,
+        log_suffix=f", slot={slot.key}",
     )
 
 
@@ -1040,15 +1017,26 @@ def _clear_fallback_sticky_state(slot: Any, client: Any) -> None:
     unrelated fallback walk (the marker-first primary seeding in
     ``advance_fallback_candidate`` would then "restore" a model the user
     explicitly moved away from).
+
+    Marker FIRST, and a failed marker clear returns WITHOUT blanking the
+    slot fields: blanking them around a surviving marker would orphan it
+    with no dashboard path left to revisit it (only its stale-primary
+    reseeding harm above would remain), so the record is retained
+    DELIBERATELY — the next turn's probe re-attempts the clear, which
+    succeeds for a transient failure and keeps re-failing for a permanently
+    hostile attribute. In practice the branch is dead: neither the real ACP
+    provider nor the client defines raising attribute hooks, so only exotic
+    test doubles reach it; the ordering costs nothing.
     """
-    slot._active_fallback_model = ""
-    slot._fallback_primary_model = ""
-    slot._fallback_slot_model = ""
     try:
         if getattr(client, TURN_FALLBACK_ATTR, None) is not None:
             setattr(client, TURN_FALLBACK_ATTR, None)
     except Exception:
-        logger.debug("clearing fallback marker failed", exc_info=True)
+        logger.debug("clearing fallback marker failed; keeping slot state for retry", exc_info=True)
+        return
+    slot._active_fallback_model = ""
+    slot._fallback_primary_model = ""
+    slot._fallback_slot_model = ""
 
 
 def _context_usage_payload(slot_key: str, client: Any) -> dict[str, Any]:
@@ -9296,13 +9284,15 @@ async def _run_chat(
             # be said out loud), then re-queue the SAME message on the SAME
             # live session, exactly like the same-model retry above.
             #
-            # Attempt budget: rewinding the counter to TRANSIENT_RETRIES - 1
-            # grants the candidate exactly ONE more pass through the
-            # same-model branch above, so each candidate gets two attempts
-            # (this re-queued one + one retry) before the next exhaustion
-            # lands back here and advances the chain — see
-            # llm_helpers.FALLBACK_CANDIDATE_ATTEMPTS for why not a full
-            # fresh budget. Nested turns (_prompt_depth > 0) get no fallback
+            # Attempt budget: rewinding the counter grants the candidate
+            # exactly one more pass through the same-model branch above, so
+            # each candidate gets FALLBACK_CANDIDATE_ATTEMPTS attempts (this
+            # re-queued one + the rewound passes) before the next exhaustion
+            # lands back here and advances the chain. The rewind value is
+            # derived in ONE place with the unattended surfaces' budget — see
+            # llm_helpers.fallback_rewound_transient_budget /
+            # FallbackState.should_retry_active. Nested turns
+            # (_prompt_depth > 0) get no fallback
             # in v1 and Stop-suppressed cycles never swap (both guarded in
             # the condition before the side-effecting swap runs).
             slot.purge_chunks()
@@ -9327,7 +9317,7 @@ async def _run_chat(
                 _fb_candidate,
                 slot._fallback_candidate_idx,
             )
-            slot._transient_5xx_retries = TRANSIENT_RETRIES - 1
+            slot._transient_5xx_retries = fallback_rewound_transient_budget()
             await asyncio.sleep(transient_retry_delay(1))
             # Stop guard AFTER the sleep (review finding on 1a61ddcf): a Stop
             # pressed during this backoff resolves while no prompt is active,

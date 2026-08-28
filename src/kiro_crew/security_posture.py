@@ -1185,6 +1185,14 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # egress boundary; the modules that CALL it (mochi routes/hooks) are the
         # registered sinks.
         "apps/builtins/mochi/redact.py",
+        # Shared model-fallback text builders (fallback_story_of /
+        # annotate_model_fallback): scrub the chain-exhaustion story and the
+        # fallback-served warning line ONCE, centrally, so every consumer gets
+        # the same safe text. They own no output — the scrubbed text reaches a
+        # human only through the delivering surfaces (the cron/heartbeat alert
+        # paths in slack/gateway.py and the sub-agent completion path in
+        # subagent.py), which are the registered sinks.
+        "llm_helpers.py",
         # Redacts artifact names/metadata at the point they are STAGED (the
         # pushable list and the S3 meta sidecar), before any response exists.
         # It owns no output of its own — every HTTP response carrying that data

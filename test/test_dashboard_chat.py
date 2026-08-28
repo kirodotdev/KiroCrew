@@ -16042,6 +16042,50 @@ class TestRunChatModelFallback:
         assert slot._fallback_walked == []
 
     @pytest.mark.asyncio
+    async def test_candidate_budget_routes_through_shared_rewind_body(self, tmp_path, monkeypatch):
+        """DRIFT PIN (#5447 item 2): the post-swap counter rewind must come
+        from llm_helpers.fallback_rewound_transient_budget — not a re-encoded
+        local constant. Patching the shared body to grant no extra pass drops
+        the candidate to a single attempt."""
+        from kiro_crew.acp.client import AcpError
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.llm_helpers import TRANSIENT_RETRIES
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_runner._agent_fallback_chain",
+            lambda: ("fallback-model",),
+        )
+        # Rewind to the exhaustion threshold: the re-queued attempt runs, and
+        # its failure immediately re-enters the fallback branch (no same-model
+        # retry pass) — one attempt on the candidate instead of two.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_runner.fallback_rewound_transient_budget",
+            lambda: TRANSIENT_RETRIES,
+        )
+        call_count = 0
+
+        async def _stream(msg):
+            nonlocal call_count
+            call_count += 1
+            raise AcpError(self._TRANSIENT)
+            yield  # pragma: no cover
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client = self._client(_stream)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await _run_chat(state, slot, "hello")
+            await self._drain_bg(state)
+
+        # 4 on the primary + only 1 on the candidate (vs 2 unpatched — see
+        # test_chain_exhaustion_surfaces_error_with_story).
+        assert call_count == TRANSIENT_RETRIES + 2
+        client.set_model.assert_awaited_once_with("fallback-model")
+
+    @pytest.mark.asyncio
     async def test_restore_probe_fires_on_next_genuine_turn(self, tmp_path, monkeypatch):
         """A sticky fallback from an earlier cycle is probed back to the
         primary at the start of the next genuine user turn — quietly (no
@@ -16228,6 +16272,124 @@ class TestRunChatModelFallback:
         # candidate. (The unknown-primary probe clears the sticky state — the
         # pin staying empty is the property under test.)
         assert slot.model == ""
+
+
+class TestSlotProbeWrapsSharedRestoreBody:
+    """DRIFT PIN (#5447 item 3): the slot restore probe is a thin adapter over
+    llm_helpers.probe_fallback_restore — only the slot pick-gen/heal/clear
+    logic lives locally. These tests pin the delegation and the slot-specific
+    hooks it hands over; the probe mechanics themselves are pinned in
+    test_llm_helpers.py and the end-to-end behavior in
+    TestRunChatModelFallback above."""
+
+    @staticmethod
+    def _slot(**overrides):
+        from types import SimpleNamespace
+
+        defaults = dict(
+            key="s1",
+            model="",
+            _model_pick_lock=None,
+            _active_fallback_model="fb-1",
+            _fallback_primary_model="primary-m",
+            _fallback_slot_model="",
+            _model_pick_gen=3,
+            _fallback_pick_gen=3,
+        )
+        defaults.update(overrides)
+        return SimpleNamespace(**defaults)
+
+    @pytest.mark.asyncio
+    async def test_delegates_slot_state_to_the_shared_body(self):
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.llm_helpers import TURN_FALLBACK_ATTR
+
+        slot = self._slot()
+        client = MagicMock()
+        setattr(client, TURN_FALLBACK_ATTR, ("primary-m", "fb-1"))
+        with patch(
+            "kiro_crew.dashboard.chat_runner.probe_fallback_restore", new_callable=AsyncMock
+        ) as probe:
+            await chat_runner._probe_fallback_restore_for_slot(slot, client)
+
+        probe.assert_awaited_once()
+        kwargs = probe.await_args.kwargs
+        assert kwargs["surface"] == "dashboard"
+        assert kwargs["state"] == ("primary-m", "fb-1")
+        assert kwargs["stale"] is False
+        assert kwargs["log_suffix"] == ", slot=s1"
+        # The handed-over clear drops slot fields AND the provider marker as
+        # one logical record.
+        kwargs["clear"]()
+        assert slot._active_fallback_model == ""
+        assert slot._fallback_primary_model == ""
+        assert getattr(client, TURN_FALLBACK_ATTR) is None
+
+    @pytest.mark.asyncio
+    async def test_explicit_pick_generation_bump_rides_in_as_stale(self):
+        from kiro_crew.dashboard import chat_runner
+
+        slot = self._slot(_model_pick_gen=4)  # picked after the swap
+        with patch(
+            "kiro_crew.dashboard.chat_runner.probe_fallback_restore", new_callable=AsyncMock
+        ) as probe:
+            await chat_runner._probe_fallback_restore_for_slot(slot, MagicMock())
+        assert probe.await_args.kwargs["stale"] is True
+
+    @pytest.mark.asyncio
+    async def test_heal_hook_restores_the_activation_snapshot(self):
+        from kiro_crew.dashboard import chat_runner
+
+        slot = self._slot(model="fb-1", _fallback_slot_model="")  # backfilled pin
+        with patch(
+            "kiro_crew.dashboard.chat_runner.probe_fallback_restore", new_callable=AsyncMock
+        ) as probe:
+            await chat_runner._probe_fallback_restore_for_slot(slot, MagicMock())
+        probe.await_args.kwargs["on_restored"]()
+        assert slot.model == ""
+
+    @pytest.mark.asyncio
+    async def test_no_active_fallback_never_reaches_the_shared_body(self):
+        from kiro_crew.dashboard import chat_runner
+
+        slot = self._slot(_active_fallback_model="")
+        with patch(
+            "kiro_crew.dashboard.chat_runner.probe_fallback_restore", new_callable=AsyncMock
+        ) as probe:
+            await chat_runner._probe_fallback_restore_for_slot(slot, MagicMock())
+        probe.assert_not_awaited()
+
+    def test_sticky_clear_drops_marker_and_slot_fields(self):
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.llm_helpers import TURN_FALLBACK_ATTR
+
+        slot = self._slot()
+        client = MagicMock()
+        setattr(client, TURN_FALLBACK_ATTR, ("primary-m", "fb-1"))
+        chat_runner._clear_fallback_sticky_state(slot, client)
+        assert getattr(client, TURN_FALLBACK_ATTR) is None
+        assert slot._active_fallback_model == ""
+        assert slot._fallback_primary_model == ""
+        assert slot._fallback_slot_model == ""
+
+    def test_sticky_clear_keeps_slot_record_when_marker_clear_fails(self):
+        """DRIFT PIN (review round 3): a failed provider-marker clear must NOT
+        blank the slot fields — the slot probe keys on _active_fallback_model,
+        so keeping the record is what makes the clear retryable next turn.
+        Blanking the fields around a surviving marker would orphan it."""
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.llm_helpers import TURN_FALLBACK_ATTR
+
+        class _HostileClient:
+            @property
+            def _kc_active_fallback(self):  # TURN_FALLBACK_ATTR
+                raise RuntimeError("hostile marker")
+
+        assert TURN_FALLBACK_ATTR == "_kc_active_fallback"
+        slot = self._slot()
+        chat_runner._clear_fallback_sticky_state(slot, _HostileClient())  # must not raise
+        assert slot._active_fallback_model == "fb-1"
+        assert slot._fallback_primary_model == "primary-m"
 
 
 class TestSlotsGetWarmsGitLabAllowlist:
