@@ -1469,13 +1469,15 @@ async def api_approvals(request: web.Request) -> web.Response:
 
 
 async def api_approval_resolve(request: web.Request) -> web.Response:
-    """POST /api/approvals/{id}/{action} — approve or reject."""
+    """POST /api/approvals/{id}/{action} — approve, reject, or reject_once."""
     state: DashboardState = request.app["state"]
     approval_id = request.match_info["id"]
     action = request.match_info["action"]
-    if action not in ("approve", "reject"):
+    if action not in ("approve", "reject", "reject_once"):
         return web.json_response({"error": "invalid action"}, status=400)
-    ok = state.resolve_approval(approval_id, action == "approve")
+    ok = state.resolve_approval(
+        approval_id, action == "approve", rejected_once=action == "reject_once"
+    )
     if not ok:
         return web.json_response({"error": "not found or expired"}, status=404)
     return web.json_response({"ok": True})

@@ -6518,6 +6518,10 @@
       "trusted_source": "受信任来源",
       "trusted_source_clones_with_your_git_credentials": "受信任来源 —— 此注册表中的应用会使用你的 Git 凭据克隆。"
     },
+    "rejectDropdown": {
+      "reject_all": "拒绝全部 —— 后续不再询问，一并拒绝",
+      "reject_once": "拒绝一次 —— 后续仍逐个询问"
+    },
     "remoteArtifactCard": {
       "clone": "克隆",
       "clone_failed": "克隆失败",

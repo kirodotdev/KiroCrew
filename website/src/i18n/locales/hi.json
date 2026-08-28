@@ -6626,6 +6626,10 @@
       "trusted_source": "विश्वसनीय स्रोत",
       "trusted_source_clones_with_your_git_credentials": "विश्वसनीय स्रोत — इस रजिस्ट्री के ऐप्स इस मशीन के Git क्रेडेंशियल से क्लोन होते हैं।"
     },
+    "rejectDropdown": {
+      "reject_all": "सभी अस्वीकार करें — बाकी को बिना पूछे अस्वीकार करें",
+      "reject_once": "एक बार अस्वीकार करें — बाकी के लिए पूछते रहें"
+    },
     "remoteArtifactCard": {
       "clone": "क्लोन करें",
       "clone_failed": "क्लोन विफल",

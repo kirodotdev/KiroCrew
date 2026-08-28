@@ -6626,6 +6626,10 @@
       "trusted_source": "বিশ্বস্ত উৎস",
       "trusted_source_clones_with_your_git_credentials": "বিশ্বস্ত উৎস — এই রেজিস্ট্রির অ্যাপগুলি আপনার Git ক্রেডেনশিয়াল দিয়ে ক্লোন হয়।"
     },
+    "rejectDropdown": {
+      "reject_all": "সব প্রত্যাখ্যান — বাকিগুলো না জিজ্ঞাসা করেই প্রত্যাখ্যান",
+      "reject_once": "একবার প্রত্যাখ্যান — বাকিগুলোর জন্য জিজ্ঞাসা চালু থাকবে"
+    },
     "remoteArtifactCard": {
       "clone": "ক্লোন করুন",
       "clone_failed": "ক্লোন ব্যর্থ",

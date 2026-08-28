@@ -6626,6 +6626,10 @@
       "trusted_source": "Vertrauenswürdige Quelle",
       "trusted_source_clones_with_your_git_credentials": "Vertrauenswürdige Quelle – Apps aus dieser Registry werden mit Ihren Git-Anmeldedaten geklont."
     },
+    "rejectDropdown": {
+      "reject_all": "Alle ablehnen — die übrigen ohne Rückfrage ablehnen",
+      "reject_once": "Einmal ablehnen — bei den übrigen weiter fragen"
+    },
     "remoteArtifactCard": {
       "clone": "Klonen",
       "clone_failed": "Klonen fehlgeschlagen",

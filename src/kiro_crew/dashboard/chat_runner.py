@@ -7630,11 +7630,12 @@ async def _run_chat(
                         _safety_reason, _ = redact_credentials(_safety_reason)
                     _safe_reject_title, _ = redact_exfiltration_urls(event.title)
                     _safe_reject_title, _ = redact_credentials(_safe_reject_title)
-                    _reject_label = (
-                        f"🚫 {_safe_reject_title} (cancelled — {_safety_reason})"
-                        if _safety_reason
-                        else f"🚫 {_safe_reject_title} (rejected)"
-                    )
+                    if _safety_reason:
+                        _reject_label = f"🚫 {_safe_reject_title} (cancelled — {_safety_reason})"
+                    elif outcome == "rejected_once":
+                        _reject_label = f"🚫 {_safe_reject_title} (rejected — this call only)"
+                    else:
+                        _reject_label = f"🚫 {_safe_reject_title} (rejected)"
                     slot.append("tool", _reject_label, "msg msg-tool")
                     sel().log_tool_invocation(
                         session_key=session_key,
@@ -7642,7 +7643,7 @@ async def _run_chat(
                         source="dashboard",
                         tool_name=_safe_reject_title,
                         tool_kind=event.tool_kind,
-                        outcome="rejected",
+                        outcome="rejected_once" if outcome == "rejected_once" else "rejected",
                         request_id=event.request_id,
                         metadata={"reason": _safety_reason or "interactive"},
                     )
@@ -7652,6 +7653,13 @@ async def _run_chat(
                     # the hook-deny (TOOL_DENY) path, which is the other site that
                     # appends to _refusal_reasons.
 
+                if outcome == "rejected_once":
+                    # Deny this one tool but do NOT cascade to remaining batch
+                    logger.info(
+                        "PERM REJECTED ONCE tool=%r — remaining batch unaffected",
+                        event.title,
+                    )
+                    continue
                 if outcome != "approved":
                     # mark batch_rejected as true and continue loop instead of breaking
                     # This will allow for marking other batched approval requests as rejected too

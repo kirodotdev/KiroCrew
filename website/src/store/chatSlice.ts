@@ -16,6 +16,7 @@ import type { McpAppRenderPayload } from '../lib/mcpAppSrcdoc'
 import { i18nT } from '../i18n/t'
 import { secureRandomId } from '../utils/secureId'
 import { mergeIntoDraft } from '../utils/chatDrafts'
+import { isRejectedDecision } from '../utils/approvalDecision'
 
 const SKIP_ROLES = new Set(['chunk', 'done'])
 const filterMessages = (msgs: ChatMessage[]) => msgs.filter(m => !SKIP_ROLES.has(m.role))
@@ -3159,9 +3160,12 @@ const chatSlice = createSlice({
         }
       }
       if (m?.meta) m.meta.resolved = decision
-      // If rejected, mark the matching toolLog entry so the pill can show a rejection icon
+      // If rejected, mark the matching toolLog entry so the pill can show a rejection icon.
+      // Every rejection token counts: a reject-once that missed this would leave
+      // the pill unmarked, and ToolCallLine then reads its 🚫 sibling as an
+      // auto-deny and paints a human refusal as a policy block.
       const toolCallId = m?.meta?.tool_call_id as string | undefined
-      if (decision === 'rejected' && toolCallId) {
+      if (isRejectedDecision(decision) && toolCallId) {
         const log = state.toolLog
         for (let i = log.length - 1; i >= 0; i--) {
           if (log[i].type === 'tool' && log[i].tool_call_id === toolCallId) {

@@ -27,6 +27,7 @@ import { i18nT } from '../../i18n/t'
 import { fmtDateFields, fmtDuration as fmtDurationParts, fmtUnit } from '../../i18n/format'
 import { api } from '../../api/client'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
+import { isRejectedDecision } from '../../utils/approvalDecision'
 
 // Tool-call ids that have already played their one-shot `.ft-block-reveal`
 // entrance fade. A CSS animation re-fires on every DOM *mount*, and a pill
@@ -152,7 +153,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
         const m = msgs[j]
         if (m.role !== 'permission' || !m.meta?.tool_call_id) continue
         if (m.meta.tool_call_id === toolCallId) {
-          return m.meta?.resolved === 'rejected'
+          return isRejectedDecision(m.meta?.resolved)
         }
       }
       return false

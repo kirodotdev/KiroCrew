@@ -6518,6 +6518,10 @@
       "trusted_source": "信頼されたソース",
       "trusted_source_clones_with_your_git_credentials": "信頼されたソース — このレジストリのアプリは、あなたの Git 認証情報を使ってクローンされます。"
     },
+    "rejectDropdown": {
+      "reject_all": "すべて拒否 — 残りは確認せずに拒否する",
+      "reject_once": "1 回だけ拒否 — 残りは引き続き確認する"
+    },
     "remoteArtifactCard": {
       "clone": "クローン",
       "clone_failed": "クローンに失敗しました",

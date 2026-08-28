@@ -659,6 +659,40 @@ describe('ToolCallLine auto-denied detection', () => {
     expect(container.querySelector('.text-danger')).toBeTruthy()
     expect(container.querySelector('.text-warn')).toBeFalsy()
   })
+
+  // The backend persists the RAW decision token into `meta.resolved`, so a
+  // deny-once reaches this component as `rejected_once`. An equality match on
+  // `'rejected'` fails one-sidedly here: the row stops counting as a user
+  // rejection and falls through to the auto-deny branch, painting the most
+  // deliberate denial a human can make as a security-policy block. That is not
+  // reachable from the live WS frame (which re-broadcasts a plain `rejected`),
+  // only from RELOADED history — which is why a store seeded like the server's
+  // persisted state is the shape that catches it.
+  it('reject-once (resolved rejected_once) stays red, not amber auto-denied', () => {
+    const pill = toolMsg({ meta: { tool_call_id: 'tc_denyonce' } })
+    const denySibling: ChatMessage = {
+      role: 'tool',
+      content: '🚫 Running: rm file (rejected — this call only)',
+      cls: 'msg msg-tool',
+      meta: { tool_call_id: 'tc_denyonce' },
+    }
+    const perm: ChatMessage = {
+      role: 'permission',
+      content: 'Running: rm file',
+      cls: '',
+      meta: { tool_call_id: 'tc_denyonce', resolved: 'rejected_once' },
+    }
+    const store = createTestStore({
+      chat: {
+        messages: [pill, perm, denySibling],
+        toolLog: [{ type: 'tool', text: 'rm file', tool_call_id: 'tc_denyonce', ts: 1 }],
+        slotRunning: false,
+      } as unknown as ChatState,
+    })
+    const { container } = renderWithProviders(<ToolCallLine message={pill} running={false} />, { store })
+    expect(container.querySelector('.text-danger')).toBeTruthy()
+    expect(container.querySelector('.text-warn')).toBeFalsy()
+  })
 })
 
 describe('ToolCallLine elapsed timer survives remount', () => {

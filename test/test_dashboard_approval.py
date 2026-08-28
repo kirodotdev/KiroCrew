@@ -13,6 +13,7 @@ from chat_test_helpers import _make_ready_kiro_prerequisite
 
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.chat import _run_chat
+from kiro_crew.dashboard.handlers.sessions import api_approval_resolve
 from kiro_crew.dashboard.state import (
     REFUSAL_RECOVERY_PREFIX,
     DashboardState,
@@ -778,6 +779,190 @@ class TestBatchRejection:
                 pass
 
         assert slot._batch_rejected is False
+
+
+class TestDenyOnce:
+    """Verify 'rejected_once' denies a single tool without cascading."""
+
+    @pytest.mark.asyncio
+    async def test_deny_once_rejects_tool_but_does_not_cascade(self, tmp_path):
+        """reject_once rejects the first tool but lets the second get its own prompt."""
+        state, client = _make_state(tmp_path, context_builder=_context_builder())
+        slot = _make_slot()
+        evt1 = _permission_event(title="tool_a")
+        evt1.request_id = "req-1"
+        evt1.tool_call_id = "tc-1"
+        evt2 = _permission_event(title="tool_b")
+        evt2.request_id = "req-2"
+        evt2.tool_call_id = "tc-2"
+        _set_stream(client, [evt1, evt2, _complete_event()])
+
+        async def _answer_both() -> None:
+            await _answer_approval(slot, "req-1", "rejected_once")
+            await _answer_approval(slot, "req-2", "approved")
+
+        answerer = asyncio.get_event_loop().create_task(_answer_both())
+
+        with _patch_stats():
+            await _run_chat(state, slot, "hello")
+        await _drain(answerer)
+
+        # First tool rejected, second approved
+        client.reject_tool.assert_any_call("req-1")
+        client.approve_tool.assert_any_call("req-2")
+        # Batch rejection flag must NOT be set
+        assert slot._batch_rejected is False
+
+    @pytest.mark.asyncio
+    async def test_deny_all_still_cascades(self, tmp_path):
+        """Full 'rejected' still cascades to remaining batch tools."""
+        state, client = _make_state(tmp_path, context_builder=_context_builder())
+        slot = _make_slot()
+        evt1 = _permission_event(title="tool_a")
+        evt1.request_id = "req-1"
+        evt1.tool_call_id = "tc-1"
+        evt2 = _permission_event(title="tool_b")
+        evt2.request_id = "req-2"
+        evt2.tool_call_id = "tc-2"
+        _set_stream(client, [evt1, evt2, _complete_event()])
+
+        async def _reject_first() -> None:
+            await _answer_approval(slot, "req-1", "rejected")
+
+        rejecter = asyncio.get_event_loop().create_task(_reject_first())
+
+        with _patch_stats():
+            await _run_chat(state, slot, "hello")
+        await _drain(rejecter)
+
+        # Both tools rejected (second via batch cascade)
+        client.reject_tool.assert_any_call("req-1")
+        client.reject_tool.assert_any_call("req-2")
+        # Reset in finally block
+        assert slot._batch_rejected is False
+
+    @pytest.mark.asyncio
+    async def test_decision_override_reaches_slot_future(self, tmp_path):
+        """``rejected_once=True`` is what the slot future receives, not "rejected"."""
+        state, _ = _make_state(tmp_path)
+        slot = _make_slot()
+        state._slots[slot.key] = slot
+
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[str] = loop.create_future()
+        slot._approval_futures["req-once"] = fut
+
+        assert state.resolve_approval("req-once", False, rejected_once=True) is True
+        assert fut.result() == "rejected_once"
+
+    @pytest.mark.asyncio
+    async def test_both_audit_event_types_agree_on_the_denial(self, tmp_path):
+        """The `approval_decision` event records the token too, not just `rejected`.
+
+        `log_tool_invocation` already distinguishes the two denials on the tool
+        event. If this second event type flattened both to "rejected", the audit
+        trail would distinguish them in one place and not the other, which
+        distinguishes nothing.
+        """
+        state, _ = _make_state(tmp_path)
+        slot = _make_slot()
+        state._slots[slot.key] = slot
+
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[str] = loop.create_future()
+        slot._approval_futures["req-audit"] = fut
+
+        with patch("kiro_crew.dashboard.state.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            state.resolve_approval("req-audit", False, rejected_once=True)
+            outcomes = [
+                c.kwargs.get("outcome")
+                for c in mock_sel.return_value.log_tool_invocation.call_args_list
+                if c.kwargs.get("tool_name") == "approval_decision"
+            ]
+        assert outcomes == ["rejected_once"]
+
+    @pytest.mark.asyncio
+    async def test_state_level_override_drop_is_logged_not_silent(self, tmp_path):
+        """A state-level future cannot carry the token, so the drop must be audible.
+
+        State futures take priority by design (id-collision safety), and they
+        hold a bool — so an override addressed at one is discarded. Harmless
+        today (a background approval has no batch to cascade to), but silence is
+        what makes the next decision token repeat the discovery.
+        """
+        state, _ = _make_state(tmp_path)
+        slot = _make_slot()
+        state._slots[slot.key] = slot
+
+        loop = asyncio.get_running_loop()
+        state_fut: asyncio.Future[bool] = loop.create_future()
+        state._approval_futures["req-bg"] = state_fut
+
+        with patch.object(state, "_log") as log:
+            assert (
+                state.resolve_approval("req-bg", False, rejected_once=True) is True
+            )
+        assert state_fut.result() is False
+        assert log.warning.called
+        assert "rejected_once" in repr(log.warning.call_args)
+
+    @pytest.mark.asyncio
+    async def test_api_reject_once_maps_to_decision_override(self):
+        """The HTTP seam: ``reject_once`` is a valid action and sets the flag.
+
+        Pinned at the handler, not in redux: a frontend-only test passes even when
+        the action never reaches ``resolve_approval``, leaving Deny once wired to
+        the plain batch reject in production.
+        """
+        state = MagicMock()
+        state.resolve_approval.return_value = True
+
+        async def _call(action: str):
+            request = MagicMock()
+            request.app = {"state": state}
+            request.match_info = {"id": "req-9", "action": action}
+            return await api_approval_resolve(request)
+
+        assert (await _call("reject_once")).status == 200
+        assert state.resolve_approval.call_args.args == ("req-9", False)
+        assert state.resolve_approval.call_args.kwargs["rejected_once"] is True
+
+        # Plain reject must keep the cascading behavior (no override).
+        assert (await _call("reject")).status == 200
+        assert state.resolve_approval.call_args.kwargs["rejected_once"] is False
+
+        # Unknown actions are still refused.
+        assert (await _call("reject_twice")).status == 400
+
+    @pytest.mark.asyncio
+    async def test_deny_once_is_distinguishable_in_the_audit_log(self, tmp_path):
+        """SEL records ``rejected_once``.
+
+        A hard-coded ``"rejected"`` would make a single-tool denial and a
+        whole-batch denial identical in the audit trail, which is the one place
+        the distinction has to survive.
+        """
+        state, client = _make_state(tmp_path, context_builder=_context_builder())
+        slot = _make_slot()
+        evt = _permission_event(title="tool_a")
+        evt.request_id = "req-1"
+        _set_stream(client, [evt, _complete_event()])
+
+        answerer = asyncio.get_event_loop().create_task(
+            _answer_approval(slot, "req-1", "rejected_once")
+        )
+        with patch("kiro_crew.dashboard.chat_runner.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            with _patch_stats():
+                await _run_chat(state, slot, "hello")
+            await _drain(answerer)
+            outcomes = [
+                c.kwargs.get("outcome")
+                for c in mock_sel.return_value.log_tool_invocation.call_args_list
+                if c.kwargs.get("tool_name") == "tool_a"
+            ]
+        assert outcomes == ["rejected_once"]
 
 
 class TestToolCompletionTracking:

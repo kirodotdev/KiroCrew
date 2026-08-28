@@ -5825,14 +5825,20 @@ class DashboardState:
             self._approval_futures.pop(approval_id, None)
 
     def _audit_and_broadcast_approval(
-        self, session_key: str, approval_id: str, approved: bool
+        self, session_key: str, approval_id: str, approved: bool, decision: str = ""
     ) -> None:
-        """Emit SEL audit event and broadcast WS notification for an approval decision."""
+        """Emit SEL audit event and broadcast WS notification for an approval decision.
+
+        *decision* is the token actually delivered to the waiter. It is recorded
+        verbatim so this event and ``log_tool_invocation``'s tool event agree on
+        which denial the user chose — an audit trail that distinguishes them in
+        one event type and not the other distinguishes nothing.
+        """
         try:
             sel().log_tool_invocation(
                 session_key=session_key,
                 tool_name="approval_decision",
-                outcome="approved" if approved else "rejected",
+                outcome=decision or ("approved" if approved else "rejected"),
                 request_id=approval_id,
                 source="dashboard",
             )
@@ -5870,11 +5876,25 @@ class DashboardState:
             return True
         return False
 
-    def resolve_approval(self, approval_id: str, approved: bool) -> bool:
+    def resolve_approval(
+        self, approval_id: str, approved: bool, *, rejected_once: bool = False
+    ) -> bool:
         """Resolve a pending approval. Returns False if not found.
 
         State-level futures receive ``bool`` (consumed by gateway, which converts to str).
-        Slot-level futures receive ``str`` ("approved"/"rejected", consumed by channel.py).
+        Slot-level futures receive ``str`` ("approved"/"rejected"/"rejected_once",
+        consumed by chat_runner).
+
+        *rejected_once* selects the "rejected_once" token for the slot-level
+        future, so the chat_runner can tell a single-tool rejection from a full
+        batch one. It is a flag rather than a decision string so the token itself
+        has exactly one owner — this method — instead of being spelled at the
+        call site too.
+
+        A state-level future carries only a bool, so it cannot express the
+        distinction and it is DROPPED there. That is harmless today (a background
+        approval has no batch to cascade to) but it is silent, so the drop is
+        logged rather than left for the next reader to rediscover.
 
         This scans slot-level futures by bare id-match with NO session-identity
         check, so it is safe only for callers that legitimately own the id
@@ -5882,8 +5902,14 @@ class DashboardState:
         addresses one slot but may hold a colliding id from another MUST use
         :meth:`resolve_state_approval` instead (see the slot-approve handler).
         """
-        decision = "approved" if approved else "rejected"
+        decision = "approved" if approved else ("rejected_once" if rejected_once else "rejected")
         if self.resolve_state_approval(approval_id, approved):
+            if rejected_once:
+                self._log.warning(
+                    "approval %s resolved at state level; decision %r downgraded to rejected",
+                    approval_id,
+                    decision,
+                )
             return True
         # Also check slot-level approval futures (chat tool approvals)
         for slot in self._slots.values():
@@ -5895,7 +5921,7 @@ class DashboardState:
                     # in-place mutation can be lost and the answered card comes
                     # back on reload with a future that no longer exists.
                     slot._dirty = True
-                self._audit_and_broadcast_approval(slot.key, approval_id, approved)
+                self._audit_and_broadcast_approval(slot.key, approval_id, approved, decision)
                 self.push_slots_update()
                 return True
         return False

@@ -6734,6 +6734,10 @@
       "trusted_source": "Fuente de confianza",
       "trusted_source_clones_with_your_git_credentials": "Fuente de confianza: las apps de este registro se clonan con tus credenciales de Git."
     },
+    "rejectDropdown": {
+      "reject_all": "Rechazar todo: rechazar las demás sin preguntar",
+      "reject_once": "Rechazar una vez: seguir preguntando por las demás"
+    },
     "remoteArtifactCard": {
       "clone": "Clonar",
       "clone_failed": "Error al clonar",

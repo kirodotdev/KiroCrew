@@ -6734,6 +6734,10 @@
       "trusted_source": "Origine attendibile",
       "trusted_source_clones_with_your_git_credentials": "Origine attendibile: le app di questo registry vengono clonate con le tue credenziali Git."
     },
+    "rejectDropdown": {
+      "reject_all": "Rifiuta tutto — rifiuta le altre senza chiedere",
+      "reject_once": "Rifiuta una volta — continua a chiedere per le altre"
+    },
     "remoteArtifactCard": {
       "clone": "Clona",
       "clone_failed": "Clonazione non riuscita",

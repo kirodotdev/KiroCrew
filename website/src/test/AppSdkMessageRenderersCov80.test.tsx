@@ -415,6 +415,16 @@ describe('ToolCallPill', () => {
     expect((screen.getByRole('button') as HTMLElement).className).toContain('text-danger')
     rejected.unmount()
 
+    // The backend persists the raw token, so a reject-once arrives here as
+    // `rejected_once`. An equality match on 'rejected' would tone the most
+    // deliberate denial a human can make as if nothing had been decided.
+    const rejectedOnce = render(<ToolCallPill
+      message={msg({ role: 'tool', content: '🔧 zzq', meta: { resolved: 'rejected_once' } })}
+      running
+    />)
+    expect((screen.getByRole('button') as HTMLElement).className).toContain('text-danger')
+    rejectedOnce.unmount()
+
     const done = render(<ToolCallPill
       message={msg({ role: 'tool_result', content: 'zzq' })} running
     />)

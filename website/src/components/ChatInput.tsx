@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useId, memo } from 'react'
 import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, Keyboard, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText } from 'lucide-react'
 import CopyBranchButton from './CopyBranchButton'
+import RejectDropdown from './RejectDropdown'
 import { usePointerDrag } from '../hooks/usePointerDrag'
 import { useScrollEdges } from '../hooks/useScrollEdges'
 import VoiceStatusBar from './VoiceStatusBar'
@@ -175,8 +176,10 @@ function sameBlocks(a: PasteBlock[], b: PasteBlock[]): boolean {
   return b.every(x => ids.has(x.id))
 }
 
-function toApiDecision(d: string): 'approve' | 'reject' {
-  return (d === 'approved' || d === 'trust' || d === 'trust_reads') ? 'approve' : 'reject'
+function toApiDecision(d: string): 'approve' | 'reject' | 'reject_once' {
+  if (d === 'approved' || d === 'trust' || d === 'trust_reads') return 'approve'
+  if (d === 'rejected_once') return 'reject_once'
+  return 'reject'
 }
 
 /** Approval sources that run unattended, with no human bound to the chat the
@@ -2879,7 +2882,11 @@ function ChatInput({
                             onAction={(action, pattern) => { handleApprovalAction(action, pattern) }}
                         />
                       )}
-                      <button disabled={approvalSubmitting} className={`${approvalBtnClass} hover:!text-danger hover:!bg-[color-mix(in_srgb,var(--danger)_10%,transparent)]`} onClick={() => handleApprovalAction('rejected')}><Ban size={12} className="shrink-0" />{i18nT('components.chatInput.reject')}</button>
+                      <RejectDropdown
+                          disabled={approvalSubmitting}
+                          className={`${approvalBtnClass} hover:!text-danger hover:!bg-[color-mix(in_srgb,var(--danger)_10%,transparent)]`}
+                          onAction={(action) => { handleApprovalAction(action) }}
+                      />
                   </div>
               </div>
               {/* A1 discoverability hint: points at the footer mode picker so a
