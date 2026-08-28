@@ -431,6 +431,12 @@ export interface AgentcoreIdentityData {
 export interface AgentcoreConsentData {
   pending: boolean
   url: string | null
+  /** Hostname of the allowlisted sign-in page, so the card can say where sign-in happens. */
+  host?: string | null
+  /** Which allowlist admitted the host: a provider the product ships with, or the operator's file. */
+  allow_source?: 'builtin' | 'operator' | null
+  /** The operator allowlist file, when allow_source is 'operator', so the reader can open it. */
+  allowlist_path?: string | null
 }
 
 /** One Settings check on the configured AgentCore Gateway. */
@@ -466,6 +472,8 @@ export interface AgentcoreGatewayTools {
 /** GET /api/agentcore/gateway and POST /verify. */
 export interface AgentcoreGatewayData {
   code: string
+  /** True for a pre-save preview of a drafted URL/posture: no identity, tools deferred. */
+  preview?: boolean
   posture: 'workload' | 'login' | null
   workload_name?: string
   gateway_url: string
@@ -4477,6 +4485,8 @@ export const api = {
     get('/api/agentcore/gateway').then(j) as Promise<AgentcoreGatewayData>,
   verifyAgentcoreGateway: () =>
     post('/api/agentcore/gateway/verify', {}).then(j) as Promise<AgentcoreGatewayData>,
+  previewAgentcoreGateway: (body: { gateway_url: string; posture: 'workload' | 'login' }) =>
+    post('/api/agentcore/gateway/preview', body).then(j) as Promise<AgentcoreGatewayData>,
   syncAgentcoreGatewayTarget: (targetId: string) =>
     post('/api/agentcore/gateway/sync', { target_id: targetId }).then(j) as Promise<{
       code: string

@@ -90,11 +90,27 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     // This crew's AgentCore identity — SettingsSelect label is an i18nT()
     // call, so the extractor never sees a string literal. Deep-link must
     // mount the identity rail.
-    id: 'security.agent-identity',
+    id: 'security.identity',
     labelKey: 'pages.settings.securityPanel.agent_identity',
     descriptionKey: 'pages.settings.securityPanel.agent_identity_hint',
     tab: 'security',
     type: 'select',
+    occurrence: 1,
+    params: { section: 'identity' },
+  },
+  {
+    id: 'security.workload-name',
+    labelKey: 'pages.settings.securityPanel.agent_identity_name',
+    tab: 'security',
+    type: 'input',
+    occurrence: 1,
+    params: { section: 'identity' },
+  },
+  {
+    id: 'security.gateway-url',
+    labelKey: 'pages.settings.securityPanel.agent_identity_gateway_url',
+    tab: 'security',
+    type: 'input',
     occurrence: 1,
     params: { section: 'identity' },
   },

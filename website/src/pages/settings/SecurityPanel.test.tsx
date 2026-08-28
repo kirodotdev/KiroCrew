@@ -47,6 +47,7 @@ vi.mock('../../api/client', () => ({
     getAgentcoreConsent: vi.fn(),
     getAgentcoreGateway: vi.fn(),
     verifyAgentcoreGateway: vi.fn(),
+    previewAgentcoreGateway: vi.fn(),
     syncAgentcoreGatewayTarget: vi.fn(),
     listTrustedApps: vi.fn(),
     trustApp: vi.fn(),
@@ -2069,6 +2070,37 @@ async function pickIdentityPosture(value: 'none' | 'workload' | 'login') {
   fireEvent.click(screen.getByRole('option', { name: i18nT(optionKey) }))
 }
 
+/** The grant must be inspected before it can be committed: with a Gateway URL
+ *  drafted, Save waits until "Preview what Save grants" has listed the targets
+ *  and then restates them on the button. This runs that step. */
+async function previewDraftedGateway(targets: Array<{ id: string; name: string }>) {
+  ;(api.previewAgentcoreGateway as ReturnType<typeof vi.fn>).mockResolvedValue({
+    ...CATALOG_IDLE,
+    code: 'ok',
+    preview: true,
+    posture: 'workload',
+    gateway_url: '',
+    gateway: { id: 'demo-gw', name: 'demo', status: 'READY', authorizer_type: 'AWS_IAM', gateway_url: '', status_reasons: [] },
+    targets: targets.map(t => ({
+      target_id: t.id,
+      name: t.name,
+      target_type: 'MCP_SERVER',
+      status: 'READY',
+      listing_mode: 'DEFAULT',
+      last_synchronized_at: '',
+      pending_auth: false,
+      authorization_url: null,
+      syncable: true,
+      status_reasons: [],
+    })),
+    targets_error: null,
+    tools: { reachable: false, skip_reason: 'listed_after_save', items: [], via: null },
+  })
+  fireEvent.click(screen.getByRole('button', { name: i18nT('pages.settings.securityPanel.agent_identity_preview') }))
+  await waitFor(() => expect(api.previewAgentcoreGateway).toHaveBeenCalled())
+  for (const t of targets) await screen.findByText(t.name)
+}
+
 describe('SecurityPanel — agent identity', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -2126,6 +2158,87 @@ describe('SecurityPanel — agent identity', () => {
     expect(api.saveAgentcoreIdentity).not.toHaveBeenCalled()
   })
 
+  it('states the consequence of Save beside the button for the pending posture', async () => {
+    renderWithProviders(<SecurityPanel />, { route: '/?section=identity' })
+    await screen.findByRole('combobox', { name: i18nT('pages.settings.securityPanel.agent_identity_posture') })
+    // Nothing pending: no consequence line to weigh.
+    expect(screen.queryByTestId('agentcore-save-consequence')).toBeNull()
+
+    // A posture without a Gateway URL grants nothing yet, and says so.
+    await pickIdentityPosture('workload')
+    expect(screen.getByTestId('agentcore-save-consequence')).toHaveTextContent(
+      i18nT('pages.settings.securityPanel.agent_identity_save_consequence_no_url'),
+    )
+
+    // With a URL the grant must be inspected first; the button waits.
+    fireEvent.change(
+      screen.getByLabelText(i18nT('pages.settings.securityPanel.agent_identity_gateway_url')),
+      { target: { value: 'https://gw.example.test/mcp' } },
+    )
+    expect(screen.getByTestId('agentcore-save-consequence')).toHaveTextContent(
+      i18nT('pages.settings.securityPanel.agent_identity_save_preview_first'),
+    )
+    expect(
+      screen.getByRole('button', { name: i18nT('pages.settings.securityPanel.agent_identity_save') }),
+    ).toBeDisabled()
+
+    // Login restates in its own terms once previewed.
+    await pickIdentityPosture('login')
+    await previewDraftedGateway([{ id: 'T1', name: 'ticketing-mcp' }])
+    expect(screen.getByTestId('agentcore-save-consequence')).toHaveTextContent(
+      i18nT('pages.settings.securityPanel.agent_identity_save_consequence_scoped_login', {
+        count: 1,
+        targets: 'ticketing-mcp',
+      }),
+    )
+    // Changing the URL invalidates the preview: back to "preview first".
+    fireEvent.change(
+      screen.getByLabelText(i18nT('pages.settings.securityPanel.agent_identity_gateway_url')),
+      { target: { value: 'https://other.example.test/mcp' } },
+    )
+    expect(screen.getByTestId('agentcore-save-consequence')).toHaveTextContent(
+      i18nT('pages.settings.securityPanel.agent_identity_save_preview_first'),
+    )
+  })
+
+  it('keeps the commit locked when the preview could not list the targets', async () => {
+    // GetGateway succeeded but ListGatewayTargets was denied: code is 'ok', the
+    // list is empty and targets_error is set. That is an UNREAD grant, not an
+    // empty one -- Save must not unlock as "no targets".
+    ;(api.previewAgentcoreGateway as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...CATALOG_IDLE,
+      code: 'ok',
+      preview: true,
+      posture: 'workload',
+      gateway_url: 'https://gw.example.test/mcp',
+      gateway: { id: 'demo-gw', name: 'demo', status: 'READY', authorizer_type: 'AWS_IAM', gateway_url: '', status_reasons: [] },
+      targets: [],
+      targets_error: 'aws_denied',
+      tools: { reachable: false, skip_reason: 'listed_after_save', items: [], via: null },
+    })
+    renderWithProviders(<SecurityPanel />, { route: '/?section=identity' })
+    await pickIdentityPosture('workload')
+    fireEvent.change(
+      screen.getByLabelText(i18nT('pages.settings.securityPanel.agent_identity_name')),
+      { target: { value: 'kirocrew-e2e' } },
+    )
+    fireEvent.change(
+      screen.getByLabelText(i18nT('pages.settings.securityPanel.agent_identity_gateway_url')),
+      { target: { value: 'https://gw.example.test/mcp' } },
+    )
+    fireEvent.click(screen.getByRole('button', { name: i18nT('pages.settings.securityPanel.agent_identity_preview') }))
+    await waitFor(() => expect(api.previewAgentcoreGateway).toHaveBeenCalled())
+    await waitFor(() =>
+      expect(screen.getByTestId('agentcore-save-consequence')).toHaveTextContent(
+        i18nT('pages.settings.securityPanel.agent_identity_save_consequence_unread'),
+      ),
+    )
+    expect(
+      screen.getByRole('button', { name: i18nT('pages.settings.securityPanel.agent_identity_save') }),
+    ).toBeDisabled()
+    expect(api.saveAgentcoreIdentity).not.toHaveBeenCalled()
+  })
+
   it('disables save when this crew\'s policy is not writable', async () => {
     ;(api.getAgentcoreIdentity as ReturnType<typeof vi.fn>).mockResolvedValue({
       ...IDENTITY_UNSET,
@@ -2135,7 +2248,7 @@ describe('SecurityPanel — agent identity', () => {
     renderWithProviders(<SecurityPanel />, { route: '/?section=identity' })
 
     expect(
-      await screen.findByText(i18nT('pages.settings.securityPanel.agent_identity_not_writable')),
+      await screen.findByText(i18nT('pages.settings.securityPanel.agent_identity_blocked_fleet_override')),
     ).toBeInTheDocument()
     expect(
       screen.getByRole('combobox', { name: i18nT('pages.settings.securityPanel.agent_identity_posture') }),
@@ -2143,6 +2256,22 @@ describe('SecurityPanel — agent identity', () => {
     expect(
       screen.getByRole('button', { name: i18nT('pages.settings.securityPanel.agent_identity_save') }),
     ).toBeDisabled()
+  })
+
+  it('names an unreadable policy instead of guessing fleet or signed', async () => {
+    ;(api.getAgentcoreIdentity as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...IDENTITY_UNSET,
+      writable: false,
+      write_blocked: 'unreadable',
+    })
+    renderWithProviders(<SecurityPanel />, { route: '/?section=identity' })
+
+    expect(
+      await screen.findByText(i18nT('pages.settings.securityPanel.agent_identity_blocked_unreadable')),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByText(i18nT('pages.settings.securityPanel.agent_identity_not_writable')),
+    ).not.toBeInTheDocument()
   })
 
   it('summarises the authored posture on the rail', async () => {
@@ -2158,7 +2287,7 @@ describe('SecurityPanel — agent identity', () => {
     expect(
       await screen.findByText(
         i18nT('pages.settings.securityPanel.agent_identity_rail', {
-          status: i18nT('pages.settings.securityPanel.agent_identity_posture_login'),
+          status: i18nT('pages.settings.securityPanel.agent_identity_state_login'),
         }),
       ),
     ).toBeInTheDocument()
@@ -2175,14 +2304,113 @@ describe('SecurityPanel — agent identity', () => {
     ;(api.getAgentcoreConsent as ReturnType<typeof vi.fn>).mockResolvedValue({
       pending: true,
       url: 'https://github.com/login/oauth/authorize',
+      host: 'github.com',
     })
     renderWithProviders(<SecurityPanel />, { route: '/?section=identity' })
 
+    // The link names WHERE sign-in happens; an unlabelled "open sign-in page"
+    // was the control the blind reader refused to click.
     const link = await screen.findByRole('link', {
-      name: i18nT('pages.settings.securityPanel.agent_identity_consent_open'),
+      name: i18nT('pages.settings.securityPanel.agent_identity_consent_open_host', { host: 'github.com' }),
     })
     expect(link).toHaveAttribute('href', 'https://github.com/login/oauth/authorize')
     expect(link).toHaveAttribute('rel', 'noopener noreferrer')
+  })
+
+  it('names WHICH allowlist admitted the sign-in host, so the reassurance is checkable', async () => {
+    ;(api.getAgentcoreIdentity as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...IDENTITY_UNSET,
+      configured: true,
+      posture: 'login',
+      source: 'policy',
+    })
+    ;(api.getAgentcoreConsent as ReturnType<typeof vi.fn>).mockResolvedValue({
+      pending: true,
+      url: 'https://idp.example.test/oauth2/v1/authorize',
+      host: 'idp.example.test',
+      allow_source: 'operator',
+      allowlist_path: '/srv/kirocrew-config/oauth_endpoints.json',
+    })
+    renderWithProviders(<SecurityPanel />, { route: '/?section=identity' })
+    await screen.findByRole('link', {
+      name: i18nT('pages.settings.securityPanel.agent_identity_consent_open_host', { host: 'idp.example.test' }),
+    })
+    // The blind reader "can't verify the reassurance about an allowlist": so
+    // the line names the host, the allowlist that admitted it, and the file
+    // they can open to see the entry -- not just that a check happened.
+    expect(screen.getByTestId('agentcore-consent-provenance')).toHaveTextContent(
+      i18nT('pages.settings.securityPanel.agent_identity_consent_source_operator', {
+        host: 'idp.example.test',
+        path: '/srv/kirocrew-config/oauth_endpoints.json',
+      }),
+    )
+  })
+
+  it('lets the operator preview what Save would grant before saving', async () => {
+    ;(api.previewAgentcoreGateway as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...CATALOG_IDLE,
+      code: 'ok',
+      preview: true,
+      posture: 'workload',
+      gateway_url: 'https://demo-gw.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp',
+      gateway: {
+        id: 'demo-gw',
+        name: 'demo',
+        status: 'READY',
+        authorizer_type: 'AWS_IAM',
+        gateway_url: 'https://demo-gw.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp',
+        status_reasons: [],
+      },
+      targets: [
+        {
+          target_id: 'TGT1',
+          name: 'docs',
+          target_type: 'MCP_SERVER',
+          status: 'READY',
+          listing_mode: 'DEFAULT',
+          last_synchronized_at: '',
+          pending_auth: false,
+          authorization_url: null,
+          syncable: true,
+          status_reasons: [],
+        },
+      ],
+      targets_error: null,
+      tools: { reachable: false, skip_reason: 'listed_after_save', items: [], via: null },
+    })
+    renderWithProviders(<SecurityPanel />, { route: '/?section=identity' })
+    await screen.findByRole('combobox', { name: i18nT('pages.settings.securityPanel.agent_identity_posture') })
+    // Off with nothing pending: no grant to preview, no card.
+    expect(screen.queryByTestId('agentcore-preview')).toBeNull()
+
+    await pickIdentityPosture('workload')
+    // The card renders at the decision point (the draft is unsaved) ...
+    expect(screen.getByTestId('agentcore-preview')).toBeInTheDocument()
+    // ... but it cannot read a Gateway until there is a URL.
+    const button = screen.getByRole('button', { name: i18nT('pages.settings.securityPanel.agent_identity_preview') })
+    expect(button).toBeDisabled()
+    fireEvent.change(
+      screen.getByLabelText(i18nT('pages.settings.securityPanel.agent_identity_gateway_url')),
+      { target: { value: 'https://demo-gw.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp' } },
+    )
+    expect(button).toBeEnabled()
+    fireEvent.click(button)
+    await waitFor(() => {
+      expect(api.previewAgentcoreGateway).toHaveBeenCalledWith({
+        gateway_url: 'https://demo-gw.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp',
+        posture: 'workload',
+      })
+    })
+    // What Save would grant, in the reader's terms: the targets, by name.
+    await screen.findByText('docs')
+    expect(screen.getByTestId('agentcore-preview')).toHaveTextContent(
+      i18nT('pages.settings.securityPanel.agent_identity_preview_targets_count', { count: 1 }),
+    )
+    expect(screen.getByTestId('agentcore-preview')).toHaveTextContent(
+      i18nT('pages.settings.securityPanel.agent_identity_preview_tools_after_save'),
+    )
+    // Nothing was saved by previewing.
+    expect(api.saveAgentcoreIdentity).not.toHaveBeenCalled()
   })
 
   it('saves an existing AgentCore Gateway URL for this crew', async () => {
@@ -2206,7 +2434,28 @@ describe('SecurityPanel — agent identity', () => {
       screen.getByLabelText(i18nT('pages.settings.securityPanel.agent_identity_gateway_url')),
       { target: { value: 'https://gw.example.test/mcp' } },
     )
-    fireEvent.click(screen.getByRole('button', { name: i18nT('pages.settings.securityPanel.agent_identity_save') }))
+    // A Gateway URL is drafted: the commit waits for the grant to be inspected.
+    const save = screen.getByRole('button', { name: i18nT('pages.settings.securityPanel.agent_identity_save') })
+    expect(save).toBeDisabled()
+    expect(screen.getByTestId('agentcore-save-consequence')).toHaveTextContent(
+      i18nT('pages.settings.securityPanel.agent_identity_save_preview_first'),
+    )
+    await previewDraftedGateway([{ id: 'T1', name: 'ticketing-mcp' }, { id: 'T2', name: 'payroll-lookup' }])
+    // The commit now restates the scoped grant -- the targets by name -- and unlocks.
+    const grant = screen.getByRole('button', {
+      name: i18nT('pages.settings.securityPanel.agent_identity_grant_button_workload', {
+        count: 2,
+        targets: 'ticketing-mcp, payroll-lookup',
+      }),
+    })
+    expect(grant).toBeEnabled()
+    expect(screen.getByTestId('agentcore-save-consequence')).toHaveTextContent(
+      i18nT('pages.settings.securityPanel.agent_identity_save_consequence_scoped_workload', {
+        count: 2,
+        targets: 'ticketing-mcp, payroll-lookup',
+      }),
+    )
+    fireEvent.click(grant)
 
     await waitFor(() =>
       expect(api.saveAgentcoreIdentity).toHaveBeenCalledWith({
@@ -2244,7 +2493,15 @@ describe('SecurityPanel — agent identity', () => {
     await screen.findByText(i18nT('pages.settings.securityPanel.agent_identity_catalog'))
     const before = (api.getAgentcoreGateway as ReturnType<typeof vi.fn>).mock.calls.length
     await pickIdentityPosture('login')
-    fireEvent.click(screen.getByRole('button', { name: i18nT('pages.settings.securityPanel.agent_identity_save') }))
+    await previewDraftedGateway([{ id: 'T1', name: 'ticketing-mcp' }])
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: i18nT('pages.settings.securityPanel.agent_identity_grant_button_login', {
+          count: 1,
+          targets: 'ticketing-mcp',
+        }),
+      }),
+    )
     await waitFor(() =>
       expect((api.getAgentcoreGateway as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(before),
     )
@@ -2315,6 +2572,10 @@ describe('SecurityPanel — agent identity', () => {
     expect(await screen.findByText('search')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: i18nT('pages.settings.securityPanel.agent_identity_verify') }))
     await waitFor(() => expect(api.verifyAgentcoreGateway).toHaveBeenCalled())
+    expect(api.syncAgentcoreGatewayTarget).not.toHaveBeenCalled()
+    expect(
+      screen.queryByRole('button', { name: i18nT('pages.settings.securityPanel.agent_identity_sync') }),
+    ).not.toBeInTheDocument()
   })
 
   it('shows a failed target status reason from the Gateway', async () => {
@@ -2349,7 +2610,11 @@ describe('SecurityPanel — agent identity', () => {
     })
     renderWithProviders(<SecurityPanel />, { route: '/?section=identity' })
     expect(await screen.findByText('public-docs')).toBeInTheDocument()
-    expect(screen.getByText('FAILED')).toBeInTheDocument()
+    // The raw enum is not shown; the row carries its human label.
+    expect(
+      screen.getByText(i18nT('pages.settings.securityPanel.agent_identity_target_status_failed')),
+    ).toBeInTheDocument()
+    expect(screen.queryByText('FAILED')).toBeNull()
     expect(
       screen.getByText('The MCP server endpoint hostname could not be resolved.'),
     ).toBeInTheDocument()
@@ -2440,5 +2705,51 @@ describe('SecurityPanel — agent identity', () => {
         i18nT('pages.settings.securityPanel.agent_identity_code_invoke_denied'),
       ),
     ).not.toHaveLength(0)
+  })
+
+  it('names an empty catalog when checks passed, and stays quiet when a check failed', async () => {
+    const greenEmpty = {
+      ...CATALOG_IDLE,
+      code: 'ok' as const,
+      posture: 'workload' as const,
+      gateway_url: 'https://demo-gw.gateway.bedrock-agentcore.us-west-2.amazonaws.com/mcp',
+      tools: { reachable: true, skip_reason: null, items: [], via: null },
+      checks: [
+        { id: 'authorizer', ok: true, detail: 'IAM' },
+        { id: 'invoke_scope', ok: true, detail: 'ok' },
+      ],
+    }
+    ;(api.getAgentcoreIdentity as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...IDENTITY_UNSET,
+      configured: true,
+      posture: 'workload',
+      source: 'policy',
+      extra_installed: true,
+      extra_code: 'ok',
+      gateway_url: greenEmpty.gateway_url,
+      workload_name: 'kirocrew-e2e',
+    })
+    ;(api.getAgentcoreGateway as ReturnType<typeof vi.fn>).mockResolvedValue(greenEmpty)
+    renderWithProviders(<SecurityPanel />, { route: '/?section=identity' })
+    expect(
+      await screen.findByText(i18nT('pages.settings.securityPanel.agent_identity_tools_empty_checks_ok')),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByText(i18nT('pages.settings.securityPanel.agent_identity_tools_empty')),
+    ).not.toBeInTheDocument()
+
+    ;(api.verifyAgentcoreGateway as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...greenEmpty,
+      checks: [{ id: 'authorizer', ok: false, detail: 'mismatch' }],
+    })
+    fireEvent.click(screen.getByRole('button', { name: i18nT('pages.settings.securityPanel.agent_identity_verify') }))
+    await waitFor(() => {
+      expect(
+        screen.queryByText(i18nT('pages.settings.securityPanel.agent_identity_tools_empty_checks_ok')),
+      ).not.toBeInTheDocument()
+    })
+    expect(
+      screen.queryByText(i18nT('pages.settings.securityPanel.agent_identity_tools_empty')),
+    ).not.toBeInTheDocument()
   })
 })

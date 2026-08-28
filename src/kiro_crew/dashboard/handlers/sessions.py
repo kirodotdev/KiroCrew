@@ -73,6 +73,63 @@ from kiro_crew.validation import sanitize_string
 logger = logging.getLogger(__name__)
 
 _SHUTDOWN_TIMEOUT_SECS = 10
+# Identity revoke: rounds x interval an in-flight allocation gets to finish
+# registering (so the re-drain catches it) before the revoke proceeds anyway
+# with the gate still refusing new turns.
+# Settle budget for allocations already past the closing gate when a revoke
+# starts: a cold provider spawn can take well over the old 5 s. The revoke
+# waits up to this long; if a reservation is STILL in flight afterwards it
+# raises and leaves the gate closed rather than reopening around it.
+_REVOKE_SETTLE_ROUNDS = 300
+_REVOKE_SETTLE_INTERVAL_SECS = 0.1
+
+
+def _provider_pid(provider: object) -> int | None:
+    """The provider's long-lived process PID, or None when there is none to track.
+
+    Same lookups ``session_pid._sync_kill_provider`` performs (ACP
+    ``_client._pid``, CC ``_proc`` / ``_active_proc``), with the same guard:
+    only a real positive non-init int counts, so a Mock attribute is None.
+    """
+    client = getattr(provider, "_client", None)
+    pid: object = getattr(client, "_pid", None) if client is not None else None
+    if pid is None:
+        for attr in ("_proc", "_active_proc"):
+            proc = getattr(provider, attr, None)
+            if proc is not None and getattr(proc, "returncode", 0) is None:
+                pid = getattr(proc, "pid", None)
+                break
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 1:
+        return None
+    return pid
+
+
+def _pid_terminated(pid: int) -> bool:
+    """True once *pid* is gone or is a zombie awaiting reap (nothing runs there)."""
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_POSIX:
+        try:
+            os.waitpid(pid, os.WNOHANG)  # reap it if it was our child
+        except ChildProcessError:
+            pass
+        except OSError:
+            pass
+    if not platform_compat.pid_exists(pid):
+        return True
+    if platform_compat.IS_POSIX:
+        # /proc/<pid>/status is a kernel-rendered file a few hundred bytes
+        # long; one bounded read, no handle iteration.
+        try:
+            with open(f"/proc/{pid}/status", encoding="utf-8") as fh:
+                status = fh.read(4096)
+        except OSError:
+            return False
+        for line in status.splitlines():
+            if line.startswith("State:"):
+                fields = line.split()
+                return len(fields) > 1 and fields[1].startswith("Z")
+    return False
 
 
 def _sel():
@@ -2957,7 +3014,7 @@ async def api_session_tool_policy(request: web.Request) -> web.Response:
     return web.json_response(policy)
 
 
-async def _reset_all_sessions(request: web.Request) -> int:
+async def _reset_all_sessions(request: web.Request, *, await_shutdown: bool = False) -> int:
     """Reset all active sessions so they pick up config changes.
 
     Reloads provider factory (handles provider switch ACP→CC or vice versa),
@@ -2965,65 +3022,201 @@ async def _reset_all_sessions(request: web.Request) -> int:
     processes loaded the old MCP config at spawn time).
     New sessions cold-start on next message.
     Returns the number of sessions reset.
+
+    Dashboard restart leaves provider ``shutdown`` in the background so
+    the HTTP response stays fast. Identity revoke passes
+    ``await_shutdown=True`` so Save → Off cannot return while an old
+    provider still holds Gateway access.
     """
     state: DashboardState = request.app["state"]
     sessions = state.sessions
 
-    # Reload factory so provider switch takes effect immediately
-    await sessions.reload_provider_factory()
-
-    # Pop all active sessions
+    # Drain before reload. ``reload_provider_factory`` awaits
+    # ``provider.shutdown()`` with no timeout on leftover sessions, so
+    # a stalled teardown would hang Save → Off and skip proxy stop.
+    # ``_safe_shutdown`` below owns the bounded kill.
     providers: list[LLMProvider] = []
     count = sessions.count
-    if count > 0:
+    if await_shutdown:
+        # Revocation must catch a cold start that raced the save: a turn
+        # whose allocation was in flight when the snapshot was taken would
+        # otherwise register afterwards, keep its injected Gateway bearer,
+        # and never meet ``_safe_shutdown``. Same fence ``close_all`` uses:
+        # enter closing UNDER the registry lock before the snapshot, so a
+        # new allocation is refused (SessionClosingError) rather than
+        # landing behind it, then let allocations already past the gate
+        # settle and drain again until nothing is live or reserved. The
+        # gate is lifted only after a teardown that drained everything; a
+        # failure leaves it closed (see _drain_all_under_closing_gate).
+        providers = await _drain_all_under_closing_gate(sessions)
+        count = len(providers)
+    elif count > 0:
         providers = await sessions.drain_all_providers()
 
     # Drain warm pool — pre-spawned processes have stale MCP config
     pool_providers = await sessions.drain_warm_pool()
     providers.extend(pool_providers)
 
-    if count > 0 or pool_providers:
-        logger.info(
-            "Reset %d session(s) + %d pool process(es) after config change",
-            count,
-            len(pool_providers),
-        )
+    async def _safe_shutdown(p: LLMProvider) -> bool:
+        """Shut *p* down and return True only when its process is confirmed gone.
 
-    state.broadcast_ws("sessions_restarting", {"status": "restarting"})
+        Save → Off revokes Gateway credentials by tearing sessions down: a
+        child that survives keeps its injected bearer, so "shutdown returned"
+        is not the bar -- "the PID is gone" is. The PID is captured BEFORE
+        shutdown (a graceful exit clears it) and any failure, not just a
+        timeout, escalates to the force-kill. A provider with no trackable
+        PID (test stand-ins, ephemeral children) has nothing to confirm.
+        """
+        pid = _provider_pid(p)
+        _timeout = _SHUTDOWN_TIMEOUT_SECS
+        try:
+            await asyncio.wait_for(p.shutdown(), timeout=_timeout)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Session shutdown hung past %.1fs; forcing kill",
+                _timeout,
+            )
+            await _force_kill(p)
+        except Exception:
+            logger.warning("Session shutdown raised; forcing kill", exc_info=True)
+            await _force_kill(p)
+        if pid is None:
+            return True
+        if await asyncio.to_thread(_pid_terminated, pid):
+            return True
+        # Graceful shutdown returned but the process is still there: kill
+        # it ourselves and give the kernel a moment to reap.
+        await _force_kill(p)
+        for _ in range(20):
+            if await asyncio.to_thread(_pid_terminated, pid):
+                return True
+            await asyncio.sleep(0.1)
+        logger.error("Session process %d survived shutdown and force-kill", pid)
+        return False
 
-    async def _background_restart() -> None:
-        if providers:
+    async def _force_kill(p: LLMProvider) -> None:
+        try:
+            await asyncio.to_thread(_h._sync_kill_provider, p)
+        except Exception:
+            logger.exception("Force-kill fallback also failed for %r", p)
 
-            async def _safe_shutdown(p: LLMProvider) -> None:
-                _timeout = _SHUTDOWN_TIMEOUT_SECS
-                try:
-                    await asyncio.wait_for(p.shutdown(), timeout=_timeout)
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        "Session shutdown hung past %.1fs; forcing kill",
-                        _timeout,
-                    )
-                    try:
-                        _h._sync_kill_provider(p)
-                    except Exception:
-                        logger.exception("Force-kill fallback also failed for %r", p)
-                except Exception:
-                    pass
+    async def _shutdown_drained() -> None:
+        if not providers:
+            return
+        results = await asyncio.gather(*[_safe_shutdown(p) for p in providers])
+        survivors = sum(1 for ok in results if not ok)
+        if survivors and await_shutdown:
+            # The caller is revoking credentials and waits on this; a
+            # surviving child still holds them, so the save must not
+            # report success. The identity PUT turns this into its
+            # rebuild-failed 503 with restart_required.
+            raise RuntimeError(
+                f"{survivors} session process(es) survived shutdown; "
+                "revoked credentials may still be usable until the gateway restarts"
+            )
 
-            await asyncio.gather(*[_safe_shutdown(p) for p in providers])
+    # Reload factory so provider switch takes effect immediately.
+    # If this raises, the drained JWT providers are already out of the
+    # manager map — shut them down here or Save → Off leaves them usable.
+    try:
+        try:
+            await sessions.reload_provider_factory()
+        except Exception:
+            logger.exception(
+                "provider factory reload failed after drain; shutting down "
+                "drained sessions so leftover credentials cannot stay usable"
+            )
+            await _shutdown_drained()
+            raise
 
-        sessions._pool_started = False
-        await sessions.start_pool(blocking=False)
-        logger.info("Background session restarted")
-        state.push_refresh("agents")
-        state.push_slots_update()
-        state.broadcast_ws("sessions_restarting", {"status": "ready"})
+        if count > 0 or pool_providers:
+            logger.info(
+                "Reset %d session(s) + %d pool process(es) after config change",
+                count,
+                len(pool_providers),
+            )
 
-    task = asyncio.create_task(_background_restart())
-    state._background_tasks.add(task)
-    task.add_done_callback(state._background_tasks.discard)
+        state.broadcast_ws("sessions_restarting", {"status": "restarting"})
+
+        async def _background_restart() -> None:
+            await _shutdown_drained()
+            if await_shutdown:
+                # Every drained provider is confirmed gone: allocations may
+                # resume (the pool fill below defers to the gate too).
+                sessions._closing = False
+
+            sessions._pool_started = False
+            await sessions.start_pool(blocking=False)
+            logger.info("Background session restarted")
+            state.push_refresh("agents")
+            state.push_slots_update()
+            state.broadcast_ws("sessions_restarting", {"status": "ready"})
+
+        if await_shutdown:
+            await _background_restart()
+        else:
+            task = asyncio.create_task(_background_restart())
+            state._background_tasks.add(task)
+            task.add_done_callback(state._background_tasks.discard)
+    except BaseException:
+        # A failed awaited revoke leaves the gate CLOSED. Reopening it here
+        # would let whatever survived (an in-flight reservation, a process
+        # that would not die) start or continue with the revoked identity;
+        # the PUT reports restart_required, and a restart is what clears it.
+        if await_shutdown:
+            logger.error(
+                "Identity revoke did not complete; the session closing gate stays set "
+                "until the gateway restarts"
+            )
+        raise
 
     return count
+
+
+async def _drain_all_under_closing_gate(sessions: Any) -> list[LLMProvider]:
+    """Enter closing, then drain until no session is live or reserved.
+
+    ``_closing`` is checked at the allocation reservation (a new
+    ``get_or_create`` raises ``SessionClosingError``) and at ``begin_turn``,
+    so once it is set under the registry lock nothing new can register.
+    Allocations that were already past the gate finish registering on their
+    own; the loop lets them settle and drains again, so every provider that
+    could hold an injected bearer ends up in the returned list. The caller
+    clears ``_closing`` only after a teardown that drained everything.
+
+    A reservation still in flight when the settle budget runs out is NOT
+    left behind an open gate: the provider it is about to register was
+    spawned with the pre-save identity and would keep Gateway access after
+    a "successful" Save -> Off. This raises instead, the gate stays closed
+    (allocations keep getting ``SessionClosingError``), and the identity PUT
+    reports 503 ``restart_required`` -- the honest state.
+    """
+    async with sessions._lock:
+        sessions._closing = True
+    drained: list[LLMProvider] = []
+    for _ in range(_REVOKE_SETTLE_ROUNDS):
+        if sessions.count > 0:
+            drained.extend(await sessions.drain_all_providers())
+        if not sessions.session_keys():
+            return drained
+        await asyncio.sleep(_REVOKE_SETTLE_INTERVAL_SECS)
+    if sessions.count > 0:
+        drained.extend(await sessions.drain_all_providers())
+    remaining = list(sessions.session_keys())
+    if remaining:
+        # Shut down what WAS drained before raising: those providers are
+        # already out of the registry and would otherwise linger.
+        for provider in drained:
+            try:
+                await asyncio.to_thread(_h._sync_kill_provider, provider)
+            except Exception:
+                logger.exception("Force-kill of a drained provider failed for %r", provider)
+        raise RuntimeError(
+            f"{len(remaining)} session allocation(s) still in flight after "
+            f"{_REVOKE_SETTLE_ROUNDS * _REVOKE_SETTLE_INTERVAL_SECS:.0f}s; the closing "
+            "gate stays set so they cannot start with revoked credentials -- restart the gateway"
+        )
+    return drained
 
 
 async def api_sessions_restart(request: web.Request) -> web.Response:

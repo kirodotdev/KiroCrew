@@ -1,12 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { ShieldCheck, ShieldAlert, Lock, Eye, EyeOff, FileWarning, Terminal, Globe, Fingerprint, KeyRound, ScanLine, Layers, AlertTriangle, CheckCircle2, Circle, Clock, ExternalLink, ChevronRight, ChevronDown, Plus, Trash2, Gavel, Building2, Gauge, ToggleRight, MessageSquare, ListChecks, Boxes, BookOpen, Network, Copy, Check, Package } from 'lucide-react'
+import { ShieldCheck, ShieldAlert, Lock, Eye, EyeOff, FileWarning, Terminal, Globe, Fingerprint, KeyRound, ScanLine, Layers, AlertTriangle, CheckCircle2, Circle, Clock, ExternalLink, ChevronRight, ChevronDown, Plus, Trash2, Gavel, Building2, Gauge, ToggleRight, MessageSquare, ListChecks, Boxes, BookOpen, Network, Copy, Check, Package, IdCard, Plug, RefreshCw, Wrench } from 'lucide-react'
 import { useAppDispatch, useAppSelector } from '../../store'
 import { setYoloDuration } from '../../store/dashboardSlice'
 import { SettingsSubNav } from '../../components/SettingsSubNav'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { Badge, Btn, Input, Toggle, Checkbox } from '../../components/ui'
-import { SettingsSection, SettingsCard, SettingsSelect, SettingsToggle } from '../../components/settings'
+import { SettingsSection, SettingsCard, SettingsInput, SettingsSelect, SettingsToggle } from '../../components/settings'
 import Modal from '../../components/Modal'
 import InfoTip from '../../components/InfoTip'
 import { api, ApiError, type DeniedCommandsData, type DeniedCommandRule, type DeniedUserRule, type GovernanceDistributionData, type GovernancePolicyData, type GovernanceScope, type GovernanceScopeDetail, type SecurityPostureData, type TailnetStatusData, type TrustedAppsData, type AgentcoreIdentityData, type AgentcoreConsentData, type AgentcoreGatewayData, type AgentcoreGatewayCheck, type AgentcoreGatewayTarget } from '../../api/client'
@@ -2327,8 +2327,15 @@ function ThirdPartyAppsCard() {
           <div className="text-[13px] text-text leading-relaxed">{confirmBody}</div>
         </div>
         {needsAck && (
-          <label className="flex items-center gap-2.5 mt-4 cursor-pointer">
-            <Checkbox checked={ack} onChange={e => setAck(e.target.checked)} />
+          <label htmlFor="trusted-apps-allow-all-ack" className="flex items-center gap-2.5 mt-4 cursor-pointer">
+            <input
+              id="trusted-apps-allow-all-ack"
+              type="checkbox"
+              checked={ack}
+              onChange={e => setAck(e.target.checked)}
+              aria-label={i18nT('pages.settings.securityPanel.trustedApps.allow_all_confirm_ack')}
+              style={{ margin: 0, accentColor: 'var(--accent)', cursor: 'pointer' }}
+            />
             <span className="text-[13px] text-text">{i18nT('pages.settings.securityPanel.trustedApps.allow_all_confirm_ack')}</span>
           </label>
         )}
@@ -2389,6 +2396,21 @@ const CATALOG_CODE_HINT: Record<string, string> = {
   proxy_unavailable: 'pages.settings.securityPanel.agent_identity_code_proxy_unavailable',
 }
 
+const WRITE_BLOCKED_HINT: Record<string, string> = {
+  signed: 'pages.settings.securityPanel.agent_identity_blocked_signed',
+  distribution: 'pages.settings.securityPanel.agent_identity_blocked_distribution',
+  companion: 'pages.settings.securityPanel.agent_identity_blocked_companion',
+  fleet_override: 'pages.settings.securityPanel.agent_identity_blocked_fleet_override',
+  signature_required: 'pages.settings.securityPanel.agent_identity_blocked_signature_required',
+  unreadable: 'pages.settings.securityPanel.agent_identity_blocked_unreadable',
+  unavailable: 'pages.settings.securityPanel.agent_identity_blocked_unavailable',
+}
+
+function writeBlockedCopy(reason: string | null | undefined): string {
+  const key = reason ? WRITE_BLOCKED_HINT[reason] : undefined
+  return i18nT(key ?? 'pages.settings.securityPanel.agent_identity_not_writable')
+}
+
 const TARGET_TYPE_LABEL: Record<string, string> = {
   MCP_SERVER: 'pages.settings.securityPanel.agent_identity_type_mcp',
   MCP: 'pages.settings.securityPanel.agent_identity_type_mcp',
@@ -2423,13 +2445,43 @@ function catalogHint(data: AgentcoreGatewayData | undefined): string | null {
   if (invoke && !invoke.ok && CATALOG_CODE_HINT[invoke.detail]) {
     return i18nT(CATALOG_CODE_HINT[invoke.detail])
   }
+  return null
+}
+
+function toolsEmptyCopy(data: AgentcoreGatewayData | undefined): string | null {
+  if (!data || data.tools.items.length > 0) return null
+  // A skipped tools/list is explained where the reader looks for the list,
+  // under the Tools heading, not as a card-top hint that leaves the heading
+  // bare.
   if (data.tools.skip_reason === 'login_needs_sign_in') {
     return i18nT('pages.settings.securityPanel.agent_identity_tools_skipped_login')
+  }
+  // One denied credential must not fan out into three differently-worded
+  // remedies: when a check above the tools list already failed, the tools
+  // section points back at it rather than naming its own cause.
+  if (data.checks.some(check => !check.ok && check.id !== 'tools')) {
+    return i18nT('pages.settings.securityPanel.agent_identity_deferred')
   }
   if (data.tools.skip_reason === 'proxy_unavailable') {
     return i18nT('pages.settings.securityPanel.agent_identity_code_proxy_unavailable')
   }
-  return null
+  if (data.tools.skip_reason) return null
+  return i18nT('pages.settings.securityPanel.agent_identity_tools_empty_checks_ok')
+}
+
+function agentcoreConsentErrorCopy(err: unknown): string | null {
+  if (!err) return null
+  if (err instanceof ApiError) {
+    try {
+      const parsed = JSON.parse(err.body) as { code?: unknown }
+      if (parsed.code === 'consent_host_refused') {
+        return i18nT('pages.settings.securityPanel.agent_identity_consent_refused')
+      }
+    } catch {
+      // not JSON — fall through to the generic unavailable copy
+    }
+  }
+  return i18nT('pages.settings.securityPanel.agent_identity_consent_unavailable')
 }
 
 function checkDetailLabel(detail: string): string {
@@ -2437,34 +2489,59 @@ function checkDetailLabel(detail: string): string {
   return key ? i18nT(key) : detail
 }
 
-function CheckRow({ check }: { check: AgentcoreGatewayCheck }) {
+function CheckRow({ check, cardHint }: { check: AgentcoreGatewayCheck; cardHint: string | null }) {
   const labelKey = CATALOG_CHECK_LABEL[check.id]
-  const Icon = check.ok ? CheckCircle2 : AlertTriangle
+  const label = labelKey ? i18nT(labelKey) : check.id
+  if (!check.ok) {
+    // A failed check is an error surface: the same notice as the card's
+    // other failures, minus the hand-off (the identity draft above is
+    // unsaved until Save). The label leads; the detail, when the backend
+    // named one, is the message.
+    // The card-level banner already carries this sentence when the hint was
+    // derived from this very check; the row then shows its label only, so one
+    // failure reads as one problem rather than two.
+    const rawDetail = check.detail && check.detail !== 'ok' ? checkDetailLabel(check.detail) : null
+    const detail = rawDetail && rawDetail === cardHint ? null : rawDetail
+    return (
+      <li className="text-[12px]">
+        <ErrorNotice
+          variant="inline"
+          title={detail ? label : undefined}
+          message={detail ?? label}
+          testId={`agentcore-check-${check.id}`}
+        />
+      </li>
+    )
+  }
   return (
     <li className="flex items-start gap-2 text-[12px]">
-      <Icon
-        className={`lucide-inline mt-0.5 shrink-0 ${check.ok ? 'text-ok' : 'text-warn'}`}
-        aria-hidden
-      />
-      <span className="text-text">
-        {labelKey ? i18nT(labelKey) : check.id}
-        {!check.ok && check.detail && check.detail !== 'ok' ? (
-          <span className="text-muted"> · {checkDetailLabel(check.detail)}</span>
-        ) : null}
-      </span>
+      <CheckCircle2 className="lucide-inline mt-0.5 shrink-0 text-ok" aria-hidden />
+      <span className="text-text">{label}</span>
     </li>
   )
 }
 
-function TargetRow({
-  target,
-  onSync,
-  syncing,
-}: {
-  target: AgentcoreGatewayTarget
-  onSync: (id: string) => void
-  syncing: boolean
-}) {
+const TARGET_STATUS_LABEL: Record<string, string> = {
+  READY: 'pages.settings.securityPanel.agent_identity_target_status_ready',
+  CREATING: 'pages.settings.securityPanel.agent_identity_target_status_creating',
+  UPDATING: 'pages.settings.securityPanel.agent_identity_target_status_updating',
+  SYNCHRONIZING: 'pages.settings.securityPanel.agent_identity_target_status_synchronizing',
+  FAILED: 'pages.settings.securityPanel.agent_identity_target_status_failed',
+}
+
+function targetStatusLabel(status: string | null | undefined): string {
+  if (!status) return '—'
+  const key = TARGET_STATUS_LABEL[status]
+  return key ? i18nT(key) : status
+}
+
+function targetTypeLabel(type: string | null | undefined): string {
+  if (!type) return '—'
+  const key = TARGET_TYPE_LABEL[type]
+  return key ? i18nT(key) : type
+}
+
+function TargetRow({ target, signInAbove }: { target: AgentcoreGatewayTarget; signInAbove: boolean }) {
   const typeKey = TARGET_TYPE_LABEL[target.target_type]
   const synced = target.last_synchronized_at
     ? fmtDateTime(target.last_synchronized_at)
@@ -2474,33 +2551,44 @@ function TargetRow({
       ? i18nT('pages.settings.securityPanel.agent_identity_listing_dynamic')
       : target.listing_mode === 'DEFAULT'
         ? i18nT('pages.settings.securityPanel.agent_identity_listing_default')
-        : target.listing_mode
+        : target.listing_mode === 'ALL'
+          ? i18nT('pages.settings.securityPanel.agent_identity_listing_all')
+          : '—'
   const authHref =
     typeof target.authorization_url === 'string' && target.authorization_url.startsWith('https://')
       ? target.authorization_url
       : null
+  const authHost = (() => {
+    try { return authHref ? new URL(authHref).hostname : '' } catch { return '' }
+  })()
   return (
     <tr className="border-t border-border align-top">
       <td className="py-2 pr-3 text-[12px] text-text">
         <div className="font-medium">{target.name || target.target_id}</div>
         {target.name && target.target_id ? (
-          <code className="font-mono text-[11px] text-muted">{target.target_id}</code>
+          <code className="font-mono text-[11px] text-muted">
+            {i18nT('pages.settings.securityPanel.agent_identity_target_id', { id: target.target_id })}
+          </code>
         ) : null}
       </td>
       <td className="py-2 pr-3 text-[12px] text-muted">
         {typeKey ? i18nT(typeKey) : target.target_type || '—'}
       </td>
       <td className="py-2 pr-3 text-[12px] text-text">
-        <span className="font-mono text-[11px]">{target.status || '—'}</span>
         {target.pending_auth ? (
-          <div className="text-warn mt-1">
+          // A target that is READY on the Gateway but waiting on a human sign-in
+          // is not ready for THIS crew; the raw enum beside the warning read as a
+          // contradiction, so the human label replaces it.
+          <div className="text-warn">
             {i18nT('pages.settings.securityPanel.agent_identity_pending_auth')}
           </div>
-        ) : null}
+        ) : (
+          <span>{targetStatusLabel(target.status)}</span>
+        )}
+        {/* No hand-off: this table renders under the identity form, whose
+            posture / workload name / Gateway URL draft is unsaved until Save. */}
         {(target.status_reasons ?? []).map(reason => (
-          <div key={reason} className="text-warn mt-1 leading-relaxed">
-            {reason}
-          </div>
+          <ErrorNotice key={reason} variant="inline" className="mt-1" message={reason} />
         ))}
       </td>
       <td className="py-2 pr-3 text-[12px] text-muted">{mode || '—'}</td>
@@ -2514,49 +2602,49 @@ function TargetRow({
             className="inline-flex items-center gap-1 text-accent hover:underline"
           >
             <ExternalLink className="lucide-inline" />
-            {i18nT('pages.settings.securityPanel.agent_identity_consent_open')}
+            {signInAbove
+              ? i18nT('pages.settings.securityPanel.agent_identity_consent_same_as_above')
+              : i18nT('pages.settings.securityPanel.agent_identity_consent_open_host', { host: authHost })}
           </a>
-        ) : null}
-        {target.syncable ? (
-          <button
-            type="button"
-            className="inline-flex items-center gap-1 text-accent hover:underline disabled:opacity-50"
-            disabled={syncing}
-            onClick={() => onSync(target.target_id)}
-          >
-            <RefreshCw className={`lucide-inline ${syncing ? 'animate-spin' : ''}`} />
-            {syncing
-              ? i18nT('pages.settings.securityPanel.agent_identity_syncing')
-              : i18nT('pages.settings.securityPanel.agent_identity_sync')}
-          </button>
         ) : null}
       </td>
     </tr>
   )
 }
 
-function GatewayCatalogCard() {
+function GatewayCatalogCard({ installFailedShownAbove = false }: { installFailedShownAbove?: boolean }) {
   const queryClient = useQueryClient()
   const [copied, setCopied] = useState(false)
+  const [copyFailed, setCopyFailed] = useState(false)
   const catalog = useQuery<AgentcoreGatewayData>({
     queryKey: ['agentcore-gateway'],
     queryFn: api.getAgentcoreGateway,
   })
+  // Same key as the identity form's consent query, so this is a subscription
+  // to the cached answer, not a second request. It only decides whether a
+  // target row's sign-in link repeats the card above or defers to it.
+  const consent = useQuery<AgentcoreConsentData>({
+    queryKey: ['agentcore-consent'],
+    queryFn: api.getAgentcoreConsent,
+  })
+  const signInAbove = Boolean(consent.data?.pending && consent.data.url)
   const verify = useMutation({
     mutationFn: api.verifyAgentcoreGateway,
     onSuccess: next => {
       queryClient.setQueryData(['agentcore-gateway'], next)
     },
   })
-  const sync = useMutation({
-    mutationFn: (targetId: string) => api.syncAgentcoreGatewayTarget(targetId),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['agentcore-gateway'] })
-    },
-  })
   const data = catalog.data
-  const hint = catalogHint(data)
+  // One failure, told once: when the form above already says the install
+  // failed, the catalog's "install the extra" hint is the same problem in
+  // other words, and the reader cannot tell whether it is one or two.
+  const rawHint = catalogHint(data)
+  const hint = installFailedShownAbove && data?.code === 'extra_missing' ? null : rawHint
+  // "No targets yet" is a fact about the Gateway; this page only has it when
+  // the listing actually ran. While a check ahead of it fails, defer.
+  const checksPass = Boolean(data && data.code === 'ok')
   const tools = data?.tools.items ?? []
+  const emptyToolsCopy = toolsEmptyCopy(data)
   const busy = catalog.isFetching || verify.isPending
   const debugBlob = data
     ? JSON.stringify(
@@ -2612,6 +2700,9 @@ function GatewayCatalogCard() {
           </Btn>
         </div>
       </div>
+      {/* No hand-off: this card renders under the identity form, whose
+          posture / workload name / Gateway URL draft is unsaved until Save —
+          navigating to the chat would discard it. */}
       {catalog.isError ? (
         <ErrorNotice
           message={catalog.error instanceof Error ? catalog.error.message : String(catalog.error)}
@@ -2622,38 +2713,62 @@ function GatewayCatalogCard() {
           message={verify.error instanceof Error ? verify.error.message : String(verify.error)}
         />
       ) : null}
-      {sync.isError ? (
-        <ErrorNotice
-          message={sync.error instanceof Error ? sync.error.message : String(sync.error)}
-        />
-      ) : null}
-      {sync.isSuccess ? (
-        <p className="text-[12px] text-muted">{i18nT('pages.settings.securityPanel.agent_identity_sync_ok')}</p>
-      ) : null}
-      {hint ? <p className="text-[12px] text-warn leading-relaxed">{hint}</p> : null}
+      {/* The hint only exists for a failure state (denied AWS call, missing
+          extra, mismatched identity/authorizer), so it is an error surface
+          too -- same no-hand-off decision as the two notices above. */}
+      <ErrorNotice message={hint} testId="agentcore-catalog-hint" />
       {data?.gateway?.name || data?.gateway?.id ? (
         <div className="text-[13px] text-text">
           <span className="text-muted">{i18nT('pages.settings.securityPanel.agent_identity_gateway_name')} </span>
           {data.gateway.name || data.gateway.id}
           {data.gateway.status ? (
-            <code className="ml-2 font-mono text-[11px] text-muted">{data.gateway.status}</code>
+            <span className="ml-2 text-[12px] text-muted">
+              {i18nT('pages.settings.securityPanel.agent_identity_gateway_status_aws', {
+                status: targetStatusLabel(data.gateway.status),
+              })}
+            </span>
           ) : null}
         </div>
       ) : null}
       {data?.checks.length ? (
         <ul className="space-y-1.5" aria-label={i18nT('pages.settings.securityPanel.agent_identity_checks')}>
-          {data.checks.map(check => (
-            <CheckRow key={check.id} check={check} />
-          ))}
+          {data.checks
+            // Under Login this page never lists tools (they are vended per
+            // person, in the chat), so a "Tools are reachable" row beside a
+            // "this page lists none" section reads as a contradiction.
+            .filter(check => !(check.id === 'tools' && data.tools.skip_reason === 'login_needs_sign_in'))
+            .map(check => (
+              <CheckRow key={check.id} check={check} cardHint={hint} />
+            ))}
         </ul>
       ) : catalog.isLoading ? (
-        <p className="text-[12px] text-muted">{i18nT('pages.settings.securityPanel.loading_governance_policy')}</p>
+        <p className="text-[12px] text-muted">{i18nT('pages.settings.securityPanel.agent_identity_loading')}</p>
       ) : null}
 
       <div className="space-y-2">
         <p className="text-[13px] text-text">{i18nT('pages.settings.securityPanel.agent_identity_targets')}</p>
-        {data && data.targets.length === 0 ? (
-          <p className="text-[12px] text-muted">{i18nT('pages.settings.securityPanel.agent_identity_targets_empty')}</p>
+        {/* A failed ListGatewayTargets arrives as `targets_error` with an empty
+            array; "no targets yet" is true only when that field is null. No
+            hand-off: same unsaved identity draft as the rest of this card. */}
+        {data?.targets_error ? (
+          // The backend sends a code (aws_denied / not_found / aws_error), the
+          // same vocabulary as the card-level hint, so the reader gets the
+          // sentence that names the grant to attach instead of an enum.
+          <ErrorNotice
+            message={
+              CATALOG_CODE_HINT[data.targets_error]
+                ? i18nT(CATALOG_CODE_HINT[data.targets_error])
+                : data.targets_error
+            }
+          />
+        ) : data && data.targets.length === 0 ? (
+          <p className="text-[12px] text-muted">
+            {i18nT(
+              checksPass
+                ? 'pages.settings.securityPanel.agent_identity_targets_empty'
+                : 'pages.settings.securityPanel.agent_identity_targets_deferred',
+            )}
+          </p>
         ) : data?.targets.length ? (
           <div className="overflow-x-auto">
             <table className="w-full text-left">
@@ -2664,17 +2779,14 @@ function GatewayCatalogCard() {
                   <th className="pb-1 pr-3 font-medium">{i18nT('pages.settings.securityPanel.agent_identity_target_status')}</th>
                   <th className="pb-1 pr-3 font-medium">{i18nT('pages.settings.securityPanel.agent_identity_target_mode')}</th>
                   <th className="pb-1 pr-3 font-medium">{i18nT('pages.settings.securityPanel.agent_identity_target_synced')}</th>
-                  <th className="pb-1 font-medium" />
+                  <th className="pb-1 font-medium">
+                    <span className="sr-only">{i18nT('pages.settings.securityPanel.agent_identity_target_actions')}</span>
+                  </th>
                 </tr>
               </thead>
               <tbody>
                 {data.targets.map(target => (
-                  <TargetRow
-                    key={target.target_id || target.name}
-                    target={target}
-                    onSync={id => sync.mutate(id)}
-                    syncing={sync.isPending && sync.variables === target.target_id}
-                  />
+                  <TargetRow key={target.target_id || target.name} target={target} signInAbove={signInAbove} />
                 ))}
               </tbody>
             </table>
@@ -2691,7 +2803,9 @@ function GatewayCatalogCard() {
           ) : null}
         </p>
         {tools.length === 0 ? (
-          <p className="text-[12px] text-muted">{i18nT('pages.settings.securityPanel.agent_identity_tools_empty')}</p>
+          emptyToolsCopy ? (
+            <p className="text-[12px] text-muted">{emptyToolsCopy}</p>
+          ) : null
         ) : (
           <ul className="space-y-1.5 max-h-64 overflow-y-auto">
             {tools.map(tool => (
@@ -2707,21 +2821,168 @@ function GatewayCatalogCard() {
       </div>
 
       {debugBlob ? (
-        <button
-          type="button"
-          className="inline-flex items-center gap-1.5 text-[12px] text-muted hover:text-text"
+        <>
+          <button
+            type="button"
+            className="inline-flex items-center gap-1.5 text-[12px] text-muted hover:text-text"
+            onClick={() => {
+              setCopyFailed(false)
+              // The shared helper guards a missing Clipboard API and falls back
+              // to `execCommand`, resolving `false` (or rejecting) when both
+              // fail. A false "Copied" is worse than no feedback, so both
+              // outcomes land in `copyFailed` rather than being dropped.
+              copyToClipboard(debugBlob).then(
+                ok => {
+                  if (ok) {
+                    setCopied(true)
+                    window.setTimeout(() => setCopied(false), 1500)
+                  } else {
+                    setCopyFailed(true)
+                  }
+                },
+                () => { setCopied(false); setCopyFailed(true) },
+              )
+            }}
+          >
+            {copied ? <Check className="lucide-inline" /> : <Copy className="lucide-inline" />}
+            {copied
+              ? i18nT('pages.settings.securityPanel.agent_identity_copied')
+              : i18nT('pages.settings.securityPanel.agent_identity_copy_debug')}
+          </button>
+          {/* No hand-off: the identity draft above is unsaved; the summary is
+              still on screen, so a failed copy has a manual path. */}
+          {copyFailed && (
+            <ErrorNotice
+              variant="inline"
+              className="mt-1.5"
+              message={i18nT('pages.settings.securityPanel.agent_identity_copy_failed')}
+              onDismiss={() => setCopyFailed(false)}
+            />
+          )}
+        </>
+      ) : null}
+    </div>
+  )
+}
+
+/** What Save WOULD grant, for the drafted URL/posture. Nothing is persisted:
+ *  the backend reads the Gateway and its targets through the same control-plane
+ *  calls as the saved catalog card, and reports tools as deferred (the identity
+ *  that lists them does not exist until Save). On demand, not on every
+ *  keystroke: the URL is being typed. */
+function GatewayPreviewCard({
+  url,
+  posture,
+  onPreviewed,
+}: {
+  url: string
+  posture: 'workload' | 'login'
+  /** The form restates the grant on its commit from this; called with the
+   *  snapshot when a preview lands, and with undefined when it fails. */
+  onPreviewed?: (snapshot: AgentcoreGatewayData | undefined) => void
+}) {
+  const preview = useMutation({
+    mutationFn: () => api.previewAgentcoreGateway({ gateway_url: url, posture }),
+    onSuccess: next => onPreviewed?.(next),
+    onError: () => onPreviewed?.(undefined),
+  })
+  // A preview belongs to the URL it read; a new draft gets a fresh one.
+  const [previewedUrl, setPreviewedUrl] = useState<string | null>(null)
+  const data = preview.data && previewedUrl === url ? preview.data : undefined
+  const hint = catalogHint(data)
+  const canPreview = url.startsWith('https://')
+  return (
+    <div className="rounded-md border border-border bg-bg-elevated p-3 space-y-3" data-testid="agentcore-preview">
+      <div className="flex items-start justify-between gap-3">
+        <div className="space-y-1 min-w-0">
+          <p className="text-[13px] text-text flex items-center gap-1.5">
+            <Plug className="lucide-inline" />
+            {i18nT('pages.settings.securityPanel.agent_identity_preview_title')}
+          </p>
+          <p className="text-[12px] text-muted leading-relaxed">
+            {i18nT('pages.settings.securityPanel.agent_identity_preview_hint')}
+          </p>
+        </div>
+        <Btn
+          disabled={!canPreview || preview.isPending}
           onClick={() => {
-            void navigator.clipboard.writeText(debugBlob).then(() => {
-              setCopied(true)
-              window.setTimeout(() => setCopied(false), 1500)
-            })
+            setPreviewedUrl(url)
+            preview.mutate()
           }}
         >
-          {copied ? <Check className="lucide-inline" /> : <Copy className="lucide-inline" />}
-          {copied
-            ? i18nT('pages.settings.securityPanel.agent_identity_copied')
-            : i18nT('pages.settings.securityPanel.agent_identity_copy_debug')}
-        </button>
+          <RefreshCw className={`lucide-inline ${preview.isPending ? 'animate-spin' : ''}`} />
+          {preview.isPending
+            ? i18nT('pages.settings.securityPanel.agent_identity_previewing')
+            : i18nT('pages.settings.securityPanel.agent_identity_preview')}
+        </Btn>
+      </div>
+      {!canPreview ? (
+        <p className="text-[12px] text-muted">{i18nT('pages.settings.securityPanel.agent_identity_preview_url_needed')}</p>
+      ) : null}
+      {/* No hand-off on any notice in this card: it renders inside the identity
+          form while the posture / name / URL draft is UNSAVED -- navigating to a
+          chat would discard the very draft the preview is about. The three
+          surfaces below (request failure, snapshot-level hint, target-listing
+          error) all follow this decision; the saved catalog card makes the same
+          one for the same reason. */}
+      {preview.isError ? (
+        <ErrorNotice
+          message={preview.error instanceof Error ? preview.error.message : String(preview.error)}
+        />
+      ) : null}
+      {data ? (
+        <>
+          <ErrorNotice message={hint} testId="agentcore-preview-hint" />
+          {data.gateway?.name || data.gateway?.id ? (
+            <div className="text-[13px] text-text">
+              <span className="text-muted">{i18nT('pages.settings.securityPanel.agent_identity_gateway_name')} </span>
+              {data.gateway.name || data.gateway.id}
+              {data.gateway.status ? (
+                <span className="ml-2 text-[12px] text-muted">
+                  {i18nT('pages.settings.securityPanel.agent_identity_gateway_status_aws', {
+                    status: targetStatusLabel(data.gateway.status),
+                  })}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
+          {data.code === 'ok' ? (
+            <div className="space-y-2">
+              <p className="text-[13px] text-text">
+                {i18nT('pages.settings.securityPanel.agent_identity_preview_targets_count', {
+                  count: data.targets.length,
+                })}
+              </p>
+              {data.targets_error ? (
+                <ErrorNotice
+                  message={
+                    CATALOG_CODE_HINT[data.targets_error]
+                      ? i18nT(CATALOG_CODE_HINT[data.targets_error])
+                      : data.targets_error
+                  }
+                />
+              ) : data.targets.length > 0 ? (
+                <ul className="space-y-1" aria-label={i18nT('pages.settings.securityPanel.agent_identity_targets')}>
+                  {data.targets.map(target => (
+                    <li key={target.target_id || target.name} className="text-[12px] text-text">
+                      <span className="font-medium">{target.name || target.target_id}</span>
+                      <span className="text-muted">
+                        {' — '}
+                        {targetTypeLabel(target.target_type)}
+                        {target.status ? `, ${targetStatusLabel(target.status)}` : ''}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-[12px] text-muted">{i18nT('pages.settings.securityPanel.agent_identity_targets_empty')}</p>
+              )}
+              <p className="text-[12px] text-muted leading-relaxed">
+                {i18nT('pages.settings.securityPanel.agent_identity_preview_tools_after_save')}
+              </p>
+            </div>
+          ) : null}
+        </>
       ) : null}
     </div>
   )
@@ -2736,6 +2997,13 @@ function AgentIdentitySection() {
   const [draft, setDraft] = useState<'none' | 'workload' | 'login'>('none')
   const [draftUrl, setDraftUrl] = useState('')
   const [draftName, setDraftName] = useState('')
+  // What the preview read for the CURRENT draft (url + posture). Cleared the
+  // moment either changes, so the commit never restates a stale grant.
+  const [previewed, setPreviewed] = useState<{
+    url: string
+    posture: 'workload' | 'login'
+    snapshot: AgentcoreGatewayData | undefined
+  } | null>(null)
   useEffect(() => {
     setDraft(data?.posture === 'login' || data?.posture === 'workload' ? data.posture : 'none')
     setDraftUrl(data?.gateway_url ?? '')
@@ -2762,14 +3030,79 @@ function AgentIdentitySection() {
     || (data?.workload_name ?? '') !== draftName.trim()
   const nameRequired = draft !== 'none' && !draftName.trim()
   const blocked = Boolean(data && !data.writable)
-  const { data: consent, isError: consentError } = useQuery<AgentcoreConsentData>({
+  const { data: consent, error: consentQueryError } = useQuery<AgentcoreConsentData>({
     queryKey: ['agentcore-consent'],
     queryFn: api.getAgentcoreConsent,
     enabled: Boolean(data?.configured),
     refetchInterval: 15_000,
   })
+  const consentErrorCopy = agentcoreConsentErrorCopy(consentQueryError)
   const consentHref =
     typeof consent?.url === 'string' && consent.url.startsWith('https://') ? consent.url : null
+  // Where sign-in happens, from the payload's allowlisted host; fall back to the
+  // URL's own hostname so the link is never unlabelled.
+  const consentHost = (() => {
+    if (typeof consent?.host === 'string' && consent.host) return consent.host
+    try { return consentHref ? new URL(consentHref).hostname : '' } catch { return '' }
+  })()
+  // The catalog card already fetches this key; subscribing here (deduped by
+  // key, and only while a consent is pending) names the target(s) waiting on
+  // this sign-in so the reader knows WHICH tool asks for WHICH account.
+  const { data: consentCatalog } = useQuery<AgentcoreGatewayData>({
+    queryKey: ['agentcore-gateway'],
+    queryFn: api.getAgentcoreGateway,
+    enabled: Boolean(consent?.pending),
+  })
+  const consentTargets = (consentCatalog?.targets ?? [])
+    .filter(t => t.pending_auth)
+    .map(t => t.name)
+  // The grant the commit restates. Valid only for the draft it was read for.
+  const previewForDraft =
+    previewed && previewed.url === draftUrl.trim() && previewed.posture === draft ? previewed : null
+  // Targets are known only when the Gateway read AND the target listing both
+  // succeeded: a denied ListGatewayTargets arrives as code=ok, an empty list
+  // and a targets_error, which must not read as "no targets".
+  const previewTargets =
+    previewForDraft?.snapshot?.code === 'ok' && !previewForDraft.snapshot.targets_error
+      ? previewForDraft.snapshot.targets
+      : null
+  const previewNames = (previewTargets ?? []).map(t => t.name || t.target_id)
+  const hasGatewayUrl = draftUrl.trim().startsWith('https://')
+  // With a Gateway URL drafted, the grant can be committed only once the
+  // targets it covers are KNOWN: no preview yet, a preview whose Gateway read
+  // failed, or one whose target listing was denied all leave the commit
+  // locked -- an unreadable grant is not an empty one.
+  const grantNeedsPreview = draft !== 'none' && hasGatewayUrl && previewForDraft === null
+  const grantUnread = draft !== 'none' && hasGatewayUrl && previewForDraft !== null && previewTargets === null
+  const grantLocked = grantNeedsPreview || grantUnread
+  const grantLabel =
+    draft !== 'none' && previewTargets !== null
+      ? previewTargets.length === 0
+        ? i18nT('pages.settings.securityPanel.agent_identity_grant_button_empty')
+        : i18nT(
+            draft === 'workload'
+              ? 'pages.settings.securityPanel.agent_identity_grant_button_workload'
+              : 'pages.settings.securityPanel.agent_identity_grant_button_login',
+            { count: previewTargets.length, targets: previewNames.join(', ') },
+          )
+      : null
+  const saveConsequence = (() => {
+    if (draft === 'none') return i18nT('pages.settings.securityPanel.agent_identity_save_consequence_none')
+    if (!hasGatewayUrl) return i18nT('pages.settings.securityPanel.agent_identity_save_consequence_no_url')
+    if (grantNeedsPreview) return i18nT('pages.settings.securityPanel.agent_identity_save_preview_first')
+    if (previewTargets === null) {
+      return i18nT('pages.settings.securityPanel.agent_identity_save_consequence_unread')
+    }
+    if (previewTargets.length === 0) {
+      return i18nT('pages.settings.securityPanel.agent_identity_save_consequence_empty')
+    }
+    return i18nT(
+      draft === 'workload'
+        ? 'pages.settings.securityPanel.agent_identity_save_consequence_scoped_workload'
+        : 'pages.settings.securityPanel.agent_identity_save_consequence_scoped_login',
+      { count: previewTargets.length, targets: previewNames.join(', ') },
+    )
+  })()
   return (
     <SettingsSection title={i18nT('pages.settings.securityPanel.agent_identity')}>
       <SettingsCard>
@@ -2778,9 +3111,13 @@ function AgentIdentitySection() {
             {i18nT('pages.settings.securityPanel.agent_identity_hint')}
           </p>
           {isLoading ? (
-            <div className="text-[12px] text-muted py-2">{i18nT('pages.settings.securityPanel.loading_governance_policy')}</div>
+            <div className="text-[12px] text-muted py-2">{i18nT('pages.settings.securityPanel.agent_identity_loading')}</div>
           ) : isError ? (
-            <ErrorNotice message={error instanceof Error ? error.message : String(error)} className="mt-3" />
+            <ErrorNotice
+              message={error instanceof Error ? error.message : String(error)}
+              className="mt-3"
+              askAgent
+            />
           ) : (
             <div className="mt-3 space-y-3">
               {draft === 'none' && !data?.workload_name ? (
@@ -2798,52 +3135,42 @@ function AgentIdentitySection() {
                 onChange={v => setDraft(v === 'workload' || v === 'login' ? v : 'none')}
                 disabled={blocked || save.isPending}
               />
+              <p className="text-[12px] text-muted">
+                {i18nT('pages.settings.securityPanel.agent_identity_reversible')}
+              </p>
               {draft !== 'none' && (
-                <label className="flex flex-col gap-1.5">
-                  <span className="text-[13px] text-muted">{i18nT('pages.settings.securityPanel.agent_identity_name')}</span>
-                  <input
-                    type="text"
-                    spellCheck={false}
-                    autoComplete="off"
-                    aria-label={i18nT('pages.settings.securityPanel.agent_identity_name')}
-                    className="bg-bg-elevated border border-border rounded-md px-2 py-1.5 text-text text-sm outline-none focus-ring font-mono"
+                <>
+                  <SettingsInput
+                    label={i18nT('pages.settings.securityPanel.agent_identity_name')}
+                    description={i18nT('pages.settings.securityPanel.agent_identity_name_hint')}
                     value={draftName}
                     disabled={blocked || save.isPending}
                     placeholder={i18nT('pages.settings.securityPanel.agent_identity_name_placeholder')}
-                    onChange={e => setDraftName(e.target.value)}
+                    onChange={setDraftName}
                   />
-                  <span className="text-[12px] text-muted leading-relaxed">
-                    {i18nT('pages.settings.securityPanel.agent_identity_name_hint')}
-                  </span>
                   {nameRequired ? (
                     <span className="text-[12px] text-warn">
                       {i18nT('pages.settings.securityPanel.agent_identity_name_required')}
                     </span>
                   ) : null}
-                </label>
+                </>
               )}
               {draft !== 'none' && (
-                <label className="flex flex-col gap-1.5">
-                  <span className="text-[13px] text-muted">{i18nT('pages.settings.securityPanel.agent_identity_gateway_url')}</span>
-                  <input
-                    type="url"
-                    spellCheck={false}
-                    autoComplete="off"
-                    aria-label={i18nT('pages.settings.securityPanel.agent_identity_gateway_url')}
-                    className="bg-bg-elevated border border-border rounded-md px-2 py-1.5 text-text text-sm outline-none focus-ring font-mono"
-                    value={draftUrl}
-                    disabled={blocked || save.isPending}
-                    placeholder={i18nT('pages.settings.securityPanel.agent_identity_gateway_url_placeholder')}
-                    onChange={e => setDraftUrl(e.target.value)}
-                  />
-                  <span className="text-[12px] text-muted leading-relaxed">
-                    {i18nT('pages.settings.securityPanel.agent_identity_gateway_url_hint')}
-                  </span>
-                </label>
+                <SettingsInput
+                  label={i18nT('pages.settings.securityPanel.agent_identity_gateway_url')}
+                  description={i18nT('pages.settings.securityPanel.agent_identity_gateway_url_hint')}
+                  value={draftUrl}
+                  disabled={blocked || save.isPending}
+                  placeholder={i18nT('pages.settings.securityPanel.agent_identity_gateway_url_placeholder')}
+                  onChange={setDraftUrl}
+                />
               )}
               {blocked && (
-                <p className="text-[12px] text-muted">{i18nT('pages.settings.securityPanel.agent_identity_not_writable')}</p>
+                <p className="text-[12px] text-muted">{writeBlockedCopy(data?.write_blocked)}</p>
               )}
+              {/* No hand-off: the posture / workload name / Gateway URL draft
+                  above is unsaved until Save — the chat navigation would
+                  discard it. Applies to every failure surfaced in this card. */}
               {save.isError && (
                 <ErrorNotice message={save.error instanceof Error ? save.error.message : String(save.error)} />
               )}
@@ -2854,19 +3181,26 @@ function AgentIdentitySection() {
                 <p className="text-[12px] text-warn">{i18nT('pages.settings.securityPanel.agent_identity_extra_missing_channel')}</p>
               )}
               {data?.extra_code === 'install_failed' && (
-                <p className="text-[12px] text-warn">{i18nT('pages.settings.securityPanel.agent_identity_extra_failed')}</p>
+                <ErrorNotice message={i18nT('pages.settings.securityPanel.agent_identity_extra_failed')} />
               )}
               {data?.configured && data.extra_installed === false && data.extra_code !== 'no_install_channel' && data.extra_code !== 'install_failed' && (
                 <p className="text-[12px] text-muted">{i18nT('pages.settings.securityPanel.agent_identity_extra_needed')}</p>
               )}
-              {consentError && (
-                <p className="text-[12px] text-muted">{i18nT('pages.settings.securityPanel.agent_identity_consent_refused')}</p>
+              {consentErrorCopy && (
+                <ErrorNotice message={consentErrorCopy} />
               )}
               {consent?.pending && consentHref && (
                 <div className="rounded-md border border-border bg-bg-elevated p-3 space-y-2">
                   <p className="text-[13px] text-text">{i18nT('pages.settings.securityPanel.agent_identity_consent_title')}</p>
                   <p className="text-[12px] text-muted leading-relaxed">
-                    {i18nT('pages.settings.securityPanel.agent_identity_consent_body')}
+                    {consentTargets.length > 0
+                      ? i18nT('pages.settings.securityPanel.agent_identity_consent_body_named', {
+                          targets: consentTargets.join(', '),
+                          host: consentHost,
+                        })
+                      : i18nT('pages.settings.securityPanel.agent_identity_consent_body_host', {
+                          host: consentHost,
+                        })}
                   </p>
                   <a
                     href={consentHref}
@@ -2875,22 +3209,66 @@ function AgentIdentitySection() {
                     className="inline-flex items-center gap-1.5 text-[13px] text-accent hover:underline"
                   >
                     <ExternalLink className="lucide-inline" />
-                    {i18nT('pages.settings.securityPanel.agent_identity_consent_open')}
+                    {i18nT('pages.settings.securityPanel.agent_identity_consent_open_host', { host: consentHost })}
                   </a>
+                  {/* The URL only reaches this card after the backend matched its
+                      host against the crew's sign-in allowlist. Saying "it was
+                      checked" is an assertion the reader cannot verify; naming
+                      WHICH allowlist admitted the host -- a provider the product
+                      ships with, or the operator's own file -- is something they
+                      can. */}
+                  <p className="text-[11px] text-muted" data-testid="agentcore-consent-provenance">
+                    {consent.allow_source === 'operator' && consent.allowlist_path
+                      ? i18nT('pages.settings.securityPanel.agent_identity_consent_source_operator', {
+                          host: consentHost,
+                          path: consent.allowlist_path,
+                        })
+                      : consent.allow_source === 'builtin'
+                        ? i18nT('pages.settings.securityPanel.agent_identity_consent_source_builtin', {
+                            host: consentHost,
+                          })
+                        : i18nT('pages.settings.securityPanel.agent_identity_consent_checked')}
+                  </p>
                 </div>
               )}
-              <div>
+              {/* The decision point. Save grants whatever this Gateway lists,
+                  and the saved catalog card only renders AFTER Save -- so
+                  without this the reader is asked to sign a blank check. The
+                  preview reads the DRAFTED url/posture through the same
+                  control-plane calls, persisting nothing. */}
+              {dirty && !blocked && draft !== 'none' ? (
+                <GatewayPreviewCard
+                  url={draftUrl.trim()}
+                  posture={draft}
+                  onPreviewed={snapshot =>
+                    setPreviewed({ url: draftUrl.trim(), posture: draft, snapshot })
+                  }
+                />
+              ) : null}
+              <div className="flex flex-wrap items-center gap-3">
                 <Btn
                   primary
-                  disabled={blocked || !dirty || nameRequired || save.isPending}
+                  disabled={blocked || !dirty || nameRequired || save.isPending || grantLocked}
                   onClick={() => save.mutate()}
                 >
                   {save.isPending
                     ? i18nT('pages.settings.securityPanel.agent_identity_saving')
-                    : i18nT('pages.settings.securityPanel.agent_identity_save')}
+                    : grantLabel ?? i18nT('pages.settings.securityPanel.agent_identity_save')}
                 </Btn>
+                {/* The consequence of pressing the commit, in the reader's
+                    words, at the decision point. A grant is restated in its own
+                    scope -- the targets by name, from the preview -- so nobody
+                    is asked to authorize "every tool" sight unseen: with a
+                    Gateway URL and no preview yet, the button waits. */}
+                {dirty && !blocked ? (
+                  <p className="text-[12px] text-muted leading-relaxed" data-testid="agentcore-save-consequence">
+                    {saveConsequence}
+                  </p>
+                ) : null}
               </div>
-              {data?.configured && data.gateway_url ? <GatewayCatalogCard /> : null}
+              {data?.configured && data.gateway_url ? (
+                <GatewayCatalogCard installFailedShownAbove={data.extra_code === 'install_failed'} />
+              ) : null}
             </div>
           )}
         </div>
@@ -3094,10 +3472,10 @@ export function SecurityPanel({ basePath }: { basePath?: string } = {}) {
         return identity.configured
           ? i18nT(
               identity.posture === 'login'
-                ? IDENTITY_POSTURE_KEY.login
-                : IDENTITY_POSTURE_KEY.workload,
+                ? 'pages.settings.securityPanel.agent_identity_state_login'
+                : 'pages.settings.securityPanel.agent_identity_state_workload',
             )
-          : i18nT(IDENTITY_POSTURE_KEY.none)
+          : i18nT('pages.settings.securityPanel.agent_identity_state_none')
       case 'layers':
         return String(FEATURES.length)
       default:

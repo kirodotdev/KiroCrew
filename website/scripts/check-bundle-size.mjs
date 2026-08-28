@@ -102,7 +102,12 @@ export const CHUNK_BUDGETS = {
   // merged analyze build measures the chunk at 807,525 B (788.6 KB); keep
   // roughly 5% headroom (matching the `all` entry's convention above) over that
   // combined measurement so expected catalog growth does not block descendants.
-  t: 819 * KB, // measured 788.6 KB on the merged (structured-monitor + managed-credentials) build (~3.7% headroom)
+  // The AgentCore identity surface (pre-save grant preview, sign-in provenance,
+  // catalog deferral copy: ~20 English keys, translated into every catalog)
+  // measured the chunk at 819.7 KB, 725 B over the previous ceiling. Same
+  // kind of growth -- product copy, not a library -- so the ceiling moves back
+  // to ~5% over that measurement.
+  t: 860 * KB, // measured 819.7 KB on the AgentCore identity build (~4.9% headroom)
 
   // Pierre editor implementation (PR #4072 replaced Monaco, whose
   // 'editor.api2' chunk this entry set used to carry) -- the code-editor

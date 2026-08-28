@@ -301,6 +301,11 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # spec. Only the gateway reads or writes it; an in-sandbox process that
     # could would restore withheld MCP commands when posture leaves login.
     "agentcore-authored-mcp",
+    # Lock and fixed-name stage the dashboard identity PUT uses to rewrite the
+    # ceiling. Only the gateway holds them; an in-sandbox writer could steal the
+    # lock or swap the staged bytes before the rename.
+    "security_policy.json.lock",
+    "security_policy.json.tmp",
     "routing",
     "webhooks",
     "live_target.json",

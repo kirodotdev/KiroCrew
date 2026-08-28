@@ -147,6 +147,9 @@ def register(app: web.Application) -> None:
     app.router.add_post(
         "/api/agentcore/gateway/sync", _lazy_agentcore("api_agentcore_gateway_sync")
     )
+    app.router.add_post(
+        "/api/agentcore/gateway/preview", _lazy_agentcore("api_agentcore_gateway_preview")
+    )
     app.router.add_get(
         "/api/agentcore/consent",
         _lazy_agentcore("api_agentcore_consent_get", "agentcore_consent"),
