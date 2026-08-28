@@ -168,7 +168,13 @@ def _cloud_login(args: argparse.Namespace) -> int:
     ui.info("Starting Kiro sign-in on the instance…")
     try:
         prompt = login_mod.start_device_login(
-            instance_id, profile, region, open_browser=not getattr(args, "no_browser", False)
+            instance_id,
+            profile,
+            region,
+            open_browser=not getattr(args, "no_browser", False),
+            identity_provider=getattr(args, "identity_provider", "") or "",
+            license_=getattr(args, "license", "") or "",
+            idp_region=getattr(args, "idp_region", "") or "",
         )
     except AWSError as exc:
         ui.fail(str(exc))
@@ -185,7 +191,14 @@ def _cloud_login(args: argparse.Namespace) -> int:
     if prompt.code:
         ui.detail(f"Verification code: {prompt.code}")
     # Keep the login daemon polling on the box so approval completes, then wait.
-    login_mod.resume_login_daemon(instance_id, profile, region)
+    login_mod.resume_login_daemon(
+        instance_id,
+        profile,
+        region,
+        identity_provider=getattr(args, "identity_provider", "") or "",
+        license_=getattr(args, "license", "") or "",
+        idp_region=getattr(args, "idp_region", "") or "",
+    )
     with ui.Spinner("Waiting for sign-in approval…"):
         signed = login_mod.wait_until_logged_in(instance_id, profile, region)
     if signed:
