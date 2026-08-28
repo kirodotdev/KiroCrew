@@ -67,12 +67,12 @@ claim that a hostile in-process agent is fully contained.
 
 | Module | Role |
 |--------|------|
-| `aws.py` | The single `run_aws` chokepoint — fixed argv, no shell, sandbox-wrapped, `--profile` only (never boto3, never a raw key). `checked`/`checked_json`; `AccessDenied → exact IAM action` mapping; `env_credentials_hint()`. |
+| `aws.py` | The `run_aws` chokepoint for captured AWS CLI calls — fixed argv, no shell, sandbox-wrapped, `--profile` only (never boto3, never a raw key). `checked`/`checked_json`; `AccessDenied → exact IAM action` mapping; `env_credentials_hint()`. |
 | `ec2.py` | `deploy`/`status`/`stop`/`start`/`destroy` via `aws cloudformation` + `ec2`; AZ- **and egress-**aware `discover_network` + `resolve_explicit_subnet` (`--subnet` pin, same guarantees); tag-based stateless discovery; `_validate_cidr`. `find_stack` verifies BOTH `kirocrew:managed=true` AND `kirocrew:instance==<tag>` before status/stop/start/destroy touch a stack — so a same-prefix managed stack with a different instance tag can't be acted on by the wrong `--tag`. |
 | `iam.py` | Least-privilege launcher policy generator (applied by the user, never by KiroCrew) + read-only reachability check + the **content-fixed instance permissions-boundary document** (`boundary_policy_document`/`boundary_arn`) and its constants (`BOUNDARY_NAME`). |
-| `ssm.py` | SSM `send-command` run-and-poll (base64-wrapped remote scripts) + `start-session` port-forward; `port_is_free` / `wait_for_local_port`. |
+| `ssm.py` | SSM `send-command` run-and-poll (base64-wrapped remote scripts) + `start-session` port-forward; `open_port_forward()` directly spawns the streaming `aws ssm start-session` child because `run_aws` captures output, and calls `aws.assert_human_action()` before doing so; `port_is_free` / `wait_for_local_port`. |
 | `login.py` | `kiro-cli` device-code / social sign-in on the box over SSM, plus `logout` — the account switch. `login` short-circuits on an existing session, so `logout` is what makes a different Kiro account reachable without a hand-run SSM command. It kills any still-polling background `kiro-cli login` **and** any live `kiro-cli acp` runtime **before** signing out (otherwise the login re-authenticates the old account, and an ACP runtime keeps serving the old account's in-memory credential until its next 401), removes the login log/PID/FIFO (they hold the previous device-code URL + code, which must never be re-shown as a fresh prompt), and confirms the result with `is_logged_in` rather than the exit code — `kiro-cli logout` exits non-zero when there was no session to drop, which is still the requested state. That confirmation fails CLOSED: it requires a positive signed-out sentinel (`__NOAUTH__`), so an SSM timeout or transport error — where the session may still be active — reports failure rather than a false "signed out". The same fail-closed applies to the cleanup command itself: if that SSM invocation doesn't return `Success`, the kills it was meant to do can't be trusted and logout reports failure without probing. The CLI warns the operator that in-flight chats/cron sessions are stopped (their runtimes are killed). |
-| `connect.py` | SSM port-forward + token mint + open browser; Instances-registry integration; `redact_token`. |
+| `connect.py` | SSM port-forward + token mint + open browser; Instances-registry integration; `redact_token`. `is_launched_instance()` prevents the generic instance PATCH endpoint from rewriting a correlated launch’s connection method, SSM target, AWS profile, or region, so Stop/Start/Delete retain the stack address and a running billable instance is not stranded. |
 | `source.py` | Detect and package an editable local checkout (`git archive`, tarfile fallback) and upload it to a per-account S3 bucket; packaged installs instead use the template's public-repo clone fallback. The secret-excluding filter is shared by both packaging paths. Also **`ensure_instance_boundary`** — creates the shared, immutable `kirocrew-ec2-boundary` managed policy once (create-if-not-exists, never re-versioned) and returns its ARN; `delete_instance_boundary` for admin cleanup. |
 | `config.py` | Persisted profile / region / tag (**never credentials**); `load()` tolerates a hand-edited/corrupt `cloud.json` — bad JSON *or* a non-object shape falls back to defaults rather than crashing every cloud command. |
 | `sizes.py` | arm64/Graviton size tiers (16 GB default `t4g.xlarge`). |
@@ -85,8 +85,7 @@ CloudFormation stack, one `aws cloudformation deploy` (change-set based), atomic
 rollback, one-command `delete-stack` teardown. AMI resolves from the public
 `resolve:ssm` Amazon-Linux-2023 alias per arch (no hardcoded AMI ids). A
 `WaitCondition` + `cfn-signal` blocks the deploy until the gateway is healthy; a
-failed bootstrap folds the on-box setup-log tail into the signal reason so the
-cause survives the rollback.
+failed bootstrap folds the on-box setup-log tail into the signal reason so the cause survives the rollback. Bootstrap failure reasons are normalized to printable ASCII before CloudFormation receives them; otherwise CloudFormation replaces the setup error with a charset error and masks it during rollback (`test_cloud_ec2.py::test_failure_reason_is_filtered_to_printable_ascii`).
 
 The instance bootstrap runs `install.sh --voice` on both its initial attempt and
 retry. This installs the existing `voice` extra (`boto3` and
@@ -138,14 +137,11 @@ cascade lines (events are newest-first, so the generic line would otherwise bury
 the root cause), and drops the generic noise entirely once a specific reason
 exists.
 
-Teardown removes the uploaded source object as part of the contract: after a
-**confirmed** `delete-stack`, `source.delete_source` returns
-`{removed, uri, error}` and the CLI warns with the exact `aws s3 rm <uri>`
-command if it couldn't be deleted (a non-zero `s3 rm` is a real failure — denied,
-wrong bucket — since `s3 rm` succeeds silently on an already-absent key) rather
-than silently leaving a private tarball billing. If the stack delete itself did
-not confirm, the source object and `last_tag` pointer are preserved and the CLI
-exits non-zero.
+Teardown removes the uploaded source object as part of the contract: after a **confirmed** `delete-stack`, `source.delete_source` returns `{removed, uri, error}`. If the stack delete itself did not confirm, the source object and `last_tag` pointer are preserved and the CLI exits non-zero.
+
+The automatic delete is owner-pinned: `source.delete_source()` issues `s3api delete-object` with `--expected-bucket-owner`, which `test_cloud_source.py::test_delete_source` pins. The pin is load-bearing because a bucket name freed by teardown can be re-registered by another account, and only the `s3api` form accepts it -- `aws s3 rm` has no equivalent flag.
+
+When that delete fails, `cli_cloud._cloud_destroy()` prints an unpinned `aws s3 rm <uri>` as the manual fallback, with no profile, region, or owner pin. That fallback drops the anti-squat guarantee the rest of this module maintains, so an operator who follows it can delete against a replacement bucket instead of the one teardown owned. The owner-pinned equivalent is `aws --profile <profile> --region <region> s3api delete-object --bucket <bucket> --key <key> --expected-bucket-owner <account>`.
 
 ## Security model
 
@@ -154,7 +150,7 @@ exits non-zero.
   credentials are unsupported (the sandbox scrubs `AWS_SECRET*`/`AWS_SESSION*`);
   `env_credentials_hint()` detects that and prints an actionable message.
 - **Injection closed in depth.** tag/region/profile/CIDR/repo/ref/run_as are
-  charset-validated (`validation.FieldSpec`) before reaching argv, **and** the
+  charset-validated (`validation.FieldSpec`) before reaching argv; `ec2.validate_profile()` aliases `deploy.profiles.PROFILE_SPEC`, which admits `+` in IAM Identity Center-derived profile names while excluding option-shaped names, so valid profile names remain usable without weakening argv validation; **and** the
   template mirrors those charsets as `AllowedPattern`s so a direct
   `aws cloudformation deploy` can't inject shell metacharacters into the root
   UserData. SSM remote scripts are base64-wrapped so `AWS-RunShellScript` can't

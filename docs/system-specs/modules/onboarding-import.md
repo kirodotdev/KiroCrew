@@ -1,9 +1,5 @@
 # Foreign-Agent Import Module
 
-Previously: 2026-07-28 (initial spec: industry-consensus scope, session-import
-removal, memory-hierarchy destination mapping, dry-run contract, and
-user-selectable conflict strategies)
-
 ## Overview
 
 `onboarding_import.py` migrates a user's setup from another AI agent into
@@ -229,13 +225,7 @@ The plan is per-item, not per-category: each entry carries `source_id`,
 and the **predicted** status (see status vocabulary). A category-level count
 alone is not a valid plan.
 
-**The plan is advisory, not authoritative.** `apply_import()` re-scans the
-source from disk and never trusts payloads echoed back by the client; only
-`(source_id, category_id)` pairs are read out of the submitted plan, filtered
-against `SOURCE_IDS`/`CATEGORY_IDS`. Consequently a preview status may differ
-from the applied status when the source changed in between. `apply_import()`
-returns per-item outcomes so the caller can report exactly which items diverged
-from their prediction; it MUST NOT silently present the preview as the result.
+**The plan is advisory, not authoritative.** `apply_import()` re-scans the source from disk and never writes item payloads echoed by the client. `_parse_selection()` validates the request shape and category ids, `_select_fresh_plan()` admits only `(source_id, category_id)` pairs offered by a fresh engine plan, and `_selected_pairs()` retains only source ids in that plan plus `CATEGORY_IDS`. The plan remains the identity authority when a provider fails closed between preview and apply, so a client cannot select an unplanned source. Consequently a preview status may differ from the applied status when the source changed in between. `apply_import()` returns per-item outcomes so the caller can report exactly which items diverged from their prediction; it MUST NOT silently present the preview as the result.
 
 ## Conflict strategy (user-selectable)
 
@@ -254,7 +244,7 @@ Applicability and rename derivation per category:
 |----------|-----------|-------------|
 | `skills` | skip · rename · overwrite | `<name>-imported-<source>`, then `<name>-<fingerprint[:8]>` |
 | `mcp_servers` | skip · rename · overwrite | `<name>-<source>`, then `<name>-<fingerprint[:8]>` |
-| `workspaces` | skip · rename | `base-<source>`, then `base-<fp[:8]>`. **Behavior change:** the pre-existing three-step ladder silently suffixed on a name collision; that is a rename, so it now requires `rename`. Plain `skip` reports the collision. |
+| `workspaces` | skip · rename | `base-<source>`, then `base-<fp[:8]>`. `skip` reports a collision; suffix derivation occurs only under `rename`. |
 | `instructions`, `memories` | n/a — merge-only, never collide destructively | — |
 | `denied_commands`, `settings` | n/a — merge-missing only | — |
 | `schedules` | skip only — a duplicate schedule is matched by `_same_schedule` | — |
@@ -295,11 +285,7 @@ Rules:
 - A strategy is chosen **per apply request**, applying to every item in it. A
   finer-grained per-item choice is a UI concern layered on top: the UI may issue
   several apply requests with different strategies.
-- `rename` exists specifically to give the user a way out of an otherwise
-  terminal conflict. Before it existed, an upstream edit to an
-  already-imported skill or MCP server produced a permanent `conflict` with no
-  resolution path, because the item fingerprint covers the content digest and
-  therefore did not match the ledger.
+- `rename` lets the user resolve a collision caused by a source edit: a changed skill or MCP server has a different content-derived fingerprint, so it does not match the ledger record for the installed item.
 
 ## Idempotency and deduplication
 
@@ -412,11 +398,7 @@ installed. An edition that supersedes a predecessor of its own registers it
 instead of the core naming it, which is what keeps an edition-specific product
 name out of this tree.
 
-`ImportSourceProvider.import_sources()` (CPP seam, public default `[]`) returns
-`ImportSource` descriptors. A descriptor says WHERE an install is: `id` (what the
-API validates), `display_name` (what the dashboard shows), `env_vars` +
-`home_dir` (where it lives), `managed_mcp_names` (that agent's own MCP servers,
-never imported), and `superseded` + `stale_mcp_binaries` (see below).
+`ImportSourceProvider.import_sources()` (CPP seam, public default `[]`) returns `ImportSource` descriptors. A descriptor says WHERE an install is: `id` (normalized by the engine registry), `display_name` (carried by the engine plan to the dashboard), `env_vars` + `home_dir` (where it lives), `managed_mcp_names` (that agent's own MCP servers, never imported), and `superseded` + `stale_mcp_binaries` (see below).
 
 **A descriptor does not supply reader code, and does not choose a reader.** The
 engine does all reading with its own helpers, which is what keeps credential
@@ -431,9 +413,7 @@ genuinely novel foreign format needs a reader added to the core, because only th
 core can read it through the gates; when a second layout exists, naming one
 becomes an additive default-valued field on this same seam.
 
-`_sources()` unions contributions over the builtins for every scan, apply, and
-id-validation path, read fail-closed through `safe_context_call` — a broken
-adapter costs the edition's sources, not the page.
+`_sources()` unions contributions over the builtins for every scan and apply registry snapshot, read fail-closed through `safe_context_call` — a broken adapter costs the edition's sources, not the page. `_source_summary()` carries the resolved id and display name in that snapshot into the plan, so consumers do not perform a second registry lookup.
 
 **Everything questionable about a descriptor is settled at one boundary.**
 `_normalize_source` is the only place that validates and canonicalizes, and BOTH
@@ -545,21 +525,9 @@ Two layers, both required:
    diagnostic — so the user sees a reason in "Not imported" instead of a silent
    skip.
 
-### Adding a source touches THREE allowlists, not one
+### Source identity has one authority
 
-The source id is enumerated independently in three places, and missing any one
-of them fails in a different way:
-
-| Layer | Symbol | Failure mode if omitted |
-|-------|--------|-------------------------|
-| Backend registry | `onboarding_import.SOURCE_IDS` (+ `_SOURCE_NAMES`, `_SOURCE_ROOTS`, `scanners`) | The source is never scanned |
-| Handler projection | `dashboard/handlers/onboarding_import._SOURCE_IDS` + `_SOURCE_NAMES` | **`_scan_response` raises and the endpoint 500s — breaking the wizard for EVERY source**, on any machine where the new source's home merely exists. `_SOURCE_NAMES` is indexed with `[source_id]`, so it `KeyError`s even once `_SOURCE_IDS` is fixed |
-| Frontend filter | `AgentImportFlow.tsx` `SUPPORTED_SOURCE_IDS` | `eligibleSources()` silently drops the source — it never renders, even with a working backend |
-
-The handler duplication is load-bearing (it is the content-free projection
-boundary), so it is pinned by `test_handler_source_tables_match_the_backend` in
-`test/test_api_onboarding_import.py`: the omission fails loudly in CI instead of
-as a production 500.
+The engine owns source identity. `_sources()` resolves and normalizes the registry once per preview or apply operation, and `_source_summary()` carries its id and display name into the plan. The handler's `_parse_selection()` accepts bounded request shapes and known categories without maintaining a second source-id table; `_select_fresh_plan()` intersects client choices with the freshly generated plan before calling `apply_import()`. `AgentImportFlow.tsx` keeps a denylist only for the reserved `quick` setup mode, so registered sources remain visible. This prevents a registered source from being hidden or a transient registry read from turning an accepted plan into an HTTP error; `test_handler_category_tables_match_the_backend` and `test_selection_survives_a_registry_that_no_longer_lists_the_source` pin the seams.
 
 | Endpoint | Phase | Body |
 |----------|-------|------|
@@ -619,9 +587,7 @@ wrote under a previous version.
 
 These are load-bearing. Changing any of them requires a security review.
 
-1. **Apply re-scans from disk.** No payload from the HTTP client is ever
-   written. Only `(source_id, category_id)` pairs, allowlist-filtered, are read
-   from the submitted plan.
+1. **Apply re-scans from disk against a fresh engine plan.** No item payload from the HTTP client is written. `_parse_selection()` validates bounded request shape and category ids; `_select_fresh_plan()` admits only `(source_id, category_id)` pairs offered by fresh `preview_import()`, and `_selected_pairs()` keeps only source ids in that plan plus `CATEGORY_IDS`. The plan remains the identity authority even if a provider fails closed between preview and apply; a client cannot select an unplanned source.
 2. **Credentials are never read.** Known credential files are not opened;
    secret-shaped MCP `env`/`headers` keys and URL-embedded secrets are stripped
    and counted, never stored.

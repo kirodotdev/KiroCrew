@@ -13,23 +13,18 @@ service supplies the common run identity, event history, source/provenance, and
 saved-definition invocation used by all workflow-like execution. It does not
 replace or reinterpret TaskRunner execution.
 
-Supports multiple concurrent tasks, interactive tool approval,
-per-step session isolation with full memory injection, git-coordinated
-step commits and reverts, independent review via actual diffs,
-cycle detection, disk persistence across restarts, activity-aware
-stall detection, and batched parallel execution to prevent resource
-exhaustion.
+Supports multiple concurrent tasks, interactive tool approval, per-step session isolation with full memory injection, git-coordinated step commits and reverts, independent review via actual diffs, cycle detection, disk persistence across restarts, activity-aware stall detection, and semaphore-bounded parallel execution to prevent resource exhaustion.
 
 ## Module Architecture
 
 The task runner is split into an orchestrator plus 4 focused helper modules under `src/kiro_crew/`:
 
 ```
-taskrunner.py        (orchestrator, ~1270 lines)
-├── task_models.py   (data models + constants, 127 lines)
-├── task_planner.py  (LLM decomposition + task parsing + parallel grouping, ~510 lines)
-├── task_executor.py (task execution + retries + tests + self-review, ~720 lines)
-└── task_reporter.py (status + notifications + progress checkpoints + resume context, ~234 lines)
+taskrunner.py        (orchestrator)
+├── task_models.py   (data models + constants)
+├── task_planner.py  (LLM decomposition + task parsing + parallel grouping)
+├── task_executor.py (task execution + retries + tests + self-review)
+└── task_reporter.py (status + notifications + progress checkpoints + resume context)
 ```
 
 ### Module Responsibilities
@@ -69,13 +64,7 @@ transition occurs only after TaskRunner has written its durable state and
 completed git/worktree finalization, so the shared view cannot report completion
 ahead of the product-layer owner.
 
-Task execution emits common workflow lifecycle and agent-step events around the
-existing `_execute_tasks` path. Step result summaries use the workflow event
-contract's 120-character bound; complete TaskRunner results remain in TaskRunner
-storage. Cancellation binds the workflow handle to the
-actual TaskRunner asyncio task. The workflow handle disables chat completion
-injection because TaskRunner retains its existing reporting and notification
-path, preventing duplicate completion messages.
+Task execution emits common workflow lifecycle and agent-step events around the existing `_execute_tasks` path. Step result summaries use the workflow event contract's bounded summary field; complete TaskRunner results remain in TaskRunner storage. Cancellation binds the workflow handle to the actual TaskRunner asyncio task. The workflow handle disables chat completion injection because TaskRunner retains its existing reporting and notification path, preventing duplicate completion messages.
 
 Direct `run()` setup performs workflow registration, task binding, and the initial
 TaskRunner registry write inside the same lifecycle `try` block as execution. A
@@ -153,7 +142,6 @@ class TaskRunner:
         sessions: SessionManager,
         context_builder: ContextBuilder | None = None,
         on_notify: NotifyCallback | None = None,
-        on_approval: ApprovalCallback | None = None,
         auto_test: bool = True,
         auto_commit: bool = False,
         work_dir: Path | None = None,
@@ -162,15 +150,19 @@ class TaskRunner:
         lesson_store: LessonStore | None = None,
         fresh: bool = False,
         global_timeout: float = 0.0,
-        token_budget: int = 0,
+        token_budget: int = DEFAULT_TOKEN_BUDGET,
+        on_approval: Callable[[Task], Awaitable[bool]] | None = None,
         max_parallel_steps: int | None = None,  # None/0 -> host-safe ceiling
+        workspace_dir: str = "",
+        workflow_service: WorkflowRunPublisher | None = None,
     ) -> None: ...
 
     # Delegates to module-level functions: task_planner.decompose(),
     # task_executor.execute_task()/self_review(), task_reporter.build_status()
 
-    async def run(self, spec_path: str | Path, task_id: str = "", name: str = "", source: str = "file") -> TaskRun
-    async def start_background(self, spec_path: str | Path, agent: str = "", name: str = "", source: str = "file", *, session_key: str = "") -> str
+    def attach_workflow_service(self, service: WorkflowRunPublisher | None) -> None
+    async def run(self, spec_path: str | Path, task_id: str = "", name: str = "", source: str = "", workspace_dir: str = "", auto_approve: bool = False) -> Project
+    async def start_background(self, spec_path: str | Path, agent: str = "", name: str = "", source: str = "", workspace_dir: str = "", auto_approve: bool = False, *, session_key: str = "") -> str
     def cancel(self, task_id: str | None = None) -> None  # None = cancel all
     def status(self) -> dict
 
@@ -182,7 +174,7 @@ class TaskRunner:
     # Mutation APIs await fsync-backed persistence off the event loop.
     async def update_plan(task_id: str, tasks: list[dict]) -> TaskRun
     async def update_task(task_id: str, index: int, updates: dict) -> dict
-    async def execute_plan(task_id: str, ...) -> str
+    async def execute_plan(task_id: str, agent: str = "", fresh: bool = False, workspace_dir: str = "", auto_approve: bool = False) -> str
     async def retry_from_task(task_id: str, from_task: int, agent: str = "") -> str
     async def delete_run(task_id: str) -> bool
 
@@ -198,14 +190,14 @@ class TaskRunner:
 filters runs by source to avoid showing cron-triggered background tasks:
 
 ```python
-dashboard_sources = {"text", "spec", "file", "chat", "dashboard"}
+dashboard_sources = {"text", "spec", "file", "chat", "dashboard", "mcp", "yaml"}
 ```
 
 | Entry Point | Source Value | Visible on Tasks Page |
 |-------------|-------------|----------------------|
 | Dashboard UI | `"dashboard"` | ✅ |
 | Slack `run <path>` | `"chat"` | ✅ |
-| MCP `task_run` tool | `"file"` (default) | ✅ |
+| MCP `task_run` tool | `"mcp"` | ✅ |
 | CLI `kirocrew run` | `"file"` (default) | ✅ |
 | `plan()` API | `"text"`, `"spec"`, `"file"` | ✅ |
 | Cron job | must pass `source="cron"` | ❌ (filtered out) |
@@ -273,9 +265,9 @@ class Project:
 - Each step gets its own session: `taskrunner:{task_id}:task{N}` (fresh per step, reset after)
 - Each task gets its own work dir: `{work_dir}/{spec_stem}/`
 - `cancel(task_id)` cancels specific task; `cancel()` cancels all
-- Completed runs pruned on new start (keep last 10)
+- Completed cron runs are pruned on new start; other completed runs retain bounded history.
 - `_tasks` cleaned in `finally` block (no leaks)
-- Max `_MAX_CONCURRENT_TASKS` (3) running tasks — enforced in `start_background()` and `execute_plan()`
+- `start_background()` and `execute_plan()` enforce `_MAX_CONCURRENT_TASKS` before changing run state, so rejected admission cannot leave a partially started run.
 - Replanned steps also reset sessions after execution (no leaks in `_try_replan`)
 
 ## Pause / Resume
@@ -297,18 +289,16 @@ On gateway restart, any task with `status == "running"` is automatically transit
 
 ### Force Approval Gates
 
-Steps can be marked with `force_approval: true` in the spec. These gates block execution even in YOLO mode:
+`task_executor.execute_single_task()` evaluates task-level approval before agent execution.
 
-- Task pauses at the gate, shows inline Approve/Deny buttons in dashboard
-- User must explicitly approve before the step executes
-- Useful for destructive operations (deploy, delete, publish)
-- Frontend: inline approval buttons rendered in project detail view
+- With an `on_approval` callback, either `requires_approval` or `force_approval` prompts the owning surface; a denial pauses the project for editing.
+- Without that callback, `requires_approval` logs a warning and continues, while `force_approval` fails closed and prevents replanning around the gate.
+- `cli_server.py` constructs the standalone `kirocrew run TASK.md` runner without an approval callback. Use `force_approval`, not `requires_approval`, for an action that must not execute unattended.
+- The dashboard supplies the callback and renders Approve/Deny controls in the project detail view.
 
 ## Parallel Execution
 
-Parallel groups are throttled to prevent resource exhaustion from simultaneous
-kiro-cli cold starts. Each kiro-cli process spawns ~4-5 MCP server child
-processes, so N parallel tasks = ~5N processes all initializing at once.
+Parallel groups are throttled to prevent resource exhaustion from simultaneous kiro-cli cold starts. Each kiro-cli cold start spawns MCP server child processes, so concurrent tasks multiply startup pressure.
 
 Every resolved task in a parallel group is dispatched at once and an
 `asyncio.Semaphore` caps how many run simultaneously, so a slot freed by a
@@ -347,11 +337,6 @@ interrupts it.
 There is no per-index stagger delay or `os.getloadavg()` load guard — the
 semaphore and the host-safe ceiling are the only throttling mechanisms.
 
-**Superseded design.** Tasks were previously chunked into fixed batches of
-`_MAX_PARALLEL_TASKS` (3), with the next batch starting only after the whole
-current one finished — so one slow task left the rest of its batch's slots idle.
-The knob was read into `self._max_parallel_steps` but never consulted by that
-loop, so it had no effect on batch size.
 
 ## Runs Persistence
 
@@ -359,7 +344,7 @@ Finished runs saved to `{work_dir}/runs.json` as JSON array.
 Loaded on `__init__` — survives gateway restarts.
 
 - Persisted on: task completion, task delete
-- Each run stores: task_id, spec_path, status, timestamps, error, tokens, replans, step_details (result truncated to 2K)
+- Each run stores: task_id, spec_path, status, timestamps, error, tokens, replans, and bounded step results.
 - Delete via `DELETE /api/taskrunner/{task_id}` removes from memory and disk
 - A plan's default work directory is provisional until the plan is accepted. A
   failed attempt removes that taskrunner-owned directory; an explicit caller
@@ -380,9 +365,19 @@ Loaded on `__init__` — survives gateway restarts.
 | GET | `/api/taskrunner` | Status with all runs, step_details |
 | POST | `/api/taskrunner` | Start from file path or inline (`__inline__:` prefix) |
 | POST | `/api/taskrunner/cancel` | Cancel specific (`{task_id}` in body) or all |
+| POST | `/api/taskrunner/plan` | Decompose input into a planned project |
+| POST | `/api/taskrunner/plan/cancel` | Cancel planning |
+| POST | `/api/taskrunner/from-chat` | Create or update a plan from chat-provided steps |
 | DELETE | `/api/taskrunner/{task_id}` | Delete finished run from memory + disk |
+| PATCH | `/api/taskrunner/{task_id}/name` | Rename a project |
+| PATCH | `/api/taskrunner/{task_id}/tasks/{index}` | Edit a pending task |
+| PUT | `/api/taskrunner/{task_id}/plan` | Replace the planned task list |
 | POST | `/api/taskrunner/{task_id}/retry` | Retry from step N (`{from_step}` in body) |
+| POST | `/api/taskrunner/{task_id}/pause` | Pause a running project |
+| POST | `/api/taskrunner/{task_id}/execute` | Execute or resume a planned project |
 | POST | `/api/taskrunner/{task_id}/to-chat` | Open task results in a new chat slot for manual review |
+| GET | `/api/taskrunner/{task_id}/plan-context` | Return plan text for chat pre-fill |
+| GET | `/api/taskrunner/{task_id}/plan.yaml` | Export the plan as YAML |
 | POST | `/api/taskrunner/refine` | Refine user input → task spec (SSE stream) |
 | GET | `/api/taskrunner/refine` | Refine status |
 | POST | `/api/taskrunner/refine/cancel` | Cancel refine |
@@ -412,7 +407,7 @@ Loaded on `__init__` — survives gateway restarts.
     "replan_count": 0,
     "step_details": [{
       "index": 1, "title": "Create handler", "description": "...",
-      "status": "passed", "error": "", "result": "...(up to 2K)...", "attempts": 1
+      "status": "passed", "error": "", "result": "...(bounded)...", "attempts": 1
     }],
     "work_dir": "/path/to/work/dir",
     "branch_name": "kirocrew/task/my-task_1771822344"
@@ -420,26 +415,9 @@ Loaded on `__init__` — survives gateway restarts.
 }
 ```
 
-## Constants (in `task_models.py`)
+## Execution Limits
 
-| Constant | Value | Purpose |
-|----------|-------|---------|
-| `MAX_RETRIES` | 3 | Logic/test failure attempts per step |
-| `MAX_RECOVERIES` | 2 | Process crash recovery budget per step |
-| `MAX_REPLAN` | 2 | Plan revision attempts after step exhausts retries |
-| `MAX_TOTAL_TASKS` | 50 | Hard cap on total tasks (including replans) |
-| `_MAX_PARALLEL_TASKS` (in `taskrunner.py`) | 3 | Ctor fallback only, used when `compute_max_subagents` raises; the live cap is `self._max_parallel_steps` |
-| `_MAX_CONCURRENT_TASKS` (in `taskrunner.py`) | 3 | Max simultaneous task runs |
-| `TEST_TIMEOUT` | 5400 | 90 min for test command |
-| `STALL_TIMEOUT` | 3600 | 60 min with no activity → warn |
-| `STALL_CANCEL_TIMEOUT` | 7200 | 2h with no activity → reset session |
-| `DEFAULT_TOKEN_BUDGET` | 0 | 0 = unlimited |
-| `PROGRESS_FILE` | `TASK_PROGRESS.md` | Written next to spec file |
-| `SESSION_PREFIX` | `taskrunner` | Session key prefix |
-| `_RUNS_FILE` (in `taskrunner.py`) | `runs.json` | Persisted runs file |
-
-Note: constants were renamed from `_MAX_RETRIES` → `MAX_RETRIES` etc. when moved
-to `task_models.py` (no longer private to a single file).
+`task_models.py` owns retry, recovery, replan, total-task, timeout, token-budget, progress-file, and session-prefix constants; `TaskRunner` owns the concurrent-run fallback and persistence filename. `task_executor.execute_task()`, `TaskRunner._try_replan()`, `TaskRunner._watchdog()`, and `task_executor.run_tests()` consume those bounds. `test_scenarios_v2_logic.py` pins retry exhaustion and `test_taskrunner.py::test_replan_blocked_by_step_limit` pins the total-task boundary, so documentation names the enforcement seams instead of copying tunables.
 
 ## Notifications
 
@@ -449,7 +427,7 @@ All notifications prefixed with `[spec_name]` via `_notify(title, body, run=run)
 |-------|-------|------|
 | Task started | 🚀 Task started | Spec name |
 | Plan ready | 📋 Plan ready | Step list |
-| Step passed | ✅ Step N/M | Title + result preview (500 chars) |
+| Step passed | ✅ Step N/M | Title + bounded result preview |
 | Step failed | ❌ Step N/M failed | Title + error |
 | Task completed | ✅ Task completed | Steps passed/failed, elapsed, tokens, work dir, full step list |
 | Task error | ❌ Task error | Exception message |
@@ -549,12 +527,8 @@ Independent review using separate session (`taskrunner:{task_id}:review`):
 
 Two-layer approval during step execution:
 
-1. **Hook rules** checked first: `hooks.on_tool_call(title)` → DENY/ALLOW
-2. **Interactive approval** via `on_tool_approval` callback (if set):
-   - In gateway: routes through `_interactive_approval` → checks YOLO/Trust mode → `DashboardState.request_approval()` → WS broadcast → user clicks ✅/🚫
-   - 2-hour timeout on interactive approval (auto-reject)
-   - YOLO mode: auto-approves all
-   - Trust mode: auto-approves when all slots trusted
+1. `task_executor.execute_task()` evaluates hook rules first; an explicit hook auto-approval remains eligible, while a deny remains a denial.
+2. When no hook grants the request, `on_tool_approval` decides it if the runner has a callback; otherwise the headless path rejects the tool with `headless_no_authorization`.
 
 ### Per-run auto-approve (trust) toggle
 
@@ -573,9 +547,7 @@ Two guardrails remain intact for a trusted run:
 
 - **Hook deny-lists / sensitive-path blocks** are evaluated BEFORE the
   auto-approve check, so a `TOOL_DENY` still rejects the tool.
-- **`force_approval` / `requires_approval` task gates** are a separate
-  task-level path (top of `execute_single_task`) and are unaffected — they
-  still block/prompt regardless of `auto_approve`.
+- **`force_approval`** is a separate task-level path at the top of `execute_single_task()` and fails closed when no approval handler exists. **`requires_approval`** only prompts when that handler exists; without it, the task continues after a warning.
 
 The mid-stream context-overflow check still runs before final approval.
 
@@ -602,23 +574,7 @@ IS held by `SafetyOverride` — as a **task-scoped grant** — so per-run trust 
 audited and expires through the same primitive the `backend-security-controls`
 rule mandates, with no independent approval state living on the run:
 
-- **SafetyOverride scoped grant (audited, TTL-bounded, slide-renewed)** — enabling
-  `auto_approve` calls `safety_override().activate_scoped("taskrunner:{task_id}:autoapprove",
-  source="dashboard")`, which fail-closed audits the activation to the SEL BEFORE
-  committing and stamps a TTL (dashboard window, 6h, under the 24h hard ceiling).
-  The permission branch authorizes via `is_scope_active(scope)` before EVERY
-  approval; when the grant lapses (or is absent, e.g. after a gateway restart) the
-  run's intent is revoked (`auto_approve` cleared, SEL `task.auto_approve_expired`)
-  and the tool falls through to interactive / deny-by-default. To avoid a long but
-  *actively-progressing* run losing trust mid-flight at the base TTL, each
-  auto-approved tool call slides the grant forward via `renew_scoped()` — capped at
-  the 24h hard ceiling from first activation, so an abandoned (idle) run still lapses
-  after the base window. `scope_remaining_secs()` is surfaced in `build_status`
-  (`auto_approve_remaining_secs`) so the dashboard can warn before expiry.
-  `Project.auto_approve` is only the persisted UI-intent flag; the live authorization
-  is the scoped grant. Setting/clearing both sides is owned by a single
-  `TaskRunner._grant_run_trust(run, enabled)` so the intent flag and grant cannot
-  diverge; grants are revoked at run teardown (`_release_run_runtime`).
+- **SafetyOverride scoped grant (audited, TTL-bounded, slide-renewed)** — enabling `auto_approve` calls `safety_override().activate_scoped("taskrunner:{task_id}:autoapprove", source="dashboard")`, which fail-closed audits the activation to the SEL before committing and stamps the dashboard-window TTL. `is_scope_active(scope)` authorizes every approval; when the grant lapses or is absent after restart, the run intent is revoked and the tool falls through to interactive approval or denial. Each auto-approved tool call slides the grant within its hard ceiling, so an idle run lapses. `scope_remaining_secs()` feeds `build_status`; `Project.auto_approve` is only persisted UI intent, while `TaskRunner._grant_run_trust(run, enabled)` owns both intent and grant so they cannot diverge, and `_release_run_runtime()` revokes the grant at teardown.
 - **Deny-by-default parsing** — the API reads `auto_approve` as `body.get(...)
   is True`, so only a literal JSON `true` enables trust; truthy non-booleans
   (`"false"`, `"0"`, `[]`, `{}`) do NOT.
@@ -645,13 +601,9 @@ rule mandates, with no independent approval state living on the run:
 
 ### Scope limitation (cron / MCP unattended runs)
 
-Per-run trust is intentionally reachable **only** from the dashboard toggle, so
-cron-scheduled and MCP/chat-launched runs — which are headless by construction —
-cannot carry it and still hit the `headless_no_authorization` deny-by-default
-branch. Auto-granting recurring trust to a cron is a deliberately larger risk, so
-that surface is **not** covered by this feature and continues to rely on the
-operator's existing global controls. Extending unattended trust to recurring runs
-is a possible follow-up, not a current goal.
+Per-run trust is reachable only through the dashboard launch endpoints' `_gate_auto_approve()` check. `cli_server.py` does not request it when it constructs the standalone runner, so `kirocrew run TASK.md` cannot turn on run-scoped tool approval. With no `on_tool_approval` callback, `task_executor.execute_task()` rejects every tool request that lacks explicit hook approval; `test_taskrunner_autoapprove.py::test_headless_no_authorization_rejects` pins this fail-closed posture.
+
+This tool-authorization default does not convert `requires_approval` into an unattended task gate: `execute_single_task()` continues a `requires_approval` task when no `on_approval` callback exists. A spec that needs an attended task boundary uses `force_approval`; the standalone CLI then stops as failed rather than proceeding.
 
 ## Watchdog
 
@@ -663,8 +615,7 @@ Activity-aware stall detection. Tracks `run.last_task_time` which is bumped on:
 
 Only fires when there is truly ZERO activity for the stall period.
 
-- 60 min no activity → ⚠️ warning notification
-- 2h no activity → 🔧 session reset → `AcpProcessDied` → recovery retry
+- Sustained inactivity first emits a warning notification, then resets the session and enters `AcpProcessDied` recovery.
 - Resets the current step session: `taskrunner:{task_id}:task{current_task}`
 - Stall flag cleared on recovery (can fire again if retry also stalls)
 - `last_task_time` reset after recovery (fresh window for retry)
@@ -678,22 +629,9 @@ Only fires when there is truly ZERO activity for the stall period.
   - Returns `{"steps": [...], "acceptance_criteria": [...]}` — criteria shown in final acceptance step
   - Backward compatible with plain JSON arrays (no criteria → step-title fallback)
 - Self-review: `taskrunner:{task_id}:review` (separate session, reset in finally) (owned by `task_executor.py`)
-- Context compaction between steps routes through the shared
-  `SessionManager.compact_if_needed(key)` path (#4686) — same dedup, failure/
-  ineffective cooldown, turn-semaphore exclusion, and skills reinjection as
-  gateway compaction; a `"busy"` decline is left alone and retried on a later
-  check (no direct `provider.compact()` fallback). The reset-if-still-≥95%
-  post-check now lives in the shared path: it fires on the attempt's own
-  IMMEDIATELY-MEASURED effect verdict (`_POST_COMPACT_RESET_PCT`), awaited
-  on this seam (outcome `"reset"`) so the next step cold-starts instead of
-  racing the recovery; deferred next-reading settles only damp (they cannot
-  distinguish a failed compaction from later turn growth), with the
-  mid-stream overflow guard covering the interim.
+- Context compaction between steps routes through `SessionManager.compact_if_needed(key)`, preserving the gateway's deduplication, cooldown, turn-semaphore exclusion, and skills reinjection. A `"busy"` decline is retried later with no direct `provider.compact()` fallback. Its shared post-check uses the attempt's immediate effect verdict (`_POST_COMPACT_RESET_PCT`) and awaits a reset before the next step cold-starts; deferred readings only damp later growth, while the mid-stream overflow guard covers the interim.
 
-Every step gets `is_new=True` on its first message, which triggers full `ContextBuilder`
-injection: user preferences, active projects, recent history, semantic memory, lessons,
-episodic memory (queried by step prompt text), and triggered skills. Same ~15k budget
-as a normal chat session.
+Every step gets `is_new=True` on its first message, which triggers full `ContextBuilder` injection: user preferences, active projects, recent history, semantic memory, lessons, episodic memory queried by the step prompt, and triggered skills. The budget matches a normal chat session.
 
 ## Dynamic Refine
 

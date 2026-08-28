@@ -30,12 +30,7 @@ pins the absence.
 
 ### Halves are always reclaimed together
 
-`_unit_paths()` is the single answer to "what files is this session made of", and
-move, restore and delete all resolve through it. Reclaiming one half produces a
-session that is broken rather than gone: without its replay log a session still
-lists but cannot resume, and without its transcript a resumable session has no
-history or search. `TestMoveTakesBothHalves` and `TestRestoreIsAllOrNothing` fail
-if either half is dropped.
+`_unit_paths()` is the single answer to "what files does staging move", including replay sidecars and transcript archive segments. Restore instead consumes one manifest entry at a time and either returns every listed file in that session or leaves the entry staged; emptying calls `_unlisted_files()` before deletion. Those distinct seams keep a move, undo, or deletion from producing a half-session. `TestMoveTakesBothHalves` and `TestRestoreIsAllOrNothing` fail if either half is dropped.
 
 Restore is all-or-nothing per session for the same reason. A file whose original
 path is occupied again blocks its whole session from being restored — the occupant
@@ -97,46 +92,11 @@ the legacy stem fails instead of agreeing with itself.
 
 ## An instance that cannot see who is live must not reclaim
 
-The exclusion set comes from **this** instance's session map, but the kiro-cli
-replay store can be shared. When `KIROCREW_HOME` is overridden while `KIRO_HOME` is
-not — a dev gateway or a pod — this instance has its own map and the machine-wide
-store, so every session belonging to the default instance is missing from the map it
-consults: a resumable conversation reads as retired and could be staged and then
-emptied out from under a gateway this process cannot see.
+`reclaim_block_reason()` blocks an isolated data home whose replay store is outside that home: its local session map cannot establish ownership of the shared store. It compares resolved paths and requires containment rather than checking environment-variable presence or a default path, so an unsafe override that falls back to the shared default cannot appear isolated. The legacy pre-migration home is a default, not isolation.
 
-`reclaim_block_reason()` detects that configuration and `move_to_trash` refuses
-outright. Two things about how it decides:
+`cotenant_sids()` handles discoverable pod candidates differently. A pod with its own replay store cannot own files in this store. A candidate that claims sessions but has no own store, or whose map cannot be read or parsed, makes `move_to_trash()` refuse because it can resume a session after the pre-move snapshot. A dev gateway at an arbitrary data home is not discoverable and remains a Known Limitation.
 
-- It compares **resolved paths**, never whether the environment variables are set.
-  Both overrides are validated and silently fall back to the default when they name
-  an unsafe target, so `KIRO_HOME=/etc` beside an isolated `KIROCREW_HOME` leaves
-  the process on the shared store while a presence test reports it isolated.
-- It decides by **containment**, not by comparing the store against its default
-  location. Once the data home is isolated, the store must be that data home or live
-  inside it. A default-location test would pass the arrangement where sharing is
-  least visible: two isolated instances pointed at one *custom* `KIRO_HOME` see
-  neither the default store nor each other's maps.
-- The **legacy pre-migration home counts as a default**, not as isolation. An
-  install that has not yet migrated legitimately resolves to `~/.kirocrew`, and
-  treating that as an isolated instance refused every such install.
-- The refusal is **symmetric**. A default instance is also blocked when a
-  discoverable co-tenant shares its store: a pod isolates `KIROCREW_HOME` but
-  deliberately not `KIRO_HOME`, so each pod home under the pod root reads the
-  machine-wide replay store while keeping its own session map — and from the default
-  side, the pod's sessions read as retired. `_replay_store_cotenants()` enumerates
-  the pod root (host-side state at a known location) and the message names the
-  eviction command, because a refusal a user cannot act on is not better than the
-  hazard. A dev gateway pointed at some other `KIROCREW_HOME` is **not**
-  discoverable and remains a Known Limitation.
-
-Because that check reads real host state, tests must isolate `KIROCREW_POD_ROOT`
-alongside the homes, or their result depends on whether the machine happens to have
-pods.
-
-The freshness floor narrows the window but does not close it, since a session idle
-for a day is still resumable. Isolating both homes, or neither, is safe. The reason
-is surfaced in the report as `reclaim_blocked_reason` so a client can explain rather
-than offer an action that can only be refused.
+The freshness floor narrows the window but does not establish ownership, so the report exposes `reclaim_blocked_reason` for a client to explain rather than offering an action that `move_to_trash()` must refuse. Tests that inspect this host state isolate `KIROCREW_POD_ROOT` with the homes.
 
 ### The index is re-read after the scan, inside the lock
 
@@ -309,19 +269,9 @@ its own payload.
 
 ### Manifests
 
-Every batch carries an append-only `manifest.jsonl`: a header line, then one line
-per session recording each file's staged path, original absolute path, and size.
-Restore reads origins from the manifest instead of reconstructing them, so a layout
-change in either store cannot send a restored file to the wrong place.
+Every new batch starts an append-only `manifest.jsonl`: a header line followed by one entry per staged session recording each file's relative staged path, original path, and size. `_append_entry()` flushes each entry, but it does not `fsync`, so the implementation does not promise device-persistent durability across a power loss. `_manifest_records()` retains every valid record it can read and ignores a trailing malformed record, while `_unlisted_files()` prevents deletion of files that no retained manifest entry names. `TestTrashAccounting::test_a_truncated_final_line_does_not_lose_the_batch` pins that recovery posture.
 
-Append-only is load-bearing twice over. A batch can span six figures of sessions,
-so rewriting a whole-document manifest per session would cost quadratic bytes; and
-an interruption leaves every completed line intact, so a partial batch stays
-restorable. A trailing partial line is skipped rather than failing the batch —
-`TestTrashAccounting::test_a_truncated_final_line_does_not_lose_the_batch`.
-
-A batch with no readable manifest is omitted from `list_trash()`: its files could
-not be put back, so offering it as restorable would be a false promise.
+A partial restore is the exception to append-only growth: `_rewrite_manifest()` writes a temporary replacement and uses `os.replace`. That gives readers the old or replacement pathname during the running filesystem operation, not a power-loss durability guarantee. A batch with no readable manifest is omitted from `list_trash()`: its files could not be put back, so offering it as restorable would be a false promise.
 
 **The directory is the batch's identity, not the manifest header.** A header
 claiming a different batch id would make a targeted empty delete the batch it named
@@ -474,9 +424,7 @@ ends of every record rather than acting on it:
   `Path("/a/b") / "/etc/passwd"` is `/etc/passwd` — joining an absolute string
   discards the base entirely, so an unchecked `rel` would let restore pick up any
   file on the host.
-- `_origin_path()` accepts an origin only inside the session or archive stores.
-  Restore *writes* to that path, so an unconstrained origin is an arbitrary-write
-  primitive: a tampered manifest could otherwise relocate a credential file.
+- `_canonical_origin()` derives the restore destination from `rel`; `_origin_path()` only validates the recorded origin before restore requires it to agree with that derived destination. A manifest cannot choose another in-store session file or an arbitrary host path as the write target.
 
 A record failing either check blocks its whole session, consistent with
 all-or-nothing restore. `TestManifestIsUntrusted` covers the absolute, traversing
@@ -501,13 +449,9 @@ SEL. Every non-2xx body carries a machine-readable `code`.
 Rows are sorted biggest-first on the **units**, before the payload is built:
 sorting heterogeneous dicts does not type-check.
 
-The GET on the collection is uncached: it walks both stores, so it is meant to be
-fetched when a screen opens or after an action, not on a poll. Every operation is
-offloaded with `asyncio.to_thread` because a store reaching six figures of files is
-far too much filesystem work for the event loop.
+The collection GETs are not HTTP-cached and are not polling endpoints, but `measure()` and `list_units()` may reuse a short-lived process-local filesystem scan. `select_reclaimable()`, `move_to_trash()`, and the handler's `_classify()` pass an uncached read because a stale scan or co-tenant map must never decide a refusal. `invalidate_scan_cache()` runs after every mutation. `test_a_reclaim_does_not_select_against_a_cached_pass` and `test_the_pre_classification_never_reads_a_cached_cotenant_pass` pin that boundary.
 
-`GET .../empty` is the exception that CAN be polled, and only because it reads
-counters this process already holds and touches no store.
+The dashboard handlers offload every store-accessing path with `asyncio.to_thread`; `kiro_crew.session_storage` itself is synchronous, so any other async caller must do the same. `GET .../empty` is the exception that can run on the event loop because it reads only process-local job counters and touches no store.
 
 Error codes: `restricted_session` (403), `unknown` (404, no such uid on the detail
 route), `invalid_body`, `invalid_threshold`, `cleanup_refused`, `invalid_batch`,
@@ -662,17 +606,7 @@ instead of the trash over-deleting. `TestEmptyTrash` and
 
 ## Constants
 
-| Constant | Value | Location |
-|---|---|---|
-| `TRASH_DIR_NAME` / `TRASH_SESSIONS_LEAF` | `trash` / `sessions` | `session_storage.py` |
-| `STAGE_CLI_LEAF` / `STAGE_CREW_LEAF` | `cli` / `crew` | `session_storage.py` |
-| `MANIFEST_NAME` | `manifest.jsonl` | `session_storage.py` |
-| `MANIFEST_SCHEMA` | `1` | `session_storage.py` |
-| `BUCKET_DAYS` | `(7, 30, 90)` | `session_storage.py` |
-| `MIN_RECLAIM_AGE_DAYS` | `1.0` | `session_storage.py` |
-| `MUTATION_LOCK_NAME` | `session-storage.lock` | `session_storage.py` |
-| `ARCHIVE_SEGMENT_DELIMITER` | `__` | `history.py` |
-| `_MAX_SELECTION` | `200000` | `dashboard/handlers/session_storage.py` |
+`kiro_crew.session_storage` owns the trash layout, manifest schema, age policy, and mutation-lock constants; `kiro_crew.dashboard.handlers.session_storage` owns the request selection bound. Callers import those constants rather than duplicating their literals, so code and tests remain the source of truth when the policy changes.
 
 ## Known Limitations
 
@@ -688,21 +622,8 @@ instead of the trash over-deleting. `TestEmptyTrash` and
   conversation only works if that conversation is unmapped.
 - The trash never expires. It grows until a user empties it, which means reclaiming
   space takes two deliberate actions rather than one.
-- `measure()` walks both stores on every call with no caching, so a store with
-  hundreds of thousands of files makes the endpoint slow to answer.
-- **Every mapped session is unreclaimable, and on a long-lived install that is most
-  of what a user recognises.** `active_sids` is `frozenset(mapping.values())`, so
-  being *paired* in the session map and being *resumable* are read as the same fact,
-  and nothing retires a map entry while its files exist. The invariant: a mapped
-  session is always refused as `resumable`, so the reclaimable space is dominated by
-  replay logs that never had a transcript half. A session is refused rather than
-  having its mapping cleaned up first, so a stale entry blocks reclaiming until
-  `SessionMap.prune()` removes it — and `prune()` checks `<sid>.json`, which kiro-cli
-  never deletes, so it rarely fires. Fixing this needs a retire-then-move ordering
-  with a crash-safe tombstone, so that an interruption leaves an ordinary orphan
-  rather than a map entry pointing at missing files. (For scale, one install measured
-  in 2026-08 had 121 mapped sessions holding 198 MB against 166,476 unpaired replay
-  logs holding 27.3 GB. Illustrative only — the ratio drifts as an install ages.)
+- `measure()` and `list_units()` may reuse a short-lived process-local scan, but the uncached selection and mutation paths still enumerate the stores; a large store remains expensive whenever a current answer is required.
+- **Every SID returned by `SessionMap.mapped_sids_by_key()` is unreclaimable.** `_build_index()` makes those SIDs `active_sids`, and `move_to_trash()` refuses active units. `SessionMap.prune()` clears a stale SID only after its metadata file is absent; reclamation cannot clean the mapping first because that would make an otherwise resumable session eligible. A safe retirement flow needs ordering that remains correct if the process stops between changing the map and staging the files.
 - The detail route reads whole files, so a client that calls it per row instead of on
   expand converts a cheap screen into a full scan of both stores.
 - A session's size counts its identifying `.json` / `.jsonl` pair and its transcript

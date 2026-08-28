@@ -2,14 +2,9 @@
 
 ## Overview
 
-File search backs the `@`-mention picker in the dashboard chat composer. A user
-types `@` followed by 2+ characters, picks a result, and the composer inserts a
-token that serializes into the prompt as an attachment marker.
+File search backs the `@`-mention picker in the dashboard chat composer. A user types `@` followed by a query that meets the endpoint minimum, picks a result, and the composer inserts a token that serializes into the prompt as an attachment marker; `test_short_query_returns_empty` pins the minimum-query refusal.
 
-Results cover both **files** and **directories**. A file is an attachment whose
-content reaches the agent. A directory is a **path reference only**: the agent
-receives the path and explores it with its own glob/grep/read tools. No
-directory listing or recursive content is inlined.
+Results cover both **files** and **directories**. A file is an attachment whose content reaches the agent. A directory is a **path reference only**: the agent receives the path and explores it with its own glob/grep/read tools. No directory listing or recursive content is inlined.
 
 ## API
 
@@ -17,11 +12,11 @@ directory listing or recursive content is inlined.
 
 | Param | Required | Description |
 |---|---|---|
-| `q` | yes | Query string. Fewer than 2 characters returns an empty result set. |
-| `project` | no | Absolute project path to scope the search to. |
-| `workspace` | no | Workspace name to scope the search to, when `project` is absent. |
+| `q` | yes | Query string. Queries shorter than the accepted minimum return an empty result set; `test_short_query_returns_empty` pins the boundary. |
+| `project` | no | An existing, non-sensitive directory after `expanduser` and `realpath` canonicalization. It takes precedence over `workspace`; `api_file_search` enforces the root check and `test_project_scoping` pins its scope. |
+| `workspace` | no | Workspace name resolved through `workspace_dir_for` only when `project` is absent. A missing workspace does not establish scope, so `api_file_search` uses its fallback roots. |
 | `kinds` | no | `all` (default), `files`, or `dirs`. Unrecognized values fall back to `all`. |
-| `limit` | no | Result cap. Default `15`, clamped server-side to `_SEARCH_LIMIT_CEILING` (60). Non-integer values fall back to the default; values below 1 clamp to 1. The clamp is a security boundary: the walk collects `limit * 10` candidates per kind, so an unbounded value would amplify server-side filesystem work. |
+| `limit` | no | Result page size. `api_file_search` normalizes it to a positive server ceiling; invalid input uses the default. The ceiling is load-bearing because candidate collection scales with the requested page size; `test_limit_clamped_at_server_ceiling`, `test_limit_non_integer_falls_back_to_default`, and `test_limit_negative_or_zero_clamped_to_floor` pin the contract. |
 
 Response:
 
@@ -36,64 +31,34 @@ Response:
 ```
 
 - `kind` is `"file"` or `"dir"`. Directory entries always report `size: 0`.
-- At most `limit` results are returned (default 15, hard ceiling 60). The
-  folder panel's expand control pages through tiers 15 → 30 → 60; callers that
-  pass no `limit` (the `@`-mention picker) keep the original 15.
-- Ranking is by fuzzy score, then **files before directories** on an equal
-  score, then shorter name, then recency. The file bias keeps directory entries
-  from crowding out the file a user is most likely searching for.
+- The endpoint returns at most the normalized `limit`; `test_max_results_capped` and `test_limit_param_honoured` pin the default and expansion behavior. The folder panel expands through its fixed tiers while callers that omit `limit` retain the default page.
+- `root` echoes the sole scoped safe root. Unscoped fallback searches return an empty `root`, as `api_file_search` constructs the response.
+- Ranking is by fuzzy score, then **files before directories** on an equal score, then shorter name, then recency. The file bias keeps directory entries from crowding out the file a user is most likely searching for; `FileIndex.search` and `api_file_search` apply the same ordering, pinned by `test_index_files_outrank_dirs_on_equal_score`.
 
 ### Result sourcing
 
 Two paths produce results:
 
-1. **In-memory index fast path.** Used when the request is scoped to a single
-   project and that project's `FileIndex` is ready and untruncated.
-2. **Per-request walk fallback.** Used otherwise, bounded by a scan budget
-   (50k entries scoped, 5k unscoped) and a collection cap. Files and directories
-   are collected into separate candidate lists, each with its own cap, and files
-   are scanned first at each level. A shared cap let a burst of matching
-   directories fill it before the files in the same directory were examined, so
-   the file-before-directory tie-break never got the chance to run.
+1. **In-memory index fast path.** Used when the request resolves to one safe scoped root and that root's `FileIndex` is ready and untruncated. `api_file_search` selects it and `FileIndex.search` applies the `kinds` filter and ranking.
+2. **Per-request walk fallback.** Used otherwise. `api_file_search` gives files and directories independent scanned-entry and candidate budgets, scans files first at each level, and applies an independent directories-entered ceiling. The independent budgets prevent one kind from starving the other, while the traversal ceiling guarantees a narrow, deep tree terminates even after a kind's collector is done; `test_files_and_dirs_have_independent_scan_budgets`, `test_many_matching_dirs_do_not_starve_files`, and `test_walk_stops_at_overall_scan_ceiling` pin those invariants.
 
-   The per-kind budgets alone do **not** bound the walk, so an independent
-   `_WALK_MAX_DIRS_VISITED` ceiling (20k directories entered) hard-stops the
-   traversal. Making the per-kind budgets independent removed the single shared
-   counter that used to terminate `os.walk`: on the default `kinds=all` request,
-   the directory counter only advances per directory *name*, so a deep tree with
-   few directories per level exhausts the file budget at the first level while
-   the directory half of the done-check stays false forever. The walk then
-   descends the entire tree doing no useful work — on every `@`-mention
-   keystroke, in the shared executor, with an aborted request unable to stop its
-   own thread.
+### Scope and containment
 
-   The ceiling counts directories **entered**, not entries scored (once a kind
-   is done its collector returns immediately, so an entries-based counter stops
-   advancing while traversal continues), and it is deliberately **not** derived
-   from the per-kind budget: in a narrow-deep tree the directory-name count grows
-   at the same rate as directories visited, so any multiple of the per-kind
-   budget is unreachable in exactly the case that needs bounding.
+`api_file_search` treats a caller-supplied `project` as the search root after canonicalization; it is not constrained to a configured workspace root. A `workspace` resolves only to its configured workspace directory. When neither establishes a root, the endpoint searches an existing `KIROCREW_PROJECT_DIR` and the Kiro Crew workspace, but never treats bare home as an implicit fallback; `test_fallback_does_not_use_home` and `test_explicit_home_project_still_searched` pin that distinction.
 
-Both paths apply the same exclusions: dot-prefixed names, a skip set
-(`node_modules`, `__pycache__`, `dist`, `build`, `venv`, `env`, `out`,
-`target`), and `is_sensitive_path`.
+The walk starts at each selected root and the endpoint accepts no descendant path parameter to resolve against it. This is not a general root-containment guard: `api_file_search` resolves each candidate only for the sensitive-path check, so a non-sensitive symlink target outside the selected root can remain a result. A sensitive symlink target is rejected on its canonical path; `test_index_file_symlink_resolved_before_sensitive_check` and `test_walk_fallback_file_symlink_resolved_before_sensitive_check` pin that refusal.
+
+Both result paths exclude dot-prefixed **files**, directories named by shared `file_index._SKIP_DIRS`, and candidates whose resolved path is sensitive. Dot-prefixed directories that are not in `_SKIP_DIRS` remain candidates but are not descended into, preserving useful configuration-folder matches without recursively exposing their contents; `test_index_offers_dot_dirs_but_not_skip_dirs`, `test_index_does_not_descend_into_dot_dirs`, and `test_walk_fallback_offers_dot_dirs_but_not_skip_dirs` pin the behavior. On macOS, the index prunes TCC-gated directories when rooted at home; the unscoped fallback also prunes them, while an explicit scoped root does not. `FileIndex._walk` and `api_file_search` enforce this distinction so background and implicit search do not repeatedly trigger consent prompts.
 
 ## Security
 
-Both file and directory candidates are resolved with `os.path.realpath`
-**before** the `is_sensitive_path` check, so a symlink pointing into a sensitive
-tree is rejected on its real path rather than its link path. This matches the
-existing precedent in `api_browse_dirs` / `api_browse_files`. The two branches
-are deliberately symmetrical: a divergence would let a sensitive target be
-reachable as a file but not as a directory, or the reverse.
+Both file and directory candidates are resolved with `os.path.realpath` **before** the `is_sensitive_path` check, so a symlink pointing into a sensitive tree is rejected on its real path rather than its link path. `FileIndex._walk` and the fallback collector inside `api_file_search` must remain symmetric: a divergence would let a sensitive target be reachable as a file but not as a directory, or the reverse. Realpath here guards sensitive targets, not root containment; the scope rule above documents the deliberate boundary.
 
 ## FileIndex
 
-`FileIndex` keeps an in-memory list of entries per project root, rebuilt every
-30 seconds on a background task, capped at 100,000 entries.
+`FileIndex` keeps an in-memory list of entries per canonical project root, rebuilds it on a background refresh loop, and shares instances across slots through `FileIndexRegistry`. `test_acquire_same_root_shares_index`, `test_release_stops_index_at_zero_refcount`, and `test_stop_cancels_refresh` pin lifecycle and ownership.
 
-Each entry is a 6-tuple: `(path, name, relpath, size, mtime, kind)` where `kind`
-is `"file"` or `"dir"` and directory entries carry `size: 0`.
+Each entry is a 6-tuple: `(path, name, relpath, size, mtime, kind)` where `kind` is `"file"` or `"dir"` and directory entries carry `size: 0`.
 
 Directories are collected during the walk rather than derived from file paths,
 so an **empty** directory is still indexed and searchable. Both files and

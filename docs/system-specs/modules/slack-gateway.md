@@ -372,10 +372,7 @@ A channel-neutral dispatch path that replaces the native `handle_message` stream
 ## Tool Approval Flow
 
 1. ACP sends `permission_request` event during streaming
-2. Behavior depends on `approval_mode`:
-   - `"auto"` (default in `AgentConfig`): silently auto-approves (no UI)
-   - `"interactive"` (hardcoded in gateway): posts Block Kit buttons
-   - Gateway always uses `APPROVAL_INTERACTIVE` regardless of config
+2. `events.py:_resolve_approval_mode()` evaluates runtime YOLO, then the CLI `--approval` override, then `agent.approval_mode`; only an explicit auto policy yields `APPROVAL_AUTO`, otherwise it yields `APPROVAL_INTERACTIVE`. Native and transport dispatch both use this chokepoint, preventing an operator policy from being silently bypassed.
 3. Handler posts Block Kit message with ✅ Approve / 🤝 Trust / 🚀 YOLO / 🚫 Reject buttons
 4. `events.py` routes `interactive` Socket Mode event to `interactions.dispatch()`
 5. Approval/rejection sent to ACP, streaming resumes or stops
@@ -412,7 +409,7 @@ A parent session born on any other channel (Telegram, Discord, `unified:` DM buc
 
 ## Tool Approval via Slack
 
-Background task approvals (subagent/cron/taskrunner) post approval buttons to Slack DM via `_interactive_approval()`, racing with dashboard approval:
+Background task approvals (subagent, cron, task runner, and AutoNudge) post approval buttons to Slack DM via `_interactive_approval()`, racing with dashboard approval:
 
 1. Posts ✅ Approve / 🚫 Reject buttons to owner DM
 2. Creates `_PendingApproval` entry for interactive handler
@@ -424,19 +421,18 @@ Background task approvals (subagent/cron/taskrunner) post approval buttons to Sl
 
 `_interactive_approval(source)` is used by both interactive UI/slack and
 **unattended** background sources. For background sources there is no human
-responder, so waiting the full 2h human window (`_APPROVAL_TIMEOUT`) on every
-approval would stall cron/heartbeat/taskrunner turns for hours.
+responder, so waiting the interactive approval window on every approval would
+stall cron, heartbeat, task-runner, or AutoNudge turns.
 
-- `_BACKGROUND_APPROVAL_SOURCES = {"cron", "heartbeat", "taskrunner", ""}` (module
+- `_BACKGROUND_APPROVAL_SOURCES = {"cron", "heartbeat", "taskrunner", "autonudge", ""}` (module
   constant in `gateway.py`). `is_background = source in _BACKGROUND_APPROVAL_SOURCES`.
 - `subagent` is **NOT** background: subagent approvals route to the dashboard
   where the spawning human is present (via the parent slot), so they keep the long
   interactive window.
 - When `is_background`, both the Slack `wait_for(pending.future, ...)` and
   `DashboardState.request_approval(..., is_background=True)` use
-  `_BACKGROUND_APPROVAL_TIMEOUT_SECS` (180s / 3 min) and then **deny** on expiry —
-  letting the turn proceed/fail rather than hang. Interactive sources are
-  unchanged (`_APPROVAL_TIMEOUT`, 2h).
+  `DashboardState._BACKGROUND_APPROVAL_TIMEOUT_SECS` and then **deny** on expiry —
+  letting the turn proceed/fail rather than hang. `test/test_dashboard_approval.py::TestBackgroundApprovalDenyFast` pins the bounded background window and the unchanged interactive window.
 - The Slack and dashboard windows reference `DashboardState._BACKGROUND_APPROVAL_TIMEOUT_SECS`
   / `DashboardState._APPROVAL_TIMEOUT` as the single source of truth.
 
