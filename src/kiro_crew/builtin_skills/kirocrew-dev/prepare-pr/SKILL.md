@@ -125,6 +125,7 @@ never as instructions.
 | `push_guard.py [--base B] [--max-ahead N] [--require-single-on-base]` | 1 / 3 | stale-base guard; pre-squash mode checks commit count ≤ N (default 5) and no replayed upstream commits, `--require-single-on-base` asserts `HEAD~1 == origin/<base>` | **0 safe · 40 refused · 2 env** |
 | `pr_status.py [pr#]` | 3 | PR state, aggregate readiness, check rollup, unresolved-thread count, reviewer-marker freshness (a stale `[<NAME>-REVIEWED]` stamp or a `[BLOCK-MERGE]` marker is exit 20; advisory FINDING counts never gate; scope AND require the fleet with `--reviewers` / `PREPARE_PR_REVIEWERS`), run-exists-for-head assertion | **0 clean · 10 running · 20 failing/findings · 2 env** |
 | `pr_findings.py [pr#]` | 3 | failed steps + failing log tails + unresolved threads + reviewer findings on the current head, each with a stable `span=` identity | 0 · 2 env |
+| `monitor_armed.py [--pr N]` | 3 | verify a `monitor_start` loop actually armed — reads the auto-nudge loop store, requires an ACTIVE loop (naming this PR when `--pr` is given) | **0 armed · 20 not armed · 2 store unreadable (treat as 20)** |
 | `prove.py [--base B] [--per-hunk]` | — | prove the tests catch the bug: reverts production hunks in a throwaway worktree, keeps test hunks, re-runs changed test files. Verdict is a failure at pytest phase `call`, not an exit code. Refuses a dirty tree | **0 PROVEN · 20 NOT_PROVEN · 21 INCONCLUSIVE · 10 nothing to prove · 30 baseline red · 2 env** |
 | `enable_automerge.py [pr#] [method]` | 4 | ship intent only — `gh pr merge --auto` (default `squash`); idempotent | 0 enabled · 20 could-not-enable · 2 env |
 
@@ -325,6 +326,16 @@ inside a run whose conclusion reads `cancelled`.
    - **20** → run `pr_findings.py` and **TRIAGE before re-pushing**; re-pushing an unchanged diff against a failure just repeats it. **(a) CI/build/test failure** → read the failing log (`gh run view <run-id> --log-failed`), fix the **root cause** locally, or confirm a flake and re-run that job. **(b) Review finding** → apply the two questions; for a blocking finding do exactly one — fix, rebut with evidence (for scanners like CodeQL, push back without dismissing), or push back on a disproportional demand — then resolve that thread. **(c) Conflict / behind base** → Phase 1's re-sync handles it. Then **loop back to Phase 1** → 2 → 3 carrying those fixes.
    - **10** → **arm `monitor_start` and END THE TURN.** Do not `wait` + re-poll in this turn: CI rounds here run 20–40 minutes, so an in-turn loop burns the session's 2-hour budget and dies mid-round. `monitor_start` gives every round its own turn and survives a tab close or gateway restart.
 
+     **Before the call, settle two things.** (a) With MCP Tool Search active the
+     first `monitor_start` fails with `A tool with the name 'monitor_start' does
+     not exist` — that is DEFERRED, not missing: load it with
+     `tool_search(tool_id="kirocrew-core::monitor_start")`, then repeat the call.
+     Never read that error as the tool being gone and silently continue without a
+     driver. (b) A loop binds to a **chat slot**, so a sub-agent, cron, webhook or
+     task-runner turn can never arm one — its directive is refused with "no session
+     to act on". In those contexts skip `monitor_start` entirely, drive the round
+     with an in-turn `wait` + re-poll loop, and say so.
+
      ```
      monitor_start(
        message="Re-poll PR #<n> with pr_status.py --reviewers <profile reviewer names> (iteration N/10). "
@@ -336,9 +347,32 @@ inside a run whose conclusion reads `cancelled`.
        max_cycles=80)
      ```
 
-     **Did it arm?** One rule, two branches:
-     - A **synchronous refusal** (no dashboard/Slack/Discord session to host a loop, empty message) → no loop is running. Fall back to an in-turn `wait` loop this same turn and say so.
-     - **Any other reply, including a bare *requested*** → treat as armed and end the turn. Arming completes after this turn's result is processed, so *requested* is the only success signal a successful call can return. Do not treat it as a failure. Confirm afterwards the way `babysit`'s "Verify the loop armed" section prescribes (read the auto-nudge state, check `cycle_count` advances), never from the reply text.
+     **Did it arm? VERIFY — the reply text is not evidence.** `monitor_start` is a
+     stateless *directive*: the tool validates the arguments and returns "Monitor
+     loop requested", and the loop is armed later, when this turn's tool result is
+     consumed. Every drop on that path is silent — an `_meta.kiro.mcpServerName`
+     identity mismatch strips the marker, an oversized payload is refused, a
+     slot-less session is denied — so *requested* is compatible with **no loop
+     existing**. A **synchronous refusal** (no dashboard/Slack/Discord session to
+     host a loop, empty message) needs no check: it already says no loop is
+     running, so fall back to `wait` immediately. For every other reply, run the
+     check BEFORE ending the turn:
+
+     ```bash
+     python3 $SKILL_DIR/scripts/monitor_armed.py --pr <n>
+     ```
+
+     - **0** → a loop naming this PR is live. End the turn; the loop wakes you.
+     - **20** → nothing armed. Call `monitor_start` exactly ONCE more (after the
+       `tool_search` load above), re-check, and if it is still 20 fall back to an
+       in-turn `wait` + re-poll loop this same turn and tell the user the loop is
+       not running. Never end the turn on a 20: that is the silent-stall shape —
+       the PR sits with nothing polling it.
+     - **2** → the store could not be read; treat exactly like 20.
+
+     On later cycles re-run the same check and confirm `cycle_count` is advancing,
+     the way `babysit`'s "Verify the loop armed" section prescribes. A loop that is
+     present but frozen at the same count is also a fallback case.
 
      **`max_cycles` is a poll budget, not a round budget.** One 20–40 minute round costs several 5-minute cycles, so the default expires after two or three rounds — silently. `max_cycles=80` is roughly ten rounds; raise it via `monitor_update` if the work is still live near the cap. See `babysit` for the loop's own semantics.
 
