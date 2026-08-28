@@ -715,6 +715,29 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "dep_sync.py::_probe_interpreter",
         "dep_sync.py::sync",
         "dep_sync.py::sync_or_reinstall",
+        # npm_preflight is the sync's pre-merge installability probe, and like
+        # dep_sync it runs AS one of the sync steps -- which server.py already
+        # wrapped through sandboxed_spawn_argv before handing it to the runner.
+        # So both of its spawns are already inside that sandbox, and routing them
+        # again would nest one sandbox inside itself; the chokepoint is applied at
+        # the call site, exactly as for server.py::worker.
+        #
+        # Neither argv is agent-influenced. _extract spawns
+        # `<git> -C <repo> show <remote>/<base branch>:website/<fixed filename>`:
+        # the binary comes from _trusted_bin (never PATH), the repo from the
+        # operator-configured checkout, the branch from the BASE_BRANCH constant,
+        # and the three filenames from a module-level tuple. probe spawns
+        # `<npm> ci --ignore-scripts --no-audit --no-fund` with cwd set to its own
+        # mkdtemp scratch directory -- not a repository, and not a path any caller
+        # supplies.
+        #
+        # The lockfile it installs IS repo-controlled, but that is input data to
+        # npm rather than steering of argv or cwd, it is the same content the real
+        # `npm ci` step installs, and --ignore-scripts is what keeps that content
+        # from getting code executed. A filesystem-scoped wrapper here would also
+        # block the scratch-directory writes that are the whole point of the probe.
+        "apps/builtins/dev_fleet/npm_preflight.py::_extract",
+        "apps/builtins/dev_fleet/npm_preflight.py::probe",
         # Foreground last-resort restart (Make Live on hosts with no drivable
         # service manager): a detached `kirocrew restart --port <marker port>`,
         # fixed argv whose binary is validated (basenamed kirocrew, absolute,

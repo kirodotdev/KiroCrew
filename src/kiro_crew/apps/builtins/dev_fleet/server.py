@@ -52,7 +52,7 @@ from typing import Any, Callable
 from aiohttp import web
 
 from kiro_crew import dep_sync, frontend, hooks, platform_compat
-from kiro_crew.apps.builtins.dev_fleet import gateway_service
+from kiro_crew.apps.builtins.dev_fleet import gateway_service, npm_preflight
 from kiro_crew.apps.proxy_auth import raw_request_target
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.env import find_node_tool, node_bin_dirs
@@ -1238,6 +1238,120 @@ _SHUTDOWN_IN_PROGRESS = False
 _RUNS_MAX_COMPLETED = 50
 
 
+#: ``_start_run`` label of the sync. The diagnosis stamp is gated on it because
+#: the sync runner is the only script that enforces the reserved-code
+#: reservation; a `provision` run reaches the same stamp while executing an
+#: agent-authored branch, and must not be able to assert a cause.
+_SYNC_RUN_LABEL = "sync"
+
+
+def _sync_base_ref() -> str:
+    """The ref this process pins the revision it is about to merge to.
+
+    ``<remote>/<base branch>`` cannot serve for this: it is a MUTABLE name, and
+    the status refresher re-fetches it every ``_NET_REFRESH_S`` seconds in this
+    same process. Resolving that name once in the probe and again in the merge --
+    with a real install in between -- lets the two land on different commits, so
+    the probe would certify a revision the merge does not install. Fetching the
+    tip into a ref of our own closes the window instead of narrowing it: the
+    refresher's fetch writes only the remote-tracking refs, so nothing can move
+    this one for the life of the run.
+
+    The PID is part of the name because ``_SYNC_LOCK`` is a lock in ONE process,
+    which makes syncs single-flight only within a single gateway. Two gateways
+    configured against the same checkout would otherwise share this ref, and the
+    second one's fetch would move it between the first one's probe and merge --
+    reopening exactly the window the ref exists to close. That configuration is
+    already destructive for a bigger reason (two syncs running ``git merge`` and
+    ``npm ci`` against one working tree), so this does not make concurrent syncs
+    safe; it only stops one gateway from invalidating another's probe.
+
+    Safe to force and safe to reuse: the fetch step rewrites it before any step
+    reads it, so a value left by an earlier run -- or by an earlier process that
+    happened to hold this PID -- can never be consumed.
+    """
+    return f"refs/kirocrew/sync-base-{os.getpid()}"
+
+
+async def _prune_dead_sync_base_refs(repo: str) -> None:
+    """Delete pinned base refs left behind by gateway processes that are gone.
+
+    The PID in the ref name is what stops two gateways on one checkout from
+    moving each other's pin, but nothing deletes the ref on the way out -- an
+    ordinary restart strands it, and so does a killed run. Without this every
+    gateway generation would leave one behind in the OPERATOR's own checkout,
+    bounded only by ``pid_max`` and visible in ``git for-each-ref`` forever.
+
+    A ref whose PID is still alive is LEFT ALONE. It may be a second gateway's
+    live pin, and deleting that would reopen exactly the window the PID suffix
+    exists to close -- so the prune is bounded by the number of live gateways,
+    which is the real floor. Liveness goes through
+    ``platform_compat.pid_exists``: a raw ``os.kill(pid, 0)`` is a liveness probe
+    only on POSIX, and on Windows it TERMINATES the process it is asked about --
+    which here would mean killing the very live gateway this is meant to spare.
+    ``pid_exists`` also collapses "exists but we cannot signal it" into alive,
+    which is the answer we want: unsure means do not touch.
+
+    Best-effort throughout: this is housekeeping, and a sync must not fail
+    because a stale ref could not be removed.
+    """
+    listed = await _git(
+        repo, "for-each-ref", "--format=%(refname)", "refs/kirocrew/"
+    )
+    if not listed:
+        return
+    mine = _sync_base_ref()
+    prefix = "refs/kirocrew/sync-base-"
+    for ref in listed.splitlines():
+        ref = ref.strip()
+        if not ref.startswith(prefix) or ref == mine:
+            continue
+        try:
+            pid = int(ref[len(prefix):])
+        except ValueError:
+            continue  # not one of ours to reason about
+        if pid <= 0:
+            # 0 and negatives are not PIDs: on POSIX they address the caller's
+            # process group and every process respectively, so they must never
+            # reach a liveness probe even a harmless one.
+            continue
+        if platform_compat.pid_exists(pid):
+            continue  # owner still running -- may be another gateway's live pin
+        await _git(repo, "update-ref", "-d", ref)
+
+
+#: The preflight probe's source, captured ONCE at import.
+#:
+#: The snapshot has to be of the code THIS gateway is running, not of whatever is
+#: on disk when a sync happens. Copying the file at sync time left a window from
+#: gateway start until the button press in which the module could be rewritten,
+#: and the copy is then executed as the one step trusted to assert a failure
+#: cause. Reading at import closes that: these bytes are the same ones the
+#: running process imported.
+#:
+#: ``None`` when the source cannot be read (a frozen or zipimported install has
+#: no readable ``__file__``). The sync REFUSES in that case rather than falling
+#: back to reading the file later -- the fallback is exactly the window this
+#: exists to remove, and refusing is the safe direction.
+try:
+    _PREFLIGHT_SOURCE: bytes | None = Path(npm_preflight.__file__).read_bytes()
+except OSError:  # pragma: no cover - frozen/zipimported install
+    _PREFLIGHT_SOURCE = None
+
+#: Label of the ONE sync step whose binary is ours, so its exit code can be
+#: trusted to mean what :mod:`npm_preflight` says it means. Every other step runs
+#: worktree-controlled code and can exit any number it likes, so a reserved code
+#: coming from one of those is remapped rather than believed.
+#:
+#: Named for the OUTCOME rather than the mechanism: this step runs a real install
+#: against the incoming lockfile, which on a cold cache is minutes of apparent
+#: silence under a 900s timeout. "Preflight" is a term the product does not use
+#: anywhere else, and an invented word next to a spinner reads as a hang; "Verify
+#: dependencies" reads as work. The runner's trust gate compares against this
+#: constant, so the display name and the gate cannot drift apart.
+_PREFLIGHT_LABEL = "Verify dependencies"
+
+
 def _parse_step_marker(text: str) -> tuple[int | None, str | None]:
     """Parse a ``::step::<idx>::<label>`` progress marker into (index, label).
 
@@ -1266,6 +1380,12 @@ async def _start_run(
     ``sandboxed_spawn_argv`` — deleted when the run finishes.
     """
     rid = uuid.uuid4().hex[:12]
+    # The run KIND, captured before the output loop can touch it. `label` is
+    # rebound inside that loop by the `::step::` handler, so by completion it
+    # holds the last STEP's label on a run that emits markers and is UNBOUND on
+    # one that does not -- reading it at the diagnosis stamp would suppress
+    # every real cause on the sync path and raise NameError on a provision.
+    run_kind = label
     async with _RUNS_LOCK:
         # Bound memory: evict the oldest COMPLETED runs beyond the cap
         # (running entries are never evicted — reattach depends on them).
@@ -1391,6 +1511,28 @@ async def _start_run(
                 else:
                     _RUNS[rid]["status"] = "done"
                     _RUNS[rid]["exit_code"] = rc
+                    # The failure DIAGNOSIS is derived here, from the exit code,
+                    # and never read out of the child's stdout. That stream also
+                    # carries worktree-controlled build output, so a marker in it
+                    # could be forged by an install script printing the marker
+                    # and then failing -- and the dashboard would present the
+                    # forgery as authoritative, remedy included.
+                    #
+                    # An exit code is not self-authenticating either: worktree
+                    # code can exit 41 as easily as it can print a marker. What
+                    # makes the code trustworthy is the SCRIPT that produced it,
+                    # and only the sync runner enforces the reservation (a
+                    # reserved code from any step but the probe is demoted to a
+                    # plain failure). So only that kind may be stamped. A
+                    # `provision` run reaches this same line while executing an
+                    # agent-authored branch with no such remapping, and stamping
+                    # it would hand back exactly the forged-diagnosis-plus-remedy
+                    # this boundary exists to refuse -- latent only for as long as
+                    # no consumer reads `cause` off a non-sync run.
+                    if run_kind == _SYNC_RUN_LABEL:
+                        cause = npm_preflight.explain_exit(rc)
+                        if cause:
+                            _RUNS[rid]["cause"] = cause
         except asyncio.CancelledError:
             # Gateway shutdown cancels in-flight run tasks. The child runs in
             # its own process group and would outlive us, continuing to mutate
@@ -3771,7 +3913,7 @@ async def _sync_start_locked() -> dict:
             "<data-home>/node-bin-dir (written by ensure-node.sh), then in "
             "mise / asdf / nvm / fnm / volta install dirs, then in "
             f"{_TRUSTED_PATH}. Fix: run `bash ensure-node.sh` in the main "
-            "checkout and press Pull + build again — no restart needed. To point "
+            "checkout and press Pull + Build again — no restart needed. To point "
             "at a toolchain by hand instead, set "
             "KIROCREW_NODE_BIN_DIR=/abs/path/to/node/bin in the gateway's "
             "service environment; that one does need a restart, because a "
@@ -3820,10 +3962,22 @@ async def _sync_start_locked() -> dict:
     # This mirrors pip rather than deviating from it: the INSTALLED pip reads the
     # merged project's metadata, and an old pip refusing a too-new project is the
     # behaviour being stood in for here.
-    fetch_step = ([git_bin, "fetch", remote, BASE_BRANCH], "standard",
+    # The fetch pins the tip it brought into this process's own base ref as well
+    # as updating the remote-tracking ref, so the probe below and the merge here
+    # consume ONE commit even though the refresher keeps fetching underneath
+    # them. Resolved once here so every step of this run names the same ref, and
+    # refs stranded by gateway processes that are gone are cleared first so they
+    # do not accumulate in the operator's checkout.
+    sync_base_ref = _sync_base_ref()
+    await _prune_dead_sync_base_refs(str(repo))
+    fetch_step = ([git_bin, "fetch", remote, BASE_BRANCH,
+                   f"+refs/heads/{BASE_BRANCH}:{sync_base_ref}"], "standard",
                   _build_env(with_credentials=True), "Pull")
-    merge_step = ([git_bin, "merge", "--ff-only", f"{remote}/{BASE_BRANCH}"], "strict",
-                  _build_env(), "Pull")
+    # Labelled distinctly from the fetch: with the preflight between them, two
+    # steps both called "Pull" would render as Pull -> Preflight -> Pull and read
+    # like the run had restarted.
+    merge_step = ([git_bin, "merge", "--ff-only", sync_base_ref], "strict",
+                  _build_env(), "Merge")
     # The venv must be an install OF this checkout before either install step
     # runs, and that is true of the reinstall just as much as the substitute.
     #
@@ -3842,6 +3996,101 @@ async def _sync_start_locked() -> dict:
             "install, or run the sync from the checkout that venv serves."
         )}
     dep_sync_snapshot: Path | None = None
+    # Whether the frontend half runs at all is decided BEFORE the step list is
+    # assembled, because the preflight belongs between fetch and merge and there
+    # is nothing to preflight when the frontend half is skipped (see the edition
+    # rationale where the build steps are appended).
+    frontend_half = not frontend.edition_configured()
+    # The preflight goes AFTER fetch and BEFORE merge, and that position is the
+    # whole point rather than a detail.
+    #
+    # `npm ci` deletes website/node_modules before installing, so a registry
+    # that refuses one package does not merely fail the sync — it empties the
+    # tree and leaves the checkout with new source, a new lockfile and no
+    # frontend dependencies. The lockfile that will be installed is knowable as
+    # soon as fetch lands (it is in the fetched ref), and fetch moves only
+    # remote refs, so between the two is the one moment where the question can
+    # be asked while a refusal still costs nothing.
+    #
+    # The runner is fail-fast, so no extra refusal plumbing is needed: a failing
+    # preflight step stops the run before the merge step is reached.
+    #
+    # Only ONE preflight is built, and it runs in the credential-free build tier
+    # like every other npm invocation here — `_run_cmd` would have been the
+    # obvious host for it but it overwrites PATH with _TRUSTED_PATH
+    # unconditionally, and npm's wrapper needs `node` to resolve BY NAME, which
+    # only _build_env()'s node-augmented PATH provides.
+    preflight_steps: list[tuple[list[str], str, dict, str]] = []
+    preflight_cleanup: list[str] = []
+    if frontend_half:
+        # Executed as a SNAPSHOT by path, never imported from the checkout.
+        #
+        # `-I` alone was not enough. It drops the cwd from sys.path, which closes
+        # the untracked-`kiro_crew/`-at-the-checkout-root shadow -- but the
+        # install is EDITABLE, so `import kiro_crew...` still resolves into the
+        # checkout's own `src/` tree. This step is trusted to assert a failure
+        # cause precisely BECAUSE its binary is ours, so importing a tree that is
+        # itself the thing being synced put the boundary's own key under the mat.
+        #
+        # Copying the module out and running that copy is the same move this
+        # function already makes for dep_sync a few lines below, and it works
+        # here for a reason worth stating: npm_preflight imports nothing but the
+        # stdlib, so a by-path snapshot needs no package context at all.
+        #
+        # mkdtemp rather than a fixed path, for the reason the dep_sync snapshot
+        # gives: executing a script by path would put its DIRECTORY on sys.path,
+        # so a predictable one would let anything dropped beside the snapshot
+        # shadow a stdlib module it imports. mkdtemp is unguessable and 0o700 --
+        # and `-I` removes that directory from sys.path as well, so neither the
+        # checkout nor the snapshot's own neighbours can reach the interpreter.
+        if _PREFLIGHT_SOURCE is None:
+            return {
+                "ok": False,
+                "error": (
+                    "the dependency preflight's own source could not be read at "
+                    "startup, so there is nothing trustworthy to run it from — "
+                    "reinstall the gateway from a source checkout"
+                ),
+            }
+        snap_dir: Path | None = None
+        try:
+            snap_dir = Path(tempfile.mkdtemp(prefix="kirocrew-npm-preflight-"))
+            snap = snap_dir / "npm_preflight.py"
+            # The BYTES captured at import, not a copy of the file as it is now:
+            # copying at sync time would execute whatever had been written to the
+            # checkout since this gateway started.
+            snap.write_bytes(_PREFLIGHT_SOURCE)
+        except OSError as exc:
+            # mkdtemp can succeed and the COPY still fail, and nothing has
+            # registered the directory for the run's cleanup yet at this point --
+            # so remove it here or a failed sync leaks one temp directory every
+            # time, which is the same litter the pinned base refs were just
+            # taught to avoid.
+            if snap_dir is not None:
+                shutil.rmtree(snap_dir, ignore_errors=True)
+            # A full or unwritable TMPDIR must not escape as a 500: the sync
+            # answers a UI action, so it degrades to the same {"ok": False} shape
+            # every other refusal here uses. Refusing is also the SAFE outcome --
+            # without a probe there is nothing to trust, and the alternative
+            # (proceed unprobed) is exactly the destructive path this change
+            # exists to prevent.
+            return {
+                "ok": False,
+                "error": (
+                    "could not stage the dependency preflight: "
+                    f"{exc.strerror or exc} — free space in the temporary "
+                    "directory and press Pull + Build again"
+                ),
+            }
+        # File before directory: the run's cleanup unlinks each entry and falls
+        # back to rmdir, which only succeeds on an empty one.
+        preflight_cleanup = [str(snap), str(snap_dir)]
+        preflight_steps = [(
+            [sys.executable, "-I", "-X", "utf8", str(snap),
+             "--git", git_bin, "--npm", npm_bin, "--repo", str(repo),
+             "--ref", sync_base_ref],
+            "strict", _build_env(), _PREFLIGHT_LABEL,
+        )]
     if locked_scripts:
         logger.info(
             "dev-fleet: %s locked by a running process; substituting a "
@@ -3857,6 +4106,7 @@ async def _sync_start_locked() -> dict:
         shutil.copyfile(dep_sync.__file__, dep_sync_snapshot)
         steps = [
             fetch_step,
+            *preflight_steps,
             merge_step,
             ([sys.executable, str(dep_sync_snapshot), str(repo), str(target_py)],
              "strict", _build_env(), "pip install"),
@@ -3864,6 +4114,7 @@ async def _sync_start_locked() -> dict:
     else:
         steps = [
             fetch_step,
+            *preflight_steps,
             merge_step,
             ([str(target_py), "-m", "pip", "install", "-e", "."], "strict",
              _build_env(), "pip install"),
@@ -3888,7 +4139,7 @@ async def _sync_start_locked() -> dict:
     # which strips KIROCREW_EDITION_DIR, so the guard would read "stock" on every
     # install and never fire. apps/backend.py therefore propagates that one var
     # explicitly, the same way it already propagates KIROCREW_PROJECT_DIR.
-    if frontend.edition_configured():
+    if not frontend_half:
         logger.info(
             "dev-fleet: skipping the frontend build and dist staging -- this is "
             "an edition checkout and the sync build cannot recompose the "
@@ -3919,6 +4170,11 @@ async def _sync_start_locked() -> dict:
              "strict", _build_env(), "npm build + stage"),
         ]
     cleanups: list[str] = []
+    # The preflight's snapshot is removed with the run's other temporaries. It is
+    # registered here rather than left behind: a leaked mkdtemp per sync is how
+    # the dependency-only path already accumulates one, and repeating that would
+    # litter the operator's temp directory on every Pull + Build.
+    cleanups.extend(preflight_cleanup)
     if dep_sync_snapshot is not None:
         # File first, then its directory: the cleanup loop removes entries in
         # order, and a directory cannot go until it is empty.
@@ -3932,8 +4188,18 @@ async def _sync_start_locked() -> dict:
         if cleanup:
             cleanups.append(cleanup)
         wrapped_steps.append({"argv": w_argv, "env": w_env, "label": label})
+    for step in wrapped_steps:
+        if step["label"] == "npm ci":
+            # `npm ci` deletes node_modules BEFORE it installs, and a tree it
+            # emptied is the one artifact of a failed sync that cannot be
+            # rebuilt without the registry — which is exactly what is unavailable
+            # when this step fails. So the runner moves it aside first and puts it
+            # back if the step does not succeed, making the failure a no-op
+            # instead of damage. A separate "restore" step could not do this: the
+            # runner is fail-fast, so anything after a failed step never runs.
+            step["stash"] = str(Path(repo) / "website" / "node_modules")
     script = (
-        "import subprocess, sys, json\n"
+        "import os, shutil, subprocess, sys, json\n"
         # Align the writer with the reader. `_start_run` decodes this stream as
         # UTF-8 (`line.decode(errors="replace")`), but a piped stdout on Windows
         # encodes with the process locale codepage — so any non-ASCII that ever
@@ -3943,8 +4209,12 @@ async def _sync_start_locked() -> dict:
         "sys.stdout.reconfigure(encoding='utf-8', errors='replace')\n"
         f"steps = json.loads({json.dumps(json.dumps(wrapped_steps))})\n"
         f"cwd = {json.dumps(repo)}\n"
-        "for i, st in enumerate(steps):\n"
-        "    print(f'::step::{i}::{st[\"label\"]}', flush=True)\n"
+        # The reserved diagnosis codes, and the ONE step label allowed to assert
+        # one. Inlined as literals because this script is stdlib-only by design:
+        # it must not import kiro_crew, so what it does cannot change with the
+        # revision being merged underneath it.
+        f"RESERVED = {sorted(npm_preflight.RESERVED_EXIT_CODES)!r}\n"
+        f"PREFLIGHT = {json.dumps(_PREFLIGHT_LABEL)}\n"
         # reconfigure() above rebinds only THIS process's stdout object. Each
         # step is a separate process that inherits the same pipe and re-derives
         # its own encoding from the locale, so the Python steps — pip, and the
@@ -3955,14 +4225,151 @@ async def _sync_start_locked() -> dict:
         # ignore the variable and are unaffected. Assigned rather than
         # defaulted: the reader's encoding is fixed, so a divergent inherited
         # value would be the defect, not a preference to preserve.
+        "def run(st):\n"
         "    env = dict(st['env'])\n"
         "    env['PYTHONIOENCODING'] = 'utf-8:replace'\n"
-        "    r = subprocess.run(st['argv'], cwd=cwd, env=env)\n"
-        "    if r.returncode != 0:\n"
-        "        sys.exit(r.returncode)\n"
+        "    return subprocess.run(st['argv'], cwd=cwd, env=env).returncode\n"
+        # `rmtree(..., ignore_errors=True)` alone is not safe HERE, even though
+        # it is the right default elsewhere: every deletion below decides what
+        # the next rename does, so a partial removal that is silently ignored
+        # leaves a directory in place, makes the following rename fail, and ends
+        # with the transaction restoring a PARTIAL tree over a good one. So the
+        # deletions whose outcome is load-bearing are CONFIRMED, and one that
+        # will not complete stops the step with both trees intact -- a refused
+        # sync is recoverable, a half-restored node_modules is not.
+        "def gone(p):\n"
+        # rmtree REFUSES a symlink ("Cannot call rmtree on a symbolic link"),
+        # and ignore_errors=True swallows that refusal -- so a symlinked
+        # node_modules left its backup undeletable, the next sync saw both paths,
+        # and every Pull + Build from then on refused as ambiguous. A permanent
+        # wedge escapable only by hand. Unlink the link, rmtree only real trees.
+        "    if os.path.islink(p):\n"
+        "        try:\n"
+        "            os.unlink(p)\n"
+        "        except OSError:\n"
+        "            pass\n"
+        "    else:\n"
+        "        shutil.rmtree(p, ignore_errors=True)\n"
+        # lexists, not exists: a DANGLING symlink is still something at this
+        # path, and reporting it as gone would let the runner proceed as though
+        # the slot were clear.
+        "    return not os.path.lexists(p)\n"
+        # Leftover state from an earlier run is reconciled BEFORE any step runs,
+        # and BOTH halves of that belong here. Splitting them was a defect: with
+        # adoption left on the `npm ci` step, a run killed just after stashing
+        # left node_modules absent and its intact backup unclaimed, and the next
+        # run's recovery sat behind every earlier step succeeding -- so a still
+        # failing preflight meant the tree stayed missing with the copy right
+        # there. Both paths are knowable from disk with nothing applied, so both
+        # decisions are made here.
+        "for st in steps:\n"
+        "    stash = st.get('stash')\n"
+        "    if not stash:\n"
+        "        continue\n"
+        "    backup = stash + '.kirocrew-sync-backup'\n"
+        # lexists, not isdir, for every presence gate. isdir FOLLOWS a symlink,
+        # so a DANGLING node_modules reads as absent -- and then the backup-only
+        # branch below calls os.rename(<dir>, <dangling link>), which fails
+        # ENOTDIR and crashes the runner on every sync, with the tree never
+        # recovered. lexists asks the only question these gates actually mean: is
+        # there anything at this path.
+        "    have_tree = os.path.lexists(stash)\n"
+        "    have_backup = os.path.lexists(backup)\n"
+        # BOTH present is genuinely AMBIGUOUS and no rule can be right:
+        #
+        #   * killed DURING npm ci -> stash is the partial tree npm was
+        #     writing, backup is the last good one.
+        #   * a backup that outlived a SUCCESSFUL sync (its cleanup failed) ->
+        #     stash is the good tree and backup is stale.
+        #
+        # Nothing on disk tells those apart, so either choice destroys the good
+        # copy in one of them. The only move that cannot lose data is to touch
+        # NEITHER and stop -- and to say what to do next, because otherwise
+        # every later press refuses identically and the operator has to deduce
+        # that a directory needs removing.
+        "    if have_tree and have_backup:\n"
+        # The paths are LOG text; the diagnosis is the exit code, which the
+        # gateway maps. Nothing here is promoted out of stdout.
+        "        print('a previous sync left a dependency-tree backup beside the '\n"
+        "              'tree', flush=True)\n"
+        "        print('tree: %s' % stash, flush=True)\n"
+        "        print('backup: %s' % backup, flush=True)\n"
+        f"        sys.exit({npm_preflight.EXIT_TREE_AMBIGUOUS})\n"
+        # Backup only: unambiguous recovery, so claim it now rather than on the
+        # step that happens to own the transaction.
+        "    if have_backup:\n"
+        "        print('restoring a dependency tree left stashed by an earlier '\n"
+        "              'run', flush=True)\n"
+        "        os.rename(backup, stash)\n"
+        "for i, st in enumerate(steps):\n"
+        "    print(f'::step::{i}::{st[\"label\"]}', flush=True)\n"
+        # node_modules transaction. `npm ci` empties the directory before it
+        # installs, so it is moved aside first: on success the backup is
+        # dropped, and on ANY non-zero outcome (including the step raising) it
+        # is put back. rc is pre-seeded non-zero so an exception restores rather
+        # than discards.
+        "    stash = st.get('stash')\n"
+        "    backup = (stash + '.kirocrew-sync-backup') if stash else None\n"
+        # Leftover state was reconciled before this loop, so a backup cannot
+        # exist here: move the tree aside and let the step install into a clean
+        # directory, which is what `npm ci` requires anyway.
+        # lexists here too: with isdir a SYMLINKED node_modules would not be
+        # moved aside at all, so the step would run with no backup to restore --
+        # the transaction silently absent on exactly the layouts that most need
+        # it (a link into a shared store).
+        "    if backup and os.path.lexists(stash):\n"
+        "        os.rename(stash, backup)\n"
+        "    rc = 1\n"
+        "    try:\n"
+        "        rc = run(st)\n"
+        # An exit code is only trustworthy from the step whose binary is OURS.
+        # Every other step runs worktree-controlled code -- an npm lifecycle
+        # script, a vite config -- and can exit any number it likes, so a forged
+        # 41 would make the dashboard assert a registry-credential failure, with
+        # a remedy, for what was actually a build error. Reserved codes from
+        # those steps are therefore reported as a plain failure, with the true
+        # code kept in the log rather than believed.
+        "        if rc in RESERVED and st['label'] != PREFLIGHT:\n"
+        "            print('step %s exited %d, which is a reserved diagnosis '\n"
+        "                  'code; reporting it as a plain failure because only '\n"
+        "                  'the %s step may assert one'\n"
+        "                  % (st['label'], rc, PREFLIGHT), flush=True)\n"
+        "            rc = 1\n"
+        "    finally:\n"
+        # lexists: the backup is whatever `os.rename` moved here, so if the tree
+        # was a symlink the backup is one too. With isdir a DANGLING one skipped
+        # this whole block -- the tree stayed moved aside and was never restored
+        # nor dropped, which is the data loss the transaction exists to prevent.
+        "        if backup and os.path.lexists(backup):\n"
+        "            if rc == 0:\n"
+        # A backup that will not delete on the SUCCESS path is not dangerous:
+        # the tree on disk is the new good one, and the next run's both-exist
+        # branch handles the leftover. Say so rather than failing a sync that
+        # already worked.
+        "                if not gone(backup):\n"
+        "                    print('note: a dependency-tree backup could not be '\n"
+        "                          'removed and was left at %s' % backup,\n"
+        "                          flush=True)\n"
+        "            elif gone(stash):\n"
+        "                os.rename(backup, stash)\n"
+        "                print('restored %s after a failed step' % stash,\n"
+        "                      flush=True)\n"
+        "            else:\n"
+        # The rename would fail anyway, and forcing it is how a partial tree
+        # ends up installed over a good backup. Leave BOTH, name them in the
+        # log, and REPLACE the step's exit code: "the tree could not be put
+        # back" outranks whatever the step itself failed with, because it is the
+        # part the operator has to act on.
+        "                print('partial: %s' % stash, flush=True)\n"
+        "                print('backup: %s' % backup, flush=True)\n"
+        f"                rc = {npm_preflight.EXIT_RESTORE_FAILED}\n"
+        "    if rc != 0:\n"
+        "        sys.exit(rc)\n"
     )
     cmd = [sys.executable, "-c", script]
-    rid = await _start_run("sync", cmd, env=_build_env(), cleanup_paths=cleanups)
+    rid = await _start_run(
+        _SYNC_RUN_LABEL, cmd, env=_build_env(), cleanup_paths=cleanups
+    )
     _SYNC_RID = rid
     return {"ok": True, "run_id": rid}
 

@@ -118,7 +118,7 @@ verification. Route names below are relative to that prefix.
 | `/apps/dev-fleet/api/fleet` | Lightweight worktree + pod list (polled every 12s), including `main_repo` and `main_repo_inferred`. `?fresh=1` forces cache bypass. Answers `{worktrees: [], needs_setup: true}` when no main checkout was found (see Main Checkout Discovery) and `{worktrees: [], error}` when a named checkout is unreadable. |
 | `/apps/dev-fleet/api/worktree?name=` | Lazy per-branch detail: PR, commits, disk usage |
 | `/apps/dev-fleet/api/pod/logs?name=&n=` | Pod journal tail (recent N lines, default 120) |
-| `/apps/dev-fleet/api/run?id=` | Async run status + streamed output (last 60 lines) |
+| `/apps/dev-fleet/api/run?id=` | Async run status + streamed output (last 60 lines), plus `cause` on a sync failure the gateway can name |
 | `/apps/dev-fleet/api/prune-candidates` | List worktrees eligible for pruning |
 | `/apps/dev-fleet/api/prune-status` | Live prune progress: per-item state machine (`items`) + backward-compatible top-level counters |
 | `/apps/dev-fleet/api/disk` | Aggregate disk usage per worktree (async computation) |
@@ -617,6 +617,56 @@ publishes the same bundle the build just wrote into `website/dist`, which keeps
 the pinned `/assets` route and the staged `index.html` on the same hashed
 chunks. The run script stops at the first non-zero step, so a build or staging
 failure fails the sync rather than silently leaving the symlink in place.
+
+### Dependency preflight and the `node_modules` transaction
+
+`npm ci` deletes `node_modules` before it installs, so a registry refusal used to
+leave the checkout with an emptied tree, a stale bundle against new backend code,
+and no way back that did not need the registry that was unavailable. Two
+independent triggers recur: a private-registry token that expires on a clock, and
+a curated mirror that blocks a version the lockfile pins.
+
+**The symptom is handled as a transaction.** The `npm ci` step carries `stash`
+metadata; the generated runner moves the tree aside before the step, restores it
+on any non-zero outcome, and drops the backup on success. This lives in the runner
+because the runner is fail-fast — anything scheduled *after* a failed step never
+runs, which is precisely the case that needs the restore. When a tree **and** a
+leftover backup are both present the state is genuinely ambiguous (killed during
+the install leaves a partial tree plus the good backup; killed during the success
+cleanup leaves the good tree plus a half-deleted one, and nothing on disk tells
+them apart), so the runner stops and touches neither, naming both paths.
+
+**The cause is handled by a `Verify dependencies` step between `fetch` and
+`merge`.** It runs a real script-free `npm ci` in a scratch directory against the
+incoming lockfile, read from the fetched ref rather than the working tree. The
+position is the mechanism: the lockfile is knowable as soon as fetch lands, fetch
+moves only refs, so refusing there costs nothing and needs no rollback. It is not
+an auth check — retrieval is integrity-addressed, so an auth probe fails while the
+install it guards would have succeeded.
+
+Fetch, probe and merge consume ONE commit. `<remote>/<base branch>` cannot serve
+for that: it is mutable, and the status refresher re-fetches it every
+`_NET_REFRESH_S` seconds in the same process, so with a real install between them
+the probe could certify a revision the merge does not install. The fetch step also
+writes the tip it brought to a per-process ref (`refs/kirocrew/sync-base-<pid>`),
+which the refresher never touches; `_prune_dead_sync_base_refs` collects refs left
+by gateway processes that are gone, and leaves alone any whose PID is still alive.
+
+The probe executes a **snapshot** of `npm_preflight.py` copied into an unguessable
+`mkdtemp`, run with `-I`, never imported from the checkout. The module is
+stdlib-only, so the copy needs no package context. Both halves matter: `-I` drops
+the cwd from `sys.path`, and the snapshot means an editable install cannot make
+the tree being synced supply the code doing the verifying.
+
+**Failure causes reach the dashboard as an exit code, not as text.** The probe
+exits with a reserved code (41-45) and the runner owns two more (46 ambiguous
+tree, 47 restore failed); `npm_preflight.explain_exit` maps each to one
+registry-neutral sentence at run completion, surfaced as `cause` on `/run` and
+preferred by the UI over the last output line. Two properties keep it honest: a
+reserved code arriving from any step OTHER than the probe is demoted to a plain
+failure, because every other step runs worktree-controlled code that can exit any
+number it likes; and only the sync run kind is stamped at all, since `_start_run`
+is shared with `provision`, whose script enforces no such reservation.
 
 The build and the copy are ONE step because they share ONE holder of the staging
 lock (`.dist.staging.lock`, next to `static/dist`). `npm run build` empties
