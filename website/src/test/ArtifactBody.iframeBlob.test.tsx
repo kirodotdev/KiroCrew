@@ -398,6 +398,25 @@ describe('ArtifactBodyIframe surfaces a frame showing something that is not ours
     expect(screen.queryByText(/couldn't render this artifact/i)).toBeNull()
   })
 
+  it('offers a retry when the engine renavigates a spent url after a good render', async () => {
+    // THE case this feature exists for, and the one an earlier version silently
+    // skipped: the document rendered and reported, then the engine navigated the
+    // frame again on its own (a back/forward-cache eviction) and re-requested a
+    // single-use url, landing on a 404. Keying the observation on the url meant a
+    // previous document's report suppressed the window exactly when it mattered.
+    const frame = await loadedFrame('<p>evicted</p>')
+    reportHeight(frame, 420)
+    await act(async () => { vi.advanceTimersByTime(4000) })
+    expect(screen.queryByText(/couldn't render this artifact/i)).toBeNull()
+
+    // Same url, second load — nothing reports this time, because what the frame
+    // is showing is not ours.
+    fireEvent.load(frame)
+    await act(async () => { vi.advanceTimersByTime(4000) })
+    expect(screen.getByText(/couldn't render this artifact/i)).toBeTruthy()
+    expect(screen.getByRole('button', { name: /retry/i })).toBeTruthy()
+  })
+
   it('re-mints rather than re-rendering the spent url when the retry is taken', async () => {
     // Re-pointing the frame at the same spent URL recovers nothing — it 404s
     // again. Recovery is a fresh mint.

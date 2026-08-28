@@ -47,7 +47,9 @@ const NO_DOCUMENT_BOX_HEIGHT = 480
  *
  * Deliberately NOT an automatic re-mint: a second `load` also happens when a
  * link inside an artifact navigates the frame, and silently pulling the reader
- * back would fight an action they took. Surfacing the existing retry is enough. */
+ * back would fight an action they took. Offering the retry is the right response
+ * to either cause — in both, the frame has stopped showing the artifact — which
+ * is why the window re-arms on EVERY load rather than only on a new url. */
 const DOC_REPORT_GRACE_MS = 3000
 
 function readThemeVars(): Record<string, string> {
@@ -379,6 +381,13 @@ export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
             src={blobUrl}
             onLoad={() => {
               loadedUrlRef.current = blobUrl
+              // Every load restarts the observation, not just a new url. The case
+              // this exists for is the engine renavigating a SPENT url after a
+              // successful render (a back/forward-cache eviction), so keeping a
+              // previous document's report would skip the window exactly when it
+              // is needed and leave a 404 in the frame with no affordance.
+              reportedRef.current = false
+              setDocSilent(false)
               setLoadNonce(n => n + 1)
               setEverLoaded(true)
               onIframeLoad?.()

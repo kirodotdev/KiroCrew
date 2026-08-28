@@ -24,9 +24,8 @@ Security posture, mirroring the webapp-preview channel next door:
   origin does not turn model HTML into same-origin script. The sandbox flags
   match what the embedding iframes already grant, so nothing the frame could do
   before is newly permitted or newly denied. ``frame-ancestors`` on the same
-  response names the request's own origin, NOT ``'self'`` — ``'self'`` resolves
-  against this response's opaque origin and therefore matches no ancestor at
-  all, which blocks the very frames the channel exists to serve.
+  response is ``'self'`` plus the ancestors ``'self'`` cannot express — see
+  ``origin.frame_ancestors_value`` for why both halves are load-bearing.
 * Every authorization decision is SEL-audited, rejected probes included. The
   token itself is never logged.
 * Entries expire, are capped in count and size, and are evicted oldest-first, so

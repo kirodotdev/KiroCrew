@@ -37,9 +37,8 @@ Security model (all LLM-influenceable inputs re-validated at serve time):
   forces an opaque origin even if the document is opened OUTSIDE the
   sandboxed iframe — the previewed app can never reach dashboard cookies,
   storage, or same-origin APIs. ``frame-ancestors`` keeps third-party
-  sites from embedding the preview; it names the request's own origin rather
-  than ``'self'``, which would resolve against this response's opaque origin
-  and match no ancestor at all (blocking the intended embed too).
+  sites from embedding the preview; it is ``'self'`` plus the ancestors
+  ``'self'`` cannot express (see ``origin.frame_ancestors_value``).
 - Dotfiles (and thus ``.kirocrew-deploy.json`` style manifests / VCS dirs)
   are never served.
 """
