@@ -3394,6 +3394,24 @@ class TestTelegramMidTurn:
         assert sess.successes == ["telegram:kirocrew:direct:7"]
         assert sess.queued == []
 
+    def test_drain_replay_does_not_bind_the_opener(self) -> None:
+        d, _cli, sess = _dispatcher({7})
+        sess.queued = [("t1", "from-someone-else", {})]
+        seen: list[bool] = []
+        real = d.handle_message
+
+        async def _spy(msg, *args, **kwargs):
+            seen.append(msg.bind_principal)
+            return await real(msg, *args, **kwargs)
+
+        d.handle_message = _spy
+
+        async def _go() -> None:
+            await d._drain_queue("telegram:kirocrew:direct:7", 7, 7)
+
+        asyncio.run(_go())
+        assert seen == [False]
+
     def test_queue_receipt_collapses_into_single_bubble(self) -> None:
         d, cli, sess = _dispatcher({7})
         sess._busy = True
@@ -4609,7 +4627,12 @@ class TestTelegramSessionPidPublish:
                         text="hi",
                     )
                 )
-                pub.assert_awaited_once_with(sess, "telegram:kirocrew:direct:7")
+                pub.assert_awaited_once_with(
+                    sess,
+                    "telegram:kirocrew:direct:7",
+                    surface="telegram",
+                    raw_id="7",
+                )
 
         asyncio.run(_go())
 

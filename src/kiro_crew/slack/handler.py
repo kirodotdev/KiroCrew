@@ -82,12 +82,17 @@ from kiro_crew.messaging.commands import (
     spawn_command_reply,
     task_command_reply,
 )
-from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
+from kiro_crew.messaging.identity import (
+    channel_inbound_permitted,
+    exclusive_bind_raw_id,
+    publish_turn_identity,
+)
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.messaging.session_trust import _trusted_sessions as _shared_trusted_sessions
 from kiro_crew.messaging.session_trust import add_trusted_session as _add_trusted_session
 from kiro_crew.messaging.session_trust import clear_trusted_sessions, is_session_trusted
 from kiro_crew.platform import current_context
+from kiro_crew.platform.agent_identity import principal_bind_kwargs
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -2538,6 +2543,8 @@ async def maybe_route_linked_thread(
                 _linked_slot,
                 text,
                 _directive_user_origin=True,
+                _principal_surface="slack",
+                _principal_raw_id=user_id,
             )
         )
         _linked_slot.task = _chat_task
@@ -2554,6 +2561,8 @@ async def maybe_route_linked_thread(
             text,
             meta=containment_meta(_dashboard_state, _linked_slot),  # type: ignore[arg-type]
             directive_user_origin=True,
+            principal_surface="slack",
+            principal_raw_id=user_id,
         )
     _dashboard_state.push_slots_update()  # type: ignore[attr-defined]
     sel().log_tool_invocation(
@@ -3135,7 +3144,21 @@ async def handle_message(
 
         # Publish this turn's session identity so managed MCP tools resolve
         # X-Session-Key; one shared writer lives in messaging.identity.
-        await publish_turn_identity(sessions, session_key)
+        # Bind only a 1:1 IM (channel id starts with D). A channel / MPIM
+        # thread accepts another member's mid-turn steer.
+        await publish_turn_identity(
+            sessions,
+            session_key,
+            **principal_bind_kwargs(
+                text,
+                surface="slack",
+                raw_id=exclusive_bind_raw_id(
+                    user_id,
+                    exclusive=channel.startswith("D"),
+                    session_key=session_key,
+                ),
+            ),
+        )
 
         # Build message with context injection
         compressed: str | None = None

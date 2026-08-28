@@ -1199,6 +1199,28 @@ class TestQueueAndDrain:
         assert prompts == ["first\n\nsecond"]
 
     @pytest.mark.asyncio
+    async def test_drain_replay_does_not_bind_the_opener(self) -> None:
+        provider = FakeProvider([AcpEvent(kind=EVENT_COMPLETE)])
+        sessions = FakeSessions(provider)
+        d = _dispatcher(sessions, FakeCtx(), FakeClient())
+        sessions.queued = [("1", "from-someone-else", {})]
+        seen: list[bool] = []
+        real = d.handle_message
+
+        async def _spy(inbound, *args, **kwargs):
+            seen.append(inbound.bind_principal)
+            return await real(inbound, *args, **kwargs)
+
+        with mock.patch.object(d, "handle_message", _spy):
+            with mock.patch(
+                "kiro_crew.webex.transport_dispatch.drive_turn",
+                mock.AsyncMock(return_value=None),
+            ):
+                await d._drain_queue(_inbound("opener"), d._session_key(_EMAIL))
+
+        assert seen == [False]
+
+    @pytest.mark.asyncio
     async def test_the_drain_defers_past_the_collapse_cap_in_order(self) -> None:
         # Once one message no longer fits, it AND everything behind it are
         # deferred, so queue order stays exact rather than being reordered.

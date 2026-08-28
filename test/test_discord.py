@@ -2439,6 +2439,25 @@ class TestDispatcher:
         assert "after second" in d.ctx_builder.messages[1]
 
     @pytest.mark.asyncio
+    async def test_drain_replay_does_not_bind_the_opener(self) -> None:
+        """A shared-key drain can collapse another speaker's text.
+
+        Session routing still uses this turn's user_id; bind does not.
+        """
+        d, _cli, sess = _dispatcher({"u1"})
+        sess.queued = [("t1", "from-someone-else", {})]
+        seen: list[bool] = []
+        real = d.handle_message
+
+        async def _spy(msg: InboundMessage, *args: Any, **kwargs: Any) -> Any:
+            seen.append(msg.bind_principal)
+            return await real(msg, *args, **kwargs)
+
+        d.handle_message = _spy  # type: ignore[method-assign]
+        await d._drain_queue(d._session_key("u1"), "u1", "c1")
+        assert seen == [False]
+
+    @pytest.mark.asyncio
     async def test_busy_steers_and_acks_with_reaction(self) -> None:
         d, cli, sess = _dispatcher({"u1"})
         sess._busy = True

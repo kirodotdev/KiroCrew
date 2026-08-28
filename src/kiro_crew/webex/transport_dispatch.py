@@ -538,6 +538,8 @@ class WebexDispatcher:
                     notice=lambda sk, provider: self._maybe_notice(inbound, sk, provider),
                     model=self._model_pref.get(email) or None,
                     audit_caller=f"webex:{email}",
+                    principal_raw_id=email if inbound.bind_principal else "",
+                    exclusive_principal=inbound.room_type == ROOM_DIRECT,
                     after_persist=_surface_new_session,
                 ),
                 sessions=self.sessions,
@@ -1172,6 +1174,7 @@ class WebexDispatcher:
                 room_id=(convo[0] if convo and convo[0] else inbound.room_id),
                 parent_id=(convo[1] if convo else inbound.parent_id),
                 person_email=email or inbound.person_email,
+                bind_principal=False,
             )
             # interpret_commands=False: drained payloads are pure turn content, so
             # a queued "/new" must reach the model as literal text rather than

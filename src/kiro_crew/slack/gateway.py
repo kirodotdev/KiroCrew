@@ -5296,6 +5296,10 @@ class GatewayOrchestrator:
         try:
             client, is_new, _resumed = await self.sessions.get_or_create(key)
             _acquired = True
+            # Direct Slack nudge skips the dispatcher. Publish without bind
+            # after acquire so a concurrent human turn cannot have its
+            # principal cleared while it still holds the session.
+            await publish_turn_identity(self.sessions, key)
             _provider = self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"
             full_msg, _ = await run_in_embed_pool(
                 self.ctx_builder.build_message, tagged, is_new, key, provider_type=_provider
@@ -5468,6 +5472,7 @@ class GatewayOrchestrator:
                 user_id=user_id,
                 conversation_id=conversation_id,
                 text=tagged,
+                bind_principal=False,
             )
             await asyncio.wait_for(
                 dispatcher.handle_message(synthetic, interpret_commands=False),
@@ -5564,6 +5569,7 @@ class GatewayOrchestrator:
                 room_id=room_id,
                 text=tagged,
                 room_type=ROOM_DIRECT,
+                bind_principal=False,
             )
             await asyncio.wait_for(
                 dispatcher.handle_message(synthetic, interpret_commands=False),

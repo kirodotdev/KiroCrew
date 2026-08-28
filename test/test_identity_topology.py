@@ -584,3 +584,81 @@ def test_every_channel_transport_dispatch_publishes_identity() -> None:
         "X-Session-Key; otherwise they fail with HTTP 400 'missing "
         "X-Session-Key' from that channel (#232)."
     )
+
+
+def test_every_human_channel_dispatcher_names_a_principal() -> None:
+    """A human channel turn must pass surface+raw_id so login Gateway can bind.
+
+    Direct publishers (Slack / Discord / Telegram) call ``principal_bind_kwargs``.
+    Shared-pipeline channels set ``ChannelTurn.principal_raw_id``. Cron / gateway
+    unattended publishes stay unbound on purpose.
+    """
+    src = _src_root()
+    pipeline = (src / "messaging" / "dispatch.py").read_text(encoding="utf-8")
+    assert "principal_bind_kwargs" in pipeline
+    assert "principal_raw_id" in pipeline
+    assert "exclusive_principal" in pipeline
+    assert "bind_raw_id" in pipeline
+
+    missing: list[str] = []
+    for path in sorted(src.glob("*/transport_dispatch.py")):
+        text = path.read_text(encoding="utf-8")
+        if "principal_raw_id" in text or "principal_bind_kwargs" in text:
+            continue
+        if "publish_turn_identity" in text or "drive_turn" in text:
+            missing.append(str(path.relative_to(src)))
+    native_slack = (src / "slack" / "handler.py").read_text(encoding="utf-8")
+    assert "principal_bind_kwargs" in native_slack
+    assert not missing, (
+        "human channel dispatcher(s) still omit a principal raw_id: "
+        f"{missing}. Pass principal_bind_kwargs (direct publish) or "
+        "ChannelTurn.principal_raw_id (drive_turn) so a later login Gateway "
+        "can attach before session/new."
+    )
+
+
+def test_shared_pipeline_principal_bind_is_exclusive_only() -> None:
+    """A group turn that can accept another speaker must not bind a principal."""
+    src = _src_root()
+    pipeline = (src / "messaging" / "dispatch.py").read_text(encoding="utf-8")
+    assert "exclusive_bind_raw_id" in pipeline
+    assert "exclusive_principal" in pipeline
+
+    group_gated = {
+        "feishu/transport_dispatch.py": "CHAT_GROUP",
+        "webex/transport_dispatch.py": "ROOM_DIRECT",
+        "whatsapp/transport_dispatch.py": "not group",
+    }
+    for rel, needle in group_gated.items():
+        text = (src / rel).read_text(encoding="utf-8")
+        assert "exclusive_principal=" in text, rel
+        assert needle in text, rel
+
+    for rel in (
+        "teams/transport_dispatch.py",
+        "wecom/transport_dispatch.py",
+        "weixin/transport_dispatch.py",
+        "imessage/transport_dispatch.py",
+    ):
+        text = (src / rel).read_text(encoding="utf-8")
+        assert "exclusive_principal=True" in text, rel
+
+    # Hand-rolled dispatchers must use the same exclusivity rule, not bind
+    # every live inbound. Each already carries a DM/group discriminator.
+    direct_gated = {
+        "slack/transport_dispatch.py": 'channel.startswith("D")',
+        "slack/handler.py": 'channel.startswith("D")',
+        "discord/transport_dispatch.py": "exclusive=not thread_id",
+        "telegram/transport_dispatch.py": 'chat_type", "private") == "private"',
+    }
+    for rel, needle in direct_gated.items():
+        text = (src / rel).read_text(encoding="utf-8")
+        assert "exclusive_bind_raw_id" in text, rel
+        assert needle in text, rel
+
+
+def test_chat_runner_does_not_bind_steer_capable_dashboard_turns() -> None:
+    """Dashboard `_run_chat` publishes unbound so a mid-turn steer cannot inherit."""
+    text = (_src_root() / "dashboard" / "chat_runner.py").read_text(encoding="utf-8")
+    assert "Dashboard turns stay unbound" in text
+    assert "await publish_turn_identity(state.sessions, session_key)" in text

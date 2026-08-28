@@ -313,10 +313,10 @@ key. `user_jwt` stays `None` until a companion annotates.
 
 | Surface | `subject` |
 |---|---|
-| Dashboard | `dashboard+{owner}` (companion IdP sub, else the local OSS owner) |
-| Slack / Discord / … | `{channel}+{provider_user_id}` |
-| CLI | `cli+{os_user}` |
-| Cron / TaskRunner | `cron+{job_owner}` |
+| Dashboard | **unbound** — `_run_chat` publishes the pid sidecar only. A queued follow-up, a linked Slack reply, or another tab can steer the same slot, so binding the opener would run that later speaker under the opener's credentials. The verified `request["user"]` claim is still carried on the queue item for provenance; it is not a session principal. |
+| Slack / Discord / Telegram / … | `{channel}+{provider_user_id}` — exclusive-speaker sessions only. Shared-group conversations and `unified:{agent}` buckets stay unbound so a mid-turn steer from another member cannot run under the originator's credentials. `drive_turn` binds `ChannelTurn.principal_raw_id` only when `exclusive_principal` is true (default false) and the key is not unified. Slack / Discord / Telegram gate `raw_id` on the DM discriminator they already carry (IM `D…` / no guild thread / `chat_type == "private"`). |
+| CLI | `cli+{passwd name}` from the process UID on POSIX, or `cli+{token SID}` on Windows, via `bind_cli_principal`. Never `LOGNAME` / `USER` / `USERNAME`. Unbound when the lookup fails. |
+| Cron / TaskRunner | **unbound** — unattended turns publish the pid sidecar only and clear any leftover human principal |
 | Subagent | inherit parent `subject`; child's `session_key` |
 | Injected cron / subagent-completion envelopes | **not a user** — `is_injected_envelope` is true; `derive_session_principal_for_injected` returns `None`. A normal user message raises `ValueError` so a silent `None` cannot look like "skip bind". |
 
@@ -327,23 +327,42 @@ and a core-derived `raw_id`, the same function binds the principal:
 
 1. `derive_session_principal` from those three fields.
 2. `annotate_principal` through `async_safe_context_call`, fallback =
-   the core principal unchanged. A companion may set `user_jwt`. A
-   rewrite of `subject` (or `surface` / `session_key`) is ignored.
+   the core principal unchanged. A companion may set `user_jwt` only
+   when every core-derived field is unchanged. A rewrite of `subject`
+   (or `surface` / `session_key`) discards the annotation, including
+   `user_jwt` — that credential belongs to the rejected identity.
 3. `SessionManager.set_principal` stores the result on the live
    `_Session`. The field survives `adopt_provider` (it names the
    caller, not the transcript).
 
-Existing callers that omit `surface` / `raw_id` stay byte-identical:
-only the pid sidecar is written. Dashboard chat (`chat_runner._run_chat`)
-is the first wired caller: `surface="dashboard"`,
-`raw_id=state.owner_id` or the local OS user. When the turn text is an
-injected envelope, `principal_bind_kwargs` omits those kwargs so the
-envelope cannot bind `dashboard+{owner}`. Channel dispatchers can pass
-`{channel_type, provider_user_id}` the same way without a second
+Callers that omit `surface` / `raw_id` write only the pid sidecar.
+Dashboard chat (`chat_runner._run_chat`) binds `surface="dashboard"`
+and `raw_id` from the verified `request["user"]` claim **only when
+`_directive_user_origin` is true and both identity fields are
+present**. Queued human turns stamp the same fields on the queue
+entry so drain can forward them; a busy-slot message that only
+carries `_directive_user_origin` would otherwise clear the
+principal. Automated turns omit `raw_id`, so `principal_bind_kwargs`
+returns `{}` regardless of message text — a user-typed cron/nudge
+prefix is not a bind signal. Unattended channel injectors (Slack
+AutoNudge, Discord/Webex synthetics with `bind_principal=False`)
+omit `raw_id` the same way and publish **after** `get_or_create`
+acquires the session, so a concurrent human turn cannot have its
+principal cleared while it still holds the lease. Those turns
+(app-token, cron, taskrunner, synthesis, AutoNudge) publish the pid
+sidecar and clear leftover principal
+**metadata** (`set_principal(None)` inside `publish_turn_identity`).
+This layer has no live inbound credentials to retract.
+`clear_session_principal` / `retract_principal_credentials` are the
+later-stack seam for recycling an ACP child and dropping a sidecar;
+they are not on this PR's production unbind path. Channel dispatchers
+pass `{channel_type, provider_user_id}` the same way without a second
 session key. `tool_input` cannot supply `subject` / `userId` —
 `reject_tool_input_identity` refuses those kwargs.
 
-Gateway inbound attach (sidecar / SigV4) is a later stack PR.
+Gateway inbound attach (sidecar / SigV4) is a later stack PR. The
+principal must already be known *before* `session/new` so that layer
+can write the sidecar first.
 
 ## Stop Orchestration
 

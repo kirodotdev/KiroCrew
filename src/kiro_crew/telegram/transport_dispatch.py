@@ -53,7 +53,11 @@ from kiro_crew.messaging.commands import (
 )
 from kiro_crew.messaging.dispatch import build_directive_consumer, delivery_is_muted
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
-from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
+from kiro_crew.messaging.identity import (
+    channel_inbound_permitted,
+    exclusive_bind_raw_id,
+    publish_turn_identity,
+)
 from kiro_crew.messaging.link import (
     CHAT_TYPE_DIRECT,
     CHAT_TYPE_FORUM,
@@ -69,6 +73,7 @@ from kiro_crew.messaging.session_trust import add_trusted_session, is_session_tr
 from kiro_crew.messaging.sessions_view import collect_recent_sessions_audited
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.messaging.upload_gate import uploads_restricted
+from kiro_crew.platform.agent_identity import principal_bind_kwargs
 from kiro_crew.safety_override import safety_override
 from kiro_crew.security import redact, redact_local_paths
 from kiro_crew.sel import sel
@@ -731,7 +736,21 @@ class TelegramDispatcher:
                 return
             # Publish this turn's session identity so managed MCP tools resolve
             # X-Session-Key; one shared writer lives in messaging.identity.
-            await publish_turn_identity(self.sessions, session_key)
+            # Bind only a private DM. A forum Topic is readable by the
+            # whole supergroup and accepts another member's mid-turn steer.
+            await publish_turn_identity(
+                self.sessions,
+                session_key,
+                **principal_bind_kwargs(
+                    text,
+                    surface="telegram",
+                    raw_id=exclusive_bind_raw_id(
+                        str(user_id) if msg.bind_principal else "",
+                        exclusive=getattr(msg, "chat_type", "private") == "private",
+                        session_key=session_key,
+                    ),
+                ),
+            )
             # Off-loop: build_message embeds the episodic query (blocking urllib).
             full_message, _ = await run_in_embed_pool(
                 self.ctx_builder.build_message,
@@ -1156,6 +1175,7 @@ class TelegramDispatcher:
                     thread_id=thread,
                     chat_type=chat_type,
                     attachments=all_attachments,
+                    bind_principal=False,
                 ),
                 drain=False,
                 # Drained payloads are pure turn content: a queued "/new" must reach

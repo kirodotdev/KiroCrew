@@ -61,7 +61,11 @@ from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
 from kiro_crew.messaging.commands import stop_running_turn
 from kiro_crew.messaging.dispatch import build_directive_consumer, delivery_is_muted
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
-from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
+from kiro_crew.messaging.identity import (
+    channel_inbound_permitted,
+    exclusive_bind_raw_id,
+    publish_turn_identity,
+)
 from kiro_crew.messaging.link import (
     ChannelLink,
     bind_origin_mirror,
@@ -73,6 +77,7 @@ from kiro_crew.messaging.link import (
 from kiro_crew.messaging.renderer import Renderer, SilentRenderer
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.messaging.upload_gate import live_dashboard_slot, uploads_restricted
+from kiro_crew.platform.agent_identity import principal_bind_kwargs
 from kiro_crew.safety_override import describe_grant_lifetime, safety_override
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -563,7 +568,21 @@ class DiscordDispatcher:
                 self._bind_origin_mirror(session_key, channel_id)
             # Publish this turn's session identity so managed MCP tools resolve
             # X-Session-Key; one shared writer lives in messaging.identity.
-            await publish_turn_identity(self.sessions, session_key)
+            # Bind only a DM (no guild thread_id). An allow-listed guild
+            # thread accepts another member's mid-turn steer.
+            await publish_turn_identity(
+                self.sessions,
+                session_key,
+                **principal_bind_kwargs(
+                    text,
+                    surface="discord",
+                    raw_id=exclusive_bind_raw_id(
+                        user_id if msg.bind_principal else "",
+                        exclusive=not thread_id,
+                        session_key=session_key,
+                    ),
+                ),
+            )
             # Off-loop: build_message embeds the episodic query (blocking urllib).
             full_message, _ = await run_in_embed_pool(
                 self.ctx_builder.build_message,
@@ -829,6 +848,11 @@ class DiscordDispatcher:
                     text=combined,
                     thread_id=thread_id or None,
                     attachments=attachments,
+                    # Session routing still uses this turn's user_id. Bind
+                    # does not: a shared-key drain can collapse another
+                    # speaker's text, and stamping the opener would mint
+                    # their bearer on that replay.
+                    bind_principal=False,
                 ),
                 drain=False,
                 interpret_commands=False,

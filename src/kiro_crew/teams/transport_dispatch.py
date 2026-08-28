@@ -421,6 +421,11 @@ class TeamsDispatcher:
                     ),
                     notice=lambda sk, provider: self._maybe_notice(inbound, sk, provider),
                     audit_caller=f"teams:{email}",
+                    principal_raw_id=email if inbound.bind_principal else "",
+                    # Transport refuses non-personal conversations, so a
+                    # Teams turn that reaches here cannot accept another
+                    # human's mid-turn steer.
+                    exclusive_principal=True,
                     after_persist=_surface_new_session,
                 ),
                 sessions=self.sessions,
@@ -754,7 +759,7 @@ class TeamsDispatcher:
                     len(remainder),
                 )
             combined = "\n\n".join(t for t in texts if t)
-            replay = replace(inbound, text=combined, attachments=attachments)
+            replay = replace(inbound, text=combined, attachments=attachments, bind_principal=False)
             # Drained payloads are turn content, so command interpretation is off:
             # a queued "/new" must reach the model as text, not execute on drain.
             # drain=False keeps the pump in THIS loop instead of nesting a drain

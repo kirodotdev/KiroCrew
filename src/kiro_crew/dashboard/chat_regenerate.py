@@ -8,7 +8,11 @@ import logging
 from aiohttp import web
 
 from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
-from kiro_crew.dashboard.chat_runner import _run_chat
+from kiro_crew.dashboard.chat_runner import (
+    _run_chat,
+    dashboard_principal_kwargs,
+    dashboard_user_origin,
+)
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -101,7 +105,10 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
                 slot,
                 user_msg,
                 regenerate_hint=hint,
-                _directive_user_origin=not bool(request.get("app", "")),
+                _directive_user_origin=dashboard_user_origin(request),
+                **dashboard_principal_kwargs(
+                    state, user_origin=dashboard_user_origin(request), request=request
+                ),
             )
         )
         slot.task = task
@@ -266,7 +273,10 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
                 state,
                 slot,
                 _bc,
-                _directive_user_origin=not bool(request.get("app", "")),
+                _directive_user_origin=dashboard_user_origin(request),
+                **dashboard_principal_kwargs(
+                    state, user_origin=dashboard_user_origin(request), request=request
+                ),
             )
         )
         slot.task = task

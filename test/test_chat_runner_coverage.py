@@ -169,7 +169,9 @@ def _quiet_sel():
         yield mock_sel
 
 
-async def _drive(state, slot, message: str = "hello") -> None:
+async def _drive(
+    state, slot, message: str = "hello", *, directive_user_origin: bool = True
+) -> None:
     """Run exactly one turn and leave no task behind.
 
     ``_empty_response_retries`` is pre-spent on purpose. A turn that streams no
@@ -180,8 +182,23 @@ async def _drive(state, slot, message: str = "hello") -> None:
     to its terminal notice branch instead, so one call is one turn.
     """
     slot._empty_response_retries = 2
+    principal = (
+        chat_runner.dashboard_principal_kwargs(
+            state,
+            user_origin=True,
+            request={"user": getattr(state, "owner_id", None) or "test-owner"},
+        )
+        if directive_user_origin
+        else {}
+    )
     with _quiet_sel():
-        await chat_runner._run_chat(state, slot, message)
+        await chat_runner._run_chat(
+            state,
+            slot,
+            message,
+            _directive_user_origin=directive_user_origin,
+            **principal,
+        )
     await _settle(slot)
 
 
@@ -1540,6 +1557,50 @@ class TestStartNextQueuedTurn:
             assert await chat_runner._start_next_queued_turn(state2, slot2) is True
         assert slot2._deferred_notes == [], "control: the note should flush off-plan"
 
+    @pytest.mark.asyncio
+    async def test_queued_human_turn_forwards_stamped_principal(self, tmp_path):
+        """A busy-slot human message must keep its verified identity on drain.
+
+        ``_directive_user_origin`` alone is not a bind: ``_run_chat`` clears
+        the session principal unless both surface and raw_id ride through.
+        """
+        state, slot = _state(tmp_path), _slot()
+        slot.queue_append(
+            "queued follow-up",
+            directive_user_origin=True,
+            principal_surface="dashboard",
+            principal_raw_id="alice",
+        )
+        state.subagents = None
+        run_chat = MagicMock(return_value=MagicMock())
+
+        with (
+            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()),
+            patch.object(chat_runner, "_run_chat", run_chat),
+        ):
+            assert await chat_runner._start_next_queued_turn(state, slot) is True
+
+        assert run_chat.call_args.kwargs["_directive_user_origin"] is True
+        assert run_chat.call_args.kwargs["_principal_surface"] == "dashboard"
+        assert run_chat.call_args.kwargs["_principal_raw_id"] == "alice"
+
+    @pytest.mark.asyncio
+    async def test_queued_human_turn_without_stamp_does_not_invent_principal(self, tmp_path):
+        state, slot = _state(tmp_path), _slot()
+        slot.queue_append("legacy unstamped", directive_user_origin=True)
+        state.subagents = None
+        run_chat = MagicMock(return_value=MagicMock())
+
+        with (
+            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()),
+            patch.object(chat_runner, "_run_chat", run_chat),
+        ):
+            assert await chat_runner._start_next_queued_turn(state, slot) is True
+
+        assert run_chat.call_args.kwargs["_directive_user_origin"] is True
+        assert "_principal_surface" not in run_chat.call_args.kwargs
+        assert "_principal_raw_id" not in run_chat.call_args.kwargs
+
 
 class TestRunPendingSynthesis:
     @pytest.mark.asyncio
@@ -2253,7 +2314,7 @@ class TestRunChatLocalCommands:
 
 class TestRunChatInjectedPrincipal:
     @pytest.mark.asyncio
-    async def test_cron_wrapped_message_does_not_bind_dashboard_owner(self, tmp_path):
+    async def test_user_authored_envelope_text_stays_unbound(self, tmp_path):
         state, client = _runner_state(tmp_path)
         state.owner_id = "alice"
         slot = _slot()
@@ -2266,9 +2327,10 @@ class TestRunChatInjectedPrincipal:
         kwargs = pub.await_args.kwargs
         assert not kwargs.get("surface")
         assert not kwargs.get("raw_id")
+        state.sessions.set_principal.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_ordinary_user_message_still_binds_dashboard_owner(self, tmp_path):
+    async def test_ordinary_user_message_stays_unbound(self, tmp_path):
         state, client = _runner_state(tmp_path)
         state.owner_id = "alice"
         slot = _slot()
@@ -2279,8 +2341,74 @@ class TestRunChatInjectedPrincipal:
 
         pub.assert_awaited()
         kwargs = pub.await_args.kwargs
-        assert kwargs.get("surface") == "dashboard"
-        assert kwargs.get("raw_id") == "alice"
+        assert not kwargs.get("surface")
+        assert not kwargs.get("raw_id")
+
+    @pytest.mark.asyncio
+    async def test_user_origin_without_surface_does_not_bind_dashboard_owner(self, tmp_path):
+        state, client = _runner_state(tmp_path)
+        state.owner_id = "alice"
+        slot = _slot()
+        _set_stream(client, [_complete()])
+        slot._empty_response_retries = 2
+
+        with _quiet_sel():
+            with patch.object(chat_runner, "publish_turn_identity", new=AsyncMock()) as pub:
+                await chat_runner._run_chat(
+                    state,
+                    slot,
+                    "hello from a linked slack thread",
+                    _directive_user_origin=True,
+                )
+        await _settle(slot)
+
+        pub.assert_awaited()
+        kwargs = pub.await_args.kwargs
+        assert not kwargs.get("surface")
+        assert not kwargs.get("raw_id")
+        # Clear is inside publish_turn_identity (mocked here); this
+        # call must not invent a dashboard owner bind.
+
+    @pytest.mark.asyncio
+    async def test_linked_slack_surface_stays_unbound(self, tmp_path):
+        state, client = _runner_state(tmp_path)
+        state.owner_id = "alice"
+        slot = _slot()
+        _set_stream(client, [_complete()])
+        slot._empty_response_retries = 2
+
+        with _quiet_sel():
+            with patch.object(chat_runner, "publish_turn_identity", new=AsyncMock()) as pub:
+                await chat_runner._run_chat(
+                    state,
+                    slot,
+                    "hello from slack",
+                    _directive_user_origin=True,
+                    _principal_surface="slack",
+                    _principal_raw_id="U123",
+                )
+        await _settle(slot)
+
+        pub.assert_awaited()
+        kwargs = pub.await_args.kwargs
+        assert not kwargs.get("surface")
+        assert not kwargs.get("raw_id")
+
+    @pytest.mark.asyncio
+    async def test_automated_turn_clears_principal(self, tmp_path):
+        state, client = _runner_state(tmp_path)
+        state.owner_id = "alice"
+        slot = _slot()
+        _set_stream(client, [_complete()])
+
+        with patch.object(chat_runner, "publish_turn_identity", new=AsyncMock()) as pub:
+            await _drive(state, slot, "please fix the build", directive_user_origin=False)
+
+        pub.assert_awaited()
+        kwargs = pub.await_args.kwargs
+        assert not kwargs.get("surface")
+        assert not kwargs.get("raw_id")
+        # Clear is inside publish_turn_identity (mocked here).
 
 
 # ── _run_chat: recovery ladders ───────────────────────────────────────────
