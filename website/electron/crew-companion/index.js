@@ -89,6 +89,15 @@ async function tokenForProbe(forceMint) {
 }
 
 /**
+ * Resolve the dashboard window a notification should be opened in.
+ *
+ * Supplied by main.js, which owns window lifecycle; the same shape `initMochi`
+ * takes its `getMainWindow` in. Absent when the companion is initialised without
+ * it, in which case the CTA reports that it could not act rather than pretending.
+ */
+let getDashboardWindow = null;
+
+/**
  * Ask the gateway whether the app is enabled.
  *
  * ``unauthorized`` is split out from ``unknown`` so a cached token that the
@@ -130,6 +139,142 @@ function probeEnabled(token) {
     });
     req.on("error", () => resolve("unknown"));
   });
+}
+
+/**
+ * True when *wc* currently hosts the dashboard itself.
+ *
+ * The `navigate` message is only listened for by the dashboard SPA. Every other
+ * page this view can hold drops it silently: the boot and recovery splashes
+ * (`loading.html`, loaded as `file://`), an error page, or a view still blank
+ * mid-load. Sending into one of those and returning true would tell the overlay
+ * the session had been opened, and the caller dismisses a sticky notification on
+ * that word — so the notification is lost and the session never opens.
+ *
+ * Matched on ORIGIN rather than on a full URL, because the dashboard's address
+ * carries a `?token=` and any in-app route: same origin is exactly the property
+ * that decides whether the SPA — and therefore the listener — is loaded.
+ *
+ * @param {object} wc the view's webContents.
+ * @returns {boolean} true only for a page served from the dashboard's origin.
+ */
+function hostsDashboard(wc) {
+  if (!backendUrl) return false;
+  let current = "";
+  try {
+    current = (wc.getURL && wc.getURL()) || "";
+  } catch {
+    return false; // torn down between the isDestroyed() check and here
+  }
+  try {
+    return new URL(current).origin === new URL(backendUrl).origin;
+  } catch {
+    return false; // "", about:blank, or a file:// splash — not the dashboard
+  }
+}
+
+/**
+ * True when the view holds a page from some OTHER web origin.
+ *
+ * The complement of :func:`hostsDashboard` is not one state but two, and only
+ * one of them is a security problem:
+ *
+ * * the app's own local shell -- "", `about:blank`, or the `file://` splash --
+ *   is this window on its way to becoming the dashboard. Nothing foreign is
+ *   displayed and nothing has been navigated away from.
+ * * an `http(s)` origin that is not the backend's is a page the dashboard
+ *   window is not supposed to be showing at all.
+ *
+ * `hostsDashboard` answers false for both, which is right for ROUTING (neither
+ * can receive a `navigate`) and wrong for AUTHORIZATION (only the second means
+ * the caller must be refused). This predicate isolates the second.
+ *
+ * @param {object} wc the view's webContents.
+ * @returns {boolean} true only for a committed non-backend web origin.
+ */
+function showsForeignOrigin(wc) {
+  let current = "";
+  try {
+    current = (wc.getURL && wc.getURL()) || "";
+  } catch {
+    return false; // torn down; the isDestroyed() check owns that case
+  }
+  let url;
+  try {
+    url = new URL(current);
+  } catch {
+    return false; // "", about:blank, or a relative shell path — not foreign
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+  if (!backendUrl) return true; // a web page with no backend to compare against
+  try {
+    return url.origin !== new URL(backendUrl).origin;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Surface the dashboard for a notification's session.
+ *
+ * The overlay cannot do this itself: it is a full-display, non-focusable window
+ * that knows nothing about the dashboard's windows, so — exactly like the panel's
+ * `crew-companion:panel-open` — it asks the main process to raise the right one.
+ * The route is the dashboard's own session deep link, the same `?sid=` the System
+ * page's session rows and the app SDK build.
+ *
+ * An empty *slotKey* means the notification names no session (an approval raised
+ * with no owning conversation carries `slot: ""`). The dashboard is still
+ * surfaced — that is where the approvals surface lives — but nothing is routed,
+ * because navigating away from whatever the user had open would claim to have
+ * opened a session that was never identified.
+ *
+ * @param {string} slotKey dashboard slot key, or "" when there is no session.
+ * @returns {boolean} true when the dashboard was surfaced; false when there was
+ *   no window able to receive the request, so the caller can KEEP a notification
+ *   it could not act on instead of dismissing it.
+ */
+function openDashboardSession(slotKey) {
+  const win = getDashboardWindow && getDashboardWindow();
+  if (!win || win.isDestroyed()) return false;
+  // Resolved BEFORE the window is raised: a routing request that cannot be
+  // delivered must fail whole, not leave the dashboard focused on the wrong
+  // session while the overlay is told the session was opened.
+  const view = win._mcView;
+  const wc = view && view.webContents;
+  // Caller authorization and slot routing are SEPARATE questions, and only the
+  // second one depends on naming a session.
+  //
+  // Unconditional: a missing or destroyed view, and a view showing a foreign web
+  // origin, are both refusals whether or not a slot was named. Gating the whole
+  // check on a non-empty slotKey let a slot-less approval land on whatever a
+  // focused secondary window happened to be showing and still answer true — so
+  // the overlay dismissed a sticky notification it had never acted on while the
+  // gateway stayed blocked. `getDashboardWindow` cannot prevent this on its own:
+  // it takes the focused window whenever it merely HAS an `_mcView`.
+  if (!wc || wc.isDestroyed() || showsForeignOrigin(wc)) return false;
+  // Is the SPA — and therefore the approvals surface and the navigate listener —
+  // actually there? The local shell ("", about:blank, the file:// splash) is
+  // this window on its way to the dashboard, so it is ours to raise but has
+  // nothing loaded yet.
+  const ready = hostsDashboard(wc);
+  // A request that NAMES a session must fail whole, before the window moves: a
+  // route that cannot be delivered must not leave the dashboard focused while
+  // the overlay is told the session was opened.
+  if (slotKey && !ready) return false;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+  // SURFACING and ACKNOWLEDGING are different answers, and the return value is
+  // the second one — the overlay dismisses a sticky notification on true.
+  // Raising a loading window is honest and useful; claiming the approval has
+  // somewhere to be acted on is not, because the surface that would show it has
+  // not loaded. Answering true here dropped the user's only pointer to work the
+  // gateway is still blocked on. So the window comes forward and the
+  // notification STAYS.
+  if (!ready) return false;
+  if (slotKey) wc.send("navigate", `/chat?sid=${encodeURIComponent(slotKey)}`);
+  return true;
 }
 
 async function reconcileOnce() {
@@ -186,12 +331,14 @@ async function reconcileOnce() {
 /**
  * Start following the app's enabled state.
  *
- * @param {{backendUrl: string, fetchLocalToken: () => Promise<string>, glog: (m: string) => void}} deps
+ * @param {{backendUrl: string, fetchLocalToken: () => Promise<string>, glog: (m: string) => void,
+ *   getDashboardWindow?: () => (object | null)}} deps
  */
 function initCrewCompanion(deps) {
   backendUrl = (deps && deps.backendUrl) || "";
   fetchLocalToken = deps && deps.fetchLocalToken;
   log = (deps && deps.glog) || (() => {});
+  getDashboardWindow = (deps && deps.getDashboardWindow) || null;
   setOverlayLogger(log);
   setPanelLogger(log);
   setGalleryLogger(log);
@@ -232,6 +379,18 @@ function initCrewCompanion(deps) {
     if (focusable) win.focus();
   });
 
+  /**
+   * "Open session" on a waiting-on-you bubble.
+   *
+   * `handle`, not `on`, because the answer is what makes the CTA honest: the
+   * overlay clears the notification only once the dashboard has actually been
+   * surfaced, and a sticky approval bubble is the only pointer the user has back
+   * to the blocked session. `removeHandler` first so a second init cannot throw
+   * on the duplicate registration.
+   */
+  ipcMain.removeHandler("crew-companion:open-session");
+  ipcMain.handle("crew-companion:open-session", (_event, slotKey) =>
+    openDashboardSession(typeof slotKey === "string" ? slotKey : ""));
 
   if (timer) clearInterval(timer);
   timer = setInterval(() => void reconcileOnce(), TICK_MS);
@@ -264,4 +423,5 @@ module.exports = {
   // Exported for tests: they drive the tick directly rather than waiting 5s.
   reconcileOnce,
   probeEnabled,
+  openDashboardSession,
 };

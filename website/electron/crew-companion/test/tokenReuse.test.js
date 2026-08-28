@@ -34,7 +34,7 @@ function loadCompanion(wiring) {
   const originalLoad = Module._load;
   const stubs = {
     electron: {
-      ipcMain: { on() {}, handle() {} },
+      ipcMain: { on() {}, handle() {}, removeHandler() {} },
       BrowserWindow: { fromWebContents: () => null },
     },
   };

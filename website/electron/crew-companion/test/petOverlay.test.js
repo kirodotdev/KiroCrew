@@ -16,6 +16,8 @@ const Module = require("module");
 function stubElectron() {
   const created = [];
   const ipcHandlers = {};
+  /** `ipcMain.handle` channels — the ones that answer, kept apart from `on`. */
+  const ipcInvokers = {};
 
   class FakeWindow {
     constructor(opts) {
@@ -55,7 +57,16 @@ function stubElectron() {
         { id: 2, bounds: { x: 1440, y: 0, width: 1920, height: 1080 } },
       ],
     },
-    ipcMain: { on: (ch, cb) => { ipcHandlers[ch] = cb; } },
+    ipcMain: {
+      on: (ch, cb) => { ipcHandlers[ch] = cb; },
+      // Electron throws on a second `handle` for one channel, so the real
+      // registration removes first; the stub mirrors both halves.
+      handle: (ch, cb) => {
+        if (ipcInvokers[ch]) throw new Error(`second handler for '${ch}'`);
+        ipcInvokers[ch] = cb;
+      },
+      removeHandler: (ch) => { delete ipcInvokers[ch]; },
+    },
     contextBridge: { exposeInMainWorld: () => {} },
     ipcRenderer: { send: () => {} },
   };
@@ -72,6 +83,7 @@ function stubElectron() {
     created,
     ipcHandlers,
     dockCalls,
+    ipcInvokers,
     restore() {
       Module._resolveFilename = realResolve;
       delete require.cache.electron;
@@ -418,6 +430,412 @@ test("showing an overlay re-asserts the host's Dock presence on macOS", () => {
       "activation policy re-asserted to regular after showing the overlay",
     );
     assert.ok(stub.dockCalls.dockShow >= 1, "app.dock.show() called after showing the overlay");
+  } finally {
+    stub.restore();
+  }
+});
+
+// ── "Open session" ──────────────────────────────────────────────────────────
+//
+// The overlay is a non-focusable full-display window with no handle on the
+// dashboard, so its waiting-on-you CTA can only ASK the main process to surface
+// the right window. What is pinned here is the answer as much as the action: the
+// CTA is the only exit a sticky approval bubble has, and it clears that bubble
+// only when this reports the dashboard was actually surfaced.
+
+/** A dashboard window as `main.js` hands it over, with its SPA view attached. */
+function fakeDashboard({
+  minimized = false,
+  viewGone = false,
+  // Defaults to the dashboard's own origin: every case that is not about WHICH
+  // page the view holds should read as "the dashboard is loaded".
+  url = "http://127.0.0.1:9/?token=t",
+} = {}) {
+  const sent = [];
+  return {
+    sent,
+    restored: false,
+    shown: false,
+    focused: false,
+    isDestroyed: () => false,
+    isMinimized() { return minimized; },
+    restore() { this.restored = true; },
+    show() { this.shown = true; },
+    focus() { this.focused = true; },
+    _mcView: {
+      webContents: {
+        isDestroyed: () => viewGone,
+        getURL: () => url,
+        send: (channel, arg) => sent.push([channel, arg]),
+      },
+    },
+  };
+}
+
+test("open-session surfaces the dashboard and routes it to that session", () => {
+  const stub = stubElectron();
+  try {
+    const { index } = loadModules();
+    const win = fakeDashboard({ minimized: true });
+    index.initCrewCompanion({
+      backendUrl: "http://127.0.0.1:9",
+      fetchLocalToken: async () => "",
+      glog: () => {},
+      getDashboardWindow: () => win,
+    });
+
+    assert.strictEqual(index.openDashboardSession("chat-7-1785905004"), true);
+    // Minimised to the taskbar is the case that makes plain focus() insufficient.
+    assert.ok(win.restored && win.shown && win.focused, "window must be surfaced");
+    assert.deepStrictEqual(win.sent, [["navigate", "/chat?sid=chat-7-1785905004"]]);
+    index.shutdownCrewCompanion();
+  } finally {
+    stub.restore();
+  }
+});
+
+test("open-session encodes the slot key rather than splicing it into the query", () => {
+  const stub = stubElectron();
+  try {
+    const { index } = loadModules();
+    const win = fakeDashboard();
+    index.initCrewCompanion({
+      backendUrl: "http://127.0.0.1:9",
+      fetchLocalToken: async () => "",
+      glog: () => {},
+      getDashboardWindow: () => win,
+    });
+
+    // Slot keys carry user-chosen names; an unencoded `&` would silently drop the
+    // rest of the key and open a different session.
+    index.openDashboardSession("chat a&b");
+    assert.deepStrictEqual(win.sent, [["navigate", "/chat?sid=chat%20a%26b"]]);
+    index.shutdownCrewCompanion();
+  } finally {
+    stub.restore();
+  }
+});
+
+test("an approval with no owning session raises the dashboard but routes nowhere", () => {
+  const stub = stubElectron();
+  try {
+    const { index } = loadModules();
+    const win = fakeDashboard();
+    index.initCrewCompanion({
+      backendUrl: "http://127.0.0.1:9",
+      fetchLocalToken: async () => "",
+      glog: () => {},
+      getDashboardWindow: () => win,
+    });
+
+    // Unowned approvals are broadcast with slot:"" and live on the dashboard's own
+    // approvals surface. Navigating anyway would claim to have opened a session
+    // that was never identified — and throw away whatever the user had open.
+    assert.strictEqual(index.openDashboardSession(""), true);
+    assert.ok(win.shown && win.focused, "the dashboard is still surfaced");
+    assert.deepStrictEqual(win.sent, [], "nothing is routed");
+    index.shutdownCrewCompanion();
+  } finally {
+    stub.restore();
+  }
+});
+
+test("open-session refuses when there is no dashboard window to surface", () => {
+  const stub = stubElectron();
+  try {
+    const { index } = loadModules();
+    index.initCrewCompanion({
+      backendUrl: "http://127.0.0.1:9",
+      fetchLocalToken: async () => "",
+      glog: () => {},
+      getDashboardWindow: () => null,
+    });
+
+    // False is what keeps the notification: the overlay leaves a sticky bubble up
+    // rather than dismissing the user's only pointer to blocked work.
+    assert.strictEqual(index.openDashboardSession("chat-7"), false);
+    index.shutdownCrewCompanion();
+  } finally {
+    stub.restore();
+  }
+});
+
+test("a routing request that cannot be delivered fails whole, without raising", () => {
+  const stub = stubElectron();
+  try {
+    const { index } = loadModules();
+    const win = fakeDashboard({ viewGone: true });
+    index.initCrewCompanion({
+      backendUrl: "http://127.0.0.1:9",
+      fetchLocalToken: async () => "",
+      glog: () => {},
+      getDashboardWindow: () => win,
+    });
+
+    // A window mid-teardown can be raised but not routed. Raising it anyway would
+    // leave the dashboard focused on the WRONG session while the overlay was told
+    // the right one had been opened.
+    assert.strictEqual(index.openDashboardSession("chat-7"), false);
+    assert.ok(!win.shown && !win.focused, "no half-done surface");
+    assert.deepStrictEqual(win.sent, []);
+    index.shutdownCrewCompanion();
+  } finally {
+    stub.restore();
+  }
+});
+
+test("the renderer's open-session channel answers rather than fires and forgets", async () => {
+  const stub = stubElectron();
+  try {
+    const { index } = loadModules();
+    const win = fakeDashboard();
+    index.initCrewCompanion({
+      backendUrl: "http://127.0.0.1:9",
+      fetchLocalToken: async () => "",
+      glog: () => {},
+      getDashboardWindow: () => win,
+    });
+
+    // `handle`, not `on`: the overlay needs the outcome before it clears a bubble.
+    const handler = stub.ipcInvokers["crew-companion:open-session"];
+    assert.ok(handler, "open-session must be registered as an invokable channel");
+    assert.strictEqual(await handler({}, "chat-7"), true);
+    assert.deepStrictEqual(win.sent, [["navigate", "/chat?sid=chat-7"]]);
+
+    // A renderer that sends something that is not a string must not reach
+    // encodeURIComponent with it; it is read as "no session named".
+    win.sent.length = 0;
+    assert.strictEqual(await handler({}, { slot: "chat-7" }), true);
+    assert.deepStrictEqual(win.sent, []);
+    index.shutdownCrewCompanion();
+  } finally {
+    stub.restore();
+  }
+});
+
+test("re-initialising does not throw on the already-registered channel", () => {
+  const stub = stubElectron();
+  try {
+    const { index } = loadModules();
+    const deps = {
+      backendUrl: "http://127.0.0.1:9",
+      fetchLocalToken: async () => "",
+      glog: () => {},
+      getDashboardWindow: () => null,
+    };
+    index.initCrewCompanion(deps);
+    index.initCrewCompanion(deps);
+    assert.ok(stub.ipcInvokers["crew-companion:open-session"]);
+    index.shutdownCrewCompanion();
+  } finally {
+    stub.restore();
+  }
+});
+
+test("open-session refuses while the view shows the boot/recovery splash", () => {
+  const stub = stubElectron();
+  try {
+    const { index } = loadModules();
+    // What the gateway-recovery and boot paths put on screen: loading.html,
+    // loaded from disk. It has no `navigate` listener, so the message would be
+    // dropped — and the caller dismisses the sticky notification on a `true`.
+    const win = fakeDashboard({ url: "file:///C:/app/electron/loading.html" });
+    index.initCrewCompanion({
+      backendUrl: "http://127.0.0.1:9",
+      fetchLocalToken: async () => "",
+      glog: () => {},
+      getDashboardWindow: () => win,
+    });
+
+    assert.strictEqual(
+      index.openDashboardSession("chat-7"),
+      false,
+      "acknowledged a navigation the splash cannot perform",
+    );
+    assert.deepStrictEqual(win.sent, [], "navigate must not be sent to the splash");
+    assert.ok(!win.shown && !win.focused, "no half-done surface");
+    index.shutdownCrewCompanion();
+  } finally {
+    stub.restore();
+  }
+});
+
+test("open-session refuses while the view is still blank", () => {
+  const stub = stubElectron();
+  try {
+    const { index } = loadModules();
+    // A view created but not yet navigated reports an empty URL.
+    const win = fakeDashboard({ url: "" });
+    index.initCrewCompanion({
+      backendUrl: "http://127.0.0.1:9",
+      fetchLocalToken: async () => "",
+      glog: () => {},
+      getDashboardWindow: () => win,
+    });
+
+    assert.strictEqual(index.openDashboardSession("chat-7"), false);
+    assert.deepStrictEqual(win.sent, []);
+    index.shutdownCrewCompanion();
+  } finally {
+    stub.restore();
+  }
+});
+
+test("open-session refuses when the view holds a foreign origin", () => {
+  const stub = stubElectron();
+  try {
+    const { index } = loadModules();
+    const win = fakeDashboard({ url: "https://example.com/chat?sid=chat-7" });
+    index.initCrewCompanion({
+      backendUrl: "http://127.0.0.1:9",
+      fetchLocalToken: async () => "",
+      glog: () => {},
+      getDashboardWindow: () => win,
+    });
+
+    assert.strictEqual(index.openDashboardSession("chat-7"), false);
+    assert.deepStrictEqual(
+      win.sent,
+      [],
+      "a session key must never be sent to a page that is not the dashboard",
+    );
+    index.shutdownCrewCompanion();
+  } finally {
+    stub.restore();
+  }
+});
+
+test("open-session still routes when the dashboard is on an in-app route", () => {
+  const stub = stubElectron();
+  try {
+    const { index } = loadModules();
+    // Preservation: the guard matches on ORIGIN, so a dashboard already deep in
+    // the SPA (its own route, its own token query) must still be routable.
+    const win = fakeDashboard({ url: "http://127.0.0.1:9/system?token=abc123" });
+    index.initCrewCompanion({
+      backendUrl: "http://127.0.0.1:9",
+      fetchLocalToken: async () => "",
+      glog: () => {},
+      getDashboardWindow: () => win,
+    });
+
+    assert.strictEqual(index.openDashboardSession("chat-9"), true);
+    assert.deepStrictEqual(win.sent, [["navigate", "/chat?sid=chat-9"]]);
+    index.shutdownCrewCompanion();
+  } finally {
+    stub.restore();
+  }
+});
+
+test("open-session with no session key surfaces a splash window but does NOT acknowledge", () => {
+  const stub = stubElectron();
+  try {
+    const { index } = loadModules();
+    // The empty-key contract still holds where it was right: this window is the
+    // app's own, so raising it is useful and safe even mid-load.
+    //
+    // What changed is the ANSWER. The return value is what the overlay reads to
+    // dismiss a sticky notification, and a loading window has no approvals
+    // surface yet -- so reporting success threw away the user's only pointer to
+    // work the gateway is still blocked on. Surfacing and acknowledging are now
+    // separate: the window comes forward, and the notification stays.
+    const win = fakeDashboard({ url: "file:///C:/app/electron/loading.html" });
+    index.initCrewCompanion({
+      backendUrl: "http://127.0.0.1:9",
+      fetchLocalToken: async () => "",
+      glog: () => {},
+      getDashboardWindow: () => win,
+    });
+
+    assert.strictEqual(
+      index.openDashboardSession(""),
+      false,
+      "a loading window acknowledged an approval it cannot yet surface",
+    );
+    assert.ok(win.shown && win.focused, "the dashboard window must still be raised");
+    assert.deepStrictEqual(win.sent, []);
+    index.shutdownCrewCompanion();
+  } finally {
+    stub.restore();
+  }
+});
+
+test("a slot-less approval is refused when the window shows a foreign origin", () => {
+  const stub = stubElectron();
+  try {
+    const { index } = loadModules();
+    // `getDashboardWindow` is `focusedDashboardWindow()`, which returns the
+    // focused window whenever it merely HAS an `_mcView` -- it never checks what
+    // that view is showing. So a focused secondary window on another origin does
+    // reach here.
+    const win = fakeDashboard({ url: "https://example.invalid/other" });
+    index.initCrewCompanion({
+      backendUrl: "http://127.0.0.1:9",
+      fetchLocalToken: async () => "",
+      glog: () => {},
+      getDashboardWindow: () => win,
+    });
+
+    // Caller authorization does not depend on naming a session. Answering true
+    // here told the overlay to dismiss a sticky notification it had not acted
+    // on, while the gateway stayed blocked on the approval.
+    assert.strictEqual(
+      index.openDashboardSession(""),
+      false,
+      "a slot-less approval bypassed the origin check",
+    );
+    assert.ok(!win.shown, "the window was raised before the check refused");
+    assert.ok(!win.focused, "the window was focused before the check refused");
+    assert.deepStrictEqual(win.sent, [], "nothing is routed");
+    index.shutdownCrewCompanion();
+  } finally {
+    stub.restore();
+  }
+});
+
+test("a slot-less approval is refused when the view is gone", () => {
+  const stub = stubElectron();
+  try {
+    const { index } = loadModules();
+    const win = fakeDashboard({ viewGone: true });
+    index.initCrewCompanion({
+      backendUrl: "http://127.0.0.1:9",
+      fetchLocalToken: async () => "",
+      glog: () => {},
+      getDashboardWindow: () => win,
+    });
+
+    assert.strictEqual(
+      index.openDashboardSession(""),
+      false,
+      "a slot-less approval was accepted by a destroyed view",
+    );
+    assert.ok(!win.shown, "the window was raised before the check refused");
+    index.shutdownCrewCompanion();
+  } finally {
+    stub.restore();
+  }
+});
+
+test("a ROUTED approval is still refused on the splash it cannot deliver to", () => {
+  const stub = stubElectron();
+  try {
+    const { index } = loadModules();
+    // The other side of the split: the local shell is not foreign, so it passes
+    // authorization -- but it cannot receive a `navigate`, so a request that
+    // names a slot must still fail whole rather than raise the window and lie.
+    const win = fakeDashboard({ url: "file:///C:/app/electron/loading.html" });
+    index.initCrewCompanion({
+      backendUrl: "http://127.0.0.1:9",
+      fetchLocalToken: async () => "",
+      glog: () => {},
+      getDashboardWindow: () => win,
+    });
+
+    assert.strictEqual(index.openDashboardSession("chat-7"), false);
+    assert.ok(!win.shown, "the window was raised for a route it cannot deliver");
+    assert.deepStrictEqual(win.sent, []);
+    index.shutdownCrewCompanion();
   } finally {
     stub.restore();
   }
