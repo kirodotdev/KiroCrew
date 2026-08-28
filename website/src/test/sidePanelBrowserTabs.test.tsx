@@ -143,6 +143,25 @@ describe('side panel browser-tab strip', () => {
     expect(group.className).not.toContain('-mx-2')
   })
 
+  it('draws the seam hairline the corner arcs land on (strip border-b, rows dropped 1px)', () => {
+    renderPanel()
+    act(() => {
+      openPanelView('slot-tabs', 'browser')
+    })
+    // The flare arc ends tangent-horizontal at the seam; without a line to
+    // continue into, the 1px stroke truncates mid-air. The strip's border-b is
+    // that line, and each chip row drops one pixel over the border row so the
+    // active chip's opaque background interrupts it across its own span.
+    const strip = document.querySelector('.side-panel-strip')!
+    expect(strip.className).toContain('border-b')
+    expect(strip.className).toContain('border-border')
+    const group = screen.getByRole('tablist')
+    expect(group.className).toContain('-mb-px')
+    // The drop lives on the GROUP containers, not the chips: the tablist
+    // scrolls, and a chip's own negative margin would be clipped away.
+    expect(group.parentElement!.querySelector(':scope > div.shrink-0')!.className).toContain('-mb-px')
+  })
+
   it('goes transparent on the pinned↔dynamic divider when an adjacent tab is active', () => {
     renderPanel()
     act(() => {

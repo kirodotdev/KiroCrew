@@ -554,12 +554,18 @@ export default function SidePanel({
           bottom dock render this same row above their content).
           side-panel-strip punches the strip out of the Electron window-drag
           region (see index.css) so chips receive events. */}
-      <div className="side-panel-strip flex items-end gap-1.5 shrink-0 px-2 pt-2 pb-0 min-h-10 rounded-tl-xl bg-bg-elevated">
+      {/* border-b draws the seam hairline the corner arcs land on: the flare
+          curve ends tangent-horizontal, and without a line to continue into it
+          would truncate mid-air. The chip rows drop 1px over the border row
+          (-mb-px on the GROUPS, not the chips — the tablist scrolls and would
+          clip an overflowing chip) so the active chip's opaque background
+          covers the line across its own span, keeping the mouth open. */}
+      <div className="side-panel-strip flex items-end gap-1.5 shrink-0 px-2 pt-2 pb-0 min-h-10 rounded-tl-xl bg-bg-elevated border-b border-border">
         {/* Pinned views (Changes / Files / Artifacts): always present, fixed at
             the front, non-closable, not draggable, compact. The group's 8px gap
             matches the active chip's corner-piece width, so a piece lands in the
             gap instead of over a neighbour. */}
-        <div className="flex items-end gap-2 shrink-0">
+        <div className="flex items-end gap-2 shrink-0 -mb-px">
           {pinnedTabs.map(t => (
             <TabChip key={t.id} tab={t} active={t.id === activeId} closable={false} pinned onSelect={() => setActive(t.id)} onClose={() => {}} />
           ))}
@@ -588,7 +594,7 @@ export default function SidePanel({
           values={dynamicTabs}
           onReorder={(next) => setOrder([...pinnedTabs, ...next])}
           role="tablist"
-          className="flex items-end gap-2 min-w-0 overflow-x-auto scrollbar-none list-none m-0 p-0 px-2"
+          className="flex items-end gap-2 min-w-0 overflow-x-auto scrollbar-none list-none m-0 p-0 px-2 -mb-px"
         >
           {dynamicTabs.map((t, i) => (
             <DraggableTabItem
