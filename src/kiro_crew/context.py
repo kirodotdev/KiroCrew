@@ -1137,6 +1137,13 @@ _CRITICAL_RULES_TAIL = (
     '"Yes, delete it"). Never phrase a label in your own voice or as your own '
     'next action ("I\'ll merge it", "Let me show the diff", "I can rebase '
     'first"), and never phrase it as a question back to the user.\n'
+    "Every option must be SELF-CONTAINED: each rendered chip carries its own "
+    "send control, so the user can send any single option alone, and ONLY that "
+    "option's text is sent -- none of its siblings come with it. Never write "
+    'an option that only makes sense combined with another one ("Build the '
+    'widget" | "Include the stop button too" -- sent alone, the second names '
+    "no action). Fold the shared base action into each label instead "
+    '("Build the widget with the stop button included").\n'
     "[END CRITICAL RULES]\n\n"
 )
 # The dashboard variant is the module's canonical block: tests and the
@@ -3133,7 +3140,9 @@ class ContextBuilder:
                 "as the very last line — exactly once, nothing after it. "
                 "Users can select multiple options before submitting. Label each choice "
                 'in the user\'s voice as an instruction to you — "Merge it now", not '
-                '"I\'ll merge it".)'
+                '"I\'ll merge it". Make each choice self-contained — any single one can '
+                "be sent alone, so never write a choice that merely modifies a sibling "
+                '("Include the stop button too"); fold the base action into it.)'
             )
             # Situational nudges for tools that may otherwise never surface with
             # MCP Tool Search. Gated on having a dashboard tab open, because
