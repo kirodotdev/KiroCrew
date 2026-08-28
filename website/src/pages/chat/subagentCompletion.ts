@@ -24,6 +24,7 @@
  */
 import type { ChatMessage } from '../../types'
 import { normalizeModelKey } from '../../lib/model'
+import { canonicalKey } from '../../providers/modelRegistry'
 
 const SINGLE_PREFIX = '[Subagent completion event]'
 const BATCH_PREFIX = '[Subagent batch completion event]'
@@ -83,43 +84,29 @@ const OUTCOME_BY_GLYPH: Record<string, SubagentOutcome> = {
 
 /**
  * True only when a model was BOTH requested and served, both ids are known, and
- * they name genuinely different models after canonical normalization. The
- * ``"auto"`` sentinel (no explicit pin) and an unknown ("") id never count as a
- * downgrade — a downgrade is a broken PROMISE, and neither made one.
+ * they name genuinely different models. The ``"auto"`` sentinel (no explicit
+ * pin) and an unknown ("") id never count as a downgrade — a downgrade is a
+ * broken PROMISE, and neither made one.
  *
- * Comparison delegates to the shared ``normalizeModelKey`` (``lib/model.ts``,
- * which mirrors the backend ``_normalize_model_key``) so "same model" has ONE
- * definition across the frontend: config pins are dotted (`claude-opus-4.8`)
- * while adapters advertise dashed (`claude-opus-4-8`) and case can differ, and
- * `normalizeModelKey` folds all three plus `auto`/`default`. A raw `!==` here
- * would false-flag an honored pin as a downgrade (GPT / Design / First
- * Principles review on #3582).
+ * "Same model?" is decided by the shared ``normalizeModelKey`` (``lib/model.ts``,
+ * mirroring the backend ``_normalize_model_key``), which routes both ids through
+ * the canonical registry (#5339): a canonical key, an alias, or a
+ * provider-prefixed id all fold to one key, so a config pin `claude-opus-4.8`
+ * and a served `global.anthropic.claude-opus-4-8[1m]` are equal, while distinct
+ * 1M/200K entries stay distinct. When both ids are in the registry, `reqKey ===
+ * resKey` is the whole answer.
  *
- * `normalizeModelKey` does NOT fold a provider/partition prefix or a version
- * suffix, so a served canonical id (`us.anthropic.claude-opus-4-8-...-v1:0`)
- * would still differ from its alias pin (`claude-opus-4.8`). Rather than diverge
- * the shared key here, we strip a KNOWN leading provider/partition prefix from
- * BOTH sides (symmetric — a pin can be given in canonical form too), fold a
- * trailing version/revision tail only when the OTHER side has none (two present
- * tails must agree: dated snapshots are distinct models), then require EXACT
- * equality. This deliberately does NOT accept an arbitrary `-`-delimited
- * substring: a pin `claude-opus-4` against served `claude-opus-4-1` is a
- * genuine version-family change and must still flag (UX review on #3582) — a
- * loose containment check would silently pass it, the exact miss this feature
- * exists to catch.
- *
- * CONSERVATIVE ON UNRECOGNIZED SHAPES (#5394): this is an audit surface, and a
- * missed downgrade is safer than a false one — a false amber on an honored pin
- * trains users to ignore the exact signal the flag exists to provide. A served
- * id whose routing prefix is OUTSIDE the known strip set (a new partition like
- * `apac.`, a new provider) folds to `<unknown-prefix>-<bare pin>`: still a
- * `!==` against the pin, but not evidence of a different model. So when one
- * folded id names the whole tail of the other at a `-` token boundary, the
- * comparison is INCONCLUSIVE and the flag is skipped. The token boundary keeps
- * the version-family guarantee: `claude-opus-4-1` does not END with
- * `-claude-opus-4`, so that case still flags. (The durable fix — routing both
- * sides through the shared registry alias→canonical fold — is #5339; this
- * guard is the interim measure until it lands.)
+ * UNREGISTERED IDS (GPT/DeepSeek/Qwen, future models) are absent from the
+ * Anthropic-only registry, so `normalizeModelKey` leaves them at the lossless
+ * string fold — which does NOT peel a routing prefix or a version tail. For that
+ * case only, we keep the interim heuristic: strip a KNOWN leading routing prefix
+ * and fold a trailing version tail to MEET a tail-less side, then treat a whole
+ * token-suffix match as INCONCLUSIVE (no amber) — a served id under an
+ * unrecognized partition (`newvendor.gpt-…`) is not evidence of a different
+ * model, and a false amber on an honored pin trains users to ignore the signal
+ * (#5394). This heuristic is skipped when either side resolved through the
+ * registry: there the canonical fold is authoritative, so a registered pin
+ * served an unregistered id (or vice versa) is a genuine difference and flags.
  */
 export function isModelDowngrade(requestedModel: string, resolvedModel: string): boolean {
   const req = requestedModel.trim()
@@ -131,20 +118,33 @@ export function isModelDowngrade(requestedModel: string, resolvedModel: string):
   if (reqKey === 'auto') return false
   const resKey = normalizeModelKey(res)
   if (reqKey === resKey) return false
-  const pReq = stripKnownRoutingPrefix(reqKey)
-  const pRes = stripKnownRoutingPrefix(resKey)
+  // The registry fold is authoritative when it recognizes BOTH sides: two
+  // different canonical keys name genuinely different models (a real 1M/200K or
+  // kiro-distinct downgrade). When only ONE side resolves, comparing the
+  // registry canonical key against the other side's raw string fold would mix
+  // normal forms and can never match (e.g. pin `opus-4.8-1m` vs served
+  // `us-anthropic-claude-opus-4-8-v1:0`), turning an honored version-suffixed pin
+  // into a FALSE downgrade amber (GPT review on #6280). So the registry decides
+  // ONLY the both-registered case; otherwise fall through to the conservative
+  // heuristic, which operates on the RAW string folds of both sides (one normal
+  // form) — a missed downgrade is safer than a false one (#5394).
+  const reqCanon = canonicalKey(req)
+  const resCanon = canonicalKey(res)
+  if (reqCanon !== null && resCanon !== null) return reqCanon !== resCanon
+  // Raw string fold (lowercase, `.`->`-`), NOT the registry-canonical key, so
+  // both sides share one normal form for the prefix/version-tail comparison.
+  const rawFold = (s: string): string => s.toLowerCase().replace(/\./g, '-')
+  const pReq = stripKnownRoutingPrefix(rawFold(req))
+  const pRes = stripKnownRoutingPrefix(rawFold(res))
   // A version/date tail is folded only to MEET a side that has none — the
   // canonical-pin-vs-bare-alias shape. When BOTH sides carry a tail the tails
-  // are kept and must agree: dated snapshot ids are first-class pins
-  // (model_registry.py carries e.g. two -YYYYMMDD snapshots of one base), and
-  // stripping both tails would silently equate two different snapshots —
-  // exactly the version-family miss this comparison must catch.
+  // are kept and must agree: dated snapshot ids are first-class pins, and
+  // stripping both tails would silently equate two different snapshots.
   const reqTail = VERSION_TAIL_RE.test(pReq)
   const resTail = VERSION_TAIL_RE.test(pRes)
   const bareReq = reqTail && !resTail ? pReq.replace(VERSION_TAIL_RE, '') : pReq
   const bareRes = resTail && !reqTail ? pRes.replace(VERSION_TAIL_RE, '') : pRes
-  // A fold that consumed the whole id (nothing but prefix/suffix matter) left
-  // nothing to compare — inconclusive, never a flag.
+  // A fold that consumed the whole id left nothing to compare — inconclusive.
   if (!bareReq || !bareRes) return false
   if (bareReq === bareRes) return false
   // One bare id is the token-suffix of the other: an unstripped routing prefix

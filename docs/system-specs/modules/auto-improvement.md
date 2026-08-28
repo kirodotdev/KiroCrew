@@ -217,6 +217,11 @@ durable queue (`pr_queue/<fp>.diff`) for a human to look at rather than publishi
 silently-altered patch. PR *prose* is the opposite case — a rewritten sentence is still a
 valid sentence — so the title and body are redacted in place.
 
+Every PR-queue text artifact (the verified ``.diff`` and its ``.pr.md`` description) is
+written as UTF-8 by the GitHub recipe, the direct-commit fallback, and the dry-run recipe.
+Candidate content is arbitrary Unicode, so the durable queue must not depend on the host's
+legacy Windows code page.
+
 Note the two distinct failure modes for prose, which the first version conflated. "Scanned,
 and it had a hit" is redacted and ships. "Could not scan at all" is **not** the same thing,
 and it now raises `ProseRedactionUnavailable` so `draft()` degrades to the queue instead of

@@ -1225,9 +1225,12 @@ class AcpProvider(LLMProvider):
             # child_low_fidelity to True for EVERY child permission event that
             # crosses this provider — the full-fidelity half of the feature
             # (mode-parity auto-approval, unannotated card) would be inert on
-            # the primary interactive surface.
+            # the primary interactive surface. Same trap for
+            # mcp_identity_trusted: dropping it revokes the verified-identity
+            # half (child_mcp_identity_trusted) for every crossing event.
             raw_params_trusted=e.raw_params_trusted,
             shell_classified=e.shell_classified,
+            mcp_identity_trusted=e.mcp_identity_trusted,
             server_name=e.server_name,
             oauth_url=e.oauth_url,
             subagents=e.subagents,

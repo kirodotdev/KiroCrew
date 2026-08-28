@@ -922,10 +922,23 @@ def test_the_replace_path_refuses_a_root_recreated_after_its_own_rmtree(
 
     monkeypatch.setattr(snapshot.shutil, "rmtree", _rmtree_then_recreate)
 
-    with pytest.raises(pinned_fs.PinnedPathRefusal) as excinfo:
+    # The refusal must SURFACE with its message intact -- that message is what proves
+    # `must_create=True` reached the call site, which is this test's whole point.
+    #
+    # It may arrive wrapped. A refusal mid-mutation now triggers the phase-two rollback, and
+    # this test's own `rmtree` patch sabotages the recovery leg too (it recreates the root the
+    # recovery is about to refill), so recovery legitimately cannot complete and the refusal
+    # is re-raised as its `cause`. Accepting either form keeps the wiring assertion exactly as
+    # strong -- the message is still required -- without asserting that a mid-mutation refusal
+    # must SKIP the rollback, which would be the opposite of correct.
+    with pytest.raises((pinned_fs.PinnedPathRefusal, snapshot.RollbackIncomplete)) as excinfo:
         snapshot._do_replace(snap, mc, ["workspace"], **UNPINNED_OK)
 
-    assert "already exists" in str(excinfo.value), f"unclear refusal: {excinfo.value}"
+    refusal = getattr(excinfo.value, "cause", excinfo.value)
+    assert isinstance(
+        refusal, pinned_fs.PinnedPathRefusal
+    ), f"not a pin refusal: {type(refusal).__name__}: {refusal}"
+    assert "already exists" in str(refusal), f"unclear refusal: {refusal}"
     assert not (live / "from-archive.txt").exists(), (
         "the archive was staged into a root somebody else recreated, so a replace would "
         "have reported success with foreign files still in place"

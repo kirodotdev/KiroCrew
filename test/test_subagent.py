@@ -2090,6 +2090,9 @@ class TestIdentityTrustedChildParentPolicyAuto:
             is_shell=False,
             mcp_server_name="example-server",
             tool_name="get-item",
+            # Identity provenance flag: the real permission builder sets it
+            # when the pair above resolves from the origin-scoped caches.
+            mcp_identity_trusted=True,
         )
         base.update(overrides)
         return LLMEvent(**base)

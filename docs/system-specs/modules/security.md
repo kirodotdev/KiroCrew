@@ -1470,13 +1470,27 @@ input. A remote (HTTP) MCP server legitimately streams empty `rawInput` on its
 frame's `_meta.kiro` server/tool identity is cache-provenance and
 non-model-authored. `AcpEvent.child_mcp_identity_trusted` isolates that half
 (requires: child origin, RESOLVED non-shell classification, canonical
-server+tool recovered from cache), and **unconditional** grants — session
-trust-all, global YOLO, `parent_policy=auto`, per-source auto-approve, the
-`--approval yolo` override — honor the grant for identity-verified events: the
-approve decision consumes no agent-authored event data, only the arguments
-remain unverified (the same blindness the interactive card has; the identity
-split changes WHO approves, not what any gate can scan). Shell events never
-qualify: their deny gates need the command bytes the event lacks.
+server+tool recovered from cache, AND the explicit `mcp_identity_trusted`
+provenance flag — set only when the trusted population actually happened: in
+`build_permission_event` it is derived from the origin-scoped cache reads
+HITTING (never from cache availability or field non-emptiness — a hit whose
+cached value is `""` still earns it), the `_meta.kiro` tool_call builders set
+it only when their extractors actually produced an identity pair (a frame
+without `_meta.kiro` populates nothing and asserts no provenance), and
+`_to_llm_event` copies it; it mirrors
+`raw_params_trusted`, so a future inline population path fails closed instead
+of counting as verified on non-emptiness alone). The grant-eligibility
+expression is hoisted to one place,
+`AcpEvent.child_unconditional_grant_eligible`
+(`not child_low_fidelity or child_mcp_identity_trusted`), consumed by all
+three approval surfaces (dashboard runner, Slack gateway, subagent manager):
+**unconditional** grants — session trust-all, global YOLO,
+`parent_policy=auto`, per-source auto-approve, the `--approval yolo` override —
+honor the grant for eligible events: the approve decision consumes no
+agent-authored event data, only the arguments remain unverified (the same
+blindness the interactive card has; the identity split changes WHO approves,
+not what any gate can scan). Shell events never qualify: their deny gates need
+the command bytes the event lacks.
 
 ### SEL Audit Logging (`sel.py`)
 

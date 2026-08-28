@@ -1843,6 +1843,14 @@ _MOVED_CONFIG_FIELDS: dict[str, str] = {
 
 _EDITABLE_CONFIG: dict[str, dict] = {
     "agent.provider": {"type": "enum", "values": ["acp"]},
+    # Which ACP agent drives a session: "" = kiro-cli, "kas" = kiro-agent.
+    # The values MUST stay equal to acp.types.ACP_BACKENDS_SELECTABLE, which is
+    # the set AcpProvider can actually serve a session with. It is duplicated
+    # rather than imported because reaching kiro_crew.acp.types executes the
+    # kiro_crew.acp package init (client + runtime), and this dict is built at
+    # module import — the same cycle config.loader._normalize_acp_backend defers
+    # for. test_agent_backend_editable.py asserts the two never drift.
+    "agent.acp_backend": {"type": "enum", "values": ["", "kas"]},
     # Default model for new sessions. Membership can NOT be validated against a
     # fixed list: the real vocabulary is whatever the live kiro-cli advertises
     # (/api/models spawns it to find out), and it spans both canonical registry
@@ -1992,10 +2000,12 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # Local OTEL metric collection — the Privacy panel's recording switch. Safe
     # to expose where beacon_endpoint is not: turning this on writes JSONL under
     # ~/.kiro/crew/metrics. It is NOT unconditionally local, though —
-    # `_build_recorder` attaches an OTLP reader when `telemetry.otlp_endpoint` is
-    # set — so the gate below refuses the ENABLE on a host that configured an
-    # endpoint, which is what keeps the switch's local-only promise true for every
-    # state it can reach. The endpoint itself stays config-file-only, so a
+    # `_build_recorder` attaches an OTLP reader for every destination the active
+    # telemetry provider supplies (the default provider supplies one when
+    # `telemetry.otlp_endpoint` is set) — so the gate below refuses the ENABLE on a
+    # host where egress would start, which is what keeps the switch's local-only
+    # promise true for every state it can reach. The endpoint itself stays
+    # config-file-only, so a
     # dashboard caller can neither choose a destination nor start sending to one.
     "telemetry.enabled": {"type": "bool"},
     # SSO login flags for an edition that supplies a real sso_login_handler.
@@ -2281,9 +2291,11 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
 
     # Local metric collection is offered as local-only ("Nothing is exported"), and
     # that promise has to hold for every state this route can reach. It would not:
-    # `_build_recorder` attaches an OTLP reader whenever `telemetry.otlp_endpoint`
-    # is set (see metrics/provider.py), so on a host that already configured an
-    # endpoint, enabling collection from the dashboard would start network egress
+    # `_build_recorder` attaches an OTLP reader for every destination the active
+    # telemetry provider supplies (see metrics/provider.py), so on a host where
+    # egress is configured — through `telemetry.otlp_endpoint` for the default
+    # provider, or an edition's own collector — enabling collection from the
+    # dashboard would start network egress
     # under a switch that says it does not. Refuse the ENABLE there and let the
     # config file — which is where the endpoint was chosen — be where that decision
     # is made. Disabling stays writable for the same reason as the beacon above: a
@@ -2294,17 +2306,33 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             # state, but a full read plus schema validation (~14ms) when the file
             # changed — and this handler runs on the event loop.
             cfg = await asyncio.to_thread(KiroCrewConfig.load)
-            endpoint = str(getattr(cfg.telemetry, "otlp_endpoint", "") or "")
+            # Resolved posture, not the raw endpoint string: the DEFAULT provider
+            # derives its one destination from telemetry.otlp_endpoint, but an
+            # edition may supply its own collector with that key empty. Asking the
+            # same resolver _build_recorder uses is what keeps this refusal and
+            # the actual egress from disagreeing. It RAISES when posture cannot be
+            # established, which the handler below turns into a refusal: reading a
+            # transient provider error as "no egress" would permit an enable that
+            # the recovered provider then turns into egress.
+            egress = await asyncio.to_thread(_metrics_provider.otlp_egress_active, cfg.telemetry)
         except Exception:
-            # Unreadable config: fail closed rather than enabling collection whose
-            # egress posture cannot be established.
-            logger.warning("telemetry config unreadable; refusing to enable", exc_info=True)
-            return _deny("could not read the telemetry configuration", f"{path_key}={value}", 409)
-        if endpoint.strip():
+            # Unreadable config, or egress posture that could not be resolved:
+            # fail closed rather than enabling collection whose egress posture
+            # cannot be established.
+            logger.warning(
+                "telemetry config or egress posture unreadable; refusing to enable",
+                exc_info=True,
+            )
             return _deny(
-                "telemetry.otlp_endpoint is set, so enabling collection here would "
-                "also export metrics off this machine. Enable it in the config file "
-                "instead, where the endpoint is configured.",
+                "could not establish the telemetry egress posture",
+                f"{path_key}={value}",
+                409,
+            )
+        if egress:
+            return _deny(
+                "this host is configured to export metrics off the machine, so "
+                "enabling collection here would also start that export. Enable it "
+                "in the config file instead, where the destination is configured.",
                 f"{path_key}={value}",
                 409,
             )
@@ -2403,9 +2431,17 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     # reload_provider_factory() must NOT be used here: it clears _sessions and
     # shuts every provider down, which is correct for a provider switch but
     # would kill in-flight turns just because a default changed.
-    if path_key in ("agent.model", "agent.reasoning_effort") or path_key.startswith(
-        "agent.role_efforts."
-    ):
+    if path_key in (
+        "agent.model",
+        "agent.reasoning_effort",
+        # The ACP backend is captured when the provider factory is built, and a
+        # pre-warmed kiro-cli process must not serve a session that asked for
+        # KAS — refresh_defaults() rebuilds the factory and drains the pool.
+        # NOT reload_provider_factory(): switching the default backend must not
+        # kill in-flight turns on live sessions, which keep the backend they
+        # were started on.
+        "agent.acp_backend",
+    ) or path_key.startswith("agent.role_efforts."):
         state = request.app["state"]
         await state.sessions.refresh_defaults()
         logger.info("%s set to %r — session defaults refreshed", path_key, value)

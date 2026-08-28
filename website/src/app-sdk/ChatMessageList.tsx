@@ -212,26 +212,38 @@ const ChatMessageList = memo(function ChatMessageList({
       : undefined
 
     // Batch resolver over EVERY pending id in this group (Req 4.1-4.4). Only
-    // offered when the host supplied onApproveBatch AND there is more than one
-    // pending approval; CollapsibleToolGroup uses it in place of onApprove only
-    // when pendingPermCount > 1, so a single pending approval keeps the
-    // id-scoped path. TOOL_DENY calls never surface as pending permissions
-    // (backend gate; locked by the T5-guard test), so this id list is deny-free.
+    // offered when the host supplied onApproveBatch AND there is MORE THAN ONE
+    // pending approval — a single-id "batch" is never invoked (CollapsibleToolGroup
+    // batches only when pendingPermCount > 1) yet a > 0 handler still flips the
+    // (onApprove || onApproveBatch) render gates, so the gate matches its one
+    // real trigger by requiring > 1 here. TOOL_DENY calls never surface as
+    // pending permissions (backend gate; locked by the T5-guard test), so this
+    // id list is deny-free.
     const batchIds = unresolvedPerms
       .map(m => m.meta?.approval_id as string | undefined)
       .filter((x): x is string => !!x)
-    const handleApproveBatch = onApproveBatch && batchIds.length > 0
+    const handleApproveBatch = onApproveBatch && batchIds.length > 1
       ? (decision: string) => onApproveBatch(batchIds, decision)
       : undefined
+    // Every pending call's meta, so the batch row can preview ALL N commands the
+    // one click will approve — not just the newest (permissionMeta). The human
+    // gate against an untrusted agent must show each command being approved.
+    // Map 1:1 over unresolvedPerms (NO filter): a meta-less pending perm becomes
+    // an empty {} so CollapsibleToolGroup renders its "No preview available"
+    // placeholder row for it. Filtering here would make permissionMetas.length <
+    // pendingPermCount, so the "Review all N" note would promise more rows than
+    // render — the silent-row gap the placeholder exists to prevent.
+    const batchMetas = unresolvedPerms.map(m => m.meta ?? {})
 
     return (
       <div key={'grp-' + item.startIdx} className="px-4 mx-auto w-full py-0" style={{ maxWidth: `var(--mc-content-width, ${contentWidth})` }}>
         <CollapsibleToolGroup
           count={nonPerm.length}
-          autoExpand={(running && item.startIdx >= messages.length - 5) || (!!handleApproveBatch && batchIds.length > 1)}
+          autoExpand={(running && item.startIdx >= messages.length - 5) || !!handleApproveBatch}
           hasPermission={unresolvedPerms.length > 0}
           isRunning={running}
           permissionMeta={lastPerm?.meta}
+          permissionMetas={batchMetas}
           pendingPermCount={unresolvedPerms.length}
           onApprove={handleApprove}
           onApproveBatch={handleApproveBatch}

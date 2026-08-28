@@ -2430,7 +2430,11 @@ export const api = {
   // every slot shares", so workspace skills leak between chats on different
   // projects and vanish entirely when two chats disagree (#2457, #3551).
   // agent, when given, scopes the listing to that agent's own skill:// mapping;
-  // an agent with no explicit mapping keeps the unfiltered listing.
+  // an agent with no explicit mapping keeps the unfiltered listing. When the
+  // mapping IS applied the server answers with the envelope
+  // {skills, agent_scoped: true, agent} instead of the bare array, so the
+  // picker can cue the scope (and tell "nothing mapped" from "nothing exists").
+  // Consume through lib/skillsPayload.ts unwrapSkills() rather than assuming an array.
   skills: (sessionKey?: string, agent?: string) =>
     get('/api/skills' + (agent ? '?agent=' + encodeURIComponent(agent) : ''),
         sessionKey).then(j),
@@ -2807,7 +2811,7 @@ export const api = {
   spawnRetry: (id: string) => post('/api/spawn/' + encodeURIComponent(id) + '/retry', {}).then(j),
   spawnClear: () => del('/api/spawn').then(j),
   approvals: (): Promise<{ id: string; source?: string; tool?: string; tool_input?: string; tool_call_id?: string; slot?: string; ts?: number }[]> => fetch('/api/approvals').then(j),
-  resolveApproval: (id: string, action: 'approve' | 'reject') => post('/api/approvals/' + encodeURIComponent(id) + '/' + action, {}).then(j),
+  resolveApproval: (id: string, action: 'approve' | 'reject' | 'reject_once') => post('/api/approvals/' + encodeURIComponent(id) + '/' + action, {}).then(j),
   /** Question cards still awaiting an answer, for rehydration after a reload or
    *  websocket reconnect (`question_card` is a one-shot broadcast). A blocking
    *  ask carries `ask_id`; a stateless card carries `card_id` instead. */

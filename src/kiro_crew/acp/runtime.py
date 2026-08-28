@@ -23,6 +23,7 @@ import subprocess
 import sys
 import threading
 import time
+import weakref
 from collections import deque
 from pathlib import Path
 from typing import Any, Callable, TypeVar
@@ -59,6 +60,7 @@ from kiro_crew.acp.session_handle import (
     AcpRuntimeProtocol,
     AcpSessionHandle,
     _load_watchdog_settings,
+    parse_advertised_models,
 )
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
@@ -141,6 +143,64 @@ _DROP_IDS_IN_LOG = 8
 _JSONRPC_METHOD_NOT_FOUND = -32601
 _INIT_TIMEOUT = 30.0
 _REQUEST_TIMEOUT = 30.0
+# One gateway event loop owns many independent SessionManager and worker-pool
+# callers. Keep their expensive subprocess spawn + initialize handshakes behind
+# one low process-wide-per-loop bound; worker pools use the same default.
+_COLD_START_MAX_CONCURRENT = 2
+
+
+class _ColdStartAdmission:
+    """Loop-affine admission state for runtime spawn + initialize."""
+
+    def __init__(self, limit: int) -> None:
+        self.semaphore = asyncio.Semaphore(limit)
+        self.active = 0
+        self.queued = 0
+
+    async def acquire(self) -> float:
+        started = time.monotonic()
+        self.queued += 1
+        acquired = False
+        try:
+            await self.semaphore.acquire()
+            acquired = True
+        finally:
+            self.queued -= 1
+        if acquired:
+            self.active += 1
+        return (time.monotonic() - started) * 1000.0
+
+    def release(self) -> None:
+        self.active = max(0, self.active - 1)
+        self.semaphore.release()
+
+
+# asyncio synchronization primitives are loop-affine. Gateways normally have one
+# loop, while tests and embedded callers can create several; keying by loop keeps
+# the production bound gateway-wide without binding a semaphore to the wrong loop.
+_cold_start_admissions: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop, weakref.ReferenceType[_ColdStartAdmission]
+] = weakref.WeakKeyDictionary()
+_cold_start_admissions_lock = threading.Lock()
+
+
+def _cold_start_admission() -> _ColdStartAdmission:
+    loop = asyncio.get_running_loop()
+    with _cold_start_admissions_lock:
+        admission_ref = _cold_start_admissions.get(loop)
+        admission = admission_ref() if admission_ref is not None else None
+        if admission is None:
+            admission = _ColdStartAdmission(_COLD_START_MAX_CONCURRENT)
+            _cold_start_admissions[loop] = weakref.ref(admission)
+        return admission
+
+
+def _cold_start_counts() -> tuple[int, int]:
+    """Current-loop active and queued starts for bounded diagnostics."""
+    admission = _cold_start_admission()
+    return admission.active, admission.queued
+
+
 # Session start (session/new, session/load) gets its own budget because kiro-cli
 # blocks the response while it initializes the session's MCP servers, and a
 # remote server pending OAuth holds that initialization for its FULL 30s
@@ -305,6 +365,16 @@ _DROP_NO_SESSION = "-"
 # string: an absent `method`, or a value of the wrong JSON type (see
 # _drop_key_part).
 _DROP_KEY_PLACEHOLDER = "?"
+
+# Entitlement probe (probe_advertised_models). The probe session carries no MCP
+# servers and activates no mode, so it is far cheaper than a real session start;
+# the timeout is still generous because the probe runs exactly when something is
+# already wrong (a rejection is being revalidated) and a loaded host must not
+# turn a recoverable verdict into a spurious probe failure.
+_ENTITLEMENT_PROBE_TIMEOUT = 30.0
+# A fresh answer is reused for this window so a burst of rejections (several
+# chats revalidating at once) costs one round-trip, not one per rejection.
+_ENTITLEMENT_PROBE_TTL_SECS = 20.0
 
 
 KIRO_CLI_BIN = "kiro-cli"
@@ -704,6 +774,11 @@ class AcpRuntime:
         # Empty until the handshake completes, so callers fail CLOSED and send
         # text-only rather than guessing a modality the agent never advertised.
         self._prompt_capabilities: dict = {}
+        # Entitlement probe state (probe_advertised_models): single-flight lock
+        # plus a short-TTL cache of the last non-empty answer.
+        self._entitlement_probe_lock = asyncio.Lock()
+        self._entitlement_probe_at = 0.0
+        self._entitlement_probe_result: list[dict[str, str]] = []
         self._dead = False
         self._last_activity: float = 0.0
         self._stderr_lines: list[str] = []
@@ -950,7 +1025,49 @@ class AcpRuntime:
         return argv
 
     async def spawn(self) -> None:
-        """Start the kiro-cli acp subprocess and complete protocol handshake."""
+        """Start the ACP runtime behind the gateway-wide cold-start admission gate."""
+        if self._process is not None:
+            raise AcpRuntimeError("Runtime already spawned")
+
+        admission = _cold_start_admission()
+        wait_ms = await admission.acquire()
+        logger.info(
+            "acp_cold_start stage=queue_wait outcome=admitted wait_ms=%.1f "
+            "active_starts=%d queued_starts=%d",
+            wait_ms,
+            admission.active,
+            admission.queued,
+        )
+        started = time.monotonic()
+        outcome = "error"
+        try:
+            await self._spawn_admitted()
+            outcome = "ready"
+        except asyncio.CancelledError:
+            outcome = "cancelled"
+            raise
+        finally:
+            process = self._process
+            if process is None:
+                process_state = "absent"
+            elif process.returncode is None:
+                process_state = "running"
+            else:
+                process_state = "exited"
+            logger.info(
+                "acp_cold_start stage=spawn outcome=%s duration_ms=%.1f backend=%s "
+                "active_starts=%d queued_starts=%d process_state=%s",
+                outcome,
+                (time.monotonic() - started) * 1000.0,
+                self._acp_backend or "kiro",
+                admission.active,
+                admission.queued,
+                process_state,
+            )
+            admission.release()
+
+    async def _spawn_admitted(self) -> None:
+        """Spawn and initialize after the caller has acquired cold-start admission."""
         if self._process is not None:
             raise AcpRuntimeError("Runtime already spawned")
 
@@ -2676,6 +2793,64 @@ class AcpRuntime:
         logger.info("Created session %s on runtime PID %d", session_id, self._pid or 0)
         return handle
 
+    async def probe_advertised_models(self) -> list[dict[str, str]]:
+        """Fetch a fresh advertised-model (entitlement) snapshot from this backend.
+
+        A session's ``availableModels`` is captured once, from its own
+        ``session/new`` response, and the backend resolves that answer from the
+        account state it holds at that instant — a lookup racing a token refresh
+        or a cold start can answer with the default (free-tier) set. A long-lived
+        session holding such an answer refuses models the account actually has,
+        and nothing ever corrects it. This re-asks the question on the SAME live
+        process with a throwaway minimal session (no MCP servers, no mode
+        activation), terminated before returning.
+
+        Single-flight + short TTL: concurrent callers share one probe, and a
+        fresh non-empty answer is reused for :data:`_ENTITLEMENT_PROBE_TTL_SECS`
+        so a burst of rejections costs one round-trip.
+
+        Returns the normalized advertised list, or ``[]`` when the probe fails
+        or advertises nothing. An empty return is NOT evidence about
+        entitlement — callers must keep whatever snapshot they already hold.
+        """
+        async with self._entitlement_probe_lock:
+            now = time.monotonic()
+            if (
+                self._entitlement_probe_result
+                and now - self._entitlement_probe_at < _ENTITLEMENT_PROBE_TTL_SECS
+            ):
+                return list(self._entitlement_probe_result)
+            if not self._initialized or self._dead or self._process is None:
+                return []
+            params = build_session_new_params(self._work_dir, mcp_servers=[])
+            session_id = ""
+            self._session_inits_in_flight += 1
+            try:
+                try:
+                    resp = await self._send_and_await(
+                        METHOD_SESSION_NEW, params, timeout=_ENTITLEMENT_PROBE_TIMEOUT
+                    )
+                    session_id = str(resp.get("sessionId") or "")
+                finally:
+                    # Close the init scope even on failure so staged init
+                    # notifications from this probe never leak into a later
+                    # real session's queue.
+                    self._finish_session_init(session_id)
+            except Exception:
+                logger.debug("entitlement probe session/new failed", exc_info=True)
+                return []
+            try:
+                fresh = parse_advertised_models(resp)
+            finally:
+                if session_id:
+                    # Evict the probe session from the shared process; never
+                    # raises (best-effort by contract).
+                    await self.terminate_session(session_id)
+            if fresh:
+                self._entitlement_probe_result = list(fresh)
+                self._entitlement_probe_at = time.monotonic()
+            return fresh
+
     async def load_session(
         self,
         session_file: str,
@@ -2885,13 +3060,52 @@ class AcpRuntime:
 
         self._last_activity = time.monotonic()
 
+        stage = {
+            "initialize": "initialize",
+            METHOD_SESSION_NEW: "session_new",
+            METHOD_SESSION_LOAD: "session_load",
+            METHOD_SET_MODE: "set_mode",
+        }.get(method)
+        started = time.monotonic()
         try:
-            return await asyncio.wait_for(future, timeout=timeout)
+            result = await asyncio.wait_for(future, timeout=timeout)
         except asyncio.TimeoutError:
             self._pending_requests.pop(req_id, None)
+            active_starts, queued_starts = _cold_start_counts()
+            process_state = (
+                "absent"
+                if self._process is None
+                else "running" if self._process.returncode is None else "exited"
+            )
+            logger.warning(
+                "acp_startup_stage stage=%s outcome=timeout timeout_method=%s "
+                "timeout_budget_s=%g duration_ms=%.1f active_starts=%d "
+                "queued_starts=%d process_state=%s stderr_lines=%d",
+                stage or "control",
+                method,
+                timeout,
+                (time.monotonic() - started) * 1000.0,
+                active_starts,
+                queued_starts,
+                process_state,
+                min(len(self._stderr_lines), 20),
+            )
             # Name the budget: a session-start timeout (90s) must be
             # distinguishable from a generic control-plane one (30s).
             raise AcpRequestTimeout(f"Request {method} timed out after {timeout:g}s")
+        if stage is not None:
+            active_starts, queued_starts = _cold_start_counts()
+            logger.info(
+                "acp_startup_stage stage=%s outcome=ready timeout_method=%s "
+                "timeout_budget_s=%g duration_ms=%.1f active_starts=%d queued_starts=%d",
+                stage,
+                method,
+                timeout,
+                (time.monotonic() - started) * 1000.0,
+                active_starts,
+                queued_starts,
+            )
+        return result
 
     async def _drain_stderr(self) -> None:
         """Drain stderr to prevent subprocess blocking."""

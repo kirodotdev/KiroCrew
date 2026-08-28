@@ -4805,6 +4805,28 @@ class ResolvedBindings:
     # mismatch. An alias key round-trips to itself.
     resolved_alias: str = ""
 
+    def same_dispatch_binding(self, other: "ResolvedBindings") -> bool:
+        """Whether two resolutions name the SAME dispatch target.
+
+        Owned here, next to the field set, so a future dispatch-relevant
+        binding field forces the identity question at the layer that defines
+        it rather than silently widening a permission check that enumerated
+        fields by hand (the dashboard's slot agent-conflict guard uses this to
+        decide whether two different NAMES may share a slot). Compares every
+        field that changes what answers a turn — the kiro agent, workspace,
+        memory store, and model — and deliberately not ``resolved_alias``
+        (two names resolving to one alias's target ARE the same binding) or
+        ``requested_resolved``/``effective_memory_config`` (the former is
+        request metadata the caller checks separately; the latter is derived
+        from ``memory_store_name`` plus global config shared by both sides).
+        """
+        return (
+            self.kiro_agent == other.kiro_agent
+            and self.workspace_dir == other.workspace_dir
+            and self.memory_store_name == other.memory_store_name
+            and self.model == other.model
+        )
+
 
 @dataclass
 class SttConfig:

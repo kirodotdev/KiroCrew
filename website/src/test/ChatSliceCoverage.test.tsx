@@ -29,7 +29,6 @@ import chatReducer, {
   editQueuedMessage,
   fetchHistory,
   hydrateSlotMessages,
-  isStopEvent,
   loadOlderMessages,
   markSubagentApproving,
   mcpAppKey,
@@ -78,6 +77,7 @@ import chatReducer, {
   switchSlot,
   warmSlotCache,
 } from '../store/chatSlice'
+import { isStopEvent } from '../lib/stopEvent'
 import dashboardReducer, { sseSlots } from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import instancesReducer from '../store/instancesSlice'

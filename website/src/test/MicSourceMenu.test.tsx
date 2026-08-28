@@ -207,6 +207,134 @@ describe('MicSourceMenu', () => {
   })
 })
 
+describe('MicSourceMenu keyboard navigation', () => {
+  // The dropdown declares role="menu", which promises the WAI-ARIA menu
+  // keyboard contract (arrows move focus between rows and wrap, Home/End jump
+  // to the boundaries, Tab is contained while the menu is open). None of that
+  // existed here: the rows were reachable only by mouse or by Tabbing blindly
+  // out of the trigger, and a screen-reader user who was just told "menu" got
+  // nothing from the arrow keys they reach for first (#6231).
+  beforeEach(() => {
+    localStorage.clear()
+    mockDevices()
+  })
+  afterEach(() => vi.restoreAllMocks())
+
+  /** The menu is PORTALLED to <body>, so it lives outside the RTL container. */
+  const menuEl = () => document.querySelector('[role="menu"]') as HTMLElement | null
+  /** Rows in document order: one per device, then "System default". */
+  const rowsOf = () => Array.from(menuEl()!.querySelectorAll<HTMLButtonElement>('button'))
+
+  /**
+   * Open the menu and wait for enumeration to land, so the row list under test
+   * is the full one (devices are fetched when the menu opens, not on mount).
+   * Returns the trigger, which must be grabbed BEFORE opening: once the menu is
+   * up, `getByRole('button')` is ambiguous.
+   */
+  async function openWithDevices() {
+    render(<MicSourceMenu onSelect={() => {}} />)
+    const trigger = screen.getByRole('button')
+    fireEvent.click(trigger)
+    await screen.findByText('AirPods Pro')
+    return trigger
+  }
+
+  it('moves focus into the menu when it opens', async () => {
+    await openWithDevices()
+    // role="menu" tells assistive tech that focus is managed inside the menu,
+    // so opening must land the user there rather than leaving focus on the
+    // trigger with the menu an unreachable island.
+    expect(menuEl()!.contains(document.activeElement)).toBe(true)
+    expect(rowsOf()).toContain(document.activeElement)
+  })
+
+  it('lands on the first device row when the device list is already known', async () => {
+    // Second open: `devices` state survived the first one, so the first row at
+    // focus-entry time is a real device row (the case a keyboard user hits for
+    // every open after the first).
+    const trigger = await openWithDevices()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    fireEvent.click(trigger)
+    await screen.findByRole('menu')
+    const rows = rowsOf()
+    expect(rows[0].textContent).toContain('MacBook Pro Microphone')
+    expect(rows[0]).toHaveFocus()
+  })
+
+  it('walks the rows with ArrowDown and wraps past the last one', async () => {
+    await openWithDevices()
+    const rows = rowsOf()
+    expect(rows).toHaveLength(3) // two audio inputs + "System default"
+    rows[0].focus()
+    fireEvent.keyDown(document, { key: 'ArrowDown' })
+    expect(rows[1]).toHaveFocus()
+    fireEvent.keyDown(document, { key: 'ArrowDown' })
+    // The action row is part of the same cycle as the device rows — a user
+    // arrowing down must be able to reach "System default".
+    expect(rows[2].textContent).toContain('System default')
+    expect(rows[2]).toHaveFocus()
+    fireEvent.keyDown(document, { key: 'ArrowDown' })
+    expect(rows[0]).toHaveFocus() // wraps, rather than dead-ending
+  })
+
+  it('walks the rows with ArrowUp and wraps past the first one', async () => {
+    await openWithDevices()
+    const rows = rowsOf()
+    rows[0].focus()
+    fireEvent.keyDown(document, { key: 'ArrowUp' })
+    expect(rows[2]).toHaveFocus()
+    fireEvent.keyDown(document, { key: 'ArrowUp' })
+    expect(rows[1]).toHaveFocus()
+  })
+
+  it('jumps to the boundary rows with Home and End', async () => {
+    await openWithDevices()
+    const rows = rowsOf()
+    rows[1].focus()
+    fireEvent.keyDown(document, { key: 'End' })
+    expect(rows[2]).toHaveFocus()
+    fireEvent.keyDown(document, { key: 'Home' })
+    expect(rows[0]).toHaveFocus()
+  })
+
+  it('contains Tab and Shift-Tab inside the open menu', async () => {
+    // #2533: a Tab out of a still-open menu drops a keyboard user behind it
+    // with no obvious way back — the menu is portalled to <body>, so the next
+    // tab stop is nowhere near the composer they came from.
+    await openWithDevices()
+    const rows = rowsOf()
+    rows[2].focus()
+    fireEvent.keyDown(document, { key: 'Tab' })
+    expect(rows[0]).toHaveFocus()
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true })
+    expect(rows[2]).toHaveFocus()
+  })
+
+  it('closes on Escape and hands focus back to the trigger', async () => {
+    // "Escape closes" is a pin on existing behaviour; the focus restore is the
+    // new part. Focus now ENTERS the menu on open, so closing without a restore
+    // would orphan focus on <body> and lose the user's place entirely.
+    const trigger = await openWithDevices()
+    expect(trigger).not.toHaveFocus()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(menuEl()).toBeNull()
+    expect(trigger).toHaveFocus()
+  })
+
+  it('hands focus back to the trigger after picking a row', async () => {
+    const onSelect = vi.fn()
+    render(<MicSourceMenu onSelect={onSelect} />)
+    const trigger = screen.getByRole('button')
+    fireEvent.click(trigger)
+    fireEvent.click(await screen.findByText('AirPods Pro'))
+    expect(onSelect).toHaveBeenCalledWith('airpods') // pin: the pick still reports
+    expect(menuEl()).toBeNull()
+    // The focused row is unmounted by the close, so without a restore focus
+    // falls to <body> and the next Tab restarts from the top of the document.
+    expect(trigger).toHaveFocus()
+  })
+})
+
 describe('mic device identity helpers', () => {
   beforeEach(() => localStorage.clear())
 

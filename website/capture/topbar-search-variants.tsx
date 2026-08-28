@@ -21,6 +21,17 @@
  *
  * ?theme=dark   ?form=mobile|desktop
  * ?count=11     the unread count to render in the badge
+ * ?update=on    render the top-bar update pill (its presence is conditional in
+ *               the shipped header, so the rung budget has TWO bases: with it
+ *               and without it) and put `tb-has-update` on the actions group,
+ *               exactly as App.tsx does
+ * ?updatelabel=…  override the pill's label, to measure locale variants. The
+ *               default is the zh-CN label, NOT the widest shipped form — the
+ *               rung budget in index.css is derived from de downloading_percent
+ *               ("Wird heruntergeladen 100 %"), so pass that to reproduce the
+ *               measurement
+ * ?budget=off|norungs|nonowrap  before states for the update-pill budget fix
+ *               (documented at the parse site below)
  * ?fix=off      strip the gutter that admits the badge's overhang (before state)
  * ?pins=N       render N pinned-crew chips in the identity group's chip row
  *               (default 0 — the group renders exactly as it did without them)
@@ -31,7 +42,7 @@
  */
 import { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { Home, Search, Bell, Lightbulb, Bug, Layers, Coins, AudioWaveform, ChevronDown } from 'lucide-react'
+import { Home, Search, Bell, Lightbulb, Bug, Layers, Coins, AudioWaveform, ChevronDown, Download } from 'lucide-react'
 
 import { initI18n } from '../src/i18n/all'
 import '../src/index.css'
@@ -42,6 +53,29 @@ const count = params.get('count') || '99+'
 const pins = Number(params.get('pins') || '0')
 const unread = Number(params.get('unread') || '0')
 const rowW = params.get('roww')
+const update = params.get('update') === 'on'
+const updateLabel = params.get('updatelabel') || '有可用更新'
+// The before states for the update-pill budget fix, separable because the fix
+// has two independent halves and evidence must attribute the effect to the
+// right one (same convention as ?fix=off above):
+//   budget=off       both halves off — the shipped-before header
+//   budget=norungs   no `tb-has-update` class (base rungs only), nowrap kept
+//   budget=nonowrap  class kept, segment nowrap backstop stripped
+// The nowrap strip targets only the capsule's own segment buttons — the
+// shipped-before UpdatePill already carried its own whitespace-nowrap.
+const budget = params.get('budget')
+if (budget === 'off' || budget === 'nonowrap') {
+  const s = document.createElement('style')
+  // The shipped-before state: the seg-derived nowrap did not exist on ANY
+  // capsule segment (buttons and the mobile metrics span alike), while the
+  // usage reading span and the update pill carried their own literal
+  // whitespace-nowrap and keep it. `data-seg` marks exactly the elements that
+  // take the shared seg class string, so the strip cannot be told apart from
+  // the shipped-before build by anything inside the capsule.
+  s.textContent = '[data-seg]{white-space:normal}'
+  document.head.appendChild(s)
+}
+const hasUpdateClass = update && budget !== 'off' && budget !== 'norungs'
 document.documentElement.setAttribute('data-theme', theme === 'light' ? 'kiro-light' : 'kiro-dark')
 initI18n('zh-CN')
 
@@ -67,7 +101,7 @@ if (params.get('fix') === 'off') {
   document.head.appendChild(s)
 }
 
-const seg = 'flex items-center gap-1 px-1.5 py-0.5 rounded-md text-muted'
+const seg = 'flex items-center gap-1 -my-0.5 px-1.5 py-0.5 rounded-md text-muted whitespace-nowrap'
 
 /** The pinned-crew chip row, verbatim from InstanceTabBar's `CrewChipRow` +
  *  `SwitcherChip` + `UnreadBadge` class strings, so the real stylesheet decides
@@ -138,6 +172,23 @@ function BellButton() {
   )
 }
 
+/** Verbatim from UpdatePill.tsx's button class string, so the rung budget is
+ *  measured against the shipped pill rather than a paraphrase. The label comes
+ *  from `?updatelabel` because it is locale- and state-dependent ("Update
+ *  available", "下载中 45%…"): the budget has to clear the widest form. */
+function UpdatePillLookalike() {
+  return (
+    <button
+      type="button"
+      data-update-pill
+      className="flex items-center gap-1.5 h-7 px-2.5 rounded-xl shrink-0 cursor-pointer text-[12px] whitespace-nowrap border border-accent/30 bg-accent-subtle text-accent hover:opacity-90 transition-opacity"
+    >
+      <Download size={13} className="lucide-inline" />
+      <span className="hidden sm:inline">{updateLabel}</span>
+    </button>
+  )
+}
+
 function TopBar() {
   return (
     <header className="topbar topbar-glass relative pl-3 pr-3" data-topbar style={{ height: 42 }}>
@@ -159,22 +210,23 @@ function TopBar() {
         <span className="text-[13px] truncate min-w-0">⌘K — 搜索任何内容…</span>
       </button>
 
-      <div className="tb-right relative">
-        <div className="flex items-center gap-2 h-7 px-2.5 rounded-xl bg-card">
+      <div className={`tb-right relative${hasUpdateClass ? ' tb-has-update' : ''}`}>
+        <div className="tb-capsule flex items-center gap-2 h-7 px-2.5 rounded-xl bg-card">
           <span className="w-1.5 h-1.5 rounded-full bg-ok shrink-0" />
           <span className="w-px h-3.5 bg-border shrink-0" />
-          <button className={`${seg} gap-2 text-[11px] font-mono`}>
-            <AudioWaveform size={12} className="tb-narrow-only" />
+          <button data-seg className={`${seg} gap-2 text-[11px] font-mono`}>
+            <AudioWaveform size={12} className="tb-narrow-only text-accent" />
             <span className="tb-drop-metrics flex items-center gap-2">
               <span>CPU 1%</span><span>MEM 42%</span><span>DSK 20%</span>
             </span>
           </button>
           <span className="w-px h-3.5 bg-border shrink-0" />
-          <button className={seg}>
+          <button data-seg className={seg}>
             <Coins size={12} />
             <span className="tb-drop-usage font-mono text-[11px] whitespace-nowrap tabular-nums">12.2万<span className="text-muted">/1万</span></span>
           </button>
         </div>
+        {update ? <UpdatePillLookalike /> : null}
         <span className="tb-drop-feedback flex items-center">
           <span className="flex items-center gap-2 h-7 rounded-xl border border-border bg-card px-3 text-[12px] text-muted">
             <span className="flex items-center gap-1"><Lightbulb size={13} className="lucide-inline" /> 申请功能</span>
@@ -242,12 +294,22 @@ function TopBarMobile() {
       <button className="h-7 w-7 rounded-md border border-border bg-card text-muted flex items-center justify-center shrink-0">
         <Search size={14} />
       </button>
-      <div className="tb-right relative">
-        <div className="flex items-center gap-2 h-7 px-2.5 rounded-xl bg-card">
+      <div className={`tb-right relative${hasUpdateClass ? ' tb-has-update' : ''}`}>
+        <div className="tb-capsule flex items-center gap-2 h-7 px-2.5 rounded-xl bg-card">
           <span className="w-1.5 h-1.5 rounded-full bg-ok shrink-0" />
           <span className="w-px h-3.5 bg-border shrink-0" />
-          <button className={seg}><Coins size={12} /></button>
+          {/* The mobile metrics readout is a passive SPAN, not a button — the
+              nowrap backstop must hold on it too, so the harness renders it
+              verbatim (App.tsx's isMobile && sysMetrics branch). The rarer
+              resource-posture segment shares the same seg class recipe, so
+              this span stands in for every span-shaped segment. */}
+          <span data-seg className={`${seg} gap-2 text-[11px] font-mono tabular-nums`}>
+            <span>CPU 1%</span><span>MEM 42%</span><span>DSK 20%</span>
+          </span>
+          <span className="w-px h-3.5 bg-border shrink-0" />
+          <button data-seg className={seg}><Coins size={12} /></button>
         </div>
+        {update ? <UpdatePillLookalike /> : null}
         <BellButton />
       </div>
     </header>

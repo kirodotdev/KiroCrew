@@ -449,6 +449,10 @@
         "header_resolved": "समाधानित"
       },
       "global": {
+        "unattributed_label": "रिपॉज़िटरी के बिना ईवेंट",
+        "unattributed_note": "ईवेंट में रिपॉज़िटरी दर्ज होने से पहले रिकॉर्ड किए गए, इसलिए किसी को नहीं सौंपे जा सकते।",
+        "repos_label": "रिपॉज़िटरी",
+        "repos_note": "यह बोर्ड इन्हें एक साथ जोड़ता है और अभी इन्हें अलग-अलग नहीं दिखा सकता।",
         "tab_pipeline": "पाइपलाइन",
         "tab_lanes": "आइटम लेन",
         "tablist_label": "ऑटो ट्राइएज पाइपलाइन के दृश्य",
@@ -4655,12 +4659,24 @@
         "download_failed": "डाउनलोड शुरू नहीं हो सका। कुछ भी नहीं भेजा गया। फिर से प्रयास करें।",
         "delete_confirm_action": "फ़ाइल हटाएं",
         "delete_confirm": "“{{name}}” हटाएं? फ़ाइल ड्राइव से हटा दी जाएगी।",
+        "col_name": "नाम",
+        "col_kind": "प्रकार",
+        "col_size": "आकार",
+        "col_modified": "संशोधित",
+        "col_actions": "कार्रवाइयाँ",
+        "kind_folder": "फ़ोल्डर",
+        "folder_new": "नया फ़ोल्डर",
+        "folder_name": "फ़ोल्डर का नाम",
+        "folder_delete_confirm": "“{{name}}” और इसमें मौजूद सब कुछ हटाएँ?",
+        "folder_delete_action": "फ़ोल्डर हटाएँ",
+        "folder_delete_failed": "फ़ोल्डर हटाया नहीं जा सका।",
+        "folder_create_failed": "फ़ोल्डर बनाया नहीं जा सका।",
+        "folder_bad_name": "इस फ़ोल्डर नाम में ऐसे वर्ण हैं जो S3 स्वीकार नहीं करता। अक्षर, अंक, स्पेस और . _ - ( ) + @ = सुरक्षित हैं।",
+        "folder_deleted": "{{objects}} ऑब्जेक्ट हटाए गए।",
         "cancel": "रद्द करें",
         "load_more": "और लोड करें",
         "stat_this_month": "इस माह",
-        "more_actions": "और कार्रवाइयाँ",
         "storage_consent_needed": "इस अकाउंट के लिए क्लाउड स्टोरेज की पुष्टि अभी बाकी है। नीचे पुष्टि करके पेज रीफ़्रेश करो।",
-        "stat_stored": "संग्रहित",
         "stat_stored_value": "{{size}} · {{objects}} ऑब्जेक्ट",
         "costs_as_of": "कैश किए आँकड़े, {{date}} तक के।",
         "costs_consent_missing": "इस खाते का खर्च देखने के लिए नीचे लागत रिपोर्टिंग चालू करें।",
@@ -4691,12 +4707,12 @@
         "kind_webapp": "वेब ऐप",
         "kind_image": "छवि",
         "drive_title": "ड्राइव",
-        "drive_root": "ड्राइव",
         "drive_upload": "अपलोड करें",
         "drive_uploading": "अपलोड हो रहा है…",
         "drive_bad_name": "उस फ़ाइल नाम में ऐसे अक्षर हैं जिन्हें ड्राइव संग्रहित नहीं कर सकती। नाम बदलें और फिर कोशिश करें।",
         "drive_empty": "यह फ़ोल्डर खाली है।",
         "section_drive": "ड्राइव",
+        "section_files": "फ़ाइलें",
         "section_library": "पुस्तकालय",
         "section_backup": "बैकअप",
         "share_title": "यह फ़ाइल साझा करें",
@@ -4741,7 +4757,9 @@
         "connection_connected": "कनेक्टेड",
         "connection_degraded": "घटा हुआ",
         "connection_unknown": "अज्ञात",
-        "copy_id": "खाता ID कॉपी करो"
+        "copy_id": "खाता ID कॉपी करो",
+        "folder_actions": "फ़ोल्डर कार्रवाइयाँ",
+        "file_actions": "फ़ाइल कार्रवाइयाँ"
       },
       "page": {
         "title": "AWS Control",
@@ -4791,7 +4809,8 @@
         "add_accounts_error": "उन प्रोफ़ाइल को पंजीकृत नहीं किया जा सका। कुछ भी नहीं जोड़ा गया। फिर से प्रयास करें।",
         "search_placeholder": "खाते खोजो",
         "search_none": "“{{query}}” से मेल खाता कोई खाता नहीं है।",
-        "paid_services_title": "सशुल्क सेवाएँ"
+        "paid_services_title": "सशुल्क सेवाएँ",
+        "orphan_consent": "यहाँ पंजीकृत नहीं किए गए AWS खाते के लिए पुष्टि की गई है। नीचे पुष्टि वापस लें, या उस खाते को फिर से पंजीकृत करके उसके पेज से प्रबंधित करें।"
       }
     }
   },
@@ -6626,6 +6645,10 @@
       "trusted_source": "विश्वसनीय स्रोत",
       "trusted_source_clones_with_your_git_credentials": "विश्वसनीय स्रोत — इस रजिस्ट्री के ऐप्स इस मशीन के Git क्रेडेंशियल से क्लोन होते हैं।"
     },
+    "rejectDropdown": {
+      "reject_all": "सभी अस्वीकार करें — बाकी को बिना पूछे अस्वीकार करें",
+      "reject_once": "एक बार अस्वीकार करें — बाकी के लिए पूछते रहें"
+    },
     "remoteArtifactCard": {
       "clone": "क्लोन करें",
       "clone_failed": "क्लोन विफल",
@@ -6924,6 +6947,10 @@
       "no_matching_skills": "कोई मेल खाती स्किल नहीं",
       "no_matching_skills_ctrl_enter_sends": "कोई मेल खाती स्किल नहीं — Ctrl+Enter संदेश भेज देगा",
       "no_matching_skills_enter_sends": "कोई मेल खाती स्किल नहीं — Enter संदेश भेज देगा",
+      "no_skills_mapped_to_agent": "{{agent}} से कोई स्किल मैप नहीं है",
+      "no_skills_mapped_to_agent_ctrl_enter_sends": "{{agent}} से कोई स्किल मैप नहीं है — Ctrl+Enter संदेश भेज देगा",
+      "no_skills_mapped_to_agent_enter_sends": "{{agent}} से कोई स्किल मैप नहीं है — Enter संदेश भेज देगा",
+      "scoped_to_agent": "एजेंट {{agent}} तक सीमित",
       "trust_needed_badge": "भरोसा चाहिए",
       "trust_needed_hint": "इस प्रोजेक्ट से। इसे चुनो ताकि जाँच कर फ़ोल्डर पर भरोसा कर सको।"
     },
@@ -7920,6 +7947,9 @@
       "update_other": "{{count}} अपडेट",
       "updated_app_one": "{{count}} ऐप अपडेट किया गया।",
       "updated_app_other": "{{count}} ऐप अपडेट किए गए।",
+      "updates_hint_link": "अपडेट देखो",
+      "updates_hint_one": "{{count}} अपडेट उपलब्ध",
+      "updates_hint_other": "{{count}} अपडेट उपलब्ध",
       "updating_progress": "अपडेट हो रहा है {{done}}/{{total}}…",
       "v": "v",
       "installed_app_find_in_library_and_enable": "{{name}} इंस्टॉल हो गया। इसे लाइब्रेरी में चालू करो।",
@@ -8515,7 +8545,8 @@
       "collapsibleToolGroup": {
         "approval_needed": "स्वीकृति आवश्यक",
         "approvals_pending": "स्वीकृतियाँ लंबित",
-        "batch_preview_note": "{{count}} लंबित कॉल में से सबसे नई; सभी एक साथ हल की जाएंगी।",
+        "batch_preview_all": "नीचे सभी {{count}} लंबित कॉल की समीक्षा करें — सभी एक साथ हल की जाएंगी।",
+        "batch_preview_none": "इस कॉल के लिए कोई पूर्वावलोकन उपलब्ध नहीं है।",
         "approve": "स्वीकृत करें",
         "approve_all": "सभी {{count}} स्वीकृत करें",
         "approved": "स्वीकृत",
@@ -9210,6 +9241,14 @@
       "sort_newest": "नवीनतम",
       "sort_oldest": "सबसे पुराने",
       "source_links_expand_failed": "बाकी लोड नहीं हो सके। दोबारा कोशिश करने के लिए क्लिक करें।",
+      "stale_collapse_caption": "इससे अधिक समय से कोई गतिविधि नहीं",
+      "stale_collapse_ctx_in_name": "{{name}} फ़ोल्डर",
+      "stale_collapse_menu": "सुप्त सत्र समेटें",
+      "stale_collapse_off": "बंद",
+      "stale_collapse_paused": "रोका गया",
+      "stale_collapse_paused_hint": "सूची खोज, फ़िल्टर या “नवीनतम पहले” के अलावा किसी क्रम में होने पर रोक दिया जाता है।",
+      "stale_collapse_row": "सुप्त सत्र",
+      "stale_collapse_row_ungrouped": "फ़ोल्डर के बाहर",
       "started_in_channel": "यह बातचीत {{channel}} में शुरू हुई थी।",
       "started_in_direct_message": "यह बातचीत एक डायरेक्ट मैसेज में शुरू हुई थी।",
       "stop_filtering_by_tag": "{{name}} से फ़िल्टर करना बंद करें",
@@ -9565,6 +9604,20 @@
       "no_checkout_found_action": "नीचे दिया एनवायरनमेंट वेरिएबल सेट करो, या इसे स्थायी बनाने के लिए {{productName}} डेटा डायरेक्टरी (डिफ़ॉल्ट रूप से ~/.kiro/crew) की config.json में dev_fleet.repo_path जोड़ो, फिर गेटवे को पुनः आरंभ करो।"
     },
     "developer": {
+      "agentBackendTab": {
+        "agent_backend": "एजेंट बैकएंड",
+        "claude_code": "Claude Code",
+        "could_not_load_the_agent_backend": "एजेंट बैकएंड लोड नहीं किया जा सका।",
+        "could_not_save_the_agent_backend": "एजेंट बैकएंड सहेजा नहीं जा सका।",
+        "default_all_features_supported": "डिफ़ॉल्ट। सभी सुविधाएँ समर्थित हैं।",
+        "experimental": "प्रयोगात्मक",
+        "kas_kiro_agent": "KAS (kiro-agent)",
+        "kiro_cli": "Kiro CLI",
+        "loading_configuration": "कॉन्फ़िगरेशन लोड हो रहा है…",
+        "new_sessions_use_this_agent_a_session_that_is_al": "नए सत्र इस एजेंट का उपयोग करते हैं। पहले से खुला सत्र उसी एजेंट पर बना रहता है जिससे वह शुरू हुआ था — यहाँ बदलने से चालू सत्र नहीं बदलता।",
+        "not_enabled_in_this_build": "इस बिल्ड में सक्रिय नहीं है",
+        "retry": "पुनः प्रयास करें"
+      },
       "featurePreviewsTab": {
         "inbound_webhook_tokens_registered_contexts_and_r": "इनबाउंड वेबहुक टोकन, पंजीकृत संदर्भ और रन इतिहास. API काम करता है, पेज अभी पूरा नहीं हुआ है.",
         "open_webhooks": "वेबहुक खोलें",
@@ -9574,6 +9627,10 @@
     "developerPage": {
       "developer": "डेवलपर",
       "tabs": {
+        "agentBackend": {
+          "description": "नए सत्र कौन-सा एजेंट शुरू करते हैं — Kiro CLI, Claude Code या KAS",
+          "label": "एजेंट बैकएंड"
+        },
         "archive": {
           "description": "घुमाया/संक्षिप्त किया गया सत्र इतिहास (7 दिन तक रखा जाता है)",
           "label": "संग्रह"
@@ -9614,7 +9671,17 @@
     },
     "discoverPage": {
       "subtitle": "एजेंटिक ऐप्स ब्राउज़ और इंस्टॉल करें",
-      "title": "डिस्कवर"
+      "tab_featured": "विशेष",
+      "tab_updates": "अपडेट",
+      "title": "डिस्कवर",
+      "updates_badge_label_one": "{{count}} अपडेट उपलब्ध",
+      "updates_badge_label_other": "{{count}} अपडेट उपलब्ध",
+      "updates_empty": "सब कुछ अप-टू-डेट है।",
+      "updates_empty_back_to_featured": "फ़ीचर्ड ऐप्स ब्राउज़ करें",
+      "version_diff": "v{{from}} → v{{to}}",
+      "updating": "अपडेट हो रहा है…",
+      "updates_check_failed": "अपडेट की जांच नहीं हो सकी।",
+      "updates_retry": "फिर से कोशिश करें"
     },
     "embedSettingsPage": {
       "back": "वापस",
@@ -10402,7 +10469,14 @@
         "probe_failing": "लगातार विफल",
         "probe_failing_help": "लगातार {{failures}} जाँच विफल। सर्वर अभी भी माउंट है; यह केवल स्वास्थ्य रीडिंग है, कोई बदलाव नहीं।",
         "reset_failures": "गणना रीसेट करें",
-        "reset_failures_help": "इस सर्वर की लगातार विफलता गणना साफ़ करें।"
+        "reset_failures_help": "इस सर्वर की लगातार विफलता गणना साफ़ करें।",
+        "sign_in": "साइन इन करें",
+        "sign_in_authorize": "{{name}} को अधिकृत करें",
+        "sign_in_mint_failed": "साइन-इन शुरू नहीं हो सका। फिर से कोशिश करें।",
+        "sign_in_preparing": "साइन-इन तैयार किया जा रहा है…",
+        "sign_in_retry": "फिर से कोशिश करें",
+        "sign_in_row_updates_after_probe": "इस पंक्ति को रीफ़्रेश करने के लिए ऊपर दिए गए Probe MCP servers का उपयोग करें।",
+        "sign_in_timeout": "साइन-इन ने समय रहते अनुमोदन लिंक नहीं दिया। फिर से कोशिश करें।"
       },
       "memoryGraphTab": {
         "all_count": "सभी ({{count}})",

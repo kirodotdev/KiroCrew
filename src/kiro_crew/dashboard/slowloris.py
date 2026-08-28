@@ -32,9 +32,12 @@ a hardened reverse proxy; this guard is the in-process backstop.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 from aiohttp import web
+
+logger = logging.getLogger(__name__)
 
 # Max seconds a client may take to send the complete request line + headers
 # before the connection is force-closed. Generous enough for any legitimate
@@ -70,7 +73,21 @@ class SlowlorisRequestHandler(web.RequestHandler):
         self._srh_disarmed = False
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
-        super().connection_made(transport)
+        try:
+            super().connection_made(transport)
+        except OSError:
+            # The socket can race closed between accept() and this callback
+            # (observed on macOS, where aiohttp's tcp_keepalive() setsockopt
+            # then raises EINVAL). The connection is already dead: close it
+            # quietly and leave the deadline unarmed instead of letting the
+            # error escape the transport callback as an unhandled asyncio
+            # exception dump. force_close() is safe even when the base call
+            # failed partway (it tolerates a missing transport/waiter).
+            logger.debug(
+                "dropping connection that closed during setup", exc_info=True
+            )
+            self.force_close()
+            return
         if self._srh_timeout and self._srh_timeout > 0:
             self._srh_handle = self._loop.call_later(
                 self._srh_timeout, self._srh_expire

@@ -21,6 +21,8 @@ function isToday(epochSecs: number): boolean {
 }
 import SortableHeader from '../../components/SortableHeader'
 import { connectionProviderForServer } from '../connections/registry'
+import McpRowSignIn from './McpRowSignIn'
+import { useConnectionsUiEnabled } from '../../hooks/useConnectionsUi'
 
 import { i18nT } from '../../i18n/t'
 async function fetchServers(): Promise<McpServer[]> {
@@ -202,6 +204,12 @@ interface McpTabProps {
 export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
   const provider = useProvider()
   const queryClient = useQueryClient()
+  // The in-place sign-in reuses the Connections mint engine, which is launch-held
+  // behind the `connections_ui` flag (the gallery it belongs to is not yet
+  // released). When the flag is off, a managed row falls through to the SAME chat
+  // guidance a non-registry row shows — chat stays the only authorize prompt while
+  // the gallery is closed (see useConnectionsUi docstring).
+  const connectionsUi = useConnectionsUiEnabled()
   const [mcpFilter, setMcpFilter] = useState('')
   // Multi-provider server browser (Add Server button) — discovery lives in
   // the modal so the installed config stays the page's primary content.
@@ -625,26 +633,34 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                       )}
                     </span>
                   ) : mcpAuthState(s) === 'sign_in_required' ? (
-                    /* Prose in the wide column rather than an Authorize control: the sign-in
-                       prompt is raised by Kiro CLI during a session's MCP bring-up, which
-                       happens on a turn, and nothing the dashboard can call from this panel
-                       starts one — so a button here would claim an action it cannot perform.
-                       Navigating to chat IS something the panel can do, so that step is a
-                       link. The user starts a new session there because an existing session
-                       keeps the server set it started with. This column already carries the
-                       other explanation a row can need, and has the width for a sentence.
-                       The closure step stays VISIBLE, in one clause: a `title` reaches
-                       neither a keyboard nor a touch user, and the panel serves from the
-                       probe cache for the whole TTL — so someone returning from a
-                       completed sign-in meets a row still reading "Sign-in required" and
-                       concludes it failed. The badge's title carries the longer form,
-                       naming the control and the state the row lands in. */
-                    <span className="text-warn text-[12px]">
-                      <Trans
-                        i18nKey="pages.overview.mcpTab.sign_in_required_help"
-                        components={{ chatLink: <Link to="/chat" className="underline hover:text-accent transition-colors" /> }}
-                      />
-                    </span>
+                    /* Two paths, split on whether the row resolves to a curated
+                       Connections provider (`managedProvider`, computed at row top)
+                       AND the Connections UI is unlocked (`connectionsUi`).
+
+                       RESOLVABLE + FLAG ON: the panel now CAN start the sign-in in
+                       place — it reuses the SAME headless mint engine the Connections
+                       cards drive (mint → poll for the approval URL → authorize →
+                       paste-back relay). Minting is fenced to registry providers
+                       only; arbitrary URLs are never minted (parked maintainer
+                       decision #4286).
+
+                       EITHER FALSE (non-registry row, OR the gallery still held
+                       behind `connections_ui`): unchanged chat guidance. Nothing the
+                       dashboard can call starts a sign-in for a user-added/self-hosted
+                       server, and while the flag is closed the mint engine is not a
+                       released surface either — so the cell stays a sentence that
+                       routes the user to chat (a link, because navigating IS something
+                       the panel can do) and names the probe step that repaints the row. */
+                    managedProvider && connectionsUi ? (
+                      <McpRowSignIn slug={managedProvider.slug} serverName={s.name} />
+                    ) : (
+                      <span className="text-warn text-[12px]">
+                        <Trans
+                          i18nKey="pages.overview.mcpTab.sign_in_required_help"
+                          components={{ chatLink: <Link to="/chat" className="underline hover:text-accent transition-colors" /> }}
+                        />
+                      </span>
+                    )
                   ) : s.tools?.length ? (<div>
                     <button className="flex items-center gap-1 text-[12px] text-accent hover:text-accent-hover cursor-pointer transition-colors mb-1" onClick={() => setExpandedTools(prev => { const next = new Set(prev); if (next.has(s.name)) next.delete(s.name); else next.add(s.name); return next })}>{s.tools.length} {i18nT('pages.overview.mcpTab.tools_2')}{!expandedTools.has(s.name) && (s.disabledTools?.length || 0) > 0 && <span className="text-muted ml-1">{i18nT('pages.overview.mcpTab.off_count', { count: s.disabledTools!.length })}</span>}<ChevronRight size={14} className={`transition-transform duration-200 ${expandedTools.has(s.name) ? 'rotate-90' : ''}`} /></button>
                     <AnimatePresence>{expandedTools.has(s.name) && <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden"><div className="space-y-0.5">{s.tools.map(t => {

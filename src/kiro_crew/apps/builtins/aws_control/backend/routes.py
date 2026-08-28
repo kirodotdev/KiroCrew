@@ -22,6 +22,8 @@ MUTATIONS (also restricted-session refused + SEL-audited)
 ``POST /drive/{account}/bootstrap``            create the bucket (two-call confirm)
 ``POST /drive/{account}/upload``               upload one file (?section&key, raw body)
 ``POST /drive/{account}/delete``               delete one object
+``POST /drive/{account}/folder``               create an empty folder (placeholder)
+``POST /drive/{account}/folder/delete``        delete a folder and all its objects
 ``POST /drive/{account}/share``                mint a presigned share + ledger entry
 ``POST /shares/{id}/forget``                   drop a ledger entry (link lives to expiry)
 ``POST /library/{account}/push``               push one artifact to the cloud library
@@ -752,6 +754,75 @@ async def _handle_drive_delete(request: web.Request) -> web.Response:
     return web.json_response({"deleted": True, "key": key})
 
 
+async def _handle_drive_folder_create(request: web.Request) -> web.Response:
+    """Create an empty folder — a zero-byte, ``/``-terminated placeholder object.
+
+    ``path`` is validated with the SAME :func:`storage_mod.validate_key` every
+    object key goes through, which is what stops a folder name from escaping the
+    section: it rejects ``../``, a leading slash (absolute key), control
+    characters, and an empty or ``/``-only value. The trailing ``/`` that turns
+    the validated key into a folder marker is appended inside storage
+    (:func:`storage_mod.create_folder`), never taken from the request, so the key
+    shape the listing filters on cannot be spoofed.
+    """
+    ctx = await _require_drive(request)
+    if isinstance(ctx, web.Response):
+        return ctx
+    account, profile, region, bucket = ctx
+    body = await _body(request)
+    section = str(body.get("section", "drive"))
+    if section not in storage_mod.SECTION_PREFIXES:
+        return _bad_request("unknown section", "invalid_section")
+    path = str(body.get("path", ""))
+    err = storage_mod.validate_key(path)
+    if err:
+        return _bad_request(err, "invalid_key")
+    try:
+        await asyncio.to_thread(
+            storage_mod.create_folder, profile, region, bucket, section, path, account=account
+        )
+    except AWSError as exc:
+        return _aws_failed(exc)
+    return web.json_response({"created": True, "path": path})
+
+
+async def _handle_drive_folder_delete(request: web.Request) -> web.Response:
+    """Delete a folder and everything under it.
+
+    A recursive delete is a blast-radius decision, so ``path`` is validated with
+    the shared :func:`storage_mod.validate_key` BEFORE it is used. That rejection
+    is what makes "delete the whole section" or "delete the whole bucket"
+    unreachable from here: an empty ``path`` and a bare ``/`` both fail the
+    validator (empty value, leading/trailing slash), so the prefix
+    :func:`storage_mod.delete_prefix` builds is always ``section/<path>/`` with a
+    concrete folder name -- never the bare ``section/`` prefix and never the
+    bucket root. The storage layer anchors on that trailing slash so a sibling
+    folder sharing a name-prefix is not swept in, and pages the batch-delete API
+    rather than assuming one request clears the folder.
+    """
+    ctx = await _require_drive(request)
+    if isinstance(ctx, web.Response):
+        return ctx
+    account, profile, region, bucket = ctx
+    body = await _body(request)
+    section = str(body.get("section", "drive"))
+    if section not in storage_mod.SECTION_PREFIXES:
+        return _bad_request("unknown section", "invalid_section")
+    path = str(body.get("path", ""))
+    # validate_key refuses empty, '/'-only, absolute, and '..' paths — the guard
+    # that keeps a folder delete from becoming a section- or bucket-wide wipe.
+    err = storage_mod.validate_key(path)
+    if err:
+        return _bad_request(err, "invalid_key")
+    try:
+        removed = await asyncio.to_thread(
+            storage_mod.delete_prefix, profile, region, bucket, section, path, account=account
+        )
+    except AWSError as exc:
+        return _aws_failed(exc)
+    return web.json_response({"deleted": True, "path": path, "objects": removed})
+
+
 async def _handle_drive_share(request: web.Request) -> web.Response:
     """Mint a presigned link + ledger entry. The URL is returned ONCE and
     never persisted — the ledger keeps metadata only (see shares.py)."""
@@ -1032,6 +1103,14 @@ def register_routes(app: web.Application) -> None:
     r.add_post(
         f"{_BASE}/drive/{{account}}/delete",
         _guarded(_mutating("drive_delete")(_handle_drive_delete)),
+    )
+    r.add_post(
+        f"{_BASE}/drive/{{account}}/folder",
+        _guarded(_mutating("drive_folder_create")(_handle_drive_folder_create)),
+    )
+    r.add_post(
+        f"{_BASE}/drive/{{account}}/folder/delete",
+        _guarded(_mutating("drive_folder_delete")(_handle_drive_folder_delete)),
     )
     r.add_post(
         f"{_BASE}/drive/{{account}}/share",

@@ -356,7 +356,7 @@ class CrPipeline:
 
             qdir = Path(qdir)
             qdir.mkdir(parents=True, exist_ok=True)
-            (qdir / f"{fp}.diff").write_text(diff or "")
+            (qdir / f"{fp}.diff").write_text(diff or "", encoding="utf-8")
             # Same shape as the recipe's queue copy ("# <summary>\n\n<description>"); strip
             # a leading H1 in the description so we don't render two titles.
             body = description or ""
@@ -367,7 +367,7 @@ class CrPipeline:
             # never reached this writer — so a direct-committed fix's description was written
             # to a filename nothing reads and silently never rendered. Raised by the GPT
             # review of this branch.
-            (qdir / f"{fp}.pr.md").write_text(f"# {summary}\n\n{body}\n")
+            (qdir / f"{fp}.pr.md").write_text(f"# {summary}\n\n{body}\n", encoding="utf-8")
         except Exception:  # noqa: BLE001 — the queue copy is for display; never fatal
             self.log.debug("direct-commit queue-copy write failed for %s", fp, exc_info=True)
 

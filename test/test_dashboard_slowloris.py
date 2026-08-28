@@ -14,6 +14,8 @@ wiring into the dashboard / API server start paths:
 from __future__ import annotations
 
 import asyncio
+import errno
+import socket
 
 import aiohttp
 import pytest
@@ -121,3 +123,94 @@ def test_start_paths_use_hardened_runner() -> None:
     # fixed closing paren) so passing extra kwargs — e.g.
     # max_field_size=_MAX_HEADER_FIELD_SIZE — still satisfies the invariant.
     assert src.count("build_hardened_runner(app") == 2
+
+
+class _RacedClosedSocket:
+    """Socket stub that fails setsockopt like a raced-closed fd.
+
+    Mirrors the macOS failure where the peer closes between ``accept()`` and
+    ``connection_made``: every ``setsockopt`` raises ``EINVAL``. aiohttp's
+    ``tcp_nodelay`` (base-protocol path) suppresses its own OSError, but
+    ``tcp_keepalive`` (request-handler path) does not — that unguarded call is
+    the one this regression pins.
+    """
+
+    family = socket.AF_INET
+
+    def setsockopt(self, level: int, optname: int, value: object) -> None:
+        raise OSError(errno.EINVAL, "Invalid argument")
+
+
+class _RacedClosedTransport(asyncio.Transport):
+    """Transport whose extra-info socket raises on setsockopt; records close."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.closed = False
+
+    def get_extra_info(self, name: str, default: object = None) -> object:
+        if name == "socket":
+            return _RacedClosedSocket()
+        return default
+
+    def close(self) -> None:
+        self.closed = True
+
+    def is_closing(self) -> bool:
+        return self.closed
+
+
+@pytest.mark.asyncio
+async def test_connection_made_oserror_is_contained() -> None:
+    """A socket that raced closed before setup is dropped without an escape.
+
+    aiohttp's base ``connection_made`` runs ``tcp_keepalive`` unguarded; on a
+    raced-closed socket the ``setsockopt`` OSError would otherwise escape the
+    transport callback as an unhandled asyncio exception dump. The guard must
+    swallow it, close the dead transport, and leave the deadline unarmed.
+    """
+    runner = build_hardened_runner(
+        await _make_app(), header_read_timeout=30.0, keepalive_timeout=75.0
+    )
+    await runner.setup()
+    try:
+        server = runner.server
+        assert isinstance(server, SlowlorisServer)
+        handler = server()
+        assert isinstance(handler, SlowlorisRequestHandler)
+        transport = _RacedClosedTransport()
+
+        # Must not raise despite the base call failing on setsockopt.
+        handler.connection_made(transport)
+
+        # The connection is treated as dead: transport closed, deadline never
+        # armed, and no request-serving task was started for it.
+        assert transport.closed
+        assert handler._srh_handle is None
+        assert handler._task_handler is None
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_connection_made_non_oserror_still_escapes() -> None:
+    """The guard is scoped to OSError; other exceptions must propagate."""
+    runner = build_hardened_runner(
+        await _make_app(), header_read_timeout=30.0, keepalive_timeout=75.0
+    )
+    await runner.setup()
+    try:
+        server = runner.server
+        assert isinstance(server, SlowlorisServer)
+        handler = server()
+
+        class _Boom(asyncio.Transport):
+            def get_extra_info(self, name: str, default: object = None) -> object:
+                if name == "socket":
+                    raise RuntimeError("not an OSError")
+                return default
+
+        with pytest.raises(RuntimeError):
+            handler.connection_made(_Boom())
+    finally:
+        await runner.cleanup()

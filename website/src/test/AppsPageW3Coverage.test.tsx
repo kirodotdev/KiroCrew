@@ -4,7 +4,8 @@
  * `AppsPageDiscover.test.tsx` covers the editorial/browse rendering surface.
  * This file covers what it does not touch: the navigation helpers (Cmd-click,
  * `autoAction` router state), the enable path including the trust-denied
- * consent hand-off, the Library disable toast, Update All's failure report,
+ * consent hand-off, the Library disable toast and updates hint row, Update
+ * All's failure report (on Discover's Updates sub-tab, its PR2 home),
  * the whole uninstall confirmation dialog (every provenance notice, the
  * dependency preview, keep-data / keep-dependency wiring), the query-error
  * card, the empty states, and `pickFeatured`'s trust filter.
@@ -122,6 +123,10 @@ function renderPage(initialRoute = '/apps') {
       <MemoryRouter initialEntries={[initialRoute]}>
         <Routes>
           <Route path="/apps" element={<DiscoverPage />} />
+          {/* Static segments BEFORE the param routes, mirroring App.tsx's
+              route order. `/apps/-/updates` is Discover's Updates sub-tab
+              (PR2) — the pending-updates worklist and Update All live there. */}
+          <Route path="/apps/-/updates" element={<DiscoverPage />} />
           <Route path="/apps/library" element={<LibraryPage />} />
           <Route path="/apps/detail/:name" element={<DetailProbe />} />
           <Route path="/apps/:name" element={<DetailProbe />} />
@@ -217,6 +222,10 @@ async function browseRow(name: string) {
 
 /** Mount the Library route directly — the split removed the in-page tab. */
 const renderLibrary = () => renderPage('/apps/library')
+
+/** Mount Discover's Updates sub-tab, where Update All lives since PR2 demoted
+ *  the Library banner to a hint row. */
+const renderUpdates = () => renderPage('/apps/-/updates')
 
 describe('AppsPage — Discover navigation', () => {
   it('Cmd-clicks a row into a new tab instead of routing in place', async () => {
@@ -410,16 +419,30 @@ describe('AppsPage — Library actions', () => {
 
   it('names the apps that failed during Update All', async () => {
     updateApp.mockRejectedValue(new Error('clone failed'))
-    renderLibrary()
+    // Update All moved with the banner demotion (PR2): the batch runs from
+    // Discover's Updates sub-tab, whose page owns the error notice surface.
+    renderUpdates()
     fireEvent.click(await screen.findByRole('button', { name: 'Update All' }))
     expect(await screen.findByText('Failed to update: secretary')).toBeInTheDocument()
   })
 
   it('reports success after Update All and shows no error', async () => {
-    renderLibrary()
+    renderUpdates()
     fireEvent.click(await screen.findByRole('button', { name: 'Update All' }))
     expect(await screen.findByText('Updated 1 app.')).toBeInTheDocument()
     expect(screen.queryByText(/Failed to update/)).toBeNull()
+  })
+
+  it('Library shows the muted updates hint row, not the old banner', async () => {
+    renderLibrary()
+    // PR2 demoted the banner: a one-line hint with the count and a hand-off
+    // link to the Updates sub-page — no Update All button on Library.
+    expect(await screen.findByText('1 update available')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'View updates' }))
+      .toHaveAttribute('href', '/apps/-/updates')
+    expect(screen.queryByRole('button', { name: 'Update All' })).toBeNull()
+    // The affected card still wears its version chip (current → pending).
+    expect(screen.getByText('v1.0.0 (v1.1.0 available)')).toBeInTheDocument()
   })
 })
 
@@ -699,7 +722,9 @@ describe('AppsPage — toast expiry', () => {
   })
 
   it('the Update All toast clears itself after four seconds', async () => {
-    renderLibrary()
+    // Update All lives on Discover's Updates sub-tab since PR2; its success
+    // toast is DiscoverPage's notice surface with the same 4s dismissal.
+    renderUpdates()
     fireEvent.click(await screen.findByRole('button', { name: 'Update All' }))
     await screen.findByText('Updated 1 app.')
     await act(async () => { vi.advanceTimersByTime(4000) })

@@ -1132,10 +1132,12 @@ def test_child_fidelity_aware_survives_client_replacement():
 
 
 def test_to_llm_event_preserves_provenance_flags():
-    """`AcpProvider._to_llm_event` reconstructs the event — dropping the two
-    provenance fields would zero them to False and flip child_low_fidelity to
-    True for EVERY child permission event on this surface, making the
-    full-fidelity half of the feature (mode-parity auto-approval) inert."""
+    """`AcpProvider._to_llm_event` reconstructs the event — dropping a
+    provenance field would zero it to False: for the params pair that flips
+    child_low_fidelity to True for EVERY child permission event on this
+    surface (making the full-fidelity half of the feature inert); for
+    mcp_identity_trusted it revokes the verified-identity half
+    (child_mcp_identity_trusted) the unconditional grant paths rely on."""
     from kiro_crew.acp.types import EVENT_PERMISSION_REQUEST, AcpEvent
     from kiro_crew.providers.acp import AcpProvider
 
@@ -1154,3 +1156,43 @@ def test_to_llm_event_preserves_provenance_flags():
     assert out.raw_params_trusted is True
     assert out.shell_classified is True
     assert out.child_low_fidelity is False
+
+
+def test_to_llm_event_preserves_mcp_identity_trusted():
+    """The identity-provenance flag crosses the provider copy: dropping it
+    from the copy list silently reads False and revokes
+    child_mcp_identity_trusted for every crossing event (the drop-to-False
+    trap the explicit flag was added to guard against — it must fail closed
+    only for genuinely untrusted population, never for a copy)."""
+    from kiro_crew.acp.types import EVENT_PERMISSION_REQUEST, AcpEvent
+    from kiro_crew.providers.acp import AcpProvider
+
+    src = AcpEvent(
+        kind=EVENT_PERMISSION_REQUEST,
+        request_id=11,
+        title="@example-server/get-item",
+        sub_session_id="child-a",
+        shell_classified=True,
+        is_shell=False,
+        mcp_server_name="example-server",
+        tool_name="get-item",
+        mcp_identity_trusted=True,
+    )
+    assert src.child_mcp_identity_trusted is True
+    out = AcpProvider._to_llm_event(src)
+    assert out.mcp_identity_trusted is True
+    assert out.child_mcp_identity_trusted is True
+    assert out.child_unconditional_grant_eligible is True
+    # And the flag is copied, not invented: an untrusted source stays False.
+    src_untrusted = AcpEvent(
+        kind=EVENT_PERMISSION_REQUEST,
+        request_id=12,
+        sub_session_id="child-a",
+        shell_classified=True,
+        is_shell=False,
+        mcp_server_name="example-server",
+        tool_name="get-item",
+    )
+    out_untrusted = AcpProvider._to_llm_event(src_untrusted)
+    assert out_untrusted.mcp_identity_trusted is False
+    assert out_untrusted.child_mcp_identity_trusted is False

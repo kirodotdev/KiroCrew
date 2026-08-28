@@ -15,7 +15,7 @@ app state — exactly like ``state.subagents`` / ``state.sessions``.
 ``author`` turns a natural-language intent into a validated workflow script using
 the same in-session model the rest of KiroCrew uses (no new model plumbing). It
 loops up to a few times until the produced script passes ``validate`` — the
-authoring-reliability gates (G1/G2) cover this shape.
+authoring-reliability gates (G1/G2/G3) cover this shape.
 """
 
 from __future__ import annotations
@@ -27,7 +27,13 @@ import threading
 from typing import Any, Callable, Optional
 
 from kiro_crew import autonudge
-from kiro_crew.llm_helpers import ToolApprovalPolicy, stream_and_collect
+from kiro_crew.acp.client import AcpError
+from kiro_crew.acp.runtime import AcpRequestTimeout, AcpRuntimeDead
+from kiro_crew.llm_helpers import (
+    ToolApprovalPolicy,
+    acp_error_is_transient,
+    stream_and_collect,
+)
 from kiro_crew.task_planner import decompose_yaml
 
 from .agent_exec import build_agent_fn
@@ -58,6 +64,17 @@ logger = logging.getLogger(__name__)
 _AUTHOR_RETRIES = 2
 _AUTHOR_REFERENCE_LIMIT = 3
 _AUTHOR_REFERENCE_SOURCE_CHARS = 16000
+# Startup retries are narrower than validation retries: only ACP control-plane
+# transients qualify, and every retry receives a fresh isolated session key.
+_AUTHOR_STARTUP_ATTEMPTS = 3
+_AUTHOR_STARTUP_BACKOFF_SECS = (0.25, 0.75)
+
+
+def _author_startup_retryable(exc: BaseException) -> bool:
+    if isinstance(exc, (AcpRequestTimeout, AcpRuntimeDead)):
+        return True
+    return isinstance(exc, AcpError) and acp_error_is_transient(exc)
+
 
 _AUTHOR_SYSTEM = """\
 You are authoring a KiroCrew DYNAMIC WORKFLOW: one Python module that orchestrates
@@ -674,10 +691,58 @@ class WorkflowService:
         # fresh session cheap: the dominant cold-start cost was loading the full
         # MCP toolset + system prompt; lite carries no tools, so the turn is just
         # the generation. REJECT_ALL is belt-and-suspenders against an alternate
-        # ACP backend injecting tools without set_mode. The session is torn down
-        # (cleanup=True) the instant authoring finishes — nothing persists.
-        key = f"wf-author:{self._new_run_id()}"
-        provider, *_ = await self._sessions.get_or_create(key, agent="kirocrew-lite")
+        # ACP backend injecting tools without set_mode. The session is destroyed
+        # the instant authoring finishes — nothing remains registered or resumable.
+        provider: Any = None
+        key = ""
+        for startup_attempt in range(1, _AUTHOR_STARTUP_ATTEMPTS + 1):
+            # A fresh key per attempt prevents a half-created session from being
+            # reclaimed after a timeout. SessionManager owns provider hard-kill
+            # cleanup when startup fails before registration.
+            key = f"wf-author:{self._new_run_id()}:a{startup_attempt}"
+            try:
+                provider, *_ = await self._sessions.get_or_create(key, agent="kirocrew-lite")
+            except Exception as exc:
+                try:
+                    await self._sessions.destroy(key)
+                except Exception:  # noqa: BLE001 - preserve the startup failure
+                    logger.debug("workflow author startup destroy failed", exc_info=True)
+                if (
+                    not _author_startup_retryable(exc)
+                    or startup_attempt >= _AUTHOR_STARTUP_ATTEMPTS
+                ):
+                    logger.warning(
+                        "workflow_author_startup attempt=%d/%d outcome=failed "
+                        "exception=%s retryable=%s",
+                        startup_attempt,
+                        _AUTHOR_STARTUP_ATTEMPTS,
+                        type(exc).__name__,
+                        _author_startup_retryable(exc),
+                    )
+                    raise
+                delay = _AUTHOR_STARTUP_BACKOFF_SECS[startup_attempt - 1]
+                logger.warning(
+                    "workflow_author_startup attempt=%d/%d outcome=retry "
+                    "exception=%s backoff_s=%.2f",
+                    startup_attempt,
+                    _AUTHOR_STARTUP_ATTEMPTS,
+                    type(exc).__name__,
+                    delay,
+                )
+                _say(
+                    "Author session startup was temporarily unavailable — "
+                    f"retrying ({startup_attempt + 1}/{_AUTHOR_STARTUP_ATTEMPTS})…"
+                )
+                await asyncio.sleep(delay)
+                continue
+            if startup_attempt > 1:
+                logger.info(
+                    "workflow_author_startup attempt=%d/%d outcome=recovered",
+                    startup_attempt,
+                    _AUTHOR_STARTUP_ATTEMPTS,
+                )
+            break
+
         try:
             errors: list[str] = []
             source = ""
@@ -715,12 +780,18 @@ class WorkflowService:
                 errors = vr.errors
             return {"ok": False, "errors": errors, "source": source}
         finally:
-            # Ephemeral, isolated session: tear it down so nothing persists between
-            # runs (separation of concerns — the workflow is independent).
+            # Destroy, rather than merely release, the acquired lease: release()
+            # leaves the provider and registry entry alive until idle expiry.
             try:
-                self._sessions.release(key, cleanup=True)
-            except Exception:  # noqa: BLE001
-                pass
+                await self._sessions.destroy(key)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # SessionManager.destroy remains the hard-cleanup owner. This
+                # boundary is housekeeping only: an ordinary teardown failure
+                # must not replace a successful script or the primary authoring
+                # exception that brought execution here.
+                logger.warning("workflow author teardown failed", exc_info=True)
 
     async def start_from_intent(
         self,

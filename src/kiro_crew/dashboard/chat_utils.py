@@ -2095,6 +2095,10 @@ def is_system_injection(content: str) -> bool:
 #: Structural queue-entry kind for runner-injected recovery instructions.
 SYNTHETIC_RECOVERY_KIND = "synthetic_recovery"
 
+#: Row-level kind for the `error` notice appended when a recovery has ALREADY
+#: been queued, so the frontend can tell a pending retry from a terminal failure.
+TRANSIENT_RETRY_KIND = "transient_retry"
+
 #: Structural queue-entry kinds for system injections.  Classification by kind
 #: tag — set at enqueue time — is unforgeable: a user typing the same prefix
 #: text will not have the kind tag and will correctly classify as plain input.

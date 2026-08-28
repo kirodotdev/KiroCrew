@@ -163,20 +163,25 @@ describe('AppsPage — hybrid Discover', () => {
     expect(await screen.findByTestId('detail-route')).toBeInTheDocument()
   })
 
-  it('shows the pending-updates banner on Library and runs Update All', async () => {
-    updateApp.mockResolvedValue({ ok: true })
+  it('shows the pending-updates hint row on Library, linking to the Updates sub-page', async () => {
     // Library is its own routed page now (PR1 split) — mount it directly.
     renderPage('/apps/library')
+    // PR2 demoted the banner to a muted one-line hint: a count and a hand-off
+    // link to the Discover Updates sub-page, which owns the update worklist.
     expect(await screen.findByText('1 update available')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Update All' }))
-    await waitFor(() => expect(updateApp).toHaveBeenCalledWith('secretary'))
+    expect(screen.getByRole('link', { name: 'View updates' }))
+      .toHaveAttribute('href', '/apps/-/updates')
+    // Update All left with the banner — the hint row carries no batch action.
+    expect(screen.queryByRole('button', { name: 'Update All' })).toBeNull()
+    // The affected card still wears its version chip (current → pending).
+    expect(screen.getByText('v1.0.0 (v1.1.0 available)')).toBeInTheDocument()
   })
 
   it('persists and migrates the stored tab (installed → library)', async () => {
     sessionStorage.setItem('appstore-tab', 'installed')
     renderPage()
     // The legacy key redirects /apps to /apps/library (REPLACE), which shows
-    // the installed management surface — the pending-updates banner proves
+    // the installed management surface — the pending-updates hint row proves
     // Library content actually rendered, not just a route change.
     expect(await screen.findByText('1 update available')).toBeInTheDocument()
     // The key is cleared after migration so the redirect can never fire twice.

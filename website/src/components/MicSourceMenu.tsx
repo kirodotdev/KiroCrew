@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom'
 
 import { i18nT } from '../i18n/t'
 import { getPreferredMicId, listMicrophones } from '../hooks/mic'
+import { useMenuKeyboard } from '../hooks/useMenuKeyboard'
 
 interface Props {
   /** Label of the device actually capturing, for the trigger text. */
@@ -52,6 +53,22 @@ export default function MicSourceMenu({ deviceLabel, activeDeviceId, onSelect, r
   const [rect, setRect] = useState<{ left: number; top: number; bottom: number } | null>(null)
   const wrapRef = useRef<HTMLSpanElement | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
+  // The trigger, so an explicit dismissal can hand focus back to it: the menu
+  // keyboard contract moves focus INTO the portalled menu on open, and the row
+  // holding it is unmounted by the close — without a restore, focus would be
+  // orphaned on <body> and the next Tab would restart from the top of the
+  // document, nowhere near the composer the user came from. Same posture as
+  // `MenuBtn` (DevFleetPage), the precedent for this contract.
+  const triggerRef = useRef<HTMLButtonElement | null>(null)
+
+  // role="menu" promises the WAI-ARIA menu keyboard contract (arrow-key row
+  // navigation with wrap, Home/End, Tab containment) — shared with the other
+  // role="menu" surfaces rather than re-spelled here (#6231). The rows are
+  // already native <button role="menuitemradio">, so the hook's default item
+  // discovery finds them (devices, then "System default") with no row markup
+  // change. Escape stays owned by the dismiss effect below: what "close" means
+  // here — reposition state, focus restore — is this host's business.
+  useMenuKeyboard({ enabled: open, containerRef: menuRef })
 
   useEffect(() => {
     if (!open) return
@@ -70,7 +87,15 @@ export default function MicSourceMenu({ deviceLabel, activeDeviceId, onSelect, r
       const t = e.target as Node
       if (!wrapRef.current?.contains(t) && !menuRef.current?.contains(t)) setOpen(false)
     }
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); setOpen(false) } }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation()
+        setOpen(false)
+        // Focus lives inside the menu at this point (see `triggerRef`), and the
+        // element holding it is about to unmount — hand it back to the trigger.
+        triggerRef.current?.focus()
+      }
+    }
     document.addEventListener('pointerdown', onDown, true)
     document.addEventListener('keydown', onKey, true)
     return () => {
@@ -89,6 +114,9 @@ export default function MicSourceMenu({ deviceLabel, activeDeviceId, onSelect, r
   const pick = (id: string) => {
     setPreferred(id)
     setOpen(false)
+    // Activation is an explicit dismissal too: the row that has focus is being
+    // unmounted, so restore to the trigger rather than dropping focus on <body>.
+    triggerRef.current?.focus()
     onSelect(id)
   }
 
@@ -140,6 +168,7 @@ export default function MicSourceMenu({ deviceLabel, activeDeviceId, onSelect, r
     <span ref={wrapRef} className="relative flex-1 min-w-0 flex items-center">
       <button
         type="button"
+        ref={triggerRef}
         onClick={toggle}
         aria-haspopup="menu"
         aria-expanded={open}

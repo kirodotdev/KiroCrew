@@ -83,6 +83,16 @@ Var KiroScope
 Var KiroAnimationsEnabled
 Var KiroWindowVisible
 Var KiroVisibleUpdate
+; The app executable's filename, carried as a VARIABLE rather than referenced as
+; ${APP_EXECUTABLE_FILENAME} where it is used. That define comes from the
+; template's common.nsh, which is included AFTER this file, so a Function body --
+; compiled at !include time -- cannot see it: NSIS emits `warning 6000: unknown
+; variable/constant "{APP_EXECUTABLE_FILENAME}"` and silently drops it, which
+; would reduce an ownership test to a bare directory path. A !macro body is
+; expanded at its !insertmacro site and CAN see it, so customInit assigns this
+; variable and the Function reads it. (${APP_FILENAME} is fine at include time --
+; it comes from the generated header, not common.nsh.)
+Var KiroAppExeName
 
 ; The fade operates on the top-level dialog, the only window type for which
 ; AW_BLEND is supported. It runs once per page boundary and leaves the native
@@ -154,7 +164,66 @@ FunctionEnd
 ; fresh install must therefore own a directory that did not exist beforehand.
 ; Normalize a /D override to a product-name leaf and keep nesting past any
 ; collision. Registered updates retain their existing install root.
+;
+; AN UPDATE NEVER RELOCATES THE INSTALL, and that is checked FIRST -- before the
+; registry-derived guards below, not through them. electron-updater re-runs this
+; installer with `--updated` against an install that by definition already
+; exists, so the collision-nesting further down would resolve $INSTDIR to a
+; FRESH subdirectory and install the new version beside the running one instead
+; of over it. The result is two parallel installs: the update lands in one, the
+; shortcuts and the post-install relaunch keep pointing at the other, and the
+; stale copy re-discovers the very same update on its next feed check -- an
+; update loop the user cannot escape except by launching the new path by hand.
+;
+; The two guards below cannot carry this, because both are downstream of ONE
+; registry value: upstream's initMultiUser reads `InstallLocation` from
+; ${INSTALL_REGISTRY_KEY} into $perUserInstallationFolder /
+; $perMachineInstallationFolder, and customInit turns those into
+; $KiroHasPerUserInstallation / $KiroHasPerMachineInstallation. When that value
+; is missing both flags read 0, the guards fall through, and the update nests.
+; That is not hypothetical: on a machine that hit this loop the uninstall key
+; carried DisplayVersion, UninstallString and DisplayIcon all pointing at the
+; real install root while `InstallLocation` itself was absent. Why it was absent
+; is not established -- registryAddInstallInfo writes it unconditionally -- which
+; is exactly why the update path must not depend on it being there.
+;
+; The guard tests $KiroVisibleUpdate rather than ${isUpdated}, and that is NOT
+; interchangeable here. ${isUpdated} expands to a StdUtils::TestParameter plugin
+; call, and this is a Function, so its body is compiled when this file is
+; !included -- before the generated script runs !addplugindir. Writing
+; ${isUpdated} here fails the build at compile time with "Plugin not found,
+; cannot call StdUtils::TestParameter". customInit gets away with it because a
+; !macro body is only expanded at its !insertmacro site, which is late enough.
+; customInit sets $KiroVisibleUpdate from ${isUpdated} before it calls this
+; function, and the install-mode page's leave callback runs later still, so the
+; variable is populated on both call paths.
+;
+; The update bypass is NOT unconditional, and must not be made so. `--updated` is
+; a command-line flag on a user-runnable installer, so it can arrive alongside
+; `/D=<any existing directory>`; an unconditional bypass would then adopt a
+; directory this installer never created, record it as the install root, and the
+; generated uninstaller -- which removes $INSTDIR recursively -- would delete the
+; user's pre-existing contents there on uninstall. So the bypass requires proof
+; that the target IS one of our install roots, and the proof is the presence of
+; this app's own executable in it. Path equality against the canonical default is
+; deliberately not used as the test: a path can match while the directory belongs
+; to something else, whereas our executable being there cannot. A registered root
+; is still short-circuited by the $KiroHasPer*Installation guards below.
+;
+; $KiroAppExeName, not ${APP_EXECUTABLE_FILENAME}: that define is unavailable at
+; !include time, and NSIS drops it with `warning 6000` instead of failing loudly,
+; which would silently reduce this test to a bare directory path and let the
+; bypass fire for a directory we do not own. See the Var declaration.
+;
+; What remains covered: the loop this fixes needs an update whose install root is
+; already a Kiro Crew install, which is exactly the case the executable check
+; admits. An update that cannot prove ownership falls through to the ordinary
+; fresh-install ownership path instead of adopting the directory.
 Function KiroEnsureAppInstallDir
+  ${If} $KiroVisibleUpdate == 1
+  ${AndIf} ${FileExists} "$KiroInstallDir\$KiroAppExeName"
+    Return
+  ${EndIf}
   ${If} $KiroScope == "current"
   ${AndIf} $KiroHasPerUserInstallation == 1
     Return
@@ -300,9 +369,31 @@ FunctionEnd
 !macroend
 
 ; Add callbacks around the stock MUI finish page without replacing its controls,
-; localization, run-after-finish behavior, or automatic progress handoff. The
-; packaging contract compares this copied StartApp block with electron-builder's
-; locked template so a dependency upgrade cannot silently drift from upstream.
+; localization, run-after-finish behavior, or automatic progress handoff.
+;
+; StartApp DELIBERATELY DIVERGES from electron-builder's template in exactly one
+; expression, and the packaging contract asserts that divergence instead of
+; equality so a dependency upgrade still cannot change it silently. Upstream
+; launches "$launchLink", which installSection.nsh resolves to $newStartMenuLink
+; whenever that shortcut exists and only falls back to the installed executable
+; when it does not. A shortcut is a POINTER, and on an update it is not
+; necessarily repointed: registryAddInstallInfo records KeepShortcuts="true", so
+; addStartMenuLink keeps whatever the previous install left behind. When that
+; shortcut names a different install root than the one this run just wrote --
+; exactly what the nesting bug guarded against above produces -- the relaunch
+; starts the OLD executable. The user then lands back on the version they just
+; updated away from, the app re-discovers the same update on its next feed check,
+; and every subsequent attempt repeats it. Launching
+; $INSTDIR\${APP_EXECUTABLE_FILENAME} names the bytes this installer just
+; installed, which is the one target that cannot be stale -- and it is not an
+; invented target: installSection.nsh assigns $launchLink exactly this path
+; whenever no Start Menu shortcut exists, so this promotes upstream's own
+; fallback to the only case. ${APP_EXECUTABLE_FILENAME} is defined globally in
+; the template's common.nsh, so it resolves wherever this macro is inserted.
+;
+; Losing the shortcut's AppUserModelID with it costs nothing here: main.js calls
+; app.setAppUserModelId() on win32 during startup, so taskbar grouping and
+; notification identity are established by the app itself either way.
 !macro customFinishPage
   !ifndef HIDE_RUN_AFTER_FINISH
     Function StartApp
@@ -311,7 +402,7 @@ FunctionEnd
       ${else}
         StrCpy $1 ""
       ${endif}
-      ${StdUtils.ExecShellAsUser} $0 "$launchLink" "open" "$1"
+      ${StdUtils.ExecShellAsUser} $0 "$INSTDIR\${APP_EXECUTABLE_FILENAME}" "open" "$1"
     FunctionEnd
 
     !define MUI_FINISHPAGE_RUN
@@ -365,6 +456,9 @@ FunctionEnd
 ; This runs for silent installs too and does not replace or restyle any page.
 !macro customInit
   StrCpy $KiroWindowVisible 0
+  ; Resolved HERE, not at the use site: see the Var declaration for why a
+  ; Function body cannot reference ${APP_EXECUTABLE_FILENAME} directly.
+  StrCpy $KiroAppExeName "${APP_EXECUTABLE_FILENAME}"
   StrCpy $KiroVisibleUpdate 0
   ${If} ${isUpdated}
     StrCpy $KiroVisibleUpdate 1

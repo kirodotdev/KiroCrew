@@ -366,6 +366,30 @@ _MCP_DRAIN_REPORT_ACTIONS = frozenset(
 _SENTINEL = object()
 
 
+def parse_advertised_models(resp: dict[str, Any]) -> list[dict[str, str]]:
+    """The normalized advertised-model list from a ``session/new``/``session/load``
+    response (``[]`` when the backend advertised nothing).
+
+    Accepts both response shapes: a ``models`` object
+    ``{availableModels: [...], currentModelId}`` and a bare list under either
+    key. A falsy ``models`` value (``{}``, ``[]``, ``None``) falls through to a
+    top-level ``availableModels`` — callers that gate on ``models`` themselves
+    should pass a wrapped envelope (e.g. ``{"models": models}``) so the
+    fallback cannot source the list from a payload their gate never saw. Normalization matches
+    :meth:`AcpSessionHandle._normalize_models`, so a
+    probe's answer and a session-init snapshot are directly comparable.
+    """
+    models = resp.get("models") or resp.get("availableModels")
+    if isinstance(models, dict):
+        avail = models.get("availableModels", [])
+        if isinstance(avail, list):
+            return AcpSessionHandle._normalize_models(avail)
+        return []
+    if isinstance(models, list):
+        return AcpSessionHandle._normalize_models(models)
+    return []
+
+
 class AcpRuntimeError(Exception):
     """Base error for AcpRuntime operations."""
 
@@ -416,6 +440,11 @@ class AcpRuntimeProtocol(Protocol):
         ...
 
     async def send_request(self, method: str, params: dict[str, Any]) -> int:
+        ...
+
+    async def probe_advertised_models(self) -> list[dict[str, str]]:
+        """Fresh advertised-model snapshot from a throwaway ``session/new``
+        (``[]`` = probe failed / advertised nothing — never evidence)."""
         ...
 
     async def send_notification(self, method: str, params: dict[str, Any]) -> None:
@@ -1663,7 +1692,20 @@ class AcpSessionHandle:
                 self._resolved_model_id = current_model_id
             avail = models.get("availableModels", [])
             if isinstance(avail, list):
-                self._available_models = self._normalize_models(avail)
+                # The shape walk is delegated to the canonical parser so this
+                # snapshot and a probe's answer stay directly comparable
+                # (#6382). The envelope is the same checked-binding discipline
+                # as the client's, though here the parser's dict-or-list
+                # fallback is unreachable by construction (the inner dict
+                # always has a key). The isinstance check above is the
+                # assignment gate: a non-list ``availableModels`` must not
+                # clobber a previously-stored list. A well-formed EMPTY list
+                # still overwrites — that asymmetry with
+                # ``AcpClient._capture_available_models`` (non-empty guard) is
+                # pre-existing policy, deliberately unchanged here.
+                self._available_models = parse_advertised_models(
+                    {"models": {"availableModels": avail}}
+                )
             # A backend may advertise its model list without echoing
             # ``currentModelId`` (it is best-effort in the ACP shape). When it
             # names exactly one model that IS the served model unambiguously, so
@@ -1676,13 +1718,18 @@ class AcpSessionHandle:
             if not self._resolved_model_id and len(self._available_models) == 1:
                 self._resolved_model_id = self._available_models[0]["modelId"]
         elif isinstance(models, list):
-            self._available_models = self._normalize_models(models)
+            self._available_models = parse_advertised_models({"availableModels": models})
 
     @staticmethod
     def _normalize_models(advertised: list[Any]) -> list[dict[str, str]]:
         """Normalize advertised models to ``{modelId, name, description}`` with
-        guaranteed keys (parity with AcpClient._capture_available_models), so the
-        dashboard model dropdown gets a stable shape regardless of backend."""
+        guaranteed keys — the canonical normalization. Every consumer
+        (``parse_advertised_models``, and through it ``store_session_config``,
+        ``AcpClient._capture_available_models``, and the pooled-runtime
+        entitlement probe ``AcpRuntime.probe_advertised_models``) shares this
+        shape, so probe answers and session-init snapshots are directly
+        comparable and the dashboard model dropdown gets a stable shape
+        regardless of backend."""
         captured: list[dict[str, str]] = []
         for m in advertised:
             if not isinstance(m, dict):
@@ -1696,6 +1743,28 @@ class AcpSessionHandle:
                 "description": str(m.get("description") or ""),
             })
         return captured
+
+    async def refresh_available_models(self) -> list[dict[str, str]]:
+        """Re-resolve the advertised-model snapshot against the live backend.
+
+        ``_available_models`` is otherwise written once, from this session's own
+        ``session/new`` — an answer the backend resolved from the account state
+        it held at that instant. When that answer was degraded (a lookup racing
+        a token refresh answers with the default tier), the session refuses
+        models the account actually has, for its whole life. Every consumer of
+        entitlement — the explicit-pick refusal, the prompt-time pin withhold,
+        the dashboard picker filter — reads through this handle's snapshot, so
+        one refresh heals them all.
+
+        The snapshot is replaced only by a NON-EMPTY probe result: a failed or
+        empty probe is not evidence about entitlement, so the prior snapshot is
+        kept. Returns the probe result either way, so callers can distinguish
+        "revalidated" from "could not revalidate".
+        """
+        fresh = await self._runtime.probe_advertised_models()
+        if fresh:
+            self._available_models = list(fresh)
+        return fresh
 
     def _sync_effort_levels(self) -> None:
         """Push ACP-reported effort levels to the global validation set (parity

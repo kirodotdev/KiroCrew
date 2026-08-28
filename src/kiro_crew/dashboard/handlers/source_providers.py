@@ -713,12 +713,13 @@ async def _run_json(
                 _audit_provider_cli(executable, "denied", "host_not_allowlisted")
                 raise SourceProviderError("GitLab host is not allowlisted")
             gitlab_host = host
-    if platform_compat.IS_WINDOWS:
-        _audit_provider_cli(executable, "denied", "sandbox_unavailable")
-        raise SourceProviderError(
-            "Pull-request source providers are not supported on Windows because "
-            "OS-level provider sandboxing is unavailable."
-        )
+    # Windows is not refused here: it has no OS sandbox backend, so it reaches
+    # the same no-backend policy a backend-less Linux host does, and
+    # ``sandboxed_spawn_argv`` below owns that policy (fail closed unless the
+    # operator set ``agent.sandbox_allow_unsandboxed_exec``). Every other bound
+    # is platform-independent and still applies: the allowlisted executable, the
+    # validated resolved path, the strict env allowlist with a pinned PATH, the
+    # output cap, the timeout and the SEL audit.
     try:
         # Off the loop: resolution walks every candidate dir and stats the whole
         # parent chain of each hit (github_runner.validate_provider_executable),

@@ -291,6 +291,53 @@ class TestDeferredFlush:
         assert _map_file(tmp_path)["dashboard:early"]["sid"] == "sid-early"
 
     @pytest.mark.asyncio
+    async def test_aclose_retires_unstarted_debounce_and_lands_state(self, session_map, tmp_path):
+        session_map.set("dashboard:early-close", "sid-early-close")
+        task = session_map._flush_task
+        assert task is not None
+
+        await session_map.aclose()
+
+        assert task.cancelled()
+        assert session_map._flush_task is None
+        assert _map_file(tmp_path)["dashboard:early-close"]["sid"] == "sid-early-close"
+
+    @pytest.mark.asyncio
+    async def test_aclose_drains_claimed_worker_write_without_sleep(self, session_map, tmp_path):
+        entered = threading.Event()
+        release = threading.Event()
+        cancellation_restored = asyncio.Event()
+        real_write = SessionMap._write_payload
+        real_restore = SessionMap._restore_dirty
+
+        def gated_write(self, payload, seq):
+            entered.set()
+            assert release.wait(timeout=10)
+            return real_write(self, payload, seq)
+
+        def observed_restore(self):
+            real_restore(self)
+            cancellation_restored.set()
+
+        with (
+            patch.object(SessionMap, "_write_payload", gated_write),
+            patch.object(SessionMap, "_restore_dirty", observed_restore),
+        ):
+            session_map.set("dashboard:claimed-close", "sid-claimed-close")
+            task = session_map._flush_task
+            assert task is not None
+            assert await asyncio.to_thread(entered.wait, 10)
+
+            closing = asyncio.create_task(session_map.aclose())
+            await asyncio.wait_for(cancellation_restored.wait(), timeout=10)
+            release.set()
+            await closing
+
+        assert task.cancelled()
+        assert session_map._flush_task is None
+        assert _map_file(tmp_path)["dashboard:claimed-close"]["sid"] == "sid-claimed-close"
+
+    @pytest.mark.asyncio
     async def test_aflush_covers_a_claimed_but_unwritten_snapshot(self, session_map, tmp_path):
         """aflush() must not report clean while a claimed snapshot is unwritten."""
         entered = threading.Event()

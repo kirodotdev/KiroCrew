@@ -786,6 +786,33 @@ def build_permission_event(
         if isinstance(_inline, dict):
             _resolved_raw_params = _inline
 
+    # Trusted MCP server + tool identity recovered from the preceding tool_call
+    # (the permission payload carries no _meta). .get() (not .pop()) mirrors the
+    # is_shell cache: a later tool_call_update for the same id re-reads it; the
+    # per-turn dispatch .clear() handles cleanup. Empty on a miss (fail-closed
+    # for the app-own-server auto-approve). The tool name lets the app-own-server
+    # auto-approve govern the canonical mcp__<server>__<tool> on the permission
+    # path.
+    _cached_server = (
+        mcp_server_name_cache.get(_ck)
+        if (mcp_server_name_cache is not None and tool_call_id)
+        else None
+    )
+    _cached_tool = (
+        tool_name_cache.get(_ck) if (tool_name_cache is not None and tool_call_id) else None
+    )
+    _mcp_server_name = _cached_server or ""
+    _tool_name = _cached_tool or ""
+    # Explicit identity-provenance flag (mirrors _raw_params_trusted): True iff
+    # BOTH cache reads above actually HIT — a written entry may legitimately be
+    # "" for a non-MCP tool, so the hit is distinguished from a miss by the
+    # None default, never by the value. Deliberately derived from the reads
+    # themselves, not from cache availability or non-emptiness: a future
+    # inline fallback populating the identity fields from the permission
+    # payload would leave this False and fail closed in
+    # AcpEvent.child_mcp_identity_trusted.
+    _mcp_identity_trusted = _cached_server is not None and _cached_tool is not None
+
     event = AcpEvent(
         kind=EVENT_PERMISSION_REQUEST,
         request_id=request_id,
@@ -799,23 +826,9 @@ def build_permission_event(
         tool_call_id=tool_call_id,
         raw_tool_params=_resolved_raw_params,
         is_shell=is_shell,
-        # Trusted MCP server identity recovered from the preceding tool_call
-        # (the permission payload carries no _meta). .get() (not .pop()) mirrors
-        # the is_shell cache: a later tool_call_update for the same id re-reads
-        # it; the per-turn dispatch .clear() handles cleanup. Empty on a miss
-        # (fail-closed for the app-own-server auto-approve).
-        mcp_server_name=(
-            mcp_server_name_cache.get(_ck, "")
-            if (mcp_server_name_cache is not None and tool_call_id)
-            else ""
-        ),
-        # Trusted tool identity recovered from the preceding tool_call, mirroring
-        # mcp_server_name above. Lets the app-own-server auto-approve govern the
-        # canonical mcp__<server>__<tool> on the permission path (no _meta here).
-        # Empty on a miss (fail-closed: no trusted tool name → no auto-approve).
-        tool_name=(
-            tool_name_cache.get(_ck, "") if (tool_name_cache is not None and tool_call_id) else ""
-        ),
+        mcp_server_name=_mcp_server_name,
+        tool_name=_tool_name,
+        mcp_identity_trusted=_mcp_identity_trusted,
     )
     return event, recorded
 
@@ -937,6 +950,11 @@ def _build_tool_call_event(
         # Trusted identity from _meta.kiro (NOT the LLM-authored title).
         tool_name=_tool_name,
         mcp_server_name=_mcp_server_name,
+        # The pair above comes exclusively from the _kiro_* extractors over the
+        # frame's _meta.kiro (non-model-authored) — the trusted tool_call path.
+        # Earned only when an identity pair was actually extracted: a frame
+        # with no _meta.kiro populates nothing, so it asserts no provenance.
+        mcp_identity_trusted=bool(_mcp_server_name and _tool_name),
         diff_old_text=_diff_old_text,
         diff_path=_diff_path,
     )

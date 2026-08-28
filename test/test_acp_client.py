@@ -7136,6 +7136,74 @@ class TestCaptureAvailableModels:
         )
         assert c.available_models()[0]["modelId"] == "m1"
 
+    def test_capture_matches_canonical_parser(self):
+        """Drift-pin (#6382): the client-side capture normalizes exactly like
+        ``parse_advertised_models`` — hard-coded expectation so a regression
+        inside the canonical parser (name fallback, description default,
+        value-as-id, non-dict skip) fails this pin too."""
+        resp = {
+            "models": {
+                "currentModelId": "m1",
+                "availableModels": [
+                    {"modelId": "m1", "name": "M1", "description": "d"},
+                    {"value": "m2"},
+                    {"name": "no id — skipped"},
+                    "not-a-dict",
+                ],
+            }
+        }
+        c = self._client()
+        c._capture_available_models(resp)
+        assert c.available_models() == [
+            {"modelId": "m1", "name": "M1", "description": "d"},
+            {"modelId": "m2", "name": "m2", "description": ""},
+        ]
+
+    def test_capture_delegates_to_canonical_parser(self, monkeypatch):
+        """Anti-re-fork pin (#6382): the list must be SOURCED from
+        ``parse_advertised_models`` AND called with the gated envelope
+        ``{"models": models}`` — a restored inline walk, a whole-response
+        re-resolution, or a wrong envelope all fail this pin.
+
+        Depends on the function-local import in ``_capture_available_models``;
+        if that import is ever hoisted to module scope, patch
+        ``kiro_crew.acp.client.parse_advertised_models`` instead.
+        """
+        from kiro_crew.acp import session_handle as sh
+
+        sentinel = [
+            {"modelId": "sentinel-a", "name": "A", "description": ""},
+            {"modelId": "sentinel-b", "name": "B", "description": ""},
+        ]
+        calls: list = []
+
+        def _fake(resp):
+            calls.append(resp)
+            return list(sentinel)
+
+        monkeypatch.setattr(sh, "parse_advertised_models", _fake)
+        c = self._client()
+        c._capture_available_models({"models": {"availableModels": [{"modelId": "real"}]}})
+        assert c.available_models() == sentinel
+        assert calls == [{"models": {"availableModels": [{"modelId": "real"}]}}]
+
+    def test_malformed_later_response_keeps_prior_snapshot(self):
+        """The non-empty assignment guard survives the consolidation: a later
+        malformed response must not clear an already-captured list."""
+        c = self._client()
+        c._capture_available_models({"models": {"availableModels": [{"modelId": "m1"}]}})
+        assert [m["modelId"] for m in c.available_models()] == ["m1"]
+        c._capture_available_models({"models": {"availableModels": "nope"}})
+        assert [m["modelId"] for m in c.available_models()] == ["m1"]
+
+    def test_empty_models_object_ignores_top_level_available_models(self):
+        """An EMPTY (falsy) ``models`` object must not let the parser's
+        dict-or-list fallback source the list from a top-level
+        ``availableModels`` key the dict gate never saw (#6382)."""
+        c = self._client()
+        c._capture_available_models({"models": {}, "availableModels": [{"modelId": "x"}]})
+        assert c.available_models() == []
+
 
 def _scripted_process(lines, *, returncode=None):
     """Build a mock subprocess whose stdout.readline yields *lines* in order.

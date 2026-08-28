@@ -580,21 +580,41 @@ describe('model provenance on the completion card (#3582)', () => {
 })
 
 describe('isModelDowngrade / normalizeModelId (GPT review on #3582)', () => {
-  it('does not flag a dotted pin vs its dashed served id as a downgrade', () => {
-    // The false positive the reviews caught: config pins are dotted
-    // (claude-opus-4.8) while adapters advertise dashed (claude-opus-4-8);
-    // normalizeModelKey folds `.`->`-` and case, so these are the same model.
-    expect(isModelDowngrade('claude-opus-4.8', 'claude-opus-4-8')).toBe(false)
-    expect(isModelDowngrade('Claude-Opus-4.8', 'claude-opus-4-8')).toBe(false)
+  it('does not flag a pin vs its provider-prefixed canonical served id', () => {
+    // The false positive the reviews caught: a config pin (dotted
+    // `claude-opus-4.8`) and the id the adapter serves for the SAME registry
+    // model (`global.anthropic.claude-opus-4-8[1m]`, `us.anthropic.…[1m]`) both
+    // resolve to `opus-4.8-1m` through the shared registry, so this is an
+    // honored pin, not a downgrade. This is the durable #5339 fold that replaced
+    // the interim prefix/suffix-strip heuristic.
+    expect(isModelDowngrade('claude-opus-4.8', 'global.anthropic.claude-opus-4-8[1m]')).toBe(false)
+    expect(isModelDowngrade('Claude-Opus-4.8', 'us.anthropic.claude-opus-4-8[1m]')).toBe(false)
+    expect(isModelDowngrade('opus-4.8-1m', 'claude-opus-4.8')).toBe(false)
   })
 
-  it('does not flag an alias pin vs its provider-canonical served id (prefix/suffix)', () => {
-    // normalizeModelKey does not fold the provider prefix / version suffix; we
-    // strip a KNOWN leading provider prefix + trailing version suffix and then
-    // require exact equality — an honored pin, not a downgrade (#3582).
-    expect(isModelDowngrade('claude-opus-4.8', 'us.anthropic.claude-opus-4-8-v1:0')).toBe(false)
-    expect(isModelDowngrade('claude-opus-4.8', 'us.anthropic.claude-opus-4-8')).toBe(false)
-    expect(isModelDowngrade('claude-opus-4-8', 'anthropic.claude-opus-4-8:0')).toBe(false)
+  it('DOES flag a 1M pin served as its 200K sibling (#5339)', () => {
+    // The registry lists the 1M `opus-4.8-1m` (dotted `claude-opus-4.8`) and the
+    // 200K `opus-4.8` (dashed `claude-opus-4-8`, `…anthropic.claude-opus-4-8`) as
+    // DISTINCT models. Requesting the 1M model and being served the 200K one is
+    // a real context-window downgrade — the exact conflation the old dot->dash
+    // string fold hid, and what this flag exists to surface.
+    expect(isModelDowngrade('claude-opus-4.8', 'claude-opus-4-8')).toBe(true)
+    expect(isModelDowngrade('claude-opus-4.8', 'global.anthropic.claude-opus-4-8')).toBe(true)
+  })
+
+  it('DOES flag a real kiro downgrade the claude_code fold would hide (#5339 Design)', () => {
+    // On the kiro/acp path Sonnet 4.6 (1M) and Haiku 4.5 (200K) are DISTINCT
+    // models, though the claude_code index aliases both onto sonnet-4.6-1m. A
+    // provider-blind claude_code-only fold would silently pass this real swap;
+    // the acp-first fold keeps them distinct so it correctly flags.
+    expect(isModelDowngrade('claude-sonnet-4.6', 'claude-haiku-4.5')).toBe(true)
+    expect(isModelDowngrade('claude-opus-4.8', 'claude-opus-4.6')).toBe(true)
+  })
+
+  it('does not flag a 200K pin vs its own provider-prefixed served id', () => {
+    // Both the pin and the served id name the 200K `opus-4.8` — an honored pin.
+    expect(isModelDowngrade('claude-opus-4-8', 'us.anthropic.claude-opus-4-8')).toBe(false)
+    expect(isModelDowngrade('claude-opus-4-8', 'global.anthropic.claude-opus-4-8')).toBe(false)
   })
 
   it('does not flag the "auto"/"default" sentinel or an unknown id', () => {
@@ -618,21 +638,47 @@ describe('isModelDowngrade / normalizeModelId (GPT review on #3582)', () => {
   })
 
   it('treats an UNRECOGNIZED routing prefix as inconclusive, never a downgrade (#5394)', () => {
-    // A partition/provider outside the known strip set (a new region token,
-    // a vendor the fold has never heard of) leaves the served id as
-    // `<unknown-prefix>-<bare pin>` — an unstripped routing shape, not
-    // evidence of a different model. A missed downgrade is safer than a
-    // false amber on an honored pin.
-    expect(isModelDowngrade('claude-opus-4.8', 'apac.anthropic.claude-opus-4-8-v1:0')).toBe(false)
-    expect(isModelDowngrade('claude-opus-4.8', 'newvendor.claude-opus-4-8')).toBe(false)
+    // For an id the registry does NOT list (GPT/DeepSeek/Qwen), a partition or
+    // vendor outside the known strip set leaves the served id as
+    // `<unknown-prefix>-<bare pin>` — an unstripped routing shape, not evidence
+    // of a different model. A missed downgrade is safer than a false amber on an
+    // honored pin. (Anthropic-registry ids resolve through the shared fold and
+    // no longer depend on this heuristic.)
+    expect(isModelDowngrade('gpt-5.6-sol', 'newvendor.gpt-5.6-sol')).toBe(false)
     expect(isModelDowngrade('gpt-5.6-sol', 'azure.openai.gpt-5.6-sol')).toBe(false)
+    // A KNOWN prefix on the same 200K model is also an honored pin.
+    expect(isModelDowngrade('claude-opus-4-8', 'apac.anthropic.claude-opus-4-8')).toBe(false)
+  })
+
+  it('flags a REGISTERED pin served an unregistered id — registry fold wins (#5339)', () => {
+    // When either side resolves through the registry, the canonical fold is
+    // authoritative: the unregistered-id token-suffix heuristic is skipped, so a
+    // registered pin served an unrecognized id is a genuine difference, not the
+    // old "inconclusive, no amber". `claude-opus-4.8` -> opus-4.8-1m (registered)
+    // vs a served id the registry does not list -> flags.
+    expect(isModelDowngrade('claude-opus-4.8', 'newvendor.some-other-model')).toBe(true)
+    // And a registered pin vs a genuinely different registered served model.
+    expect(isModelDowngrade('claude-opus-4.8', 'claude-sonnet-4.6')).toBe(true)
+  })
+
+  it('does NOT false-flag a registered pin vs a version-suffixed id of the same base (#6280)', () => {
+    // A served Bedrock on-demand id (`…claude-opus-4-8-v1:0`) is unregistered
+    // (the registry carries no `-v1:0` window entry). The pin resolves to a
+    // canonical key, the served id does not — so the registry short-circuit is
+    // SKIPPED and the fall-through compares RAW string folds (one normal form):
+    // both strip to `claude-opus-4-8`, an honored pin, no amber. Comparing the
+    // pin's canonical key against the served raw fold would false-flag it (GPT).
+    expect(isModelDowngrade('claude-opus-4.8', 'us.anthropic.claude-opus-4-8-v1:0')).toBe(false)
+    expect(isModelDowngrade('claude-opus-4-8', 'anthropic.claude-opus-4-8:0')).toBe(false)
+    // A DIFFERENT version-family under a version suffix still flags.
+    expect(isModelDowngrade('claude-opus-4.8', 'us.anthropic.claude-opus-4-7-v1:0')).toBe(true)
   })
 
   it('folds BOTH sides symmetrically: a canonical-form pin vs its bare served id (#5394)', () => {
-    // A pin can itself be written in provider-canonical form; stripping only
-    // the served side would false-flag the honored pin.
-    expect(isModelDowngrade('us.anthropic.claude-opus-4-8-v1:0', 'claude-opus-4-8')).toBe(false)
-    expect(isModelDowngrade('anthropic.claude-opus-4-8:0', 'claude-opus-4.8')).toBe(false)
+    // A pin can itself be written in provider-canonical form; both sides resolve
+    // to the same registry model, so this is an honored pin, not a downgrade.
+    expect(isModelDowngrade('us.anthropic.claude-opus-4-8[1m]', 'claude-opus-4.8')).toBe(false)
+    expect(isModelDowngrade('global.anthropic.claude-opus-4-8', 'claude-opus-4-8')).toBe(false)
   })
 
   it('still flags a genuinely different model under an unknown prefix (#5394)', () => {
@@ -681,9 +727,11 @@ describe('downgrade is visible, not hover-only (UX review on #3582)', () => {
     expect(banner.textContent).toContain('claude-opus-4.7')
   })
 
-  it('shows NO downgrade banner when the served model matches the dashed spelling', () => {
+  it('shows NO downgrade banner when the served id is the same registry model', () => {
+    // Pin `claude-opus-4.8` and served `global.anthropic.claude-opus-4-8[1m]`
+    // both resolve to `opus-4.8-1m` — an honored pin, no warn styling.
     const { container } = renderWithProviders(
-      <SubagentCompletionCard message={msg(SINGLE, { meta: meta('claude-opus-4.8', 'claude-opus-4-8') })} />,
+      <SubagentCompletionCard message={msg(SINGLE, { meta: meta('claude-opus-4.8', 'global.anthropic.claude-opus-4-8[1m]') })} />,
       { store: store() },
     )
     expect(container.querySelector('[data-testid="subagent-completion-downgrade"]')).toBeNull()

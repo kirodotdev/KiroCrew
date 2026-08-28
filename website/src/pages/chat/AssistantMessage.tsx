@@ -18,6 +18,7 @@ import { useSmoothStream } from '../../hooks/useSmoothStream'
 import type { PlanStepInput } from '../../api/client'
 import { extractSteeringAcks, parseOptions, stripPartialOptionMarker } from '../../app-sdk/protocol'
 import { i18nT } from '../../i18n/t'
+import { ROUTING_PREFIX_RE } from '../../providers/modelRegistry'
 import { fmtCurrency, fmtDuration, fmtNumber, fmtUnit } from '../../i18n/format'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 
@@ -30,9 +31,10 @@ export interface TurnStats { elapsed_ms: number; credits?: number; cost_usd?: nu
 /** Trim a served model id to a compact footer label: drop region/vendor
  *  routing prefixes ("global.anthropic.claude-opus-4-8[1m]" → "claude-opus-4-8[1m]").
  *  The full untrimmed id stays available in the footer tooltip, so this only
- *  affects the inline label. Unknown shapes pass through unchanged. */
+ *  affects the inline label. Unknown shapes pass through unchanged. Shares the
+ *  one routing-prefix pattern with the registry fold (providers/modelRegistry.ts). */
 export function fmtTurnModel(id: string): string {
-  return id.replace(/^(?:(?:us|eu|apac|global)\.)?(?:anthropic|amazon|openai|bedrock)\./, '')
+  return id.replace(ROUTING_PREFIX_RE, '')
 }
 
 /** "8.4s" under 10s, "42s" under a minute, "2m 34s" beyond. */

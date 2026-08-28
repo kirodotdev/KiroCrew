@@ -347,6 +347,53 @@ describe('awsControlApi.backup*', () => {
 
 /* ── profile discovery + registration ─────────────────────────────────────── */
 
+describe('awsControlApi.driveFolderCreate / driveFolderDelete', () => {
+  it('create POSTs the section and path, encoding the account into the segment', async () => {
+    fetchSpy.mockResolvedValue(jsonResponse({ created: true, path: 'photos/2026' }))
+    await awsControlApi.driveFolderCreate('acct/1', 'drive', 'photos/2026')
+    const [url, init] = firstCall(fetchSpy)
+    expect(url).toBe(`${BASE}/drive/acct%2F1/folder`)
+    expect(init.method).toBe('POST')
+    expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/json')
+    // The path travels in the BODY, not the URL: a folder path contains slashes,
+    // and putting it in the path would make it indistinguishable from further
+    // route segments.
+    expect(init.body).toBe(JSON.stringify({ section: 'drive', path: 'photos/2026' }))
+  })
+
+  it('delete POSTs to its own path, so a create can never be mistaken for a delete', async () => {
+    // Distinct URLs rather than one path plus a flag: unlike bootstrap's
+    // preview/confirm pair, these are two different operations and a dropped
+    // field must not turn one into the other.
+    fetchSpy.mockResolvedValue(jsonResponse({ deleted: true, path: 'photos', objects: 12 }))
+    await awsControlApi.driveFolderDelete('a', 'drive', 'photos')
+    const [url, init] = firstCall(fetchSpy)
+    expect(url).toBe(`${BASE}/drive/a/folder/delete`)
+    expect(init.method).toBe('POST')
+    expect(init.body).toBe(JSON.stringify({ section: 'drive', path: 'photos' }))
+  })
+
+  it('carries the section through, so a folder is created in the section asked for', async () => {
+    fetchSpy.mockResolvedValue(jsonResponse({ created: true, path: 'q' }))
+    await awsControlApi.driveFolderCreate('a', 'backup', 'q')
+    const [, init] = firstCall(fetchSpy)
+    expect(JSON.parse(String(init.body)).section).toBe('backup')
+  })
+
+  it('returns the object count the delete reports, which is what the UI restates', async () => {
+    fetchSpy.mockResolvedValue(jsonResponse({ deleted: true, path: 'photos', objects: 12 }))
+    const res = await awsControlApi.driveFolderDelete('a', 'drive', 'photos')
+    expect(res.objects).toBe(12)
+  })
+
+  it('surfaces the backend refusal code for a path that escapes its section', async () => {
+    // The backend runs the path through the same key validator every object key
+    // goes through; the client must not swallow that refusal.
+    fetchSpy.mockResolvedValue(jsonResponse({ code: 'invalid_key' }, 400))
+    await expect(awsControlApi.driveFolderCreate('a', 'drive', '../etc')).rejects.toBeInstanceOf(AwsControlError)
+  })
+})
+
 describe('awsControlApi.availableProfiles / registerProfiles', () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>
 

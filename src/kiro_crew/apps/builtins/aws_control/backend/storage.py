@@ -456,6 +456,276 @@ def delete_key(
     )
 
 
+#: ``delete-objects`` accepts at most 1000 keys per request (a hard S3 API
+#: limit, not a tunable). A folder with more objects than that MUST be paged,
+#: so the constant is the batch size the caller walks the listing in — never an
+#: assumption that one call clears the whole prefix.
+_DELETE_BATCH_MAX = 1000
+
+#: Byte ceiling for the serialized ``--delete`` document, which travels as ONE
+#: argv element. Two limits bound it, and the tighter one wins:
+#:
+#:   * Linux caps a single argument at MAX_ARG_STRLEN (128 KiB).
+#:   * Windows caps the WHOLE command line near 32 KiB (32767 chars) - and
+#:     ``subprocess`` builds that line with ``list2cmdline``, which escapes every
+#:     ``"`` as ``\"``. An S3 key may legitimately contain quotes (nothing stops
+#:     another tool writing one), and a JSON document is quote-dense by
+#:     construction, so a batch can DOUBLE on the way to CreateProcess.
+#:
+#: So the budget is set for the worst case rather than the typical one:
+#: 12 KiB * 2 (every byte escaped) + roughly 300 bytes of fixed argv is about
+#: 25 KiB, comfortably inside 32767. ``_WINDOWS_CMDLINE_MAX`` and the test that
+#: multiplies these together keep the relationship honest if the cap is ever
+#: raised - 1000 keys of 1024 chars would otherwise serialize to ~1 MB and fail
+#: to spawn at all, which is an OSError and a 500 rather than a delete.
+_DELETE_PAYLOAD_MAX_BYTES = 12 * 1024
+
+#: The ceiling the budget above is derived from. Not a tunable: it is the
+#: documented CreateProcess command-line limit.
+_WINDOWS_CMDLINE_MAX = 32767
+
+
+def _delete_batches(keys: list[str]) -> list[list[str]]:
+    """Split ``keys`` into batches that fit BOTH S3's count cap and argv limits.
+
+    Order is preserved and every key appears exactly once: a split that dropped
+    or duplicated a key would under-delete (leaving objects behind) or make the
+    reported count a lie. A single key that alone exceeds the budget still gets
+    its own batch - refusing it here would silently skip an object the caller
+    asked to remove, so the spawn is attempted and any failure surfaces.
+    """
+    batches: list[list[str]] = []
+    current: list[str] = []
+    # {"Objects":[],"Quiet":true} plus the per-key {"Key":"..."} wrapper.
+    overhead = len(json.dumps({"Objects": [], "Quiet": True}, separators=(",", ":")))
+    size = overhead
+    for key in keys:
+        entry = len(json.dumps({"Key": key}, separators=(",", ":")).encode()) + 1
+        too_big = size + entry > _DELETE_PAYLOAD_MAX_BYTES
+        if current and (too_big or len(current) >= _DELETE_BATCH_MAX):
+            batches.append(current)
+            current, size = [], overhead
+        current.append(key)
+        size += entry
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _raise_on_delete_errors(out: str) -> None:
+    """Turn a per-key DeleteObjects failure into an ``AWSError``.
+
+    ``delete-objects`` answers 200 with an ``Errors`` array when it could not
+    remove some keys, so the CLI exits 0 and the caller would otherwise count
+    them as deleted.
+
+    An EMPTY body is success: with ``Quiet`` a fully successful call returns
+    nothing. A non-empty body that will not parse is NOT success - the call site
+    pins ``--output json``, so unparseable output means something unexpected
+    happened, and on a destructive path the honest answer is to report failure
+    rather than to assume the objects are gone.
+    """
+    if not (out or "").strip():
+        return
+    try:
+        parsed = json.loads(out) or {}
+    except json.JSONDecodeError:
+        raise AWSError(
+            "delete-objects returned a response that could not be read as JSON; "
+            "refusing to report the folder as deleted"
+        ) from None
+    errors = parsed.get("Errors") or []
+    if not errors:
+        return
+    first = errors[0] if isinstance(errors[0], dict) else {}
+    code = first.get("Code", "unknown")
+    key = first.get("Key", "?")
+    raise AWSError(
+        f"delete-objects could not remove {len(errors)} object(s) — "
+        f"first: {key} ({code}); the folder is only partially deleted"
+    )
+
+
+def folder_placeholder_key(section: str, path: str) -> str:
+    """The zero-byte object key that MAKES a folder exist.
+
+    S3 has no directories: an empty folder is only ever a zero-byte object whose
+    key ends in ``/``. The listing (:func:`list_section`) computes its page
+    prefix as ``SECTION_PREFIXES[section] + f"{subpath}/"`` and drops the one
+    object whose key EQUALS that prefix, treating it as the folder marker rather
+    than a file. This function produces exactly that key -- ``section_key`` plus a
+    trailing ``/`` -- so a folder created here is filtered out of ``files`` and
+    surfaces as a ``folder`` instead. If this shape drifts from the listing's
+    filter, a created folder would show up as a zero-byte FILE.
+    """
+    return f"{section_key(section, path)}/"
+
+
+def create_folder(
+    profile: str, region: str, bucket: str, section: str, path: str, *, account: str
+) -> None:
+    """Create an empty folder as its zero-byte, ``/``-terminated placeholder.
+
+    ``path`` is a validated drive key (no trailing slash, no escape segment) --
+    the ``/`` that makes it a folder is appended HERE via
+    :func:`folder_placeholder_key`, never accepted from the caller, so the key
+    shape the listing filters on cannot be spoofed into some other form.
+
+    Owner-pinned like every other write: ``--expected-bucket-owner`` makes S3
+    itself reject the put if the globally-unique bucket name is no longer this
+    account's, the same reason :func:`put_file` cannot use ``s3 cp``. A body is
+    deliberately omitted so the object is zero bytes.
+    """
+    _checked(
+        [
+            "s3api",
+            "put-object",
+            "--bucket",
+            bucket,
+            "--key",
+            folder_placeholder_key(section, path),
+            "--expected-bucket-owner",
+            account,
+        ],
+        profile,
+        action="s3:PutObject",
+    )
+
+
+def delete_prefix(
+    profile: str, region: str, bucket: str, section: str, path: str, *, account: str
+) -> int:
+    """Delete every object under ``section/path/`` and return the count removed.
+
+    A folder delete is a BLAST-RADIUS decision, so the prefix is constructed
+    here, never taken raw: it is ``section_key(section, path)`` plus a trailing
+    ``/``. The trailing slash is load-bearing -- deleting under ``drive/photos``
+    (no slash) would also sweep a sibling ``drive/photos-backup/``; anchoring on
+    ``drive/photos/`` confines the delete to the folder the caller named. The
+    caller validates ``path`` with :func:`validate_key` first, which rejects an
+    empty or ``/``-only value, so this can never be asked to delete a whole
+    section (``drive/``) or the whole bucket.
+
+    S3 caps ``delete-objects`` at 1000 keys per request, so this walks the folder
+    in rounds: list one ``list-objects-v2`` window under the prefix
+    (owner-pinned), batch-delete the keys it returned, then list AGAIN from the
+    prefix -- deliberately WITHOUT ``--starting-token``.
+
+    Resuming with a token would be wrong here. ``--max-items`` is CLIENT-side
+    pagination: when the CLI truncates inside a server page it emits a composite
+    token carrying an intra-page offset (``boto_truncate_amount``), and S3 is
+    free to return a short page, so the CLI may fetch another to reach the
+    requested count and truncate mid-page. Resuming then re-lists and skips N
+    items -- but those N were just deleted, so the skip lands on SURVIVING keys,
+    which are never removed while the call reports completion. Re-listing has no
+    offset to get wrong: what was deleted is gone, so the next window starts at
+    the next survivor. It is also memory-bounded, unlike collecting every key
+    before deleting any.
+
+    The walk therefore depends on each round removing what it listed, which the
+    per-key error check guarantees. If a listing ever repeats without shrinking,
+    the round made no progress and this raises rather than spinning.
+
+    Each delete is owner-pinned for the same name-reuse reason as every other
+    write. On the versioned bucket each removal is a delete MARKER, so 'deleted'
+    is recoverable at the S3 layer until a version purge exists -- matching
+    :func:`delete_key`.
+    """
+    full_prefix = f"{section_key(section, path)}/"
+    removed = 0
+    #: A round that lists keys must delete them, so the same first key twice means
+    #: no progress. Two strikes rather than one: a concurrent writer re-creating a
+    #: key is not by itself a stall.
+    _MAX_STALLED_ROUNDS = 2
+    stalled = 0
+    last_first_key = ""
+    while True:
+        list_args = [
+            "s3api",
+            "list-objects-v2",
+            "--bucket",
+            bucket,
+            "--prefix",
+            full_prefix,
+            "--max-items",
+            str(_DELETE_BATCH_MAX),
+            "--expected-bucket-owner",
+            account,
+            "--output",
+            "json",
+        ]
+        out = _checked(list_args, profile, action="s3:ListBucket", timeout=60)
+        try:
+            data = json.loads(out or "{}")
+        except json.JSONDecodeError:
+            # A garbled listing page must not crash mid-delete and leave the
+            # folder half-removed. Degrade to an empty page and stop the walk --
+            # the same read-path tolerance usage() applies. Nothing further is
+            # deleted, so a bad page can only UNDER-delete (safe), never over.
+            break
+        contents = data.get("Contents", []) or []
+        keys = [obj["Key"] for obj in contents if obj.get("Key")]
+        if not keys:
+            # Nothing left under the prefix: the folder is gone.
+            break
+        for batch in _delete_batches(keys):
+            # ``delete-objects`` takes a JSON document, passed as ONE argv element
+            # (run_aws builds a fixed argv with no shell, so there is nothing to
+            # quote-escape). That single element is why the page is split by
+            # SERIALIZED SIZE and not only by S3's 1000-key cap: 1000 keys of up
+            # to 1024 chars each serialize to ~1 MB, past the per-argument
+            # ceiling on Linux (MAX_ARG_STRLEN, 128 KiB) and far past Windows'
+            # whole-command-line limit, which would surface as an OSError and a
+            # 500 rather than as a delete.
+            payload = json.dumps(
+                {"Objects": [{"Key": k} for k in batch], "Quiet": True},
+                separators=(",", ":"),
+            )
+            out = _checked(
+                [
+                    "s3api",
+                    "delete-objects",
+                    "--bucket",
+                    bucket,
+                    "--delete",
+                    payload,
+                    "--expected-bucket-owner",
+                    account,
+                    # The error check below reads this response as JSON. Without
+                    # pinning the format, a user's `output = text` (or yaml) in
+                    # ~/.aws/config would make the body unparseable and turn that
+                    # check into a no-op - a guard that works only on some
+                    # machines is worse than no guard, because it reads as one.
+                    "--output",
+                    "json",
+                ],
+                profile,
+                action="s3:DeleteObject",
+            )
+            # DeleteObjects reports per-key failures INSIDE a 200 response, so
+            # the CLI exits 0 and _checked (which raises only on rc != 0) sees
+            # success. Counting the batch here would tell the caller the folder
+            # is gone while objects it could not touch are still in the bucket.
+            # Quiet=True means a fully successful call returns an empty body, so
+            # only a parsed, non-empty `Errors` is a failure.
+            _raise_on_delete_errors(out)
+            removed += len(batch)
+        # No token: the next round lists the prefix again, where the keys just
+        # removed are gone. A repeat of the same first key means the round made no
+        # progress, so stop rather than spin.
+        if keys[0] == last_first_key:
+            stalled += 1
+            if stalled >= _MAX_STALLED_ROUNDS:
+                raise AWSError(
+                    "folder delete made no progress: the listing keeps returning "
+                    f"{keys[0]!r} after a delete that reported success"
+                )
+        else:
+            stalled = 0
+        last_first_key = keys[0]
+    return removed
+
+
 def object_exists(
     profile: str, region: str, bucket: str, section: str, key: str, *, account: str
 ) -> bool:

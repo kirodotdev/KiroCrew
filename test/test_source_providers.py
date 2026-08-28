@@ -694,21 +694,70 @@ async def test_run_json_kills_process_tree_when_stdout_exceeds_limit(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_run_json_refuses_provider_cli_on_windows(monkeypatch) -> None:
-    resolver = MagicMock()
-    sandbox = MagicMock()
+async def test_run_json_on_windows_defers_to_the_sandbox_gate(monkeypatch) -> None:
+    """Windows is no longer refused by a platform check of its own.
+
+    It has no OS sandbox backend, but neither does a backend-less Linux host, and
+    both must reach the same gate: ``sandboxed_spawn_argv`` fail-closes unless the
+    operator opted into unsandboxed exec, and its refusal names that opt-in. The
+    old blanket check ran BEFORE that gate, so it made the documented escape
+    hatch unreachable on Windows alone and left the Changes panel permanently
+    dead there. Asserting the resolver is now REACHED is what pins that: it sat
+    behind the removed refusal, so a reintroduced platform check fails here.
+    """
+    resolver = MagicMock(return_value="C:\\gh\\gh.exe")
+    sandbox = MagicMock(side_effect=RuntimeError("no OS-level sandbox backend"))
     spawn = AsyncMock()
     monkeypatch.setattr(source.platform_compat, "IS_WINDOWS", True)
     monkeypatch.setattr(source, "_resolve_provider_executable", resolver)
     monkeypatch.setattr(source, "sandboxed_spawn_argv", sandbox)
     monkeypatch.setattr(source.asyncio, "create_subprocess_exec", spawn)
 
-    with pytest.raises(source.SourceProviderError, match="not supported on Windows"):
+    with pytest.raises(source.SourceProviderError, match="could not start securely"):
         await source._run_json("gh", "api", "repos/acme/repo")
 
-    resolver.assert_not_called()
-    sandbox.assert_not_called()
+    resolver.assert_called_once()
+    sandbox.assert_called_once()
+    # The sandbox refused, so nothing was ever executed unisolated.
     spawn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_json_on_windows_proceeds_once_the_sandbox_gate_allows(monkeypatch) -> None:
+    """With the opt-in in force the gate returns argv and the read completes.
+
+    The companion to the test above: together they show Windows now has BOTH
+    outcomes the gate defines, rather than one hard-coded refusal.
+
+    **The resolved path is POSIX-shaped on purpose — do not "correct" it to a
+    Windows one.** Only ``IS_WINDOWS`` is patched here; CI runs this on a POSIX
+    host where ``os.sep`` and ``shutil.which`` are real. A ``C:\\...`` value
+    would take ``create_subprocess_limited``'s PATH-search branch (the spawn shim
+    is non-empty on POSIX), ``shutil.which`` would return None, and the read
+    would die with ``gh could not start`` before reaching the mocked spawn — the
+    test would fail deterministically on CI while passing on a Windows dev box.
+    What this test pins is the sandbox gate, not path resolution, so it uses the
+    same absolute POSIX path every sibling test does.
+    """
+
+    class FakeProcess:
+        returncode = 0
+
+    monkeypatch.setattr(source.platform_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(
+        source, "_resolve_provider_executable", MagicMock(return_value="/usr/bin/gh")
+    )
+    monkeypatch.setattr(
+        source,
+        "sandboxed_spawn_argv",
+        lambda argv, **kwargs: (argv, kwargs["env"], None),
+    )
+    monkeypatch.setattr(
+        source.asyncio, "create_subprocess_exec", AsyncMock(return_value=FakeProcess())
+    )
+    monkeypatch.setattr(source, "_collect_process_output", AsyncMock(return_value=(b"{}", b"")))
+
+    assert await source._run_json("gh", "api", "repos/acme/repo") == {}
 
 
 @pytest.mark.asyncio

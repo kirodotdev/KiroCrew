@@ -4283,7 +4283,15 @@ app.whenReady().then(async () => {
   // Same shape and the same best-effort contract: the companion's windows follow
   // the app's enabled state, and a failure here must never block the dashboard.
   try {
-    initCrewCompanion({ backendUrl: BACKEND_URL, fetchLocalToken, glog });
+    // `getDashboardWindow` is what lets the companion's "Open session" CTA reach a
+    // dashboard route: the same window the app menu's Settings…/About items target,
+    // resolved here because main.js owns window lifecycle.
+    initCrewCompanion({
+      backendUrl: BACKEND_URL,
+      fetchLocalToken,
+      glog,
+      getDashboardWindow: () => focusedDashboardWindow() || null,
+    });
   } catch (err) {
     glog(`crew-companion: init failed — ${err && err.message}`);
   }

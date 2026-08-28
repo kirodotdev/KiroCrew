@@ -850,8 +850,18 @@ def _classify(uids: list[str], index: SessionIndex, now: float) -> tuple[list[st
     guarantee is NOT weakened: it still re-reads the session map inside the lock
     and still refuses anything live, so this pre-pass can only ever be more
     conservative than the authority, never less.
+
+    That property requires the enumeration below to be UNCACHED — in both
+    halves. The co-tenant contribution to ``active`` is served from a 30s cache
+    on ordinary read paths, and a pre-pass fed a stale co-tenant set would
+    classify a just-claimed session as eligible — the authority would still
+    refuse it, but as the all-or-nothing batch failure this function exists to
+    prevent. The STORE half fails the same way on its own: ``age_days`` reads
+    the scan's mtime, so a session appended to after a cached pass reads
+    stale-older here and ``too_fresh`` inside the move. A perf change that
+    re-caches either half re-opens the batch failure.
     """
-    by_uid = {u.uid: u for u in list_units(index)}
+    by_uid = {u.uid: u for u in list_units(index, cached=False)}
     eligible: list[str] = []
     refused: list[dict] = []
     for uid in uids:

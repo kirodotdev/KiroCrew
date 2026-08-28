@@ -166,7 +166,7 @@ def test_the_otlp_reader_is_reaped_too_when_init_fails(tmp_path, monkeypatch):
         raise RuntimeError("meter provider init failed")
 
     monkeypatch.setattr(provider_mod, "PeriodicExportingMetricReader", FakeReader)
-    monkeypatch.setattr(provider_mod, "_build_otlp_reader", lambda cfg: FakeOtlpReader())
+    monkeypatch.setattr(provider_mod, "_build_otlp_reader", lambda dest, cfg: FakeOtlpReader())
     monkeypatch.setattr(provider_mod, "MeterProvider", _boom)
     try:
         assert get_recorder().enabled is False
@@ -197,12 +197,42 @@ def test_degrades_to_noop_when_otel_missing(monkeypatch):
 # ── OTLP opt-in egress (rec #1: no egress by default) ─────────────────────
 
 
-def test_otlp_reader_none_by_default():
-    """Empty otlp_endpoint => no OTLP reader => no network egress (default)."""
-    from kiro_crew.config.loader import TelemetryConfig
-    from kiro_crew.metrics.provider import _build_otlp_reader
+def _dest(endpoint, *, name="test", signals=("metrics",), **kw):
+    """An OtlpDestination as an edition would supply it."""
+    from kiro_crew.platform.interfaces import OtlpDestination
 
-    assert _build_otlp_reader(TelemetryConfig(enabled=True)) is None
+    return OtlpDestination(name=name, endpoint=endpoint, signals=frozenset(signals), **kw)
+
+
+def test_no_egress_destination_by_default():
+    """What SHIPS yields no destination: the real config, constructed with no
+    arguments, must resolve to zero OTLP destinations — egress-off is a property
+    of the default provider + default config, not of a test fixture."""
+    from kiro_crew.config.loader import TelemetryConfig
+    from kiro_crew.metrics.provider import _otlp_destinations
+    from kiro_crew.platform.defaults import DefaultTelemetryProvider
+
+    assert DefaultTelemetryProvider().otlp_destinations(TelemetryConfig()) == ()
+    assert _otlp_destinations(TelemetryConfig()) == ()
+    # Enabling LOCAL telemetry still must not create an egress destination.
+    assert _otlp_destinations(TelemetryConfig(enabled=True)) == ()
+
+
+def test_default_provider_yields_one_destination_for_the_config_endpoint():
+    """A non-empty telemetry.otlp_endpoint yields exactly the destination the
+    hardcoded exporter used to reach — the byte-identical-behaviour claim."""
+    from kiro_crew.config.loader import TelemetryConfig
+    from kiro_crew.metrics.provider import _otlp_destinations
+    from kiro_crew.platform.defaults import DefaultTelemetryProvider
+
+    cfg = TelemetryConfig(enabled=True, otlp_endpoint="http://localhost:4318/v1/metrics")
+    dests = DefaultTelemetryProvider().otlp_destinations(cfg)
+    assert len(dests) == 1
+    assert dests[0].endpoint == "http://localhost:4318/v1/metrics"
+    assert "metrics" in dests[0].signals
+    assert dests[0].session is None
+    # And the resolver keeps it (deny-by-default filter must not drop a valid one).
+    assert len(_otlp_destinations(cfg)) == 1
 
 
 def test_otlp_reader_degrades_without_logging_endpoint(monkeypatch, caplog):
@@ -223,7 +253,7 @@ def test_otlp_reader_degrades_without_logging_endpoint(monkeypatch, caplog):
     endpoint = "https://user:super-secret@example.test/v1/metrics?token=hidden"
     cfg = TelemetryConfig(enabled=True, otlp_endpoint=endpoint)
     # Must NOT raise — returns None and telemetry stays local-only.
-    assert _build_otlp_reader(cfg) is None
+    assert _build_otlp_reader(_dest(endpoint), cfg) is None
     assert endpoint not in caplog.text
     assert "super-secret" not in caplog.text
     assert "token=hidden" not in caplog.text
@@ -252,7 +282,7 @@ def test_otlp_constructor_failure_never_logs_endpoint(monkeypatch, caplog):
     )
 
     cfg = TelemetryConfig(enabled=True, otlp_endpoint=endpoint)
-    assert _build_otlp_reader(cfg) is None
+    assert _build_otlp_reader(_dest(endpoint), cfg) is None
     assert endpoint not in caplog.text
     assert "super-secret" not in caplog.text
     assert "token=hidden" not in caplog.text
@@ -309,7 +339,11 @@ def test_env_var_blank_defers_to_config(monkeypatch):
 
 
 def test_otlp_reader_built_when_endpoint_set(monkeypatch):
-    """A non-empty otlp_endpoint yields a live OTLP reader (opt-in enables export)."""
+    """A supplied destination yields a live OTLP reader, and its auth surface —
+    session + headers — reaches the exporter. The session is the whole point of
+    the seam: requests re-evaluates Session.auth per request, so a credential
+    that rotates mid-process keeps working where a header frozen at construction
+    would start returning 401."""
     import sys
     import types
 
@@ -322,9 +356,10 @@ def test_otlp_reader_built_when_endpoint_set(monkeypatch):
     captured = {}
 
     class _StubOTLPMetricExporter(MetricExporter):
-        def __init__(self, *, endpoint):
+        def __init__(self, *, endpoint, **kwargs):
             super().__init__()
             captured["endpoint"] = endpoint
+            captured.update(kwargs)
 
         def export(self, metrics_data, timeout_millis=10_000, **kwargs):
             return MetricExportResult.SUCCESS
@@ -343,10 +378,15 @@ def test_otlp_reader_built_when_endpoint_set(monkeypatch):
         mod,
     )
 
+    session = object()  # stands in for a requests.Session carrying rotating auth
     cfg = TelemetryConfig(enabled=True, otlp_endpoint="http://localhost:4318/v1/metrics")
-    reader = _build_otlp_reader(cfg)
-    assert reader is not None, "opt-in endpoint must build an OTLP reader"
+    reader = _build_otlp_reader(
+        _dest("http://localhost:4318/v1/metrics", session=session),
+        cfg,
+    )
+    assert reader is not None, "a supplied destination must build an OTLP reader"
     assert captured["endpoint"] == "http://localhost:4318/v1/metrics"
+    assert captured["session"] is session, "the edition's authenticated transport"
     # Clean shutdown so the reader's daemon thread doesn't linger.
     try:
         reader.shutdown()

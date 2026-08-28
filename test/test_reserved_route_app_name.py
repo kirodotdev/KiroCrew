@@ -103,6 +103,17 @@ class TestReservedRouteAppName:
         breaking change, not a refactor side-effect."""
         assert RESERVED_APP_NAME_CODE == "reserved_app_name"
 
+    def test_a_leading_hyphen_name_is_refused(self, tmp_path, app_home):
+        """A name starting with '-' must stay inadmissible: the dashboard
+        routes static store sub-pages under the ``/apps/-/`` prefix (the
+        Updates worklist lives at ``/apps/-/updates``) precisely because no
+        legal app name can begin with a hyphen. Loosening ``KEBAB_RE`` to
+        admit one would let an app shadow every ``-/`` route without touching
+        ``RESERVED_APP_NAMES`` — this pin makes that a conscious decision."""
+        result = register_external_app("-updates", "1.0.0", "Dash Prefix")
+        assert not result.ok
+        assert "kebab-case" in result.error
+
     def test_a_normal_name_still_passes_both_doors(self, tmp_path, app_home):
         """The reservation is exact-match: ordinary names are unaffected."""
         src = _make_app_source(tmp_path, "librarian-notes")

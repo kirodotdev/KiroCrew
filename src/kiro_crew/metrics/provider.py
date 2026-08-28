@@ -42,10 +42,20 @@ from typing import TYPE_CHECKING, Any, NamedTuple, Optional
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
 from kiro_crew.metrics.recorder import MetricsRecorder
+from kiro_crew.platform.context import (
+    PlatformCompositionError,
+    current_context,
+    safe_context_call,
+)
 
 if TYPE_CHECKING:  # real types for annotations; never imported at runtime
+    from collections.abc import Iterable
+
     from opentelemetry.sdk.metrics import MeterProvider as _MeterProviderT
     from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader as _ReaderT
+
+    from kiro_crew.config.loader import TelemetryConfig
+    from kiro_crew.platform.interfaces import OtlpDestination
 
 # KiroCrew declares opentelemetry-sdk as a required dependency, so
 # the availability probe below is defense-in-depth — not for a genuinely
@@ -272,8 +282,9 @@ _check_in_flight = False
 # LOCAL metrics on (or force them off) without editing ~/.kiro/crew/config.json —
 # handy for CI, containers, and one-off debugging. Truthy => enable, falsy =>
 # disable, unset/blank => defer to the ``telemetry.enabled`` config flag (itself
-# default False). This gates LOCAL collection ONLY: external OTLP egress still
-# requires ``telemetry.otlp_endpoint`` to be set, so merely flipping this var
+# default False). This gates LOCAL collection ONLY: external OTLP egress needs the
+# active telemetry provider to name a destination (the default provider does so
+# only for a non-empty ``telemetry.otlp_endpoint``), so merely flipping this var
 # never causes data to leave the host (egress stays off by default).
 # Public: a UI control over ``telemetry.enabled`` names this variable when it
 # reports the setting as pinned, and naming it from here keeps the message and the
@@ -358,6 +369,12 @@ def _build_recorder() -> _Build:
         logger.warning("opentelemetry not importable; telemetry disabled")
         return _Build(MetricsRecorder(None), None, consent)
 
+    # Resolve egress destinations BEFORE any reader is started. Two reasons:
+    # the seam belongs to the edition and a PlatformCompositionError from it must
+    # not be folded into "telemetry init failed" below, and resolving first means
+    # there is nothing started to reap if it goes wrong.
+    destinations = _otlp_destinations(cfg)
+
     # PeriodicExportingMetricReader starts its daemon ticker thread inside
     # __init__, so if any later step (MeterProvider construction, etc.) raises,
     # the reader is already ticking. This list is bound BEFORE the try — binding
@@ -383,12 +400,18 @@ def _build_recorder() -> _Build:
                 export_interval_millis=float(cfg.export_interval_seconds) * 1000.0,
             )
         )
-        # Opt-in OTLP egress: only when telemetry.otlp_endpoint is set.
-        # Empty endpoint => local-only, no network egress (the default).
-        otlp_reader = _build_otlp_reader(cfg)
-        otlp_active = otlp_reader is not None
-        if otlp_reader is not None:
-            started_readers.append(otlp_reader)
+        # Opt-in OTLP egress: one reader per destination the active telemetry
+        # provider supplied, appended AFTER the local sink so the local reader is
+        # always present and can never be replaced. No destinations => local-only,
+        # no network egress (the default). Each reader joins started_readers as it
+        # is constructed, so a later failure reaps every earlier one.
+        otlp_names: list = []
+        for dest in destinations:
+            reader = _build_otlp_reader(dest, cfg)
+            if reader is not None:
+                started_readers.append(reader)
+                otlp_names.append(dest.name)
+        otlp_active = bool(otlp_names)
         provider = MeterProvider(
             metric_readers=started_readers,
             resource=Resource.create({"service.name": _SERVICE_NAME}),
@@ -415,8 +438,13 @@ def _build_recorder() -> _Build:
         if otlp_active:
             # Name the egress start on its own line: a file/CLI enable is trusted
             # and ungated, so this log is the only record that metrics began
-            # leaving the machine.
-            logger.info("telemetry OTLP export active; metrics leave this machine")
+            # leaving the machine. Destination NAMES only — the endpoint value is
+            # never logged, and with more than one collector the name is the only
+            # way to tell which one is live.
+            logger.info(
+                "telemetry OTLP export active; metrics leave this machine (%s)",
+                ", ".join(otlp_names),
+            )
         meter = provider.get_meter(_SCOPE)
         # Process-resource gauges (threads/fds/gc/rss/cpu) ride the same consent
         # gate: registered only on this live path, and their observable
@@ -432,9 +460,9 @@ def _build_recorder() -> _Build:
         return _Build(MetricsRecorder(meter), provider, consent)
     except Exception as exc:
         logger.warning("telemetry init failed; metrics disabled: %s", exc)
-        # Reap EVERY reader already started, not just the first: with
-        # telemetry.otlp_endpoint set there are two, and leaving the second
-        # ticking is the same orphan this branch exists to prevent.
+        # Reap EVERY reader already started, not just the first: an egress
+        # destination adds one each, so there can be several, and leaving any of
+        # them ticking is the same orphan this branch exists to prevent.
         #
         # Off this thread, because a reader shutdown performs a final export and
         # joins its ticker with the SDK's 30s default.
@@ -442,24 +470,140 @@ def _build_recorder() -> _Build:
         return _Build(MetricsRecorder(None), None, consent)
 
 
-def _build_otlp_reader(cfg: object) -> Optional["_ReaderT"]:
-    """Build the opt-in OTLP/HTTP metric reader, or None when not configured.
+def _egress_degraded() -> tuple:
+    """Report a provider that could not answer, then contribute no destinations.
 
-    Egress is OFF by default: this returns None unless
-    ``telemetry.otlp_endpoint`` is a non-empty string. The OTLP exporter lives
-    in the separate ``kirocrew[otlp]`` package extra (install with
-    ``pip install "kirocrew[otlp]"``), not the hard dependency set. If a host
-    opts in without installing it, we log a warning and degrade to local-only
-    rather than crashing telemetry init. The exporter sees only what the
-    MetricsRecorder facade lets through: attributes are sanitised before they
-    reach any reader, and call sites are required to pass low-cardinality
-    constants rather than prompts, content, tokens, paths or user ids. That
-    sanitisation is defence in depth over that requirement, not a substitute
-    for it, so egress is only as safe as the call sites feeding it.
+    Separate from the call site because ``safe_context_call`` invokes a
+    ``fallback_factory`` ONLY on the degrade path, which is what turns "the
+    provider raised" into one WARNING a default install actually collects.
     """
-    endpoint = str(getattr(cfg, "otlp_endpoint", "") or "").strip()
-    if not endpoint:
-        return None
+    logger.warning(
+        "telemetry provider raised while resolving OTLP destinations; "
+        "OTLP egress disabled (local-only)"
+    )
+    return ()
+
+
+def otlp_egress_active(cfg: "TelemetryConfig") -> bool:
+    """Whether enabling collection under *cfg* would send metrics off this machine.
+
+    The disclosure surfaces (the Privacy panel's ``otlp_configured``, and the
+    config route that refuses to ENABLE collection from a switch offered as
+    local-only) MUST answer this question from the same resolved destination set
+    ``_build_recorder`` will attach — not from ``telemetry.otlp_endpoint``, which
+    is only how the DEFAULT provider happens to name a destination. An edition
+    that supplies its own collector would otherwise leave the panel reporting
+    "nothing is exported" while metrics leave the machine: two answers to one
+    consent question, which is the defect this seam must not introduce.
+
+    RAISES when posture cannot be established, and that is deliberate: the two
+    directions of "fail closed" are OPPOSITE here. At BUILD time an unresolvable
+    provider must not export, so ``_otlp_destinations`` degrades to ``()`` and
+    collection continues local-only. At GATE time it must not read as "no
+    egress" — a caller that saw ``False`` would permit an enable that the
+    provider, once recovered, turns into egress. So callers handle the raise: the
+    config route answers 409, and the panel reports egress rather than promising
+    local-only.
+
+    A provider that does not IMPLEMENT the method is a different case and answers
+    ``False``, not a raise. Providers are matched structurally with no inherited
+    default and the contract assertion compares only a version integer, so an
+    edition built before this seam composes fine and simply has no method. That
+    is a KNOWN answer — it contributes no destination through this seam, exactly
+    as ``_build_recorder`` concludes on the same host — so treating it as
+    "unknown" would make the two surfaces disagree, report egress that provably
+    cannot happen, and brick the dashboard's enable switch. An ``AttributeError``
+    raised INSIDE an implementation still propagates: only an absent attribute is
+    read as no-destinations.
+    """
+    provider = current_context().telemetry
+    resolve = getattr(provider, "otlp_destinations", None)
+    if resolve is None:
+        return False
+    return bool(_filter_metric_destinations(resolve(cfg)))
+
+
+def _filter_metric_destinations(
+    supplied: "Iterable[OtlpDestination] | None",
+) -> "tuple[OtlpDestination, ...]":
+    """Keep only the destinations this core would build a METRIC reader for.
+
+    Deny-by-default: a destination is kept only when it positively names an
+    ``endpoint`` AND the ``"metrics"`` signal. A descriptor that is
+    half-populated, or one aimed at a signal this core does not emit, contributes
+    nothing rather than being coerced into an egress nobody asked for.
+    """
+    kept = []
+    for dest in supplied or ():
+        endpoint = str(getattr(dest, "endpoint", "") or "").strip()
+        signals = frozenset(getattr(dest, "signals", ()) or ())
+        if not endpoint or "metrics" not in signals:
+            continue
+        kept.append(dest)
+    return tuple(kept)
+
+
+def _otlp_destinations(cfg: "TelemetryConfig") -> "tuple[OtlpDestination, ...]":
+    """Resolve the metric egress destinations the active edition supplies.
+
+    The core owns WHAT may leave this machine (consent, attribute sanitisation,
+    the views, batching); an edition owns only WHERE it goes, which it declares
+    through ``TelemetryProvider.otlp_destinations``. The public default turns
+    ``telemetry.otlp_endpoint`` into exactly one destination, so a standalone
+    build behaves as it did when this module constructed that exporter itself.
+
+    Lenient by design, unlike :func:`otlp_egress_active`: on this path an
+    unresolvable provider must not export, so it contributes nothing and
+    collection continues local-only.
+    """
+    try:
+        supplied = safe_context_call(
+            lambda: current_context().telemetry.otlp_destinations(cfg),
+            # A raising provider contributes NOTHING, but it must not do so
+            # quietly: safe_context_call's own log_message is debug-level, and a
+            # default install collects WARNING and above, so relying on it alone
+            # is how a broken provider becomes an undiagnosable permanent no-op.
+            # fallback_factory is invoked only on the degrade path (and inside the
+            # except), which makes it the hook for one loud line; log_message
+            # still carries the traceback at debug for whoever wants it.
+            fallback_factory=_egress_degraded,
+            log_message="telemetry provider raised in otlp_destinations",
+        )
+    except PlatformCompositionError:
+        # Deliberate departure from the usual re-raise. For an EGRESS seam the
+        # closed state is "no destinations", so a host that cannot compose its
+        # companion must land there rather than turn a metric call into a raise:
+        # boot_platform already fail-closes on composition for the paths where
+        # that is the security-relevant answer, and processes exist that never
+        # boot the platform at all (the MCP sidecar). Degrading here removes
+        # egress; it can never add any.
+        logger.warning("platform context unavailable; OTLP egress disabled (local-only)")
+        return ()
+
+    return _filter_metric_destinations(supplied)
+
+
+def _build_otlp_reader(dest: "OtlpDestination", cfg: object) -> Optional["_ReaderT"]:
+    """Build one OTLP/HTTP metric reader for *dest*, or None when unavailable.
+
+    Egress is OFF by default: reaching here at all means an edition named a
+    destination (the public default does so only when ``telemetry.otlp_endpoint``
+    is a non-empty string). The OTLP exporter lives in the separate
+    ``kirocrew[otlp]`` package extra (install with ``pip install
+    "kirocrew[otlp]"``), not the hard dependency set. If a host opts in without
+    installing it, we log a warning and degrade to local-only rather than
+    crashing telemetry init. The exporter sees only what the MetricsRecorder
+    facade lets through: attributes are sanitised before they reach any reader,
+    and call sites are required to pass low-cardinality constants rather than
+    prompts, content, tokens, paths or user ids. That sanitisation is defence in
+    depth over that requirement, not a substitute for it, so egress is only as
+    safe as the call sites feeding it.
+
+    The export CADENCE stays a core decision, read from
+    ``telemetry.export_interval_seconds`` — a destination says where to send, not
+    how often to send.
+    """
+    endpoint = dest.endpoint
     # Callable directly (not only via _build_recorder), so make sure the lazily
     # imported SDK symbols this needs are bound.
     if not _load_otel():
@@ -471,15 +615,26 @@ def _build_otlp_reader(cfg: object) -> Optional["_ReaderT"]:
         )
     except ImportError:
         # Never log the configured endpoint: URLs may contain credentials in
-        # userinfo or query parameters. The setting's presence is sufficient
-        # for diagnosis without exposing its value.
+        # userinfo or query parameters. The destination NAME is safe by contract
+        # and is enough for diagnosis without exposing the value.
         logger.warning(
-            "telemetry.otlp_endpoint is set but opentelemetry-exporter-otlp-"
-            "proto-http is not installed; OTLP egress disabled (local-only)"
+            "OTLP destination %r is configured but opentelemetry-exporter-otlp-"
+            "proto-http is not installed; OTLP egress disabled (local-only)",
+            dest.name,
         )
         return None
     try:
-        exporter = OTLPMetricExporter(endpoint=endpoint)
+        kwargs: dict = {"endpoint": endpoint}
+        # Passed only when supplied so the exporter keeps its own defaults (and
+        # its env-var fallbacks) for everything an edition did not set.
+        if dest.session is not None:
+            # An authenticated transport. requests re-evaluates Session.auth per
+            # request, which is what lets a credential that rotates mid-process
+            # keep working where a header frozen at construction would 401. Static
+            # per-destination headers ride on Session.headers, so they need no
+            # separate field on the descriptor.
+            kwargs["session"] = dest.session
+        exporter = OTLPMetricExporter(**kwargs)
         return PeriodicExportingMetricReader(
             exporter,
             export_interval_millis=float(
@@ -490,7 +645,10 @@ def _build_otlp_reader(cfg: object) -> Optional["_ReaderT"]:
     except Exception:
         # Constructor errors may echo the credential-bearing endpoint in their
         # message. Keep this warning fixed-text just like the missing-extra path.
-        logger.warning("OTLP exporter init failed; OTLP egress disabled (local-only)")
+        logger.warning(
+            "OTLP exporter init failed for destination %r; egress disabled (local-only)",
+            dest.name,
+        )
         return None
 
 

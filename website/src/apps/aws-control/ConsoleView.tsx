@@ -13,20 +13,20 @@
  * invalidating its react-query key. All AWS access runs through the gateway's
  * audited CLI chokepoint — this surface never talks to AWS from the browser.
  */
-import { useRef, useState } from 'react'
-import type { ReactNode } from 'react'
+import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  ChevronLeft, ChevronDown, RefreshCw, Copy, Check, HardDrive, Library,
-  Archive, Share2, Download, Trash2, Upload, ShieldCheck, FolderClosed, FileText, X, MoreHorizontal, Star, Link2, Code, } from 'lucide-react'
-import { Btn, Badge, StatCard, Toggle, Input, ContentSkeleton, IconButton } from '../../components/ui'
+  ChevronLeft, ChevronRight, ChevronDown, RefreshCw, Copy, Check, HardDrive, Star, Link2, ShieldCheck, } from 'lucide-react'
+import { Btn, Badge, StatCard, ContentSkeleton } from '../../components/ui'
 import AwsConsentGate from '../../components/AwsConsentGate'
 import { i18nT } from '../../i18n/t'
-import { fmtBytes, fmtCurrency, fmtRelative, fmtDate } from '../../i18n/format'
+import { CopyBtn, SectionHeader } from './shared'
+import type { LiveDrive } from './DrivePage'
+import { fmtBytes, fmtCurrency, fmtDate } from '../../i18n/format'
 import { awsControlApi, AwsControlError } from './api'
+import { api, type AwsConsentStatus } from '../../api/client'
 import type {
-  AwsAccount, AwsProfile, ProfileKind, ReconnectPlan, DriveSection, DriveStatus,
-  ArtifactKind, LibraryArtifact, BackupKind, Share,
+  AwsAccount, AwsProfile, ProfileKind, ReconnectPlan, DriveStatus,
 } from './types'
 
 /** The name the console leads with: the backend name, or the "not connected" label. */
@@ -52,54 +52,6 @@ const RECONNECT_HINT_KEY: Record<ProfileKind, string> = {
   sso: 'apps.awsControl.page.reconnect_hint_sso',
   'credential-process': 'apps.awsControl.page.reconnect_hint_credential_process',
   other: 'apps.awsControl.page.reconnect_hint_other',
-}
-
-/* Literal-key maps from enum → full catalog key, so no i18nT() call assembles a
- * key by interpolation (dynamicKeys gate): extractors and unused-key tooling
- * can then see every key, and a missing one fails the parity gate rather than
- * rendering raw. Mirrors UPDATE_ERROR_KEYS in pages/settings/AboutPanel.tsx. */
-const KIND_LABEL_KEY: Record<ArtifactKind, string> = {
-  widget: 'apps.awsControl.console.kind_widget',
-  markdown: 'apps.awsControl.console.kind_markdown',
-  html: 'apps.awsControl.console.kind_html',
-  json: 'apps.awsControl.console.kind_json',
-  webapp: 'apps.awsControl.console.kind_webapp',
-  image: 'apps.awsControl.console.kind_image',
-}
-
-const EXPIRY_LABEL_KEY: Record<string, string> = {
-  '1h': 'apps.awsControl.console.expiry_1h',
-  '1d': 'apps.awsControl.console.expiry_1d',
-  '7d': 'apps.awsControl.console.expiry_7d',
-}
-
-const SECTION_LABEL_KEY: Record<DriveSection, string> = {
-  drive: 'apps.awsControl.console.section_drive',
-  library: 'apps.awsControl.console.section_library',
-  backup: 'apps.awsControl.console.section_backup',
-}
-
-const BACKUP_KIND_LABEL_KEY: Record<BackupKind, string> = {
-  snapshot: 'apps.awsControl.console.backup_kind_snapshot',
-  sessions: 'apps.awsControl.console.backup_kind_sessions',
-}
-
-/** Copy-to-clipboard button that flips to a check for ~1.5s. */
-function CopyBtn({ text, testId, ariaLabel }: { text: string; testId?: string; ariaLabel?: string }) {
-  const [copied, setCopied] = useState(false)
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(text)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
-    } catch { /* clipboard unavailable — the text is still selectable by hand */ }
-  }
-  return (
-    <Btn onClick={copy} data-testid={testId} aria-label={ariaLabel}>
-      {copied ? <Check size={13} className="text-ok" /> : <Copy size={13} />}
-      {copied ? i18nT('apps.awsControl.console.copied') : i18nT('apps.awsControl.console.copy')}
-    </Btn>
-  )
 }
 
 /* ── Section: Connections ────────────────────────────────────────────────── */
@@ -212,39 +164,6 @@ function ConnectionsSection({ account }: { account: AwsAccount }) {
   )
 }
 
-/** A collapsible `</>` drawer: the bucket, a prefix, and a generic CLI line. */
-function CliDrawer({ bucket, prefix }: { bucket: string; prefix: string }) {
-  const [open, setOpen] = useState(false)
-  const line = `aws s3 ls s3://${bucket}/${prefix}`
-  return (
-    <div className="mt-2" data-testid="cli-drawer">
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="inline-flex items-center gap-1 text-[12px] text-muted hover:text-text cursor-pointer bg-transparent border-none p-0"
-        aria-expanded={open}
-        data-testid="cli-drawer-toggle"
-      >
-        <Code size={12} />
-        {i18nT('apps.awsControl.console.cli_drawer_label')}
-        <ChevronDown size={12} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
-      </button>
-      {open && (
-        <div className="mt-1.5 rounded-md border border-border bg-bg-elevated p-2.5 text-[12px]" data-testid="cli-drawer-body">
-          <div className="text-muted mb-1">
-            {i18nT('apps.awsControl.console.cli_drawer_hint', { bucket, prefix })}
-          </div>
-          <div className="flex items-center gap-2">
-            <code className="flex-1 min-w-0 break-all rounded bg-bg px-2 py-1.5 font-mono text-[12px] text-text">
-              {line}
-            </code>
-            <CopyBtn text={line} />
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
 /* ── Section 3: drive-missing setup card ─────────────────────────────────── */
 
 function SetupCard({ account, region }: { account: string; region: string }) {
@@ -339,588 +258,16 @@ function SetupCard({ account, region }: { account: string; region: string }) {
   )
 }
 
-/* ── Section 4: Library ──────────────────────────────────────────────────── */
-
-const KIND_KEYS: ArtifactKind[] = ['widget', 'markdown', 'html', 'json', 'webapp', 'image']
-
-function LibrarySection({ account, bucket }: { account: string; bucket: string }) {
-  const qc = useQueryClient()
-  const [kind, setKind] = useState<ArtifactKind | 'all'>('all')
-  const libQ = useQuery({
-    queryKey: ['aws-control', 'library', account],
-    queryFn: () => awsControlApi.library(account),
-  })
-  const pushMut = useMutation({
-    mutationFn: (slug: string) => awsControlApi.libraryPush(account, slug),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['aws-control', 'library', account] }),
-  })
-
-  const artifacts = libQ.data?.artifacts ?? []
-  const counts: Record<string, number> = { all: artifacts.length }
-  for (const k of KIND_KEYS) counts[k] = artifacts.filter((a) => a.kind === k).length
-  const shown = kind === 'all' ? artifacts : artifacts.filter((a) => a.kind === kind)
-
-  return (
-    <section data-testid="library-section">
-      <SectionHeader icon={<Library size={15} />} title={i18nT('apps.awsControl.console.library_title')} />
-      <div className="mb-3 flex flex-wrap gap-1.5" data-testid="library-chips">
-        {(['all', ...KIND_KEYS] as const).map((k) => (
-          <button
-            key={k}
-            onClick={() => setKind(k)}
-            className={`rounded-full border px-2.5 py-1 text-[12px] cursor-pointer transition-colors ${
-              kind === k ? 'border-accent bg-accent/10 text-accent' : 'border-border bg-transparent text-muted hover:text-text'
-            }`}
-            data-testid={`library-chip-${k}`}
-          >
-            {k === 'all' ? i18nT('apps.awsControl.console.library_all') : i18nT(KIND_LABEL_KEY[k])}{' '}
-            <span className="font-mono opacity-70">{counts[k] ?? 0}</span>
-          </button>
-        ))}
-      </div>
-
-      {libQ.isLoading && <ContentSkeleton rows={2} />}
-
-      {libQ.data && shown.length === 0 && (
-        <p className="text-[13px] text-muted" data-testid="library-empty">
-          {i18nT('apps.awsControl.console.library_empty')}
-        </p>
-      )}
-
-      {shown.length > 0 && (
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2" data-testid="library-tiles">
-          {shown.map((a) => (
-            <LibraryTile key={a.slug} artifact={a} onPush={() => pushMut.mutate(a.slug)} pushing={pushMut.isPending && pushMut.variables === a.slug} />
-          ))}
-        </div>
-      )}
-
-      <CliDrawer bucket={bucket} prefix="artifacts/" />
-    </section>
-  )
-}
-
-function LibraryTile({ artifact, onPush, pushing }: { artifact: LibraryArtifact; onPush: () => void; pushing: boolean }) {
-  const synced = artifact.pushedVersion !== null
-  const upToDate = artifact.pushedVersion === artifact.version
-  const notPushable = artifact.kind === 'image'
-  return (
-    <div className="rounded-md border border-border bg-card px-3 py-2.5" data-testid="library-tile">
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="truncate text-[13px] font-medium text-text">{artifact.name}</span>
-            <Badge variant="muted">{i18nT(KIND_LABEL_KEY[artifact.kind])}</Badge>
-          </div>
-          <div className="mt-1 flex flex-wrap items-center gap-x-2 text-[12px] text-muted">
-            <span className="font-mono">v{artifact.version}</span>
-            <span>{fmtRelative(artifact.updatedAt)}</span>
-            <span className={synced ? 'text-ok' : 'text-muted'}>
-              {synced
-                ? i18nT('apps.awsControl.console.library_synced', { version: artifact.pushedVersion })
-                : i18nT('apps.awsControl.console.library_not_synced')}
-            </span>
-          </div>
-        </div>
-        <Btn
-          onClick={onPush}
-          disabled={pushing || upToDate || notPushable}
-          data-testid="library-push"
-          title={notPushable ? i18nT('apps.awsControl.console.library_not_pushable') : undefined}
-        >
-          <Upload size={13} />
-          {upToDate
-            ? i18nT('apps.awsControl.console.library_up_to_date')
-            : i18nT('apps.awsControl.console.library_push')}
-        </Btn>
-      </div>
-    </div>
-  )
-}
-
-/* ── Section 5: Drive (folder browser) ───────────────────────────────────── */
-
-/** Client-side key-segment validation, matching the backend's charset rule. */
-const KEY_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9 ._()+@=-]*$/
-
-function DriveSectionView({ account, bucket }: { account: string; bucket: string }) {
-  const qc = useQueryClient()
-  const [path, setPath] = useState('')
-  const [token, setToken] = useState('')
-  const [share, setShare] = useState<{ key: string } | null>(null)
-  const [uploadError, setUploadError] = useState('')
-  const [downloadError, setDownloadError] = useState('')
-  const [menuFor, setMenuFor] = useState<string | null>(null)
-  const [crumbMenu, setCrumbMenu] = useState(false)
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
-  const fileRef = useRef<HTMLInputElement>(null)
-
-  const listQ = useQuery({
-    queryKey: ['aws-control', 'drive', account, 'list', path, token],
-    queryFn: () => awsControlApi.driveList(account, 'drive', path, token),
-  })
-  const invalidate = () => qc.invalidateQueries({ queryKey: ['aws-control', 'drive', account] })
-
-  const uploadMut = useMutation({
-    mutationFn: (file: File) =>
-      awsControlApi.driveUpload(account, 'drive', path ? `${path}/${file.name}` : file.name, file),
-    onSuccess: invalidate,
-  })
-  const deleteMut = useMutation({
-    mutationFn: (key: string) => awsControlApi.driveDelete(account, 'drive', key),
-    onSuccess: invalidate,
-  })
-
-  const onPick = (file: File | undefined) => {
-    if (!file) return
-    setUploadError('')
-    if (!KEY_SEGMENT.test(file.name)) {
-      setUploadError(i18nT('apps.awsControl.console.drive_bad_name'))
-      return
-    }
-    uploadMut.mutate(file)
-  }
-
-  const download = async (key: string) => {
-    // Open the tab SYNCHRONOUSLY, inside the click's user activation, then
-    // navigate it once the presign returns. Awaiting first and calling
-    // window.open afterwards spends the activation on the await, and Safari
-    // (and Chrome, with popups restricted) blocks the resulting window - the
-    // Download button silently does nothing.
-    //
-    // Deliberately NO 'noopener' feature here: per the HTML standard a
-    // window.open carrying it returns NULL, which made the earlier version of
-    // this fix a no-op -- the handle was always null, so every download fell
-    // through to the post-await open it was written to avoid, and the test that
-    // covered it passed only because it MOCKED window.open into returning a
-    // tab. The isolation noopener buys is restored on the next line by nulling
-    // `opener` on the window we just got: same guarantee, handle kept.
-    setDownloadError('')
-    const tab = window.open('', '_blank')
-    if (tab) tab.opener = null
-    try {
-      const { url } = await awsControlApi.driveDownload(account, 'drive', key)
-      if (tab) tab.location.href = url
-      else window.open(url, '_blank', 'noopener')
-    } catch {
-      // Never leave an orphaned blank tab behind, and never rethrow: this runs
-      // from an onClick with no catch, so a rethrow becomes an unhandled
-      // rejection that tells the USER nothing. Report it in the row instead.
-      tab?.close()
-      setDownloadError(i18nT('apps.awsControl.console.download_failed'))
-    }
-  }
-
-  const crumbs = path.split('/').filter(Boolean)
-
-  return (
-    <section data-testid="drive-section">
-      <SectionHeader icon={<HardDrive size={15} />} title={i18nT('apps.awsControl.console.drive_title')} actions={
-        <Btn onClick={() => fileRef.current?.click()} disabled={uploadMut.isPending} data-testid="drive-upload-btn">
-          <Upload size={13} />
-          {uploadMut.isPending ? i18nT('apps.awsControl.console.drive_uploading') : i18nT('apps.awsControl.console.drive_upload')}
-        </Btn>
-      } />
-      <input
-        ref={fileRef}
-        type="file"
-        className="hidden"
-        aria-label={i18nT('apps.awsControl.console.drive_upload')}
-        data-testid="drive-file-input"
-        onChange={(e) => onPick(e.target.files?.[0])}
-      />
-
-      {uploadError && <p className="mb-2 text-[12px] text-danger" data-testid="drive-upload-error">{uploadError}</p>}
-      {downloadError && <p className="mb-2 text-[12px] text-danger" data-testid="drive-download-error">{downloadError}</p>}
-
-      {/* Breadcrumb within the section. Root plus one overflow is two sibling
-          controls; the folder you are IN is text, not a third button. The
-          ancestors go into the same inline overflow the file rows use, which
-          keeps the jump-to-an-ancestor navigation that rendering the whole path
-          as flat text would have removed. */}
-      <div className="mb-2 flex flex-wrap items-center gap-1 text-[12px] text-muted" data-testid="drive-crumbs">
-        <button className="hover:text-text cursor-pointer bg-transparent border-none p-0" onClick={() => { setPath(''); setToken('') }}>
-          {i18nT('apps.awsControl.console.drive_root')}
-        </button>
-        {crumbs.length > 1 && (
-          <span className="relative flex items-center gap-1">
-            {' / '}
-            <IconButton
-              aria-label={i18nT('apps.awsControl.console.parent_folders')}
-              onClick={() => setCrumbMenu((v) => !v)}
-              data-testid="drive-crumb-more"
-            >
-              <MoreHorizontal size={14} />
-            </IconButton>
-            {crumbMenu && (
-              <div className="absolute left-0 top-full z-10 mt-1 flex flex-col gap-1 rounded-md border border-border bg-card p-1 shadow-md" data-testid="drive-crumb-menu">
-                {crumbs.slice(0, -1).map((c, i) => (
-                  <Btn
-                    key={i}
-                    onClick={() => {
-                      setCrumbMenu(false)
-                      setPath(crumbs.slice(0, i + 1).join('/'))
-                      setToken('')
-                    }}
-                  >
-                    {c}
-                  </Btn>
-                ))}
-              </div>
-            )}
-          </span>
-        )}
-        {crumbs.length > 0 && (
-          <span data-testid="drive-crumb-current">{' / '}{crumbs[crumbs.length - 1]}</span>
-        )}
-      </div>
-
-      {listQ.isLoading && <ContentSkeleton rows={2} />}
-
-      {listQ.data && (
-        <div className="rounded-md border border-border bg-card divide-y divide-border" data-testid="drive-listing">
-          {listQ.data.folders.map((name) => (
-            <button
-              key={`f-${name}`}
-              onClick={() => { setPath(`${name}`); setToken('') }}
-              className="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] text-text hover:bg-bg-hover cursor-pointer bg-transparent border-none"
-              data-testid="drive-folder"
-            >
-              <FolderClosed size={14} className="text-muted" />
-              <span className="truncate">{name}</span>
-            </button>
-          ))}
-          {listQ.data.files.map((f) => (
-            <div key={`o-${f.key}`} data-testid="drive-file">
-              <div className="flex items-center gap-2 px-3 py-2 text-[13px]">
-              <FileText size={14} className="text-muted shrink-0" />
-              <span className="min-w-0 flex-1 truncate text-text">{f.key.split('/').pop()}</span>
-              <span className="hidden shrink-0 text-muted sm:inline">{fmtBytes(f.size)}</span>
-              <span className="hidden shrink-0 text-muted md:inline">{fmtRelative(f.modified)}</span>
-              <div className="relative flex shrink-0 items-center gap-1">
-                <Btn onClick={() => download(f.key)} data-testid="drive-download"><Download size={13} />{i18nT('apps.awsControl.console.download')}</Btn>
-                {/* One primary action inline; everything else lives in the
-                    overflow so a row never exceeds two sibling controls. */}
-                <IconButton
-                  aria-label={i18nT('apps.awsControl.console.more_actions')}
-                  onClick={() => setMenuFor(menuFor === f.key ? null : f.key)}
-                  data-testid="drive-more"
-                >
-                  <MoreHorizontal size={14} />
-                </IconButton>
-                {menuFor === f.key && (
-                  <div className="absolute right-0 top-full z-10 mt-1 flex flex-col gap-1 rounded-md border border-border bg-card p-1 shadow-md" data-testid="drive-more-menu">
-                    <Btn
-                      onClick={() => { setMenuFor(null); setShare({ key: f.key }) }}
-                      data-testid="drive-share"
-                    >
-                      <Share2 size={13} />{i18nT('apps.awsControl.console.share')}
-                    </Btn>
-                    <Btn
-                      danger
-                      onClick={() => { setMenuFor(null); setConfirmDelete(f.key) }}
-                      data-testid="drive-delete"
-                    >
-                      <Trash2 size={13} />{i18nT('apps.awsControl.console.delete')}
-                    </Btn>
-                  </div>
-                )}
-              </div>
-              </div>
-              {confirmDelete === f.key && (
-                <div className="flex flex-wrap items-center gap-2 border-t border-border bg-bg-elevated px-3 py-2 text-[13px]" data-testid="drive-delete-confirm">
-                  <span className="min-w-0 flex-1 text-text">
-                    {i18nT('apps.awsControl.console.delete_confirm', { name: f.key.split('/').pop() ?? f.key })}
-                  </span>
-                  {deleteMut.isError && (
-                    <span className="text-danger" data-testid="drive-delete-error">
-                      {i18nT('apps.awsControl.console.delete_failed')}
-                    </span>
-                  )}
-                  <Btn onClick={() => setConfirmDelete(null)} data-testid="drive-delete-cancel">
-                    {i18nT('apps.awsControl.console.cancel')}
-                  </Btn>
-                  <Btn
-                    danger
-                    disabled={deleteMut.isPending}
-                    onClick={() => deleteMut.mutate(f.key, { onSuccess: () => setConfirmDelete(null) })}
-                    data-testid="drive-delete-confirm-action"
-                  >
-                    <Trash2 size={13} />{i18nT('apps.awsControl.console.delete_confirm_action')}
-                  </Btn>
-                </div>
-              )}
-            </div>
-          ))}
-          {listQ.data.folders.length === 0 && listQ.data.files.length === 0 && (
-            <p className="px-3 py-3 text-[13px] text-muted" data-testid="drive-empty">{i18nT('apps.awsControl.console.drive_empty')}</p>
-          )}
-        </div>
-      )}
-
-      {listQ.data?.nextToken && (
-        <div className="mt-2">
-          <Btn onClick={() => setToken(listQ.data!.nextToken!)} data-testid="drive-load-more">{i18nT('apps.awsControl.console.load_more')}</Btn>
-        </div>
-      )}
-
-      <CliDrawer bucket={bucket} prefix="drive/" />
-
-      {share && (
-        <ShareDialog account={account} section="drive" fileKey={share.key} onClose={() => setShare(null)} />
-      )}
-    </section>
-  )
-}
-
-/* ── Share dialog ────────────────────────────────────────────────────────── */
-
-const EXPIRY_OPTIONS: Array<{ key: string; secs: number }> = [
-  { key: '1h', secs: 3600 },
-  { key: '1d', secs: 86400 },
-  { key: '7d', secs: 604800 },
-]
-
-function ShareDialog({ account, section, fileKey, onClose }: { account: string; section: DriveSection; fileKey: string; onClose: () => void }) {
-  const qc = useQueryClient()
-  const [secs, setSecs] = useState(3600)
-  const [note, setNote] = useState('')
-  const shareMut = useMutation({
-    mutationFn: () => awsControlApi.driveShare(account, section, fileKey, secs, note),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['aws-control', 'shares', account] }),
-  })
-  const url = shareMut.data?.url
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" data-testid="share-dialog" role="dialog" aria-modal="true">
-      <div className="w-full max-w-md rounded-lg border border-border bg-card p-4 shadow-lg">
-        <div className="mb-3 flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-text-strong">{i18nT('apps.awsControl.console.share_title')}</h3>
-          <button onClick={onClose} className="text-muted hover:text-text cursor-pointer bg-transparent border-none p-0" aria-label={i18nT('apps.awsControl.console.close')} data-testid="share-close"><X size={16} /></button>
-        </div>
-
-        {!url ? (
-          <>
-            <span className="mb-1 block text-[12px] text-muted">{i18nT('apps.awsControl.console.share_expiry')}</span>
-            <div className="mb-3 flex gap-1.5" data-testid="share-expiry" role="group" aria-label={i18nT('apps.awsControl.console.share_expiry')}>
-              {EXPIRY_OPTIONS.map((o) => (
-                <button
-                  key={o.key}
-                  onClick={() => setSecs(o.secs)}
-                  aria-pressed={secs === o.secs}
-                  className={`rounded-md border px-2.5 py-1 text-[13px] cursor-pointer transition-colors ${secs === o.secs ? 'border-accent bg-accent/10 text-accent' : 'border-border bg-transparent text-muted hover:text-text'}`}
-                  data-testid={`share-expiry-${o.key}`}
-                >
-                  {i18nT(EXPIRY_LABEL_KEY[o.key])}
-                </button>
-              ))}
-            </div>
-            {/* eslint-disable-next-line jsx-a11y/label-has-for -- deprecated rule can't see the htmlFor→id link to the custom Input control; label-has-associated-control is satisfied. */}
-            <label htmlFor="aws-share-note" className="mb-1 block text-[12px] text-muted">{i18nT('apps.awsControl.console.share_note')}</label>
-            <Input id="aws-share-note" value={note} onChange={(e) => setNote(e.target.value)} placeholder={i18nT('apps.awsControl.console.share_note_placeholder')} className="mb-3 w-full" data-testid="share-note" />
-            <Btn primary onClick={() => shareMut.mutate()} disabled={shareMut.isPending} data-testid="share-create">
-              {shareMut.isPending ? i18nT('apps.awsControl.console.share_creating') : i18nT('apps.awsControl.console.share_create')}
-            </Btn>
-          </>
-        ) : (
-          <div data-testid="share-result">
-            <div className="mb-2 flex items-center gap-2">
-              <code className="flex-1 min-w-0 break-all rounded bg-bg px-2 py-1.5 font-mono text-[12px] text-text">{url}</code>
-              <CopyBtn text={url} testId="share-copy" />
-            </div>
-            <p className="text-[12px] text-muted">{i18nT('apps.awsControl.console.share_expires_note')}</p>
-            <p className="mt-1 text-[12px] text-muted">{i18nT('apps.awsControl.console.share_credentials_caveat')}</p>
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-/* ── Section 6: Backup ───────────────────────────────────────────────────── */
-
-const BACKUP_KINDS: BackupKind[] = ['snapshot', 'sessions']
-
-function BackupSection({ account }: { account: string }) {
-  const qc = useQueryClient()
-  const [showRemote, setShowRemote] = useState(false)
-  const backupQ = useQuery({
-    queryKey: ['aws-control', 'backup', account],
-    queryFn: () => awsControlApi.backup(account),
-  })
-  const invalidate = () => qc.invalidateQueries({ queryKey: ['aws-control', 'backup', account] })
-  const runMut = useMutation({
-    mutationFn: (kind: BackupKind) => awsControlApi.backupRun(account, kind),
-    onSuccess: invalidate,
-  })
-  const nightlyMut = useMutation({
-    mutationFn: (enabled: boolean) => awsControlApi.backupNightly(account, enabled),
-    onSuccess: invalidate,
-  })
-  const restoreMut = useMutation({
-    mutationFn: (key: string) => awsControlApi.backupRestore(account, key),
-  })
-
-  const data = backupQ.data
-
-  return (
-    <section data-testid="backup-section">
-      <SectionHeader icon={<Archive size={15} />} title={i18nT('apps.awsControl.console.backup_title')} />
-      {backupQ.isLoading && <ContentSkeleton rows={2} />}
-      {data && (
-        <div className="rounded-md border border-border bg-card divide-y divide-border">
-          {BACKUP_KINDS.map((kind) => {
-            const run = data.runs[kind]
-            const running = runMut.isPending && runMut.variables === kind
-            return (
-              <div key={kind} className="flex items-center gap-3 px-3 py-2.5" data-testid={`backup-row-${kind}`}>
-                <div className="min-w-0 flex-1">
-                  <div className="text-[13px] font-medium text-text">{i18nT(BACKUP_KIND_LABEL_KEY[kind])}</div>
-                  <div className="text-[12px] text-muted">
-                    {run
-                      ? i18nT('apps.awsControl.console.backup_last_run', { when: fmtRelative(run.at), size: fmtBytes(run.bytes) })
-                      : i18nT('apps.awsControl.console.backup_never')}
-                  </div>
-                  {kind === 'sessions' && (
-                    // The archive takes BOTH halves of a session, and the CLI
-                    // half lives in a directory shared with any kiro-cli chat
-                    // started outside Kiro Crew. Say so where the button is:
-                    // the owner is choosing what leaves their machine.
-                    <div className="text-[12px] text-muted" data-testid="backup-sessions-scope">
-                      {i18nT('apps.awsControl.console.backup_sessions_scope')}
-                    </div>
-                  )}
-                </div>
-                <Btn onClick={() => runMut.mutate(kind)} disabled={running} data-testid={`backup-run-${kind}`}>
-                  <RefreshCw size={13} className={running ? 'animate-spin' : ''} />
-                  {running ? i18nT('apps.awsControl.console.backup_running') : i18nT('apps.awsControl.console.backup_run_now')}
-                </Btn>
-              </div>
-            )
-          })}
-          <div className="flex items-center justify-between px-3 py-2.5" data-testid="backup-nightly">
-            <div className="min-w-0">
-              <div className="text-[13px] font-medium text-text">{i18nT('apps.awsControl.console.backup_nightly')}</div>
-              <div className="text-[12px] text-muted">{i18nT('apps.awsControl.console.backup_nightly_hint')}</div>
-            </div>
-            <Toggle checked={data.nightly} onChange={(v) => nightlyMut.mutate(v)} label={i18nT('apps.awsControl.console.backup_nightly')} />
-          </div>
-        </div>
-      )}
-
-      {data?.remoteError && (
-        <p className="mt-2 text-[12px] text-muted" data-testid="backup-remote-error">{i18nT('apps.awsControl.console.backup_remote_error')}</p>
-      )}
-
-      {data?.remote && (
-        <div className="mt-2">
-          <button
-            onClick={() => setShowRemote((v) => !v)}
-            className="inline-flex items-center gap-1 text-[12px] text-muted hover:text-text cursor-pointer bg-transparent border-none p-0"
-            aria-expanded={showRemote}
-            data-testid="backup-remote-toggle"
-          >
-            {i18nT('apps.awsControl.console.backup_archive')}
-            <ChevronDown size={12} className={`transition-transform ${showRemote ? 'rotate-180' : ''}`} />
-          </button>
-          {showRemote && (
-            <div className="mt-1.5 rounded-md border border-border bg-card divide-y divide-border" data-testid="backup-archive">
-              {BACKUP_KINDS.flatMap((kind) => (data.remote?.[kind] ?? []).slice(0, 5).map((f) => (
-                <div key={f.key} className="flex items-center gap-2 px-3 py-2 text-[12px]" data-testid="backup-archive-row">
-                  <span className="min-w-0 flex-1 truncate font-mono text-text">{f.key}</span>
-                  <span className="hidden shrink-0 text-muted sm:inline">{fmtBytes(f.size)}</span>
-                  <Btn onClick={() => restoreMut.mutate(f.key)} disabled={restoreMut.isPending} data-testid="backup-restore"><Download size={13} />{i18nT('apps.awsControl.console.backup_restore')}</Btn>
-                </div>
-              )))}
-            </div>
-          )}
-          {showRemote && (
-            // The recommended least-privilege policy makes the backup prefix
-            // write-only on purpose, so Restore is denied for anyone who pasted
-            // exactly that tier. Say so where the button is instead of letting
-            // them discover it as an AccessDenied.
-            <p className="mt-1.5 text-[12px] text-muted" data-testid="backup-restore-caveat">
-              {i18nT('apps.awsControl.console.backup_restore_caveat')}
-            </p>
-          )}
-        </div>
-      )}
-
-      {restoreMut.data && (
-        <div className="mt-2 rounded-md border border-border bg-bg-elevated p-2.5 text-[12px]" data-testid="backup-restored">
-          <div className="mb-1 text-muted">{i18nT('apps.awsControl.console.backup_restored_note')}</div>
-          <div className="flex items-center gap-2">
-            <code className="flex-1 min-w-0 break-all rounded bg-bg px-2 py-1.5 font-mono text-[12px] text-text">{restoreMut.data.path}</code>
-            <CopyBtn text={restoreMut.data.path} />
-          </div>
-        </div>
-      )}
-    </section>
-  )
-}
-
-/* ── Section 7: Access (shares ledger) ───────────────────────────────────── */
-
-function AccessSection({ account }: { account: string }) {
-  const qc = useQueryClient()
-  const sharesQ = useQuery({
-    queryKey: ['aws-control', 'shares', account],
-    queryFn: () => awsControlApi.shares(account),
-  })
-  const forgetMut = useMutation({
-    mutationFn: (id: string) => awsControlApi.shareForget(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['aws-control', 'shares', account] }),
-  })
-  const shares = sharesQ.data?.shares ?? []
-
-  return (
-    <section data-testid="access-section">
-      <SectionHeader icon={<Share2 size={15} />} title={i18nT('apps.awsControl.console.access_title')} />
-      {sharesQ.isLoading && <ContentSkeleton rows={1} />}
-      {sharesQ.data && shares.length === 0 && (
-        <p className="text-[13px] text-muted" data-testid="access-empty">{i18nT('apps.awsControl.console.access_empty')}</p>
-      )}
-      {shares.length > 0 && (
-        <div className="rounded-md border border-border bg-card divide-y divide-border" data-testid="access-list">
-          {shares.map((s: Share) => (
-            <div key={s.id} className="flex items-center gap-3 px-3 py-2.5 text-[13px]" data-testid="access-row">
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <span className="truncate font-mono text-text">{s.key}</span>
-                  <Badge variant="muted">{i18nT(SECTION_LABEL_KEY[s.section])}</Badge>
-                </div>
-                <div className="text-[12px] text-muted">
-                  {s.note ? `${s.note} · ` : ''}
-                  {i18nT('apps.awsControl.console.access_expires_in', { when: fmtRelative(s.expiresAt) })}
-                </div>
-              </div>
-              <Btn onClick={() => forgetMut.mutate(s.id)} disabled={forgetMut.isPending} data-testid="access-forget">{i18nT('apps.awsControl.console.access_forget')}</Btn>
-            </div>
-          ))}
-        </div>
-      )}
-      <p className="mt-2 text-[12px] text-muted">{i18nT('apps.awsControl.console.access_footer')}</p>
-    </section>
-  )
-}
-
-/* ── shared section header ───────────────────────────────────────────────── */
-
-function SectionHeader({ icon, title, actions }: { icon: ReactNode; title: string; actions?: ReactNode }) {
-  return (
-    <div className="mb-2 flex items-center justify-between gap-2">
-      <h2 className="flex items-center gap-1.5 text-sm font-semibold text-text-strong">
-        <span className="text-accent">{icon}</span>
-        {title}
-      </h2>
-      {actions}
-    </div>
-  )
-}
-
 /* ── Console shell ───────────────────────────────────────────────────────── */
 
-export default function ConsoleView({ account, onBack }: { account: AwsAccount; onBack: () => void }) {
+export default function ConsoleView({ account, onBack, onOpenDrive }: {
+  account: AwsAccount
+  onBack: () => void
+  /** Open the drive page for this account. Owned by `AwsControlPage`, which
+   *  holds the app's view state, so the console does not nest a second page
+   *  inside itself. */
+  onOpenDrive: (drive: LiveDrive) => void
+}) {
   const id = account.account
   const qcTop = useQueryClient()
 
@@ -938,6 +285,41 @@ export default function ConsoleView({ account, onBack }: { account: AwsAccount; 
 
   const drive: DriveStatus | undefined = driveQ.data
   const costs = costsQ.data
+  // The drive read's refusal states, named once so the receipt below and the ask
+  // further down cannot drift apart.
+  const driveErr = driveQ.error instanceof AwsControlError ? driveQ.error : null
+  const drive409 = driveQ.isError && driveErr?.status === 409 ? driveErr : null
+  const driveConsentRefused = drive409?.message === 'aws_consent_required'
+  // A receipt belongs on THIS console only when the grant it shows was recorded
+  // for THIS account. A grant is service-scoped and carries the account it was
+  // confirmed for, so mounting it under every console would claim a scope it
+  // does not have AND put a withdraw control for one account's drive on another
+  // account's page - the withdraw is global, so that misfire is destructive, not
+  // cosmetic.
+  //
+  // It is also suppressed while that service's own refusal is still on screen:
+  // granting invalidates the consent query but not the drive or costs caches, so
+  // for the renders between a grant and the next refetch the ask and the receipt
+  // would both be visible, saying opposite things about the same service.
+  const s3ConsentQ = useQuery<AwsConsentStatus>({
+    queryKey: ['awsConsent', 's3'],
+    queryFn: () => api.awsConsent('s3'),
+  })
+  const ceConsentQ = useQuery<AwsConsentStatus>({
+    queryKey: ['awsConsent', 'ce'],
+    queryFn: () => api.awsConsent('ce'),
+  })
+  const confirmedHere = (c: AwsConsentStatus | undefined) =>
+    c?.granted === true && c.grant?.account === id
+  const s3Receipt = confirmedHere(s3ConsentQ.data) && !driveConsentRefused
+  const ceReceipt = confirmedHere(ceConsentQ.data) && !costs?.consentMissing
+  // Both surfaces whose content a grant decides. The ask reads a cached refusal
+  // and the drive row reads a cached listing, so a grant change has to reach
+  // them or the page keeps rendering the previous answer.
+  const refetchGated = () => {
+    qcTop.invalidateQueries({ queryKey: ['aws-control', 'drive', id] })
+    qcTop.invalidateQueries({ queryKey: ['aws-control', 'costs', id] })
+  }
   // Fallback region for the setup preview, sourced the same way GeneralSection
   // sources the one it displays: the default key's region, else the first key's.
   // The Payments row bills through this same key, so it reads its region and
@@ -1005,6 +387,11 @@ export default function ConsoleView({ account, onBack }: { account: AwsAccount; 
             hardcoded em-dashes with no query behind them, and they said the
             same "connects later" as the ghost cards that used to close the
             page — four elements for two features that do not exist yet. */}
+        {/* One stat, because there is one figure this page alone can state: the
+            month-to-date bill. Stored bytes and object count used to sit beside
+            it AND on the Cloud drive row below, which is the same fact twice on
+            one screen - and the row is the better home, since that is the thing
+            the number describes. */}
         <div className="mt-6 grid grid-cols-2 gap-3" data-testid="console-stats">
           {costs?.consentMissing ? (
             <StatCard label={i18nT('apps.awsControl.console.stat_this_month')} value="—" title={i18nT('apps.awsControl.console.costs_consent_missing')} />
@@ -1019,10 +406,6 @@ export default function ConsoleView({ account, onBack }: { account: AwsAccount; 
               title={costs && !costs.fresh ? i18nT('apps.awsControl.console.costs_as_of', { date: fmtDate(costs.fetchedAt) }) : undefined}
             />
           )}
-          <StatCard
-            label={i18nT('apps.awsControl.console.stat_stored')}
-            value={drive?.exists ? i18nT('apps.awsControl.console.stat_stored_value', { size: fmtBytes(drive.usage.bytes), objects: drive.usage.objects }) : '—'}
-          />
         </div>
 
         {driveQ.isLoading && <div className="mt-6"><ContentSkeleton rows={3} /></div>}
@@ -1030,11 +413,11 @@ export default function ConsoleView({ account, onBack }: { account: AwsAccount; 
         {/* A 409 is not one condition: storage-not-confirmed renders the
             confirmation card (the fix is right here), while a dead
             connection points back at Reconnect on the Accounts page. */}
-        {driveQ.isError && driveQ.error instanceof AwsControlError && driveQ.error.status === 409 && (
-          driveQ.error.message === 'aws_consent_required' ? (
+        {drive409 && (
+          driveConsentRefused ? (
             <div className="mt-6" data-testid="console-storage-consent">
               <p className="mb-2 text-[13px] text-muted">{i18nT('apps.awsControl.console.storage_consent_needed')}</p>
-              <AwsConsentGate service="s3" />
+              <AwsConsentGate service="s3" onConsentChange={refetchGated} />
               <div className="mt-2">
                 <Btn onClick={() => qcTop.invalidateQueries({ queryKey: ['aws-control', 'drive', id] })} data-testid="console-consent-recheck">
                   <RefreshCw size={13} />{i18nT('apps.awsControl.page.refresh')}
@@ -1046,23 +429,44 @@ export default function ConsoleView({ account, onBack }: { account: AwsAccount; 
           )
         )}
 
-        {/* Drive-missing setup replaces sections 4-7 */}
-        {drive && !drive.exists && (
-          <div className="mt-6">
-            {/* The account's own default-profile region, not "" -- the preview
-                panel falls back to this when a backend response omits its
-                region, and a hardcoded empty string made that fallback dead. */}
-            <SetupCard account={id} region={setupRegion} />
-          </div>
-        )}
+        {/* The account's capabilities, one row each. Today there is exactly one,
+            and a row appears only when the thing it names exists - the page used
+            to close with two dashed "connects later" cards for features that did
+            not, which is what this app is being cleaned of.
 
-        {/* Drive present: the four sections */}
-        {drive?.exists && (
-          <div className="mt-6 flex flex-col gap-8">
-            <LibrarySection account={id} bucket={drive.bucket} />
-            <DriveSectionView account={id} bucket={drive.bucket} />
-            <BackupSection account={id} />
-            <AccessSection account={id} />
+            The row is NAVIGATION, not a disclosure: the drive's contents (the
+            artifact library, the files, the backups and the share ledger) were
+            four sections stacked on this page, and they are a page of their own
+            now. What belongs here is the one line that says the drive exists and
+            how much is in it. */}
+        {drive && (
+          <div className="mt-6 overflow-hidden rounded-lg border border-border bg-card" data-testid="console-capabilities">
+            {drive.exists ? (
+              <button
+                type="button"
+                onClick={() => onOpenDrive(drive)}
+                className="flex w-full items-center gap-3 px-4 py-3 text-left cursor-pointer bg-transparent border-none hover:bg-bg-hover"
+                data-testid="capability-drive"
+              >
+                <HardDrive size={15} className="shrink-0 text-accent" />
+                <span className="text-[13px] font-medium text-text-strong">{i18nT('apps.awsControl.console.drive_title')}</span>
+                <span className="min-w-0 truncate font-mono text-[12px] text-muted">{drive.bucket}</span>
+                <span className="flex-1" />
+                <span className="shrink-0 text-[12px] text-muted" data-testid="capability-drive-usage">
+                  {i18nT('apps.awsControl.console.stat_stored_value', { size: fmtBytes(drive.usage.bytes), objects: drive.usage.objects })}
+                </span>
+                <ChevronRight size={14} className="shrink-0 text-muted" />
+              </button>
+            ) : (
+              /* No bucket yet, so the row carries the one action that changes
+                 that. The account's own default-profile region, not "" -- the
+                 preview panel falls back to this when a backend response omits
+                 its region, and a hardcoded empty string made that fallback
+                 dead. */
+              <div className="px-4 py-3" data-testid="capability-drive-setup">
+                <SetupCard account={id} region={setupRegion} />
+              </div>
+            )}
           </div>
         )}
 
@@ -1071,11 +475,42 @@ export default function ConsoleView({ account, onBack }: { account: AwsAccount; 
             that used to sit in the stats strip. A capability appears on this
             page when it exists. */}
 
-        {/* Cost Explorer consent nudge when the gate is missing. */}
-        {costs?.consentMissing && (
+        {/* Cost Explorer ask, driven by the CONSENT state rather than by
+            `costs.consentMissing`. That field only arrives when the backend has
+            a cached cost reading to attach it to; with no cache - the state a
+            never-confirmed account is always in - the costs request is a bare
+            409 and the field never exists, so keying the ask on it left Cost
+            Explorer with no confirmation control anywhere in the product. */}
+        {ceConsentQ.data?.granted === false && (
           <div className="mt-6" data-testid="costs-consent-gate">
-            <AwsConsentGate service="ce" />
+            <AwsConsentGate service="ce" onConsentChange={refetchGated} />
           </div>
+        )}
+
+        {/* The confirmations recorded for THIS account, once each is granted and
+            its ask has cleared. Each card is mounted on its own condition rather
+            than the section's, because the two services are granted separately
+            and a receipt for one must not be implied by the other. Withdrawing
+            here revokes the one grant this account's drive and cost figure run
+            on - which is why a grant recorded for a DIFFERENT account never
+            renders here, and why this is the only surface that calls revoke for
+            s3 and ce.
+
+            `onConsentChange` is what makes a withdraw recoverable: the ask above
+            is decided by a CACHED drive 409 and a cached `consentMissing`, so
+            without invalidating them the receipt would unmount and no ask would
+            take its place - a mistaken withdraw with nothing on screen offering
+            the confirm back. */}
+        {(s3Receipt || ceReceipt) && (
+          <section className="mt-8" data-testid="paid-services">
+            <h2 className="text-sm font-semibold text-text-strong">
+              {i18nT('apps.awsControl.page.paid_services_title')}
+            </h2>
+            <div className="mt-3 flex flex-col gap-3">
+              {s3Receipt && <AwsConsentGate service="s3" onConsentChange={refetchGated} />}
+              {ceReceipt && <AwsConsentGate service="ce" onConsentChange={refetchGated} />}
+            </div>
+          </section>
         )}
       </div>
     </div>

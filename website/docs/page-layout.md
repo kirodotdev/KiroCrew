@@ -329,6 +329,50 @@ so a further such surface gets the gesture by using the hook rather than by
 re-deriving the math — and `touch-none` on the transform target is what opts it out
 of the root's `pan-x pan-y`.
 
+**A trackpad is a third input class, not a touchscreen.** A trackpad pinch emits no
+pointer events at all, so it reaches none of the contact-tracking code: Blink
+reports it as a `wheel` carrying `ctrlKey`, WebKit as
+`gesturestart`/`gesturechange` carrying a **cumulative** `scale`. The hook claims
+both, which is what gives a laptop — and `ctrl`+scroll on a mouse — the same
+magnification a touchscreen gets from two fingers. Four constraints are
+load-bearing and each is easy to get wrong:
+
+- **`gesture*` binds only under `(pointer: fine)`.** The converse of "a trackpad
+  pinch emits no pointer events" does not hold: a gesture event does not imply a
+  trackpad. **iOS Safari fires `gesturestart`/`gesturechange` for a two-finger
+  TOUCH pinch too**, and those fingers are already driving the contact-tracking
+  path — so binding both on a touch device puts two independent formulas on one
+  pinch and zooms twice. The media query keeps this an *additional* input path for
+  pointing devices rather than a second one for touch. `wheel` is deliberately
+  **not** gated: a coarse-pointer device can still carry a mouse. Absent
+  `matchMedia` counts as coarse, because failing closed costs only a trackpad path
+  on a platform that has none, while failing open restores the double zoom.
+
+- **The listeners cannot be React props.** React attaches `wheel` at the root
+  *passively*, so `preventDefault()` inside an `onWheel` prop is ignored and the
+  browser page-zooms anyway. They are manual `addEventListener` calls with
+  `{ passive: false }`.
+- **They sit on `window` and gate on containment**, not on the element. A viewer's
+  element ref is null until it opens, so an effect reading the element at mount
+  would bind nothing. Containment is the **overlay**, not the transform target: the
+  letterbox around a small image is visually the viewer, and letting a pinch there
+  fall through page-zooms the whole app behind a viewer that looks unchanged.
+- **Binding is gated on the consumer being in a zoomable state**, which carries two
+  distinct costs. A non-passive listener makes the compositor wait on main-thread
+  dispatch for *every* wheel event, so an always-mounted consumer would tax
+  scrolling app-wide while its viewer is shut. And claiming a gesture the consumer
+  ignores would suppress page zoom — which, on content that is **not** fit-scaled,
+  genuinely does magnify. So a no-viewBox diagram binds nothing and keeps that
+  fallback.
+- **Only `ctrl`+wheel is claimed.** A plain wheel belongs to whatever scroller owns
+  it, which is what a no-viewBox diagram depends on to reach its edges.
+
+And note why page zoom is not a substitute for any of this: a fit-to-viewport
+surface is *invariant* under page zoom. At 200% the viewport's CSS-pixel width
+halves, the `fixed inset-0` box halves with it, and the content re-fits to the
+smaller box while each CSS pixel covers two device pixels — the two cancel, and the
+labels come out the same apparent size.
+
 The guard that enforces this sweeps **both** `components/**` and `pages/**`, because
 a magnify overlay can live in either and a population scoped to one directory counts
 instances of a set it has itself narrowed. `AppDetailPage.tsx` is carried in that

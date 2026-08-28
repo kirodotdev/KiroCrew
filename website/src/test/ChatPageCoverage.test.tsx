@@ -420,9 +420,12 @@ describe('ChatPage default-agent footer row', () => {
     act(() => { chatInputProps!.onAgentClick!({ left: 40, top: 80 } as DOMRect) })
     await waitFor(() => expect(defaultAgentRowProps).not.toBeNull())
 
-    expect(defaultAgentRowProps!.agentName).toBe('default')
+    // An agent-less slot resolves to the configured default agent (the
+    // useAgents mock above returns defaultAgent: 'kirocrew'), not the
+    // literal 'default' placeholder the pre-fix fallback rendered.
+    expect(defaultAgentRowProps!.agentName).toBe('kirocrew')
     act(() => { defaultAgentRowProps!.onSetDefault() })
-    await waitFor(() => expect(setDefault).toHaveBeenCalledWith('default'))
+    await waitFor(() => expect(setDefault).toHaveBeenCalledWith('kirocrew'))
   })
 })
 

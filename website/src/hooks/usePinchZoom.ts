@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 /** Two-finger pinch-to-zoom with focal anchoring and pan clamping, for a
  *  full-viewport viewer that owns its own magnification.
@@ -23,6 +23,26 @@ import { useCallback, useRef, useState } from 'react'
  */
 
 type Point = { x: number; y: number }
+
+/** Divisor turning a `wheel` deltaY into a multiplicative zoom step. 100 is the
+ *  conventional "one notch" unit, so a trackpad's many small deltas accumulate
+ *  smoothly while a mouse notch lands near the clamp below. */
+const WHEEL_ZOOM_DIVISOR = 100
+/** Ceiling on ONE wheel event's factor (and, inverted, its floor). Without it a
+ *  single mouse notch would scale by e^-1 ≈ 0.37 — a jump, not a zoom. */
+const WHEEL_STEP_MAX = 1.25
+/** `deltaY` is only in pixels when `deltaMode` is 0. Firefox reports a mouse
+ *  notch as `DOM_DELTA_LINE` with `deltaY ≈ 3`, which against the divisor above
+ *  is a ~3% step instead of the intended ~25% — the same physical notch zooming
+ *  roughly 8× slower. 33 is 100/3: it maps Firefox's 3-line notch onto the
+ *  100px notch the divisor is tuned for. The value only has to be close —
+ *  `WHEEL_STEP_MAX` bounds the result either way, so an imperfect factor cannot
+ *  produce a jump, only a slightly brisker or gentler notch. */
+const WHEEL_LINE_PX = 33
+
+/** Safari's non-standard pinch events, which no DOM lib type covers. `scale` is
+ *  cumulative from `gesturestart`, not per-frame. */
+type GestureEventLike = Event & { scale: number; clientX: number; clientY: number }
 
 /* The three helpers below are module-private on purpose. They are the pinch's
  * internals, not its interface: both consumers drive the gesture through the
@@ -66,7 +86,24 @@ export type PinchZoomOptions = {
   /** The element whose layout box bounds the pan. Its `offsetWidth/Height` times
    *  the current zoom is the visual size; travel is allowed up to half the
    *  overflow beyond the viewport. A null ref leaves a candidate pan unclamped. */
-  targetRef: { current: { offsetWidth: number; offsetHeight: number } | null }
+  targetRef: { current: HTMLElement | null }
+  /** Element whose subtree claims a trackpad gesture. Defaults to `targetRef`,
+   *  but a viewer whose transform target is smaller than its overlay should pass
+   *  the overlay: a pinch on the letterbox around a small image is visually
+   *  inside the viewer, and letting it fall through page-zooms the whole app
+   *  behind a viewer that looks unchanged. */
+  containRef?: { current: HTMLElement | null }
+  /** Whether the trackpad path is bound at all. Default true.
+   *
+   *  Pass false whenever the consumer cannot act on a zoom — a viewer that is
+   *  closed, or content that is not fit-scaled. Two distinct costs ride on this:
+   *  a non-passive `wheel` listener makes the compositor wait on main-thread
+   *  dispatch for EVERY wheel event in the app, so an always-mounted consumer
+   *  would tax scrolling everywhere while its viewer is shut; and claiming a
+   *  gesture the consumer ignores would suppress the browser page zoom that DOES
+   *  magnify content which is not fit-to-viewport, turning a working fallback
+   *  into a dead end. */
+  enabled?: boolean
   min: number
   max: number
   /** Fires when a pinch seats (the second contact lands). The caller uses it to
@@ -78,7 +115,7 @@ export type PinchZoomOptions = {
   onPinchEnd?: () => void
 }
 
-export function usePinchZoom({ targetRef, min, max, onPinchStart, onPinchEnd }: PinchZoomOptions) {
+export function usePinchZoom({ targetRef, containRef, enabled = true, min, max, onPinchStart, onPinchEnd }: PinchZoomOptions) {
   const [zoom, setZoom] = useState(min)
   const [pan, setPan] = useState<Point>({ x: 0, y: 0 })
   const [pinching, setPinching] = useState(false)
@@ -90,6 +127,10 @@ export function usePinchZoom({ targetRef, min, max, onPinchStart, onPinchEnd }: 
   zoomRef.current = zoom
   const panRef = useRef(pan)
   panRef.current = pan
+
+  /** Last `scale` seen from a WebKit gesture, so each frame's factor is the ratio
+   *  against the previous one rather than the cumulative value. */
+  const gestureScaleRef = useRef(1)
 
   /** Hold a candidate zoom inside bounds. Rounded because a pinch produces a
    *  continuous factor, and an unrounded float would make the `zoom > min`
@@ -211,6 +252,130 @@ export function usePinchZoom({ targetRef, min, max, onPinchStart, onPinchEnd }: 
     resetPinch()
     setPinching(false)
   }, [min, resetPinch])
+
+  /** Scale by `factor` while holding whatever sits under (`focalX`, `focalY`).
+   *
+   *  Same anchoring identity the two-finger path uses, with the baseline read from
+   *  what is on screen rather than from a seated gesture: the content renders as
+   *  `translate(pan) scale(zoom)` about its centre, so the detail under the focal
+   *  point is at content-local offset `(focal - centre - pan) / zoom`, and keeping
+   *  that offset under the focal point after the scale is what holds it under the
+   *  cursor instead of letting it drift outward as the content grows. */
+  const zoomAbout = useCallback((factor: number, focalX: number, focalY: number) => {
+    const from = zoomRef.current
+    const next = clampZoom(from * factor)
+    if (next === from) return
+    const cx = window.innerWidth / 2
+    const cy = window.innerHeight / 2
+    // Fall back to the centre when an event arrives without usable coordinates.
+    // Pan PERSISTS, so a single non-finite focal would not just misplace one frame
+    // — it would write NaN into the stored pan and leave the content invisible
+    // until a reset, which is a much worse outcome than an unanchored zoom.
+    const fx = Number.isFinite(focalX) ? focalX : cx
+    const fy = Number.isFinite(focalY) ? focalY : cy
+    const anchorX = (fx - cx - panRef.current.x) / from
+    const anchorY = (fy - cy - panRef.current.y) / from
+    setZoom(next)
+    setPan(clampPan(fx - cx - anchorX * next, fy - cy - anchorY * next, next))
+  }, [clampZoom, clampPan])
+
+  /** Trackpad magnification, which reaches none of the pointer code above.
+   *
+   *  A trackpad pinch produces NO pointer events at all: Blink reports it as a
+   *  `wheel` carrying `ctrlKey`, WebKit as `gesturestart`/`gesturechange` carrying
+   *  a cumulative `scale`. So a laptop had no way to magnify a fit-scaled surface —
+   *  the browser's own page zoom is the default action for both, and page zoom
+   *  cannot magnify content that re-fits to the viewport it has just shrunk.
+   *  Claiming these two signals is what gives a trackpad, and `ctrl`+scroll on a
+   *  mouse, the same magnification the two-finger path gives a touchscreen.
+   *
+   *  Four details are load-bearing:
+   *
+   *  - The listeners are NON-PASSIVE and are not React props. React attaches
+   *    `wheel` at the root passively, so `preventDefault()` inside an `onWheel`
+   *    prop is ignored and the page zooms anyway.
+   *  - They sit on `window` and gate on the target being inside `containRef`,
+   *    rather than on the element itself. A viewer's element ref is null until it
+   *    opens, so an effect that read the element at mount would bind nothing.
+   *    Binding is instead gated by `enabled`, which the consumer sets from its own
+   *    open/zoomable state — that is what keeps a non-passive listener off `window`
+   *    while there is nothing to zoom, and what stops a claimed-but-ignored gesture
+   *    from suppressing a page zoom that would have worked.
+   *  - Only `ctrl`+wheel is claimed. A plain wheel stays with whatever scroller
+   *    owns it, which is what a no-viewBox diagram depends on to reach its edges.
+   *  - `gesture*` is bound only under `(pointer: fine)`. The reverse of the first
+   *    sentence does NOT hold: a gesture event does not imply a trackpad. iOS
+   *    Safari fires `gesturestart`/`gesturechange` for a two-finger TOUCH pinch as
+   *    well, and those same fingers are already driving the pointer path above — so
+   *    binding both on a touch device runs two independent formulas over one pinch
+   *    and zooms twice. The media query is what keeps this an ADDITIONAL input path
+   *    for pointing devices instead of a second one for touch.
+   */
+  useEffect(() => {
+    if (!enabled) return
+    const inTarget = (e: Event): boolean => {
+      const el = (containRef ?? targetRef).current
+      return !!el && e.target instanceof Node && el.contains(e.target)
+    }
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey || !inTarget(e)) return
+      e.preventDefault()
+      // Exponentiating keeps the step multiplicative, so a given physical gesture
+      // covers the same proportion of the range at any current zoom. The clamp is
+      // what makes one event type serve two very different granularities: a
+      // trackpad emits many small deltas, while one mouse notch is ~100 and would
+      // otherwise jump by e^-1 in a single tick.
+      // `deltaY` carries no unit of its own — `deltaMode` names it. Normalise to
+      // pixels FIRST, or the same physical notch means different things per engine.
+      const px =
+        e.deltaMode === 1 ? e.deltaY * WHEEL_LINE_PX
+        : e.deltaMode === 2 ? e.deltaY * (window.innerHeight || WHEEL_ZOOM_DIVISOR)
+        : e.deltaY
+      const raw = Math.exp(-px / WHEEL_ZOOM_DIVISOR)
+      zoomAbout(Math.min(WHEEL_STEP_MAX, Math.max(1 / WHEEL_STEP_MAX, raw)), e.clientX, e.clientY)
+    }
+    const onGestureStart = (e: Event) => {
+      if (!inTarget(e)) return
+      e.preventDefault()
+      gestureScaleRef.current = 1
+    }
+    const onGestureChange = (e: Event) => {
+      if (!inTarget(e)) return
+      e.preventDefault()
+      const g = e as GestureEventLike
+      if (typeof g.scale !== 'number' || !(g.scale > 0)) return
+      // `scale` is cumulative from gesture start, so this frame's factor is the
+      // ratio against the previous frame rather than the value itself.
+      const factor = g.scale / gestureScaleRef.current
+      gestureScaleRef.current = g.scale
+      zoomAbout(factor, g.clientX, g.clientY)
+    }
+    const onGestureEnd = (e: Event) => {
+      if (!inTarget(e)) return
+      e.preventDefault()
+      gestureScaleRef.current = 1
+    }
+    window.addEventListener('wheel', onWheel, { passive: false })
+    // `gesture*` is bound ONLY under a fine primary pointer, and `wheel` never is.
+    // Absent `matchMedia` (jsdom, SSR) counts as NOT fine: failing closed costs a
+    // trackpad path on a platform that does not exist, while failing open restores
+    // the double zoom on every touch device.
+    const finePointer =
+      typeof window.matchMedia === 'function' && window.matchMedia('(pointer: fine)').matches
+    if (finePointer) {
+      window.addEventListener('gesturestart', onGestureStart, { passive: false })
+      window.addEventListener('gesturechange', onGestureChange, { passive: false })
+      window.addEventListener('gestureend', onGestureEnd, { passive: false })
+    }
+    return () => {
+      window.removeEventListener('wheel', onWheel)
+      if (finePointer) {
+        window.removeEventListener('gesturestart', onGestureStart)
+        window.removeEventListener('gesturechange', onGestureChange)
+        window.removeEventListener('gestureend', onGestureEnd)
+      }
+    }
+  }, [enabled, containRef, targetRef, zoomAbout])
 
   // Return exactly what a consumer CALLS or READS — never what it merely names.
   // A handle nothing invokes is a second entry point into this gesture's maths,

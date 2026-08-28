@@ -342,6 +342,7 @@ POOL_DECISIONS: frozenset[str] = frozenset(
 )
 
 # Stateless session-key prefixes — skip resume across restarts.
+_WORKFLOW_AUTHOR_PREFIX = "wf-author:"
 _WORKFLOW_POOL_PREFIX = "wf-pool:"
 _STATELESS_PREFIXES = (
     "cron:",
@@ -350,6 +351,10 @@ _STATELESS_PREFIXES = (
     _CHANNEL_PREFIX,
     "secretary:",
     _SIDE_PREFIX,
+    # Workflow authoring sessions are one-request scratch contexts. Explicit
+    # destruction reaps the provider; stateless classification additionally
+    # prevents a resume lookup or map write before that teardown completes.
+    _WORKFLOW_AUTHOR_PREFIX,
     # Warm workflow-pool workers (workflows/agent_pool.py) are per-run ephemeral
     # sessions reset between tasks via provider.new_conversation(); they must
     # NEVER persist a session_map entry or resume a prior transcript. Without
@@ -4802,7 +4807,7 @@ class SessionManager:
             # shutdown durability point: await the off-loop flush so a wedged
             # filesystem cannot hold the loop past the shutdown deadline.
             try:
-                await self._session_map.aflush()
+                await self._session_map.aclose()
             except asyncio.CancelledError:
                 raise
             except Exception:

@@ -269,7 +269,12 @@ def test_handshake_is_per_backend() -> None:
     Collapsing the two capability dicts into one every harness accepts silently
     downgrades what the Kiro session declares.
     """
-    source = inspect.getsource(acp_runtime.AcpRuntime.spawn)
+    source = "\n".join(
+        (
+            inspect.getsource(acp_runtime.AcpRuntime.spawn),
+            inspect.getsource(acp_runtime.AcpRuntime._spawn_admitted),
+        )
+    )
     assert "KAS_CLIENT_CAPABILITIES" in source and "ACP_CLIENT_CAPABILITIES" in source
     assert KAS_CLIENT_CAPABILITIES != ACP_CLIENT_CAPABILITIES
 

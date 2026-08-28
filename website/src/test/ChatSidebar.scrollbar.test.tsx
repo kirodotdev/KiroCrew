@@ -140,7 +140,13 @@ function expectScrollbarHidden(lane: HTMLElement) {
   expect(lane.className).toContain('overflow-y-auto')
 }
 
-beforeEach(() => localStorage.clear())
+// Fixtures here carry fixed old timestamps; keep the stale-session collapse
+// off so every row stays queryable (its own behavior is pinned in
+// ChatSidebar.staleCollapse.test.tsx).
+beforeEach(() => {
+  localStorage.clear()
+  localStorage.setItem('mc-session-stale-collapse-ms', '0')
+})
 afterEach(() => vi.clearAllMocks())
 
 describe('chat sidebar — vertical scrollbar is hidden', () => {

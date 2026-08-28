@@ -110,3 +110,40 @@ describe('createArtifactsProvider — search mapping', () => {
     ])
   })
 })
+
+describe('createArtifactsProvider — backend relevance order is the score tiebreak (issue #4579)', () => {
+  it('preserves backend order for body-only hits (all scores 0) instead of alphabetizing', async () => {
+    // Titles are in REVERSE-alphabetical order and share no characters with the
+    // query, so every row is a body hit with score 0. The backend ranked these
+    // by relevance / mtime; the old name tiebreak returned them alphabetized.
+    const items: Artifact[] = [
+      artifact({ slug: 'z-art', name: 'Zebra doc', snippet: 'mentions 4579' }),
+      artifact({ slug: 'm-art', name: 'Muffin doc', snippet: 'discusses 4579' }),
+      artifact({ slug: 'a-art', name: 'Alpha doc', snippet: '4579 details' }),
+    ]
+    const { d } = deps(items)
+    const p = createArtifactsProvider(d)
+    const results = await run(p, '4579')
+    expect(results).toHaveLength(3)
+    expect(results.every(r => r.score === 0)).toBe(true)
+    // Backend order, NOT ['Alpha doc', 'Muffin doc', 'Zebra doc'].
+    expect(results.map(r => r.title)).toEqual(['Zebra doc', 'Muffin doc', 'Alpha doc'])
+  })
+
+  it('still ranks a title match first even when the backend returned it last (bias preserved)', async () => {
+    const items: Artifact[] = [
+      artifact({ slug: 'u-1', name: 'Unrelated alpha', snippet: 'grid spec' }),
+      artifact({ slug: 'u-2', name: 'Unrelated beta', snippet: 'grid spec again' }),
+      artifact({ slug: 'g-1', name: 'grid design' }),
+    ]
+    const { d } = deps(items)
+    const p = createArtifactsProvider(d)
+    const results = await run(p, 'grid')
+    expect(results).toHaveLength(3)
+    expect(results[0].title).toBe('grid design')
+    expect(results[0].score).toBeGreaterThan(0)
+    // The remaining body-only rows keep their backend order between themselves.
+    expect(results.slice(1).map(r => r.title)).toEqual(['Unrelated alpha', 'Unrelated beta'])
+  })
+})
+

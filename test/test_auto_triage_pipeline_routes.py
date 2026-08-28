@@ -87,8 +87,9 @@ async def test_overview_returns_the_folded_pipeline(
 ) -> None:
     seen: dict[str, Any] = {}
 
-    def fake_fold(*, recent_hours: int):
+    def fake_fold(*, recent_hours: int, repo: str | None = None):
         seen["hours"] = recent_hours
+        seen["repo"] = repo
         return _Row({"steps": [{"step": "scan", "inFlight": 2}]})
 
     monkeypatch.setattr(fold, "fold_pipeline", fake_fold)
@@ -97,6 +98,9 @@ async def test_overview_returns_the_folded_pipeline(
         assert resp.status == 200
         assert (await resp.json())["steps"][0]["step"] == "scan"
     assert seen["hours"] == 48
+    # No repo asked for means every repository, which is what this route did
+    # before the trail carried one -- an old client keeps working unchanged.
+    assert seen["repo"] is None
 
 
 @pytest.mark.asyncio
@@ -110,7 +114,7 @@ async def test_overview_falls_back_to_the_default_window_for_junk_hours(
     """
     seen: dict[str, Any] = {}
 
-    def fake_fold(*, recent_hours: int):
+    def fake_fold(*, recent_hours: int, repo: str | None = None):
         seen["hours"] = recent_hours
         return _Row({"steps": []})
 
@@ -338,3 +342,36 @@ def test_only_read_routes_are_mounted() -> None:
 def test_the_route_prefix_tracks_the_manifest_name() -> None:
     """The manifest's permissions.api entries and these paths must not drift."""
     assert routes.PREFIX == f"/api/apps/{routes.APP_NAME}"
+
+
+@pytest.mark.asyncio
+async def test_overview_takes_NO_repository_parameter(
+    enabled: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The L0 route answers for every repository and accepts nothing to narrow it.
+
+    An earlier revision of this branch took `?repo=` and passed it to the fold as a
+    filter. That is only correct once the dispatch queue is keyed on repository AND
+    number; today it is keyed on the number alone, so a narrowed fold hands back one
+    repository's sessions and costs under another's name (issue #6221).
+
+    Pinned from the fold's side rather than by asserting a 400, because the honest
+    contract is "this route has no repository dimension", not "this route validates
+    one". A stray query string is inert: it cannot reach the fold, so it cannot
+    narrow anything.
+    """
+    calls: list[dict[str, Any]] = []
+
+    def fake_fold(**kwargs):
+        calls.append(kwargs)
+        return _Row({"steps": []})
+
+    monkeypatch.setattr(fold, "fold_pipeline", fake_fold)
+    async with client_for(make_app()) as client:
+        for query in ("", "?repo=acme/widgets", "?repo=", "?repo=noslash"):
+            resp = await client.get(f"{routes.PREFIX}/overview{query}")
+            assert resp.status == 200, query
+
+    assert len(calls) == 4
+    for kwargs in calls:
+        assert "repo" not in kwargs, "the route must not pass a repository to the fold"

@@ -196,6 +196,26 @@ export interface DriveDeleteResult {
   deleted: true
 }
 
+/** Result of `POST /drive/{account}/folder`. `path` echoes the folder created. */
+export interface DriveFolderResult {
+  created: true
+  path: string
+}
+
+/**
+ * Result of `POST /drive/{account}/folder/delete`.
+ *
+ * `objects` is the number actually removed, which the page reports after the
+ * delete: one click can remove many objects, and this count is the only honest
+ * statement of what happened - a figure shown BEFORE consent would cost a
+ * second full recursive listing of the prefix.
+ */
+export interface DriveFolderDeleteResult {
+  deleted: true
+  path: string
+  objects: number
+}
+
 /** The stored record of one active share link. The URL itself is never here. */
 export interface Share {
   id: string

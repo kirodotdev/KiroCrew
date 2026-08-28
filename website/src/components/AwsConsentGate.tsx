@@ -16,8 +16,24 @@ import { i18nT } from '../i18n/t'
  * the backend can run the identity probe. Nothing here decides anything: the
  * backend refuses to record a confirmation it cannot attach an account to, so
  * this component cannot manufacture consent by rendering a button.
+ *
+ * `onConsentChange` exists because a grant gates data this component cannot
+ * name. It invalidates its own status and the voice catalogue, but a caller's
+ * surfaces may also be reading refusals out of cache -- the AWS Control console
+ * decides whether to show the ask from a cached 409 on the drive read and from
+ * `costs.consentMissing`. Without a way to invalidate those too, withdrawing
+ * leaves the operator with no receipt, no ask, and a stale drive row: nothing
+ * on screen offers the confirm back. Callers whose surfaces do not depend on a
+ * grant omit it.
  */
-export default function AwsConsentGate({ service }: { service: string }) {
+export default function AwsConsentGate({
+  service,
+  onConsentChange,
+}: {
+  service: string
+  /** Invalidate caller-owned queries whose content depends on this grant. */
+  onConsentChange?: () => void
+}) {
   const qc = useQueryClient()
   const consentQ = useQuery<AwsConsentStatus>({
     queryKey: ['awsConsent', service],
@@ -29,6 +45,7 @@ export default function AwsConsentGate({ service }: { service: string }) {
     // The Polly voice catalogue is fetched through the same gate, so a grant
     // change flips that request between a real catalogue and a refusal.
     qc.invalidateQueries({ queryKey: ['voiceVoices'] })
+    onConsentChange?.()
   }
 
   const grantMut = useMutation({

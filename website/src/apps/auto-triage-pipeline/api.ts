@@ -369,11 +369,27 @@ export interface UnmappedEvent {
   count: number
 }
 
+/** One repository the event trail names, with how many events carry it. */
+export interface RepoEventCount {
+  repo: string
+  count: number
+}
+
 /** L0 — the whole pipeline. Timestamps are epoch SECONDS and may be null. */
 export interface OverviewResponse {
   steps: OverviewStep[]
   totalEvents: number
   unparseable: number
+  /** Events carrying no repository, which is every event written before the
+   *  scheduled jobs began stamping one. Nothing can back-fill them, so the count
+   *  is what lets the view disclose that part of the trail is unattributable
+   *  rather than implying every event is accounted for. */
+  unattributedEvents: number
+  /** Every repository the trail names, with its event count. A CENSUS: it reports
+   *  what the trail contains so the view can say the pipeline spans more than one
+   *  repository. It is not a selector -- separating them needs the dispatch queue
+   *  keyed on repository and number first (issue #6221). */
+  repos: RepoEventCount[]
   unmappedEvents: UnmappedEvent[]
   firstEventAt: number | null
   lastEventAt: number | null
@@ -618,6 +634,8 @@ export const autoTriagePipelineFoldApi = {
       steps: [],
       totalEvents: 0,
       unparseable: 0,
+      unattributedEvents: 0,
+      repos: [],
       unmappedEvents: [],
       firstEventAt: null,
       lastEventAt: null,
@@ -625,6 +643,10 @@ export const autoTriagePipelineFoldApi = {
     })
     const q = new URLSearchParams()
     if (typeof hours === 'number' && Number.isFinite(hours)) q.set('hours', String(Math.trunc(hours)))
+    // No repository parameter: this endpoint answers for every repository the trail
+    // names. `repos` below reports which ones those are, which is disclosure -- the
+    // fold cannot yet SEPARATE them, because the queue behind L1/L2 is keyed on the
+    // issue number alone (issue #6221).
     const suffix = q.toString() ? `?${q.toString()}` : ''
     const o = await getObjectOrThrow(`${ATP_API}/overview${suffix}`)
     const steps: OverviewStep[] = []
@@ -641,10 +663,24 @@ export const autoTriagePipelineFoldApi = {
         if (r) unmappedEvents.push({ event: str(r, 'event'), count: num(r, 'count') })
       }
     }
+    // The census of repositories the trail names. A row with no name is dropped
+    // rather than kept as an empty label: an unnamed repository is what
+    // `unattributedEvents` already counts, and a blank row in a picker would offer
+    // the operator a selection that matches nothing.
+    const repos: RepoEventCount[] = []
+    if (Array.isArray(o.repos)) {
+      for (const e of o.repos) {
+        const r = asObject(e)
+        const name = r ? str(r, 'repo') : ''
+        if (name) repos.push({ repo: name, count: num(r as Record<string, unknown>, 'count') })
+      }
+    }
     return {
       steps,
       totalEvents: num(o, 'totalEvents'),
       unparseable: num(o, 'unparseable'),
+      unattributedEvents: num(o, 'unattributedEvents'),
+      repos,
       unmappedEvents,
       firstEventAt: ts(o, 'firstEventAt'),
       lastEventAt: ts(o, 'lastEventAt'),

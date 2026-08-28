@@ -200,6 +200,73 @@ export default function PipelineFlow({
         />
       </div>
 
+      {/* Two disclosures about the SHAPE of the trail behind the numbers above.
+          Both exist because this board folds every repository together and cannot
+          yet separate them: the dispatch queue keys its entries on the issue number
+          alone, so filtering by repository would narrow these rows while the queue
+          and session joins stayed number-keyed, attributing one repository's
+          sessions and costs to another. Disclosing the mixture is honest; a
+          repository selector over ambiguous joins would look precise and be wrong.
+          Selection arrives when the queue is keyed on repository and number.
+
+          Each line renders only when it has something to say -- an install whose
+          trail names one repository, or carries no pre-stamp events, sees neither.
+          Label-and-value rather than a sentence carrying the number, so no locale
+          needs plural agreement for counts usually in the thousands. */}
+      {/* `?? []` rather than a bare read. This module's client is documented as
+          forward-tolerant and never-throwing, and every degraded path returns a
+          designed empty -- but a caller handing over an overview assembled without
+          this field would otherwise take the ENTIRE board down with a
+          "cannot read properties of undefined" instead of dropping one line.
+          The sibling count below already degrades that way for free, because
+          `undefined > 0` is false; an array read needs to say so. */}
+      {(overview.repos ?? []).length > 1 ? (
+        <p
+          className="text-[11px] leading-snug"
+          style={{ color: 'var(--text-dim)' }}
+          data-testid="atp-repo-census"
+        >
+          <span className="font-semibold uppercase tracking-wide">
+            {i18nT('apps.autoTriagePipeline.global.repos_label')}
+          </span>{' '}
+          <span style={{ color: 'var(--text)' }}>{(overview.repos ?? []).length}</span>{' '}
+          {/* Names directly after the count, THEN the note -- "REPOSITORIES 2 are
+              folded together ... acme/one, acme/two" put the subject after its own
+              verb and read as two disconnected fragments. */}
+          <span style={{ color: 'var(--text)' }}>
+            {/* Bounded: a trail naming many repositories must not push a wall of
+                names into the header. The count above is the complete figure. */}
+            {(overview.repos ?? [])
+              .slice(0, 4)
+              .map((r) => r.repo)
+              .join(', ')}
+            {(overview.repos ?? []).length > 4 ? '...' : null}
+          </span>
+          {/* A separator, not decoration: without it the value and the note run
+              together as "2 acme/one This board folds..." and the count reads as the
+              sentence's first word. Rendered here rather than baked into any
+              catalog string, so no locale has to carry punctuation whose job is
+              layout. */}
+          <span aria-hidden="true">{' \u2014 '}</span>
+          {i18nT('apps.autoTriagePipeline.global.repos_note')}
+        </p>
+      ) : null}
+
+      {overview.unattributedEvents > 0 ? (
+        <p
+          className="text-[11px] leading-snug"
+          style={{ color: 'var(--text-dim)' }}
+          data-testid="atp-unattributed"
+        >
+          <span className="font-semibold uppercase tracking-wide">
+            {i18nT('apps.autoTriagePipeline.global.unattributed_label')}
+          </span>{' '}
+          <span style={{ color: 'var(--text)' }}>{overview.unattributedEvents}</span>
+          <span aria-hidden="true">{' \u2014 '}</span>
+          {i18nT('apps.autoTriagePipeline.global.unattributed_note')}
+        </p>
+      ) : null}
+
       <Card className="p-3">
         {/* Narrow-first. Six cards with a fixed minimum width are ~57rem of content,
             so on a 320px viewport the horizontal strip could only be reached by

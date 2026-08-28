@@ -465,7 +465,7 @@ def test_all_candidates_corrupt_yields_no_floor(bad: str) -> None:
 # the gateway before it ever finishes booting.
 #
 # SCOPE, stated plainly: this gate is SHAPE cover, not the proof. It flags a read
-# spelled directly inside an `async def` body in chat_persistence.py. It would
+# spelled directly inside an `async def` body in the scanned files. It would
 # NOT have caught #895's original form, where the async driver drove a synchronous
 # GENERATOR and the reads sat one hop away inside it — and it deliberately does not
 # chase that hop, because following module-local calls transitively lands in
@@ -481,10 +481,11 @@ def test_all_candidates_corrupt_yields_no_floor(bad: str) -> None:
 # The offloaded shape passes for free — `asyncio.to_thread(_prefetch_recent_session, …)`
 # passes the function as a bare Name, which is not a call at that point.
 #
-# Scoped to chat_persistence.py deliberately. Repo-wide these three methods have
-# many legitimate on-loop callers reading one small metadata line; the invariant
-# being pinned is about the BULK restore path, and a gate that fires everywhere
-# would be turned off rather than obeyed.
+# Scoped to an explicit allow-list of bulk-restore drivers (chat_persistence.py and
+# sessions.py), not repo-wide. Repo-wide, these three methods have many legitimate
+# on-loop callers reading one small metadata line; the invariant being pinned is
+# about the BULK restore path, and a gate that fires everywhere would be turned
+# off rather than obeyed.
 
 _RESTORE_READS = frozenset({"list_sessions", "read_messages_chained", "get_metadata_status"})
 
@@ -516,22 +517,34 @@ def find_restore_read_violations(source: str, path: str = "<source>") -> list[tu
 
 
 def test_no_startup_restore_read_runs_on_the_event_loop() -> None:
-    """chat_persistence's async drivers must prefetch, never read inline."""
-    target = _src_root() / "dashboard" / "chat_persistence.py"
-    assert target.exists(), f"chat_persistence.py not found at {target}"
-    violations = find_restore_read_violations(
-        target.read_text(encoding="utf-8"), str(target)
-    )
-    if violations:
-        detail = "\n".join(f"  {path}:{lineno}" for path, lineno in violations)
+    """Async handlers must offload bulk-reads, never call inline.
+
+    **Limitation:** This gate is lexical — it flags only calls syntactically
+    inside an ``async def`` body. A one-level sync-helper extraction defeats it
+    (e.g. ``def _helper(): return log.list_sessions()`` called from an async def).
+    Zero-violation does NOT prove the code is safe; it proves the gate cannot see
+    a violation.
+    """
+    targets = [
+        _src_root() / "dashboard" / "chat_persistence.py",
+        _src_root() / "dashboard" / "handlers" / "sessions.py",
+    ]
+    all_violations: list[tuple[str, int]] = []
+    for target in targets:
+        assert target.exists(), f"{target.name} not found at {target}"
+        all_violations.extend(
+            find_restore_read_violations(target.read_text(encoding="utf-8"), str(target))
+        )
+    if all_violations:
+        detail = "\n".join(f"  {path}:{lineno}" for path, lineno in all_violations)
         raise AssertionError(
             "a bulk-restore disk read is called directly inside an `async def` "
-            "body in chat_persistence.py.\n\n"
+            "body.\n\n"
             "list_sessions() scans every session file; read_messages_chained() "
             "walks a whole transcript across forks. On the event loop that "
             "starves the LoopStallWatchdog heartbeat, whose exit_after timer "
             "then kills the gateway mid-boot (#895). Hoist the read:\n"
-            "    meta, msgs = await asyncio.to_thread(_prefetch_recent_session, …)\n"
+            "    sessions = await asyncio.to_thread(log.list_sessions)\n"
             "and keep only the slot mutation on the loop (slot creation "
             "broadcasts through asyncio.Queue.put_nowait / Event.set, neither "
             "thread-safe).\n"

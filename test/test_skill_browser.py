@@ -938,7 +938,35 @@ class TestApiSkillsAgentScoping:
             resp = await client.get("/api/skills", params={"agent": "custom"})
             assert resp.status == 200
             payload = await resp.json()
-        assert {s["name"] for s in payload} == {"alpha"}
+        # #6028: an applied agent filter answers with the scoped envelope —
+        # the arrays alone are byte-identical to the legacy shape, so this
+        # flag is the ONLY way the picker can cue that filtering happened.
+        assert payload["agent_scoped"] is True
+        assert payload["agent"] == "custom"
+        assert {s["name"] for s in payload["skills"]} == {"alpha"}
+
+    @pytest.mark.asyncio
+    async def test_scoped_envelope_is_kept_when_the_mapping_matches_nothing(self, fake_home):
+        """#6028: an agent whose skill:// mapping resolves to zero listed
+        skills still gets the envelope (``skills: []``, ``agent_scoped``
+        true). This is the empty state the picker must attribute to the
+        MAPPING ("no skills mapped to this agent"), not to the catalog
+        ("no skills exist") — without the flag both are a bare ``[]``."""
+        _write_skill(fake_home / ".kiro" / "skills", "alpha")
+        agents_dir = fake_home / ".kiro" / "agents"
+        agents_dir.mkdir(parents=True)
+        (agents_dir / "custom.json").write_text(json.dumps({
+            "name": "custom",
+            "resources": ["skill://~/.kiro/skills/gamma/SKILL.md"],
+        }))
+
+        async with TestClient(TestServer(_make_app(self._state()))) as client:
+            resp = await client.get("/api/skills", params={"agent": "custom"})
+            assert resp.status == 200
+            payload = await resp.json()
+        assert payload["agent_scoped"] is True
+        assert payload["agent"] == "custom"
+        assert payload["skills"] == []
 
     @pytest.mark.asyncio
     async def test_agent_without_an_explicit_mapping_sees_everything(self, fake_home):
@@ -961,6 +989,9 @@ class TestApiSkillsAgentScoping:
             resp = await client.get("/api/skills", params={"agent": "plain"})
             assert resp.status == 200
             payload = await resp.json()
+        # No filter applied → the legacy bare-array shape, no envelope: the
+        # picker must render this with zero scope cues (#6028).
+        assert isinstance(payload, list)
         assert {s["name"] for s in payload} == {"alpha", "beta"}
 
     @pytest.mark.asyncio
@@ -970,6 +1001,7 @@ class TestApiSkillsAgentScoping:
             resp = await client.get("/api/skills", params={"agent": "does-not-exist"})
             assert resp.status == 200
             payload = await resp.json()
+        assert isinstance(payload, list)
         assert {s["name"] for s in payload} == {"alpha"}
 
     @pytest.mark.asyncio
@@ -987,6 +1019,7 @@ class TestApiSkillsAgentScoping:
             resp = await client.get("/api/skills")
             assert resp.status == 200
             payload = await resp.json()
+        assert isinstance(payload, list)
         assert {s["name"] for s in payload} == {"alpha", "beta"}
 
 

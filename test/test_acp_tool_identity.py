@@ -88,6 +88,9 @@ class TestBuildToolCallEventIdentity:
         assert event.kind == EVENT_TOOL_CALL
         assert event.tool_name == "monitor_start"
         assert event.mcp_server_name == "kirocrew-core"
+        # This builder populates the identity pair exclusively from _meta.kiro
+        # (non-model-authored), so it earns the explicit provenance flag.
+        assert event.mcp_identity_trusted is True
 
     def test_identity_is_meta_not_title(self) -> None:
         """The title is LLM prose; a shell tool could title itself "monitor_start"
@@ -111,8 +114,73 @@ class TestBuildToolCallEventIdentity:
         event = _build_tool_call_event(shell_update, None)
         assert event.tool_name == ""
         assert event.mcp_server_name == ""
+        # No _meta.kiro → nothing was populated, so no provenance is asserted.
+        assert event.mcp_identity_trusted is False
         # is_shell must still be derived from the kind (unrelated to identity).
         assert event.is_shell is True
+
+
+class TestClientToolCallEventIdentityProvenance:
+    """``AcpClient._extract_tool_event``'s inline tool_call builder is the
+    legacy sibling of ``_build_tool_call_event``: it also populates the
+    identity pair exclusively from ``_meta.kiro`` and must earn the same
+    explicit ``mcp_identity_trusted`` provenance flag — a drop here would
+    silently revoke the verified-identity half on the legacy client path."""
+
+    def test_inline_tool_call_builder_sets_identity_flag(self) -> None:
+        from kiro_crew.acp.client import AcpClient
+        from kiro_crew.acp.types import AcpPromptStats, JsonRpcMessage
+
+        client = AcpClient.__new__(AcpClient)  # avoid spawning a real process
+        client._tool_call_inputs = {}
+        client._tool_call_input_redacted = {}
+        client._tool_call_params = {}
+        client._tool_call_is_shell = {}
+        client._tool_call_mcp_server = {}
+        client._tool_call_tool_name = {}
+        client.last_prompt_stats = AcpPromptStats()
+        msg = JsonRpcMessage(
+            method="session/update",
+            params={
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "tc-meta-1",
+                    "kind": "other",
+                    "title": "Arming a monitor loop",
+                    "rawInput": {"message": "check PR"},
+                    "_meta": {
+                        "kiro": {
+                            "toolName": "monitor_start",
+                            "mcpServerName": "kirocrew-core",
+                        }
+                    },
+                }
+            },
+        )
+        event = client._extract_tool_event(msg)
+        assert event is not None
+        assert event.tool_name == "monitor_start"
+        assert event.mcp_server_name == "kirocrew-core"
+        assert event.mcp_identity_trusted is True
+        # Counterfactual: a frame with no _meta.kiro populates nothing, so the
+        # builder asserts no provenance.
+        msg_no_meta = JsonRpcMessage(
+            method="session/update",
+            params={
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "tc-no-meta",
+                    "kind": "execute",
+                    "title": "Running: echo hi",
+                    "rawInput": {"command": "echo hi"},
+                }
+            },
+        )
+        event_no_meta = client._extract_tool_event(msg_no_meta)
+        assert event_no_meta is not None
+        assert event_no_meta.tool_name == ""
+        assert event_no_meta.mcp_server_name == ""
+        assert event_no_meta.mcp_identity_trusted is False
 
 
 # ── Part 3: chat_runner directive gate (security regression, integration) ─────

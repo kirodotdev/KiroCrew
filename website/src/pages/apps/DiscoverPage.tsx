@@ -16,10 +16,11 @@
  * query, category pick, sort, action loading) lives here.
  */
 import { useEffect, useMemo, useState } from 'react'
-import { Link, Navigate } from 'react-router-dom'
-import { AlertTriangle, ShoppingBag, X } from 'lucide-react'
+import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom'
+import { AlertTriangle, CheckCircle2, ShoppingBag, X } from 'lucide-react'
 import { EmptyState, PageHeader, SearchInput } from '../../components/ui'
 import SimpleSelect from '../../components/SimpleSelect'
+import UnderlineTabs, { type UnderlineTab } from '../../components/UnderlineTabs'
 import FeaturedSpotlight from '../../components/appstore/FeaturedSpotlight'
 import CategoryRail from '../../components/appstore/CategoryRail'
 import AppListRow from '../../components/appstore/AppListRow'
@@ -33,6 +34,8 @@ import ErrorNotice from '../../components/ErrorNotice'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import useAppsData from './useAppsData'
 import { useAppActions } from './useAppActions'
+import { useAppUpdates } from './useAppUpdates'
+import UpdatesList from './UpdatesList'
 import { cardDataKey } from './cardDataKey'
 
 /**
@@ -88,26 +91,66 @@ function BrowseCardFallback({ label, message, className }: { label?: string; mes
  * fallback pattern as other legacy query→path migrations. The key is cleared
  * in an idempotent effect in ALL cases (library, discover, or garbage) so the
  * redirect can never fire twice and the legacy key dies here.
+ *
+ * The redirect only applies to the bare `/apps` mount: a `/apps/-/updates`
+ * deep-link is an explicit destination, and a stale legacy key must not
+ * hijack it. (The key is still cleared either way.)
  */
 export default function DiscoverPage() {
+  const { pathname } = useLocation()
   const stored = sessionStorage.getItem('appstore-tab')
   const legacyLibrary = stored === 'library' || stored === 'installed'
   useEffect(() => { sessionStorage.removeItem('appstore-tab') }, [])
-  if (legacyLibrary) return <Navigate to="/apps/library" replace />
+  if (legacyLibrary && pathname !== UPDATES_PATH) return <Navigate to="/apps/library" replace />
   return <DiscoverPageBody />
 }
 
+/** The Updates sub-tab's canonical URL. The `-/` prefix can never collide with
+ *  an installed app: `-` is not a valid app name, so unlike `library` it needs
+ *  no server-side reservation (see the route comment in App.tsx). */
+const UPDATES_PATH = '/apps/-/updates'
+
+type DiscoverTab = 'featured' | 'updates'
+
+/** URL → sub-tab. Anything that is not the Updates path is Featured — `/apps`
+ *  is the default mount and stays the canonical Featured URL. */
+function tabForPath(pathname: string): DiscoverTab {
+  return pathname === UPDATES_PATH ? 'updates' : 'featured'
+}
+
 function DiscoverPageBody() {
+  const location = useLocation()
+  const navigate = useNavigate()
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState<Category | 'all'>('all')
   const [sort, setSort] = useState<'name' | 'category'>('name')
   const [sourcesOpen, setSourcesOpen] = useState(false)
   const [successMsg, setSuccessMsg] = useState('')
+  /* Whether the success notice carries the Library link. Only the
+     install-from-path flow sets it — that notice hands off to another page
+     (enable lives in Library) and persists until acted on; an update success
+     resolves HERE, so it links nowhere and auto-dismisses instead. */
+  const [successLink, setSuccessLink] = useState(false)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
+
+  /* Sub-tab state (V1 mockup: Featured | Updates). Component-internal state
+     initialized SYNCHRONOUSLY from the URL so a `/apps/-/updates` deep-link or
+     refresh renders the Updates tab on the first frame (no Featured flash —
+     the same read-side rule as the legacy-key migration above). The effect
+     re-syncs on history navigation (back/forward), where the path changes
+     without going through `switchTab`. */
+  const [tab, setTab] = useState<DiscoverTab>(() => tabForPath(location.pathname))
+  useEffect(() => { setTab(tabForPath(location.pathname)) }, [location.pathname])
+  const switchTab = (next: DiscoverTab) => {
+    setTab(next)
+    // Push (not replace): the tabs are navigation between two addressable
+    // screens, so Back must return to the one the user came from.
+    navigate(next === 'updates' ? UPDATES_PATH : '/apps')
+  }
 
   const {
     apps, appsError, registryError, loading,
-    browseApps, featuredSections, categories, sources,
+    browseApps, featuredSections, categories, sources, updatables,
     announceAppsChanged,
   } = useAppsData()
 
@@ -115,6 +158,31 @@ function DiscoverPageBody() {
     setError, displayError, dismissError,
     openDetail, getApp, updateApp, trustTarget, runEnable, trust,
   } = useAppActions({ apps, browseApps, appsError, registryError, announceAppsChanged })
+
+  // Transient success surface for the shared update hook: the hook reports
+  // outcomes, this page owns display + auto-dismiss (the Library's 4s).
+  const showSuccess = (msg: string) => {
+    setSuccessMsg(msg)
+    setSuccessLink(false)
+    setTimeout(() => setSuccessMsg(''), 4000)
+  }
+
+  // Per-row update and Update All for the Updates sub-tab — the SAME
+  // useAppUpdates instance shape the Library runs, so the two surfaces cannot
+  // drift on pending state and the sequential batch. `rowUpdatesInPlace`
+  // keeps every row on this worklist updating where it stands: the header
+  // and Update All promise in-place updating, so a row's button must not
+  // navigate away mid-triage (the hook's comment carries the full contract).
+  const { updatingAll, updatePending, runUpdate, updateAll } = useAppUpdates({
+    apps, updatables, announceAppsChanged, updateApp,
+    setError, setSuccess: showSuccess,
+    // A lapsed execution trust on an in-place update is a consent prompt:
+    // reuse the enable path's modal, but hand the gate the UPDATE retry —
+    // its default retry is the enable action, which would start the app
+    // instead of updating it after the user consents.
+    onTrustDenied: (name, retryUpdate) => trust.open(trustTarget(name), retryUpdate),
+    rowUpdatesInPlace: true,
+  })
 
   const filteredBrowse = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -170,13 +238,18 @@ function DiscoverPageBody() {
         title={i18nT('pages.discoverPage.title')}
         subtitle={i18nT('pages.discoverPage.subtitle')}
         actions={<>
-          <SearchInput
-            placeholder={i18nT('pages.appsPage.search_apps')}
-            value={query}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
-            className="w-[220px]"
-            aria-label={i18nT('pages.appsPage.search_apps')}
-          />
+          {/* Search filters the Featured browse grid only, so the field hides
+              on the Updates worklist — a live input that visibly does nothing
+              there reads as broken. */}
+          {tab === 'featured' && (
+            <SearchInput
+              placeholder={i18nT('pages.appsPage.search_apps')}
+              value={query}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
+              className="w-[220px]"
+              aria-label={i18nT('pages.appsPage.search_apps')}
+            />
+          )}
           <SourcesPopover
             open={sourcesOpen}
             onOpenChange={setSourcesOpen}
@@ -189,6 +262,7 @@ function DiscoverPageBody() {
               // No auto-dismiss: the notice carries a pending task, so it stays
               // until the user acts on it or dismisses it.
               setSuccessMsg(i18nT('pages.appsPage.installed_app_find_in_library_and_enable', { name }))
+              setSuccessLink(true)
             }}
           />
         </>}
@@ -201,6 +275,30 @@ function DiscoverPageBody() {
             copy's line length past comfortable reading. Utility pages stay
             full-width; a content shelf follows store convention instead. */}
         <div className="max-w-[1200px] mx-auto">
+        {/* Sub-tabs (V1 mockup): Featured is the storefront, Updates the
+            pending-updates worklist. The repo's shared UnderlineTabs carries
+            the WAI-ARIA tabs contract (roving tabindex, arrow keys,
+            aria-selected) and hides the count at zero, so no badge noise when
+            everything is current. */}
+        <div className="mb-4">
+          <UnderlineTabs<DiscoverTab>
+            tabs={[
+              { key: 'featured', label: i18nT('pages.discoverPage.tab_featured') },
+              {
+                key: 'updates',
+                label: i18nT('pages.discoverPage.tab_updates'),
+                count: updatables.length,
+                tooltip: updatables.length > 0
+                  ? i18nT('pages.discoverPage.updates_badge_label', { count: updatables.length })
+                  : undefined,
+              },
+            ] satisfies Array<UnderlineTab<DiscoverTab>>}
+            value={tab}
+            onChange={switchTab}
+            ariaLabel={i18nT('pages.discoverPage.title')}
+            layoutId="discover-subtab"
+          />
+        </div>
         {/* Notifications. No hand-off on the error notice: the SourcesPopover's
             install-path input shares this page — navigating away would discard
             what the user typed. */}
@@ -214,12 +312,16 @@ function DiscoverPageBody() {
         {successMsg && (
           <div className="mb-4 bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--ok) 45%, transparent)' }}>
             <span className="text-text text-sm flex-1">{successMsg}</span>
-            {/* The install flow now finishes on another page, so the notice
-                carries the navigation instead of asking the user to hunt. */}
-            <Link to="/apps/library" className="text-accent text-sm font-medium hover:underline shrink-0">
-              {i18nT('nav.library')}
-            </Link>
-            <button aria-label={i18nT('pages.appsPage.dismiss_message')} className="text-muted hover:text-text text-sm" onClick={() => setSuccessMsg('')}><X className="lucide-inline" /></button>
+            {/* Set only by the install-from-path notice: that flow finishes on
+                another page, so the notice carries the navigation instead of
+                asking the user to hunt. Update successes resolve here and
+                carry no link. */}
+            {successLink && (
+              <Link to="/apps/library" className="text-accent text-sm font-medium hover:underline shrink-0">
+                {i18nT('nav.library')}
+              </Link>
+            )}
+            <button aria-label={i18nT('pages.appsPage.dismiss_message')} className="text-muted hover:text-text text-sm" onClick={() => { setSuccessMsg(''); setSuccessLink(false) }}><X className="lucide-inline" /></button>
           </div>
         )}
 
@@ -235,7 +337,58 @@ function DiscoverPageBody() {
           onConfirm={trust.confirm}
         />
 
-        {loading ? (
+        {tab === 'updates' ? (
+          /* Updates sub-page: the pending-updates worklist. This branch owns
+             the tab's frame (loading, the all-current empty state); the row
+             list and its Update All header render through UpdatesList, driven
+             by the shared useAppUpdates instance above. */
+          loading ? (
+            <div className="text-center py-12 text-muted text-sm">{i18nT('pages.appsPage.loading_apps')}</div>
+          ) : updatables.length === 0 ? (
+            /* An empty list is only an all-clear when the data actually
+               loaded: on a failed registry/apps fetch the count is UNKNOWN —
+               a success checkmark there would visually assert "up to date"
+               over a dismissed error notice, so the failed state wears the
+               warning glyph and offers a refetch instead of an exit. */
+            registryError || appsError ? (
+              <EmptyState
+                icon={<AlertTriangle size={36} />}
+                title={i18nT('pages.discoverPage.updates_check_failed')}
+                action={
+                  <button
+                    type="button"
+                    className="text-accent text-sm font-medium hover:underline bg-transparent border-none cursor-pointer"
+                    onClick={announceAppsChanged}
+                  >
+                    {i18nT('pages.discoverPage.updates_retry')}
+                  </button>
+                }
+              />
+            ) : (
+            <EmptyState
+              icon={<CheckCircle2 size={36} />}
+              title={i18nT('pages.discoverPage.updates_empty')}
+              action={
+                <button
+                  type="button"
+                  className="text-accent text-sm font-medium hover:underline bg-transparent border-none cursor-pointer"
+                  onClick={() => switchTab('featured')}
+                >
+                  {i18nT('pages.discoverPage.updates_empty_back_to_featured')}
+                </button>
+              }
+            />
+            )
+          ) : (
+            <UpdatesList
+              rows={updatables}
+              updatingAll={updatingAll}
+              updatePending={updatePending}
+              onUpdate={runUpdate}
+              onUpdateAll={updateAll}
+            />
+          )
+        ) : loading ? (
           <div className="text-center py-12 text-muted text-sm">{i18nT('pages.appsPage.loading_apps')}</div>
         ) : browseApps.length === 0 ? (
           <EmptyState

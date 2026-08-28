@@ -14,6 +14,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
+from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -39,7 +40,10 @@ from kiro_crew.dashboard.chat_delivery import (
     queue_for_next_turn,
     steer_into_running_turn,
 )
-from kiro_crew.dashboard.chat_folders import _unhide_folder
+from kiro_crew.dashboard.chat_folders import (
+    _resolve_folder_project_dir,
+    _unhide_folder,
+)
 from kiro_crew.dashboard.chat_orchestrator import _stage_loop
 from kiro_crew.dashboard.chat_persistence import (
     _FLUSH_SNAPSHOT_RETRIES,
@@ -83,6 +87,7 @@ from kiro_crew.dashboard.state import (
     _ChatSlot,
     _mark_permission_resolved,
     _normalize_slot_key,
+    durable_row_count,
     is_stop_event_row,
     is_turn_interrupted,
     parse_cls_meta,
@@ -399,8 +404,68 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         # Slot already has an agent — only reject explicit mismatches (non-empty different agent).
         # Empty agent in request means "use existing" (e.g. follow-up messages from frontend).
         if agent and slot.agent != agent:
-            _emit_agent_assignment(slot.key, agent or "", outcome="denied_mismatch")
-            return web.json_response({"error": "slot agent mismatch"}, status=409)
+            # Different NAMES can still be the same BINDING: slots record the
+            # resolved default ALIAS at creation, while a client may send the
+            # underlying kiro agent name (the E2E smoke tests do exactly this).
+            # 409 only when the two names resolve to different dispatch targets.
+            # Identity is EVERY dispatch-relevant binding field — kiro agent,
+            # workspace, memory store, and model — because aliases configure
+            # memory stores and model pins independently of workspace, and a
+            # request landing in another alias's memory store is the exact
+            # cross-scoping this guard exists to prevent. An unknown requested
+            # name (requested_resolved=False) still 409s — the resolver would
+            # silently fall back to the default, which is the same lie.
+            # Resolution failure falls back to the strict name comparison
+            # (fail closed), reported as its own outcome so a config-load
+            # blip is not triaged as an agent-naming problem.
+            same_binding = False
+            resolution_failed = False
+            try:
+                # Config load is file IO (stat + read + jsonschema validate on a
+                # cache miss), so it rides a thread like the member-slot load
+                # above — never the event loop.
+                _cfg = await asyncio.to_thread(KiroCrewConfig.load)
+                # Resolve within the slot's PROJECT scope, exactly as dispatch
+                # does (see the agent-switch path below): a project-scoped agent
+                # exists only inside slot.project, so resolving without it would
+                # fall back to default bindings and falsely equate a
+                # project-agent slot with a request naming the default alias.
+                # Warm the cache off-loop first so the on-loop lookup is a hit.
+                await warm_project_agent_names(slot.project or None)
+                _stored = resolve_agent_bindings(_cfg, slot.agent, slot.project or None)
+                _requested = resolve_agent_bindings(_cfg, agent, slot.project or None)
+                # Identity itself lives on ResolvedBindings, next to the field
+                # set, so a new dispatch-relevant field cannot silently widen
+                # this bypass. requested_resolved stays a separate caller-side
+                # check: an unknown name would resolve to the default and MATCH
+                # a default-bound slot, which is the lie this guard prevents.
+                same_binding = _requested.requested_resolved and _stored.same_dispatch_binding(
+                    _requested
+                )
+            except Exception:
+                resolution_failed = True
+                logger.warning(
+                    "agent-conflict binding resolution failed; using strict name comparison",
+                    exc_info=True,
+                )
+            if not same_binding:
+                _emit_agent_assignment(
+                    slot.key,
+                    agent or "",
+                    outcome=(
+                        "denied_resolution_failed" if resolution_failed else "denied_mismatch"
+                    ),
+                )
+                return web.json_response({"error": "slot agent mismatch"}, status=409)
+            # The one outcome of this guard that overrides a 409 boundary must be
+            # auditable alongside the denials and adoptions it sits between.
+            _emit_agent_assignment(slot.key, agent, outcome="allowed_same_binding")
+            logger.debug(
+                "agent names differ but resolve to the same binding: slot=%s stored=%s requested=%s",
+                slot.key,
+                slot.agent,
+                agent,
+            )
         else:
             logger.debug("agent match for slot=%s agent=%s", slot.key, agent)
     elif agent:
@@ -1889,6 +1954,23 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "folder not found", "code": "folder_not_found"}, status=400
         )
+    folder_project = ""
+    existing_slot = state._slots.get(_normalize_slot_key(str(name))) if name else None
+    if folder_id and (existing_slot is None or not existing_slot.project):
+        folder_snapshot = await state.read_folders(
+            lambda folders: [dict(folder) for folder in folders]
+        )
+        folder_project, folder_project_error = await asyncio.to_thread(
+            _resolve_folder_project_dir, folder_snapshot, folder_id
+        )
+        if folder_project_error:
+            return web.json_response(
+                {
+                    "error": f"invalid folder project: {folder_project_error}",
+                    "code": "folder_project_invalid",
+                },
+                status=400,
+            )
 
     # Resolve workspace from agent bindings
     workspace = "default"
@@ -1899,6 +1981,16 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # Infra failure loading config must not block slot creation outright, so
         # validation below is skipped rather than failing closed.
         logger.warning("Failed to load config for slot create", exc_info=True)
+    # An agent-less create means "use the default agent": stamp the RESOLVED
+    # default alias into the slot instead of storing "", so the slot's
+    # metadata records what will actually answer — otherwise the dashboard
+    # footer chip renders its literal 'default' fallback while dispatch
+    # quietly resolves the real default (#2891 fixed the same class for
+    # channel-transport writes). Placed BEFORE the normalization below so
+    # the stamped alias also gets its workspace resolved by the existing
+    # binding path.
+    if cfg is not None and not agent:
+        agent = cfg.default_agent or ""
     # Normalize an agent nothing will dispatch to the one that WILL answer.
     # Otherwise the name is stored verbatim and resolve_agent_bindings silently
     # falls back to the default agent: the sidebar advertises the requested agent
@@ -2031,20 +2123,9 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         artifact_slug = body.get("artifact") if isinstance(body, dict) else None
         if isinstance(artifact_slug, str) and ARTIFACT_SLUG_RE.match(artifact_slug):
             slot._artifact = artifact_slug
-        # Default project to workspace directory so file search works out of the box
-        if not slot.project:
-            cfg_proj = cfg.dashboard.default_project if cfg else ""
-            if isinstance(cfg_proj, str) and cfg_proj:
-                resolved = os.path.realpath(os.path.expanduser(cfg_proj))
-                if os.path.isdir(resolved) and not is_sensitive_path(resolved):
-                    cfg_proj = resolved
-                else:
-                    cfg_proj = ""
-            else:
-                cfg_proj = ""
-            slot.project = cfg_proj or default_project_dir(workspace)
         # File the slot before the coalesced broadcast, so its first appearance
         # in every client is already inside the folder.
+        folder_applied = False
         if folder_id:
             # Mirror PATCH /api/chat/slots/{slot}/folder: a CHANGED folder must
             # re-inject the [FOLDER] breadcrumb on the next turn. `is_new` alone
@@ -2067,6 +2148,27 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             if not await _unhide_folder(state, folder_id):
                 slot.folder_id = previous_folder
                 slot._folder_changed = previous_changed
+            else:
+                folder_applied = True
+        # A slot with no project filed into a project-linked folder inherits
+        # from the nearest configured ancestor before its first broadcast. The
+        # server owns this fallback because the client folder cache can be
+        # temporarily stale; existing named slots with an explicit project keep
+        # it and continue to use the project endpoint for scope changes.
+        if folder_project and folder_applied and not slot.project:
+            slot.project = folder_project
+        # Default project to workspace directory so file search works out of the box
+        if not slot.project:
+            cfg_proj = cfg.dashboard.default_project if cfg else ""
+            if isinstance(cfg_proj, str) and cfg_proj:
+                resolved = os.path.realpath(os.path.expanduser(cfg_proj))
+                if os.path.isdir(resolved) and not is_sensitive_path(resolved):
+                    cfg_proj = resolved
+                else:
+                    cfg_proj = ""
+            else:
+                cfg_proj = ""
+            slot.project = cfg_proj or default_project_dir(workspace)
         _sync_dashboard_slots(state)
         # Guarantee a frame. get_or_create_slot pushes for a NEW slot, but
         # returns an existing named slot without pushing — and this handler is
@@ -5011,6 +5113,11 @@ async def _reconcile_slot_window(state: DashboardState, slot: "_ChatSlot") -> No
     if getattr(slot, "_dirty_flag", False):
         return
     history_key = slot_history_key(slot)
+    # Deliberately ``_disk_older_count``, NOT ``_disk_older_durable_count``:
+    # this reconciliation reasons about the on-disk FILE LAYOUT (how many disk
+    # lines the slot represents), so the all-rows counter is the one whose
+    # units match. The durable counter exists for absolute message positions
+    # (session_control.read_messages), a different measurement.
     represented = (getattr(slot, "_disk_older_count", 0) or 0) + len(slot.messages)
     try:
         disk_msgs = await asyncio.to_thread(
@@ -5720,6 +5827,10 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     messages = all_messages[-max_resume:] if disk_total > max_resume else all_messages
     # Stable count of messages older than what we loaded into memory
     slot._disk_older_count = max(0, disk_total - len(messages))
+    # Durable-only view of the same prefix, recomputed from the on-disk rows —
+    # the base absolute message positions are built over. ``islice`` avoids
+    # copying the whole prefix on the event loop. See _ChatSlot.__init__.
+    slot._disk_older_durable_count = durable_row_count(islice(all_messages, slot._disk_older_count))
     for m in messages:
         role = m.get("role", "assistant")
         cls = "msg msg-u" if role == "user" else "msg msg-a"

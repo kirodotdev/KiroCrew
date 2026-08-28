@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Lock, Sparkles } from 'lucide-react'
 import { api } from '../api/client'
+import { unwrapSkills } from '../lib/skillsPayload'
+import type { SkillsPayload } from '../lib/skillsPayload'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
 import { menuGeometry, bottomUpOrder } from '../lib/pickerMenu'
 import { skillsCacheStaleTime } from '../lib/skillsCache'
@@ -26,6 +28,14 @@ interface SkillItem {
   // project root on the grant.
   trusted?: boolean
 }
+
+// Height estimate (px) for the pinned scope footer: py-1.5 (6px × 2) + one
+// 11px-type line at the inherited ~1.5 line-height (~17px) + the 1px top
+// border. Passed into menuGeometry so an above-anchor menu's top edge
+// accounts for the footer instead of the extra pixels overhanging the
+// composer; like the 48px row estimate it is an estimate, clamped by
+// maxHeight, not a measured value.
+const SCOPE_FOOTER_H = 30
 
 interface Props {
   query: string
@@ -80,13 +90,27 @@ export default function SkillPickerMenu({
   // invalidateQueries({queryKey:['skills']}) call keeps working.
   // staleTime is long because skills change rarely. `enabled: open` keeps the
   // menu lazy — the focus-prefetch warms the same key separately.
-  const { data, isLoading, isFetching, isError } = useQuery<SkillItem[]>({
+  const { data, isLoading, isFetching, isError } = useQuery<SkillsPayload<SkillItem>>({
     queryKey: ['skills', slotKey ?? null, project ?? null, agent ?? null],
     queryFn: () => api.skills(slotKey, agent),
     enabled: open,
     staleTime: skillsCacheStaleTime(project),
   })
   const loading = isLoading && open
+
+  // Unwrap the two payload shapes once (the cache stores the RAW payload so
+  // ChatInput's focus-prefetch — same query key, same queryFn — stays
+  // interchangeable with this reader).
+  const { items, agentScoped, scopedAgent } = useMemo(() => unwrapSkills(data), [data])
+
+  // The pinned scope footer shows for ANY scoped non-empty catalog — including
+  // one the typed query filtered to zero rows, where "No matching skills"
+  // would otherwise leave the very "was this filtered?" ambiguity #6028
+  // removes. Only the mapped-EMPTY state omits it: its copy already names the
+  // agent. Referenced by the geometry calls below so the footer's height is
+  // budgeted, not overhanging.
+  const showScopeFooter = agentScoped && !loading && items.length > 0
+  const scopedLabel = i18nT('components.skillPickerMenu.scoped_to_agent', { agent: scopedAgent })
 
   // Choose handler reads from resultsRef (current at keypress time).
   const choose = useCallback((idx: number) => {
@@ -107,11 +131,10 @@ export default function SkillPickerMenu({
   // render's match set — a gate derived from the `results` state would lag one
   // effect flush behind and could release Enter while matches exist.
   const matched = useMemo(() => {
-    const list = Array.isArray(data) ? data : []
     const q = query.toLowerCase()
     const seen = new Set<string>()
     const out: SkillItem[] = []
-    for (const s of list) {
+    for (const s of items) {
       const leaf = leafOf(s.key || s.name).toLowerCase()
       if (q && !leaf.includes(q)) continue
       if (seen.has(leaf)) continue
@@ -119,7 +142,7 @@ export default function SkillPickerMenu({
       out.push(s)
     }
     return out.slice(0, 50)
-  }, [data, query])
+  }, [items, query])
 
   // "Settled and genuinely empty": only then does the menu have no claim on
   // Enter/Tab — release them so the composer's own Enter action still works
@@ -150,13 +173,15 @@ export default function SkillPickerMenu({
   // at the top.
   useEffect(() => {
     if (!open) return
-    const above = anchorRef.current ? menuGeometry(anchorRef.current, matched.length, 48).above : false
+    const above = anchorRef.current
+      ? menuGeometry(anchorRef.current, matched.length, 48, showScopeFooter ? SCOPE_FOOTER_H : 0).above
+      : false
     const { ordered, initialIndex } = bottomUpOrder(matched, above)
     setResults(ordered); resultsRef.current = ordered
     // setSelected is the hook's synced setter (keeps selectedRef in lockstep),
     // so Enter-before-arrow dispatches on this row.
     setSelected(initialIndex)
-  }, [matched, open, anchorRef, setSelected])
+  }, [matched, open, anchorRef, setSelected, showScopeFooter])
 
   // Scroll the selected row into view once results actually render. The filter
   // effect sets the selection (often the bottom row when the menu opens above)
@@ -173,7 +198,29 @@ export default function SkillPickerMenu({
 
   if (!open || !anchorRef.current) return null
 
-  const { top, left, width, maxHeight } = menuGeometry(anchorRef.current, results.length, 48)
+  const { top, left, width, maxHeight } = menuGeometry(
+    anchorRef.current, results.length, 48, showScopeFooter ? SCOPE_FOOTER_H : 0,
+  )
+
+  // Two different causes of emptiness get two different explanations. When
+  // the server-scoped catalog itself is empty (`items`, before the typed
+  // filter), nothing the user types can produce a row — the cause is the
+  // agent's skill:// mapping, so say so ("mapped", per the #3820 wording
+  // ruling: describe the mapping, never availability). A non-empty scoped
+  // catalog filtered to nothing by the query keeps the generic copy. Both
+  // branches preserve the Enter/Ctrl+Enter release announcement.
+  const mappedEmpty = agentScoped && items.length === 0
+  const emptyKey = mappedEmpty
+    ? (!releaseKeysWhenEmpty
+        ? 'components.skillPickerMenu.no_skills_mapped_to_agent'
+        : sendOnEnter === 'ctrl-enter'
+          ? 'components.skillPickerMenu.no_skills_mapped_to_agent_ctrl_enter_sends'
+          : 'components.skillPickerMenu.no_skills_mapped_to_agent_enter_sends')
+    : (!releaseKeysWhenEmpty
+        ? 'components.skillPickerMenu.no_matching_skills'
+        : sendOnEnter === 'ctrl-enter'
+          ? 'components.skillPickerMenu.no_matching_skills_ctrl_enter_sends'
+          : 'components.skillPickerMenu.no_matching_skills_enter_sends')
 
   const empty = loading
     ? <div className="px-3 py-3 text-[12px] text-muted">{i18nT('components.skillPickerMenu.loading_skills')}</div>
@@ -184,55 +231,85 @@ export default function SkillPickerMenu({
     // role="status": the flip is otherwise announced only visually, and a
     // screen-reader user would hit the very silent-send surprise this copy
     // exists to prevent.
-    : <div role="status" className="px-3 py-3 text-[12px] text-muted">{i18nT(!releaseKeysWhenEmpty ? 'components.skillPickerMenu.no_matching_skills' : sendOnEnter === 'ctrl-enter' ? 'components.skillPickerMenu.no_matching_skills_ctrl_enter_sends' : 'components.skillPickerMenu.no_matching_skills_enter_sends')}</div>
+    : <div role="status" className="px-3 py-3 text-[12px] text-muted">{i18nT(emptyKey, { agent: scopedAgent })}</div>
 
   return createPortal(
+    // The portal is a flex column CAPPED at maxHeight: the listbox scrolls,
+    // the scope footer (when shown) is a pinned non-scrolling sibling BELOW
+    // it — always visible however long the list, and never an illegal child
+    // of role="listbox" (a listbox owns only option/group children). The
+    // footer is a role="status" live region — the same mechanism the empty
+    // state uses — because this listbox is never the focus/AT-current node
+    // (rows are tabIndex={-1}, mousedown is prevented, the composer keeps
+    // focus), so a description attached TO the listbox would never be
+    // announced. `truncate` pins the footer to one line so its height budget
+    // stays exact under long localized copy or agent names; the full text
+    // stays in the accessibility tree and in `title`.
     <div
-      className="fixed z-[9999] bg-card border border-border rounded-lg shadow-lg overflow-y-auto py-1 animate-slide-up"
-      role="listbox"
+      className="fixed z-[9999] bg-card border border-border rounded-lg shadow-lg py-1 animate-slide-up flex flex-col"
       style={{ top, left, width: Math.min(width, 460), maxHeight }}
     >
-      {results.length === 0 ? empty : results.map((s, i) => {
-        const leaf = leafOf(s.key || s.name)
-        const gated = needsTrust(s)
-        const info = { leaf, key: s.key || s.name }
-        return (
-          <div
-            role="option"
-            aria-selected={i === selected}
-            tabIndex={-1}
-            key={s.key || s.name}
-            ref={el => { itemRefs.current[i] = el }}
-            className={`w-full text-left px-3 py-2 flex items-center gap-3 cursor-pointer transition-colors ${i === selected ? 'bg-accent-subtle text-text' : 'text-muted hover:bg-bg-hover hover:text-text'}`}
-            title={s.key}
-            onMouseEnter={() => setSelected(i)}
-            onMouseDown={e => {
-              e.preventDefault()
-              if (gated && onTrustRequest) onTrustRequest(info)
-              else onSelect(info)
-            }}
-          >
-            {gated
-              ? <Lock size={14} className="shrink-0 lucide-inline" />
-              : <Sparkles size={14} className="shrink-0 lucide-inline" />}
-            <div className="flex-1 min-w-0">
-              <div className={`text-[13px] font-mono font-semibold truncate ${gated ? 'text-muted' : ''}`}>${leaf}</div>
-              <div className="text-[11px] text-muted truncate">
-                {gated ? i18nT('components.skillPickerMenu.trust_needed_hint') : (s.description || s.key)}
+      <div
+        role="listbox"
+        className="overflow-y-auto flex-1 min-h-0"
+      >
+        {results.length === 0 ? empty : results.map((s, i) => {
+          const leaf = leafOf(s.key || s.name)
+          const gated = needsTrust(s)
+          const info = { leaf, key: s.key || s.name }
+          return (
+            <div
+              role="option"
+              aria-selected={i === selected}
+              tabIndex={-1}
+              key={s.key || s.name}
+              ref={el => { itemRefs.current[i] = el }}
+              className={`w-full text-left px-3 py-2 flex items-center gap-3 cursor-pointer transition-colors ${i === selected ? 'bg-accent-subtle text-text' : 'text-muted hover:bg-bg-hover hover:text-text'}`}
+              title={s.key}
+              onMouseEnter={() => setSelected(i)}
+              onMouseDown={e => {
+                e.preventDefault()
+                if (gated && onTrustRequest) onTrustRequest(info)
+                else onSelect(info)
+              }}
+            >
+              {gated
+                ? <Lock size={14} className="shrink-0 lucide-inline" />
+                : <Sparkles size={14} className="shrink-0 lucide-inline" />}
+              <div className="flex-1 min-w-0">
+                <div className={`text-[13px] font-mono font-semibold truncate ${gated ? 'text-muted' : ''}`}>${leaf}</div>
+                <div className="text-[11px] text-muted truncate">
+                  {gated ? i18nT('components.skillPickerMenu.trust_needed_hint') : (s.description || s.key)}
+                </div>
               </div>
+              {gated
+                ? (
+                  <span className="text-[10px] text-warn shrink-0 whitespace-nowrap uppercase tracking-wide">
+                    {i18nT('components.skillPickerMenu.trust_needed_badge')}
+                  </span>
+                )
+                : s.source && s.source !== 'kirocrew' && (
+                  <span className="text-[10px] text-muted shrink-0 whitespace-nowrap uppercase tracking-wide">{s.source}</span>
+                )}
             </div>
-            {gated
-              ? (
-                <span className="text-[10px] text-warn shrink-0 whitespace-nowrap uppercase tracking-wide">
-                  {i18nT('components.skillPickerMenu.trust_needed_badge')}
-                </span>
-              )
-              : s.source && s.source !== 'kirocrew' && (
-                <span className="text-[10px] text-muted shrink-0 whitespace-nowrap uppercase tracking-wide">{s.source}</span>
-              )}
-          </div>
-        )
-      })}
+          )
+        })}
+      </div>
+      {showScopeFooter && (
+        // Scope indicator for a scoped catalog: without it the scoped list is
+        // visually identical to the legacy unfiltered one — and on a
+        // query-miss over a scoped catalog it disambiguates "no match here"
+        // from "no match anywhere". No `uppercase`: the interpolated agent
+        // name is a user-authored, case-sensitive identifier and must render
+        // as the agent picker spells it.
+        <div
+          role="status"
+          title={scopedLabel}
+          className="px-3 py-1.5 text-[11px] text-muted border-t border-border shrink-0 truncate"
+        >
+          {scopedLabel}
+        </div>
+      )}
     </div>,
     document.body
   )

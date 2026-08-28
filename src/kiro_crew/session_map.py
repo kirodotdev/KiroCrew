@@ -652,6 +652,38 @@ class SessionMap:
             self._restore_dirty()
             raise
 
+    async def aclose(self) -> None:
+        """Retire deferred flush tasks and durably land every owed snapshot.
+
+        Cancelling and awaiting the registered task handles both ends of the
+        debounce lifecycle: a task cancelled before its first step leaves the
+        dirty mark untouched, while a task cancelled after claiming a snapshot
+        restores that mark in ``_flush_async``. ``aflush`` then queues a newer
+        snapshot behind any worker-thread write that cancellation could not
+        stop. Repeat if a mutation registered a replacement task while the
+        durability write was in flight, and return only with no task retained.
+        """
+        while True:
+            with _MAP_LOCK:
+                task = self._flush_task
+            if task is not None:
+                task.cancel()
+                try:
+                    await asyncio.gather(task, return_exceptions=True)
+                finally:
+                    # A coroutine cancelled before its first step cannot run
+                    # _restore_dirty(), so retire its registration here. The
+                    # identity guard preserves a replacement scheduled by a
+                    # concurrent mutation.
+                    with _MAP_LOCK:
+                        if self._flush_task is task:
+                            self._flush_task = None
+
+            await self.aflush()
+            with _MAP_LOCK:
+                if self._flush_task is None:
+                    return
+
     @_guarded
     def _write(self) -> None:
         payload, seq = self._serialize()

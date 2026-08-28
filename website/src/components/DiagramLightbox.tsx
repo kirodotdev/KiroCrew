@@ -76,6 +76,14 @@ export default function DiagramLightbox({ svg, onClose }: { svg: string; onClose
   const { zoom, setZoom, pan, setPan, pinching, clampPan, trackPointerDown, trackPointerMove, trackPointerUp, reset } =
     usePinchZoom({
       targetRef: hostRef,
+      // Claim a trackpad gesture anywhere in the overlay, not just over the SVG:
+      // the padding around a fit-scaled diagram is visually part of the viewer.
+      containRef: dialogRef,
+      // Only while the SVG is actually fit-scaled. A natural-size (no-viewBox) SVG
+      // gets no transform, so claiming its pinch would do nothing AND suppress the
+      // browser page zoom — which, unlike on fit-scaled content, genuinely does
+      // magnify it. Not binding leaves that fallback intact.
+      enabled: fitted,
       min: DIAGRAM_ZOOM_MIN,
       max: DIAGRAM_ZOOM_MAX,
       onPinchEnd: () => { suppressClickRef.current = true },

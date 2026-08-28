@@ -239,6 +239,121 @@ describe('SkillPickerMenu', () => {
   })
 })
 
+/* ── Agent scope cue (#6028) ──
+ * When the server actually applied the active agent's skill:// mapping it
+ * answers with {skills, agent_scoped: true, agent} instead of the bare array.
+ * The picker must (a) attribute a scoped-empty catalog to the MAPPING, and
+ * (b) mark a scoped non-empty list with a footer — and render NEITHER cue
+ * for the legacy bare-array shape. Wording is mapping/scope only ("mapped",
+ * "scoped"), never availability, per the #3820 semantics ruling. */
+describe('SkillPickerMenu — agent scope cue', () => {
+  const SCOPED = { skills: SKILLS, agent_scoped: true, agent: 'custom-template' }
+
+  it('renders a "Scoped to agent" footer on a scoped non-empty list', async () => {
+    mockApi.skills.mockResolvedValue(SCOPED)
+    render(<Harness query="" open slotKey="dashboard:chat-1" agent="custom-template" />)
+    await screen.findByText('$grill')
+    expect(screen.getByText(/Scoped to agent custom-template/i)).toBeInTheDocument()
+  })
+
+  it('renders no footer for the legacy bare-array shape, even with an agent prop', async () => {
+    // An agent with no skill:// mapping of its own keeps the unfiltered
+    // listing — the cue must come from the server flag, not the prop.
+    render(<Harness query="" open slotKey="dashboard:chat-1" agent="plain" />)
+    await screen.findByText('$grill')
+    expect(screen.queryByText(/Scoped to agent/i)).not.toBeInTheDocument()
+  })
+
+  it('attributes a scoped-EMPTY catalog to the mapping, preserving the Enter announcement', async () => {
+    mockApi.skills.mockResolvedValue({ skills: [], agent_scoped: true, agent: 'custom-template' })
+    render(<Harness query="" open slotKey="dashboard:chat-1" agent="custom-template" />)
+    expect(await screen.findByText(
+      /No skills mapped to custom-template — Enter sends the message/,
+    )).toBeInTheDocument()
+    // The mapped copy already names the agent, so the footer would be
+    // redundant here — it must not render alongside.
+    expect(screen.queryByText(/Scoped to agent/i)).not.toBeInTheDocument()
+    // Settled-empty still releases Enter to the composer (#5029/#5041).
+    expect(fireEvent.keyDown(document, { key: 'Enter' })).toBe(true)
+  })
+
+  it('names Ctrl+Enter in the mapped-empty copy when that is the send binding', async () => {
+    mockApi.skills.mockResolvedValue({ skills: [], agent_scoped: true, agent: 'custom-template' })
+    render(<Harness query="" open agent="custom-template" sendOnEnter="ctrl-enter" />)
+    expect(await screen.findByText(
+      /No skills mapped to custom-template — Ctrl\+Enter sends the message/,
+    )).toBeInTheDocument()
+  })
+
+  it('keeps the generic copy on a query-miss over a scoped list, but keeps the scope footer', async () => {
+    // The typed filter (not the mapping) emptied the rows: the mapped copy
+    // would be wrong, but the footer must stay — "no match HERE" and
+    // "no match anywhere" are exactly the ambiguity the cue removes.
+    mockApi.skills.mockResolvedValue(SCOPED)
+    render(<Harness query="zzznope" open agent="custom-template" />)
+    expect(await screen.findByText(/No matching skills — Enter sends the message/)).toBeInTheDocument()
+    expect(screen.queryByText(/No skills mapped to/)).not.toBeInTheDocument()
+    expect(screen.getByText(/Scoped to agent custom-template/i)).toBeInTheDocument()
+  })
+
+  it('keeps the generic empty copy for a bare-array empty catalog (nothing exists ≠ nothing mapped)', async () => {
+    mockApi.skills.mockResolvedValue([])
+    render(<Harness query="" open agent="plain" />)
+    expect(await screen.findByText(/No matching skills — Enter sends the message/)).toBeInTheDocument()
+    expect(screen.queryByText(/No skills mapped to/)).not.toBeInTheDocument()
+  })
+
+  it('rows from the scoped envelope stay selectable (unwrap does not break choose)', async () => {
+    mockApi.skills.mockResolvedValue(SCOPED)
+    const onSelect = vi.fn()
+    render(<Harness query="grill" open agent="custom-template" onSelect={onSelect} />)
+    fireEvent.mouseDown(await screen.findByText('$grill'))
+    expect(onSelect).toHaveBeenCalledWith({ leaf: 'grill', key: 'grill' })
+  })
+
+  it('announces the scope through a role="status" live region outside the listbox', async () => {
+    // A listbox owns only option/group children, and THIS listbox is never
+    // the focus/AT-current node (rows are tabIndex={-1}, the composer keeps
+    // focus) — so the cue must be a live region, the same mechanism the
+    // empty state uses, not a description attached to the listbox.
+    mockApi.skills.mockResolvedValue(SCOPED)
+    render(<Harness query="" open agent="custom-template" />)
+    await screen.findByText('$grill')
+    const listbox = screen.getByRole('listbox')
+    const footer = screen.getByText(/Scoped to agent custom-template/i)
+    expect(listbox.contains(footer)).toBe(false)
+    expect(footer.getAttribute('role')).toBe('status')
+    expect(footer.getAttribute('aria-hidden')).not.toBe('true')
+  })
+
+  it('renders no scope status region for an unscoped list', async () => {
+    render(<Harness query="" open agent="plain" />)
+    await screen.findByText('$grill')
+    expect(screen.queryByText(/Scoped to agent/i)).not.toBeInTheDocument()
+  })
+
+  it('renders the cue from a cache seeded with the RAW envelope (prefetch interchangeability)', async () => {
+    // ChatInput's focus-prefetch stores api.skills' raw payload under the
+    // same query key. The picker must render the scope cue from that cached
+    // envelope without its own fetch — pin it by never letting the queryFn
+    // settle.
+    mockApi.skills.mockImplementation(() => new Promise(() => {}))
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    qc.setQueryData(
+      ['skills', 'dashboard:chat-1', '/work/project-a', 'custom-template'],
+      { skills: SKILLS, agent_scoped: true, agent: 'custom-template' },
+    )
+    render(
+      <Harness
+        query="" open client={qc}
+        slotKey="dashboard:chat-1" project="/work/project-a" agent="custom-template"
+      />,
+    )
+    expect(await screen.findByText('$grill')).toBeInTheDocument()
+    expect(screen.getByText(/Scoped to agent custom-template/i)).toBeInTheDocument()
+  })
+})
+
 /* ── Project-skills trust gate ──
  * A workspace skill is listed before consent but must not behave like a usable
  * one: its $token cannot resolve until the operator trusts the directory, so

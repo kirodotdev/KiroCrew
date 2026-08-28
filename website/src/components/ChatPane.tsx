@@ -109,9 +109,6 @@ export default function ChatPane({
   // has_more freezes at mount while a later bounded warm can truncate the cache.
   const warmHasMore = useAppSelector((s) => s.chat.slotPaneHasMore?.[slotKey])
   const paneSlot = useAppSelector((s) => s.dashboard.slots.find((x) => x.key === slotKey))
-  // One source for both same-meaning markers in the agent pop-up: the row's check and
-  // the default-agent row's label.
-  const paneAgentName = paneSlot?.agent || 'default'
   // Shared composer-busy rule (chatSlice.selectComposerBusy): main turn
   // streaming OR sub-agents running (dual signal). Drives the queue affordance
   // and skips the optimistic user bubble (the backend returns a "queued"
@@ -198,6 +195,11 @@ export default function ChatPane({
   // it scopes which project-local agents exist, so a project change must refetch.
   const paneProject = useAppSelector((s) => s.dashboard.slots.find((x) => x.key === slotKey)?.project || undefined)
   const { agents: installedAgents, defaultAgent } = useAgents(agentsRefreshTrigger, slotKey, paneProject)
+  // One source for every same-meaning marker: the composer chip, the row's
+  // check, and the default-agent row's label. An agent-less slot resolves to
+  // the configured default (matching what dispatch runs) before the literal
+  // 'default' placeholder.
+  const paneAgentName = paneSlot?.agent || defaultAgent || 'default'
   const navigate = useNavigate()
   const [defaultAgentFailed, setDefaultAgentFailed] = useState(false)
   // Same contract as ChatPage: set-only, clearing lives on the Templates page.
@@ -757,8 +759,8 @@ export default function ChatPane({
           isRunning={busy}
           onStop={onStop}
           autoFocusKey={slotKey}
-          agentName={paneSlot?.agent || 'default'}
-          agentSource={installedAgents.find((a) => a.name === (paneSlot?.agent || 'default'))?.source}
+          agentName={paneAgentName}
+          agentSource={installedAgents.find((a) => a.name === paneAgentName)?.source}
           modelName={shownModel}
           contextPct={contextPct}
           contextUsedTokens={contextTokens?.used}

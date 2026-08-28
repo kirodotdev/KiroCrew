@@ -18,6 +18,7 @@ from kiro_crew import model_registry
 from kiro_crew.dashboard.handlers.agents import (
     _advertised_cc_models,
     _cc_models,
+    _normalize_model_key,
 )
 
 # Canonical registry rows now lead the dropdown (replaces _CC_CURATED_MODELS).
@@ -229,3 +230,63 @@ class TestCcModelsMerge:
         assert all(m["model_name"] for m in out)
         # the canonical "auto" row is still present, exactly once.
         assert names.count("auto") == 1
+
+
+class TestNormalizeModelKey:
+    """`_normalize_model_key` routes through the canonical registry (#5339).
+
+    Mirror of the frontend `normalizeModelKey` unit tests in
+    `website/src/test/model.displayModel.test.ts` -- the two must agree, which is
+    the whole point of folding through the shared `model_registry.json`.
+    """
+
+    def test_auto_default_and_unset(self):
+        # auto/default fold to the sentinel; an unset id stays "" (distinct).
+        assert _normalize_model_key(" auto ") == "auto"
+        assert _normalize_model_key("default") == "auto"
+        assert _normalize_model_key("DEFAULT") == "auto"
+        assert _normalize_model_key("") == ""
+        assert _normalize_model_key("   ") == ""
+
+    def test_alias_key_and_provider_id_fold_to_one_key(self):
+        # An alias, the canonical key, and the claude_code provider id (with or
+        # without a routing prefix) all resolve to one canonical key, any case.
+        assert _normalize_model_key("claude-opus-4.8") == "opus-4.8-1m"
+        assert _normalize_model_key("Claude-Opus-4.8") == "opus-4.8-1m"
+        assert _normalize_model_key("opus-4.8-1m") == "opus-4.8-1m"
+        assert _normalize_model_key("opus") == "opus-4.8-1m"
+        assert _normalize_model_key("global.anthropic.claude-opus-4-8[1m]") == "opus-4.8-1m"
+        # The "fold a provider/partition prefix" half of #5339: a regional
+        # profile id that is not itself a registry entry folds after the peel.
+        assert _normalize_model_key("us.anthropic.claude-opus-4-8[1m]") == "opus-4.8-1m"
+
+    def test_distinct_context_window_variants_stay_apart(self):
+        # The old dot->dash fold made both of these `claude-opus-4-8`, equating a
+        # 200K model with a 1M one. The registry lists them as separate entries.
+        assert _normalize_model_key("claude-opus-4-8") == "opus-4.8"  # 200K
+        assert _normalize_model_key("claude-opus-4.8") == "opus-4.8-1m"  # 1M
+        assert _normalize_model_key("claude-opus-4-8") != _normalize_model_key("claude-opus-4.8")
+
+    def test_kiro_distinct_models_stay_apart_via_acp_first_fold(self):
+        # The claude_code index aliases these onto Sonnet/Opus 4.8 for dropdown
+        # dedup, but kiro serves them as DISTINCT real models. Resolving the acp
+        # index first (canonical_key's documented order) keeps them apart, so the
+        # shared fold cannot equate a Haiku pin with Sonnet 4.6 (a real 1M->200K
+        # swap the downgrade flag must catch).
+        assert _normalize_model_key("claude-haiku-4.5") == "haiku-4.5"
+        assert _normalize_model_key("claude-sonnet-4.5") == "sonnet-4.5"
+        assert _normalize_model_key("claude-sonnet-4") == "sonnet-4"
+        assert _normalize_model_key("claude-opus-4.6") == "opus-4.6-1m"
+        assert _normalize_model_key("claude-sonnet-4.6") == "sonnet-4.6-1m"
+        assert _normalize_model_key("claude-haiku-4.5") != _normalize_model_key("claude-sonnet-4.6")
+        assert _normalize_model_key("claude-opus-4.6") != _normalize_model_key("claude-opus-4.8")
+        # acp-only canonical keys resolve to themselves.
+        assert _normalize_model_key("haiku-4.5") == "haiku-4.5"
+        assert _normalize_model_key("opus-4.6-1m") == "opus-4.6-1m"
+
+    def test_unregistered_id_uses_the_string_fold(self):
+        # GPT/DeepSeek/Qwen and future models are absent from the (Anthropic-only)
+        # registry, so they keep the historical trim/lowercase/dot->dash fold.
+        assert _normalize_model_key("GPT-5.6") == "gpt-5-6"
+        assert _normalize_model_key("deepseek-3.2") == "deepseek-3-2"
+        assert _normalize_model_key("claude-opus-5") == "claude-opus-5"

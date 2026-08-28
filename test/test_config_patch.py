@@ -755,16 +755,62 @@ class TestTelemetryEnabledPatch:
 class TestTelemetryEnabledEgressGate:
     """The switch promises local-only, so it must not reach a state that exports.
 
-    `_build_recorder` attaches an OTLP reader whenever `telemetry.otlp_endpoint` is
-    set, so on a host that configured an endpoint, enabling collection from the
-    dashboard would start network egress under a control whose own description says
-    "Nothing is exported". Enabling is refused there; disabling always composes.
+    `_build_recorder` attaches an OTLP reader for every destination the active
+    telemetry provider supplies, so on a host where egress is configured — through
+    `telemetry.otlp_endpoint` for the default provider, or an edition's own
+    collector — enabling collection from the dashboard would start network egress
+    under a control whose own description says "Nothing is exported". Enabling is
+    refused there; disabling always composes.
     """
 
     def _seed_endpoint(self, cfg_path, endpoint: str) -> None:
         data = json.loads(cfg_path.read_text(encoding="utf-8"))
         data.setdefault("telemetry", {})["otlp_endpoint"] = endpoint
         cfg_path.write_text(json.dumps(data), encoding="utf-8")
+
+    @pytest.mark.asyncio
+    async def test_enable_is_refused_when_an_edition_supplies_a_destination(
+        self, tmp_config
+    ) -> None:
+        """Egress posture is NOT the config key. An edition that supplies its own
+        collector must refuse the same enable, or the local-only promise would hold
+        only for the default provider and the panel would report "nothing is
+        exported" while metrics left the machine."""
+        import dataclasses
+
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.platform import build_default_context
+        from kiro_crew.platform.context import reset_context, set_context
+        from kiro_crew.platform.interfaces import OtlpDestination
+
+        class _EditionTelemetry:
+            def record_event(self, event_type, data):
+                return None
+
+            def frontend_rum_config(self):
+                return None
+
+            def otlp_destinations(self, cfg):
+                return (
+                    OtlpDestination(
+                        "edition-collector",
+                        "https://collector.internal:4318/v1/metrics",
+                        frozenset({"metrics"}),
+                    ),
+                )
+
+        base = build_default_context(KiroCrewConfig())
+        set_context(dataclasses.replace(base, telemetry=_EditionTelemetry()))
+        try:
+            # telemetry.otlp_endpoint stays EMPTY on disk — the old guard read that
+            # key and would have allowed this write.
+            async with TestClient(TestServer(_make_app())) as c:
+                resp = await _patch(c, "telemetry.enabled", True)
+                assert resp.status == 409
+            data = json.loads(tmp_config.read_text(encoding="utf-8"))
+            assert data.get("telemetry", {}).get("enabled") is not True
+        finally:
+            reset_context()
 
     @pytest.mark.asyncio
     async def test_enable_is_refused_when_an_endpoint_is_configured(self, tmp_config) -> None:
@@ -774,6 +820,39 @@ class TestTelemetryEnabledEgressGate:
             assert resp.status == 409
         data = json.loads(tmp_config.read_text(encoding="utf-8"))
         assert data["telemetry"].get("enabled") is not True
+
+    @pytest.mark.asyncio
+    async def test_enable_is_refused_when_the_egress_posture_cannot_be_resolved(
+        self, tmp_config
+    ) -> None:
+        """A provider that raises must not read as "no egress". Permitting the
+        toggle there would let the recovered provider attach an OTLP reader on the
+        next build - egress the operator was told would not happen."""
+        import dataclasses
+
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.platform import build_default_context
+        from kiro_crew.platform.context import reset_context, set_context
+
+        class _BrokenTelemetry:
+            def record_event(self, event_type, data):
+                return None
+
+            def frontend_rum_config(self):
+                return None
+
+            def otlp_destinations(self, cfg):
+                raise RuntimeError("collector discovery failed")
+
+        base = build_default_context(KiroCrewConfig())
+        set_context(dataclasses.replace(base, telemetry=_BrokenTelemetry()))
+        try:
+            async with TestClient(TestServer(_make_app())) as c:
+                assert (await _patch(c, "telemetry.enabled", True)).status == 409
+            data = json.loads(tmp_config.read_text(encoding="utf-8"))
+            assert data.get("telemetry", {}).get("enabled") is not True
+        finally:
+            reset_context()
 
     @pytest.mark.asyncio
     async def test_disable_is_still_allowed_when_an_endpoint_is_configured(

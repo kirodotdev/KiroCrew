@@ -1026,7 +1026,12 @@ async def api_sessions(request: web.Request) -> web.Response:
         offset = 0
     want_preview = (request.query.get("preview") or "").lower() in ("1", "true", "yes")
     exclude_open = (request.query.get("exclude_open") or "").lower() in ("1", "true", "yes")
-    all_sessions = state.conversation_log.list_sessions()
+    # list_sessions() globs, stats, and reads the first line of EVERY session file
+    # in the history dir — O(all sessions). At 2000 sessions, that's ~200 ms of
+    # blocking IO (measured: 208 ms / 2000 files on a dev host). Running that on
+    # the event loop freezes chat, heartbeat, and every other coroutine for the
+    # full duration. Offload to a worker thread (#3057).
+    all_sessions = await asyncio.to_thread(state.conversation_log.list_sessions)
     if exclude_open:
         open_keys = _open_slot_transcript_keys(state)
         # Fold through ``_canonical_key`` as well: ``list_sessions`` deduplicates
@@ -1408,39 +1413,35 @@ async def api_sessions_clear(request: web.Request) -> web.Response:
     if not state.conversation_log:
         return web.json_response({"error": "no conversation log"}, status=400)
 
-    # Same definition of "open as a tab" the Older-sessions list excludes on, so
-    # a session cannot be simultaneously hidden from that list and eligible for
-    # this delete.
-    protected = _open_slot_transcript_keys(state)
+    # Bind after the None guard so mypy's narrowing carries into the closure.
+    log = state.conversation_log
 
-    sessions = state.conversation_log.list_sessions()
+    # list_sessions() globs, stats, and reads the first line of EVERY session file
+    # in the history dir — O(all sessions). Offload to keep the event loop responsive.
+    all_sessions = await asyncio.to_thread(log.list_sessions)
+
     count = 0
     skipped = 0
     failed = 0
     cleanup_tasks = []
-    for s in sessions:
+    for s in all_sessions:
         key = s["key"]
-        if key in protected:
+
+        # Re-check per iteration: a resume publishing a slot during the
+        # list_sessions scan OR during an earlier delete-await now appears here.
+        if key in _open_slot_transcript_keys(state):
             skipped += 1
             continue
+
         try:
-            meta = state.conversation_log.get_metadata(key)
-        except Exception:
-            logger.warning(
-                "api_sessions_clear: unreadable metadata for %s, skipping", key, exc_info=True
-            )
-            skipped += 1
-            continue
-        if not isinstance(meta, dict):
-            skipped += 1
-            continue
-        if meta.get("pinned"):
-            skipped += 1
-            continue
-        try:
-            # delete_session enters _locked (flock + os.close) — offload off the
-            # event loop so a wedged peer can't stall the bulk clear on it.
-            if await asyncio.to_thread(state.conversation_log.delete_session, key):
+            # Offload off the event loop — delete_session enters _locked (flock).
+            # skip_pinned=True makes the pin-check-and-delete atomic so a
+            # concurrent pin cannot sneak in between the metadata read and the
+            # unlink. The invariant (lock, real test) now lives in history.py.
+            result = await asyncio.to_thread(log.delete_session, key, skip_pinned=True)
+            if result is None:
+                skipped += 1
+            elif result:
                 cleanup_tasks.append(_remove_slot_for_history_key(state, key))
                 count += 1
             else:
@@ -1469,13 +1470,15 @@ async def api_approvals(request: web.Request) -> web.Response:
 
 
 async def api_approval_resolve(request: web.Request) -> web.Response:
-    """POST /api/approvals/{id}/{action} — approve or reject."""
+    """POST /api/approvals/{id}/{action} — approve, reject, or reject_once."""
     state: DashboardState = request.app["state"]
     approval_id = request.match_info["id"]
     action = request.match_info["action"]
-    if action not in ("approve", "reject"):
+    if action not in ("approve", "reject", "reject_once"):
         return web.json_response({"error": "invalid action"}, status=400)
-    ok = state.resolve_approval(approval_id, action == "approve")
+    ok = state.resolve_approval(
+        approval_id, action == "approve", rejected_once=action == "reject_once"
+    )
     if not ok:
         return web.json_response({"error": "not found or expired"}, status=404)
     return web.json_response({"ok": True})

@@ -625,7 +625,9 @@ bugs:
   fixed-height layout whose scrollers are all inner leaves no way to reach the
   topbar and composer it pushes off-screen. The surfaces that need magnifying
   keep it — the image viewer and the diagram viewer both zoom on their own pinch,
-  the diagram viewer also on a double-tap, and code blocks scroll sideways.
+  the diagram viewer also on a double-tap, and code blocks scroll sideways. On a
+  laptop or desktop those two viewers also zoom on a **trackpad pinch**, and on
+  **`ctrl`+scroll** with a mouse; a plain scroll still scrolls.
 
 Installing changes nothing about authentication: the app carries the same cookies
 the browser holds, on the same clocks as [Session duration](#session-duration).

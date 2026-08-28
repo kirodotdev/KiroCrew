@@ -1,6 +1,9 @@
 import { useSyncExternalStore } from 'react'
 
-const MOBILE_BREAKPOINT = 768
+/* Exported for the top-bar rung-budget test: the <640px icon-only rung base in
+   index.css needs the desktop readouts to be unreachable below the pill's
+   label gate, which holds only while this form switch sits at or above it. */
+export const MOBILE_BREAKPOINT = 768
 const MOBILE_QUERY = `(max-width: ${MOBILE_BREAKPOINT - 1}px)`
 
 const mql = typeof window !== 'undefined' ? window.matchMedia(MOBILE_QUERY) : null

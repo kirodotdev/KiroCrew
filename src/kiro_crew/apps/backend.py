@@ -909,6 +909,7 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
     except FileNotFoundError:
         pass
     except OSError as exc:
+        # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure - logs the app name and OSError only, never the secret value
         logger.warning(
             "Could not enforce owner-only mode on %s app secret: %s", app_name, exc,
         )

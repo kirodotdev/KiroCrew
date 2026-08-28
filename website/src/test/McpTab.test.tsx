@@ -11,6 +11,7 @@ const mockApi = vi.hoisted(() => ({
   mcpApply: vi.fn(),
   mcpGlobalScopes: vi.fn(),
   mcpResetProbeFailures: vi.fn(),
+  kirocrewConfig: vi.fn(),
 }))
 vi.mock('../api/client', () => ({ api: mockApi }))
 
@@ -49,6 +50,9 @@ beforeEach(() => {
   Object.values(mockApi).forEach(m => m.mockReset())
   mockApi.mcpServers.mockResolvedValue([server('alpha'), server('beta')])
   mockApi.mcpGlobalScopes.mockResolvedValue({ scopes: [] })
+  // connections_ui is launch-held OFF by default; the in-place sign-in only
+  // renders when a test opts it on. Off ⇒ managed rows fall to the chat prose.
+  mockApi.kirocrewConfig.mockResolvedValue({})
 })
 
 describe('McpTab restructure', () => {
@@ -242,6 +246,76 @@ describe('McpTab needs_auth status', () => {
 
     await waitFor(() => expect(screen.getByText('Signed in')).toBeInTheDocument())
     expect(screen.queryByRole('link', { name: /Go to chat/ })).not.toBeInTheDocument()
+  })
+
+  /**
+   * #6274: a row that needs a sign-in AND resolves to a curated Connections
+   * provider (name === slug AND url === the registry mcp_url) can start the
+   * sign-in in place, reusing the headless mint engine — but ONLY when the
+   * Connections UI is unlocked (`connections_ui: true`). A non-resolvable row,
+   * or the flag held closed, keeps the chat prose unchanged — minting is never
+   * offered for arbitrary URLs (parked maintainer decision #4286), and the mint
+   * engine is not a released surface while the gallery is held.
+   */
+  it('offers an in-place Sign in on a resolvable managed row when connections_ui is on', async () => {
+    mockApi.kirocrewConfig.mockResolvedValue({ connections_ui: true })
+    mockApi.mcpServers.mockResolvedValue([
+      {
+        ...remote('needs_auth'),
+        name: 'notion',
+        url: 'https://mcp.notion.com/mcp',
+        authChallenge: true,
+        authGrantPresent: false,
+      },
+    ])
+    renderTab()
+
+    await waitFor(() => expect(screen.getByText('Sign-in required')).toBeInTheDocument())
+    // The managed row gets the in-place control, not the chat prose.
+    await waitFor(() => expect(screen.getByRole('button', { name: /Sign in/ })).toBeInTheDocument())
+    expect(screen.queryByRole('link', { name: /Go to chat/ })).not.toBeInTheDocument()
+  })
+
+  it('FIX 1: falls back to the chat prose on a resolvable managed row when connections_ui is OFF', async () => {
+    // The mint engine is launch-held behind connections_ui. With it off, even a
+    // registry-resolvable row must show the same chat guidance a non-registry row
+    // does — chat stays the only authorize prompt while the gallery is closed.
+    mockApi.kirocrewConfig.mockResolvedValue({}) // flag off (also the default)
+    mockApi.mcpServers.mockResolvedValue([
+      {
+        ...remote('needs_auth'),
+        name: 'notion',
+        url: 'https://mcp.notion.com/mcp',
+        authChallenge: true,
+        authGrantPresent: false,
+      },
+    ])
+    renderTab()
+
+    await waitFor(() => expect(screen.getByText('Sign-in required')).toBeInTheDocument())
+    expect(screen.getByRole('link', { name: /Go to chat/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Sign in/ })).not.toBeInTheDocument()
+  })
+
+  it('keeps the chat prose on a non-resolvable row even when connections_ui is on', async () => {
+    // A server whose URL is NOT the registry mcp_url does not resolve to a
+    // provider, so it never gets a mint control — only the chat guidance, flag
+    // on or off.
+    mockApi.kirocrewConfig.mockResolvedValue({ connections_ui: true })
+    mockApi.mcpServers.mockResolvedValue([
+      {
+        ...remote('needs_auth'),
+        name: 'notion',
+        url: 'https://self-hosted.example.com/mcp',
+        authChallenge: true,
+        authGrantPresent: false,
+      },
+    ])
+    renderTab()
+
+    await waitFor(() => expect(screen.getByText('Sign-in required')).toBeInTheDocument())
+    expect(screen.getByRole('link', { name: /Go to chat/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Sign in/ })).not.toBeInTheDocument()
   })
 
   /**

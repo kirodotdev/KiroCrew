@@ -1317,12 +1317,22 @@ def read_messages(
 
     # Indexes are ABSOLUTE positions in the session, not offsets into the live
     # window. A slot keeps only the most recent ``_MAX_SLOT_MESSAGES`` in memory
-    # and credits each trimmed row to ``_disk_older_count``, so window length
+    # and credits each trimmed row to a frozen-prefix counter, so window length
     # stops growing once trimming starts. A cursor derived from that length
     # would freeze at the cap and never see another reply; adding the
     # frozen-prefix count makes it monotonic for the session's whole life.
     raw_window = list(slot.messages)
-    base = int(getattr(slot, "_disk_older_count", 0) or 0)
+    # The DURABLE frozen-prefix counter, never ``_disk_older_count``: that one
+    # counts every trimmed row, transient ones included, while the positions
+    # below are built over the durable rows the filter keeps. Basing on the
+    # all-rows counter shifted every position as soon as a transient row was
+    # trimmed, and a ``since`` read then served a durable message the caller
+    # already had. ``_disk_older_durable_count`` counts exactly the rows the
+    # ``TRANSIENT_ROLES`` filter below would have kept, so the two spaces agree
+    # for the session's whole life. Defensive ``getattr`` matches how the
+    # existing code reads ``_disk_older_count``: a slot restored by an older
+    # build simply has no trimmed prefix yet.
+    base = int(getattr(slot, "_disk_older_durable_count", 0) or 0)
     # Stop the cursor before the streaming tail (see ``TRANSIENT_ROLES``): those
     # rows are deleted when the segment flushes, so a cursor past them would sit
     # beyond the list that replaces them and never return the finished reply.
@@ -1332,40 +1342,28 @@ def read_messages(
     if since is not None:
         if since < 0:
             raise SessionControlError("since must be >= 0", code="invalid_since")
-        if base:
-            # ``_disk_older_count`` counts every trimmed row, transient ones
-            # included (persistence writes them and only skips them when reading
-            # back), while the positions above are built over DURABLE rows only.
-            # The two agree until a transient row is trimmed into the frozen
-            # prefix — then `base` advances with no durable row behind it, every
-            # position shifts, and a `since` read serves a durable message the
-            # caller already had.
-            #
-            # An exact cursor needs a durable-only prefix count, which does not
-            # exist yet and cannot be added from here: ``_disk_older_count`` has a
-            # contract with the save model (it is the frozen prefix saves must not
-            # rewrite) and is read by backfill, rewind and channel slots. So this
-            # refuses loudly instead of quietly duplicating. Tail reads (no
-            # ``since``) still work, and the window is 10,000 rows, so only a very
-            # long-lived session reaches this at all. Tracked for the real fix.
+        if since < base:
+            # The cursor points into the trimmed prefix: those rows exist only
+            # on disk now, and this read serves the in-memory window. Starting
+            # at ``base`` instead would silently skip every row in
+            # ``[since, base)`` — a poller that lagged a whole window behind
+            # would lose messages with nothing in the response saying so. The
+            # refusal is loud and the tail-read fallback recovers, exactly like
+            # the past-the-end case below.
             raise SessionControlError(
-                "this session is long enough that older messages have been "
-                "trimmed, and cursor positions are no longer exact — read without "
-                "`since` to get the latest messages",
+                "this session is long enough that the messages at your cursor "
+                "have been trimmed from memory — read without `since` to get "
+                "the latest messages",
                 status=409,
                 code="cursor_unavailable",
             )
-        # `base` is 0 from here on — the guard above refused every trimmed
-        # session — so the absolute position and the window offset coincide.
-        #
         # A cursor PAST the end is the remaining inexact case, and it is not the
         # same as a stale one: rewind and regenerate shrink a transcript, so
         # `total` can move backwards under a caller that is still holding the old
         # position. Clamping it to `total` would start the read at the end and
         # silently skip every replacement row written below the old cursor, with
-        # nothing in the response saying so. That is the failure the trimmed-session
-        # guard above refuses loudly rather than answer approximately, so this
-        # refuses the same way. Reads without `since` are unaffected.
+        # nothing in the response saying so. So this refuses loudly rather than
+        # answer approximately. Reads without `since` are unaffected.
         if since > total:
             raise SessionControlError(
                 "this session is shorter than your cursor — it was rewound or "
@@ -1375,13 +1373,16 @@ def read_messages(
                 code="cursor_unavailable",
             )
         start = since
-        offset = start
+        # Positions are absolute; the window slice below is offset-relative, so
+        # subtract the durable prefix that is no longer in memory.
+        offset = start - base
     else:
-        # A tail read is still served on a trimmed session (only `since` reads are
-        # refused), so the two spaces come apart here: slice the in-memory window
-        # by OFFSET, but report the index in ABSOLUTE terms so the number still
-        # means "position in the session". Conflating them returned an empty
-        # window, because `total` counts the frozen prefix the list does not hold.
+        # A tail read never refuses (only a `since` below the trimmed prefix or
+        # past the end is), and the two spaces come apart here: slice the
+        # in-memory window by OFFSET, but report the index in ABSOLUTE terms so
+        # the number still means "position in the session". Conflating them
+        # returned an empty window, because `total` counts the frozen prefix
+        # the list does not hold.
         offset = max(0, durable_end - limit)
         start = base + offset
     window = messages[offset:][:limit]
@@ -1434,13 +1435,11 @@ def read_messages(
         # `total` stays in the response as the backlog depth — the difference
         # from `next_since` is how far behind the caller still is.
         #
-        # Omitted once rows have been trimmed, because positions stop being exact
-        # there (see the `cursor_unavailable` refusal above). Handing back a
-        # cursor that the next call would reject is worse than saying it is gone,
-        # so its ABSENCE is the signal: a caller with no `next_since` falls back
-        # to tail reads. No separate flag says the same thing -- two encodings of
-        # one fact can disagree, and the reader already has to handle the absent
-        # key.
-        **({"next_since": start + len(out)} if not base else {}),
+        # Returned on trimmed sessions too: positions are based on the
+        # durable-only prefix counter, so they stay exact after rows age into
+        # the frozen prefix. The refusals above cover the cases that genuinely
+        # cannot be exact (a cursor under the trimmed prefix, or past the end of
+        # a rewound transcript).
+        "next_since": start + len(out),
         "messages": out,
     }

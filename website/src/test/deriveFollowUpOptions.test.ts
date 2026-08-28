@@ -16,6 +16,24 @@ const note = (content: string): ChatMessage => ({ role: 'inject', content, cls: 
 // rehydrated note carries no class and `meta.noteSession` is the surviving provenance.
 const rehydratedNote = (content: string): ChatMessage =>
   ({ role: 'inject', content, cls: '', meta: { noteSession: 'chat-1844-1787619403' } })
+// Every terminal turn error reaches the feed as role="error", so the role is the whole
+// contract and the text is deliberately irrelevant to the derivation.
+const errorRow = (content = '❌ Request session/new timed out after 90s'): ChatMessage =>
+  ({ role: 'error', content, cls: 'msg msg-err' })
+const queuedRow = (content: string, queueId = 'q1'): ChatMessage =>
+  ({ role: 'queued', content, cls: 'msg msg-queued', meta: { queueId } })
+// An auto-retry notice: role `error` like any failure, but carrying the kind the
+// backend stamps when it has already queued the recovery that re-runs the turn.
+const retryNoticeLive = (content = '⟳ Backend hiccup — retrying…'): ChatMessage =>
+  ({ role: 'error', content, cls: 'msg msg-err', kind: 'transient_retry', meta: { kind: 'transient_retry' } })
+const retryNoticeReload = (content = '⟳ Backend hiccup — retrying…'): ChatMessage =>
+  ({ role: 'error', content, cls: 'msg msg-err', meta: { kind: 'transient_retry' } })
+// Both forms are load-bearing (see `isStopEvent`): the live path sets `kind`, a rehydrated
+// transcript carries only `meta.kind` unpacked from `cls`.
+const stopEventLive = (content = '⏹️ Stopped by user'): ChatMessage =>
+  ({ role: 'system', content, cls: 'msg msg-sys', kind: 'stop_event', meta: { kind: 'stop_event' } })
+const stopEventReload = (content = '⏹️ Stopped by user'): ChatMessage =>
+  ({ role: 'system', content, cls: 'msg msg-sys', meta: { kind: 'stop_event' } })
 
 const OPTIONS_MSG = 'Pick one [OPTIONS: Alpha | Beta | Gamma]'
 
@@ -305,6 +323,342 @@ describe('deriveFollowUpOptions', () => {
         false,
       ).followUpSourceKey
       expect(a).not.toBe(b)
+    })
+  })
+
+  // A pill click appends the optimistic `user` bubble BEFORE the network call, and a failed
+  // turn never removes it — so the unconditional stop hid the pills for good.
+  describe('options survive a failed turn', () => {
+    it('keeps options when the turn the user started failed', () => {
+      const msgs = [user('go'), assistant(OPTIONS_MSG), user('Alpha'), errorRow()]
+      expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual(['Alpha', 'Beta', 'Gamma'])
+    })
+
+    // Was `keeps the plan flag too` until validation found the double-advance: the pill's click
+    // was dispatched, and a dispatch that fails ambiguously may already have committed.
+    it('drops the plan flag, because a failed plan turn may already have advanced', () => {
+      const plan = assistant('📋 Plan for: ship it\nStage 1: build\n[OPTIONS: Approve | Revise]')
+      const derived = deriveFollowUpOptions([user('go'), plan, user('Approve'), errorRow()], false)
+      expect(derived.followUpOptions).toEqual([])
+      expect(derived.followUpIsPlan).toBe(false)
+    })
+
+    // Asserted the opposite until validation found the double-run: a `queued` row's QUEUE
+    // ENTRY survives the error, so re-offering the pill runs the choice twice, not once.
+    it('clears options when a QUEUED send failed', () => {
+      const msgs = [user('go'), assistant(OPTIONS_MSG), queuedRow('Beta'), errorRow()]
+      expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual([])
+    })
+
+    // The exact reported path: Quick Send while busy, an AUTH error, then sign-in. The queue
+    // entry is still pending, so offering the pill would be the second of two executions.
+    it('offers nothing after a queued send hit an auth-error boundary', () => {
+      const msgs = [
+        user('go'), assistant(OPTIONS_MSG),
+        queuedRow('Beta', 'q1'), errorRow('🔒 Authentication required — please sign in'),
+      ]
+      const derived = deriveFollowUpOptions(msgs, false)
+      // No pill to click, so the pending queue entry remains the ONLY execution of 'Beta'.
+      expect(derived.followUpOptions).toEqual([])
+      expect(derived.followUpSourceKey).toBe(null)
+    })
+
+    // A `user` row carries no queue entry, so crossing it re-offers a choice that never ran.
+    it('still keeps options when a USER send failed, which strands no queue entry', () => {
+      const msgs = [user('go'), assistant(OPTIONS_MSG), user('Beta'), errorRow()]
+      expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual(['Alpha', 'Beta', 'Gamma'])
+    })
+
+    // A deliberate Stop ENDS the turn rather than interrupting it — the same reading
+    // `selectTurnInterrupted` already applies — so the error licence must not cross it.
+    it('offers nothing when the user pressed Stop after the failure', () => {
+      const msgs = [user('go'), assistant(OPTIONS_MSG), user('Alpha'), errorRow(), stopEventLive()]
+      expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual([])
+    })
+
+    // The rehydrated form carries only `meta.kind`; a guard reading just `kind` would
+    // restore the pills after a reload and re-open a choice the user cancelled.
+    it('offers nothing for a rehydrated Stop row after the failure', () => {
+      const msgs = [user('go'), assistant(OPTIONS_MSG), user('Alpha'), errorRow(), stopEventReload()]
+      expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual([])
+    })
+
+    it('offers nothing when Stop precedes the error row in the feed', () => {
+      const msgs = [user('go'), assistant(OPTIONS_MSG), user('Alpha'), stopEventLive(), errorRow()]
+      expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual([])
+    })
+
+    // Pins a behaviour CHANGE with no failure involved: a stopped injected or Continue turn
+    // has no `user` row, and the stop card was transparent to the scan before this PR.
+    it('hides options for a stopped turn with no user row', () => {
+      expect(deriveFollowUpOptions([user('go'), assistant(OPTIONS_MSG), stopEventLive()], false).followUpOptions).toEqual([])
+      expect(deriveFollowUpOptions([user('go'), assistant(OPTIONS_MSG), stopEventReload()], false).followUpOptions).toEqual([])
+    })
+
+    it('keeps options when a failed turn carries no Stop row at all', () => {
+      const msgs = [user('go'), assistant(OPTIONS_MSG), user('Alpha'), errorRow()]
+      expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual(['Alpha', 'Beta', 'Gamma'])
+    })
+
+    // The backend queues the recovery that re-runs the turn BEFORE the user can click, so
+    // re-offering the pill here executes the same choice twice.
+    it('offers nothing while an automatic retry is pending', () => {
+      const msgs = [user('go'), assistant(OPTIONS_MSG), user('Alpha'), retryNoticeLive()]
+      expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual([])
+    })
+
+    // The rehydrated row carries only `meta.kind`; a guard reading just `kind` would re-offer
+    // the pill after a reload, which is when the double-execution actually bites.
+    it('offers nothing for a rehydrated retry notice', () => {
+      const msgs = [user('go'), assistant(OPTIONS_MSG), user('Alpha'), retryNoticeReload()]
+      expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual([])
+    })
+
+    // The retry ran and then failed for good, so the question is open again and nothing is
+    // pending that could re-run the choice.
+    it('restores options when a retry notice is followed by a terminal error', () => {
+      const msgs = [user('go'), assistant(OPTIONS_MSG), user('Alpha'), retryNoticeLive(), errorRow()]
+      expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual(['Alpha', 'Beta', 'Gamma'])
+    })
+
+    it('offers nothing for a plan row reached across a pending retry', () => {
+      const plan = assistant('📋 Plan for: ship it\nStage 1: build\n[OPTIONS: Go | Go All | Cancel]')
+      expect(deriveFollowUpOptions([user('go'), plan, user('Go'), retryNoticeLive()], false).followUpOptions).toEqual([])
+    })
+
+    it('keeps options across two stacked failed attempts', () => {
+      // Re-arming per error is what makes this work: each error licenses exactly one crossing.
+      const msgs = [
+        user('go'), assistant(OPTIONS_MSG),
+        user('Alpha'), errorRow(),
+        user('Alpha'), errorRow('❌ Connection error'),
+      ]
+      expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual(['Alpha', 'Beta', 'Gamma'])
+    })
+
+    // The queued row now STOPS the scan, so the two `user` failures above it are still
+    // crossed but the older options row behind the queued row is deliberately out of reach.
+    it('stops at a queued row even with later failed user attempts', () => {
+      const msgs = [
+        user('go'), assistant(OPTIONS_MSG),
+        queuedRow('Alpha', 'q1'), errorRow(),
+        user('Alpha'), errorRow('❌ Send failed'),
+        user('Alpha'), errorRow('⏱️ timed out'),
+      ]
+      expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual([])
+    })
+
+    it('keeps options across three stacked failed USER attempts', () => {
+      const msgs = [
+        user('go'), assistant(OPTIONS_MSG),
+        user('Alpha'), errorRow(),
+        user('Alpha'), errorRow('❌ Send failed'),
+        user('Alpha'), errorRow('⏱️ timed out'),
+      ]
+      expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual(['Alpha', 'Beta', 'Gamma'])
+    })
+
+    // The text is not consulted at all, so a cause the derivation has never heard of is
+    // covered for free. This is what "every error" rests on.
+    it.each([
+      '⏱️ Request session/new timed out after 90s',
+      '❌ Connection error',
+      '⟳ Session busy — please retry.',
+      'Session stuck — please start a new chat.',
+      '',
+      'some cause invented after this test was written',
+    ])('keeps options whatever the error text says (%j)', text => {
+      const msgs = [user('go'), assistant(OPTIONS_MSG), user('Alpha'), { ...errorRow(), content: text }]
+      expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual(['Alpha', 'Beta', 'Gamma'])
+    })
+
+    it('still clears options when the turn succeeded with an option-less reply', () => {
+      const msgs = [user('go'), assistant(OPTIONS_MSG), user('Alpha'), assistant('Done, no options here')]
+      expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual([])
+    })
+
+    // THE load-bearing control: an error arms exactly ONE crossing, so a turn that completed
+    // between the old options and the failure still stops the scan.
+    it('does not reach back past a turn that succeeded before the failure', () => {
+      const msgs = [
+        user('go'), assistant(OPTIONS_MSG),
+        user('Alpha'), assistant('Done, no options here'),
+        user('next'), errorRow(),
+      ]
+      expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual([])
+    })
+
+    // #2409 must not regress: a queued send with no error after it still hides the pills.
+    it('still clears options for a queued send that has not failed', () => {
+      const msgs = [user('go'), assistant(OPTIONS_MSG), queuedRow('Alpha')]
+      expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual([])
+    })
+
+    it('offers the NEWER options when the retried turn succeeded with its own marker', () => {
+      const msgs = [
+        user('go'), assistant(OPTIONS_MSG),
+        user('Alpha'), errorRow(),
+        user('Alpha'), assistant('Retried fine [OPTIONS: Delta | Epsilon]'),
+      ]
+      expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual(['Delta', 'Epsilon'])
+    })
+
+    it('still suppresses options while streaming, even after a failed turn', () => {
+      const msgs = [user('go'), assistant(OPTIONS_MSG), user('Alpha'), errorRow()]
+      expect(deriveFollowUpOptions(msgs, true).followUpOptions).toEqual([])
+    })
+
+    it('still suppresses options while a question card is pending, even after a failed turn', () => {
+      const msgs = [user('go'), assistant(OPTIONS_MSG), user('Alpha'), errorRow()]
+      expect(deriveFollowUpOptions(msgs, false, true).followUpOptions).toEqual([])
+    })
+
+    it('crosses a failed turn whose feed also carries a compaction notice', () => {
+      const msgs = [user('go'), assistant(OPTIONS_MSG), user('Alpha'), compactionLive(), errorRow()]
+      expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual(['Alpha', 'Beta', 'Gamma'])
+    })
+
+    it('crosses a failed turn whose feed also carries an option-less note', () => {
+      const msgs = [user('go'), assistant(OPTIONS_MSG), user('Alpha'), note('FYI: nothing to do'), errorRow()]
+      expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual(['Alpha', 'Beta', 'Gamma'])
+    })
+
+    it('lets a note claim the pills over an older assistant turn after a failure', () => {
+      const msgs = [user('go'), assistant(OPTIONS_MSG), user('Alpha'), errorRow(), note('Retry? [OPTIONS: Yes | No]')]
+      expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual(['Yes', 'No'])
+    })
+
+    // An error with no user/queued row after it was ALREADY transparent (it matched no
+    // branch and fell through). Pinned so the explicit `error` branch cannot change it.
+    it('leaves a bare error row transparent to the scan', () => {
+      const msgs = [user('go'), assistant(OPTIONS_MSG), errorRow()]
+      expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual(['Alpha', 'Beta', 'Gamma'])
+    })
+
+    it('returns no options when a failed turn has no options-bearing turn behind it', () => {
+      const msgs = [user('go'), assistant('no marker here'), user('again'), errorRow()]
+      expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual([])
+    })
+
+    it('returns no options when the feed is nothing but a failed send', () => {
+      expect(deriveFollowUpOptions([user('go'), errorRow()], false).followUpOptions).toEqual([])
+    })
+  })
+
+  // A turn that streamed text before dying flushes it as a REAL assistant row ahead of the
+  // error row, and that option-less row shadowed the question just as the `user` row did.
+  describe('options survive a failed turn that emitted partial text', () => {
+    const partial = (content = 'Working on it, here is what I found so far…'): ChatMessage =>
+      assistant(content)
+
+    it('keeps options when the failed turn flushed partial text first', () => {
+      const msgs = [user('go'), assistant(OPTIONS_MSG), user('Alpha'), partial(), errorRow()]
+      expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual(['Alpha', 'Beta', 'Gamma'])
+    })
+
+    // Same double-run reason as the non-partial queued case: the queue entry outlives the
+    // error, so the partial flush does not change whether the pill may be re-offered.
+    it('clears options when a queued send failed after emitting partial text', () => {
+      const msgs = [user('go'), assistant(OPTIONS_MSG), queuedRow('Beta'), partial(), errorRow()]
+      expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual([])
+    })
+
+    it('keeps options across several partial-then-error segments in one failed turn', () => {
+      // The recovery path appends [partial] [notice] repeatedly before the terminal error.
+      const msgs = [
+        user('go'), assistant(OPTIONS_MSG), user('Alpha'),
+        partial('first chunk'), errorRow('⟳ Backend hiccup — recovering…'),
+        partial('second chunk'), errorRow('❌ gave up'),
+      ]
+      expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual(['Alpha', 'Beta', 'Gamma'])
+    })
+
+    it('prefers a partial that itself carries a marker over the older turn', () => {
+      const msgs = [
+        user('go'), assistant(OPTIONS_MSG), user('Alpha'),
+        assistant('Partway there [OPTIONS: Retry | Abandon]'), errorRow(),
+      ]
+      expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual(['Retry', 'Abandon'])
+    })
+
+    it('still clears options when the partial turn ultimately succeeded', () => {
+      // No error at all: the option-less reply is the final word and closes the question.
+      const msgs = [user('go'), assistant(OPTIONS_MSG), user('Alpha'), partial(), assistant('All done')]
+      expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual([])
+    })
+
+    it('does not reach past a completed turn to a failure two turns back', () => {
+      const msgs = [
+        user('go'), assistant(OPTIONS_MSG),
+        user('Alpha'), assistant('All done'),
+        user('next'), partial(), errorRow(),
+      ]
+      expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual([])
+    })
+
+    // The accepted trade-off, pinned so it stays a decision on record: nothing marks an
+    // assistant row partial rather than complete, so a busy-slot refused send reads the same.
+    it('re-offers earlier choices when an error follows a completed option-less reply', () => {
+      const msgs = [user('go'), assistant(OPTIONS_MSG), user('Alpha'), assistant('All done'), errorRow()]
+      expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual(['Alpha', 'Beta', 'Gamma'])
+    })
+
+    // Demotion was tried first and was not enough: Quick Send sends a pill in one click
+    // whatever `followUpIsPlan` says, so the ambiguous plan case is offered nothing at all.
+    it('offers nothing for a re-offered PLAN row after a completed reply', () => {
+      const plan = assistant('📋 Plan for: ship it\nStage 1: build\n[OPTIONS: Go | Go All | Cancel]')
+      const msgs = [user('go'), plan, user('Go'), assistant('Stage 1 complete.'), errorRow()]
+      const derived = deriveFollowUpOptions(msgs, false)
+      expect(derived.followUpOptions).toEqual([])
+      expect(derived.followUpIsPlan).toBe(false)
+      expect(derived.followUpSourceKey).toBe(null)
+    })
+
+    // Was `keeps the plan flag when only a failed user row was crossed`: that rested on the plan
+    // not having advanced, but the go-latch is per page load, so a reload re-exposes the Go.
+    it('offers nothing for a PLAN row reached by crossing a failed user turn', () => {
+      const plan = assistant('📋 Plan for: ship it\nStage 1: build\n[OPTIONS: Go | Go All | Cancel]')
+      const derived = deriveFollowUpOptions([user('go'), plan, user('Go'), errorRow()], false)
+      expect(derived.followUpOptions).toEqual([])
+      expect(derived.followUpIsPlan).toBe(false)
+      expect(derived.followUpSourceKey).toBe(null)
+    })
+
+    it('offers nothing for a PLAN row across two stacked failed attempts', () => {
+      const plan = assistant('📋 Plan for: ship it\nStage 1: build\n[OPTIONS: Go | Go All | Cancel]')
+      const msgs = [user('go'), plan, user('Go'), errorRow(), user('Go'), errorRow()]
+      expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual([])
+    })
+
+    // Scoping control: suppression is PLAN-only, so a blanket regression fails here.
+    it('still restores NON-plan options across the same failed user turn', () => {
+      const msgs = [user('go'), assistant(OPTIONS_MSG), user('Alpha'), errorRow()]
+      expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual(['Alpha', 'Beta', 'Gamma'])
+    })
+
+    // Control: plan chips are not blanket-suppressed. With no failed turn crossed, one-tap
+    // approval is still correct and `followUpIsPlan` must survive.
+    it('keeps a PLAN row offered when no failed turn was crossed', () => {
+      const plan = assistant('📋 Plan for: ship it\nStage 1: build\n[OPTIONS: Go | Go All | Cancel]')
+      const derived = deriveFollowUpOptions([user('go'), plan], false)
+      expect(derived.followUpOptions).toEqual(['Go', 'Go All', 'Cancel'])
+      expect(derived.followUpIsPlan).toBe(true)
+    })
+
+    // Control for the tests above: without it, they still pass if the
+    // derivation stops keying on the error row at all.
+    it('does not re-offer a PLAN row when the completed reply was not followed by an error', () => {
+      const plan = assistant('📋 Plan for: ship it\nStage 1: build\n[OPTIONS: Go | Go All | Cancel]')
+      const msgs = [user('go'), plan, user('Go'), assistant('Stage 1 complete.')]
+      const derived = deriveFollowUpOptions(msgs, false)
+      expect(derived.followUpOptions).toEqual([])
+      expect(derived.followUpIsPlan).toBe(false)
+    })
+
+    it('still suppresses a crossed partial while streaming or a card is pending', () => {
+      const msgs = [user('go'), assistant(OPTIONS_MSG), user('Alpha'), partial(), errorRow()]
+      expect(deriveFollowUpOptions(msgs, true).followUpOptions).toEqual([])
+      expect(deriveFollowUpOptions(msgs, false, true).followUpOptions).toEqual([])
     })
   })
 })

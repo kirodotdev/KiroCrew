@@ -173,7 +173,10 @@ on `PATH`, and run `kiro-cli login`. `kirocrew doctor` reports its status.
 
 ## AcpProvider: shared-runtime startup
 
-`AcpProvider.start()` branches on the backend:
+`AcpProvider.start()` branches on the backend. Every shared-runtime branch below
+enters the same `AcpRuntime.spawn()` cold-start coordinator (default 2 concurrent
+spawn+initialize handshakes per gateway loop); admission is backend-neutral, so an
+adapted runtime harness neither bypasses the bound nor changes the Kiro path.
 
 - **kiro (`is_claude_backend` False)** → `_start_kiro_runtime()`. This spawns an
   `AcpRuntime` (carrying the provider's sandbox mode, extra env, and MCP-gateway

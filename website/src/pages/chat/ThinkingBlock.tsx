@@ -111,20 +111,21 @@ function ThinkingBlock({ content, disclosureKey }: { content: string; disclosure
         {/* Same deterministic centering as the tool pill's status icon: the
             label spans pin leading-5 (20px), so the 12px icon centers on the
             first line at (20 − 12) / 2 = 4px. While reasoning is live the icon
-            gently pulses, reinforcing the label's streaming shimmer so a folded
-            row still reads as "in progress" even when the one-line tail is
-            empty between two bursts. */}
+            gently pulses — the row's ONLY "in progress" motion, so a folded
+            row still reads as live even when the one-line tail is empty
+            between two bursts. */}
         <Sparkles size={12} className={`shrink-0 text-accent${streaming ? ' animate-pulse' : ''}`} style={{ marginTop: '4px' }} />
         {/* The label is tense-aware: several locales render `thinking` as an
             explicitly in-progress form ("思考中", "考え中"), which reads wrong
             once the burst has settled. It rides the same growth-derived
             liveness as the preview line, so the row's whole header flips to
             the finished form the moment the preview disappears — and a block
-            restored from history starts on the finished form. While live it
-            also carries `.streaming-glow` — the same accent shimmer-sweep the
-            streaming assistant answer uses — so a folded turn's single row
-            actively signals the model is still thinking. */}
-        <span className={`shrink-0 leading-5${streaming ? ' streaming-glow' : ''}`}>{streaming ? i18nT('pages.chat.thinkingBlock.thinking') : i18nT('pages.chat.thinkingBlock.thought_process')}</span>
+            restored from history starts on the finished form. The label itself
+            stays static: `.streaming-glow` is sized for a full streaming
+            sentence, and on a 3-glyph CJK label its background chip + sweep
+            read as a smeared highlight, so liveness is carried by the pulsing
+            icon and the live preview tail instead. */}
+        <span className="shrink-0 leading-5">{streaming ? i18nT('pages.chat.thinkingBlock.thinking') : i18nT('pages.chat.thinkingBlock.thought_process')}</span>
         <ChevronRight
           size={13}
           className="shrink-0 transition-transform duration-200"

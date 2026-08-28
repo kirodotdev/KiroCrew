@@ -143,7 +143,10 @@ const clickChip = (el: HTMLElement, init?: MouseEventInit): boolean => {
 const took = () => vi.fn(() => true)
 
 describe('ChatSidebar – PR chip', () => {
-  beforeEach(() => switchSlotMock.mockClear())
+  beforeEach(() => {
+    switchSlotMock.mockClear()
+    localStorage.setItem('mc-session-stale-collapse-ms', '0')
+  })
 
   it('is still an anchor carrying the provider url', () => {
     // Link semantics are load-bearing for the fall-through cases below, for

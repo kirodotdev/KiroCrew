@@ -13,6 +13,7 @@ import time
 import uuid
 from collections import OrderedDict, deque
 from collections.abc import Iterator, Mapping
+from itertools import islice
 
 from kiro_crew import model_registry
 from kiro_crew.agent import kiro_agents_dir_path
@@ -28,10 +29,12 @@ from kiro_crew.dashboard.chat_utils import (
     slot_transcript_key,
 )
 from kiro_crew.dashboard.state import (
+    _TRANSIENT_ROLES,
     DashboardState,
     _ChatSlot,
     _normalize_slot_key,
     _note_authorized_elsewhere,
+    durable_row_count,
     row_mid,
 )
 from kiro_crew.effort import EFFORT_LEVELS, EFFORT_VALUES
@@ -1023,7 +1026,14 @@ def _rehydrate_slot_from_history(
         # Only the recent window is loaded into memory; older on-disk lines become
         # the FROZEN PREFIX that saves never rewrite. _disk_older_count must
         # therefore count those older lines so the save model preserves them.
-        slot._disk_older_count = max(0, len(messages) - 500)
+        older_cut = max(0, len(messages) - 500)
+        slot._disk_older_count = older_cut
+        # Recomputed from the on-disk rows on every load (never trusted from any
+        # stored value): the durable-only view of the same prefix, which is what
+        # absolute message positions are built over. See _ChatSlot.__init__.
+        # ``islice``, not ``messages[:older_cut]`` — this can run on the event
+        # loop for a large transcript, and a slice would copy the whole prefix.
+        slot._disk_older_durable_count = durable_row_count(islice(messages, older_cut))
         for m in messages[-500:]:
             role = m.get("role", "assistant")
             cls = m.get("cls") or ("msg msg-u" if role == "user" else "msg msg-a")
@@ -1450,7 +1460,12 @@ def _apply_recent_session(
         # _rehydrate_slot_from_history.
         update_metadata_off_loop(conv_log, key, {"tab_id": tab_id})
     slot._tab_id = tab_id
-    slot._disk_older_count = max(0, len(messages) - 500)
+    older_cut = max(0, len(messages) - 500)
+    slot._disk_older_count = older_cut
+    # Durable-only view of the same prefix, recomputed from disk on every load —
+    # see the equivalent line (and the islice rationale) in
+    # _rehydrate_slot_from_history.
+    slot._disk_older_durable_count = durable_row_count(islice(messages, older_cut))
     for m in messages[-500:]:
         role = m.get("role", "assistant")
         cls = m.get("cls") or ("msg msg-u" if role == "user" else "msg msg-a")
@@ -1903,7 +1918,9 @@ def _build_message_entry_uncached(m: dict) -> dict | None:
 # Transient/streaming roles that are never persisted (mirrors
 # ``_build_message_entry``). A window-region disk line carrying one of these is
 # not a real message and is never treated as a cross-process append to preserve.
-_TRANSIENT_ROLES = frozenset({"chunk", "done", "streaming", "queued", "permission"})
+# Canonically defined in ``state`` (imported above) so the trim path that must
+# count durable rows shares the same set; re-exported here unchanged for this
+# module's historical readers (session_control, chat_handlers).
 
 
 def _foreign_tail_ts(foreign_lines: list[str]) -> str | None:

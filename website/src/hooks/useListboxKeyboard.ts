@@ -3,8 +3,8 @@ import { isTouchDevice } from '../utils/isTouchDevice'
 import { useImeGuard } from './useImeGuard'
 
 /**
- * Roving-focus keyboard navigation for a portal listbox that pairs with
- * `useFilteredDropdown` (AgentSelector). Real DOM focus moves
+ * Roving-focus keyboard navigation for a portal listbox, used by the filtered
+ * pickers (AgentSelector via Radix Popover, SearchableSelect). Real DOM focus moves
  * across elements marked `data-option` inside `dropdownRef`; the trigger
  * regains focus on close (the caller owns `closeToTrigger`). This is the
  * WAI-ARIA listbox / combobox pattern.
@@ -82,8 +82,9 @@ export function useListboxKeyboard(opts: {
   )
 
   // When no filter input is shown, move focus into the list on open so keyboard
-  // users can reach the options. (When an input is shown, useFilteredDropdown
-  // auto-focuses it.) Skip on touch to avoid hijacking focus.
+  // users can reach the options. (When an input is shown, the consumer's opener
+  // auto-focuses it — Radix onOpenAutoFocus for the Popover-based pickers,
+  // useFilteredDropdown for the rest.) Skip on touch to avoid hijacking focus.
   useEffect(() => {
     if (!open || hasFilterInput || isTouchDevice()) return
     const t = window.setTimeout(() => {

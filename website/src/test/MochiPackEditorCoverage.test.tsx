@@ -391,7 +391,10 @@ describe('PackEditor — slot popover', () => {
     fireEvent.keyDown(slot('Peeking'), { key: 'Enter' })
     expect(screen.getByRole('menu').getAttribute('aria-label')).toBe('Peeking')
 
-    fireEvent.keyDown(slot('Peeking'), { key: 'Escape' })
+    // A key the slot does not own leaves the open popover alone. This probe used
+    // to be Escape; Escape is now the popover's dismissal (#6231, required
+    // because Tab is contained inside the menu), so an inert key stands in.
+    fireEvent.keyDown(slot('Peeking'), { key: 'x' })
     expect(screen.getByRole('menu')).toBeTruthy()
 
     fireEvent.mouseDown(document.body)
@@ -709,5 +712,137 @@ describe('PackEditor — edit mode', () => {
     pending.resolve(detailWithRequiredStates())
     await pending.promise
     expect(screen.queryByText('Edit Pack')).toBeNull()
+  })
+})
+
+// ── The slot popover's keyboard contract (#6231) ────────────────────────────
+
+/**
+ * The popover carries `role="menu"`, which promises the WAI-ARIA menu keyboard
+ * contract: focus enters the menu on open, arrows move between rows and wrap at
+ * both ends, Home/End jump to the boundaries, and Tab is contained inside the
+ * menu. Because Tab is contained, dismissal has to exist too — Escape closes
+ * the popover and hands focus back to the slot that opened it, or a keyboard
+ * user would be stuck cycling the rows forever.
+ *
+ * The rows are addressed by index rather than by name: the contract is about
+ * ORDER, and the copy-source rows in the middle vary with what is filled.
+ */
+describe('PackEditor — slot popover keyboard contract', () => {
+  /** The open menu's rows, in DOM order. */
+  function items(): HTMLElement[] {
+    return within(screen.getByRole('menu')).getAllByRole('menuitem')
+  }
+
+  /**
+   * Fill two slots and open Idle's popover FROM THE KEYBOARD, with the slot card
+   * genuinely focused so the focus-restore assertion has a real opener to return
+   * to. Idle's menu then has three rows — Select File / the Walking copy source
+   * / Clear — which is the minimum that tells a wrap apart from a clamp.
+   */
+  async function openIdleMenu(): Promise<HTMLElement> {
+    await importInto('Idle', svgFile('idle'))
+    copyInto('Walking', 'Idle')
+    const card = slot('Idle')
+    card.focus()
+    fireEvent.keyDown(card, { key: 'Enter' })
+    expect(items().map((el) => el.textContent?.trim()))
+      .toEqual(['Select File', 'Walking', 'Clear'])
+    return card
+  }
+
+  it('moves focus onto the first row when the popover opens', async () => {
+    render(<PackEditor onSave={vi.fn()} onCancel={vi.fn()} />)
+    await openIdleMenu()
+
+    // role="menu" tells assistive tech that focus is managed here, so a
+    // keyboard user must land inside the menu they were just told is open.
+    expect(items()[0]).toHaveFocus()
+  })
+
+  it('walks the rows with ArrowDown/ArrowUp and wraps at both ends', async () => {
+    render(<PackEditor onSave={vi.fn()} onCancel={vi.fn()} />)
+    await openIdleMenu()
+
+    fireEvent.keyDown(document, { key: 'ArrowDown' })
+    expect(items()[1]).toHaveFocus()
+    fireEvent.keyDown(document, { key: 'ArrowDown' })
+    expect(items()[2]).toHaveFocus()
+    // Last row → wraps forward to the first, not a clamp.
+    fireEvent.keyDown(document, { key: 'ArrowDown' })
+    expect(items()[0]).toHaveFocus()
+    // First row → wraps backward to the last.
+    fireEvent.keyDown(document, { key: 'ArrowUp' })
+    expect(items()[2]).toHaveFocus()
+    fireEvent.keyDown(document, { key: 'ArrowUp' })
+    expect(items()[1]).toHaveFocus()
+  })
+
+  it('jumps to the boundary rows on End and Home', async () => {
+    render(<PackEditor onSave={vi.fn()} onCancel={vi.fn()} />)
+    await openIdleMenu()
+
+    fireEvent.keyDown(document, { key: 'End' })
+    expect(items()[2]).toHaveFocus()
+    fireEvent.keyDown(document, { key: 'Home' })
+    expect(items()[0]).toHaveFocus()
+  })
+
+  it('contains Tab and Shift-Tab inside the menu', async () => {
+    render(<PackEditor onSave={vi.fn()} onCancel={vi.fn()} />)
+    await openIdleMenu()
+
+    // A Tab off the last row would drop the user behind the still-open popover
+    // with no obvious way back (#2533), so it cycles to the first row instead.
+    fireEvent.keyDown(document, { key: 'End' })
+    fireEvent.keyDown(document, { key: 'Tab' })
+    expect(items()[0]).toHaveFocus()
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true })
+    expect(items()[2]).toHaveFocus()
+  })
+
+  it('closes on Escape and hands focus back to the slot that opened it', async () => {
+    render(<PackEditor onSave={vi.fn()} onCancel={vi.fn()} />)
+    const card = await openIdleMenu()
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('menu')).toBeNull()
+    // Focus must not be left on a row that no longer exists: it goes back to
+    // the opener, the way MenuBtn returns focus to its trigger.
+    expect(card).toHaveFocus()
+  })
+
+  // Escape is not the only dismissal that unmounts the focused row: EVERY menu
+  // command closes the popover too, and the row the user just activated is the
+  // active element at that moment. Without a focus restore the activeElement
+  // falls back to <body> and the keyboard user is stranded at the top of the
+  // document — worse than Escape, because activating a command is the COMMON
+  // path. These two pin the copy row and Clear, the commands whose actions stay
+  // in-process (Select File hands off to a native file dialog).
+  it('returns focus to the opener when the focused "use same as" row is activated', async () => {
+    render(<PackEditor onSave={vi.fn()} onCancel={vi.fn()} />)
+    const card = await openIdleMenu()
+
+    // Walk to the copy row the way a keyboard user does, then activate it.
+    fireEvent.keyDown(document, { key: 'ArrowDown' })
+    expect(items()[1]).toHaveFocus()
+    await userEvent.keyboard('{Enter}')
+
+    expect(screen.queryByRole('menu')).toBeNull()
+    expect(document.activeElement).not.toBe(document.body)
+    expect(card).toHaveFocus()
+  })
+
+  it('returns focus to the opener when the focused Clear row is activated', async () => {
+    render(<PackEditor onSave={vi.fn()} onCancel={vi.fn()} />)
+    const card = await openIdleMenu()
+
+    fireEvent.keyDown(document, { key: 'End' })
+    expect(items()[2]).toHaveFocus()
+    fireEvent.click(items()[2])
+
+    expect(screen.queryByRole('menu')).toBeNull()
+    expect(document.activeElement).not.toBe(document.body)
+    expect(card).toHaveFocus()
   })
 })

@@ -257,6 +257,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402
     CRON_NOTIFICATION_KIND,
     SUBAGENT_COMPLETION_KIND,
     SYNTHETIC_RECOVERY_KIND,
+    TRANSIENT_RETRY_KIND,
     RecoveryPayload,
     has_leaked_tool_call,
     is_promise_only_terminal,
@@ -6608,17 +6609,11 @@ async def _run_chat(
                 # to the interactive card. A child WITH full context takes the
                 # same branches as the main agent (mode parity).
                 _child_low_fidelity = event.child_low_fidelity
-                # Verified-identity half of the fidelity split (see
-                # AcpEvent.child_mcp_identity_trusted): a remote MCP server's
-                # tool_call frame streams no rawInput, so args provenance is
-                # unrecoverable — but the _meta.kiro server/tool identity DID
-                # arrive and is non-model-authored. UNCONDITIONAL grant paths
-                # below (trust-all / YOLO / native crew), whose approve decision
-                # consumes no agent-authored event data, honor the grant for
-                # such events; content-matching paths (trusted patterns,
-                # trust-reads) stay gated on the composite fidelity because the
-                # agent-authored title/params ARE their matched input.
-                _child_grant_eligible = not _child_low_fidelity or event.child_mcp_identity_trusted
+                # Verified-identity half of the fidelity split — see
+                # AcpEvent.child_unconditional_grant_eligible for which grant
+                # paths may honor it (unconditional grants: trust-all / YOLO /
+                # native crew) and which must not (content-matching paths).
+                _child_grant_eligible = event.child_unconditional_grant_eligible
                 if _child_low_fidelity:
                     # Diagnostic for a path that is otherwise invisible in
                     # logs: without it a trust-all session watching its
@@ -7630,11 +7625,12 @@ async def _run_chat(
                         _safety_reason, _ = redact_credentials(_safety_reason)
                     _safe_reject_title, _ = redact_exfiltration_urls(event.title)
                     _safe_reject_title, _ = redact_credentials(_safe_reject_title)
-                    _reject_label = (
-                        f"🚫 {_safe_reject_title} (cancelled — {_safety_reason})"
-                        if _safety_reason
-                        else f"🚫 {_safe_reject_title} (rejected)"
-                    )
+                    if _safety_reason:
+                        _reject_label = f"🚫 {_safe_reject_title} (cancelled — {_safety_reason})"
+                    elif outcome == "rejected_once":
+                        _reject_label = f"🚫 {_safe_reject_title} (rejected — this call only)"
+                    else:
+                        _reject_label = f"🚫 {_safe_reject_title} (rejected)"
                     slot.append("tool", _reject_label, "msg msg-tool")
                     sel().log_tool_invocation(
                         session_key=session_key,
@@ -7642,7 +7638,7 @@ async def _run_chat(
                         source="dashboard",
                         tool_name=_safe_reject_title,
                         tool_kind=event.tool_kind,
-                        outcome="rejected",
+                        outcome="rejected_once" if outcome == "rejected_once" else "rejected",
                         request_id=event.request_id,
                         metadata={"reason": _safety_reason or "interactive"},
                     )
@@ -7652,6 +7648,13 @@ async def _run_chat(
                     # the hook-deny (TOOL_DENY) path, which is the other site that
                     # appends to _refusal_reasons.
 
+                if outcome == "rejected_once":
+                    # Deny this one tool but do NOT cascade to remaining batch
+                    logger.info(
+                        "PERM REJECTED ONCE tool=%r — remaining batch unaffected",
+                        event.title,
+                    )
+                    continue
                 if outcome != "approved":
                     # mark batch_rejected as true and continue loop instead of breaking
                     # This will allow for marking other batched approval requests as rejected too
@@ -8032,12 +8035,15 @@ async def _run_chat(
         if _stop_reason == STOP_REASON_STALE_RECOVER:
             needs_session_reset = True  # checked in finally block (reset + resume)
 
-            def _emit_stale(msg: str) -> None:
-                slot.append("error", msg, "msg msg-err")
-                state.broadcast_ws(
-                    "chat_message",
-                    {"slot": slot.key, "role": "error", "content": msg},
+            def _emit_stale(msg: str, *, will_retry: bool = False) -> None:
+                slot.append(
+                    "error",
+                    msg,
+                    "msg msg-err",
+                    meta={"kind": TRANSIENT_RETRY_KIND} if will_retry else None,
                 )
+                # No explicit chat_message: slot.append already emits ONE, and it
+                # carries `meta` -- a second frame here would arrive untagged.
 
             if _prompt_depth == 0 and slot._stale_recovery_retries < 3:
                 slot._stale_recovery_retries += 1
@@ -8047,7 +8053,7 @@ async def _run_chat(
                     kind=SYNTHETIC_RECOVERY_KIND,
                     payload=RecoveryPayload.CONTINUATION,
                 )
-                _emit_stale("⟳ Recovering a stalled turn…")
+                _emit_stale("⟳ Recovering a stalled turn…", will_retry=True)
             elif slot._stale_recovery_retries >= 3:
                 # Budget exhausted — terminal for this slot until a turn
                 # actually completes. The budget is deliberately NOT reset
@@ -8081,12 +8087,15 @@ async def _run_chat(
         # from pipe-death so a stall can never burn the reconnect budget.
         if _stop_reason == STOP_REASON_TOOL_STALL:
 
-            def _emit_stall(msg: str) -> None:
-                slot.append("error", msg, "msg msg-err")
-                state.broadcast_ws(
-                    "chat_message",
-                    {"slot": slot.key, "role": "error", "content": msg},
+            def _emit_stall(msg: str, *, will_retry: bool = False) -> None:
+                slot.append(
+                    "error",
+                    msg,
+                    "msg msg-err",
+                    meta={"kind": TRANSIENT_RETRY_KIND} if will_retry else None,
                 )
+                # No explicit chat_message: slot.append already emits ONE, and it
+                # carries `meta` -- a second frame here would arrive untagged.
 
             _idle_m = re.search(r"idle_secs=(\d+)", _stall_evidence or "")
             _idle_secs = int(_idle_m.group(1)) if _idle_m else 0
@@ -8105,7 +8114,7 @@ async def _run_chat(
                     kind=SYNTHETIC_RECOVERY_KIND,
                     payload=RecoveryPayload.CONTINUATION,
                 )
-                _emit_stall("⟳ Tool appeared stalled — recovering…")
+                _emit_stall("⟳ Tool appeared stalled — recovering…", will_retry=True)
             elif slot._tool_stall_retries >= 3:
                 # Budget exhausted — mirrors the stale_recover branch above:
                 # budget left alone (a wedged slot must not re-enter a fresh
@@ -8143,12 +8152,15 @@ async def _run_chat(
             _rc = getattr(client, "exit_code", None)
             _rc_suffix = f" (exit {_rc})" if _rc is not None else ""
 
-            def _emit_error(msg: str) -> None:
-                slot.append("error", msg, "msg msg-err")
-                state.broadcast_ws(
-                    "chat_message",
-                    {"slot": slot.key, "role": "error", "content": msg},
+            def _emit_error(msg: str, *, will_retry: bool = False) -> None:
+                slot.append(
+                    "error",
+                    msg,
+                    "msg msg-err",
+                    meta={"kind": TRANSIENT_RETRY_KIND} if will_retry else None,
                 )
+                # No explicit chat_message: slot.append already emits ONE, and it
+                # carries `meta` -- a second frame here would arrive untagged.
 
             if _prompt_depth == 0 and slot._acp_pipe_death_retries < 3:
                 slot._acp_pipe_death_retries += 1
@@ -8164,7 +8176,7 @@ async def _run_chat(
                     kind=SYNTHETIC_RECOVERY_KIND,
                     payload=_requeue_payload,
                 )
-                _emit_error(f"⟳ Connection lost{_rc_suffix} — retrying...")
+                _emit_error(f"⟳ Connection lost{_rc_suffix} — retrying...", will_retry=True)
             elif slot._acp_pipe_death_retries >= 3:
                 _emit_error(f"Session stuck{_rc_suffix} — please start a new chat.")
             else:
@@ -9060,7 +9072,7 @@ async def _run_chat(
             # also broadcast_ws("chat_message") or the UI renders a duplicate card
             # until the post-turn history refresh reconciles it.
             _retry_msg = "⟳ Connection lost — retrying…"
-            slot.append("error", _retry_msg, "msg msg-err")
+            slot.append("error", _retry_msg, "msg msg-err", meta={"kind": TRANSIENT_RETRY_KIND})
             _requeue_text, _requeue_payload = build_recovery_requeue(
                 message,
                 _turn_emitted,
@@ -9097,7 +9109,7 @@ async def _run_chat(
             # via _on_message (see the AcpProcessDied note above); no explicit
             # broadcast_ws or the UI shows a duplicate card.
             _retry_msg = "⟳ Session busy — retrying…"
-            slot.append("error", _retry_msg, "msg msg-err")
+            slot.append("error", _retry_msg, "msg msg-err", meta={"kind": TRANSIENT_RETRY_KIND})
             _requeue_text, _requeue_payload = build_recovery_requeue(
                 message,
                 _turn_emitted,
@@ -9191,7 +9203,7 @@ async def _run_chat(
                     _is_pipe_death,
                     slot._acp_pipe_death_retries if _is_pipe_death else slot._prompt_busy_retries,
                 )
-                slot.append("error", _status, "msg msg-err")
+                slot.append("error", _status, "msg msg-err", meta={"kind": TRANSIENT_RETRY_KIND})
                 _requeue_text, _requeue_payload = build_recovery_requeue(
                     message,
                     _turn_emitted,
@@ -9261,7 +9273,14 @@ async def _run_chat(
                 # broadcasts one chat_message; no explicit broadcast_ws. Back off,
                 # then re-queue — the finally block dequeues onto the SAME live
                 # session (no reset), preserving conversation state.
-                slot.append("error", "⟳ Backend hiccup — retrying…", "msg msg-err")
+                # A recovery is queued below unconditionally, so this notice is NOT
+                # terminal: the tag stops the UI re-offering a choice that re-runs itself.
+                slot.append(
+                    "error",
+                    "⟳ Backend hiccup — retrying…",
+                    "msg msg-err",
+                    meta={"kind": TRANSIENT_RETRY_KIND},
+                )
                 await asyncio.sleep(_delay)
                 _queue_recovery(
                     0,
@@ -9425,9 +9444,16 @@ async def _run_chat(
                 _safe, _ = redact_credentials(_safe)
                 slot.purge_chunks()
                 slot.append("assistant", _safe, "msg msg-a")
-            # Surface a brief recovery notice (one append).
-            slot.append("error", "⟳ Backend hiccup — recovering…", "msg msg-err")
-            if not _should_suppress_requeue(slot) and _prompt_depth == 0:
+            # Surface a brief recovery notice (one append). Tag it ONLY when the
+            # requeue below will actually happen, or a terminal notice reads as pending.
+            _will_recover = not _should_suppress_requeue(slot) and _prompt_depth == 0
+            slot.append(
+                "error",
+                "⟳ Backend hiccup — recovering…",
+                "msg msg-err",
+                meta={"kind": TRANSIENT_RETRY_KIND} if _will_recover else None,
+            )
+            if _will_recover:
                 _delay = transient_retry_delay(1)  # single short backoff (one-shot)
                 logger.info(
                     "Transient backend 5xx AFTER emit in slot %s — one-shot "
@@ -9618,6 +9644,7 @@ async def _run_chat(
                     "messages are kept; the model rebuilds its working "
                     "context from them)…",
                     "msg msg-err",
+                    meta={"kind": TRANSIENT_RETRY_KIND},
                 )
                 _queue_recovery(0, message, kind=SYNTHETIC_RECOVERY_KIND)
                 # Fresh conversation ⇒ fresh ladder for the recovery cycle.

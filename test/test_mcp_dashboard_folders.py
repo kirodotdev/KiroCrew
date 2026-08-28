@@ -1433,7 +1433,12 @@ class TestTheVerifiedCallerKeyReachesTheRequest:
         assert "since=7" in out, "an empty window must still carry next_since"
 
     def test_a_trimmed_transcript_invents_no_cursor_on_an_empty_window(self):
-        """`next_since` is absent exactly when positions stopped being exact."""
+        """The renderer never invents a cursor the response did not carry.
+
+        The live server now returns `next_since` on trimmed sessions too, so
+        this pins the renderer's defensive behaviour for a cursor-less
+        response shape, whatever produces one.
+        """
         with patch(
             "kiro_crew.mcp_dashboard._resolve_session_key_strict", return_value=self.VERIFIED
         ), patch(

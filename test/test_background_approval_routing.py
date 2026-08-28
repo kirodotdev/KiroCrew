@@ -314,6 +314,9 @@ def _child_identity_event(request_id: str = "req-child-mcp-1") -> LLMEvent:
         is_shell=False,
         mcp_server_name="example-server",
         tool_name="get-item",
+        # Identity provenance flag: the real permission builder sets it when
+        # the pair above resolves from the origin-scoped caches.
+        mcp_identity_trusted=True,
     )
     assert ev.child_low_fidelity
     assert ev.child_mcp_identity_trusted

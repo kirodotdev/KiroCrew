@@ -5018,6 +5018,21 @@ _CREW_SECRET_LEAVES: list[str] = [
     # gateway's own startup reader opens it directly rather than through this
     # gate, so both keep working.
     "live_target.json",
+    # Holds `backup/redaction.json`, the switch that decides whether a bundle
+    # leaving this machine is redacted first. An agent that could write it would
+    # turn redaction off and every later upload would carry the operator's
+    # secrets verbatim; an agent that could read it learns whether the memory
+    # store is currently being scrubbed. Flipping it is the attack and reading it
+    # is reconnaissance, so this needs read AND write protection, not just write.
+    #
+    # The DIRECTORY is classified, not just the leaf inside it. Naming only the
+    # leaf leaves the container writable, and a writable container is the same
+    # hole one level up: replace `backup/` with a symlink and the protected leaf
+    # now resolves somewhere unprotected, where the switch can be rewritten at
+    # will. Restore's rollback copies live at `pre-restore-<ts>/`, not here, so
+    # nothing legitimate is shut out, and the product's own reader opens the file
+    # directly rather than through this gate.
+    "backup",
     # The computer-use primary enable ({enabled, allowed_apps, extra_denied_apps}).
     # Same class of control as ``denied_commands.json`` directly above, and here
     # for the same reason: flipping ``enabled`` grants full desktop observation

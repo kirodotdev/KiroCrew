@@ -146,6 +146,16 @@ no longer destroy older turns.
   into the frozen prefix (`_disk_older_count += …`) only for messages actually
   persisted (`min(excess, _disk_window_len)`); an unpersisted overflow is logged
   rather than silently counted as on-disk.
+- **`slot._disk_older_durable_count`**: the durable-only position base — how
+  many non-transient rows (`state._TRANSIENT_ROLES`) have left the window off
+  the front. Maintained at every site that sets or advances
+  `_disk_older_count` (restore/resume/rehydrate/channel rebuild recompute it
+  from disk; the trim path advances it by the durable rows in the WHOLE
+  evicted slice, unpersisted overflow included — it is a position base with no
+  disk contract, so an uncounted lost row would silently shift every later
+  position). It exists for absolute message positions
+  (`session_control.read_messages`), never for save-model arithmetic — the
+  save's frozen-prefix contract stays on `_disk_older_count`.
 - **Single-file only**: the save touches `_path(history_key)` and never reads or
   writes sibling files. `tab_id` is 1:1 with a file (fork creates a fresh slot
   with its own file), so chaining is untouched and legacy no-tab_id sessions are

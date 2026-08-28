@@ -5,7 +5,7 @@ import { useAppSelector, useAppDispatch } from '../../store'
 import { clearFocusToolCallId, mcpAppKey } from '../../store/chatSlice'
 import { useSimplifiedToolNames } from '../../hooks/useSimplifiedToolNames'
 import { useLanguage } from '../../i18n/LanguageProvider'
-import { pickToolLabel } from '../../utils/toolLabel'
+import { DERIVE_LABEL_THRESHOLD_CHARS, deriveShellSummary, pickToolLabel } from '../../utils/toolLabel'
 import { LoaderCircle, CircleSlash, CircleAlert, CircleDot, Lock, PanelRight } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion'
@@ -27,6 +27,7 @@ import { i18nT } from '../../i18n/t'
 import { fmtDateFields, fmtDuration as fmtDurationParts, fmtUnit } from '../../i18n/format'
 import { api } from '../../api/client'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
+import { isRejectedDecision } from '../../utils/approvalDecision'
 
 // Tool-call ids that have already played their one-shot `.ft-block-reveal`
 // entrance fade. A CSS animation re-fires on every DOM *mount*, and a pill
@@ -152,7 +153,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
         const m = msgs[j]
         if (m.role !== 'permission' || !m.meta?.tool_call_id) continue
         if (m.meta.tool_call_id === toolCallId) {
-          return m.meta?.resolved === 'rejected'
+          return isRejectedDecision(m.meta?.resolved)
         }
       }
       return false
@@ -656,6 +657,21 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
     const stripped = toolLabel.split(filePath).join('').replace(/\s+/g, ' ').trim()
     return stripped || toolLabel
   }, [showFileOpen, filePath, toolLabel])
+  // A purpose-less shell call's label is the raw command. The collapsed row's
+  // `truncate` (LABEL_COLLAPSED_CLASS) already bounds how much of it is
+  // visible, but a clipped wall of quoting says nothing — in simplified mode a
+  // flood-length shell label is substituted with a derived command digest
+  // (binaries + redirect target), so the visible line is meaningful. Short
+  // labels pass through untouched, and raw mode always shows the exact command.
+  const pillLabelText = useMemo(() => {
+    if (!simplified) return displayLabel
+    if (displayLabel.length <= DERIVE_LABEL_THRESHOLD_CHARS && !displayLabel.includes('\n')) {
+      return displayLabel
+    }
+    return deriveShellSummary(displayLabel, { bareCommand: isShell }) ?? displayLabel
+  }, [displayLabel, simplified, isShell])
+  // Hover reveals the verbatim command whenever the pill shows a substitute.
+  const pillLabelTitle = pillLabelText === displayLabel ? undefined : displayLabel
   // Both running and pending-approval pills shimmer — the highlight color
   // tracks the status so pending shimmers warn-yellow (matching the approval
   // bar) and running shimmers accent.
@@ -804,6 +820,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
         ref={pillButtonRef}
         className={`inline-flex ${ROW_PILL_BUTTON_CLASS} focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none ${hasPendingPerm ? 'cursor-default' : 'cursor-pointer hover:brightness-110'}`}
         aria-expanded={effectivelyExpanded}
+        title={pillLabelTitle}
         aria-label={hasPendingPerm
           ? i18nT('pages.chat.toolCallLine.aria_awaiting_approval', { label })
           : effectivelyExpanded
@@ -828,9 +845,9 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
             }}
             animate={{ backgroundPosition: ['100% 0%', '-50% 0%'] }}
             transition={{ duration: 2.4, repeat: Infinity, ease: 'linear' }}
-          >{displayLabel}</motion.span>
+          >{pillLabelText}</motion.span>
         ) : (
-          <span data-testid="tool-pill-label" className={`${labelWrapClass} min-w-0 leading-5 text-muted hover:text-text transition-colors`}>{displayLabel}</span>
+          <span data-testid="tool-pill-label" className={`${labelWrapClass} min-w-0 leading-5 text-muted hover:text-text transition-colors`}>{pillLabelText}</span>
         )}
       </button>
 

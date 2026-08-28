@@ -22,12 +22,24 @@ describe('displayModel', () => {
   })
 
   it('returns the list spelling so the row actually highlights', () => {
-    // Matching is normalized across dotted/dashed/case, but ModelDropdownList
+    // Matching is normalized through the canonical registry (an alias and its
+    // provider-prefixed canonical id fold together), but ModelDropdownList
     // highlights on exact `activeModel === m.name`. Returning the caller's
-    // spelling would show the model in the chip while checking no row.
-    expect(displayModel('claude-opus-4-8', list)).toBe('claude-opus-4.8')
+    // spelling would show the model in the chip while checking no row. The
+    // list's `claude-opus-4.8` and the pin `global.anthropic.claude-opus-4-8[1m]`
+    // both resolve to `opus-4.8-1m`, so the pin displays as the list spelling.
+    expect(displayModel('global.anthropic.claude-opus-4-8[1m]', list)).toBe('claude-opus-4.8')
     expect(displayModel('CLAUDE-OPUS-4.8', list)).toBe('claude-opus-4.8')
     expect(displayModel('claude-opus-4.8', list)).toBe('claude-opus-4.8')
+  })
+
+  it('does NOT fold a 200K variant onto its 1M sibling (#5339)', () => {
+    // `claude-opus-4-8` is the advertised 200K model (`opus-4.8`) while the
+    // list's `claude-opus-4.8` is the 1M model (`opus-4.8-1m`). The old
+    // dot->dash string fold equated them; routing through the registry keeps
+    // the two context-window variants distinct, so a 200K pin against a
+    // 1M-only list reads as withheld.
+    expect(displayModel('claude-opus-4-8', list)).toBe('auto')
   })
 
   it('keeps the pin when the list is marked degraded', () => {
@@ -66,8 +78,9 @@ describe('pinIsWithheld', () => {
   it('is false for a mere spelling difference', () => {
     // displayModel returns the list's spelling, so pin and shown can differ as
     // strings while naming the same model. Treating that as withheld would
-    // disable the pin row for a perfectly usable model.
-    expect(pinIsWithheld('claude-opus-4.8', 'claude-opus-4-8')).toBe(false)
+    // disable the pin row for a perfectly usable model. A provider-prefixed
+    // canonical id and its bare alias both resolve to `opus-4.8-1m`.
+    expect(pinIsWithheld('global.anthropic.claude-opus-4-8[1m]', 'claude-opus-4.8')).toBe(false)
     expect(pinIsWithheld('CLAUDE-OPUS-4.8', 'claude-opus-4.8')).toBe(false)
   })
 
@@ -82,10 +95,58 @@ describe('pinIsWithheld', () => {
 })
 
 describe('normalizeModelKey', () => {
-  it('folds case, dots and the auto/default synonyms', () => {
-    expect(normalizeModelKey('Claude-Opus-4.8')).toBe('claude-opus-4-8')
+  it('folds the auto/default synonyms and keeps unset empty', () => {
     expect(normalizeModelKey(' auto ')).toBe('auto')
     expect(normalizeModelKey('default')).toBe('auto')
+    expect(normalizeModelKey('DEFAULT')).toBe('auto')
     expect(normalizeModelKey('')).toBe('')
+    expect(normalizeModelKey('   ')).toBe('')
+  })
+
+  it('routes a registry alias / canonical key / provider id to one canonical key', () => {
+    // An alias, the canonical key itself, and the claude_code provider id all
+    // fold to the same canonical key regardless of case.
+    expect(normalizeModelKey('claude-opus-4.8')).toBe('opus-4.8-1m')
+    expect(normalizeModelKey('Claude-Opus-4.8')).toBe('opus-4.8-1m')
+    expect(normalizeModelKey('opus-4.8-1m')).toBe('opus-4.8-1m')
+    expect(normalizeModelKey('opus')).toBe('opus-4.8-1m')
+    expect(normalizeModelKey('global.anthropic.claude-opus-4-8[1m]')).toBe('opus-4.8-1m')
+    // The "fold a provider/partition prefix" half of #5339: a regional profile
+    // id that is not itself a registry entry still folds after the prefix peel.
+    expect(normalizeModelKey('us.anthropic.claude-opus-4-8[1m]')).toBe('opus-4.8-1m')
+  })
+
+  it('keeps distinct 200K / 1M context variants apart (#5339)', () => {
+    // The old dot->dash fold made both of these `claude-opus-4-8`, equating a
+    // 200K model with a 1M one. The registry lists them as separate entries.
+    expect(normalizeModelKey('claude-opus-4-8')).toBe('opus-4.8') // 200K
+    expect(normalizeModelKey('claude-opus-4.8')).toBe('opus-4.8-1m') // 1M
+    expect(normalizeModelKey('claude-opus-4-8')).not.toBe(normalizeModelKey('claude-opus-4.8'))
+  })
+
+  it('keeps kiro-distinct models apart via the acp-first fold (#5339 Design)', () => {
+    // The claude_code index aliases these onto Sonnet/Opus 4.8 for dropdown
+    // dedup, but kiro serves them as DISTINCT real models. Resolving the acp
+    // index first keeps them apart, so the shared fold cannot equate e.g. a
+    // Haiku pin with Sonnet 4.6 (a real 1M->200K swap isModelDowngrade must catch).
+    expect(normalizeModelKey('claude-haiku-4.5')).toBe('haiku-4.5')
+    expect(normalizeModelKey('claude-sonnet-4.5')).toBe('sonnet-4.5')
+    expect(normalizeModelKey('claude-sonnet-4')).toBe('sonnet-4')
+    expect(normalizeModelKey('claude-opus-4.6')).toBe('opus-4.6-1m')
+    expect(normalizeModelKey('claude-sonnet-4.6')).toBe('sonnet-4.6-1m')
+    // None of the kiro-distinct models collapse onto their claude_code fold target.
+    expect(normalizeModelKey('claude-haiku-4.5')).not.toBe(normalizeModelKey('claude-sonnet-4.6'))
+    expect(normalizeModelKey('claude-opus-4.6')).not.toBe(normalizeModelKey('claude-opus-4.8'))
+    // acp-only canonical keys resolve to themselves.
+    expect(normalizeModelKey('haiku-4.5')).toBe('haiku-4.5')
+    expect(normalizeModelKey('opus-4.6-1m')).toBe('opus-4.6-1m')
+  })
+
+  it('passes an unregistered id through the lossless string fold', () => {
+    // GPT/DeepSeek/Qwen and future models are absent from the (Anthropic-only)
+    // registry, so they keep the historical trim/lowercase/dot->dash behavior.
+    expect(normalizeModelKey('GPT-5.6')).toBe('gpt-5-6')
+    expect(normalizeModelKey('deepseek-3.2')).toBe('deepseek-3-2')
+    expect(normalizeModelKey('claude-opus-5')).toBe('claude-opus-5')
   })
 })

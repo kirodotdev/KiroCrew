@@ -21,6 +21,7 @@ import type {
 import { FileTree, useFileTree } from '@pierre/trees/react'
 import { AtSign, FileDiff, FolderOpen } from 'lucide-react'
 import { api } from '../api/client'
+import { useMenuKeyboard } from '../hooks/useMenuKeyboard'
 import { i18nT } from '../i18n/t'
 import { normalizeWindowsPath } from '../utils/fileTokens'
 import { TreeSkeleton } from './tree'
@@ -80,8 +81,25 @@ function TreeContextMenu({ item, context, root, onAddToContext }: {
   useEffect(() => {
     firstItemRef.current?.focus()
   }, [])
+  // The DEGENERATE single-item case of the shared role="menu" keyboard contract
+  // (#6231): with exactly one item the arrows have nothing to move between, so
+  // the wiring buys no navigation today. It is here because the CONTRACT is
+  // what role="menu" advertises to assistive technology, and honouring it
+  // per-surface-by-item-count is how surfaces drift: an arrow inside an open
+  // menu must be consumed rather than scrolling the tree behind it, Tab must
+  // stay contained (#2533), and IME composition keys must not reach the menu at
+  // all — all true of a one-item menu. It also means the day this menu grows a
+  // second action (an Open, a Reveal), real navigation arrives with it instead
+  // of being a second bug to find. `enabled: true` unconditionally because
+  // Pierre only mounts this component while the menu is open.
+  // focusFirstOnOpen: false — the firstItemRef effect above already owns focus
+  // entry (it must, because Pierre focuses the tree ROW, not this slotted
+  // content); letting the hook also focus would be a redundant second move.
+  const menuRef = useRef<HTMLDivElement>(null)
+  useMenuKeyboard({ enabled: true, containerRef: menuRef, focusFirstOnOpen: false })
   return (
     <div
+      ref={menuRef}
       role="menu"
       className="min-w-[176px] rounded-lg border border-border bg-bg-elevated p-1 shadow-lg"
     >

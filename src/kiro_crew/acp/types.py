@@ -536,6 +536,15 @@ class AcpEvent:
     #: classification (cache hit), not the miss-default False.
     raw_params_trusted: bool = False
     shell_classified: bool = False
+    #: mcp_identity_trusted: mcp_server_name/tool_name below were populated
+    #: from a provenance-verified source — the origin-scoped tool_call caches
+    #: (permission path) or ``_meta.kiro`` on the tool_call frame itself —
+    #: never an inline/agent-authored fallback. Mirrors ``raw_params_trusted``:
+    #: ``child_mcp_identity_trusted`` requires this flag IN ADDITION to
+    #: non-empty identity fields, so a future population path that forgets it
+    #: fails CLOSED (identity not counted as verified) instead of silently
+    #: passing on non-emptiness alone.
+    mcp_identity_trusted: bool = False
     # Canonical, NON-model-authored tool identity from ``_meta.kiro`` (see
     # ``_dispatch._kiro_tool_name``). ``title`` is LLM-authored prose — for shell
     # tools ``select_tool_title`` even prefers the model's ``description`` — so a
@@ -661,19 +670,45 @@ class AcpEvent:
         (``sub_session_id``), a RESOLVED non-shell classification
         (``shell_classified`` and not ``is_shell`` — an unclassified event
         defaults to non-shell and must not pass as one; a shell tool's deny
-        gates need the command bytes this event lacks), and the canonical
+        gates need the command bytes this event lacks), the canonical
         ``mcp_server_name`` + ``tool_name`` pair recovered from the tool_call
         cache (empty on a miss, and populated only for genuinely MCP-served
-        tools — a host shell/builtin can never carry a server name). A
+        tools — a host shell/builtin can never carry a server name), and the
+        explicit ``mcp_identity_trusted`` provenance flag set by the trusted
+        population sites — non-emptiness alone is NOT proof of provenance, so
+        an identity pair written by any future inline/agent-authored fallback
+        stays untrusted until that site earns the flag. A
         non-child event returns False: parents never need the split.
         """
         return bool(
             self.sub_session_id
             and self.shell_classified
             and not self.is_shell
+            and self.mcp_identity_trusted
             and self.mcp_server_name
             and self.tool_name
         )
+
+    @property
+    def child_unconditional_grant_eligible(self) -> bool:
+        """True when an UNCONDITIONAL grant path may honor this event.
+
+        An unconditional grant is one whose approve decision consumes no
+        agent-authored event data: session trust-all, global YOLO / the
+        ``--approval yolo`` override, ``parent_policy=auto``, per-source
+        auto-approve. Such a grant is eligible when the event has full
+        fidelity (``not child_low_fidelity``) OR its canonical MCP identity is
+        verified (``child_mcp_identity_trusted``) — for the latter only the
+        ARGUMENTS remain unverified, which the grant never reads (the same
+        blindness the interactive card has; the identity split changes WHO
+        approves, not what any gate can scan). Content-MATCHING paths —
+        trusted patterns, trust-reads, title-keyed ``auto_approve_tools``, the
+        'reads' classification — must stay gated on the composite
+        ``child_low_fidelity`` instead: the agent-authored title or inline
+        params ARE their matched input, and a forged title must never satisfy
+        them. Non-child events are always eligible (never low-fidelity).
+        """
+        return not self.child_low_fidelity or self.child_mcp_identity_trusted
 
 
 @dataclass

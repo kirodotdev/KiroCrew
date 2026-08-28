@@ -446,6 +446,10 @@
         "header_resolved": "解決済み"
       },
       "global": {
+        "unattributed_label": "リポジトリのないイベント",
+        "unattributed_note": "イベントがリポジトリを示すようになる前に記録されたため、どのリポジトリにも帰属できません。",
+        "repos_label": "リポジトリ",
+        "repos_note": "このボードはそれらをまとめて集計し、個別の表示にはまだ対応していません。",
         "tab_pipeline": "パイプライン",
         "tab_lanes": "項目レーン",
         "tablist_label": "自動トリアージパイプラインのビュー",
@@ -4577,12 +4581,24 @@
         "download_failed": "ダウンロードを開始できませんでした。何も送信されていません。もう一度お試しください。",
         "delete_confirm_action": "ファイルを削除",
         "delete_confirm": "「{{name}}」を削除しますか？ファイルはドライブから削除されます。",
+        "col_name": "名前",
+        "col_kind": "種類",
+        "col_size": "サイズ",
+        "col_modified": "更新日時",
+        "col_actions": "アクション",
+        "kind_folder": "フォルダー",
+        "folder_new": "新しいフォルダー",
+        "folder_name": "フォルダー名",
+        "folder_delete_confirm": "「{{name}}」とその中のすべてを削除しますか？",
+        "folder_delete_action": "フォルダーを削除",
+        "folder_delete_failed": "フォルダーを削除できませんでした。",
+        "folder_create_failed": "フォルダーを作成できませんでした。",
+        "folder_bad_name": "このフォルダー名には S3 が受け付けない文字が含まれています。英数字、スペース、および . _ - ( ) + @ = は使用できます。",
+        "folder_deleted": "{{objects}} 個のオブジェクトを削除しました。",
         "cancel": "キャンセル",
         "load_more": "さらに読み込む",
         "stat_this_month": "今月",
-        "more_actions": "その他の操作",
         "storage_consent_needed": "このアカウントのクラウドストレージはまだ確認されていません。下で確認してから更新してください。",
-        "stat_stored": "保存容量",
         "stat_stored_value": "{{size}} · {{objects}} 個のオブジェクト",
         "costs_as_of": "{{date}} 時点のキャッシュされた数値です。",
         "costs_consent_missing": "このアカウントの支出を表示するには、以下でコストレポートを有効にしてください。",
@@ -4613,12 +4629,12 @@
         "kind_webapp": "ウェブアプリ",
         "kind_image": "画像",
         "drive_title": "ドライブ",
-        "drive_root": "ドライブ",
         "drive_upload": "アップロード",
         "drive_uploading": "アップロード中…",
         "drive_bad_name": "そのファイル名には、ドライブが保存できない文字が含まれています。名前を変更してもう一度お試しください。",
         "drive_empty": "このフォルダーは空です。",
         "section_drive": "ドライブ",
+        "section_files": "ファイル",
         "section_library": "ライブラリー",
         "section_backup": "バックアップ",
         "share_title": "このファイルを共有",
@@ -4662,7 +4678,9 @@
         "connection_connected": "接続済み",
         "connection_degraded": "劣化",
         "connection_unknown": "不明",
-        "copy_id": "アカウント ID をコピー"
+        "copy_id": "アカウント ID をコピー",
+        "folder_actions": "フォルダーの操作",
+        "file_actions": "ファイルの操作"
       },
       "page": {
         "title": "AWS Control",
@@ -4707,7 +4725,8 @@
         "add_accounts_error": "それらのプロファイルを登録できませんでした。何も追加されていません。もう一度お試しください。",
         "search_placeholder": "アカウントを検索",
         "search_none": "「{{query}}」に一致するアカウントはありません。",
-        "paid_services_title": "有料サービス"
+        "paid_services_title": "有料サービス",
+        "orphan_consent": "ここに登録されていない AWS アカウントに対して確認済みです。下で確認を取り消すか、そのアカウントを再登録して専用ページから管理してください。"
       }
     }
   },
@@ -6518,6 +6537,10 @@
       "trusted_source": "信頼されたソース",
       "trusted_source_clones_with_your_git_credentials": "信頼されたソース — このレジストリのアプリは、あなたの Git 認証情報を使ってクローンされます。"
     },
+    "rejectDropdown": {
+      "reject_all": "すべて拒否 — 残りは確認せずに拒否する",
+      "reject_once": "1 回だけ拒否 — 残りは引き続き確認する"
+    },
     "remoteArtifactCard": {
       "clone": "クローン",
       "clone_failed": "クローンに失敗しました",
@@ -6815,6 +6838,10 @@
       "no_matching_skills": "一致するスキルがありません",
       "no_matching_skills_ctrl_enter_sends": "一致するスキルがありません — Ctrl+Enter でメッセージを送信します",
       "no_matching_skills_enter_sends": "一致するスキルがありません — Enter でメッセージを送信します",
+      "no_skills_mapped_to_agent": "{{agent}} にマッピングされたスキルはありません",
+      "no_skills_mapped_to_agent_ctrl_enter_sends": "{{agent}} にマッピングされたスキルはありません — Ctrl+Enter でメッセージを送信します",
+      "no_skills_mapped_to_agent_enter_sends": "{{agent}} にマッピングされたスキルはありません — Enter でメッセージを送信します",
+      "scoped_to_agent": "エージェント {{agent}} に限定",
       "trust_needed_badge": "信頼が必要",
       "trust_needed_hint": "このプロジェクトのスキルです。選択すると内容を確認してフォルダーを信頼できます。"
     },
@@ -7801,6 +7828,8 @@
       "uninstall_removes_metadata_secret_and_source": "アプリからインストール — {{productName}} メタデータ、アプリシークレット、ダウンロードされたソースコードが削除されます。",
       "update_all": "すべて更新",
       "update_other": "{{count}} 更新",
+      "updates_hint_link": "更新を表示",
+      "updates_hint_other": "{{count}} 件の更新があります",
       "updating_progress": "更新中 {{done}}/{{total}}…",
       "v": "v",
       "installed_app_find_in_library_and_enable": "{{name}} をインストールしました。ライブラリで有効にしてください。",
@@ -8389,7 +8418,8 @@
       "collapsibleToolGroup": {
         "approval_needed": "承認が必要です",
         "approvals_pending": "承認待ち",
-        "batch_preview_note": "保留中の {{count}} 件のうち最新のもの。すべてまとめて処理されます。",
+        "batch_preview_all": "保留中の {{count}} 件のコールを以下ですべて確認してください。すべてまとめて処理されます。",
+        "batch_preview_none": "このコールのプレビューはありません。",
         "approve": "承認",
         "approve_all": "すべて承認 ({{count}})",
         "approved": "承認済み",
@@ -9063,6 +9093,14 @@
       "sort_name_desc": "Z → A",
       "sort_newest": "新しい順",
       "sort_oldest": "古い順",
+      "stale_collapse_caption": "次の期間より長く操作がない場合",
+      "stale_collapse_ctx_in_name": "{{name}}フォルダー",
+      "stale_collapse_menu": "休眠中のセッションを折りたたむ",
+      "stale_collapse_off": "オフ",
+      "stale_collapse_paused": "一時停止中",
+      "stale_collapse_paused_hint": "検索・フィルター中、または「新しい順」以外の並び替え中は一時停止します。",
+      "stale_collapse_row": "休眠中のセッション",
+      "stale_collapse_row_ungrouped": "フォルダー外",
       "started_in_channel": "この会話は {{channel}} で始まりました。",
       "started_in_direct_message": "この会話はダイレクトメッセージで始まりました。",
       "stop_filtering_by_tag": "{{name}} でのフィルターを解除",
@@ -9416,6 +9454,20 @@
       "no_checkout_found_action": "下記の環境変数を設定するか、設定を永続化するには {{productName}} データディレクトリ（既定では ~/.kiro/crew）の config.json に dev_fleet.repo_path を追加し、ゲートウェイを再起動してください。"
     },
     "developer": {
+      "agentBackendTab": {
+        "agent_backend": "エージェントバックエンド",
+        "claude_code": "Claude Code",
+        "could_not_load_the_agent_backend": "エージェントバックエンドを読み込めませんでした。",
+        "could_not_save_the_agent_backend": "エージェントバックエンドを保存できませんでした。",
+        "default_all_features_supported": "デフォルト。すべての機能に対応しています。",
+        "experimental": "実験的",
+        "kas_kiro_agent": "KAS (kiro-agent)",
+        "kiro_cli": "Kiro CLI",
+        "loading_configuration": "設定を読み込んでいます…",
+        "new_sessions_use_this_agent_a_session_that_is_al": "新しいセッションはこのエージェントを使用します。すでに開いているセッションは開始時のエージェントを維持し、ここで切り替えてもセッション中に変わることはありません。",
+        "not_enabled_in_this_build": "このビルドでは有効になっていません",
+        "retry": "再試行"
+      },
       "featurePreviewsTab": {
         "inbound_webhook_tokens_registered_contexts_and_r": "受信 Webhook のトークン、登録済みコンテキスト、実行履歴。API は動作しますが、ページは未完成です。",
         "open_webhooks": "Webhooks を開く",
@@ -9425,6 +9477,10 @@
     "developerPage": {
       "developer": "デベロッパー",
       "tabs": {
+        "agentBackend": {
+          "description": "新しいセッションが起動するエージェント — Kiro CLI、Claude Code、KAS",
+          "label": "エージェントバックエンド"
+        },
         "archive": {
           "description": "ローテーション/圧縮済みセッション履歴（7 日間保持）",
           "label": "アーカイブ"
@@ -9465,7 +9521,16 @@
     },
     "discoverPage": {
       "subtitle": "エージェンティックアプリの閲覧とインストール",
-      "title": "発見"
+      "tab_featured": "注目",
+      "tab_updates": "更新",
+      "title": "発見",
+      "updates_badge_label_other": "{{count}} 件の更新があります",
+      "updates_empty": "すべて最新です。",
+      "updates_empty_back_to_featured": "おすすめアプリを見る",
+      "version_diff": "v{{from}} → v{{to}}",
+      "updating": "更新中…",
+      "updates_check_failed": "更新を確認できませんでした。",
+      "updates_retry": "再試行"
     },
     "embedSettingsPage": {
       "back": "戻る",
@@ -10247,7 +10312,14 @@
         "probe_failing": "連続失敗",
         "probe_failing_help": "{{failures}} 回連続でプローブに失敗しました。サーバーはマウントされたままで、これは状態の表示であり変更ではありません。",
         "reset_failures": "カウントをリセット",
-        "reset_failures_help": "このサーバーの連続失敗回数をクリアします。"
+        "reset_failures_help": "このサーバーの連続失敗回数をクリアします。",
+        "sign_in": "サインイン",
+        "sign_in_authorize": "{{name}} を承認",
+        "sign_in_mint_failed": "サインインを開始できませんでした。もう一度お試しください。",
+        "sign_in_preparing": "サインインを準備しています…",
+        "sign_in_retry": "もう一度試す",
+        "sign_in_row_updates_after_probe": "上部の「Probe MCP servers」を使ってこの行を更新してください。",
+        "sign_in_timeout": "サインインが時間内に承認リンクを生成しませんでした。もう一度お試しください。"
       },
       "memoryGraphTab": {
         "all_count": "すべて（{{count}}）",

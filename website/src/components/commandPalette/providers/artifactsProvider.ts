@@ -6,7 +6,7 @@ import { useQueryClient } from '@tanstack/react-query'
 
 import { api } from '../../../api/client'
 import { i18nT } from '../../../i18n/t'
-import { fuzzyMatch, makeScoreThenNameComparator, substringIndices } from '../../../utils/fuzzyMatch'
+import { fuzzyMatch, substringIndices } from '../../../utils/fuzzyMatch'
 import type { Artifact } from '../../../types'
 import type { Result, ResourceProvider } from '../types'
 
@@ -116,11 +116,10 @@ export function createArtifactsProvider(deps: ArtifactsProviderDeps): ResourcePr
         }
       })
 
-      // Title matches first, then deterministic name order. Skip the re-rank on
-      // an empty query so the backend's recency ordering is preserved (the
-      // Artifacts tab + All-tab recents rely on it).
+      // Title matches first, then backend relevance/mtime order is preserved via stable sort (issue #4579).
+      // Skip the re-rank on an empty query so the backend's recency ordering is preserved.
       if (q.length > 0) {
-        results.sort(makeScoreThenNameComparator<Result>(r => r.score, r => r.title))
+        results.sort((a, b) => b.score - a.score)
       }
       return results
     },

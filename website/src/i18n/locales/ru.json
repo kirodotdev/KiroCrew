@@ -455,6 +455,10 @@
         "header_resolved": "РЕШЕНО"
       },
       "global": {
+        "unattributed_label": "СОБЫТИЯ БЕЗ РЕПОЗИТОРИЯ",
+        "unattributed_note": "Записаны до того, как события стали указывать свой репозиторий, поэтому их нельзя отнести ни к одному.",
+        "repos_label": "РЕПОЗИТОРИИ",
+        "repos_note": "Эта панель объединяет их и пока не может показать их по отдельности.",
         "tab_pipeline": "Конвейер",
         "tab_lanes": "Дорожки элементов",
         "tablist_label": "Представления конвейера авторазбора",
@@ -4811,12 +4815,24 @@
         "download_failed": "Не удалось начать загрузку. Ничего не было отправлено. Попробуйте снова.",
         "delete_confirm_action": "Удалить файл",
         "delete_confirm": "Удалить «{{name}}»? Файл будет убран из диска.",
+        "col_name": "Название",
+        "col_kind": "Тип",
+        "col_size": "Размер",
+        "col_modified": "Изменено",
+        "col_actions": "Действия",
+        "kind_folder": "Папка",
+        "folder_new": "Новая папка",
+        "folder_name": "Название папки",
+        "folder_delete_confirm": "Удалить «{{name}}» и всё её содержимое?",
+        "folder_delete_action": "Удалить папку",
+        "folder_delete_failed": "Не удалось удалить папку.",
+        "folder_create_failed": "Не удалось создать папку.",
+        "folder_bad_name": "В этом имени папки есть символы, которые S3 не принимает. Буквы, цифры, пробелы и . _ - ( ) + @ = безопасны.",
+        "folder_deleted": "Удалено объектов: {{objects}}.",
         "cancel": "Отмена",
         "load_more": "Показать ещё",
         "stat_this_month": "За этот месяц",
-        "more_actions": "Другие действия",
         "storage_consent_needed": "Облачное хранилище для этого аккаунта ещё не подтверждено. Подтвердите его ниже и обновите страницу.",
-        "stat_stored": "Хранится",
         "stat_stored_value": "{{size}} · {{objects}} объектов",
         "costs_as_of": "Кэшированные данные по состоянию на {{date}}.",
         "costs_consent_missing": "Включите отчёт о расходах ниже, чтобы увидеть траты этого аккаунта.",
@@ -4847,12 +4863,12 @@
         "kind_webapp": "Веб-приложение",
         "kind_image": "Изображение",
         "drive_title": "Диск",
-        "drive_root": "Диск",
         "drive_upload": "Загрузить",
         "drive_uploading": "Загрузка…",
         "drive_bad_name": "В имени файла есть символы, которые диск не может сохранить. Переименуйте файл и попробуйте снова.",
         "drive_empty": "Эта папка пуста.",
         "section_drive": "Диск",
+        "section_files": "Файлы",
         "section_library": "Библиотека",
         "section_backup": "Резервная копия",
         "share_title": "Поделиться этим файлом",
@@ -4899,7 +4915,9 @@
         "connection_connected": "Подключено",
         "connection_degraded": "Ухудшено",
         "connection_unknown": "Неизвестно",
-        "copy_id": "Скопировать ID аккаунта"
+        "copy_id": "Скопировать ID аккаунта",
+        "folder_actions": "Действия с папкой",
+        "file_actions": "Действия с файлом"
       },
       "page": {
         "title": "AWS Control",
@@ -4959,7 +4977,8 @@
         "keys_summary_many": "{{count}} ключей",
         "add_accounts_count_few": "{{count}} из {{max}} зарегистрировано",
         "add_accounts_count_many": "{{count}} из {{max}} зарегистрировано",
-        "paid_services_title": "Платные сервисы"
+        "paid_services_title": "Платные сервисы",
+        "orphan_consent": "Подтверждено для аккаунта AWS, который здесь не зарегистрирован. Отзовите подтверждение ниже или зарегистрируйте этот аккаунт снова, чтобы управлять им на его собственной странице."
       }
     }
   },
@@ -6842,6 +6861,10 @@
       "trusted_source": "Доверенный источник",
       "trusted_source_clones_with_your_git_credentials": "Доверенный источник — приложения из этого реестра клонируются с вашими учётными данными Git."
     },
+    "rejectDropdown": {
+      "reject_all": "Отклонить все — отклонить остальные без вопросов",
+      "reject_once": "Отклонить один раз — продолжать спрашивать об остальных"
+    },
     "remoteArtifactCard": {
       "clone": "Клонировать",
       "clone_failed": "Не удалось клонировать",
@@ -7142,6 +7165,10 @@
       "no_matching_skills": "Нет подходящих навыков",
       "no_matching_skills_ctrl_enter_sends": "Нет подходящих навыков — Ctrl+Enter отправит сообщение",
       "no_matching_skills_enter_sends": "Нет подходящих навыков — Enter отправит сообщение",
+      "no_skills_mapped_to_agent": "Нет навыков, сопоставленных с {{agent}}",
+      "no_skills_mapped_to_agent_ctrl_enter_sends": "Нет навыков, сопоставленных с {{agent}} — Ctrl+Enter отправит сообщение",
+      "no_skills_mapped_to_agent_enter_sends": "Нет навыков, сопоставленных с {{agent}} — Enter отправит сообщение",
+      "scoped_to_agent": "Ограничено агентом {{agent}}",
       "trust_needed_badge": "Нужно доверие",
       "trust_needed_hint": "Из этого проекта. Выбери его, чтобы просмотреть и доверять папке."
     },
@@ -8156,6 +8183,11 @@
       "updated_app_many": "Обновлено {{count}} приложений.",
       "updated_app_one": "Обновлено {{count}} приложение.",
       "updated_app_other": "Обновлено {{count}} приложения.",
+      "updates_hint_link": "Посмотреть обновления",
+      "updates_hint_few": "Доступно {{count}} обновления",
+      "updates_hint_many": "Доступно {{count}} обновлений",
+      "updates_hint_one": "Доступно {{count}} обновление",
+      "updates_hint_other": "Доступно {{count}} обновления",
       "updating_progress": "Обновление {{done}}/{{total}}...",
       "v": "v",
       "installed_app_find_in_library_and_enable": "{{name}} установлено. Включите его в Библиотеке.",
@@ -8767,7 +8799,8 @@
       "collapsibleToolGroup": {
         "approval_needed": "Требуется подтверждение",
         "approvals_pending": "ожидают подтверждения",
-        "batch_preview_note": "Последний из {{count}} ожидающих вызовов; все будут обработаны вместе.",
+        "batch_preview_all": "Просмотрите ниже все {{count}} ожидающих вызовов — все будут обработаны вместе.",
+        "batch_preview_none": "Предпросмотр для этого вызова недоступен.",
         "approve": "Разрешить",
         "approve_all": "Разрешить все ({{count}})",
         "approved": "Разрешено",
@@ -9500,6 +9533,14 @@
       "sort_newest": "Сначала новые",
       "sort_oldest": "Сначала старые",
       "source_links_expand_failed": "Не удалось загрузить остальное. Нажмите, чтобы повторить.",
+      "stale_collapse_caption": "Без активности дольше",
+      "stale_collapse_ctx_in_name": "папка {{name}}",
+      "stale_collapse_menu": "Сворачивать спящие сессии",
+      "stale_collapse_off": "Выкл.",
+      "stale_collapse_paused": "Приостановлено",
+      "stale_collapse_paused_hint": "Приостановлено, пока список в поиске, отфильтрован или отсортирован не по новизне.",
+      "stale_collapse_row": "Спящие сессии",
+      "stale_collapse_row_ungrouped": "вне папок",
       "started_in_channel": "Этот диалог начался в {{channel}}.",
       "started_in_direct_message": "Этот диалог начался в личном сообщении.",
       "stop_filtering_by_tag": "Не фильтровать по тегу {{name}}",
@@ -9863,6 +9904,20 @@
       "no_checkout_found_action": "Задайте переменную окружения ниже или добавьте dev_fleet.repo_path в config.json в каталоге данных {{productName}} (по умолчанию ~/.kiro/crew), чтобы сохранить настройку, затем перезапустите шлюз."
     },
     "developer": {
+      "agentBackendTab": {
+        "agent_backend": "Бэкенд агента",
+        "claude_code": "Claude Code",
+        "could_not_load_the_agent_backend": "Не удалось загрузить бэкенд агента.",
+        "could_not_save_the_agent_backend": "Не удалось сохранить бэкенд агента.",
+        "default_all_features_supported": "По умолчанию. Все функции поддерживаются.",
+        "experimental": "Экспериментальный",
+        "kas_kiro_agent": "KAS (kiro-agent)",
+        "kiro_cli": "Kiro CLI",
+        "loading_configuration": "Загрузка конфигурации…",
+        "new_sessions_use_this_agent_a_session_that_is_al": "Новые сессии используют этого агента. Уже открытая сессия сохраняет того, с которым была начата, — переключение здесь не меняет её посреди сессии.",
+        "not_enabled_in_this_build": "Не включено в этой сборке",
+        "retry": "Повторить"
+      },
       "featurePreviewsTab": {
         "inbound_webhook_tokens_registered_contexts_and_r": "Токены входящих вебхуков, зарегистрированные контексты и история запусков. API работает, но страница не доделана.",
         "open_webhooks": "Открыть вебхуки",
@@ -9872,6 +9927,10 @@
     "developerPage": {
       "developer": "Разработчик",
       "tabs": {
+        "agentBackend": {
+          "description": "Какого агента запускают новые сессии — Kiro CLI, Claude Code или KAS",
+          "label": "Бэкенд агента"
+        },
         "archive": {
           "description": "Ротированная и сжатая история сессий (хранение 7 дней)",
           "label": "Архив"
@@ -9912,7 +9971,19 @@
     },
     "discoverPage": {
       "subtitle": "Просматривайте и устанавливайте агентные приложения",
-      "title": "Обзор"
+      "tab_featured": "Рекомендуемое",
+      "tab_updates": "Обновления",
+      "title": "Обзор",
+      "updates_badge_label_few": "Доступно {{count}} обновления",
+      "updates_badge_label_many": "Доступно {{count}} обновлений",
+      "updates_badge_label_one": "Доступно {{count}} обновление",
+      "updates_badge_label_other": "Доступно {{count}} обновления",
+      "updates_empty": "Всё обновлено.",
+      "updates_empty_back_to_featured": "Смотреть рекомендуемые приложения",
+      "version_diff": "v{{from}} → v{{to}}",
+      "updating": "Обновление…",
+      "updates_check_failed": "Не удалось проверить обновления.",
+      "updates_retry": "Повторить"
     },
     "embedSettingsPage": {
       "back": "Назад",
@@ -10712,7 +10783,14 @@
         "probe_failing": "Постоянные сбои",
         "probe_failing_help": "{{failures}} последовательных неудачных проверок. Сервер по-прежнему подключён; это показание состояния, а не изменение.",
         "reset_failures": "Сбросить счётчик",
-        "reset_failures_help": "Сбрасывает счётчик последовательных сбоев этого сервера."
+        "reset_failures_help": "Сбрасывает счётчик последовательных сбоев этого сервера.",
+        "sign_in": "Войти",
+        "sign_in_authorize": "Авторизовать {{name}}",
+        "sign_in_mint_failed": "Не удалось начать вход. Попробуйте ещё раз.",
+        "sign_in_preparing": "Подготовка входа…",
+        "sign_in_retry": "Попробовать ещё раз",
+        "sign_in_row_updates_after_probe": "Нажмите «Probe MCP servers» выше, чтобы обновить эту строку.",
+        "sign_in_timeout": "Вход не выдал ссылку на подтверждение вовремя. Попробуйте ещё раз."
       },
       "memoryGraphTab": {
         "all_count": "Все ({{count}})",

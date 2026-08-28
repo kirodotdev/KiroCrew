@@ -446,6 +446,10 @@
         "header_resolved": "해결됨"
       },
       "global": {
+        "unattributed_label": "리포지토리가 없는 이벤트",
+        "unattributed_note": "이벤트가 리포지토리를 명시하기 전에 기록되어 어느 리포지토리에도 귀속할 수 없습니다.",
+        "repos_label": "리포지토리",
+        "repos_note": "이 보드는 이들을 함께 집계하며 아직 개별로 표시할 수 없습니다.",
         "tab_pipeline": "파이프라인",
         "tab_lanes": "항목 레인",
         "tablist_label": "자동 분류 파이프라인 보기",
@@ -4577,12 +4581,24 @@
         "download_failed": "다운로드를 시작할 수 없습니다. 아무것도 전송되지 않았습니다. 다시 시도하세요.",
         "delete_confirm_action": "파일 삭제",
         "delete_confirm": "‘{{name}}’을(를) 삭제하시겠습니까? 파일이 드라이브에서 제거됩니다.",
+        "col_name": "이름",
+        "col_kind": "종류",
+        "col_size": "크기",
+        "col_modified": "수정일",
+        "col_actions": "작업",
+        "kind_folder": "폴더",
+        "folder_new": "새 폴더",
+        "folder_name": "폴더 이름",
+        "folder_delete_confirm": "‘{{name}}’과(와) 그 안의 모든 항목을 삭제하시겠습니까?",
+        "folder_delete_action": "폴더 삭제",
+        "folder_delete_failed": "폴더를 삭제할 수 없습니다.",
+        "folder_create_failed": "폴더를 만들 수 없습니다.",
+        "folder_bad_name": "이 폴더 이름에는 S3에서 허용하지 않는 문자가 있습니다. 문자, 숫자, 공백 및 . _ - ( ) + @ = 는 사용할 수 있습니다.",
+        "folder_deleted": "{{objects}}개 항목을 삭제했습니다.",
         "cancel": "취소",
         "load_more": "더 보기",
         "stat_this_month": "이번 달",
-        "more_actions": "추가 작업",
         "storage_consent_needed": "이 계정의 클라우드 스토리지가 아직 확인되지 않았습니다. 아래에서 확인한 뒤 새로 고치세요.",
-        "stat_stored": "저장량",
         "stat_stored_value": "{{size}} · 객체 {{objects}}개",
         "costs_as_of": "{{date}} 기준 캐시된 수치입니다.",
         "costs_consent_missing": "이 계정의 지출을 보려면 아래에서 비용 보고를 켜세요.",
@@ -4613,12 +4629,12 @@
         "kind_webapp": "웹 앱",
         "kind_image": "이미지",
         "drive_title": "드라이브",
-        "drive_root": "드라이브",
         "drive_upload": "업로드",
         "drive_uploading": "업로드 중…",
         "drive_bad_name": "이 파일 이름에는 드라이브가 저장할 수 없는 문자가 있습니다. 이름을 바꾼 뒤 다시 시도하세요.",
         "drive_empty": "이 폴더는 비어 있습니다.",
         "section_drive": "드라이브",
+        "section_files": "파일",
         "section_library": "라이브러리",
         "section_backup": "백업",
         "share_title": "이 파일 공유",
@@ -4662,7 +4678,9 @@
         "connection_connected": "연결됨",
         "connection_degraded": "저하됨",
         "connection_unknown": "알 수 없음",
-        "copy_id": "계정 ID 복사"
+        "copy_id": "계정 ID 복사",
+        "folder_actions": "폴더 작업",
+        "file_actions": "파일 작업"
       },
       "page": {
         "title": "AWS Control",
@@ -4707,7 +4725,8 @@
         "add_accounts_error": "해당 프로필을 등록할 수 없습니다. 아무것도 추가되지 않았습니다. 다시 시도하세요.",
         "search_placeholder": "계정 검색",
         "search_none": "‘{{query}}’과(와) 일치하는 계정이 없습니다.",
-        "paid_services_title": "유료 서비스"
+        "paid_services_title": "유료 서비스",
+        "orphan_consent": "여기에 등록되지 않은 AWS 계정에 대해 확인되었습니다. 아래에서 확인을 철회하거나, 해당 계정을 다시 등록해 전용 페이지에서 관리하세요."
       }
     }
   },
@@ -6518,6 +6537,10 @@
       "trusted_source": "신뢰된 출처",
       "trusted_source_clones_with_your_git_credentials": "신뢰된 출처 — 이 레지스트리의 앱은 사용자의 Git 자격 증명으로 복제됩니다."
     },
+    "rejectDropdown": {
+      "reject_all": "모두 거부 — 나머지는 묻지 않고 거부",
+      "reject_once": "한 번만 거부 — 나머지는 계속 확인"
+    },
     "remoteArtifactCard": {
       "clone": "클론",
       "clone_failed": "클론하지 못했습니다",
@@ -6815,6 +6838,10 @@
       "no_matching_skills": "일치하는 스킬 없음",
       "no_matching_skills_ctrl_enter_sends": "일치하는 스킬 없음 — Ctrl+Enter 키를 누르면 메시지가 전송됩니다",
       "no_matching_skills_enter_sends": "일치하는 스킬 없음 — Enter 키를 누르면 메시지가 전송됩니다",
+      "no_skills_mapped_to_agent": "{{agent}}에 매핑된 스킬 없음",
+      "no_skills_mapped_to_agent_ctrl_enter_sends": "{{agent}}에 매핑된 스킬 없음 — Ctrl+Enter 키를 누르면 메시지가 전송됩니다",
+      "no_skills_mapped_to_agent_enter_sends": "{{agent}}에 매핑된 스킬 없음 — Enter 키를 누르면 메시지가 전송됩니다",
+      "scoped_to_agent": "에이전트 {{agent}}(으)로 제한됨",
       "trust_needed_badge": "신뢰 필요",
       "trust_needed_hint": "이 프로젝트의 스킬입니다. 선택하면 내용을 확인하고 폴더를 신뢰할 수 있습니다."
     },
@@ -7801,6 +7828,8 @@
       "uninstall_removes_metadata_secret_and_source": "앱에서 설치됨 — {{productName}} 메타데이터, 앱 시크릿, 다운로드된 소스 코드가 제거됩니다.",
       "update_all": "모두 업데이트",
       "update_other": "업데이트 {{count}}개",
+      "updates_hint_link": "업데이트 보기",
+      "updates_hint_other": "업데이트 {{count}}개 사용 가능",
       "updating_progress": "업데이트 중 {{done}}/{{total}}…",
       "v": "v",
       "installed_app_find_in_library_and_enable": "{{name}} 설치됨. 라이브러리에서 활성화하세요.",
@@ -8389,7 +8418,8 @@
       "collapsibleToolGroup": {
         "approval_needed": "승인 필요",
         "approvals_pending": "승인 대기 중",
-        "batch_preview_note": "대기 중인 {{count}}건 중 최신 항목입니다. 모두 함께 처리됩니다.",
+        "batch_preview_all": "아래에서 대기 중인 {{count}}건의 호출을 모두 검토하세요. 모두 함께 처리됩니다.",
+        "batch_preview_none": "이 호출에 대한 미리 보기를 사용할 수 없습니다.",
         "approve": "승인",
         "approve_all": "모두 승인 ({{count}})",
         "approved": "승인됨",
@@ -9065,6 +9095,14 @@
       "sort_newest": "최신순",
       "sort_oldest": "오래된순",
       "source_links_expand_failed": "나머지를 불러올 수 없습니다. 클릭하여 다시 시도하세요.",
+      "stale_collapse_caption": "다음 기간보다 오래 활동이 없으면",
+      "stale_collapse_ctx_in_name": "{{name}} 폴더",
+      "stale_collapse_menu": "휴면 세션 접기",
+      "stale_collapse_off": "끄기",
+      "stale_collapse_paused": "일시 중지됨",
+      "stale_collapse_paused_hint": "목록이 검색·필터 중이거나 최신순이 아닌 정렬일 때는 일시 중지됩니다.",
+      "stale_collapse_row": "휴면 세션",
+      "stale_collapse_row_ungrouped": "폴더 밖",
       "started_in_channel": "이 대화는 {{channel}}에서 시작되었습니다.",
       "started_in_direct_message": "이 대화는 다이렉트 메시지에서 시작되었습니다.",
       "stop_filtering_by_tag": "{{name}} 필터 해제",
@@ -9416,6 +9454,20 @@
       "no_checkout_found_action": "아래 환경 변수를 설정하거나, 설정을 유지하려면 {{productName}} 데이터 디렉터리(기본값 ~/.kiro/crew)의 config.json에 dev_fleet.repo_path를 추가한 후 게이트웨이를 다시 시작하세요."
     },
     "developer": {
+      "agentBackendTab": {
+        "agent_backend": "에이전트 백엔드",
+        "claude_code": "Claude Code",
+        "could_not_load_the_agent_backend": "에이전트 백엔드를 불러올 수 없습니다.",
+        "could_not_save_the_agent_backend": "에이전트 백엔드를 저장할 수 없습니다.",
+        "default_all_features_supported": "기본값입니다. 모든 기능이 지원됩니다.",
+        "experimental": "실험적",
+        "kas_kiro_agent": "KAS (kiro-agent)",
+        "kiro_cli": "Kiro CLI",
+        "loading_configuration": "구성을 불러오는 중…",
+        "new_sessions_use_this_agent_a_session_that_is_al": "새 세션은 이 에이전트를 사용합니다. 이미 열려 있는 세션은 시작할 때의 에이전트를 유지하며, 여기서 전환해도 세션 중에는 바뀌지 않습니다.",
+        "not_enabled_in_this_build": "이 빌드에서는 활성화되지 않았습니다",
+        "retry": "다시 시도"
+      },
       "featurePreviewsTab": {
         "inbound_webhook_tokens_registered_contexts_and_r": "수신 웹훅 토큰, 등록된 컨텍스트, 실행 기록입니다. API는 동작하지만 페이지는 아직 완성되지 않았습니다.",
         "open_webhooks": "Webhooks 열기",
@@ -9425,6 +9477,10 @@
     "developerPage": {
       "developer": "개발자",
       "tabs": {
+        "agentBackend": {
+          "description": "새 세션이 시작할 에이전트 — Kiro CLI, Claude Code 또는 KAS",
+          "label": "에이전트 백엔드"
+        },
         "archive": {
           "description": "순환·압축된 세션 기록(7일간 보관)",
           "label": "아카이브"
@@ -9465,7 +9521,16 @@
     },
     "discoverPage": {
       "subtitle": "에이전틱 앱을 둘러보고 설치합니다",
-      "title": "탐색"
+      "tab_featured": "추천",
+      "tab_updates": "업데이트",
+      "title": "탐색",
+      "updates_badge_label_other": "업데이트 {{count}}개 사용 가능",
+      "updates_empty": "모든 앱이 최신 상태입니다.",
+      "updates_empty_back_to_featured": "추천 앱 둘러보기",
+      "version_diff": "v{{from}} → v{{to}}",
+      "updating": "업데이트 중…",
+      "updates_check_failed": "업데이트를 확인할 수 없습니다.",
+      "updates_retry": "다시 시도"
     },
     "embedSettingsPage": {
       "back": "뒤로",
@@ -10247,7 +10312,14 @@
         "probe_failing": "연속 실패",
         "probe_failing_help": "연속 {{failures}}회 프로브 실패. 서버는 그대로 마운트되어 있으며, 이는 상태 표시이지 변경이 아닙니다.",
         "reset_failures": "횟수 초기화",
-        "reset_failures_help": "이 서버의 연속 실패 횟수를 지웁니다."
+        "reset_failures_help": "이 서버의 연속 실패 횟수를 지웁니다.",
+        "sign_in": "로그인",
+        "sign_in_authorize": "{{name}} 승인",
+        "sign_in_mint_failed": "로그인을 시작할 수 없습니다. 다시 시도하세요.",
+        "sign_in_preparing": "로그인 준비 중…",
+        "sign_in_retry": "다시 시도",
+        "sign_in_row_updates_after_probe": "위의 Probe MCP servers를 사용하여 이 행을 새로 고치세요.",
+        "sign_in_timeout": "로그인이 제시간에 승인 링크를 생성하지 못했습니다. 다시 시도하세요."
       },
       "memoryGraphTab": {
         "all_count": "전체 ({{count}})",

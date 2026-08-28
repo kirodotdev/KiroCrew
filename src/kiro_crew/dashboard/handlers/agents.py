@@ -993,17 +993,41 @@ async def api_agents_installed(request: web.Request) -> web.Response:
 def _normalize_model_key(name: str) -> str:
     """Canonical key for de-duping CC model ids across spelling variants.
 
-    The claude-agent-acp adapter advertises dashed ids (``claude-opus-4-7``)
-    while curated/config entries may use dotted versions (``claude-opus-4.7``);
-    case can also differ. Without normalization the same model surfaces twice in
-    the dropdown (one curated row + one advertised row). Lowercase and fold
-    ``.``→``-`` so equivalent ids collapse to one entry. ``default`` and ``auto``
-    both mean "let the backend pick", so they map to a single key too.
+    Mirrors ``normalizeModelKey`` in ``website/src/lib/model.ts``: both route a
+    model id through the shared canonical registry (``model_registry.json``) so
+    "same model?" has ONE definition across the dashboard (dropdown dedup, slot
+    display, and the #5306 subagent downgrade flag).
+
+    Resolution order:
+    1. ``auto``/``default``/unset -> the ``auto`` sentinel (both mean "let the
+       backend pick"); an empty id stays ``""`` (no pin, distinct from Auto).
+    2. Registry canonical key: a canonical key, a registry alias, or a
+       claude_code provider id -- with or without a region/vendor routing prefix
+       (``us.anthropic.…``, ``global.anthropic.…``) -- folds to its canonical
+       key. This makes an alias and its provider-prefixed canonical id equal
+       (``us.anthropic.claude-opus-4-8[1m]`` == ``claude-opus-4.8`` ->
+       ``opus-4.8-1m``) while keeping DISTINCT registry entries distinct -- the
+       advertised dashed ``claude-opus-4-8`` (200K, ``opus-4.8``) does NOT fold
+       onto dotted ``claude-opus-4.8`` (1M, ``opus-4.8-1m``); the old
+       ``.``->``-`` fold conflated those two different-window models (#5339).
+    3. Fallback for an id the registry does not list (GPT/DeepSeek/Qwen, future
+       models, operator-typed ids): the historical lossless fold -- lowercase,
+       ``.``->``-`` -- so behavior is identity-preserving off the registered set,
+       matching ``from_provider_id``'s pass-through contract.
     """
-    key = (name or "").strip().lower().replace(".", "-")
-    if key in ("default", "auto"):
+    string_fold = (name or "").strip().lower().replace(".", "-")
+    if not string_fold:
+        return ""
+    if string_fold in ("default", "auto"):
         return "auto"
-    return key
+    # Registry lookups are exact and its keys/aliases/provider-ids are all
+    # lowercase, so resolve on the lowercased id (the old helper lowercased too).
+    # canonical_key resolves acp-first then claude_code AND peels a known routing
+    # prefix, so it covers both #5339 halves; a miss returns None.
+    resolved = model_registry.canonical_key((name or "").strip().lower())
+    if resolved is not None:
+        return resolved
+    return string_fold
 
 
 def _advertised_cc_models(request: web.Request) -> list[dict]:

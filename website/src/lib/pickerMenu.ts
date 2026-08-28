@@ -27,11 +27,16 @@ export interface MenuGeometry {
 /**
  * Compute where an anchored picker opens and its portal position.
  * `count` is the number of rows; `rowH` the per-row height estimate (px).
- * The menu opens above the input when there's room, else below.
+ * `extraH` budgets non-row chrome (e.g. a pinned footer) into the height so
+ * an above-anchor menu's top edge accounts for it instead of the extra
+ * pixels overhanging the composer. The menu opens above the input when
+ * there's room, else below.
  */
-export function menuGeometry(anchor: HTMLElement, count: number, rowH: number): MenuGeometry {
+export function menuGeometry(
+  anchor: HTMLElement, count: number, rowH: number, extraH = 0,
+): MenuGeometry {
   const rect = anchor.getBoundingClientRect()
-  const menuH = Math.min((count || 1) * rowH + 8, MENU_MAX_HEIGHT)
+  const menuH = Math.min((count || 1) * rowH + 8 + extraH, MENU_MAX_HEIGHT)
   const aboveTop = rect.top - menuH - 4
   const above = aboveTop > 0
   return {

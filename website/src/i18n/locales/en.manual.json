@@ -1237,6 +1237,10 @@
       "run_named_now": "Run {{name}} now",
       "running": "running"
     },
+    "rejectDropdown": {
+      "reject_all": "Reject all — refuse the rest without asking",
+      "reject_once": "Reject once — keep asking about the rest"
+    },
     "tailnetMobile": {
       "automatic_https": "After HTTPS is enabled for this tailnet, Tailscale creates and renews the private certificate automatically.",
       "setting_up": "Setting up phone access…",
@@ -2150,7 +2154,11 @@
     },
     "skillPickerMenu": {
       "no_matching_skills_ctrl_enter_sends": "No matching skills — Ctrl+Enter sends the message",
-      "no_matching_skills_enter_sends": "No matching skills — Enter sends the message"
+      "no_matching_skills_enter_sends": "No matching skills — Enter sends the message",
+      "no_skills_mapped_to_agent": "No skills mapped to {{agent}}",
+      "no_skills_mapped_to_agent_ctrl_enter_sends": "No skills mapped to {{agent}} — Ctrl+Enter sends the message",
+      "no_skills_mapped_to_agent_enter_sends": "No skills mapped to {{agent}} — Enter sends the message",
+      "scoped_to_agent": "Scoped to agent {{agent}}"
     },
     "snipOverlay": {
       "could_not_capture_the_selected_region_please_try": "Could not capture the selected region. Please try again."
@@ -2708,6 +2716,9 @@
       "uninstall_removes_metadata_secret_and_source": "Installed from Apps — {{productName}} metadata, the app secret, and the downloaded source code will be removed.",
       "updated_app_one": "Updated {{count}} app.",
       "updated_app_other": "Updated {{count}} apps.",
+      "updates_hint_link": "View updates",
+      "updates_hint_one": "{{count}} update available",
+      "updates_hint_other": "{{count}} updates available",
       "updating_progress": "Updating {{done}}/{{total}}…"
     },
     "artifactDeployPage": {
@@ -3529,6 +3540,10 @@
     },
     "developerPage": {
       "tabs": {
+        "agentBackend": {
+          "description": "Which agent new sessions start — Kiro CLI, Claude Code, or KAS",
+          "label": "Agent Backend"
+        },
         "archive": {
           "description": "Rotated/compacted session history (7-day retention)",
           "label": "Archive"
@@ -3569,7 +3584,17 @@
     },
     "discoverPage": {
       "subtitle": "Browse and install agentic apps",
-      "title": "Discover"
+      "tab_featured": "Featured",
+      "tab_updates": "Updates",
+      "title": "Discover",
+      "updates_badge_label_one": "{{count}} update available",
+      "updates_badge_label_other": "{{count}} updates available",
+      "updates_empty": "Everything is up to date.",
+      "updates_empty_back_to_featured": "Browse Featured apps",
+      "version_diff": "v{{from}} → v{{to}}",
+      "updating": "Updating…",
+      "updates_check_failed": "Couldn't check for updates.",
+      "updates_retry": "Retry"
     },
     "hooksPage": {
       "click_again_to_confirm": "Click again to confirm",
@@ -3912,6 +3937,13 @@
         "servers_scope_tip": "MCP servers across Kiro Crew and your interactive {{provider}}/Kiro globals. The Kiro Crew badge shows if it'll load in Kiro Crew sessions; the Globals badge shows if it's shared to your interactive Kiro global. Click to toggle, then Apply.",
         "sign_in_required": "Sign-in required",
         "sign_in_required_help": "This server uses OAuth and nobody has signed in yet. <chatLink>Go to chat</chatLink>, start a new session, and send any message — you'll be asked to approve the sign-in in chat. Then probe to refresh this list.",
+        "sign_in": "Sign in",
+        "sign_in_retry": "Try again",
+        "sign_in_preparing": "Preparing sign-in…",
+        "sign_in_authorize": "Authorize {{name}}",
+        "sign_in_mint_failed": "Could not start the sign-in. Try again.",
+        "sign_in_timeout": "The sign-in did not produce an approval link in time. Try again.",
+        "sign_in_row_updates_after_probe": "Use Probe MCP servers above to refresh this row.",
         "oauth_not_a_static_token": "This server signs in with OAuth, so a static Authorization header cannot satisfy it. Remove and re-add this server without the header, enable it, then start a new chat session to sign in.",
         "sign_in_required_next": "Once you have approved it, use the Probe MCP servers button above this table; this row will then read Signed in.",
         "signed_in": "Signed in",

@@ -139,6 +139,7 @@ describe('ChatSidebar – search results honour a locally-renamed title', () => 
   beforeEach(() => {
     sessionsSearchMock.mockClear()
     localStorage.clear()
+    localStorage.setItem('mc-session-stale-collapse-ms', '0')
   })
 
   it('shows a title-matching session while the backend result set is empty', async () => {

@@ -37,6 +37,7 @@ import type { ChatMessage } from '../types'
 import { fmtMessageTime, fmtMessageTimeFull } from '../pages/chat/messageTime'
 import { turnHadPolicyBlock } from './turnPolicyBlock'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
+import { isRejectedDecision } from '../utils/approvalDecision'
 
 /** Everything a renderer may read. Passed per row so entries stay pure functions. */
 export interface MessageRenderContext {
@@ -125,7 +126,7 @@ export const ToolCallPill = memo(function ToolCallPill({ message, running, onFil
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [expanded, setExpanded] = React.useState(false)
   const isDone = message.role === 'tool_result'
-  const isRejected = message.meta?.resolved === 'rejected'
+  const isRejected = isRejectedDecision(message.meta?.resolved)
   const hasPendingPerm = message.role === 'permission' && !message.meta?.resolved
 
   // Prefer the backend-stamped purpose ("Add teams_data dict guard…") over the

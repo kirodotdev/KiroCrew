@@ -452,6 +452,10 @@
         "header_resolved": "RÉSOLU"
       },
       "global": {
+        "unattributed_label": "ÉVÉNEMENTS SANS DÉPÔT",
+        "unattributed_note": "Enregistrés avant que les événements ne nomment leur dépôt, donc non attribuables.",
+        "repos_label": "DÉPÔTS",
+        "repos_note": "Ce tableau les regroupe et ne peut pas encore les afficher séparément.",
         "tab_pipeline": "Pipeline",
         "tab_lanes": "Couloirs d'éléments",
         "tablist_label": "Vues du pipeline de triage automatique",
@@ -4733,12 +4737,24 @@
         "download_failed": "Le téléchargement n'a pas pu démarrer. Rien n'a été envoyé. Réessayez.",
         "delete_confirm_action": "Supprimer le fichier",
         "delete_confirm": "Supprimer « {{name}} » ? Le fichier est retiré du drive.",
+        "col_name": "Nom",
+        "col_kind": "Type",
+        "col_size": "Taille",
+        "col_modified": "Modifié",
+        "col_actions": "Actions",
+        "kind_folder": "Dossier",
+        "folder_new": "Nouveau dossier",
+        "folder_name": "Nom du dossier",
+        "folder_delete_confirm": "Supprimer « {{name}} » et tout son contenu ?",
+        "folder_delete_action": "Supprimer le dossier",
+        "folder_delete_failed": "Impossible de supprimer le dossier.",
+        "folder_create_failed": "Impossible de créer le dossier.",
+        "folder_bad_name": "Ce nom de dossier contient des caracteres refuses par S3. Les lettres, chiffres, espaces et . _ - ( ) + @ = sont surs.",
+        "folder_deleted": "{{objects}} objet(s) supprime(s).",
         "cancel": "Annuler",
         "load_more": "Afficher plus",
         "stat_this_month": "Ce mois-ci",
-        "more_actions": "Autres actions",
         "storage_consent_needed": "Le stockage cloud de ce compte n'est pas encore confirmé. Confirmez-le ci-dessous, puis actualisez la page.",
-        "stat_stored": "Stockage",
         "stat_stored_value": "{{size}} · {{objects}} objets",
         "costs_as_of": "Chiffres en cache, au {{date}}.",
         "costs_consent_missing": "Activez le suivi des coûts ci-dessous pour voir les dépenses de ce compte.",
@@ -4769,12 +4785,12 @@
         "kind_webapp": "Application web",
         "kind_image": "Image",
         "drive_title": "Disque",
-        "drive_root": "Disque",
         "drive_upload": "Téléverser",
         "drive_uploading": "Téléversement…",
         "drive_bad_name": "Ce nom de fichier contient des caractères que le disque ne peut pas stocker. Renommez-le et réessayez.",
         "drive_empty": "Ce dossier est vide.",
         "section_drive": "Disque",
+        "section_files": "Fichiers",
         "section_library": "Bibliothèque",
         "section_backup": "Sauvegarde",
         "share_title": "Partager ce fichier",
@@ -4820,7 +4836,9 @@
         "connection_connected": "Connectée",
         "connection_degraded": "Dégradée",
         "connection_unknown": "Inconnue",
-        "copy_id": "Copier l’ID de compte"
+        "copy_id": "Copier l’ID de compte",
+        "folder_actions": "Actions du dossier",
+        "file_actions": "Actions du fichier"
       },
       "page": {
         "title": "AWS Control",
@@ -4875,7 +4893,8 @@
         "aggregate_healthy_many": "{{count}} saines",
         "keys_summary_many": "{{count}} clés",
         "add_accounts_count_many": "{{count}} sur {{max}} enregistrés",
-        "paid_services_title": "Services payants"
+        "paid_services_title": "Services payants",
+        "orphan_consent": "Confirmé pour un compte AWS qui n'est pas enregistré ici. Retirez la confirmation ci-dessous, ou enregistrez à nouveau ce compte pour le gérer depuis sa propre page."
       }
     }
   },
@@ -6734,6 +6753,10 @@
       "trusted_source": "Source de confiance",
       "trusted_source_clones_with_your_git_credentials": "Source de confiance — les apps de ce registre sont clonées avec vos identifiants Git."
     },
+    "rejectDropdown": {
+      "reject_all": "Tout refuser — refuser les autres sans demander",
+      "reject_once": "Refuser une fois — continuer à demander pour les autres"
+    },
     "remoteArtifactCard": {
       "clone": "Cloner",
       "clone_failed": "Échec du clonage",
@@ -7033,6 +7056,10 @@
       "no_matching_skills": "Aucune compétence correspondante",
       "no_matching_skills_ctrl_enter_sends": "Aucune compétence correspondante — Ctrl+Enter envoie le message",
       "no_matching_skills_enter_sends": "Aucune compétence correspondante — Enter envoie le message",
+      "no_skills_mapped_to_agent": "Aucune compétence mappée à {{agent}}",
+      "no_skills_mapped_to_agent_ctrl_enter_sends": "Aucune compétence mappée à {{agent}} — Ctrl+Enter envoie le message",
+      "no_skills_mapped_to_agent_enter_sends": "Aucune compétence mappée à {{agent}} — Enter envoie le message",
+      "scoped_to_agent": "Limité à l’agent {{agent}}",
       "trust_needed_badge": "Approbation requise",
       "trust_needed_hint": "De ce projet. Sélectionne-la pour l’examiner et approuver le dossier."
     },
@@ -8038,6 +8065,10 @@
       "updated_app_many": "{{count}} applications mises à jour.",
       "updated_app_one": "{{count}} application mise à jour.",
       "updated_app_other": "{{count}} applications mises à jour.",
+      "updates_hint_link": "Voir les mises à jour",
+      "updates_hint_many": "{{count}} mises à jour disponibles",
+      "updates_hint_one": "{{count}} mise à jour disponible",
+      "updates_hint_other": "{{count}} mises à jour disponibles",
       "updating_progress": "Mise à jour {{done}}/{{total}}…",
       "v": "v",
       "installed_app_find_in_library_and_enable": "{{name}} installé. Activez-le dans la Bibliothèque.",
@@ -8641,7 +8672,8 @@
       "collapsibleToolGroup": {
         "approval_needed": "Approbation requise",
         "approvals_pending": "approbations en attente",
-        "batch_preview_note": "Appel le plus récent sur {{count}} en attente ; tous seront traités ensemble.",
+        "batch_preview_all": "Passez en revue ci-dessous les {{count}} appels en attente — tous seront traités ensemble.",
+        "batch_preview_none": "Aucun aperçu disponible pour cet appel.",
         "approve": "Approuver",
         "approve_all": "Tout approuver ({{count}})",
         "approved": "Approuvé",
@@ -9355,6 +9387,14 @@
       "sort_newest": "Plus récentes",
       "sort_oldest": "Plus anciennes",
       "source_links_expand_failed": "Impossible de charger le reste. Cliquez pour réessayer.",
+      "stale_collapse_caption": "Sans activité depuis plus de",
+      "stale_collapse_ctx_in_name": "dossier {{name}}",
+      "stale_collapse_menu": "Réduire les sessions en sommeil",
+      "stale_collapse_off": "Désactivé",
+      "stale_collapse_paused": "En pause",
+      "stale_collapse_paused_hint": "En pause tant que la liste est en recherche, filtrée ou triée autrement que par plus récentes d’abord.",
+      "stale_collapse_row": "Sessions en sommeil",
+      "stale_collapse_row_ungrouped": "hors dossiers",
       "started_in_channel": "Cette conversation a commencé dans {{channel}}.",
       "started_in_direct_message": "Cette conversation a commencé dans un message privé.",
       "stop_filtering_by_tag": "Arrêter de filtrer par {{name}}",
@@ -9714,6 +9754,20 @@
       "no_checkout_found_action": "Définissez la variable d'environnement ci-dessous, ou ajoutez dev_fleet.repo_path au config.json de votre répertoire de données {{productName}} (~/.kiro/crew par défaut) pour la rendre permanente, puis redémarrez la passerelle."
     },
     "developer": {
+      "agentBackendTab": {
+        "agent_backend": "Backend de l’agent",
+        "claude_code": "Claude Code",
+        "could_not_load_the_agent_backend": "Impossible de charger le backend de l’agent.",
+        "could_not_save_the_agent_backend": "Impossible d’enregistrer le backend de l’agent.",
+        "default_all_features_supported": "Par défaut. Toutes les fonctionnalités sont prises en charge.",
+        "experimental": "Expérimental",
+        "kas_kiro_agent": "KAS (kiro-agent)",
+        "kiro_cli": "Kiro CLI",
+        "loading_configuration": "Chargement de la configuration…",
+        "new_sessions_use_this_agent_a_session_that_is_al": "Les nouvelles sessions utilisent cet agent. Une session déjà ouverte conserve celui avec lequel elle a démarré : changer ici ne la modifie pas en cours de session.",
+        "not_enabled_in_this_build": "Non activé dans cette version",
+        "retry": "Réessayer"
+      },
       "featurePreviewsTab": {
         "inbound_webhook_tokens_registered_contexts_and_r": "Jetons de webhooks entrants, contextes enregistrés et historique des exécutions. L'API fonctionne, mais la page n'est pas terminée.",
         "open_webhooks": "Ouvrir Webhooks",
@@ -9723,6 +9777,10 @@
     "developerPage": {
       "developer": "Développeur",
       "tabs": {
+        "agentBackend": {
+          "description": "Quel agent les nouvelles sessions démarrent : Kiro CLI, Claude Code ou KAS",
+          "label": "Backend de l’agent"
+        },
         "archive": {
           "description": "Historique des sessions après rotation ou compactage (conservation de 7 jours)",
           "label": "Archives"
@@ -9763,7 +9821,18 @@
     },
     "discoverPage": {
       "subtitle": "Parcourez et installez des applications agentiques",
-      "title": "Découvrir"
+      "tab_featured": "À la une",
+      "tab_updates": "Mises à jour",
+      "title": "Découvrir",
+      "updates_badge_label_many": "{{count}} mises à jour disponibles",
+      "updates_badge_label_one": "{{count}} mise à jour disponible",
+      "updates_badge_label_other": "{{count}} mises à jour disponibles",
+      "updates_empty": "Tout est à jour.",
+      "updates_empty_back_to_featured": "Parcourir les apps à la une",
+      "version_diff": "v{{from}} → v{{to}}",
+      "updating": "Mise à jour…",
+      "updates_check_failed": "Impossible de vérifier les mises à jour.",
+      "updates_retry": "Réessayer"
     },
     "embedSettingsPage": {
       "back": "Retour",
@@ -10557,7 +10626,14 @@
         "probe_failing": "En echec",
         "probe_failing_help": "{{failures}} sondages en echec consecutifs. Le serveur reste monte : c'est un releve d'etat, pas une modification.",
         "reset_failures": "Reinitialiser le compteur",
-        "reset_failures_help": "Efface le compteur d'echecs consecutifs de ce serveur."
+        "reset_failures_help": "Efface le compteur d'echecs consecutifs de ce serveur.",
+        "sign_in": "Se connecter",
+        "sign_in_authorize": "Autoriser {{name}}",
+        "sign_in_mint_failed": "Impossible de démarrer la connexion. Réessayez.",
+        "sign_in_preparing": "Préparation de la connexion…",
+        "sign_in_retry": "Réessayer",
+        "sign_in_row_updates_after_probe": "Utilisez « Probe MCP servers » ci-dessus pour actualiser cette ligne.",
+        "sign_in_timeout": "La connexion n’a pas produit de lien d’approbation à temps. Réessayez."
       },
       "memoryGraphTab": {
         "all_count": "Tous ({{count}})",

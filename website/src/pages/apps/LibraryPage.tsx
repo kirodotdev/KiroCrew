@@ -2,14 +2,15 @@
  * LibraryPage — installed-app management, split out of the old AppsPage
  * (PR1 App Store split; route `/apps/library`).
  *
- * Pending-updates banner with Update All, search, the management cards
- * (InstalledAppCard), and the uninstall preview flow — all moved unchanged
- * from AppsPage's library branch. Data identity (installed list, update map,
- * mc:apps-changed announcement) lives in the shared `useAppsData` hook so
- * this page and Discover cannot drift.
+ * Search, the management cards (InstalledAppCard), and the uninstall preview
+ * flow — all moved unchanged from AppsPage's library branch. Data identity
+ * (installed list, update map, mc:apps-changed announcement) lives in the
+ * shared `useAppsData` hook so this page and Discover cannot drift.
  *
- * PR1 constraint: the update banner's behavior is UNCHANGED here — PR2 owns
- * any banner changes.
+ * Pending updates surface here as a light one-line hint linking to the
+ * Discover Updates sub-page (`/apps/-/updates`), which owns the update
+ * worklist and Update All (PR2 App Store split). Per-row Update stays on the
+ * cards via the shared `useAppUpdates` hook.
  */
 import { useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
@@ -23,12 +24,13 @@ import { Btn, EmptyState, PageHeader, SearchInput } from '../../components/ui'
 import { recordEvent } from '../../rum'
 import InstalledAppCard from '../../components/appstore/InstalledAppCard'
 import TrustAppModal, { isTrustDeniedError } from '../../components/appstore/TrustAppModal'
-import { isRegistrySourced, type InstalledApp } from '../../components/appstore/types'
+import type { InstalledApp } from '../../components/appstore/types'
 import { i18nT } from '../../i18n/t'
 import ErrorNotice from '../../components/ErrorNotice'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import useAppsData from './useAppsData'
 import { useAppActions } from './useAppActions'
+import { useAppUpdates } from './useAppUpdates'
 import { cardDataKey } from './cardDataKey'
 
 /** Uninstall preview payload (mirrors ``api.uninstallPreview`` return shape). */
@@ -48,12 +50,28 @@ export default function LibraryPage() {
   const [successMsg, setSuccessMsg] = useState('')
   const [successLink, setSuccessLink] = useState(false)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
-  const [updatingAll, setUpdatingAll] = useState<{ done: number; total: number } | null>(null)
 
   const {
     setError, displayError, dismissError,
     openDetail, updateApp, trustTarget, runEnable, trust,
   } = useAppActions({ apps, browseApps, appsError, registryError, announceAppsChanged })
+
+  // Transient success surface for the shared update hook: the hook reports
+  // outcomes, this page owns display + auto-dismiss (same 4s the other
+  // toasts here use).
+  const showSuccess = (msg: string) => {
+    setSuccessMsg(msg)
+    setTimeout(() => setSuccessMsg(''), 4000)
+  }
+
+  // Per-row update comes from the shared useAppUpdates hook (PR2), so this
+  // page and the Discover Updates sub-page cannot drift on how an update
+  // behaves. The recorded-source routing comment lives there. Update All is
+  // the Updates sub-page's affordance now — this page only hints (below).
+  const { updatingAll, updatePending, runUpdate } = useAppUpdates({
+    apps, updatables, announceAppsChanged, updateApp,
+    setError, setSuccess: showSuccess,
+  })
 
   // Uninstall confirmation state
   const [uninstallTarget, setUninstallTarget] = useState<InstalledApp | null>(null)
@@ -101,42 +119,15 @@ export default function LibraryPage() {
       }
       return
     }
-    // Update dispatches on the RECORDED SOURCE, mirroring ``handle_update_app``'s
-    // own branch. A registry-sourced app is re-cloned from its registry and the
-    // detail page owns that flow (streaming log plus the trust consent modal), so
-    // it navigates there. An app installed from a path has no registry row: it is
-    // refreshed in place from the directory recorded at install — the same call
-    // Update All makes — and routing it at the registry instead failed every sync
-    // with "not found in registry". A row absent from this list carries no source
-    // to read, so it navigates and the detail page re-dispatches on the record it
-    // loads. Blocked while Update All is running so the same update can't run
-    // twice concurrently.
-    if (action === 'update') {
-      if (updatingAll) return
-      const target = apps.find(a => a.name === name)
-      if (!target || isRegistrySourced(target)) {
-        updateApp(name)
-        return
-      }
-    }
+    // Update routing (recorded-source dispatch, per-app pending state, the
+    // Update-All concurrency guard) is the shared hook's contract now.
+    if (action === 'update') return runUpdate(name)
     setActionLoading(`${name}:${action}`)
     setError('')
     try {
       if (action === 'enable') await runEnable(name)
       else if (action === 'disable') await api.disableApp(name)
-      else if (action === 'update') await api.updateApp(name)
       announceAppsChanged()
-      // An in-place sync is the one action here whose success is otherwise
-      // INVISIBLE: re-copying a source directory usually carries the same
-      // version, so the card re-renders byte-identical and the dev cannot tell
-      // whether new bytes landed. Reflect it the way `disable` already does.
-      if (action === 'update') {
-        const app = apps.find(a => a.name === name)
-        setSuccessMsg(i18nT('pages.appsPage.synced_from_its_source_directory', {
-          name: app?.displayName || name,
-        }))
-        setTimeout(() => setSuccessMsg(''), 4000)
-      }
       // Show toast when hiding a builtin app
       if (action === 'disable') {
         const app = apps.find(a => a.name === name)
@@ -172,29 +163,6 @@ export default function LibraryPage() {
       setActionLoading(null)
       setUninstallTarget(null)
       setUninstallPreview(null)
-    }
-  }
-
-  const updateAll = async () => {
-    if (updatingAll) return
-    const targets = updatables.map(a => a.name)
-    setUpdatingAll({ done: 0, total: targets.length })
-    setError('')
-    const failed: string[] = []
-    for (let i = 0; i < targets.length; i++) {
-      try {
-        await api.updateApp(targets[i])
-      } catch {
-        failed.push(targets[i])
-      }
-      setUpdatingAll({ done: i + 1, total: targets.length })
-    }
-    setUpdatingAll(null)
-    announceAppsChanged()
-    if (failed.length) setError(i18nT('pages.appsPage.failed_to_update', { names: failed.join(', ') }))
-    else {
-      setSuccessMsg(i18nT('pages.appsPage.updated_app', { count: targets.length }))
-      setTimeout(() => setSuccessMsg(''), 4000)
     }
   }
 
@@ -405,18 +373,16 @@ export default function LibraryPage() {
         ) : (
           <>
             {updatables.length > 0 && (
-              <div className="mb-4 border border-[color-mix(in_srgb,var(--info)_45%,transparent)] bg-bg-elevated rounded-lg p-3 flex items-center gap-3 animate-rise">
-                <ArrowUp size={15} className="text-[var(--info)] shrink-0" />
-                <span className="text-text text-sm flex-1">
-                  {i18nT('pages.appsPage.update', { count: updatables.length })} {i18nT('pages.appsPage.available')}
-                </span>
-                <Btn
-                  className="!bg-[var(--info)] !text-white hover:!opacity-80"
-                  onClick={updateAll}
-                  disabled={!!updatingAll}
-                >
-                  {updatingAll ? i18nT('pages.appsPage.updating_progress', { done: updatingAll.done, total: updatingAll.total }) : i18nT('pages.appsPage.update_all')}
-                </Btn>
+              /* Light hint, not a banner: the update WORKLIST (rows, version
+                 diffs, Update All) lives on the Discover Updates sub-page —
+                 this row only says updates exist and hands off there. Per-row
+                 Update on the cards below still works via the shared hook. */
+              <div className="mb-4 flex items-center gap-2 text-[13px] text-muted animate-rise">
+                <ArrowUp size={13} className="shrink-0" aria-hidden />
+                <span>{i18nT('pages.appsPage.updates_hint', { count: updatables.length })}</span>
+                <Link to="/apps/-/updates" className="text-accent font-medium hover:underline shrink-0">
+                  {i18nT('pages.appsPage.updates_hint_link')}
+                </Link>
               </div>
             )}
             <div className="space-y-3">
@@ -458,7 +424,9 @@ export default function LibraryPage() {
                 >
                   <InstalledAppCard
                     app={app}
-                    actionLoading={updatingAll ? `${app.name}:update` : actionLoading}
+                    actionLoading={updatingAll
+                      ? `${app.name}:update`
+                      : updatePending ? `${updatePending}:update` : actionLoading}
                     onAction={handleAction}
                     onOpen={() => navigate(appNavTarget(app)?.route || `/apps/${app.name}`)}
                     onDetail={() => openDetail(app.name)}

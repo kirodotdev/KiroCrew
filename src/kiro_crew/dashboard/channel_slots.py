@@ -57,10 +57,11 @@ import asyncio
 import logging
 import time
 import weakref
+from itertools import islice
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.channel_folders import lookup_channel_folder
-from kiro_crew.dashboard.state import _normalize_slot_key
+from kiro_crew.dashboard.state import _normalize_slot_key, durable_row_count
 from kiro_crew.history import carry_provenance, is_incognito_transcript
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.link import channel_namespace_of, is_channel_session_key
@@ -371,7 +372,13 @@ def _rebuild_window(slot: "_ChatSlot", messages: list[dict[str, Any]]) -> None:
     """
     slot.messages.clear()
     slot._pending.clear()
-    slot._disk_older_count = max(0, len(messages) - _RESTORE_WINDOW)
+    older_cut = max(0, len(messages) - _RESTORE_WINDOW)
+    slot._disk_older_count = older_cut
+    # Durable-only view of the same prefix (transient-role lines excluded),
+    # recomputed from the transcript on every rebuild — the base absolute
+    # message positions are built over. ``islice`` avoids copying the whole
+    # prefix. See _ChatSlot.__init__.
+    slot._disk_older_durable_count = durable_row_count(islice(messages, older_cut))
     for msg in messages[-_RESTORE_WINDOW:]:
         role = msg.get("role", "assistant")
         cls = msg.get("cls") or ("msg msg-u" if role == "user" else "msg msg-a")

@@ -513,6 +513,17 @@ def _workspace() -> Path:
     return workspace_dir()
 
 
+def _event_repo(record: dict[str, Any]) -> str:
+    """The repository an event names, or ``""`` when it names none.
+
+    ``""`` is the pre-stamp shape, not a defect: the scheduled jobs only began
+    recording the repository recently, and the events written before that cannot be
+    back-filled.
+    """
+    value = record.get("repo")
+    return value if isinstance(value, str) and value else ""
+
+
 def audit_log_path(root: Path | None = None) -> Path:
     return (root if root is not None else _workspace()) / AUDIT_LOG_NAME
 
@@ -578,6 +589,19 @@ class PipelineFold:
     total_events: int = 0
     unparseable: int = 0
     unmapped: dict[str, int] = field(default_factory=dict)
+    #: Events that carry no repository at all, counted rather than dropped. Every
+    #: event written before the jobs began stamping the repository is in here, and
+    #: nothing can back-fill them: the record does not name a repository and an
+    #: issue number alone stops identifying one as soon as a second repository
+    #: exists. They are therefore included in EVERY repository's fold -- a reader
+    #: that filtered them out would make the whole history vanish, which reads as
+    #: the pipeline never having run. This count is what lets a view say so out
+    #: loud instead of quietly attributing them.
+    unattributed: int = 0
+    #: Every repository the trail actually names, with its event count. Derived
+    #: from the data rather than from configuration, so a view can offer exactly
+    #: the repositories that have events instead of asserting one.
+    repos: dict[str, int] = field(default_factory=dict)
     first_event_at: float | None = None
     last_event_at: float | None = None
     recent_hours: int = DEFAULT_RECENT_HOURS
@@ -587,6 +611,22 @@ class PipelineFold:
             "steps": [s.to_dict() for s in self.steps],
             "totalEvents": self.total_events,
             "unparseable": self.unparseable,
+            "unattributedEvents": self.unattributed,
+            "repos": [
+                # Redaction happens HERE, at the boundary the value crosses, and NOT
+                # on the dict key. The trail is written by agent-driven jobs, so a
+                # repository value is attacker-reachable text like a title is and
+                # must not reach the dashboard raw -- but `_printable` also
+                # TRUNCATES, so using it as the aggregation key merged any two
+                # repositories sharing a 120-character prefix into one entry. That
+                # defeated the disclosure this census exists for: their counts
+                # combined, the list shrank to a single row, and the view's
+                # "more than one repository" condition went false, so a mixed board
+                # reported itself as clean. Counting on the raw value and redacting
+                # on the way out keeps identity exact and the output safe.
+                {"repo": _printable(name, 120), "count": count}
+                for name, count in sorted(self.repos.items(), key=lambda kv: (-kv[1], kv[0]))
+            ],
             "unmappedEvents": [
                 {"event": name, "count": count}
                 for name, count in sorted(self.unmapped.items(), key=lambda kv: (-kv[1], kv[0]))[
@@ -615,6 +655,21 @@ def fold_pipeline(
     not blank the page. Note that clamping means there is no "all time" value --
     the cumulative counters already answer that, and ``recent`` is only ever a
     window.
+
+    This fold covers EVERY repository the trail names, and takes no parameter to
+    narrow it. That is deliberate, not an omission. ``repos`` and ``unattributed``
+    report what the trail contains -- which repositories appear, and how many
+    events predate the jobs stamping one -- so the ambiguity is DISCLOSED. They are
+    a census, never a filter.
+
+    Narrowing is what this fold must not offer yet. The dispatch queue keys its
+    entries on the issue NUMBER alone, so two repositories sharing a number
+    collide in the queue file before any fold reads it. A per-repository fold
+    layered on that would filter the step lists while the queue and session joins
+    stayed number-keyed, and would then attribute one repository's sessions and
+    costs to the other -- a filter that reads as precision while being wrong.
+    Selecting a repository becomes correct once the queue is keyed on repository
+    and number (issue #6221), and not before.
     """
     recent_hours = max(1, min(int(recent_hours or DEFAULT_RECENT_HOURS), 24 * 90))
     clock = time.time() if now is None else now
@@ -641,6 +696,22 @@ def fold_pipeline(
         if not ok or record is None:
             result.unparseable += 1
             continue
+        # Repository attribution is read for the CENSUS only. `repos` and
+        # `unattributed` answer "which repositories does this trail contain", which
+        # is disclosure; nothing below drops an event because of its repository, so
+        # `total_events` and the step counters cover exactly the same events the
+        # census describes.
+        event_repo = _event_repo(record)
+        if event_repo:
+            # Counted on the RAW value: this is an identity, and `_printable`
+            # truncates at 120 characters, so redacting here would merge two
+            # repositories whose names share a long prefix into one census row --
+            # exactly the mixture this census exists to disclose. The redaction is
+            # applied in `to_dict()`, where the value actually leaves for the
+            # dashboard.
+            result.repos[event_repo] = result.repos.get(event_repo, 0) + 1
+        else:
+            result.unattributed += 1
         result.total_events += 1
         name = record.get("event")
         if not isinstance(name, str) or not name:
@@ -890,6 +961,30 @@ def list_step_items(
     "Currently sitting in" means the item entered this step and no event has
     been observed taking it out -- the same in-flight relation L0 counts, so the
     number on the step card and the length of this list cannot disagree.
+
+    ``owner``/``repo`` are used ONLY to locate the local issue cache that supplies
+    titles, labels and assignees. They do NOT filter the item list, and must not
+    until the dispatch queue is keyed on repository and number (issue #6221).
+
+    That restriction is the whole point, so it is worth stating plainly rather than
+    leaving to a reader. The queue keys its entries on the issue NUMBER alone, and
+    the session lookup behind L2 does the same. Filtering THIS list by repository
+    while those joins stay number-keyed does not narrow the data -- it narrows only
+    the list, and then each surviving row is joined against whichever repository's
+    entry happens to occupy that number in the queue file. A two-repository install
+    would read one repository's metadata, sessions and costs under the other's
+    name, with a filtered heading asserting that it had been scoped. Returning
+    every repository's items is less precise and honest; returning a filtered list
+    over ambiguous joins is precise-looking and wrong.
+
+    So passing a different owner/repo returns the SAME items with less enrichment,
+    never a different pipeline -- which is also why the L0 overview takes no
+    repository parameter. Anyone reading these arguments as a repo filter would
+    draw exactly the wrong conclusion from a two-repository install. What the L0
+    fold does offer is a census: ``repos`` names the repositories the trail
+    contains and ``unattributedEvents`` counts the events written before the jobs
+    stamped one, so a view can disclose the mixture instead of implying a scope it
+    does not have.
     """
     spec = STEP_BY_KEY.get(step)
     if spec is None:
@@ -910,6 +1005,9 @@ def list_step_items(
     for record, ok in _iter_jsonl(text):
         if not ok or record is None:
             continue
+        # No repository filter here, deliberately -- see this function's docstring.
+        # The queue and session joins downstream are keyed on the issue number
+        # alone, so narrowing this list would misattribute rather than scope.
         name = record.get("event")
         if not isinstance(name, str) or not name:
             continue

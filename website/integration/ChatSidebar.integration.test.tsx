@@ -34,6 +34,7 @@ describe('ChatSidebar Folder Grouping', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     localStorage.clear()
+    localStorage.setItem('mc-session-stale-collapse-ms', '0')
     mockConfirm.mockReturnValue(true)
     // Hermetic focus baseline. api/client.ts shows a session-expired banner on an
     // unhandled auth 403 and its token input grabs focus on a rAF (client.ts

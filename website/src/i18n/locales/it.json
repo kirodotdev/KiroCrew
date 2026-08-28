@@ -452,6 +452,10 @@
         "header_resolved": "RISOLTO"
       },
       "global": {
+        "unattributed_label": "EVENTI SENZA REPOSITORY",
+        "unattributed_note": "Registrati prima che gli eventi indicassero il loro repository, quindi non attribuibili.",
+        "repos_label": "REPOSITORY",
+        "repos_note": "Questa bacheca li unisce e non può ancora mostrarli separatamente.",
         "tab_pipeline": "Pipeline",
         "tab_lanes": "Corsie degli elementi",
         "tablist_label": "Viste della pipeline di triage automatico",
@@ -4733,12 +4737,24 @@
         "download_failed": "Non è stato possibile avviare il download. Non è stato inviato nulla. Riprova.",
         "delete_confirm_action": "Elimina file",
         "delete_confirm": "Eliminare «{{name}}»? Il file viene rimosso dal drive.",
+        "col_name": "Nome",
+        "col_kind": "Tipo",
+        "col_size": "Dimensione",
+        "col_modified": "Modificato",
+        "col_actions": "Azioni",
+        "kind_folder": "Cartella",
+        "folder_new": "Nuova cartella",
+        "folder_name": "Nome della cartella",
+        "folder_delete_confirm": "Eliminare «{{name}}» e tutto il suo contenuto?",
+        "folder_delete_action": "Elimina cartella",
+        "folder_delete_failed": "Impossibile eliminare la cartella.",
+        "folder_create_failed": "Impossibile creare la cartella.",
+        "folder_bad_name": "Questo nome di cartella contiene caratteri che S3 non accetta. Lettere, cifre, spazi e . _ - ( ) + @ = sono sicuri.",
+        "folder_deleted": "Eliminati {{objects}} oggetti.",
         "cancel": "Annulla",
         "load_more": "Carica altro",
         "stat_this_month": "Questo mese",
-        "more_actions": "Altre azioni",
         "storage_consent_needed": "L'archiviazione cloud di questo account non è ancora confermata. Confermala qui sotto e poi aggiorna la pagina.",
-        "stat_stored": "Archiviato",
         "stat_stored_value": "{{size}} · {{objects}} oggetti",
         "costs_as_of": "Dati in cache, aggiornati al {{date}}.",
         "costs_consent_missing": "Attiva il report dei costi qui sotto per vedere le spese di questo account.",
@@ -4769,12 +4785,12 @@
         "kind_webapp": "App web",
         "kind_image": "Immagine",
         "drive_title": "Drive",
-        "drive_root": "Drive",
         "drive_upload": "Carica",
         "drive_uploading": "Caricamento…",
         "drive_bad_name": "Questo nome di file contiene caratteri che il drive non può archiviare. Rinominalo e riprova.",
         "drive_empty": "Questa cartella è vuota.",
         "section_drive": "Drive",
+        "section_files": "File",
         "section_library": "Libreria",
         "section_backup": "Backup",
         "share_title": "Condividi questo file",
@@ -4820,7 +4836,9 @@
         "connection_connected": "Connessa",
         "connection_degraded": "Degradata",
         "connection_unknown": "Sconosciuta",
-        "copy_id": "Copia ID account"
+        "copy_id": "Copia ID account",
+        "folder_actions": "Azioni cartella",
+        "file_actions": "Azioni file"
       },
       "page": {
         "title": "AWS Control",
@@ -4875,7 +4893,8 @@
         "aggregate_healthy_many": "{{count}} integri",
         "keys_summary_many": "{{count}} chiavi",
         "add_accounts_count_many": "{{count}} su {{max}} registrati",
-        "paid_services_title": "Servizi a pagamento"
+        "paid_services_title": "Servizi a pagamento",
+        "orphan_consent": "Confermato per un account AWS non registrato qui. Ritira la conferma qui sotto, oppure registra di nuovo quell'account per gestirlo dalla sua pagina."
       }
     }
   },
@@ -6734,6 +6753,10 @@
       "trusted_source": "Origine attendibile",
       "trusted_source_clones_with_your_git_credentials": "Origine attendibile: le app di questo registry vengono clonate con le tue credenziali Git."
     },
+    "rejectDropdown": {
+      "reject_all": "Rifiuta tutto — rifiuta le altre senza chiedere",
+      "reject_once": "Rifiuta una volta — continua a chiedere per le altre"
+    },
     "remoteArtifactCard": {
       "clone": "Clona",
       "clone_failed": "Clonazione non riuscita",
@@ -7033,6 +7056,10 @@
       "no_matching_skills": "Nessuna skill corrispondente",
       "no_matching_skills_ctrl_enter_sends": "Nessuna skill corrispondente — Ctrl+Invio invia il messaggio",
       "no_matching_skills_enter_sends": "Nessuna skill corrispondente — Invio invia il messaggio",
+      "no_skills_mapped_to_agent": "Nessuna skill mappata a {{agent}}",
+      "no_skills_mapped_to_agent_ctrl_enter_sends": "Nessuna skill mappata a {{agent}} — Ctrl+Invio invia il messaggio",
+      "no_skills_mapped_to_agent_enter_sends": "Nessuna skill mappata a {{agent}} — Invio invia il messaggio",
+      "scoped_to_agent": "Limitato all’agente {{agent}}",
       "trust_needed_badge": "Richiede attendibilità",
       "trust_needed_hint": "Da questo progetto. Selezionala per esaminarla e considerare attendibile la cartella."
     },
@@ -8038,6 +8065,10 @@
       "updated_app_many": "{{count}} app aggiornate.",
       "updated_app_one": "{{count}} app aggiornata.",
       "updated_app_other": "{{count}} app aggiornate.",
+      "updates_hint_link": "Vedi aggiornamenti",
+      "updates_hint_many": "{{count}} aggiornamenti disponibili",
+      "updates_hint_one": "{{count}} aggiornamento disponibile",
+      "updates_hint_other": "{{count}} aggiornamenti disponibili",
       "updating_progress": "Aggiornamento {{done}}/{{total}}…",
       "v": "v",
       "installed_app_find_in_library_and_enable": "{{name}} installato. Abilitalo nella Libreria.",
@@ -8641,7 +8672,8 @@
       "collapsibleToolGroup": {
         "approval_needed": "Approvazione necessaria",
         "approvals_pending": "approvazioni in attesa",
-        "batch_preview_note": "La più recente di {{count}} chiamate in attesa; verranno risolte tutte insieme.",
+        "batch_preview_all": "Esamina di seguito tutte le {{count}} chiamate in attesa: verranno risolte tutte insieme.",
+        "batch_preview_none": "Nessuna anteprima disponibile per questa chiamata.",
         "approve": "Approva",
         "approve_all": "Approva tutte ({{count}})",
         "approved": "Approvato",
@@ -9355,6 +9387,14 @@
       "sort_newest": "Più recenti",
       "sort_oldest": "Più vecchie",
       "source_links_expand_failed": "Impossibile caricare il resto. Fai clic per riprovare.",
+      "stale_collapse_caption": "Senza attività da più di",
+      "stale_collapse_ctx_in_name": "cartella {{name}}",
+      "stale_collapse_menu": "Comprimi sessioni dormienti",
+      "stale_collapse_off": "Disattivato",
+      "stale_collapse_paused": "In pausa",
+      "stale_collapse_paused_hint": "In pausa mentre l’elenco è in ricerca, filtrato oppure ordinato diversamente da più recenti prima.",
+      "stale_collapse_row": "Sessioni dormienti",
+      "stale_collapse_row_ungrouped": "fuori dalle cartelle",
       "started_in_channel": "Questa conversazione è iniziata in {{channel}}.",
       "started_in_direct_message": "Questa conversazione è iniziata in un messaggio diretto.",
       "stop_filtering_by_tag": "Non filtrare più per {{name}}",
@@ -9714,6 +9754,20 @@
       "no_checkout_found_action": "Imposta la variabile d'ambiente qui sotto, oppure aggiungi dev_fleet.repo_path al config.json nella directory dati di {{productName}} (~/.kiro/crew per impostazione predefinita) per renderla permanente, poi riavvia il gateway."
     },
     "developer": {
+      "agentBackendTab": {
+        "agent_backend": "Backend dell’agente",
+        "claude_code": "Claude Code",
+        "could_not_load_the_agent_backend": "Non è stato possibile caricare il backend dell’agente.",
+        "could_not_save_the_agent_backend": "Impossibile salvare il backend dell’agente.",
+        "default_all_features_supported": "Predefinito. Tutte le funzionalità sono supportate.",
+        "experimental": "Sperimentale",
+        "kas_kiro_agent": "KAS (kiro-agent)",
+        "kiro_cli": "Kiro CLI",
+        "loading_configuration": "Caricamento della configurazione…",
+        "new_sessions_use_this_agent_a_session_that_is_al": "Le nuove sessioni usano questo agente. Una sessione già aperta mantiene quello con cui è stata avviata: cambiarlo qui non la modifica a metà sessione.",
+        "not_enabled_in_this_build": "Non abilitato in questa build",
+        "retry": "Riprova"
+      },
       "featurePreviewsTab": {
         "inbound_webhook_tokens_registered_contexts_and_r": "Token dei webhook in ingresso, contesti registrati e cronologia delle esecuzioni. L’API funziona, ma la pagina non è finita.",
         "open_webhooks": "Apri Webhooks",
@@ -9723,6 +9777,10 @@
     "developerPage": {
       "developer": "Sviluppatore",
       "tabs": {
+        "agentBackend": {
+          "description": "Quale agente avviano le nuove sessioni: Kiro CLI, Claude Code o KAS",
+          "label": "Backend dell’agente"
+        },
         "archive": {
           "description": "Cronologia delle sessioni ruotata/compressa (conservazione di 7 giorni)",
           "label": "Archivio"
@@ -9763,7 +9821,18 @@
     },
     "discoverPage": {
       "subtitle": "Sfoglia e installa app agentiche",
-      "title": "Scopri"
+      "tab_featured": "In evidenza",
+      "tab_updates": "Aggiornamenti",
+      "title": "Scopri",
+      "updates_badge_label_many": "{{count}} aggiornamenti disponibili",
+      "updates_badge_label_one": "{{count}} aggiornamento disponibile",
+      "updates_badge_label_other": "{{count}} aggiornamenti disponibili",
+      "updates_empty": "È tutto aggiornato.",
+      "updates_empty_back_to_featured": "Sfoglia le app in evidenza",
+      "version_diff": "v{{from}} → v{{to}}",
+      "updating": "Aggiornamento…",
+      "updates_check_failed": "Impossibile verificare gli aggiornamenti.",
+      "updates_retry": "Riprova"
     },
     "embedSettingsPage": {
       "back": "Indietro",
@@ -10557,7 +10626,14 @@
         "probe_failing": "Con errori",
         "probe_failing_help": "{{failures}} probe fallite consecutive. Il server resta montato: e una lettura di stato, non una modifica.",
         "reset_failures": "Azzera conteggio",
-        "reset_failures_help": "Azzera il conteggio degli errori consecutivi di questo server."
+        "reset_failures_help": "Azzera il conteggio degli errori consecutivi di questo server.",
+        "sign_in": "Accedi",
+        "sign_in_authorize": "Autorizza {{name}}",
+        "sign_in_mint_failed": "Impossibile avviare l’accesso. Riprova.",
+        "sign_in_preparing": "Preparazione dell’accesso…",
+        "sign_in_retry": "Riprova",
+        "sign_in_row_updates_after_probe": "Usa «Probe MCP servers» qui sopra per aggiornare questa riga.",
+        "sign_in_timeout": "L’accesso non ha prodotto un link di approvazione in tempo. Riprova."
       },
       "memoryGraphTab": {
         "all_count": "Tutti ({{count}})",

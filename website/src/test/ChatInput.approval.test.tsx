@@ -39,6 +39,14 @@ const defaultProps = {
   onSend: vi.fn(),
 }
 
+/** Open the reject dropdown and click one of its two tiers. */
+function rejectVia(label: 'Reject once' | 'Reject all') {
+  fireEvent.click(screen.getByRole('button', { name: 'Reject' }))
+  const item = screen.getAllByRole('menuitem').find(b => b.textContent?.startsWith(label))!
+  expect(item).toBeTruthy()
+  fireEvent.click(item)
+}
+
 function stateWithApproval(meta: Record<string, unknown> = {}): Partial<RootState> {
   return {
     chat: {
@@ -102,10 +110,18 @@ describe('ChatInput approval flow', () => {
     expect(screen.getByText('Trust')).toBeInTheDocument()
   })
 
-  it('shows Reject button', () => {
+  it('offers both rejection tiers behind ONE Reject trigger', () => {
+    // The row is already at the count AUTOSDE's max-two-buttons-per-row exempts
+    // as pre-existing, so a second rejection BUTTON would breach the cap.
+    // Both tiers therefore live in the dropdown, and the row does not grow.
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
-    expect(screen.getByText('Reject')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Reject once' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Reject all' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Reject' }))
+    const items = screen.getAllByRole('menuitem').map(b => b.textContent || '')
+    expect(items.some(x => x.startsWith('Reject once'))).toBe(true)
+    expect(items.some(x => x.startsWith('Reject all'))).toBe(true)
   })
 
   it('Allow once calls resolveApproval with approve', async () => {
@@ -118,12 +134,15 @@ describe('ChatInput approval flow', () => {
     expect(api.approveChatSlot).not.toHaveBeenCalled()
   })
 
-  it('Reject calls resolveApproval with reject', async () => {
+  it.each([
+    ['Reject all', 'reject'],
+    ['Reject once', 'reject_once'],
+  ])('%s calls resolveApproval with %s', async (label, decision) => {
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
-    fireEvent.click(screen.getByText('Reject'))
+    rejectVia(label as 'Reject once' | 'Reject all')
     await waitFor(() => {
-      expect(api.resolveApproval).toHaveBeenCalledWith('ap-123', 'reject')
+      expect(api.resolveApproval).toHaveBeenCalledWith('ap-123', decision)
     })
     expect(api.approveChatSlot).not.toHaveBeenCalled()
   })
@@ -350,7 +369,7 @@ describe('ChatInput orphaned approval (404)', () => {
     vi.mocked(api.resolveApproval).mockRejectedValueOnce(notFound())
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
-    fireEvent.click(screen.getByText('Reject'))
+    rejectVia('Reject all')
     await waitFor(() => {
       expect(screen.getByRole('status')).toHaveTextContent(/expired/i)
     })
@@ -583,7 +602,7 @@ describe('ChatInput unattended-source approvals', () => {
     expect(screen.queryByText('Trust reads')).not.toBeInTheDocument()
     // The actionable controls remain — the card is still answerable.
     expect(screen.getByText('Allow once')).toBeInTheDocument()
-    expect(screen.getByText('Reject')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Reject' })).toBeInTheDocument()
   })
 
   it('keeps Trust for autonudge, which does run in this session', () => {
@@ -606,7 +625,8 @@ describe('ChatInput unattended-source approvals', () => {
 
   it.each([
     ['Allow once', 'approve'],
-    ['Reject', 'reject'],
+    ['Reject all', 'reject'],
+    ['Reject once', 'reject_once'],
   ])('answers an unattended card via %s without the slot-scoped grant', async (label, decision) => {
     // No control on an unattended card may route through approveChatSlot,
     // which grants on THIS slot. (handleApprovalAction also downgrades a trust
@@ -614,7 +634,8 @@ describe('ChatInput unattended-source approvals', () => {
     // those controls entirely, so that branch is not reachable from here.)
     const store = createTestStore(withSource('cron'))
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
-    fireEvent.click(screen.getByText(label))
+    if (label === 'Allow once') fireEvent.click(screen.getByText(label))
+    else rejectVia(label as 'Reject once' | 'Reject all')
     await waitFor(() => {
       expect(api.resolveApproval).toHaveBeenCalledWith('ap-123', decision)
     })
@@ -664,7 +685,7 @@ describe('ChatInput approval bar survives a steered user message (#1667)', () =>
     expect(screen.getByText(/Waiting for approval/)).toBeInTheDocument()
     expect(screen.getByText('Allow once')).toBeInTheDocument()
     expect(screen.getByText('Trust')).toBeInTheDocument()
-    expect(screen.getByText('Reject')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Reject' })).toBeInTheDocument()
   })
 
   it('approval buttons still resolve the same approval_id after a steer', async () => {

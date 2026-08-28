@@ -3,8 +3,9 @@
  * Used by PetWidget (overlay) and ChatPanel (chat window).
  * Handles edge clamping, click-outside dismiss, and optional hitbox reporting for overlay use.
  */
-import React, { useEffect, useRef, useCallback } from 'react'
+import React, { useEffect, useLayoutEffect, useRef, useCallback } from 'react'
 
+import { useMenuKeyboard } from '../../../../hooks/useMenuKeyboard'
 import { api } from '../mochiApi'
 
 export interface ContextMenuItem {
@@ -51,6 +52,107 @@ const MENU_MIN_W = 160
 
 export function ContextMenu({ x, y, items, reportHitbox, onAction, onClose }: Props) {
   const menuRef = useRef<HTMLDivElement>(null)
+
+  /*
+   * The container below carries `role="menu"`, which tells assistive technology
+   * that focus is MANAGED here and the arrow keys walk the rows (WAI-ARIA menu
+   * pattern) — a promise this component made and then did not keep: the rows
+   * were `tabIndex={0}` divs with an Enter/Space handler and nothing else, so a
+   * screen-reader user who reached for the arrows got page scroll instead of
+   * item navigation (#6231, #5851).
+   *
+   * `useMenuKeyboard` is the shared spelling of that contract (extracted from
+   * `MenuBtn` in DevFleetPage) — ArrowDown/ArrowUp with wrap at both ends,
+   * Home/End to the boundary rows, Tab/Shift-Tab contained inside the menu
+   * (#2533), and an IME composition latch so a candidate-list arrow is not
+   * stolen from the input method. `enabled` is a literal `true` because this
+   * component is MOUNTED ONLY WHILE OPEN: its hosts (PetContextMenu, ChatPanel)
+   * render it conditionally, so mount is open and unmount is close — there is no
+   * separate open flag to gate on, and the hook's cleanup drops the listener.
+   *
+   * Item discovery is left at the default (`menuItemsOf`): it collects the
+   * `role="menuitem"` rows in document order and naturally steps over the
+   * `role="separator"` dividers, so no `getItems` override is needed.
+   *
+   * `focusFirstOnOpen` is left at its default (true), which matches `MenuBtn`'s
+   * posture: focus enters the menu on open so the first arrow CHOOSES a row
+   * rather than being spent entering the list. That is safe against the
+   * close-on-blur effect below because it listens for a WINDOW blur (the pet
+   * overlay losing focus), not an element one — moving focus between rows
+   * dispatches non-bubbling element blur/focusout and never reaches it.
+   *
+   * Escape and Enter/Space stay where they are: the hook deliberately owns
+   * navigation only, because what "close" means (and the per-row action) is the
+   * host's business.
+   */
+  useMenuKeyboard({ enabled: true, containerRef: menuRef })
+
+  /*
+   * The element that was focused when this menu MOUNTED — the row, bubble or
+   * pet the user right-clicked (or reached with the keyboard). Captured during
+   * the first RENDER on purpose, not in an effect: render runs before
+   * `useMenuKeyboard`'s focus-entry effect moves focus onto the first row, so
+   * this is the last moment the opener is still `document.activeElement`.
+   * Same spelling as `SlotPopover` in PackEditor.tsx, which had this problem
+   * first. `undefined` is the "not yet captured" sentinel — `activeElement`
+   * itself can in principle be null, and using null for both would re-run the
+   * capture on a later render and latch a menu ROW as the opener.
+   */
+  const opener = useRef<Element | null | undefined>(undefined)
+  if (opener.current === undefined) opener.current = document.activeElement
+
+  /*
+   * Give focus back when the menu goes away (#6267 review).
+   *
+   * Focus ENTRY without a matching restore is a regression, not half a feature:
+   * every host renders this component conditionally (ChatPanel, PetContextMenu),
+   * so closing it UNMOUNTS the element that holds focus, and the browser drops
+   * focus to `<body>`. A keyboard user who pressed Escape or picked a row would
+   * be left nowhere — the next Tab restarts from the top of the document instead
+   * of resuming beside what they right-clicked. Before the rows were focusable
+   * nothing was lost on close, so the entry is what created this debt.
+   *
+   * Doing it in an UNMOUNT cleanup rather than next to each dismissal covers all
+   * of them in one place — Escape, row activation via `handleAction`, the
+   * close-on-window-blur path, and a host that stops rendering the menu for its
+   * own reasons (a re-render, a route change) and never called `onClose` at all.
+   *
+   * The guard says: restore ONLY if focus is still inside the menu being
+   * destroyed — precisely the case where focus would otherwise be lost. If an
+   * action legitimately moved focus elsewhere (settings or the dashboard opening
+   * and focusing something there), or the menu was dismissed by an outside click
+   * that already moved focus, then focus has a rightful owner and reclaiming it
+   * would be a second bug wearing the first one's clothes. In practice react-dom
+   * ALSO defends that case for us — it snapshots `activeElement` before the
+   * mutation phase and re-focuses it after the commit when that node is still in
+   * the document, which is exactly why this restore only "wins" when the focused
+   * row is being removed. The guard is kept anyway: it states the intent at the
+   * site, and it is the only protection if this ever moves off the commit path
+   * (an explicit Escape handler, the shape `SlotPopover` uses).
+   *
+   * The container is read into `menu` AT MOUNT rather than as `menuRef.current`
+   * inside the cleanup: React detaches host refs while tearing the tree down,
+   * and the captured node answers `contains` just as well.
+   *
+   * `useLayoutEffect`, NOT `useEffect`, and that is the load-bearing detail.
+   * React runs layout cleanups synchronously as it walks the deleted subtree,
+   * while the menu is STILL in the document and still holds focus; passive
+   * (`useEffect`) cleanups are deferred until after the commit, by which point
+   * the DOM node is gone and the browser has already reset `activeElement` to
+   * `<body>`. In a passive cleanup the guard therefore reads "focus is not in
+   * the menu" every single time and restores nothing — a version of this fix
+   * written with `useEffect` looks right, type-checks, and silently does not
+   * work. The tests below the fold in CrewCompanionContextMenu.test.tsx are what
+   * distinguish the two.
+   */
+  useLayoutEffect(() => {
+    const menu = menuRef.current
+    return () => {
+      if (menu?.contains(document.activeElement)) {
+        ;(opener.current as HTMLElement | null)?.focus?.()
+      }
+    }
+  }, [])
 
   // Clamp position so menu stays within viewport
   const [clampedX, setClampedX] = React.useState(x)

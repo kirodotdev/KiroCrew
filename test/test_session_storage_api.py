@@ -1027,6 +1027,42 @@ class TestWhyAReclaimIsRefused:
     "in use", which is a claim the user can disprove by reading the date next to it.
     """
 
+    def test_the_pre_classification_never_reads_a_cached_cotenant_pass(
+        self, stores: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """_classify derives per-row refusals, so it must enumerate uncached.
+
+        A pre-pass fed a 30s-stale co-tenant set would classify a just-claimed
+        session as eligible; a stale store scan fails independently the same way
+        (a stale-older mtime reads eligible here and too_fresh inside the move).
+        Either way the authority still refuses, but as the all-or-nothing batch
+        failure ``_classify`` exists to prevent. Both halves are counted, so a
+        future change that splits the flag cannot re-cache either half here.
+        """
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
+        index = session_storage_module.SessionIndex(stem_to_sid={}, active_sids=frozenset())
+        # Prime both caches through the ordinary cached read path.
+        session_storage_module.list_units(index)
+
+        calls = {"cotenant": 0, "scan": 0}
+        real_cotenants = session_storage_module._replay_store_cotenants
+        real_scan = session_storage_module._scan_raw_uncached
+
+        def counted_cotenants() -> list[str]:
+            calls["cotenant"] += 1
+            return real_cotenants()
+
+        def counted_scan(sid_for_stem):
+            calls["scan"] += 1
+            return real_scan(sid_for_stem)
+
+        monkeypatch.setattr(session_storage_module, "_replay_store_cotenants", counted_cotenants)
+        monkeypatch.setattr(session_storage_module, "_scan_raw_uncached", counted_scan)
+        handler._classify([], index, now=time.time())
+
+        assert calls["cotenant"] == 1, "the trash pre-pass must re-read co-tenants, not the cache"
+        assert calls["scan"] == 1, "the trash pre-pass must re-enumerate the stores, not the cache"
+
     @staticmethod
     def _recorded_session(crew_home: Path, kiro_home: Path, sid: str, key: str) -> None:
         """A session that IS in the map: a transcript, a replay log, and the entry."""

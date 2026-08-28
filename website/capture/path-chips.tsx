@@ -46,10 +46,21 @@ const RELEASE_NOTES = `${PROJECT}/release-notes.md`
 const OVERVIEW = `${PROJECT}/src/overview.md`
 
 const DIRS = new Set([PROJECT, WORKSPACE])
+
+/** Unicode paths — issue #6483: none of these classified before PATH_SHAPE_RE
+ *  gained `\p{L}\p{M}\p{N}` + the `u` flag, so the probe was never issued. The
+ *  NFD constant is written with escapes (e + U+0301) exactly as macOS returns
+ *  decomposed filenames. */
+const CJK_DOC = `${PROJECT}/产品文档/发布说明.md`
+const NFD_NOTES = `${PROJECT}/cafe\u0301-menu\u0308/notes.md`
+const DEVANAGARI_REPORT = '~/दस्तावेज़/रिपोर्ट.md'
 const FILES = new Set([
   `${PROJECT}/README.md`,
   OVERVIEW,
   RELEASE_NOTES,
+  CJK_DOC,
+  NFD_NOTES,
+  DEVANAGARI_REPORT,
 ])
 
 const realFetch = globalThis.fetch.bind(globalThis)
@@ -269,6 +280,17 @@ function FolderFlowScene() {
   )
 }
 
+/** Unicode transcript for issue #6483: rooted CJK, NFD-decomposed accented,
+ *  and home-relative Devanagari paths must classify; slash-separated prose
+ *  must stay plain. */
+const UNICODE = [
+  'The launch doc lives at `' + CJK_DOC + '`,',
+  'the macOS notes folder holds `' + NFD_NOTES + '` (NFD-decomposed),',
+  'and the report is at `' + DEVANAGARI_REPORT + '`.',
+  '',
+  'Prose stays plain: `要么这样/要么那样` and `и/или` are not paths.',
+].join('\n')
+
 function Scene() {
   if (scene === 'folder-flow') return <FolderFlowScene />
   if (scene === 'markdown-link') return <MarkdownLinkScene />
@@ -307,7 +329,7 @@ function Scene() {
   return (
     <div data-capture-root className="bg-bg p-5" style={{ width: 720 }}>
       <MarkdownRenderer
-        content={scene === 'cited' ? CITED : TRANSCRIPT}
+        content={scene === 'cited' ? CITED : scene === 'unicode' ? UNICODE : TRANSCRIPT}
         onFileOpen={() => {}}
         onFolderOpen={() => {}}
       />

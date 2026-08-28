@@ -740,6 +740,135 @@ class TestWaveDigest:
         assert "/tmp/w0/result.txt" not in final  # already delivered in chunk 1
 
     @pytest.mark.asyncio
+    async def test_wave_digest_text_carries_member_model_provenance(self):
+        """Issue #5337: the per-member SERVED model must be visible in the
+        PARENT-READ digest body (built from ok_lines/fail_lines), not only in
+        the injected meta dict. Only the served id is printed — never a
+        "(requested …)" qualifier, since a raw requested-vs-resolved inequality
+        would false-amber every member of a normal auto-pinned wave (maintainer
+        kyleseaman) — and a member with no served model prints no tag, matching
+        the card."""
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        slot = MagicMock()
+        slot.mode = "chat"
+        slot.running = False
+        slot.task = None
+        slot._orch_tracker = None
+        slot._subagent_deliveries_inflight = 0
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        mgr, on_done = self._capture_on_done(orch)
+        total = 2
+        injected: list[str] = []
+
+        async def _fake_run_chat(_state, _slot, text, *, _directive_user_origin, **_kw):
+            injected.append(text)
+
+        with patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat), \
+                patch("kiro_crew.subagent_persistence.mark_delivered"):
+            # Member 0: served model present. Member 1: requested set but served
+            # DIFFERS — the served id is still all that prints (no downgrade
+            # qualifier, no false amber).
+            m0 = self._member(0, total)
+            m0.resolved_model = "claude-opus-4.8"
+            m1 = self._member(1, total)
+            m1.requested_model = "claude-opus-4.8"
+            m1.resolved_model = "claude-opus-4.7"
+            mgr.batch_members_pending = MagicMock(return_value=True)
+            await on_done(m0)
+            await asyncio.sleep(0)
+            mgr.batch_members_pending = MagicMock(return_value=False)
+            await on_done(m1)
+            await asyncio.sleep(0)
+            await _settle(lambda: len(injected) >= 1)
+
+        body = "\n".join(injected)
+        # Each member shows its SERVED id inline.
+        assert "model claude-opus-4.8" in body
+        assert "model claude-opus-4.7" in body
+        # The "(requested …)" downgrade qualifier is never printed.
+        assert "requested" not in body
+
+    @pytest.mark.asyncio
+    async def test_wave_digest_no_model_tag_when_served_model_absent(self):
+        """Maintainer kyleseaman: when resolved_model is empty the card shows
+        nothing, so the digest line must not label the pin as `model
+        {requested}` either — no tag at all."""
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        slot = MagicMock()
+        slot.mode = "chat"
+        slot.running = False
+        slot.task = None
+        slot._orch_tracker = None
+        slot._subagent_deliveries_inflight = 0
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        mgr, on_done = self._capture_on_done(orch)
+        injected: list[str] = []
+
+        async def _fake_run_chat(_state, _slot, text, *, _directive_user_origin, **_kw):
+            injected.append(text)
+
+        with patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat), \
+                patch("kiro_crew.subagent_persistence.mark_delivered"):
+            m0 = self._member(0, 1)
+            m0.requested_model = "auto"  # a pin, but nothing served
+            m0.resolved_model = ""
+            mgr.batch_members_pending = MagicMock(return_value=False)
+            await on_done(m0)
+            await asyncio.sleep(0)
+            await _settle(lambda: len(injected) >= 1)
+
+        body = "\n".join(injected)
+        assert "· model" not in body
+        assert "auto" not in body
+
+    @pytest.mark.asyncio
+    async def test_wave_digest_model_tag_is_redacted(self):
+        """GPT 5.6 (backend-security-controls): model values are
+        caller-influenceable (spawn_run.model), so a credential-shaped value
+        must not reach the digest text broadcast to the dashboard/channels.
+        The inline model tag is redacted through the display context."""
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        slot = MagicMock()
+        slot.mode = "chat"
+        slot.running = False
+        slot.task = None
+        slot._orch_tracker = None
+        slot._subagent_deliveries_inflight = 0
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        mgr, on_done = self._capture_on_done(orch)
+        injected: list[str] = []
+
+        async def _fake_run_chat(_state, _slot, text, *, _directive_user_origin, **_kw):
+            injected.append(text)
+
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        with patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat), \
+                patch("kiro_crew.subagent_persistence.mark_delivered"):
+            m0 = self._member(0, 1)
+            m0.resolved_model = secret
+            mgr.batch_members_pending = MagicMock(return_value=False)
+            await on_done(m0)
+            await asyncio.sleep(0)
+            await _settle(lambda: len(injected) >= 1)
+
+        body = "\n".join(injected)
+        # The raw credential-shaped value must not appear verbatim in the
+        # broadcast digest text.
+        assert secret not in body
+
+    @pytest.mark.asyncio
     async def test_digest_chunks_inject_in_fifo_order_despite_delayed_dispatch_hop(self):
         """A later digest chunk must never overtake an earlier one whose
         dispatched injection is still inside ``bounded_chat_turn``'s off-loop

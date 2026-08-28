@@ -1,5 +1,7 @@
 import type { ChatMessage } from '../../types'
 import { isSystemNoticeKind } from '../../lib/systemNotice'
+import { isStopEvent } from '../../lib/stopEvent'
+import { isRetryNotice } from '../../lib/retryNotice'
 import { isNoteRow } from '../../lib/noteContract'
 import { OPTION_MARKER_RE } from './optionMarker'
 
@@ -90,11 +92,14 @@ const rowIdentity = (m: ChatMessage, i: number): string =>
  *
  * Three messages short-circuit the scan:
  *  - a `user` message ends the previous turn, so its options no longer apply →
- *    return none.
+ *    return none. UNLESS the turn it began failed: see `sawError` below.
  *  - a `queued` message means the user already acted (Quick Send while the
  *    slot was busy). The optimistic user bubble was suppressed, but the intent
  *    is identical — hide options immediately so they don't linger until the
- *    queue drains.
+ *    queue drains. This stop is UNCONDITIONAL: no failed-turn exception.
+ *  - a `stop_event` card is an UNCONDITIONAL stop too. A deliberate Stop ends
+ *    the turn rather than interrupting it, so the question is closed by the
+ *    user's own cancellation and no error may license reaching back past it.
  *  - a `compaction` notice is skipped. Auto-compaction appends a
  *    "✅ Conversation compacted" message with the `assistant` role but tagged
  *    `kind="compaction"` (see `chat_utils._broadcast_compaction_result`). It
@@ -102,6 +107,39 @@ const rowIdentity = (m: ChatMessage, i: number): string =>
  *    real options-bearing turn it follows and the buttons would vanish after a
  *    compaction. The marker is read from `kind` (live websocket path) or
  *    `meta.kind` (history-reload path).
+ *
+ * A `user`/`queued` row is only a valid stop because it means "the user has
+ * answered, so the question is closed". A `user` row whose turn FAILED answered
+ * nothing — the question is still open and the choices still apply — but the
+ * row stays in the feed forever, so an unconditional stop hid the pills
+ * permanently and the user had to retype the choice by hand. `sawError` tracks
+ * an error row seen while scanning backward and lets exactly ONE such row be
+ * crossed, re-arming per error so repeated failed attempts each get crossed.
+ * A `queued` row is NEVER crossed: unlike a `user` row it leaves a live entry
+ * in `slot._queue`, which only a hard kill clears, so the choice still runs
+ * when the queue drains — re-offering the pill would run it a second time.
+ * `error` is the role to key on, but NOT on its own: the backend reaches the feed
+ * with role `error` for a terminal failure AND for an auto-retry notice whose
+ * recovery is already queued, so only a row without `TRANSIENT_RETRY_KIND` may
+ * license a crossing — otherwise the pill re-runs a choice already re-running.
+ * A failed turn can also flush the text it streamed as a real assistant row
+ * before the error, so an option-less assistant row under a live `sawError` is
+ * crossed too — otherwise a partial answer shadows the question that is still
+ * open. The trade is deliberate: nothing on the row marks it partial rather
+ * than complete, so an error arriving after a genuinely finished option-less
+ * reply reads the same way and can re-offer the previous turn's choices. A
+ * PLAN row reached that way is therefore offered NOTHING: the plan may already
+ * have advanced, and demoting to the composer path would not help because
+ * Quick Send sends a pill in one click regardless of `followUpIsPlan`. Cost:
+ * a plan turn that flushed a partial before failing gets no chips back.
+ *
+ * The same suppression covers a plan row reached across a failed `user` row.
+ * That row records a click already DISPATCHED, and `usePlanActionMutation`
+ * treats any 5xx, 408/429 or transport rejection as possibly-committed, so the
+ * stage may have advanced before the turn failed. Its go-latch blocks the
+ * second Go only within one page load — the latch is a module-level Map — so it
+ * cannot cover the rehydrated transcript this exception creates. Plan chips are
+ * the narrow case: a Go advances server state by itself, a text pill does not.
  *
  * `questionPending` suppresses the pills while an `ask_question` card is on
  * screen for the same slot, so the user is never offered the same choice twice
@@ -118,9 +156,30 @@ export function deriveFollowUpOptions(
   questionPending = false,
 ): FollowUpDerivation {
   if (isStreaming || questionPending) return { followUpOptions: [], followUpIsPlan: false, followUpSourceKey: null }
+  // Errors were already transparent here (no branch matched them); the flag is
+  // what makes that transparency mean something.
+  let sawError = false
+  // Set by EITHER crossing: both leave a plan row that may already have advanced (see above).
+  let crossedFailedTurn = false
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]
-    if (m.role === 'user' || m.role === 'queued') return { followUpOptions: [], followUpIsPlan: false, followUpSourceKey: null }
+    // A deliberate Stop ENDS the turn rather than interrupting it, so the choice is closed
+    // by the user's own cancellation — the error licence below must not reach back past it.
+    if (isStopEvent(m)) return { followUpOptions: [], followUpIsPlan: false, followUpSourceKey: null }
+    // Only a TERMINAL error licenses a crossing. A retry notice means the recovery is
+    // already queued, so re-offering the pill would run the same choice a second time.
+    if (m.role === 'error') { if (!isRetryNotice(m)) sawError = true; continue }
+    // `queued` is an UNCONDITIONAL stop: its queue entry OUTLIVES the error (only a hard
+    // kill clears the queue), so re-offering the pill would run the choice a second time.
+    if (m.role === 'queued') return { followUpOptions: [], followUpIsPlan: false, followUpSourceKey: null }
+    if (m.role === 'user') {
+      if (!sawError) return { followUpOptions: [], followUpIsPlan: false, followUpSourceKey: null }
+      // Cross this failed turn and keep looking. Re-armed only by another error,
+      // so a SUCCESSFUL turn further back still stops the scan.
+      sawError = false
+      crossedFailedTurn = true
+      continue
+    }
     if (isSystemNoticeKind(m.kind ?? (m.meta?.kind as string | undefined))) continue
     // A note may carry options, so a zero-token cron can offer an action without an LLM turn.
     // `isNoteRow` also matches a rehydrated note, whose class the history format drops.
@@ -137,6 +196,13 @@ export function deriveFollowUpOptions(
     }
     if (m.role === 'assistant' && m.content) {
       const { options, isPlan } = parseOptions(m.content)
+      // A failed turn can flush the text it streamed as a real assistant row before the
+      // error, and that option-less row shadowed the question exactly as the `user` row did.
+      // Crossing does NOT consume the error licence: the `user` row below still needs it.
+      if (!options.length && sawError) { crossedFailedTurn = true; continue }
+      // Offer NOTHING for a plan row reached that way. Demoting to the composer path is not
+      // enough: with Quick Send on, one click still sends `Go All` as orchestrator-run text.
+      if (isPlan && crossedFailedTurn) return { followUpOptions: [], followUpIsPlan: false, followUpSourceKey: null }
       const followUpSourceKey = options.length > 0 ? rowIdentity(m, i) : null
       return { followUpOptions: options, followUpIsPlan: isPlan, followUpSourceKey }
     }

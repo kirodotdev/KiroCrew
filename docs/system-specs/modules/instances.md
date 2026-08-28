@@ -1310,6 +1310,17 @@ port-scoped cookie so it cannot land in the peer's access log, and a `401/403`
 gets exactly one transparent re-mint retry, because a retained credential can go
 stale while the tunnel stays `CONNECTED`.
 
+"Follows the same rules" is now **enforced rather than asserted**: all three
+peer-request methods — `send_session_bundle`, `search_sessions_remote` and
+`proxy_request` — resolve their target and credential through one shared private
+pair, `_peer_target` (connected-only, loopback target, port-scoped cookie name)
+and `_peer_cookie_header` (credential re-read per attempt, sent as a cookie,
+never logged). A fourth caller inherits the invariant instead of copying it.
+What is deliberately *not* shared is each method's error contract: the
+`proxy_`/`transfer_`/`search_` code families belong to three separate route
+contracts, so the helper reports a neutral reason and each caller names its own
+code as a literal — a drift test asserts the three stay distinct.
+
 Each peer request runs under `DEFAULT_SEARCH_PROXY_TIMEOUT_SECS` (6s) — sized
 between the token probe (2s, a bare ping, which would produce false
 "unreachable" verdicts on a loaded peer doing real scan work) and the transfer

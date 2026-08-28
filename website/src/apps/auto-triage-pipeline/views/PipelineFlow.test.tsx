@@ -208,4 +208,59 @@ describe('PipelineFlow — unparseable warning row', () => {
     renderFlow(overview([step({ key: 'scan' })], { unparseable: 0 }))
     expect(screen.queryByTestId('atp-unparseable')).toBeNull()
   })
+
+  it('DISCLOSES the pre-stamp share of the event count when there is one', () => {
+    // The count existed on the payload from the start and was rendered nowhere,
+    // which made the total read as fully attributed. This is the disclosure.
+    renderFlow(overview([step({ key: 'scan' })], { totalEvents: 4773, unattributedEvents: 4565 }))
+    const note = screen.getByTestId('atp-unattributed')
+    expect(note.textContent).toContain('4565')
+    // And it says WHY, not just the number -- a bare count beside the total would
+    // read as a second unexplained metric rather than a qualification of the first.
+    expect(note.textContent).toContain('cannot be attributed')
+  })
+
+  it('does NOT disclose anything when the whole trail is stamped', () => {
+    // A fully-stamped install must not see a line reading zero: it would invite an
+    // operator to chase an ambiguity that does not exist.
+    renderFlow(overview([step({ key: 'scan' })], { totalEvents: 208, unattributedEvents: 0 }))
+    expect(screen.queryByTestId('atp-unattributed')).toBeNull()
+  })
+
+  it('DISCLOSES that the board mixes repositories, naming them', () => {
+    // This board folds every repository together and cannot separate them: the
+    // dispatch queue keys entries on the issue number alone. Saying so is the
+    // honest alternative to a repository selector over ambiguous joins.
+    renderFlow(
+      overview([step({ key: 'scan' })], {
+        repos: [
+          { repo: 'acme/alpha', count: 12 },
+          { repo: 'acme/beta', count: 3 },
+        ],
+      }),
+    )
+    const note = screen.getByTestId('atp-repo-census')
+    expect(note.textContent).toContain('2')
+    expect(note.textContent).toContain('acme/alpha')
+    expect(note.textContent).toContain('acme/beta')
+  })
+
+  it('says NOTHING about repositories when the trail names only one', () => {
+    // One repository is not a mixture, so a line announcing it would be noise --
+    // and would imply a scoping decision the board did not make.
+    renderFlow(overview([step({ key: 'scan' })], { repos: [{ repo: 'acme/alpha', count: 9 }] }))
+    expect(screen.queryByTestId('atp-repo-census')).toBeNull()
+  })
+
+  it('drops the census line rather than the whole board when the field is absent', () => {
+    // The client is documented as forward-tolerant and never-throwing. An overview
+    // assembled without `repos` must cost one line, not the entire pipeline: a bare
+    // `.length` read here took the board down with a TypeError.
+    const partial = overview([step({ key: 'scan' })], {})
+    delete (partial as { repos?: unknown }).repos
+    renderFlow(partial)
+    expect(screen.queryByTestId('atp-repo-census')).toBeNull()
+    // The board itself still rendered.
+    expect(screen.getByTestId('atp-step-scan')).toBeTruthy()
+  })
 })

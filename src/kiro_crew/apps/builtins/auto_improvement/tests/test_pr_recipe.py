@@ -10,11 +10,14 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
 from kiro_crew.apps.builtins.auto_improvement.profiles.github_repo import pr_recipe as pr
-from kiro_crew.apps.builtins.auto_improvement.spine.profile import PRRecipe
+from kiro_crew.apps.builtins.auto_improvement.spine.pr_pipeline import CrPipeline
+from kiro_crew.apps.builtins.auto_improvement.spine.profile import PRRecipe, StubPRRecipe
 
 
 def _broken_scanner(_text: str) -> str:
@@ -31,6 +34,94 @@ def _recipe(tmp_path: Path, **kw) -> pr.GitHubPRRecipe:
         base_ref=kw.pop("base_ref", "origin/main"),
         **kw,
     )
+
+
+def _simulate_legacy_locale(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make omitted ``Path.write_text`` encodings deterministic on every host."""
+    original = Path.write_text
+
+    def write_text(
+        path: Path,
+        data: str,
+        encoding: str | None = None,
+        errors: str | None = None,
+        newline: str | None = None,
+    ) -> int:
+        return original(
+            path,
+            data,
+            encoding="cp1252" if encoding is None else encoding,
+            errors=errors,
+            newline=newline,
+        )
+
+    monkeypatch.setattr(Path, "write_text", write_text)
+
+
+class TestQueueEncoding:
+    """Queue artifacts must preserve agent-authored Unicode on legacy Windows locales."""
+
+    _summary = "fix: 保存候選 🚀"
+    _description = "說明 🧪"
+    _diff = "+新增 🛠️\n"
+
+    def test_github_recipe_writes_utf8(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _simulate_legacy_locale(monkeypatch)
+        monkeypatch.setattr(pr.shutil, "which", lambda _name: None)
+        recipe = _recipe(tmp_path)
+
+        assert (
+            recipe.draft(
+                summary=self._summary,
+                description=self._description,
+                diff=self._diff,
+                fingerprint="github",
+            )
+            == "QUEUED:github"
+        )
+        assert (recipe.pr_queue_dir / "github.diff").read_text(encoding="utf-8") == self._diff
+        assert self._description in (recipe.pr_queue_dir / "github.pr.md").read_text(
+            encoding="utf-8"
+        )
+
+    def test_direct_commit_copy_writes_utf8(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _simulate_legacy_locale(monkeypatch)
+        queue = tmp_path / "direct"
+        pipeline = CrPipeline(ledger=MagicMock(), measurer=MagicMock())
+        profile = SimpleNamespace(pr_recipe=SimpleNamespace(pr_queue_dir=queue))
+
+        pipeline._write_queue_copy(
+            profile=profile,
+            fp="direct",
+            summary=self._summary,
+            description=self._description,
+            diff=self._diff,
+        )
+
+        assert (queue / "direct.diff").read_text(encoding="utf-8") == self._diff
+        assert self._description in (queue / "direct.pr.md").read_text(encoding="utf-8")
+
+    def test_dry_run_recipe_writes_utf8(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _simulate_legacy_locale(monkeypatch)
+        recipe = StubPRRecipe(tmp_path / "stub")
+
+        assert (
+            recipe.draft(
+                summary=self._summary,
+                description=self._description,
+                diff=self._diff,
+                fingerprint="stub",
+            )
+            == "QUEUED:stub"
+        )
+        assert (recipe.queue_dir / "stub.diff").read_text(encoding="utf-8") == self._diff
+        assert self._description in (recipe.queue_dir / "stub.pr.md").read_text(encoding="utf-8")
 
 
 class TestProtocolConformance:
@@ -341,6 +432,7 @@ class TestPushedContentIsScanned:
         from kiro_crew.apps.builtins.auto_improvement.profiles.github_repo import pr_recipe as PR
 
         recipe = _recipe(tmp_path)
+        _simulate_legacy_locale(monkeypatch)
 
         gh_calls: list[list[str]] = []
         monkeypatch.setattr(PR.subprocess, "run", lambda argv, **kw: gh_calls.append(argv))
@@ -351,16 +443,20 @@ class TestPushedContentIsScanned:
         monkeypatch.setattr(security_mod, "redact", _broken_scanner)
         out = recipe.draft(
             fingerprint="fp-unscannable",
-            summary="fix: something",
-            description="body with aws_access_key_id=AKIAIOSFODNN7EXAMPLE",
-            diff="--- a\n+++ b\n",
+            summary="fix: 保存候選 🚀",
+            description="說明 🧪 with aws_access_key_id=AKIAIOSFODNN7EXAMPLE",
+            diff="--- a\n+++ b\n+新增 🛠️\n",
         )
 
         assert out == "QUEUED:fp-unscannable", f"it published anyway: {out!r}"
         assert gh_calls == [], "gh was invoked with unscanned prose"
         # The evidence still survives on disk for the human.
-        assert (recipe.pr_queue_dir / "fp-unscannable.pr.md").is_file()
-        assert (recipe.pr_queue_dir / "fp-unscannable.diff").is_file()
+        assert "說明 🧪" in (recipe.pr_queue_dir / "fp-unscannable.pr.md").read_text(
+            encoding="utf-8"
+        )
+        assert "新增 🛠️" in (recipe.pr_queue_dir / "fp-unscannable.diff").read_text(
+            encoding="utf-8"
+        )
 
 
 class TestEveryPushPathScansContent:

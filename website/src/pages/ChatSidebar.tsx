@@ -76,7 +76,9 @@ import {
 import { loadChatConfig, saveChatConfig } from './chat/ChatSettings'
 import { focusSiblingSessionRow, SESSION_ROW_SELECTOR } from './chat/sessionRowNav'
 import { focusComposer } from './chat/composerFocus'
-import { compareBySort, comparePinnedThenSort, fmtRelativeTime, slotActivityTs } from './chat/sessionOrder'
+import { compareBySort, comparePinnedThenSort, fmtRelativeTime, lastActivityEpoch, slotActivityTs } from './chat/sessionOrder'
+import { DEFAULT_STALE_COLLAPSE_MS, STALE_COLLAPSE_PRESETS_MS, STALE_COLLAPSE_TICK_MS, splitStaleSlots } from './staleCollapse'
+import type { StaleSplit } from './staleCollapse'
 import type { SortKey } from './chat/sessionOrder'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 
@@ -970,6 +972,26 @@ function readStoredRecentWindow(): number {
 /** Folders excluded from the flat lane (see `filterHiddenFolders`). Stored as a JSON
  *  array of folder ids under this key. */
 const HIDDEN_FOLDERS_LS_KEY = 'mc-flat-hidden-folders'
+
+// Stale-session collapse threshold (ms), persisted. 0 = off. Presets live in
+// the filter menu's display section; the pure split math lives in
+// ./staleCollapse so it can be unit-tested without a render.
+const STALE_COLLAPSE_LS_KEY = 'mc-session-stale-collapse-ms'
+
+/** Read the persisted stale-collapse threshold (ms). A stored "0" means the
+ *  user turned the feature off and must survive reloads, so only a missing or
+ *  invalid value falls back to the default. Runs in a useState initializer, so
+ *  a throwing localStorage must not crash the component. */
+function readStoredStaleCollapse(): number {
+  try {
+    const raw = localStorage.getItem(STALE_COLLAPSE_LS_KEY)
+    if (raw === null) return DEFAULT_STALE_COLLAPSE_MS
+    const saved = Number(raw)
+    return Number.isFinite(saved) && saved >= 0 ? saved : DEFAULT_STALE_COLLAPSE_MS
+  } catch {
+    return DEFAULT_STALE_COLLAPSE_MS
+  }
+}
 
 /** Whether the filter menu's Folders section is rolled up to its heading. */
 const FOLDERS_SHELVED_LS_KEY = 'mc-filter-folders-shelved'
@@ -1928,6 +1950,122 @@ function ChatSidebar({
 
   // Pinned: derived from server-persisted slot.pinned
   const pinned = useMemo(() => new Set(slots.filter(s => s.pinned).map(s => s.key)), [slots])
+
+  // ── Stale-session collapse ─────────────────────────────────────────────────
+  // Sessions idle past the threshold collapse behind a per-container
+  // "Dormant sessions (N)" expander row, independently at every tree level (each
+  // folder body + the ungrouped root). Pinned, focused, running and
+  // needs-input sessions are exempt: collapsing de-noises settled work, it is
+  // never a place where live or deliberately-kept rows can disappear.
+  const [staleCollapseMs, setStaleCollapseMsState] = useState(readStoredStaleCollapse)
+  const setStaleCollapseMs = useCallback((ms: number) => {
+    setStaleCollapseMsState(ms)
+    safeSetItem(STALE_COLLAPSE_LS_KEY, String(ms))
+    // Off also stops the heartbeat (the map's only GC), so drop the move
+    // exemptions now rather than letting them accumulate unpruned. Read-time
+    // expiry keeps them harmless meanwhile; this is hygiene, not correctness.
+    if (ms <= 0) setStaleRecentlyMoved(prev => (prev.size ? new Map() : prev))
+  }, [])
+  // Manually-expanded containers ('root' or a folder id). Deliberately NOT
+  // persisted: expanding is a "let me peek" gesture, and the collapse is the
+  // steady state the user chose via the threshold — a reload restores it.
+  const [staleExpanded, setStaleExpanded] = useState<Set<string>>(new Set())
+  // Rows the user just MOVED between containers, keyed to WHEN they moved.
+  // Exempt from collapsing so a drag or menu move never lands its row behind
+  // a closed expander (which reads as data loss). Timestamped so the
+  // heartbeat prunes only entries a full interval old — a bare clear could
+  // strip a move made milliseconds before the tick fired.
+  const [staleRecentlyMoved, setStaleRecentlyMoved] = useState<ReadonlyMap<string, number>>(new Map())
+  // Slow heartbeat so rows age INTO the collapsed set while the tab stays
+  // open. Staleness moves on a scale of days, so ten minutes is plenty.
+  const [, setStaleCollapseTick] = useState(0)
+  useEffect(() => {
+    if (staleCollapseMs <= 0) return
+    const id = setInterval(() => {
+      setStaleCollapseTick(t => t + 1)
+      setStaleRecentlyMoved(prev => {
+        if (prev.size === 0) return prev
+        const cutoff = Date.now() - STALE_COLLAPSE_TICK_MS
+        const kept = new Map([...prev].filter(([, at]) => at > cutoff))
+        return kept.size === prev.size ? prev : kept
+      })
+    }, STALE_COLLAPSE_TICK_MS)
+    return () => clearInterval(id)
+  }, [staleCollapseMs])
+  // Exempt everything live or owed to the user: pinned, focused, running
+  // (incl. workflows/goal loops), live or queued subagents, an approval gate,
+  // an unanswered question, unread output — and a row the user JUST moved,
+  // which must stay visible at its destination whatever its age. The collapse
+  // de-noises settled work; a row that needs the user is not settled.
+  // Memoized (not just for render cost): the reveal-in-sidebar effect below
+  // consults it to decide whether the target row needs its dormant section
+  // pre-expanded, so it must be a listable effect dependency.
+  const isStaleExempt = useCallback((s: Slot): boolean =>
+    pinned.has(s.key) || s.key === activeSlot || runningSet.has(s.key)
+    || (subagentCounts[s.key] ?? 0) > 0 || !!s.pending_approval
+    || !!s.needs_input || unreadSet.has(s.key)
+    // Read-time expiry: an entry only counts while younger than one heartbeat
+    // interval, so correctness never depends on the prune timer having fired
+    // (the timer is gated on the feature being on; the writer is not).
+    || (staleRecentlyMoved.get(s.key) ?? 0) > Date.now() - STALE_COLLAPSE_TICK_MS,
+  [pinned, activeSlot, runningSet, subagentCounts, unreadSet, staleRecentlyMoved])
+  const splitStale = (list: Slot[]): StaleSplit<Slot> => {
+    // Inert while the list is narrowed: a search or status chip must reach
+    // every match (the same invariant that sends the folder filter inert
+    // while searching), so the collapse may never become a fourth hiding
+    // dimension on top of an active one. Also inert under non-date sorts —
+    // only newest-first ordering makes the stale set a truthful contiguous
+    // tail, so an expander under name/created sort would hide rows from the
+    // middle of the visible ordering.
+    const active = !listNarrowed && sortKey === 'date-desc'
+    return splitStaleSlots(
+      list,
+      active ? staleCollapseMs : 0,
+      Date.now(),
+      s => lastActivityEpoch(s) * 1000,
+      isStaleExempt,
+    )
+  }
+  const renderStaleSection = (containerId: string, staleSlots: Slot[], depth: number, containerName?: string): React.ReactNode => {
+    if (staleSlots.length === 0) return null
+    const open = staleExpanded.has(containerId)
+    const regionId = `stale-rows-${containerId}`
+    const lblId = `stale-lbl-${containerId}`
+    const countId = `stale-count-${containerId}`
+    const ctxId = `stale-ctx-${containerId}`
+    return (
+      <Fragment key={`stale-${containerId}`}>
+        {/* aria-labelledby composes the visible label + count badge + a
+            visually-hidden container name, so AT announces "Dormant sessions
+            3 <folder>" — an aria-label would drop the count (it overrides
+            button contents) and re-pluralizing it per locale is exactly the
+            concatenation trap the i18n rules ban. */}
+        <button type="button"
+          aria-expanded={open}
+          aria-controls={regionId}
+          aria-labelledby={`${lblId} ${countId} ${ctxId}`}
+          data-testid={`stale-expander-${containerId}`}
+          onClick={() => setStaleExpanded(prev => {
+            const next = new Set(prev)
+            if (next.has(containerId)) next.delete(containerId); else next.add(containerId)
+            return next
+          })}
+          className="w-full flex items-center gap-1.5 px-3 py-0.5 rounded-md text-[11px] leading-4 text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none cursor-pointer text-left">
+          <DisclosureChevron open={open} size={11} />
+          <span id={lblId}>{i18nT('pages.chatSidebar.stale_collapse_row')}</span>
+          <span id={countId} className="px-1 rounded-full bg-bg-hover text-[10px] tabular-nums">{staleSlots.length}</span>
+          <span id={ctxId} className="sr-only">{containerName
+            ? i18nT('pages.chatSidebar.stale_collapse_ctx_in_name', { name: containerName })
+            : i18nT('pages.chatSidebar.stale_collapse_row_ungrouped')}</span>
+        </button>
+        {/* The controlled region always exists so aria-controls never dangles
+            in the collapsed state; only the rows are conditionally mounted. */}
+        <div id={regionId} hidden={!open}>{open && staleSlots.map(s => renderSessionRow(s, depth, false))}</div>
+      </Fragment>
+    )
+  }
+  // ── end stale-session collapse ─────────────────────────────────────────────
+
   // Ranks up to the configured count of sessions by settled recency for the sidebar tint —
   // see ../utils/recencyTint. Count = server-side dashboard.recent_tint_count (shared
   // kirocrewConfig query); recomputes when the slots or the configured count change.
@@ -2032,8 +2170,13 @@ function ChatSidebar({
     }
   }, [])
 
-  // Folders via React Query
-  const { data: folders = [] } = useQuery<ChatFolder[]>({ queryKey: ['chat-folders'], queryFn: () => api.chatFolders() })
+  // Folders via React Query. `isSuccess` gates the stale-collapse move
+  // watcher below: before folder data has actually ARRIVED `folders` is the
+  // [] default, so every filed slot would read as "just moved" the moment
+  // real data lands — hydration is not user movement. isSuccess (not
+  // isFetched, which is also true after a FAILED first fetch) stays false
+  // through an error window until the websocket seed or a retry backfills.
+  const { data: folders = [], isSuccess: foldersLoaded } = useQuery<ChatFolder[]>({ queryKey: ['chat-folders'], queryFn: () => api.chatFolders() })
 
   // Tags via React Query (dynamic vocabulary, defaults seeded server-side)
   const { data: tags = [] } = useQuery<ChatTag[]>({ queryKey: ['chat-tags'], queryFn: () => api.chatTags() })
@@ -2296,6 +2439,36 @@ function ChatSidebar({
     return m
   }, [slots, folders])
 
+  // Watch for sessions changing container and exempt them from the stale
+  // collapse until they age out (see the timestamped prune on the heartbeat).
+  // Derived from the store rather than wrapped around a move call site, so
+  // EVERY path that moves a session — drag, the row menu, the chat-header
+  // menu, and the move-undo bar — gets the exemption, including moves
+  // initiated outside this component. Gated on `foldersLoaded`: until folder
+  // data has arrived every filed slot maps to undefined, and treating that
+  // hydration as movement would exempt the whole tree on a cold load.
+  const prevSlotFoldersRef = useRef<Map<string, string | undefined> | null>(null)
+  useEffect(() => {
+    if (!foldersLoaded) return
+    const prev = prevSlotFoldersRef.current
+    const next = new Map<string, string | undefined>()
+    for (const s of slots) next.set(s.key, slotFolders[s.key])
+    prevSlotFoldersRef.current = next
+    if (!prev) return
+    const moved: string[] = []
+    for (const [key, fid] of next) {
+      if (prev.has(key) && prev.get(key) !== fid) moved.push(key)
+    }
+    if (moved.length) {
+      const now = Date.now()
+      setStaleRecentlyMoved(prevMap => {
+        const merged = new Map(prevMap)
+        for (const key of moved) merged.set(key, now)
+        return merged
+      })
+    }
+  }, [slots, slotFolders, foldersLoaded])
+
   // Folder IDs that hold at least one ACTIVE slot, directly or via any
   // descendant folder. Computed from all `slots` (not filteredSlots) so a
   // search/filter never spuriously hides a folder that still holds work.
@@ -2483,6 +2656,48 @@ function ChatSidebar({
   // silently miss one (a missed dimension used to strand the folder lane's
   // folders as empty "New chat in <name>" shells).
   const listNarrowed = filterDimensions.some(d => d.narrows !== null && d.narrows())
+
+  // Bridge a clearing narrow for the stale collapse: while narrowed the
+  // collapse is inert, so a 10-day-old search match renders as an ordinary
+  // row. Clearing the search must not swallow the row the user was just
+  // reading behind an expander they have never seen — so when the narrow
+  // ends, pre-expand every container whose narrowed-visible rows would now
+  // collapse. Captured in an EFFECT (committed renders only — a ref written
+  // during render could hold a speculative list an abandoned render never
+  // showed), consumed on the committed narrowed→clear transition. Effect
+  // order matters and matches declaration order: the capture effect sees
+  // `listNarrowed === false` on the clearing commit and leaves the ref for
+  // the consumer below. Pre-expanding a container the narrow never scrolled
+  // into view is accepted: an expanded section inside a collapsed folder is
+  // invisible, and over-expansion never hides anything.
+  const staleNarrowBridgeRef = useRef<Slot[] | null>(null)
+  useEffect(() => {
+    if (listNarrowed) staleNarrowBridgeRef.current = filteredSlots
+  }, [listNarrowed, filteredSlots])
+  useEffect(() => {
+    if (listNarrowed) return
+    const shown = staleNarrowBridgeRef.current
+    // Consumed (and discarded) on the clearing transition even when the
+    // bridge cannot act — under a non-date sort or with the feature off the
+    // collapse is inert anyway, and holding the capture for a LATER sort
+    // switch would mean expanding containers from an arbitrarily old list.
+    staleNarrowBridgeRef.current = null
+    if (!shown?.length || staleCollapseMs <= 0 || sortKey !== 'date-desc') return
+    const { stale } = splitStaleSlots(
+      shown, staleCollapseMs, Date.now(),
+      s => lastActivityEpoch(s) * 1000, isStaleExempt,
+    )
+    if (!stale.length) return
+    setStaleExpanded(prev => {
+      const next = new Set(prev)
+      for (const s of stale) next.add(slotFolders[s.key] || 'root')
+      return next
+    })
+    // Deliberately keyed on the narrowed→clear transition alone: the bridge
+    // must fire exactly when the narrow ends, not whenever the collapse
+    // inputs it reads happen to change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listNarrowed])
 
   /** Every filter that can hide a reveal target, derived from
    *  `filterDimensions`: the reveal effect iterates this list instead of
@@ -2868,6 +3083,21 @@ function ChatSidebar({
     // Reveal means "show me this row", so drop every filter hiding the target
     // rather than scrolling to nothing (#912 D5). Registered in one list above.
     for (const dim of revealBlockingFilters) if (dim.hides(slot)) dim.clear(slot)
+    // The stale-session collapse is a per-container disclosure, not a filter
+    // dimension (clearing a dimension drops it everywhere; a reveal should
+    // open ONE dormant section, not all of them), so it is handled here
+    // rather than in the registry: pre-expand the target's container when the
+    // row is stale-collapsible, or the retry loop below scrolls to a row that
+    // never rendered (#6479). Gated on the collapse being ACTIVE (same gate
+    // as the narrow-bridge consumer above): with the feature off or under a
+    // non-date sort the row renders anyway, and the write would leave that
+    // container's section pre-opened whenever the collapse next re-engages.
+    // Deliberately NOT gated on `listNarrowed`: the filter clearing two lines
+    // up has not committed yet, so it would still read true here.
+    if (staleCollapseMs > 0 && sortKey === 'date-desc' && !isStaleExempt(slot)) {
+      const container = slotFolders[key] || 'root'
+      setStaleExpanded(prev => (prev.has(container) ? prev : new Set(prev).add(container)))
+    }
     if (slot.folder_id) {
       // Expand all collapsed ancestor folders. Cycle-guarded: a hand-edited
       // folders.json can contain a parent_id loop and must not hang the tab.
@@ -2926,7 +3156,7 @@ function ChatSidebar({
       revealFlashTimersRef.current = [t1, t2]
     }
     tryScroll()
-  }, [revealRequest, dispatch, slots, folders, revealBlockingFilters, updateFolderMutation])
+  }, [revealRequest, dispatch, slots, folders, revealBlockingFilters, updateFolderMutation, isStaleExempt, slotFolders, staleCollapseMs, sortKey])
   const renameCommit = useCallback((id: string, name: string) => {
     if (name.trim()) updateFolderMutation.mutate({ id, body: { name: name.trim() } })
     setEditingId(null)
@@ -4391,12 +4621,15 @@ function ChatSidebar({
     // new-subfolder input, so it reads as part of the folder list.
     const hiddenHere = hiddenByContainer.get(folder.id)
     if (hiddenHere?.length) childNodes.push(renderHiddenReveal(folder.id, hiddenHere, depth + 1))
-    childSlots.forEach((s, i) => {
+    const { fresh: freshChildSlots, stale: staleChildSlots } = splitStale(childSlots)
+    freshChildSlots.forEach((s, i) => {
       const isActive = activeSlot === s.key
-      const nextIsActive = i < childSlots.length - 1 && activeSlot === childSlots[i + 1].key
-      const showDivider = i < childSlots.length - 1 && !isActive && !nextIsActive
+      const nextIsActive = i < freshChildSlots.length - 1 && activeSlot === freshChildSlots[i + 1].key
+      const showDivider = i < freshChildSlots.length - 1 && !isActive && !nextIsActive
       childNodes.push(renderSessionRow(s, depth + 1, showDivider))
     })
+    const staleSection = renderStaleSection(folder.id, staleChildSlots, depth + 1, folder.name)
+    if (staleSection) childNodes.push(staleSection)
     // Hide folders with no matching children while the list is narrowed
     if (listNarrowed && childNodes.length === 0) return []
     // Wrap children in a bordered container so the folder's extent is visually
@@ -4954,6 +5187,57 @@ function ChatSidebar({
                     {sortKey === o.value && <Check size={14} className="text-accent shrink-0" />}
                   </DropdownMenuItem>
                 ))}
+                <DropdownMenuSeparator />
+                {/* Stale-session collapse threshold. Lives beside Sort rather than
+                    in Settings: it shapes how this list reads, exactly like the
+                    sort order, and the Recent filter's window picker set the
+                    precedent for a duration control in this menu. Hidden in the
+                    flat lane and on the board — those views render rows through
+                    paths the collapse does not touch, and a control that
+                    displays an active setting while doing nothing is a lie. */}
+                {!flatLaneActive && !boardLaneActive && (() => {
+                  // The trigger must not advertise "· 2d" while the collapse
+                  // is inert (narrowed list / non-date sort): a control that
+                  // displays an active setting while doing nothing is a lie.
+                  const stalePaused = staleCollapseMs > 0 && (listNarrowed || sortKey !== 'date-desc')
+                  return (
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger data-testid="stale-collapse-menu"
+                    title={stalePaused ? i18nT('pages.chatSidebar.stale_collapse_paused_hint') : undefined}>
+                    <Clock size={14} className="text-muted shrink-0" />
+                    <span className="flex-1 truncate">
+                      {i18nT('pages.chatSidebar.stale_collapse_menu')}
+                      <span className="text-muted"> · {staleCollapseMs > 0
+                        ? (stalePaused
+                          ? i18nT('pages.chatSidebar.stale_collapse_paused')
+                          : formatRecentWindow(staleCollapseMs))
+                        : i18nT('pages.chatSidebar.stale_collapse_off')}</span>
+                    </span>
+                    <ChevronRight size={13} className="text-muted shrink-0" />
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="min-w-[150px] max-w-[240px]">
+                    {/* Caption saying what the durations mean, mirroring the
+                        Recent submenu's "Within" caption above its presets. */}
+                    <div className="px-2 pt-1 pb-1 text-[11px] text-muted">{i18nT('pages.chatSidebar.stale_collapse_caption')}</div>
+                    {/* While paused the WHY must be readable without hover —
+                        the trigger's title tooltip is invisible to keyboard
+                        and touch users, so the hint renders here too. */}
+                    {stalePaused && (
+                      <div className="px-2 pb-1.5 text-[11px] text-muted italic">{i18nT('pages.chatSidebar.stale_collapse_paused_hint')}</div>
+                    )}
+                    {STALE_COLLAPSE_PRESETS_MS.map(ms => (
+                      <DropdownMenuItem
+                        key={ms}
+                        onSelect={() => setStaleCollapseMs(ms)}
+                      >
+                        <span className="flex-1">{ms > 0 ? formatRecentWindow(ms) : i18nT('pages.chatSidebar.stale_collapse_off')}</span>
+                        {staleCollapseMs === ms && <Check size={14} className="text-accent shrink-0" />}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+                  )
+                })()}
                 {/* Tags. Placed above Folders and NOT gated on the lane: tags are
                     a property of the session, so they mean the same thing in the
                     flat list, the folder tree and the board — and the board is
@@ -5270,12 +5554,20 @@ function ChatSidebar({
                              *  below, always reachable even when the root lane has
                              *  no empty space. */}
                             {draggingNestedFolder && <RootDropHint />}
-                            {ungroupedSlots.map((s, i) => {
-                              const nextIsActive = i < ungroupedSlots.length - 1 && activeSlot === ungroupedSlots[i + 1].key
-                              const isActive = activeSlot === s.key
-                              const showDivider = i < ungroupedSlots.length - 1 && !isActive && !nextIsActive
-                              return renderSessionRow(s, 0, showDivider)
-                            })}
+                            {(() => {
+                              const { fresh: freshRoot, stale: staleRoot } = splitStale(ungroupedSlots)
+                              return (
+                                <>
+                                  {freshRoot.map((s, i) => {
+                                    const nextIsActive = i < freshRoot.length - 1 && activeSlot === freshRoot[i + 1].key
+                                    const isActive = activeSlot === s.key
+                                    const showDivider = i < freshRoot.length - 1 && !isActive && !nextIsActive
+                                    return renderSessionRow(s, 0, showDivider)
+                                  })}
+                                  {renderStaleSection('root', staleRoot, 0)}
+                                </>
+                              )
+                            })()}
                             {ungroupedSlots.length === 0 && draggingFolderedSession && <RootDropHint />}
                           </div>
                         )}

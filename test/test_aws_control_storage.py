@@ -450,6 +450,289 @@ class TestObjectIO:
         assert checked.call_args.kwargs["action"] == "s3:DeleteObject"
 
 
+# ---------------------------------------------------------------------------
+# Folder create — a folder exists ONLY as a zero-byte, '/'-terminated
+# placeholder, and its key must be exactly the shape list_section() filters out
+# of `files` (obj["Key"] == prefix). If the two drift, a created folder shows up
+# as a phantom file.
+# ---------------------------------------------------------------------------
+
+
+class TestFolderPlaceholderKey:
+    def test_placeholder_is_section_key_plus_trailing_slash(self):
+        # The listing computes its page prefix as SECTION_PREFIXES[section] +
+        # f"{subpath}/" and drops the object whose key EQUALS it. The placeholder
+        # must be that exact string.
+        assert storage.folder_placeholder_key("drive", "photos") == "drive/photos/"
+        assert storage.folder_placeholder_key("library", "a/b") == "artifacts/a/b/"
+
+    def test_placeholder_matches_what_the_listing_filters(self):
+        # Round-trip the contract: create a folder "photos", then list its parent
+        # and confirm the placeholder is filtered from files and never leaks in.
+        # This is the anti-drift assertion — it fails if either side changes.
+        section, path = "drive", "photos"
+        placeholder = storage.folder_placeholder_key(section, path)
+        # list_section under the parent (root) sees the placeholder as a
+        # CommonPrefix folder, and the object whose Key == the child prefix is
+        # dropped. Here we assert the created key equals the prefix the listing
+        # of the FOLDER ITSELF would compute and drop.
+        listing_prefix = storage.SECTION_PREFIXES[section] + f"{path}/"
+        assert placeholder == listing_prefix
+
+
+class TestCreateFolder:
+    def test_create_folder_puts_the_zero_byte_placeholder(self):
+        # A folder is a zero-byte object: put-object with NO --body, owner-pinned
+        # like every write, keyed at section/path/ (trailing slash appended here,
+        # never taken from the caller).
+        with mock.patch.object(storage, "_checked") as checked:
+            storage.create_folder("p", "us-east-1", "b", "drive", "photos", account="111122223333")
+        argv = checked.call_args.args[0]
+        assert argv[:2] == ["s3api", "put-object"]
+        assert argv[argv.index("--bucket") + 1] == "b"
+        assert argv[argv.index("--key") + 1] == "drive/photos/"
+        assert argv[argv.index("--expected-bucket-owner") + 1] == "111122223333"
+        # Zero-byte: no body flag at all.
+        assert "--body" not in argv
+        assert checked.call_args.kwargs["action"] == "s3:PutObject"
+
+
+# ---------------------------------------------------------------------------
+# Folder delete (delete_prefix) — the blast-radius surface. The contract:
+# (a) anchor on section/path/ WITH the trailing slash so a name-prefixed sibling
+# is not swept; (b) page the batch API, honouring the 1000-key cap rather than
+# assuming one call clears the folder; (c) every call owner-pinned; (d) return
+# the true count removed.
+# ---------------------------------------------------------------------------
+
+
+class TestDeletePrefix:
+    def _run(self, pages: list[dict], delete_out: object = ""):
+        """Drive delete_prefix with list-objects-v2 returning `pages` in order,
+        capturing every argv the engine saw.
+
+        `delete_out` is what each delete-objects call returns: a string, or a
+        callable given the parsed payload so a test can fail specific keys the
+        way S3 does - per-key, inside a 200 response.
+        """
+        calls: list[list] = []
+        page_iter = iter(pages)
+
+        def checked(args, profile, *, action, timeout=30):
+            calls.append(args)
+            if args[1] == "list-objects-v2":
+                # The walk RE-LISTS after every round (no resume token), so it
+                # asks once more than there are populated pages and stops on the
+                # empty one. Supplying that terminator here keeps each test's
+                # `pages` about the content it cares about.
+                return json.dumps(next(page_iter, {"Contents": []}))
+            if callable(delete_out):
+                return delete_out(json.loads(args[args.index("--delete") + 1]))
+            return delete_out
+
+        with mock.patch.object(storage, "_checked", side_effect=checked):
+            removed = storage.delete_prefix(
+                "p", "us-east-1", "b", "drive", "photos", account="111122223333"
+            )
+        return removed, calls
+
+    def test_per_key_failure_is_raised_not_counted_as_removed(self):
+        # DeleteObjects reports per-key failures INSIDE a 200 response, so the
+        # CLI exits 0 and _checked (which only raises on rc != 0) sees success.
+        # Counting the batch as removed would tell the caller a folder is gone
+        # while objects it could not touch are still there.
+        def one_denied(_payload):
+            return json.dumps(
+                {"Errors": [{"Key": "drive/photos/b", "Code": "AccessDenied", "Message": "no"}]}
+            )
+
+        with pytest.raises(storage.AWSError) as excinfo:
+            self._run(
+                [{"Contents": [{"Key": "drive/photos/a"}, {"Key": "drive/photos/b"}]}],
+                delete_out=one_denied,
+            )
+        assert "AccessDenied" in str(excinfo.value)
+
+    def test_an_empty_errors_list_is_still_success(self):
+        removed, _calls = self._run(
+            [{"Contents": [{"Key": "drive/photos/a"}]}],
+            delete_out=json.dumps({"Errors": []}),
+        )
+        assert removed == 1
+
+    def test_an_empty_delete_response_is_success(self):
+        # Quiet=True on a fully successful call returns an EMPTY body; that is
+        # the common path and must not be read as a failure. (A non-empty body
+        # that will not parse is a different case - see the test below.)
+        removed, _calls = self._run([{"Contents": [{"Key": "drive/photos/a"}]}], delete_out="")
+        assert removed == 1
+
+    def test_delete_batches_stay_within_argv_length_limits(self):
+        # The payload travels as ONE argv element. A page of 1000 long keys
+        # serializes past the per-argument ceiling (~128 KiB on Linux) and past
+        # Windows' whole-command-line limit, so the page has to be split by
+        # SERIALIZED SIZE, not just by S3's key count.
+        long_keys = [f"drive/photos/{i:04d}-{'k' * 200}" for i in range(1000)]
+        removed, calls = self._run([{"Contents": [{"Key": k} for k in long_keys]}])
+
+        deletes = [a for a in calls if a[1] == "delete-objects"]
+        assert len(deletes) > 1, "a 1000-key page of long keys must be split"
+        seen: list[str] = []
+        for args in deletes:
+            payload = args[args.index("--delete") + 1]
+            assert len(payload.encode()) <= storage._DELETE_PAYLOAD_MAX_BYTES
+            seen += [o["Key"] for o in json.loads(payload)["Objects"]]
+        # Every key exactly once: a split must not drop or duplicate work.
+        assert seen == long_keys
+        assert removed == len(long_keys)
+
+    def test_delete_forces_json_output_so_the_error_check_can_parse(self):
+        # `_raise_on_delete_errors` reads the response as JSON. A user's
+        # ~/.aws/config may set `output = text` (or yaml), which would make the
+        # body unparseable and turn the per-key error check into a no-op - the
+        # guard would be silently config-dependent. The listing call already
+        # pins its own --output json; this one must too.
+        _removed, calls = self._run([{"Contents": [{"Key": "drive/photos/a"}]}])
+        delete = next(a for a in calls if a[1] == "delete-objects")
+        assert delete[delete.index("--output") + 1] == "json"
+
+    def test_an_unparseable_non_empty_delete_body_is_a_failure(self):
+        # With --output json pinned, a non-empty body that is not JSON is not
+        # something to shrug at on a destructive path: report failure rather
+        # than claim the objects are gone. (Empty stays success - that is what
+        # Quiet returns when everything worked.)
+        with pytest.raises(storage.AWSError):
+            self._run(
+                [{"Contents": [{"Key": "drive/photos/a"}]}],
+                delete_out="DELETE_MARKER\tdrive/photos/a\ttrue",
+            )
+
+    def test_the_payload_budget_survives_worst_case_windows_escaping(self):
+        # The budget is a DERIVED number, so pin the derivation rather than the
+        # literal: subprocess builds the Windows command line with list2cmdline,
+        # which escapes every " as \", and an S3 key may legitimately contain
+        # quotes. A batch that doubles must still fit CreateProcess's limit.
+        worst_case = storage._DELETE_PAYLOAD_MAX_BYTES * 2
+        fixed_argv = len(
+            "s3api delete-objects --bucket bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb "
+            "--delete --expected-bucket-owner 111122223333 "
+        )
+        assert worst_case + fixed_argv < storage._WINDOWS_CMDLINE_MAX
+
+    def test_quote_dense_keys_still_produce_spawnable_batches(self):
+        # A key made of quotes is the pathological case the budget exists for:
+        # JSON-escaping doubles it once, Windows argv escaping can double it
+        # again. Every batch must survive both and still cover each key once.
+        quoted = [f"drive/photos/{i}-{chr(34) * 40}" for i in range(200)]
+        removed, calls = self._run([{"Contents": [{"Key": k} for k in quoted]}])
+        seen: list[str] = []
+        for args in (a for a in calls if a[1] == "delete-objects"):
+            payload = args[args.index("--delete") + 1]
+            assert len(payload.encode()) <= storage._DELETE_PAYLOAD_MAX_BYTES
+            # Model list2cmdline's quote escaping: the doubled form must fit.
+            assert len(payload.replace('"', '\\"').encode()) < storage._WINDOWS_CMDLINE_MAX
+            seen += [o["Key"] for o in json.loads(payload)["Objects"]]
+        assert seen == quoted
+        assert removed == len(quoted)
+
+    def test_deletes_every_object_and_returns_the_count(self):
+        removed, calls = self._run(
+            [{"Contents": [{"Key": "drive/photos/a"}, {"Key": "drive/photos/b"}]}]
+        )
+        assert removed == 2
+        delete = next(a for a in calls if a[1] == "delete-objects")
+        assert delete[:2] == ["s3api", "delete-objects"]
+        payload = json.loads(delete[delete.index("--delete") + 1])
+        assert payload["Objects"] == [{"Key": "drive/photos/a"}, {"Key": "drive/photos/b"}]
+        assert delete[delete.index("--expected-bucket-owner") + 1] == "111122223333"
+
+    def test_list_is_anchored_on_the_trailing_slash_prefix(self):
+        # Anchoring on "drive/photos/" (not "drive/photos") is what keeps a
+        # sibling "drive/photos-backup/" out of the delete. Pin the LIST prefix.
+        _removed, calls = self._run([{"Contents": [{"Key": "drive/photos/a"}]}])
+        list_args = next(a for a in calls if a[1] == "list-objects-v2")
+        assert list_args[list_args.index("--prefix") + 1] == "drive/photos/"
+        assert list_args[list_args.index("--expected-bucket-owner") + 1] == "111122223333"
+
+    def test_walks_a_multi_page_folder_by_RE_LISTING_not_by_resume_token(self):
+        # A folder larger than one batch must still be fully deleted, and the walk
+        # deliberately does NOT resume with --starting-token.
+        #
+        # `--max-items` is CLIENT-side pagination: when the CLI truncates inside a
+        # server page it emits a COMPOSITE token carrying an intra-page offset
+        # (boto_truncate_amount). S3 is free to return a short page, so the CLI
+        # can fetch another to reach the requested count and truncate mid-page.
+        # Resuming with that token re-lists and skips N items - but those N were
+        # just DELETED, so the skip lands on surviving keys, which are then never
+        # removed while the call reports completion.
+        #
+        # Re-listing from the prefix each round has no such offset to get wrong:
+        # what was deleted is simply gone, so the next listing begins at the next
+        # survivor. It is also memory-bounded, unlike collecting every key first.
+        removed, calls = self._run(
+            [
+                {"Contents": [{"Key": "drive/photos/a"}], "NextToken": "T1"},
+                {"Contents": [{"Key": "drive/photos/b"}]},
+                {"Contents": []},
+            ]
+        )
+        assert removed == 2
+        lists = [a for a in calls if a[1] == "list-objects-v2"]
+        deletes = [a for a in calls if a[1] == "delete-objects"]
+        assert len(deletes) == 2
+        # Every listing starts from the prefix: no resume token is ever sent,
+        # even though the first page offered one.
+        for args in lists:
+            assert "--starting-token" not in args
+
+    def test_stops_when_a_listing_stops_shrinking(self):
+        # Termination safety: the walk relies on each round removing what it
+        # listed. If a listing keeps returning the same keys (a delete that
+        # reported success without removing anything), spinning forever would be
+        # worse than failing, so the walk refuses to repeat a round that made no
+        # progress.
+        same = {"Contents": [{"Key": "drive/photos/a"}]}
+        calls: list[list] = []
+
+        def checked(args, profile, *, action, timeout=30):
+            calls.append(args)
+            if args[1] == "list-objects-v2":
+                return json.dumps(same)
+            return ""
+
+        with mock.patch.object(storage, "_checked", side_effect=checked):
+            with pytest.raises(storage.AWSError):
+                storage.delete_prefix(
+                    "p", "us-east-1", "b", "drive", "photos", account="111122223333"
+                )
+        # It gave up rather than looping: a bounded number of rounds.
+        assert len([a for a in calls if a[1] == "list-objects-v2"]) < 10
+
+    def test_batch_size_is_capped_at_the_api_limit(self):
+        # The listing window (--max-items) must be the API's own per-request cap,
+        # so a single delete-objects never exceeds what S3 accepts.
+        _removed, calls = self._run([{"Contents": [{"Key": "drive/photos/a"}]}])
+        list_args = next(a for a in calls if a[1] == "list-objects-v2")
+        assert list_args[list_args.index("--max-items") + 1] == str(storage._DELETE_BATCH_MAX)
+        assert storage._DELETE_BATCH_MAX == 1000
+
+    def test_an_empty_folder_issues_no_delete_call(self):
+        # A prefix with no objects (already empty, or only the placeholder just
+        # removed) must not send an empty delete-objects, which the CLI rejects.
+        removed, calls = self._run([{"Contents": []}])
+        assert removed == 0
+        assert not any(a[1] == "delete-objects" for a in calls)
+
+    def test_malformed_list_body_stops_cleanly(self):
+        # A garbled listing page must not crash mid-delete; it reads as an empty
+        # page and the walk terminates.
+        with mock.patch.object(storage, "_checked", return_value="{not json"):
+            removed = storage.delete_prefix(
+                "p", "us-east-1", "b", "drive", "photos", account="111122223333"
+            )
+        assert removed == 0
+
+
 class TestObjectExists:
     def test_head_object_success_means_exists(self):
         # object_exists uses run_aws directly (not _checked) so a 404 head is a

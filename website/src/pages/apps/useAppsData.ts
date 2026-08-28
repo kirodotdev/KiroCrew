@@ -156,25 +156,6 @@ export function pickFeatured(apps: RegistryApp[]): RegistryApp[] {
 }
 
 /**
- * Whether an installed app belongs in the Library list.
- *
- * A disabled builtin is normally hidden: the wheel ships ~20 of them default-off
- * and listing every one would bury the apps a reader actually uses. An app that
- * REPLACES a host surface is the exception, because it is the only class a reader
- * can turn off and then need to find again -- its own copy tells them to disable
- * it to get the old surface back, and with the row gone from Library and no
- * catalog row in Discover that would be a one-way switch. Keyed on `ui.overlays`
- * rather than on the app id so the rule belongs to the capability, not to a name.
- *
- * Exported so its test exercises this predicate rather than a copy of it.
- */
-export function keepInLibrary(
-  app: Pick<InstalledApp, 'origin' | 'enabled' | 'manifest'>,
-): boolean {
-  return !(app.origin === 'builtin' && !app.enabled && !app.manifest?.ui?.overlays?.length)
-}
-
-/**
  * Announce an install-state change to the app shell.
  *
  * Neither ['apps'] nor ['registry'] is invalidated here: the mc:apps-changed
@@ -209,6 +190,170 @@ export type AppsData = {
   announceAppsChanged: () => void
 }
 
+// ---- Pending-update derivation ------------------------------------------
+// Shared by this hook's `updatables` and App.tsx's sidebar Discover badge —
+// the sidebar count must equal the Updates sub-tab count, and one shared
+// derivation is the only arrangement two surfaces cannot drift under.
+
+/** The registry-row fields the update derivation reads. */
+type UpdatableRegistryRow = Pick<RegistryApp, 'name' | 'version' | 'updateAvailable'>
+
+/**
+ * The installed-row fields the update derivation reads.
+ *
+ * Only server-emitted fields appear here: the `['apps']` cache can hold RAW
+ * rows (some observers fetch it without normalizing — see the queryFn note in
+ * `useAppsData`), so this derivation must not lean on anything normalization
+ * adds.
+ */
+export type UpdatableInstalledRow = Pick<
+  InstalledApp,
+  'name' | 'lifecycle' | 'origin' | 'enabled' | 'manifest'
+>
+
+/**
+ * Whether an installed app belongs in the Library list.
+ *
+ * A disabled builtin is normally hidden: the wheel ships ~20 of them default-off
+ * and listing every one would bury the apps a reader actually uses. An app that
+ * REPLACES a host surface is the exception, because it is the only class a reader
+ * can turn off and then need to find again -- its own copy tells them to disable
+ * it to get the old surface back, and with the row gone from Library and no
+ * catalog row in Discover that would be a one-way switch. Keyed on `ui.overlays`
+ * rather than on the app id so the rule belongs to the capability, not to a name.
+ *
+ * Exported so its test exercises this predicate rather than a copy of it.
+ */
+export function keepInLibrary(
+  app: Pick<InstalledApp, 'origin' | 'enabled' | 'manifest'>,
+): boolean {
+  return !(app.origin === 'builtin' && !app.enabled && !app.manifest?.ui?.overlays?.length)
+}
+
+/** name → new version for every registry row with an update available. */
+function buildUpdateMap(
+  registry: readonly UpdatableRegistryRow[],
+): Map<string, string> {
+  return new Map(registry.filter(r => r.updateAvailable).map(r => [r.name, r.version]))
+}
+
+/**
+ * Whether Update All / the Updates sub-page would touch this Library row: a
+ * pending update AND a gateway-managed lifecycle (`app`- and `locked`-
+ * lifecycle apps manage their own updates, so the store cannot update them).
+ */
+function isUpdatable(
+  app: Pick<InstalledApp, 'name' | 'lifecycle'>,
+  updateMap: ReadonlyMap<string, string>,
+): boolean {
+  return updateMap.has(app.name) && app.lifecycle === 'gateway'
+}
+
+/**
+ * The updates count every badge surface shows (sidebar Discover row, Discover
+ * Updates sub-tab) — the length of the same list `useAppsData.updatables`
+ * builds, computed from the same two payloads. Tolerates absent inputs so a
+ * cold cache (store pages never visited yet) reads as "no known updates".
+ */
+export function countUpdatables(
+  registry: readonly UpdatableRegistryRow[] | undefined,
+  installed: readonly UpdatableInstalledRow[] | undefined,
+): number {
+  if (!registry?.length || !installed?.length) return 0
+  const updateMap = buildUpdateMap(registry)
+  if (updateMap.size === 0) return 0
+  return installed.filter(a => keepInLibrary(a) && isUpdatable(a, updateMap)).length
+}
+
+/**
+ * The single fetch boundary for the ['registry'] cache, shared by every
+ * observer of that key. React Query keeps one queryFn per key — whichever
+ * observer registered last fetches — so the app shell's badge query and this
+ * hook MUST reference the same function: a second, raw fetcher would win the
+ * registration race and hand normalized-shape consumers an unnormalized
+ * payload.
+ */
+export async function registryQueryFn(): Promise<{
+  apps: RegistryApp[]
+  categoryOrder: string[]
+  editorialSections: EditorialBlock[]
+}> {
+    const res = await api.listRegistry()
+    // Normalize at the single fetch boundary: registry.py yields minimal
+    // rows when an app.json fetch fails, and external registries are
+    // user-supplied JSON, so display fields may be missing or mistyped.
+    //
+    // `categoryOrder` is published presentation, so it gets the same
+    // treatment: a non-array, or a member that is not a string, collapses to
+    // an empty list, which `mergeCategoryOrder` reads as "use the canonical
+    // order".
+    const publishedOrder = Array.isArray(res.categoryOrder)
+      ? res.categoryOrder.filter((id): id is string => typeof id === 'string')
+      : []
+    // Published layout gets the same treatment as the order: the server
+    // already screened each artwork URL, but the SHAPE arrives over HTTP like
+    // any other payload, so a malformed block is dropped here rather than
+    // reaching a component that would throw mid-render.
+    const publishedSections: EditorialBlock[] = Array.isArray(res.editorialSections)
+      ? res.editorialSections.flatMap((rawBlock: unknown) => {
+          if (!rawBlock || typeof rawBlock !== 'object') return []
+          const b = rawBlock as Record<string, unknown>
+          // An unrecognised FORM skips the whole block: the arrangement is
+          // what a form names, and a block whose arrangement this client
+          // cannot draw has no partial rendering that is not a guess.
+          // `carousel` lands here deliberately until a renderer ships.
+          if (b.form !== 'full' && b.form !== 'row') return []
+          const items: EditorialItem[] = Array.isArray(b.items)
+            ? b.items.flatMap((raw: unknown) => {
+                if (!raw || typeof raw !== 'object') return []
+                const s = raw as Record<string, unknown>
+                // An unrecognised item TYPE skips just this card -- a narrower
+                // failure than the form's, because the arrangement can still
+                // be drawn around a card it does not know.
+                if (s.type !== 'app' && s.type !== 'collection') return []
+                const refs = Array.isArray(s.appRefs)
+                  ? s.appRefs.filter((n): n is string => typeof n === 'string' && !!n.trim()).map(n => n.trim())
+                  : []
+                // Dedupe and cap HERE as well as server-side. This boundary exists
+                // to not trust the payload, and every bound it skipped was one the
+                // component would have rendered: duplicate refs collide row keys,
+                // and an `app` item carrying several refs would render a multi-row
+                // card headed by one member's name.
+                const unique = [...new Set(refs)].slice(0, MAX_SECTION_APPS)
+                if (s.type === 'app' ? unique.length !== 1 : unique.length < MIN_COLLECTION_APPS) return []
+                const title = typeof s.title === 'string' && s.title.trim() ? s.title.trim() : undefined
+                // A collection is nothing without its theme, so one that arrives
+                // without a title is dropped rather than rendered anonymously. A
+                // whitespace-only title is absent, not present-and-blank -- otherwise
+                // the card renders an empty heading over the rows.
+                if (s.type === 'collection' && !title) return []
+                return [{
+                  type: s.type,
+                  appRefs: unique,
+                  // An `app` item is headed by the app's own name; a published
+                  // title there means the document meant `collection`.
+                  title: s.type === 'collection' ? title : undefined,
+                  blurb: typeof s.blurb === 'string' ? s.blurb : undefined,
+                  artwork: normalizeEditorialArtwork(s.artwork),
+                }]
+              })
+            : []
+          // The form's own floor, re-applied at the boundary: a `full` block
+          // holds exactly one card, a `row` needs two to have anything to sit
+          // beside. A block that lost cards to the item filter above can fall
+          // through its floor here, and dropping it whole beats rendering a
+          // half-width card against empty space.
+          if (b.form === 'full' ? items.length !== 1 : items.length < 2) return []
+          return [{ form: b.form, items, curated: true }]
+        })
+      : []
+    return {
+      apps: (res.apps as RegistryApp[]).map(normalizeRegistryApp),
+      categoryOrder: publishedOrder,
+      editorialSections: publishedSections,
+    }
+}
+
 export default function useAppsData(): AppsData {
   const { data: apps = [], isLoading: appsLoading, error: appsError } = useQuery<InstalledApp[]>({
     queryKey: ['apps'],
@@ -229,84 +374,8 @@ export default function useAppsData(): AppsData {
     editorialSections: EditorialBlock[]
   }>({
     queryKey: ['registry'],
-    // api.listRegistry() types `apps` as unknown[]; the backend payload matches
-    // RegistryApp, so narrow it here at the single fetch boundary.
-    queryFn: async () => {
-      const res = await api.listRegistry()
-      // Normalize at the single fetch boundary: registry.py yields minimal
-      // rows when an app.json fetch fails, and external registries are
-      // user-supplied JSON, so display fields may be missing or mistyped.
-      //
-      // `categoryOrder` is published presentation, so it gets the same
-      // treatment: a non-array, or a member that is not a string, collapses to
-      // an empty list, which `mergeCategoryOrder` reads as "use the canonical
-      // order".
-      const publishedOrder = Array.isArray(res.categoryOrder)
-        ? res.categoryOrder.filter((id): id is string => typeof id === 'string')
-        : []
-      // Published layout gets the same treatment as the order: the server
-      // already screened each artwork URL, but the SHAPE arrives over HTTP like
-      // any other payload, so a malformed block is dropped here rather than
-      // reaching a component that would throw mid-render.
-      const publishedSections: EditorialBlock[] = Array.isArray(res.editorialSections)
-        ? res.editorialSections.flatMap((rawBlock: unknown) => {
-            if (!rawBlock || typeof rawBlock !== 'object') return []
-            const b = rawBlock as Record<string, unknown>
-            // An unrecognised FORM skips the whole block: the arrangement is
-            // what a form names, and a block whose arrangement this client
-            // cannot draw has no partial rendering that is not a guess.
-            // `carousel` lands here deliberately until a renderer ships.
-            if (b.form !== 'full' && b.form !== 'row') return []
-            const items: EditorialItem[] = Array.isArray(b.items)
-              ? b.items.flatMap((raw: unknown) => {
-                  if (!raw || typeof raw !== 'object') return []
-                  const s = raw as Record<string, unknown>
-                  // An unrecognised item TYPE skips just this card -- a narrower
-                  // failure than the form's, because the arrangement can still
-                  // be drawn around a card it does not know.
-                  if (s.type !== 'app' && s.type !== 'collection') return []
-                  const refs = Array.isArray(s.appRefs)
-                    ? s.appRefs.filter((n): n is string => typeof n === 'string' && !!n.trim()).map(n => n.trim())
-                    : []
-                  // Dedupe and cap HERE as well as server-side. This boundary exists
-                  // to not trust the payload, and every bound it skipped was one the
-                  // component would have rendered: duplicate refs collide row keys,
-                  // and an `app` item carrying several refs would render a multi-row
-                  // card headed by one member's name.
-                  const unique = [...new Set(refs)].slice(0, MAX_SECTION_APPS)
-                  if (s.type === 'app' ? unique.length !== 1 : unique.length < MIN_COLLECTION_APPS) return []
-                  const title = typeof s.title === 'string' && s.title.trim() ? s.title.trim() : undefined
-                  // A collection is nothing without its theme, so one that arrives
-                  // without a title is dropped rather than rendered anonymously. A
-                  // whitespace-only title is absent, not present-and-blank -- otherwise
-                  // the card renders an empty heading over the rows.
-                  if (s.type === 'collection' && !title) return []
-                  return [{
-                    type: s.type,
-                    appRefs: unique,
-                    // An `app` item is headed by the app's own name; a published
-                    // title there means the document meant `collection`.
-                    title: s.type === 'collection' ? title : undefined,
-                    blurb: typeof s.blurb === 'string' ? s.blurb : undefined,
-                    artwork: normalizeEditorialArtwork(s.artwork),
-                  }]
-                })
-              : []
-            // The form's own floor, re-applied at the boundary: a `full` block
-            // holds exactly one card, a `row` needs two to have anything to sit
-            // beside. A block that lost cards to the item filter above can fall
-            // through its floor here, and dropping it whole beats rendering a
-            // half-width card against empty space.
-            if (b.form === 'full' ? items.length !== 1 : items.length < 2) return []
-            return [{ form: b.form, items, curated: true }]
-          })
-        : []
-      return {
-        apps: (res.apps as RegistryApp[]).map(normalizeRegistryApp),
-        categoryOrder: publishedOrder,
-        editorialSections: publishedSections,
-      }
-    },
+    // Shared fetch boundary — see registryQueryFn's contract comment.
+    queryFn: registryQueryFn,
     staleTime: 5 * 60_000, // cache for 5min to avoid re-fetching on page switch
   })
   const registry: RegistryApp[] = useMemo(() => registryData?.apps || [], [registryData])
@@ -474,10 +543,7 @@ export default function useAppsData(): AppsData {
 
   // ---- Library data --------------------------------------------------------
 
-  const updateMap = useMemo(
-    () => new Map(registry.filter(r => r.updateAvailable).map(r => [r.name, r.version])),
-    [registry],
-  )
+  const updateMap = useMemo(() => buildUpdateMap(registry), [registry])
   const installedApps: LibraryApp[] = useMemo(
     () =>
       apps
@@ -490,7 +556,7 @@ export default function useAppsData(): AppsData {
     [apps, updateMap],
   )
   const updatables = useMemo(
-    () => installedApps.filter(a => updateMap.has(a.name) && a.lifecycle === 'gateway'),
+    () => installedApps.filter(a => isUpdatable(a, updateMap)),
     [installedApps, updateMap],
   )
 

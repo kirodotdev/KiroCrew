@@ -295,6 +295,27 @@ def _validate_project_dir(raw: str) -> tuple[str, str | None]:
     return resolved, None
 
 
+def _resolve_folder_project_dir(
+    folders: list[dict[str, Any]], folder_id: str
+) -> tuple[str, str | None]:
+    """Return the nearest validated project directory inherited by a folder."""
+    by_id = {str(folder.get("id") or ""): folder for folder in folders if isinstance(folder, dict)}
+    seen: set[str] = set()
+    current_id = folder_id
+    while current_id and current_id not in seen:
+        seen.add(current_id)
+        folder = by_id.get(current_id)
+        if folder is None:
+            break
+        raw_project = folder.get("project_dir")
+        if raw_project:
+            if not isinstance(raw_project, str):
+                return "", "project_dir must be a string"
+            return _validate_project_dir(raw_project.strip())
+        current_id = str(folder.get("parent_id") or "")
+    return "", None
+
+
 def _refuse_unattributable_caller(
     state: DashboardState, request: web.Request
 ) -> web.Response | None:

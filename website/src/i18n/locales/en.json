@@ -328,6 +328,10 @@
         "header_resolved": "RESOLVED"
       },
       "global": {
+        "unattributed_label": "EVENTS WITHOUT A REPOSITORY",
+        "unattributed_note": "Recorded before events named their repository, so they cannot be attributed to one.",
+        "repos_label": "REPOSITORIES",
+        "repos_note": "This board folds them together and cannot show them separately yet.",
         "tab_pipeline": "Pipeline",
         "tab_lanes": "Item lanes",
         "tablist_label": "Auto triage pipeline views",
@@ -3555,12 +3559,24 @@
         "download_failed": "Couldn't start the download. Nothing was sent. Try again.",
         "delete_confirm_action": "Delete file",
         "delete_confirm": "Delete “{{name}}”? The file is removed from the drive.",
+        "col_name": "Name",
+        "col_kind": "Kind",
+        "col_size": "Size",
+        "col_modified": "Modified",
+        "col_actions": "Actions",
+        "kind_folder": "Folder",
+        "folder_new": "New folder",
+        "folder_name": "Folder name",
+        "folder_delete_confirm": "Delete “{{name}}” and everything in it?",
+        "folder_delete_action": "Delete folder",
+        "folder_delete_failed": "Could not delete the folder.",
+        "folder_create_failed": "Could not create the folder.",
+        "folder_bad_name": "That folder name has characters S3 will not take. Letters, digits, spaces and . _ - ( ) + @ = are safe.",
+        "folder_deleted": "Deleted {{objects}} object(s).",
         "cancel": "Cancel",
         "load_more": "Load more",
         "stat_this_month": "This month",
-        "more_actions": "More actions",
         "storage_consent_needed": "Cloud storage has not been confirmed for this account yet. Confirm it below, then refresh.",
-        "stat_stored": "Stored",
         "stat_stored_value": "{{size}} · {{objects}} objects",
         "costs_as_of": "Cached figures, as of {{date}}.",
         "costs_consent_missing": "Turn on cost reporting below to see this account's spending.",
@@ -3591,12 +3607,12 @@
         "kind_webapp": "Web app",
         "kind_image": "Image",
         "drive_title": "Drive",
-        "drive_root": "Drive",
         "drive_upload": "Upload",
         "drive_uploading": "Uploading…",
         "drive_bad_name": "That file name has characters the drive can't store. Rename it and try again.",
         "drive_empty": "This folder is empty.",
         "section_drive": "Drive",
+        "section_files": "Files",
         "section_library": "Library",
         "section_backup": "Backup",
         "share_title": "Share this file",
@@ -3641,7 +3657,9 @@
         "connection_connected": "Connected",
         "connection_degraded": "Degraded",
         "connection_unknown": "Unknown",
-        "copy_id": "Copy account ID"
+        "copy_id": "Copy account ID",
+        "folder_actions": "Folder actions",
+        "file_actions": "File actions"
       },
       "page": {
         "title": "AWS Control",
@@ -3691,7 +3709,8 @@
         "add_accounts_error": "Couldn't register those profiles. Nothing was added. Try again.",
         "search_placeholder": "Search accounts",
         "search_none": "No accounts match “{{query}}”.",
-        "paid_services_title": "Paid services"
+        "paid_services_title": "Paid services",
+        "orphan_consent": "Confirmed for an AWS account that is not registered here. Withdraw it below, or register that account again to manage it from its own page."
       }
     }
   },
@@ -5796,7 +5815,8 @@
       "collapsibleToolGroup": {
         "approval_needed": "Approval needed",
         "approvals_pending": "approvals pending",
-        "batch_preview_note": "Showing the most recent of {{count}} pending calls; all will be resolved together.",
+        "batch_preview_all": "Review all {{count}} pending calls below — all will be resolved together.",
+        "batch_preview_none": "No preview available for this call.",
         "approve": "Approve",
         "approve_all": "Approve all {{count}}",
         "approved": "Approved",
@@ -6175,6 +6195,14 @@
       "sort_and_filter_sessions": "Sort and filter sessions",
       "sort_by": "Sort by",
       "sort_filter_sessions": "Sort & filter sessions",
+      "stale_collapse_caption": "Untouched for longer than",
+      "stale_collapse_ctx_in_name": "{{name}} folder",
+      "stale_collapse_menu": "Collapse dormant sessions",
+      "stale_collapse_off": "Off",
+      "stale_collapse_paused": "Paused",
+      "stale_collapse_paused_hint": "Paused while the list is searched, filtered, or sorted by anything other than newest first.",
+      "stale_collapse_row": "Dormant sessions",
+      "stale_collapse_row_ungrouped": "outside folders",
       "stop_filtering_by_tag": "Stop filtering by {{name}}",
       "switch_all_sessions": "Switch All Sessions",
       "switch_all_to_model": "Switch all to model…",
@@ -6312,6 +6340,20 @@
       "worktrees_created_under_a_previous_repository_na": "Worktrees created under a previous repository name. Hidden by default; still covered by Prune merged."
     },
     "developer": {
+      "agentBackendTab": {
+        "agent_backend": "Agent Backend",
+        "claude_code": "Claude Code",
+        "could_not_load_the_agent_backend": "Could not load the agent backend.",
+        "could_not_save_the_agent_backend": "Could not save the agent backend.",
+        "default_all_features_supported": "Default. All features supported.",
+        "experimental": "Experimental",
+        "kas_kiro_agent": "KAS (kiro-agent)",
+        "kiro_cli": "Kiro CLI",
+        "loading_configuration": "Loading configuration…",
+        "new_sessions_use_this_agent_a_session_that_is_al": "New sessions use this agent. A session that is already open keeps the one it started with — switching here does not change it mid-session.",
+        "not_enabled_in_this_build": "Not enabled in this build",
+        "retry": "Retry"
+      },
       "featurePreviewsTab": {
         "inbound_webhook_tokens_registered_contexts_and_r": "Inbound webhook tokens, registered contexts, and run history. The API works; the page is not finished.",
         "open_webhooks": "Open Webhooks",

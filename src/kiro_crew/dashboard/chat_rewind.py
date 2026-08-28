@@ -127,6 +127,10 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
         # by slot._disk_older_count. Validate inputs against the chained
         # length so error messages match what the user sees, and translate
         # back to a slot.messages-relative index for the truncation below.
+        # Deliberately the all-rows counter: the frontend's index space is the
+        # chained DISK read plus the raw window, so on-disk-line units are the
+        # ones that line up (the durable-only counter measures a different,
+        # role-filtered space).
         disk_older = getattr(slot, "_disk_older_count", 0)
         chained_len = disk_older + len(msgs)
 

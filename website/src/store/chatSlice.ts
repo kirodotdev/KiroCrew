@@ -4,6 +4,7 @@ import { addSlotOptimistic, updateSlot, removeSlotOptimistic, markSlotRead, fetc
 import { resolveDefaultColor } from '../utils/sessionColors'
 import { isChatPageSurface } from '../utils/channelOrigin'
 import { isSystemNoticeKind } from '../lib/systemNotice'
+import { isStopEvent } from '../lib/stopEvent'
 import { gcSessionStorage } from '../utils/storageGc'
 import type { RootState } from './index'
 import type { ChatMessage, ChatSlot, SessionInfo, SubagentActivity, ToolActivity, WorkflowRunSummary } from '../types'
@@ -16,6 +17,7 @@ import type { McpAppRenderPayload } from '../lib/mcpAppSrcdoc'
 import { i18nT } from '../i18n/t'
 import { secureRandomId } from '../utils/secureId'
 import { mergeIntoDraft } from '../utils/chatDrafts'
+import { isRejectedDecision } from '../utils/approvalDecision'
 
 const SKIP_ROLES = new Set(['chunk', 'done'])
 const filterMessages = (msgs: ChatMessage[]) => msgs.filter(m => !SKIP_ROLES.has(m.role))
@@ -2691,19 +2693,6 @@ export const selectContinuable = (state: RootState): boolean => {
 }
 
 /**
- * True when *m* is the card recorded because the USER pressed Stop.
- *
- * Two forms exist and both are load-bearing: the websocket path sets `kind` AND
- * `meta.kind` (see the stop_event branch in the message reducer), while a
- * transcript rehydrated from disk carries only the JSON-encoded `cls` that
- * `parse_cls_meta()` unpacks into `meta`. `ChatPage` and `ChatMessageList`
- * already test both; this is the same predicate named once so a fourth caller
- * cannot check only half of it.
- */
-export const isStopEvent = (m: ChatMessage): boolean =>
-  m.kind === 'stop_event' || (m.meta as { kind?: string } | undefined)?.kind === 'stop_event'
-
-/**
  * True when the transcript SHOWS the last turn ending without the assistant
  * handing the floor back — the user's row is last, or an `error` row trails the
  * assistant's.
@@ -3159,9 +3148,12 @@ const chatSlice = createSlice({
         }
       }
       if (m?.meta) m.meta.resolved = decision
-      // If rejected, mark the matching toolLog entry so the pill can show a rejection icon
+      // If rejected, mark the matching toolLog entry so the pill can show a rejection icon.
+      // Every rejection token counts: a reject-once that missed this would leave
+      // the pill unmarked, and ToolCallLine then reads its 🚫 sibling as an
+      // auto-deny and paints a human refusal as a policy block.
       const toolCallId = m?.meta?.tool_call_id as string | undefined
-      if (decision === 'rejected' && toolCallId) {
+      if (isRejectedDecision(decision) && toolCallId) {
         const log = state.toolLog
         for (let i = log.length - 1; i >= 0; i--) {
           if (log[i].type === 'tool' && log[i].tool_call_id === toolCallId) {

@@ -1752,18 +1752,19 @@ class GatewayOrchestrator:
             # or a foreign event type) must not accidentally enter the
             # restricted path on a truthy non-bool.
             _child_lf = getattr(event, "child_low_fidelity", False) is True
-            # Verified-identity half of the fidelity split (see
-            # AcpEvent.child_mcp_identity_trusted): grant-eligible when full
-            # fidelity OR the canonical MCP server/tool identity resolved from
-            # the tool_call cache (arguments unverified). UNCONDITIONAL
-            # shortcuts below — ones whose approve decision consumes no
-            # agent-authored event data (per-source auto-approve, --approval
-            # yolo, the YOLO override, slot trust) — honor their grant for
-            # such events; the 'reads' mode stays gated on the composite
-            # ``_child_lf`` because it MATCHES the agent-authored title.
-            # Same strict ``is True`` rationale as ``_child_lf``.
+            # Hoisted grant-eligibility — see
+            # AcpEvent.child_unconditional_grant_eligible for which shortcuts
+            # below may honor it (per-source auto-approve, --approval yolo,
+            # the YOLO override, slot trust) and which must not (the 'reads'
+            # mode MATCHES the agent-authored title). The outer
+            # ``not _child_lf`` short-circuit keeps a foreign event type or
+            # mock — which never entered the restricted path via the strict
+            # ``_child_lf`` probe — eligible without consulting an attribute
+            # it may not have; the property is only reached for a genuinely
+            # low-fidelity event, with the same strict ``is True`` rationale
+            # as ``_child_lf``.
             _child_grant_eligible = (not _child_lf) or (
-                getattr(event, "child_mcp_identity_trusted", False) is True
+                getattr(event, "child_unconditional_grant_eligible", False) is True
             )
             # Background callers pass the authoritative parent session key. Prefer it
             # over a request-ID resolver because tool permission IDs are opaque UUIDs,
@@ -6604,16 +6605,39 @@ class GatewayOrchestrator:
                     bp["err"] += 1
                 else:
                     bp["ok"] += 1
+                # Per-member model provenance in the PARENT-READ digest text
+                # (issue #5337): the announce body the parent LLM consumes is
+                # built from ok_lines/fail_lines, so surface each member's served
+                # model inline there — rather than in a structured meta field
+                # with no consumer.
+                #
+                # Print the SERVED model id only (no "(requested …)" qualifier):
+                # `_res_model != _req_model` is NOT how the card decides a
+                # downgrade — `isModelDowngrade` folds auto/default to "no pin"
+                # and treats alias-vs-canonical / routing-prefix pairs as the
+                # same model, so a raw inequality would print a false downgrade
+                # on every member of a normal wave (default agent.model is
+                # "auto"). Until this uses the same fold (or #5339's registry
+                # fold), show only the served id, and show nothing when there is
+                # no served model — matching what the card renders in that case.
+                # The value is caller-influenceable (spawn_run.model), so redact
+                # it through the display context before it enters the digest
+                # text broadcast to the dashboard/channels (GPT 5.6:
+                # credential-shaped input must not reach metadata).
+                _res_model = info.resolved_model or ""
+                if _res_model:
+                    _res_model, _ = redact_for_display(_res_model, redact_via_context)
+                _model_tag = f" · model {_res_model}" if _res_model else ""
                 # Exception-first digest content: failures/stops carry detail,
                 # successes are one pointer line (full output stays on disk).
                 if _oc == "completed":
                     bp["ok_lines"].append(
-                        f"— `{info.id}` ✅ {task_text[:80]}"
+                        f"— `{info.id}` ✅ {task_text[:80]}{_model_tag}"
                         + (f"\n  → {result_path}" if result_path else "")
                     )
                 else:
                     bp["fail_lines"].append(
-                        f"— `{info.id}` {status} {emoji} · {task_text[:80]}\n"
+                        f"— `{info.id}` {status} {emoji} · {task_text[:80]}{_model_tag}\n"
                         f"  {detail[:400]}{'…' if len(detail) > 400 else ''}"
                     )
                 _last = bp["total"] > 0 and bp["done"] >= bp["total"]

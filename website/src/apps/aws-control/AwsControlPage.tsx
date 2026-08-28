@@ -18,10 +18,13 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Cloud, RefreshCw, ChevronRight, ChevronDown, Search } from 'lucide-react'
 import { PageHeader, Btn, EmptyState, ContentSkeleton, Input } from '../../components/ui'
 import AwsConsentGate from '../../components/AwsConsentGate'
+import { api, type AwsConsentStatus } from '../../api/client'
 import { i18nT } from '../../i18n/t'
 import { awsControlApi, AwsControlError } from './api'
 import ConsoleView, { ReconnectAction } from './ConsoleView'
+import DrivePage from './DrivePage'
 import type { AwsAccount, AccountHealth } from './types'
+import type { LiveDrive } from './DrivePage'
 
 /** Tailwind token for each health light, keyed as an `as const` map (literal-safe). */
 const HEALTH_DOT: Record<AccountHealth, string> = {
@@ -251,6 +254,7 @@ export default function AwsControlPage() {
   // resolves single-segment routes only. Selecting an account row opens it; the
   // breadcrumb inside ConsoleView clears the selection to return here.
   const [selected, setSelected] = useState<AwsAccount | null>(null)
+  const [drive, setDrive] = useState<LiveDrive | null>(null)
   const [query, setQuery] = useState('')
 
   const accountsQ = useQuery({
@@ -272,8 +276,60 @@ export default function AwsControlPage() {
     )
   }, [data, query])
 
+  // A grant is keyed on the SERVICE, so it outlives the account it was recorded
+  // for. The console only shows a receipt whose grant matches that console's own
+  // account, which means a grant matching NO registered account has no console
+  // to live on and `revokeAwsConsent` has no caller anywhere - money confirmed
+  // with no way to unconfirm it. Zero registered accounts is only one way to
+  // reach that; deregistering the account a grant was recorded for while others
+  // remain is another, so the condition is the general one rather than an empty
+  // list. This mounts nothing whenever some registered account owns the grant,
+  // which is the ordinary case.
+  const s3ConsentQ = useQuery<AwsConsentStatus>({
+    queryKey: ['awsConsent', 's3'],
+    queryFn: () => api.awsConsent('s3'),
+  })
+  const ceConsentQ = useQuery<AwsConsentStatus>({
+    queryKey: ['awsConsent', 'ce'],
+    queryFn: () => api.awsConsent('ce'),
+  })
+  const orphaned = (c: AwsConsentStatus | undefined) => {
+    const owner = c?.grant?.account
+    if (c?.granted !== true || !owner) return false
+    // Only once the LIST is known. An in-flight accounts query leaves `data`
+    // undefined, and treating that as "no account owns this grant" would flash
+    // a withdraw control onto the ordinary accounts page on every load where the
+    // consent read lands first - a destructive control offered by mistake, and
+    // the exact section this page was cleaned of.
+    if (!accountsQ.isSuccess) return false
+    return !(data?.accounts ?? []).some((a) => a.account === owner)
+  }
+  const s3Orphan = orphaned(s3ConsentQ.data)
+  const ceOrphan = orphaned(ceConsentQ.data)
+
+  /* Three levels of view state, not routes: `BuiltinAppRoute` resolves only a
+     single-segment route, so the accounts list, one account's console and that
+     account's drive are all this component's state. The drive level is held HERE
+     rather than inside the console so the console does not nest a second page
+     within itself - each level renders exactly one surface. */
+  if (selected && drive) {
+    return (
+      <DrivePage
+        account={selected}
+        drive={drive}
+        onBack={() => setDrive(null)}
+      />
+    )
+  }
+
   if (selected) {
-    return <ConsoleView account={selected} onBack={() => setSelected(null)} />
+    return (
+      <ConsoleView
+        account={selected}
+        onBack={() => setSelected(null)}
+        onOpenDrive={setDrive}
+      />
+    )
   }
 
   const header = (
@@ -381,30 +437,30 @@ export default function AwsControlPage() {
           </div>
         )}
 
-        {/* Paid-service consent, page-wide, because that is the scope it
-            actually has: GET /api/aws/consent takes a service and nothing else,
-            and its handler derives the (profile, region) from that service's own
-            configuration - it refuses a client-supplied pair so a confirmation
-            cannot diverge from the request it authorises. A confirmation is
-            therefore SERVICE-scoped, so this page, not an account page, is where
-            it can be stated truthfully. It is also the only surface that can
-            state it: the settings cards mount polly and transcribe, never s3 or
-            ce, so removing this section would leave a granted confirmation with
-            nowhere in the dashboard to be seen or withdrawn.
+        {/* No paid-service section here. This page is the account list, and a
+            confirmation is not an account: both paid services (s3 behind the
+            drive, ce behind the cost figure) are reached from an account's
+            console, so both the ask and the receipt live there. The earlier
+            claim that this page was the only surface able to show a grant was
+            wrong - the console already mounted both gates on refusal.
 
-            What this change removes is the THREE paragraphs that used to sit
-            above the cards, one of which existed only to disclaim that each card
-            covered a single connection - a caveat the placement never needed and
-            the cards' own fields already carry. */}
-        <section className="mt-8" data-testid="paid-services">
-          <h2 className="text-sm font-semibold text-text-strong">
-            {i18nT('apps.awsControl.page.paid_services_title')}
-          </h2>
-          <div className="mt-3 flex flex-col gap-3">
-            <AwsConsentGate service="s3" />
-            <AwsConsentGate service="ce" />
+            The one exception below is not a section but a rescue: a grant whose
+            recorded account is not registered here has no console to appear on,
+            so without this it could never be withdrawn. It renders only in that
+            state, so whenever an account owns the grant this page is accounts
+            and nothing else. */}
+        {(s3Orphan || ceOrphan) && (
+          <div className="mt-6 flex flex-col gap-3" data-testid="orphan-consent">
+            {/* This state needs its sentence more than any other surface here: the
+                card names an AWS account that matches nothing in the list above
+                it, and its only control is destructive. */}
+            <p className="text-[13px] text-text" data-testid="orphan-consent-note">
+              {i18nT('apps.awsControl.page.orphan_consent')}
+            </p>
+            {s3Orphan && <AwsConsentGate service="s3" />}
+            {ceOrphan && <AwsConsentGate service="ce" />}
           </div>
-        </section>
+        )}
 
         <AddAccounts />
       </div>

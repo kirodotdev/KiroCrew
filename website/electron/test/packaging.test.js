@@ -237,10 +237,41 @@ describe("first-download installer design contract", () => {
       /!macro customFinishPage[\s\S]*?MUI_PAGE_CUSTOMFUNCTION_SHOW KiroFadeInPage[\s\S]*?MUI_PAGE_CUSTOMFUNCTION_LEAVE KiroFadeOutPage[\s\S]*?!insertmacro MUI_PAGE_FINISH/
     );
     const startAppContract = /Function StartApp[\s\S]*?!define MUI_FINISHPAGE_RUN_FUNCTION "StartApp"/;
+    // StartApp may diverge from electron-builder's locked template in EXACTLY
+    // ONE expression: the launch target. Upstream launches $launchLink, which
+    // installSection.nsh resolves to the Start Menu shortcut when one exists --
+    // and an update does not necessarily repoint that shortcut, because
+    // registryAddInstallInfo records KeepShortcuts="true". A shortcut left
+    // naming a previous install root makes the post-update relaunch start the
+    // OLD executable, which is the update loop this diverges to prevent. So the
+    // assertion rewrites our launch line back to upstream's and demands
+    // equality: the one intended difference is pinned, and any OTHER drift from
+    // the template still fails here.
+    const oursStartApp = normalizedNsisBlock(installer, startAppContract);
+    const upstreamStartApp = normalizedNsisBlock(assistedInstallerTemplate, startAppContract);
+    const oursLaunch =
+      '${StdUtils.ExecShellAsUser} $0 "$INSTDIR\\${APP_EXECUTABLE_FILENAME}" "open" "$1"';
+    const upstreamLaunch = '${StdUtils.ExecShellAsUser} $0 "$launchLink" "open" "$1"';
+    assert.ok(
+      oursStartApp.includes(oursLaunch),
+      "StartApp must relaunch the executable this installer just wrote"
+    );
     assert.equal(
-      normalizedNsisBlock(installer, startAppContract),
-      normalizedNsisBlock(assistedInstallerTemplate, startAppContract),
-      "customFinishPage must retain electron-builder's locked StartApp contract"
+      oursStartApp.includes(upstreamLaunch),
+      false,
+      "StartApp must not relaunch through a shortcut an update may leave stale"
+    );
+    // Fails when a dependency upgrade changes upstream's launch line, so the
+    // divergence gets re-derived against the new template instead of silently
+    // continuing to pass against a line that no longer exists.
+    assert.ok(
+      upstreamStartApp.includes(upstreamLaunch),
+      "upstream StartApp no longer launches $launchLink -- re-derive this divergence"
+    );
+    assert.equal(
+      oursStartApp.replace(oursLaunch, upstreamLaunch),
+      upstreamStartApp,
+      "customFinishPage may diverge from the locked StartApp contract ONLY in its launch target"
     );
     assert.match(buildWorkflow, /test-windows-installer\.ps1/);
     assert.match(runtimeScript, /^\$MaxInstallSeconds = 120$/m);
@@ -327,6 +358,82 @@ describe("first-download installer design contract", () => {
       /Function KiroAbortPre[\s\S]*?\$KiroVisibleUpdate == 1[\s\S]*?Abort[\s\S]*?FunctionEnd[\s\S]*?!define MUI_PAGE_FUNCTION_ABORTWARNING KiroAbortPre/
     );
     assert.doesNotMatch(installer, /NSD_(?:Create|Kill)Timer|Sleep\s+\d+/);
+  });
+
+  it("never relocates the install root on an update", () => {
+    // electron-updater re-runs this installer with --updated against an install
+    // that by definition already exists, so KiroEnsureAppInstallDir's
+    // collision-nesting would resolve $INSTDIR to a FRESH subdirectory and put
+    // the new version beside the running one instead of over it. That leaves two
+    // parallel installs, and the post-install relaunch plus every shortcut kept
+    // by KeepShortcuts="true" go on naming the old one -- so the app comes back
+    // on the version it just updated away from and re-offers the same update
+    // forever.
+    //
+    // The guard has to be the FIRST thing the function does. The two guards
+    // after it are both downstream of one registry value: upstream reads
+    // InstallLocation into $perUserInstallationFolder /
+    // $perMachineInstallationFolder, and customInit turns those into
+    // $KiroHasPer*Installation. When that value is absent both read 0 and the
+    // update nests, which is why the update path must not depend on them.
+    const ensureInstallDir = normalizedNsisBlock(
+      installer,
+      /Function KiroEnsureAppInstallDir[\s\S]*?FunctionEnd/
+    );
+    assert.match(
+      ensureInstallDir,
+      /^Function KiroEnsureAppInstallDir\n\$\{If\} \$KiroVisibleUpdate == 1\n\$\{AndIf\} \$\{FileExists\} "\$KiroInstallDir\\\$KiroAppExeName"\nReturn\n\$\{EndIf\}\n/,
+      "an update must return before any install-dir nesting can run, and only for a root it can prove is ours"
+    );
+    // The update bypass must stay conditional on that ownership proof. `--updated`
+    // is a command-line flag on a user-runnable installer, so it can arrive with
+    // `/D=<any existing directory>`; an unconditional bypass would adopt a
+    // directory this installer never created and the generated uninstaller, which
+    // removes $INSTDIR recursively, would delete the user's contents there.
+    assert.equal(
+      /\$\{If\} \$KiroVisibleUpdate == 1\nReturn/.test(ensureInstallDir),
+      false,
+      "the update bypass must require proof the install root is ours, not return unconditionally"
+    );
+    // The ownership test must read the executable name from a VARIABLE, never the
+    // ${APP_EXECUTABLE_FILENAME} define. That define lives in the template's
+    // common.nsh, which is included after installer.nsh, so a Function body --
+    // compiled at !include time -- cannot see it. NSIS does not fail loudly on
+    // that: it emits `warning 6000: unknown variable/constant` and DROPS the
+    // token, silently reducing the test to a bare directory path so the bypass
+    // fires for a directory we do not own. customInit assigns $KiroAppExeName
+    // instead, because a !macro body expands late enough to see the define.
+    assert.equal(
+      /\$\{APP_EXECUTABLE_FILENAME\}/.test(ensureInstallDir),
+      false,
+      "KiroEnsureAppInstallDir must not reference the ${APP_EXECUTABLE_FILENAME} define at include time"
+    );
+    assert.match(
+      installer,
+      /!macro customInit[\s\S]*?StrCpy \$KiroAppExeName "\$\{APP_EXECUTABLE_FILENAME\}"/,
+      "customInit must resolve $KiroAppExeName, since only a macro body sees that define"
+    );
+    // The guard must NOT be written as ${isUpdated}. That expands to a
+    // StdUtils::TestParameter plugin call, and a Function body is compiled when
+    // installer.nsh is !included -- before the generated script runs
+    // !addplugindir -- so it breaks the build with "Plugin not found, cannot
+    // call StdUtils::TestParameter". Only a !macro body (customInit) may test it,
+    // because that expands at its !insertmacro site. Asserted here because the
+    // two forms look interchangeable and the failure is invisible until an actual
+    // NSIS compile runs in CI.
+    assert.equal(
+      /\$\{isUpdated\}/.test(ensureInstallDir),
+      false,
+      "KiroEnsureAppInstallDir must not call the plugin-backed ${isUpdated} at include time"
+    );
+    // The fresh-install protection the guard sits in front of must stay: a first
+    // install still may not adopt a directory it did not create, because the
+    // generated uninstaller removes $INSTDIR recursively.
+    assert.match(
+      ensureInstallDir,
+      /KiroFreshInstallDirExists:\nStrCpy \$KiroInstallDir "\$KiroInstallDir\\\$\{APP_FILENAME\}"/,
+      "a fresh install must still nest past a directory it does not own"
+    );
   });
 
   it("keeps install-root ownership and legacy startup cleanup without custom pages", () => {

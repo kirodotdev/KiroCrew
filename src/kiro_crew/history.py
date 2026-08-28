@@ -22,7 +22,7 @@ from collections.abc import Callable, Container, Iterator
 from collections.abc import Set as AbstractSet
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Generic, NamedTuple, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, Literal, NamedTuple, TypeVar, overload
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
@@ -4367,7 +4367,28 @@ class ConversationLog:
             if chained not in keys:
                 keys.append(chained)
 
-    def delete_session(self, key: str) -> bool:
+    @overload
+    def delete_session(
+        self,
+        key: str,
+        *,
+        skip_pinned: Literal[False] = ...,
+    ) -> bool: ...
+
+    @overload
+    def delete_session(
+        self,
+        key: str,
+        *,
+        skip_pinned: Literal[True],
+    ) -> bool | None: ...
+
+    def delete_session(
+        self,
+        key: str,
+        *,
+        skip_pinned: bool = False,
+    ) -> bool | None:
         """Delete a session file. Returns True if a file was removed.
 
         The existence check and unlink run under ``_locked`` so a concurrent
@@ -4380,10 +4401,42 @@ class ConversationLog:
         between our existence check and the unlink). On a wedged holder the lock
         acquire raises ``HistoryLockTimeout``; we report "not removed" rather
         than delete unlocked (the very clobber this lock prevents).
+
+        Args:
+            skip_pinned: If True, check the session's metadata under the same
+                lock and return None (skip) if pinned=True OR if the metadata
+                is transiently unreadable. This makes the pin-check-and-delete
+                atomic so a concurrent pin cannot sneak in between.
+
+        Returns:
+            True if a file was removed, False if nothing to remove or unlink
+            failed, None if skipped due to skip_pinned + (pinned OR unreadable).
         """
         existed = False
         try:
             with self._locked(key):
+                if skip_pinned:
+                    try:
+                        meta, readable = self.get_metadata_status(key)
+                    except Exception:
+                        # Corrupt metadata, permanent I/O failure — skip (don't
+                        # delete blind). Log so aggregate 'skipped' count is
+                        # diagnosable.
+                        logger.warning(
+                            "delete_session: unexpected error reading metadata "
+                            "for %s, skipping",
+                            key,
+                            exc_info=True,
+                        )
+                        return None
+                    if not readable:
+                        # Transient read failure (Windows indexer/AV hold) — skip
+                        # quietly so the caller can retry later.
+                        return None
+                    if not isinstance(meta, dict):
+                        return None  # malformed -> skip
+                    if meta.get("pinned"):
+                        return None  # pinned -> skip
                 path = self._path(key)
                 existed = path.exists()
                 try:

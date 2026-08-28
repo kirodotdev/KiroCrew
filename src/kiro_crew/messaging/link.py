@@ -116,6 +116,7 @@ _TELEMETRY_LOCAL_PREFIXES: tuple[tuple[str, str], ...] = (
     ("secretary", "secretary"),
     ("side", "side"),
     ("wf-pool", "workflow_pool"),
+    ("wf-author", "workflow_author"),
     # ``channel:`` is a namespace of its own (reply-token-bound sends), distinct
     # from the per-transport namespaces above.
     ("channel", "channel"),

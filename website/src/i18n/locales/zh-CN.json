@@ -446,6 +446,10 @@
         "header_resolved": "已解决"
       },
       "global": {
+        "unattributed_label": "没有仓库的事件",
+        "unattributed_note": "记录于事件开始标明仓库之前，因此无法归属到任何仓库。",
+        "repos_label": "仓库",
+        "repos_note": "此面板将它们合并展示，暂时无法分开显示。",
         "tab_pipeline": "流水线",
         "tab_lanes": "条目泳道",
         "tablist_label": "自动分诊流水线视图",
@@ -4577,12 +4581,24 @@
         "download_failed": "无法开始下载。没有发送任何内容。请重试。",
         "delete_confirm_action": "删除文件",
         "delete_confirm": "删除“{{name}}”？文件将从云盘中移除。",
+        "col_name": "名称",
+        "col_kind": "类型",
+        "col_size": "大小",
+        "col_modified": "修改时间",
+        "col_actions": "操作",
+        "kind_folder": "文件夹",
+        "folder_new": "新建文件夹",
+        "folder_name": "文件夹名称",
+        "folder_delete_confirm": "删除“{{name}}”及其中的全部内容？",
+        "folder_delete_action": "删除文件夹",
+        "folder_delete_failed": "无法删除该文件夹。",
+        "folder_create_failed": "无法创建该文件夹。",
+        "folder_bad_name": "该文件夹名称包含 S3 不接受的字符。字母、数字、空格以及 . _ - ( ) + @ = 是安全的。",
+        "folder_deleted": "已删除 {{objects}} 个对象。",
         "cancel": "取消",
         "load_more": "加载更多",
         "stat_this_month": "本月",
-        "more_actions": "更多操作",
         "storage_consent_needed": "这个账户的云存储还没有确认。在下方确认后再刷新。",
-        "stat_stored": "已存储量",
         "stat_stored_value": "{{size}} · {{objects}} 个对象",
         "costs_as_of": "缓存数据，截至 {{date}}。",
         "costs_consent_missing": "在下方开启费用报告，即可查看此账户的支出。",
@@ -4613,12 +4629,12 @@
         "kind_webapp": "网页应用",
         "kind_image": "图片",
         "drive_title": "硬盘",
-        "drive_root": "硬盘",
         "drive_upload": "上传",
         "drive_uploading": "上传中…",
         "drive_bad_name": "该文件名包含硬盘无法存储的字符。请重命名后重试。",
         "drive_empty": "此文件夹为空。",
         "section_drive": "硬盘",
+        "section_files": "文件",
         "section_library": "制品库",
         "section_backup": "备份",
         "share_title": "分享此文件",
@@ -4662,7 +4678,9 @@
         "connection_connected": "已连接",
         "connection_degraded": "降级",
         "connection_unknown": "未知",
-        "copy_id": "复制账户 ID"
+        "copy_id": "复制账户 ID",
+        "folder_actions": "文件夹操作",
+        "file_actions": "文件操作"
       },
       "page": {
         "title": "AWS Control",
@@ -4707,7 +4725,8 @@
         "add_accounts_error": "无法注册这些配置文件。没有添加任何内容。请重试。",
         "search_placeholder": "搜索账户",
         "search_none": "没有匹配“{{query}}”的账户。",
-        "paid_services_title": "付费服务"
+        "paid_services_title": "付费服务",
+        "orphan_consent": "已为一个未在此注册的 AWS 账号确认。可在下方撤回确认，或重新注册该账号以在它自己的页面上管理。"
       }
     }
   },
@@ -6518,6 +6537,10 @@
       "trusted_source": "受信任来源",
       "trusted_source_clones_with_your_git_credentials": "受信任来源 —— 此注册表中的应用会使用你的 Git 凭据克隆。"
     },
+    "rejectDropdown": {
+      "reject_all": "拒绝全部 —— 后续不再询问，一并拒绝",
+      "reject_once": "拒绝一次 —— 后续仍逐个询问"
+    },
     "remoteArtifactCard": {
       "clone": "克隆",
       "clone_failed": "克隆失败",
@@ -6815,6 +6838,10 @@
       "no_matching_skills": "无匹配的技能",
       "no_matching_skills_ctrl_enter_sends": "无匹配的技能 —— 按 Ctrl+Enter 直接发送消息",
       "no_matching_skills_enter_sends": "无匹配的技能 —— 按 Enter 直接发送消息",
+      "no_skills_mapped_to_agent": "没有映射到 {{agent}} 的技能",
+      "no_skills_mapped_to_agent_ctrl_enter_sends": "没有映射到 {{agent}} 的技能 —— 按 Ctrl+Enter 直接发送消息",
+      "no_skills_mapped_to_agent_enter_sends": "没有映射到 {{agent}} 的技能 —— 按 Enter 直接发送消息",
+      "scoped_to_agent": "已限定为代理 {{agent}}",
       "trust_needed_badge": "需要信任",
       "trust_needed_hint": "来自此项目。选择它即可查看并信任此文件夹。"
     },
@@ -7801,6 +7828,8 @@
       "uninstall_removes_metadata_secret_and_source": "通过“应用”安装 — 会移除 {{productName}} 元数据、应用密钥和已下载的源代码。",
       "update_all": "全部更新",
       "update_other": "{{count}} 项更新",
+      "updates_hint_link": "查看更新",
+      "updates_hint_other": "有 {{count}} 项更新可用",
       "updating_progress": "正在更新 {{done}}/{{total}}…",
       "v": "v",
       "installed_app_find_in_library_and_enable": "已安装 {{name}}。请在“库”中启用它。",
@@ -8389,7 +8418,8 @@
       "collapsibleToolGroup": {
         "approval_needed": "需要审批",
         "approvals_pending": "项待审批",
-        "batch_preview_note": "{{count}} 个待处理调用中的最新一个；将一并处理。",
+        "batch_preview_all": "请在下方查看全部 {{count}} 个待处理调用；将一并处理。",
+        "batch_preview_none": "此调用没有可用的预览。",
         "approve": "批准",
         "approve_all": "全部批准 ({{count}})",
         "approved": "已批准",
@@ -9065,6 +9095,14 @@
       "sort_newest": "最新",
       "sort_oldest": "最早",
       "source_links_expand_failed": "无法加载其余项，点击重试。",
+      "stale_collapse_caption": "超过以下时长未活动",
+      "stale_collapse_ctx_in_name": "{{name}}文件夹",
+      "stale_collapse_menu": "折叠休眠会话",
+      "stale_collapse_off": "关闭",
+      "stale_collapse_paused": "已暂停",
+      "stale_collapse_paused_hint": "列表处于搜索、筛选或非“最新优先”排序时暂停折叠。",
+      "stale_collapse_row": "休眠会话",
+      "stale_collapse_row_ungrouped": "文件夹外",
       "started_in_channel": "此对话开始于 {{channel}}。",
       "started_in_direct_message": "此对话开始于私信。",
       "stop_filtering_by_tag": "取消按 {{name}} 筛选",
@@ -9416,6 +9454,20 @@
       "no_checkout_found_action": "请设置下方环境变量，或在 {{productName}} 数据目录（默认为 ~/.kiro/crew）的 config.json 中添加 dev_fleet.repo_path 以长期生效，然后重启网关。"
     },
     "developer": {
+      "agentBackendTab": {
+        "agent_backend": "代理后端",
+        "claude_code": "Claude Code",
+        "could_not_load_the_agent_backend": "无法加载代理后端。",
+        "could_not_save_the_agent_backend": "无法保存代理后端。",
+        "default_all_features_supported": "默认。支持所有功能。",
+        "experimental": "实验性",
+        "kas_kiro_agent": "KAS (kiro-agent)",
+        "kiro_cli": "Kiro CLI",
+        "loading_configuration": "正在加载配置…",
+        "new_sessions_use_this_agent_a_session_that_is_al": "新会话使用此代理。已打开的会话保持启动时所用的代理；在此切换不影响正在进行的会话。",
+        "not_enabled_in_this_build": "此版本中未启用",
+        "retry": "重试"
+      },
       "featurePreviewsTab": {
         "inbound_webhook_tokens_registered_contexts_and_r": "入站 Webhook 令牌、已注册的上下文和运行历史。API 可用，但页面尚未完成。",
         "open_webhooks": "打开 Webhook",
@@ -9425,6 +9477,10 @@
     "developerPage": {
       "developer": "开发者",
       "tabs": {
+        "agentBackend": {
+          "description": "新会话启动哪个代理 — Kiro CLI、Claude Code 或 KAS",
+          "label": "代理后端"
+        },
         "archive": {
           "description": "已轮转/压缩的会话历史（保留 7 天）",
           "label": "归档"
@@ -9465,7 +9521,16 @@
     },
     "discoverPage": {
       "subtitle": "浏览并安装智能体应用",
-      "title": "发现"
+      "tab_featured": "精选",
+      "tab_updates": "更新",
+      "title": "发现",
+      "updates_badge_label_other": "有 {{count}} 项更新可用",
+      "updates_empty": "所有应用均为最新。",
+      "updates_empty_back_to_featured": "浏览精选应用",
+      "version_diff": "v{{from}} → v{{to}}",
+      "updating": "更新中…",
+      "updates_check_failed": "无法检查更新。",
+      "updates_retry": "重试"
     },
     "embedSettingsPage": {
       "back": "返回",
@@ -10247,7 +10312,14 @@
         "probe_failing": "持续失败",
         "probe_failing_help": "连续 {{failures}} 次探测失败。服务器仍然挂载，这只是健康状态读数，不是变更。",
         "reset_failures": "重置计数",
-        "reset_failures_help": "清除该服务器的连续失败计数。"
+        "reset_failures_help": "清除该服务器的连续失败计数。",
+        "sign_in": "登录",
+        "sign_in_authorize": "授权 {{name}}",
+        "sign_in_mint_failed": "无法启动登录。请重试。",
+        "sign_in_preparing": "正在准备登录…",
+        "sign_in_retry": "重试",
+        "sign_in_row_updates_after_probe": "使用上方的“Probe MCP servers”刷新此行。",
+        "sign_in_timeout": "登录未能及时生成批准链接。请重试。"
       },
       "memoryGraphTab": {
         "all_count": "全部（{{count}}）",

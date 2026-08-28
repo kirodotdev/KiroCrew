@@ -745,25 +745,35 @@ ids cannot collide with restored ones.
 ### Authoring
 
 `author(intent)` turns a natural-language intent into a validated script using the
-same in-session model plumbing as the rest of Kiro Crew, looping up to
-`_AUTHOR_RETRIES + 1` = 3 attempts and feeding the validation errors back on each
-retry. `_strip_fence` peels only the opening fence line and a trailing fence, never
-splitting on every ``` , because a literal triple backtick inside the script body
-would otherwise truncate it mid-statement.
+same in-session model plumbing as the rest of Kiro Crew. Session creation has its
+own narrow startup retry: up to three total attempts, each with a fresh isolated
+key and deterministic bounded backoff, only for `AcpRequestTimeout`,
+`AcpRuntimeDead`, or an `AcpError` accepted by the shared transient classifier.
+Each failed attempt is destroyed before the next. Authentication, configuration,
+permission, arbitrary, model-prompt, and validation failures are not startup
+retries. Once a session is ready, script validation still loops up to
+`_AUTHOR_RETRIES + 1` = 3 attempts and feeds the validation errors back on each
+retry. `_strip_fence` peels only the opening fence line and a trailing fence,
+never splitting on every ``` , because a literal triple backtick inside the
+script body would otherwise truncate it mid-statement.
 
 Before generation, authoring searches the saved global definition library and
 supplies up to three relevant local examples. The model may adapt one and declare
 its exact `id@revision` in `META["adapted_from"]`; otherwise it authors from
 scratch. A named saved workflow is never re-authored or reinterpreted.
 
-Authoring runs in a **fresh, isolated, ephemeral** session (`wf-author:<id>`), torn
-down with `cleanup=True` the instant it finishes, so a workflow's authoring context
-never pollutes (or is polluted by) chat, consolidation, or another run. It uses the
-tool-less `kirocrew-lite` agent with `ToolApprovalPolicy.REJECT_ALL`: the dominant
-cold-start cost is loading the full MCP toolset and system prompt, and authoring is
-pure text generation, so lite is what makes a fresh session cheap. `REJECT_ALL` is
-belt-and-suspenders against an alternate ACP backend injecting tools without
-`set_mode`.
+Authoring runs in a **fresh, isolated, ephemeral** session (`wf-author:<id>`).
+`wf-author:` is a stateless SessionManager prefix, so acquisition never consults
+or writes a resume mapping. Every failed startup attempt is explicitly destroyed
+before retry backoff, and the successfully acquired session is explicitly destroyed
+when authoring finishes; destruction shuts down the provider, removes the registry
+entry, and deletes any stale SessionMap entry. A workflow's authoring context
+therefore never pollutes (or is polluted by) chat, consolidation, or another run. It
+uses the tool-less `kirocrew-lite` agent with `ToolApprovalPolicy.REJECT_ALL`: the
+dominant cold-start cost is loading the full MCP toolset and system prompt, and
+authoring is pure text generation, so lite is what makes a fresh session cheap.
+`REJECT_ALL` is belt-and-suspenders against an alternate ACP backend injecting tools
+without `set_mode`.
 
 The authoring system prompt (`service._AUTHOR_SYSTEM`) is the model-facing
 statement of this contract: the required module shape, the sandbox rules, the

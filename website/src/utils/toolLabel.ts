@@ -105,6 +105,102 @@ export function labelMatchesLanguage(text: string, lang: string): boolean {
   return true
 }
 
+/** A label longer than this — or spanning lines — reads better as a derived
+ *  summary than as raw code. Threshold only: the collapsed row's CSS `truncate`
+ *  (see ToolCallLine's LABEL_COLLAPSED_CLASS) owns visual overflow; this
+ *  constant only decides when substituting a summary is worth it. */
+export const DERIVE_LABEL_THRESHOLD_CHARS = 200
+
+/** Shell titles arrive as ``Running: <command>`` or as the bare command; MCP
+ *  invocations as ``Running: @server/tool``. Only real commands are parseable. */
+const RUNNING_PREFIX_RE = /^Running:\s+/
+/** ``VAR=value`` prefixes before the actual binary (``FOO=1 cmd …``). */
+const ENV_ASSIGN_RE = /^[A-Za-z_]\w*=/
+/** Pipeline/chain operators that separate command segments. Bare ``&`` is
+ *  excluded: redirects are masked first, and a lone ``&`` tail adds no name. */
+const SEGMENT_SPLIT_RE = /\|\|?|&&|;/
+/** First redirect target on a line (``> file`` / ``>> file``). */
+const REDIRECT_TARGET_RE = />>?\s*([^\s'"&|;]+)/
+/** Heredoc opener on a raw (unmasked) line — everything after it is data. */
+const HEREDOC_RE = /<<[-~]?\s*['"]?[A-Za-z_]/
+/** Shell bookkeeping that says nothing about what a command DOES. Dropped from
+ *  the summary when a more meaningful binary is present, kept when it is the
+ *  whole command (``cd /tmp`` should still read ``cd``). */
+const BOOKKEEPING = new Set(['export', 'cd', 'set', 'source', 'exec', 'unset'])
+
+/** Blank out quoted spans (keeping length) so operators inside quotes do not
+ *  split segments — ``grep -E 'foo|bar'`` is one command, not two. Display-only
+ *  port of the backend's ``_split_command_segments`` quote masking; escapes are
+ *  not interpreted because a wrong guess only degrades a label, never policy. */
+function maskQuotes(line: string): string {
+  let out = ''
+  let quote: string | null = null
+  for (const ch of line) {
+    if (quote) {
+      if (ch === quote) { quote = null; out += ch } else out += ' '
+    } else if (ch === "'" || ch === '"') { quote = ch; out += ch } else out += ch
+  }
+  return out
+}
+
+/**
+ * Derive a compact, language-neutral summary of a shell command label:
+ * the binaries it runs plus the first redirect target.
+ *
+ *   Running: cat > /tmp/desc.md <<'EOF' …   →  Running: cat → /tmp/desc.md
+ *   Running: export P=… cd … ls | grep -i x →  Running: ls, grep
+ *
+ * A purpose-less shell call falls back to its raw title (`pickToolLabel`), and
+ * a raw shell title is the command verbatim. The collapsed row's `truncate`
+ * bounds how much of it is VISIBLE; this function makes the visible part
+ * MEANINGFUL — clipped raw quoting tells the reader almost nothing.
+ *
+ * Bare titles (no ``Running:`` prefix) are only parsed when the CALLER has
+ * established shell-ness (the tool log's ``is_shell``) — without that gate,
+ * ``Editing AGENTS.md`` would "derive" to the binary ``Editing``. Returns null
+ * for anything unparseable so the caller keeps the raw label. Built from
+ * command names and paths only — script-neutral, no i18n catalog entry needed,
+ * and `labelMatchesLanguage` can never suppress it.
+ */
+export function deriveShellSummary(
+  label: string,
+  opts: { bareCommand?: boolean } = {},
+): string | null {
+  const prefix = label.match(RUNNING_PREFIX_RE)
+  if (!prefix && !opts.bareCommand) return null
+  const cmd = prefix ? label.slice(prefix[0].length) : label
+  if (cmd.startsWith('@')) return null
+  let names: string[] = []
+  let target = ''
+  // Parse every line until a heredoc opens: a multi-line script's real work is
+  // often not on line 1 (``export PATH=…`` first, ``docker-compose`` second),
+  // while everything under a heredoc operator is document body, not commands.
+  for (const rawLine of cmd.split('\n')) {
+    const masked = maskQuotes(rawLine)
+    if (!target) target = masked.match(REDIRECT_TARGET_RE)?.[1] ?? ''
+    // Mask redirects AFTER capturing the target so 2>&1 / &> / << neither
+    // split segments nor contribute tokens.
+    const noRedirects = masked.replace(/\d*>&\d*|&>>?|>>?|<<?[-~]?/g, ' ')
+    for (const seg of noRedirects.split(SEGMENT_SPLIT_RE)) {
+      const tokens = seg.trim().split(/\s+/).filter(Boolean)
+      let i = 0
+      while (i < tokens.length && ENV_ASSIGN_RE.test(tokens[i])) i++
+      const head = tokens[i]
+      if (!head) continue
+      const base = head.split('/').pop() || head
+      if (/^[\w.@+-]+$/.test(base) && !names.includes(base)) names.push(base)
+    }
+    if (HEREDOC_RE.test(rawLine)) break
+  }
+  if (names.length > 1) {
+    const meaningful = names.filter(n => !BOOKKEEPING.has(n))
+    if (meaningful.length > 0) names = meaningful
+  }
+  if (names.length === 0) return null
+  const shown = names.length > 4 ? `${names.slice(0, 4).join(', ')} …` : names.join(', ')
+  return `${prefix ? prefix[0] : ''}${shown}${target ? ` → ${target}` : ''}`
+}
+
 /**
  * Choose the text a tool pill / session-row / approval bar should display.
  *

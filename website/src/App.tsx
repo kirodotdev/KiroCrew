@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef, useMemo, createContext, lazy, Suspense, type HTMLAttributes, type ReactNode } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo, useSyncExternalStore, createContext, lazy, Suspense, type HTMLAttributes, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Routes, Route, Navigate, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -13,7 +13,7 @@ import { getBuiltinSurfaces, getBuiltinSurface, selectSurfaceBadgeCount, selectS
 import { createSlot, appendSlotMessage, setAgentSwitchNotice, setSlotRunning, switchSlot, selectActiveSlotProject } from './store/chatSlice'
 import { queryComposer } from './pages/chat/composerFocus'
 import { setNavIntentHandler as setArtifactNavIntentHandler } from './utils/artifactPopout'
-import { applyNavIntentInMain } from './utils/navIntent'
+import { applyNavIntentInMain, chatDeepLinkSlot } from './utils/navIntent'
 import { installSoftNavigate } from './utils/errorReport'
 import { agentSwitchFailureMessage } from './utils/agentSwitchFeedback'
 import { readSendReceipt } from './utils/sendDelivery'
@@ -127,6 +127,13 @@ import { i18nT } from './i18n/t'
 import { appNavTarget } from './appNav'
 import { resolveSlotOverlays, type SlotOwners } from './apps/overlaySlots'
 import { fmtCompact, fmtPercent } from './i18n/format'
+// Static on purpose, and the tradeoff is real: the sidebar updates badge
+// needs `registryQueryFn` (its own fetch boundary — a badge that only lights
+// after a store-page visit does not do its job), and importing it pulls the
+// store data layer into the eager App chunk. Accepted: the bundle-size gate
+// still passes, and a second raw fetcher under the same query key would win
+// React Query's one-queryFn-per-key registration and poison the cache shape.
+import { countUpdatables, registryQueryFn, type UpdatableInstalledRow } from './pages/apps/useAppsData'
 
 // Lazy on purpose: the update-found popup (its policy module, Trans runtime
 // wiring, and mutation plumbing) is dead weight for every session without an
@@ -1631,6 +1638,44 @@ export default function App() {
     setAppBadges(prev => prev.projects === approvalCount ? prev : { ...prev, projects: approvalCount })
   }, [approvalCount])
 
+  // Pending app-update count for the sidebar Discover badge — the SAME count
+  // the Discover Updates sub-tab shows, via the shared `countUpdatables`
+  // derivation. The registry read is an ACTIVE query on the shared
+  // `registryQueryFn` boundary (one normalize path, so either observer may
+  // fetch and both see the same shape): a passive cache read only ever fires
+  // after a store page has populated the cache, which is the one place the
+  // count is already visible — a badge that cannot appear in a fresh session
+  // does not do its job. `mc:apps-changed` invalidation above refetches it.
+  // `['apps']` stays a passive read: refreshAppNav in this shell already
+  // writes it on every fetch.
+  const { data: registryBadgeData } = useQuery({
+    queryKey: ['registry'],
+    queryFn: registryQueryFn,
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+  })
+  const subscribeQueryCache = useCallback(
+    (onStoreChange: () => void) => queryClient.getQueryCache().subscribe(onStoreChange),
+    [queryClient],
+  )
+  const installedSnapshot = useSyncExternalStore(
+    subscribeQueryCache,
+    () => queryClient.getQueryData<UpdatableInstalledRow[]>(['apps']),
+  )
+  const appUpdatesCount = useMemo(
+    () => countUpdatables(registryBadgeData?.apps, installedSnapshot),
+    [registryBadgeData, installedSnapshot],
+  )
+  // Merged only into the badge map the two Discover rows read — NOT into the
+  // `appBadges` state: that map feeds the tab-title `totalAttention` sum, and
+  // a pending app update is not an attention item the way an approval or an
+  // unread message is. `NavBadge` hides at count 0 (BadgeIndicator renders
+  // null), so an empty count leaves the row badge-free.
+  const discoverBadges = useMemo(
+    () => (appUpdatesCount > 0 ? { ...appBadges, apps: appUpdatesCount } : appBadges),
+    [appBadges, appUpdatesCount],
+  )
+
   const [updating, setUpdating] = useState(false)
   const [showUpdateModal, setShowUpdateModal] = useState(false)
   const [kiroUsageOpen, setKiroUsageOpen] = useState(false)
@@ -2013,16 +2058,35 @@ export default function App() {
     const electronAPI = (window as Window & { electronAPI?: { setDevMode?: (v: boolean) => void } }).electronAPI
     electronAPI?.setDevMode?.(devMode)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
-  // Native app-menu navigation (Settings…, About): the Electron main process
-  // sends an in-app path; route to it. Accept only plain absolute app paths —
-  // rejects protocol-relative ("//host") and external URLs by construction.
+  // Native app-menu navigation (Settings…, About) and the Crew Companion's "Open
+  // session" CTA: the Electron main process sends an in-app path; route to it.
+  // Accept only plain absolute app paths — rejects protocol-relative ("//host")
+  // and external URLs by construction.
+  //
+  // A session deep link takes the same route a popout's nav intent does — select
+  // the session, then navigate — rather than a bare navigate. `?sid=` is read by
+  // ChatPage only while it MOUNTS, so from an already-open /chat a bare navigate
+  // would surface the dashboard with the previous session still on screen: the
+  // window comes forward and the notification appears to have opened nothing.
   useEffect(() => {
     const electronAPI = (window as Window & { electronAPI?: { onNavigate?: (cb: (path: string) => void) => () => void } }).electronAPI
     if (!electronAPI?.onNavigate) return
     return electronAPI.onNavigate(path => {
-      if (typeof path === 'string' && /^\/(?!\/)/.test(path)) navigate(path)
+      if (typeof path !== 'string' || !/^\/(?!\/)/.test(path)) return
+      const slotKey = chatDeepLinkSlot(path)
+      if (slotKey) {
+        applyNavIntentInMain(
+          // `path` is deliberately dropped in favour of the bare route: a
+          // NavIntent carries no query string, and ChatPage writes `?sid=` back
+          // into the URL itself once the session is active.
+          { path: '/chat', slotKey },
+          { navigate, switchSlot: (key) => { dispatch(switchSlot(key)) } },
+        )
+        return
+      }
+      navigate(path)
     })
-  }, [navigate])
+  }, [navigate, dispatch])
   // Dismiss the dev-page notification dot once the user visits /developer
   useEffect(() => {
     if (location.pathname === '/developer') setDevPageSeen(true)
@@ -2234,7 +2298,7 @@ export default function App() {
   //    `=== '/apps'` match, so an app page never lit the store link. Keeping
   //    that mapping means exactly one row lights at a time.
   const libraryNavActive = activePath === '/apps/library' || activePath.startsWith('/apps/library/')
-  const discoverNavActive = activePath === '/apps' || activePath.startsWith('/apps/detail/') || activePath.startsWith('/apps/migrate/')
+  const discoverNavActive = activePath === '/apps' || activePath.startsWith('/apps/-/') || activePath.startsWith('/apps/detail/') || activePath.startsWith('/apps/migrate/')
   const isChat = activePath === '/chat' || activePath.startsWith('/chat/') || activePath === '/'
   // /webhooks is a full-height rail-and-detail shell (like /capabilities), so it
   // owns its own scrolling and must not sit inside <main>'s scroll container.
@@ -2560,7 +2624,15 @@ export default function App() {
             </ErrorBoundary>
           ) : null
         })()}
-        <div className="tb-right relative">
+        {/* `tb-has-update` shifts the collapse ladder's rungs (index.css): the
+            update pill is a conditional, non-shrinking sibling of the ladder,
+            so while it is mounted the group's fixed content is wider by the
+            pill's footprint and every rung must fire that much earlier. The
+            class keys off the same selector the pill itself reads, so they
+            move together; during the pill's lazy-chunk fetch the class can
+            lead the pill by a moment, which costs readout room briefly and
+            harms nothing. */}
+        <div className={`tb-right relative${updateAvailable ? ' tb-has-update' : ''}`}>
 
           {/* Theme decoration: extra aside control (e.g. a stardate / clock). */}
           {branding?.topBarAside && !(branding?.topBarHideOnMobile && isMobile) && (
@@ -2579,7 +2651,14 @@ export default function App() {
               this fork's usage pill is Kiro-credits-only.) */}
           {(() => {
             const offline = !connected
-            const seg = `flex items-center gap-1 -my-0.5 px-1.5 py-0.5 rounded-md bg-transparent border-none cursor-pointer transition-colors hover:bg-bg-hover ${offline ? 'opacity-70' : ''}`
+            // whitespace-nowrap is the ladder's backstop for the BUILT-IN
+            // segments that share this class string: if the group is ever
+            // narrower than its contents (a locale wider than the measured
+            // budget, the dev-only pseudolocale), a squeezed segment must clip
+            // at the edge, never wrap into two lines the capsule's fixed h-7
+            // then crops. Extension segments bring their own class strings and
+            // are bounded by the capsule's terminal rung instead.
+            const seg = `flex items-center gap-1 -my-0.5 px-1.5 py-0.5 rounded-md bg-transparent border-none cursor-pointer transition-colors hover:bg-bg-hover whitespace-nowrap ${offline ? 'opacity-70' : ''}`
             const segments: ReactNode[] = []
             // The dot doubles as the capsule's collapse toggle: click to
             // fold the readouts down to just the dot, click again to expand.
@@ -3112,7 +3191,7 @@ export default function App() {
                 active={discoverNavActive}
                 collapsed={false}
                 onClick={closeMobileNav}
-                badge={<NavBadge navId="apps" collapsed={false} appBadges={appBadges} />}
+                badge={<NavBadge navId="apps" collapsed={false} appBadges={discoverBadges} />}
               />
               <NavItem
                 navId="apps-library"
@@ -3139,7 +3218,7 @@ export default function App() {
                 active={discoverNavActive}
                 collapsed
                 onClick={closeMobileNav}
-                badge={<NavBadge navId="apps" collapsed appBadges={appBadges} />}
+                badge={<NavBadge navId="apps" collapsed appBadges={discoverBadges} />}
               />
               <NavItem
                 navId="apps-library"
@@ -3458,8 +3537,12 @@ export default function App() {
             <Route path="/instances" element={<Navigate to="/settings/instances" replace />} />
             {/* Static segments (library, detail, migrate) MUST stay registered
                 before the /apps/:name installed-app catch-all -- they are
-                reserved app-name words enforced server-side. */}
+                reserved app-name words enforced server-side. The '-/' prefix
+                (e.g. /apps/-/updates) needs NO server-side reservation: '-' is
+                not a valid app name, so it can never collide with an installed
+                app -- the reserved set stays frozen at 'library'. */}
             <Route path="/apps" element={<Suspense fallback={null}><DiscoverPage /></Suspense>} />
+            <Route path="/apps/-/updates" element={<Suspense fallback={null}><DiscoverPage /></Suspense>} />
             <Route path="/apps/library" element={<Suspense fallback={null}><LibraryPage /></Suspense>} />
             <Route path="/apps/detail/:name" element={<AppDetailPage />} />
             <Route path="/apps/migrate/:name" element={<MigrationPage />} />

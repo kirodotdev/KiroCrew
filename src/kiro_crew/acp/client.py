@@ -2468,6 +2468,12 @@ class AcpClient:
         claude-agent-acp) instead of a hardcoded guess. Best-effort and never
         raises — a backend that omits ``models`` simply leaves the list empty.
 
+        The shape walk is delegated to
+        :func:`kiro_crew.acp.session_handle.parse_advertised_models` so this
+        snapshot stays directly comparable with the pooled-runtime probe
+        (#6382). This path keeps its dict-only ``models`` gate and its
+        non-empty assignment guard — both are call-site policy, not parsing.
+
         Also records ``currentModelId`` for ``_track_metadata``'s context
         window lookup.
         """
@@ -2477,23 +2483,18 @@ class AcpClient:
         current_model_id = models.get("currentModelId")
         if isinstance(current_model_id, str) and current_model_id:
             self._resolved_model_id = current_model_id
-        advertised = models.get("availableModels")
-        if not isinstance(advertised, list):
-            return
-        captured: list[dict[str, str]] = []
-        for m in advertised:
-            if not isinstance(m, dict):
-                continue
-            model_id = m.get("modelId") or m.get("value") or ""
-            if not model_id:
-                continue
-            captured.append(
-                {
-                    "modelId": str(model_id),
-                    "name": str(m.get("name") or model_id),
-                    "description": str(m.get("description") or ""),
-                }
-            )
+        # Imported lazily: acp.session_handle imports this module at module
+        # level, so a top-level import here would be a cycle.
+        from kiro_crew.acp.session_handle import parse_advertised_models
+
+        # Parse the gated sub-payload, not the whole response: the parser's
+        # dict-or-list fallback would otherwise let an EMPTY (falsy) models
+        # object fall through to a top-level ``availableModels`` key, sourcing
+        # the list from a payload the dict gate above never saw.
+        # NOTE: the pre-consolidation code returned early on a malformed
+        # ``availableModels``; nothing may be appended after this block
+        # without re-adding that malformed-payload guard.
+        captured = parse_advertised_models({"models": models})
         if captured:
             self._available_models = captured
 
@@ -5576,6 +5577,14 @@ class AcpClient:
                 is_shell=is_shell,
                 tool_name=_kiro_tool_name(update),
                 mcp_server_name=_kiro_mcp_server_name(update),
+                # The pair above comes exclusively from the _kiro_* extractors
+                # over the frame's _meta.kiro (non-model-authored) — the
+                # trusted tool_call path. Earned only when an identity pair was
+                # actually extracted: a frame with no _meta.kiro populates
+                # nothing, so it asserts no provenance.
+                mcp_identity_trusted=bool(
+                    _kiro_mcp_server_name(update) and _kiro_tool_name(update)
+                ),
             )
         return None
 

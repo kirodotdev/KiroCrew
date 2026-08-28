@@ -8,16 +8,39 @@
  *  name a model no turn will use.
  */
 
+import { canonicalKey } from '../providers/modelRegistry'
+
 /** Canonical key for comparing model ids across spelling variants.
  *
- *  Mirrors `_normalize_model_key` in `dashboard/handlers/agents.py`: adapters
- *  advertise dashed ids (`claude-opus-4-8`) while curated/config entries may be
- *  dotted (`claude-opus-4.8`), and case can differ. `default` and `auto` both
- *  mean "let the backend pick", so they fold to one key.
+ *  Mirrors `_normalize_model_key` in `dashboard/handlers/agents.py`: both route
+ *  a model id through the shared canonical registry (`model_registry.json`) so
+ *  "same model?" has ONE definition across the dashboard (picker, slot display,
+ *  and the #5306 subagent downgrade flag).
+ *
+ *  Resolution order:
+ *  1. `auto`/`default`/unset -> the `auto` sentinel (both mean "let the backend
+ *     pick"); an empty id stays `''` (no pin, distinct from Auto).
+ *  2. Registry canonical key: a canonical key, a registry alias, or a
+ *     claude_code provider id — with or without a region/vendor routing prefix
+ *     (`us.anthropic.…`, `global.anthropic.…`) — folds to its canonical key.
+ *     This is what makes an alias and its provider-prefixed canonical id equal
+ *     (`us.anthropic.claude-opus-4-8[1m]` ≡ `claude-opus-4.8` -> `opus-4.8-1m`)
+ *     while keeping DISTINCT registry entries distinct — notably the advertised
+ *     dashed `claude-opus-4-8` (200K, `opus-4.8`) does NOT fold onto dotted
+ *     `claude-opus-4.8` (1M, `opus-4.8-1m`); the old dot->dash fold conflated
+ *     those two genuinely different context-window models (#5339).
+ *  3. Fallback for an id the registry does not list (GPT/DeepSeek/Qwen, future
+ *     models, operator-typed ids): the historical lossless fold — trim,
+ *     lowercase, `.`->`-` — so behavior is identity-preserving off the
+ *     registered set, matching the backend's pass-through contract.
  */
 export function normalizeModelKey(name: string): string {
-  const key = (name || '').trim().toLowerCase().replace(/\./g, '-')
-  return key === 'default' || key === 'auto' ? 'auto' : key
+  const stringFold = (name || '').trim().toLowerCase().replace(/\./g, '-')
+  if (!stringFold) return ''
+  if (stringFold === 'default' || stringFold === 'auto') return 'auto'
+  const canonical = canonicalKey(name)
+  if (canonical !== null) return canonical
+  return stringFold
 }
 
 /** The model id to DISPLAY for a slot pinned to `pinned`.
