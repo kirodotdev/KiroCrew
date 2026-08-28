@@ -8,9 +8,6 @@ increment site.
 
 from __future__ import annotations
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock
-
 import pytest
 from chat_test_helpers import _make_state
 
@@ -209,13 +206,16 @@ class TestReadMessagesDurableCursor:
     """read_messages uses _disk_older_durable_count for exact cursor positions."""
 
     @pytest.fixture(autouse=True)
-    def setup(self, tmp_path, _sc_enabled, monkeypatch):
+    def setup(self, tmp_path, _sc_enabled):
         self.state = _make_state(tmp_path)
-        # Patch the workspace membership check that read_messages performs
-        monkeypatch.setattr(sc, "_workspace_of", lambda slot: "default")
 
     def _make_target_with_prefix(self, durable_prefix, transient_prefix, window_msgs):
-        """Create a slot with the given prefix counts and window messages."""
+        """Create a target slot with the given prefix counts and window messages.
+
+        Returns the slot so callers can inspect it; read_messages addresses it
+        by name ("target") through the state, matching the authorize_target
+        resolution path.
+        """
         slot = _slot(self.state, "target")
         for role, content in window_msgs:
             slot.append(role, content, "msg msg-u" if role == "user" else "msg msg-a",
@@ -226,14 +226,15 @@ class TestReadMessagesDurableCursor:
 
     def test_next_since_emitted_on_trimmed_session(self):
         """next_since is present even when the session has trimmed rows."""
-        slot = self._make_target_with_prefix(
+        self._make_target_with_prefix(
             durable_prefix=50, transient_prefix=10,
             window_msgs=[("assistant", f"msg {i}") for i in range(5)],
         )
         caller = _slot(self.state, "caller")
         result = sc.read_messages(
-            slot=slot,
+            self.state,
             caller_session_key=_key(caller),
+            target="target",
             limit=100,
         )
         assert "next_since" in result
@@ -241,15 +242,16 @@ class TestReadMessagesDurableCursor:
 
     def test_since_read_works_on_trimmed_session(self):
         """A since-read no longer raises cursor_unavailable on trimmed sessions."""
-        slot = self._make_target_with_prefix(
+        self._make_target_with_prefix(
             durable_prefix=50, transient_prefix=10,
             window_msgs=[("assistant", f"msg {i}") for i in range(5)],
         )
         caller = _slot(self.state, "caller")
         # This would have raised SessionControlError("cursor_unavailable") before
         result = sc.read_messages(
-            slot=slot,
+            self.state,
             caller_session_key=_key(caller),
+            target="target",
             since=50,
             limit=100,
         )
@@ -259,14 +261,15 @@ class TestReadMessagesDurableCursor:
 
     def test_since_at_zero_on_trimmed_session(self):
         """since=0 on a trimmed session starts from the window beginning."""
-        slot = self._make_target_with_prefix(
+        self._make_target_with_prefix(
             durable_prefix=50, transient_prefix=10,
             window_msgs=[("user", f"msg {i}") for i in range(3)],
         )
         caller = _slot(self.state, "caller")
         result = sc.read_messages(
-            slot=slot,
+            self.state,
             caller_session_key=_key(caller),
+            target="target",
             since=0,
             limit=100,
         )
@@ -277,15 +280,16 @@ class TestReadMessagesDurableCursor:
 
     def test_since_past_end_raises(self):
         """A cursor past the end still raises for rewind/regenerate detection."""
-        slot = self._make_target_with_prefix(
+        self._make_target_with_prefix(
             durable_prefix=10, transient_prefix=2,
             window_msgs=[("assistant", "only one")],
         )
         caller = _slot(self.state, "caller")
         with pytest.raises(sc.SessionControlError, match="shorter than your cursor"):
             sc.read_messages(
-                slot=slot,
+                self.state,
                 caller_session_key=_key(caller),
+                target="target",
                 since=999,
                 limit=100,
             )
@@ -296,7 +300,7 @@ class TestReadMessagesDurableCursor:
 
     def test_total_uses_durable_count(self):
         """total in the response is base + durable window rows."""
-        slot = self._make_target_with_prefix(
+        self._make_target_with_prefix(
             durable_prefix=100, transient_prefix=20,
             window_msgs=[
                 ("assistant", "d1"),
@@ -306,8 +310,9 @@ class TestReadMessagesDurableCursor:
         )
         caller = _slot(self.state, "caller")
         result = sc.read_messages(
-            slot=slot,
+            self.state,
             caller_session_key=_key(caller),
+            target="target",
             limit=100,
         )
         # chunk is transient, so only 2 durable in window
