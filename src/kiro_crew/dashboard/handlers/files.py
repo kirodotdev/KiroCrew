@@ -3096,7 +3096,12 @@ async def api_file_diff(request: web.Request) -> web.Response:
                 cwd=dirpath, capture_output=True, text=True, encoding="utf-8",
                 errors="replace", timeout=10, env=_env,
             )
-            diff = r.stdout.strip() if r.returncode == 0 else ""
+            if r.returncode != 0:
+                # A failed diff prints nothing, which is indistinguishable from an
+                # unmodified file. Name the failure so the caller cannot read it
+                # as "no changes"; the HEAD content fetched above is still valid.
+                return {"diff": "", "original": original, "status": "error"}
+            diff = r.stdout.strip()
             if not diff:
                 # Check for untracked file
                 r2 = subprocess.run(

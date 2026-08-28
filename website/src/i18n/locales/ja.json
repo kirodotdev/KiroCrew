@@ -6061,6 +6061,7 @@
       "next_enter": "次へ (Enter)",
       "next_match": "次の一致",
       "no_changes_in_file": "このファイルに変更はありません",
+      "no_git_comparison": "このファイルに利用できる Git の比較はありません",
       "no_results": "結果がありません",
       "open_artifact": "アーティファクト {{name}} を開く",
       "open_as_artifact": "アーティファクトとして開く",

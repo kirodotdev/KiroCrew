@@ -6265,6 +6265,7 @@
       "next_enter": "Próximo (Enter)",
       "next_match": "Próxima correspondência",
       "no_changes_in_file": "Nenhuma alteração neste arquivo",
+      "no_git_comparison": "Nenhuma comparação do git disponível para este arquivo",
       "no_results": "Nenhum resultado",
       "open_artifact": "Abrir o artefato {{name}}",
       "open_as_artifact": "Abrir como artefato",

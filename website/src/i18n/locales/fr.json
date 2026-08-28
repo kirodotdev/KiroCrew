@@ -6265,6 +6265,7 @@
       "next_enter": "Suivant (Enter)",
       "next_match": "Résultat suivant",
       "no_changes_in_file": "Aucune modification dans ce fichier",
+      "no_git_comparison": "Aucune comparaison git disponible pour ce fichier",
       "no_results": "Aucun résultat",
       "open_artifact": "Ouvrir l’artefact {{name}}",
       "open_as_artifact": "Ouvrir comme artefact",

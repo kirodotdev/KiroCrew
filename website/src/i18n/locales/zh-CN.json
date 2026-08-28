@@ -6061,6 +6061,7 @@
       "next_enter": "下一个（Enter）",
       "next_match": "下一个匹配",
       "no_changes_in_file": "此文件没有更改",
+      "no_git_comparison": "此文件没有可用的 Git 比较",
       "no_results": "无结果",
       "open_artifact": "打开工件 {{name}}",
       "open_as_artifact": "作为工件打开",

@@ -285,3 +285,89 @@ async def test_sel_audit_logging_on_success(tmp_path):
     call_kwargs = mock_sel.log_api_access.call_args
     assert call_kwargs[1]["operation"] == "file_diff"
     assert call_kwargs[1]["outcome"] == "allowed"
+
+
+@pytest.mark.asyncio
+async def test_git_diff_failure_reports_error_not_clean(tmp_path):
+    """A failed ``git diff`` must not be indistinguishable from an unmodified file.
+
+    The failure prints nothing, so reading "no changes" out of it would tell the
+    caller its edits are absent. The HEAD content already fetched stays valid.
+    """
+    f = tmp_path / "tracked.txt"
+    f.write_text("current content")
+
+    def fake_run(cmd, **kwargs):
+        if "rev-parse" in cmd and "--git-dir" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout=".git\n", stderr="")
+        if "rev-parse" in cmd and "--show-toplevel" in cmd:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=f"{tmp_path}\n", stderr=""
+            )
+        if "show" in cmd:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="baseline content", stderr=""
+            )
+        if "diff" in cmd:
+            return subprocess.CompletedProcess(
+                cmd, 128, stdout="", stderr="fatal: bad revision"
+            )
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with (
+        patch(
+            "kiro_crew.dashboard.handlers.files.subprocess.run", side_effect=fake_run
+        ),
+        patch("kiro_crew.dashboard.handlers.files._sel", return_value=_mock_sel()),
+    ):
+        resp = await api_file_diff(_req(str(f)))
+
+    assert resp.status == 200
+    body = json.loads(resp.body)
+    assert body["status"] == "error"
+    assert body["diff"] == ""
+    assert body["original"] == "baseline content"
+
+
+@pytest.mark.asyncio
+async def test_git_diff_failure_does_not_claim_untracked(tmp_path):
+    """A diff failure short-circuits before the untracked probe.
+
+    ``git status`` can report ``??`` for a path the failed diff said nothing
+    about, which would relabel a failure as a legitimate all-added diff.
+    """
+    f = tmp_path / "probe.txt"
+    f.write_text("current content")
+    status_calls = []
+
+    def fake_run(cmd, **kwargs):
+        if "rev-parse" in cmd and "--git-dir" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout=".git\n", stderr="")
+        if "rev-parse" in cmd and "--show-toplevel" in cmd:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=f"{tmp_path}\n", stderr=""
+            )
+        if "show" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if "diff" in cmd:
+            return subprocess.CompletedProcess(
+                cmd, 128, stdout="", stderr="fatal: bad revision"
+            )
+        if "status" in cmd:
+            status_calls.append(cmd)
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="?? probe.txt\n", stderr=""
+            )
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with (
+        patch(
+            "kiro_crew.dashboard.handlers.files.subprocess.run", side_effect=fake_run
+        ),
+        patch("kiro_crew.dashboard.handlers.files._sel", return_value=_mock_sel()),
+    ):
+        resp = await api_file_diff(_req(str(f)))
+
+    body = json.loads(resp.body)
+    assert body["status"] == "error"
+    assert status_calls == []

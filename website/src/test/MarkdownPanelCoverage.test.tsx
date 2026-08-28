@@ -588,6 +588,44 @@ describe('MarkdownPanel — diff chrome', () => {
     expect(surface).toHaveAttribute('data-new', 'one\ntwo\nthree\n')
   })
 
+  it('says there is no git comparison rather than rendering a file outside a repo as all-added', async () => {
+    // The backend already reports this. An empty `original` would otherwise be
+    // diffed against the whole buffer and read as a genuine addition.
+    vi.mocked(api.fileDiff).mockResolvedValue({ diff: '', original: '', status: 'not_git' } as never)
+    mountPanel({ content: 'one\ntwo\n', initialDiffMode: undefined })
+    await waitFor(() => expect(api.fileDiff).toHaveBeenCalled())
+    fireEvent.click(screen.getAllByLabelText('Toggle diff view')[0])
+    expect(await screen.findByText('No git comparison available for this file')).toBeInTheDocument()
+    expect(screen.queryByTestId('pierre-diff')).toBeNull()
+    // The header must not claim added lines against a baseline that does not
+    // exist — an empty `original` would otherwise count every line as added and
+    // render a green "+N" beside a notice saying there is nothing to compare.
+    expect(screen.queryByText(/^\+\d+$/)).toBeNull()
+    // …and offers the way back out.
+    fireEvent.click(screen.getByText('Show full file'))
+    await waitFor(() => expect(screen.queryByText('No git comparison available for this file')).toBeNull())
+  })
+
+  it('treats a failed git diff the same way rather than as an addition', async () => {
+    vi.mocked(api.fileDiff).mockResolvedValue({ diff: '', original: '', status: 'error' } as never)
+    mountPanel({ content: 'one\ntwo\n', initialDiffMode: undefined })
+    await waitFor(() => expect(api.fileDiff).toHaveBeenCalled())
+    fireEvent.click(screen.getAllByLabelText('Toggle diff view')[0])
+    expect(await screen.findByText('No git comparison available for this file')).toBeInTheDocument()
+    expect(screen.queryByTestId('pierre-diff')).toBeNull()
+  })
+
+  it('prefers the no-baseline notice over "no changes" for an empty file outside a repo', async () => {
+    // Both sides are empty, so the zero-diff check matches and would claim the
+    // file is unchanged — when the truth is that no comparison was possible.
+    vi.mocked(api.fileDiff).mockResolvedValue({ diff: '', original: '', status: 'not_git' } as never)
+    mountPanel({ content: '', initialDiffMode: undefined })
+    await waitFor(() => expect(api.fileDiff).toHaveBeenCalled())
+    fireEvent.click(screen.getAllByLabelText('Toggle diff view')[0])
+    expect(await screen.findByText('No git comparison available for this file')).toBeInTheDocument()
+    expect(screen.queryByText('No changes in this file')).toBeNull()
+  })
+
   it('says so instead of rendering an empty canvas for a file with no changes', async () => {
     vi.mocked(api.fileDiff).mockResolvedValue({ diff: '', original: 'same\n', status: 'clean' } as never)
     mountPanel({ content: 'same\n', initialDiffMode: undefined })

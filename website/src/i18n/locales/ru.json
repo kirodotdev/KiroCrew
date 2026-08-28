@@ -6367,6 +6367,7 @@
       "next_enter": "Далее (Enter)",
       "next_match": "Следующее совпадение",
       "no_changes_in_file": "В этом файле нет изменений",
+      "no_git_comparison": "Сравнение git для этого файла недоступно",
       "no_results": "Ничего не найдено",
       "open_artifact": "Открыть артефакт {{name}}",
       "open_as_artifact": "Открыть как артефакт",

@@ -6163,6 +6163,7 @@
       "next_enter": "अगला (Enter)",
       "next_match": "अगला मैच",
       "no_changes_in_file": "इस फ़ाइल में कोई बदलाव नहीं है",
+      "no_git_comparison": "इस फ़ाइल के लिए कोई git तुलना उपलब्ध नहीं है",
       "no_results": "कोई परिणाम नहीं",
       "open_artifact": "आर्टिफ़ैक्ट {{name}} खोलो",
       "open_as_artifact": "आर्टिफ़ैक्ट के रूप में खोलें",

@@ -1884,6 +1884,7 @@
       "file_too_large_to_add": "File is too large to add",
       "full_screen": "Full screen",
       "no_changes_in_file": "No changes in this file",
+      "no_git_comparison": "No git comparison available for this file",
       "no_results": "No results",
       "open_artifact": "Open artifact {{name}}",
       "open_as_artifact": "Open as artifact",
