@@ -297,6 +297,10 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # ``workflow_library`` are masked for.
     "appearance-library",
     "agentcore-inbound",
+    # Authored non-managed MCP stashed while login withhold filters the runtime
+    # spec. Only the gateway reads or writes it; an in-sandbox process that
+    # could would restore withheld MCP commands when posture leaves login.
+    "agentcore-authored-mcp",
     "routing",
     "webhooks",
     "live_target.json",

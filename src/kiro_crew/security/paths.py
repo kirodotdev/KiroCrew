@@ -456,6 +456,13 @@ _CREW_SECRET_LEAVES: list[str] = [
     # whole DIRECTORY so atomic-write temps and every sidecar file are
     # covered.
     "agentcore-inbound",
+    # Authored non-managed MCP stashed while login withhold filters the
+    # runtime ``--agent`` spec. Owner-only, same class as inbound JWTs:
+    # an agent that could write it would restore arbitrary MCP commands
+    # when posture leaves login; a reader learns the operator's withheld
+    # servers. Classified as the whole DIRECTORY so atomic-write temps
+    # cannot sit as an unfenced sibling of a file leaf.
+    "agentcore-authored-mcp",
     # Which checkout the gateway executes (Dev Fleet "Make live"). The pointer is
     # resolved during startup and exec'd into, so a writable one is arbitrary
     # code execution in the gateway's own identity — the agent must not be able

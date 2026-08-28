@@ -480,6 +480,7 @@ EXPORTED_NAMES: tuple[str, ...] = (
     "_wedged_workers",
     "_xargs_reconstructed_command",
     "annotate_refusal",
+    "allow_agentcore_consent_url",
     "annotations",
     "apply_resource_limits",
     "asdict",

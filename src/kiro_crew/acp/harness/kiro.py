@@ -34,7 +34,7 @@ from kiro_crew.acp.types import (
     ACP_CLIENT_CAPABILITIES,
     METHOD_SESSION_TERMINATE,
 )
-from kiro_crew.agent import ForkGovernanceUnresolved
+from kiro_crew.agent import ForkGovernanceUnresolved, LoginWithholdUnresolved
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +92,14 @@ class KiroHarness(MembershipHarness):
         try:
             await asyncio.to_thread(agent_mod.require_fork_governance, ctx.agent, ctx.work_dir)
         except ForkGovernanceUnresolved as exc:
+            raise AcpRuntimeError(str(exc)) from exc
+        # Same shape for the login posture: an app agent whose on-disk spec
+        # still carries the MCP a login rebuild should have withheld
+        # (rematerialize AND neutralize failed) must not spawn -- the file is
+        # the second load path and kiro-cli would run its command.
+        try:
+            await asyncio.to_thread(agent_mod.require_login_withhold, ctx.agent, ctx.work_dir)
+        except LoginWithholdUnresolved as exc:
             raise AcpRuntimeError(str(exc)) from exc
 
         overlap = await asyncio.to_thread(

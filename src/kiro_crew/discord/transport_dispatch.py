@@ -79,6 +79,7 @@ from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
 from kiro_crew.messaging.identity import (
     channel_inbound_permitted,
     exclusive_bind_raw_id,
+    prepare_turn_gateway,
     publish_turn_identity,
 )
 from kiro_crew.messaging.inbound_spool import InboundRoute, spool_refused_turn
@@ -613,6 +614,37 @@ class DiscordDispatcher:
             return monitor_result
         chan_id = f"discord:{channel_id}" if thread_id else f"discord:{user_id}"
         agent = self._resolve_agent()
+        if resumed_key is not None and monitor_completion is None:
+            # A resumed session must run as ITSELF, not as Discord's agent. On a
+            # cold start get_or_create applies the agent we pass, so handing it
+            # the Discord default would load the dashboard conversation's
+            # transcript and then run it under a different system prompt — and a
+            # different allowedTools set, which is a permission-boundary change,
+            # not just a tone change. get_metadata touches the filesystem, so it
+            # goes off-loop. Fall back to the Discord agent only when the
+            # conversation recorded none. Resolved HERE, before the Gateway bind
+            # is staged: the stage authorizes against the crew profile, so the
+            # persisted crew must be the one it evaluates, not the default.
+            persisted = await asyncio.to_thread(persisted_session_agent, self.conv_log, resumed_key)
+            if persisted:
+                agent = persisted
+        # Stage the Gateway bind before EITHER claim below runs session/new:
+        # the monitor-completion fast claim spawns too, and a sidecar written
+        # after it would only reach the next turn's process.
+        await prepare_turn_gateway(
+            self.sessions,
+            session_key,
+            principal_bind_kwargs(
+                text,
+                surface="discord",
+                raw_id=exclusive_bind_raw_id(
+                    user_id if msg.bind_principal else "",
+                    exclusive=not thread_id,
+                    session_key=session_key,
+                ),
+            ),
+            agent=agent or "",
+        )
         _acquired = False
         provider = None
         is_new = False
@@ -636,18 +668,6 @@ class DiscordDispatcher:
                 logger.exception("Discord monitor session claim failed")
                 return MonitorDispatchResult.UNAVAILABLE
             _acquired = True
-        elif resumed_key is not None:
-            # A resumed session must run as ITSELF, not as Discord's agent. On a
-            # cold start get_or_create applies the agent we pass, so handing it
-            # the Discord default would load the dashboard conversation's
-            # transcript and then run it under a different system prompt — and a
-            # different allowedTools set, which is a permission-boundary change,
-            # not just a tone change. get_metadata touches the filesystem, so it
-            # goes off-loop. Fall back to the Discord agent only when the
-            # conversation recorded none.
-            persisted = await asyncio.to_thread(persisted_session_agent, self.conv_log, resumed_key)
-            if persisted:
-                agent = persisted
 
         try:
             decider = (

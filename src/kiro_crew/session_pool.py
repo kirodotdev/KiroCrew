@@ -83,6 +83,7 @@ class WarmPoolState:
     fill_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     health_task: asyncio.Task[Any] | None = None
     sweep_pids: set[int] = field(default_factory=set)
+    last_claim_spawn: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,6 +214,14 @@ class WarmSessionPool:
     @_pool_sweep_pids.setter
     def _pool_sweep_pids(self, value: set[int]) -> None:
         self.state.sweep_pids = value
+
+    @property
+    def _last_claim_spawn(self) -> float | None:
+        return self.state.last_claim_spawn
+
+    @_last_claim_spawn.setter
+    def _last_claim_spawn(self, value: float | None) -> None:
+        self.state.last_claim_spawn = value
 
     async def start_pool(self, *, blocking: bool = True) -> None:
         """Start the background session and configured warm-pool workers."""
@@ -424,10 +433,12 @@ class WarmSessionPool:
                 await self._owner._discard_pool_provider(provider, "Warm pool discard")
                 claimed = self._owner._claim_from_pool(agent)
                 continue
+            self._last_claim_spawn = spawn_time
             return provider
 
         if discarded:
             self._owner._schedule_replenish()
+        self._last_claim_spawn = None
         return None
 
     def _schedule_replenish(self) -> None:

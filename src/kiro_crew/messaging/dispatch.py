@@ -6,6 +6,7 @@ This module owns the sequence every non-Slack channel dispatcher runs around
     governance gate
     -> hook auto-reply                   (HOOK_REPLY short-circuits, no session)
     -> renderer.on_turn_start()          (typing indicator before cold start)
+    -> prepare_turn_gateway               (login sidecar before session/new)
     -> sessions.get_or_create + set_channel
     -> publish_turn_identity
     -> ctx_builder.build_message         (off-loop, embeds block)
@@ -40,6 +41,7 @@ from kiro_crew.messaging.driver import DirectiveConsumer, TurnDriver
 from kiro_crew.messaging.identity import (
     channel_inbound_permitted,
     exclusive_bind_raw_id,
+    prepare_turn_gateway,
     publish_turn_identity,
 )
 from kiro_crew.messaging.inbound_spool import InboundRoute, spool_refused_turn
@@ -589,6 +591,21 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
         # A linked member session must validate its own memory before a cold
         # provider start. The same identity is then used for this turn's prompt.
         memory_store = await session_store_for_turn(ctx_builder, session_key)
+        bind_raw_id = exclusive_bind_raw_id(
+            turn.principal_raw_id,
+            exclusive=turn.exclusive_principal,
+            session_key=session_key,
+        )
+        await prepare_turn_gateway(
+            sessions,
+            session_key,
+            principal_bind_kwargs(
+                turn.user_text,
+                surface=turn.channel_type,
+                raw_id=bind_raw_id,
+            ),
+            agent=turn.agent or "",
+        )
         provider, is_new, resumed = await sessions.get_or_create(
             session_key, agent=turn.agent, channel_id=turn.conversation_id, **extra
         )
