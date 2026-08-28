@@ -1379,6 +1379,9 @@
       "goal_active_cycle": "Goal active (cycle {{cycle}})",
       "goal_interrupted_cycle": "Goal loop armed (cycle {{cycle}}) — last turn was interrupted; resume the chat or wait for the next cycle",
       "never": "never",
+      "next_cycle_due": "Next cycle due, fires after the current turn",
+      "next_cycle_in": "Next cycle in {{time}}",
+      "next_cycle_unscheduled": "Next cycle not yet scheduled",
       "save": "Save",
       "start_loop": "Start loop"
     },

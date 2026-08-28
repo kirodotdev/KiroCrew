@@ -26,7 +26,8 @@ function renderPopover(loop: AutoNudgeLoop | null) {
 
 const makeLoop = (over: Partial<AutoNudgeLoop> = {}): AutoNudgeLoop => ({
   id: 'l1', slot_key: SLOT, message: 'active loop goal',
-  idle_secs: 90, max_cycles: 3, cycle_count: 1, active: true, last_fire_ts: 0, ...over,
+  idle_secs: 90, max_cycles: 3, cycle_count: 1, active: true, last_fire_ts: 0,
+  next_due_ts: 0, ...over,
 })
 
 describe('AutoNudgePopover goal persistence', () => {
@@ -336,5 +337,108 @@ describe('AutoNudgePopover — zero-token watches armed on this slot', () => {
     expect(screen.queryByText(/Zero-token watches/i)).toBeNull()
     // The popover's actual job is still fully usable.
     expect(screen.getByPlaceholderText(/Describe what you want the agent to accomplish/i)).toBeTruthy()
+  })
+})
+
+/** #6482: hovering the goal button / opening the popover shows a live countdown
+ *  to the next trigger, computed from the loop's already-serialized next_due_ts. */
+describe('AutoNudgePopover next-trigger countdown', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    __resetForTests()
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ loop: null }) })) as unknown as typeof fetch)
+    vi.useFakeTimers()
+  })
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
+
+  const nowSecs = () => Date.now() / 1000
+
+  it('shows the countdown in the popover and the trigger tooltip, and it ticks', () => {
+    renderPopover(makeLoop({ next_due_ts: nowSecs() + 125 }))
+    // 125s -> "2m 5s" (en narrow units via fmtDuration).
+    expect(screen.getAllByText(/Next cycle in .*2.*m.*5.*s/i).length).toBeGreaterThan(0)
+    const trigger = screen.getByRole('button', { name: /Goal active \(cycle 1\)/i })
+    expect(trigger.getAttribute('title')).toMatch(/Next cycle in/i)
+
+    // One tick: the rendered remaining time decreases.
+    act(() => { vi.advanceTimersByTime(1000) })
+    expect(screen.getAllByText(/Next cycle in .*2.*m.*4.*s/i).length).toBeGreaterThan(0)
+  })
+
+  it('drops the seconds digit above an hour', () => {
+    renderPopover(makeLoop({ next_due_ts: nowSecs() + 3_720 }))
+    const line = screen.getAllByText(/Next cycle in/i)[0].textContent || ''
+    expect(line).toMatch(/1.*h/i)
+    expect(line).not.toMatch(/\ds\b/)
+  })
+
+  it('reads "due" instead of a negative countdown when the deadline elapsed mid-turn', () => {
+    renderPopover(makeLoop({ next_due_ts: nowSecs() - 5 }))
+    expect(screen.getAllByText(/Next cycle due, fires after the current turn/i).length).toBeGreaterThan(0)
+  })
+
+  it('shows the unscheduled placeholder when next_due_ts is 0', () => {
+    renderPopover(makeLoop({ next_due_ts: 0 }))
+    expect(screen.getAllByText(/Next cycle not yet scheduled/i).length).toBeGreaterThan(0)
+  })
+
+  it('shows no countdown for an inactive loop', () => {
+    renderPopover(makeLoop({ active: false, next_due_ts: nowSecs() + 300 }))
+    expect(screen.queryByText(/Next cycle/i)).toBeNull()
+  })
+
+  /** Review finding: the countdown must stay OUT of aria-label — a per-second
+   *  label change re-announces the button to screen readers. Title only. */
+  it('keeps aria-label stable (countdown lives in title only)', () => {
+    renderPopover(makeLoop({ next_due_ts: nowSecs() + 125 }))
+    const trigger = screen.getByRole('button', { name: /Goal active \(cycle 1\)/i })
+    expect(trigger.getAttribute('aria-label')).not.toMatch(/Next cycle/i)
+    expect(trigger.getAttribute('title')).toMatch(/Next cycle in/i)
+  })
+
+  /** Review finding: the 1s ticker is popover-open-only — a closed-but-armed
+   *  loop must not re-render the toolbar button every second. Hover/focus
+   *  refresh the snapshot instead, which is all a native tooltip can show. */
+  it('does not tick while closed; hovering the trigger refreshes the tooltip', () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
+    const deadline = nowSecs() + 125
+    render(
+      <QueryClientProvider client={qc}>
+        <AutoNudgePopover slotKey={SLOT} loop={makeLoop({ next_due_ts: deadline })} open={false} onOpenChange={() => {}} onChange={() => {}} />
+      </QueryClientProvider>,
+    )
+    const trigger = screen.getByRole('button', { name: /Goal active \(cycle 1\)/i })
+    expect(trigger.getAttribute('title')).toMatch(/2.*m.*5.*s/i)
+
+    // A minute passes with the popover closed: no interval is armed, so the
+    // title still carries the mount-time snapshot...
+    act(() => { vi.advanceTimersByTime(60_000) })
+    expect(trigger.getAttribute('title')).toMatch(/2.*m.*5.*s/i)
+
+    // ...until a hover refreshes it to the current remaining time.
+    fireEvent.mouseEnter(trigger)
+    expect(trigger.getAttribute('title')).toMatch(/1.*m.*5.*s/i)
+  })
+
+  it('stops updating after the loop goes inactive (ticker torn down)', () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
+    const deadline = nowSecs() + 125
+    const props = { slotKey: SLOT, open: true, onOpenChange: () => {}, onChange: () => {} }
+    const view = render(
+      <QueryClientProvider client={qc}>
+        <AutoNudgePopover {...props} loop={makeLoop({ next_due_ts: deadline })} />
+      </QueryClientProvider>,
+    )
+    expect(screen.getAllByText(/Next cycle in/i).length).toBeGreaterThan(0)
+
+    view.rerender(
+      <QueryClientProvider client={qc}>
+        <AutoNudgePopover {...props} loop={makeLoop({ active: false, next_due_ts: deadline })} />
+      </QueryClientProvider>,
+    )
+    expect(screen.queryByText(/Next cycle/i)).toBeNull()
+    // Advancing the clock after teardown must not resurrect it or throw.
+    act(() => { vi.advanceTimersByTime(5_000) })
+    expect(screen.queryByText(/Next cycle/i)).toBeNull()
   })
 })

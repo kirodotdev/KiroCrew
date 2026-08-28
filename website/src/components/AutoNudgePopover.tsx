@@ -8,7 +8,7 @@ import { loadGoalDraft, saveGoalDraft, type GoalDraft } from '../utils/goalDraft
 import { DRAFT_SAVE_DEBOUNCE_MS } from '../utils/draftConstants'
 
 import { i18nT } from '../i18n/t'
-import { fmtTimeNumeric } from '../i18n/format'
+import { fmtTimeNumeric, fmtDuration } from '../i18n/format'
 export interface AutoNudgeLoop {
   id: string
   slot_key: string
@@ -18,6 +18,10 @@ export interface AutoNudgeLoop {
   cycle_count: number
   active: boolean
   last_fire_ts: number
+  /** Absolute wall-clock deadline for the next fire; 0 = not yet scheduled.
+   *  Already serialized by the backend's `asdict(loop)` — the field simply
+   *  was not surfaced here before (#6482). */
+  next_due_ts: number
 }
 
 interface Props {
@@ -214,6 +218,50 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
     }
   }
 
+  // ── Countdown to the next trigger (#6482) ──
+  // The 1s ticker runs only while the popover is OPEN (review finding: a
+  // closed-but-armed loop must not re-render the toolbar button every second
+  // all day). The hover affordance needs no ticker: a native title tooltip
+  // snapshots at hover-start, so the trigger's onMouseEnter/onFocus refresh
+  // nowTs once, which is exactly the freshness a tooltip glance can show.
+  const ticking = open && !!loop?.active && (loop.next_due_ts || 0) > 0
+  const [nowTs, setNowTs] = useState(() => Date.now() / 1000)
+  useEffect(() => {
+    if (!ticking) return
+    setNowTs(Date.now() / 1000)
+    const timer = setInterval(() => setNowTs(Date.now() / 1000), 1000)
+    return () => clearInterval(timer)
+  }, [ticking])
+  const refreshNow = () => setNowTs(Date.now() / 1000)
+  /** Hover/popover line for the next trigger, or '' when no active loop.
+   *  Semantics: the loop is deadline-preserving — a user turn defers a due fire
+   *  until the turn ends but never pushes the deadline back — so an elapsed
+   *  deadline reads "due, fires after the current turn" rather than a negative
+   *  countdown. next_due_ts of 0 means the next arm has not scheduled yet.
+   *  next_due_ts is a SERVER wall-clock deadline rendered against the CLIENT
+   *  clock; skew shifts the countdown by that skew, and the due-fallback below
+   *  bounds the visible damage. */
+  const countdownText = (() => {
+    if (!loop?.active) return ''
+    if (!(loop.next_due_ts > 0)) return i18nT('components.autoNudgePopover.next_cycle_unscheduled')
+    const remaining = Math.round(loop.next_due_ts - nowTs)
+    if (remaining <= 0) return i18nT('components.autoNudgePopover.next_cycle_due')
+    const h = Math.floor(remaining / 3600)
+    const m = Math.floor((remaining % 3600) / 60)
+    const s = remaining % 60
+    // Above an hour the seconds digit is noise on a tooltip; below it, keep
+    // the tick visible so the affordance reads as live.
+    const parts: Array<[number, 'hour' | 'minute' | 'second']> =
+      h > 0 ? [[h, 'hour'], [m, 'minute']] : [[m, 'minute'], [s, 'second']]
+    return i18nT('components.autoNudgePopover.next_cycle_in', {
+      time: fmtDuration(parts, { dropZero: true }),
+    })
+  })()
+  /** The tooltip only carries a REAL deadline signal (counting or due) — the
+   *  "not yet scheduled" placeholder is popover-only, so an armed-but-unscheduled
+   *  loop keeps the plain "Goal active (cycle N)" title. */
+  const titleCountdown = loop?.active && (loop.next_due_ts || 0) > 0 ? countdownText : ''
+
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
       <PopoverTrigger asChild>
@@ -225,8 +273,12 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
                 : 'text-accent hover:text-accent hover:bg-accent/10 animate-pulse'
               : 'text-muted hover:text-text hover:bg-bg-hover'
           }`}
-          title={loop?.active ? (interrupted ? i18nT('components.autoNudgePopover.goal_interrupted_cycle', { cycle: loop.cycle_count }) : i18nT('components.autoNudgePopover.goal_active_cycle', { cycle: loop.cycle_count })) : i18nT('components.autoNudgePopover.set_a_goal')}
+          title={loop?.active ? `${interrupted ? i18nT('components.autoNudgePopover.goal_interrupted_cycle', { cycle: loop.cycle_count }) : i18nT('components.autoNudgePopover.goal_active_cycle', { cycle: loop.cycle_count })}${titleCountdown ? ` · ${titleCountdown}` : ''}` : i18nT('components.autoNudgePopover.set_a_goal')}
+          // The countdown stays OUT of aria-label (review finding): a
+          // per-second label change re-announces the button to screen readers.
           aria-label={loop?.active ? (interrupted ? i18nT('components.autoNudgePopover.goal_interrupted_cycle', { cycle: loop.cycle_count }) : i18nT('components.autoNudgePopover.goal_active_cycle', { cycle: loop.cycle_count })) : i18nT('components.autoNudgePopover.set_a_goal')}
+          onMouseEnter={refreshNow}
+          onFocus={refreshNow}
         >
           <Goal size={16} className="shrink-0" />
           {loop?.active && loop.cycle_count > 0 ? loop.cycle_count : null}
@@ -308,6 +360,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
         {loop && (
           <div className="text-muted text-[11px] mb-3">
             {i18nT('components.autoNudgePopover.last_fire')} {loop.last_fire_ts ? fmtTimeNumeric(loop.last_fire_ts) : i18nT('components.autoNudgePopover.never')}
+            {countdownText && <span> · {countdownText}</span>}
           </div>
         )}
 
