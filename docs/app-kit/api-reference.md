@@ -764,25 +764,30 @@ generic set of environment variables. No app-specific variables are ever injecte
 | `PORT` | yes | The loopback port your backend must bind (`127.0.0.1:$PORT`). |
 | `KIROCREW_APP_NAME` | yes | This app's installed name. |
 | `KIROCREW_HOME` | yes | The gateway's resolved data home, so the backend reads the same app tree. |
-| `KIROCREW_GATEWAY_ORIGIN` | yes | The gateway's own origin, `http://127.0.0.1:<port>`, for calling back to the gateway (for example `POST /api/notifications/push`). The port is the one the gateway ACTUALLY bound; it is never your app's `PORT`, a default, or a request-derived value, so a child can never be pointed at a sibling gateway. |
+| `KIROCREW_GATEWAY_ORIGIN` | only with bound-port evidence | The gateway's own origin, `http://127.0.0.1:<bound port>`, for calling back to the gateway (for example `POST /api/notifications/push`). It is set ONLY from the port the gateway ACTUALLY bound (its exported `KIROCREW_BOUND_PORT`, required to be numeric and in `1..65535`); it is never your app's `PORT`, an inherited `KIROCREW_PORT`, a config value, a default, or a request-derived value, so a child can never be pointed at a sibling gateway. Without that bound-port evidence the variable is omitted entirely (see below). |
 | `KIROCREW_PROXY_SECRET` | only if a secret exists | The per-app secret used to verify the `X-KiroCrew-Proxy` header (see above). |
-| `KIROCREW_GATEWAY_ORIGIN_PROOF` | only if a secret exists | `HMAC-SHA256(app_secret, KIROCREW_GATEWAY_ORIGIN)`, hex. Recompute it with your secret to confirm the injected origin was minted by this gateway, rather than an inherited or spoofed env value. |
 
 Security and lifecycle:
 
-- The per-app secret lives at `<data-home>/apps/<name>/.app_secret`, owner-only `0600`. The
-  gateway re-enforces that mode each time it reads the secret to spawn a backend.
-- If no `.app_secret` exists, the gateway injects `KIROCREW_GATEWAY_ORIGIN` but neither the
-  secret nor the proof; a secret-less backend is otherwise unchanged.
-- `KIROCREW_GATEWAY_ORIGIN` and its proof are recomputed on every spawn, so a gateway
-  restarted on a different port hands the backend the current origin.
+- The per-app secret lives on disk at `<KIROCREW_HOME>/apps/<name>/.app_secret`, owner-only
+  `0600` (owner-only DACL on Windows). The gateway re-enforces that mode BEFORE it reads the
+  secret to spawn a backend, so a file that lost its mode is never read while still
+  group/world-readable.
+- If no `.app_secret` exists, the gateway injects neither the secret nor anything derived from
+  it; a secret-less backend is otherwise unchanged and no lockdown warning is emitted.
+- `KIROCREW_GATEWAY_ORIGIN` is fail-closed: it is present only when the gateway has real
+  evidence of the port it bound. A gateway that has not exported a valid `KIROCREW_BOUND_PORT`
+  hands the backend no origin, so a backend that needs a callback base stays dormant rather
+  than trusting a guessed address.
+- The origin is recomputed on every spawn, so a gateway restarted on a different bound port
+  hands the backend the current origin.
 
 Using the origin for notifications:
 
 An entryPoint backend that declares `notifications.channels` in `app.json` pushes with
 `POST {KIROCREW_GATEWAY_ORIGIN}/api/notifications/push`, authenticating with its app secret
-(see App Notifications). Verify `KIROCREW_GATEWAY_ORIGIN_PROOF` before you trust the origin as
-your callback base.
+(see App Notifications). If `KIROCREW_GATEWAY_ORIGIN` is unset the gateway did not publish a
+bound-port origin, so the backend has no callback base and should not push.
 
 ## App Dev Mode (live reload)
 

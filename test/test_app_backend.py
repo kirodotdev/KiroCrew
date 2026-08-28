@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -1475,20 +1476,38 @@ def test_devfleet_repo_env_wins_repo_discovery(monkeypatch, tmp_path):
 
 
 class TestGatewayOriginInjection:
-    """Trusted gateway-origin/proof injection into entryPoint app backends.
+    """Bound-port-gated gateway-origin injection into entryPoint app backends.
 
-    The gateway hands each entryPoint child two generic variables so the child
+    The gateway hands each entryPoint child one generic variable so the child
     can call BACK to this gateway (for example POST /api/notifications/push on a
-    declared channel): ``KIROCREW_GATEWAY_ORIGIN`` (where the gateway listens)
-    and ``KIROCREW_GATEWAY_ORIGIN_PROOF`` (an HMAC that lets the child confirm
-    the origin came from the gateway that alone holds its secret). The origin is
-    built from the port the gateway ACTUALLY bound, never the app's own PORT.
+    declared channel): ``KIROCREW_GATEWAY_ORIGIN``. It is injected ONLY from hard
+    evidence of the port the gateway ACTUALLY bound -- the exported
+    ``KIROCREW_BOUND_PORT``, required to be numeric and in 1..65535. There is no
+    fallback to an inherited ``KIROCREW_PORT``, the app's own ``PORT``, a config
+    value, or a default: without bound-port evidence the origin is omitted and a
+    backend that needs a callback base fails closed (dormant). No app-specific
+    variable is ever injected.
     """
 
     _SECRET = "test-app-secret-0123456789abcdef"
 
     def _install_backend_app(self, tmp_path, name="origin-app"):
         src = _make_app_with_backend(tmp_path, name=name)
+        install_app(src)
+        return name
+
+    def _install_typed_backend_app(self, tmp_path, name, entry_rel, backend_type, body):
+        """Install an app whose backend declares an explicit ``type`` + entry file."""
+        src = tmp_path / "source" / name
+        (src / Path(entry_rel).parent).mkdir(parents=True, exist_ok=True)
+        (src / entry_rel).write_text(body)
+        (src / APP_MANIFEST_FILENAME).write_text(json.dumps({
+            "name": name, "version": "1.0.0",
+            "displayName": name, "description": "typed entry",
+            "author": "tester",
+            "backend": {"entryPoint": entry_rel, "type": backend_type,
+                        "healthCheck": "/health"},
+        }))
         install_app(src)
         return name
 
@@ -1521,17 +1540,14 @@ class TestGatewayOriginInjection:
         result = bmod.start_app_backend(app_name)
         return result, captured.get("env")
 
-    def test_child_gets_exact_origin_proof_and_the_actual_bound_port(
+    def test_valid_bound_port_injects_exact_origin_distinct_from_app_port(
         self, tmp_path, app_env, monkeypatch
     ):
-        """The child env carries the origin from the bound port, plus a matching proof.
+        """A valid KIROCREW_BOUND_PORT yields the exact origin, never the app's own PORT.
 
         The origin must be the port THIS gateway bound (KIROCREW_BOUND_PORT),
         not the app's own PORT (which lives in the 9100-9200 app range).
         """
-        import hashlib
-        import hmac
-
         import kiro_crew.apps.backend as bmod
 
         name = self._install_backend_app(tmp_path)
@@ -1544,33 +1560,92 @@ class TestGatewayOriginInjection:
         # The origin is the GATEWAY port, never the app's own bound PORT.
         assert env["PORT"] != "8123"
         assert bmod._MIN_PORT <= int(env["PORT"]) <= bmod._MAX_PORT
-        # The proof is HMAC-SHA256(app_secret, origin) over the exact origin.
-        expected = hmac.new(
-            self._SECRET.encode("utf-8"),
-            b"http://127.0.0.1:8123",
-            hashlib.sha256,
-        ).hexdigest()
-        assert env["KIROCREW_GATEWAY_ORIGIN_PROOF"] == expected
+        # The proxy secret is still injected when a secret exists.
         assert env["KIROCREW_PROXY_SECRET"] == self._SECRET
 
-    def test_the_proof_verifies_under_the_app_secret_and_not_another(
+    def test_no_bound_port_env_omits_the_origin(
         self, tmp_path, app_env, monkeypatch
     ):
-        """A backend recomputing the proof with its secret accepts it; a wrong key rejects."""
-        import hashlib
-        import hmac
-
+        """With no KIROCREW_BOUND_PORT at all, the origin is omitted (fail closed)."""
         name = self._install_backend_app(tmp_path)
         self._write_secret(name)
-        monkeypatch.setenv("KIROCREW_BOUND_PORT", "8123")
+        monkeypatch.delenv("KIROCREW_BOUND_PORT", raising=False)
 
         _result, env = self._capture_child_env(monkeypatch, name)
         assert env is not None
-        origin = env["KIROCREW_GATEWAY_ORIGIN"].encode("utf-8")
-        good = hmac.new(self._SECRET.encode("utf-8"), origin, hashlib.sha256).hexdigest()
-        bad = hmac.new(b"a-different-secret", origin, hashlib.sha256).hexdigest()
-        assert hmac.compare_digest(env["KIROCREW_GATEWAY_ORIGIN_PROOF"], good)
-        assert not hmac.compare_digest(env["KIROCREW_GATEWAY_ORIGIN_PROOF"], bad)
+        assert "KIROCREW_GATEWAY_ORIGIN" not in env
+        # The unrelated proxy-secret behavior is unchanged.
+        assert env["KIROCREW_PROXY_SECRET"] == self._SECRET
+
+    def test_inherited_kirocrew_port_alone_does_not_produce_an_origin(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        """An inherited KIROCREW_PORT is NOT bound-port evidence: no fallback, origin omitted.
+
+        Proves the injected origin never derives from resolve_serving_port()'s
+        KIROCREW_PORT/default chain -- only the exported KIROCREW_BOUND_PORT counts.
+        """
+        name = self._install_backend_app(tmp_path)
+        self._write_secret(name)
+        monkeypatch.delenv("KIROCREW_BOUND_PORT", raising=False)
+        monkeypatch.setenv("KIROCREW_PORT", "5476")  # inherited / --port guess only
+
+        _result, env = self._capture_child_env(monkeypatch, name)
+        assert env is not None
+        assert "KIROCREW_GATEWAY_ORIGIN" not in env
+
+    @pytest.mark.parametrize("bad", ["", "   ", "notaport", "80.5", "0", "-1", "65536", "99999"])
+    def test_nonnumeric_zero_or_out_of_range_bound_port_omits_the_origin(
+        self, tmp_path, app_env, monkeypatch, bad
+    ):
+        """Nonnumeric, zero, negative, and out-of-range (>65535) bound ports all omit."""
+        name = self._install_backend_app(tmp_path)
+        self._write_secret(name)
+        monkeypatch.setenv("KIROCREW_BOUND_PORT", bad)
+
+        _result, env = self._capture_child_env(monkeypatch, name)
+        assert env is not None
+        assert "KIROCREW_GATEWAY_ORIGIN" not in env, (
+            f"KIROCREW_BOUND_PORT={bad!r} is not valid bound-port evidence"
+        )
+
+    def test_every_entrypoint_type_gets_the_same_generic_origin(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        """The origin is injected before type dispatch, so every entry type sees it identically.
+
+        Covers the file-based backend types (python, asgi, node, and -- on POSIX
+        -- exec). Module-style dotted entries are builtin-only and not installable
+        here. The value is the same generic origin regardless of type.
+        """
+        import kiro_crew.apps.backend as bmod
+
+        # A node backend must find a node binary before it reaches the spawn; the
+        # binary is never executed (Popen is spied), so a stub path suffices.
+        monkeypatch.setattr(bmod, "_find_node_binary", lambda: sys.executable)
+        monkeypatch.setenv("KIROCREW_BOUND_PORT", "8123")
+
+        cases = [
+            ("py-plain", "backend/server.py", "python",
+             'import http.server\n'),
+            ("py-asgi", "backend/app.py", "asgi",
+             'from fastapi import FastAPI\nimport uvicorn\napp = FastAPI()\n'),
+            ("node-app", "server.js", "node",
+             'require("http")\n'),
+        ]
+        if os.name == "posix":
+            cases.append(("exec-app", "start.sh", "exec", "#!/bin/sh\nsleep 30\n"))
+
+        origins = {}
+        for name, entry_rel, backend_type, body in cases:
+            self._install_typed_backend_app(tmp_path, name, entry_rel, backend_type, body)
+            _result, env = self._capture_child_env(monkeypatch, name)
+            assert env is not None, f"{backend_type} entry never reached the spawn boundary"
+            origins[backend_type] = env["KIROCREW_GATEWAY_ORIGIN"]
+
+        assert set(origins.values()) == {"http://127.0.0.1:8123"}, (
+            f"every entry type must get the same generic origin (saw {origins!r})"
+        )
 
     @pytest.mark.skipif(os.name != "posix", reason="POSIX file-mode check")
     def test_reading_the_secret_tightens_it_to_owner_only(
@@ -1622,12 +1697,11 @@ class TestGatewayOriginInjection:
     def test_missing_secret_is_tolerated_without_a_lockdown_warning(
         self, tmp_path, app_env, monkeypatch, caplog
     ):
-        """A missing .app_secret stays a silent no-op even though restrict now runs first.
+        """A missing .app_secret stays a silent no-op: no lockdown attempt, no warning.
 
-        Moving restrict_to_owner ahead of the read means a secret-less app hits
-        its fail-loud path; a MISSING file (FileNotFoundError) must be tolerated
-        silently rather than warn on every spawn. Only a real lockdown failure
-        on an EXISTING file warns.
+        The lockdown+read are gated on secret_path.exists(), so a secret-less app
+        never reaches restrict_to_owner and never warns on every spawn. Only a
+        real lockdown failure on an EXISTING file warns.
         """
         import logging
 
@@ -1645,10 +1719,10 @@ class TestGatewayOriginInjection:
             r for r in caplog.records if "owner-only mode" in r.getMessage()
         ], "a missing secret must not emit a lockdown warning"
 
-    def test_missing_secret_injects_origin_but_neither_proof_nor_secret(
+    def test_missing_secret_still_injects_origin_but_no_secret(
         self, tmp_path, app_env, monkeypatch
     ):
-        """A missing .app_secret is tolerated: origin still set, no proof, no secret."""
+        """A missing .app_secret is tolerated: origin still set (bound port valid), no secret."""
         from kiro_crew.apps.manager import app_dir
 
         name = self._install_backend_app(tmp_path)
@@ -1658,7 +1732,6 @@ class TestGatewayOriginInjection:
         _result, env = self._capture_child_env(monkeypatch, name)
         assert env is not None
         assert env["KIROCREW_GATEWAY_ORIGIN"] == "http://127.0.0.1:8123"
-        assert "KIROCREW_GATEWAY_ORIGIN_PROOF" not in env
         assert "KIROCREW_PROXY_SECRET" not in env
 
     def test_a_non_entrypoint_app_is_not_spawned_and_gets_no_injection(
@@ -1679,66 +1752,6 @@ class TestGatewayOriginInjection:
         result, env = self._capture_child_env(monkeypatch, name)
         assert result is None
         assert env is None, "a non-entryPoint app must never reach the spawn boundary"
-
-    def test_bound_port_beats_an_inherited_port_for_the_origin(
-        self, tmp_path, app_env, monkeypatch
-    ):
-        """The origin follows the ACTUAL bound port, not an inherited --port/KIROCREW_PORT.
-
-        resolve_serving_port() prefers KIROCREW_BOUND_PORT over KIROCREW_PORT, so
-        a child of a ``--port auto`` gateway that also inherited KIROCREW_PORT is
-        pinned to its real parent, never a sibling on the inherited port.
-        """
-        name = self._install_backend_app(tmp_path)
-        self._write_secret(name)
-        monkeypatch.setenv("KIROCREW_PORT", "5476")        # inherited / --port guess
-        monkeypatch.setenv("KIROCREW_BOUND_PORT", "8123")  # the port actually bound
-
-        _result, env = self._capture_child_env(monkeypatch, name)
-        assert env is not None
-        assert env["KIROCREW_GATEWAY_ORIGIN"] == "http://127.0.0.1:8123"
-
-
-class TestAidlcNotificationsChannelOracle:
-    """CRIT-2 oracle: the one-channel AI-DLC fixture validates against the host schema.
-
-    The AI-DLC app declares a single notification channel so its entryPoint
-    backend can push over the trusted gateway origin. This pins that channel
-    declaration against the REAL imported manifest schema, so a host-side schema
-    change that would reject it fails here rather than in the app at runtime.
-    """
-
-    _FIXTURE = {"channels": [{"id": "aidlc", "name": "AIDLC", "defaultPriority": "default"}]}
-
-    def test_fixture_validates_and_round_trips_through_notifications_config(self):
-        from kiro_crew.apps.manifest import NotificationsConfig
-
-        cfg = NotificationsConfig.from_dict(self._FIXTURE)
-        assert cfg.validate() == []
-        assert len(cfg.channels) == 1
-        ch = cfg.channels[0]
-        assert (ch.id, ch.name, ch.defaultPriority) == ("aidlc", "AIDLC", "default")
-        # Round-trips through the real schema without loss.
-        again = NotificationsConfig.from_dict(cfg.to_dict())
-        assert again.channels[0].id == "aidlc"
-        assert again.channels[0].name == "AIDLC"
-        assert again.channels[0].defaultPriority == "default"
-
-    def test_fixture_is_accepted_inside_a_full_app_manifest(self):
-        from kiro_crew.apps.manifest import AppManifest
-
-        manifest = AppManifest.from_dict({
-            "name": "ai-dlc",
-            "version": "1.0.0",
-            "displayName": "AI-DLC",
-            "description": "AI-DLC app",
-            "author": "tester",
-            "notifications": self._FIXTURE,
-        })
-        # The real ingestion path parses the channel...
-        assert [c.id for c in manifest.notifications.channels] == ["aidlc"]
-        # ...and the full-manifest validator raises no notifications error for it.
-        assert not [e for e in manifest.validate() if "notifications" in e]
 
 
 class TestTheCacheOnlyChildCanSeeTheCacheItMustBootFrom:

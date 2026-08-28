@@ -6,8 +6,6 @@ the backend process lifecycle: spawn on enable, health-check, stop on disable.
 from __future__ import annotations
 
 import concurrent.futures
-import hashlib
-import hmac
 import json
 import logging
 import os
@@ -35,7 +33,6 @@ from kiro_crew.apps.manager import app_dir, get_app_manifest, list_apps
 from kiro_crew.apps.registry import minimal_env
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
-from kiro_crew.port_resolution import resolve_serving_port
 from kiro_crew.sandbox import (
     RLIMIT_PROFILE_BUILD,
     RLIMIT_PROFILE_TOOL,
@@ -919,54 +916,50 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
         **_platform_extra,
     )
     # Trusted gateway origin for the backend's own callbacks to this gateway
-    # (e.g. POST /api/notifications/push on a declared channel). Built from the
-    # port THIS gateway actually bound: resolve_serving_port() prefers the
-    # exported KIROCREW_BOUND_PORT over an inherited/guessed KIROCREW_PORT, so
-    # the child is pinned to its real parent and can never be handed the origin
-    # of a sibling gateway. Never the app's own PORT, a default, or any
-    # request-derived value. Generic name only; no app-specific env is set here.
-    gateway_origin = f"http://127.0.0.1:{resolve_serving_port()}"
-    env["KIROCREW_GATEWAY_ORIGIN"] = gateway_origin
+    # (e.g. POST /api/notifications/push on a declared channel). It is injected
+    # ONLY from hard evidence of the port THIS gateway actually bound:
+    # KIROCREW_BOUND_PORT, which the gateway exports into its own environment
+    # once its listening socket is bound. We require it to be present and to
+    # parse as an integer in 1..65535. We never fall back to KIROCREW_PORT (an
+    # inherited/--port guess), the app's own PORT, a config value, a run-marker,
+    # or a built-in default: any of those could point the child at a sibling
+    # gateway or at a port nothing is listening on. Absent or invalid evidence
+    # => omit the origin entirely, so a backend that needs a callback base fails
+    # closed (dormant) rather than trusting a guessed address. Generic name
+    # only; no app-specific env is set here.
+    bound_port = os.environ.get("KIROCREW_BOUND_PORT", "").strip()
+    if bound_port.isdigit() and 1 <= int(bound_port) <= 65535:
+        env["KIROCREW_GATEWAY_ORIGIN"] = f"http://127.0.0.1:{int(bound_port)}"
     # Inject the per-app proxy secret so the backend can verify the
     # X-KiroCrew-Proxy HMAC the gateway signs on every forwarded request
     # (CWE-306). Without it the loopback backend would trust any local caller.
-    # The same secret keys KIROCREW_GATEWAY_ORIGIN_PROOF, an
-    # HMAC-SHA256(secret, origin) the backend recomputes to confirm the origin
-    # value was minted by the gateway that alone holds this secret, rather than
-    # an inherited or spoofed env value. Both are injected ONLY when the secret
-    # is present; a missing .app_secret is tolerated as before and yields
-    # neither the secret nor the proof (the origin, being non-secret, is still
-    # set so a secret-less legacy backend is otherwise unchanged).
+    # Injected ONLY when the secret is present; a missing .app_secret is
+    # tolerated as before and yields no secret (a secret-less legacy backend is
+    # otherwise unchanged).
     secret_path = root / ".app_secret"
-    # Re-tighten owner-only mode BEFORE reading, mirroring write_app_secret
-    # (0600 on POSIX / owner-only DACL on Windows), so a secret that lost its
-    # mode in transit (e.g. a pre-existing 0644 file) is never read while it is
-    # still group/world-readable: the lockdown has to precede the read to close
-    # that window. Best-effort: restrict_to_owner is fail-loud, but a chmod
-    # failure must not sink a backend the gateway can otherwise start, so
-    # warn-and-continue. A missing .app_secret raises FileNotFoundError, which
-    # is tolerated silently exactly as the read below tolerates it; only a real
-    # lockdown failure on an existing file warns. The secret is never logged.
-    try:
-        platform_compat.restrict_to_owner(secret_path)
-    except FileNotFoundError:
-        pass
-    except OSError as exc:
-        # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure - logs the app name and OSError only, never the secret value
-        logger.warning(
-            "Could not enforce owner-only mode on %s app secret: %s", app_name, exc,
-        )
-    try:
-        _proxy_secret = secret_path.read_text().strip()
-    except OSError:
-        _proxy_secret = ""
-    if _proxy_secret:
-        env["KIROCREW_PROXY_SECRET"] = _proxy_secret
-        env["KIROCREW_GATEWAY_ORIGIN_PROOF"] = hmac.new(
-            _proxy_secret.encode("utf-8"),
-            gateway_origin.encode("utf-8"),
-            hashlib.sha256,
-        ).hexdigest()
+    if secret_path.exists():
+        # Re-tighten owner-only mode BEFORE reading, mirroring write_app_secret
+        # (0600 on POSIX / owner-only DACL on Windows), so a secret that lost
+        # its mode in transit (e.g. a pre-existing 0644 file) is never read
+        # while it is still group/world-readable: the lockdown has to precede
+        # the read to close that window. Best-effort: restrict_to_owner is
+        # fail-loud, but a chmod failure must not sink a backend the gateway can
+        # otherwise start, so warn-and-continue. Gating the whole block on
+        # exists() keeps a missing secret a silent no-op -- no lockdown attempt,
+        # so no warning on every secret-less spawn. The secret is never logged.
+        try:
+            platform_compat.restrict_to_owner(secret_path)
+        except OSError as exc:
+            # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure - logs the app name and OSError only, never the secret value
+            logger.warning(
+                "Could not enforce owner-only mode on %s app secret: %s", app_name, exc,
+            )
+        try:
+            _proxy_secret = secret_path.read_text().strip()
+        except OSError:
+            _proxy_secret = ""
+        if _proxy_secret:
+            env["KIROCREW_PROXY_SECRET"] = _proxy_secret
     entry_str = str(entry) if entry else entry_point
 
     # Prefer explicit backend type from manifest over content sniffing
