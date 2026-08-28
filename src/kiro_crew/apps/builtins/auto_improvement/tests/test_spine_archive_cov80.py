@@ -14,15 +14,38 @@ archive that positional readers parse.
 from __future__ import annotations
 
 import json
+import locale
 from dataclasses import dataclass
 from pathlib import Path
+
+import pytest
 
 from kiro_crew.apps.builtins.auto_improvement.spine.archive import (
     CONTROL_COLUMNS,
     Archive,
+    ArchiveEncodingError,
     _jsonable,
     _render_secondary,
 )
+
+
+def _simulate_legacy_locale(monkeypatch) -> None:
+    """Make encoding=None behave like a Windows legacy code page."""
+    real_open = Path.open
+
+    def legacy_open(
+        path,
+        mode="r",
+        buffering=-1,
+        encoding=None,
+        errors=None,
+        newline=None,
+    ):
+        if "b" not in mode and encoding in (None, "locale"):
+            encoding = "cp1252"
+        return real_open(path, mode, buffering, encoding, errors, newline)
+
+    monkeypatch.setattr(Path, "open", legacy_open)
 
 
 def _rows(archive: Archive) -> list[dict]:
@@ -99,6 +122,89 @@ class TestRunMetadata:
         archive = Archive(tmp_path / "results")
         archive.meta_path.write_text("{not json")
         assert archive.read_meta() == {}
+
+
+class TestDurableTextEncoding:
+    def test_legacy_tsv_fails_closed_and_is_not_corrupted_across_host_locales(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # Written under codec A (cp1252), opened on a host whose locale is
+        # codec B (cp1251): the archive must never be transcoded by guess —
+        # cp1252 "café" decoded as cp1251 would silently become "cafй".
+        root = tmp_path / "results"
+        root.mkdir()
+        tsv = root / "results.tsv"
+        original = ("\t".join(CONTROL_COLUMNS) + "\n1\tlegacy\t\t\t\t\t\t\tcafé\t\t\n").encode(
+            "cp1252"
+        )
+        tsv.write_bytes(original)
+        monkeypatch.setattr(locale, "getpreferredencoding", lambda _do_setlocale=False: "cp1251")
+
+        with pytest.raises(ArchiveEncodingError, match="legacy-encoded"):
+            Archive(root)
+
+        assert tsv.read_bytes() == original
+        assert not list(root.glob(".results.tsv.*.tmp"))
+
+    def test_legacy_tsv_error_names_the_file_and_a_remedy(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        root = tmp_path / "results"
+        root.mkdir()
+        tsv = root / "results.tsv"
+        tsv.write_bytes(("café\n").encode("cp1252"))
+        monkeypatch.setattr(locale, "getpreferredencoding", lambda _do_setlocale=False: "cp1252")
+
+        with pytest.raises(ArchiveEncodingError) as excinfo:
+            Archive(root)
+
+        message = str(excinfo.value)
+        assert str(tsv) in message
+        assert "left untouched" in message
+        assert "utf-8" in message.lower()
+
+    def test_torn_utf8_tsv_is_not_misclassified_as_legacy(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        root = tmp_path / "results"
+        root.mkdir()
+        tsv = root / "results.tsv"
+        prefix = "\t".join(CONTROL_COLUMNS) + "\n1\tlegacy\t\t\t\t\t\t\tcafé "
+        original = prefix.encode("utf-8") + "🚀".encode("utf-8")[:3]
+        tsv.write_bytes(original)
+        monkeypatch.setattr(locale, "getpreferredencoding", lambda _do_setlocale=False: "cp1252")
+
+        with pytest.raises(ArchiveEncodingError, match="crash-torn") as excinfo:
+            Archive(root)
+
+        assert str(tsv) in str(excinfo.value)
+        assert tsv.read_bytes() == original
+        assert not list(root.glob(".results.tsv.*.tmp"))
+
+    def test_archive_round_trips_agent_text_under_a_legacy_locale(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        _simulate_legacy_locale(monkeypatch)
+        text = "東京 🚀"
+        archive = Archive(tmp_path / "results")
+
+        archive.write_meta({"label": text})
+        archive.save_candidate(cand_id="unicode", diff=f"+{text}\n", detail={"label": text})
+        archive.append_row(
+            {"cycle": 1, "cand_id": "unicode", "description": text, "primary_delta": -1}
+        )
+        archive.write_drift(1, {"reason": text})
+
+        reopened = Archive(archive.root)
+        assert reopened.read_meta()["label"] == text
+        assert reopened.top_k()[0]["description"] == text
+        assert text in (archive.candidates_dir / "unicode.diff").read_text(encoding="utf-8")
+        detail = json.loads((archive.candidates_dir / "unicode.json").read_text(encoding="utf-8"))
+        assert detail["label"] == text
+        cells = archive.tsv.read_text(encoding="utf-8").splitlines()[1].split("\t")
+        assert cells[CONTROL_COLUMNS.index("description")] == text
+        drift = json.loads((archive.drift_dir / "rebest-1.json").read_text(encoding="utf-8"))
+        assert drift["reason"] == text
 
 
 class TestArchiveLayout:

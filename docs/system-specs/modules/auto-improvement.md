@@ -927,6 +927,16 @@ sessions/<key>.json  chat-session records (resume)
 logs/
 ```
 
+All archive text is UTF-8, including raw candidate diffs and TSV descriptions. When an
+existing `results.tsv` is not valid UTF-8, Archive initialization fails closed with an
+error naming the file and the remedy — it never decodes with the current host locale,
+because an archive written under one legacy code page and opened under another would be
+silently transcoded to mojibake. An incomplete UTF-8 sequence at EOF is reported as a
+crash-torn append (recoverable by deleting the incomplete final line) rather than
+misread as legacy text. Agent output is not restricted to the gateway host's locale, so
+durable state must not inherit a legacy Windows code page that cannot represent the
+candidate text.
+
 Disposable clones and worktrees live **outside** `data/` under
 `~/.autoimprove-scratch` (override: `AUTO_IMPROVEMENT_SCRATCH`), because they are
 large, regenerable, and must not be mistaken for the durable record.
