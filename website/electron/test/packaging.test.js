@@ -436,6 +436,147 @@ describe("first-download installer design contract", () => {
     );
   });
 
+  it("repoints kept shortcuts once an update has proven install-root ownership", () => {
+    // KeepShortcuts="true" makes addStartMenuLink / addDesktopLink preserve
+    // whatever .lnk a previous install left behind, so a machine carrying two
+    // sibling install roots keeps launching the stale one from its shortcuts
+    // even though updates land on the live root. The customInstall hook
+    // rewrites this channel's own links at the root the update just wrote.
+    const heal = normalizedNsisBlock(installer, /!macro customInstall\r?\n[\s\S]*?!macroend/);
+    // The gate must stay exactly (visible update) AND (kept shortcuts) AND
+    // (physical bifurcation evidence). The $keepShortcuts assignment carries
+    // the pre-extraction ${FileExists} "$appExe" ownership proof -- a
+    // FileExists probe inside this macro would be vacuously true, because
+    // customInstall expands after installApplicationFiles wrote the
+    // executable. $KiroStaleSibling keeps the rewrite off healthy machines:
+    // CreateShortCut resets a link's arguments/icon/working directory, so a
+    // machine with a single install root must never have its customized
+    // shortcuts rewritten. Pinning all three conditions means deleting any
+    // one, or widening the gate to unproven installs or healthy machines,
+    // fails here.
+    assert.match(
+      heal,
+      /\$\{If\} \$KiroVisibleUpdate == 1\n\$\{AndIf\} \$keepShortcuts == "true"\n\$\{AndIf\} \$KiroStaleSibling == 1\n/,
+      "shortcut healing must be gated on visible-update + kept-shortcuts ownership proof + bifurcation evidence"
+    );
+    // The bifurcation flag is default-deny: it starts 0, and only the two
+    // sibling existence probes (stale parent root / stale nested child) may
+    // arm it -- both use the same executable-presence evidence standard as
+    // the update bypass.
+    assert.match(
+      heal,
+      /^!macro customInstall\n(?:;[^\n]*\n)*StrCpy \$KiroStaleSibling 0\n/,
+      "the bifurcation flag must default to 0 before any probe runs"
+    );
+    assert.match(
+      heal,
+      /\$\{AndIf\} \$\{FileExists\} "\$KiroStaleSiblingProbe\\\$\{APP_EXECUTABLE_FILENAME\}"\nStrCpy \$KiroStaleSibling 1/,
+      "the stale-parent probe must require this app's executable at the parent root"
+    );
+    assert.match(
+      heal,
+      /\$\{If\} \$\{FileExists\} "\$INSTDIR\\\$\{APP_FILENAME\}\\\$\{APP_EXECUTABLE_FILENAME\}"\nStrCpy \$KiroStaleSibling 1/,
+      "the stale-child probe must require this app's executable in the nested ${APP_FILENAME} child"
+    );
+    assert.equal(
+      heal.match(/StrCpy \$KiroStaleSibling 1/g).length,
+      2,
+      "only the two sibling probes may arm the bifurcation flag"
+    );
+    // The rewrite target must name the install root THIS run wrote. Any
+    // registry-derived path could itself be the stale sibling. Each rewrite is
+    // existence-gated so a shortcut the user deleted stays deleted, and the
+    // CreateShortCut arguments mirror the template's own calls.
+    assert.match(
+      heal,
+      /\$\{If\} \$\{FileExists\} "\$newStartMenuLink"\nClearErrors\nCreateShortCut "\$newStartMenuLink" "\$INSTDIR\\\$\{APP_EXECUTABLE_FILENAME\}" "" "\$INSTDIR\\\$\{APP_EXECUTABLE_FILENAME\}" 0 "" "" "\$\{APP_DESCRIPTION\}"/,
+      "the Start Menu link must be re-created at $INSTDIR with the template's own arguments"
+    );
+    assert.match(
+      heal,
+      /\$\{If\} \$\{FileExists\} "\$newDesktopLink"\nClearErrors\nCreateShortCut "\$newDesktopLink" "\$INSTDIR\\\$\{APP_EXECUTABLE_FILENAME\}" "" "\$INSTDIR\\\$\{APP_EXECUTABLE_FILENAME\}" 0 "" "" "\$\{APP_DESCRIPTION\}"/,
+      "the Desktop link must be re-created at $INSTDIR with the template's own arguments"
+    );
+    // A failed rewrite must leave a breadcrumb: the details pane is muted on
+    // this path, and a silent failure means the update reports success while
+    // the shortcut still names the stale root.
+    assert.match(
+      heal,
+      /\$\{If\} \$\{Errors\}\nSetDetailsPrint both\nDetailPrint "Could not rewrite the Start Menu shortcut[\s\S]*?SetDetailsPrint lastused\nClearErrors/,
+      "a failed Start Menu rewrite must print a breadcrumb before clearing the error flag"
+    );
+    // CreateShortCut drops the AppUserModelID stamp; the template re-stamps
+    // after every creation and the heal must too, or the rewritten shortcut
+    // loses its taskbar/notification identity registration.
+    assert.match(heal, /WinShell::SetLnkAUMI "\$newStartMenuLink" "\$\{APP_ID\}"/);
+    assert.match(heal, /WinShell::SetLnkAUMI "\$newDesktopLink" "\$\{APP_ID\}"/);
+    // Each branch reproduces the template's own compile-time opt-outs, so a
+    // future createStartMenuShortcut/createDesktopShortcut=false config change
+    // cannot leave this macro as the only code still writing that link.
+    assert.match(
+      heal,
+      /!ifndef DO_NOT_CREATE_START_MENU_SHORTCUT\n\$\{If\} \$\{FileExists\} "\$newStartMenuLink"/
+    );
+    assert.match(
+      heal,
+      /!ifndef DO_NOT_CREATE_DESKTOP_SHORTCUT\n\$\{If\} \$\{FileExists\} "\$newDesktopLink"/
+    );
+    // Only the template's own resolved link variables (setLinkVars) may be
+    // rewritten -- an invented .lnk literal would orphan the heal on a template
+    // upgrade and could reach another channel's or application's shortcut.
+    assert.doesNotMatch(
+      heal,
+      /\.lnk/,
+      "the heal must use $newStartMenuLink / $newDesktopLink, never a literal shortcut path"
+    );
+    // The stale sibling install directory is left in place: no ownership proof
+    // exists for a recursive delete under %LOCALAPPDATA%\Programs.
+    assert.doesNotMatch(heal, /RMDir|\bDelete\b/);
+    // The gate's ownership argument rests on two facts in the vendored
+    // template, and this platform's NSIS code cannot run in CI, so pin them
+    // the way the StartApp test pins assistedInstaller.nsh: an
+    // electron-builder bump that breaks either must fail here, not ship a
+    // silently dead (or silently widened) heal.
+    const installSection = fs.readFileSync(
+      path.join(
+        ROOT,
+        "node_modules",
+        "app-builder-lib",
+        "templates",
+        "nsis",
+        "installSection.nsh"
+      ),
+      "utf8"
+    );
+    // (a) $keepShortcuts can only become "true" behind the pre-extraction
+    // ${FileExists} "$appExe" ownership proof -- the fact the macro's gate
+    // borrows.
+    assert.match(
+      installSection,
+      /\$\{andIf\} \$\{FileExists\} "\$appExe"\r?\n\s*StrCpy \$keepShortcuts "true"/,
+      "the template must still assign keepShortcuts only behind the pre-extraction $appExe existence proof"
+    );
+    assert.equal(
+      installSection.match(/StrCpy \$keepShortcuts "true"/g).length,
+      1,
+      "a second keepShortcuts assignment would bypass the ownership proof the heal's gate borrows"
+    );
+    // (b) customInstall must still expand after extraction and after both link
+    // macros, or the heal reads pre-install state / gets overwritten.
+    const extractionAt = installSection.indexOf("!insertmacro installApplicationFiles");
+    const startMenuAt = installSection.indexOf("!insertmacro addStartMenuLink");
+    const desktopAt = installSection.indexOf("!insertmacro addDesktopLink");
+    const healAt = installSection.indexOf("!insertmacro customInstall");
+    assert.ok(
+      extractionAt !== -1 && startMenuAt !== -1 && desktopAt !== -1 && healAt !== -1,
+      "the template must still contain the extraction, link, and customInstall insertion points"
+    );
+    assert.ok(
+      extractionAt < startMenuAt && startMenuAt < desktopAt && desktopAt < healAt,
+      "customInstall must expand after extraction and after both link macros"
+    );
+  });
+
   it("keeps install-root ownership and legacy startup cleanup without custom pages", () => {
     assert.match(installer, /Function KiroEnsureAppInstallDir[\s\S]*?FunctionEnd/);
     assert.match(installer, /!macro customInit[\s\S]*?Call KiroEnsureAppInstallDir/);

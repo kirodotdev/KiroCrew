@@ -93,6 +93,11 @@ Var KiroVisibleUpdate
 ; variable and the Function reads it. (${APP_FILENAME} is fine at include time --
 ; it comes from the generated header, not common.nsh.)
 Var KiroAppExeName
+; Bifurcation evidence for the shortcut heal in customInstall: whether a
+; sibling install root (the shape the former collision-nesting produced)
+; physically exists beside the root this update writes.
+Var KiroStaleSibling
+Var KiroStaleSiblingProbe
 
 ; The fade operates on the top-level dialog, the only window type for which
 ; AW_BLEND is supported. It runs once per page boundary and leaves the native
@@ -450,6 +455,123 @@ FunctionEnd
     ${EndIf}
   ${EndIf}
   CopyFiles /SILENT "${SOURCE}\*" "${DESTINATION}"
+!macroend
+
+; Heal a PERSISTED shortcut left naming a stale sibling install root.
+;
+; The relaunch half of that staleness is already handled: StartApp launches
+; $INSTDIR\${APP_EXECUTABLE_FILENAME} directly (see customFinishPage). What that
+; cannot reach is the shortcut a user clicks by hand later: with
+; KeepShortcuts="true", addStartMenuLink / addDesktopLink preserve whatever .lnk
+; a previous install left behind, so on a machine carrying two sibling install
+; roots both links can still name the stale one. Launching it lands on the
+; frozen copy, which re-discovers the update and re-runs a full download +
+; install on every launch.
+;
+; GATE. $keepShortcuts, not another FileExists probe, carries the ownership
+; proof here: this macro expands after installApplicationFiles, where
+; "$INSTDIR\${APP_EXECUTABLE_FILENAME}" exists unconditionally because this run
+; just wrote it. installSection.nsh sets $keepShortcuts to "true" only after
+; testing ${FileExists} "$appExe" BEFORE extraction -- the same
+; executable-presence proof KiroEnsureAppInstallDir's update bypass requires --
+; so ($KiroVisibleUpdate == 1) AND ($keepShortcuts == "true") is exactly "an
+; update whose install root was proven ours pre-extraction, and whose shortcuts
+; were preserved rather than recreated". A fresh install never reaches this,
+; and the $keepShortcuts == "false" branch needs no healing: the template
+; itself just re-created both links at $appExe there.
+;
+; REWRITE, NOT READ-AND-COMPARE. Reading a .lnk target needs the ShellLink
+; plugin, which this build does not bundle (the template ships only WinShell /
+; StdUtils / UAC), so an existing link is re-created at the root this run just
+; wrote without reading its current target. CreateShortCut resets any
+; arguments, icon or working directory a user edited onto a link, so the
+; rewrite must never touch a healthy machine: it additionally requires
+; PHYSICAL EVIDENCE OF BIFURCATION -- a sibling Kiro Crew install root in one
+; of the two shapes the former collision-nesting produced (this app's
+; executable directly in $INSTDIR's parent, or in an ${APP_FILENAME} child of
+; $INSTDIR). $KiroStaleSibling defaults to 0 and only the two existence probes
+; can set it, so a machine with a single install root keeps its customized
+; shortcuts untouched on every update. On a bifurcated machine the rewrite
+; discards customization on the two links it heals; a customized link naming a
+; frozen copy is already broken, and that loss is the accepted cost of not
+; bundling ShellLink. The ${FileExists} link gates keep a shortcut the user
+; deleted deleted. Arguments mirror the template's own CreateShortCut calls
+; ($appExe is "$INSTDIR\${APP_EXECUTABLE_FILENAME}"), and $newStartMenuLink /
+; $newDesktopLink are the template's own resolved names (setLinkVars), so a
+; template upgrade that renames a link moves this code with it.
+;
+; The AppUserModelID is re-stamped because CreateShortCut writes a fresh .lnk
+; without one. This does not contradict customFinishPage's "costs nothing"
+; note: main.js's app.setAppUserModelId() covers the running PROCESS identity,
+; which is why the relaunch can name the executable directly, while the stamp
+; here keeps the persisted .lnk itself carrying the id the shell groups and
+; pins by. The two cover different surfaces; neither substitutes for the other.
+;
+; KNOWN UNCOVERED SURFACE: a taskbar PIN is the shell's own .lnk copy under
+; the user's "User Pinned\TaskBar" tree, not either link rewritten here, so a
+; pin created before the machine bifurcated keeps naming the stale root.
+; Healing it would mean writing a literal shell path this template does not
+; manage; that is a deliberate follow-up, not part of this change.
+;
+; A failed rewrite is surfaced, not swallowed: the details pane is muted on
+; this path (installSection.nsh runs SetDetailsPrint none), and a silent
+; failure here would mean the update reports success while the shortcut still
+; names the stale root, with no trace to diagnose. The template's own
+; unconditional ClearErrors covers a cosmetic "already exists" create; here
+; the write IS the fix, so failure gets a breadcrumb first.
+;
+; THE STALE SIBLING DIRECTORY IS DELIBERATELY LEFT IN PLACE. Removing it would
+; be a recursive delete under %LOCALAPPDATA%\Programs keyed off a path this run
+; did not write; a wrong deletion there is unrecoverable for the user, and an
+; ownership proof for a DELETE would have to be at least as strong as the one
+; guarding the update bypass -- no such proof exists for the sibling. An
+; unreferenced directory costs disk only.
+!macro customInstall
+  ; Default-deny: only the two probes below may arm the heal. Probe 1 catches
+  ; a stale PARENT root (this update runs in the nested child); probe 2
+  ; catches a stale NESTED child (this update runs in the parent). Both are
+  ; the executable-presence test, the same evidence standard as the update
+  ; bypass in KiroEnsureAppInstallDir.
+  StrCpy $KiroStaleSibling 0
+  ${GetParent} "$INSTDIR" $KiroStaleSiblingProbe
+  ${If} $KiroStaleSiblingProbe != ""
+  ${AndIf} $KiroStaleSiblingProbe != "$INSTDIR"
+  ${AndIf} ${FileExists} "$KiroStaleSiblingProbe\${APP_EXECUTABLE_FILENAME}"
+    StrCpy $KiroStaleSibling 1
+  ${EndIf}
+  ${If} ${FileExists} "$INSTDIR\${APP_FILENAME}\${APP_EXECUTABLE_FILENAME}"
+    StrCpy $KiroStaleSibling 1
+  ${EndIf}
+  ${If} $KiroVisibleUpdate == 1
+  ${AndIf} $keepShortcuts == "true"
+  ${AndIf} $KiroStaleSibling == 1
+    !ifndef DO_NOT_CREATE_START_MENU_SHORTCUT
+      ${If} ${FileExists} "$newStartMenuLink"
+        ClearErrors
+        CreateShortCut "$newStartMenuLink" "$INSTDIR\${APP_EXECUTABLE_FILENAME}" "" "$INSTDIR\${APP_EXECUTABLE_FILENAME}" 0 "" "" "${APP_DESCRIPTION}"
+        ${If} ${Errors}
+          SetDetailsPrint both
+          DetailPrint "Could not rewrite the Start Menu shortcut; it keeps its old target."
+          SetDetailsPrint lastused
+          ClearErrors
+        ${EndIf}
+        WinShell::SetLnkAUMI "$newStartMenuLink" "${APP_ID}"
+      ${EndIf}
+    !endif
+    !ifndef DO_NOT_CREATE_DESKTOP_SHORTCUT
+      ${If} ${FileExists} "$newDesktopLink"
+        ClearErrors
+        CreateShortCut "$newDesktopLink" "$INSTDIR\${APP_EXECUTABLE_FILENAME}" "" "$INSTDIR\${APP_EXECUTABLE_FILENAME}" 0 "" "" "${APP_DESCRIPTION}"
+        ${If} ${Errors}
+          SetDetailsPrint both
+          DetailPrint "Could not rewrite the Desktop shortcut; it keeps its old target."
+          SetDetailsPrint lastused
+          ClearErrors
+        ${EndIf}
+        WinShell::SetLnkAUMI "$newDesktopLink" "${APP_ID}"
+      ${EndIf}
+    !endif
+  ${EndIf}
 !macroend
 
 ; Preserve only the install-root ownership guard from the former custom UI.
