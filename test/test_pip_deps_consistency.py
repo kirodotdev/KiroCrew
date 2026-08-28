@@ -86,10 +86,30 @@ def _setup_cfg_path() -> pathlib.Path:
     return pathlib.Path(__file__).resolve().parent.parent / "setup.cfg"
 
 
+def _is_unpinned_read(line: str) -> bool:
+    """Whether *line* reads ``setup.cfg`` without pinning an explicit encoding."""
+    return ".read(" in line and "_setup_cfg_path()" in line and "encoding=" not in line
+
+
+def _read_setup_cfg() -> configparser.ConfigParser:
+    """Parse ``setup.cfg`` as UTF-8, whatever the host's locale codepage is.
+
+    ``ConfigParser.read`` without ``encoding=`` opens the file with
+    ``locale.getpreferredencoding()``. ``setup.cfg`` is UTF-8 and its comments
+    carry non-ASCII text, so on a Windows host whose ANSI codepage is a
+    double-byte one (cp932/cp936/cp950) the decode raises
+    ``UnicodeDecodeError`` and this build gate cannot run at all. Pinning the
+    encoding to UTF-8 matches how the file is written and how
+    ``test_coverage_omit_contract.py`` already reads it.
+    """
+    cfg = configparser.ConfigParser()
+    cfg.read(_setup_cfg_path(), encoding="utf-8")
+    return cfg
+
+
 def _parse_install_requires() -> set[str]:
     """Parse setup.cfg and return the set of declared import root names."""
-    cfg = configparser.ConfigParser()
-    cfg.read(_setup_cfg_path())
+    cfg = _read_setup_cfg()
     raw = cfg.get("options", "install_requires", fallback="")
     declared: set[str] = set()
     for line in raw.strip().splitlines():
@@ -145,8 +165,7 @@ def _is_in_try_except_importerror(node: ast.stmt, tree: ast.Module) -> bool:
 
 def test_otlp_extra_declares_exact_http_exporter_version():
     """The documented kirocrew[otlp] install path must remain usable."""
-    cfg = configparser.ConfigParser()
-    cfg.read(_setup_cfg_path())
+    cfg = _read_setup_cfg()
     requirements = [
         line.strip()
         for line in cfg.get("options.extras_require", "otlp").splitlines()
@@ -190,8 +209,7 @@ def test_pyproject_declares_optional_dependencies_dynamic():
 
 def test_declared_extras_match_setup_cfg():
     """Every setup.cfg extra stays reachable; guards the dynamic wiring above."""
-    cfg = configparser.ConfigParser()
-    cfg.read(_setup_cfg_path())
+    cfg = _read_setup_cfg()
     assert cfg.has_section("options.extras_require")
     extras = set(cfg.options("options.extras_require"))
     # These three are referenced by docs, CI, and the Makefile; losing any of
@@ -204,8 +222,7 @@ def test_declared_extras_match_setup_cfg():
 
 
 def _extra_requirements(extra: str) -> list[str]:
-    cfg = configparser.ConfigParser()
-    cfg.read(_setup_cfg_path())
+    cfg = _read_setup_cfg()
     return [
         line.strip()
         for line in cfg.get("options.extras_require", extra).splitlines()
@@ -236,8 +253,7 @@ def test_python_requires_agrees_between_pyproject_and_setup_cfg():
     bound in setup.cfg is dead config that advertises support for interpreters
     the package cannot actually run on.
     """
-    cfg = configparser.ConfigParser()
-    cfg.read(_setup_cfg_path())
+    cfg = _read_setup_cfg()
     cfg_req = cfg.get("options", "python_requires", fallback="").strip()
 
     proj_req = ""
@@ -411,3 +427,51 @@ def test_noop_recorder_when_otel_missing(monkeypatch):
         sys.modules.pop("kiro_crew.metrics.provider", None)
         # Re-import cleanly
         importlib.import_module("kiro_crew.metrics.provider")
+
+
+# --- setup.cfg decoding: this gate must run on a non-UTF-8 locale host ---
+
+
+def test_setup_cfg_is_read_as_utf8_not_locale_default() -> None:
+    """The parse survives ``setup.cfg``'s non-ASCII bytes and keeps them intact.
+
+    ``setup.cfg`` is UTF-8 and its comments contain non-ASCII characters, so a
+    locale-default read is a decode error on a double-byte codepage and silent
+    mojibake on a single-byte one. Reading the raw bytes here rather than
+    trusting the host keeps the assertion meaningful on a UTF-8 CI runner too:
+    it pins that the file really does carry the bytes that make the encoding
+    argument necessary, so this test cannot quietly go vacuous if the comments
+    are ever rewritten to pure ASCII.
+    """
+    raw = _setup_cfg_path().read_bytes()
+    assert any(b > 0x7F for b in raw), "setup.cfg no longer has non-ASCII bytes"
+
+    # The decode must not depend on the host codepage.
+    cfg = _read_setup_cfg()
+    assert cfg.has_section("options")
+    assert cfg.get("options", "install_requires", fallback="")
+
+
+def test_every_setup_cfg_read_in_this_module_pins_the_encoding() -> None:
+    """Ratchet: no call site may fall back to the locale codepage again.
+
+    The behavioural test above only fails on a host whose preferred encoding
+    cannot decode UTF-8 -- it passes either way on a UTF-8 runner, which is
+    what CI uses. This static check is what actually holds the seam closed
+    there, so a future ``ConfigParser().read(path)`` cannot reintroduce the
+    crash for developers on cp932/cp936/cp950 machines.
+    """
+    source = pathlib.Path(__file__).read_text(encoding="utf-8")
+    offenders = [
+        (n, line.strip())
+        for n, line in enumerate(source.splitlines(), 1)
+        if _is_unpinned_read(line)
+    ]
+    assert not offenders, f"setup.cfg read without an explicit encoding: {offenders}"
+
+    # Self-check: the scan must be able to see a violation at all, otherwise a
+    # renamed helper would turn this ratchet into a permanent green no-op. The
+    # probe is assembled from fragments so that this line is not itself an
+    # offender the scan above would report.
+    probe = "cfg." + "read(" + "_setup_cfg_path())"
+    assert _is_unpinned_read(probe), "the ratchet's own scan no longer detects a violation"
