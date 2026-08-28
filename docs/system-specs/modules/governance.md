@@ -2153,9 +2153,10 @@ in `platform/agentcore_schema.py` so policy parse does not import AWS.
 Consumption ANDs three conjuncts: the `agent_identity` adapter is on,
 governance permits `capabilities.agentcore`, and `agentcore_posture(ceiling)`
 is a known value. The public `DefaultAgentIdentityProvider` is disabled, so a
-standalone host with no policy is unchanged. Later stack PRs consult this row
-at rebuild / Gateway injection; naming it here is what lets a policy pin the
-capability before those chokepoints land.
+standalone host with no policy is unchanged. Standalone boot may swap
+`agent_identity` for the optional AWS adapter when that extra is opted in;
+later stack PRs consult this row at rebuild / Gateway injection. Naming it
+here is what lets a policy pin the capability before those chokepoints land.
 
 `capabilities.publish` is a `CapabilityGate` (opt-in: `capability_default=False`)
 with an inner `destinations` `ScopedRuleset` (`identifier` matcher) bounding

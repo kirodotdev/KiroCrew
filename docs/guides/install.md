@@ -274,6 +274,7 @@ Optional extras (install with e.g. `pip install "kirocrew[voice]"`):
 | Extra | Adds | For |
 |-------|------|-----|
 | `voice` | `boto3`, `amazon-transcribe` | Speech-to-text transcription |
+| `agentcore` | `boto3` | Optional Amazon Bedrock AgentCore identity adapter. Default-off; IaC (`install.sh --agentcore`) or a configured home-policy posture installs it. Does not inject Gateway MCP or start a SigV4 proxy |
 | `otlp` | `opentelemetry-exporter-otlp-proto-http` | OTLP/HTTP metrics export. Installing it does not enable egress; that still needs an explicit `telemetry.otlp_endpoint` |
 | `perf` | `py-spy` | Out-of-process profiling (`kirocrew perf sample --pid`). The in-process sampler needs nothing extra |
 | `teams` | `PyJWT[crypto]` | Microsoft Teams channel (validates the inbound Bot Framework RS256 JWT) |

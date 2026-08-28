@@ -1839,6 +1839,21 @@ Examples:
         action="store_true",
         help="On bootstrap failure, keep the instance (disable rollback) for inspection",
     )
+    _c_launch.add_argument(
+        "--agentcore-posture",
+        default="none",
+        choices=["none", "workload", "login"],
+        help="Create an Amazon Bedrock AgentCore workload identity on launch "
+        "(workload = IAM Gateway at boot; login = JWT after sign-in; "
+        "none = no identity)",
+    )
+    _c_launch.add_argument(
+        "--agentcore-gateway-url",
+        default="",
+        metavar="URL",
+        help="Existing AgentCore Gateway MCP URL written onto the instance "
+        "(https only; empty = identity without a Gateway spec)",
+    )
 
     _c_list = cloud_sub.add_parser("list", help="List your Kiro Crew cloud instances")
     _cloud_creds_opts(_c_list)
@@ -1897,6 +1912,17 @@ Examples:
         "iam-policy", help="Print the least-privilege IAM policy to apply"
     )
     _cloud_creds_opts(_c_iam)
+    _c_iam.add_argument(
+        "--instance",
+        action="store_true",
+        help="Print the instance-role fragment (not the launcher policy)",
+    )
+    _c_iam.add_argument(
+        "--posture",
+        choices=("workload", "login"),
+        default=None,
+        help="Instance posture (required with --instance)",
+    )
     _c_boundary = cloud_sub.add_parser(
         "iam-boundary",
         help="Pre-create the immutable instance permissions boundary (admin, one-time)",

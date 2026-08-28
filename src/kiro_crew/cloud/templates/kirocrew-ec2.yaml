@@ -53,19 +53,20 @@ Parameters:
     Description: Discovery tag value written as kirocrew:instance.
   PermissionsBoundaryArn:
     Type: String
-    # The launcher fills this with the deterministic ARN of the SHARED, PRE-CREATED
+    # The launcher fills this with the deterministic ARN of a SHARED, PRE-CREATED
     # immutable instance permissions boundary (arn:aws:iam::<account>:policy/
-    # kirocrew-ec2-boundary). It is created ONCE by launcher code
+    # kirocrew-ec2-boundary, or the AgentCore successor
+    # kirocrew-ec2-boundary-agentcore). It is created ONCE by launcher code
     # (source.ensure_instance_boundary), NOT per-launch here, so a leaked launcher
     # credential can't author a permissive boundary (see cloud/iam.py). The
-    # AllowedPattern mirrors the other ARN params: an IAM policy ARN naming exactly
-    # the boundary. InstanceRole references this by ARN — the CEILING on what the
-    # role can EVER do, regardless of inline/attached policies.
-    AllowedPattern: "^arn:aws:iam::[0-9]{12}:policy/kirocrew-ec2-boundary$"
+    # AllowedPattern lists both names. InstanceRole references this by ARN — the
+    # CEILING on what the role can EVER do, regardless of inline/attached policies.
+    AllowedPattern: "^arn:aws:iam::[0-9]{12}:policy/kirocrew-ec2-boundary(-agentcore)?$"
     Description: >-
       ARN of the pre-created shared instance permissions boundary
-      (arn:aws:iam::<account>:policy/kirocrew-ec2-boundary). The launcher creates
-      it once and passes it here; the InstanceRole is capped by it.
+      (arn:aws:iam::<account>:policy/kirocrew-ec2-boundary or
+      kirocrew-ec2-boundary-agentcore). The launcher creates it once and
+      passes it here; the InstanceRole is capped by it.
   # NB: the AllowedPatterns below mirror the launcher CLI's FieldSpec charsets
   # (cloud/ec2.py). These values flow into the root user-data script, so the
   # template itself must reject shell metacharacters even when someone deploys
@@ -119,6 +120,30 @@ Parameters:
       when combined with EC2 Instance Connect (which pushes an ephemeral key over
       the AWS API). Empty (default, recommended) = SSM-only: no inbound ports and
       no key material - use `kirocrew cloud connect` (SSM port-forward) instead.
+  AgentCorePosture:
+    Type: String
+    Default: none
+    AllowedValues: [none, workload, login]
+    Description: >-
+      When workload or login, the stack creates an Amazon Bedrock AgentCore
+      standalone WorkloadIdentity and attaches the matching instance-role
+      grant. none (default) is the historical launch with no AgentCore identity.
+  AgentCoreWorkloadName:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^[A-Za-z0-9_.-]{3,255}$"
+    Description: >-
+      Name of the AWS::BedrockAgentCore::WorkloadIdentity the stack creates
+      (kirocrew-<StackTag>). Required when AgentCorePosture is not none; the
+      launcher fills it. Empty on a default launch.
+  AgentCoreGatewayUrl:
+    Type: String
+    Default: ""
+    MaxLength: 512
+    Description: >-
+      MCP URL of an existing Amazon Bedrock AgentCore Gateway this crew
+      should call. Empty means identity is created but no Gateway spec is
+      contributed until the operator sets KIROCREW_AGENTCORE_GATEWAY_URL.
 
 # The AMI is resolved at deploy time from the public SSM Parameter Store alias —
 # never a hardcoded per-region AMI id. Latest Amazon Linux 2023 for the arch.
@@ -135,14 +160,27 @@ Conditions:
   IsArm: !Equals [!Ref Architecture, arm64]
   HasS3Source: !Not [!Equals [!Ref SourceBucket, ""]]
   WantPublicIp: !Equals [!Ref AssociatePublicIp, "true"]
+  HasAgentCore: !Not [!Equals [!Ref AgentCorePosture, "none"]]
+  IsWorkloadPosture: !Equals [!Ref AgentCorePosture, "workload"]
+  IsLoginPosture: !Equals [!Ref AgentCorePosture, "login"]
+
+Rules:
+  AgentCoreNameRequired:
+    RuleCondition: !Not [!Equals [!Ref AgentCorePosture, "none"]]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref AgentCoreWorkloadName, ""]]
+        AssertDescription: >-
+          AgentCoreWorkloadName is required when AgentCorePosture is workload
+          or login. The launcher fills kirocrew-<StackTag>.
 
 Resources:
   # --- IAM: instance role trusts EC2 and gets SSM core (enables Session Manager
   #     with zero inbound ports). Role name is prefixed so the launcher IAM
   #     policy can scope PassRole to it.
   #
-  #     PermissionsBoundary references the SHARED, PRE-CREATED, IMMUTABLE boundary
-  #     (kirocrew-ec2-boundary) by ARN via the PermissionsBoundaryArn parameter —
+  #     PermissionsBoundary references a SHARED, PRE-CREATED, IMMUTABLE boundary
+  #     (kirocrew-ec2-boundary or kirocrew-ec2-boundary-agentcore) by ARN via the
+  #     PermissionsBoundaryArn parameter —
   #     it is NOT created per-launch here anymore. That boundary is the CEILING on
   #     what the role can EVER do, regardless of inline/attached policies: even if
   #     a holder of the launcher policy inlined an admin policy onto this role and
@@ -188,6 +226,82 @@ Resources:
     Properties:
       InstanceProfileName: !Sub "kirocrew-ec2-${StackTag}"
       Roles: [!Ref InstanceRole]
+
+  # Standalone AgentCore Identity for this crew. Not Runtime-managed and not
+  # Gateway-managed — those identities cannot call GetWorkloadAccessToken.
+  # Destroying the stack deletes the identity with it.
+  CrewWorkloadIdentity:
+    Type: AWS::BedrockAgentCore::WorkloadIdentity
+    Condition: HasAgentCore
+    Properties:
+      Name: !Ref AgentCoreWorkloadName
+      Tags:
+        - { Key: "kirocrew:managed", Value: "true" }
+        - { Key: "kirocrew:instance", Value: !Ref StackTag }
+
+  AgentCoreWorkloadInstancePolicy:
+    Type: AWS::IAM::Policy
+    Condition: IsWorkloadPosture
+    Properties:
+      PolicyName: AgentCoreIdentityWorkload
+      Roles: [!Ref InstanceRole]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AgentCoreIdentity
+            Effect: Allow
+            Action:
+              - bedrock-agentcore:GetWorkloadAccessToken
+              - bedrock-agentcore:GetWorkloadAccessTokenForUserId
+            Resource:
+              - !Sub "arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:workload-identity-directory/default"
+              - !GetAtt CrewWorkloadIdentity.WorkloadIdentityArn
+          - Sid: AgentCoreGateway
+            Effect: Allow
+            Action: [bedrock-agentcore:InvokeGateway]
+            Resource: !Sub "arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:gateway/kirocrew-*"
+          - Sid: AgentCoreGatewayInspect
+            Effect: Allow
+            Action:
+              - bedrock-agentcore:GetGateway
+              - bedrock-agentcore:ListGatewayTargets
+              - bedrock-agentcore:GetGatewayTarget
+              - bedrock-agentcore:SynchronizeGatewayTargets
+            Resource: !Sub "arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:gateway/*"
+          - Sid: DenyJwtPathOnWorkloadPosture
+            Effect: Deny
+            Action: bedrock-agentcore:GetWorkloadAccessTokenForJWT
+            Resource: "*"
+
+  AgentCoreLoginInstancePolicy:
+    Type: AWS::IAM::Policy
+    Condition: IsLoginPosture
+    Properties:
+      PolicyName: AgentCoreIdentityLogin
+      Roles: [!Ref InstanceRole]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AgentCoreIdentityForJwt
+            Effect: Allow
+            Action: [bedrock-agentcore:GetWorkloadAccessTokenForJWT]
+            Resource:
+              - !Sub "arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:workload-identity-directory/default"
+              - !GetAtt CrewWorkloadIdentity.WorkloadIdentityArn
+          - Sid: AgentCoreGatewayInspect
+            Effect: Allow
+            Action:
+              - bedrock-agentcore:GetGateway
+              - bedrock-agentcore:ListGatewayTargets
+              - bedrock-agentcore:GetGatewayTarget
+              - bedrock-agentcore:SynchronizeGatewayTargets
+            Resource: !Sub "arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:gateway/*"
+          - Sid: DenyUserIdAndIamGateway
+            Effect: Deny
+            Action:
+              - bedrock-agentcore:GetWorkloadAccessTokenForUserId
+              - bedrock-agentcore:InvokeGateway
+            Resource: "*"
 
   # --- Security group: no ingress by default (SSM is outbound-only). Egress all
   #     so the box can pull packages, reach SSM, and the kiro-cli/LLM endpoints.
@@ -547,10 +661,12 @@ Resources:
           export KIROCREW_REQUIRE_FRONTEND=1
           # One retry: first-boot contention can signal-kill the first build;
           # the warm re-run reliably succeeds (see "Source fetch" above).
-          if ! bash install.sh --voice; then
+          AC_EXTRA=""
+          if [ "${AgentCorePosture}" != "none" ]; then AC_EXTRA="--agentcore"; fi
+          if ! bash install.sh --voice $AC_EXTRA; then
             echo "install.sh failed on first attempt - settling then retrying once"
             sleep 20
-            bash install.sh --voice
+            bash install.sh --voice $AC_EXTRA
           fi
           KCFETCH
           chmod +x /tmp/kcfetch.sh
@@ -597,6 +713,9 @@ Resources:
           Environment=PATH=$RUN_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
           # The registry records this port as the instance's remote_port.
           Environment=KIROCREW_PORT=${DashboardPort}
+          Environment=KIROCREW_AGENTCORE_POSTURE=${AgentCorePosture}
+          Environment=KIROCREW_AGENTCORE_WORKLOAD_NAME=${AgentCoreWorkloadName}
+          Environment=KIROCREW_AGENTCORE_GATEWAY_URL=${AgentCoreGatewayUrl}
 
           [Install]
           WantedBy=multi-user.target
@@ -644,3 +763,11 @@ Outputs:
   StackTag:
     Description: The kirocrew:instance discovery tag value.
     Value: !Ref StackTag
+  AgentCoreWorkloadIdentityName:
+    Condition: HasAgentCore
+    Description: Standalone Amazon Bedrock AgentCore workload identity name.
+    Value: !Ref CrewWorkloadIdentity
+  AgentCoreWorkloadIdentityArn:
+    Condition: HasAgentCore
+    Description: Standalone Amazon Bedrock AgentCore workload identity ARN.
+    Value: !GetAtt CrewWorkloadIdentity.WorkloadIdentityArn

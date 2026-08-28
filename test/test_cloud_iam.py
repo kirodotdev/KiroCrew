@@ -170,9 +170,12 @@ class TestPolicyDocument:
         assert st["Action"] == ["iam:CreateRole"]
         assert "StringEquals" not in st["Condition"], "must be ArnLike, not StringEquals"
         cond = st["Condition"]["ArnLike"]["iam:PermissionsBoundary"]
-        # The exact fixed boundary name, no trailing wildcard on the policy name.
-        assert cond == f"arn:aws:iam::*:policy/{iam.BOUNDARY_NAME}"
-        assert cond.startswith("arn:aws:iam::")
+        values = [cond] if isinstance(cond, str) else list(cond)
+        # Either shared boundary name, no trailing wildcard on the policy name.
+        assert f"arn:aws:iam::*:policy/{iam.BOUNDARY_NAME}" in values
+        assert f"arn:aws:iam::*:policy/{iam.AGENTCORE_BOUNDARY_NAME}" in values
+        assert all(v.startswith("arn:aws:iam::") for v in values)
+        assert not any(v.endswith("*") for v in values)
 
     def test_put_role_policy_scoped_no_dead_boundary_condition(self):
         # PutRolePolicy is a SEPARATE statement scoped to the role ARN prefix. It
@@ -228,10 +231,14 @@ class TestPolicyDocument:
             "iam:GetPolicy",
             "iam:GetPolicyVersion",
         }
-        assert st["Resource"] == f"arn:aws:iam::*:policy/{iam.BOUNDARY_NAME}"
+        resources = st["Resource"]
+        if isinstance(resources, str):
+            resources = [resources]
+        assert f"arn:aws:iam::*:policy/{iam.BOUNDARY_NAME}" in resources
+        assert f"arn:aws:iam::*:policy/{iam.AGENTCORE_BOUNDARY_NAME}" in resources
         # No trailing wildcard on the policy name (would let CreatePolicy target
         # other, e.g. permissive, boundary-prefixed names).
-        assert not st["Resource"].endswith("*")
+        assert not any(r.endswith("*") for r in resources)
 
     def test_no_boundary_mutation_verbs_anywhere(self):
         # Guard: the mutating boundary verbs must not reappear ANYWHERE in the
