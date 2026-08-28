@@ -209,7 +209,7 @@ export default function RemoteArtifactDetailPage() {
   // A gateway-served document, not a `blob:` URL — the same reason the artifact
   // and widget frames moved: some WebKit-based in-app browsers refuse a blob
   // load outright and can take the whole page down with it.
-  const { url: blobUrl, failed, retry } = useSandboxDoc(srcdoc)
+  const { url: blobUrl, failed, pending, retry } = useSandboxDoc(srcdoc)
 
   // Anchored-comment highlights for the remote markdown body use the SAME
   // DOM-rect overlay as the local artifact page (InlineCommentOverlay), so
@@ -366,7 +366,7 @@ export default function RemoteArtifactDetailPage() {
                 ) : failed ? (
                   <div className="p-6 flex items-center gap-3 text-text">
                     <span>{i18nT('components.artifactBody.could_not_render')}</span>
-                    <Btn onClick={retry} className="flex items-center gap-1">
+                    <Btn onClick={retry} disabled={pending} className="flex items-center gap-1">
                       <RotateCw className="lucide-inline" />
                       {i18nT('components.artifactBody.retry')}
                     </Btn>

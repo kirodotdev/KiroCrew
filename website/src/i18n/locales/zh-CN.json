@@ -5102,8 +5102,10 @@
       "artifact": "工件：{{slug}}",
       "could_not_render": "无法渲染此工件",
       "image_could_not_be_loaded": "无法加载图片",
+      "no_longer_showing": "此工件已不再显示",
       "rendering": "渲染中…",
-      "retry": "重试"
+      "retry": "重试",
+      "show_artifact": "显示工件"
     },
     "artifactChatPanel": {
       "agent_chat": "智能体对话",

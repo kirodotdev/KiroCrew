@@ -5372,8 +5372,10 @@
       "artifact": "Артефакт: {{slug}}",
       "could_not_render": "Не удалось отобразить этот артефакт",
       "image_could_not_be_loaded": "Не удалось загрузить изображение",
+      "no_longer_showing": "Этот артефакт больше не отображается",
       "rendering": "Отрисовка…",
-      "retry": "Повторить"
+      "retry": "Повторить",
+      "show_artifact": "Показать артефакт"
     },
     "artifactChatPanel": {
       "agent_chat": "Чат с агентом",

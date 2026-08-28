@@ -5192,8 +5192,10 @@
       "artifact": "आर्टिफ़ैक्ट: {{slug}}",
       "could_not_render": "यह आर्टिफ़ैक्ट रेंडर नहीं हो सका",
       "image_could_not_be_loaded": "छवि लोड नहीं हो सकी",
+      "no_longer_showing": "यह आर्टिफ़ैक्ट अब दिखाई नहीं दे रहा है",
       "rendering": "रेंडर हो रहा है…",
-      "retry": "पुन: प्रयास करें"
+      "retry": "पुन: प्रयास करें",
+      "show_artifact": "आर्टिफ़ैक्ट दिखाएँ"
     },
     "artifactChatPanel": {
       "agent_chat": "एजेंट चैट",

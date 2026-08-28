@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { widgetHeightKey, getWidgetHeight, setWidgetHeight, estimateWidgetHeight, clampFrameHeight } from '../utils/widgetHeights'
 import { Maximize2, Minimize2, ExternalLink, Download, Star, RotateCw } from 'lucide-react'
-import { IconButton, IconButtonGroup } from './ui'
+import { Btn, IconButton, IconButtonGroup } from './ui'
 import { useTheme } from '../hooks/useTheme'
 import { sanitizeCssValue } from '../lib/cssSanitize'
 import { THEME_VAR_NAMES, buildSrcdoc } from '../lib/widgetSrcdoc'
@@ -226,7 +226,7 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, w
   // See hooks/useSandboxDoc.ts: the frame loads a gateway-served document
   // rather than a `blob:` URL, and the previous document survives both an
   // in-flight and a failed re-mint.
-  const { url: blobUrl, failed: mintFailed, retry: retryMint } = useSandboxDoc(
+  const { url: blobUrl, failed: mintFailed, pending: mintPending, retry: retryMint } = useSandboxDoc(
     visible ? srcdoc : null,
   )
   // Fade the iframe in once its document loads, so the reveal is a soft fade
@@ -566,14 +566,15 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, w
 
       {mintFailed && <div className="px-3 py-2 flex items-center gap-3 text-text">
         <span>{i18nT('components.widgetFrame.could_not_render')}</span>
-        <button
-          type="button"
-          className="btn btn-sm"
+        {/* Btn, not a raw `btn btn-sm` button: that class has no CSS behind it,
+            so the recovery control rendered as bare text. */}
+        <Btn
+          disabled={mintPending}
           onClick={retryMint}
         >
           <RotateCw className="lucide-inline" />
           {i18nT('components.widgetFrame.retry')}
-        </button>
+        </Btn>
       </div>}
 
       {/* While the document URL is in flight the row must keep the height the

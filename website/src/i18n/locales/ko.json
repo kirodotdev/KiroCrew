@@ -5085,8 +5085,10 @@
       "artifact": "아티팩트: {{slug}}",
       "could_not_render": "이 아티팩트를 렌더링할 수 없습니다",
       "image_could_not_be_loaded": "이미지를 불러올 수 없습니다",
+      "no_longer_showing": "이 아티팩트가 더 이상 표시되지 않습니다",
       "rendering": "렌더링 중…",
-      "retry": "다시 시도"
+      "retry": "다시 시도",
+      "show_artifact": "아티팩트 표시"
     },
     "kiroAccountModal": {
       "account_details_unavailable": "계정 세부 정보를 불러올 수 없음",

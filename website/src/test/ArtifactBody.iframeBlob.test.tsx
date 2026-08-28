@@ -374,14 +374,18 @@ describe('ArtifactBodyIframe surfaces a frame showing something that is not ours
     }))
   }
 
-  it('offers a retry when the loaded document never reports its height', async () => {
+  it('offers a Show artifact action when the loaded document never reports its height', async () => {
     await loadedFrame('<p>silent</p>')
-    expect(screen.queryByText(/couldn't render this artifact/i)).toBeNull()
+    expect(screen.queryByText(/no longer showing/i)).toBeNull()
 
     await act(async () => { vi.advanceTimersByTime(4000) })
 
-    expect(screen.getByText(/couldn't render this artifact/i)).toBeTruthy()
-    expect(screen.getByRole('button', { name: /retry/i })).toBeTruthy()
+    // Cause-neutral copy: from outside the opaque sandbox a spent-url 404 is
+    // indistinguishable from the reader following a link inside the artifact,
+    // so the notice must not claim a render failure (#6489).
+    expect(screen.getByText(/this artifact is no longer showing/i)).toBeTruthy()
+    expect(screen.getByRole('button', { name: /show artifact/i })).toBeTruthy()
+    expect(screen.queryByText(/couldn't render this artifact/i)).toBeNull()
     // The frame stays mounted: with a document still showing, the notice overlays
     // it rather than replacing what the reader may still be able to see.
     expect(document.querySelector('iframe')).toBeTruthy()
@@ -395,10 +399,11 @@ describe('ArtifactBodyIframe surfaces a frame showing something that is not ours
 
     await act(async () => { vi.advanceTimersByTime(4000) })
 
+    expect(screen.queryByText(/no longer showing/i)).toBeNull()
     expect(screen.queryByText(/couldn't render this artifact/i)).toBeNull()
   })
 
-  it('offers a retry when the engine renavigates a spent url after a good render', async () => {
+  it('offers a Show artifact action when the engine renavigates a spent url after a good render', async () => {
     // THE case this feature exists for, and the one an earlier version silently
     // skipped: the document rendered and reported, then the engine navigated the
     // frame again on its own (a back/forward-cache eviction) and re-requested a
@@ -407,30 +412,153 @@ describe('ArtifactBodyIframe surfaces a frame showing something that is not ours
     const frame = await loadedFrame('<p>evicted</p>')
     reportHeight(frame, 420)
     await act(async () => { vi.advanceTimersByTime(4000) })
-    expect(screen.queryByText(/couldn't render this artifact/i)).toBeNull()
+    expect(screen.queryByText(/no longer showing/i)).toBeNull()
 
     // Same url, second load — nothing reports this time, because what the frame
     // is showing is not ours.
     fireEvent.load(frame)
     await act(async () => { vi.advanceTimersByTime(4000) })
-    expect(screen.getByText(/couldn't render this artifact/i)).toBeTruthy()
-    expect(screen.getByRole('button', { name: /retry/i })).toBeTruthy()
+    expect(screen.getByText(/this artifact is no longer showing/i)).toBeTruthy()
+    expect(screen.getByRole('button', { name: /show artifact/i })).toBeTruthy()
   })
 
-  it('re-mints rather than re-rendering the spent url when the retry is taken', async () => {
+  it('re-mints rather than re-rendering the spent url when Show artifact is taken', async () => {
     // Re-pointing the frame at the same spent URL recovers nothing — it 404s
     // again. Recovery is a fresh mint.
     await loadedFrame('<p>silent</p>')
     await act(async () => { vi.advanceTimersByTime(4000) })
 
     mintSpy.mockResolvedValue({ url: '/sandbox-doc/fresh/tok' })
-    screen.getByRole('button', { name: /retry/i }).click()
+    screen.getByRole('button', { name: /show artifact/i }).click()
 
     await waitFor(() => {
       expect(document.querySelector('iframe')?.getAttribute('src'))
         .toBe('/sandbox-doc/fresh/tok')
     })
     expect(mintSpy).toHaveBeenCalledTimes(2)
-    expect(screen.queryByText(/couldn't render this artifact/i)).toBeNull()
+    expect(screen.queryByText(/no longer showing/i)).toBeNull()
+  })
+
+  it('renders DIFFERENT copy for a failed mint than for a frame that stopped showing', async () => {
+    // The defect in #6489 was one notice for two states: `failed` (the mint
+    // itself failed — a failure claim is accurate) and `docSilent` (the frame
+    // may simply be showing a page the reader chose to open — a failure claim
+    // is a lie half the time). This pins the split: merging the two branches
+    // back into one message must red this test.
+    const silent = render(<ArtifactBodyIframe artifact={makeArtifact('<p>silent</p>')} />)
+    const frame = await waitFor(() => {
+      const el = document.querySelector('iframe')
+      if (!el) throw new Error('frame never mounted')
+      return el as HTMLIFrameElement
+    })
+    fireEvent.load(frame)
+    await act(async () => { vi.advanceTimersByTime(4000) })
+    const silentMessage = screen.getByText(/no longer showing/i).textContent
+    const silentAction = screen.getByRole('button', { name: /show artifact/i }).textContent
+    silent.unmount()
+
+    mintSpy.mockRejectedValueOnce(new Error('gateway said no'))
+    render(<ArtifactBodyIframe artifact={makeArtifact('<p>doomed</p>')} />)
+    const failedMessage = (await screen.findByText(/couldn't render this artifact/i)).textContent
+    const failedAction = screen.getByRole('button', { name: /retry/i }).textContent
+
+    expect(silentMessage).not.toBe(failedMessage)
+    expect(silentAction).not.toBe(failedAction)
+  })
+
+  it('lets failed win when both states are set at once', async () => {
+    // Reachable state: with the silent notice up, a content change re-mints and
+    // the mint FAILS. The previous url survives a failed mint (see
+    // useSandboxDoc), so no new `load` fires and docSilent stays set while
+    // failed turns on. A known failed mint is the more specific diagnosis, so
+    // its copy must win — inverting the notice ternaries to key on docSilent
+    // would keep the split but regress this order.
+    const view = render(<ArtifactBodyIframe artifact={makeArtifact('<p>silent</p>')} />)
+    const frame = await waitFor(() => {
+      const el = document.querySelector('iframe')
+      if (!el) throw new Error('frame never mounted')
+      return el as HTMLIFrameElement
+    })
+    fireEvent.load(frame)
+    await act(async () => { vi.advanceTimersByTime(4000) })
+    expect(screen.getByText(/no longer showing/i)).toBeTruthy()
+
+    mintSpy.mockRejectedValueOnce(new Error('gateway said no'))
+    view.rerender(<ArtifactBodyIframe artifact={makeArtifact('<p>silent v2</p>')} />)
+
+    await screen.findByText(/couldn't render this artifact/i)
+    expect(screen.getByRole('button', { name: /retry/i })).toBeTruthy()
+    expect(screen.queryByText(/no longer showing/i)).toBeNull()
+    // Pin the premise: docSilent is genuinely still set here, not cleared. A
+    // second mint was attempted and NO new url landed (same iframe src, no new
+    // load), so the only docSilent-clearing path — a blobUrl change — did not
+    // run. Without these, the assertion above is equally satisfied by a code
+    // path that clears docSilent whenever failed turns on, and the test would
+    // green as a tautology.
+    expect(mintSpy).toHaveBeenCalledTimes(2)
+    expect(document.querySelector('iframe')?.getAttribute('src')).toBe(DOC_URL)
+    // The document the reader may still be looking at stays mounted throughout.
+    expect(document.querySelector('iframe')).toBeTruthy()
+  })
+
+  it('keeps the notice when a re-mint returns the same spent url', async () => {
+    // The recovery path with nothing to recover: the gateway can mint the same
+    // url string for the same html, which is a React no-op — no src change, no
+    // new load, nothing ever re-arms the silence window. If the click cleared
+    // docSilent, this outcome would leave the reader on a dead frame with NO
+    // affordance at all, strictly worse than before the click. The click is
+    // acknowledged by disabling the button while the mint is in flight, never
+    // by hiding the notice.
+    await loadedFrame('<p>silent</p>')
+    await act(async () => { vi.advanceTimersByTime(4000) })
+    expect(screen.getByText(/no longer showing/i)).toBeTruthy()
+
+    // Same-url outcome under explicit settlement control: the default mock
+    // settles inside a single act() flush, which would make the settle
+    // unobservable as a transition.
+    let settle: (v: { url: string }) => void = () => {}
+    mintSpy.mockImplementationOnce(() => new Promise((res) => { settle = res }))
+    const button = screen.getByRole('button', { name: /show artifact/i }) as HTMLButtonElement
+    button.click()
+    // Flush the passive effect first: the mint (and with it the deferred
+    // resolver) does not exist until the [srcdoc, attempt] effect runs.
+    await act(async () => { await Promise.resolve() })
+    await act(async () => { settle({ url: DOC_URL }); await Promise.resolve() })
+    // The re-enable proves the settle happened (the disabled→enabled
+    // transition itself is pinned by the dedicated test below); if a
+    // regression cleared docSilent on a same-url settle, the notice unmounts
+    // and this detached node keeps disabled=true, so this reds rather than
+    // passing on a null query.
+    await waitFor(() => expect(button.disabled).toBe(false))
+
+    expect(mintSpy).toHaveBeenCalledTimes(2)
+    expect(document.querySelector('iframe')?.getAttribute('src')).toBe(DOC_URL)
+    // The notice survives the SETTLE: it is the only affordance the reader has
+    // left, and the re-enabled button proves pending is not stuck either way.
+    expect(screen.getByText(/no longer showing/i)).toBeTruthy()
+    expect(screen.getByRole('button', { name: /show artifact/i })).toBeTruthy()
+  })
+
+  it('disables the action while the re-mint is in flight', async () => {
+    // The acknowledgment for the click: the button visibly cannot be pressed
+    // again until the attempt settles, instead of looking inert (or worse,
+    // hiding the notice before anything about the frame has changed).
+    await loadedFrame('<p>silent</p>')
+    await act(async () => { vi.advanceTimersByTime(4000) })
+
+    let settle: (v: { url: string }) => void = () => {}
+    mintSpy.mockImplementationOnce(() => new Promise((res) => { settle = res }))
+    const button = screen.getByRole('button', { name: /show artifact/i }) as HTMLButtonElement
+    button.click()
+    await act(async () => { await Promise.resolve() })
+    expect(button.disabled).toBe(true)
+
+    // Settle with the SAME url so the notice stays mounted, and assert the
+    // re-enable on the node held from before the click — settling with a fresh
+    // url would unmount the notice and let a stuck-pending regression pass on
+    // a null query.
+    await act(async () => { settle({ url: DOC_URL }); await Promise.resolve() })
+    expect(button.disabled).toBe(false)
+    expect(screen.getByText(/no longer showing/i)).toBeTruthy()
   })
 })

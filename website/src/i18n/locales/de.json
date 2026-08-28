@@ -5192,8 +5192,10 @@
       "artifact": "Artefakt: {{slug}}",
       "could_not_render": "Dieses Artefakt konnte nicht dargestellt werden",
       "image_could_not_be_loaded": "Bild konnte nicht geladen werden",
+      "no_longer_showing": "Dieses Artefakt wird nicht mehr angezeigt",
       "rendering": "Wird gerendert…",
-      "retry": "Wiederholen"
+      "retry": "Wiederholen",
+      "show_artifact": "Artefakt anzeigen"
     },
     "artifactChatPanel": {
       "agent_chat": "Agenten-Chat",

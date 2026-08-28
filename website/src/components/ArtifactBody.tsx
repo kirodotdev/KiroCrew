@@ -1,10 +1,11 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
-import { Download, Image as ImageIcon, ImageOff, RotateCw } from 'lucide-react'
+import { Download, Eye, Image as ImageIcon, ImageOff, RotateCw } from 'lucide-react'
 import { useTheme } from '../hooks/useTheme'
 import { useSandboxDoc } from '../hooks/useSandboxDoc'
 import { useScrollMemory } from '../hooks/useScrollMemory'
 import { useCommentBridge, type IframeSelection } from '../hooks/useCommentBridge'
 import { InlineCommentOverlay } from './InlineCommentOverlay'
+import { Btn } from './ui'
 import { sanitizeCssValue } from '../lib/cssSanitize'
 import { THEME_VAR_NAMES, buildSrcdoc } from '../lib/widgetSrcdoc'
 import {
@@ -47,9 +48,12 @@ const NO_DOCUMENT_BOX_HEIGHT = 480
  *
  * Deliberately NOT an automatic re-mint: a second `load` also happens when a
  * link inside an artifact navigates the frame, and silently pulling the reader
- * back would fight an action they took. Offering the retry is the right response
- * to either cause — in both, the frame has stopped showing the artifact — which
- * is why the window re-arms on EVERY load rather than only on a new url. */
+ * back would fight an action they took. Offering the re-mint is the right
+ * response to either cause — in both, the frame has stopped showing the artifact
+ * — which is why the window re-arms on EVERY load rather than only on a new url.
+ * The two causes cannot be told apart from outside the opaque sandbox, so the
+ * notice for this state is cause-neutral ("no longer showing" / "Show artifact")
+ * rather than the `failed` state's failure claim. */
 const DOC_REPORT_GRACE_MS = 3000
 
 function readThemeVars(): Record<string, string> {
@@ -291,9 +295,11 @@ export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
   )
   // One shared hook rather than this effect in four components: the previous
   // document survives both an in-flight and a failed re-mint, and `failed`
-  // clears when a retry starts. See hooks/useSandboxDoc.ts for why each rule
+  // clears on a successful settle (or when the srcdoc goes away) — `pending`
+  // acknowledges the click.
+  // See hooks/useSandboxDoc.ts for why each rule
   // exists.
-  const { url: blobUrl, failed, retry } = useSandboxDoc(srcdoc)
+  const { url: blobUrl, failed, pending, retry } = useSandboxDoc(srcdoc)
   // A new document starts the observation over. Declared before the arming
   // effect below so a url change clears the previous document's verdict in the
   // same commit that re-arms.
@@ -346,20 +352,59 @@ export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
           failed re-mint must not displace what the user is reading. With no
           document at all, the same overlay is a thin strip along the top of an
           empty box, which reads as a broken page rather than a failed load — so
-          it centres instead. */}
+          it centres instead.
+
+          Two COPIES too, because only one of the states is a known failure.
+          `failed` means the mint itself failed, so asserting a render failure is
+          accurate and the action is honestly a retry. `docSilent` means the frame
+          navigated to something that is not ours, and from outside the opaque
+          sandbox an engine renavigation onto a spent url (a failure) is
+          indistinguishable from the reader following a link inside the artifact
+          (deliberate). The copy must not assert a failure the surface cannot
+          verify, and the action — the same re-mint — is labeled by what it does
+          for the user (bring the artifact back), not as a "retry" of an error
+          they may not have had. `failed` wins when both are set: a known failed
+          mint is the more specific diagnosis. */}
       {(failed || docSilent) && (
         <div
           className={
             blobUrl
-              ? 'absolute top-0 left-0 right-0 z-10 px-6 py-3 flex items-center gap-3 text-text bg-bg-elevated/95 border-b border-border'
-              : 'absolute inset-0 z-10 flex items-center justify-center gap-3 text-text'
+              ? 'absolute top-0 left-0 right-0 z-10 px-6 py-3 flex flex-wrap items-center gap-3 text-text bg-bg-elevated/95 border-b border-border'
+              : 'absolute inset-0 z-10 flex flex-wrap items-center justify-center gap-3 text-text'
           }
         >
-          <span>{i18nT('components.artifactBody.could_not_render')}</span>
-          <button type="button" className="btn btn-sm" onClick={retry}>
-            <RotateCw className="lucide-inline" />
-            {i18nT('components.artifactBody.retry')}
-          </button>
+          {/* The live region is the text span, not the container: a region
+              holding the button would re-announce the control's name as status
+              prose on every state flip (implicit aria-atomic). While a re-mint
+              is in flight it carries the existing "Rendering…" string so a
+              screen-reader user who pressed the action hears that something
+              happened — the visual disabled state alone is silent to AT. */}
+          <span role="status" className="min-w-0">
+            {i18nT(pending
+              ? 'components.artifactBody.rendering'
+              : failed
+                ? 'components.artifactBody.could_not_render'
+                : 'components.artifactBody.no_longer_showing')}
+          </span>
+          {/* The click is acknowledged by DISABLING the button, never by
+              clearing `docSilent`: a re-mint can resolve with the same url
+              string (a React no-op — no new `load`, so nothing would ever
+              re-arm the silence window) or hang, and a notice cleared at click
+              time would leave the reader on a dead frame with no affordance at
+              all. The glyph branches with the copy: a reload arrow asserts the
+              same failure the docSilent string just stopped claiming. Btn (the
+              design-system button), not a raw `btn btn-sm` button: that class
+              has no CSS behind it, and this control is the only recovery
+              affordance the reader has — it must look pressable. */}
+          <Btn
+            disabled={pending}
+            onClick={retry}
+          >
+            {failed ? <RotateCw className="lucide-inline" /> : <Eye className="lucide-inline" />}
+            {i18nT(failed
+              ? 'components.artifactBody.retry'
+              : 'components.artifactBody.show_artifact')}
+          </Btn>
         </div>
       )}
       {blobUrl ? (

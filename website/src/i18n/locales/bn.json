@@ -5192,8 +5192,10 @@
       "artifact": "আর্টিফ্যাক্ট: {{slug}}",
       "could_not_render": "এই আর্টিফ্যাক্টটি রেন্ডার করা যায়নি",
       "image_could_not_be_loaded": "ছবিটি লোড করা যায়নি",
+      "no_longer_showing": "এই আর্টিফ্যাক্টটি আর দেখা যাচ্ছে না",
       "rendering": "রেন্ডার হচ্ছে…",
-      "retry": "আবার চেষ্টা করুন"
+      "retry": "আবার চেষ্টা করুন",
+      "show_artifact": "আর্টিফ্যাক্ট দেখান"
     },
     "artifactChatPanel": {
       "agent_chat": "এজেন্ট চ্যাট",
