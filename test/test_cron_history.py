@@ -553,3 +553,79 @@ class TestRunResultFreshness:
         assert row2["trace"] == ""
         # Context-carry for the next prompt still holds run 1's value.
         assert job.last_result == "run one output"
+
+
+# ── append enforces the caps (not only an explicit rotate) ───────────────
+
+
+@pytest.fixture
+def small_store(tmp_path: Path) -> CronHistoryStore:
+    """Store with tiny caps so the bound is reachable without thousands of writes."""
+    return CronHistoryStore(
+        base_dir=tmp_path,
+        cron_max_records_per_job=5,
+        cron_max_index_records=8,
+    )
+
+
+@pytest.mark.asyncio
+async def test_append_bounds_the_job_file_without_an_explicit_rotate(
+    small_store: CronHistoryStore,
+) -> None:
+    """The per-job cap must hold continuously, not just after a rotate call.
+
+    ``rotate_all`` runs once, from ``CronService.start``. A gateway that stays up
+    keeps appending, so a cap enforced only at startup does not bound anything
+    for the lifetime of the process — which is exactly when the history grows.
+    """
+    for i in range(12):
+        await small_store.append(_record(run_id=f"r{i}"))
+
+    records, total = await small_store.get_job_history("job1", limit=50)
+    assert total == 5, "job file grew past cron_max_records_per_job"
+    # Newest kept, oldest dropped — same end state an explicit rotate produces.
+    assert [r["run_id"] for r in records] == ["r11", "r10", "r9", "r8", "r7"]
+
+
+@pytest.mark.asyncio
+async def test_append_bounds_the_global_index(
+    small_store: CronHistoryStore, tmp_path: Path
+) -> None:
+    """The index is read whole on every dashboard history request, so it is
+    the file whose unbounded growth costs the most."""
+    for i in range(20):
+        await small_store.append(_record(job_id=f"job{i % 3}", run_id=f"r{i}"))
+
+    index_path = tmp_path / "cron-history" / "_index.jsonl"
+    index_lines = index_path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(index_lines) == 8, "index grew past cron_max_index_records"
+    # Newest-first retention across jobs, matching rotate_all's behaviour.
+    assert [json.loads(ln)["run_id"] for ln in index_lines] == [f"r{i}" for i in range(12, 20)]
+
+
+@pytest.mark.asyncio
+async def test_append_under_the_cap_keeps_every_record(
+    small_store: CronHistoryStore,
+) -> None:
+    """Negative control: the trim must not fire below the cap."""
+    for i in range(4):
+        await small_store.append(_record(run_id=f"r{i}"))
+
+    records, total = await small_store.get_job_history("job1", limit=50)
+    assert total == 4
+    assert [r["run_id"] for r in records] == ["r3", "r2", "r1", "r0"]
+
+
+@pytest.mark.asyncio
+async def test_append_trim_preserves_the_full_trace_of_kept_records(
+    small_store: CronHistoryStore,
+) -> None:
+    """Trimming rewrites the job file; the surviving records must stay intact,
+    including the trace that only ``get_run_detail`` returns."""
+    for i in range(9):
+        await small_store.append(_record(run_id=f"r{i}", trace=f"trace-{i}"))
+
+    detail = await small_store.get_run_detail("job1", "r8")
+    assert detail is not None
+    assert detail["trace"] == "trace-8"
+    assert await small_store.get_run_detail("job1", "r0") is None

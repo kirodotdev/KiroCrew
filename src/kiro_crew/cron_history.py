@@ -31,6 +31,30 @@ _MAX_RECORDS_PER_JOB = 100
 _MAX_INDEX_RECORDS = 2000
 
 
+def _trim_file(path: Path, max_records: int) -> None:
+    """Keep only the newest *max_records* lines of the JSONL at *path*.
+
+    Writes through a temp then ``os.replace``, so a reader — which takes no lock
+    — sees either the whole old file or the whole new one, never a half-written
+    one. A no-op at or below the cap, so an append under the limit pays one read
+    and no rewrite.
+
+    The caller MUST hold the store lock: this reads the file and republishes it
+    whole, so an unlocked interleaving with an append drops the record that
+    landed between the read and the replace.
+    """
+    if max_records <= 0 or not path.exists():
+        return
+    lines = path.read_text(encoding="utf-8").strip().splitlines()
+    if len(lines) <= max_records:
+        return
+    tmp = path.with_suffix(".tmp")
+    wfd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(wfd, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines[-max_records:]) + "\n")
+    os.replace(tmp, path)
+
+
 @dataclass
 class CronRunRecord:
     """Single cron execution record."""
@@ -114,6 +138,16 @@ class CronHistoryStore:
             ifd = os.open(str(self._index_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
             with os.fdopen(ifd, "a", encoding="utf-8") as f:
                 f.write(json.dumps(record.to_dict(include_trace=False)) + "\n")
+            # The caps are enforced on the write path, not only by ``rotate_all``.
+            # That runs once per process, from ``CronService.start``, so it bounds
+            # the history a gateway INHERITS, never the history the gateway itself
+            # writes — and a long-lived gateway is where the growth happens. Every
+            # read (``get_job_history``, ``get_all_history``, ``get_run_detail``)
+            # loads its whole file, so an unbounded index also makes each dashboard
+            # request cost more as the process ages. The trim runs under the lock
+            # this method already holds, so it adds no second critical section.
+            _trim_file(job_path, self._max_records_per_job)
+            _trim_file(self._index_path, self._max_index_records)
         finally:
             self._unlock(fd)
 
@@ -216,15 +250,7 @@ class CronHistoryStore:
             return
         fd = self._lock()
         try:
-            lines = job_path.read_text(encoding="utf-8").strip().splitlines()
-            if len(lines) <= self._max_records_per_job:
-                return
-            keep = lines[-self._max_records_per_job:]
-            tmp = job_path.with_suffix(".tmp")
-            wfd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(wfd, "w", encoding="utf-8") as f:
-                f.write("\n".join(keep) + "\n")
-            os.replace(tmp, job_path)
+            _trim_file(job_path, self._max_records_per_job)
         finally:
             self._unlock(fd)
 
@@ -238,23 +264,8 @@ class CronHistoryStore:
             for p in self._dir.glob("*.jsonl"):
                 if p.name == "_index.jsonl":
                     continue
-                lines = p.read_text(encoding="utf-8").strip().splitlines()
-                if len(lines) > self._max_records_per_job:
-                    keep = lines[-self._max_records_per_job:]
-                    tmp = p.with_suffix(".tmp")
-                    wfd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-                    with os.fdopen(wfd, "w", encoding="utf-8") as f:
-                        f.write("\n".join(keep) + "\n")
-                    os.replace(tmp, p)
-            if self._index_path.exists():
-                lines = self._index_path.read_text(encoding="utf-8").strip().splitlines()
-                if len(lines) > self._max_index_records:
-                    keep = lines[-self._max_index_records:]
-                    tmp = self._index_path.with_suffix(".tmp")
-                    wfd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-                    with os.fdopen(wfd, "w", encoding="utf-8") as f:
-                        f.write("\n".join(keep) + "\n")
-                    os.replace(tmp, self._index_path)
+                _trim_file(p, self._max_records_per_job)
+            _trim_file(self._index_path, self._max_index_records)
         finally:
             self._unlock(fd)
 
