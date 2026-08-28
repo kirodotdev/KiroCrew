@@ -67,16 +67,24 @@ export function artifactSlugFromHref(href: string | null | undefined): string | 
 }
 
 /**
- * Character-level shape of a local filesystem path: word chars, dot, dash, @,
- * ~, colon and space, separated by slashes. Anchored at both ends, so anything
- * carrying a URL scheme (`https://…`) or shell punctuation fails outright.
+ * Character-level shape of a local filesystem path: letters and digits in any
+ * script (`\p{L}\p{N}` — filenames are not ASCII-only), combining marks
+ * (`\p{M}` — macOS stores NFD-decomposed forms, and Indic/Thai/Arabic scripts
+ * need marks even under NFC), underscore, dot, dash, @, ~, colon and space,
+ * separated by slashes. Anchored at both ends, so anything carrying a URL
+ * scheme (`https://…`) or shell punctuation fails outright.
  *
  * Shape alone is NOT sufficient to linkify — see `isPathCandidate`.
  */
-const PATH_SHAPE_RE = /^~?(?:\.{0,2}\/)?[\w.@~/ -]*\/[\w.@~: -]*[\w.]$/
+const PATH_SHAPE_RE =
+  /^~?(?:\.{0,2}\/)?[\p{L}\p{M}\p{N}_.@~/ -]*\/[\p{L}\p{M}\p{N}_.@~: -]*[\p{L}\p{M}\p{N}_.]$/u
 
 /** A trailing `.ext` on the last segment, 1-8 chars — the only positive path
- *  signal available to a path that is neither rooted nor explicitly relative. */
+ *  signal available to a path that is neither rooted nor explicitly relative.
+ *  The extension itself stays ASCII on purpose: it is a POSITIVE signal, and
+ *  keeping it narrow is what stops slash-separated prose from classifying. A
+ *  Unicode basename with an ASCII extension (`产品文档-v1.0.md`) still passes,
+ *  because only the trailing `.ext` is matched. */
 const EXT_RE = /\.[A-Za-z0-9]{1,8}$/
 
 /**

@@ -65,8 +65,24 @@ const EXPECTED_CITED = [
   [`${NOTES}:10-16`, 'file', NOTES, '10'],
 ]
 
+/**
+ * Unicode paths (issue #6483), in document order. The three paths must
+ * classify as files (rooted CJK, NFD-decomposed accented, home-relative
+ * Devanagari) and the two slash-separated prose spans must stay plain — so
+ * this can never quietly emit a screenshot where prose became clickable or a
+ * Unicode path stayed inert.
+ */
+const EXPECTED_UNICODE = [
+  [`${PROJECT}/产品文档/发布说明.md`, 'file'],
+  [`${PROJECT}/cafe\u0301-menu\u0308/notes.md`, 'file'],
+  ['~/दस्तावेज़/रिपोर्ट.md', 'file'],
+  ['要么这样/要么那样', 'plain'],
+  ['и/или', 'plain'],
+]
+
 const SCENES = [
   { scene: 'chips', marker: 'code[data-path-kind="dir"]', note: 'directory chip resolved; git refs inert' },
+  { scene: 'unicode', marker: 'code[data-path-kind="file"]', note: 'Unicode paths (CJK/NFD/Devanagari) classify; prose stays plain' },
   { scene: 'cited', marker: 'code[data-path-line="447"]', note: 'file:line chips live; bare :line inert' },
   // Waits on the DECORATION, not just the editor: the marker is the highlight
   // itself, so a reveal that scrolled but failed to paint fails the run.
@@ -145,9 +161,9 @@ const run = async () => {
           continue
         }
       }
-      if (scene === 'chips' || scene === 'cited') {
+      if (scene === 'chips' || scene === 'cited' || scene === 'unicode') {
         const cited = scene === 'cited'
-        const expected = cited ? EXPECTED_CITED : EXPECTED_KINDS
+        const expected = cited ? EXPECTED_CITED : scene === 'unicode' ? EXPECTED_UNICODE : EXPECTED_KINDS
         const actual = await page.$$eval('code', (els, withPath) =>
           els.map(e => withPath
             ? [e.textContent, e.dataset.pathKind ?? 'plain', e.dataset.path, e.dataset.pathLine]

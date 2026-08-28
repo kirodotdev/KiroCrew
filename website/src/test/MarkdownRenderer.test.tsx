@@ -201,6 +201,45 @@ describe('isPathCandidate — path chip pre-filter', () => {
     expect(isPathCandidate('website/src/components/MarkdownRenderer.tsx')).toBe(true)
   })
 
+  it('accepts Unicode segments in rooted, home-relative and explicitly relative paths', () => {
+    // Filenames are not ASCII-only. Each shape class from the ASCII cases
+    // above must also classify when its segments carry CJK, accented or
+    // Cyrillic letters (issue #6483: \w rejected these before the stat probe).
+    expect(isPathCandidate('/a/b/产品文档-v1.0.md')).toBe(true) // CJK, rooted
+    expect(isPathCandidate('/home/user/notes/café-menü')).toBe(true) // accented, rooted, no extension
+    expect(isPathCandidate('~/документы/отчёт.txt')).toBe(true) // Cyrillic, home-relative
+    expect(isPathCandidate('~/文档/说明')).toBe(true) // CJK terminal segment, no extension
+    expect(isPathCandidate('./docs/仕様書.md')).toBe(true) // CJK, explicitly relative
+    expect(isPathCandidate('../архив/старый-отчёт')).toBe(true) // Cyrillic, parent-relative
+  })
+
+  it('accepts combining marks — NFD-decomposed and mark-requiring scripts', () => {
+    // macOS returns NFD-decomposed filenames (é as e + U+0301), and Indic
+    // scripts need combining marks even under NFC — both are \p{M}, not
+    // \p{L}. Written as escapes so the source encoding cannot renormalize.
+    expect(isPathCandidate('/home/user/notes/cafe\u0301-menu\u0308')).toBe(true)
+    expect(isPathCandidate('~/दस्तावेज़/रिपोर्ट.md')).toBe(true) // Devanagari (virama/matra/nukta)
+  })
+
+  it('accepts a bare relative path whose Unicode basename has an ASCII extension', () => {
+    // The extension positive-signal must not require the whole basename to be
+    // ASCII — only the trailing `.ext` is the signal.
+    expect(isPathCandidate('src/产品文档-v1.0.md')).toBe(true)
+    expect(isPathCandidate('docs/résumé.pdf')).toBe(true)
+  })
+
+  it('still rejects slash-separated Unicode prose with no positive path signal', () => {
+    // Same rule as ASCII `and/or`: a bare two-segment identifier without a
+    // root, explicit-relative prefix, or extension is not a candidate.
+    expect(isPathCandidate('要么这样/要么那样')).toBe(false)
+    expect(isPathCandidate('и/или')).toBe(false)
+    expect(isPathCandidate('entweder/oder')).toBe(false)
+    // Shape-level pin: fullwidth colon U+FF1A is \p{Po}, outside the widened
+    // class, so this is rejected by PATH_SHAPE_RE itself — not by the
+    // extension gate — pinning that Unicode punctuation stays excluded.
+    expect(isPathCandidate('/文档：说明/文件.md')).toBe(false)
+  })
+
   it('rejects git refs — the regression that made this gate necessary', () => {
     // These rendered as clickable "files" and could only ever 404.
     expect(isPathCandidate('refs/heads/fix/investigation-record-403')).toBe(false)
