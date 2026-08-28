@@ -1023,6 +1023,8 @@ export type TailnetMobileStep =
  * this machine do next", where the other answers "what does the running server
  * already trust". Both are needed and they are not interchangeable. */
 export interface TailnetMobileData {
+  /** Per-process marker used only to prove a requested restart completed. */
+  boot_id: string
   step: TailnetMobileStep
   /** MagicDNS name as resolved right now; `''` when unresolvable. */
   host: string
@@ -1059,6 +1061,12 @@ export interface TailnetMobileMutation {
   ok: boolean
   code: string
   detail: string
+}
+
+/** Durable config established by the explicit mobile setup action. */
+export interface TailnetMobileConfigure {
+  /** Trust/origin settings are snapshotted by middleware at gateway boot. */
+  restart_required: boolean
 }
 
 /** A minted mobile-access QR. Carries a LIVE session token in both fields, so
@@ -2130,8 +2138,10 @@ export const api = {
   // server resolved from it at startup.
   tailnetStatus: () => get('/api/tailnet/status').then(j) as Promise<TailnetStatusData>,
   // Mobile access. `tailnetMobile` is a LIVE probe (two daemon round trips
-  // server-side), so poll it gently; the three mutations below are user-driven.
+  // server-side), so poll it gently; the mutations below are user-driven.
   tailnetMobile: () => get('/api/tailnet/mobile').then(j) as Promise<TailnetMobileData>,
+  tailnetMobileConfigure: () =>
+    post('/api/tailnet/mobile/configure', {}).then(j) as Promise<TailnetMobileConfigure>,
   tailnetMobilePublish: () =>
     post('/api/tailnet/mobile/publish', {}).then(j) as Promise<TailnetMobileMutation>,
   tailnetMobileUnpublish: () =>

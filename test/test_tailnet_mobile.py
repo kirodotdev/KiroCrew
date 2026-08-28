@@ -59,14 +59,22 @@ _PORT = 5476
 _HOST = "desk.tail-abc.ts.net"
 
 
-def _owner_session_token(*, ttl_seconds: int = MAX_SESSION_TTL_SECS, **extra: str) -> str:
+def _owner_session_token(
+    *, ttl_seconds: int = MAX_SESSION_TTL_SECS, peer_key: str = "", **extra: str
+) -> str:
     """A real caller credential, as the auth middleware would have validated it."""
-    return generate_token(_OWNER, ttl_seconds=ttl_seconds, extra=extra or None)
+    return generate_token(
+        _OWNER,
+        ttl_seconds=ttl_seconds,
+        peer_key=peer_key,
+        extra=extra or None,
+    )
 
 
 def _probe(
     *,
     name: str = _HOST,
+    login: str = "owner@example.com",
     installed: bool = True,
     reachable: bool = True,
     logged_in: bool = True,
@@ -79,6 +87,7 @@ def _probe(
         reachable=reachable,
         logged_in=logged_in,
         detail=detail,
+        login=login,
         https_enabled=https_enabled,
     )
 
@@ -154,6 +163,41 @@ class TestProbeDistinguishesCauses:
             p = tailnet.probe_daemon()
         assert p.name == _HOST
         assert p.detail == ""
+
+    def test_ready_probe_derives_the_local_tailscale_login(self) -> None:
+        status = {
+            "BackendState": "Running",
+            "Self": {"UserID": 42},
+            "User": {"42": {"LoginName": "owner@example.com"}},
+        }
+        with (
+            patch.object(tailnet, "_cli_path", return_value="/usr/bin/tailscale"),
+            patch.object(tailnet, "_run_json_detail", return_value=(status, False)),
+            patch.object(tailnet, "self_dns_name", return_value=_HOST),
+        ):
+            p = tailnet.probe_daemon()
+        assert p.login == "owner@example.com"
+
+    @pytest.mark.parametrize(
+        "status",
+        [
+            {"BackendState": "Running"},
+            {"BackendState": "Running", "Self": {"UserID": 42}, "User": []},
+            {
+                "BackendState": "Running",
+                "Self": {"UserID": 42},
+                "User": {"42": {"LoginName": "not an identity"}},
+            },
+        ],
+    )
+    def test_missing_or_malformed_local_login_is_never_guessed(self, status: dict) -> None:
+        with (
+            patch.object(tailnet, "_cli_path", return_value="/usr/bin/tailscale"),
+            patch.object(tailnet, "_run_json_detail", return_value=(status, False)),
+            patch.object(tailnet, "self_dns_name", return_value=_HOST),
+        ):
+            p = tailnet.probe_daemon()
+        assert p.login == ""
 
     def test_matching_cert_domain_reports_https_enabled(self) -> None:
         with (
@@ -346,6 +390,71 @@ class TestRestartIsNotReady:
         assert _step(startup_host="old.tail-abc.ts.net") == "restart_gateway"
 
 
+class TestDurableMobileSetupConfig:
+    """The explicit setup click upgrades ordinary installs atomically."""
+
+    def test_enrolls_daemon_login_and_enables_restart_persistence(self) -> None:
+        data = {
+            "dashboard": {
+                "tailscale": {
+                    "enabled": True,
+                    "allowed_logins": ["teammate@example.com"],
+                }
+            }
+        }
+
+        changed, restart, persistent = tailnet_mobile._apply_mobile_setup_config(
+            data, "owner@example.com"
+        )
+
+        assert (changed, restart, persistent) == (True, True, True)
+        dashboard = data["dashboard"]
+        assert dashboard["qr_session_until_restart"] is True
+        assert dashboard["qr_session_persist_across_restart"] is True
+        assert dashboard["tailscale"] == {
+            "enabled": True,
+            "allowed_logins": ["teammate@example.com", "owner@example.com"],
+            "trust_identity": True,
+        }
+
+    def test_second_setup_is_idempotent(self) -> None:
+        data = {
+            "dashboard": {
+                "qr_session_until_restart": True,
+                "qr_session_persist_across_restart": True,
+                "tailscale": {
+                    "enabled": True,
+                    "trust_identity": True,
+                    "allowed_logins": ["Owner@Example.com"],
+                },
+            }
+        }
+        assert tailnet_mobile._apply_mobile_setup_config(data, "owner@example.com") == (
+            False,
+            False,
+            True,
+        )
+
+    def test_explicit_timed_session_opt_out_is_preserved(self) -> None:
+        data = {
+            "dashboard": {
+                "qr_session_until_restart": False,
+                "tailscale": {"enabled": True},
+            }
+        }
+        changed, restart, persistent = tailnet_mobile._apply_mobile_setup_config(
+            data, "owner@example.com"
+        )
+        assert (changed, restart, persistent) == (True, True, False)
+        assert data["dashboard"]["qr_session_until_restart"] is False
+        assert "qr_session_persist_across_restart" not in data["dashboard"]
+
+    def test_malformed_allowlist_refuses_instead_of_overwriting_it(self) -> None:
+        data = {"dashboard": {"tailscale": {"allowed_logins": "owner@example.com"}}}
+        with pytest.raises(ValueError, match="allowed_logins"):
+            tailnet_mobile._apply_mobile_setup_config(data, "owner@example.com")
+
+
 _OWNER = "owner@example.com"
 
 
@@ -451,6 +560,7 @@ def _machine(
     *,
     pinned: bool = False,
     name: str = _HOST,
+    login: str = _OWNER,
     installed: bool = True,
     reachable: bool = True,
     logged_in: bool = True,
@@ -489,6 +599,7 @@ def _machine(
         reachable=reachable,
         logged_in=logged_in,
         detail=detail,
+        login=login,
         https_enabled=https_enabled,
     )
     with (
@@ -502,6 +613,226 @@ def _machine(
         ),
     ):
         yield
+
+
+class TestConfigureEndpoint:
+    """One owner action lands the complete update-proof config shape."""
+
+    @staticmethod
+    def _effective_cfg(
+        *,
+        enabled: bool = True,
+        trust_identity: bool = True,
+        allowed_logins: list[str] | None = None,
+        until_restart: bool = True,
+        persistent: bool = True,
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            dashboard=SimpleNamespace(
+                tailscale=SimpleNamespace(
+                    enabled=enabled,
+                    trust_identity=trust_identity,
+                    allowed_logins=allowed_logins or ["owner@example.com"],
+                ),
+                qr_session_until_restart=until_restart,
+                qr_session_persist_across_restart=persistent,
+            )
+        )
+
+    @pytest.mark.asyncio
+    async def test_writes_identity_and_persistence_in_one_locked_update(
+        self, tmp_path, _unrestricted, _quiet_audit
+    ) -> None:
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text(
+            json.dumps({"dashboard": {"tailscale": {"enabled": True}}}),
+            encoding="utf-8",
+        )
+        with (
+            patch.object(tailnet_mobile, "config_path", return_value=cfg_path),
+            patch.object(tailnet_mobile.tailnet, "is_governance_pinned_off", return_value=False),
+            patch.object(
+                tailnet_mobile.tailnet,
+                "probe_daemon",
+                return_value=_probe(login="owner@example.com"),
+            ),
+            patch.object(
+                tailnet_mobile.KiroCrewConfig,
+                "load",
+                classmethod(lambda cls: self._effective_cfg()),
+            ),
+        ):
+            resp = await tailnet_mobile.api_tailnet_mobile_configure(_request())
+
+        assert resp.status == 200
+        payload = json.loads(resp.body)
+        assert payload == {"restart_required": True}
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert saved["dashboard"]["tailscale"]["trust_identity"] is True
+        assert saved["dashboard"]["tailscale"]["allowed_logins"] == ["owner@example.com"]
+        assert saved["dashboard"]["qr_session_until_restart"] is True
+        assert saved["dashboard"]["qr_session_persist_across_restart"] is True
+
+    @pytest.mark.asyncio
+    async def test_effective_overlay_conflict_is_reported_after_base_write(
+        self, tmp_path, _unrestricted, _quiet_audit
+    ) -> None:
+        """A higher-precedence local override cannot produce a false success."""
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text("{}", encoding="utf-8")
+        effective = self._effective_cfg(trust_identity=False, persistent=False)
+        with (
+            patch.object(tailnet_mobile, "config_path", return_value=cfg_path),
+            patch.object(tailnet_mobile.tailnet, "is_governance_pinned_off", return_value=False),
+            patch.object(
+                tailnet_mobile.tailnet,
+                "probe_daemon",
+                return_value=_probe(login="owner@example.com"),
+            ),
+            patch.object(
+                tailnet_mobile.KiroCrewConfig,
+                "load",
+                classmethod(lambda cls: effective),
+            ),
+        ):
+            resp = await tailnet_mobile.api_tailnet_mobile_configure(_request())
+
+        assert resp.status == 409
+        payload = json.loads(resp.body)
+        assert payload["code"] == "config_overlay_conflict"
+        assert payload["fields"] == [
+            "dashboard.tailscale.trust_identity",
+            "dashboard.qr_session_persist_across_restart",
+        ]
+        assert set(payload) == {"error", "code", "fields"}
+        # The base still receives the requested safe shape; removing the local
+        # override later makes it effective without another setup mutation.
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert saved["dashboard"]["tailscale"]["trust_identity"] is True
+        assert saved["dashboard"]["qr_session_persist_across_restart"] is True
+
+    @pytest.mark.asyncio
+    async def test_effective_timed_opt_out_remains_a_nonpersistent_success(
+        self, tmp_path, _unrestricted, _quiet_audit
+    ) -> None:
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text("{}", encoding="utf-8")
+        effective = self._effective_cfg(until_restart=False, persistent=False)
+        with (
+            patch.object(tailnet_mobile, "config_path", return_value=cfg_path),
+            patch.object(tailnet_mobile.tailnet, "is_governance_pinned_off", return_value=False),
+            patch.object(tailnet_mobile.tailnet, "probe_daemon", return_value=_probe()),
+            patch.object(
+                tailnet_mobile.KiroCrewConfig,
+                "load",
+                classmethod(lambda cls: effective),
+            ),
+        ):
+            resp = await tailnet_mobile.api_tailnet_mobile_configure(_request())
+
+        assert resp.status == 200
+        payload = json.loads(resp.body)
+        assert payload == {"restart_required": True}
+
+    @pytest.mark.asyncio
+    async def test_retry_after_overlay_removal_still_requires_live_trust_restart(
+        self, tmp_path, _unrestricted, _quiet_audit
+    ) -> None:
+        """The prior conflicting attempt already wrote the base file, but the
+        running middleware still has the old disabled trust snapshot."""
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text(
+            json.dumps(
+                {
+                    "dashboard": {
+                        "qr_session_until_restart": True,
+                        "qr_session_persist_across_restart": True,
+                        "tailscale": {
+                            "enabled": True,
+                            "trust_identity": True,
+                            "allowed_logins": ["owner@example.com"],
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        with (
+            patch.object(tailnet_mobile, "config_path", return_value=cfg_path),
+            patch.object(tailnet_mobile.tailnet, "is_governance_pinned_off", return_value=False),
+            patch.object(tailnet_mobile.tailnet, "probe_daemon", return_value=_probe()),
+            patch.object(
+                tailnet_mobile.KiroCrewConfig,
+                "load",
+                classmethod(lambda cls: self._effective_cfg()),
+            ),
+        ):
+            resp = await tailnet_mobile.api_tailnet_mobile_configure(_request())
+
+        payload = json.loads(resp.body)
+        assert resp.status == 200
+        assert payload == {"restart_required": True}
+
+    @pytest.mark.asyncio
+    async def test_idempotent_setup_needs_no_restart_when_live_trust_matches(
+        self, tmp_path, _unrestricted, _quiet_audit
+    ) -> None:
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text(
+            json.dumps(
+                {
+                    "dashboard": {
+                        "qr_session_until_restart": True,
+                        "qr_session_persist_across_restart": True,
+                        "tailscale": {
+                            "enabled": True,
+                            "trust_identity": True,
+                            "allowed_logins": ["owner@example.com"],
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        request = _request()
+        request.app["tailnet_trust"] = tailnet.TailnetTrust(
+            trust_identity=True,
+            allowed_logins=("owner@example.com",),
+        )
+        with (
+            patch.object(tailnet_mobile, "config_path", return_value=cfg_path),
+            patch.object(tailnet_mobile.tailnet, "is_governance_pinned_off", return_value=False),
+            patch.object(tailnet_mobile.tailnet, "probe_daemon", return_value=_probe()),
+            patch.object(
+                tailnet_mobile.KiroCrewConfig,
+                "load",
+                classmethod(lambda cls: self._effective_cfg()),
+            ),
+        ):
+            resp = await tailnet_mobile.api_tailnet_mobile_configure(request)
+
+        payload = json.loads(resp.body)
+        assert resp.status == 200
+        assert payload == {"restart_required": False}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("probe_kw", [{"name": ""}, {"login": ""}])
+    async def test_daemon_without_a_usable_identity_refuses_before_writing(
+        self, probe_kw, _unrestricted, _quiet_audit
+    ) -> None:
+        with (
+            patch.object(tailnet_mobile.tailnet, "is_governance_pinned_off", return_value=False),
+            patch.object(
+                tailnet_mobile.tailnet,
+                "probe_daemon",
+                return_value=_probe(**probe_kw),
+            ),
+            patch.object(tailnet_mobile, "update_config_locked") as write,
+        ):
+            resp = await tailnet_mobile.api_tailnet_mobile_configure(_request())
+        assert resp.status == 409
+        assert b"daemon_not_ready" in resp.body
+        write.assert_not_called()
 
 
 class TestQrRefusals:
@@ -861,6 +1192,7 @@ class TestQrCallerBounds:
         def _fake_mint(_sub, ttl_seconds=0, **kw):
             captured["ttl"] = ttl_seconds
             captured["extra"] = kw.get("extra")
+            captured["peer_key"] = kw.get("peer_key", "")
             return "tok"
 
         return _fake_mint
@@ -996,6 +1328,25 @@ class TestQrCallerBounds:
         assert isinstance(extra, dict) and extra["boot"] == "boot-from-caller"
 
     @pytest.mark.asyncio
+    async def test_a_peer_bound_caller_carries_its_exact_device_key(
+        self, _unrestricted, _quiet_audit
+    ) -> None:
+        """A child QR cannot turn a device-bound owner session into a bearer link."""
+        peer_key = "ts:node:owner@example.com|desktop.tail.ts.net"
+        captured: dict[str, object] = {}
+        response = await self._mint(
+            captured,
+            cookie_token=_owner_session_token(
+                require_peer="1",
+                peer_key=peer_key,
+            ),
+        )
+        assert response.status == 200
+        extra = captured["extra"]
+        assert isinstance(extra, dict) and extra["require_peer"] == "1"
+        assert captured["peer_key"] == peer_key
+
+    @pytest.mark.asyncio
     async def test_bounds_come_from_the_query_token_not_a_stray_cookie(
         self, _unrestricted, _quiet_audit
     ) -> None:
@@ -1020,6 +1371,7 @@ class TestRestrictedSessionRefused:
     """An app-scoped session must not escalate out of its sandbox."""
 
     _MUTATIONS = [
+        tailnet_mobile.api_tailnet_mobile_configure,
         tailnet_mobile.api_tailnet_mobile_publish,
         tailnet_mobile.api_tailnet_mobile_unpublish,
         tailnet_mobile.api_tailnet_mobile_qr,
@@ -1240,6 +1592,15 @@ class TestOwnerOnly:
         pub.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_non_owner_cannot_configure_persistent_access(
+        self, _unrestricted, _quiet_audit
+    ) -> None:
+        with patch.object(tailnet_mobile, "update_config_locked") as write:
+            resp = await tailnet_mobile.api_tailnet_mobile_configure(_request(user=self._OTHER))
+        assert resp.status == 403
+        write.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_non_owner_cannot_unpublish(self, _unrestricted, _quiet_audit) -> None:
         with patch.object(tailnet_mobile.tailnet_serve, "unpublish") as unpub:
             resp = await tailnet_mobile.api_tailnet_mobile_unpublish(_request(user=self._OTHER))
@@ -1298,6 +1659,7 @@ class TestStatusIsOwnerOnly:
     async def test_owner_can_read_the_card_state(self, _unrestricted, _quiet_audit) -> None:
         resp = await self._status()
         assert resp.status == 200
+        assert json.loads(resp.body)["boot_id"]
 
     @pytest.mark.asyncio
     async def test_non_owner_read_is_refused(self, _unrestricted, _quiet_audit) -> None:

@@ -30,10 +30,17 @@ from kiro_crew.dashboard.refresh_tokens import (
     generate_refresh_token,
     refresh_cookie_name,
     refresh_token_boot,
+    refresh_token_peer_key,
     refresh_token_requires_peer,
     validate_refresh_token,
 )
-from kiro_crew.dashboard.tailnet import TailnetTrust, peer_pin_key, resolve_forwarded_peer
+from kiro_crew.dashboard.tailnet import (
+    TailnetTrust,
+    login_allowed,
+    peer_pin_key,
+    peer_pin_key_for_claim,
+    resolve_forwarded_peer,
+)
 from kiro_crew.dashboard.token_auth import (
     MAX_SESSION_TTL_SECS,
     _cookie_port_from_host,
@@ -459,16 +466,40 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
     # "bounded by identity" — and it is the only bound available here, since
     # behind `tailscale serve` every request arrives from 127.0.0.1, so an
     # address pin would read as a pin while excluding nobody.
-    if refresh_token_requires_peer(refresh_token) and not await _verified_peer(request):
-        _audit(user_id, "refresh_token_use", "peer_unverified", chain_id)
+    carried_require_peer = refresh_token_requires_peer(refresh_token)
+    carried_peer_key = refresh_token_peer_key(refresh_token) if carried_require_peer else ""
+    verified_peer_key = (
+        await _verified_peer_key(request, carried_peer_key) if carried_require_peer else ""
+    )
+    if carried_require_peer and (
+        not verified_peer_key or not carried_peer_key or verified_peer_key != carried_peer_key
+    ):
+        if not verified_peer_key:
+            outcome = "peer_unverified"
+            code = "peer_identity_unverified"
+            message = (
+                "This device could not be verified on the tailnet, so the session "
+                "cannot be renewed. Reconnect to the tailnet and try again."
+            )
+        elif not carried_peer_key:
+            outcome = "peer_binding_missing"
+            code = "peer_binding_missing"
+            message = (
+                "This session predates restart-safe device binding and cannot be "
+                "renewed. Show a new phone-access QR code and scan it once."
+            )
+        else:
+            outcome = "peer_mismatch"
+            code = "peer_identity_mismatch"
+            message = "This session belongs to a different tailnet device and cannot be renewed."
+        _audit(user_id, "refresh_token_use", outcome, chain_id)
         # Prose in ``error``, machine id in ``code``, per the error-code contract:
         # the dashboard renders ``error`` verbatim into a localized UI, so an
         # un-coded identifier would be untranslatable by construction.
         return web.json_response(
             {
-                "error": "This device could not be verified on the tailnet, so the session "
-                "cannot be renewed. Reconnect to the tailnet and try again.",
-                "code": "peer_identity_unverified",
+                "error": message,
+                "code": code,
             },
             status=401,
         )
@@ -531,7 +562,6 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
     # this path, carrying degrades to "unbound", while re-deriving would silently
     # mint a live binding for it.
     carried_boot = refresh_token_boot(refresh_token)
-    carried_require_peer = refresh_token_requires_peer(refresh_token)
     _carried_claims: dict[str, str] = {}
     if carried_boot:
         _carried_claims["boot"] = carried_boot
@@ -545,11 +575,16 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
         user_id,
         ttl_seconds=MAX_SESSION_TTL_SECS,
         register_nonce=False,
+        peer_key=carried_peer_key,
         extra=_carried_claims or None,
     )
     new_session_exp = now + MAX_SESSION_TTL_SECS
     new_refresh_token, _new_chain, _new_jti, new_refresh_exp = generate_refresh_token(
-        user_id, chain_id=chain_id, boot=carried_boot, require_peer=carried_require_peer
+        user_id,
+        chain_id=chain_id,
+        boot=carried_boot,
+        require_peer=carried_require_peer,
+        peer_key=carried_peer_key,
     )
 
     public_payload = {
@@ -578,9 +613,15 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
         replacement=json.dumps(grace_payload, separators=(",", ":")),
     )
 
-    await _rebind_rotated_token_to_peer(
-        request, new_access_token, new_session_exp, boot_bound=bool(carried_boot)
-    )
+    if carried_require_peer:
+        # The signed claim, not a second whois result, is authoritative. The
+        # request already proved it matches ``verified_peer_key`` above; mirror
+        # that exact key into the hot in-memory map for posture/reporting.
+        bind_token_peer(new_access_token, carried_peer_key, new_session_exp)
+    else:
+        await _rebind_rotated_token_to_peer(
+            request, new_access_token, new_session_exp, boot_bound=bool(carried_boot)
+        )
 
     resp = web.json_response(public_payload)
     _set_access_cookie(resp, request, new_access_token, new_session_exp)
@@ -590,8 +631,8 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
     return resp
 
 
-async def _verified_peer(request: web.Request) -> bool:
-    """Whether a daemon-verified tailnet peer resolves for this request.
+async def _verified_peer_key(request: web.Request, claimed_peer_key: str = "") -> str:
+    """Return the allowed daemon-verified peer key for this request.
 
     Reads the same ``tailnet_trust`` gate and the same resolver that
     :func:`_rebind_rotated_token_to_peer` uses, so "can this be pinned" and "may
@@ -600,12 +641,17 @@ async def _verified_peer(request: web.Request) -> bool:
     """
     trust = request.app.get("tailnet_trust")
     if not (isinstance(trust, TailnetTrust) and trust.trust_identity and trust.allowed_logins):
-        return False
+        return ""
     try:
-        return await resolve_forwarded_peer(request, trust) is not None
+        peer = await resolve_forwarded_peer(request, trust)
+        if peer is None or not login_allowed(peer.login, trust.allowed_logins):
+            return ""
+        if claimed_peer_key:
+            return peer_pin_key_for_claim(peer, claimed_peer_key)
+        return peer_pin_key(peer, trust.pin_scope)
     except Exception:  # noqa: BLE001 - an auth decision must not 500 on the probe
         logger.debug("refresh: tailnet peer resolution failed", exc_info=True)
-        return False
+        return ""
 
 
 async def _rebind_rotated_token_to_peer(
@@ -617,7 +663,7 @@ async def _rebind_rotated_token_to_peer(
     replacement access token would be UNBOUND — one rotation would launder a
     node-scoped identity pin into an any-peer token. When the refresh request
     itself resolves a verified peer, the fresh token is pinned to that peer's
-    key; when no peer resolves (non-tailnet setups, daemon down, Windows) the
+    key; when no peer resolves (non-tailnet setups or daemon down) the
     token stays unbound, which is byte-for-byte the pre-identity behaviour.
     The middleware's early allowlist deny already covers this route (it runs
     before the bypass list), so a verified-but-unallowlisted peer never

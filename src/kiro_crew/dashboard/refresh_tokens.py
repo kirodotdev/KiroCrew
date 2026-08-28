@@ -412,6 +412,7 @@ def generate_refresh_token(
     ttl_seconds: int = MAX_REFRESH_TTL_SECS,
     boot: str = "",
     require_peer: bool = False,
+    peer_key: str = "",
 ) -> tuple[str, str, str, float]:
     """Generate a refresh token.
 
@@ -427,6 +428,10 @@ def generate_refresh_token(
     function of the credential it was rotated from. Empty string means unbound,
     which is every caller that does not opt in.
     """
+    if require_peer and not peer_key:
+        raise ValueError("require_peer refresh tokens must carry their original peer_key")
+    if peer_key and not require_peer:
+        raise ValueError("peer_key requires require_peer")
     now = time.time()
     session_ttl = min(ttl_seconds, MAX_REFRESH_TTL_SECS)
     if chain_id is None:
@@ -456,6 +461,13 @@ def generate_refresh_token(
         # rotated by a caller whose identity could not be established. Omitted
         # when false for the same byte-identity reason as ``boot``.
         payload_dict["require_peer"] = "1"
+        if peer_key:
+            # The original daemon-verified device binding must survive a
+            # gateway restart along with the chain.  The HMAC-signed claim is
+            # authoritative; an in-memory access-token pin is only a hot-path
+            # mirror and cannot safely be re-created by whichever allowed node
+            # presents a stolen cookie first after restart.
+            payload_dict["peer_key"] = peer_key
     payload = json.dumps(payload_dict, separators=(",", ":")).encode()
     encoded_payload = _b64url_encode(payload)
     signature = _sign(payload)
@@ -569,6 +581,24 @@ def refresh_token_requires_peer(token: str) -> bool:
     if not isinstance(payload, dict):
         return True
     return str(payload.get("require_peer", "")) == "1"
+
+
+def refresh_token_peer_key(token: str) -> str:
+    """Return the signed device binding carried by an identity-bound chain.
+
+    Callers use this only after :func:`validate_refresh_token` succeeds.  An
+    empty result is deliberately unusable for a ``require_peer`` chain: it
+    identifies a legacy token minted before peer bindings were carried across
+    restarts, and accepting it would restore first-verified-device takeover.
+    """
+    try:
+        payload = json.loads(_b64url_decode(token.split(".")[0]))
+    except Exception:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    value = payload.get("peer_key", "")
+    return value if isinstance(value, str) else ""
 
 
 def refresh_cookie_name(port: str | int) -> str:

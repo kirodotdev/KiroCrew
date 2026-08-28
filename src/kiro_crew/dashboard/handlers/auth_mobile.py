@@ -111,7 +111,13 @@ async def api_auth_mobile_link(request: web.Request) -> web.Response:
             {"error": "caller_session_expired", "code": "caller_session_expired"}, status=403
         )
 
-    token = generate_token(user_id, ttl_seconds=ttl_ceiling, extra=carried or None)
+    caller_peer_key = carried.pop("peer_key", "")
+    token = generate_token(
+        user_id,
+        ttl_seconds=ttl_ceiling,
+        peer_key=caller_peer_key,
+        extra=carried or None,
+    )
     await _audit_async(user_id, "issued")
     return web.json_response(
         {

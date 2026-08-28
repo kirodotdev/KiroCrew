@@ -51,11 +51,11 @@ class RenderProbe extends Component<
 vi.mock('../api/client', () => ({
   api: {
     tailnetMobile: vi.fn(),
+    tailnetMobileConfigure: vi.fn(),
     restartGateway: vi.fn(),
     tailnetMobilePublish: vi.fn(),
     tailnetMobileUnpublish: vi.fn(),
     tailnetMobileQr: vi.fn(),
-    patchConfig: vi.fn(),
   },
 }))
 
@@ -79,6 +79,7 @@ const LS_KEY = 'mc-tailnet-mobile-invite-expanded'
 /** A `ready` machine — every field truthful for that step. Overrides shift it. */
 function data(overrides: Partial<TailnetMobileData> = {}): TailnetMobileData {
   return {
+    boot_id: 'boot-before',
     step: 'ready',
     host: HOST,
     origin: ORIGIN,
@@ -121,6 +122,9 @@ beforeEach(() => {
   vi.clearAllMocks()
   window.localStorage.clear()
   mockCopy.mockResolvedValue(undefined)
+  mockApi.tailnetMobileConfigure.mockResolvedValue({
+    restart_required: false,
+  })
 })
 
 afterEach(() => {
@@ -305,7 +309,7 @@ describe('TailnetMobileCard — ready', () => {
     await mount()
     expect(screen.getByText(ORIGIN)).toBeInTheDocument()
     expect(screen.getByText(/will not sleep while phone access is on/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Show QR code/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Set up & show QR/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Turn off' })).toBeInTheDocument()
     // Re-check belongs to the mid-setup steps; `ready` is not one.
     expect(screen.queryByRole('button', { name: /Re-check/ })).toBeNull()
@@ -349,7 +353,7 @@ describe('TailnetMobileCard — the QR', () => {
     mockApi.tailnetMobileQr.mockResolvedValue(qrPayload())
     await mount()
 
-    fireEvent.click(screen.getByRole('button', { name: /Show QR code/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Set up & show QR/ }))
 
     const img = await screen.findByAltText('QR code linking to this dashboard')
     expect(img).toHaveAttribute('src', 'data:image/png;base64,zzzQRIMAGE')
@@ -362,7 +366,7 @@ describe('TailnetMobileCard — the QR', () => {
   it('drops the code from state when dismissed', async () => {
     mockApi.tailnetMobileQr.mockResolvedValue(qrPayload())
     await mount()
-    fireEvent.click(screen.getByRole('button', { name: /Show QR code/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Set up & show QR/ }))
     await screen.findByAltText('QR code linking to this dashboard')
 
     fireEvent.click(screen.getByRole('button', { name: 'Hide' }))
@@ -376,7 +380,7 @@ describe('TailnetMobileCard — the QR', () => {
     mockApi.tailnetMobileQr.mockResolvedValue(qrPayload())
     mockApi.tailnetMobileUnpublish.mockResolvedValue({ ok: true, code: 'ok', detail: '' })
     await mount()
-    fireEvent.click(screen.getByRole('button', { name: /Show QR code/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Set up & show QR/ }))
     await screen.findByAltText('QR code linking to this dashboard')
 
     fireEvent.click(screen.getByRole('button', { name: 'Turn off' }))
@@ -391,7 +395,7 @@ describe('TailnetMobileCard — the QR', () => {
     mockApi.tailnetMobileQr.mockRejectedValue(new Error('zzz mint refused: not owner'))
     await mount()
 
-    fireEvent.click(screen.getByRole('button', { name: /Show QR code/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Set up & show QR/ }))
 
     expect(await screen.findByText('zzz mint refused: not owner')).toBeInTheDocument()
   })
@@ -434,7 +438,7 @@ describe('TailnetMobileCard — copy', () => {
     const payload = qrPayload()
     mockApi.tailnetMobileQr.mockResolvedValue(payload)
     await mount()
-    fireEvent.click(screen.getByRole('button', { name: /Show QR code/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Set up & show QR/ }))
     await screen.findByAltText('QR code linking to this dashboard')
 
     fireEvent.click(screen.getByRole('button', { name: 'Copy link' }))
@@ -474,7 +478,9 @@ describe('TailnetMobileCard — mutating actions', () => {
   })
 
   it('configures, restarts, publishes HTTPS, and shows the QR with one click', async () => {
-    mockApi.patchConfig.mockResolvedValue({})
+    mockApi.tailnetMobileConfigure.mockResolvedValue({
+      restart_required: true,
+    })
     mockApi.restartGateway.mockResolvedValue({})
     mockApi.tailnetMobilePublish.mockResolvedValue({ ok: true, code: 'ok', detail: '' })
     mockApi.tailnetMobileQr.mockResolvedValue(qrPayload())
@@ -486,17 +492,43 @@ describe('TailnetMobileCard — mutating actions', () => {
         startup_trusted: false,
         published: false,
       }))
-      .mockResolvedValueOnce(data({ step: 'publish', published: false }))
-      .mockResolvedValue(data())
+      .mockResolvedValueOnce(data({
+        boot_id: 'boot-after',
+        step: 'publish',
+        published: false,
+      }))
+      .mockResolvedValue(data({ boot_id: 'boot-after' }))
 
     fireEvent.click(screen.getByRole('button', { name: /Set up & show QR/ }))
 
     await waitFor(() =>
-      expect(mockApi.patchConfig).toHaveBeenCalledWith('dashboard.tailscale.enabled', true),
+      expect(mockApi.tailnetMobileConfigure).toHaveBeenCalledTimes(1),
     )
     await waitFor(() => expect(mockApi.restartGateway).toHaveBeenCalled())
     await waitFor(() => expect(mockApi.tailnetMobilePublish).toHaveBeenCalled())
     expect(await screen.findByAltText('QR code linking to this dashboard')).toBeInTheDocument()
+  })
+
+  it('migrates an already-ready user to persistent access before showing a QR', async () => {
+    mockApi.tailnetMobileConfigure.mockResolvedValue({
+      restart_required: true,
+    })
+    mockApi.restartGateway.mockResolvedValue({})
+    mockApi.tailnetMobileQr.mockResolvedValue(qrPayload())
+    await mount()
+    // The exiting process can still answer one final request and still says
+    // `ready`; only a changed boot id proves the replacement loaded the new
+    // persistent-session config.
+    mockApi.tailnetMobile
+      .mockResolvedValueOnce(data())
+      .mockResolvedValue(data({ boot_id: 'boot-after' }))
+
+    fireEvent.click(screen.getByRole('button', { name: /Set up & show QR/ }))
+
+    await waitFor(() => expect(mockApi.tailnetMobileConfigure).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(mockApi.restartGateway).toHaveBeenCalledTimes(1))
+    expect(await screen.findByAltText('QR code linking to this dashboard')).toBeInTheDocument()
+    expect(mockApi.tailnetMobileQr).toHaveBeenCalledTimes(1)
   })
 
   it('continues automatically after a required gateway restart', async () => {
@@ -505,8 +537,16 @@ describe('TailnetMobileCard — mutating actions', () => {
     mockApi.tailnetMobileQr.mockResolvedValue(qrPayload())
     await mount(data({ step: 'restart_gateway', startup_trusted: false }))
     mockApi.tailnetMobile
-      .mockResolvedValueOnce(data({ step: 'publish', published: false }))
-      .mockResolvedValue(data())
+      .mockResolvedValueOnce(data({
+        step: 'restart_gateway',
+        startup_trusted: false,
+      }))
+      .mockResolvedValueOnce(data({
+        boot_id: 'boot-after',
+        step: 'publish',
+        published: false,
+      }))
+      .mockResolvedValue(data({ boot_id: 'boot-after' }))
 
     fireEvent.click(screen.getByRole('button', { name: /Set up & show QR/ }))
 
@@ -516,13 +556,54 @@ describe('TailnetMobileCard — mutating actions', () => {
   })
 
   it('labels the full operation as phone access setup while it is running', async () => {
-    mockApi.patchConfig.mockReturnValue(new Promise<void>(() => {}))
+    mockApi.tailnetMobileConfigure.mockReturnValue(new Promise<void>(() => {}))
     await mount(data({ step: 'trust_off', trusted: false }))
 
     fireEvent.click(screen.getByRole('button', { name: /Set up & show QR/ }))
 
     const pending = await screen.findByRole('button', { name: /Setting up phone access/ })
     expect(pending).toBeDisabled()
+  })
+
+  it('shows restart feedback and a pending label during a ready-user migration', async () => {
+    mockApi.tailnetMobileConfigure.mockResolvedValue({ restart_required: true })
+    mockApi.tailnetMobileQr.mockResolvedValue(qrPayload())
+    let finishRestart!: () => void
+    mockApi.restartGateway.mockReturnValue(
+      new Promise<void>((resolve) => { finishRestart = resolve }),
+    )
+    await mount()
+    mockApi.tailnetMobile
+      .mockResolvedValueOnce(data())
+      .mockResolvedValue(data({ boot_id: 'boot-after' }))
+
+    fireEvent.click(screen.getByRole('button', { name: /Set up & show QR/ }))
+
+    expect(await screen.findByText('Restart Kiro Crew to finish')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Setting up phone access/ })).toBeDisabled()
+    finishRestart()
+    expect(await screen.findByAltText('QR code linking to this dashboard')).toBeInTheDocument()
+  })
+
+  it('refreshes a stale boot id before fencing a migration restart', async () => {
+    mockApi.tailnetMobileConfigure.mockResolvedValue({ restart_required: true })
+    mockApi.restartGateway.mockResolvedValue({})
+    mockApi.tailnetMobileQr.mockResolvedValue(qrPayload())
+    await mount(data({ boot_id: 'stale-cache-boot' }))
+    mockApi.tailnetMobile.mockReset()
+    mockApi.tailnetMobile
+      .mockResolvedValueOnce(data({ boot_id: 'actual-old-boot' }))
+      .mockResolvedValue(data({ boot_id: 'boot-after' }))
+
+    fireEvent.click(screen.getByRole('button', { name: /Set up & show QR/ }))
+
+    expect(await screen.findByAltText('QR code linking to this dashboard')).toBeInTheDocument()
+    // Refresh old boot, observe new boot, then refetch after the successful QR.
+    expect(mockApi.tailnetMobile).toHaveBeenCalledTimes(3)
+    expect(mockApi.restartGateway).toHaveBeenCalledTimes(1)
+    expect(mockApi.tailnetMobile.mock.invocationCallOrder[0]).toBeLessThan(
+      mockApi.restartGateway.mock.invocationCallOrder[0],
+    )
   })
 
   it('re-checks from a mid-setup step', async () => {
@@ -535,12 +616,35 @@ describe('TailnetMobileCard — mutating actions', () => {
   })
 
   it('surfaces a transport error from a mutation', async () => {
-    mockApi.patchConfig.mockRejectedValue(new Error('zzz network unreachable'))
+    mockApi.tailnetMobileConfigure.mockRejectedValue(new Error('zzz network unreachable'))
     await mount(data({ step: 'trust_off', trusted: false }))
 
     fireEvent.click(screen.getByRole('button', { name: /Set up & show QR/ }))
 
     expect(await screen.findByText('zzz network unreachable')).toBeInTheDocument()
+  })
+
+  it('names the config.local overrides that block persistent setup', async () => {
+    mockApi.tailnetMobileConfigure.mockRejectedValue(Object.assign(
+      new Error('config.local.json overrides the safe phone-access settings'),
+      {
+        status: 409,
+        body: JSON.stringify({
+          code: 'config_overlay_conflict',
+          fields: [
+            'dashboard.tailscale.trust_identity',
+            'dashboard.qr_session_persist_across_restart',
+          ],
+        }),
+      },
+    ))
+    await mount(data({ step: 'trust_off', trusted: false }))
+
+    fireEvent.click(screen.getByRole('button', { name: /Set up & show QR/ }))
+
+    expect(await screen.findByText(
+      /dashboard\.tailscale\.trust_identity.*dashboard\.qr_session_persist_across_restart/,
+    )).toBeInTheDocument()
   })
 })
 

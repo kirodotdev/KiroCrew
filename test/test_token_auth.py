@@ -13,7 +13,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 
-from kiro_crew.dashboard.refresh_tokens import REFRESH_COOKIE_PREFIX, refresh_cookie_name
+from kiro_crew.dashboard.refresh_tokens import (
+    REFRESH_COOKIE_PREFIX,
+    refresh_cookie_name,
+    refresh_token_peer_key,
+)
 from kiro_crew.dashboard.token_auth import (
     MAX_CONCURRENT_NONCES,
     MAX_SESSION_TTL_SECS,
@@ -28,6 +32,7 @@ from kiro_crew.dashboard.token_auth import (
     is_consumed,
     mark_consumed,
     parse_duration,
+    required_peer_key_unverified,
     revoke_access_cookie,
     revoke_all_sessions,
     token_auth_middleware,
@@ -3205,6 +3210,43 @@ async def test_daemon_failure_degrades_to_token_ip_path(_tailnet_env) -> None:
 
 
 @pytest.mark.asyncio
+async def test_require_peer_link_refuses_daemon_failure_before_cookie_exchange(
+    _tailnet_env,
+) -> None:
+    """A persistent QR link must not become a shared loopback session when
+    whois is unavailable during its first exchange."""
+    _tailnet_env(None)
+    mw = token_auth_middleware(tailnet_trust=_tailnet_trust())
+    token = generate_token("tsuser", ttl_seconds=300, extra={"require_peer": "1"})
+    resp = await mw(_peer_request(query={"token": token}), _ok_handler)
+    assert resp.status == 403
+    assert b"tailnet identity unverified" in resp.body
+    assert resp.cookies.get("mc_token_5476") is None
+
+
+@pytest.mark.asyncio
+async def test_require_peer_link_exchanges_for_verified_allowed_peer(_tailnet_env) -> None:
+    """The fail-closed claim still permits the intended verified peer and the
+    exchanged access cookie keeps the identity-required claim."""
+    from kiro_crew.dashboard import token_auth as _ta
+
+    _tailnet_env(_whois_payload())
+    mw = token_auth_middleware(tailnet_trust=_tailnet_trust())
+    token = generate_token("tsuser", ttl_seconds=300, extra={"require_peer": "1"})
+    resp = await mw(_peer_request(query={"token": token}), _ok_handler)
+    assert resp.status == 200
+    cookie = resp.cookies.get("mc_token_5476")
+    assert cookie is not None
+    assert _ta.requires_verified_peer_unverified(cookie.value) is True
+    expected = "ts:node:you@example.com|phone.tail.ts.net"
+    assert required_peer_key_unverified(cookie.value) == expected
+    assert _ta._state._peer_bindings[cookie.value][0] == expected
+    refresh = resp.cookies.get(refresh_cookie_name("5476"))
+    assert refresh is not None
+    assert refresh_token_peer_key(refresh.value) == expected
+
+
+@pytest.mark.asyncio
 async def test_non_tailscale_tunnel_behaviour_is_unchanged(_tailnet_env) -> None:
     """Loopback peer + XFF with identity trust OFF: byte-for-byte today's
     behaviour — pin ip:127.0.0.1, posture SHARED, no daemon call."""
@@ -3351,6 +3393,124 @@ async def test_restart_first_use_repins_verified_peer_cookie(_tailnet_env) -> No
     )
     assert resp2.status == 403
     assert b"device identity mismatch" in resp2.body
+
+
+@pytest.mark.asyncio
+async def test_restart_require_peer_cookie_refuses_unverified_first_use(
+    _tailnet_env,
+) -> None:
+    """After restart, an unbound persistent cookie waits for verified whois;
+    it cannot claim the proxy's loopback identity during a daemon outage."""
+    from kiro_crew.dashboard import token_auth as _ta
+
+    _tailnet_env(None)
+    mw = token_auth_middleware(tailnet_trust=_tailnet_trust())
+    token = generate_token("tsuser", ttl_seconds=300, extra={"require_peer": "1"})
+    mark_consumed(token)
+    # No bind_token_peer call: simulates the post-restart in-memory state.
+    resp = await mw(_peer_request(cookies={"mc_token_5476": token}), _ok_handler)
+    assert resp.status == 403
+    assert b"tailnet identity unverified" in resp.body
+    assert token not in _ta._state._peer_bindings
+
+
+@pytest.mark.asyncio
+async def test_restart_signed_require_peer_cookie_rehydrates_only_for_original_device(
+    _tailnet_env,
+) -> None:
+    """The signed original-device claim, not first arrival, rebuilds the hot pin."""
+    from kiro_crew.dashboard import token_auth as _ta
+
+    expected = "ts:node:you@example.com|phone.tail.ts.net"
+    set_whois = _tailnet_env
+    set_whois(_whois_payload())
+    mw = token_auth_middleware(tailnet_trust=_tailnet_trust())
+    token = generate_token(
+        "tsuser",
+        ttl_seconds=300,
+        peer_key=expected,
+        extra={"require_peer": "1"},
+        register_nonce=False,
+    )
+
+    assert token not in _ta._state._peer_bindings
+    response = await mw(_peer_request(cookies={"mc_token_5476": token}), _ok_handler)
+    assert response.status == 200
+    assert _ta._state._peer_bindings[token][0] == expected
+
+    # Simulate another restart, then let a different but still allowlisted node
+    # arrive first.  It cannot claim the empty in-memory map.
+    _ta._state._peer_bindings.pop(token, None)
+    set_whois(_whois_payload(node="other-node.tail.ts.net"))
+    replay = await mw(
+        _peer_request(forwarded="100.64.0.6", cookies={"mc_token_5476": token}),
+        _ok_handler,
+    )
+    assert replay.status == 403
+    assert b"device identity mismatch" in replay.body
+    assert token not in _ta._state._peer_bindings
+
+
+@pytest.mark.asyncio
+async def test_restart_legacy_claimless_require_peer_cookie_cannot_claim_device(
+    _tailnet_env,
+) -> None:
+    """Pre-fix cookies must re-scan instead of accepting the first allowed node."""
+    from kiro_crew.dashboard import token_auth as _ta
+
+    _tailnet_env(_whois_payload())
+    mw = token_auth_middleware(tailnet_trust=_tailnet_trust())
+    token = generate_token(
+        "tsuser", ttl_seconds=300, extra={"require_peer": "1"}, register_nonce=False
+    )
+    response = await mw(_peer_request(cookies={"mc_token_5476": token}), _ok_handler)
+    assert response.status == 403
+    assert b"tailnet session device binding missing" in response.body
+    assert token not in _ta._state._peer_bindings
+
+
+@pytest.mark.asyncio
+async def test_claimless_require_peer_link_cannot_enroll_on_mixed_internal_path(
+    _tailnet_env,
+) -> None:
+    """Only the main QR exchange path may turn a claimless link into a session."""
+    from kiro_crew.dashboard import token_auth as _ta
+
+    _tailnet_env(_whois_payload())
+    mw = token_auth_middleware(
+        mixed_internal_paths=frozenset({"/api/spawn"}),
+        tailnet_trust=_tailnet_trust(),
+    )
+    token = generate_token("tsuser", ttl_seconds=300, extra={"require_peer": "1"})
+    request = _peer_request(query={"token": token})
+    request.path = "/api/spawn"
+    response = await mw(request, _ok_handler)
+    assert response.status == 403
+    assert b"tailnet session device binding missing" in response.body
+    assert not response.cookies
+    assert token not in _ta._state._peer_bindings
+
+
+@pytest.mark.asyncio
+async def test_signed_login_scope_survives_operator_pin_scope_change(_tailnet_env) -> None:
+    """An issued login-scoped session keeps its signed scope after config changes."""
+    from kiro_crew.dashboard import token_auth as _ta
+
+    expected = "ts:login:you@example.com"
+    _tailnet_env(_whois_payload(node="replacement-phone.tail.ts.net"))
+    # Today's config is node-scoped, but the signed credential was issued with
+    # login scope and therefore remains usable after a phone re-enrolment.
+    mw = token_auth_middleware(tailnet_trust=_tailnet_trust(pin_scope="node"))
+    token = generate_token(
+        "tsuser",
+        ttl_seconds=300,
+        peer_key=expected,
+        extra={"require_peer": "1"},
+        register_nonce=False,
+    )
+    response = await mw(_peer_request(cookies={"mc_token_5476": token}), _ok_handler)
+    assert response.status == 200
+    assert _ta._state._peer_bindings[token][0] == expected
 
 
 @pytest.mark.asyncio

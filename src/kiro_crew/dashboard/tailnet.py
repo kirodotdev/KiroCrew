@@ -353,6 +353,9 @@ class DaemonProbe:
     reachable: bool
     logged_in: bool
     detail: str
+    #: Login owning this machine, validated from ``Self.UserID`` -> ``User``.
+    #: Kept server-side; the status API does not expose it to the renderer.
+    login: str = ""
     peer_count: int = 0
     peers_online: int = 0
     #: ``None`` means this older/unexpected status document did not expose the
@@ -419,6 +422,7 @@ def probe_daemon() -> DaemonProbe:
             detail="Tailscale is running but this machine is not signed in.",
         )
     peer_count, peers_online = _count_peers(status)
+    login = _self_login(status)
     name = self_dns_name() or ""
     if not name:
         return DaemonProbe(
@@ -430,6 +434,7 @@ def probe_daemon() -> DaemonProbe:
                 "Signed in, but no MagicDNS name is available for this machine — "
                 "MagicDNS may be disabled for this tailnet."
             ),
+            login=login,
             peer_count=peer_count,
             peers_online=peers_online,
         )
@@ -454,6 +459,7 @@ def probe_daemon() -> DaemonProbe:
         reachable=True,
         logged_in=True,
         detail="",
+        login=login,
         peer_count=peer_count,
         peers_online=peers_online,
         https_enabled=https_enabled,
@@ -913,6 +919,31 @@ def _valid_identity(raw: object) -> str | None:
     return s
 
 
+def _self_login(status: dict) -> str:
+    """Return the login owning ``Self`` in ``tailscale status --json``.
+
+    Tailscale keys the top-level ``User`` map by ``Self.UserID``. JSON object
+    keys are strings even when the daemon's Go type uses an integer id, so the
+    lookup is normalised instead of relying on one client version's decoded
+    representation. Missing or malformed identity is never guessed: mobile
+    setup then refuses to enable persistent identity trust.
+    """
+    self_node = status.get("Self")
+    users = status.get("User")
+    if not isinstance(self_node, dict) or not isinstance(users, dict):
+        return ""
+    user_id = self_node.get("UserID")
+    if not isinstance(user_id, (str, int)) or isinstance(user_id, bool):
+        return ""
+    profile = users.get(str(user_id))
+    if not isinstance(profile, dict):
+        # Older decoded mappings and test doubles can retain an integer key.
+        profile = users.get(user_id)
+    if not isinstance(profile, dict):
+        return ""
+    return _valid_identity(profile.get("LoginName")) or ""
+
+
 def _whois_node(addr: str) -> tuple[tuple[str, str] | None, bool]:
     """Ask the local daemon who *addr* is. ``((login, node) | None, transient)``.
 
@@ -966,11 +997,6 @@ def _forwarded_peer_candidate(request: web.Request, trust: TailnetTrust) -> str 
     Returns the single forwarded tailnet address worth asking the daemon
     about, or ``None``. No I/O — safe to run inline on the event loop.
     """
-    # Windows daemon/CLI behaviour is unverified (RFC OQ4): resolution is
-    # POSIX-only and everything degrades to the token+IP path there.
-    if not IS_POSIX:
-        logger.debug("tailnet peer resolution is POSIX-only; skipping on this platform")
-        return None
     # (b) explicit opt-in AND a non-empty allowlist. Identity trust is never
     # inferred, and an empty allowlist means trust was refused at config load.
     if not trust.trust_identity or not trust.allowed_logins:
@@ -1070,6 +1096,19 @@ def peer_pin_key(peer: ForwardedPeer, pin_scope: str) -> str:
     if pin_scope == PIN_SCOPE_LOGIN:
         return f"ts:login:{peer.login}"
     return f"ts:node:{peer.login}|{peer.node}"
+
+
+def peer_pin_key_for_claim(peer: ForwardedPeer, claimed_key: str) -> str:
+    """Render *peer* in the scope encoded by an existing signed pin claim.
+
+    The claim, not today's config, owns an already-issued session's scope. If
+    the operator later changes ``pin_scope``, silently reinterpreting a
+    node-bound token as login-bound (or the reverse) would either widen it or
+    log the correct device out. Unknown claim shapes default to node scope, the
+    narrower direction; the caller's exact comparison then rejects them.
+    """
+    scope = PIN_SCOPE_LOGIN if claimed_key.startswith("ts:login:") else PIN_SCOPE_NODE
+    return peer_pin_key(peer, scope)
 
 
 def login_allowed(login: str, allowed_logins: tuple[str, ...]) -> bool:

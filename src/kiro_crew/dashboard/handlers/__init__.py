@@ -402,6 +402,7 @@ from kiro_crew.dashboard.handlers.tailnet import (  # noqa: E402, F401
     api_tailnet_status,
 )
 from kiro_crew.dashboard.handlers.tailnet_mobile import (  # noqa: E402, F401
+    api_tailnet_mobile_configure,
     api_tailnet_mobile_publish,
     api_tailnet_mobile_qr,
     api_tailnet_mobile_status,

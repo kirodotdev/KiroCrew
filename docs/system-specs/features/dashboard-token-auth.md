@@ -106,8 +106,9 @@ Two expiry times:
 - `exp`: link click window — 5 minutes (`LINK_WINDOW_SECS = 300`). The URL must be opened within this time.
 - `session_exp`: cookie session TTL — capped at 20 hours (`MAX_SESSION_TTL_SECS = 20 * 3600`). Once the cookie is set, the access session lasts this long; the refresh cookie (see Cookies) lets the SPA rotate it silently before expiry.
 
-Two optional claims scope a session more tightly than its `session_exp`, and are
-mutually exclusive in practice because they answer the same question differently:
+Three optional claims scope a session more tightly than its `session_exp`, and
+are mutually exclusive in practice because they answer the same question
+differently:
 
 - `no_refresh`: no refresh chain is issued at the token→session exchange, and any
   refresh cookie already held for this port is expired. `session_exp` therefore
@@ -122,9 +123,43 @@ mutually exclusive in practice because they answer the same question differently
   access token also keeps its address pin when tailnet identity trust is off,
   which a `no_refresh` session got for free by never rotating. This is the
   DEFAULT for the phone-access QR (`dashboard.qr_session_until_restart`, on by
-  default).
+  default) when identity-bound restart persistence is not enabled.
+- `require_peer`: every request, including refresh, must resolve through the
+  local Tailscale daemon to an allowed peer identity. This replaces the `boot`
+  claim only when `dashboard.qr_session_persist_across_restart` is on together
+  with `qr_session_until_restart`, `dashboard.tailscale.trust_identity`, and a
+  non-empty `allowed_logins`. The guided **Phone access** setup atomically
+  establishes those prerequisites from the daemon-reported local login, so its
+  QR sessions survive gateway restarts and application updates without becoming
+  usable by every member of a shared tailnet. The claim is enforced on the
+  original link, every access-cookie path, and refresh: a daemon timeout or an
+  otherwise unverified forwarded peer fails closed instead of falling back to
+  the proxy's shared `ip:127.0.0.1` identity. The initial QR URL is a claimless,
+  five-minute enrollment bearer; redeeming it from a verified allowed peer
+  mints access **and** refresh cookies carrying that peer's HMAC-signed
+  `peer_key`. Every later request and refresh compares the live daemon identity
+  with that exact signed key (using the scope encoded by the issued key, even if
+  today's `pin_scope` setting changed). After restart, only a matching original
+  peer may re-establish the in-memory hot pin; another allowed node cannot claim
+  a stolen cookie by arriving first. A pre-fix persistent cookie/refresh chain
+  that has `require_peer` but no signed `peer_key` fails closed and requires one
+  new QR scan. Any child mobile/QR link minted by a peer-bound session carries
+  the same `require_peer` + `peer_key` pair, so delegation cannot widen it.
 
-Both are CLAIM-GATED: a token without the claim is not checked against either
+The guided setup writes the base `config.json`, then reloads the merged effective
+configuration. If user-owned `config.local.json` overrides any required identity
+or persistence field, the endpoint returns `409 config_overlay_conflict` with the
+conflicting dotted field names instead of claiming the phone is update-proof.
+The safe base settings already written to `config.json` remain in place; the
+endpoint does not roll them back because the user-owned overlay is the only thing
+preventing them from becoming effective.
+An explicit effective `qr_session_until_restart=false` remains the supported
+timed-session opt-out and is reported as a successful non-persistent setup. A
+retry after removing an override also compares the running gateway's immutable
+tailnet-trust snapshot and still requests a restart when the files no longer
+changed but this process has not loaded the effective identity settings yet.
+
+All three are CLAIM-GATED: a token without the claim is not checked against any
 mechanism, so existing sessions and every default path are unaffected.
 
 #### Public API
@@ -324,7 +359,7 @@ class TokenStateManager:
 
 Up to `MAX_CONCURRENT_NONCES` (**50**) link nonces are valid simultaneously. When the limit is exceeded, the oldest nonce is evicted via `OrderedDict.popitem(last=False)` (O(1)); a successful nonce check also refreshes a nonce's eviction position so an actively-used session isn't evicted by newer grants. The limit was **raised from 5 to 50** specifically so pending Slack link nonces aren't evicted by other token-minting activity (crons, dashboard links, etc.). This allows multiple browser tabs and `kirocrew token` invocations without invalidating prior sessions.
 
-The in-memory `TokenStateManager` (link nonces, IP bindings, consumed set) is cleared on restart, but this does **not** log users out: an established session cookie is validated on the cookie path (`use_session_exp=True`), which needs only a valid HMAC signature (persistent key) + unexpired `session_exp` + a current revocation generation + a nonce not on the persisted denylist — it never consults the in-memory link-nonce set. Revoked-session state is durable: `RevokedNonceStore` persists to `token_revoked_nonces.json` (mode `0600`) and the revocation generation persists to `token_revocation.gen`, so a logged-out cookie stays dead across restarts while a restart alone (generation reloaded unchanged) logs nobody out. Users can revoke a single session via `POST /api/auth/logout` (`revoke_access_cookie()`) or all sessions — access cookies and refresh chains — via `kirocrew logout` (`revoke_all_sessions()`, which bumps the generation both token kinds embed and check).
+The in-memory `TokenStateManager` (link nonces, IP bindings, consumed set) is cleared on restart, but this does **not** log users out: an established session cookie is validated on the cookie path (`use_session_exp=True`), which needs only a valid HMAC signature (persistent key) + unexpired `session_exp` + a current revocation generation + a nonce not on the persisted denylist — it never consults the in-memory link-nonce set. Identity-persistent `require_peer` cookies additionally prove the original device with their signed `peer_key` before the hot pin is reconstructed; the deliberately fail-closed exception is a legacy claimless `require_peer` cookie, which must re-scan once because its original device cannot be recovered safely. Revoked-session state is durable: `RevokedNonceStore` persists to `token_revoked_nonces.json` (mode `0600`) and the revocation generation persists to `token_revocation.gen`, so a logged-out cookie stays dead across restarts while a restart alone (generation reloaded unchanged) logs nobody out. Users can revoke a single session via `POST /api/auth/logout` (`revoke_access_cookie()`) or all sessions — access cookies and refresh chains — via `kirocrew logout` (`revoke_all_sessions()`, which bumps the generation both token kinds embed and check).
 
 If `token_revocation.gen` exists but cannot be read as an integer, both token
 validators fail closed until the state is repaired. The gateway warning names
@@ -612,9 +647,9 @@ dashboard session; if no other device is signed in, it restores the
 
 ## Security Properties
 
-1. Per-process HMAC secret (`os.urandom(32)`) — process restart invalidates all tokens
+1. Persistent HMAC secret (`token_signing.key`, mode `0600`) — signed access and refresh cookies survive a process restart; `os.urandom(32)` is only the fail-safe fallback when the key cannot be persisted
 2. Dual expiry: 5-minute link click window + configurable session TTL (max 20h)
-3. Peer-keyed session pinning on first use — prevents token theft across networks. The pin binds to the client address (`ip:<addr>`), or — when the operator opted into `dashboard.tailscale.trust_identity` and the local daemon verified the forwarded peer — to the tailnet identity (`ts:node:<login>|<node>` or `ts:login:<login>` per `pin_scope`, ACL-tagged nodes always node-scoped). A verified login outside `allowed_logins` is denied outright. Resolution failure is fail-closed on identity and fail-open on availability for NEW sessions: they degrade to the address pin. A session already pinned to a tailnet identity is denied ("tailnet identity unverified") while the daemon cannot answer — never satisfiable by an unverified proxied request — and transient daemon failures (spawn error, timeout) are cached only ~2s so a startup blip clears quickly. Behind a non-Tailscale tunnel the pin binds to the tunnel's loopback address and is therefore shared (reported by Security Posture)
+3. Peer-keyed session pinning on first use — prevents token theft across networks. The pin binds to the client address (`ip:<addr>`), or — when the operator opted into `dashboard.tailscale.trust_identity` and the local daemon verified the forwarded peer — to the tailnet identity (`ts:node:<login>|<node>` or `ts:login:<login>` per `pin_scope`, ACL-tagged nodes always node-scoped). A verified login outside `allowed_logins` is denied outright. Resolution failure is fail-closed on identity and fail-open on availability for NEW ordinary sessions: they degrade to the address pin. A `require_peer` QR link instead fails closed, enrolls one verified allowed peer on its main exchange path, and carries that HMAC-signed original `peer_key` through access cookies, refresh rotation/grace replay, and child mints. A session pinned to a tailnet identity is denied ("tailnet identity unverified") while the daemon cannot answer and denied on signed-key mismatch after restart — never satisfiable by an unverified proxied request or whichever allowed node presents a stolen cookie first. Transient daemon failures (spawn error, timeout) are cached only ~2s so a startup blip clears quickly. Behind a non-Tailscale tunnel the pin binds to the tunnel's loopback address and is therefore shared (reported by Security Posture)
 4. Single-use URL consumption — re-click from different client rejected; same client redirected to strip token
 5. Dashboard link sent via DM only — never posted in channels
 6. Loopback always trusted — local processes (mcp-core, doctor, SSH tunnels) never need tokens

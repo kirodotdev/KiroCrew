@@ -2889,8 +2889,8 @@ class TailscaleConfig:
             "Explicit opt-in, never inferred, and requires a non-empty "
             "allowed_logins — enabling it with an empty allowlist is refused at "
             "load. Every failure to verify a peer falls back to the ordinary "
-            "token path. POSIX only. Takes effect on the next gateway "
-            "start (the trust settings are read once at startup).",
+            "token path. Takes effect on the next gateway start (the trust "
+            "settings are read once at startup).",
         ),
     )
     allowed_logins: list[str] = field(

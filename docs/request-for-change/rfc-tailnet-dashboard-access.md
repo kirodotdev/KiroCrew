@@ -18,9 +18,10 @@ superseded-by: []
   Posture row, and the guide correction across all three tunnel providers.
   **Phase 3 landed** (issue #1762): `resolve_forwarded_peer()` in
   `dashboard/tailnet.py`, the peer-keyed session pin and login allowlist in
-  `dashboard/token_auth.py`, and audit attribution to the resolved login —
-  POSIX-only per OQ4 (Windows resolution is unverified and degrades to the
-  token path). One shape divergence from §3: the implemented peer keys are
+  `dashboard/token_auth.py`, and audit attribution to the resolved login.
+  OQ4 is now resolved: Windows uses the same installed `tailscale whois --json`
+  verification path and degrades to the token path only when verification
+  fails, just like the other platforms. One shape divergence from §3: the implemented peer keys are
   `ts:node:<login>|<node>` / `ts:login:<login>` — the scope tag and the `|`
   separator (forbidden inside either component) exist because logins are
   emails and contain `@`, so the bare shapes in §3 are ambiguous. Phase 2's explicit half
@@ -449,9 +450,10 @@ Exit criteria:
   path resolves once at upgrade rather than per frame.
 - Every gate green with `tailscaled` absent from the CI host.
 
-Entry depends on OQ4 (Windows behaviour) — pin scope is settled (§3.1). If OQ4
-resolves negatively, this phase is POSIX-only and degrades to token auth
-elsewhere.
+OQ4 (Windows behaviour) and pin scope are settled (§3.1). The supported Windows
+CLI provides the same `whois --json` identity document, so the resolution matrix
+is platform-independent and still fails back to token auth on every daemon or
+schema failure.
 
 ### Phase 4 — Tailnet unfurl
 
@@ -535,9 +537,6 @@ IP pin as a mitigation that does not hold.
    If identity is re-verified from the daemon on every request, is the ceiling
    still the right instrument?
 3. **Should §6 exist at all?** It is the only phase that widens egress.
-4. **Windows.** The `tailscale` CLI location and the daemon's local API on
-   Windows are unverified. If resolution is not reliable there, Phase 3 is
-   POSIX-only and must degrade to token auth rather than break.
 
 ## Resolved during review of this document
 
@@ -551,6 +550,10 @@ IP pin as a mitigation that does not hold.
   `tagged-devices`, which would make `login` scope collapse the pin across an
   entire tagged fleet — a tagged node is therefore always pinned to `node`
   regardless of configuration.
+- **Windows identity resolution** (was OQ4). **Resolved: use the installed
+  `tailscale whois --json` CLI on every supported platform.** The Windows client
+  exposes the same schema used on POSIX; malformed output, a missing CLI, a
+  timeout, or an unknown peer continues to fail closed to ordinary token auth.
 - **Scope of the guide correction** (was OQ6). Asked whether Phase 1 should
   correct the inert-pin claim only for the Tailscale rows or for every tunnel the
   guide recommends. **Resolved: every tunnel.** The claim is equally false for

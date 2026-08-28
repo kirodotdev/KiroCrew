@@ -43,18 +43,47 @@ from kiro_crew.dashboard.refresh_tokens import (
     RefreshStateManager,
     generate_refresh_token,
     refresh_cookie_name,
+    refresh_token_peer_key,
     refresh_token_requires_peer,
     validate_refresh_token,
 )
-from kiro_crew.dashboard.tailnet import TailnetTrust
+from kiro_crew.dashboard.tailnet import ForwardedPeer, TailnetTrust
 from kiro_crew.dashboard.token_auth import (
     MAX_SESSION_TTL_SECS,
     _b64url_decode,
     generate_token,
+    required_peer_key_unverified,
     validate_token,
 )
 
 PORT = 7777
+PHONE_PEER_KEY = "ts:node:phone@example.com|phone.tail.ts.net"
+
+
+def _phone_peer(node: str = "phone.tail.ts.net") -> ForwardedPeer:
+    return ForwardedPeer(
+        login="phone@example.com",
+        node=node,
+        address="100.64.0.5",
+    )
+
+
+def _phone_trust(*, pin_scope: str = "node") -> TailnetTrust:
+    return TailnetTrust(
+        trust_identity=True,
+        allowed_logins=("phone@example.com",),
+        pin_scope=pin_scope,
+    )
+
+
+def _legacy_claimless_require_peer_refresh() -> tuple[str, str, str, float]:
+    """Build the pre-fix signed shape that had require_peer but no peer_key."""
+    token, chain_id, jti, exp = generate_refresh_token("phone")
+    payload = json.loads(rt._b64url_decode(token.split(".", 1)[0]))
+    payload["require_peer"] = "1"
+    raw = json.dumps(payload, separators=(",", ":")).encode()
+    encoded = rt._b64url_encode(raw)
+    return f"{encoded}.{rt._sign(raw)}", chain_id, jti, exp
 
 
 @pytest.fixture(autouse=True)
@@ -344,7 +373,9 @@ async def test_require_peer_is_enforced_before_the_grace_replay_return(
     check placed at the mint left a REFRESH_GRACE_SECS window in which a replayed
     token was honoured with no identity check at all.
     """
-    refresh, chain_id, jti, _exp = generate_refresh_token("phone", require_peer=True)
+    refresh, chain_id, jti, _exp = generate_refresh_token(
+        "phone", require_peer=True, peer_key=PHONE_PEER_KEY
+    )
     # Stage exactly the state the grace branch reads: this jti consumed as the
     # chain head, with the replacement pair it minted available for replay.
     state.mark_consumed(
@@ -393,7 +424,9 @@ async def test_require_peer_chain_refuses_to_rotate_without_a_verified_peer(
     burning a 30-day credential over a daemon blip would turn a recoverable
     hiccup into a re-scan.
     """
-    refresh, chain_id, _jti, _exp = generate_refresh_token("phone", require_peer=True)
+    refresh, chain_id, _jti, _exp = generate_refresh_token(
+        "phone", require_peer=True, peer_key=PHONE_PEER_KEY
+    )
     request = _mk(
         "POST",
         "/api/auth/refresh",
@@ -415,10 +448,16 @@ def test_require_peer_survives_rotation_and_defaults_off() -> None:
     A chain that lost the claim on its first rotation would silently become an
     ordinary rotating session - the same defect one rotation later.
     """
-    bound, _c, _j, _e = generate_refresh_token("phone", require_peer=True)
+    bound, _c, _j, _e = generate_refresh_token("phone", require_peer=True, peer_key=PHONE_PEER_KEY)
     assert refresh_token_requires_peer(bound) is True
+    assert refresh_token_peer_key(bound) == PHONE_PEER_KEY
     plain, _c2, _j2, _e2 = generate_refresh_token("desktop")
     assert refresh_token_requires_peer(plain) is False
+
+
+def test_require_peer_refresh_cannot_be_minted_without_a_device_key() -> None:
+    with pytest.raises(ValueError, match="original peer_key"):
+        generate_refresh_token("phone", require_peer=True)
 
 
 def test_require_peer_fails_closed_on_an_undecodable_payload() -> None:
@@ -430,6 +469,151 @@ def test_require_peer_fails_closed_on_an_undecodable_payload() -> None:
     """
     assert refresh_token_requires_peer("not-a-token") is True
     assert refresh_token_requires_peer("") is True
+
+
+@pytest.mark.asyncio
+async def test_require_peer_rotation_preserves_signed_device_on_both_cookies(
+    state: RefreshStateManager,
+    audit: list,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A matching peer may rotate, and neither half may lose the binding."""
+    monkeypatch.setattr(h, "resolve_forwarded_peer", AsyncMock(return_value=_phone_peer()))
+    token, _chain, _jti, _exp = generate_refresh_token(
+        "phone", require_peer=True, peer_key=PHONE_PEER_KEY
+    )
+    response = await h.api_auth_refresh(
+        _mk(
+            cookies={refresh_cookie_name(str(PORT)): token},
+            app_keys={"tailnet_trust": _phone_trust()},
+        )
+    )
+    assert response.status == 200
+    new_access = response.cookies[f"mc_token_{PORT}"].value
+    new_refresh = response.cookies[refresh_cookie_name(str(PORT))].value
+    assert required_peer_key_unverified(new_access) == PHONE_PEER_KEY
+    assert refresh_token_peer_key(new_refresh) == PHONE_PEER_KEY
+    assert refresh_token_requires_peer(new_refresh) is True
+
+
+@pytest.mark.asyncio
+async def test_require_peer_rotation_rejects_another_allowed_node_without_consuming(
+    state: RefreshStateManager,
+    audit: list,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same allowlisted login is insufficient for a node-scoped credential."""
+    monkeypatch.setattr(
+        h,
+        "resolve_forwarded_peer",
+        AsyncMock(return_value=_phone_peer("other-phone.tail.ts.net")),
+    )
+    token, chain_id, jti, _exp = generate_refresh_token(
+        "phone", require_peer=True, peer_key=PHONE_PEER_KEY
+    )
+    response = await h.api_auth_refresh(
+        _mk(
+            cookies={refresh_cookie_name(str(PORT)): token},
+            app_keys={"tailnet_trust": _phone_trust()},
+        )
+    )
+    assert response.status == 401
+    assert _body(response)["code"] == "peer_identity_mismatch"
+    assert "Set-Cookie" not in response.headers
+    assert not state.is_consumed(jti)
+    assert not state.is_chain_revoked(chain_id)
+
+
+@pytest.mark.asyncio
+async def test_legacy_claimless_require_peer_refresh_requires_one_rescan(
+    state: RefreshStateManager,
+    audit: list,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A verified peer cannot claim an unsafe pre-fix chain after restart."""
+    monkeypatch.setattr(h, "resolve_forwarded_peer", AsyncMock(return_value=_phone_peer()))
+    token, chain_id, jti, _exp = _legacy_claimless_require_peer_refresh()
+    response = await h.api_auth_refresh(
+        _mk(
+            cookies={refresh_cookie_name(str(PORT)): token},
+            app_keys={"tailnet_trust": _phone_trust()},
+        )
+    )
+    assert response.status == 401
+    assert _body(response)["code"] == "peer_binding_missing"
+    assert "Set-Cookie" not in response.headers
+    assert not state.is_consumed(jti)
+    assert not state.is_chain_revoked(chain_id)
+
+
+@pytest.mark.asyncio
+async def test_require_peer_grace_replay_checks_signed_device_before_cached_pair(
+    state: RefreshStateManager,
+    audit: list,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A same-IP replay from another node cannot receive cached replacement cookies."""
+    monkeypatch.setattr(
+        h,
+        "resolve_forwarded_peer",
+        AsyncMock(return_value=_phone_peer("other-phone.tail.ts.net")),
+    )
+    token, chain_id, jti, _exp = generate_refresh_token(
+        "phone", require_peer=True, peer_key=PHONE_PEER_KEY
+    )
+    state.mark_consumed(
+        jti,
+        chain_id,
+        time.time() + 3600,
+        "203.0.113.9",
+        json.dumps(
+            {
+                "session_exp": time.time() + 3600,
+                "refresh_exp": time.time() + 3600,
+                "_access_token": "cached-access",
+                "_refresh_token": "cached-refresh",
+            }
+        ),
+    )
+    response = await h.api_auth_refresh(
+        _mk(
+            cookies={refresh_cookie_name(str(PORT)): token},
+            app_keys={"tailnet_trust": _phone_trust()},
+        )
+    )
+    assert response.status == 401
+    assert _body(response)["code"] == "peer_identity_mismatch"
+    assert "Set-Cookie" not in response.headers
+    assert not state.is_chain_revoked(chain_id)
+
+
+@pytest.mark.asyncio
+async def test_require_peer_rotation_preserves_signed_login_scope(
+    state: RefreshStateManager,
+    audit: list,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issued scope, rather than today's config, controls refresh comparison."""
+    login_key = "ts:login:phone@example.com"
+    monkeypatch.setattr(
+        h,
+        "resolve_forwarded_peer",
+        AsyncMock(return_value=_phone_peer("replacement-phone.tail.ts.net")),
+    )
+    token, _chain, _jti, _exp = generate_refresh_token(
+        "phone", require_peer=True, peer_key=login_key
+    )
+    response = await h.api_auth_refresh(
+        _mk(
+            cookies={refresh_cookie_name(str(PORT)): token},
+            app_keys={"tailnet_trust": _phone_trust(pin_scope="node")},
+        )
+    )
+    assert response.status == 200
+    assert required_peer_key_unverified(response.cookies[f"mc_token_{PORT}"].value) == login_key
+    assert (
+        refresh_token_peer_key(response.cookies[refresh_cookie_name(str(PORT))].value) == login_key
+    )
 
 
 @pytest.mark.asyncio

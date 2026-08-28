@@ -49,9 +49,11 @@ from typing import Any, Literal, NamedTuple
 from aiohttp import web
 
 from kiro_crew.config import KiroCrewConfig
+from kiro_crew.config.loader import ConfigReadError, config_path, update_config_locked
 from kiro_crew.dashboard import tailnet, tailnet_serve
 from kiro_crew.dashboard.boot_id import current_boot_id
 from kiro_crew.dashboard.handlers._shared import _caller_bounds, _is_restricted_session
+from kiro_crew.dashboard.handlers.agents import _get_config_lock
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.token_auth import (
     LINK_WINDOW_SECS,
@@ -245,6 +247,12 @@ async def api_tailnet_mobile_status(request: web.Request) -> web.Response:
     probe = live.probe
     return web.json_response(
         {
+            # A per-process marker lets the setup flow prove that a requested
+            # restart reached the replacement gateway. Step text alone is not
+            # sufficient: an already-ready pre-migration process remains
+            # ``ready`` during its response-flush window and could otherwise
+            # mint one last boot-bound QR before exiting.
+            "boot_id": current_boot_id(),
             "step": live.step,
             "host": probe.name,
             "origin": f"https://{probe.name}" if probe.name else "",
@@ -469,6 +477,221 @@ def _guard(request: web.Request) -> web.Response | None:
             status=403,
         )
     return None
+
+
+def _apply_mobile_setup_config(data: dict, login: str) -> tuple[bool, bool, bool]:
+    """Apply the durable half of one-click mobile setup in place.
+
+    Returns ``(changed, restart_required, persistent)``. The login comes from
+    this machine's daemon status, not from the browser, and is ADDED to an
+    existing allowlist rather than replacing it. That makes the explicit
+    "Set up / Show QR" action sufficient to establish the identity bound a
+    session needs to survive an update without silently removing identities an
+    operator configured by hand.
+
+    ``qr_session_until_restart=false`` is the one advanced opt-out preserved:
+    it deliberately asks for a clock-bounded, non-refreshing session. Every
+    default/ordinary shape is promoted to persistent once identity trust is
+    ready. Trust/origin changes require a gateway restart because middleware
+    snapshots them at boot; changing only the QR session shape does not.
+    """
+    dashboard = data.setdefault("dashboard", {})
+    if not isinstance(dashboard, dict):
+        raise ValueError("config section 'dashboard' is not an object")
+    tailscale = dashboard.setdefault("tailscale", {})
+    if not isinstance(tailscale, dict):
+        raise ValueError("config section 'dashboard.tailscale' is not an object")
+
+    changed = False
+    restart_required = False
+
+    def _set(section: dict, key: str, value: object, *, restart: bool = False) -> None:
+        nonlocal changed, restart_required
+        if section.get(key) == value:
+            return
+        section[key] = value
+        changed = True
+        restart_required = restart_required or restart
+
+    _set(tailscale, "enabled", True, restart=True)
+
+    raw_logins = tailscale.get("allowed_logins", [])
+    if not isinstance(raw_logins, list):
+        raise ValueError("config field 'dashboard.tailscale.allowed_logins' is not a list")
+    allowed_logins = list(raw_logins)
+    if login and not any(
+        isinstance(entry, str) and entry.strip().lower() == login.lower()
+        for entry in allowed_logins
+    ):
+        allowed_logins.append(login)
+        _set(tailscale, "allowed_logins", allowed_logins, restart=True)
+    if login:
+        _set(tailscale, "trust_identity", True, restart=True)
+
+    identity_ready = bool(
+        tailscale.get("trust_identity") is True
+        and any(isinstance(entry, str) and entry.strip() for entry in allowed_logins)
+    )
+    persistent = False
+    if identity_ready and dashboard.get("qr_session_until_restart", True) is not False:
+        _set(dashboard, "qr_session_until_restart", True)
+        _set(dashboard, "qr_session_persist_across_restart", True)
+        persistent = True
+
+    return changed, restart_required, persistent
+
+
+def _effective_mobile_setup(cfg: KiroCrewConfig, login: str) -> tuple[bool, list[str]]:
+    """Validate the merged config that the next gateway boot will consume.
+
+    The writer above intentionally edits ``config.json`` only, while
+    ``config.local.json`` is a user-owned, higher-precedence overlay.  Returning
+    success from the raw base write would therefore be a lie when that overlay
+    disables identity trust or persistence.  The explicit timed-session opt-out
+    remains valid; every other mismatch is returned as a dotted field name so
+    the caller can explain exactly what the overlay must stop overriding.
+    """
+    dashboard = cfg.dashboard
+    tailscale = dashboard.tailscale
+    allowed_logins = tuple(
+        entry for entry in getattr(tailscale, "allowed_logins", ()) if isinstance(entry, str)
+    )
+    conflicts: list[str] = []
+    if getattr(tailscale, "enabled", False) is not True:
+        conflicts.append("dashboard.tailscale.enabled")
+    if getattr(tailscale, "trust_identity", False) is not True:
+        conflicts.append("dashboard.tailscale.trust_identity")
+    if not tailnet.login_allowed(login, allowed_logins):
+        conflicts.append("dashboard.tailscale.allowed_logins")
+
+    timed_opt_out = getattr(dashboard, "qr_session_until_restart", True) is False
+    persistent = False
+    if not timed_opt_out:
+        if getattr(dashboard, "qr_session_persist_across_restart", False) is not True:
+            conflicts.append("dashboard.qr_session_persist_across_restart")
+        else:
+            persistent = not conflicts
+    return persistent, conflicts
+
+
+def _running_tailnet_trust_ready(request: web.Request, login: str) -> bool:
+    """Whether this process can enforce a persistent phone session right now."""
+    trust = request.app.get("tailnet_trust")
+    if not isinstance(trust, tailnet.TailnetTrust):
+        return False
+    return trust.trust_identity and tailnet.login_allowed(login, trust.allowed_logins)
+
+
+async def api_tailnet_mobile_configure(request: web.Request) -> web.Response:
+    """POST /api/tailnet/mobile/configure — persist safe update-proof access.
+
+    This is deliberately a dedicated owner-only mutation instead of four
+    generic config PATCHes. The allowlist value is discovered from the local
+    Tailscale daemon and all related fields land in one locked write, so a
+    crash or concurrent settings save cannot leave ``trust_identity`` enabled
+    with an empty list, or persistence enabled without its identity bound.
+    """
+    refusal = _guard(request)
+    if refusal is not None:
+        await _audit_async(request, "tailnet.mobile.configure", "denied", "restricted-session")
+        return refusal
+
+    pinned = await asyncio.to_thread(
+        tailnet.is_governance_pinned_off, audit_tool="tailnet_mobile_configure"
+    )
+    if pinned:
+        await _audit_async(request, "tailnet.mobile.configure", "denied", "governance-pinned")
+        return web.json_response(
+            {
+                "error": "tailnet access is disabled by your administrator's security policy",
+                "code": "governance_pinned",
+            },
+            status=403,
+        )
+
+    probe = await asyncio.to_thread(tailnet.probe_daemon)
+    if not (probe.reachable and probe.logged_in and probe.name and probe.login):
+        await _audit_async(request, "tailnet.mobile.configure", "denied", "daemon-not-ready")
+        return web.json_response(
+            {
+                "error": (
+                    "Tailscale must be signed in with MagicDNS and a readable local "
+                    "login before persistent phone access can be configured."
+                ),
+                "code": "daemon_not_ready",
+            },
+            status=409,
+        )
+
+    result: dict[str, bool] = {}
+
+    def _mutate(data: dict) -> dict | None:
+        changed, restart_required, persistent = _apply_mobile_setup_config(data, probe.login)
+        result.update(
+            changed=changed,
+            restart_required=restart_required,
+            persistent=persistent,
+        )
+        return data if changed else None
+
+    try:
+        async with _get_config_lock():
+            await asyncio.to_thread(update_config_locked, config_path(), mutate=_mutate)
+    except ConfigReadError:
+        await _audit_async(request, "tailnet.mobile.configure", "error", "config-read-failed")
+        return web.json_response(
+            {"error": "failed to read config file", "code": "config_read_failed"}, status=500
+        )
+    except ValueError as exc:
+        await _audit_async(request, "tailnet.mobile.configure", "error", "config-invalid")
+        return web.json_response({"error": str(exc), "code": "config_invalid"}, status=500)
+    except OSError:
+        await _audit_async(request, "tailnet.mobile.configure", "error", "config-write-failed")
+        return web.json_response(
+            {"error": "failed to write config file", "code": "config_write_failed"}, status=500
+        )
+
+    effective = await asyncio.to_thread(KiroCrewConfig.load)
+    persistent, conflicts = _effective_mobile_setup(effective, probe.login)
+    result["persistent"] = persistent
+    if conflicts:
+        await _audit_async(
+            request,
+            "tailnet.mobile.configure",
+            "denied",
+            "config-local-override",
+        )
+        return web.json_response(
+            {
+                "error": (
+                    "config.json now contains the safe phone-access settings, but "
+                    "config.local.json overrides them; update or remove the listed "
+                    "overrides, then retry so the gateway can load them"
+                ),
+                "code": "config_overlay_conflict",
+                "fields": conflicts,
+            },
+            status=409,
+        )
+
+    if persistent and not _running_tailnet_trust_ready(request, probe.login):
+        # A prior attempt may have written the base file but returned the
+        # overlay conflict above. Once the user removes that overlay, a retry
+        # sees no raw-file change; nevertheless this process still holds the
+        # old startup trust snapshot and must restart before a require_peer
+        # link can work. Comparing the LIVE snapshot keeps that retry honest.
+        result["restart_required"] = True
+
+    await _audit_async(
+        request,
+        "tailnet.mobile.configure",
+        "success",
+        "persistent" if result.get("persistent") else "boot-bound",
+    )
+    # The browser needs only the action it must take next. ``changed`` and
+    # ``persistent`` remain server-side inputs to restart/audit decisions; a
+    # successful 2xx response already carries the success bit.
+    return web.json_response({"restart_required": bool(result.get("restart_required"))})
 
 
 async def api_tailnet_mobile_publish(request: web.Request) -> web.Response:
@@ -819,7 +1042,13 @@ async def api_tailnet_mobile_qr(request: web.Request) -> web.Response:
     # unbounded - which the desktop local-bootstrap mint is, since
     # ``/api/token/local`` carries neither ``boot`` nor ``no_refresh``.
     claims = {**shape, **carried}
-    token = generate_token(owner_id or "local-app", ttl_seconds=ttl, extra=claims)
+    caller_peer_key = claims.pop("peer_key", "")
+    token = generate_token(
+        owner_id or "local-app",
+        ttl_seconds=ttl,
+        peer_key=caller_peer_key,
+        extra=claims,
+    )
     url = f"https://{host}/?token={token}"
     try:
 

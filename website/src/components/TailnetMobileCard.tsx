@@ -167,12 +167,35 @@ function pause(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms))
 }
 
+/** Preserve the backend's actionable overlay field list in the visible error.
+ *
+ * `ApiError.body` is intentionally available for call sites that need more
+ * than the generic human message. Keep this structural rather than
+ * `instanceof ApiError`: component tests mock the API module, and the useful
+ * contract here is simply status + raw body.
+ */
+function setupErrorMessage(err: Error): string {
+  const apiErr = err as Error & { status?: unknown; body?: unknown }
+  if (apiErr.status !== 409 || typeof apiErr.body !== 'string') return err.message
+  try {
+    const payload = JSON.parse(apiErr.body) as { fields?: unknown }
+    if (!Array.isArray(payload.fields)) return err.message
+    const fields = payload.fields.filter(
+      (field): field is string => typeof field === 'string' && field.length > 0,
+    )
+    return fields.length > 0 ? `${err.message} (${fields.join(', ')})` : err.message
+  } catch {
+    return err.message
+  }
+}
+
 /** Wait for the replacement gateway rather than mistaking the old process's
  * final 200 for recovery. The old process can answer `restart_gateway` for the
  * 250 ms response-flush window; only a different step proves startup ran again.
  * Network errors are expected while the listener is between process images.
  */
 async function waitForRestartedGateway(
+  previousBootId: string,
   onStatus: (next: TailnetMobileData) => void,
 ): Promise<TailnetMobileData> {
   const deadline = Date.now() + RESTART_WAIT_MS
@@ -181,7 +204,11 @@ async function waitForRestartedGateway(
     try {
       const next = await api.tailnetMobile()
       onStatus(next)
-      if (next.step !== 'trust_off' && next.step !== 'restart_gateway') return next
+      if (
+        next.boot_id !== previousBootId &&
+        next.step !== 'trust_off' &&
+        next.step !== 'restart_gateway'
+      ) return next
     } catch {
       // Expected while the old listener exits and the replacement binds.
     }
@@ -242,6 +269,7 @@ export function TailnetMobileCard() {
   const [qr, setQr] = useState<TailnetMobileQr | null>(null)
   const [actionError, setActionError] = useState('')
   const [inviteExpanded, setInviteExpanded] = useState(readInviteExpanded)
+  const [setupRestarting, setSetupRestarting] = useState(false)
 
   /** Single writer for the invite's open/closed state, so the persisted value
    *  can never drift from what is rendered. */
@@ -274,15 +302,6 @@ export function TailnetMobileCard() {
     onError: (err: Error) => setActionError(err.message),
   })
 
-  const mintQr = useMutation({
-    mutationFn: () => api.tailnetMobileQr(),
-    onSuccess: (res) => {
-      setActionError('')
-      setQr(res)
-    },
-    onError: (err: Error) => setActionError(err.message),
-  })
-
   /** Finish every gateway-owned step behind one click.
    *
    * Each transition is read back from the server rather than re-derived here.
@@ -299,14 +318,35 @@ export function TailnetMobileCard() {
         qc.setQueryData(['tailnet-mobile'], next)
       }
 
-      if (current.step === 'trust_off') {
-        await api.patchConfig('dashboard.tailscale.enabled', true)
+      // One atomic server-side write enables the origin, enrolls the daemon's
+      // own login, and makes the QR session survive future gateway restarts.
+      // It runs for the already-ready path too: that is the upgrade migration
+      // for users who set up phone access before persistent sessions existed.
+      const configured = await api.tailnetMobileConfigure()
+      if (configured.restart_required) {
+        // The query-cache snapshot can predate this click. Refresh immediately
+        // before capturing the fence, otherwise the still-running OLD gateway
+        // can look "new" relative to a stale boot id and we can mint the QR
+        // before the replacement has loaded identity trust.
         accept(await api.tailnetMobile())
+        const previousBootId = current.boot_id
+        setSetupRestarting(true)
+        await api.restartGateway()
+        current = await waitForRestartedGateway(previousBootId, accept)
+        setSetupRestarting(false)
       }
 
       if (current.step === 'restart_gateway') {
-        await api.restartGateway()
-        current = await waitForRestartedGateway(accept)
+        // Re-check before a disruptive action: background recovery may have
+        // made the restart unnecessary since the card rendered.
+        accept(await api.tailnetMobile())
+        if (current.step === 'restart_gateway') {
+          const previousBootId = current.boot_id
+          setSetupRestarting(true)
+          await api.restartGateway()
+          current = await waitForRestartedGateway(previousBootId, accept)
+          setSetupRestarting(false)
+        }
       }
 
       if (current.step === 'publish') {
@@ -328,7 +368,8 @@ export function TailnetMobileCard() {
       setQr(res)
       invalidate()
     },
-    onError: (err: Error) => setActionError(err.message),
+    onError: (err: Error) => setActionError(setupErrorMessage(err)),
+    onSettled: () => setSetupRestarting(false),
   })
 
   if (isLoading || !data) return null
@@ -389,7 +430,6 @@ export function TailnetMobileCard() {
   const Icon = STEP_ICON[step]
   const busy =
     unpublish.isPending ||
-    mintQr.isPending ||
     setup.isPending
 
   return (
@@ -452,6 +492,12 @@ export function TailnetMobileCard() {
             </p>
           ) : null}
 
+          {setupRestarting ? (
+            <p className="mt-2 text-muted">
+              {i18nT('components.tailnetMobile.restart_gateway_title')}
+            </p>
+          ) : null}
+
           {/* The other half of the setup, and the one this machine cannot do for
               the operator. Shown on the two steps where they are about to rely on
               a phone reaching this address: publishing succeeds and the QR renders
@@ -497,9 +543,11 @@ export function TailnetMobileCard() {
 
             {step === 'ready' ? (
               <>
-                <Btn primary disabled={busy} onClick={() => mintQr.mutate()}>
+                <Btn primary disabled={busy} onClick={() => setup.mutate()}>
                   <QrCode className="lucide-inline" />
-                  {i18nT('components.tailnetMobile.show_qr')}
+                  {setup.isPending
+                    ? i18nT('components.tailnetMobile.setting_up')
+                    : i18nT('components.tailnetMobile.setup_action')}
                 </Btn>
                 <Btn disabled={busy} onClick={() => unpublish.mutate()}>
                   {i18nT('components.tailnetMobile.stop')}

@@ -305,13 +305,26 @@ the same and the difference is the whole security story:
   certificate file to create or install manually. The action still refuses to
   replace a different service already mounted at `443/`.
 
-  The CLI equivalent is:
+  The same click enrolls this machine's daemon-reported Tailscale login in the
+  explicit allowlist and makes the phone session survive gateway restarts and
+  application updates. Each request still has to resolve through the local
+  Tailscale daemon as that allowed identity; persistence does not turn the QR
+  into a tailnet-wide bearer session. Users who set up phone access on an older
+  build migrate when they next choose **Show QR code** on the desktop. A session
+  already invalidated by the update that installed this migration cannot be
+  revived, so that upgrade requires one final scan; later updates do not.
+
+  The basic CLI equivalent is:
   ```bash
   kirocrew config set dashboard.tailscale.enabled true   # once per machine
   kirocrew restart
   kirocrew tailnet up
   kirocrew token                                         # the link to open on the phone
   ```
+  This manual sequence keeps the config's selected session policy. The guided
+  card is the path that safely discovers the local login and atomically enables
+  identity-bound restart persistence without asking you to hand-edit an
+  allowlist.
   `kirocrew tailnet up` runs `tailscale serve` for you — HTTPS on 443 in front of
   the dashboard's loopback port — and prints the URL to open on your phone. That is
   the half that used to be an undocumented command you had to know and type.

@@ -56,8 +56,13 @@ def _minted_claims(payload: dict) -> dict:
     return json.loads(_b64url_decode(token.split(".", 1)[0]))
 
 
-def _caller_token(**extra: str) -> str:
-    return generate_token("alice", ttl_seconds=MAX_SESSION_TTL_SECS, extra=extra or None)
+def _caller_token(*, peer_key: str = "", **extra: str) -> str:
+    return generate_token(
+        "alice",
+        ttl_seconds=MAX_SESSION_TTL_SECS,
+        peer_key=peer_key,
+        extra=extra or None,
+    )
 
 
 def test_mobile_link_uses_configured_external_origin():
@@ -139,6 +144,22 @@ def test_mobile_link_carries_the_callers_bounds_into_the_minted_token():
     claims = _minted_claims(json.loads(response.text))
     assert claims["boot"] == "boot-abc"
     assert claims["no_refresh"] == "1"
+
+
+def test_mobile_link_carries_the_callers_exact_device_binding():
+    """A delegated login link cannot widen a peer-bound session."""
+    peer_key = "ts:node:alice@example.com|phone.tail.ts.net"
+    response = _call(
+        _request(
+            dashboard_url="https://dashboard.example",
+            cookie_token=_caller_token(require_peer="1", peer_key=peer_key),
+        )
+    )
+
+    assert response.status == 200
+    claims = _minted_claims(json.loads(response.text))
+    assert claims["require_peer"] == "1"
+    assert claims["peer_key"] == peer_key
 
 
 def test_mobile_link_caps_ttl_at_the_callers_remaining_session():

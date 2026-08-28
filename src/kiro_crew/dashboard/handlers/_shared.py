@@ -29,6 +29,7 @@ from kiro_crew.dashboard.state import VALID_MEMORY_MODES, DashboardState
 from kiro_crew.dashboard.token_auth import (
     MAX_SESSION_TTL_SECS,
     _b64url_decode,
+    required_peer_key_unverified,
 )
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.messaging.privacy_mode import hydrate as _hydrate_conv_flags
@@ -1523,9 +1524,10 @@ def _caller_bounds(request: web.Request) -> tuple[dict[str, str], int]:
     copied verbatim (same rule as the link→session exchange in ``token_auth``),
     ``no_refresh`` copied so the recipient session never grows a refresh chain,
     and the remaining ``session_exp`` becomes the TTL ceiling so a short-lived
-    caller cannot mint a longer-lived credential. Fail-closed on an unreadable
-    payload: a caller whose bounds cannot be established gets a bounded
-    (no-refresh, default-TTL-capped) link rather than an unbounded one.
+    caller cannot mint a longer-lived credential. ``require_peer`` and its
+    signed ``peer_key`` move as one inseparable device bound. Fail-closed on an
+    unreadable payload: a caller whose bounds cannot be established gets a
+    bounded (no-refresh, default-TTL-capped) link rather than an unbounded one.
 
     **Read the credential the middleware VALIDATED, not a re-extracted one.**
     Only that credential has a verified signature; the other one was never
@@ -1562,6 +1564,13 @@ def _caller_bounds(request: web.Request) -> tuple[dict[str, str], int]:
             carried["boot"] = boot
         if str(data.get("no_refresh", "")) == "1":
             carried["no_refresh"] = "1"
+        if str(data.get("require_peer", "")) == "1":
+            carried["require_peer"] = "1"
+            # Middleware refuses a claimless require_peer cookie, so the
+            # fallback is unreachable on a real authenticated request. Keep it
+            # fail-closed for direct test doubles or future alternate auth:
+            # an impossible key mints an unusable child instead of widening it.
+            carried["peer_key"] = required_peer_key_unverified(token) or "unverified"
         session_exp = float(data.get("session_exp", 0.0))
         if session_exp:
             remaining = int(session_exp - time.time())

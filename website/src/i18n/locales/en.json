@@ -5203,7 +5203,6 @@
       "copy": "Copy",
       "copy_link": "Copy link",
       "download": "Download Tailscale",
-      "show_qr": "Show QR code",
       "hide_qr": "Hide",
       "stop": "Turn off",
       "recheck": "Re-check",
