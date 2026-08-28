@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
-import time
 
 
 @pytest.fixture
@@ -129,7 +129,7 @@ def test_orchestration_tracker_failure_limit():
     t = OrchestrationTracker()
     assert t.record_failure("task-a") is False  # 1
     assert t.record_failure("task-a") is False  # 2
-    assert t.record_failure("task-a") is True   # 3 — limit reached
+    assert t.record_failure("task-a") is True  # 3 — limit reached
     assert t.failure_count("task-a") == 3
 
 
@@ -185,100 +185,6 @@ def test_stage_timeout_resets_after_guidance():
     t.record_round(1)  # must restart timer — core fix
     assert t._stage_start > 0
     assert not t.is_stage_timed_out()
-
-
-def test_plan_memory_roundtrip(tmp_path):
-    from kiro_crew.context_management import append_plan_event, load_plan_memory
-
-    with patch("kiro_crew.context_management.config_dir", return_value=tmp_path):
-        append_plan_event("sess-1", {"type": "plan_created", "stages": ["a", "b"]})
-        append_plan_event("sess-1", {"type": "user_guidance", "question": "skip?", "answer": "yes"})
-        append_plan_event("sess-2", {"type": "plan_created", "stages": ["c"]})
-        # All events
-        all_events = load_plan_memory()
-        assert len(all_events) == 3
-        # Filtered by session
-        events = load_plan_memory("sess-1")
-    assert len(events) == 2
-    assert events[0]["type"] == "plan_created"
-    assert events[1]["answer"] == "yes"
-
-
-def test_plan_memory_summary_with_lessons(tmp_path):
-    from kiro_crew.context_management import (
-        append_plan_event,
-        plan_lessons_path,
-        summarize_plan_memory_for_context,
-    )
-
-    with patch("kiro_crew.context_management.config_dir", return_value=tmp_path):
-        # Write global plan lessons (as if consolidation generated them)
-        plan_lessons_path().parent.mkdir(parents=True, exist_ok=True)
-        plan_lessons_path().write_text("- Always run tests before committing\n- Lint failures can be skipped for hotfixes")
-        # Write session events
-        append_plan_event("sess-2", {"type": "task_failed", "stage": 1, "task": "lint", "error": "timeout", "attempt": 2})
-        append_plan_event("sess-2", {"type": "user_guidance", "question": "skip lint?", "answer": "yes, skip it"})
-        summary = summarize_plan_memory_for_context("sess-2")
-    assert "Plan lessons from past sessions" in summary
-    assert "Always run tests" in summary
-
-
-def test_plan_memory_empty_session(tmp_path):
-    from kiro_crew.context_management import summarize_plan_memory_for_context
-    import kiro_crew.context_management as _cm
-
-    _cm._plan_lessons_cache = (0.0, "")  # reset cache from prior tests
-    with patch("kiro_crew.context_management.config_dir", return_value=tmp_path):
-        assert summarize_plan_memory_for_context("nonexistent") == ""
-
-
-def test_build_plan_consolidation_prompt(tmp_path):
-    from kiro_crew.context_management import (
-        append_plan_event,
-        build_plan_consolidation_prompt,
-        save_plan_lessons,
-        plan_lessons_path,
-    )
-
-    with patch("kiro_crew.context_management.config_dir", return_value=tmp_path):
-        # No events → empty prompt
-        assert build_plan_consolidation_prompt() == ""
-
-        # Simulate events from multiple sessions
-        append_plan_event("s1", {"type": "task_failed", "task": "lint check", "error": "timeout"})
-        append_plan_event("s2", {"type": "task_failed", "task": "lint check", "error": "timeout"})
-        append_plan_event("s1", {"type": "user_guidance", "question": "skip?", "answer": "Yes, skip lint for hotfixes"})
-        append_plan_event("s2", {"type": "plan_completed", "success": True, "summary": "3-stage review worked well"})
-
-        prompt = build_plan_consolidation_prompt()
-        assert "lint check" in prompt
-        assert "skip lint" in prompt
-        assert "3-stage review" in prompt
-        assert "plan_lessons.md" in prompt
-
-        # save_plan_lessons writes to disk
-        save_plan_lessons("- Always run tests first")
-        assert plan_lessons_path().exists()
-        assert "Always run tests" in plan_lessons_path().read_text()
-
-
-def test_build_stage_context(tmp_path):
-    from kiro_crew.context_management import build_stage_context, plan_lessons_path
-
-    with patch("kiro_crew.context_management.config_dir", return_value=tmp_path):
-        plan_lessons_path().parent.mkdir(parents=True, exist_ok=True)
-        plan_lessons_path().write_text("- Always run tests first")
-
-        ctx = build_stage_context(
-            session_id="s1",
-            approved_plan="Stage 1: Review\nStage 2: Fix\nStage 3: Test",
-            completed_stages=[
-                {"stage": 1, "status": "success", "summary": "Found 2 issues"},
-            ],
-        )
-    assert "Always run tests" in ctx
-    assert "Stage 1: Review" in ctx
-    assert "Found 2 issues" in ctx
 
 
 # ── Orchestration tracker: additional coverage ──────────────────────
@@ -357,11 +263,15 @@ def test_looks_like_plan_true():
 def test_looks_like_plan_true_numbered_bold():
     from kiro_crew.context_management import looks_like_plan
 
-    assert looks_like_plan("1. **Analysis**: check\n2. **Implementation**: code\n3. **Test**: verify") is True
+    assert (
+        looks_like_plan("1. **Analysis**: check\n2. **Implementation**: code\n3. **Test**: verify")
+        is True
+    )
 
 
 def test_looks_like_plan_true_stage_keyword():
     from kiro_crew.context_management import looks_like_plan
+
     assert looks_like_plan("Stage 1: Setup\n- Install deps\nStage 2: Build\n- Compile") is True
 
 
@@ -390,7 +300,9 @@ async def test_rephrase_plan_not_a_plan_returns_none():
 
     with patch("kiro_crew.llm_helpers.stream_and_collect", new_callable=AsyncMock) as mock_stream:
         mock_stream.return_value = "NOT_A_PLAN"
-        result = await rephrase_plan("some analysis text", ["No header"], client, might_not_be_plan=True)
+        result = await rephrase_plan(
+            "some analysis text", ["No header"], client, might_not_be_plan=True
+        )
     assert result is None
 
 
@@ -402,7 +314,9 @@ async def test_rephrase_plan_is_a_plan_returns_reformatted():
     reformatted = "📋 Plan for: task\n\nStage 1: Do it\n- step\n\n[OPTION: Go | Go All | Cancel]"
     with patch("kiro_crew.llm_helpers.stream_and_collect", new_callable=AsyncMock) as mock_stream:
         mock_stream.return_value = reformatted
-        result = await rephrase_plan("Phase 1: Do it", ["No header"], AsyncMock(), might_not_be_plan=True)
+        result = await rephrase_plan(
+            "Phase 1: Do it", ["No header"], AsyncMock(), might_not_be_plan=True
+        )
     assert result == reformatted
 
 
@@ -427,7 +341,9 @@ def test_validate_plan_format_no_header():
 def test_validate_plan_format_no_stages():
     from kiro_crew.context_management import validate_plan_format
 
-    has_plan, valid, issues = validate_plan_format('📋 Plan for: "test"\n\n[OPTION: Go | Go All | Cancel]')
+    has_plan, valid, issues = validate_plan_format(
+        '📋 Plan for: "test"\n\n[OPTION: Go | Go All | Cancel]'
+    )
     assert has_plan and not valid
     assert any("Stage" in i for i in issues)
 

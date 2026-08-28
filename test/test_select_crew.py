@@ -12,7 +12,11 @@ import kiro_crew.mcp_core as mcp_core
 def _write_cfg(tmp_path: Path) -> Path:
     data = {
         "agents": {
-            "default": {"kiro_agent": "kirocrew", "workspace": "default", "memory_store": "default"},
+            "default": {
+                "kiro_agent": "kirocrew",
+                "workspace": "default",
+                "memory_store": "default",
+            },
             "oncall": {
                 "kiro_agent": "oncall-agent",
                 "workspace": "oncall-ws",

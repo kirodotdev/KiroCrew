@@ -50,7 +50,6 @@ src/kiro_crew/cloud/wizard.py 65.8   # 283/430
 src/kiro_crew/computer_use/cli.py 68.8   # 130/189
 src/kiro_crew/computer_use/macos_skylight.py 54.8   # 142/259
 src/kiro_crew/conpty.py 27.9   # 12/43
-src/kiro_crew/context_management.py 74.2   # 178/240
 src/kiro_crew/dashboard/_types.py 0.0   # 0/3
 src/kiro_crew/dashboard/handlers/agents.py 77.4   # 579/748
 src/kiro_crew/dashboard/handlers/cron.py 70.9   # 400/564
@@ -72,7 +71,6 @@ src/kiro_crew/mcp_gateway/manager.py 28.7   # 96/335
 src/kiro_crew/mcp_gateway/pool.py 68.6   # 286/417
 src/kiro_crew/mcp_gateway/stub.py 66.6   # 353/530
 src/kiro_crew/mcp_gateway/transport.py 73.1   # 163/223
-src/kiro_crew/session_workspace.py 38.8   # 26/67
 src/kiro_crew/skill_providers/skillsh.py 64.0   # 137/214
 src/kiro_crew/slack/allowlist.py 57.1   # 68/119
 src/kiro_crew/slack/client.py 67.2   # 246/366

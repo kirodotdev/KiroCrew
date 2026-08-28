@@ -94,7 +94,6 @@ DEFAULT_TARGETS = (
     "src",
     "scripts",
     "test",
-    "tests",
     "packages",
     "docker",
     "packaging",

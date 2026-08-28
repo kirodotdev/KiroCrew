@@ -321,6 +321,28 @@ jobs:
           python3 scripts/check_loop_bound_locks.py --test
           python3 scripts/check_loop_bound_locks.py
 
+  testpaths-coverage:
+    name: Testpaths Coverage Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check that every pytest test file sits under a collected root
+        # setup.cfg pins `testpaths`, so a test_*.py file created outside those
+        # roots is silently never run — green by omission — and rots against
+        # the code it claims to cover (#6577: twelve files sat uncollected in a
+        # root-level tests/ dir). Whole-tree, not diff-scoped: the backlog is
+        # zero after #6577's move, so there is nothing to charge to whoever
+        # pushes next. Nested distributions with their own pyproject/setup.cfg
+        # and marker-exempted manual scripts are excluded; see the script
+        # docstring.
+        run: |
+          # Self-test first: it plants one probe per rule family, so a rule
+          # that silently stops matching fails here instead of shipping green.
+          python3 scripts/check_testpaths_coverage.py --test
+          python3 scripts/check_testpaths_coverage.py
+
   harness-parity:
     name: Harness Parity Gate
     runs-on: ubuntu-latest

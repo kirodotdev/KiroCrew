@@ -63,11 +63,15 @@ class TestWidgetBlockPlaceholder:
             assert "bg-[var(" not in result
 
     def test_pointer_is_short(self):
-        # Hard budget: each pointer branch stays under 300 chars. The old
-        # block was ~800. Catches accidental regrowth.
-        for density in ("more", "less"):
+        # Hard budget per density. The pre-pointer block was ~800 chars of
+        # inlined instructions; the pointer deliberately grew to two short
+        # sections (Inline Widgets + Artifacts, ~640 chars for "more") when the
+        # Artifacts pointer was added. Budgets sit just above today's sizes to
+        # keep catching accidental regrowth toward inlining full skill docs.
+        budgets = {"more": 700, "less": 400}
+        for density, budget in budgets.items():
             result = _resolve("{{WIDGET_BLOCK}}", "dashboard:abc", density=density)
-            assert len(result) < 300, f"{density} pointer too long: {len(result)} chars"
+            assert len(result) < budget, f"{density} pointer too long: {len(result)} chars"
 
     def test_dashboard_underscore_key_also_matches(self):
         # Some dashboard sessions use `dashboard_<slot>` instead of `dashboard:<slot>`.
@@ -121,9 +125,7 @@ class TestMaxSubagentsPlaceholder:
 
     def test_resolver_error_falls_back_to_several(self):
         # A raising resolver must never break prompt assembly.
-        result = self._resolve_cap(
-            "up to {{MAX_SUBAGENTS}} agents", "dashboard:abc", raises=True
-        )
+        result = self._resolve_cap("up to {{MAX_SUBAGENTS}} agents", "dashboard:abc", raises=True)
         assert "up to several agents" in result
 
     def test_absent_token_skips_resolver(self):
@@ -131,9 +133,10 @@ class TestMaxSubagentsPlaceholder:
         from kiro_crew.context import ContextBuilder
 
         fake_cfg = SimpleNamespace(dashboard=SimpleNamespace(widget_density="more"))
-        with patch(
-            "kiro_crew.context.KiroCrewConfig.load", return_value=fake_cfg
-        ), patch("kiro_crew.subagent.resolve_max_subagents") as resolver:
+        with (
+            patch("kiro_crew.context.KiroCrewConfig.load", return_value=fake_cfg),
+            patch("kiro_crew.subagent.resolve_max_subagents") as resolver,
+        ):
             ContextBuilder._resolve_prompt_templates(
                 "no token here {{WIDGET_BLOCK}}", "dashboard:abc"
             )

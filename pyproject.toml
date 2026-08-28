@@ -67,11 +67,19 @@ line-length = 100
 # force-exclude (not extend-exclude): formatter hooks pass explicit file paths
 # to black, and only force-exclude is honored for explicit paths. Vendored
 # third-party code must never be reformatted (keeps diffs against upstream
-# wheels clean for upgrades).
-force-exclude = "/_vendor/"
+# wheels clean for upgrades). test/workflows/malicious/ is the B9 adversarial
+# workflow corpus — hostile scripts kept as DATA (loaded by
+# test_workflows_malicious.py, never collected or imported); reformatting
+# attack payloads would alter the very byte patterns they exist to probe.
+force-exclude = "/_vendor/|/test/workflows/malicious/"
 
 [tool.isort]
-known_first_party = ["kiro_crew"]
+# `tests` covers the builtin apps' own test packages (e.g.
+# src/kiro_crew/apps/builtins/code_review_sage/tests), imported as
+# `from tests.fixtures import ...` with the app dir as the sys.path root.
+# isort used to infer first-party from the repo-root tests/ directory; that
+# directory was removed in #6577, so the classification is pinned explicitly.
+known_first_party = ["kiro_crew", "tests"]
 
 # required for compatibility with black:
 profile = "black"

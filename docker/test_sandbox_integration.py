@@ -1,3 +1,4 @@
+# testpaths-ok: manual Docker probe run via `python docker/test_sandbox_integration.py <step>`, not pytest
 """
 Integration test for sandbox Docker detection fix (issue #1617).
 

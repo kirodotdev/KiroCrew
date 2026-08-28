@@ -1,8 +1,8 @@
 """GATE B9 — the adversarial escape corpus must be 100% rejected.
 
-Loads every ``*.py`` under ``tests/workflows/malicious/`` (hostile workflow
-scripts — data fixtures, not collected as tests since pytest's ``testpaths`` is
-``test``) and asserts ``validate()`` statically rejects each one. New escape ideas
+Loads every ``*.py`` under ``test/workflows/malicious/`` (hostile workflow
+scripts — data fixtures, not collected as tests because their filenames carry no
+``test_`` prefix) and asserts ``validate()`` statically rejects each one. New escape ideas
 are added by dropping a file in that directory — this test picks it up
 automatically (the flywheel).
 
@@ -17,7 +17,7 @@ import pytest
 
 from kiro_crew.workflows.validate import validate
 
-_CORPUS_DIR = Path(__file__).resolve().parent.parent / "tests" / "workflows" / "malicious"
+_CORPUS_DIR = Path(__file__).resolve().parent / "workflows" / "malicious"
 
 
 def _corpus_files() -> list[Path]:
