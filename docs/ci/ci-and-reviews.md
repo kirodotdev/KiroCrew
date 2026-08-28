@@ -79,6 +79,12 @@ Out-of-band lanes that never gate a PR:
   opens a rolling PR rather than committing directly, like `test-durations.yml`.
   A login in `.github/contributors-optout.txt` is never added, which keeps the
   README's removal promise enforceable against the full-rebuild collector).
+  The same block also holds contributors whose contribution was never a pull
+  request — a bug report, a review, a private security report — added with
+  `scripts/update_contributors.py --login`. Those entries survive every later run
+  because the collector only ever inserts and never rewrites an existing line;
+  that preservation is what makes one shared list workable instead of a second
+  table.
 
 ## `ci.yml`: correctness
 

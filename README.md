@@ -904,6 +904,7 @@ make this tool possible:
 <a href="https://github.com/miamanav" title="miamanav"><img src="https://github.com/miamanav.png?size=64" width="64" height="64" alt="miamanav" /></a>
 <a href="https://github.com/michellemxm" title="Michelle Ma"><img src="https://github.com/michellemxm.png?size=64" width="64" height="64" alt="Michelle Ma" /></a>
 <a href="https://github.com/MikeMayer" title="Mike Mayer"><img src="https://github.com/MikeMayer.png?size=64" width="64" height="64" alt="Mike Mayer" /></a>
+<a href="https://github.com/miketheman" title="Mike Fiedler"><img src="https://github.com/miketheman.png?size=64" width="64" height="64" alt="Mike Fiedler" /></a>
 <a href="https://github.com/mikkuzne" title="Mikhail Kuznetsov"><img src="https://github.com/mikkuzne.png?size=64" width="64" height="64" alt="Mikhail Kuznetsov" /></a>
 <a href="https://github.com/minglong51" title="Minglong Pan"><img src="https://github.com/minglong51.png?size=64" width="64" height="64" alt="Minglong Pan" /></a>
 <a href="https://github.com/mkbarnum" title="mkbarnum"><img src="https://github.com/mkbarnum.png?size=64" width="64" height="64" alt="mkbarnum" /></a>
@@ -1100,8 +1101,10 @@ make this tool possible:
 
 Listed alphabetically by GitHub username. Internal contributors appear here if they
 consented to public recognition in the contributor survey; open-source contributors are
-included from this repository's pull request history. If you contributed and would like
-to be added, corrected, or removed, please open an issue or a pull request.
+included from this repository's pull request history, and from contributions that were
+never a pull request at all — a bug report, a code review, a translation, an idea, a
+private security report — added on request. If you contributed and would like to be
+added, corrected, or removed, please open an issue or a pull request.
 
 ## License
 

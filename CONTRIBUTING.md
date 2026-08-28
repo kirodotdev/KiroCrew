@@ -531,6 +531,28 @@ Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`
 
 Rules: imperative mood, lowercase summary, no trailing period, wrap body at 72 chars.
 
+## Recognizing Contributions
+
+There is one contributor list, the Contributors block in [README.md](README.md).
+Deliberately one: a second table for "other" contributions would rank one kind of
+help above another, and split recognition across two places nobody reads twice.
+
+Merged pull requests are credited automatically — a daily job adds their authors.
+Contributions that never were a pull request are credited in the same block, on
+request: a bug report, a code review, a translation, an idea, a design, a
+private security report. Open an issue naming the person (yourself is fine), and
+a maintainer records it:
+
+```sh
+python3 scripts/update_contributors.py --login <github-login> --name "Display Name"
+```
+
+The daily job re-derives the full merged-PR author set and rebuilds its branch
+from scratch, but it never rewrites or drops an existing line, so a
+manually-added entry survives every later run. A login listed in
+`.github/contributors-optout.txt` is never added by the job, which is how a
+removal request stays honored.
+
 ## Questions?
 
 Open a [GitHub issue](https://github.com/kirodotdev/KiroCrew/issues) or start a
