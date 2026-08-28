@@ -342,6 +342,11 @@ class TestPrReadiness:
         assert 'ADJUDICATION_END::${nonce}' in ledger_step
         assert '(.body // "")' in ledger_step
         assert 'startswith("<!-- ai-review-disposition ")' in ledger_step
+        # Lane-scoped consumption: a writer's disposition record enters THIS
+        # lane's ledger only when its marker names target=gpt -- a record
+        # labeled for another lane must not downgrade GPT findings, and this
+        # selection is the only place target= is load-bearing for the ledger.
+        assert 'startswith("<!-- ai-review-disposition target=gpt ")' in ledger_step
         # The ledger downgrades repetition only; it must never read as an
         # approval channel.
         assert "never as" in ledger_step

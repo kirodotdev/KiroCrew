@@ -45,6 +45,7 @@ def _install_fake_gh(
     payload: str,
     comments: str = "[]",
     head_run_events: list[str] | None = None,
+    permissions: dict[str, str] | None = None,
 ) -> None:
     events = ["pull_request"] if head_run_events is None else head_run_events
 
@@ -55,6 +56,11 @@ def _install_fake_gh(
             return 0, payload, ""
         if args[:3] == ["gh", "repo", "view"]:
             return 0, "example/repo", ""
+        if args[:2] == ["gh", "api"] and "/collaborators/" in args[2]:
+            if permissions is None:
+                raise AssertionError("unexpected command: {}".format(args))
+            login = args[2].split("/")[4]
+            return 0, json.dumps({"permission": permissions.get(login, "none")}), ""
         if args[:2] == ["gh", "api"] and "/issues/" in args[2] and "/comments" in args[2]:
             return 0, comments, ""
         if args[:2] == ["gh", "api"] and "/actions/runs" in args[2]:
@@ -1897,3 +1903,235 @@ def test_degraded_rollup_reason_is_distinct_from_a_genuine_no_checks_pr(capsys) 
     assert "no CI checks reported" in genuine_status
     assert "CI status unreadable" not in genuine_status
     assert degraded_status != genuine_status
+
+
+# ---------------------------------------------------------------------------
+# Issue #4187: the disposition gate -- one lane, one rationale per finding.
+# The computation is pinned byte-identical to pr_findings.py's copy by
+# test_prepare_pr_findings.py; these tests cover the GATING half.
+# ---------------------------------------------------------------------------
+
+_GREEN_CHECKS = [{"context": "PR Readiness", "state": "SUCCESS"}]
+
+
+def _gpt_finding_comment(module: ModuleType) -> tuple[dict, str]:
+    """A trusted GPT-lane comment with one advisory finding for the head."""
+    span = module.span_hash("src/x.py", "gpt/FINDING")
+    comment = {
+        "user": {"type": "Bot", "login": "github-actions[bot]"},
+        "body": (
+            "<!-- codex-ai-review -->\n"
+            "FINDING -- src/x.py:10 -- tighten -> Fix: x\n"
+            "[GPT-REVIEWED] " + "f" * 40
+        ),
+    }
+    return comment, span
+
+
+def _disposition(author: str, target: str, body_tail: str, comment_id: int = 11) -> dict:
+    return {
+        "id": comment_id,
+        "user": {"type": "User", "login": author},
+        "body": (
+            "<!-- ai-review-disposition target=" + target + " head=" + "f" * 40 + " -->\n"
+            + body_tail
+        ),
+    }
+
+
+def test_cross_lane_disposition_from_a_writer_blocks_readiness(capsys) -> None:
+    """A writer-authored record whose target= lane differs from the lane of
+    the span it claims is exactly the blanket ruling the rule forbids."""
+    module = _load_script()
+    bot_comment, span = _gpt_finding_comment(module)
+    disposition = _disposition("alice", "opus", f"- **rebutted** span={span}\n> reason")
+    _install_fake_gh(
+        module,
+        _pr_payload(_GREEN_CHECKS),
+        comments=json.dumps([bot_comment, disposition]),
+        permissions={"alice": "write"},
+    )
+
+    code = module.main(["pr_status.py", "42", "--json"])
+
+    assert code == 20
+    report = _last_line_json(capsys)
+    assert "disposition rule:" in report["progress_key"]["status"]
+    assert "cross-lane" in report["progress_key"]["status"]
+
+
+def test_per_finding_same_lane_disposition_stays_clean(capsys) -> None:
+    module = _load_script()
+    bot_comment, span = _gpt_finding_comment(module)
+    disposition = _disposition("alice", "gpt", f"- **rebutted** span={span}\n> reason")
+    _install_fake_gh(
+        module,
+        _pr_payload(_GREEN_CHECKS),
+        comments=json.dumps([bot_comment, disposition]),
+        permissions={"alice": "write"},
+    )
+
+    assert module.main(["pr_status.py", "42"]) == 0
+
+
+def test_spanless_disposition_for_a_lane_with_findings_blocks(capsys) -> None:
+    """The observed #3963 shape: a blanket ruling naming no finding identity
+    while its lane has findings on the current head."""
+    module = _load_script()
+    bot_comment, _span = _gpt_finding_comment(module)
+    disposition = _disposition("alice", "gpt", "> out of scope for this fix")
+    _install_fake_gh(
+        module,
+        _pr_payload(_GREEN_CHECKS),
+        comments=json.dumps([bot_comment, disposition]),
+        permissions={"alice": "write"},
+    )
+
+    code = module.main(["pr_status.py", "42", "--json"])
+
+    assert code == 20
+    assert "claims no span=" in _last_line_json(capsys)["progress_key"]["status"]
+
+
+def test_non_writer_disposition_cannot_block_the_pr(capsys) -> None:
+    """A drive-by commenter's crafted marker must not hold the PR hostage:
+    authority comes from the collaborators permission, as in the ledger."""
+    module = _load_script()
+    bot_comment, span = _gpt_finding_comment(module)
+    disposition = _disposition("mallory", "opus", f"- **rebutted** span={span}")
+    _install_fake_gh(
+        module,
+        _pr_payload(_GREEN_CHECKS),
+        comments=json.dumps([bot_comment, disposition]),
+        permissions={"mallory": "read"},
+    )
+
+    assert module.main(["pr_status.py", "42"]) == 0
+
+
+def test_unreadable_disposition_comments_fail_closed_in_decide() -> None:
+    module = _load_script()
+
+    code, status = module.decide(
+        state="OPEN",
+        mergeable="MERGEABLE",
+        merge_state="CLEAN",
+        decision="NONE",
+        draft=False,
+        readiness_kind="pass",
+        n_running=0,
+        n_fail=0,
+        n_checks=1,
+        readiness_context="PR Readiness",
+        disposition_eval={"ok": False, "violations": []},
+    )
+
+    assert code == 20
+    assert "disposition comments could not be read" in status
+
+
+def test_unreadable_disposition_evaluation_outranks_the_running_round() -> None:
+    """"Could not read" is not "no violations": while an unknown evaluation
+    waits behind an in-flight round, the bots rewrite their stamped comments
+    and the judged-head evidence a re-read would need is gone. It must gate
+    NOW, exactly like a known violation."""
+    module = _load_script()
+
+    code, status = module.decide(
+        state="OPEN",
+        mergeable="MERGEABLE",
+        merge_state="CLEAN",
+        decision="NONE",
+        draft=False,
+        readiness_kind="running",
+        n_running=3,
+        n_fail=0,
+        n_checks=5,
+        readiness_context="PR Readiness",
+        disposition_eval={"ok": False, "violations": []},
+    )
+
+    assert code == 20
+    assert "disposition comments could not be read" in status
+
+
+def test_clean_disposition_eval_does_not_change_the_verdict() -> None:
+    module = _load_script()
+
+    code, _status = module.decide(
+        state="OPEN",
+        mergeable="MERGEABLE",
+        merge_state="CLEAN",
+        decision="NONE",
+        draft=False,
+        readiness_kind="pass",
+        n_running=0,
+        n_fail=0,
+        n_checks=1,
+        readiness_context="PR Readiness",
+        disposition_eval={"ok": True, "violations": []},
+    )
+
+    assert code == 0
+
+
+def test_disposition_violation_outranks_the_running_round(capsys) -> None:
+    """Precedence: a violation is a condition waiting cannot fix -- only the
+    author editing the comment clears it -- and deferring it behind an
+    in-flight round loses the evidence, because the reviewer bots rewrite
+    their stamped comments in place when the round completes. It must gate
+    NOW, like a conflict or a draft, not after the checks settle."""
+    module = _load_script()
+    bot_comment, span = _gpt_finding_comment(module)
+    disposition = _disposition("alice", "opus", f"span={span}")
+    _install_fake_gh(
+        module,
+        _pr_payload([{"context": "PR Readiness", "state": "PENDING"}]),
+        comments=json.dumps([bot_comment, disposition]),
+        permissions={"alice": "write"},
+    )
+
+    code = module.main(["pr_status.py", "42", "--json"])
+
+    assert code == 20
+    assert "disposition rule:" in _last_line_json(capsys)["progress_key"]["status"]
+
+
+def test_prior_head_record_still_blocks_after_the_fix_push(capsys) -> None:
+    """The ordinary flow: the writer stamps head=<prior-reviewed-sha> and then
+    pushes, so the PR head has moved by the time the gate polls. The record
+    must be validated against the head it judged -- skipping it as history is
+    exactly how the blanket ruling shipped green on #3963."""
+    module = _load_script()
+    prior = "f" * 40
+    current = "e" * 40
+    span = module.span_hash("src/x.py", "gpt/FINDING")
+    bot_comment = {
+        "user": {"type": "Bot", "login": "github-actions[bot]"},
+        "body": (
+            "<!-- codex-ai-review -->\n"
+            "FINDING -- src/x.py:10 -- tighten -> Fix: x\n"
+            "[GPT-REVIEWED] " + prior
+        ),
+    }
+    disposition = {
+        "id": 12,
+        "user": {"type": "User", "login": "alice"},
+        "body": (
+            "<!-- ai-review-disposition target=opus head=" + prior + " -->\n"
+            + f"- **rebutted** span={span}\n> reason"
+        ),
+    }
+    _install_fake_gh(
+        module,
+        _pr_payload(_GREEN_CHECKS, headRefOid=current),
+        comments=json.dumps([bot_comment, disposition]),
+        permissions={"alice": "write"},
+    )
+
+    code = module.main(["pr_status.py", "42", "--json"])
+
+    assert code == 20
+    status = _last_line_json(capsys)["progress_key"]["status"]
+    assert "disposition rule:" in status
+    assert "cross-lane" in status

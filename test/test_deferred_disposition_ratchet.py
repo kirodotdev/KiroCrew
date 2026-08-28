@@ -126,3 +126,50 @@ def test_the_disposition_step_offers_the_whole_vocabulary() -> None:
         f"{PREPARE_PR.name} carries a stale three-disposition enumeration. Every "
         "place that lists the vocabulary must list all four."
     )
+
+
+# --- Mechanical enforcement ----------------------------------------------------
+#
+# The scope rules above were prose-only: `target=` was written into the marker
+# and parsed nowhere, so one comment with one rationale silently covered N
+# findings across lanes (observed: one "out of scope" rationale answered four
+# findings from three lanes and the PR merged green). The enforcement half is
+# a disposition-record contract shared by the two prepare-pr scripts: a
+# writer-authored record claims exactly one span= finding identity from its
+# own target= lane, pr_findings.py computes the violations (non-gating) and
+# pr_status.py gates on them. These assertions pin that the rule STAYS
+# mechanical -- deleting the parser or the gate must fail here, not silently
+# demote the rule back to prose.
+
+SCRIPTS = SKILLS / "kirocrew-dev" / "prepare-pr" / "scripts"
+
+
+def test_the_disposition_rule_is_mechanically_enforced() -> None:
+    status = (SCRIPTS / "pr_status.py").read_text(encoding="utf-8")
+    findings = (SCRIPTS / "pr_findings.py").read_text(encoding="utf-8")
+    for name, source in (("pr_status.py", status), ("pr_findings.py", findings)):
+        assert "ai-review-disposition" in source, (
+            f"{name} no longer knows the disposition marker; the rule is prose again"
+        )
+        assert "disposition_violations" in source, (
+            f"{name} lost the violation computation; `target=` is decorative again"
+        )
+        assert "target=([A-Za-z0-9_-]+)" in source, (
+            f"{name} no longer parses `target=` out of the disposition marker"
+        )
+    assert "disposition_eval" in status, (
+        "pr_status.py's decide() no longer consumes the disposition evaluation, "
+        "so a violating record cannot block readiness"
+    )
+
+
+def test_the_skill_tells_the_writer_to_claim_the_span() -> None:
+    """The gate demands a span= claim exactly where finding identity exists;
+    the skill step that writes the comment must say so, or every agent's
+    first disposition after a finding blocks readiness with no instruction
+    for avoiding it."""
+    text = PREPARE_PR.read_text(encoding="utf-8")
+    assert "span=" in text, (
+        f"{PREPARE_PR.name} no longer tells the writer to name the finding's "
+        "span= identity in the disposition comment"
+    )

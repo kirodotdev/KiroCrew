@@ -334,6 +334,49 @@ drift or a bot that fails to post. Two tests hold the contract together:
 `test_emitting_workflows_still_carry_the_marker_grammar` pins the emitting
 workflows to the markers the consumers parse.
 
+The same parity pins the **disposition-record grammar**, the writer-side half
+of the contract. A repository writer records a ruling on a reviewer finding
+as a PR comment whose LEADING bytes are
+`<!-- ai-review-disposition target=<lane> head=<sha> -->` — the byte prefix
+`codex-review.yml`'s adjudication ledger selects records by — and claims the
+one finding it rules on with a `span=<id>` token, the same 12-hex identity
+`pr_findings.py` prints for every finding (path + reviewer/kind). The claim
+lives on the marker line or a `- **…**` title bullet; span ids inside `> `
+quoted lines read as quoted evidence, never as claims. That claim is what
+makes the "one comment covers one lane, one rationale covers one finding"
+rule mechanical rather than prose: `pr_findings.py` computes the violations
+(it stays non-gating) and `pr_status.py`'s byte-identical copy gates on them
+(exit 20). Each record is validated against the findings stamped for the
+head its `head=` says it judged — in the ordinary fix-then-push round that
+is the PRIOR head, since the writer rules on the listing they just read —
+and against the current head's, because a record is immutable and the ledger
+selects it with no head filter, so it keeps downgrade power on every later
+head. The violation classes: a record claiming more than one span, carrying
+more than one non-quoted finding-title bullet (two same-kind findings in one
+file share a span id, so span dedup alone cannot separate them), a span from
+a lane other than its `target=`, a span resolving to no finding on the head
+it judged (a fabricated or stale identity), a record claiming no span while
+its lane has live findings, and a comment carrying the prefix with an
+unparseable marker (gated as malformed because the ledger still consumes
+it). Records count only from authors holding write/maintain/admin (the
+collaborators permission API — the same authority check the ledger applies,
+made for every distinct author with no cap, exactly as the ledger's own
+author loop runs); an unverifiable author's records are ignored rather than
+gated on (deny-only: a drive-by commenter can never hold a PR hostage), and
+the report prints the marker-comment vs verified-writer counts so an inert
+check is visible. `codex-review.yml`'s ledger consumes only records naming
+its own lane (`target=gpt` in the leading marker), so a record labeled for
+another lane cannot downgrade GPT findings — the selection there is what
+makes the `target=` label load-bearing for the ledger, and the gate's
+unbound-lane exemption is safe because a mislabeled record has no consumer.
+Lanes outside the marker bindings, and lanes whose concerns
+never parse into `FINDING`/`BLOCKING` lines, have no span identity to claim
+and are exempt from the claim requirement (never from the multi-span,
+multi-bullet or cross-lane classes); a superseded record whose judged head's
+stamps are gone
+is not re-litigated — the reviewer has already re-adjudicated the surviving
+findings on the new head.
+
 ## 6. Distribution — keep it built-in
 
 Built-in and portable are **not** in conflict:

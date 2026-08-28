@@ -31,10 +31,12 @@ Exit codes:
   20  BLOCKED   - failing readiness, merge conflict, draft, CHANGES_REQUESTED,
                   a terminal PR state (MERGED/CLOSED), a stale reviewer stamp,
                   a blocking review marker on the current head, no
-                  pull_request-event run for the current head, or anything
-                  that cannot be confirmed
+                  pull_request-event run for the current head, a disposition
+                  comment violating the one-lane / one-rationale-per-finding
+                  rule, or anything that cannot be confirmed
    2  ENV ERROR - gh missing or not authenticated, or PR not found
 """
+import hashlib
 import json
 import os
 import re
@@ -602,6 +604,389 @@ def comment_key(body):
     return m.group(1) if m else ""
 
 
+# One finding per line: "BLOCKING -- <file>:<line> -- <text>" (GPT lane) or the
+# bold Opus form "**BLOCKING — <file>:<line> — <title>**". Tolerates an em-dash
+# for "--", bold markers around the token or the whole line, and an absent
+# second separator (the Opus form puts detail on following lines).
+FINDING_RE = re.compile(
+    r"^\s*(?:\*\*)?(BLOCKING|FINDING)(?:\*\*)?\s*(?:--|\u2014)\s*"
+    r"(?:\*\*)?(\S+?):(\d+)(?:\*\*)?\s*(?:(?:--|\u2014)\s*)?(.*)$",
+    re.MULTILINE,
+)
+
+
+def span_hash(path, rule_class):
+    """Stable per-finding span identity: sha256(path | rule_class)[:12].
+
+    Deterministic across runs and independent of line numbers, so recurrence
+    detection survives rebases. Deliberately PATH-scoped: finding paths come
+    from UNTRUSTED bot-comment text, and reading any file a comment names --
+    even one inside the working tree, which can be a dotfiles checkout holding
+    credentials -- is a file read of LLM-influenced input that this standalone
+    script cannot route through the repo's sensitive-path gate. So no file is
+    ever opened; the hash uses only the quoted path and ``rule_class`` (the
+    reviewer name + finding kind, e.g. "gpt/BLOCKING" -- the only mechanically
+    stable category the comments carry; free-text titles are rephrased between
+    rounds and would break identity). Coarser than a per-function span: two
+    findings of one kind in different functions of one file share an id, which
+    errs toward triggering the same-span restructure rule earlier, never later.
+    """
+    key = "{}|{}".format(path, rule_class)
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+
+
+def extract_findings(comments, head_sha, bindings):
+    """Findings from bot comments stamped for the CURRENT head, with span ids.
+
+    Yields dicts {reviewer, kind, path, line, text, span} for every
+    BLOCKING/FINDING line inside a comment whose workflow-authored leading
+    key binds to a reviewer AND whose own [<NAME>-REVIEWED] stamp matches
+    ``head_sha``. Identity comes from the binding, never from stamp names in
+    the body (model output is prompt-injectable). Comments stamped for an
+    older head are skipped: bots update their comment in place, so a stale
+    body describes a diff that no longer exists.
+    """
+    for c in comments or []:
+        body = c.get("body") or ""
+        name = bindings.get(comment_key(body))
+        if not name:
+            continue
+        fresh = any(
+            stamp_name == name and len(sha) >= 7 and head_sha.startswith(sha)
+            for stamp_name, sha in REVIEWED_STAMP_RE.findall(body)
+        )
+        if not fresh:
+            continue
+        reviewer = name.lower()
+        block_merge = any(
+            len(sha) >= 7 and head_sha.startswith(sha) for sha in BLOCK_MERGE_RE.findall(body)
+        )
+        for kind, path, line, text in FINDING_RE.findall(body):
+            try:
+                line_no = int(line)
+            except ValueError:
+                line_no = 1
+            rule_class = "{}/{}".format(reviewer, kind)
+            yield {
+                "reviewer": reviewer,
+                "kind": kind,
+                "path": path,
+                "line": line_no,
+                "text": text.strip(),
+                "block_merge": block_merge,
+                "span": span_hash(path, rule_class),
+            }
+
+
+# --- Disposition-record contract --------------------------------------------
+# A repository writer records rulings on reviewer findings as PR comments
+# whose LEADING bytes are this exact marker prefix. codex-review.yml's
+# adjudication ledger selects records by the same byte prefix (no leading
+# whitespace), so the check below covers exactly what the ledger consumes: a
+# comment carrying the prefix but an unparseable marker still enters the
+# ledger with downgrade power, and is therefore surfaced as malformed rather
+# than silently escaping. Byte-identical copy in pr_findings.py (parity-pinned
+# by test_prepare_pr_findings.py; the scripts are standalone-copyable, so
+# neither imports the other).
+DISPOSITION_PREFIX = "<!-- ai-review-disposition "
+# target= names exactly ONE lane (the token admits no separator, so a
+# multi-lane target cannot parse) and head= the commit the ruling judged.
+# Only the LEADING marker is authoritative -- same rationale as
+# _COMMENT_KEY_RE: position is template-controlled, later text is not.
+DISPOSITION_MARKER_RE = re.compile(
+    r"\A<!--\s*ai-review-disposition\s+target=([A-Za-z0-9_-]+)"
+    r"\s+head=([0-9a-f]{7,40})\s*-->"
+)
+# A record claims the finding it rules on by the same span=<id> identity this
+# script prints for every finding (span_hash: path + reviewer/kind). Claims
+# make the prose rule mechanical: "one rationale covers one finding" is one
+# record claiming one span, and "one comment covers one lane" is every
+# claimed span belonging to the record's own target= lane.
+SPAN_CLAIM_RE = re.compile(r"\bspan=([0-9a-f]{12})\b")
+# A finding-title bullet, the same line shape the adjudication ledger keeps
+# ("- **...**" lines). Counted because the span id is deliberately coarse:
+# two findings of one kind in one file share a span, so span dedup alone
+# would let one record carry both titles under one rationale -- the bullet
+# count is what closes that shape.
+DISPOSITION_BULLET_RE = re.compile(r"^\s*[-*]\s*\*\*")
+
+
+def parse_disposition_record(comment):
+    """Parse one disposition-marked comment into a record dict, else None.
+
+    Returns {author, comment_id, target, head, spans, bullets, malformed}.
+    ``malformed`` is True when the body carries the ledger-selected byte prefix
+    but the leading marker does not parse: such a comment still enters the
+    adjudication ledger (selected by prefix alone) with downgrade power, so it
+    must stay visible to the disposition check rather than silently escaping
+    it. ``target`` is lower-cased. ``spans`` preserves first-seen order and
+    drops duplicates, so one finding claimed twice in one comment is one
+    claim, not a false multi-span violation -- and ``> `` quoted lines are
+    excluded from both the span scan and the ``bullets`` count, because
+    quoting the pr_findings.py listing (or another record) as a ruling's
+    evidence is natural and must not read as claiming every span or title the
+    quoted text happens to mention. A claim lives on the marker line or a
+    title bullet, never inside a quote.
+    """
+    body = comment.get("body") or ""
+    if not body.startswith(DISPOSITION_PREFIX):
+        return None
+    user = comment.get("user") or {}
+    record = {
+        "author": user.get("login") or "",
+        "comment_id": comment.get("id"),
+        "target": "",
+        "head": "",
+        "spans": [],
+        "bullets": 0,
+        "malformed": True,
+    }
+    m = DISPOSITION_MARKER_RE.match(body)
+    if m:
+        record["target"] = m.group(1).lower()
+        record["head"] = m.group(2)
+        record["malformed"] = False
+        seen = set()
+        spans = []
+        bullets = 0
+        for line in body.split("\n"):
+            if line.lstrip().startswith(">"):
+                continue
+            if DISPOSITION_BULLET_RE.match(line):
+                bullets += 1
+            for s in SPAN_CLAIM_RE.findall(line):
+                if s not in seen:
+                    seen.add(s)
+                    spans.append(s)
+        record["spans"] = spans
+        record["bullets"] = bullets
+    return record
+
+
+def fetch_disposition_comments(repo, number):
+    """Disposition-marked comments from ANY author, across pages; None on error.
+
+    Deliberately separate from fetch_bot_comments: dispositions are authored
+    by the agent or a human writer, never the workflow bot, so the
+    marker-source author filter would hide every one of them. Authority is
+    established afterwards per author (author_is_repo_writer), matching the
+    check codex-review.yml applies before a record enters its ledger.
+    """
+    if not repo:
+        return None
+    comments: list = []
+    for page in range(1, _MAX_COMMENT_PAGES + 1):
+        rc, out, _ = run(
+            [
+                "gh",
+                "api",
+                "repos/{}/issues/{}/comments?per_page=100&page={}".format(repo, number, page),
+            ]
+        )
+        if rc != 0 or not out.strip():
+            return None
+        try:
+            batch = json.loads(out)
+        except ValueError:
+            return None
+        if not isinstance(batch, list):
+            return None
+        for c in batch:
+            if isinstance(c, dict) and (c.get("body") or "").startswith(DISPOSITION_PREFIX):
+                comments.append(c)
+        if len(batch) < 100:
+            return comments
+    return None
+
+
+def author_is_repo_writer(repo, login):
+    """Whether ``login`` holds write/maintain/admin on ``repo``; False on error.
+
+    The marker prefix alone is forgeable -- anyone can comment on a
+    public-repo PR -- so authority comes from the collaborators permission
+    API, the same check codex-review.yml applies before a disposition enters
+    the adjudication ledger. Fail-soft per author: an unverifiable author's
+    records are IGNORED, never acted on -- the downstream gate can only add
+    blocking, so ignoring an unverified record degrades to pre-existing
+    behavior while a drive-by commenter can never hold a PR hostage with a
+    crafted marker.
+    """
+    if not repo or not login:
+        return False
+    rc, out, _ = run(
+        ["gh", "api", "repos/{}/collaborators/{}/permission".format(repo, login)]
+    )
+    if rc != 0 or not out.strip():
+        return False
+    try:
+        permission = json.loads(out).get("permission") or ""
+    except (ValueError, AttributeError):
+        return False
+    return permission.lower() in ("admin", "maintain", "write")
+
+
+def writer_disposition_records(repo, comments):
+    """Parse disposition comments into records, keeping repository writers'.
+
+    ``comments`` is fetch_disposition_comments output; None propagates so the
+    caller can fail closed on an unreadable comment list. Permission lookups
+    are cached per login and made for EVERY distinct author, exactly as the
+    adjudication ledger's own author loop does -- capping them would let a
+    flood of non-writer comments push a real writer's record past the cap,
+    making this check skip a record the uncapped ledger still consumes.
+    Records whose author cannot be verified are dropped -- see
+    author_is_repo_writer for why that is the safe direction.
+    """
+    if comments is None:
+        return None
+    verdicts: dict = {}
+    records = []
+    for c in comments:
+        record = parse_disposition_record(c)
+        if record is None:
+            continue
+        login = record["author"]
+        if login not in verdicts:
+            verdicts[login] = author_is_repo_writer(repo, login)
+        if verdicts[login]:
+            records.append(record)
+    return records
+
+
+def disposition_violations(records, comments, head_sha, bindings):
+    """Mechanical one-lane / one-rationale-per-finding violations, sorted.
+
+    ``records`` is writer_disposition_records output, ``comments`` the trusted
+    marker-source comments (fetch_bot_comments), ``head_sha`` the PR's current
+    head, ``bindings`` the comment-key -> reviewer-name map (its values are
+    the lanes finding identity exists for). A record is validated against the
+    findings stamped for the head it JUDGED (its own ``head=`` -- the
+    pr_findings.py listing the writer read when ruling, which in the ordinary
+    fix-then-push round is the PRIOR head, not the current one) and against
+    the current head's: a span's lane is immutable by construction (the lane
+    is part of the hash preimage), and a record keeps its adjudication-ledger
+    downgrade power on every later head (the ledger selects by prefix with no
+    head filter), so "an older head" is not an exemption. Five classes:
+
+    * malformed -- the ledger-selected prefix with an unparseable marker,
+      flagged on ANY record: the ledger consumes it as-is until the comment
+      itself is fixed.
+    * multi-span -- one record claiming more than one span, whatever the
+      target. One rationale covers exactly one finding, and the record (the
+      comment) is the only unit the ledger can scope a rationale by.
+    * multi-bullet -- one record carrying more than one non-quoted
+      finding-title bullet (the ``- **...**`` shape the ledger keeps). This
+      closes the span-granularity gap: span_hash is deliberately coarse, so
+      two findings of one kind in one file share a span id and span dedup
+      alone would let one record carry both titles under one rationale.
+    * cross-lane -- a claimed span that resolves (on the judged or current
+      head) to a finding from a lane other than the record's target=,
+      whatever the target. One comment covers exactly one lane.
+    * unresolvable -- a claimed span that resolves on NEITHER head while the
+      target lane has findings on the judged head: the writer read that
+      head's listing, so a claim matching nothing in it is a fabricated or
+      stale identity, not a ruling on a real finding.
+    * unclaimed -- a record for a bound lane claiming no span while that lane
+      has findings on the judged or current head. Without this class a
+      blanket comment simply omits span= tokens and the rule stays prose; the
+      current-head half keeps a blanket record gated even after its judged
+      head's stamps are superseded, because its ledger power lives exactly as
+      long as the lane still has live findings for it to downgrade.
+
+    Exemptions are where identity genuinely does not exist: a target outside
+    ``bindings`` is held only to the malformed/multi-span/cross-lane classes
+    (no extractable findings exist to REQUIRE a claim from it), and a lane
+    whose concerns never parse into FINDING/BLOCKING lines is exempt the same
+    way. A record with a resolvable claim whose judged head's stamps are gone
+    is not re-litigated against the new head -- the reviewer has already
+    re-adjudicated the surviving findings there. Output is sorted and
+    duplicate-free, so the gate's reason string (which travels in
+    ``progress_key.status``) is deterministic across runs.
+    """
+    lanes = {name.lower() for name in (bindings or {}).values()}
+
+    def lane_map(for_head):
+        found: dict = {}
+        if for_head:
+            for f in extract_findings(comments or [], for_head, bindings or {}):
+                found.setdefault(f["span"], f["reviewer"])
+        return found
+
+    current_map = lane_map(head_sha)
+    current_lanes = set(current_map.values())
+    judged_cache: dict = {}
+    out = set()
+    for r in records or []:
+        where = "comment {} by {}".format(r.get("comment_id") or "?", r.get("author") or "?")
+        if r.get("malformed"):
+            out.add(
+                "malformed disposition marker ({}) - the adjudication ledger "
+                "selects it by prefix alone, so fix or delete that comment: "
+                "expected '{}target=<lane> head=<sha> -->'".format(where, DISPOSITION_PREFIX)
+            )
+            continue
+        target = r.get("target") or ""
+        spans = r.get("spans") or []
+        judged_head = r.get("head") or ""
+        # The marker grammar admits a 7-40 hex prefix while workflow stamps
+        # carry the full 40, and extract_findings matches stamp-prefix-of-head
+        # -- so a short judged head must be expanded to the full stamped SHA it
+        # prefixes, or every stamp lookup for it would miss.
+        if judged_head and len(judged_head) < 40:
+            for c in comments or []:
+                for _name, stamped in REVIEWED_STAMP_RE.findall(c.get("body") or ""):
+                    if len(stamped) == 40 and stamped.startswith(judged_head):
+                        judged_head = stamped
+                        break
+                if len(judged_head) == 40:
+                    break
+        if judged_head not in judged_cache:
+            judged_cache[judged_head] = lane_map(judged_head)
+        judged_map = judged_cache[judged_head]
+        judged_lanes = set(judged_map.values())
+        if len(spans) > 1:
+            out.add(
+                "one disposition record claims {} findings ({}; target={}; "
+                "spans: {}) - one rationale covers exactly one finding, so "
+                "post one disposition comment per span".format(
+                    len(spans), where, target, ", ".join(spans)
+                )
+            )
+        bullets = r.get("bullets") or 0
+        if bullets > 1:
+            out.add(
+                "one disposition record carries {} finding-title bullets "
+                "({}; target={}) - one rationale covers exactly one finding, "
+                "so post one comment per finding even when the findings "
+                "share a span id".format(bullets, where, target)
+            )
+        if not spans and target in lanes and (target in judged_lanes or target in current_lanes):
+            out.add(
+                "disposition record claims no span= finding identity ({}; "
+                "target={}) while that lane has findings on the head it "
+                "judged or the current one - name exactly one span=<id> from "
+                "pr_findings.py per comment".format(where, target)
+            )
+        for s in spans:
+            lane = judged_map.get(s) or current_map.get(s)
+            if lane is not None and lane != target:
+                out.add(
+                    "cross-lane disposition ({}; target={}) claims span {} "
+                    "from lane {} - one comment covers exactly one lane, so "
+                    "give that finding its own comment with target={}".format(
+                        where, target, s, lane, lane
+                    )
+                )
+            elif lane is None and target in lanes and target in judged_lanes:
+                out.add(
+                    "disposition record claims span {} that resolves to no "
+                    "finding ({}; target={}) - claim the span=<id> exactly as "
+                    "pr_findings.py printed it for the head the record "
+                    "judged".format(s, where, target)
+                )
+    return sorted(out)
+
+
 def resolve_marker_bindings(argv, environ):
     """Resolve the comment-key -> reviewer-name bindings (flag > env > default)."""
     raw = None
@@ -1152,6 +1537,7 @@ def decide(
     marker_eval=None,
     head_run="skip",
     rollup_notice="",
+    disposition_eval=None,
 ):
     """Resolve PR state to (exit_code, status line). Fail-closed.
 
@@ -1169,7 +1555,17 @@ def decide(
        belongs to the old head. Ranking in-flight checks first reports "running"
        forever while nothing can complete -- a stall only a human notices.
        BEHIND, draft and CHANGES_REQUESTED behave the same way: each survives
-       any amount of waiting and needs the author to act.
+       any amount of waiting and needs the author to act. The disposition
+       evaluation (``disposition_eval``, built from disposition_violations)
+       belongs here too, in BOTH its states: a violation is cleared only by
+       the author editing or deleting the offending comment, and an
+       UNREADABLE evaluation is not "no violations" -- while either waits
+       behind an in-flight round, the reviewer bots rewrite their stamped
+       comments in place, so the judged-head span mapping the verdict needs
+       disappears with the old stamps. It gates because a record that claims
+       several findings, another lane's finding, or no finding at all is
+       exactly the blanket ruling the one-lane / one-rationale rule forbids
+       -- and the adjudication ledger would consume it as written.
     3. Only then is "still running" a wait, and an uncomputed mergeability too.
     4. Everything left is a check-result verdict -- including the reviewer-side
        conditions: ``marker_eval`` (from evaluate_reviewer_markers; None skips
@@ -1177,9 +1573,10 @@ def decide(
        string "skip" skips the gate). Both are evaluated ONLY here, after the
        running gate: while a round is in flight the reviewer bots may simply
        not have posted yet, and a stale stamp mid-round is expected, not a
-       defect. Both fail closed on "could not read". Advisory FINDING counts
-       never gate -- whether a non-blocking finding should hold the loop open
-       is a judgment call the exit code deliberately does not make.
+       defect. Both fail closed on "could not read".
+       Advisory FINDING counts never gate -- whether a non-blocking finding
+       should hold the loop open is a judgment call the exit code deliberately
+       does not make.
        ``rollup_notice`` -- the non-empty NOTICE string when the rollup read
        degraded (fetch failure, or a concurrent push between the two reads) --
        never changes the exit code either, only which reason an empty rollup
@@ -1199,6 +1596,24 @@ def decide(
         blocked_now.append("PR is a draft")
     if decision == "CHANGES_REQUESTED":
         blocked_now.append("review decision is CHANGES_REQUESTED")
+    if disposition_eval is not None:
+        # A disposition violation is a condition waiting cannot fix -- only the
+        # AUTHOR editing or deleting the comment clears it -- so it belongs
+        # with the other author-action conditions ABOVE the running gate.
+        # Deferring it behind an in-flight round loses the evidence: the
+        # reviewer bots rewrite their stamped comments in place when the round
+        # completes, and the judged-head span mapping the violation was
+        # computed from disappears with the old stamps. An UNREADABLE
+        # evaluation (records or the finding map could not be fetched) gates
+        # here for the same reason: "could not read" is not "no violations",
+        # and waiting through the round destroys the very evidence a re-read
+        # would need. Sorted by construction (disposition_violations returns a
+        # sorted list), so the joined reason -- which travels in
+        # ``progress_key.status`` -- is deterministic.
+        if not disposition_eval.get("ok"):
+            blocked_now.append("disposition comments could not be read (fail-closed)")
+        for v in disposition_eval.get("violations") or []:
+            blocked_now.append("disposition rule: " + v)
     if blocked_now:
         return 20, "STATUS: BLOCKED - " + "; ".join(blocked_now)
 
@@ -1385,8 +1800,9 @@ def main(argv):
     # unreliable in both directions on this repo.
     marker_authors = resolve_marker_authors(argv, os.environ)
     marker_bindings = resolve_marker_bindings(argv, os.environ)
+    bot_comments = fetch_bot_comments(repo, d.get("number"), marker_authors)
     marker_eval = evaluate_reviewer_markers(
-        fetch_bot_comments(repo, d.get("number"), marker_authors),
+        bot_comments,
         head_sha,
         marker_bindings,
         only=reviewers_filter,
@@ -1416,6 +1832,70 @@ def main(argv):
             )
         for name in marker_eval["stale"]:
             print("  - {}: STALE (stamp names an older head)".format(sanitize(name)))
+
+    # Disposition-rule gate (issue #4187): a repository writer's disposition
+    # comment must claim exactly one span= finding identity from its own
+    # target= lane. Each record is validated against the findings stamped for
+    # the head its head= says it judged (in the ordinary fix-then-push round
+    # that is the PRIOR head) and the current one, so the rule "one comment
+    # covers one lane, one rationale covers one finding" is mechanical rather
+    # than prose.
+    disposition_comments = fetch_disposition_comments(repo, d.get("number"))
+    disposition_records = writer_disposition_records(repo, disposition_comments)
+    disposition_violation_list: list = []
+    # BOTH inputs must be readable: the records (the rulings) and the trusted
+    # reviewer comments (the finding map the rulings are validated against).
+    # An unreadable finding map is not "no findings" -- computing with an
+    # empty map would silently drop every evidence-bearing class while the
+    # round runs, and the judged-head evidence is rewritten in place when it
+    # completes.
+    disposition_ok = disposition_records is not None and bot_comments is not None
+    if disposition_ok:
+        disposition_violation_list = disposition_violations(
+            disposition_records, bot_comments, head_sha, marker_bindings
+        )
+    disposition_eval = {"ok": disposition_ok, "violations": disposition_violation_list}
+    print("-- Disposition records (one lane, one rationale per finding) " + "-" * 6)
+    if not disposition_ok:
+        print("  ERROR: disposition comments could not be read (fail-closed)")
+    elif not disposition_comments:
+        print("  (no disposition comments)")
+    else:
+        # Both counts, so a degraded state is visible instead of reading like
+        # an empty PR: zero verified records above a non-zero comment count
+        # means the check is INERT for those comments -- non-writer authors,
+        # or a token that cannot read collaborator permissions (the endpoint
+        # needs push access).
+        print(
+            "  disposition-marked comment(s): {}  from verified writers: {}".format(
+                len(disposition_comments), len(disposition_records)
+            )
+        )
+        if not disposition_records:
+            print(
+                "  NOTICE: none verified as a repository writer's - the "
+                "disposition check is inert for these comments"
+            )
+        unknown_targets = sorted(
+            {
+                r["target"]
+                for r in disposition_records
+                if not r["malformed"]
+                and r["target"] not in {n.lower() for n in marker_bindings.values()}
+            }
+        )
+        if unknown_targets:
+            # Advisory only: an unbound lane (e.g. first-principles) has no
+            # extractable finding identity, but a typo'd target= looks the
+            # same and silently escapes the claim requirement -- say so.
+            print(
+                "  NOTICE: target lane(s) outside the marker bindings "
+                "(claim checks do not apply): " + ", ".join(sanitize(t) for t in unknown_targets)
+            )
+        for v in disposition_violation_list:
+            print("  VIOLATION: " + sanitize(v))
+        if not disposition_violation_list:
+            print("  (no disposition-rule violations)")
 
     # Assert a pull_request-event run exists for the current head, but only on
     # a PR that demonstrably uses Actions (a rollup entry with a workflowName);
@@ -1453,6 +1933,7 @@ def main(argv):
         marker_eval=marker_eval,
         head_run=head_run,
         rollup_notice=rollup_notice,
+        disposition_eval=disposition_eval,
     )
     print(status)
     if "--json" in argv[1:]:

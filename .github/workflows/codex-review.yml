@@ -381,10 +381,13 @@ jobs:
           #     lines from ai-review-human-override.yml, any head. Author
           #     filter means a PR commenter cannot forge one.
           #   - disposition summaries: from comments starting with the
-          #     ai-review-disposition marker, keep the marker line, quoted
-          #     rationale lines ("> ..."), and the finding-title bullets
-          #     ("- **...**" lines) — verdict and rationale, not free prose.
-          #     The rationale lines matter: ROUND CONVERGENCE scopes a
+          #     ai-review-disposition marker NAMING THIS LANE (target=gpt) —
+          #     a record labeled for another lane must not downgrade GPT
+          #     findings, and nothing else parses target=, so the selection
+          #     here is what makes the label load-bearing. Keep the marker
+          #     line, quoted rationale lines ("> ..."), and the finding-title
+          #     bullets ("- **...**" lines) — verdict and rationale, not free
+          #     prose. The rationale lines matter: ROUND CONVERGENCE scopes a
           #     ruling's coverage by its recorded rationale, so a record
           #     without one covers only the exact instance it names.
           # Disposition AUTHORS are verified per login against the
@@ -414,7 +417,7 @@ jobs:
           ledger_full="$(printf '%s' "$comments_json" \
             | jq -r --argjson writers "$writers" '[.[]
                 | select((.user.login == "github-actions[bot]" and ((.body // "") | startswith("<!-- ai-review-human-override ")))
-                         or (((.body // "") | startswith("<!-- ai-review-disposition ")) and (.user.login as $l | $writers | index($l) != null)))]
+                         or (((.body // "") | startswith("<!-- ai-review-disposition target=gpt ")) and (.user.login as $l | $writers | index($l) != null)))]
                 | reverse | .[]
                 | "@" + (.created_at // "") + " by " + (.user.login // "") + "\n"
                   + ([(.body // "") | split("\n")[]
