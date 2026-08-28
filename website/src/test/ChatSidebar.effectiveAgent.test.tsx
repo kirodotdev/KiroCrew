@@ -146,7 +146,18 @@ function markerFor(container: HTMLElement, title: string): HTMLElement | null {
   return metaLineFor(container, title).querySelector('[data-testid="session-effective-agent"]')
 }
 
-beforeEach(() => localStorage.clear())
+// `LAST_TS` is a fixed wall-clock instant while the stale-session collapse
+// measures age against `Date.now()`, so this file's rows drift into dormancy on
+// their own: they were 1.6 days old when the collapse shipped and passed, then
+// crossed the 2-day default at 2026-08-28T18:00Z and every row-by-title lookup
+// below started throwing `no row titled ...` with no code change in between.
+// Pinning the threshold off keeps the rows queryable and makes the file's age
+// irrelevant; the collapse's own behavior is pinned in
+// ChatSidebar.staleCollapse.test.tsx, which is where it belongs.
+beforeEach(() => {
+  localStorage.clear()
+  localStorage.setItem('mc-session-stale-collapse-ms', '0')
+})
 afterEach(() => vi.clearAllMocks())
 
 describe('chat sidebar — effective-agent marker', () => {
