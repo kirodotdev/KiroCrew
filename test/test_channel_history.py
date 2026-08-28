@@ -358,3 +358,83 @@ class TestChannelHistoryContext:
         msg, _ = builder.build_message("hello", False, channel_id="C123")
 
         assert msg.startswith("hello")
+
+
+class TestObserveFileBounding:
+    """The persisted observe file must honour ``observe_max_entries``.
+
+    The in-memory deque is created with ``maxlen=observe_max_entries``, and
+    ``_load_observe`` appends every line it reads into that deque — so any
+    record past the newest ``observe_max_entries`` is parsed and then
+    immediately evicted. Those lines can never reach a caller; they only cost
+    disk and a slower load.
+    """
+
+    @staticmethod
+    def _lines(tmp_path, channel="C1"):
+        return (tmp_path / f"{channel}.jsonl").read_text(encoding="utf-8").strip().splitlines()
+
+    def test_appending_past_the_cap_does_not_grow_the_file_without_bound(self, tmp_path):
+        """Compaction runs on the write path, not only at the next set_observe."""
+        h = ChannelHistory(observe_max_entries=5, history_dir=tmp_path)
+        h.set_observe("C1")
+        for i in range(20):
+            h.push("C1", "alice", f"msg{i}")
+
+        lines = self._lines(tmp_path)
+        assert len(lines) <= 10, f"observe file grew to {len(lines)} lines for a cap of 5"
+        # Only the reachable window survives — the deque would have evicted the rest.
+        assert [json.loads(ln)["text"] for ln in lines][-5:] == [f"msg{i}" for i in range(15, 20)]
+
+    def test_the_reachable_window_is_intact_after_compaction(self, tmp_path):
+        """Bounding the file must not cost the entries the deque still holds."""
+        h = ChannelHistory(observe_max_entries=5, history_dir=tmp_path)
+        h.set_observe("C1")
+        for i in range(20):
+            h.push("C1", "alice", f"msg{i}")
+
+        ctx = h.context_for("C1")
+        for i in range(15, 20):
+            assert f"msg{i}" in ctx
+        assert h.entry_count("C1") == 5
+
+        # And it survives a restart that reloads from the compacted file.
+        h2 = ChannelHistory(observe_max_entries=5, history_dir=tmp_path)
+        h2.set_observe("C1")
+        assert h2.entry_count("C1") == 5
+        ctx2 = h2.context_for("C1")
+        for i in range(15, 20):
+            assert f"msg{i}" in ctx2
+
+    def test_an_oversized_inherited_file_is_bounded_on_load(self, tmp_path):
+        """A file written by a build that never bounded it must not stay oversized.
+
+        Nothing here is expired, so the existing TTL-triggered lazy compaction
+        does not fire.
+        """
+        path = tmp_path / "C1.jsonl"
+        now = time.time()
+        with path.open("w", encoding="utf-8") as f:
+            for i in range(40):
+                f.write(
+                    json.dumps(
+                        {"user": "alice", "text": f"msg{i}", "thread_ts": None, "ts": now - 1}
+                    )
+                    + "\n"
+                )
+
+        h = ChannelHistory(observe_max_entries=5, history_dir=tmp_path)
+        h.set_observe("C1")
+
+        assert len(self._lines(tmp_path)) == 5, "oversized inherited file was not bounded on load"
+        assert h.entry_count("C1") == 5
+
+    def test_under_the_cap_nothing_is_rewritten_or_dropped(self, tmp_path):
+        """Negative control: the bound must not fire below the cap."""
+        h = ChannelHistory(observe_max_entries=5, history_dir=tmp_path)
+        h.set_observe("C1")
+        for i in range(4):
+            h.push("C1", "alice", f"msg{i}")
+
+        lines = self._lines(tmp_path)
+        assert [json.loads(ln)["text"] for ln in lines] == [f"msg{i}" for i in range(4)]
