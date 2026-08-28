@@ -29,6 +29,7 @@ jobs:
     # runs the WHOLE suite unsharded to record per-test durations.
     timeout-minutes: 90
     steps:
+      # persist-credentials retained: refresh / "Open PR if durations changed" runs git push --force origin
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0

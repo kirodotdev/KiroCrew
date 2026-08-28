@@ -111,6 +111,8 @@ jobs:
       EXPECT_SUBJECT_CN: "Amazon Web Services, Inc."
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # Windows publishes x64 only, so these are constants rather than inputs.
       # There is deliberately no `arch` parameter: with none, nothing can request

@@ -73,6 +73,8 @@ jobs:
       - name: Checkout manifest verifier contract
         if: env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Download wheel artifact
         if: env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY
@@ -94,11 +96,13 @@ jobs:
       - name: Locate wheel and compute checksum
         id: wheel
         if: env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY
+        env:
+          WHEEL_ARTIFACT: ${{ inputs.wheel_artifact }}
         run: |
           set -euo pipefail
           mapfile -t WHEELS < <(find cli-dist -type f -name '*.whl' -print)
           if [ "${#WHEELS[@]}" -ne 1 ]; then
-            echo "::error::Expected exactly one .whl in artifact '${{ inputs.wheel_artifact }}'; found ${#WHEELS[@]}"
+            echo "::error::Expected exactly one .whl in artifact '${WHEEL_ARTIFACT}'; found ${#WHEELS[@]}"
             exit 1
           fi
           WHEEL="${WHEELS[0]}"

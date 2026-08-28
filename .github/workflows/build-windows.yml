@@ -169,12 +169,16 @@ jobs:
       HAS_WINDOWS_SIGNING: ${{ secrets.AWS_WINDOWS_SIGNING_ROLE_ARN != '' && inputs.use_prod_environment == true && 'true' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: website/package-lock.json
+          # cache disabled: this workflow is workflow_call-only from
+          # nightly.yml / release.yml, so every run builds published bytes.
+          # An Actions cache is writable from any branch and readable by a
+          # tag run (zizmor cache-poisoning).
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -182,6 +186,12 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        # cache disabled explicitly: setup-uv's default (enable-cache: auto)
+        # turns the cache ON for hosted runners, and this workflow only ever
+        # runs on a publish path, so a restored entry would reach the signed
+        # installer (zizmor cache-poisoning).
+        with:
+          enable-cache: false
         # The build script provisions python-build-standalone interpreters
         # through uv; windows-latest does not ship it, and the script's
         # curl|sh fallback is POSIX-shaped.

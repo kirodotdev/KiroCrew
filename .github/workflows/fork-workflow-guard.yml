@@ -41,9 +41,7 @@ on:
     types: [labeled, unlabeled, synchronize]
 
 permissions:
-  checks: write
   contents: read
-  pull-requests: write
 
 concurrency:
   group: fork-workflow-guard-${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}
@@ -54,6 +52,15 @@ jobs:
     name: Fork workflow-change guard
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # `checks: write` posts this guard's own check-run. The reads are all GETs:
+    # `pull-requests: read` for the open-PR list and the changed-file list,
+    # `issues: read` for the label list (labels are an issues endpoint). No
+    # write to the PR -- only strip-stale-override removes the override label.
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: read
+      issues: read
     # FORK ONLY, both event shapes. Same-repo PRs are unaffected.
     if: >-
       ( github.event_name == 'workflow_run'

@@ -118,6 +118,8 @@ jobs:
       FORMAT: ${{ inputs.format }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # Resolve every arch-dependent name in ONE fail-closed place: the
       # published basename, the electron-updater channel file, and the ELF

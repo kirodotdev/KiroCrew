@@ -78,6 +78,7 @@ jobs:
           # restricts WHICH refs may trigger a publish; this decides WHAT gets
           # published.
           ref: main
+          persist-credentials: false
 
       # Fail-closed, deliberately NOT the `if: env.HAS_SIGNING_SECRETS` skip
       # pattern the other publish lanes use. Those turn a missing secret into a
