@@ -711,6 +711,51 @@ def test_stage_built_dist_sweeps_residue_even_when_refusing(tmp_path):
     assert not orphan.exists(), "residue survived a refused stage"
 
 
+def test_build_stock_frontend_uses_lockfile_without_lifecycle_scripts(tmp_path, monkeypatch):
+    website = tmp_path / "website"
+    website.mkdir()
+    (website / "package-lock.json").write_text('{"lockfileVersion": 3}\n')
+    monkeypatch.setenv("KIROCREW_EDITION_DIR", "/private/edition")
+    monkeypatch.setenv("KIROCREW_ALLOW_EDITION", "1")
+    calls: list[tuple[list[str], dict[str, str]]] = []
+
+    def _run(website_dir, npm, args, timeout, log, label, *, env=None):
+        assert website_dir == website
+        assert npm == "/usr/bin/npm"
+        assert env is not None
+        calls.append((args, env))
+        if args == ["run", "build"]:
+            _make_dist(website / "dist")
+        return True
+
+    monkeypatch.setattr(frontend, "_run_npm_step", _run)
+
+    assert frontend.build_stock_frontend(tmp_path, npm="/usr/bin/npm") == (website / "dist")
+    assert [args for args, _env in calls] == [
+        ["ci", "--ignore-scripts", "--no-audit", "--no-fund"],
+        ["run", "build"],
+    ]
+    for _args, env in calls:
+        assert "KIROCREW_EDITION_DIR" not in env
+        assert "KIROCREW_ALLOW_EDITION" not in env
+
+
+def test_build_stock_frontend_stops_when_install_fails(tmp_path, monkeypatch):
+    website = tmp_path / "website"
+    website.mkdir()
+    (website / "package-lock.json").write_text('{"lockfileVersion": 3}\n')
+    calls: list[list[str]] = []
+
+    def _run(_website, _npm, args, *_rest, **_kwargs):
+        calls.append(args)
+        return False
+
+    monkeypatch.setattr(frontend, "_run_npm_step", _run)
+
+    assert frontend.build_stock_frontend(tmp_path, npm="/usr/bin/npm") is None
+    assert calls == [["ci", "--ignore-scripts", "--no-audit", "--no-fund"]]
+
+
 def test_build_and_stage_holds_the_lock_across_the_build(tmp_path):
     """The lock must be held while `npm run build` runs, not just while copying.
 
