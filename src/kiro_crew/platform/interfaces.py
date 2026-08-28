@@ -14,7 +14,7 @@ deny decision must be ``@final`` to enforce the ADD-only floor.
 from __future__ import annotations
 
 import enum
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -398,7 +398,7 @@ class SessionPrincipal:
     surface: str
     subject: str
     session_key: str
-    user_jwt: str | None = None
+    user_jwt: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -410,7 +410,7 @@ class InboundToken:
     """
 
     scheme: str
-    token: str
+    token: str = field(repr=False)
     expires_at: float
     audience: str
 

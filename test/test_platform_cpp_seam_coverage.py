@@ -63,6 +63,7 @@ from kiro_crew.platform.governance import (
     parse_profile,
     resolve,
 )
+from kiro_crew.platform.interfaces import InboundToken, SessionPrincipal
 
 # ── Static-analysis configuration ──
 
@@ -622,6 +623,24 @@ class TestAgentIdentitySeam:
                 needle in lowered for needle in _TOKEN_LIKE_STATUS_NEEDLES
             ), f"agent_identity.status() must not expose token-like key {key!r}"
 
+    def test_bearer_fields_are_omitted_from_repr(self) -> None:
+        principal = SessionPrincipal(
+            surface="dashboard",
+            subject="user-1",
+            session_key="dashboard:main",
+            user_jwt="secret.jwt.token",
+        )
+        inbound = InboundToken(
+            scheme="Bearer",
+            token="secret-inbound",
+            expires_at=0.0,
+            audience="gateway",
+        )
+        assert "secret.jwt.token" not in repr(principal)
+        assert "secret-inbound" not in repr(inbound)
+        assert principal.user_jwt == "secret.jwt.token"
+        assert inbound.token == "secret-inbound"
+
     def test_agent_identity_capability_is_opt_in(self) -> None:
         spec = SCOPE_CATALOG["capabilities.agentcore"]
         assert spec.kind == CAPABILITY
@@ -635,6 +654,27 @@ class TestAgentIdentitySeam:
         with pytest.raises(PlatformCompositionError, match="posture"):
             parse_policy(
                 _agentcore_policy_body(agentcore={"enabled": True, "posture": "federated"})
+            )
+
+    def test_agent_identity_non_boolean_enabled_aborts_when_fail_closed(self) -> None:
+        with pytest.raises(PlatformCompositionError, match="boolean"):
+            parse_policy(
+                _agentcore_policy_body(
+                    agentcore={"enabled": "false", "posture": "workload"},
+                )
+            )
+
+    def test_agent_identity_non_boolean_enabled_raises_when_not_fail_closed(
+        self,
+    ) -> None:
+        # CapabilityGate.from_dict rejects unconditionally; fail_closed
+        # cannot salvage a stringly-typed enabled into a disabled row.
+        with pytest.raises(PlatformCompositionError, match="boolean"):
+            parse_policy(
+                _agentcore_policy_body(
+                    fail_closed=False,
+                    agentcore={"enabled": "false", "posture": "workload"},
+                )
             )
 
     def test_agent_identity_enabled_without_posture_disables_when_not_fail_closed(
@@ -695,6 +735,11 @@ class TestAgentIdentitySeam:
         gate = profile.controls["capabilities.agentcore"]
         assert isinstance(gate, CapabilityGate)
         assert gate.enabled is True
+
+    def test_agent_identity_profile_non_boolean_enabled_is_rejected(self) -> None:
+        """``enabled: "false"`` must not coerce to a permit through ``bool()``."""
+        with pytest.raises(PlatformCompositionError, match="boolean"):
+            parse_profile({"name": "host", "capabilities": {"agentcore": {"enabled": "false"}}})
 
     def test_agent_identity_profile_carrying_posture_is_rejected(self) -> None:
         """Carrying posture on a profile is a silent lie — reject like ScopedMap.posture."""

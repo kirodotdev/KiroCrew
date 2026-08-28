@@ -32,6 +32,10 @@ def normalize_agentcore_gateway_url(value: str | None) -> str:
         return ""
     if len(url) > AGENTCORE_GATEWAY_URL_MAX:
         raise ValueError(f"agentcore_gateway_url exceeds {AGENTCORE_GATEWAY_URL_MAX} characters")
+    # Internal whitespace (including newlines) survives urlparse's scheme
+    # check and would land unquoted in a systemd Environment= line.
+    if any(ch.isspace() for ch in url):
+        raise ValueError("agentcore_gateway_url must be an https URL without credentials")
     parsed = urlparse(url)
     if (
         parsed.scheme != "https"

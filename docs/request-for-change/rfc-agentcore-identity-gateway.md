@@ -852,10 +852,9 @@ same principal rules, same redaction. Do not start this phase to
 
 ## Live verification findings (2026-08-28)
 
-Operator account `199621702461` / `us-east-1`, local IAM
-`trackout-email`. Tagged stack `kirocrew:e2e=true`: AWS_IAM Gateway
-`kirocrew-e2e-n9pk1rdrea` (READY), standalone identity `kirocrew-e2e`,
-Lambda target `echo-hello`, MCP_SERVER target `public-docs`.
+Verified in a scratch AWS account in `us-east-1` against a tagged
+`kirocrew:e2e=true` stack: an AWS_IAM Gateway (READY), a standalone
+workload identity, a Lambda target, and an MCP_SERVER target.
 
 Verified live:
 
@@ -882,8 +881,8 @@ Closed after the run:
   when env posture is still `workload`. Login sidecars now always use
   the https Gateway URL.
 - Catalog/verify now probes `GetWorkloadAccessToken` and discards the
-  body. A standalone `kirocrew-e2e` is `ok`; the Gateway-linked name
-  `kirocrew-e2e-n9pk1rdrea` is `service_linked`; the default
+  body. A standalone `kirocrew-e2e` is `ok`; a Gateway-linked
+  service identity is `service_linked`; the default
   `kirocrew` is `identity_denied`. Login skips the probe
   (`login_needs_sign_in`). The token never enters the snapshot.
 - Login sidecar `Authorization` is RFC 6750 `Bearer` (live-checked).
@@ -907,12 +906,12 @@ Closed on the production-ready pass:
   pasted existing Gateway is not falsely red. Prefix is the
   fallback when tools were not proved. A data-plane 401/403 is
   `invoke_denied` even on a `kirocrew-*` id.
-- Instance-role-only IAM (`kirocrew-e2e-instance` assumed from
-  `trackout-email`, policy from `agentcore_instance_policy_document(
+- Instance-role-only IAM (`kirocrew-e2e-instance` assumed from a
+  named IAM user, policy from `agentcore_instance_policy_document(
   "workload")`): WAT `ok`, all nine catalog checks green, tools/list
   and `SynchronizeGatewayTargets` accepted. Admin keys were not in
   that process.
-- MCP_SERVER target `public-docs` / `2L1SFWDBDE` (DEFAULT listing)
+- MCP_SERVER target `public-docs` (DEFAULT listing)
   is READY. GetGatewayTarget still omits `targetType`; catalog
   infers `MCP_SERVER`, marks it `syncable`, and lists
   `public-docs___ask_question` / `read_wiki_contents` /
@@ -998,7 +997,7 @@ Closed on the leftover-validation pass (live, 2026-08-28):
   type or does not exist"). Gateway MCP tools already list and
   call without Crew becoming a token broker. Phase 5 stays out.
 - **Invoke `gateway/*`.** Created IAM Gateway
-  `existing-customer-oonks9wcjt` (not `kirocrew-*`) + public MCP
+  an existing-customer Gateway (not `kirocrew-*`) + public MCP
   target. Admin/laptop credentials: catalog `invoke_scope` green
   via proxy (`via=proxy`, 3 tools). Assumed
   `kirocrew-e2e-instance`: inspect `ok`, tools `tools_denied`,

@@ -233,6 +233,20 @@ class TestCapabilityGate:
         g2 = CapabilityGate.from_dict({}, default_enabled=False)
         assert not g2.enabled
 
+    def test_from_dict_rejects_non_boolean_enabled(self):
+        # bool("false") is True — a stringly-typed disable must not permit.
+        for bogus in ("false", "true", 1, 0, ["yes"]):
+            with pytest.raises(PlatformCompositionError, match="boolean"):
+                CapabilityGate.from_dict({"enabled": bogus}, default_enabled=False)
+
+    def test_known_capability_rejects_non_boolean_enabled(self):
+        # Default-ON siblings (memory_writes, browse, …) used to coerce
+        # enabled: "false" through bool() and stay on.
+        with pytest.raises(PlatformCompositionError, match="boolean"):
+            parse_profile(
+                {"name": "host", "capabilities": {"memory_writes": {"enabled": "false"}}}
+            )
+
     def test_scopes_compose_independently(self):
         a = CapabilityGate(
             enabled=True,

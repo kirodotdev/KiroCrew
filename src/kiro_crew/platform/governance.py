@@ -878,8 +878,12 @@ class CapabilityGate:
             if isinstance(v, dict)
         }
         enabled = d.get("enabled")
+        if enabled is not None and not isinstance(enabled, bool):
+            raise PlatformCompositionError(
+                f"CapabilityGate.enabled must be a boolean, got {enabled!r}"
+            )
         return CapabilityGate(
-            enabled=bool(enabled) if enabled is not None else default_enabled,
+            enabled=enabled if enabled is not None else default_enabled,
             scopes=scopes,
         )
 

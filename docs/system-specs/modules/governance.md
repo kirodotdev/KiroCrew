@@ -2125,6 +2125,13 @@ with a missing or unknown `posture` fails closed — the row is treated as
 disabled, or boot aborts when `boot.fail_closed`. A disabled or omitted row
 does not require `posture`.
 
+`CapabilityGate.from_dict` rejects a non-boolean `enabled` the same way
+`ScopedRuleset.mode` rejects an unknown mode: `enabled: "false"` is not
+coerced with `bool()`. The raise is unconditional (including
+`boot.fail_closed=false`) and applies to every capability row, not just
+`agentcore` — six catalog scopes default ON, so a stringly-typed disable
+must not turn into a permit.
+
 The composed posture is a **policy-only** ceiling side field
 (`GovernanceCeiling.agentcore_identity_posture`, Rule 6 — same shape as Slack
 `channels.posture` and `updates`). A profile may enable or disable the
@@ -2139,7 +2146,8 @@ raw policy JSON. The helper returns the stored posture only when the
 capability is enabled with a known value; `None` when the ceiling is missing,
 the capability is omitted, disabled, or fail-closed-disabled.
 
-`gateway_url` (https MCP URL, no credentials, no fragment) and `workload_name`
+`gateway_url` (https MCP URL, no credentials, no fragment, no internal
+whitespace) and `workload_name`
 (3–255 of `[A-Za-z0-9_.-]`) are the same policy-only shape. Validators live
 in `platform/agentcore_schema.py` so policy parse does not import AWS.
 Consumption ANDs three conjuncts: the `agent_identity` adapter is on,
