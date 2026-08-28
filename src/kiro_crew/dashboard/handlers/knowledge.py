@@ -61,6 +61,7 @@ from kiro_crew.knowledge.sync import SyncScheduler
 from kiro_crew.knowledge.watcher import KnowledgeWatcher
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
+from kiro_crew.zip_vet import ZipInventoryRejected, vet_zip_inventory
 
 logger = logging.getLogger(__name__)
 
@@ -1493,7 +1494,24 @@ def _inspect_zip_archive(path: str) -> str | None:
     synchronous zip I/O, so callers MUST run it off the event loop (via
     ``asyncio.to_thread``) — a large/hostile central directory would otherwise
     stall the gateway loop and heartbeat.
+
+    The member cap runs TWICE, deliberately. The shared vet (kiro_crew.zip_vet)
+    reads the archive tail first, so the declared central-directory size — the
+    field ZipFile's construction loop actually reads and allocates from — is
+    bounded BEFORE ZipFile exists. The infolist() pass below then bounds the
+    aggregate declared expansion, which only the parsed records can answer. The
+    rejection reasons are unchanged: an archive that the preflight refuses would
+    have been refused by the count check anyway, just after the allocation.
     """
+    try:
+        vet_zip_inventory(path, max_members=_MAX_INGEST_ARCHIVE_MEMBERS)
+    except ZipInventoryRejected as exc:
+        # Same reasons this function already returns, so the API error body and
+        # the SEL outcome do not change shape: a tail we cannot parse is a bad
+        # archive, an over-cap inventory is too many members.
+        if exc.reason in ("missing_eocd", "truncated_eocd", "unreadable"):
+            return "bad_archive"
+        return "too_many_members"
     try:
         with zipfile.ZipFile(path) as zf:
             infos = zf.infolist()

@@ -33,6 +33,7 @@ except ModuleNotFoundError:  # pragma: no cover — exercised via monkeypatch
 
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
+from kiro_crew.zip_vet import ZipInventoryRejected, vet_zip_inventory
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,13 @@ logger = logging.getLogger(__name__)
 
 _MAX_ZIP_ENTRY = 50 * 1024 * 1024  # 50 MB per ZIP entry (decompressed)
 _MAX_DECOMPRESS = 50 * 1024 * 1024  # 50 MB for zlib decompression
+# Inventory bound for OOXML containers. The per-entry cap above bounds what one
+# member can expand to, but nothing here previously bounded how MANY members an
+# archive declares — and ZipFile's construction allocates from the declared
+# central-directory size before any per-entry limit can apply. Generous next to
+# real documents (a large deck with per-slide media is in the low thousands of
+# parts), so this refuses crafted inventories without narrowing legitimate ones.
+_MAX_ARCHIVE_MEMBERS = 20000
 
 # ── Public API ──
 
@@ -120,6 +128,21 @@ def _safe_decompress(data: bytes, max_size: int | None = None) -> bytes:
     return result
 
 
+def _vet_archive_inventory(path: str) -> bool:
+    """Preflight an OOXML container's declared inventory before opening it.
+
+    Returns True when the archive is within bounds. Fails closed: a rejected or
+    unreadable tail returns False, and the caller degrades to "" like every
+    other unreadable-document path in this module.
+    """
+    try:
+        vet_zip_inventory(path, max_members=_MAX_ARCHIVE_MEMBERS)
+    except ZipInventoryRejected as exc:
+        logger.warning("archive inventory rejected (%s)", exc.reason)
+        return False
+    return True
+
+
 def _read_zip_entry(
     zf: zipfile.ZipFile, name: str, max_size: int | None = None,
 ) -> bytes | None:
@@ -150,6 +173,8 @@ def _extract_docx(path: str) -> str:
     """
     assert _xml_fromstring is not None  # extract_text() gates the None case
     if is_sensitive_path(path):
+        return ""
+    if not _vet_archive_inventory(path):
         return ""
     paragraphs: list[str] = []
     with zipfile.ZipFile(path, "r") as zf:
@@ -182,6 +207,8 @@ def _extract_pptx(path: str) -> str:
     """
     assert _xml_fromstring is not None  # extract_text() gates the None case
     if is_sensitive_path(path):
+        return ""
+    if not _vet_archive_inventory(path):
         return ""
     slides: list[tuple[int, str]] = []
     with zipfile.ZipFile(path, "r") as zf:

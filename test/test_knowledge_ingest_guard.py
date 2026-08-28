@@ -589,3 +589,67 @@ async def test_a_hand_registered_source_is_left_alone(pipeline, kstore, tmp_path
             "SELECT content FROM items WHERE source_id = ?", (src,)).fetchall())
     assert "AKIAIOSFODNN7EXAMPLE" in stored, (
         "a hand-registered source keeps its existing behaviour")
+
+
+class TestZipArchivePreflight:
+    """The ingest inventory cap must bind BEFORE ZipFile allocates.
+
+    Before this, _inspect_zip_archive constructed ZipFile and only then counted
+    infolist() -- so the allocation the cap exists to bound had already happened.
+    The rejection reasons are unchanged; only their timing is.
+    """
+
+    def test_a_forged_directory_size_is_refused_before_zipfile(self, tmp_path, monkeypatch):
+        import zipfile
+
+        from kiro_crew.dashboard.handlers import knowledge
+
+        path = tmp_path / "crafted.docx"
+        with zipfile.ZipFile(path, "w") as z:
+            z.writestr("word/document.xml", b"<a/>")
+        data = bytearray(path.read_bytes())
+        eocd = data.rfind(b"PK\x05\x06")
+        # Entry count stays honest and low; the field ZipFile actually reads to
+        # size its directory walk is inflated.
+        data[eocd + 12: eocd + 16] = (0xFFFFFFF0).to_bytes(4, "little")
+        path.write_bytes(bytes(data))
+
+        def _explode(*a, **kw):
+            raise AssertionError("ZipFile was constructed for a refused archive")
+
+        monkeypatch.setattr(zipfile, "ZipFile", _explode)
+        assert knowledge._inspect_zip_archive(str(path)) == "too_many_members"
+
+    def test_an_over_cap_member_count_is_refused_before_zipfile(self, tmp_path, monkeypatch):
+        import zipfile
+
+        from kiro_crew.dashboard.handlers import knowledge
+
+        path = tmp_path / "many.docx"
+        with zipfile.ZipFile(path, "w") as z:
+            for i in range(12):
+                z.writestr(f"m{i}", b"x")
+        monkeypatch.setattr(knowledge, "_MAX_INGEST_ARCHIVE_MEMBERS", 10)
+
+        def _explode(*a, **kw):
+            raise AssertionError("ZipFile was constructed for a refused archive")
+
+        monkeypatch.setattr(zipfile, "ZipFile", _explode)
+        assert knowledge._inspect_zip_archive(str(path)) == "too_many_members"
+
+    def test_a_non_archive_still_reads_as_a_bad_archive(self, tmp_path):
+        from kiro_crew.dashboard.handlers import knowledge
+
+        path = tmp_path / "not.docx"
+        path.write_bytes(b"PK\x03\x04" + b"\x00" * 32)
+        assert knowledge._inspect_zip_archive(str(path)) == "bad_archive"
+
+    def test_a_valid_archive_within_caps_still_passes(self, tmp_path):
+        import zipfile
+
+        from kiro_crew.dashboard.handlers import knowledge
+
+        path = tmp_path / "ok.docx"
+        with zipfile.ZipFile(path, "w") as z:
+            z.writestr("word/document.xml", b"<a/>")
+        assert knowledge._inspect_zip_archive(str(path)) is None

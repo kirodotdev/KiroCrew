@@ -57,6 +57,7 @@ from kiro_crew.validation import (
     ValidationError,
     validate_tool_args,
 )
+from kiro_crew.zip_vet import ZipInventoryRejected, vet_zip_inventory_bytes
 
 # Register OOXML office MIME types explicitly. The system mimetypes
 # database on AL2/AL2023 build hosts does NOT include .docx, .xlsx, or
@@ -3918,33 +3919,25 @@ def _vet_zip_eocd(data: bytes) -> None:
     """Refuse archives whose end-of-central-directory record declares an
     oversized inventory, BEFORE zipfile.ZipFile is constructed.
 
-    ZipFile.__init__ walks the whole central directory and allocates a
-    ZipInfo per entry, so a crafted archive with hundreds of thousands of
-    entries exhausts memory during construction -- ahead of any infolist()
-    check. The EOCD carries both the entry count and the central-directory
-    byte size; capping both bounds that allocation regardless of which field
-    lies (zipfile itself iterates the directory by its byte size).
+    Delegates to the shared vet (kiro_crew.zip_vet) so this endpoint, knowledge
+    ingest, and document parsing share one implementation of the preflight --
+    only the caps and the error channel stay per-caller. This endpoint's
+    observable behaviour is unchanged: a tail with no usable EOCD still reads as
+    "not a spreadsheet" (415), an over-cap inventory as an expansion refusal
+    (413).
     """
-    # EOCD (PK\x05\x06) sits within the last 22 + 65535 bytes (fixed record
-    # plus maximum comment length).
-    tail_start = max(0, len(data) - (22 + 65535))
-    eocd = data.rfind(b"PK\x05\x06", tail_start)
-    if eocd < 0 or len(data) < eocd + 22:
-        raise _SheetRefusal(415, "not an OOXML spreadsheet", "not_a_spreadsheet")
-    count = int.from_bytes(data[eocd + 10 : eocd + 12], "little")
-    cdir_size = int.from_bytes(data[eocd + 12 : eocd + 16], "little")
-    if count == 0xFFFF or cdir_size == 0xFFFFFFFF:
-        # Saturated classic fields mean the archive declares >= 65535 entries
-        # or a >= 4 GiB central directory -- both orders of magnitude past
-        # this endpoint's caps, so the ZIP64 records that would carry the
-        # real numbers can never change the verdict. Refusing outright keeps
-        # the vet free of a second record-location protocol to get right.
-        raise _SheetRefusal(413, "workbook expands too large", "workbook_expands_too_large")
-    if (
-        count > _SHEET_MAX_MEMBERS
-        or cdir_size > _SHEET_MAX_MEMBERS * _SHEET_MAX_CDIR_ENTRY_BYTES
-    ):
-        raise _SheetRefusal(413, "workbook expands too large", "workbook_expands_too_large")
+    try:
+        vet_zip_inventory_bytes(
+            data,
+            max_members=_SHEET_MAX_MEMBERS,
+            max_cdir_entry_bytes=_SHEET_MAX_CDIR_ENTRY_BYTES,
+        )
+    except ZipInventoryRejected as exc:
+        if exc.reason in ("missing_eocd", "truncated_eocd", "unreadable"):
+            raise _SheetRefusal(
+                415, "not an OOXML spreadsheet", "not_a_spreadsheet") from exc
+        raise _SheetRefusal(
+            413, "workbook expands too large", "workbook_expands_too_large") from exc
 
 
 def _parse_workbook_grid(data: bytes) -> dict:

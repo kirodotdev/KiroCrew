@@ -431,3 +431,45 @@ async def test_cancellation_during_parse_still_audits(tmp_path, mock_sel):
         for call in mock_sel.log_tool_invocation.call_args_list
     ]
     assert "cancelled" in outcomes
+
+
+def test_the_sheet_vet_routes_through_the_shared_module(tmp_path, monkeypatch):
+    """The endpoint keeps its own caps and its own error channel, but the
+    implementation is the shared one -- so there is only one preflight to audit."""
+    import zipfile
+
+    from kiro_crew.dashboard.handlers import files as files_mod
+    from kiro_crew.zip_vet import ZipInventoryRejected
+
+    seen: dict = {}
+
+    def _fake_vet(data, *, max_members, max_cdir_entry_bytes):
+        seen["max_members"] = max_members
+        seen["max_cdir_entry_bytes"] = max_cdir_entry_bytes
+        raise ZipInventoryRejected("cdir_too_large", "boom")
+
+    monkeypatch.setattr(files_mod, "vet_zip_inventory_bytes", _fake_vet)
+    f = tmp_path / "x.xlsx"
+    with zipfile.ZipFile(f, "w") as z:
+        z.writestr("m", b"x")
+    with pytest.raises(_SheetRefusal) as exc:
+        files_mod._vet_zip_eocd(f.read_bytes())
+    assert exc.value.status == 413
+    assert exc.value.code == "workbook_expands_too_large"
+    assert seen["max_members"] == files_mod._SHEET_MAX_MEMBERS
+    assert seen["max_cdir_entry_bytes"] == files_mod._SHEET_MAX_CDIR_ENTRY_BYTES
+
+
+def test_an_unreadable_tail_reads_as_not_a_spreadsheet(monkeypatch):
+    """Fail closed, in this endpoint's own vocabulary."""
+    from kiro_crew.dashboard.handlers import files as files_mod
+    from kiro_crew.zip_vet import ZipInventoryRejected
+
+    def _fake_vet(data, **kw):
+        raise ZipInventoryRejected("unreadable", "boom")
+
+    monkeypatch.setattr(files_mod, "vet_zip_inventory_bytes", _fake_vet)
+    with pytest.raises(_SheetRefusal) as exc:
+        files_mod._vet_zip_eocd(b"PK\x03\x04")
+    assert exc.value.status == 415
+    assert exc.value.code == "not_a_spreadsheet"
