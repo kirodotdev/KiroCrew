@@ -17,9 +17,12 @@ Rotation: the live log is closed at ``_SEGMENT_MAX_BYTES`` and renamed into
 ``<config_dir>/security_events.d/``, keeping ``_SEGMENT_KEEP`` closed segments.
 Each segment is an INDEPENDENT HMAC chain (it starts from genesis), and the
 first record of every new live log is a ``sel_rotation`` event naming the
-segment just closed and its final ``entry_hash`` — so the boundary is auditable
-evidence rather than a chain break, and retention deleting an old segment leaves
-every surviving segment verifiable on its own.
+segment just closed and its size — deliberately NOT that segment's final
+``entry_hash``, which a sibling process still holding a writable fd to the
+renamed inode could invalidate, making verification report an untampered log as
+compromised. The segment NAME is what lets an investigator walk the sequence, so
+the boundary is auditable evidence rather than a chain break, and retention
+deleting an old segment leaves every surviving segment verifiable on its own.
 Retention: configurable, default 365 days per Amazon Security Event Logging Standard.
 """
 
@@ -1681,11 +1684,14 @@ class SecurityEventLog:
         new live log starts from genesis, so BOTH verify independently and
         retention deleting an old segment can never break a surviving one. The
         boundary is not lost — it is recorded as the new log's first entry, a
-        ``sel_rotation`` event naming the closed segment and its final
-        ``entry_hash``. An investigator can therefore still walk segment to
-        segment, and a segment that was deleted or swapped is visible as a
-        rotation record whose named predecessor is absent or ends on a different
-        hash.
+        ``sel_rotation`` event naming the closed segment and its size. It
+        deliberately does NOT claim that segment's final ``entry_hash``: a hash
+        captured here can be stale by the time the record is written (see
+        :meth:`_rotation_event`), which would make verification report an
+        untampered log as compromised. An investigator can therefore still walk
+        segment to segment, and a segment that was deleted or swapped is visible
+        as a rotation record whose named predecessor is absent or whose entries
+        fail their own per-record HMACs.
         """
         size = self._live_size()
         if size < _SEGMENT_MAX_BYTES:

@@ -17,10 +17,15 @@ auditing happen IN THE GATEWAY (``computer_use/tools.py`` →
   ``hooks._governance_denial`` — the PreToolUse gate — is fail-**OPEN** by
   deliberate repo policy (a governance glitch must not wedge every tool call on
   every surface), so it cannot be the sole authorization point for a surface that
-  can read a password field's ``AXValue``. The authoritative gate
-  (``gate.require_computer_use``) fails CLOSED and needs the OS-resolved app
-  identity and the addressed element's role — which only the gateway-side tool
-  body has.
+  can read a password field's ``AXValue``. The fail-CLOSED gate is the keystone
+  primary enable, read at the top of ``computer_use/tools.py``'s ordered
+  chokepoint: a keystone that is missing, unreadable or disabled refuses the call
+  outright. ``gate.require_computer_use`` is audit-only — it unconditionally
+  permits and records the call, retained as the one place a future edition can
+  reintroduce a decision without touching every call site — and the refusals
+  downstream of the enable (the operator's target policy, the element and pointer
+  shape checks) need the OS-resolved app identity and the addressed element's
+  role, which only the gateway-side tool body has.
 * **Governance and the audit trail live where the platform context is composed.**
   The ceiling, the profile store and the SEL trust root are all gateway state.
 * **No native code in this process.** This module imports no ctypes, loads no
