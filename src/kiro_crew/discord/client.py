@@ -40,6 +40,7 @@ import urllib.parse
 from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Awaitable, Callable, TypeVar
 
 import aiohttp
@@ -775,6 +776,49 @@ class DiscordClient:
         )
         return str(result.get("id", "")) if result is not None else None
 
+    async def send_document(
+        self,
+        channel_id: str,
+        document: OutboundFile,
+        *,
+        caption: str | None = None,
+        reply_to_message_id: str | None = None,
+    ) -> str | None:
+        """Upload ONE file as a named attachment. Returns the message id or None.
+
+        The generic-file counterpart of :meth:`send_message_with_files`, for
+        attachments that are not raster images (PDF, CSV, archives — whatever the
+        caller's own gates admitted).
+
+        ``filenames`` pins the document's real name: the multipart sanitizer is
+        aimed at LLM-authored reference paths and maps any non-raster mime to
+        ``.bin``, and this caller's name has already passed the file_send gates —
+        letting the sanitizer rewrite the extension would deliver ``report.pdf``
+        as ``report.bin`` and break the receiver's file-type association.
+
+        Refuses over ``DISCORD_MAX_TOTAL_UPLOAD_BYTES`` rather than uploading
+        into a 413: one attachment IS the whole upload, so the message ceiling is
+        this file's ceiling. The caller gets None and keeps its existing
+        dashboard-link fallback.
+        """
+        if not document.data:
+            return None
+        if len(document.data) > DISCORD_MAX_TOTAL_UPLOAD_BYTES:
+            logger.warning(
+                "discord: refusing a %d-byte document (ceiling %d)",
+                len(document.data),
+                DISCORD_MAX_TOTAL_UPLOAD_BYTES,
+            )
+            return None
+        result = await self._api_multipart(
+            "POST",
+            f"/channels/{channel_id}/messages",
+            _create_payload(caption or "", None, reply_to_message_id),
+            [document],
+            filenames=[Path(document.path or "").name],
+        )
+        return str(result.get("id", "")) if result is not None else None
+
     async def edit_message_with_files(
         self,
         channel_id: str,
@@ -1397,13 +1441,19 @@ class DiscordClient:
         files: Sequence[OutboundFile],
         *,
         timeout: int = 60,
+        filenames: Sequence[str] | None = None,
     ) -> DiscordApiResult:
-        """Send multipart, rebuilding the single-use form for every attempt."""
+        """Send multipart, rebuilding the single-use form for every attempt.
+
+        *filenames*, when supplied, is used verbatim in place of
+        :func:`upload_filename` — see :meth:`send_document` for when that is the
+        right call. Omit it for anything whose name the model influenced.
+        """
         return await self._api_request(
             method,
             path,
             timeout=timeout,
-            build=lambda: {"data": _build_upload_form(payload, files)},
+            build=lambda: {"data": _build_upload_form(payload, files, filenames=filenames)},
         )
 
     async def _api(
@@ -1421,9 +1471,13 @@ class DiscordClient:
         payload: dict[str, Any],
         files: Sequence[OutboundFile],
         timeout: int = 60,
+        *,
+        filenames: Sequence[str] | None = None,
     ) -> Any:
         """:meth:`api_files` reduced to its body, mirroring :meth:`_api`."""
-        return (await self.api_files(method, path, payload, files, timeout=timeout)).data
+        return (
+            await self.api_files(method, path, payload, files, timeout=timeout, filenames=filenames)
+        ).data
 
     async def _api_request(
         self,
@@ -1561,13 +1615,26 @@ def _safe_description(alt: str) -> str:
     return out[:1024]
 
 
-def _build_upload_form(payload: dict[str, Any], files: Sequence[OutboundFile]) -> aiohttp.FormData:
-    """Build matching attachment descriptors and indexed file parts."""
+def _build_upload_form(
+    payload: dict[str, Any],
+    files: Sequence[OutboundFile],
+    *,
+    filenames: Sequence[str] | None = None,
+) -> aiohttp.FormData:
+    """Build matching attachment descriptors and indexed file parts.
+
+    *filenames* is positional against *files* and used verbatim when supplied,
+    bypassing :func:`upload_filename` for a name the caller's own gates already
+    admitted (see :meth:`DiscordClient.send_document`). The descriptor and the
+    file part always carry the SAME name — Discord matches them by ``id``, and a
+    mismatch is what renames an attachment mid-upload.
+    """
     form = aiohttp.FormData()
     descriptors: list[dict[str, Any]] = []
     names: list[str] = []
     for index, file in enumerate(files):
-        name = upload_filename(file, index)
+        pinned = filenames[index] if filenames is not None and index < len(filenames) else ""
+        name = pinned or upload_filename(file, index)
         names.append(name)
         descriptor: dict[str, Any] = {"id": index, "filename": name}
         if file.alt:

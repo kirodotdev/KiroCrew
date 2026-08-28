@@ -189,6 +189,36 @@ class DiscordTransport(MessagingTransport):
         mid = await self._client.send_message_with_files(conversation_id, content, files)
         return str(mid or "")
 
+    async def send_document(
+        self,
+        conversation_id: str,
+        file: OutboundFile,
+        *,
+        caption: str = "",
+        thread_id: str | None = None,
+    ) -> str:
+        """Send one validated file, keeping its admitted name. Returns the message id.
+
+        The name-preserving counterpart of :meth:`send_message_with_files`, whose
+        sanitizer is aimed at LLM-authored reference paths and would deliver
+        ``report.pdf`` as ``report.bin``. A caller here has already gated the name
+        (``file_send``), so the real basename is pinned onto the multipart part.
+        ``file`` carries validated bytes (the ``OutboundFile`` contract — the path
+        is provenance, never re-opened).
+
+        ``thread_id``, when present, IS the destination: a Discord thread's
+        snowflake is its channel id, which is why the persisted link is built as
+        ``ChannelLink("discord", channel_id=...)`` with no thread id at all (see
+        :meth:`may_send_to`). The parameter exists for cross-transport parity, and
+        honouring it costs nothing because the value it would carry is a channel.
+        """
+        mid = await self._client.send_document(
+            thread_id or conversation_id,
+            file,
+            caption=caption or None,
+        )
+        return str(mid or "")
+
     async def resolve_conversation(self, user_id: str) -> str:
         # Proactive sends need a DM channel; the client's create_dm_channel
         # POSTs /users/@me/channels to create (or return) it for a user id.

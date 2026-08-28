@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -37,6 +38,20 @@ def outbox_file(tmp_path):
     outbox = tmp_path / "outbox"
     outbox.mkdir()
     f = outbox / "report.txt"
+    f.write_text("hello world", encoding="utf-8")
+    return f
+
+
+@pytest.fixture
+def outbox_pdf(tmp_path):
+    """A non-raster document in the outbox — the extension the extraction
+    sanitizer would rewrite to `.bin`, which is what the document verb exists
+    to preserve. The delivered name comes from ``OutboundFile.path`` (the
+    resolved file on disk), not from the request's ``filename`` field.
+    """
+    outbox = tmp_path / "outbox"
+    outbox.mkdir(exist_ok=True)
+    f = outbox / "report.pdf"
     f.write_text("hello world", encoding="utf-8")
     return f
 
@@ -778,12 +793,95 @@ class TestChannelUploadEndpoint:
         assert kwargs["thread_id"] == "7"
 
     @pytest.mark.asyncio
-    async def test_discord_destination_is_an_explicit_skip(self, tmp_path, outbox_file):
-        # Deliberate: Discord's transport upload verb serves the image
-        # extraction pipeline, whose sanitizer maps any non-raster mime to
-        # `.bin` — report.pdf would arrive as report.bin. Until a
-        # name-preserving document verb exists, Discord callers keep the
-        # dashboard-link fallback rather than a corrupted attachment.
+    async def test_discord_destination_gets_send_document(self, tmp_path, outbox_pdf):
+        # Issue #6058: Discord was an explicit skip while its only upload verb
+        # was the extraction one, whose sanitizer maps any non-raster mime to
+        # `.bin` (report.pdf would arrive as report.bin). It now has the same
+        # purpose-built name-preserving verb Telegram uses, so it delivers.
+        from unittest.mock import AsyncMock
+
+        transport = MagicMock(spec_set=["send_document", "send_message_with_files"])
+        transport.send_document = AsyncMock(return_value="900")
+        transport.send_message_with_files = AsyncMock(return_value="901")
+        app = self._app()
+        with patch(
+            "kiro_crew.dashboard.chat_runner._resolve_mirror_target",
+            return_value=(self._link("discord", "555"), transport),
+        ), patch(
+            "kiro_crew.config.loader.outbox_dir", return_value=outbox_pdf.parent
+        ), patch(
+            "kiro_crew.config.loader.workspace_root", return_value=tmp_path
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(
+                    "/api/channel/upload-file",
+                    json={
+                        "file_path": str(outbox_pdf),
+                        "filename": "report.pdf",
+                        "description": "weekly numbers",
+                    },
+                    headers={"X-Session-Key": "discord:1"},
+                )
+                body = await resp.json()
+        assert resp.status == 200
+        assert body == {"ok": True, "delivered": True, "channel_type": "discord"}
+        transport.send_document.assert_awaited_once()
+        # The extraction verb stays out of this path: it is the one whose
+        # sanitizer would rename the attachment.
+        transport.send_message_with_files.assert_not_called()
+        args, kwargs = transport.send_document.call_args
+        assert args[0] == "555"
+        outbound = args[1]
+        # The OutboundFile contract: the gated bytes ARE the payload.
+        assert outbound.data == b"hello world"
+        assert outbound.path == str(outbox_pdf)
+        # `.pdf` survives end-to-end — the whole point of the separate verb.
+        # `upload_filename` would have made this `report.bin`.
+        from kiro_crew.messaging.outbound_files import upload_filename
+
+        assert Path(outbound.path).name == "report.pdf"
+        assert upload_filename(outbound, 0) == "report.bin"
+        assert outbound.mime == "application/pdf"
+        assert kwargs["caption"] == "weekly numbers"
+
+    @pytest.mark.asyncio
+    async def test_discord_outbound_text_is_redacted_in_display_form(self, tmp_path, outbox_file):
+        # Same boundary rule as the Telegram leg: redact() scans literal bytes,
+        # and Discord renders markdown, so AKIA**…** displays as an intact key.
+        from unittest.mock import AsyncMock
+
+        key = "AKIA" + "IOSFODNN7EXAMPLE"
+        transport = MagicMock(spec_set=["send_document"])
+        transport.send_document = AsyncMock(return_value="900")
+        app = self._app()
+        with patch(
+            "kiro_crew.dashboard.chat_runner._resolve_mirror_target",
+            return_value=(self._link("discord", "555"), transport),
+        ), patch(
+            "kiro_crew.config.loader.outbox_dir", return_value=outbox_file.parent
+        ), patch(
+            "kiro_crew.config.loader.workspace_root", return_value=tmp_path
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(
+                    "/api/channel/upload-file",
+                    json={
+                        "file_path": str(outbox_file),
+                        "filename": "report.pdf",
+                        "description": f"{key[:4]}**{key[4:]}**",
+                    },
+                    headers={"X-Session-Key": "discord:1"},
+                )
+                body = await resp.json()
+        assert resp.status == 200 and body["delivered"] is True
+        caption = transport.send_document.call_args[1]["caption"]
+        assert key not in caption.replace("*", "").replace("`", "").replace("_", "")
+
+    @pytest.mark.asyncio
+    async def test_a_discord_transport_without_the_verb_is_still_a_skip(self, tmp_path, outbox_file):
+        # The channel list is not the authority — the verb is. A transport that
+        # predates it keeps the dashboard-link fallback rather than being routed
+        # into the extraction upload whose sanitizer renames the attachment.
         from unittest.mock import AsyncMock
 
         transport = MagicMock(spec_set=["send_message_with_files"])

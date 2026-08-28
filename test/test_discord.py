@@ -99,6 +99,24 @@ class MultipartFake:
             channel_id, text, components=components, reply_to_message_id=reply_to_message_id
         )
 
+    async def send_document(
+        self,
+        channel_id: str,
+        document: Any,
+        *,
+        caption: Any = None,
+        reply_to_message_id: Any = None,
+    ) -> str | None:
+        """Record the destination alongside the file: the document verb routes a
+        thread to its own channel id, which is the part a caller can get wrong."""
+        getattr(self, "uploads", []).append(("document", [document]))
+        getattr(self, "documents", []).append((channel_id, document, caption))
+        if getattr(self, "raise_uploads", False):
+            raise RuntimeError("document send exploded")
+        if getattr(self, "fail_uploads", False):
+            return None
+        return await self.send_message(channel_id, caption or "")  # type: ignore[attr-defined]
+
     async def edit_message_with_files(
         self,
         channel_id: str,
@@ -135,6 +153,8 @@ class FakeClient(MultipartFake):
         self.attachment_bodies: dict[str, bytes] = {}
         self.attachment_downloads: list[str] = []
         self.uploads: list[tuple[str, list[Any]]] = []
+        #: (channel_id, document, caption) per name-preserving document send.
+        self.documents: list[tuple[str, Any, Any]] = []
         self.edit_ok = True
         #: When set, every send returns None, which is what the real client does
         #: for a revoked token or a dead network.
