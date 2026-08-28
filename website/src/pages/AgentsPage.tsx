@@ -3,6 +3,7 @@ import { useQuery, useMutation } from '@tanstack/react-query'
 import { Star, Brain, Plug, Pin, Package, Lock, Hourglass, Bot, ChevronDown, LayoutTemplate, X } from 'lucide-react'
 import { createPortal } from 'react-dom'
 import { api } from '../api/client'
+import { defaultAgentQuery } from '../api/defaultAgentQuery'
 import type { SubagentInfo } from '../types'
 import Clickable from '../components/Clickable'
 import { SourceBadge, PageHeader, EmptyState, Btn, Input, SearchInput, Card, CardTitle, Badge } from '../components/ui'
@@ -469,10 +470,7 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
   })
   const crews = useMemo(() => crewsData?.agents ?? [], [crewsData])
 
-  const { data: defaultAgentData, isError: defaultFailed, refetch: refetchDefault } = useQuery({
-    queryKey: ['default-agent'],
-    queryFn: () => api.defaultAgent().then(d => d.default_agent || ''),
-  })
+  const { data: defaultAgentData, isError: defaultFailed, refetch: refetchDefault } = useQuery(defaultAgentQuery)
   const defaultAgent = defaultAgentData ?? ''
 
   const [selectedAgent, setSelectedAgent] = useState<AgentDetail | null>(null)

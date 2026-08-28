@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useSelector } from 'react-redux'
+import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import type { RootState } from '../store'
 import type { CronJob, SubagentInfo } from '../types'
+import { agentOrDefaultLabel } from '../utils/agentLabel'
+import { defaultAgentQuery } from '../api/defaultAgentQuery'
 
 export interface AgentSource {
   id: string
@@ -31,17 +34,28 @@ function shortName(s: string, max = 45): string {
 export function useAgentSync() {
   const slots = useSelector((s: RootState) => s.dashboard.slots)
   const [extras, setExtras] = useState<AgentSource[]>([])
+  // Slots created before the default agent was stamped into metadata at
+  // creation carry agent:'' — label them with the alias that actually answers,
+  // falling back to the literal 'default' until the fetch lands. Deliberately
+  // NOT useAgents(0): that hook fires the owner-only, config-writing
+  // POST /api/agents/sync once per mount, which a view-only surface must not
+  // pay. The shared ['default-agent'] query (same key + shape as AgentsPage)
+  // reads GET /api/config/default-agent — no lock, no write — and
+  // useWebSocket's refresh invalidation keeps a long-lived Worlds/popout
+  // surface from pinning a stale alias after the default changes.
+  const { data: defaultAgentData } = useQuery(defaultAgentQuery)
+  const defaultAgent = defaultAgentData ?? ''
 
   const slotAgents = useMemo<AgentSource[]>(() => slots.map(sl => ({
     id: 'slot-' + sl.key, name: shortName(sl.title || sl.key),
-    label: sl.agent || 'default', kind: 'slot' as const,
+    label: agentOrDefaultLabel(sl.agent, defaultAgent), kind: 'slot' as const,
     running: sl.running, detail: sl.messages + ' msgs',
     lastMessage: sl.last_message || '',
     waitingForInput: !!sl.waiting_for_input,
     pendingApproval: sl.pending_approval_info
       ? { tool: sl.pending_approval_info.tool, requestId: sl.pending_approval_info.request_id }
       : null,
-  })), [slots])
+  })), [slots, defaultAgent])
 
   useEffect(() => {
     let cancelled = false

@@ -45,6 +45,8 @@ import {
 import ScheduleTemplateGallery from '../components/ScheduleTemplateGallery'
 
 import { i18nT } from '../i18n/t'
+import { defaultAgentQuery } from '../api/defaultAgentQuery'
+import { agentOrDefaultLabel } from '../utils/agentLabel'
 import { fmtDateTimeNumeric } from '../i18n/format'
 import { formatCadence } from '../utils/scheduleCadence'
 const RENDER_TZ_STORAGE_KEY = 'kirocrew.schedule.renderTz'
@@ -206,7 +208,12 @@ function EmptyFolderChip({ folder, onRename, onDelete, error }: { folder: CronFo
 
 export default function SchedulePage() {
   const [jobs, setJobs] = useState<CronJob[]>([])
-  const { agents, defaultAgent } = useAgents(0)
+  const { agents } = useAgents(0)
+  // The default agent comes from the shared, WS-invalidated + focus-refetched
+  // query rather than useAgents' one-shot value, so the agent-column label's
+  // freshness matches the agents rail's — one source of truth (issue #6495).
+  const { data: defaultAgentData } = useQuery(defaultAgentQuery)
+  const defaultAgent = defaultAgentData ?? ''
   const [cronFilter, setCronFilter] = useState('')
   const [selected, setSelected] = useState<CronJob | null>(null)
   /**
@@ -817,12 +824,12 @@ export default function SchedulePage() {
                     schedule/timezone pair in the next column. The agent's model
                     is tooltip-only: at this width it truncated to noise, and the
                     detail dialog shows it in full. */}
-                <TableCell className="truncate" title={j.script ? j.script : j.command ? j.command : `${j.agent || 'default'}${j.model ? ` · ${j.model}` : ''}`}>
+                <TableCell className="truncate" title={j.script ? j.script : j.command ? j.command : `${agentOrDefaultLabel(j.agent, defaultAgent)}${j.model ? ` · ${j.model}` : ''}`}>
                   {j.script ? <span className="font-medium text-[var(--accent)]">{i18nT('pages.schedulePage.script_python')}</span>
                     : j.command ? <span className="font-medium text-[var(--warn)]">{i18nT('pages.schedulePage.command_shell')}</span>
                     : <>
                         <span className="text-muted">{i18nT('pages.schedulePage.agent')}</span>
-                        <span className="block truncate text-[11px] text-muted">{j.agent || 'default'}</span>
+                        <span className="block truncate text-[11px] text-muted">{agentOrDefaultLabel(j.agent, defaultAgent)}</span>
                       </>}
                 </TableCell>
                 <TableCell className="truncate" title={j.schedule}><code>{j.schedule}</code>{j.timezone && <span className="block truncate text-[11px] text-muted">{j.timezone.replace(/_/g, ' ')}</span>}</TableCell>
