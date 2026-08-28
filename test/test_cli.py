@@ -6687,6 +6687,32 @@ class TestChatPermissionRequest:
         assert "/home/tester/thesis.md" in capsys.readouterr().out
 
     @pytest.mark.asyncio
+    async def test_a_multi_target_call_discloses_the_count(self, monkeypatch, capsys):
+        # Now that extraction is nesting-aware, a batch call yields every target,
+        # and showing only the first would have the human consent to one file
+        # while approving the whole batch. The first path plus a count keeps the
+        # prompt honest without turning it into a manifest.
+        provider, sels, reads = await self._drive(
+            monkeypatch,
+            event=self._event(
+                title="Read the notes",
+                tool_name="read",
+                raw_params={
+                    "operations": [
+                        {"mode": "Line", "path": "/home/tester/thesis.md"},
+                        {"mode": "Line", "path": "/home/tester/notes.md"},
+                        {"mode": "Line", "path": "/home/tester/refs.md"},
+                    ]
+                },
+            ),
+            answer="a",
+        )
+        assert provider.calls == [("approve", 7, False)]
+        out = capsys.readouterr().out
+        assert "/home/tester/thesis.md" in out
+        assert "(+2 more)" in out
+
+    @pytest.mark.asyncio
     async def test_a_pathless_call_is_still_asked_about(self, monkeypatch):
         # Absence of a path is NOT a refusal. Most builtin calls legitimately act
         # on no file, so denying whenever a path cannot be found would refuse

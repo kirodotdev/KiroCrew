@@ -500,9 +500,14 @@ def _target_path(event: LLMEvent) -> str:
     sensitive-path keystone was in fact reading two of the three, so a
     ``filePath`` target was displayed as vetted while never having been gated.
 
-    The FIRST path is shown when a call carries several. The gate denies on ANY of
-    them, so anything forbidden has already been refused before this runs; what is
-    left is a disclosure choice, and a prompt is a question rather than a manifest.
+    The FIRST path is shown when a call carries several, with a ``(+N more)``
+    count appended so the human is never told one file while consenting to a
+    batch — before the extraction became nesting-aware a multi-target batch
+    yielded nothing here, so the single-path display was honest by
+    construction; now that every nested target is collected, a bare first path
+    would under-disclose. The gate denies on ANY of them, so anything forbidden
+    has already been refused before this runs; what is left is a disclosure
+    choice, and a prompt is a question rather than a manifest.
 
     Returns ``""`` when the call carries no path, which is the ordinary case for
     a tool that acts on no file. That is deliberately NOT a refusal: most builtin
@@ -511,7 +516,11 @@ def _target_path(event: LLMEvent) -> str:
     which DO name a file.
     """
     found = target_paths(event.raw_tool_params)
-    return found[0] if found else ""
+    if not found:
+        return ""
+    if len(found) == 1:
+        return found[0]
+    return f"{found[0]} (+{len(found) - 1} more)"
 
 
 def _display_path(path: str) -> str:
