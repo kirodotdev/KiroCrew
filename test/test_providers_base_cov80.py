@@ -66,6 +66,13 @@ def test_unknown_context_readings_are_conservative(provider: _MinimalProvider) -
     assert provider.context_used_tokens() == 0
 
 
+def test_rate_limit_defaults_to_no_quota(provider: _MinimalProvider) -> None:
+    # H8: the capability lands on the ABC with a safe default rather than as a
+    # hasattr probe at the call site, so a harness that reports no plan quota —
+    # which is most of them — answers None without implementing anything.
+    assert provider.rate_limit_payload() is None
+
+
 def test_identity_defaults_are_empty_not_wildcards(provider: _MinimalProvider) -> None:
     assert provider.session_id == ""
     assert provider.cwd == ""

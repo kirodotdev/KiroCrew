@@ -793,13 +793,15 @@ class TestPushGuardCredentialRedaction:
         _git(repo_dir, "init")
         _git(repo_dir, "commit", "--allow-empty", "-m", "init")
 
-        # PAT-style URL (no colon separator, just token@host).
+        # PAT-style URL (no colon separator, just token@host).  A closed local
+        # port makes the fetch fail deterministically without reaching the
+        # operator's network or a credential helper for a real forge host.
         _git(
             repo_dir,
             "remote",
             "add",
             "origin",
-            "https://ghp_aBcDeFgHiJkLmNoPqRsT@github.com/org/repo.git",
+            "http://ghp_aBcDeFgHiJkLmNoPqRsT@127.0.0.1:1/org/repo.git",
         )
 
         rc, stdout, stderr = _run_push_guard(repo_dir)

@@ -25,7 +25,7 @@ from collections.abc import Callable, Iterable, MutableMapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import urlsplit as _urlsplit
 
 from kiro_crew import __version__, model_registry, platform_compat, windows_acl
@@ -1453,6 +1453,27 @@ def resolve_agent_config_path() -> Path:
     return config_package_dir() / "defaults.json"
 
 
+def _selectable_acp_backends() -> list[str]:
+    """The values an operator may persist in ``agent.acp_backend``.
+
+    A function, not a literal, and called at SCHEMA-BUILD time rather than while
+    this module's dataclasses are being defined. The import cannot happen at class
+    definition: reaching ``kiro_crew.acp.types`` executes the ``kiro_crew.acp``
+    package init, which imports the ACP client and runtime, which import this
+    module — the same cycle ``_normalize_acp_backend`` documents.
+
+    Restating the list instead is what allowed the schema to keep validating
+    against ``['', 'kas']`` after the selectable adapter set expanded. That
+    failed in the worst available way: the config PATCH validated against a
+    different allowlist, answered 200, and this schema then rejected the value on
+    the next load and silently degraded it to the default — a save that reported
+    success and changed nothing.
+    """
+    from kiro_crew.acp import backends as acp_backends
+
+    return sorted(acp_backends.selectable_ids())
+
+
 def _meta(label: str, help: str, **kwargs: object) -> dict:
     """Helper to build field metadata dicts with safe defaults."""
     return {"label": label, "help": help, **kwargs}
@@ -1615,9 +1636,27 @@ class AgentConfig:
         default="",
         metadata=_meta(
             "ACP Backend",
-            "Which ACP agent to drive: '' = kiro-cli (default), 'kas' = kiro-agent. "
-            "KAS runs chat but has no native subagent progress reporting yet.",
-            enum=["", "kas"],
+            "Which admitted ACP agent to drive: '' = kiro-cli (default), "
+            "'kas' = kiro-agent. Registry adapters can be discovered before "
+            "admission but cannot be persisted until they join the selectable set.",
+            # Derived, never restated. A hardcoded list can drift from the
+            # editable-config allowlist: the PATCH then answers 200 before this
+            # schema rejects the value on the next load and degrades it to the
+            # default. A save that reports success and changes nothing is worse
+            # than a refusal, so both surfaces must read one source.
+            enum=_selectable_acp_backends,
+        ),
+    )
+    acp_backend_allow_ungated_tools: bool = field(
+        default=False,
+        metadata=_meta(
+            "Allow Ungated Tools",
+            "Start a session on an experimental ACP backend even when its tool "
+            "decisions cannot be shown to reach Kiro Crew's PreToolUse gate. "
+            "OFF by default, and leaving it off is the safe choice: with it on, "
+            "the bundled denied-command rules, the sensitive-path block and the "
+            "governance ceiling are not consulted for tool calls the backend "
+            "auto-approves on its own.",
         ),
     )
     default_agent: str = field(
@@ -4618,7 +4657,10 @@ def _normalize_jail(value: object) -> str:
     return JAIL_MODE_AUTO
 
 
-def _normalize_acp_backend(value: object) -> str:
+def _normalize_acp_backend(
+    value: object,
+    selectable_acp_backends: frozenset[str] | None = None,
+) -> str:
     """Coerce a persisted ``agent.acp_backend`` to a selectable backend.
 
     Anything not selectable — an unknown value, or a backend the code understands
@@ -4633,14 +4675,18 @@ def _normalize_acp_backend(value: object) -> str:
     imports the ACP client and runtime, which import this module — and this
     module is imported first by the gateway and desktop entrypoints.
     """
-    from kiro_crew.acp.types import (
-        ACP_BACKEND_KIRO,
-        ACP_BACKENDS_KNOWN,
-        ACP_BACKENDS_SELECTABLE,
-    )
+    from kiro_crew.acp import backends as acp_backends
+    from kiro_crew.acp.types import ACP_BACKEND_KIRO, ACP_BACKENDS_KNOWN
 
-    if isinstance(value, str) and value in ACP_BACKENDS_SELECTABLE:
-        return value
+    selectable = (
+        acp_backends.selectable_ids()
+        if selectable_acp_backends is None
+        else selectable_acp_backends
+    )
+    if isinstance(value, str):
+        value = acp_backends.canonical_backend_id(value)
+        if value in selectable:
+            return value
     if value not in (None, ""):
         known_but_unusable = isinstance(value, str) and value in ACP_BACKENDS_KNOWN
         logger.warning(
@@ -4648,7 +4694,7 @@ def _normalize_acp_backend(value: object) -> str:
             "Selectable values: %s",
             value,
             "not usable yet" if known_but_unusable else "unknown",
-            ", ".join(repr(b) for b in sorted(ACP_BACKENDS_SELECTABLE)),
+            ", ".join(repr(b) for b in sorted(selectable)),
         )
     return ACP_BACKEND_KIRO
 
@@ -7030,7 +7076,11 @@ class KiroCrewConfig:
         return set(self.slack.allowed_enterprise_ids)
 
     @classmethod
-    def load(cls) -> KiroCrewConfig:
+    def load(
+        cls,
+        *,
+        selectable_acp_backends: frozenset[str] | None = None,
+    ) -> KiroCrewConfig:
         """Load config from ~/.kiro/crew/config.json, falling back to defaults.
 
         If ``config.local.json`` exists alongside ``config.json``, it is
@@ -7040,7 +7090,11 @@ class KiroCrewConfig:
         The overlay is applied at load time but NOT persisted back by
         ``save()`` — only the base config is written to ``config.json``.
         """
-        cfg = cls._load_resolved()
+        cfg = (
+            cls._load_resolved()
+            if selectable_acp_backends is None
+            else cls._load_resolved(selectable_acp_backends=selectable_acp_backends)
+        )
         # Push the MCP search-path setting to its consumer. It is PUSHED rather
         # than read there because kiro_crew.env.mcp_search_path is reached from
         # the event loop by every MCP probe and by the agent-config resolver, so
@@ -7074,7 +7128,11 @@ class KiroCrewConfig:
         return cfg
 
     @classmethod
-    def _load_resolved(cls) -> KiroCrewConfig:
+    def _load_resolved(
+        cls,
+        *,
+        selectable_acp_backends: frozenset[str] | None = None,
+    ) -> KiroCrewConfig:
         """Resolve the config from disk (or defaults). See :meth:`load`.
 
         Split out so :meth:`load` owns the post-resolution publication on every
@@ -7087,7 +7145,11 @@ class KiroCrewConfig:
         # _deep_merge + the full jsonschema.validate. A deep copy is returned so
         # in-place mutation by callers (and the write-back migration below) can
         # never corrupt the cached original.
-        cached_data = _cached_validated_data()
+        # A caller-supplied registry snapshot can include an adapter that disk
+        # cache publication could not persist. Revalidate the raw config against
+        # that exact snapshot rather than serving a prior cache entry that may
+        # already have removed the dynamic backend.
+        cached_data = _cached_validated_data() if selectable_acp_backends is None else None
         if cached_data is not None:
             data = cached_data
         else:
@@ -7190,7 +7252,13 @@ class KiroCrewConfig:
             # Preserve fail-closed security semantics before advisory schema
             # validation can replace malformed input with a missing-field default.
             # Validate against JSON Schema (advisory — never fatal)
-            _validate_config_data(data)
+            if selectable_acp_backends is None:
+                _validate_config_data(data)
+            else:
+                _validate_config_data(
+                    data,
+                    selectable_acp_backends=selectable_acp_backends,
+                )
             # Clamp security-relevant resource-limit knobs to their API ceilings
             # BEFORE caching, so a hand-edited/prompt-injected config.json that
             # exceeds a ceiling cannot drive resource exhaustion (DoS). Runs only
@@ -7198,7 +7266,8 @@ class KiroCrewConfig:
             _clamp_security_bounds(data)
             # Cache the validated, merged dict under the PRE-read fingerprint so
             # a mid-read write self-heals (next load misses and re-reads).
-            _store_validated_data(data, pre_read_fp)
+            if selectable_acp_backends is None:
+                _store_validated_data(data, pre_read_fp)
 
         # Collected during the parse that discards them — the only moment the
         # evidence exists, since the migration below rewrites config.json in
@@ -7373,7 +7442,13 @@ class KiroCrewConfig:
                 mcp_quarantine_after_failures=_safe_int(
                     agent_data.get("mcp_quarantine_after_failures", 3), 3
                 ),
-                acp_backend=_normalize_acp_backend(agent_data.get("acp_backend")),
+                acp_backend=_normalize_acp_backend(
+                    agent_data.get("acp_backend"),
+                    selectable_acp_backends,
+                ),
+                acp_backend_allow_ungated_tools=_safe_bool(
+                    agent_data.get("acp_backend_allow_ungated_tools"), False
+                ),
                 default_agent=agent_data.get("default_agent", ""),
                 sweep_agents_backups=_safe_bool(
                     agent_data.get("sweep_agents_backups", False), False
@@ -8450,6 +8525,8 @@ class KiroCrewConfig:
         agent: str | None,
         model_override: str | None,
         global_model: str | None = None,
+        *,
+        registry_model_ids: bool = True,
     ) -> str:
         """The model id the ACP factory selects — what its effort gate keys on.
 
@@ -8458,32 +8535,39 @@ class KiroCrewConfig:
         instead of mirroring it — a mirror that drifts reports a false
         ``effort_applied``/``effort_dropped`` receipt, worse than silence.
 
-        Precedence: ``model_override`` (an explicit caller model or the value
-        the session layer resolved) > a named agent's own kiro ``model`` pin
-        (``kirocrew`` itself and the no-agent case use the global directly) >
-        the collapsed global. ``global_model`` lets the factory pass its
-        build-time collapsed ``agent.model``; when omitted it is recomputed
-        the same way (``agent.model``, collapsed through
-        :meth:`_resolve_agent_model` when it is the ``auto`` sentinel).
+        For the Kiro model namespace, precedence is ``model_override`` (an
+        explicit caller model or the value the session layer resolved) > a
+        named agent's own Kiro ``model`` pin (``kirocrew`` itself and the
+        no-agent case use the global directly) > the collapsed global.
+        ``global_model`` lets the factory pass its build-time collapsed
+        ``agent.model``; when omitted it is recomputed the same way.
 
-        The result is translated through ``model_registry.to_acp_id`` exactly
-        as the factory does — canonical keys become kiro ids, and ``auto``
-        collapses to ``""`` (``to_acp_id``, NOT ``to_provider_id``: kiro serves
-        the registry aliases as distinct real models — see its docstring).
-        ``""`` means nothing is pinned anywhere: kiro-cli resolves the model
-        itself and the effort overlay cannot be keyed.
+        When ``registry_model_ids`` is true, the result is translated through
+        ``model_registry.to_acp_id`` exactly as the Kiro factory does —
+        canonical keys become kiro ids, and ``auto`` collapses to ``""``
+        (``to_acp_id``, NOT ``to_provider_id``: kiro serves the registry aliases
+        as distinct real models — see its docstring). Adapter factories whose
+        model ids are backend-owned pass false: they use only an explicit
+        override or a concrete global model and never read Kiro agent files.
+        Their ``auto`` sentinel is left for the backend to resolve. ``""``
+        means nothing is pinned anywhere: the backend resolves the model itself
+        and the effort overlay cannot be keyed.
         """
         if global_model is None:
             global_model = self.agent.model
-            if global_model == DEFAULT_MODEL:
+            if registry_model_ids and global_model == DEFAULT_MODEL:
                 global_model = self._resolve_agent_model()
         if model_override:
             m: str = model_override
+        elif not registry_model_ids:
+            m = global_model
         elif not agent or agent == "kirocrew":
             m = global_model
         else:
             m = self._resolve_named_agent_model(agent) or global_model
-        return model_registry.to_acp_id(m) if m else ""
+        if registry_model_ids:
+            return model_registry.to_acp_id(m) if m else ""
+        return m
 
     @staticmethod
     def _resolve_named_agent_model(agent: str, agents_dir: Path | None = None) -> str:
@@ -8591,18 +8675,120 @@ class KiroCrewConfig:
         return creds
 
     def create_provider_factory(self) -> Callable:
-        """Return a factory that creates LLMProvider instances from config.
+        """Return the first-class kiro-cli provider factory.
 
-        KiroCrew is KiroACP-only: the sole provider is the ACP adapter driving
-        the kiro-cli backend. The factory accepts an optional ``session_key`` to
-        create a per-session subdirectory under ``workspace_root()``.
+        This is the direct, unconditional Kiro construction path. Adapter
+        selection and adapter-only capabilities live in ``ProviderRegistry``;
+        they never enter this function (H13).
         """
-        from kiro_crew.providers.acp import (
-            AcpProvider,  # circular: acp -> client -> session -> config.loader
-        )
+        from kiro_crew.acp.types import ACP_BACKEND_KIRO
+        from kiro_crew.providers.acp import AcpProvider
 
         model = self.agent.model
         if model == DEFAULT_MODEL:
+            model = self._resolve_agent_model()
+
+        sandbox = self.agent.sandbox
+        tool_search = self.agent.tool_search
+        tool_search_min_pct = self.agent.tool_search_min_pct
+        tool_search_min_tokens = self.agent.tool_search_min_tokens
+        default_effort = self.agent.reasoning_effort
+
+        _gw = self.mcp_gateway
+        if _gw.stub_servers:
+            _gw_overlay = _gw.overlay_dir or str(default_overlay_dir())
+            _gw_socket = _gw.socket_path or str(default_socket_path())
+            _gw_settings = str(Path(_gw_overlay).parent / "settings" / "mcp.json")
+        else:
+            _gw_overlay = None
+            _gw_socket = None
+            _gw_settings = None
+
+        # Preserve the first-class Kiro factory's warning contract. Adapter
+        # registration must not make a valid-but-unsupported effort request
+        # disappear silently on the existing path (H13).
+        _effort_drop_warned: set[tuple[str, str]] = set()
+
+        def _acp(
+            session_key: str | None = None,
+            agent: str | None = None,
+            channel_id: str | None = None,
+            model_override: str | None = None,
+            cwd: str | None = None,
+            extra_env: dict[str, str] | None = None,
+            reasoning_effort_override: str | None = None,
+            crew_agent: str | None = None,
+            **_kwargs: object,
+        ) -> AcpProvider:
+            wdir = Path(cwd) if cwd else _session_work_dir(session_key)
+            crew_agent = resolve_crew_identity(self, agent, crew_agent)
+            if model_override:
+                m = model_override
+            elif not agent or agent == "kirocrew":
+                m = model
+            else:
+                m = self._resolve_named_agent_model(agent) or model
+            m = model_registry.to_acp_id(m) if m else m
+
+            effort_per_model: dict[str, str] = {}
+            if agent in ("kirocrew-lite", "kirocrew-heartbeat"):
+                base_effort = self.agent.resolve_effort("background")
+            else:
+                base_effort = default_effort
+            effort = reasoning_effort_override or base_effort
+            if m and effort and is_valid_effort(effort) and model_supports_effort(m):
+                effort_per_model[m] = effort
+            elif effort and is_valid_effort(effort):
+                dedupe = not reasoning_effort_override
+                if not dedupe or (m, effort) not in _effort_drop_warned:
+                    if dedupe:
+                        _effort_drop_warned.add((m, effort))
+                    logger.warning(
+                        "reasoning effort '%s' will not be applied (session %s) — "
+                        "model '%s' does not support effort configuration",
+                        effort,
+                        session_key or "?",
+                        m or "auto",
+                    )
+
+            return AcpProvider(
+                work_dir=wdir,
+                model=m,
+                agent=agent,
+                crew_agent=crew_agent,
+                sandbox_mode=sandbox,
+                session_key=session_key,
+                channel_id=channel_id,
+                extra_env=extra_env,
+                acp_backend=ACP_BACKEND_KIRO,
+                effort_per_model=effort_per_model,
+                tool_search=tool_search,
+                tool_search_min_pct=tool_search_min_pct,
+                tool_search_min_tokens=tool_search_min_tokens,
+                mcp_gateway_overlay=_gw_overlay,
+                mcp_gateway_settings_mcp_json=_gw_settings,
+                mcp_gateway_socket=_gw_socket,
+            )
+
+        return _acp
+
+    def _create_adapter_provider_factory(
+        self,
+        *,
+        factory_backend: str,
+        provider_type: type,
+        registry_model_ids: bool,
+        tool_search_supported: bool,
+    ) -> Callable:
+        """Build one registry-selected non-Kiro ACP provider factory.
+
+        Backend identity, provider class, and capabilities are inputs owned by
+        ``ProviderRegistry``. The first-class factory above never calls this
+        adapter-only helper.
+        """
+
+        model = self.agent.model
+        if registry_model_ids and model == DEFAULT_MODEL:
             model = self._resolve_agent_model()
 
         sandbox = self.agent.sandbox
@@ -8646,36 +8832,30 @@ class KiroCrewConfig:
             extra_env: dict[str, str] | None = None,
             reasoning_effort_override: str | None = None,
             crew_agent: str | None = None,
+            inherit_config_model: bool = True,
             **_kwargs: object,
-        ) -> AcpProvider:
+        ) -> Any:
             wdir = Path(cwd) if cwd else _session_work_dir(session_key)
             # Canonical crew identity for the session (keys per-agent watchdog
             # windows on the handle) — one shared resolution rule, see
             # resolve_crew_identity.
             crew_agent = resolve_crew_identity(self, agent, crew_agent)
-            # Resolve the model, highest tier first:
-            #   1. model_override — the caller's explicit pick. The dashboard
-            #      passes the slot's own model, else the KiroCrew agent's
-            #      configured default (see chat_runner._run_chat).
-            #   2. the bound kiro agent's own pinned model, for a named agent.
-            #      Custom agents MUST resolve here because the ACP
-            #      session/set_mode path switches prompt/tools but not the model,
-            #      so an unset model makes kiro fall back to cli.json's
-            #      chat.defaultModel. Use _resolve_named_agent_model (the kiro
-            #      model slot) to match this backend.
-            #   3. ``model`` — the global agent.model default, already collapsed
-            #      through _resolve_agent_model() at factory-build time. It
-            #      applies to every agent, not just "kirocrew": an agent that
-            #      pins nothing inherits the user's configured default instead of
-            #      silently falling through to the backend's own choice.
+            # Kiro-owned model ids follow the same override > named Kiro agent
+            # pin > global precedence as the first-class factory. A spec
+            # adapter's namespace is independent: only an explicit override or
+            # concrete global is meaningful there, and auto stays the adapter's
+            # default. Reading Kiro agent JSON for that path would leak a valid
+            # but foreign id onto the adapter wire.
             # "" at the end means nothing is pinned anywhere; AcpClient
             # normalizes "" to DEFAULT_MODEL, same as None.
-            # Selection + to_acp_id translation live in acp_effective_model —
-            # SHARED with the spawn-side effort verdict (subagent.py) so the
-            # reported outcome cannot drift from what this gate actually keys
-            # on. (The translation rationale — why to_acp_id and not
-            # to_provider_id — is documented on that method.)
-            m = self.acp_effective_model(agent, model_override, global_model=model)
+            # Selection and optional registry translation live in
+            # acp_effective_model, shared with the spawn-side effort verdict.
+            m = self.acp_effective_model(
+                agent if inherit_config_model else None,
+                model_override,
+                global_model=model if inherit_config_model else "",
+                registry_model_ids=registry_model_ids,
+            )
             # Thread the slot's effort into a per-model override so the kiro
             # cli.json overlay is written from it at spawn — without this, a
             # kiro cold start (or the handler's reset-then-respawn) would only
@@ -8725,7 +8905,7 @@ class KiroCrewConfig:
                         session_key or "?",
                         m or "auto",
                     )
-            return AcpProvider(
+            return provider_type(
                 work_dir=wdir,
                 model=m,
                 agent=agent,
@@ -8734,14 +8914,18 @@ class KiroCrewConfig:
                 session_key=session_key,
                 channel_id=channel_id,
                 extra_env=extra_env,
-                acp_backend=self.agent.acp_backend,
+                acp_backend=factory_backend,
                 effort_per_model=_eff_per_model,
-                tool_search=tool_search,
+                # None means "do not write the overlay at all", which is the
+                # correct request for a backend that does not read kiro-cli's
+                # cli.json. Passing False would write an explicit disable.
+                tool_search=(tool_search if tool_search_supported else None),
                 tool_search_min_pct=tool_search_min_pct,
                 tool_search_min_tokens=tool_search_min_tokens,
                 mcp_gateway_overlay=_gw_overlay,
                 mcp_gateway_settings_mcp_json=_gw_settings,
                 mcp_gateway_socket=_gw_socket,
+                allow_ungated_tools=self.agent.acp_backend_allow_ungated_tools,
             )
 
         return _acp
@@ -8753,33 +8937,31 @@ def build_provider_factory(cfg: "KiroCrewConfig") -> Callable:
     Routes through ``current_context().providers.create_factory(cfg)`` (the CPP
     ``ProviderRegistry`` extension point) instead of calling
     ``cfg.create_provider_factory()`` directly, so an edition can supply an
-    alternate provider factory (e.g. re-registering an extra ACP backend through
-    the dormant ``ACP_BACKEND_*`` seam).  The ``Default`` ProviderRegistry returns
-    exactly ``cfg.create_provider_factory()``, so the public edition is
-    behaviorally identical to calling it directly.
+    alternate provider factory. The ``Default`` ProviderRegistry wraps the core
+    config factory with the provider-class selection that enforces public-spec
+    adapter admission.
 
     Fail-closed: a :class:`PlatformCompositionError` (a non-standalone host that
     could not compose its companion) propagates.  Any other transient lookup
-    failure degrades to ``cfg.create_provider_factory()`` so an unbooted /
-    standalone call site never breaks — it just gets the public factory.
+    failure degrades to ``DefaultProviderRegistry.create_factory(cfg)`` so an
+    unbooted / standalone call site keeps the public admission boundary.
 
     The fallback is passed as ``fallback_factory`` (a lazy thunk), NOT eagerly:
-    ``cfg.create_provider_factory()`` is built ONLY on the degrade path, so the
-    standalone happy path builds the factory exactly once (the Default
-    ``ProviderRegistry`` already returns ``cfg.create_provider_factory()``, so an
-    eager fallback would build it a second time on every session/reload).  A
-    failure INSIDE ``cfg.create_provider_factory()`` itself is handled by
+    the default registry is built ONLY on the degrade path, so the standalone
+    happy path builds the core factory exactly once. A failure INSIDE
+    ``cfg.create_provider_factory()`` itself is handled by
     ``safe_context_call`` (which guards the factory call) rather than escaping
     uncaught; with no eager ``fallback`` here there is no usable factory, so a
     composition error propagates (fail-closed) and any other error re-raises —
     a corrupt-config failure surfaces at the factory site, it is not swallowed.
     """
     from kiro_crew.platform.context import current_context, safe_context_call
+    from kiro_crew.platform.defaults import DefaultProviderRegistry
 
     return safe_context_call(
         lambda: current_context().providers.create_factory(cfg),
-        fallback_factory=lambda: cfg.create_provider_factory(),
-        log_message="providers.create_factory failed; using cfg.create_provider_factory()",
+        fallback_factory=lambda: DefaultProviderRegistry().create_factory(cfg),
+        log_message="providers.create_factory failed; using the default provider registry",
     )
 
 

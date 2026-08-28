@@ -21,6 +21,7 @@ from chat_test_helpers import (
     _make_folder_app,
     _make_ready_kiro_prerequisite,
     _make_state,
+    stub_acp_identity,
 )
 
 from kiro_crew.acp.types import TurnUsage
@@ -5517,14 +5518,15 @@ class TestTokenPersistenceBackfill:
         slot = state.get_or_create_slot("s1")
         slot.model = ""  # CC has not yet emitted init when _run_chat begins
 
-        # This simulates a claude_code session, so the backfill must run under
-        # provider=claude_code for canonicalize_for_provider to map 'opus' ->
-        # 'opus-4.8-1m'. The default test config is provider=acp, under which the
-        # backfill (correctly) leaves a kiro/acp model unchanged — so force a CC
-        # config here. _run_chat reads only cfg.agent.provider (+ dashboard.
-        # merge_queued_messages) on this path, so a MagicMock cfg suffices.
+        # This simulates a Claude ACP adapter session, so the backfill must use
+        # the live provider identity for canonicalize_for_provider to map
+        # 'opus' -> 'opus-4.8-1m'. A MagicMock config suffices for the few
+        # settings this path reads.
+        from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
+
         _cc_cfg = MagicMock()
-        _cc_cfg.agent.provider = "claude_code"
+        _cc_cfg.agent.provider = "acp"
+        _cc_cfg.agent.acp_backend = ACP_BACKEND_CLAUDE
         _cc_cfg.dashboard.merge_queued_messages = False
         monkeypatch.setattr("kiro_crew.dashboard.chat_runner.KiroCrewConfig.load", lambda: _cc_cfg)
 
@@ -5532,7 +5534,10 @@ class TestTokenPersistenceBackfill:
         # branch (chat_runner.py:471-476) finds nothing and leaves slot.model
         # blank. Then mutate inner._model mid-stream — just before yielding
         # EVENT_COMPLETE — so only the late backfill branch can populate it.
-        client = AsyncMock()
+        from kiro_crew.providers.acp import AcpProvider
+
+        client = AsyncMock(spec=AcpProvider)
+        client.backend = ACP_BACKEND_CLAUDE
         client.context_usage_pct = MagicMock(return_value=10.0)
         inner = MagicMock()
         inner._model = ""  # empty at session-create time
@@ -16393,6 +16398,28 @@ class TestBulkModelSwitch:
         state.push_slots_update.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_codex_composite_switch_persists_effort_for_cold_start(
+        self, tmp_path, monkeypatch
+    ):
+        cfg = MagicMock()
+        cfg.agent.provider = "acp"
+        cfg.agent.acp_backend = "codex"
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.KiroCrewConfig.load", lambda: cfg)
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        slot = state.get_or_create_slot("a", model="gpt-5.2[low]")
+        slot.reasoning_effort = "low"
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post("/api/chat/slots/model", json={"model": "gpt-5.2[high]"})
+
+        assert resp.status == 200
+        assert slot.model == "gpt-5.2[high]"
+        assert slot.reasoning_effort == "high"
+        state.sessions.reset.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_skips_running_slot_by_default(self, tmp_path):
         state = _make_state(tmp_path)
         state.sessions.reset = AsyncMock()
@@ -16687,22 +16714,37 @@ class TestSlotModelLiveSwitch:
     def _provider(
         *,
         claude: bool = False,
+        codex: bool = False,
         active_turn: bool = False,
         models=("auto",),
         supports_effort: bool = False,
         change_effort: bool = True,
     ):
-        """A live AcpProvider double. ``spec=`` keeps isinstance() working."""
+        """A live AcpProvider double. ``spec=`` keeps isinstance() working.
+
+        The identity is stubbed as a whole SET from one backend id: an unstubbed
+        ``spec=`` property answers a truthy Mock, so setting only the claude flag
+        would leave this double claiming every other harness identity too, and
+        dispatch keyed on any of them would take the wrong branch.
+        """
+        from kiro_crew.acp.types import (
+            ACP_BACKEND_CLAUDE,
+            ACP_BACKEND_CODEX,
+            ACP_BACKEND_KIRO,
+        )
         from kiro_crew.providers.acp import AcpProvider
 
         provider = MagicMock(spec=AcpProvider)
-        provider.is_claude_backend = claude
+        backend = ACP_BACKEND_CODEX if codex else ACP_BACKEND_CLAUDE if claude else ACP_BACKEND_KIRO
+        stub_acp_identity(provider, backend)
+        provider.backend = backend
         provider.has_active_turn.return_value = active_turn
         provider.available_models.return_value = [{"modelId": m} for m in models]
         provider.supports_effort.return_value = supports_effort
         provider.change_effort = AsyncMock(return_value=change_effort)
         provider.clear_effort = AsyncMock(return_value=False)
         provider.client = MagicMock()
+        provider.client.backend = backend
         provider.client.set_model = AsyncMock()
         return provider
 
@@ -16907,6 +16949,26 @@ class TestSlotModelLiveSwitch:
 
         assert resp.status == 200
         provider.change_effort.assert_awaited_once_with("high")
+        state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_codex_composite_pick_applies_and_persists_its_effort(self, tmp_path):
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._provider(codex=True, supports_effort=True)
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        slot = state.get_or_create_slot("a", model="gpt-5.2[low]")
+        slot.reasoning_effort = "low"
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post("/api/chat/slots/a/model", json={"model": "gpt-5.2[xhigh]"})
+
+        assert resp.status == 200
+        provider.client.set_model.assert_awaited_once_with("gpt-5.2")
+        provider.change_effort.assert_awaited_once_with("xhigh")
+        assert slot.model == "gpt-5.2[xhigh]"
+        assert slot.reasoning_effort == "xhigh"
         state.sessions.reset.assert_not_awaited()
 
     @pytest.mark.asyncio

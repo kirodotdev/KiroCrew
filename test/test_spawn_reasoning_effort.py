@@ -30,7 +30,7 @@ pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
 
 @contextmanager
-def _hermetic_cfg(role_models=None, agent_pins=None):
+def _hermetic_cfg(role_models=None, agent_pins=None, acp_backend=""):
     """A config the verdict helpers AND the provider factory resolve
     identically on any box: the global model stays the unresolved ``auto``
     sentinel (``_resolve_agent_model`` would otherwise read the installed
@@ -39,7 +39,7 @@ def _hermetic_cfg(role_models=None, agent_pins=None):
     from kiro_crew.config.loader import AgentConfig, KiroCrewConfig
 
     pins = dict(agent_pins or {})
-    cfg = KiroCrewConfig(agent=AgentConfig(role_models=role_models or {}))
+    cfg = KiroCrewConfig(agent=AgentConfig(role_models=role_models or {}, acp_backend=acp_backend))
     with (
         patch("kiro_crew.config.loader.KiroCrewConfig.load", classmethod(lambda c: cfg)),
         patch.object(KiroCrewConfig, "_resolve_agent_model", staticmethod(lambda: "")),
@@ -883,6 +883,42 @@ class TestVerdictFactoryParity:
         assert (note != "") == gate_applies
         assert (drop == "") == gate_applies
 
+    @pytest.mark.parametrize("backend", ["codex", "opencode"])
+    @pytest.mark.parametrize("model", ["opus-4.8-1m", "auto"])
+    def test_backend_owned_model_ids_stay_untranslated(self, backend, model, tmp_path):
+        from kiro_crew.subagent import (
+            _spawn_effective_model,
+            effort_applied_note,
+            effort_drop_reason,
+        )
+
+        with _hermetic_cfg(acp_backend=backend) as cfg:
+            provider_cls = MagicMock()
+            factory = cfg._create_adapter_provider_factory(
+                factory_backend=backend,
+                provider_type=provider_cls,
+                registry_model_ids=False,
+                tool_search_supported=False,
+            )
+            factory(
+                "parity-key",
+                model_override=model,
+                cwd=str(tmp_path),
+                reasoning_effort_override="high",
+            )
+            kwargs = provider_cls.call_args.kwargs
+            gate_model = kwargs["model"] or ""
+            gate_applies = bool(kwargs["effort_per_model"])
+
+            resolved = _spawn_effective_model(model, "", backend)
+            drop = effort_drop_reason(model, "high", "", backend)
+            note = effort_applied_note(model, "high", "", backend)
+
+        assert gate_model == model
+        assert resolved == gate_model
+        assert (note != "") == gate_applies
+        assert (drop == "") == gate_applies
+
 
 class TestAppliedLineRendering:
     """The tool renders the server's effort_applied note per subagent."""
@@ -974,6 +1010,45 @@ class TestAppliedLineRendering:
         assert "effort_applied" not in data
         assert "effort_dropped" in data
 
+    def test_api_spawn_drops_receipt_for_an_unavailable_parent_model(self):
+        """The receipt follows the child launcher when entitlement drops a pin."""
+        from kiro_crew.config.loader import AgentConfig, KiroCrewConfig
+        from kiro_crew.dashboard.handlers.messaging import api_spawn
+
+        mgr = MagicMock()
+        mgr.spawn.return_value = SimpleNamespace(id="a1", done=False, error="")
+        state = SimpleNamespace(
+            subagents=mgr,
+            sessions=SimpleNamespace(
+                get_agent=lambda key: "",
+                live_harness=lambda key: ("codex", ["openai.gpt-5.6-sol"]),
+            ),
+        )
+        request = MagicMock()
+        request.app = {"state": state}
+        request.json = AsyncMock(
+            return_value={
+                "task": "x",
+                "model": "claude-sonnet-4.6",
+                "reasoning_effort": "high",
+                "parent_session": "d:1",
+            }
+        )
+        cfg = KiroCrewConfig(agent=AgentConfig(acp_backend="codex"))
+        with (
+            patch("kiro_crew.config.loader.KiroCrewConfig.load", classmethod(lambda c: cfg)),
+            patch(
+                "kiro_crew.dashboard.handlers.messaging.warm_project_agents_for_spawn",
+                AsyncMock(),
+            ),
+        ):
+            resp = asyncio.run(api_spawn(request))
+        import json as _json
+
+        data = _json.loads(resp.body)
+        assert "effort_applied" not in data
+        assert "auto" in data.get("effort_dropped", "")
+
 
 class TestSessionChainResolution:
     """The verdict mirrors the FULL model chain the factory's effort gate
@@ -1013,6 +1088,44 @@ class TestSessionChainResolution:
         cfg = self._cfg_with_crew("sonnet-test-model")
         assert self._reason("", "high", "mycrew", cfg=cfg) == ""
         assert "sonnet-test-model" in self._note("", "high", "mycrew", cfg=cfg)
+
+    def test_adapter_crew_pin_carries_the_effort(self):
+        from kiro_crew.config.loader import AgentConfig, KiroCrewAgentConfig, KiroCrewConfig
+
+        cfg = KiroCrewConfig(agent=AgentConfig(acp_backend="codex"))
+        cfg.agents["mycrew"] = KiroCrewAgentConfig(model="gpt-5.6-sol")
+        assert self._reason("", "high", "mycrew", cfg=cfg) == ""
+        assert "gpt-5.6-sol" in self._note("", "high", "mycrew", cfg=cfg)
+
+    @pytest.mark.parametrize(
+        "configured_backend,live_backend,configured_model",
+        [
+            ("", "codex", "sonnet-test-model"),
+            ("codex", "", "gpt-5.6-sol"),
+        ],
+    )
+    def test_live_backend_crossover_does_not_claim_the_configured_model(
+        self,
+        configured_backend,
+        live_backend,
+        configured_model,
+    ):
+        from kiro_crew.config.loader import AgentConfig, KiroCrewConfig
+        from kiro_crew.subagent import _spawn_effective_model
+
+        cfg = KiroCrewConfig(
+            agent=AgentConfig(acp_backend=configured_backend, model=configured_model)
+        )
+        with patch("kiro_crew.config.loader.KiroCrewConfig.load", classmethod(lambda c: cfg)):
+            assert (
+                _spawn_effective_model(
+                    "",
+                    "",
+                    live_backend,
+                    model_pin_resolved=True,
+                )
+                == ""
+            )
 
     def test_non_capable_crew_pin_is_named(self):
         cfg = self._cfg_with_crew("deepseek-3.2")
@@ -1064,17 +1177,30 @@ class TestVerdictOffTheEventLoop:
 
         mgr = MagicMock()
         mgr.spawn.return_value = SimpleNamespace(id="a1", done=False, error="")
-        state = SimpleNamespace(subagents=mgr, sessions=SimpleNamespace(get_agent=lambda key: ""))
+        state = SimpleNamespace(
+            subagents=mgr,
+            sessions=SimpleNamespace(
+                get_agent=lambda key: "",
+                live_harness=lambda key: ("codex", ["gpt-5.6-sol"]),
+            ),
+        )
         request = MagicMock()
         request.app = {"state": state}
         request.json = AsyncMock(
             return_value={"task": "x", "reasoning_effort": "high", "parent_session": "d:1"}
         )
         cfg = KiroCrewConfig(agent=AgentConfig())
-        seen: list[object] = []
+        seen: list[tuple[object, str | None]] = []
 
-        def _recording_drop(model, effort, agent=""):
-            seen.append(threading.current_thread())
+        def _recording_drop(
+            model,
+            effort,
+            agent="",
+            acp_backend=None,
+            *,
+            model_pin_resolved=False,
+        ):
+            seen.append((threading.current_thread(), acp_backend))
             return "recorded-drop"
 
         loop_thread: list[object] = []
@@ -1094,4 +1220,5 @@ class TestVerdictOffTheEventLoop:
             resp = asyncio.run(_drive())
         assert resp.status == 200
         assert seen, "the verdict resolver was never called"
-        assert seen[0] is not loop_thread[0], "verdict ran ON the event loop thread"
+        assert seen[0][0] is not loop_thread[0], "verdict ran ON the event loop thread"
+        assert seen[0][1] == "codex"

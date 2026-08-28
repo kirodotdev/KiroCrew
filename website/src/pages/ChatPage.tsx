@@ -114,7 +114,7 @@ import SessionGridView from '../components/SessionGridView'
 import SessionTabStrip from '../components/SessionTabStrip'
 import { useSessionTabs } from '../hooks/useSessionTabs'
 import { anchorForSlot, loadLayout, sessionSlots } from '../hooks/splitLayoutStore'
-import { modelSupportsEffort } from '../lib/effort'
+import { showEffortControl } from '../lib/effort'
 import { isEmbeddedPane } from '../lib/embedded'
 import { countCompletedTurns } from '../lib/completedTurns'
 import { displayModel, pinIsWithheld } from '../lib/model'
@@ -1006,6 +1006,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const slotState = useAppSelector(s => s.chat.slotState)
   const contextPct = useAppSelector(s => s.chat.slotContextPct[s.chat.activeSlot ?? ''] ?? 0)
   const contextTokens = useAppSelector(s => s.chat.slotContextTokens?.[s.chat.activeSlot ?? ''])
+  // Plan quota for whatever harness this slot runs on — undefined for the ones
+  // that report none, which is most of them.
+  const rateLimit = useAppSelector(s => s.chat.slotRateLimit?.[s.chat.activeSlot ?? ''])
   // Length only. The two arrays themselves are mutated per streamed sub-agent /
   // tool chunk, and their only consumer is the Activity panel (SidePanel), which
   // is closed by default and now subscribes to them itself. Subscribing to the
@@ -1125,7 +1128,22 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   }, [dispatch])
   const { open: agentDropdown, setOpen: setAgentDropdown, filter: agentFilter, setFilter: setAgentFilter, dropdownRef: agentDropdownRef, inputRef: agentInputRef, filtered: filteredAgentsByName } = useFilteredDropdown(installedAgents)
   const filteredAgents = filteredAgentsByName
-  const availableModels = useAvailableModels()
+  const harnessBackend = useAppSelector(s => s.dashboard.status?.harness?.backend ?? '')
+  const slotBackend = useAppSelector(s => {
+    const key = s.chat.activeSlot
+    if (!key) return undefined
+    return s.dashboard.slots.find(sl => sl.key === key)?.acp_backend
+  })
+  const sessionBackend = slotBackend !== undefined ? slotBackend : harnessBackend
+  const availableModels = useAvailableModels({
+    slot: activeSlot || undefined,
+    backend: sessionBackend,
+  })
+  const { data: advertisedEffort } = useQuery({
+    queryKey: ['effort-levels', activeSlot ?? ''],
+    queryFn: () => api.effortLevels(activeSlot || undefined),
+    enabled: !!activeSlot,
+  })
   const { open: modelDropdown, setOpen: setModelDropdown, filter: modelFilter, setFilter: setModelFilter, dropdownRef: modelDropdownRef, inputRef: modelInputRef, filtered: filteredModels } = useFilteredDropdown(availableModels)
   // Roving-focus keyboard nav for the agent + model dropdowns (shared with StyledSelect/AgentSelector).
   const { onListKeyDown: onAgentListKeyDown } = useListboxKeyboard({
@@ -5171,6 +5189,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     availableModels,
     _modelsDegraded,
   )
+  const hasEffort = !!(
+    activeSlot
+    && provider.capabilities.reasoningEffort
+    && showEffortControl(
+      advertisedEffort,
+      shownModel === 'auto' ? '' : shownModel,
+      sessionBackend,
+    )
+  )
   // True when the pin row would be a no-op: the agent already stores exactly
   // the model the composer is showing. 'auto' is the inherit spelling, never a
   // stored pin, so it never counts as pinned. Reads the slot's REAL model, not
@@ -7649,6 +7676,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               contextPct={contextPct}
               contextUsedTokens={contextTokens?.used}
               contextWindowTokens={contextTokens?.window || provider.getContextWindow(shownModel)}
+              rateLimit={rateLimit}
               showContextPct={chatConfig.showContextPct}
               showContextTokens={chatConfig.showContextTokens}
               isRunning={composerBusy}
@@ -7699,7 +7727,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               approvalMode={displayMode}
               providerId={provider.id}
               reasoningEffort={effectiveEffort}
-              onReasoningEffortClick={provider.capabilities.reasoningEffort && modelSupportsEffort(shownModel === 'auto' ? '' : shownModel) ? (rect) => { setReasoningEffortBtnRect(rect); setReasoningEffortDropdown(!reasoningEffortDropdown) } : undefined}
+              onReasoningEffortClick={hasEffort ? (rect) => { setReasoningEffortBtnRect(rect); setReasoningEffortDropdown(!reasoningEffortDropdown) } : undefined}
               onAutoNudgeClick={setAutoNudgeOpen}
               autoNudgeLoop={autoNudgeLoop}
               autoNudgeOpen={autoNudgeOpen}
@@ -7809,7 +7837,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 filter={modelFilter}
                 setFilter={setModelFilter}
                 onClose={() => setModelDropdown(false)}
-                hasEffort={!!(activeSlot && provider.capabilities.reasoningEffort && modelSupportsEffort(shownModel === 'auto' ? '' : shownModel))}
+                hasEffort={hasEffort}
                 slot={activeSlot}
                 currentEffort={currentSlot?.reasoning_effort || ''}
                 defaultEffort={defaultEffort}
@@ -7842,7 +7870,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               onSelect={path => { setProject(path); setProjectPickerOpen(false) }}
             />
             {/* Reasoning effort dropdown portal */}
-            {reasoningEffortDropdown && reasoningEffortBtnRect && activeSlot && provider.capabilities.reasoningEffort && modelSupportsEffort(shownModel === 'auto' ? '' : shownModel) && createPortal(
+            {reasoningEffortDropdown && reasoningEffortBtnRect && activeSlot && hasEffort && createPortal(
               <div ref={reasoningEffortDropdownRef} className="fixed z-[9999] animate-slide-up" style={(() => { const left = Math.max(8, Math.min(reasoningEffortBtnRect.left, window.innerWidth - 220)); return { bottom: window.innerHeight - reasoningEffortBtnRect.top + 4, left: isMobile ? 8 : left, ...(isMobile ? { right: 8, maxWidth: 'calc(100vw - 16px)' } : {}) } })()}>
                 <ReasoningEffortDropdown slot={activeSlot} currentEffort={currentSlot?.reasoning_effort || ''} defaultEffort={defaultEffort} onClose={() => setReasoningEffortDropdown(false)} />
               </div>,
@@ -7962,4 +7990,3 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     </RowDisclosureProvider>
   )
 }
-

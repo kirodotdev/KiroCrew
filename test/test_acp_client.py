@@ -22,6 +22,8 @@ from kiro_crew.acp.client import (
     AcpClient,
     AcpError,
     AcpProcessDied,
+    AcpToolGateUnroutable,
+    SpecAdapterAcpClient,
     _format_acp_error,
     _is_model_substitution_advisory,
     _make_unified_diff,
@@ -39,6 +41,9 @@ from kiro_crew.acp.liveness import (
 )
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
+    ACP_BACKEND_GOOSE,
+    ACP_BACKEND_KAS,
     JSONRPC_METHOD_NOT_FOUND,
     AcpPromptStats,
 )
@@ -595,6 +600,62 @@ class TestAcpClientSessionKey:
         await _stop_stderr_drain(client)
 
     @pytest.mark.asyncio
+    async def test_registry_npx_spawn_pins_offline_after_all_overlays(self, tmp_path):
+        from kiro_crew.acp import registry
+
+        adapter = registry.RegistryAdapter(
+            id="example-acp",
+            name="Example ACP",
+            version="1.0.0",
+            description="",
+            repository="",
+            license="MIT",
+            icon="",
+            kind="npx",
+            package="example-acp@1.0.0",
+            args=(),
+            env=(("npm_config_offline", "false"),),
+        )
+        with patch.object(registry, "cached", return_value={adapter.id: adapter}):
+            client = SpecAdapterAcpClient(
+                work_dir=tmp_path,
+                acp_backend=adapter.id,
+                extra_env={"npm_config_offline": "false"},
+                allow_ungated_tools=True,
+            )
+        offloaded: list[object] = []
+
+        async def _to_thread(func, /, *args, **kwargs):
+            offloaded.append(func)
+            return func(*args, **kwargs)
+
+        with (
+            patch.object(registry, "cached", return_value={adapter.id: adapter}) as cached_registry,
+            patch("asyncio.to_thread", _to_thread),
+            patch.object(
+                registry.RegistryAdapter,
+                "resolve_launch_argv",
+                return_value=["/usr/bin/node", "/opt/example-acp/cli.js"],
+            ),
+            patch(
+                "kiro_crew.acp.client.wrap_argv",
+                return_value=(["/usr/bin/node", "/opt/example-acp/cli.js"], None),
+            ),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+            patch("kiro_crew.session._track_pid"),
+            patch("kiro_crew.session._track_session_pid"),
+        ):
+            mock_proc = MagicMock(pid=12345, returncode=None)
+            mock_proc.stderr = None
+            mock_exec.return_value = mock_proc
+            await client._spawn()
+
+        env = mock_exec.call_args.kwargs["env"]
+        assert cached_registry in offloaded
+        assert env["npm_config_offline"] == "true"
+        await _stop_stderr_drain(client)
+
+    @pytest.mark.asyncio
     async def test_spawn_sets_env_with_channel_id(self, tmp_path):
         client = AcpClient(work_dir=tmp_path, session_key="k", channel_id="C0ABC123")
         with (
@@ -627,7 +688,7 @@ class TestAcpClientSessionKey:
         # _spawn must forward it verbatim to the subprocess so the adapter's
         # SettingsManager reads the isolated dir (creds kept, plugins stripped).
         iso = str(tmp_path / "cc-config")
-        client = AcpClient(
+        client = SpecAdapterAcpClient(
             work_dir=tmp_path,
             acp_backend=ACP_BACKEND_CLAUDE,
             extra_env={"CLAUDE_CONFIG_DIR": iso, "CLAUDE_CODE_USE_BEDROCK": "1"},
@@ -903,13 +964,37 @@ class TestSpawnStderrDrainCleanup:
 class TestAcpClientBackendSelection:
     """Verify the right backend binary is launched for kiro vs claude."""
 
+    @pytest.mark.asyncio
+    async def test_spec_adapter_refuses_an_agent_whose_shell_limit_cannot_be_enforced(
+        self, tmp_path: Path
+    ) -> None:
+        agents = tmp_path / ".kiro" / "agents"
+        agents.mkdir(parents=True)
+        (agents / "restricted.json").write_text(json.dumps({"tools": ["fs_read"]}))
+        client = SpecAdapterAcpClient(
+            work_dir=tmp_path,
+            agent="restricted",
+            acp_backend=ACP_BACKEND_CODEX,
+        )
+
+        with (
+            patch("kiro_crew.acp.client.tool_gate.enforce"),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as spawn,
+        ):
+            with pytest.raises(AcpToolGateUnroutable, match="silently grant full shell"):
+                await client._spawn()
+
+        spawn.assert_not_called()
+
     @pytest.fixture(autouse=True)
     def _reset_claude_cache(self):
         import kiro_crew.acp.client as _mod
 
         _mod._claude_acp_argv_cache = _mod._UNRESOLVED
+        _mod._claude_code_executable_cache = _mod._UNRESOLVED
         yield
         _mod._claude_acp_argv_cache = _mod._UNRESOLVED
+        _mod._claude_code_executable_cache = _mod._UNRESOLVED
 
     @pytest.fixture(autouse=True)
     def _no_cgroup_scope(self):
@@ -998,17 +1083,140 @@ class TestAcpClientBackendSelection:
         await _stop_stderr_drain(client)
 
     @pytest.mark.asyncio
+    async def test_spawn_kiro_does_not_resolve_claude_code_executable(self, tmp_path):
+        """H9: the kiro arm must not pay for Claude's mise/PATH lookup."""
+        client = AcpClient(work_dir=tmp_path)
+        with (
+            patch("kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"),
+            patch(
+                "kiro_crew.acp.client.wrap_argv",
+                side_effect=lambda argv, mode, **kwargs: (argv, None),
+            ),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+            patch("kiro_crew.session._track_pid"),
+            patch("kiro_crew.session._track_session_pid"),
+            patch("kiro_crew.acp.client._resolve_claude_code_executable") as resolve_exe,
+            patch("kiro_crew.acp.client._resolve_claude_spawn_bins") as spawn_bins,
+        ):
+            mock_proc = MagicMock()
+            mock_proc.pid = 12345
+            mock_proc.returncode = None
+            mock_exec.return_value = mock_proc
+
+            await client._spawn()
+
+            resolve_exe.assert_not_called()
+            spawn_bins.assert_not_called()
+
+        await _stop_stderr_drain(client)
+
+    def test_models_come_from_the_model_config_option_when_models_is_absent(self, tmp_path):
+        """claude-agent-acp advertises no `models` payload — its list is a configOption.
+
+        Measured against the real adapter: `session/new` carries neither
+        `models.availableModels` nor `currentModelId`, only a configOptions entry
+        `id="model"`. Reading the spec field alone left the picker empty on the
+        one backend whose list the old comment cited as the example.
+        """
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
+        client._store_session_config(
+            {
+                "configOptions": [
+                    {"id": "effort", "options": [{"value": "low", "name": "Low"}]},
+                    {
+                        "id": "model",
+                        "currentValue": "global.anthropic.claude-sonnet-5",
+                        "options": [
+                            {"value": "default", "name": "Default", "description": "Opus"},
+                            {"value": "global.anthropic.claude-sonnet-5", "name": "Sonnet"},
+                        ],
+                    },
+                ]
+            }
+        )
+        # Ids VERBATIM — a rewritten id is one the adapter never offered.
+        assert [m["modelId"] for m in client.available_models()] == [
+            "default",
+            "global.anthropic.claude-sonnet-5",
+        ]
+        assert client._resolved_model_id == "global.anthropic.claude-sonnet-5"
+
+    def test_the_models_payload_still_wins_over_the_config_option(self, tmp_path):
+        """The spec field stays authoritative; the configOption is only a fallback."""
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
+        client._capture_available_models(
+            {"models": {"availableModels": [{"modelId": "spec-model", "name": "Spec"}]}}
+        )
+        client._store_session_config(
+            {"configOptions": [{"id": "model", "options": [{"value": "option-model"}]}]}
+        )
+        assert [m["modelId"] for m in client.available_models()] == ["spec-model"]
+
+    @pytest.mark.asyncio
+    async def test_a_stale_startup_model_does_not_prevent_the_session_starting(self, tmp_path):
+        """A model persisted under another backend must not make this one unstartable.
+
+        Reproduces a live failure: `gpt-5.6-sol` is a kiro-namespace id, and
+        applying it to the claude dialect is refused with -32603. Letting that
+        propagate failed ensure_ready, so switching backends while a kiro model
+        was selected left the new backend permanently unable to start — and the
+        model picker that would correct it lives BEHIND the session that cannot
+        start. The entitlement check cannot catch this: it is gated on kiro
+        because a spec adapter advertises a different id namespace.
+        """
+        from kiro_crew.acp.client import DEFAULT_MODEL
+
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
+        client._session_id = "sess-stale"
+        client._model = "gpt-5.6-sol"
+
+        async def refuse(*_a, **_k):
+            raise acp_client.AcpError(
+                "JSON-RPC error: {'code': -32603, 'message': 'Internal error', "
+                "'data': {'details': 'Invalid value for config option model: "
+                "gpt-5.6-sol'}}"
+            )
+
+        client.set_config_option = refuse  # type: ignore[assignment]
+
+        # Must NOT raise: the session has to come up on the backend's default.
+        await client._apply_startup_model()
+
+        # Reset so the warm-pool re-apply does not retry the refused id.
+        assert client._model == DEFAULT_MODEL
+
+    @pytest.mark.asyncio
     async def test_initialize_protocol_version_per_backend(self, tmp_path):
-        """kiro expects a date string; claude-agent-acp expects an integer."""
+        """kiro sends a date string; EVERY spec-dialect adapter sends the integer.
+
+        Derived from the dialect rather than a hand-listed pair. A hand-listed
+        pair named only kiro and claude, so codex and goose silently inherited
+        kiro's date string and every session/new was refused at initialize with
+        "expected number, received string" — a defect no mocked test caught
+        because the fake backend accepts whatever it is sent.
+        """
+        from kiro_crew.acp import backends as acp_backends
         from kiro_crew.acp.client import (
             PROTOCOL_VERSION,
-            PROTOCOL_VERSION_CLAUDE,
+            PROTOCOL_VERSION_SPEC,
         )
 
-        for backend, expected in (
-            ("", PROTOCOL_VERSION),
-            (ACP_BACKEND_CLAUDE, PROTOCOL_VERSION_CLAUDE),
-        ):
+        cases = [
+            (
+                backend,
+                (
+                    PROTOCOL_VERSION_SPEC
+                    if acp_backends.dialect_of(backend) is acp_backends.Dialect.SPEC
+                    else PROTOCOL_VERSION
+                ),
+            )
+            for backend in sorted(acp_backends.known_ids())
+        ]
+        # The set must actually exercise both arms, or this asserts nothing.
+        assert PROTOCOL_VERSION_SPEC in {expected for _, expected in cases}
+        assert PROTOCOL_VERSION in {expected for _, expected in cases}
+
+        for backend, expected in cases:
             client = AcpClient(work_dir=tmp_path, acp_backend=backend)
             client._session_id = "sess-1"  # short-circuit past the new-session call
             sent_params: dict = {}
@@ -1242,6 +1450,44 @@ class TestResolveClaudeCodeExecutable:
         monkeypatch.setattr(client_mod, "_mise_which", lambda tool: None)
         monkeypatch.setattr(client_mod.shutil, "which", lambda name, path=None: None)
         assert client_mod._resolve_claude_code_executable() is None
+
+    def test_cached_success_skips_mise(self, tmp_path, monkeypatch):
+        from kiro_crew.acp import client as client_mod
+
+        client_mod._claude_code_executable_cache = client_mod._UNRESOLVED
+        exe = tmp_path / "claude"
+        exe.write_text("#!/bin/sh\n")
+        exe.chmod(0o755)
+        calls = {"n": 0}
+
+        def fake_mise(tool: str) -> str:
+            calls["n"] += 1
+            return str(exe)
+
+        monkeypatch.delenv("CLAUDE_CODE_EXECUTABLE", raising=False)
+        monkeypatch.setattr(client_mod, "_mise_which", fake_mise)
+        assert client_mod._resolve_claude_code_executable_cached() == str(exe)
+        assert client_mod._resolve_claude_code_executable_cached() == str(exe)
+        assert calls["n"] == 1
+        client_mod._claude_code_executable_cache = client_mod._UNRESOLVED
+
+    def test_failed_lookup_is_not_cached(self, monkeypatch):
+        from kiro_crew.acp import client as client_mod
+
+        client_mod._claude_code_executable_cache = client_mod._UNRESOLVED
+        calls = {"n": 0}
+
+        def fake_mise(tool: str) -> None:
+            calls["n"] += 1
+            return None
+
+        monkeypatch.delenv("CLAUDE_CODE_EXECUTABLE", raising=False)
+        monkeypatch.setattr(client_mod, "_mise_which", fake_mise)
+        monkeypatch.setattr(client_mod.shutil, "which", lambda name, path=None: None)
+        assert client_mod._resolve_claude_code_executable_cached() is None
+        assert client_mod._resolve_claude_code_executable_cached() is None
+        assert calls["n"] == 2
+        assert client_mod._claude_code_executable_cache is client_mod._UNRESOLVED
 
 
 class TestMiseWhich:
@@ -3847,6 +4093,7 @@ class TestSendPipeErrors:
         )
 
         client = AcpClient()
+        client._session_id = "s1"
 
         text_msg = JsonRpcMessage(
             method="session/update",
@@ -3861,6 +4108,7 @@ class TestSendPipeErrors:
             id=99,
             method="session/requestPermission",
             params={
+                "sessionId": "s1",
                 "toolName": "shell",
                 "toolInput": "rm -rf /tmp/test",
                 "options": [{"id": "allow_once", "label": "Allow"}],
@@ -4344,6 +4592,7 @@ class TestInitializeSession:
     async def test_new_session_basic(self, tmp_path):
         """Happy path: initialize → session/new → set_mode → drain."""
         client = self._make_client(tmp_path)
+        client._apply_session_permission_routing = AsyncMock()
         responses = {
             1: {"protocolVersion": "2025-08-22", "agentCapabilities": {}},
             2: {"sessionId": "sess-abc"},
@@ -4359,7 +4608,19 @@ class TestInitializeSession:
 
         assert client._session_id == "sess-abc"
         assert client._resumed is False
+        client._apply_session_permission_routing.assert_not_awaited()
         client._drain_notifications.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_spec_adapter_initialization_applies_permission_routing(self, tmp_path):
+        client = SpecAdapterAcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CODEX)
+        client._apply_session_permission_routing = AsyncMock()
+
+        with patch.object(AcpClient, "_initialize_session", new_callable=AsyncMock) as base_init:
+            await client._initialize_session()
+
+        base_init.assert_awaited_once_with()
+        client._apply_session_permission_routing.assert_awaited_once_with()
 
     @pytest.mark.asyncio
     async def test_session_resume_success(self, tmp_path):
@@ -4426,31 +4687,35 @@ class TestInitializeSession:
         finally:
             session_file.unlink(missing_ok=True)
 
+    @pytest.mark.parametrize("backend", [ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX])
     @pytest.mark.asyncio
-    async def test_cc_resume_skips_load_when_transcript_missing(self, tmp_path):
-        """claude backend: a stale persisted sid with NO transcript on disk
-        must fall back to session/new (a fresh start), not replay via
-        session/load. Guards against the ~38%-on-'hi' base-context bloat."""
-        from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
+    async def test_spec_adapter_resume_uses_opaque_session_id(self, tmp_path, backend):
+        """Spec adapters resume from their own stores, without a ~/.kiro file."""
+        client = self._make_client(tmp_path, acp_backend=backend)
+        client._resume_session_id = "old-spec-session"
 
-        client = self._make_client(tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
-        client._resume_session_id = "ghost-sess"  # no transcript exists for it
-
-        call_idx = [0]
+        responses = {
+            1: {"protocolVersion": 1, "agentCapabilities": {"loadSession": True}},
+            2: {
+                "modes": {"availableModes": []},
+                "models": {"availableModels": [], "currentModelId": "gpt-5.2"},
+                "configOptions": (
+                    [{"id": "mode", "options": [{"value": "read-only"}]}]
+                    if backend == ACP_BACKEND_CODEX
+                    else []
+                ),
+            },
+        }
 
         async def fake_wait(req_id, timeout=50.0, *, method="", expected_mcp=None):
-            call_idx[0] += 1
-            if call_idx[0] == 1:
-                return {"protocolVersion": "2025-08-22", "agentCapabilities": {"loadSession": True}}
-            # session/load must NOT be called; the next request is session/new.
-            return {"sessionId": "fresh-sess"}
+            return responses.get(req_id, {})
 
         client._wait_for_response = AsyncMock(side_effect=fake_wait)
         client._drain_notifications = AsyncMock()
 
         await client._initialize_session()
-        assert client._session_id == "fresh-sess"
-        assert client._resumed is False
+        assert client._session_id == "old-spec-session"
+        assert client._resumed is True
 
     @pytest.mark.asyncio
     async def test_set_model_when_non_default(self, tmp_path):
@@ -4876,10 +5141,12 @@ class TestDispatchEventsExtended:
         from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, JsonRpcMessage
 
         client = AcpClient()
+        client._session_id = "s1"
         perm_msg = JsonRpcMessage(
             id=99,
             method="session/requestPermission",
             params={
+                "sessionId": "s1",
                 "toolCall": {"title": "shell", "toolCallId": "tc1"},
                 "options": [{"id": "allow_once", "label": "Allow"}],
             },
@@ -5398,7 +5665,7 @@ class TestBuildPermissionEvent:
         event = client._build_permission_event(msg)
         assert event.tool_kind == ""
 
-    def test_default_options_when_empty(self):
+    def test_empty_options_stay_empty_and_pending(self):
         client = AcpClient()
         from kiro_crew.acp.types import JsonRpcMessage
 
@@ -5408,15 +5675,15 @@ class TestBuildPermissionEvent:
             params={"toolCall": {"title": "rm"}, "options": []},
         )
         event = client._build_permission_event(msg)
-        assert len(event.options) == 2
-        assert event.options[0]["id"] == "allow_once"
+        assert event.options == []
+        assert client._permission_options[10] == {}
 
     @pytest.mark.parametrize("bad_options", [None, "allow", 42, {"id": "allow_once"}])
-    def test_non_list_options_degrade_to_defaults(self, bad_options):
+    def test_non_list_options_degrade_to_empty_pending_request(self, bad_options):
         """The permission payload comes straight from the agent process; a
         non-list options value made the for-loop raise TypeError (or iterate
         dict keys), tearing down the prompt-turn event generator instead of
-        degrading to the default allow options."""
+        degrading to a cancellable request with no selectable options."""
         client = AcpClient()
         from kiro_crew.acp.types import EVENT_PERMISSION_REQUEST, JsonRpcMessage
 
@@ -5427,8 +5694,8 @@ class TestBuildPermissionEvent:
         )
         event = client._build_permission_event(msg)  # must not raise
         assert event.kind == EVENT_PERMISSION_REQUEST
-        assert len(event.options) == 2
-        assert event.options[0]["id"] == "allow_once"
+        assert event.options == []
+        assert client._permission_options[12] == {}
 
     @pytest.mark.parametrize("bad_toolcall", [None, "shell", ["x"], 7])
     def test_non_dict_toolcall_degrades_to_unknown(self, bad_toolcall):
@@ -5466,7 +5733,7 @@ class TestBuildPermissionEvent:
             },
         )
         event = client._build_permission_event(msg)  # must not raise
-        assert event.options == [{"id": "allow_once", "label": "Allow once"}]
+        assert event.options == [{"id": "allow_once", "label": "Allow once", "kind": "allow_once"}]
 
     def test_cached_tool_input_used(self):
         client = AcpClient()
@@ -5556,7 +5823,10 @@ class TestBuildPermissionEvent:
             },
         )
         client._build_permission_event(msg)
-        assert client._permission_options[20] == {"once": "allow", "always": "allow_always"}
+        assert client._permission_options[20] == {
+            "allow_once": "allow",
+            "allow_always": "allow_always",
+        }
 
     def test_legacy_kiro_shape_records_optionids(self):
         """Legacy kiro shape (id/label, no kind) is classified by literal id."""
@@ -5576,8 +5846,8 @@ class TestBuildPermissionEvent:
         )
         client._build_permission_event(msg)
         assert client._permission_options[21] == {
-            "once": "allow_once",
-            "always": "allow_always",
+            "allow_once": "allow_once",
+            "allow_always": "allow_always",
         }
 
     def test_reject_option_recorded_even_without_allow(self):
@@ -5599,7 +5869,7 @@ class TestBuildPermissionEvent:
             },
         )
         client._build_permission_event(msg)
-        assert client._permission_options[22].get("reject") == "reject_once"
+        assert client._permission_options[22].get("reject_once") == "reject_once"
 
     def test_unknown_legacy_id_not_classified(self):
         """Unknown legacy ids do not get a synthesized kind."""
@@ -5615,7 +5885,64 @@ class TestBuildPermissionEvent:
             },
         )
         client._build_permission_event(msg)
-        assert 23 not in client._permission_options
+        assert client._permission_options[23] == {}
+
+    def test_v2_command_and_raw_input_match_shared_builder(self):
+        """The client path must accept the same ACP v2 command / rawInput
+        shapes as AcpSessionHandle: both go through build_permission_event.
+        The local builder ignored subject.type==\"command\", skipped rawInput
+        on fallback, and never set raw_params_trusted / shell_classified."""
+        from kiro_crew.acp._dispatch import build_permission_event
+        from kiro_crew.acp.types import EVENT_PERMISSION_REQUEST, JsonRpcMessage
+
+        client = AcpClient()
+        command_msg = JsonRpcMessage(
+            id=30,
+            method="session/requestPermission",
+            params={
+                "title": "Run ls",
+                "subject": {
+                    "type": "command",
+                    "command": "ls -la",
+                    "cwd": "/tmp",
+                    "toolCallId": "tc-cmd",
+                },
+                "options": [
+                    {"optionId": "allow_once", "name": "Allow", "kind": "allow_once"},
+                ],
+            },
+        )
+        raw_input_msg = JsonRpcMessage(
+            id=31,
+            method="session/requestPermission",
+            params={
+                "toolCall": {
+                    "title": "write",
+                    "toolCallId": "tc-ri",
+                    "rawInput": {"path": "/tmp/x", "contents": "hi"},
+                },
+                "options": [{"id": "allow_once", "label": "Allow"}],
+            },
+        )
+
+        client_cmd = client._build_permission_event(command_msg)
+        shared_cmd, _ = build_permission_event(command_msg)
+        assert client_cmd.kind == EVENT_PERMISSION_REQUEST
+        assert client_cmd.is_shell is True
+        assert client_cmd.raw_params_trusted is True
+        assert client_cmd.shell_classified is True
+        assert client_cmd.raw_tool_params == {"command": "ls -la", "cwd": "/tmp"}
+        assert client_cmd.raw_tool_params == shared_cmd.raw_tool_params
+        assert client_cmd.is_shell == shared_cmd.is_shell
+        assert client_cmd.raw_params_trusted == shared_cmd.raw_params_trusted
+        assert client_cmd.shell_classified == shared_cmd.shell_classified
+
+        client_ri = client._build_permission_event(raw_input_msg)
+        shared_ri, _ = build_permission_event(raw_input_msg)
+        assert "/tmp/x" in client_ri.tool_input
+        assert client_ri.raw_tool_params == {"path": "/tmp/x", "contents": "hi"}
+        assert client_ri.raw_tool_params == shared_ri.raw_tool_params
+        assert client_ri.tool_input == shared_ri.tool_input
 
 
 class TestApproveTool:
@@ -5626,12 +5953,12 @@ class TestApproveTool:
         from kiro_crew.acp.types import OUTCOME_SELECTED
 
         client = AcpClient(work_dir=tmp_path)
-        client._permission_options[42] = {"once": "allow", "always": "allow_always"}
+        client._permission_options[42] = {"allow_once": "allow", "allow_always": "allow_always"}
         client._send_response = AsyncMock()
         await client.approve_tool(42, always=True)
         client._send_response.assert_awaited_once_with(
             42,
-            {"outcome": {"outcome": OUTCOME_SELECTED, "optionId": "allow_always"}},
+            {"outcome": {"outcome": OUTCOME_SELECTED, "optionId": "allow"}},
         )
         assert 42 not in client._permission_options
 
@@ -5640,7 +5967,7 @@ class TestApproveTool:
         from kiro_crew.acp.types import OUTCOME_SELECTED
 
         client = AcpClient(work_dir=tmp_path)
-        client._permission_options[43] = {"once": "allow", "always": "allow_always"}
+        client._permission_options[43] = {"allow_once": "allow", "allow_always": "allow_always"}
         client._send_response = AsyncMock()
         await client.approve_tool(43)
         client._send_response.assert_awaited_once_with(
@@ -5649,69 +5976,49 @@ class TestApproveTool:
         )
 
     @pytest.mark.asyncio
-    async def test_no_recorded_falls_back_to_literal(self, tmp_path):
-        from kiro_crew.acp.types import (
-            OPTION_ALLOW_ALWAYS,
-            OPTION_ALLOW_ONCE,
-            OUTCOME_SELECTED,
-        )
+    async def test_no_recorded_option_cancels(self, tmp_path):
+        from kiro_crew.acp.types import OUTCOME_CANCELLED
 
         client = AcpClient(work_dir=tmp_path)
         client._send_response = AsyncMock()
         await client.approve_tool(44)
         client._send_response.assert_awaited_with(
             44,
-            {"outcome": {"outcome": OUTCOME_SELECTED, "optionId": OPTION_ALLOW_ONCE}},
+            {"outcome": {"outcome": OUTCOME_CANCELLED}},
         )
         await client.approve_tool(45, always=True)
         client._send_response.assert_awaited_with(
             45,
-            {"outcome": {"outcome": OUTCOME_SELECTED, "optionId": OPTION_ALLOW_ALWAYS}},
+            {"outcome": {"outcome": OUTCOME_CANCELLED}},
         )
 
     @pytest.mark.asyncio
-    async def test_explicit_option_id_skips_recorded_pop(self, tmp_path):
-        """Explicit option_id bypasses the recorded entry — defensive retries
-        with a recorded entry left intact still send the explicit id."""
-        from kiro_crew.acp.types import OUTCOME_SELECTED
+    async def test_unadvertised_explicit_option_cancels_and_consumes(self, tmp_path):
+        from kiro_crew.acp.types import OUTCOME_CANCELLED
 
         client = AcpClient(work_dir=tmp_path)
-        client._permission_options[46] = {"once": "allow", "always": "allow_always"}
+        client._permission_options[46] = {"allow_once": "allow"}
         client._send_response = AsyncMock()
         await client.approve_tool(46, option_id="custom_id")
         client._send_response.assert_awaited_with(
             46,
-            {"outcome": {"outcome": OUTCOME_SELECTED, "optionId": "custom_id"}},
+            {"outcome": {"outcome": OUTCOME_CANCELLED}},
         )
-        assert client._permission_options[46] == {"once": "allow", "always": "allow_always"}
+        assert 46 not in client._permission_options
 
     @pytest.mark.asyncio
-    async def test_reject_only_recorded_falls_back_to_literal_on_approve(self, tmp_path):
-        """A request that advertised only a reject option records {"reject": ...}
-        with no "once"/"always" keys. Approving it must fall back to the canonical
-        allow id rather than KeyError-ing on the missing key."""
-        from kiro_crew.acp.types import (
-            OPTION_ALLOW_ALWAYS,
-            OPTION_ALLOW_ONCE,
-            OUTCOME_SELECTED,
-        )
+    async def test_reject_only_request_cannot_be_approved(self, tmp_path):
+        from kiro_crew.acp.types import OUTCOME_CANCELLED
 
         client = AcpClient(work_dir=tmp_path)
-        client._permission_options[47] = {"reject": "reject_once"}
+        client._permission_options[47] = {"reject_once": "reject_once"}
         client._send_response = AsyncMock()
         await client.approve_tool(47)
         client._send_response.assert_awaited_with(
             47,
-            {"outcome": {"outcome": OUTCOME_SELECTED, "optionId": OPTION_ALLOW_ONCE}},
+            {"outcome": {"outcome": OUTCOME_CANCELLED}},
         )
         assert 47 not in client._permission_options
-
-        client._permission_options[48] = {"reject": "reject_once"}
-        await client.approve_tool(48, always=True)
-        client._send_response.assert_awaited_with(
-            48,
-            {"outcome": {"outcome": OUTCOME_SELECTED, "optionId": OPTION_ALLOW_ALWAYS}},
-        )
 
 
 class TestRejectTool:
@@ -5725,8 +6032,9 @@ class TestRejectTool:
         from kiro_crew.acp.types import OUTCOME_SELECTED
 
         client = AcpClient(work_dir=tmp_path)
-        # claude-agent-acp advertises optionId "reject" with kind "reject_once"
-        client._permission_options[60] = {"once": "allow", "reject": "reject"}
+        # claude-agent-acp advertises optionId "reject" with kind "reject_once";
+        # the map is keyed by KIND, so the id and the key differ here on purpose.
+        client._permission_options[60] = {"allow_once": "allow", "reject_once": "reject"}
         client._send_response = AsyncMock()
         await client.reject_tool(60)
         client._send_response.assert_awaited_once_with(
@@ -5742,7 +6050,10 @@ class TestRejectTool:
         from kiro_crew.acp.types import OUTCOME_CANCELLED
 
         client = AcpClient(work_dir=tmp_path)
-        client._permission_options[61] = {"once": "allow_once", "always": "allow_always"}
+        client._permission_options[61] = {
+            "allow_once": "allow_once",
+            "allow_always": "allow_always",
+        }
         client._send_response = AsyncMock()
         await client.reject_tool(61)
         client._send_response.assert_awaited_once_with(
@@ -5773,15 +6084,103 @@ class TestHandlePermission:
         client = AcpClient(work_dir=tmp_path)
         from kiro_crew.acp.types import JsonRpcMessage
 
+        client._session_id = "s1"
         msg = JsonRpcMessage(
             id=55,
             method="session/requestPermission",
-            params={"toolCall": {"title": "bash"}, "options": []},
+            params={
+                "sessionId": "s1",
+                "toolCall": {"title": "bash"},
+                "options": [{"id": "allow_once", "label": "Allow"}],
+            },
         )
         client.approve_tool = AsyncMock()
 
         await client._handle_permission(msg)
         client.approve_tool.assert_awaited_once_with(55)
+
+    @pytest.mark.asyncio
+    async def test_missing_session_id_is_rejected(self, tmp_path):
+        client = AcpClient(work_dir=tmp_path)
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        client._session_id = "s1"
+        msg = JsonRpcMessage(
+            id=56,
+            method="session/requestPermission",
+            params={"toolCall": {"title": "bash"}, "options": []},
+        )
+        client.approve_tool = AsyncMock()
+        client.reject_tool = AsyncMock()
+
+        await client._handle_permission(msg)
+        client.approve_tool.assert_not_awaited()
+        client.reject_tool.assert_awaited_once_with(56)
+
+    @pytest.mark.asyncio
+    async def test_unattended_worker_denies_sensitive_path_before_approval(self, tmp_path):
+        client = AcpClient(
+            work_dir=tmp_path,
+            audit_source="knowledge-pool",
+            session_key="knowledge:test",
+        )
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        client._session_id = "s1"
+        msg = JsonRpcMessage(
+            id=57,
+            method="session/requestPermission",
+            params={
+                "sessionId": "s1",
+                "toolCall": {"title": str(Path.home() / ".aws" / "credentials")},
+                "options": [
+                    {"id": "allow_once", "label": "Allow"},
+                    {"id": "reject_once", "label": "Reject"},
+                ],
+            },
+        )
+        client.approve_tool = AsyncMock()
+        client.reject_tool = AsyncMock()
+
+        await client._handle_permission(msg)
+
+        client.approve_tool.assert_not_awaited()
+        client.reject_tool.assert_awaited_once_with(57)
+
+    @pytest.mark.asyncio
+    async def test_unattended_worker_rejects_permission_without_cached_provenance(self, tmp_path):
+        client = AcpClient(
+            work_dir=tmp_path,
+            audit_source="knowledge-pool",
+            session_key="knowledge:test",
+        )
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        client._session_id = "s1"
+        msg = JsonRpcMessage(
+            id=58,
+            method="session/requestPermission",
+            params={
+                "sessionId": "s1",
+                "toolCall": {
+                    "toolCallId": "uncached",
+                    "title": "bash",
+                    "kind": "execute",
+                    "rawInput": {"command": "rm -rf /tmp/example"},
+                },
+                "options": [
+                    {"id": "allow_once", "label": "Allow"},
+                    {"id": "reject_once", "label": "Reject"},
+                ],
+            },
+        )
+        client.approve_tool = AsyncMock()
+        client.reject_tool = AsyncMock()
+
+        await client._handle_permission(msg)
+
+        client.approve_tool.assert_not_awaited()
+        client.reject_tool.assert_awaited_once_with(58)
 
 
 class TestReadNewToolResultsSync:
@@ -6135,10 +6534,15 @@ class TestPromptLoopReleasesTurnDone:
         from kiro_crew.acp.types import JsonRpcMessage
 
         client = AcpClient()
+        client._session_id = "s1"
         perm_msg = JsonRpcMessage(
             id=99,
             method="session/requestPermission",
-            params={"toolCall": {"title": "shell"}, "options": []},
+            params={
+                "sessionId": "s1",
+                "toolCall": {"title": "shell"},
+                "options": [{"id": "allow_once", "label": "Allow"}],
+            },
         )
         complete_msg = JsonRpcMessage(id=1, result={})
         client.approve_tool = AsyncMock()
@@ -7994,6 +8398,45 @@ class TestFormatAcpError:
         out = _format_acp_error(err)
         assert "transient error" not in out.lower()
         assert "kiro-cli login" in out.lower()
+
+    def test_session_expired_names_the_backends_own_signin(self):
+        """A Codex/Claude/goose auth failure must not send the operator to kiro-cli.
+
+        ``signin_command`` is the descriptor field the not-authenticated error is
+        documented to quote. Default (kiro) and KAS keep the historical
+        ``kiro-cli login`` sentence so the kiro path is unchanged.
+        """
+        err = {"code": -32603, "message": "Internal error", "data": "not authenticated"}
+        kiro_out = _format_acp_error(err)
+        assert "kiro-cli login" in kiro_out.lower()
+
+        kas_out = _format_acp_error(err, backend=ACP_BACKEND_KAS)
+        assert "kiro-cli login" in kas_out.lower()
+
+        codex_out = _format_acp_error(err, backend=ACP_BACKEND_CODEX)
+        assert "codex login" in codex_out.lower()
+        assert "kiro-cli login" not in codex_out.lower()
+
+        claude_out = _format_acp_error(err, backend=ACP_BACKEND_CLAUDE)
+        assert "`claude`" in claude_out
+        assert "kiro-cli login" not in claude_out.lower()
+
+        goose_out = _format_acp_error(err, backend=ACP_BACKEND_GOOSE)
+        assert "goose configure" in goose_out.lower()
+        assert "kiro-cli login" not in goose_out.lower()
+
+    def test_raise_acp_error_forwards_backend_into_the_signin_sentence(self):
+        """The raise helper is what the live prompt path calls; threading
+        ``backend`` only through the formatter would leave the operator on the
+        kiro-cli sentence when Codex actually failed.
+        """
+        from kiro_crew.acp.client import _raise_acp_error
+
+        err = {"code": -32603, "message": "Internal error", "data": "login required"}
+        with pytest.raises(AcpError) as ei:
+            _raise_acp_error(err, backend=ACP_BACKEND_CODEX)
+        assert "codex login" in str(ei.value).lower()
+        assert "kiro-cli login" not in str(ei.value).lower()
 
 
 class TestIsTransientRawError:
@@ -9960,6 +10403,46 @@ class TestSpawnEnvScrub:
         assert env.get("KIROCREW_UNRELATED_KEEPME") == "keep-this-value"
         assert env.get("AWS_ACCESS_KEY_ID") == "FAKE-akid"
 
+    @pytest.mark.asyncio
+    async def test_client_spawn_pins_callbacks_to_parent_bound_port(self, monkeypatch):
+        monkeypatch.setenv("KIROCREW_PORT", "6776")
+        monkeypatch.setenv("KIROCREW_BOUND_PORT", "7959")
+        captured: dict[str, object] = {}
+
+        class _StopSpawn(Exception):
+            pass
+
+        async def _fake_exec(*_args, **kwargs):
+            captured["env"] = kwargs.get("env")
+            raise _StopSpawn()
+
+        monkeypatch.setattr(acp_client, "_resolve_kiro_bin", lambda: "/fake/kiro")
+        monkeypatch.setattr(
+            acp_client,
+            "wrap_argv",
+            lambda argv, mode, strip_python_env=False, is_kiro_cli=None: (argv, None),
+        )
+        monkeypatch.setattr(acp_client, "cgroup_scope_argv", lambda argv: argv)
+        monkeypatch.setattr(acp_client, "augmented_path", lambda p: p)
+        monkeypatch.setattr(acp_client, "resolve_krb5_ccname", lambda env: None)
+        monkeypatch.setattr(acp_client, "_resolve_ssh_auth_sock", lambda env: None)
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+        client = AcpClient(
+            sandbox_mode="auto",
+            extra_env={
+                "KIROCREW_PORT": "9000",
+                "KIROCREW_BOUND_PORT": "9001",
+            },
+        )
+        with pytest.raises(_StopSpawn):
+            await client._spawn()
+
+        env = captured["env"]
+        assert isinstance(env, dict)
+        assert env.get("KIROCREW_PORT") == "7959"
+        assert env.get("KIROCREW_BOUND_PORT") == "7959"
+
 
 class TestSetModelRebasesContextStats:
     """A mid-session set_model must re-anchor the context-meter stats.
@@ -10323,6 +10806,25 @@ class TestModelEntitlementPreflight:
         assert len(sent) == 1
         assert sent[0][1]["modelId"] == "claude-opus-4.8"
         assert client._model == "claude-opus-4.8"
+
+    @pytest.mark.asyncio
+    async def test_kiro_startup_process_death_stays_fail_loud(self):
+        """An adapter model refusal may degrade; a dead Kiro process may not.
+
+        The first-class path sends ``session/set_model`` without awaiting a
+        response, so an ``AcpProcessDied`` here is a transport death rather than
+        a model-namespace refusal. Swallowing it makes ``ensure_ready`` report a
+        dead session as ready.
+        """
+        client = self._client([], "claude-opus-4.8")
+
+        async def dead(*_args, **_kwargs):
+            raise AcpProcessDied("kiro-cli exited")
+
+        client._send_request = dead
+
+        with pytest.raises(AcpProcessDied, match="kiro-cli exited"):
+            await client._apply_startup_model()
 
     @pytest.mark.asyncio
     async def test_startup_leaves_claude_backend_alone(self):

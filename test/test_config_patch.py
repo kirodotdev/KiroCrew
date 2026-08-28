@@ -3,12 +3,24 @@
 from __future__ import annotations
 
 import json
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+
+from kiro_crew.acp.types import ACP_BACKEND_KAS
+
+
+@pytest.fixture(autouse=True)
+def _owner_caller(monkeypatch):
+    """Exercise config behavior past the ACP backend's owner boundary."""
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+        lambda request: True,
+    )
 
 
 def _make_app() -> web.Application:
@@ -72,7 +84,281 @@ async def _patch(client, path, value):
     return await client.patch("/api/config/kirocrew", json={"path": path, "value": value})
 
 
+@pytest.mark.asyncio
+async def test_dynamic_backend_allowlist_resolves_off_the_event_loop(
+    tmp_config, monkeypatch
+) -> None:
+    from kiro_crew.dashboard.handlers import core
+
+    seeded = json.loads(tmp_config.read_text(encoding="utf-8"))
+    seeded["agent"]["acp_backend"] = ""
+    tmp_config.write_text(json.dumps(seeded), encoding="utf-8")
+    event_loop_thread = threading.get_ident()
+
+    def selectable_values() -> list[str]:
+        assert threading.get_ident() != event_loop_thread
+        return [""]
+
+    monkeypatch.setitem(core._EDITABLE_CONFIG["agent.acp_backend"], "values_fn", selectable_values)
+    async with TestClient(TestServer(_make_app())) as client:
+        response = await _patch(client, "agent.acp_backend", "")
+
+    assert response.status == 200
+
+
+@pytest.mark.asyncio
+async def test_acp_backend_patch_refuses_a_non_owner(tmp_path, monkeypatch) -> None:
+    cfg_path = tmp_path / "config.json"
+    seeded = _seed_config()
+    seeded["agent"]["acp_backend"] = ""
+    cfg_path.write_text(json.dumps(seeded), encoding="utf-8")
+
+    app = _make_app()
+    app["state"] = SimpleNamespace(
+        _slots={},
+        push_slots_update=lambda: None,
+        sessions=SimpleNamespace(refresh_defaults=AsyncMock()),
+    )
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+        lambda request: False,
+    )
+    with patch("kiro_crew.config.loader.config_path", return_value=cfg_path):
+        async with TestClient(TestServer(app)) as client:
+            response = await _patch(client, "agent.acp_backend", ACP_BACKEND_KAS)
+            payload = await response.json()
+
+    assert response.status == 403
+    assert payload["code"] == "owner_only"
+    assert json.loads(cfg_path.read_text(encoding="utf-8")) == seeded
+
+
 # ── Per-role models (agent.role_models.*) ─────────────────────────────────
+
+
+class TestBackendSwitchHealsNamespacedModels:
+    """A model id belongs to one backend's namespace, so it cannot survive a switch.
+
+    kiro's `gpt-5.6-sol` is not portable to another backend. Left in the
+    config it is refused at the wire on every future session, and the picker keeps
+    showing a selection the backend will never honour — while the picker that
+    would correct it lives behind the session that could not start.
+    """
+
+    @pytest.mark.asyncio
+    async def test_switching_backend_resets_a_namespaced_model(self, tmp_path) -> None:
+        cfg_path = tmp_path / "config.json"
+        seeded = _seed_config()
+        seeded["agent"]["acp_backend"] = ""
+        seeded["agent"]["model"] = "gpt-5.6-sol"
+        seeded["agent"]["role_models"] = {"background": "gpt-5.6-terra", "subagent": "auto"}
+        seeded["agents"]["kirocrew"]["model"] = "gpt-5.6-sol"
+        seeded["agents"]["reviewer"] = {
+            "kiro_agent": "reviewer",
+            "workspace": "default",
+            "memory_store": "default",
+            "model": "auto",
+        }
+        cfg_path.write_text(json.dumps(seeded), encoding="utf-8")
+
+        app = _make_app()
+        sessions = SimpleNamespace(refresh_defaults=AsyncMock())
+        app["state"] = SimpleNamespace(
+            _slots={"chat-1": SimpleNamespace(model="gpt-5.6-sol", _model_pick_gen=7)},
+            push_slots_update=lambda: None,
+            sessions=sessions,
+        )
+        with patch("kiro_crew.config.loader.config_path", return_value=cfg_path):
+            async with TestClient(TestServer(app)) as c:
+                resp = await _patch(c, "agent.acp_backend", ACP_BACKEND_KAS)
+                assert resp.status == 200
+
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert saved["agent"]["acp_backend"] == ACP_BACKEND_KAS
+        # Reset to the auto sentinel, which is never sent to the wire, so the new
+        # backend serves its own default instead of being handed a foreign id.
+        assert saved["agent"]["model"] == "auto"
+        assert saved["agent"]["role_models"]["background"] == "auto"
+        # An already-auto pin is left exactly as it was.
+        assert saved["agent"]["role_models"]["subagent"] == "auto"
+        assert saved["agents"]["kirocrew"]["model"] == ""
+        assert saved["agents"]["reviewer"]["model"] == "auto"
+        # The in-memory slot pin is namespaced too.
+        assert app["state"]._slots["chat-1"].model == ""
+        # Invalidate an in-flight fallback restore probe so it cannot repopulate
+        # the old backend's model after this switch has cleared it.
+        assert app["state"]._slots["chat-1"]._model_pick_gen == 8
+        # The provider factory captures the backend at build time. Refreshing it
+        # makes the next session use KAS while preserving open conversations.
+        sessions.refresh_defaults.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_backend_normalization_race_rolls_back_the_atomic_switch(self, tmp_path) -> None:
+        cfg_path = tmp_path / "config.json"
+        seeded = _seed_config()
+        seeded["agent"]["acp_backend"] = ""
+        seeded["agent"]["model"] = "gpt-5.6-sol"
+        seeded["agent"]["role_models"] = {"background": "gpt-5.6-terra"}
+        seeded["agents"]["kirocrew"]["model"] = "gpt-5.6-sol"
+        cfg_path.write_text(json.dumps(seeded), encoding="utf-8")
+        sessions = SimpleNamespace(refresh_defaults=AsyncMock())
+        app = _make_app()
+        app["state"] = SimpleNamespace(
+            _slots={},
+            push_slots_update=lambda: None,
+            sessions=sessions,
+        )
+        normalized = SimpleNamespace(agent=SimpleNamespace(acp_backend=""))
+        with (
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            patch(
+                "kiro_crew.dashboard.handlers.core.KiroCrewConfig.load",
+                return_value=normalized,
+            ),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await _patch(client, "agent.acp_backend", ACP_BACKEND_KAS)
+                payload = await resp.json()
+
+        assert resp.status == 409
+        assert payload["code"] == "acp_backend_changed_during_save"
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert saved["agent"]["acp_backend"] == ""
+        assert saved["agent"]["model"] == "gpt-5.6-sol"
+        assert saved["agent"]["role_models"] == {"background": "gpt-5.6-terra"}
+        assert saved["agents"]["kirocrew"]["model"] == "gpt-5.6-sol"
+        sessions.refresh_defaults.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_normalization_rollback_spares_concurrent_model_updates(self, tmp_path) -> None:
+        """Rollback restores only fields still holding this request's reset values."""
+        cfg_path = tmp_path / "config.json"
+        seeded = _seed_config()
+        seeded["agent"]["acp_backend"] = ""
+        seeded["agent"]["model"] = "gpt-5.6-sol"
+        seeded["agent"]["role_models"] = {
+            "background": "gpt-5.6-terra",
+            "subagent": "gpt-5.6-luna",
+        }
+        seeded["agents"]["kirocrew"]["model"] = "gpt-5.6-sol"
+        cfg_path.write_text(json.dumps(seeded), encoding="utf-8")
+        sessions = SimpleNamespace(refresh_defaults=AsyncMock())
+        app = _make_app()
+        app["state"] = SimpleNamespace(
+            _slots={},
+            push_slots_update=lambda: None,
+            sessions=sessions,
+        )
+        normalized = SimpleNamespace(agent=SimpleNamespace(acp_backend=""))
+
+        def normalize_after_concurrent_updates():
+            current = json.loads(cfg_path.read_text(encoding="utf-8"))
+            current["agent"]["model"] = "concurrent-model"
+            current["agent"]["role_models"]["background"] = "concurrent-background"
+            current["agents"]["kirocrew"]["model"] = "concurrent-agent-model"
+            cfg_path.write_text(json.dumps(current), encoding="utf-8")
+            return normalized
+
+        with (
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            patch(
+                "kiro_crew.dashboard.handlers.core.KiroCrewConfig.load",
+                side_effect=normalize_after_concurrent_updates,
+            ),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await _patch(client, "agent.acp_backend", ACP_BACKEND_KAS)
+
+        assert resp.status == 409
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert saved["agent"]["acp_backend"] == ""
+        assert saved["agent"]["model"] == "concurrent-model"
+        assert saved["agent"]["role_models"] == {
+            "background": "concurrent-background",
+            "subagent": "gpt-5.6-luna",
+        }
+        assert saved["agents"]["kirocrew"]["model"] == "concurrent-agent-model"
+        sessions.refresh_defaults.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_re_saving_the_same_backend_leaves_the_model_alone(self, tmp_path) -> None:
+        """Only a real change heals — re-sending the current value must not reset a pick."""
+        cfg_path = tmp_path / "config.json"
+        seeded = _seed_config()
+        seeded["agent"]["acp_backend"] = ""
+        seeded["agent"]["model"] = "claude-opus-5"
+        cfg_path.write_text(json.dumps(seeded), encoding="utf-8")
+
+        app = _make_app()
+        sessions = SimpleNamespace(refresh_defaults=AsyncMock())
+        app["state"] = SimpleNamespace(
+            _slots={},
+            push_slots_update=lambda: None,
+            sessions=sessions,
+        )
+        with patch("kiro_crew.config.loader.config_path", return_value=cfg_path):
+            async with TestClient(TestServer(app)) as c:
+                assert (await _patch(c, "agent.acp_backend", "")).status == 200
+
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert saved["agent"]["model"] == "claude-opus-5"
+        sessions.refresh_defaults.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_saving_implicit_kiro_backend_leaves_the_model_alone(self, tmp_path) -> None:
+        """An omitted legacy backend key already means Kiro, so saving Kiro is not a switch."""
+        cfg_path = tmp_path / "config.json"
+        seeded = _seed_config()
+        seeded["agent"]["model"] = "gpt-5.6-sol"
+        cfg_path.write_text(json.dumps(seeded), encoding="utf-8")
+
+        app = _make_app()
+        sessions = SimpleNamespace(refresh_defaults=AsyncMock())
+        app["state"] = SimpleNamespace(
+            _slots={},
+            push_slots_update=lambda: None,
+            sessions=sessions,
+        )
+        with patch("kiro_crew.config.loader.config_path", return_value=cfg_path):
+            async with TestClient(TestServer(app)) as client:
+                response = await _patch(client, "agent.acp_backend", "")
+
+        assert response.status == 200
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert saved["agent"]["acp_backend"] == ""
+        assert saved["agent"]["model"] == "gpt-5.6-sol"
+        sessions.refresh_defaults.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_switch_and_model_healing_are_one_atomic_config_write(self, tmp_path) -> None:
+        cfg_path = tmp_path / "config.json"
+        seeded = _seed_config()
+        seeded["agent"]["acp_backend"] = ""
+        seeded["agent"]["model"] = "gpt-5.6-sol"
+        cfg_path.write_text(json.dumps(seeded), encoding="utf-8")
+        app = _make_app()
+        app["state"] = SimpleNamespace(
+            _slots={},
+            push_slots_update=lambda: None,
+            sessions=SimpleNamespace(refresh_defaults=AsyncMock()),
+        )
+        with (
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            patch(
+                "kiro_crew.config.loader.update_config_locked",
+                wraps=__import__(
+                    "kiro_crew.config.loader", fromlist=["update_config_locked"]
+                ).update_config_locked,
+            ) as update,
+        ):
+            async with TestClient(TestServer(app)) as c:
+                resp = await _patch(c, "agent.acp_backend", ACP_BACKEND_KAS)
+
+        assert resp.status == 200
+        assert update.call_count == 1
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert saved["agent"]["acp_backend"] == ACP_BACKEND_KAS
+        assert saved["agent"]["model"] == "auto"
 
 
 class TestRoleModels:

@@ -1355,25 +1355,13 @@ class TestProcessStartTime:
         monkeypatch.setattr(pc, "Path", _FakeStatPath)
         assert pc.process_start_time(4242) is None
 
-    def test_the_bsd_leg_resolves_ps_through_trusted_system_bin(self, monkeypatch):
-        """A PATH-resolved `ps` would let a planted binary forge process identity.
-
-        The value gates a kill, so its source binary must come from the pinned
-        lookup rather than whatever `PATH` leads with.
-        """
+    def test_the_macos_leg_uses_the_full_libproc_start_identity(self, monkeypatch):
+        """macOS keeps libproc's seconds and microseconds as one opaque token."""
         monkeypatch.setattr(pc.sys, "platform", "darwin")
         monkeypatch.setattr(pc, "IS_WINDOWS", False)
-        monkeypatch.setattr(pc, "trusted_system_bin", lambda _n: "/usr/bin/ps")
-        seen: list[list[str]] = []
+        monkeypatch.setattr(pc, "get_process_start_id", lambda pid: f"1704067200:{pid}")
 
-        def _check_output(argv, **_k):
-            seen.append(list(argv))
-            return b" Mon Jan  1 00:00:00 2024\n"
-
-        monkeypatch.setattr(pc.subprocess, "check_output", _check_output)
-
-        assert pc.process_start_time(4242) == "Mon Jan  1 00:00:00 2024"
-        assert seen and seen[0][0] == "/usr/bin/ps", "ps was not the pinned binary"
+        assert pc.process_start_time(4242) == "1704067200:4242"
 
     def test_an_absent_ps_fails_safe(self, monkeypatch):
         monkeypatch.setattr(pc.sys, "platform", "darwin")

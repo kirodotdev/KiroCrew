@@ -672,6 +672,12 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
   }, [displayLabel, simplified, isShell])
   // Hover reveals the verbatim command whenever the pill shows a substitute.
   const pillLabelTitle = pillLabelText === displayLabel ? undefined : displayLabel
+  // Keep transcript-sized shell payloads out of accessibility announcements,
+  // matching the visible summary while ordinary rows retain their raw label.
+  const ariaToolLabel = isShell
+    && (label.length > DERIVE_LABEL_THRESHOLD_CHARS || label.includes('\n'))
+    ? pillLabelText
+    : label
   // Both running and pending-approval pills shimmer — the highlight color
   // tracks the status so pending shimmers warn-yellow (matching the approval
   // bar) and running shimmers accent.
@@ -822,10 +828,10 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
         aria-expanded={effectivelyExpanded}
         title={pillLabelTitle}
         aria-label={hasPendingPerm
-          ? i18nT('pages.chat.toolCallLine.aria_awaiting_approval', { label })
+          ? i18nT('pages.chat.toolCallLine.aria_awaiting_approval', { label: ariaToolLabel })
           : effectivelyExpanded
-            ? i18nT('pages.chat.toolCallLine.aria_hide_details', { label })
-            : i18nT('pages.chat.toolCallLine.aria_show_details', { label })}
+            ? i18nT('pages.chat.toolCallLine.aria_hide_details', { label: ariaToolLabel })
+            : i18nT('pages.chat.toolCallLine.aria_show_details', { label: ariaToolLabel })}
         onClick={onToggle}
       >
         {/* Deterministic vertical centering: the label spans pin leading-5
@@ -979,7 +985,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
             transition={{ duration: 0.35, ease: [0.4, 0.0, 0.2, 1] /* Material standard */ }}
             style={{ overflow: 'hidden' }}
           >
-            <ToolDetails purpose={purpose} pillLabel={toolLabel} toolName={label} input={input} output={isAutoDenied ? denyOutput : output} auto={auto} pending={hasPendingPerm} ts={ts} hasEntry={hasEntry} fmtTime={fmtTime} barColor={barStyle} layoutId={`tool-detail-${effectiveId || toolCallId || fallbackId}`} flush />
+            <ToolDetails purpose={purpose} pillLabel={displayLabel} toolName={label} input={input} output={isAutoDenied ? denyOutput : output} auto={auto} pending={hasPendingPerm} ts={ts} hasEntry={hasEntry} fmtTime={fmtTime} barColor={barStyle} layoutId={`tool-detail-${effectiveId || toolCallId || fallbackId}`} flush />
           </motion.div>
         )}
       </AnimatePresence>

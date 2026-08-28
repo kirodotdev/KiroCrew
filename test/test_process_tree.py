@@ -206,8 +206,8 @@ class TestSnapshotProcessTree:
             await client._snapshot_process_tree()
 
         assert client._child_pids == {200: (2000, b"proc200"), 300: (3000, b"proc300"), 400: (4000, b"proc400")}
-        # Verify child:parent lines written to kiro_pids.txt
-        content = (tmp_path / "kiro_pids.txt").read_text(encoding="utf-8")
+        # Runtime PID state stays below the protected run directory.
+        content = (tmp_path / "run" / "kiro_pids.txt").read_text(encoding="utf-8")
         lines = {ln.strip() for ln in content.splitlines() if ln.strip()}
         assert lines == {"200:100", "300:100", "400:100"}
 

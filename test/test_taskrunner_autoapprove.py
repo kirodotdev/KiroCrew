@@ -12,7 +12,7 @@ otherwise. (Global YOLO / safety-override is deliberately NOT honored here.)
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -78,13 +78,11 @@ async def test_hook_auto_approve_bypasses_interactive_prompt(tmp_path):
     sessions = _mock_sessions(provider)
     run, task = _run_and_task()
     ctx = _ctx_with_hook_action(TOOL_AUTO_APPROVE)
-    with patch.object(task_executor.KiroCrewConfig, "load") as cfg:
-        cfg.return_value.agent.provider = "acp"
-        await task_executor.execute_task(
-            run=run, task=task, sessions=sessions, ctx=ctx, agent="",
-            on_tool_approval=prompt, auto_test=False, test_cmd=None,
-            work_dir=Path(tmp_path), on_notify=AsyncMock(), session_key="k",
-        )
+    await task_executor.execute_task(
+        run=run, task=task, sessions=sessions, ctx=ctx, agent="",
+        on_tool_approval=prompt, auto_test=False, test_cmd=None,
+        work_dir=Path(tmp_path), on_notify=AsyncMock(), session_key="k",
+    )
     prompt.assert_not_called()
     provider.approve_tool.assert_awaited_once_with("req-1")
 
@@ -96,13 +94,11 @@ async def test_headless_no_authorization_rejects(tmp_path):
     sessions = _mock_sessions(provider)
     run, task = _run_and_task()
     ctx = _ctx_with_hook_action(TOOL_ALLOW)
-    with patch.object(task_executor.KiroCrewConfig, "load") as cfg:
-        cfg.return_value.agent.provider = "acp"
-        await task_executor.execute_task(
-            run=run, task=task, sessions=sessions, ctx=ctx, agent="",
-            on_tool_approval=None, auto_test=False, test_cmd=None,
-            work_dir=Path(tmp_path), on_notify=AsyncMock(), session_key="k",
-        )
+    await task_executor.execute_task(
+        run=run, task=task, sessions=sessions, ctx=ctx, agent="",
+        on_tool_approval=None, auto_test=False, test_cmd=None,
+        work_dir=Path(tmp_path), on_notify=AsyncMock(), session_key="k",
+    )
     provider.reject_tool.assert_awaited_once_with("req-1")
     provider.approve_tool.assert_not_awaited()
 
@@ -115,13 +111,11 @@ async def test_headless_hook_auto_approve_still_approves(tmp_path):
     sessions = _mock_sessions(provider)
     run, task = _run_and_task()
     ctx = _ctx_with_hook_action(TOOL_AUTO_APPROVE)
-    with patch.object(task_executor.KiroCrewConfig, "load") as cfg:
-        cfg.return_value.agent.provider = "acp"
-        await task_executor.execute_task(
-            run=run, task=task, sessions=sessions, ctx=ctx, agent="",
-            on_tool_approval=None, auto_test=False, test_cmd=None,
-            work_dir=Path(tmp_path), on_notify=AsyncMock(), session_key="k",
-        )
+    await task_executor.execute_task(
+        run=run, task=task, sessions=sessions, ctx=ctx, agent="",
+        on_tool_approval=None, auto_test=False, test_cmd=None,
+        work_dir=Path(tmp_path), on_notify=AsyncMock(), session_key="k",
+    )
     provider.approve_tool.assert_awaited_once_with("req-1")
     provider.reject_tool.assert_not_awaited()
 
@@ -134,12 +128,10 @@ async def test_interactive_prompt_fires_when_handler_present(tmp_path):
     sessions = _mock_sessions(provider)
     run, task = _run_and_task()
     ctx = _ctx_with_hook_action(TOOL_ALLOW)
-    with patch.object(task_executor.KiroCrewConfig, "load") as cfg:
-        cfg.return_value.agent.provider = "acp"
-        await task_executor.execute_task(
-            run=run, task=task, sessions=sessions, ctx=ctx, agent="",
-            on_tool_approval=prompt, auto_test=False, test_cmd=None,
-            work_dir=Path(tmp_path), on_notify=AsyncMock(), session_key="k",
-        )
+    await task_executor.execute_task(
+        run=run, task=task, sessions=sessions, ctx=ctx, agent="",
+        on_tool_approval=prompt, auto_test=False, test_cmd=None,
+        work_dir=Path(tmp_path), on_notify=AsyncMock(), session_key="k",
+    )
     prompt.assert_awaited_once()
     provider.approve_tool.assert_awaited_once_with("req-1")

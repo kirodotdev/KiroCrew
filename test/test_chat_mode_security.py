@@ -131,6 +131,22 @@ async def test_trust_reads_unknown_slot_is_400_and_revokes_nothing(state) -> Non
 
 
 @pytest.mark.asyncio
+async def test_harness_auto_refusal_mutates_no_grant_or_slot(state) -> None:
+    """The unavailable harness mode is rejected before any authority changes."""
+    slot = state.get_or_create_slot("s1")
+    override = _FakeOverride(active=True)
+    with patch("kiro_crew.dashboard.chat_handlers.safety_override", return_value=override):
+        async with _client(state) as client:
+            resp = await client.post("/api/chat/mode", json={"mode": "auto", "slot": "s1"})
+            assert resp.status == 409
+            assert (await resp.json())["code"] == "permission_auto_requires_safety_override"
+    assert override.active is True
+    assert override.deactivate_calls == []
+    assert slot._trust is False
+    assert slot._trust_reads is False
+
+
+@pytest.mark.asyncio
 async def test_trust_reads_non_string_slot_key_is_rejected(state) -> None:
     """A truthy non-string key used to fall through to the all-slots branch."""
     state.get_or_create_slot("s1")

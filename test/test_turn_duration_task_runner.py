@@ -21,7 +21,6 @@ The REAL ``persist_token_record_async`` runs (so the precedence in
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -77,9 +76,6 @@ def _intercept_usage(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
     monkeypatch.setattr(usage, "read_context_tokens", lambda *a, **k: (100, 1000))
     monkeypatch.setattr(usage, "read_effective_agent", lambda *a, **k: "agentX")
     monkeypatch.setattr(usage, "read_effective_model", lambda *a, **k: "test-model")
-    fake_config = MagicMock()
-    fake_config.load.return_value = SimpleNamespace(agent=SimpleNamespace(provider="acp"))
-    monkeypatch.setattr(task_executor, "KiroCrewConfig", fake_config)
     return captured
 
 

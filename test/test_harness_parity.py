@@ -5,9 +5,10 @@ Each test here closes one invariant from
 ``docs/system-specs/modules/harness-parity.md`` by its id, so a change that
 degrades the Kiro path goes red here rather than at an operator's first message.
 
-Two invariants (H13, H14) are properties of a *change* rather than of a tree and
-have no deterministic form; they are carried by the ``harness-parity`` rule in
-``AUTOSDE.yaml``. The added-line half of H5 lives in
+H14 is a property of a *change* rather than of a tree and has no deterministic
+form; it is carried by the ``harness-parity`` rule in ``AUTOSDE.yaml``. H13's
+direct Kiro-factory half is pinned in ``test_provider_dispatch.py``. The
+added-line half of H5 lives in
 ``scripts/check_harness_parity.py`` and is exercised by its ``--test`` mode,
 which :func:`test_added_line_gate_self_test_passes` runs.
 """
@@ -16,6 +17,7 @@ from __future__ import annotations
 
 import importlib.util
 import inspect
+import json
 import os
 import subprocess
 import sys
@@ -25,21 +27,26 @@ import pytest
 
 from kiro_crew.acp import client as acp_client
 from kiro_crew.acp import runtime as acp_runtime
+from kiro_crew.acp import types as acp_types
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
+    ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
-    ACP_BACKENDS_ACP_RUNTIME,
+    ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_PI,
+    ACP_BACKENDS_AUTO_MODEL,
     ACP_BACKENDS_INTERNAL_SANDBOX,
+    ACP_BACKENDS_KIRO_CREDITS,
     ACP_BACKENDS_KNOWN,
     ACP_BACKENDS_SELECTABLE,
     ACP_BACKENDS_SESSION_SHARING,
     ACP_BACKENDS_STEER,
     ACP_CLIENT_CAPABILITIES,
     KAS_CLIENT_CAPABILITIES,
-    PROVIDER_LABEL_CLAUDE,
     PROVIDER_LABEL_DEFAULT,
-    PROVIDER_LABEL_KAS,
+    PROVIDER_LABELS_BY_BACKEND,
 )
 from kiro_crew.config.loader import AgentConfig, _normalize_acp_backend
 from kiro_crew.providers import acp as providers_acp
@@ -81,6 +88,24 @@ def test_kiro_is_always_selectable() -> None:
     assert ACP_BACKEND_KIRO in ACP_BACKENDS_SELECTABLE
 
 
+def test_initial_adapter_selection_is_limited_to_reviewed_backends() -> None:
+    """H1: discovery does not advertise an adapter before basic validation.
+
+    Claude, Codex, goose, OpenCode, pi, and registry-only adapters remain
+    described so their integration work can continue. Claude is withheld until
+    its settings cleanup can preserve an operator's pre-existing project file.
+    Codex is withheld because its read-only mode does not permission-route
+    passive reads, so the standard sandbox cannot enforce the sensitive-path
+    floor for that backend.
+    """
+    assert ACP_BACKENDS_SELECTABLE == frozenset(
+        {
+            ACP_BACKEND_KIRO,
+            ACP_BACKEND_KAS,
+        }
+    )
+
+
 def test_provider_enum_is_acp_only() -> None:
     """H2: a harness is chosen at ``acp_backend``, never as a second provider.
 
@@ -91,7 +116,10 @@ def test_provider_enum_is_acp_only() -> None:
     assert _field_default("provider") == "acp"
 
 
-@pytest.mark.parametrize("persisted", ["", "kas", "byo-harness", "claude", None, 7])
+@pytest.mark.parametrize(
+    "persisted",
+    ["", "kas", "byo-harness", "claude", "codex", "codex-acp", None, 7],
+)
 def test_unselectable_backend_degrades_to_kiro(persisted: object) -> None:
     """H3: an unusable persisted value degrades to Kiro and never raises.
 
@@ -113,10 +141,38 @@ def test_enum_and_selectability_are_separate() -> None:
     the enum admits must therefore still pass ``_normalize_acp_backend``.
     """
     enum = _field_enum("acp_backend")
+    if callable(enum):
+        enum = enum()
     assert isinstance(enum, list) and enum, "acp_backend must declare an enum"
     assert ACP_BACKEND_KIRO in enum
     for value in enum:
         assert _normalize_acp_backend(value) in ACP_BACKENDS_SELECTABLE
+
+
+def test_normalize_does_not_let_registry_alias_bypass_selectability() -> None:
+    from kiro_crew.config.loader import _normalize_acp_backend
+
+    assert _normalize_acp_backend("codex-acp") == ACP_BACKEND_KIRO
+
+
+def test_load_aliases_registry_id_before_schema_validation(tmp_path, monkeypatch) -> None:
+    """A registry spelling canonicalizes before selection is enforced.
+
+    Codex is currently withheld, so both its canonical and registry spellings
+    degrade to Kiro. This pins that the alias cannot become a second admission
+    path around ``ACP_BACKENDS_SELECTABLE``.
+    """
+    from kiro_crew.config import loader as config_loader
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    cfgp = tmp_path / "config.json"
+    cfgp.write_text(json.dumps({"agent": {"acp_backend": "codex-acp"}}), encoding="utf-8")
+    monkeypatch.setattr(config_loader, "config_path", lambda: cfgp)
+    monkeypatch.setattr(config_loader, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(config_loader, "config_local_path", lambda: tmp_path / "config.local.json")
+
+    cfg = KiroCrewConfig.load()
+    assert cfg.agent.acp_backend == ACP_BACKEND_KIRO
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +201,12 @@ def test_steer_is_opt_in() -> None:
     source = inspect.getsource(acp_client.AcpClient.supports_steer.fget)
     assert "ACP_BACKENDS_STEER" in source
     assert ACP_BACKEND_KIRO in ACP_BACKENDS_STEER
+    assert ACP_BACKEND_KAS in ACP_BACKENDS_STEER
     assert ACP_BACKEND_CLAUDE not in ACP_BACKENDS_STEER
+    assert ACP_BACKEND_GOOSE not in ACP_BACKENDS_STEER
+    assert ACP_BACKEND_CODEX not in ACP_BACKENDS_STEER
+    assert ACP_BACKEND_OPENCODE not in ACP_BACKENDS_STEER
+    assert ACP_BACKEND_PI not in ACP_BACKENDS_STEER
 
 
 def test_steer_capability_declares_its_stamp() -> None:
@@ -216,19 +277,81 @@ def test_is_kiro_cli_is_positive() -> None:
     )
 
 
+def test_auto_model_is_opt_in() -> None:
+    """H6: serving the ``"auto"`` model id is membership, not a non-kiro test.
+
+    ``"auto"`` is a kiro-namespace id rather than a protocol concept: the
+    kiro-agent family advertises it as a row of its own model list, and a spec
+    adapter rejects it at the wire. Deciding by "is the backend id non-empty"
+    reads as a kiro test only because ``ACP_BACKEND_KIRO`` is ``""`` — it is the
+    forbidden negative form, and it stripped the Auto row from KAS, which speaks
+    kiro's dialect and does serve the id.
+    """
+    assert ACP_BACKEND_KIRO in ACP_BACKENDS_AUTO_MODEL
+    assert ACP_BACKEND_KAS in ACP_BACKENDS_AUTO_MODEL
+    assert ACP_BACKEND_CLAUDE not in ACP_BACKENDS_AUTO_MODEL
+    assert ACP_BACKEND_CODEX not in ACP_BACKENDS_AUTO_MODEL
+
+    # The gateway STATES the capability rather than leaving the dashboard to infer
+    # it from the id, so the membership has exactly one home. Read from the set at
+    # both response sites: the success envelope and the degraded 503, which is the
+    # steady state of an adapter with no live session and therefore precisely when
+    # the picker has to decide whether it may synthesize the row.
+    from kiro_crew.dashboard.handlers import agents as agents_handler
+
+    source = inspect.getsource(agents_handler.api_models)
+    assert source.count('"serves_auto": _alt_backend in ACP_BACKENDS_AUTO_MODEL') == 2
+
+
+def test_kiro_credits_is_opt_in() -> None:
+    """H6: billing against the operator's Kiro credit plan is membership.
+
+    ``CAP_BILLING`` is not a usable proxy for it and must not be reused as one:
+    that level says whether Kiro Crew can READ a cost signal, and
+    claude-agent-acp is DEGRADED there because it reports a real cumulative
+    dollar figure — from another account. Whose balance moved is a property of
+    the account a harness authenticates to, not of the wire dialect, which is
+    also why KAS is a member while sitting at UNVERIFIED for billing.
+
+    Both readouts fail toward hiding a number rather than asserting a balance,
+    because the alternative costs real money: populating the pill spends a BILLED
+    ``kiro-cli chat ... /usage`` turn on a 30s timer.
+    """
+    assert ACP_BACKEND_KIRO in ACP_BACKENDS_KIRO_CREDITS
+    assert ACP_BACKEND_KAS in ACP_BACKENDS_KIRO_CREDITS
+    assert ACP_BACKEND_CLAUDE not in ACP_BACKENDS_KIRO_CREDITS
+    assert ACP_BACKEND_CODEX not in ACP_BACKENDS_KIRO_CREDITS
+
+    # The gateway STATES it, at both consumers, so no dashboard carries a second
+    # copy of the set: the status payload's harness block and the usage endpoint
+    # that would otherwise spend credits scraping a balance nobody is drawing.
+    from kiro_crew.dashboard import state as dashboard_state
+    from kiro_crew.dashboard.handlers import sessions as sessions_handler
+
+    assert "bills_kiro_credits" in inspect.getsource(dashboard_state._harness_status)
+    assert "bills_kiro_credits" in inspect.getsource(sessions_handler.api_sessions_usage)
+
+
 def test_capability_sets_are_subsets_of_known_backends() -> None:
     """H8: a capability cannot be granted to an identifier nothing recognizes.
 
     A member that is not in ``ACP_BACKENDS_KNOWN`` is dead config at best and a
     typo that silently grants nothing at worst.
+
+    Discovered from the module rather than listed here, because a hand-kept list
+    fails in the direction that matters: a set added to ``acp/types.py`` and
+    forgotten here is exactly the one whose members nobody has checked.
     """
-    for name, members in (
-        ("ACP_BACKENDS_SELECTABLE", ACP_BACKENDS_SELECTABLE),
-        ("ACP_BACKENDS_SESSION_SHARING", ACP_BACKENDS_SESSION_SHARING),
-        ("ACP_BACKENDS_STEER", ACP_BACKENDS_STEER),
-        ("ACP_BACKENDS_INTERNAL_SANDBOX", ACP_BACKENDS_INTERNAL_SANDBOX),
-        ("ACP_BACKENDS_ACP_RUNTIME", ACP_BACKENDS_ACP_RUNTIME),
-    ):
+    sets = {
+        name: value
+        for name, value in vars(acp_types).items()
+        if name.startswith("ACP_BACKENDS_")
+        and name != "ACP_BACKENDS_KNOWN"
+        and isinstance(value, frozenset)
+    }
+    # A rename that empties this dict would pass every assertion below.
+    assert len(sets) >= 5, f"capability sets are no longer discoverable: {sorted(sets)}"
+    for name, members in sets.items():
         assert members <= ACP_BACKENDS_KNOWN, f"{name} names an unknown backend"
 
 
@@ -269,13 +392,13 @@ def test_handshake_is_per_backend() -> None:
     Collapsing the two capability dicts into one every harness accepts silently
     downgrades what the Kiro session declares.
     """
-    source = "\n".join(
-        (
-            inspect.getsource(acp_runtime.AcpRuntime.spawn),
-            inspect.getsource(acp_runtime.AcpRuntime._spawn_admitted),
-        )
-    )
-    assert "KAS_CLIENT_CAPABILITIES" in source and "ACP_CLIENT_CAPABILITIES" in source
+    kiro_version, kiro_capabilities = acp_runtime._runtime_wire_contract(ACP_BACKEND_KIRO)
+    kas_version, kas_capabilities = acp_runtime._runtime_wire_contract(ACP_BACKEND_KAS)
+
+    assert kiro_version == acp_runtime.PROTOCOL_VERSION
+    assert kas_version == acp_runtime.PROTOCOL_VERSION_KAS
+    assert kiro_capabilities is ACP_CLIENT_CAPABILITIES
+    assert kas_capabilities is KAS_CLIENT_CAPABILITIES
     assert KAS_CLIENT_CAPABILITIES != ACP_CLIENT_CAPABILITIES
 
 
@@ -285,16 +408,18 @@ def test_every_known_backend_has_a_label() -> None:
     The label indexes resume compatibility, session-map persistence, and
     session-file cleanup routing. A harness with no label of its own persists as
     a Kiro session, and the map then prunes its id for want of a Kiro transcript.
+
+    Reads the REAL mapping rather than restating it. This test used to keep its own
+    copy of the dict, which silently went stale the moment a backend was added —
+    it was missing codex and still passing its own assertion, because the copy was
+    self-consistent. Kiro is deliberately absent from the table: its label IS the
+    default, so it is added here rather than stored.
     """
-    labels = {
-        ACP_BACKEND_KIRO: PROVIDER_LABEL_DEFAULT,
-        ACP_BACKEND_CLAUDE: PROVIDER_LABEL_CLAUDE,
-        ACP_BACKEND_KAS: PROVIDER_LABEL_KAS,
-    }
+    labels = {ACP_BACKEND_KIRO: PROVIDER_LABEL_DEFAULT, **PROVIDER_LABELS_BY_BACKEND}
     assert set(labels) == set(ACP_BACKENDS_KNOWN), (
         "a known backend has no PROVIDER_LABEL_* of its own, so it would persist "
-        "under the kiro label — add one in acp/types.py and a branch in "
-        "providers.acp.provider_label"
+        "under the kiro label — add one in acp/types.py and an entry in "
+        "PROVIDER_LABELS_BY_BACKEND"
     )
     assert len(set(labels.values())) == len(labels), "two backends share a label"
 

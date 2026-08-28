@@ -162,9 +162,7 @@ class TestPerSlotWindowIsAlsoBudgetBounded:
         return min(state.approval_timeout_for(slot), td.tool_approval_timeout_secs())
 
     @pytest.mark.asyncio
-    async def test_attended_window_is_the_configured_one_not_the_flat_constant(
-        self, cfg
-    ) -> None:
+    async def test_attended_window_is_the_configured_one_not_the_flat_constant(self, cfg) -> None:
         # 7200 is what `approval_timeout_for` returns for an attended slot; the
         # window that actually applies is the configurable, bounded one.
         cfg(window=600, turn=7200)

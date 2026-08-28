@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew.acp.types import ACP_BACKEND_KIRO
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.chat_runner import _eager_spawn, schedule_eager_spawn
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
@@ -605,6 +606,7 @@ class TestSpeculativeResumeHandover:
             m.is_process_alive = lambda: True
             m.cwd = "/tmp"
             m.client = MagicMock()
+            m.client.backend = ACP_BACKEND_KIRO
             m.client.resumed = True  # the load restored the transcript
             m.client._session_id = "prior-sid-a"
             return m
@@ -640,6 +642,7 @@ class TestSpeculativeResumeHandover:
             m.is_process_alive = lambda: True
             m.cwd = "/tmp"
             m.client = MagicMock()
+            m.client.backend = ACP_BACKEND_KIRO
             m.client.resumed = True  # the session/load restored the transcript
             m.client._session_id = sid
             return m
@@ -1161,6 +1164,7 @@ class TestSpecResumeFallbackMapGuard:
             m.is_process_alive = lambda: True
             m.cwd = "/tmp"
             m.client = MagicMock()
+            m.client.backend = ACP_BACKEND_KIRO
             m.client.resumed = False  # the load FELL BACK to a fresh session
             m.client._session_id = "empty-fallback-sid"
             return m
@@ -1262,6 +1266,7 @@ class TestSpecResumeFallbackMapGuard:
             m.is_process_alive = lambda: True
             m.cwd = "/tmp"
             m.client = MagicMock()
+            m.client.backend = ACP_BACKEND_KIRO
             m.client.resumed = False  # the load FELL BACK
             m.client._session_id = "empty-fallback-sid"
             return m

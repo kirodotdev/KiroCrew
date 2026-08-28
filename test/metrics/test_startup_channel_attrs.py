@@ -126,10 +126,13 @@ class TestStartupAttrs:
             session_key="telegram:1",
             meta={"resumed": False, "resume_outcome": "fallback_replay"},
         )
-        assert ("kirocrew.session.resume.outcome", {
-            "outcome": "fallback_replay",
-            "channel": "telegram",
-        }) in rec.counters
+        assert (
+            "kirocrew.session.resume.outcome",
+            {
+                "outcome": "fallback_replay",
+                "channel": "telegram",
+            },
+        ) in rec.counters
 
     def test_no_resume_counter_on_a_fresh_session(self):
         rec = self._emit(session_key="dashboard:chat-1")
@@ -232,6 +235,7 @@ class TestPoolDecisions:
             "bypass_stateless",
             "bypass_cwd",
             "bypass_env",
+            "bypass_backend",
             "disabled",
         } <= POOL_DECISIONS
 

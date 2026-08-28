@@ -138,6 +138,7 @@ class TestClientToolCallEventIdentityProvenance:
         client._tool_call_is_shell = {}
         client._tool_call_mcp_server = {}
         client._tool_call_tool_name = {}
+        client._tool_call_mcp_ambiguous = {}
         client.last_prompt_stats = AcpPromptStats()
         msg = JsonRpcMessage(
             method="session/update",
@@ -170,7 +171,7 @@ class TestClientToolCallEventIdentityProvenance:
                 "update": {
                     "sessionUpdate": "tool_call",
                     "toolCallId": "tc-no-meta",
-                    "kind": "execute",
+                    "kind": "other",
                     "title": "Running: echo hi",
                     "rawInput": {"command": "echo hi"},
                 }

@@ -20,8 +20,8 @@ const CMDS = [
   { name: '/kb', description: 'Search knowledge library' },
 ]
 
-function Harness({ input, onSelect = vi.fn(), onClose = vi.fn(), sendOnEnter }: {
-  input: string; onSelect?: (c: string) => void; onClose?: () => void; sendOnEnter?: 'enter' | 'ctrl-enter' | 'enter-ctrl-newline'
+function Harness({ input, slotId, onSelect = vi.fn(), onClose = vi.fn(), sendOnEnter }: {
+  input: string; slotId?: string; onSelect?: (c: string) => void; onClose?: () => void; sendOnEnter?: 'enter' | 'ctrl-enter' | 'enter-ctrl-newline'
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -29,7 +29,7 @@ function Harness({ input, onSelect = vi.fn(), onClose = vi.fn(), sendOnEnter }: 
     <QueryClientProvider client={qc}>
       <div>
         <div ref={ref} data-testid="anchor">anchor</div>
-        <SlashCommandMenu input={input} anchorRef={ref} onSelect={onSelect} onClose={onClose} sendOnEnter={sendOnEnter} />
+        <SlashCommandMenu input={input} slotId={slotId} anchorRef={ref} onSelect={onSelect} onClose={onClose} sendOnEnter={sendOnEnter} />
       </div>
     </QueryClientProvider>
   )
@@ -41,6 +41,11 @@ beforeEach(() => {
 })
 
 describe('SlashCommandMenu (shared-hook migration)', () => {
+  it('scopes the command catalog to the pane slot', async () => {
+    render(<Harness input="/" slotId="chat:one/two" />)
+    await waitFor(() => expect(mockApi.slashCommands).toHaveBeenCalledWith({ slot: 'chat:one/two' }))
+  })
+
   it('renders commands when input is a bare slash', async () => {
     render(<Harness input="/" />)
     expect(await screen.findByText('/aa')).toBeInTheDocument()

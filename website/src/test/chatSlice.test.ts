@@ -2089,6 +2089,40 @@ describe('sseContextUsage reducer', () => {
     const state = reducer(seeded, sseContextUsage({ slot: 's1', pct: 12 }))
     expect(state.slotContextTokens['s1']).toEqual({ used: 100000, window: 1000000 })
   })
+
+  it('stores the plan rate limit per slot', () => {
+    const state = reducer(initial, sseContextUsage({
+      slot: 's1', pct: 44, used_tokens: 88000, window_tokens: 200000,
+      rate_limit: { status: 'allowed_warning', limit_type: 'five_hour', utilization: 81 },
+    }))
+    expect(state.slotRateLimit['s1']).toEqual({ status: 'allowed_warning', limit_type: 'five_hour', utilization: 81 })
+    // Another slot's quota is its own account state, never inherited.
+    expect(state.slotRateLimit['s2']).toBeUndefined()
+  })
+
+  it('keeps the stored quota when a later frame omits it', () => {
+    // The adapter emits the block only when the state CHANGES, so most frames
+    // carry none. Treating that as "quota unknown" would blank the readout for
+    // the rest of the session — the OPPOSITE rule to the token counts above.
+    const seeded = reducer(initial, sseContextUsage({ slot: 's1', pct: 10, rate_limit: { status: 'rejected' } }))
+    const state = reducer(seeded, sseContextUsage({ slot: 's1', pct: 12 }))
+    expect(state.slotRateLimit['s1']).toEqual({ status: 'rejected' })
+  })
+
+  it('reset does NOT clear the quota', () => {
+    // Compaction and a model switch — what `reset` marks — change the
+    // transcript, not the account the quota belongs to.
+    const seeded = reducer(initial, sseContextUsage({ slot: 's1', pct: 90, rate_limit: { status: 'allowed_warning', utilization: 76 } }))
+    const state = reducer(seeded, sseContextUsage({ slot: 's1', pct: 0, reset: true }))
+    expect(state.slotContextTokens['s1']).toBeUndefined()
+    expect(state.slotRateLimit['s1']).toEqual({ status: 'allowed_warning', utilization: 76 })
+  })
+
+  it('replaces the stored quota when a change event arrives', () => {
+    const seeded = reducer(initial, sseContextUsage({ slot: 's1', pct: 10, rate_limit: { status: 'allowed_warning', utilization: 76 } }))
+    const state = reducer(seeded, sseContextUsage({ slot: 's1', pct: 11, rate_limit: { status: 'rejected' } }))
+    expect(state.slotRateLimit['s1']).toEqual({ status: 'rejected' })
+  })
 })
 
 describe('sseSideResult — side conversation reducer', () => {

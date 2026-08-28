@@ -135,8 +135,6 @@ export default function KiroCrewCfgTab() {
   const [saveErr, setSaveErr] = useState('')
   const [rev, setRev] = useState(0)
 
-  const reqId = useRef(0)
-
   const patchMut = useMutation({
     mutationFn: ({ path, value }: { path: string; value: unknown }) => api.patchConfig(path, value),
     onSuccess: (updated) => { queryClient.setQueryData(['kirocrewConfig'], updated) },
@@ -148,11 +146,7 @@ export default function KiroCrewCfgTab() {
     },
   })
 
-  const save = (path: string, value: unknown) => {
-    ++reqId.current
-    patchMut.mutate({ path, value })
-  }
-
+  const save = (path: string, value: unknown) => patchMut.mutate({ path, value })
   if (err) return <Card><ErrorNotice message={err} askAgent /></Card>
   if (!cfg) return <Card><div className="skeleton h-40 rounded" /></Card>
 

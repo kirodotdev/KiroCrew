@@ -37,6 +37,7 @@ import os
 import shlex
 import sys
 import urllib.parse
+from collections.abc import Mapping, MutableMapping
 from typing import Any
 
 from kiro_crew import platform_compat
@@ -351,6 +352,41 @@ def resolve_serving_port() -> int:
             pass  # malformed value is no evidence; fall through to the client order
     port, _evidence_backed = resolve_client_port_ex(None)
     return port
+
+
+def pin_gateway_child_port(
+    env: MutableMapping[str, str],
+    *,
+    parent_env: Mapping[str, str] | None = None,
+) -> None:
+    """Pin a gateway-owned child's callback target to the port its parent serves.
+
+    A gateway can inherit ``KIROCREW_PORT`` from the shell that launched it and
+    then bind a different port through ``--port`` or ``--port auto``. Generic
+    client processes must continue to prefer that explicit target, but an ACP
+    child belongs to the gateway that spawned it: its authenticated MCP callbacks
+    must return to that parent, never to the inherited sibling.
+
+    Read bound truth from the parent environment rather than *env*, because ACP
+    registry and adapter environment overlays are merged into the child mapping
+    before this guard runs. Those overlays may configure the adapter, but they
+    cannot retarget Kiro Crew's control-plane callbacks.
+
+    When no validated bound port exists, leave *env* unchanged. This preserves
+    direct CLI and pre-listen spawn behavior, where ``KIROCREW_PORT`` remains the
+    only explicit target available.
+    """
+    source = os.environ if parent_env is None else parent_env
+    raw_bound = source.get("KIROCREW_BOUND_PORT", "")
+    try:
+        bound = int(raw_bound)
+    except (TypeError, ValueError):
+        return
+    if not 1 <= bound <= 65535:
+        return
+    value = str(bound)
+    env["KIROCREW_BOUND_PORT"] = value
+    env["KIROCREW_PORT"] = value
 
 
 # Subcommands that launch a long-running Kiro Crew *server* process which

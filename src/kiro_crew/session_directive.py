@@ -29,11 +29,13 @@ FORGERY: the marker payload is model-visible (it comes back as the tool result
 text), so a model *could* emit the literal bytes. The consumer defends by
 honouring a directive ONLY when the tool call it arrived under was recorded — by
 KiroCrew observing the tool CALL — as an MCP-served call whose CANONICAL name
-(``_meta.kiro.toolName``, with ``_meta.kiro.mcpServerName`` set) is one of
-:data:`DIRECTIVE_TOOLS`. That identity comes from kiro-cli's out-of-band ``_meta``
-channel, NOT the ``title`` (which is LLM-authored prose for shell tools — a shell
-command titled ``"monitor_start"`` whose stdout forges the marker must NOT be
-honoured). The gate fails closed when ``_meta`` identity is absent. The payload
+(``event.tool_name``, with ``event.mcp_server_name`` set) is one of
+:data:`DIRECTIVE_TOOLS`. That identity comes from kiro-cli's out-of-band
+``_meta.kiro`` channel, or — when ``_meta.kiro`` is absent and ``kind`` is
+present and not execute — from a spec-adapter ``mcp__<server>__<tool>`` title.
+A kiro-cli ``title`` is LLM-authored prose and is never parsed (a shell command
+titled ``"monitor_start"`` whose stdout forges the marker must NOT be honoured).
+The gate fails closed when neither identity channel is present. The payload
 never carries a session key (the session is supplied by the consumer), and the
 consumer additionally refuses native-sub-agent tool calls, which surface as flat
 events in the parent loop but have no independently bindable slot. A model
@@ -152,7 +154,7 @@ def decode(text: str, expected_tool: str) -> dict[str, Any] | None:
     idx = text.find(_SENTINEL)
     if idx < 0:
         return None
-    line = text[idx + len(_SENTINEL):].split("\n", 1)[0]
+    line = text[idx + len(_SENTINEL) :].split("\n", 1)[0]
     try:
         block = json.loads(line)
     except (ValueError, TypeError):
@@ -167,11 +169,13 @@ def match_tool(raw: str) -> str:
     """Return the directive-tool name a recorded CANONICAL tool name refers to,
     or ``""``.
 
-    ``raw`` MUST be the trusted ``_meta.kiro.toolName`` (NOT the LLM-authored
-    title). For an MCP tool that name is the bare tool name (``"monitor_start"``);
-    some transports server-qualify it as ``"<server>___<name>"``. Accept exact
-    membership plus that single ``___`` split — nothing wider, so a crafted
-    string cannot smuggle a directive name in as a path/namespace tail.
+    ``raw`` MUST be the trusted canonical tool name (NOT a kiro-cli LLM-authored
+    title): ``_meta.kiro.toolName``, or the tool half of a spec-adapter
+    ``mcp__<server>__<tool>`` title recovered by ``acp._dispatch``. For an MCP
+    tool that name is the bare tool name (``"monitor_start"``); some transports
+    server-qualify it as ``"<server>___<name>"``. Accept exact membership plus
+    that single ``___`` split — nothing wider, so a crafted string cannot
+    smuggle a directive name in as a path/namespace tail.
     """
     if not raw:
         return ""

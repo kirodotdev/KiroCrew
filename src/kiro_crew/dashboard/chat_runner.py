@@ -201,7 +201,7 @@ from kiro_crew.metrics.events import TURN_TIMEOUT_CAUSE, emit_counter
 from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.name_grant import Refusal, name_grant_refusal, pin_human_approval
 from kiro_crew.platform import redact_via_context
-from kiro_crew.providers.acp import is_claude_backend
+from kiro_crew.providers.acp import is_claude_backend, provider_label
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -214,6 +214,7 @@ from kiro_crew.providers.base import (
     EVENT_TOOL_CALL_UPDATE,
     EVENT_TOOL_RESULT,
     LLMEvent,
+    LLMProvider,
 )
 from kiro_crew.quick_prompts import QUICK_PROMPTS
 from kiro_crew.safety_override import safety_override
@@ -555,8 +556,8 @@ async def _steer_policy_notice(
     Opt-in by positive capability, never by harness identity: a backend outside
     ``ACP_BACKENDS_STEER`` has no ``_session/steer``, reports
     ``supports_steer`` False, and keeps the recovery-continuation behaviour
-    unchanged. ``getattr`` guards the attribute because the reject paths also run
-    against minimal test doubles.
+    unchanged. Only a conforming provider may advertise the capability; minimal
+    test doubles take the safe unsupported arm.
 
     Appends the notice to *notices* (the turn's pending list, settled later by the
     ``steering_consumed`` echo) and returns whether it was written. Best-effort:
@@ -567,7 +568,7 @@ async def _steer_policy_notice(
     :func:`build_refusal_steer_notice`. Every deny path that reaches a model runs
     through here, so a new one states its cause rather than inheriting "policy".
     """
-    if not getattr(client, "supports_steer", False):
+    if not isinstance(client, LLMProvider) or not client.supports_steer:
         return False
     notice = build_refusal_steer_notice(title, reason, cause=cause)
     if not notice:
@@ -1090,6 +1091,25 @@ def _context_usage_payload(slot_key: str, client: Any) -> dict[str, Any]:
         payload["window_tokens"] = window
     else:
         payload["reset"] = True
+    # Plan rate limit (claude-agent-acp's `_meta["_claude/rateLimit"]`), attached
+    # to this frame rather than given its own event: it rides the same
+    # usage_update the context counts come from, refreshes on the same cadence,
+    # and lands in the same popover. Omitted entirely when the provider reports
+    # none, so the key's PRESENCE is the frontend's "this harness has a quota"
+    # signal — an empty dict would render a header over no rows. The `reset`
+    # branch above does not clear it: a compaction changes the transcript, not
+    # the account's quota.
+    #
+    # Read through the ABC-declared accessor on a positive isinstance check, not
+    # a `hasattr` capability probe (H8): the method exists on every conforming
+    # provider with a None default, so a probe would be testing whether `client`
+    # is a provider at all — which is what the isinstance actually asks. The dict
+    # check then keeps an unspecced test double's Mock return (truthy, and not
+    # JSON-serializable) out of a live WS frame.
+    if isinstance(client, LLMProvider):
+        rate_limit = client.rate_limit_payload()
+        if isinstance(rate_limit, dict) and rate_limit:
+            payload["rate_limit"] = rate_limit
     return payload
 
 
@@ -4527,6 +4547,21 @@ class _AppAgentNotLoaded(Exception):
     """
 
 
+def _chat_turn_backend(state: object, slot: object) -> str:
+    """Return the live or configured backend without config I/O on the event loop."""
+
+    from kiro_crew.acp.types import ACP_BACKEND_KIRO
+
+    live_getter = getattr(state, "_live_slot_acp_client", None)
+    live_client = live_getter(slot) if callable(live_getter) else None
+    live_backend = getattr(live_client, "backend", None) if live_client is not None else None
+    if isinstance(live_backend, str):
+        return live_backend
+    sessions = getattr(state, "sessions", None)
+    selected_backend = getattr(sessions, "acp_backend", ACP_BACKEND_KIRO)
+    return selected_backend if isinstance(selected_backend, str) else ACP_BACKEND_KIRO
+
+
 async def _run_chat(
     state: DashboardState,
     slot: _ChatSlot,
@@ -4946,7 +4981,9 @@ async def _run_chat(
 
     # ── Slash commands: detect early, before session acquisition ──
     first_word = message.split()[0] if message.strip() else ""
-    _is_cc_provider = KiroCrewConfig.load().agent.provider == "claude_code"
+    from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
+
+    _is_cc_provider = _chat_turn_backend(state, slot) == ACP_BACKEND_CLAUDE
     # Named rather than inlined so the quick-prompt exception is one testable rule
     # instead of a condition only reachable by driving this whole function: a macro
     # must NOT be forwarded to the harness as a command.
@@ -5286,6 +5323,10 @@ async def _run_chat(
             reasoning_effort_override=slot.reasoning_effort or None,
         )
         _acquired = True
+        # agent.provider is intentionally single-valued ("acp"). Context,
+        # branding, resume metadata, and usage attribution need the concrete
+        # harness that actually serves this session.
+        provider_name = provider_label(client)
         # Member activity pointer — once per SESSION, not per turn: the log
         # answers "which sessions did this member take part in", so a per-turn
         # append would inflate every count taken from it. `slot.agent` is the
@@ -5751,7 +5792,7 @@ async def _run_chat(
                 compressed_history=compressed,
                 mode=slot.mode,
                 blocks_reads=slot.blocks_reads,
-                provider_type=cfg.agent.provider,
+                provider_type=provider_name,
                 runtime_source="dashboard",
                 exclude_last_n=1,
                 folder_path=folder_path,
@@ -6416,9 +6457,11 @@ async def _run_chat(
                 # tool's own return over the MCP pipe — this does NOT rewrite the
                 # model's tool result, which is why the tool's own message is
                 # written to not over-claim the (consumer-applied) effect.
-                # Gated on _pending_dir_tool — the CANONICAL _meta.kiro tool name
-                # for a genuine MCP call, NOT model-authored result/title text —
-                # so a forged marker under a shell/non-directive tool is ignored.
+                # Gated on _pending_dir_tool — the CANONICAL tool name for a
+                # genuine MCP call (kiro ``_meta.kiro`` or a non-shell
+                # spec-adapter ``mcp__`` title), NOT model-authored result
+                # text — so a forged marker under a shell/non-directive tool
+                # is ignored.
                 # A native sub-agent's tool calls DO surface here (flat events
                 # tagged in _native_tc_card) but have no independently bindable
                 # slot, so they are refused rather than applied to the parent —
@@ -6664,6 +6707,7 @@ async def _run_chat(
                         is_shell=event.is_shell,
                         mcp_server_name=event.mcp_server_name,
                         mcp_tool_name=event.tool_name,
+                        mcp_identity_ambiguous=event.mcp_identity_ambiguous,
                         # The RESOLVED agent (what actually served the turn), not
                         # slot.agent — that is an alias resolve_agent_bindings
                         # maps to a concrete kiro agent, so it must never decide
@@ -7889,10 +7933,7 @@ async def _run_chat(
                 # unattributable turn stays "" and the footer omits the field.
                 _turn_model = read_turn_model(client)
                 if _u.input_tokens or _u.output_tokens or _u.credits:
-                    try:
-                        _provider_name = cfg.agent.provider  # type: ignore[possibly-undefined]
-                    except (NameError, AttributeError):
-                        _provider_name = ""
+                    _provider_name = provider_label(client)
                     # Late backfill: CC reports model only via the `init`
                     # system event which arrives after the run starts, so
                     # slot.model may still be empty here even though the

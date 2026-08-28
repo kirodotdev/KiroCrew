@@ -86,7 +86,7 @@ describe('WorkflowLibraryTab', () => {
   it('switches between the saved library and unified run history', async () => {
     renderTab()
 
-    await screen.findByText('Debug Project')
+    await screen.findByRole('button', { name: /Debug Project/ })
     fireEvent.click(
       screen.getByRole('button', { name: i18nT('pages.hooksPage.runs') }),
     )
@@ -98,7 +98,11 @@ describe('WorkflowLibraryTab', () => {
   it('shows saved workflows, slash invocation, and lineage', async () => {
     renderTab()
 
-    expect(await screen.findByText('Debug Project')).toBeInTheDocument()
+    expect(
+      await screen.findByLabelText(
+        i18nT('pages.overview.workflowLibrary.source'),
+      ),
+    ).toBeInTheDocument()
     expect(screen.getAllByText('/workflow debug-project')).toHaveLength(2)
     expect(screen.getByText(/wfd_parent/)).toBeInTheDocument()
     expect(
@@ -194,7 +198,7 @@ describe('WorkflowLibraryTab', () => {
     )
     renderTab()
 
-    await screen.findByText('Debug Project')
+    await screen.findByRole('button', { name: /Debug Project/ })
     fireEvent.click(
       screen.getByRole('button', {
         name: i18nT('pages.overview.workflowLibrary.new_workflow'),
@@ -230,7 +234,9 @@ describe('WorkflowLibraryTab', () => {
 
   it('updates with the selected definition revision as the precondition', async () => {
     renderTab()
-    await screen.findByText('Debug Project')
+    await screen.findByLabelText(
+      i18nT('pages.overview.workflowLibrary.source'),
+    )
     fireEvent.change(
       screen.getByLabelText(i18nT('pages.overview.workflowLibrary.source')),
       {
@@ -265,7 +271,9 @@ describe('WorkflowLibraryTab', () => {
       }),
     )
     renderTab()
-    await screen.findByText('Debug Project')
+    await screen.findByLabelText(
+      i18nT('pages.overview.workflowLibrary.source'),
+    )
     const source = screen.getByLabelText(
       i18nT('pages.overview.workflowLibrary.source'),
     )
@@ -312,7 +320,9 @@ describe('WorkflowLibraryTab', () => {
 
   it('keeps the revision the draft was based on after a background refetch', async () => {
     const { client } = renderTab()
-    await screen.findByText('Debug Project')
+    await screen.findByLabelText(
+      i18nT('pages.overview.workflowLibrary.source'),
+    )
     fireEvent.change(
       screen.getByLabelText(i18nT('pages.overview.workflowLibrary.source')),
       {
@@ -356,7 +366,9 @@ describe('WorkflowLibraryTab', () => {
       Object.assign(new Error('revision conflict'), { status: 409 }),
     )
     renderTab()
-    await screen.findByText('Debug Project')
+    await screen.findByLabelText(
+      i18nT('pages.overview.workflowLibrary.source'),
+    )
     fireEvent.change(
       screen.getByLabelText(i18nT('pages.overview.workflowLibrary.source')),
       {

@@ -111,6 +111,7 @@ const FALLBACK_COMMANDS: SlashCommand[] = FALLBACK_COMMAND_NAMES.map(name => ({ 
 
 interface Props {
   input: string
+  slotId?: string | null
   anchorRef: React.RefObject<HTMLElement | null>
   onSelect: (command: string) => void
   onClose: () => void
@@ -142,10 +143,10 @@ const FRONTEND_COMMAND_NAMES = ['/kb', '/onboarding', '/plain'] as const
 
 const FRONTEND_COMMANDS: SlashCommand[] = FRONTEND_COMMAND_NAMES.map(name => ({ name }))
 
-export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, open = true, sendOnEnter = 'enter' }: Props) {
+export default function SlashCommandMenu({ input, slotId, anchorRef, onSelect, onClose, open = true, sendOnEnter = 'enter' }: Props) {
   const { data: apiCommands = FALLBACK_COMMANDS, isFetching } = useQuery<SlashCommand[]>({
-    queryKey: ['slash-commands'],
-    queryFn: () => api.slashCommands(),
+    queryKey: ['slash-commands', slotId ?? ''],
+    queryFn: () => api.slashCommands(slotId ? { slot: slotId } : undefined),
     enabled: typeof api.slashCommands === 'function',
   })
   const commands = useMemo(() => {

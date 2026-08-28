@@ -16,7 +16,9 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew import agent_state, model_registry
+from kiro_crew.acp.backends import Dialect, dialect_of, selectable_ids
 from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
+from kiro_crew.acp.types import ACP_BACKENDS_AUTO_MODEL
 from kiro_crew.agent import (
     AGENT_FILENAME,
     clear_model_pin,
@@ -65,6 +67,7 @@ from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor, maintenance_executor, subprocess_executor
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.providers.base import LLMProvider
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
     cgroup_scope_argv,
@@ -432,7 +435,9 @@ async def api_agent_config(request: web.Request) -> web.Response:
             # other JSON type (list, dict, number) would flow into the sidecar
             # helper as a dict key and crash the endpoint with a 500.
             raw_name = config.get("name")
-            name = raw_name if isinstance(raw_name, str) and raw_name.strip() else installed_path.stem
+            name = (
+                raw_name if isinstance(raw_name, str) and raw_name.strip() else installed_path.stem
+            )
 
             # Governance floor on the WHOLE-object write path: this handler
             # persists the request's config verbatim, so a dashboard PUT could
@@ -597,6 +602,9 @@ async def api_default_agent(request: web.Request) -> web.Response:
 async def api_config_schema(request: web.Request) -> web.Response:
     """GET /api/config/schema — return config schema entries."""
     entries = SCHEMA_REGISTRY
+    # Registry adapters are dynamic and cache-backed. Resolve them at request
+    # time, off the event loop; importing schema metadata must remain pure.
+    acp_backend_values = sorted(await asyncio.to_thread(selectable_ids))
 
     # Filter by tags (comma-separated, intersection)
     tags_param = request.query.get("tags", "").strip()
@@ -614,6 +622,8 @@ async def api_config_schema(request: web.Request) -> web.Response:
     result = []
     for entry in entries:
         d = config_entry_to_dict(entry)
+        if entry.path == "agent.acp_backend":
+            d["enumValues"] = acp_backend_values
         if entry.sensitive or dataclasses.is_dataclass(d.get("defaultValue")):
             d["defaultValue"] = None
         result.append(d)
@@ -976,6 +986,7 @@ async def api_agents_installed(request: web.Request) -> web.Response:
     (``resolve_agent_bindings(..., project_dir=...)``), spawn validation, and
     Slack — see ``agent_discovery.project_agent_names``.
     """
+
     # list_agents() does glob + per-file resolve(strict=True) + read_bytes +
     # json.loads over ~/.kiro/agents — blocking filesystem work that, on a large
     # agents dir (network home, many project-registry agents), can stall the
@@ -1047,11 +1058,8 @@ def _advertised_cc_models(request: web.Request) -> list[dict]:
     except (KeyError, AttributeError):
         return []
     for provider in providers:
-        getter = getattr(provider, "available_models", None)
-        if not callable(getter):
-            continue
         try:
-            advertised = getter()
+            advertised = provider.available_models()
         except Exception:
             continue
         if advertised:
@@ -1111,11 +1119,8 @@ def _entitled_kiro_models(request: web.Request, models: list[dict]) -> list[dict
     # entitlements, i.e. keep offering exactly the models this narrowing exists to
     # hide. The most recently started session carries the most recent snapshot.
     for provider in reversed(providers):
-        getter = getattr(provider, "available_models", None)
-        if not callable(getter):
-            continue
         try:
-            ids = advertised_model_ids(getter())
+            ids = advertised_model_ids(provider.available_models())
         except Exception:
             continue
         if ids:
@@ -1232,8 +1237,11 @@ def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]
             # After "auto", never before it: "auto" is the configured default in
             # the general case and leads the list.
             merged.insert(
-                1 if merged and _normalize_model_key(merged[0].get("model_name", "")) == "auto"
-                else 0,
+                (
+                    1
+                    if merged and _normalize_model_key(merged[0].get("model_name", "")) == "auto"
+                    else 0
+                ),
                 {
                     "model_name": canonical_default,
                     "display_name": canonical_default,
@@ -1271,6 +1279,159 @@ def _wrap_list_models_argv(argv: list[str]) -> tuple[list[str], str | None]:
     return wrap_argv(argv, mode=configured_sandbox_mode(), is_kiro_cli=True)
 
 
+def _configured_acp_backend() -> str:
+    """The configured non-default ACP backend, or ``""`` for kiro-cli.
+
+    Fails closed to ``""``: an unreadable config keeps the kiro-cli path, which is
+    the behaviour that exists today.
+    """
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        backend = KiroCrewConfig.load().agent.acp_backend
+        return backend if isinstance(backend, str) else ""
+    except Exception:
+        return ""
+
+
+def _provider_backend(provider: LLMProvider | None) -> str | None:
+    """ACP backend a live provider reports through the H14 contract."""
+    if provider is None:
+        return None
+    try:
+        backend = provider.backend
+    except (AttributeError, TypeError):
+        return None
+    return backend if isinstance(backend, str) else None
+
+
+def _models_from_provider(provider: LLMProvider) -> list[dict[str, str]]:
+    """Verbatim advertised rows from one live provider, or ``[]``."""
+    try:
+        rows = provider.available_models()
+    except Exception:
+        return []
+    models: list[dict[str, str]] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        model_id = row.get("modelId") or row.get("model_name") or ""
+        if not isinstance(model_id, str) or not model_id:
+            continue
+        models.append(
+            {
+                "model_name": model_id,
+                "display_name": str(row.get("name") or model_id),
+                "description": str(row.get("description") or ""),
+            }
+        )
+    return models
+
+
+def _models_list_scope(request: web.Request) -> tuple[str | None, LLMProvider | None]:
+    """Return ``(backend, scoped_provider_or_None)`` for GET /api/models.
+
+    A ``?slot=`` with a live provider uses that session's harness — an open chat
+    must not list the *next* harness's catalog. A slot that has not spawned yet,
+    or a request with no slot (settings / new-session pickers), uses the
+    configured default.
+    """
+    slot = ""
+    try:
+        raw_slot = request.query.get("slot")
+        slot = raw_slot.strip() if isinstance(raw_slot, str) else ""
+    except Exception:
+        slot = ""
+    if slot:
+        try:
+            state = request.app.get("state")
+            sessions = getattr(state, "sessions", None)
+            getter = getattr(sessions, "get_provider", None)
+            scoped = getter(_history_key_for(slot)) if callable(getter) else None
+        except Exception:
+            scoped = None
+        if scoped is not None:
+            return _provider_backend(scoped), scoped
+    return _configured_acp_backend(), None
+
+
+def _advertised_alt_backend_models(
+    request: web.Request, *, backend: str | None = None
+) -> list[dict[str, str]]:
+    """Models a live session's backend advertised, newest session first.
+
+    The ONLY correct source on a non-kiro backend: ids live in that backend's own
+    namespace, so neither the model registry nor ``kiro-cli --list-models`` can
+    supply them. Ids are passed through VERBATIM — a Codex row is spelled
+    ``<model>[<effort>]`` and rewriting it would produce something the adapter
+    never advertised.
+
+    Newest first because a just-created session reflects the operator's current
+    configuration; an older one may predate a backend switch. Returns the first
+    non-empty list rather than merging, since merging two backends' namespaces
+    would offer ids the active backend rejects.
+
+    ``backend`` restricts the walk to providers driving that harness. Unfiltered
+    (``None``) keeps the original newest-any-session behaviour for callers that
+    have not named a namespace.
+    """
+    state = request.app.get("state")
+    sessions = getattr(state, "sessions", None)
+    active = getattr(sessions, "active_providers", None)
+    if not callable(active):
+        return []
+    try:
+        providers = list(active())
+    except Exception:
+        logger.debug("Could not enumerate active providers", exc_info=True)
+        return []
+
+    for provider in reversed(providers):
+        if backend is not None and _provider_backend(provider) != backend:
+            continue
+        models = _models_from_provider(provider)
+        if models:
+            return models
+    return []
+
+
+def _effort_levels_for(request: web.Request) -> list[str]:
+    """Reasoning-effort levels the relevant harness actually advertised.
+
+    A live adapter session that reported none returns ``[]`` — do not substitute
+    kiro's process-global union. The kiro family (``Dialect.KIRO``, including
+    KAS) still falls through to that union so the first-class path is unchanged.
+    """
+    slot = ""
+    try:
+        raw_slot = request.query.get("slot")
+        slot = raw_slot.strip() if isinstance(raw_slot, str) else ""
+    except Exception:
+        slot = ""
+    if slot:
+        try:
+            state = request.app.get("state")
+            sessions = getattr(state, "sessions", None)
+            getter = getattr(sessions, "get_provider", None)
+            provider = getter(_history_key_for(slot)) if callable(getter) else None
+        except Exception:
+            provider = None
+        if provider is None:
+            return []
+        levels = provider.get_valid_effort_levels()
+        if levels:
+            return list(levels)
+        live_backend = _provider_backend(provider)
+        if live_backend is None or dialect_of(live_backend) is not Dialect.KIRO:
+            return []
+        return get_reasoning_effort_ordered()
+
+    backend = _configured_acp_backend()
+    if backend and dialect_of(backend) is not Dialect.KIRO:
+        return []
+    return get_reasoning_effort_ordered()
+
+
 async def api_models(request: web.Request) -> web.Response:
     """GET /api/models — list available models from the live kiro-cli ACP session."""
     # Signed-out gateways must never reach the spawn below. kiro-cli auto-opens
@@ -1284,6 +1445,70 @@ async def api_models(request: web.Request) -> web.Response:
     blocked = await reject_if_kiro_unverified(request)
     if blocked is not None:
         return blocked
+
+    # Backend scope, checked BEFORE the kiro-cli spawn: on another ACP backend
+    # that subprocess is both impossible (the binary may be absent) and wrong
+    # (its ids are kiro-namespace and the other backend rejects them). The
+    # advertised list from a live session is the only correct source there.
+    #
+    # ``?slot=`` follows the live session when one exists, so an open chat does
+    # not list the *next* harness's catalog after a default-backend save. The
+    # configured default is used only when no live provider is bound (settings,
+    # a new tab that has not spawned yet). Off the loop: the no-provider path
+    # reads config.json.
+    _alt_backend, scope_provider = await asyncio.to_thread(_models_list_scope, request)
+    if scope_provider is not None and _alt_backend is None:
+        return web.json_response(
+            {
+                "error": "live provider did not identify its ACP backend",
+                "code": "acp_provider_backend_unknown",
+            },
+            status=503,
+        )
+    if _alt_backend:
+        advertised = (
+            _models_from_provider(scope_provider)
+            if scope_provider is not None
+            else _advertised_alt_backend_models(request, backend=_alt_backend)
+        )
+        if not advertised:
+            # Degraded, NOT a genuine "zero models" answer — no session has
+            # advertised yet. Same keep-polling contract as the branches below;
+            # a cached [] renders an empty picker that only a refresh recovers.
+            #
+            # `backend` is reported on the FAILURE too, not just on success: the
+            # client caches model lists, and a cache is only safe to reuse for
+            # the namespace it was written for. Naming the backend here lets a
+            # degraded answer still identify the namespace, so the client can
+            # refuse a cache belonging to a different one.
+            return web.json_response(
+                {
+                    "error": "no live ACP session has advertised its models yet",
+                    "code": "acp_backend_models_unavailable",
+                    "backend": _alt_backend,
+                    "serves_auto": _alt_backend in ACP_BACKENDS_AUTO_MODEL,
+                },
+                status=503,
+            )
+        # The kiro path below answers with a BARE ARRAY, so the object shape here
+        # is itself the discriminator for "not kiro"; `backend` names which one.
+        #
+        # `serves_auto` travels on the SUCCESS and the FAILURE alike, for the same
+        # reason `backend` does. It answers a question the model list itself
+        # cannot: whether the picker may synthesize an "auto" row when it has no
+        # live list to show. That is exactly the degraded state, so a flag sent
+        # only on success would be absent precisely when it is needed. Reported
+        # from ACP_BACKENDS_AUTO_MODEL so the frontend never mirrors the
+        # membership -- a backend added to that set is picked up here with no
+        # client change.
+        return web.json_response(
+            {
+                "models": advertised,
+                "backend": _alt_backend,
+                "serves_auto": _alt_backend in ACP_BACKENDS_AUTO_MODEL,
+            }
+        )
+
     kiro_bin: str | None = None
     try:
         from kiro_crew.acp.client import (  # noqa: F811
@@ -1453,32 +1678,20 @@ async def api_effort_levels(request: web.Request) -> web.Response:
     a model switch is reflected immediately. Falls back to the process-global
     ordered list (cold start / no live provider / provider without the getter).
     """
-    slot = request.query.get("slot")
-    if slot:
-        try:
-            state: DashboardState = request.app["state"]
-            provider = state.sessions.get_provider(_history_key_for(slot))
-            getter = getattr(provider, "get_valid_effort_levels", None) if provider else None
-            if callable(getter):
-                levels = getter()
-                if levels:
-                    return web.json_response(levels)
-        except (KeyError, AttributeError):
-            pass
-    return web.json_response(get_reasoning_effort_ordered())
+    return web.json_response(await asyncio.to_thread(_effort_levels_for, request))
 
 
 async def api_slash_commands(request: web.Request) -> web.Response:
     """GET /api/slash-commands — list available slash commands (provider-aware)."""
-    cfg = KiroCrewConfig.load()
-    if cfg.agent.provider == "claude_code":
-        state: DashboardState = request.app["state"]
-        cc_commands: list[str] = []
-        for provider in state.sessions.active_providers():
-            cmds = getattr(provider, "_slash_commands", [])
-            if cmds:
-                cc_commands = cmds
-                break
+    from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
+
+    backend, scoped_provider = await asyncio.to_thread(_models_list_scope, request)
+    if backend == ACP_BACKEND_CLAUDE:
+        cc_commands = (
+            list(getattr(scoped_provider, "_slash_commands", []))
+            if scoped_provider is not None
+            else []
+        )
         if not cc_commands:
             cc_commands = [
                 "compact",
@@ -2150,9 +2363,7 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
             return web.json_response({"error": f"Agent '{name}' already exists"}, status=409)
         model_reason = _model_pin_rejected(model, request, cfg.agent.provider)
         if model_reason:
-            return web.json_response(
-                {"error": model_reason, "code": "invalid_model"}, status=400
-            )
+            return web.json_response({"error": model_reason, "code": "invalid_model"}, status=400)
         cfg.agents[name] = KiroCrewAgentConfig(
             kiro_agent=kiro_agent,
             workspace=body.get("workspace", "default"),

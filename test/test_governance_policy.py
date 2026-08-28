@@ -38,6 +38,7 @@ from kiro_crew.platform.governance import (
     ScopeSpec,
     assert_governance_floor,
     assert_policy_signature_satisfied,
+    classify_tool_title,
     compose_profiles,
     deny_all_profile,
     load_security_policy,
@@ -150,14 +151,34 @@ class TestMcpMatcher:
         # the LAST '__' so the whole server name is preserved — else a
         # server-level deny never matches and the tool is wrongly permitted.
         assert (
-            mcp_title_to_ref("mcp__npm__playwright_mcp__browser_click")
+            mcp_title_to_ref(
+                "mcp__npm__playwright_mcp__browser_click",
+                server_names={"npm__playwright_mcp"},
+            )
             == "@npm__playwright_mcp/browser_click"
         )
 
     def test_double_underscore_server_deny_matches(self):
         r = ScopedRuleset(mode=MODE_DENY, deny=("@npm__playwright_mcp",), matcher="mcp")
-        ref = mcp_title_to_ref("mcp__npm__playwright_mcp__browser_click")
+        ref = mcp_title_to_ref(
+            "mcp__npm__playwright_mcp__browser_click",
+            server_names={"npm__playwright_mcp"},
+        )
         assert not r.permits(ref).permitted
+
+    def test_multi_segment_title_without_roster_keeps_a_governed_identity(self):
+        assert mcp_title_to_ref("mcp__github__repo__delete") == "@github__repo/delete"
+
+    def test_multi_segment_auto_approval_probe_stays_governed(self):
+        assert classify_tool_title("mcp__npm__playwright_mcp__probe") == (
+            ("mcp", "@npm__playwright_mcp/probe"),
+        )
+
+    def test_roster_preserves_double_underscore_tool_name(self):
+        assert (
+            mcp_title_to_ref("mcp__github__repo__delete", server_names={"github"})
+            == "@github/repo__delete"
+        )
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -306,9 +327,7 @@ class TestLoader:
     def test_absent_returns_none(self, monkeypatch, tmp_path):
         monkeypatch.delenv("KIROCREW_SECURITY_POLICY", raising=False)
         _nope = tmp_path / "nope.json"
-        monkeypatch.setattr(
-            "kiro_crew.platform.governance._policy_home_path", lambda: _nope
-        )
+        monkeypatch.setattr("kiro_crew.platform.governance._policy_home_path", lambda: _nope)
         assert load_security_policy() is None
 
     def test_env_path_wins(self, monkeypatch, tmp_path):
@@ -335,18 +354,14 @@ class TestLoader:
         monkeypatch.delenv("KIROCREW_SECURITY_POLICY", raising=False)
         home = tmp_path / "security_policy.json"
         home.write_text(json.dumps(_policy_body()))
-        monkeypatch.setattr(
-            "kiro_crew.platform.governance._policy_home_path", lambda: home
-        )
+        monkeypatch.setattr("kiro_crew.platform.governance._policy_home_path", lambda: home)
         ceiling = load_security_policy()
         assert ceiling is not None
 
     def test_bundled_loader_precedence(self, monkeypatch, tmp_path):
         monkeypatch.delenv("KIROCREW_SECURITY_POLICY", raising=False)
         _nope = tmp_path / "nope.json"
-        monkeypatch.setattr(
-            "kiro_crew.platform.governance._policy_home_path", lambda: _nope
-        )
+        monkeypatch.setattr("kiro_crew.platform.governance._policy_home_path", lambda: _nope)
         called = {}
 
         def bundled():
@@ -927,7 +942,9 @@ class TestSchemaStrictness:
             ScopedMap.from_dict(
                 {
                     "members": {"mode": "allow", "allow": ["slack"]},
-                    "posture": {"discord": {"allowed_guild_ids": {"mode": "allow", "allow": ["G"]}}},
+                    "posture": {
+                        "discord": {"allowed_guild_ids": {"mode": "allow", "allow": ["G"]}}
+                    },
                 },
                 allow_posture=True,
             )
@@ -936,7 +953,9 @@ class TestSchemaStrictness:
         m = ScopedMap.from_dict(
             {
                 "members": {"mode": "allow", "allow": ["slack"]},
-                "posture": {"slack": {"allowed_enterprise_ids": {"mode": "allow", "allow": ["E1"]}}},
+                "posture": {
+                    "slack": {"allowed_enterprise_ids": {"mode": "allow", "allow": ["E1"]}}
+                },
             },
             allow_posture=True,
         )
@@ -1081,9 +1100,7 @@ class TestPolicySignatureStates:
 
     def test_non_ascii_signature_fails_closed_when_required(self, monkeypatch, tmp_path):
         """...and with the opt-in ON it must ABORT, not degrade to ungoverned."""
-        body = _policy_body(
-            identity={"issuer": "fleet-control", "signature": "tamper\u2013ed"}
-        )
+        body = _policy_body(identity={"issuer": "fleet-control", "signature": "tamper\u2013ed"})
         p = tmp_path / "policy.json"
         p.write_text(json.dumps(body))
         monkeypatch.setenv("KIROCREW_SECURITY_POLICY", str(p))
@@ -1279,9 +1296,7 @@ class TestPolicySignatureOptIn:
                 bundled_loader=lambda: _policy_body(identity={"issuer": "fleet-control"})
             )
         # A correctly-signed bundled policy verifies and loads.
-        signed = _sign_policy(
-            _policy_body(identity={"issuer": "fleet-control"}), "trust-key"
-        )
+        signed = _sign_policy(_policy_body(identity={"issuer": "fleet-control"}), "trust-key")
         ceiling = load_security_policy(bundled_loader=lambda: signed)
         assert ceiling is not None
         assert ceiling.signature_state == SIGNATURE_VERIFIED
@@ -1307,8 +1322,11 @@ class TestPolicySignatureOptIn:
             "kiro_crew.platform.governance._policy_home_path", lambda: tmp_path / "nope.json"
         )
         adm = tmp_path / "admission_policy.json"
-        adm.write_text(json.dumps({"require_policy_signature": True,
-                                   "trust_keys": {"fleet-control": "trust-key"}}))
+        adm.write_text(
+            json.dumps(
+                {"require_policy_signature": True, "trust_keys": {"fleet-control": "trust-key"}}
+            )
+        )
         monkeypatch.setenv("KIROCREW_ADMISSION_POLICY", str(adm))
         assert load_security_policy() is None  # core's loader-less pass
         assert load_security_policy(bundled_loader=lambda: None) is None  # edition's pass
@@ -1322,8 +1340,11 @@ class TestPolicySignatureAbsenceGate:
         # bypasses the requirement precisely when it matters (a mandated-signature
         # fleet that lost or never shipped its policy). Boot must abort instead.
         adm = tmp_path / "admission_policy.json"
-        adm.write_text(json.dumps({"require_policy_signature": True,
-                                   "trust_keys": {"fleet-control": "trust-key"}}))
+        adm.write_text(
+            json.dumps(
+                {"require_policy_signature": True, "trust_keys": {"fleet-control": "trust-key"}}
+            )
+        )
         monkeypatch.setenv("KIROCREW_ADMISSION_POLICY", str(adm))
         with pytest.raises(PlatformCompositionError):
             assert_policy_signature_satisfied(None)
@@ -1348,13 +1369,9 @@ class TestPolicySignatureAbsenceGate:
     def test_verified_ceiling_satisfies_the_gate(self, monkeypatch, tmp_path):
         _real_trust_file(monkeypatch, tmp_path, require=True, keys={"fleet-control": "trust-key"})
         signed = _sign_policy(_policy_body(identity={"issuer": "fleet-control"}), "trust-key")
-        assert_policy_signature_satisfied(
-            parse_policy(signed, signature_state=SIGNATURE_VERIFIED)
-        )
+        assert_policy_signature_satisfied(parse_policy(signed, signature_state=SIGNATURE_VERIFIED))
 
-    def test_present_but_unverified_ceiling_does_NOT_satisfy_the_gate(
-        self, monkeypatch, tmp_path
-    ):
+    def test_present_but_unverified_ceiling_does_NOT_satisfy_the_gate(self, monkeypatch, tmp_path):
         # Presence alone is not enough — the gate is the enforcement point for the
         # verdict too, now that load time only computes it. A tampered or unsigned
         # ceiling that survived precedence must abort here.
@@ -1384,9 +1401,7 @@ class TestPolicySignatureAbsenceGate:
     @pytest.mark.parametrize(
         "shape", ['{ "mode": "open",  <-- typo', "[]", "null", '"a string"', "123"]
     )
-    def test_a_broken_trust_root_reads_as_no_optin_by_design(
-        self, monkeypatch, tmp_path, shape
-    ):
+    def test_a_broken_trust_root_reads_as_no_optin_by_design(self, monkeypatch, tmp_path, shape):
         """A corrupt/malformed admission file does NOT fail closed. Deliberate.
 
         An attacker who can write this file is outside the policy-signature threat
@@ -1443,9 +1458,7 @@ class TestPolicySignatureAbsenceGate:
         # second bespoke file, and NOT from the security policy itself.
         adm = tmp_path / "admission_policy.json"
         adm.write_text(
-            json.dumps(
-                {"require_policy_signature": True, "trust_keys": {"fleet-control": "k"}}
-            )
+            json.dumps({"require_policy_signature": True, "trust_keys": {"fleet-control": "k"}})
         )
         monkeypatch.setenv("KIROCREW_ADMISSION_POLICY", str(adm))
         from kiro_crew.platform.governance import _policy_trust_settings

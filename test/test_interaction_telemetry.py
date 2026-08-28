@@ -263,6 +263,9 @@ class _FakeSessionManager:
     def has_session(self, key):
         return False
 
+    def is_busy(self, key):
+        return False
+
     def get_provider(self, key):
         return None
 

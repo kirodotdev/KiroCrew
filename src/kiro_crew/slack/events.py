@@ -75,10 +75,13 @@ from kiro_crew.slack.files import (
     voice_memo_notes,
 )
 from kiro_crew.slack.handler import (
+    _FOLLOW_UP_ACK_REACTION,
     APPROVAL_AUTO,
     APPROVAL_INTERACTIVE,
+    dequeue_busy_followup,
     describe_grant_lifetime,
     handle_message,
+    inject_busy_followup,
     is_allowed_user,
     is_owner,
     is_yolo_mode,
@@ -406,8 +409,7 @@ async def _handle_yolo(
         if orch.dashboard_state:
             orch.dashboard_state.push_slots_update()
         await respond(
-            f"🟢 YOLO mode *ON* ({describe_grant_lifetime()})"
-            f" — all tools auto-approved."
+            f"🟢 YOLO mode *ON* ({describe_grant_lifetime()})" f" — all tools auto-approved."
         )
     elif arg == "off":
         from kiro_crew.slack.handler import (
@@ -701,16 +703,22 @@ async def _handle_restart(
     """Restart the gateway process (owner-only, requires systemd supervisor)."""
     if not is_owner(caller_id):
         sel().log_tool_invocation(
-            session_key="", source="slack", tool_name="/kirocrew restart",
-            outcome="denied", resources=f"user={caller_id}",
+            session_key="",
+            source="slack",
+            tool_name="/kirocrew restart",
+            outcome="denied",
+            resources=f"user={caller_id}",
         )
         await respond("⛔ Only the owner can restart the gateway.")
         return
 
     if not os.environ.get("INVOCATION_ID"):
         sel().log_tool_invocation(
-            session_key="", source="slack", tool_name="/kirocrew restart",
-            outcome="denied", resources=f"user={caller_id},reason=no_supervisor",
+            session_key="",
+            source="slack",
+            tool_name="/kirocrew restart",
+            outcome="denied",
+            resources=f"user={caller_id},reason=no_supervisor",
         )
         await respond(
             "⛔ Restart requires a process supervisor (systemd). "
@@ -719,8 +727,11 @@ async def _handle_restart(
         return
 
     sel().log_tool_invocation(
-        session_key="", source="slack", tool_name="/kirocrew restart",
-        outcome="approved", resources=f"user={caller_id}",
+        session_key="",
+        source="slack",
+        tool_name="/kirocrew restart",
+        outcome="approved",
+        resources=f"user={caller_id}",
     )
     try:
         await respond("♻️ Restarting gateway…")
@@ -760,9 +771,7 @@ async def _handle_restart(
             # NOT catch CancelledError (propagates to keep this 5s deadline
             # honest); a still-held lock from a pathological overrun is recovered
             # by the orphan reaper on next startup.
-            await asyncio.wait_for(
-                orch.sessions.close_all(drain_timeout=2.0), timeout=5.0
-            )
+            await asyncio.wait_for(orch.sessions.close_all(drain_timeout=2.0), timeout=5.0)
     except Exception:
         logger.debug("Session cleanup before restart failed", exc_info=True)
     # Flush the SEL audit queue: logging is async (background writer thread +
@@ -1000,9 +1009,7 @@ async def _publish_home_tab(orch: GatewayOrchestrator, user_id: str) -> None:
             # list (e.g. 100+ skills) would overflow and make views.publish fail
             # with invalid_arguments, breaking the whole Home tab. Mirrors the
             # cron block's jobs[:15] guard below.
-            def _capped_names_section(
-                label: str, names: list[str], budget: int = 2900
-            ) -> dict:
+            def _capped_names_section(label: str, names: list[str], budget: int = 2900) -> dict:
                 total = len(names)
                 prefix = f"*{label} ({total}):* "
                 suffix_room = 24  # reserve for "  _…and N more_"
@@ -1022,13 +1029,9 @@ async def _publish_home_tab(orch: GatewayOrchestrator, user_id: str) -> None:
                 return {"type": "section", "text": {"type": "mrkdwn", "text": line}}
 
             if servers:
-                blocks.append(
-                    _capped_names_section("MCP Integrations", [s.name for s in servers])
-                )
+                blocks.append(_capped_names_section("MCP Integrations", [s.name for s in servers]))
             if skills:
-                blocks.append(
-                    _capped_names_section("Skills", [s["name"] for s in skills])
-                )
+                blocks.append(_capped_names_section("Skills", [s["name"] for s in skills]))
             if not servers and not skills:
                 blocks.append(
                     {
@@ -1409,7 +1412,9 @@ async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
     user_match = re.search(r"<@([A-Z0-9]+)(?:\|([^>]+))?>", cmd_text)
     if user_match:
         _spawn_tracked(
-            _respond("⛔ Multi-user access is disabled. Only the owner can use Kiro Crew via Slack.")
+            _respond(
+                "⛔ Multi-user access is disabled. Only the owner can use Kiro Crew via Slack."
+            )
         )
         return
 
@@ -1418,9 +1423,7 @@ async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
     if channel_match:
         channel_id = channel_match.group(1)
         channel_name = channel_match.group(2) or "Secret"
-        _spawn_tracked(
-            prompt_track_channel(orch.slack, orch._owner_id, channel_id, channel_name)
-        )
+        _spawn_tracked(prompt_track_channel(orch.slack, orch._owner_id, channel_id, channel_name))
         _spawn_tracked(_respond(f"📨 Track request sent for #{channel_name or channel_id}."))
         return
 
@@ -1790,23 +1793,17 @@ def _extract_blocks_text(blocks: list[dict]) -> str:
                         sub_els = child.get("elements", [])
                         if not isinstance(sub_els, list):
                             sub_els = []
-                        inline = "".join(
-                            _render_rich_text_element(el) for el in sub_els
-                        )
+                        inline = "".join(_render_rich_text_element(el) for el in sub_els)
                         if inline:
                             parts.append(f"- {inline}")
                 elif el_type == "rich_text_quote":
                     # Quote blocks: prefix with "> "
-                    inline = "".join(
-                        _render_rich_text_element(el) for el in child_els
-                    )
+                    inline = "".join(_render_rich_text_element(el) for el in child_els)
                     if inline:
                         parts.append(f"> {inline}")
                 else:
                     # rich_text_section, rich_text_preformatted
-                    inline = "".join(
-                        _render_rich_text_element(el) for el in child_els
-                    )
+                    inline = "".join(_render_rich_text_element(el) for el in child_els)
                     if inline:
                         parts.append(inline)
         elif block_type == "section":
@@ -1835,10 +1832,12 @@ def _extract_blocks_text(blocks: list[dict]) -> str:
 # NOTE: These are best-effort, undocumented, English-only Slack placeholder strings.
 # They may change or be localized — recovery is best-effort for non-English workspaces.
 # No fuzzy/structural detection is attempted (out of scope; would change behavior broadly).
-_SLACK_BLOCK_FALLBACKS = frozenset({
-    "This message contains interactive elements.",
-    "This content can't be displayed.",
-})
+_SLACK_BLOCK_FALLBACKS = frozenset(
+    {
+        "This message contains interactive elements.",
+        "This content can't be displayed.",
+    }
+)
 
 
 def _normalize_message_blocks(raw: list) -> list[dict]:
@@ -2427,6 +2426,7 @@ async def _route_message(
     #    (_handle_restart) which owns owner-check + supervisor guard, keeping
     #    a single source of truth for the restart logic. ──
     if clean_text.strip().lower() == "!restart":
+
         async def _restart_respond(text: str, **_kw: Any) -> None:
             if orch.slack:
                 await orch.slack.post_message(channel, text, thread_ts or msg_ts)
@@ -2445,61 +2445,13 @@ async def _route_message(
         _safe_log(text[:80]),
     )
 
-    # ── Queue check: if session is busy, enqueue instead of blocking ──
+    # ── Mid-turn: steer when the live provider supports it, else enqueue ──
+    # Spec adapters do not implement ``_session/steer``; waiting on the
+    # semaphore until the current turn ends is worse than Discord's immediate
+    # follow-up. Read the named capability, never ``backend != kiro`` (H5/H6).
     session_key = thread_ts or msg_ts
     _task_busy = session_key in orch._session_tasks
-    if _task_busy:
-        # A task is already running for this session key.  Try the session-level
-        # queue first (semaphore-based); fall back to an orchestrator-level
-        # pre-session queue when the session object doesn't exist yet.
-        _queued = orch.sessions and orch.sessions.enqueue(
-            session_key,
-            msg_ts,
-            clean_text,
-            force=True,
-            channel=channel,
-            thread_ts=thread_ts,
-            sender_id=sender_id,
-            team_id=team_id,
-            agent_override=agent_override,
-            user_display_name=_sender_display,
-            image_temp_paths=list(_image_temp_paths),
-        )
-        if not _queued:
-            # Session object not created yet — stash on orch._pending_queue
-            orch._pending_queue.setdefault(session_key, []).append(
-                (
-                    msg_ts,
-                    clean_text,
-                    dict(
-                        channel=channel,
-                        thread_ts=thread_ts,
-                        sender_id=sender_id,
-                        team_id=team_id,
-                        agent_override=agent_override,
-                        user_display_name=_sender_display,
-                        image_temp_paths=list(_image_temp_paths),
-                    ),
-                )
-            )
-        logger.info(
-            "Message %s queued for busy session %s (session_obj=%s)", msg_ts, session_key, _queued
-        )
-        if orch.slack:
-            try:
-                await orch.slack.add_reaction(channel, msg_ts, "hourglass_flowing_sand")
-            except Exception:
-                logger.debug("Failed to add queue reaction", exc_info=True)
-        # NOTE: do NOT _cleanup_image_temps() here — clean_text references these
-        # temp-file paths and the queued turn hasn't run yet. They are carried in
-        # the queue kwargs and unlinked by _dispatch_queued after the turn runs
-        # (deleting them now dropped the images silently: p.is_file() was False
-        # by dispatch time, so _send_prompt skipped them with no error).
-        return
-    elif orch.sessions and orch.sessions.enqueue(
-        session_key,
-        msg_ts,
-        clean_text,
+    _enqueue_kwargs = dict(
         channel=channel,
         thread_ts=thread_ts,
         sender_id=sender_id,
@@ -2507,16 +2459,35 @@ async def _route_message(
         agent_override=agent_override,
         user_display_name=_sender_display,
         image_temp_paths=list(_image_temp_paths),
-    ):
-        logger.info("Message %s queued for busy session %s", msg_ts, session_key)
+    )
+    _session_busy = orch.sessions is not None and orch.sessions.is_busy(session_key) is True
+    if orch.sessions and (_task_busy or _session_busy):
+        _outcome = await inject_busy_followup(
+            orch.sessions,
+            session_key,
+            clean_text,
+            msg_ts,
+            slack=orch.slack,
+            channel=channel,
+            thread_ts=thread_ts or msg_ts,
+            force_busy=_task_busy,
+            enqueue_kwargs=_enqueue_kwargs,
+        )
+        if _outcome != "idle":
+            logger.info("Message %s mid-turn %s for session %s", msg_ts, _outcome, session_key)
+            return
+    if _task_busy:
+        # inject returned idle (no live owner yet) or sessions is unset: park
+        # on the orchestrator queue until the handler task exists.
+        orch._pending_queue.setdefault(session_key, []).append(
+            (msg_ts, clean_text, _enqueue_kwargs)
+        )
+        logger.info("Message %s queued for busy session %s (pre-session)", msg_ts, session_key)
         if orch.slack:
             try:
-                await orch.slack.add_reaction(channel, msg_ts, "hourglass_flowing_sand")
+                await orch.slack.add_reaction(channel, msg_ts, _FOLLOW_UP_ACK_REACTION)
             except Exception:
                 logger.debug("Failed to add queue reaction", exc_info=True)
-        # See the force=True branch above: cleanup is deferred to
-        # _dispatch_queued so the queued turn's clean_text can still resolve
-        # its image temp-file paths.
         return
 
     # ── New transport path: route to the messaging abstraction ──
@@ -2594,7 +2565,7 @@ async def _route_message(
             # busy aren't stranded when the transport path is the active route.
             try:
                 if session_key not in orch._session_tasks and orch.sessions:
-                    _next = orch.sessions.dequeue(session_key)
+                    _next = dequeue_busy_followup(orch.sessions, session_key)
                     # Fall back to orchestrator-level pending queue (pre-session).
                     if not _next:
                         _pq = orch._pending_queue.get(session_key)
@@ -2657,7 +2628,7 @@ async def _route_message(
         # Drain queue: only if no other task took over this session
         try:
             if session_key not in orch._session_tasks and orch.sessions:
-                _next = orch.sessions.dequeue(session_key)
+                _next = dequeue_busy_followup(orch.sessions, session_key)
                 # Fall back to orchestrator-level pending queue (pre-session messages)
                 if not _next:
                     _pq = orch._pending_queue.get(session_key)

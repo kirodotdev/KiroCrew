@@ -689,7 +689,7 @@ class TestManifestAutoApproveCannotSelfGrantAnExemption:
             boot=gov.BootControls(),
             controls={"mcp": gov.ScopedRuleset(mode="allow", allow=(), deny=())},
         )
-        assert gov.may_skip_gate("@anything", ceiling) is False
+        assert gov.may_skip_gate("@npm__playwright_mcp", ceiling) is False
 
 
 class TestATighteningReachesAnExistingConfig:

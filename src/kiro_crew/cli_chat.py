@@ -813,6 +813,7 @@ async def _answer_permission(
             is_shell=event.is_shell,
             mcp_server_name=event.mcp_server_name,
             mcp_tool_name=event.tool_name,
+            mcp_identity_ambiguous=event.mcp_identity_ambiguous,
         )
     except Exception:
         logger.warning("CLI permission gate failed; refusing the request", exc_info=True)

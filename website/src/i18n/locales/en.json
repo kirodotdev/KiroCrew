@@ -6356,7 +6356,8 @@
       "featurePreviewsTab": {
         "inbound_webhook_tokens_registered_contexts_and_r": "Inbound webhook tokens, registered contexts, and run history. The API works; the page is not finished.",
         "open_webhooks": "Open Webhooks",
-        "webhooks": "Webhooks"
+        "webhooks": "Webhooks",
+        "acp_backends": "ACP Adapters"
       }
     },
     "developerPage": {
@@ -7067,6 +7068,34 @@
         "value": "Value",
         "vector_memory": "Vector Memory",
         "vector_memory_is_initializing_the_embedding_mode": "Vector memory is initializing. The embedding model (~610MB) downloads automatically in the background, and legacy memory migrates on its own — no action needed."
+      },
+      "acpBackend": {
+        "title": "ACP Adapter",
+        "experimental": "Experimental",
+        "all_features_supported": "Default. All features supported.",
+        "features_differ": "{{count}} of {{total}} features behave differently, are unavailable, or are not verified.",
+        "show_what_changes": "Show what changes",
+        "not_enabled_in_this_build": "Not enabled in this build: {{backends}}. See the experimental ACP adapters documentation.",
+        "level_supported": "Supported",
+        "level_degraded": "Works differently",
+        "level_unavailable": "Unavailable",
+        "cap_session_sharing": "Shared subagent runtime",
+        "cap_reasoning_effort": "Reasoning effort",
+        "cap_mcp_tool_search": "MCP Tool Search",
+        "cap_agent_profiles": "Agent profiles",
+        "cap_slash_commands": "Slash commands",
+        "cap_turn_usage": "Per-turn usage",
+        "cap_billing": "Cost and limits",
+        "cap_native_resume": "Session resume",
+        "cap_registry_model_ids": "Uses Kiro model catalog",
+        "cap_mid_turn_steer": "Mid-turn steer",
+        "confirm_title": "Switch to {{backend}}?",
+        "confirm_body": "This adapter is experimental. {{count}} of {{total}} Kiro Crew features behave differently, are unavailable, or are not verified.",
+        "cancel": "Cancel",
+        "confirm_switch": "Switch adapter",
+        "confirm_prerequisites": "Run these on the Gateway host first, in order.",
+        "not_installed": "Adapter not installed",
+        "level_unverified": "Not verified"
       }
     },
     "overviewPage": {
@@ -7295,7 +7324,9 @@
       "stopped": "Stopped",
       "threads": "Threads",
       "uptime": "Uptime",
-      "working_directory": "Working directory"
+      "working_directory": "Working directory",
+      "acp_backend": "ACP Adapter",
+      "acp_backend_experimental": "{{label}} (experimental)"
     },
     "sessionArchive": {
       "fuzzy_filter_substring_match": "Fuzzy filter (substring match)",

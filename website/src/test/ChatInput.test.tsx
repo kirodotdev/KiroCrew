@@ -907,9 +907,15 @@ describe('ChatInput', () => {
       // onOptimizeResult tagged with slot A so ChatPage can route it into A's
       // draft.
       let resolveFetch: ((value: Response) => void) | null = null
-      const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation(() =>
-        new Promise<Response>(res => { resolveFetch = res })
-      )
+      const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation((input) => {
+        if (String(input).startsWith('/api/slash-commands')) {
+          return Promise.resolve(new Response('[]', {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }))
+        }
+        return new Promise<Response>(res => { resolveFetch = res })
+      })
       // execCommand is the in-place write path; it must never fire for the
       // cross-session case (that would write into the on-screen session).
       const execSpy = vi.spyOn(document, 'execCommand').mockReturnValue(true)
@@ -945,9 +951,15 @@ describe('ChatInput', () => {
       // the on-screen textarea, and must hand the ORIGINAL prompt back to the
       // originating session so the user's text isn't lost.
       let rejectFetch: ((reason?: Error) => void) | null = null
-      const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation(() =>
-        new Promise<Response>((_res, rej) => { rejectFetch = rej })
-      )
+      const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation((input) => {
+        if (String(input).startsWith('/api/slash-commands')) {
+          return Promise.resolve(new Response('[]', {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }))
+        }
+        return new Promise<Response>((_res, rej) => { rejectFetch = rej })
+      })
       const execSpy = vi.spyOn(document, 'execCommand').mockReturnValue(true)
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => { })
       try {

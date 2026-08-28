@@ -17,6 +17,7 @@ vi.mock('../hooks/useVoiceInput', () => ({ useVoiceInput: () => ({ recording: fa
 import ChatInput, { REASONING_EFFORT_PROVIDERS, EFFORT_LABEL_KEY, modelSupportsEffort } from '../components/ChatInput'
 import ReasoningEffortDropdown from '../components/ReasoningEffortDropdown'
 import { pendingSlotSwitchTarget, performSlotSwitch, SWITCH_CONFIRM_TIMEOUT_MS } from '../lib/slotSwitch'
+import { showEffortControl } from '../lib/effort'
 
 beforeEach(() => { vi.clearAllMocks() })
 
@@ -76,6 +77,17 @@ describe('ChatInput reasoning effort button', () => {
   it('REASONING_EFFORT_PROVIDERS is acp-only (kiro-cli is the sole provider)', () => {
     expect(REASONING_EFFORT_PROVIDERS.has('acp')).toBe(true)
     expect(REASONING_EFFORT_PROVIDERS.has('claude_code')).toBe(false)
+  })
+
+  it('showEffortControl hides the slider when an adapter advertised no levels', () => {
+    // Codex ids like gpt-5.2[high] match the kiro 'gpt' heuristic, which is
+    // exactly the fake-notch bug: the control appears with kiro's low..max
+    // ladder even though effort is baked into the model id.
+    expect(showEffortControl([], 'gpt-5.2[high]', 'codex')).toBe(false)
+    expect(showEffortControl(['low', 'high'], 'gpt-5.2[high]', 'codex')).toBe(true)
+    expect(showEffortControl([], 'claude-opus-4.8', '')).toBe(true)
+    expect(showEffortControl(undefined, 'claude-opus-4.8', '')).toBe(true)
+    expect(showEffortControl(undefined, 'gpt-5.2[high]', 'codex')).toBe(false)
   })
 
   it('modelSupportsEffort gates per-model (Fable/Opus/Sonnet/GPT-5.x)', () => {
@@ -372,6 +384,15 @@ describe('ReasoningEffortDropdown', () => {
     await screen.findByRole('slider', { name: 'Reasoning effort' })
     expect(screen.getByText('Default')).toBeInTheDocument()
     expect(screen.getByRole('switch', { name: 'Use model default' })).toBeInTheDocument()
+  })
+
+  it('does not invent kiro notches when the slot advertised none', async () => {
+    mockApi.effortLevels.mockResolvedValueOnce([])
+    const { container } = renderDropdown({ currentEffort: '' })
+    await vi.waitFor(() => {
+      expect(mockApi.effortLevels).toHaveBeenCalled()
+      expect(container.querySelector('[role="slider"]')).toBeNull()
+    })
   })
 
   it('an explicit per-slot override still outranks the configured default', async () => {

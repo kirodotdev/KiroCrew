@@ -273,7 +273,7 @@ describe('AutoNudgePopover — zero-token watches armed on this slot', () => {
     // the one surface a user opens to confirm something is running.
     stubCrons([cron()])
     await act(async () => { renderPopover(null) })
-    expect(screen.getByText(/Zero-token watches/i)).toBeTruthy()
+    expect(await screen.findByText(/Zero-token watches/i)).toBeTruthy()
     expect(screen.getByText('pr watch #6234')).toBeTruthy()
   })
 

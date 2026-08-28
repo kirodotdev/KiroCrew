@@ -8,7 +8,7 @@
  * said the bot never came up. These cases pin the render to the payload: delete the
  * per-channel rows and every one of them goes red.
  */
-import { describe, it, expect, vi } from 'vitest'
+import { afterEach, describe, it, expect, vi } from 'vitest'
 import { screen, waitFor } from '@testing-library/react'
 
 import { createTestStore, renderWithProviders } from './helpers'
@@ -28,10 +28,22 @@ vi.mock('../api/client', () => ({
     // scoped to the channel rows.
     mcpGatewayStatus: () => Promise.resolve({ enabled: false, running: false, ping_ok: false }),
     mcpGatewayMetrics: () => Promise.resolve({ running: false, backends: [] }),
+    acpBackends: vi.fn(() => Promise.resolve({
+      active: '',
+      allow_ungated_tools: false,
+      routing_verdict: 'routed',
+      backends: [
+        { id: '', label: 'Kiro', experimental: false },
+        { id: 'codex', label: 'Codex', experimental: true },
+      ],
+    })),
   },
 }))
 
 import ServicesTab from '../pages/system/ServicesTab'
+import { PREVIEW_ACP_BACKENDS } from '../utils/previewFlags'
+
+afterEach(() => localStorage.removeItem(PREVIEW_ACP_BACKENDS))
 
 function renderWithStatus(status: Partial<StatusData>) {
   const base = createTestStore().getState() as RootState
@@ -51,6 +63,24 @@ function rowText(label: string): string {
 }
 
 describe('ServicesTab channel rows', () => {
+  it('reacts to active adapter updates in the shared query cache', async () => {
+    localStorage.setItem(PREVIEW_ACP_BACKENDS, '1')
+    const { queryClient } = renderWithStatus({})
+
+    await waitFor(() => expect(rowText('ACP Adapter')).toContain('Kiro'))
+    queryClient.setQueryData(['acp-backends', { probe: true }], {
+      active: 'codex',
+      allow_ungated_tools: false,
+      routing_verdict: 'routed',
+      backends: [
+        { id: '', label: 'Kiro', experimental: false },
+        { id: 'codex', label: 'Codex', experimental: true },
+      ],
+    })
+
+    await waitFor(() => expect(rowText('ACP Adapter')).toContain('Codex (experimental)'))
+  })
+
   it('renders one row per channel the payload reports as connected', async () => {
     renderWithStatus({
       slack_connected: false,

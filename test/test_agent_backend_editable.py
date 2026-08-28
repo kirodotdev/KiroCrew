@@ -4,15 +4,10 @@ The Developer > Agent Backend switch writes this field over
 ``PATCH /api/config/kirocrew``, so it has to be in ``_EDITABLE_CONFIG`` at all —
 before this it was absent and every save came back "field not editable".
 
-The load-bearing test here is the PARITY one. ``_EDITABLE_CONFIG`` duplicates the
-selectable-backend list as a literal because importing ``kiro_crew.acp.types`` at
-module scope would execute the ``kiro_crew.acp`` package init (client + runtime)
-while this dict is being built — the import cycle
-``config.loader._normalize_acp_backend`` defers for as well. A literal that nobody
-checks is a literal that drifts: widening ``ACP_BACKENDS_SELECTABLE`` without
-touching the handler would leave the new backend rejected by the dashboard with a
-misleading "invalid value", and NARROWING it would let the dashboard write a value
-the loader then silently coerces back. Both directions fail here instead.
+The load-bearing test here is the PARITY one. Both the editable-config validator
+and the schema metadata resolve the selectable-backend set lazily, avoiding an
+import cycle while keeping one source of truth. Widening or narrowing
+``ACP_BACKENDS_SELECTABLE`` must therefore change both surfaces together.
 """
 
 from kiro_crew.acp.types import ACP_BACKENDS_SELECTABLE
@@ -24,17 +19,18 @@ FIELD = "agent.acp_backend"
 
 def test_acp_backend_is_editable_from_the_dashboard():
     assert FIELD in _EDITABLE_CONFIG, f"{FIELD} must be PATCH-able or the switch cannot save"
-    assert _EDITABLE_CONFIG[FIELD]["type"] == "enum"
+    assert _EDITABLE_CONFIG[FIELD]["type"] == "str"
+    assert callable(_EDITABLE_CONFIG[FIELD]["values_fn"])
 
 
 def test_editable_values_equal_the_selectable_backends():
     """The allowlist and the set AcpProvider can serve must be the same set."""
-    assert set(_EDITABLE_CONFIG[FIELD]["values"]) == set(ACP_BACKENDS_SELECTABLE)
+    assert set(_EDITABLE_CONFIG[FIELD]["values_fn"]()) == set(ACP_BACKENDS_SELECTABLE)
 
 
 def test_the_default_backend_is_accepted_by_its_own_allowlist():
     """The shipped default must be writable, or the switch cannot be reset."""
-    assert KiroCrewConfig().agent.acp_backend in _EDITABLE_CONFIG[FIELD]["values"]
+    assert KiroCrewConfig().agent.acp_backend in _EDITABLE_CONFIG[FIELD]["values_fn"]()
 
 
 def test_the_field_schema_enum_matches_the_allowlist():
@@ -45,4 +41,5 @@ def test_the_field_schema_enum_matches_the_allowlist():
     an option that is enabled and then refused (or hide one that works).
     """
     meta = KiroCrewConfig().agent.__dataclass_fields__["acp_backend"].metadata
-    assert set(meta["enum"]) == set(_EDITABLE_CONFIG[FIELD]["values"])
+    assert callable(meta["enum"])
+    assert set(meta["enum"]()) == set(_EDITABLE_CONFIG[FIELD]["values_fn"]())

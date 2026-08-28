@@ -689,7 +689,16 @@ read-your-writes should add it deliberately, with its own tests.
   identity does not express. Each covers a security dimension the other cannot,
   so a deny on EITHER denies the call: a `~/.aws/credentials` title still denies
   behind a harmless canonical name, and a denied canonical name still denies
-  behind benign prose. **Server-only identity.** When the backend proves the
+  behind benign prose. The trusted server/tool fields are passed to
+  `gate_decision` as an already-canonical `@server/tool` reference. The display
+  form is lossy when either segment contains `__`; spec adapters therefore
+  cache the unique roster-resolved pair before the permission frame. When no
+  unique roster match is available, the classifier retains a governed identity
+  by treating the final separator as the boundary. That fallback may be less
+  specific than a roster-backed identity, but it prevents an ambiguous title
+  from disappearing from governance entirely and keeps wildcard and deny-all
+  ceilings effective for auto-approval probes.
+  **Server-only identity.** When the backend proves the
   server but not the tool (no `_meta.kiro.toolName`, or an uncached permission
   event), `gate_decision` is asked about `mcp__<mcp_server_name>` instead. That
   is a complete question for this plane and only this plane: `mcp_title_to_ref`
@@ -700,8 +709,12 @@ read-your-writes should add it deliberately, with its own tests.
   is deliberately NOT added to the deny-floor targets: that plane matches raw
   text and operator regexes, where `mcp__<server>` is a different string from
   the canonical identity a rule is written against rather than a broader form of
-  it. A server-only identity never satisfies auto-approval. Because this
-  enforcement is
+  it. A server-only identity never satisfies auto-approval. Spec-title recovery
+  also carries an explicit ambiguity bit when more than one
+  exact server name matches the title prefix. `HookManager.on_tool_call` denies
+  that bit before any title-based or interactive approval path; blanking the
+  server/tool fields alone is insufficient because it would turn an
+  unresolvable policy boundary into a human choice. Because this enforcement is
   on the common path, the first-party app-own auto-approve below does **not**
   repeat it; what remains load-bearing there is the identity requirement itself
   (an absent `mcp_tool_name` leaves the canonical name empty, so the tool cannot

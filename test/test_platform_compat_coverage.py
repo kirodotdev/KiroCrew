@@ -460,9 +460,7 @@ def _bsdinfo(ppid: int = 0, sec: int = 0, usec: int = 0) -> bytes:
     buf = bytearray(pc._DARWIN_BSDINFO_SIZE)
     buf[16:20] = ppid.to_bytes(4, "little")
     buf[pc._DARWIN_OFF_START_TVSEC : pc._DARWIN_OFF_START_TVSEC + 8] = sec.to_bytes(8, "little")
-    buf[pc._DARWIN_OFF_START_TVUSEC : pc._DARWIN_OFF_START_TVUSEC + 8] = usec.to_bytes(
-        8, "little"
-    )
+    buf[pc._DARWIN_OFF_START_TVUSEC : pc._DARWIN_OFF_START_TVUSEC + 8] = usec.to_bytes(8, "little")
     return bytes(buf)
 
 
@@ -569,6 +567,16 @@ class TestGetProcessStartId:
         # Microsecond resolution is the point: two processes started in the same
         # second must not alias onto one identity.
         assert pc.get_process_start_id(5) == "1700000000.000042"
+
+    def test_process_start_time_keeps_macos_microseconds(self, monkeypatch):
+        _fake_libproc(monkeypatch, payload=_bsdinfo(sec=1700000000, usec=42), ret=136)
+        first = pc.process_start_time(5)
+        _fake_libproc(monkeypatch, payload=_bsdinfo(sec=1700000000, usec=43), ret=136)
+        second = pc.process_start_time(5)
+
+        assert first == "1700000000.000042"
+        assert second == "1700000000.000043"
+        assert first != second
 
     def test_macos_treats_a_zero_start_time_as_unknown(self, monkeypatch):
         _fake_libproc(monkeypatch, payload=_bsdinfo(sec=0, usec=7), ret=136)
@@ -1625,9 +1633,7 @@ class TestRestrictToOwner:
             seen["sids"] = tuple(sids)
 
         monkeypatch.setattr(pc, "IS_POSIX", False)
-        monkeypatch.setattr(
-            pc, "current_user_sid", lambda: pc._OWNER_RIGHTS_SID.removeprefix("*")
-        )
+        monkeypatch.setattr(pc, "current_user_sid", lambda: pc._OWNER_RIGHTS_SID.removeprefix("*"))
         monkeypatch.setattr(pc.windows_acl, "apply_owner_only", _apply)
         pc.restrict_to_owner(tmp_path / "token.key")
         assert seen["sids"].count("S-1-3-4") == 1, seen
@@ -1705,9 +1711,7 @@ class TestExecutableDiscovery:
         hook.write_text("")
         assert pc.is_executable_file(hook, platform_name="win32") is False
 
-    def test_posix_target_accepts_any_regular_file_from_a_windows_host(
-        self, monkeypatch, tmp_path
-    ):
+    def test_posix_target_accepts_any_regular_file_from_a_windows_host(self, monkeypatch, tmp_path):
         hook = tmp_path / "pre.sh"
         hook.write_text("")
         monkeypatch.setattr(pc, "IS_POSIX", False)
@@ -2670,9 +2674,7 @@ class TestWindowsLineageLifetimes:
             101: (101, 15, 40),  # an immediate launcher that has already exited
             102: (102, 20, None),
         }
-        assert (
-            pc._windows_lineage_matches_lifetimes(102, self.ROOT, parent_map, identities) is True
-        )
+        assert pc._windows_lineage_matches_lifetimes(102, self.ROOT, parent_map, identities) is True
 
     def test_the_root_is_trivially_its_own_lineage(self):
         assert pc._windows_lineage_matches_lifetimes(self.ROOT, self.ROOT, {}, {}) is True
@@ -2757,9 +2759,7 @@ class TestDescendantHandleScanCleanup:
 
     def test_refuses_a_root_handle_that_names_another_process(self, monkeypatch):
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
-        monkeypatch.setattr(
-            pc, "_windows_process_handle_identity", lambda _h: (999, 1, None)
-        )
+        monkeypatch.setattr(pc, "_windows_process_handle_identity", lambda _h: (999, 1, None))
         with pytest.raises(ValueError, match="root handle identity mismatch"):
             pc.descendant_termination_handles(100, {}, 8001)
 
@@ -2795,9 +2795,7 @@ class TestDescendantHandleScanCleanup:
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
         monkeypatch.setattr(pc, "_windows_process_parent_map", lambda: {101: 100})
         monkeypatch.setattr(pc, "_open_process_termination_handle", lambda _pid: None)
-        monkeypatch.setattr(
-            pc, "_windows_process_handle_identity", lambda _h: (100, 10, None)
-        )
+        monkeypatch.setattr(pc, "_windows_process_handle_identity", lambda _h: (100, 10, None))
         assert pc.descendant_termination_handles(100, {}, 8001) == {}
 
 
@@ -2834,9 +2832,7 @@ class TestDuplicateAsyncioHandleFailure:
 
         _fake_windows(
             monkeypatch,
-            kernel32=types.SimpleNamespace(
-                GetCurrentProcess=_const(1), DuplicateHandle=_Fn(_boom)
-            ),
+            kernel32=types.SimpleNamespace(GetCurrentProcess=_const(1), DuplicateHandle=_Fn(_boom)),
         )
         assert pc.duplicate_asyncio_process_handle(process) is None
 

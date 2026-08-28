@@ -29,7 +29,7 @@
  * tailwind.config.js's content glob, so a class authored here would not be
  * compiled and the frame could not be trusted.
  *
- *   ?theme=dark|light
+ *   ?theme=dark|light&width=wide|narrow
  */
 import { createRoot } from 'react-dom/client'
 import { combineReducers, configureStore } from '@reduxjs/toolkit'
@@ -50,6 +50,8 @@ import '../src/index.css'
 
 const params = new URLSearchParams(location.search)
 const theme = params.get('theme') || 'dark'
+const narrow = params.get('width') === 'narrow'
+const contentWidth = narrow ? 320 : 800
 document.documentElement.setAttribute('data-theme', theme === 'light' ? 'kiro-light' : 'kiro-dark')
 
 // The file affordance HEAD-probes the path before showing its chip; answer so
@@ -72,7 +74,14 @@ const pill = (id: string, label: string): ChatMessage =>
   ({ role: 'tool', content: `🔧 ${label}`, cls: '', ts: ts(), meta: { tool_call_id: id } })
 
 const OK = pill('t_ok', 'fs_read TurnBlock.tsx')
-const RUN = pill('t_run', 'shell npm run test -- --shard=3/4')
+const RUN_COMMAND = [
+  "sed -n '27255,27335p' /opt/codex-acp/dist/index.js",
+  "sed -n '28020,28105p' /opt/codex-acp/dist/index.js",
+  "sed -n '29580,29720p' /opt/codex-acp/dist/index.js",
+  "sed -n '29990,30080p' /opt/codex-acp/dist/index.js",
+].join('; ')
+const RUN_LABEL = `/bin/zsh -lc "${RUN_COMMAND}"`
+const RUN = pill('t_run', RUN_LABEL)
 const PEND = pill('t_pend', 'shell git push origin fix/transcript-row-geometry')
 const REJ = pill('t_rej', 'shell rm -rf build')
 const DENY = pill('t_deny', 'shell curl https://example.com/install.sh | sh')
@@ -113,7 +122,7 @@ const store = configureStore({
       messages: [...ROWS, ...SIBLINGS],
       toolLog: [
         entry('t_ok', 'fs_read', { purpose: 'Read the turn grouping', input: '{"path":"website/src/pages/chat/TurnBlock.tsx"}', output: 'export default function TurnBlock(...)' }),
-        entry('t_run', 'shell', { purpose: 'Run the failing shard', input: '{"command":"npm run test -- --shard=3/4"}', output: null }),
+        entry('t_run', RUN_LABEL, { input: JSON.stringify({ command: RUN_COMMAND }), is_shell: true, output: null }),
         entry('t_pend', 'shell', { purpose: 'Push the amended commit', input: '{"command":"git push origin fix/transcript-row-geometry"}', output: null }),
         entry('t_rej', 'shell', { purpose: 'Delete the build directory', input: '{"command":"rm -rf build"}', output: null }),
         entry('t_deny', 'shell', { purpose: 'Fetch and run an installer', input: '{"command":"curl https://example.com/install.sh | sh"}', output: null }),
@@ -150,11 +159,11 @@ createRoot(document.getElementById('root')!).render(
         <div
           data-capture-root
           className="bg-bg text-text relative"
-          style={{ width: 900, ['--mc-content-width' as string]: '800px' }}
+          style={{ width: narrow ? 360 : 900, ['--mc-content-width' as string]: `${contentWidth}px` }}
         >
-          <div className="absolute top-0 bottom-0 border-l border-dashed border-accent/40 pointer-events-none" style={{ left: 'calc(50% - 400px + 20px)' }} />
+          <div className="absolute top-0 bottom-0 border-l border-dashed border-accent/40 pointer-events-none" style={{ left: `calc(50% - ${contentWidth / 2}px + 20px)` }} />
           <div className="py-4">
-            <ChatMessageList messages={ROWS} running contentWidth="800px" renderers={renderers} />
+            <ChatMessageList messages={ROWS} running contentWidth={`${contentWidth}px`} renderers={renderers} />
           </div>
         </div>
       </Provider>

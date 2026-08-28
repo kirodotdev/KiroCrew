@@ -17,12 +17,14 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from kiro_crew.acp.types import AcpPromptStats
+from kiro_crew.acp.types import AcpPromptStats, AcpRateLimit
 from kiro_crew.dashboard.chat_runner import _context_usage_payload
 from kiro_crew.providers.acp import AcpProvider
 
 
-def _provider_with_stats(used: int, window: int, pct: float) -> AcpProvider:
+def _provider_with_stats(
+    used: int, window: int, pct: float, rate_limit: AcpRateLimit | None = None
+) -> AcpProvider:
     with patch("kiro_crew.providers.acp.AcpClient"):
         provider = AcpProvider()
     provider._client = MagicMock()
@@ -30,6 +32,7 @@ def _provider_with_stats(used: int, window: int, pct: float) -> AcpProvider:
         context_pct=pct,
         context_used_tokens=used,
         context_window_tokens=window,
+        rate_limit=rate_limit,
     )
     return provider
 
@@ -64,6 +67,51 @@ def test_payload_resets_for_provider_without_token_accessors():
     stub.context_usage_pct.return_value = 12.3
     payload = _context_usage_payload("dashboard:1", stub)
     assert payload == {"slot": "dashboard:1", "pct": 12.3, "reset": True}
+
+
+def test_payload_carries_the_plan_rate_limit_when_reported():
+    # The frame the popover's quota section is fed from. Its PRESENCE is the
+    # "this harness has a quota" signal, so it must be absent rather than empty
+    # for the harnesses that report none (below).
+    provider = _provider_with_stats(
+        used=88000,
+        window=200000,
+        pct=44.0,
+        rate_limit=AcpRateLimit(status="allowed_warning", limit_type="five_hour", utilization=81.0),
+    )
+    payload = _context_usage_payload("dashboard:1", provider)
+    assert payload["rate_limit"] == {
+        "status": "allowed_warning",
+        "limit_type": "five_hour",
+        "utilization": 81.0,
+    }
+
+
+def test_payload_omits_rate_limit_when_the_harness_reports_none():
+    provider = _provider_with_stats(used=88000, window=200000, pct=44.0)
+    assert "rate_limit" not in _context_usage_payload("dashboard:1", provider)
+
+
+def test_payload_survives_a_reset_carrying_the_quota():
+    # Compaction resets the token counts but not the account's quota, so the two
+    # travel on the same frame independently.
+    provider = _provider_with_stats(
+        used=0, window=200000, pct=0.0, rate_limit=AcpRateLimit(status="rejected")
+    )
+    payload = _context_usage_payload("dashboard:1", provider)
+    assert payload["reset"] is True
+    assert payload["rate_limit"] == {"status": "rejected"}
+
+
+def test_payload_omits_rate_limit_for_a_non_provider_client():
+    # A stub that is not an LLMProvider has no rate_limit_payload() contract, and
+    # an unspecced Mock would answer every attribute with a truthy Mock — which
+    # is not JSON-serializable and would break the live WS frame.
+    stub = MagicMock(spec=["context_usage_pct", "context_used_tokens", "context_window_tokens"])
+    stub.context_usage_pct.return_value = 12.3
+    stub.context_used_tokens.return_value = 1000
+    stub.context_window_tokens.return_value = 200000
+    assert "rate_limit" not in _context_usage_payload("dashboard:1", stub)
 
 
 def test_payload_resets_when_used_unmeasured():

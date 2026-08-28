@@ -327,11 +327,10 @@ class AcpSessionProvider(LLMProvider):
     async def approve_tool(
         self, request_id: str | int, option_id: str | None = None, *, always: bool = False
     ) -> None:
-        """Approve a pending tool permission request. Accepts an explicit
-        option_id (signature parity with AcpClient.approve_tool); falls back to
-        allow_always/allow_once from `always`."""
-        resolved = option_id or ("allow_always" if always else "allow_once")
-        await self._guarded(self._handle.approve_tool(request_id, option_id=resolved))
+        """Approve only an optionId the pending request advertised."""
+        await self._guarded(
+            self._handle.approve_tool(request_id, option_id=option_id, always=always)
+        )
 
     async def reject_tool(self, request_id: str | int) -> None:
         """Reject a pending tool permission request."""

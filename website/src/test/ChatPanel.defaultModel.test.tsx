@@ -27,6 +27,7 @@ vi.mock('../api/client', () => ({
     dashboardConfig: () => Promise.resolve({ restore_sessions: false, restore_window_minutes: 30, merge_queued_messages: false, widget_density: 'more' }),
     kirocrewConfig: kirocrewConfigMock,
     models: modelsMock,
+    effortLevels: () => Promise.resolve(['low', 'medium', 'high', 'xhigh', 'max']),
     patchConfig: patchConfigMock,
     updateDashboardConfig: () => Promise.resolve({}),
     tipsStatus: () => Promise.resolve({ enabled_config: true, opted_out: false }),

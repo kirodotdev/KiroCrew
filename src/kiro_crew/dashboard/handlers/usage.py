@@ -1675,10 +1675,124 @@ def _parse_token_history() -> dict[str, Any]:
     return result
 
 
+def _configured_acp_backend() -> str:
+    """The configured non-default ACP backend, or ``""`` for kiro-cli.
+
+    Fails closed to ``""``: an unreadable config keeps the existing kiro
+    behaviour rather than switching the data source underneath the page.
+    """
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        return KiroCrewConfig.load().agent.acp_backend or ""
+    except Exception:
+        return ""
+
+
+def _sessions_from_own_records() -> dict:
+    """Session analytics built from Kiro Crew's OWN token shards.
+
+    Used when there is no kiro-cli sessions directory to read, which is the
+    normal state on a host running another ACP backend. Without this the endpoint
+    answers a permanent 200-carrying-an-error that is never cached, so it
+    re-parses on every poll and the Usage page shows nothing at all.
+
+    Reads ``<data home>/usage/tokens/YYYY-MM-DD.jsonl``, the same shards the rest
+    of this module already aggregates, keyed by slot. A session is attributed to
+    the day of its EARLIEST in-window turn so it is counted once rather than once
+    per active day.
+
+    Fidelity limits, stated because the numbers are not equivalent to the kiro
+    path's and a reader comparing the two deserves to know why:
+
+    * ``messages`` counts COMPLETED TURNS only. The kiro path counts transcript
+      entries, which include the paired user prompt, so this reads roughly half.
+    * ``tool_calls`` is always 0. Tool calls are not recorded in a token shard.
+    * ``all_time_sessions`` is the same window-scoped count as
+      ``total_sessions``, not an unbounded total, because the shards outside the
+      retention window are gone.
+    """
+    daily_sessions: Counter = Counter()
+    daily_msgs: Counter = Counter()
+    first_day_for_slot: dict[str, str] = {}
+    msgs_for_slot: Counter = Counter()
+
+    for shard in _shards_in_window(_TOKEN_HISTORY_DAYS):
+        day = shard.stem
+        try:
+            raw = shard.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(obj, dict) or obj.get("_type") != "tokens":
+                continue
+            slot = obj.get("slot")
+            if not isinstance(slot, str) or not slot:
+                continue
+            msgs_for_slot[slot] += 1
+            # Earliest day wins: shards are per-day files, and a slot spanning
+            # several days is one session, not one per day.
+            existing = first_day_for_slot.get(slot)
+            if existing is None or day < existing:
+                first_day_for_slot[slot] = day
+
+    for slot, day in first_day_for_slot.items():
+        daily_sessions[day] += 1
+        daily_msgs[day] += msgs_for_slot[slot]
+
+    days = sorted(set(daily_sessions) | set(daily_msgs))
+    history = [
+        {
+            "date": day,
+            "sessions": daily_sessions.get(day, 0),
+            "messages": daily_msgs.get(day, 0),
+            "tool_calls": 0,
+        }
+        for day in days
+    ]
+
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    today = [h for h in history if h["date"] == today_str]
+    week_cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    week = [h for h in history if h["date"] >= week_cutoff]
+
+    total_sessions = len(first_day_for_slot)
+    return {
+        "total_sessions": total_sessions,
+        "total_messages": sum(msgs_for_slot.values()),
+        "total_tool_calls": 0,
+        "all_time_sessions": total_sessions,
+        "daily_history": history,
+        "today": {
+            "sessions": sum(h["sessions"] for h in today),
+            "messages": sum(h["messages"] for h in today),
+            "tool_calls": 0,
+        },
+        "this_week": {
+            "sessions": sum(h["sessions"] for h in week),
+            "messages": sum(h["messages"] for h in week),
+            "tool_calls": 0,
+        },
+    }
+
+
 def _parse_sessions() -> dict:
     """Parse local kiro session files for usage analytics."""
     sessions_dir = _sessions_dir()
     if not sessions_dir.exists():
+        # No kiro transcripts is the NORMAL state on another ACP backend, not an
+        # error to report forever. Fall back to Kiro Crew's own records so the
+        # page shows real numbers; keep the error for a kiro host, where an
+        # absent directory genuinely means something is wrong.
+        if _configured_acp_backend():
+            return _sessions_from_own_records()
         return {"error": "No sessions directory"}
 
     cutoff = time.time() - (30 * 86400)
@@ -1809,8 +1923,17 @@ async def _cached_parse_sessions() -> dict:
     # `is not None` (not truthiness) so a valid-but-empty {} parse is still a hit.
     if now - _SESSIONS_CACHE_TS < _CACHE_TTL and _SESSIONS_CACHE is not None:
         return _SESSIONS_CACHE
-    if not _sessions_dir().exists():
-        return {}
+    # An absent kiro sessions dir short-circuits to {} — EXCEPT on another ACP
+    # backend, where that is the normal state and _parse_sessions has a real
+    # fallback to serve. Returning {} there would make the cached path contradict
+    # the uncached one.
+    sessions_dir = _sessions_dir()
+    if not await asyncio.to_thread(sessions_dir.exists):
+        # Loading config may read and validate config.json plus the dynamic ACP
+        # registry cache. Both reads stay off the gateway loop on this cold
+        # fallback path, just like the full parse below.
+        if not await asyncio.to_thread(_configured_acp_backend):
+            return {}
     async with _SESSIONS_CACHE_LOCK:
         # Re-check: a concurrent request may have refreshed while we waited, so
         # a burst of cold-cache polls collapses into a single parse.

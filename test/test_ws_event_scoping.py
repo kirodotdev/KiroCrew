@@ -1473,18 +1473,26 @@ class TestLiveScopeNarrowing:
         `_push_status` writes straight to the socket every few seconds, so the
         frame's CONTENT is the control, not a gate. Counts and environment are
         fine; the checkout's branch and commit say what the operator is working
-        on and have no consumer outside the owner surfaces, so they are stripped
-        for app tokens instead of moving the whole frame behind a declaration —
-        that would cut every existing app off from the version signal it uses to
-        reload across a gateway upgrade.
+        on, and the harness block says which agent binary they chose to run —
+        host configuration with no consumer outside the owner surfaces, so those
+        are stripped for app tokens instead of moving the whole frame behind a
+        declaration — that would cut every existing app off from the version
+        signal it uses to reload across a gateway upgrade.
         """
         src = (
             Path(__file__).resolve().parents[1]
             / "src" / "kiro_crew" / "dashboard" / "ws.py"
         ).read_text(encoding="utf-8")
-        assert 'for _owner_only in ("branch", "commit")' in src, (
+        # Anchored on the loop and then on each name, so ADDING a field to the
+        # strip list cannot red this while removing one still does.
+        strip = re.search(r"for _owner_only in \(([^)]*)\):", src)
+        assert strip is not None, (
             "the periodic dashboard frame must withhold checkout identity from apps"
         )
+        for _field in ('"branch"', '"commit"', '"harness"'):
+            assert _field in strip.group(1), (
+                f"{_field} is owner-only and must be stripped from the app-token frame"
+            )
         assert 'if not ws.get("_is_dashboard_user", False):' in src
         # And the owner surfaces must NOT be narrowed: /api/status and SSE run on
         # dashboard-user tokens and still need the full snapshot.
@@ -3529,9 +3537,11 @@ class TestDirectSendGrantsAreAudited:
         ).read_text(encoding="utf-8")
         # The app-token narrowing block inside _push_status: it strips the
         # owner-only fields, and the grant must be recorded in the same branch.
-        marker = 'for _owner_only in ("branch", "commit"):'
-        assert marker in src, "the app-token narrowing block moved; re-anchor this guard"
-        region = " ".join(src[src.index(marker):].split())
+        # Matched on the loop rather than its exact tuple, so adding an owner-only
+        # field does not red a guard about auditing.
+        strip = re.search(r"for _owner_only in \([^)]*\):", src)
+        assert strip is not None, "the app-token narrowing block moved; re-anchor this guard"
+        region = " ".join(src[strip.start():].split())
         # Look only as far as the send that ends the block.
         region = region[: region.index('ws.send_json({"type": "dashboard"')]
         assert re.search(r'_audit\w*\([^)]*"dashboard"\)', region), (

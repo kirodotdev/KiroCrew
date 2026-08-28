@@ -4,7 +4,7 @@ import { SettingsSection, SettingsCard, SettingsToggle, SettingsSelect, Settings
 import { loadChatConfig, saveChatConfig, type ChatConfig, type ContentWidth, type DashboardConfig, type SendMode } from '../chat/ChatSettings'
 import { api } from '../../api/client'
 import { useAvailableModels } from '../../hooks/useAvailableModels'
-import { EFFORT_LEVELS, effortLabel, modelSupportsEffort } from '../../lib/effort'
+import { EFFORT_LEVELS, effortLabel, showEffortControl } from '../../lib/effort'
 import { isMac } from '../../utils/platform'
 import { capRoleOther, clampRoleOther } from '../../lib/userProfile'
 import { ROLE_SLUGS, TECH_SLUGS } from '../../lib/profileOptions'
@@ -153,6 +153,7 @@ export function ChatPanel() {
     session?: { autocompact_pct?: number }
     session_summary?: { enabled?: boolean }
     agent?: {
+      acp_backend?: string
       model?: string
       role_models?: { background?: string; subagent?: string }
       role_efforts?: { background?: string; subagent?: string }
@@ -299,8 +300,14 @@ export function ChatPanel() {
   // ── Default model + default reasoning effort ──
   // These are the DEFAULTS for new sessions. A session's own model/effort
   // picker still overrides them per-slot; nothing here touches live sessions.
-  // Same query key as every other model picker so the list is fetched once.
-  const availableModels = useAvailableModels()
+  // Scoped to the configured harness so a backend save does not keep showing
+  // the previous catalog while the first refetch is in flight.
+  const configBackend = mcCfg?.agent?.acp_backend ?? ''
+  const availableModels = useAvailableModels({ backend: configBackend })
+  const { data: advertisedEffort } = useQuery({
+    queryKey: ['effort-levels', 'config'],
+    queryFn: () => api.effortLevels(),
+  })
   // '' in config means "unset" and resolves the same way 'auto' does, so both
   // render as the 'auto' option rather than as a missing selection.
   const defaultModel = mcCfg?.agent?.model || 'auto'
@@ -320,7 +327,7 @@ export function ChatPanel() {
   // Effort is only meaningful on reasoning-capable models. Rather than hide the
   // row (which would make the setting look absent), keep it visible and
   // disabled with an explanatory hint.
-  const effortSupported = modelSupportsEffort(defaultModel)
+  const effortSupported = showEffortControl(advertisedEffort, defaultModel, configBackend)
   const defaultEffortMut = useMutation({
     mutationFn: (v: string) => api.patchConfig('agent.reasoning_effort', v),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
@@ -368,8 +375,16 @@ export function ChatPanel() {
   // rather than folded into this copy fix.
   const backgroundEffort = mcCfg?.agent?.role_efforts?.background ?? ''
   const subagentEffort = mcCfg?.agent?.role_efforts?.subagent ?? ''
-  const bgEffortSupported = modelSupportsEffort(backgroundModel !== 'auto' ? backgroundModel : defaultModel)
-  const subEffortSupported = modelSupportsEffort(subagentModel !== 'auto' ? subagentModel : defaultModel)
+  const bgEffortSupported = showEffortControl(
+    advertisedEffort,
+    backgroundModel !== 'auto' ? backgroundModel : defaultModel,
+    configBackend,
+  )
+  const subEffortSupported = showEffortControl(
+    advertisedEffort,
+    subagentModel !== 'auto' ? subagentModel : defaultModel,
+    configBackend,
+  )
   const effortLabels = EFFORT_LEVELS.map(l => (l === '' ? i18nT('pages.settings.chatPanel.model_default') : effortLabel(l)))
   const backgroundEffortMut = useMutation({
     mutationFn: (v: string) => api.patchConfig('agent.role_efforts.background', v),

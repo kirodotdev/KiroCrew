@@ -23,6 +23,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Any
 
 from kiro_crew import platform_compat, security, webhooks
 from kiro_crew.config import paths as _config_paths
@@ -166,8 +167,7 @@ class TransformHook:
     suffix: str = ""
 
 
-_BUNDLED_AUTO_APPROVE_TOOLS: list[str] = [
-]
+_BUNDLED_AUTO_APPROVE_TOOLS: list[str] = []
 
 
 def _coerce_bool(value: object, default: bool) -> bool:
@@ -452,6 +452,7 @@ class HookManager:
         is_shell: bool = False,
         mcp_server_name: str = "",
         mcp_tool_name: str = "",
+        mcp_identity_ambiguous: bool = False,
         resolved_agent: str = "",
     ) -> ToolHookResult:
         """Check if a tool should be auto-approved, denied, or handled normally.
@@ -532,7 +533,20 @@ class HookManager:
         so a deny on EITHER denies the call. Empty (no ``_meta.kiro.toolName``)
         means the tool cannot be identified, so the own-server auto-approve does
         NOT fire (fall through to interactive approval — fail-closed).
+
+        ``mcp_identity_ambiguous`` records that a spec-adapter title matched
+        multiple exact server names from the session roster. No canonical
+        governance reference exists in that case, so the call is hard-denied;
+        interactive approval cannot override this provenance failure.
         """
+        # A spec-adapter title that matches more than one exact session server
+        # has no trustworthy server/tool boundary. Interactive approval cannot
+        # override the governance ceiling, so refuse before any title-based gate.
+        if mcp_identity_ambiguous:
+            return ToolHookResult.deny(
+                "Blocked: ambiguous MCP identity could not be verified for security policy"
+            )
+
         # Deny-by-default: a shell tool whose command could not be recovered
         # must not be evaluated on the untrusted title alone — that is the very
         # bypass this gate closes. Reject instead of falling through.
@@ -1255,9 +1269,7 @@ def set_builtin_app_mcp_servers(names: Iterable[str]) -> None:
     gate never touches the filesystem. Idempotent; a later call replaces the set.
     """
     global _BUILTIN_APP_MCP_SERVERS
-    _BUILTIN_APP_MCP_SERVERS = frozenset(
-        n.casefold() for n in names if isinstance(n, str) and n
-    )
+    _BUILTIN_APP_MCP_SERVERS = frozenset(n.casefold() for n in names if isinstance(n, str) and n)
 
 
 def _is_declared_builtin_mcp_server(mcp_server_name: str) -> bool:
@@ -2119,13 +2131,14 @@ def safe_read_file_bytes_nolink(
 # errnos meaning "this filesystem has no extended attributes", as opposed to "the
 # lookup failed". Only the former is safe to treat as "nothing to carry".
 _XATTR_UNSUPPORTED_ERRNOS = frozenset(
-    e for e in (getattr(errno, n, None) for n in ("ENOTSUP", "EOPNOTSUPP", "ENOSYS"))
+    e
+    for e in (getattr(errno, n, None) for n in ("ENOTSUP", "EOPNOTSUPP", "ENOSYS"))
     if e is not None
 )
 
 _ACCESS_CONTROL_XATTR_PREFIXES = (
     "system.posix_acl_",  # POSIX ACLs: the actual permission set
-    "security.",          # SELinux/SMACK/capabilities labels
+    "security.",  # SELinux/SMACK/capabilities labels
 )
 
 
@@ -2289,10 +2302,13 @@ def safe_write_file_nolink(
     # nothing on the source to lose. Any OTHER failure means we cannot know what
     # we would be dropping, so it refuses.
     src_xattrs: list[tuple[str, bytes]] = []
-    if all(hasattr(os, a) for a in ("listxattr", "getxattr", "setxattr")):
+    list_xattr: Any = getattr(os, "listxattr", None)
+    get_xattr: Any = getattr(os, "getxattr", None)
+    set_xattr: Any = getattr(os, "setxattr", None)
+    if all(callable(fn) for fn in (list_xattr, get_xattr, set_xattr)):
         try:
-            for _attr in os.listxattr(fd):
-                src_xattrs.append((_attr, os.getxattr(fd, _attr)))
+            for _attr in list_xattr(fd):
+                src_xattrs.append((_attr, get_xattr(fd, _attr)))
         except OSError as exc:
             if exc.errno not in _XATTR_UNSUPPORTED_ERRNOS:
                 logger.warning(
@@ -2413,7 +2429,7 @@ def safe_write_file_nolink(
             # loop cannot be affected by a path that moved since.
             for attr, value in src_xattrs:
                 try:
-                    os.setxattr(tfd, attr, value)
+                    set_xattr(tfd, attr, value)
                 except OSError:
                     if _is_access_control_xattr(attr):
                         logger.warning(
@@ -2996,8 +3012,10 @@ def validate_hook_fields(
     """
     if event not in HOOK_EVENTS:
         raise ValueError(f"invalid event: {event}")
-    if isinstance(timeout, bool) or not isinstance(timeout, int) or not (
-        HOOK_TIMEOUT_MIN <= timeout <= HOOK_TIMEOUT_MAX
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, int)
+        or not (HOOK_TIMEOUT_MIN <= timeout <= HOOK_TIMEOUT_MAX)
     ):
         raise ValueError(
             f"timeout must be an integer between {HOOK_TIMEOUT_MIN} and {HOOK_TIMEOUT_MAX}"
@@ -3119,9 +3137,13 @@ class ScriptHook:
     name: str = ""
     event: str = HOOK_EVENT_USER_PROMPT_SUBMIT
     matcher: str = ""  # tool matcher for PreToolUse/PostToolUse (empty = all tools)
-    matcher_mode: str = "glob"  # "glob" (fnmatch, default), "regex" (re.search), "contains" (case-insensitive pipe-delimited substrings)
+    matcher_mode: str = (
+        "glob"  # "glob" (fnmatch, default), "regex" (re.search), "contains" (case-insensitive pipe-delimited substrings)
+    )
     command: str = ""  # shell command to execute
-    skills: list = field(default_factory=list)  # skill keys to inject when matched (no subprocess needed)
+    skills: list = field(
+        default_factory=list
+    )  # skill keys to inject when matched (no subprocess needed)
     timeout: int = 30  # seconds (Kiro CLI default is 30s)
     enabled: bool = True
     last_run: float = 0.0
@@ -3282,9 +3304,7 @@ async def _communicate_capped(
         # already waiting" and leak the process.
         for task in (stdin_task, stdout_task, stderr_task):
             task.cancel()
-        await asyncio.gather(
-            stdin_task, stdout_task, stderr_task, return_exceptions=True
-        )
+        await asyncio.gather(stdin_task, stdout_task, stderr_task, return_exceptions=True)
         raise
     return stdout_b, stdout_trunc, stderr_b, stderr_trunc
 
@@ -3694,9 +3714,7 @@ class ScriptHookStore:
                 except webhooks.WebhookStoreUnreadable:
                     raise
                 except (json.JSONDecodeError, OSError) as exc:
-                    logger.warning(
-                        "hooks.json unreadable, refusing to overwrite it: %s", exc
-                    )
+                    logger.warning("hooks.json unreadable, refusing to overwrite it: %s", exc)
                     raise webhooks.WebhookStoreUnreadable(
                         f"{self._path.name} is unreadable; refusing to overwrite it "
                         "and erase the registered webhook contexts"
@@ -3769,7 +3787,11 @@ class ScriptHookStore:
                     setattr(hook, k, data[k])
             if "skills" in data:
                 skills_raw = data["skills"]
-                hook.skills = [str(s) for s in skills_raw if isinstance(s, str)] if isinstance(skills_raw, list) else []
+                hook.skills = (
+                    [str(s) for s in skills_raw if isinstance(s, str)]
+                    if isinstance(skills_raw, list)
+                    else []
+                )
             # Validate the MERGED hook through the shared validator — the same
             # one `create` uses — so both write paths enforce one contract:
             # event membership, timeout bounds, the command+skills invariant and
@@ -3887,8 +3909,14 @@ class ScriptHookStore:
             # Skills-only hooks: inject skill-loading directive without subprocess.
             # Only meaningful for UserPromptSubmit/AgentSpawn — on tool hooks or Stop
             # the synthesized "Load skills:" text has no consumer.
-            if hook.skills and not hook.command and event in (
-                HOOK_EVENT_USER_PROMPT_SUBMIT, HOOK_EVENT_AGENT_SPAWN,
+            if (
+                hook.skills
+                and not hook.command
+                and event
+                in (
+                    HOOK_EVENT_USER_PROMPT_SUBMIT,
+                    HOOK_EVENT_AGENT_SPAWN,
+                )
             ):
                 # Governance: skills-only hooks must respect the same capability
                 # gate as command hooks — a disabled capabilities.script_hooks
@@ -3905,12 +3933,16 @@ class ScriptHookStore:
                     )
                     logger.info(
                         "Hook %s (%s): skills-only blocked by governance: %s",
-                        hook.name, event, gov_denied,
+                        hook.name,
+                        event,
+                        gov_denied,
                     )
                     continue
                 # Audit the allow decision before proceeding.
                 _audit_governance_hook_decision(
-                    sk, f"skills_only_hook:{hook.name or hook.id}", "allowed",
+                    sk,
+                    f"skills_only_hook:{hook.name or hook.id}",
+                    "allowed",
                     "skills-only hook permitted",
                 )
                 skills_directive = " ".join(f"${s.split('/')[-1]}" for s in hook.skills)

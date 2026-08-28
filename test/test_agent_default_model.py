@@ -290,6 +290,10 @@ class TestSessionModelCoversEverySurface:
         cfg = _cfg({"oncall": {"kiro_agent": "kirocrew", "model": "claude-opus-5"}}, "claude-haiku-4.5")
         assert _session_model(cfg, "oncall") == "claude-opus-5"
 
+    def test_adapter_namespace_keeps_the_crew_model(self, specs_dir: Path) -> None:
+        cfg = _cfg({"oncall": {"kiro_agent": "pinned", "model": "gpt-5.6-sol"}}, "auto")
+        assert _session_model(cfg, "oncall", registry_model_ids=False) == "gpt-5.6-sol"
+
     def test_crew_pin_outranks_the_bound_template_pin(self, specs_dir: Path) -> None:
         cfg = _cfg({"oncall": {"kiro_agent": "pinned", "model": "claude-opus-5"}}, "")
         assert _session_model(cfg, "oncall") == "claude-opus-5"

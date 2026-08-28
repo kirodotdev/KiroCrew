@@ -50,6 +50,22 @@ export interface PreviewFlagChange {
 export const PREVIEW_WEBHOOKS = `${PREVIEW_FLAG_PREFIX}webhooks`
 
 /**
+ * Experimental ACP backends (the dedicated Developer > ACP Adapters tab, and
+ * the active-backend row on System > Services).
+ *
+ * Gated for a different reason than the other flags: not roughness, but that no
+ * successful session has been observed on a non-kiro backend. The refusal paths
+ * are covered by tests; the working path is not, because it needs a host with a
+ * Codex or Claude adapter installed and signed in. Advertising a selector whose
+ * happy path is unverified invites an operator to switch a real session onto it.
+ *
+ * This is NOT a substitute for `ACP_BACKENDS_SELECTABLE` on the gateway, which
+ * is the real enforcement point — the flag only decides whether the operator is
+ * shown the control.
+ */
+export const PREVIEW_ACP_BACKENDS = `${PREVIEW_FLAG_PREFIX}acp-backends`
+
+/**
  * Read a preview flag. Absent, unparseable, or storage-denied all mean OFF —
  * the whole point of the gate is that a surface stays hidden unless someone
  * deliberately turned it on, so it fails closed.

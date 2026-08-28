@@ -17,8 +17,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from kiro_crew import model_registry
+from kiro_crew.acp.types import PROVIDER_LABEL_CLAUDE, is_spec_adapter_provider_label
 from kiro_crew.agent import _prompt_path
-from kiro_crew.agent_discovery import agent_skill_globs
+from kiro_crew.agent_discovery import _read_agent_spec, agent_skill_globs
 from kiro_crew.config.loader import KiroCrewConfig, workspace_dir_for
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.cron import get_local_tz
@@ -1041,19 +1042,39 @@ def _build_ui_language_section(cfg: "KiroCrewConfig") -> str:
     )
 
 
-def _load_steering_resources() -> str:
-    """Load steering files from the agent config's resources array.
+def _agent_spec_candidates(agent: str, project: str | None = None) -> list[Path]:
+    """Project-first agent specs, matching kiro-cli's resolution order."""
+    candidates: list[Path] = []
+    if project:
+        try:
+            from kiro_crew.agent_discovery import project_agent_files
+
+            candidates.extend(project_agent_files(project))
+        except Exception:
+            logger.debug("Project agent scan failed for %r", agent, exc_info=True)
+    candidates.extend(kiro_agents_dir().glob("*.json"))
+    return candidates
+
+
+def _load_agent_file_resources(agent: str, project: str | None = None) -> str:
+    """Load markdown ``file://`` resources from one agent config.
 
     kiro-cli injects these automatically for its sessions; the dashboard
-    must do it explicitly so that dashboard chat sessions also benefit
-    from project-specific steering conventions.
+    must do it explicitly for spec adapters, which do not read Kiro agent
+    configs. This applies to custom agents as well as the default agent.
     Only loads ``file://`` resources matching ``*.md``.
     """
     try:
-        cfg_path = kiro_agents_dir() / "kirocrew.json"
-        if not cfg_path.exists():
+        cfg: dict | None = None
+        for candidate in _agent_spec_candidates(agent, project):
+            candidate_data = _read_agent_spec(candidate)
+            if candidate_data is None:
+                continue
+            if candidate_data.get("name") == agent or candidate.stem == agent:
+                cfg = candidate_data
+                break
+        if cfg is None:
             return ""
-        cfg = json.loads(safe_read_file(str(cfg_path)))
         resources = cfg.get("resources", [])
         parts: list[str] = []
         home_resolved = str(Path.home().resolve()) + os.sep
@@ -1083,6 +1104,11 @@ def _load_steering_resources() -> str:
     except Exception as exc:
         logger.debug("steering load failed: %s", type(exc).__name__)
         return ""
+
+
+def _load_steering_resources() -> str:
+    """Compatibility wrapper for the default agent's file resources."""
+    return _load_agent_file_resources("kirocrew")
 
 
 # Critical rules reinforced every session (supplements the system prompt).
@@ -1660,7 +1686,7 @@ def build_session_replay(
     return replay.translate(_MULTIBYTE_TABLE)
 
 
-def _skills_injection_plan(agent: str | None, *, is_cc: bool) -> tuple[bool, list[str]]:
+def _skills_injection_plan(agent: str | None, *, is_spec_adapter: bool) -> tuple[bool, list[str]]:
     """Whether to inject skills for *agent*, plus the glob restriction to apply.
 
     THE single source of truth for the agent-scoping rule, shared by the
@@ -1675,7 +1701,7 @@ def _skills_injection_plan(agent: str | None, *, is_cc: bool) -> tuple[bool, lis
     """
     globs = agent_skill_globs(agent) if agent else []
     is_custom = bool(agent) and agent != "kirocrew"
-    return (is_cc if globs else not is_custom), globs
+    return (is_spec_adapter if globs else not is_custom), globs
 
 
 def _emit_context_section_timings(
@@ -1796,15 +1822,31 @@ class ContextBuilder:
         self.channel_history = channel_history
         if bot_name:
             self._bot_name = bot_name
+            self._bot_name_explicit = True
         else:
+            from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
+
             cfg = KiroCrewConfig.load()
-            self._bot_name = "KiroCrew" if cfg.agent.provider == "claude_code" else "Kiro"
+            # Reads the ACP BACKEND, not agent.provider: the provider enum is
+            # single-valued ("acp"), so comparing it against "claude_code" could
+            # never be true and the branded name never applied. Branding stays
+            # claude-specific rather than spec-adapter-wide, because the persona
+            # rewrite substitutes Claude's own product wording.
+            # The persona NAME substituted into the prompt, carried over from main
+            # unchanged. Respelling it would rename the bot, not fix a typo.
+            _branded = "KiroCrew"  # brand-ok
+            claude_active = cfg.agent.acp_backend == ACP_BACKEND_CLAUDE
+            self._bot_name = _branded if claude_active else "Kiro"
+            self._bot_name_explicit = False
         # Register default memory in the workspace cache
         _memory_stores["default"] = self.memory
 
-    def _substitute_bot_name(self, prompt: str) -> str:
+    def _substitute_bot_name(self, prompt: str, provider_type: str | None = None) -> str:
         """Replace {bot_name} placeholder in prompt text."""
-        return prompt.replace("{bot_name}", self._bot_name)
+        bot_name = self._bot_name
+        if provider_type is not None and not self._bot_name_explicit:
+            bot_name = "KiroCrew" if provider_type == PROVIDER_LABEL_CLAUDE else "Kiro"  # brand-ok
+        return prompt.replace("{bot_name}", bot_name)
 
     @staticmethod
     def _resolve_prompt_templates(prompt: str, session_key: str) -> str:
@@ -2011,38 +2053,23 @@ class ContextBuilder:
         return prompt.replace("{{WIDGET_BLOCK}}", widget_block)
 
     @staticmethod
-    def _load_agent_prompt(agent: str) -> str:
+    def _load_agent_prompt(agent: str, project: str | None = None) -> str:
         """Read the prompt from a custom agent's config file."""
-        agents_dir = kiro_agents_dir()
-        for f in agents_dir.glob("*.json"):
-            # Skip macOS AppleDouble sidecars ("._foo.json"); not JSON.
-            if f.name.startswith("._"):
+        for f in _agent_spec_candidates(agent, project):
+            data = _read_agent_spec(f)
+            if data is None:
                 continue
-            # Resolve and gate on sensitive paths before reading: a symlink
-            # under ~/.kiro/agents/ could otherwise point at a credential
-            # file (e.g. ~/.aws/credentials renamed *.json).
-            try:
-                resolved = f.resolve(strict=True)
-            except OSError:
+            if data.get("name") != agent and f.stem != agent:
                 continue
-            if is_sensitive_path(str(resolved)):
-                continue
-            try:
-                # ValueError covers json.JSONDecodeError + UnicodeDecodeError
-                # so a non-UTF-8 sidecar can't break context building.
-                data = json.loads(resolved.read_text(encoding="utf-8"))
-                if not isinstance(data, dict):
-                    continue
-                if data.get("name") == agent or f.stem == agent:
-                    prompt = data.get("prompt") or ""
-                    if prompt.startswith("file://"):
-                        try:
-                            return safe_read_file(prompt[7:])
-                        except (OSError, PermissionError):
-                            return ""
-                    return prompt
-            except (OSError, ValueError):
-                continue
+            prompt = data.get("prompt") or ""
+            if not isinstance(prompt, str):
+                return ""
+            if prompt.startswith("file://"):
+                try:
+                    return safe_read_file(prompt[7:])
+                except (OSError, PermissionError):
+                    return ""
+            return prompt
         return ""
 
     def build_session_context(
@@ -2113,7 +2140,7 @@ class ContextBuilder:
         and hooks are injected for all agents.
         """
         is_custom = agent and agent != "kirocrew"
-        is_cc = provider_type == "claude_code"
+        is_spec_adapter = is_spec_adapter_provider_label(provider_type)
         caps = _resolve_caps(model_window)
         parts: list[str] = []
 
@@ -2274,12 +2301,11 @@ class ContextBuilder:
         # Steering files from agent config resources.
         # kiro-cli loads an agent's ``resources`` natively when spawned with
         # ``--agent`` (see acp/client.py ``_spawn``) — the same mechanism that
-        # lets us skip this for custom agents above. The CC backend
-        # (claude-agent-acp) does NOT read agent ``resources``, so only it needs
-        # the explicit load. Injecting on the ACP/kiro backend would duplicate
-        # what kiro-cli already loaded.
-        if not is_custom and is_cc and _group_included(context_groups, CONTEXT_GROUP_PROJECT):
-            steering_ctx = _load_steering_resources()
+        # lets us skip this on the kiro dialect for both default and custom
+        # agents. A spec adapter does not read ANY Kiro agent config, so it needs
+        # the selected agent's file resources explicitly.
+        if is_spec_adapter and _group_included(context_groups, CONTEXT_GROUP_PROJECT):
+            steering_ctx = _load_agent_file_resources(agent or "kirocrew", project)
             if steering_ctx:
                 if lazy_skills and len(steering_ctx) > caps.steering:
                     steering_ctx = steering_ctx[: caps.steering] + "\n...[steering truncated]\n"
@@ -2431,7 +2457,7 @@ class ContextBuilder:
         # skill's summary. The slice below is a defensive backstop only.
         # Mapped: CC only (kiro loads them natively). Unmapped: kirocrew only.
         # Shared with the post-compaction re-injection in build_message.
-        inject_skills, skill_globs = _skills_injection_plan(agent, is_cc=is_cc)
+        inject_skills, skill_globs = _skills_injection_plan(agent, is_spec_adapter=is_spec_adapter)
         if inject_skills:
             # ON: usage-ranked top-K bounded by the skills section cap.
             # OFF (budget=None): legacy full skills dump, unchanged behavior.
@@ -2627,12 +2653,19 @@ class ContextBuilder:
         _user_bounds: tuple[int, int] | None = None
         _user_part_index: int | None = None
         is_cc = provider_type == "claude_code"
+        # Two DIFFERENT concerns, deliberately not one flag: the skills plan is a
+        # DIALECT question (a spec adapter loads no kiro agent config, so Kiro Crew
+        # injects what kiro-cli would have loaded), while the persona rewrite below
+        # is claude-specific BRANDING that substitutes Claude's own product wording.
+        is_spec_adapter = is_spec_adapter_provider_label(provider_type)
 
         # Session context on first message only
         if is_new_session:
             # Agent prompt goes BEFORE session context wrapper
             # so the LLM treats it as its identity, not background info.
-            if is_cc:
+            if is_custom:
+                agent_prompt = self._load_agent_prompt(agent or "", project)
+            elif is_cc:
                 # CC gets the SAME KiroCrew persona prompt as kiro — including
                 # the Output Format rules (diff blocks, image embeds, OPTIONS)
                 # which are dashboard UI contracts, not kiro-specific. Only the
@@ -2647,8 +2680,6 @@ class ContextBuilder:
                     agent_prompt = agent_prompt.strip()
                 except Exception:
                     agent_prompt = ""
-            elif is_custom:
-                agent_prompt = self._load_agent_prompt(agent or "")
             else:
 
                 try:
@@ -2659,7 +2690,7 @@ class ContextBuilder:
                     agent_prompt = ""
             if agent_prompt:
                 agent_prompt = self._resolve_prompt_templates(agent_prompt, session_key or "")
-                agent_prompt = self._substitute_bot_name(agent_prompt)
+                agent_prompt = self._substitute_bot_name(agent_prompt, provider_type)
                 parts.append(
                     f"[AGENT SYSTEM PROMPT]\n{agent_prompt}\n[END AGENT SYSTEM PROMPT]\n\n"
                 )
@@ -2764,7 +2795,7 @@ class ContextBuilder:
         # mapping excludes and an unmapped custom agent cannot receive a block
         # its session-start context never contained.
         if not is_new_session and needs_reinjection:
-            _inject, _globs = _skills_injection_plan(agent, is_cc=is_cc)
+            _inject, _globs = _skills_injection_plan(agent, is_spec_adapter=is_spec_adapter)
             if _inject:
                 _cfg = KiroCrewConfig.load()
                 lazy_skills = bool(getattr(_cfg.skills, "lazy_load", False))

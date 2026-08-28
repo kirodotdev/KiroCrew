@@ -118,6 +118,23 @@ function renderChat(store = createTestStore()) {
   return { store, queryClient, ...utils }
 }
 
+const nativeMutationObserver = globalThis.MutationObserver
+let deterministicObservers: DeterministicMutationObserver[] = []
+
+class DeterministicMutationObserver {
+  readonly observe = vi.fn()
+  readonly disconnect = vi.fn()
+  readonly takeRecords = vi.fn(() => [] as MutationRecord[])
+
+  constructor(private readonly callback: MutationCallback) {
+    deterministicObservers.push(this)
+  }
+
+  emit(): void {
+    this.callback([], this as unknown as MutationObserver)
+  }
+}
+
 describe('ChatPage — pull request panel discovery', () => {
   beforeEach(() => {
     setWindowWidth(1400)
@@ -198,8 +215,15 @@ describe('ChatPage — activity panel open state is resize-independent', () => {
 })
 
 describe('ChatPage — activity slot self-healing', () => {
-  beforeEach(() => setWindowWidth(1400))
+  beforeEach(() => {
+    setWindowWidth(1400)
+    deterministicObservers = []
+    globalThis.MutationObserver = (
+      DeterministicMutationObserver as unknown as typeof MutationObserver
+    )
+  })
   afterEach(() => {
+    globalThis.MutationObserver = nativeMutationObserver
     document.getElementById('activity-bar-slot')?.remove()
   })
 
@@ -216,7 +240,16 @@ describe('ChatPage — activity slot self-healing', () => {
     // The MutationObserver must latch it and portal the panel there.
     const slot = document.createElement('div')
     slot.id = 'activity-bar-slot'
-    act(() => { document.body.appendChild(slot) })
+    const activityObserver = deterministicObservers.find(observer =>
+      observer.observe.mock.calls.some(([target, options]) =>
+        target === document.body && options?.childList && options?.subtree,
+      ),
+    )
+    expect(activityObserver).toBeDefined()
+    act(() => {
+      document.body.appendChild(slot)
+      activityObserver?.emit()
+    })
 
     await waitFor(() => {
       const panel = screen.getByTestId('side-panel')

@@ -697,9 +697,7 @@ class TestRedactCredentials:
 
         # Derived worst case: the narrowest `sub` a caller could pass, with every
         # float claim at its shortest repr (an exactly-integral `time.time()`).
-        claims = json.loads(
-            base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
-        )
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
         # `gen` is normalised alongside `sub` because it mirrors the persisted
         # counter behind `revocation_gen.current_revocation_gen()`, LOADED FROM
         # DISK on first use. Left ambient, the
@@ -1142,15 +1140,11 @@ class TestSecretGateOrderIsCostOrdered:
         assert counts["entropy"] == 1, f"entropy should be reached: {counts}"
         assert counts["decode"] == 0, f"decode must run after entropy: {counts}"
 
-    def test_a_real_key_still_pays_for_every_gate(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_a_real_key_still_pays_for_every_gate(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # The pass-through case: a genuine key clears all gates, so every gate
         # runs exactly once. This is what proves the cheap gates are not
         # short-circuiting a real secret away from the expensive checks.
-        counts = self._counting_classify(
-            "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", monkeypatch
-        )
+        counts = self._counting_classify("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", monkeypatch)
         assert counts == {"entropy": 1, "decode": 1}
 
 
@@ -1198,9 +1192,7 @@ class TestSecretGateOrderIsVerdictNeutral:
             return False
         return (
             security._vowel_ratio(token) <= security._SECRET_MAX_VOWEL_RATIO
-            and not security._lowercase_run_exceeds(
-                token, security._SECRET_MAX_LOWER_RUN
-            )
+            and not security._lowercase_run_exceeds(token, security._SECRET_MAX_LOWER_RUN)
             and security._shannon_entropy(token) >= security._SECRET_ENTROPY_MIN
             and not security._decodes_to_printable_text(token)
         )
@@ -1948,10 +1940,7 @@ class TestOAuthAuthorizationUrlRedaction:
         assert oauth_url_contains_credential(url) is True
 
     def test_userinfo_embedded_token_fails_closed(self) -> None:
-        url = (
-            f"https://{self.GITHUB_TOKEN}@api.notion.com/v1/oauth/authorize"
-            "?state=ok"
-        )
+        url = f"https://{self.GITHUB_TOKEN}@api.notion.com/v1/oauth/authorize" "?state=ok"
         assert oauth_url_contains_credential(url) is True
         cleaned, warnings = redact_credentials(url)
         assert self.GITHUB_TOKEN not in cleaned
@@ -1963,10 +1952,7 @@ class TestOAuthAuthorizationUrlRedaction:
 
     def test_bare_aws_secret_in_hostname_fails_closed(self) -> None:
         assert len(self.BARE_AWS_SECRET_ALNUM) == 40
-        url = (
-            f"https://{self.BARE_AWS_SECRET_ALNUM}.example/oauth/authorize"
-            "?state=ok"
-        )
+        url = f"https://{self.BARE_AWS_SECRET_ALNUM}.example/oauth/authorize" "?state=ok"
         assert oauth_url_contains_credential(url) is True
 
     def test_bare_aws_secret_in_fragment_fails_closed(self) -> None:
@@ -2051,9 +2037,7 @@ class TestOAuthAuthorizationUrlRedaction:
         ],
         ids=["form-encoded-spaces", "percent-encoded-header"],
     )
-    def test_encoded_pem_header_in_path_fails_closed_everywhere(
-        self, encoded_header: str
-    ) -> None:
+    def test_encoded_pem_header_in_path_fails_closed_everywhere(self, encoded_header: str) -> None:
         url = f"https://attacker.example/upload/{encoded_header}/c2hvcnQ"
         assert oauth_url_contains_credential(url) is True
 
@@ -2172,9 +2156,7 @@ class TestOperatorOAuthEndpointExtension:
         )
 
     @pytest.fixture(autouse=True)
-    def _isolated_extension_state(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> Path:
+    def _isolated_extension_state(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
         """Fresh home + fresh process-global audit/memo state for EVERY test.
 
         The dedupe set and the file memo are process-global by design; without
@@ -2231,9 +2213,7 @@ class TestOperatorOAuthEndpointExtension:
             ext_home / "oauth_endpoints.json",
             ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000),
         )
-        assert _load_operator_oauth_endpoints() == frozenset(
-            {("other.idp.example", "/authorize")}
-        )
+        assert _load_operator_oauth_endpoints() == frozenset({("other.idp.example", "/authorize")})
 
         (ext_home / "oauth_endpoints.json").unlink()
         assert _load_operator_oauth_endpoints() == frozenset()
@@ -2362,16 +2342,12 @@ class TestOperatorOAuthEndpointExtension:
         invalid_padding: list[dict] = [
             {"host": "*.invalid.example", "path": "/a"}
         ] * _ENDPOINT_EXTENSION_CAP
-        self._write_extension(
-            ext_home, invalid_padding + [{"host": self.HOST, "path": self.PATH}]
-        )
+        self._write_extension(ext_home, invalid_padding + [{"host": self.HOST, "path": self.PATH}])
         assert _load_operator_oauth_endpoints() == frozenset()
 
     # ── Gate: the extension widens exactly the builtin exemption, nothing more ──
 
-    def test_extended_endpoint_passes_previously_rejected_consent_url(
-        self, ext_home: Path
-    ) -> None:
+    def test_extended_endpoint_passes_previously_rejected_consent_url(self, ext_home: Path) -> None:
         # Fails closed with no file (the pre-extension behavior) …
         assert oauth_url_contains_credential(self.CONSENT_URL) is True
         # … and passes once the operator allowlists the exact endpoint.
@@ -3270,6 +3246,19 @@ class TestExfilExactHostExemption:
 class TestIsSensitivePath:
     """Tests for is_sensitive_path()."""
 
+    @pytest.mark.parametrize(
+        "leaf",
+        [
+            "run/kiro_pids.txt",
+            "run/kiro_session_pids.txt",
+            "kiro_pids.txt",
+            "kiro_session_pids.txt",
+        ],
+    )
+    def test_process_tracking_authority_is_protected(self, leaf: str) -> None:
+        for prefix in (".kiro/crew", ".kirocrew"):
+            assert is_sensitive_path(f"~/{prefix}/{leaf}") is True
+
     def test_aws_credentials(self) -> None:
         assert is_sensitive_path("~/.aws/credentials") is True
 
@@ -3746,10 +3735,15 @@ class TestIsSensitiveBashCommand:
     def test_chained_relative_cd_resolves_against_prior_base(self) -> None:
         """Relative cd targets must join against the prior base_dir, not overwrite."""
         # cd ~/.kiro && cd crew → base should be ~/.kiro/crew, not bare "crew"
-        assert is_sensitive_bash_command("cd ~/.kiro && cd crew && cat token_signing.key") is not None
+        assert (
+            is_sensitive_bash_command("cd ~/.kiro && cd crew && cat token_signing.key") is not None
+        )
         assert is_sensitive_bash_command("cd ~ && cd .aws && cat credentials") is not None
         # Absolute cd resets the base entirely
-        assert is_sensitive_bash_command("cd /tmp && cd /home/user/.aws && cat credentials") is not None
+        assert (
+            is_sensitive_bash_command("cd /tmp && cd /home/user/.aws && cat credentials")
+            is not None
+        )
         # Benign chained cd is allowed
         assert is_sensitive_bash_command("cd ~/project && cd src && cat main.py") is None
 
@@ -3964,9 +3958,7 @@ class TestIsSensitiveBashCommand:
         entered $HOME.
         """
         assert (
-            is_sensitive_bash_command(
-                "__kc_subst=/tmp; cd $(printf %s ~); cat .aws/credentials"
-            )
+            is_sensitive_bash_command("__kc_subst=/tmp; cd $(printf %s ~); cat .aws/credentials")
             is not None
         )
 
@@ -4037,9 +4029,7 @@ class TestIsSensitiveBashCommand:
             is_sensitive_bash_command('cd "$(printf %s "$HOME/.kiro")/crew"; cat token_signing.key')
             is not None
         )
-        assert (
-            is_sensitive_bash_command('cd `printf %s "$HOME/.aws"`; cat credentials') is not None
-        )
+        assert is_sensitive_bash_command('cd `printf %s "$HOME/.aws"`; cat credentials') is not None
         assert (
             is_sensitive_bash_command('cd "$(printf %s $HOME)/.aws"; cat credentials') is not None
         )
@@ -4101,9 +4091,7 @@ class TestIsSensitiveBashCommand:
             )
             is not None
         )
-        assert (
-            is_sensitive_bash_command("cd ~/.aws; false && cd /tmp; cat credentials") is not None
-        )
+        assert is_sensitive_bash_command("cd ~/.aws; false && cd /tmp; cat credentials") is not None
         # Ordinary chained moves are unaffected.
         assert is_sensitive_bash_command("cd /tmp; cd /var/log; cat syslog") is None
         assert is_sensitive_bash_command("cd ~ && cd src && cat main.py") is None
@@ -4141,9 +4129,7 @@ class TestIsSensitiveBashCommand:
         still readable in the text.
         """
         assert (
-            is_sensitive_bash_command(
-                "X=x; D=${X:+$HOME/.kiro/crew}; cd $D; cat token_signing.key"
-            )
+            is_sensitive_bash_command("X=x; D=${X:+$HOME/.kiro/crew}; cd $D; cat token_signing.key")
             is not None
         )
         assert (
@@ -4213,9 +4199,7 @@ class TestIsSensitiveBashCommand:
             is_sensitive_bash_command('cd "$(printf %s ~)/.kiro/crew" && cat token_signing.key')
             is not None
         )
-        assert (
-            is_sensitive_bash_command("cd $(printf %s ~)/.aws && cat credentials") is not None
-        )
+        assert is_sensitive_bash_command("cd $(printf %s ~)/.aws && cat credentials") is not None
         assert is_sensitive_bash_command("cd `printf %s ~`/.ssh && cat id_rsa") is not None
         assert is_sensitive_bash_command("cat $(printf %s ~)/.aws/credentials") is not None
         # Through a variable assigned from a substitution.
@@ -4530,8 +4514,29 @@ class TestIsSensitiveBashCommand:
         # Each of these injects ONE excluded character into an otherwise valid
         # read. None may be exonerated.
         for bad in (
-            "(", ")", "{", "}", "[", "]", "<", ">", "|", "&", ";", "`", "$",
-            "'", '"', "\\", "*", "?", "!", "#", "\n", "\r", "\x00",
+            "(",
+            ")",
+            "{",
+            "}",
+            "[",
+            "]",
+            "<",
+            ">",
+            "|",
+            "&",
+            ";",
+            "`",
+            "$",
+            "'",
+            '"',
+            "\\",
+            "*",
+            "?",
+            "!",
+            "#",
+            "\n",
+            "\r",
+            "\x00",
         ):
             cmd = base + bad
             assert _is_bare_trust_root_read(cmd) is False, repr(cmd)
@@ -4767,7 +4772,9 @@ class TestChdirVerbSpellings:
         monotone precisely so that adding syntax cannot walk a denial back.
         """
         assert security.is_sensitive_bash_command("pushd ~/.aws; popd; cat credentials")
-        assert security.is_sensitive_bash_command("Push-Location ~/.aws; Pop-Location; cat credentials")
+        assert security.is_sensitive_bash_command(
+            "Push-Location ~/.aws; Pop-Location; cat credentials"
+        )
 
     def test_cmd_exe_drive_switch_is_not_the_target(self) -> None:
         """`cd /d <dir>` must track <dir>, via the candidate rule.
@@ -4894,10 +4901,10 @@ class TestChdirVerbSpellings:
             security.is_sensitive_bash_command("Set-Location -Path:/tmp; Get-Content notes.txt")
             is None
         )
+        assert security.is_sensitive_bash_command("cd -Path:~/project; cat main.py") is None
         assert (
-            security.is_sensitive_bash_command("cd -Path:~/project; cat main.py") is None
+            security.is_sensitive_bash_command("cd -ErrorAction:Stop /tmp; cat notes.txt") is None
         )
-        assert security.is_sensitive_bash_command("cd -ErrorAction:Stop /tmp; cat notes.txt") is None
         # A flag with no payload contributes no candidate at all.
         assert security._chdir_candidates(["-Force"]) == []
         assert security._chdir_candidates(["-Path:"]) == []
@@ -5033,9 +5040,7 @@ class TestNativeHomeEntryThenFencedRead:
         assert security.is_sensitive_bash_command(
             'cd /d "%USERPROFILE%" ' + self.AMP + " more .aws" + self.BS + "credentials"
         )
-        assert security.is_sensitive_bash_command(
-            'cd "~" ' + self.AMP + " cat .aws/credentials"
-        )
+        assert security.is_sensitive_bash_command('cd "~" ' + self.AMP + " cat .aws/credentials")
         assert security.is_sensitive_bash_command("cd '~' " + self.AMP + " cat .aws/credentials")
         assert security.is_sensitive_bash_command(
             'cd "%USERPROFILE%"; type .aws' + self.BS + "credentials"
@@ -5052,9 +5057,7 @@ class TestNativeHomeEntryThenFencedRead:
         assert security.is_sensitive_bash_command(
             "cd %USERPROFILE% " + self.AMP + " more<.aws" + self.BS + "credentials"
         )
-        assert security.is_sensitive_bash_command(
-            "cd ~ " + self.AMP + " more<.aws/credentials"
-        )
+        assert security.is_sensitive_bash_command("cd ~ " + self.AMP + " more<.aws/credentials")
         assert security.is_sensitive_bash_command("cd ~; cat >.aws/credentials")
         assert security.is_sensitive_bash_command("cd ~; {cat .aws/credentials;}")
 
@@ -5259,8 +5262,7 @@ class TestNativeHomeEntryThenFencedRead:
         """
         for tail in ("C:.aws" + self.BS + "credentials", "C:.ssh/id_rsa"):
             assert (
-                security.is_sensitive_bash_command("cd ~ " + self.AMP + " type " + tail)
-                is not None
+                security.is_sensitive_bash_command("cd ~ " + self.AMP + " type " + tail) is not None
             ), tail
 
     def test_drive_relative_benign_target_still_allowed(self) -> None:
@@ -5343,8 +5345,7 @@ class TestNativeHomeEntryThenFencedRead:
             "./project" + self.BS + ".." + self.BS + ".ssh/id_" + "rsa",
         ):
             assert (
-                security.is_sensitive_bash_command("cd ~ " + self.AMP + " type " + tail)
-                is not None
+                security.is_sensitive_bash_command("cd ~ " + self.AMP + " type " + tail) is not None
             ), tail
 
     def test_traversal_that_leaves_the_directory_is_not_this_scan(self) -> None:
@@ -5436,8 +5437,7 @@ class TestNativeHomeEntryThenFencedRead:
             ".config" + self.BS + "gcloud." + self.BS + "x",
         ):
             assert (
-                security.is_sensitive_bash_command("cd ~ " + self.AMP + " type " + tail)
-                is not None
+                security.is_sensitive_bash_command("cd ~ " + self.AMP + " type " + tail) is not None
             ), tail
 
     def test_dot_only_segments_keep_their_meaning(self) -> None:
@@ -5473,8 +5473,7 @@ class TestNativeHomeEntryThenFencedRead:
             "type '.aw's" + self.BS + "credentials",
         ):
             assert (
-                security.is_sensitive_bash_command("cd ~ " + self.AMP + " " + spelling)
-                is not None
+                security.is_sensitive_bash_command("cd ~ " + self.AMP + " " + spelling) is not None
             ), spelling
 
     def test_skipping_quotes_does_not_fuse_separate_arguments(self) -> None:
@@ -5502,13 +5501,7 @@ class TestNativeHomeEntryThenFencedRead:
         for spelling in (
             "cd ~ " + self.AMP + " type .aw" + self.BT + "s" + self.BS + "credentials",
             "c" + self.BT + "d ~ " + self.AMP + " type .aws" + self.BS + "credentials",
-            "cd %USER"
-            + self.BT
-            + "PROFILE% "
-            + self.AMP
-            + " type .aws"
-            + self.BS
-            + "credentials",
+            "cd %USER" + self.BT + "PROFILE% " + self.AMP + " type .aws" + self.BS + "credentials",
         ):
             assert security.is_sensitive_bash_command(spelling) is not None, spelling
 
@@ -5564,10 +5557,7 @@ class TestNativeHomeEntryThenFencedRead:
         # An operator still ends the run, which is what stops the scan reaching a
         # `~` that belongs to a different command. Here the shell is in /tmp, so
         # `.aws/credentials` resolves under /tmp and is not the fenced store.
-        assert (
-            security.is_sensitive_bash_command("cd /tmp ; echo ~ ; cat .aws/credentials")
-            is None
-        )
+        assert security.is_sensitive_bash_command("cd /tmp ; echo ~ ; cat .aws/credentials") is None
 
     def test_a_fenced_entry_containing_a_space(self) -> None:
         """Two fenced entries have a space in them, so a word cannot end at one."""
@@ -5691,9 +5681,7 @@ class TestWindowsPathShapes:
         from unittest.mock import patch
 
         monkeypatch.delenv("KIROCREW_HOME", raising=False)
-        with patch.object(
-            security.Path, "home", return_value=Path("\\\\srv\\homes\\u")
-        ):
+        with patch.object(security.Path, "home", return_value=Path("\\\\srv\\homes\\u")):
             assert security._is_path_like("\\\\srv\\homes\\u\\.aws\\credentials")
             assert not security._is_path_like("\\\\other\\share\\x")
             # A share that merely extends the name past the segment boundary
@@ -5777,8 +5765,7 @@ class TestWindowsPathShapes:
         # Adding a leaf must not fence the whole crew home: unrelated content in
         # the same native spelling stays writable.
         assert (
-            is_sensitive_bash_command('echo x > "C:\\Users\\u\\.kiro\\crew\\sessions.db"')
-            is None
+            is_sensitive_bash_command('echo x > "C:\\Users\\u\\.kiro\\crew\\sessions.db"') is None
         )
 
     def test_appdata_alias_of_fenced_store_is_blocked(self) -> None:
@@ -5834,25 +5821,18 @@ class TestWindowsPathShapes:
         for cmd in cmds:
             assert is_sensitive_bash_command(cmd) is not None, cmd
         # Other %LOCALAPPDATA% content stays allowed.
-        assert (
-            is_sensitive_bash_command('type "%LOCALAPPDATA%\\SomeApp\\config.json"')
-            is None
-        )
+        assert is_sensitive_bash_command('type "%LOCALAPPDATA%\\SomeApp\\config.json"') is None
         # The home-anchored native spelling of the Local store is fenced too
         # (via the _SENSITIVE_HOME_DIRS entry, not the alias branch).
         assert (
-            is_sensitive_bash_command(
-                "type 'C:\\Users\\u\\AppData\\Local\\kiro-cli\\data.sqlite3'"
-            )
+            is_sensitive_bash_command("type 'C:\\Users\\u\\AppData\\Local\\kiro-cli\\data.sqlite3'")
             is not None
         )
 
     def test_backslash_relative_traversal_is_blocked(self) -> None:
         assert is_sensitive_bash_command("type ..\\..\\.aws\\credentials") is not None
         assert (
-            is_sensitive_bash_command(
-                "type ..\\..\\AppData\\Roaming\\kiro-cli\\data.sqlite3"
-            )
+            is_sensitive_bash_command("type ..\\..\\AppData\\Roaming\\kiro-cli\\data.sqlite3")
             is not None
         )
         # The POSIX spelling keeps matching through the widened alternation.
@@ -5860,9 +5840,7 @@ class TestWindowsPathShapes:
 
     def test_benign_native_spellings_stay_allowed(self) -> None:
         assert is_sensitive_bash_command("type 'C:\\Users\\u\\project\\readme.md'") is None
-        assert (
-            is_sensitive_bash_command("python -c \"open(r'C:\\temp\\x.txt')\"") is None
-        )
+        assert is_sensitive_bash_command("python -c \"open(r'C:\\temp\\x.txt')\"") is None
 
     def test_down_up_traversal_reentry_is_blocked(self) -> None:
         # A same-level excursion (X\..) is a canonical no-op, so a spelling
@@ -5981,6 +5959,26 @@ class TestBareTokenProtectedLeaves:
             for prefix in security.crew_home_prefixes():
                 anchored = f"echo forged > ~/{prefix}/{leaf}"
                 assert is_sensitive_bash_command(anchored) is not None, anchored
+
+
+class TestAcpRegistryCacheWriteProtection:
+    """The registry cache is executable configuration, readable but not writable."""
+
+    @pytest.mark.parametrize("prefix", [".kiro/crew", ".kirocrew"])
+    def test_file_tool_cannot_rewrite_registry_cache(self, prefix: str) -> None:
+        from kiro_crew.security import is_sensitive_write_path
+
+        assert is_sensitive_write_path(f"~/{prefix}/acp-registry.json") is True
+        assert is_sensitive_path(f"~/{prefix}/acp-registry.json") is False
+
+    @pytest.mark.parametrize("prefix", [".kiro/crew", ".kirocrew"])
+    def test_shell_cannot_rewrite_registry_cache(self, prefix: str) -> None:
+        for command in (
+            f"echo forged > ~/{prefix}/acp-registry.json",
+            f"cp /tmp/forged.json ~/{prefix}/acp-registry.json",
+            f"python -c \"open('~/{prefix}/acp-registry.json','w')\"",
+        ):
+            assert is_sensitive_bash_command(command) is not None, command
 
 
 class TestKiroAgentsDirWriteProtection:
@@ -6117,9 +6115,7 @@ class TestKiroAgentsDirWriteProtection:
         # over-blocked on the bash gate.
         assert is_sensitive_bash_command("cat ~/.kiro/agents-backup/foo.json") is None
 
-    def test_kiro_home_override_is_covered_on_the_tool_gate(
-        self, tmp_path, monkeypatch
-    ) -> None:
+    def test_kiro_home_override_is_covered_on_the_tool_gate(self, tmp_path, monkeypatch) -> None:
         # kiro_agents_dir() honours KIRO_HOME; the override moves the specs the
         # gateway execs, so the write gate must follow it (re-anchored the same way
         # KIROCREW_HOME re-anchors the crew secrets). The default ~/.kiro/agents
@@ -7034,10 +7030,7 @@ class TestKiroCrewSlackAppCreateLink:
         payload = slack_manifest.stripped_template().replace(
             slack_manifest.ALIAS_PLACEHOLDER, secret40
         )
-        url = (
-            "https://api.slack.com/apps?new_app=1&manifest_yaml="
-            + quote(payload, safe="")
-        )
+        url = "https://api.slack.com/apps?new_app=1&manifest_yaml=" + quote(payload, safe="")
         assert scan_exfiltration_urls(url) != []
 
         # Within ALIAS_MAX but a recognised credential shape — caught on the
@@ -7051,9 +7044,11 @@ class TestKiroCrewSlackAppCreateLink:
         from kiro_crew import slack_manifest
         from kiro_crew.security import scan_exfiltration_urls
 
-        tampered = slack_manifest.stripped_template().replace(
-            slack_manifest.ALIAS_PLACEHOLDER, "real", 1
-        ).replace(slack_manifest.ALIAS_PLACEHOLDER, "other")
+        tampered = (
+            slack_manifest.stripped_template()
+            .replace(slack_manifest.ALIAS_PLACEHOLDER, "real", 1)
+            .replace(slack_manifest.ALIAS_PLACEHOLDER, "other")
+        )
         assert scan_exfiltration_urls(self._link(payload=tampered)) != []
 
     def test_arbitrary_payload_redacted(self) -> None:

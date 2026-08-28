@@ -490,13 +490,15 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                     # gateway upgrade) and the liveness signal. That only holds
                     # while the payload stays counts-and-environment: the
                     # checkout's branch and commit say what the operator is
-                    # working ON, which is not an app's business and has no
-                    # consumer outside the owner surfaces. Strip them here
+                    # working ON, and the harness block says which agent
+                    # binary they chose to run — host configuration, not an
+                    # app's business, with no consumer outside the owner
+                    # surfaces. Strip them here
                     # rather than moving the whole frame behind a declaration,
                     # which would silently cut every existing app off from the
                     # version signal. ``/api/status`` and the SSE stream run on
                     # dashboard-user tokens and keep the full snapshot.
-                    for _owner_only in ("branch", "commit"):
+                    for _owner_only in ("branch", "commit", "harness"):
                         data.pop(_owner_only, None)
                     # Tier 0 admits every app unconditionally, but the decision
                     # is still a grant per ``AUTOSDE.yaml`` -- this frame is

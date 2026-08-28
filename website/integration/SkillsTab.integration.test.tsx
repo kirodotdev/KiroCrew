@@ -60,7 +60,8 @@ describe('SkillsTab Integration Tests', () => {
     renderWithProviders(<SkillsTab />)
 
     await waitFor(() => {
-      expect(screen.getByText('Amazon Writing')).toBeInTheDocument()
+      const list = screen.getByRole('listbox', { name: 'Skills' })
+      expect(within(list).getByText('Amazon Writing')).toBeInTheDocument()
     })
 
     // amazon-writing is always-on → "auto" badge; code-search → "on-demand".
@@ -271,7 +272,8 @@ describe('SkillsTab Integration Tests', () => {
     renderWithProviders(<SkillsTab />)
 
     await waitFor(() => {
-      expect(screen.getByText('Amazon Writing')).toBeInTheDocument()
+      const list = screen.getByRole('listbox', { name: 'Skills' })
+      expect(within(list).getByText('Amazon Writing')).toBeInTheDocument()
     })
 
     const refreshBtn = screen.getByRole('button', { name: /refresh skills/i })
@@ -319,7 +321,10 @@ describe('SkillsTab Integration Tests', () => {
     renderWithProviders(<SkillsTab />)
 
     // aim-tool auto-selected; read-only sources have no Edit/Delete.
-    await waitFor(() => expect(screen.getByText('Aim Tool')).toBeInTheDocument())
+    await waitFor(() => {
+      const list = screen.getByRole('listbox', { name: 'Skills' })
+      expect(within(list).getByText('Aim Tool')).toBeInTheDocument()
+    })
     expect(screen.queryByRole('button', { name: /edit/i })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /delete/i })).not.toBeInTheDocument()
   })

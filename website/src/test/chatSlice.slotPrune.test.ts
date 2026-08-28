@@ -136,6 +136,7 @@ describe('slot teardown parity', () => {
       slotStatusDetail: Object.fromEntries(keys.map(k => [k, { kind: 'compacting' as const, text: 'Compacting…', ts: 1 }])),
       slotContextPct: Object.fromEntries(keys.map(k => [k, 42])),
       slotContextTokens: Object.fromEntries(keys.map(k => [k, { used: 1234, window: 200000 }])),
+      slotRateLimit: Object.fromEntries(keys.map(k => [k, { status: 'allowed_warning', utilization: 81 }])),
       stopPressedAt: Object.fromEntries(keys.map(k => [k, 999])),
       followups: Object.fromEntries(keys.map(k => [k, { items: [], ts: 1 }])),
       folderSuggestions: Object.fromEntries(keys.map(k => [k, { folderId: 'f', folderName: 'F', breadcrumb: 'F', ts: 1, turns: 0 }])),
@@ -150,7 +151,7 @@ describe('slot teardown parity', () => {
   const perSlotMaps = [
     'slotMessages', 'slotActivity', 'slotRun', 'slotHydrated', 'slotSide',
     'slotSideClosed', 'slotStatusDetail', 'slotContextPct', 'slotContextTokens',
-    'stopPressedAt', 'followups', 'folderSuggestions', 'subagentQueued', 'goalLoops',
+    'slotRateLimit', 'stopPressedAt', 'followups', 'folderSuggestions', 'subagentQueued', 'goalLoops',
     'slotPaneHasMore', 'slotPaneBounded',
     // Client-only and unrecoverable, so a slot that leaves has to take it with it.
     'thinkingOrphans',

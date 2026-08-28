@@ -24,7 +24,6 @@
     "hide_full_changelog": "▾ Hide Full Changelog",
     "i_d_like_to_request_a_feature": "I’d like to request a feature!",
     "iam_identity_center": "IAM Identity Center",
-    "kiro_credit_usage_api_key": "Kiro credit usage — not available with API key authentication",
     "kiro_credit_usage_unavailable": "Kiro credit usage — unavailable",
     "memory_unavailable": "Memory: unavailable",
     "metrics_are_stale_latest_fetch_failed": "Metrics are stale, latest fetch failed",
@@ -65,7 +64,10 @@
     "open_command_bar": "Open Command Bar",
     "focus_mode": "Focus mode",
     "focus_mode_title": "Focus mode · Alt+Shift+M",
-    "focus_mode_title_mac": "Focus mode · ⌥⇧M"
+    "focus_mode_title_mac": "Focus mode · ⌥⇧M",
+    "kiro_credit_usage_api_key": "Kiro credit usage — not available with API key authentication",
+    "active_harness": "New sessions use {{label}}. Open chats keep the harness they started with.",
+    "harness_new_sessions": "New sessions"
   },
   "appSdk": {
     "chatEmbed": {
@@ -1285,11 +1287,6 @@
     "appHost": {
       "not_installed": "\"{{name}}\" is not installed"
     },
-    "approvalCard": {
-      "approval_no_longer_pending": "This approval has expired or was already decided — the agent is no longer waiting on it.",
-      "decision_failed": "This decision may not have been recorded — the request failed.",
-      "decision_not_recorded_error": "This decision wasn't recorded: {{error}}"
-    },
     "approvalModePicker": {
       "approval_mode_aria": "Approval mode: {{mode}}",
       "normal_label": "Normal",
@@ -1391,13 +1388,6 @@
       "terminal": "Terminal"
     },
     "chatInput": {
-      "send_a_message_or_tap_the_mic_for_voice": "Send a message, or tap the mic for voice",
-      "release_to_transcribe": "Release to transcribe",
-      "hold_to_talk": "Hold to talk",
-      "release_to_cancel": "Release to cancel",
-      "slide_up_to_cancel": "Slide up to cancel",
-      "switch_to_keyboard": "Switch to keyboard",
-      "switch_to_voice": "Switch to voice",
       "drop_to_attach": "Drop to attach",
       "agent": "Agent: {{name}}",
       "approve_sub_agent": "Approve sub-agent: {{name}}",
@@ -1438,8 +1428,21 @@
       "queue": "Queue",
       "queue_run_after_the_current_work_finishes_desc": "Run after the current work finishes",
       "steer_act_on_this_right_away_desc": "Act on this right away",
+      "send_a_message_or_tap_the_mic_for_voice": "Send a message, or tap the mic for voice",
+      "release_to_transcribe": "Release to transcribe",
+      "hold_to_talk": "Hold to talk",
+      "release_to_cancel": "Release to cancel",
+      "slide_up_to_cancel": "Slide up to cancel",
+      "switch_to_keyboard": "Switch to keyboard",
+      "switch_to_voice": "Switch to voice",
       "finishing": "Finishing…",
-      "keep_holding_to_record": "Keep holding to record"
+      "keep_holding_to_record": "Keep holding to record",
+      "plan_limit": "Plan limit",
+      "limit_type": "Limit type",
+      "resets": "Resets",
+      "rate_limit_allowed": "OK",
+      "rate_limit_warning": "Near limit",
+      "rate_limit_rejected": "Rate limited"
     },
     "chatPane": {
       "earlier_messages_load_failed": "Couldn't load earlier messages. Scroll to the top of the session to try again.",
@@ -2482,6 +2485,11 @@
       "unsaved_changes": "Unsaved changes",
       "webhook_unbound_short": "No tokens bound",
       "wire_what_it_works_with": "What it works with"
+    },
+    "approvalCard": {
+      "approval_no_longer_pending": "This approval has expired or was already decided — the agent is no longer waiting on it.",
+      "decision_failed": "This decision may not have been recorded — the request failed.",
+      "decision_not_recorded_error": "This decision wasn't recorded: {{error}}"
     },
     "confirmDialog": {
       "cancel": "Cancel"
@@ -3538,6 +3546,11 @@
       "no_checkout_found_env_example": "KIROCREW_DEVFLEET_REPO=/path/to/your/checkout",
       "no_checkout_found_action": "Set the environment variable below, or add dev_fleet.repo_path to config.json in your {{productName}} data directory (~/.kiro/crew by default) to make it stick, then restart the gateway."
     },
+    "developer": {
+      "featurePreviewsTab": {
+        "experimental_acp_backends_claude_code": "Claude Code as an alternative to Kiro CLI. Experimental — safety refusals work; end-to-end sessions are not yet verified."
+      }
+    },
     "developerPage": {
       "tabs": {
         "agentBackend": {
@@ -4095,6 +4108,17 @@
         "structured_semantic_key_value_episodic_conversat": "Structured semantic (key-value) + episodic (conversation fragments) memory with vector search. Embeddings are always-on — the model downloads automatically in the background.",
         "unknown_error": "Unknown error",
         "verifying_model_integrity": "Verifying model integrity…"
+      },
+      "acpBackend": {
+        "routing_routed": "Tool calls reach {{productName}}'s security gate",
+        "routing_indeterminate": "Tool-call routing is not verified — new sessions will refuse tool calls",
+        "routing_bypassed": "Tool calls would bypass {{productName}}'s security gate — new sessions will refuse tool calls",
+        "routing_reason": "{{reason}}",
+        "ungated_opt_out": "Ungated tools are allowed. Denied-command rules, sensitive-path blocking, and the governance ceiling are not consulted for this backend's self-approved calls.",
+        "applies_to_new_sessions": "New chats use this harness. A chat that is already open keeps the one it started with — switching here does not change it mid-session.",
+        "confirm_open_sessions": "This does not switch the harness mid-session. Open chats keep the one they started with until you start a new chat.",
+        "confirm_model_reset": "Model selections will be reset — each harness has its own model list. This includes open chats.",
+        "load_failed": "Could not load ACP adapters. Try again."
       }
     },
     "overviewPage": {
@@ -4254,19 +4278,6 @@
       "script_source_download": "Download script",
       "script_source_failed": "Could not load the script source.",
       "script_source_truncated": "Truncated — the script is larger than the preview limit."
-    },
-    "servicesTab": {
-      "channels": "Channels",
-      "connect_error": "Connection error",
-      "discord": "Discord",
-      "imessage": "iMessage",
-      "teams": "Microsoft Teams",
-      "telegram": "Telegram",
-      "webex": "Webex",
-      "wecom": "WeCom",
-      "weixin": "WeChat",
-      "whatsapp": "WhatsApp",
-      "feishu": "Feishu"
     },
     "sessionArchive": {
       "no_matches_for_query": "No matches for \"{{query}}\".",
@@ -5120,6 +5131,19 @@
     "worldsPopout": {
       "hide_controls": "Hide controls",
       "show_controls": "Show controls"
+    },
+    "servicesTab": {
+      "channels": "Channels",
+      "connect_error": "Connection error",
+      "discord": "Discord",
+      "imessage": "iMessage",
+      "teams": "Microsoft Teams",
+      "telegram": "Telegram",
+      "webex": "Webex",
+      "wecom": "WeCom",
+      "weixin": "WeChat",
+      "whatsapp": "WhatsApp",
+      "feishu": "Feishu"
     }
   },
   "privacyDisclosure": {

@@ -2191,9 +2191,28 @@ class TestSteerRun:
         mgr = _manager()
         info = _info("a")
         info._session_sharing = True
-        info._shared_provider = MagicMock(steer=AsyncMock(return_value=False))
+        info._shared_provider = MagicMock(steer=AsyncMock(return_value=False), supports_steer=True)
         mgr._agents["a"] = info
         assert await mgr.steer_run("a", "hi") == (False, "steer rejected by provider")
+
+    @pytest.mark.asyncio
+    async def test_spec_adapter_degrades_to_follow_up_without_hanging(self) -> None:
+        mgr = _manager()
+        info = _info("a")
+        info._session_sharing = True
+        provider = MagicMock()
+        provider.supports_steer = False
+        provider.backend = "goose"
+        provider.steer = AsyncMock(side_effect=AssertionError("must not send _session/steer"))
+        info._shared_provider = provider
+        mgr._agents["a"] = info
+        mgr.follow_up_run = AsyncMock(return_value=(True, "queued"))
+        ok, detail = await mgr.steer_run("a", "correct the approach")
+        assert ok is True
+        assert detail.startswith("follow_up:")
+        assert "goose" in detail.lower() or "does not implement mid-turn steer" in detail
+        mgr.follow_up_run.assert_awaited_once_with("a", "correct the approach")
+        provider.steer.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_audit_failure_does_not_change_the_verdict(self) -> None:

@@ -39,6 +39,31 @@ def session_pid_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 class TestKillPidTree:
+    def test_confirmed_identity_stays_pinned_through_kill(self) -> None:
+        from kiro_crew.session_pid import _kill_pid_tree
+
+        with patch(
+            "kiro_crew.session_pid.platform_compat.kill_process_tree_pinned",
+            return_value=True,
+        ) as pinned:
+            assert _kill_pid_tree(4321, expected_start_token="start-7") == (1, True)
+
+        pinned.assert_called_once_with(4321, "start-7", signal.SIGKILL)
+
+    def test_failed_pinned_identity_does_not_kill_or_claim_success(self) -> None:
+        from kiro_crew.session_pid import _kill_pid_tree
+
+        with (
+            patch(
+                "kiro_crew.session_pid.platform_compat.kill_process_tree_pinned",
+                return_value=False,
+            ),
+            patch("kiro_crew.session_pid.platform_compat.kill_process_tree") as unpinned,
+        ):
+            assert _kill_pid_tree(4321, expected_start_token="start-7") == (0, False)
+
+        unpinned.assert_not_called()
+
     def test_rejects_non_positive_pid(self) -> None:
         """pid <= 0 is catastrophic — must return immediately."""
         from kiro_crew.session_pid import _kill_pid_tree
@@ -397,7 +422,7 @@ class TestPeriodicPidSweep:
         ):
             killed_or_dead, candidates = _periodic_pid_sweep(my_gw, set())
 
-        assert 99999 in candidates
+        assert (99999, None) in candidates
         assert f"{my_gw}:99999" not in killed_or_dead  # not pruned yet — deferred to phase 2
 
 
@@ -414,7 +439,7 @@ class TestKillConfirmedAndWriteback:
             patch("kiro_crew.session_pid._kill_pid_tree", return_value=(1, True)),
             patch("kiro_crew.session_pid._write_back_pid_file") as mock_wb,
         ):
-            killed = _kill_confirmed_and_writeback(1, [99999], set())
+            killed = _kill_confirmed_and_writeback(1, [(99999, None)], set())
 
         assert killed == 1
         mock_wb.assert_called_once()
@@ -429,7 +454,7 @@ class TestKillConfirmedAndWriteback:
             patch("os.kill"),  # re-probe: still alive
             patch("kiro_crew.session_pid._write_back_pid_file") as mock_wb,
         ):
-            killed = _kill_confirmed_and_writeback(1, [99999], set())
+            killed = _kill_confirmed_and_writeback(1, [(99999, None)], set())
 
         assert killed == 0
         # Entry not added to killed_or_dead, but writeback not called (empty set)
@@ -473,11 +498,11 @@ class TestPeriodicSweepIntegration:
         ):
             # Phase 1: identify candidates
             killed_or_dead, candidates = _periodic_pid_sweep(my_gw, set())
-            assert orphan_pid in candidates
+            assert (orphan_pid, None) in candidates
 
             # Phase 2a: re-check against live sessions (none → confirmed)
-            confirmed = [p for p in candidates if p not in set()]
-            assert orphan_pid in confirmed
+            confirmed = [candidate for candidate in candidates if candidate[0] not in set()]
+            assert (orphan_pid, None) in confirmed
 
             # Phase 2b: kill and writeback
             orphan_killed = _kill_confirmed_and_writeback(my_gw, confirmed, killed_or_dead)
@@ -762,7 +787,7 @@ class TestSweepGraceIntegration:
         ):
             killed_or_dead, candidates = _periodic_pid_sweep(my_gw, set())
 
-        assert 99999 in candidates
+        assert (99999, None) in candidates
 
     def test_dead_pid_pruned_regardless_of_grace(self, session_pid_file: Path) -> None:
         """Dead PIDs are pruned (no /proc entry) — grace gate is never reached."""

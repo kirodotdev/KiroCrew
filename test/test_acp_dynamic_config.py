@@ -87,6 +87,13 @@ class TestGetValidEffortLevels:
         ]
         assert client.get_valid_effort_levels() == ["low", "medium", "high"]
 
+    def test_extracts_codex_reasoning_effort_levels(self):
+        client = AcpClient()
+        client._acp_config_options = [
+            {"id": "reasoning_effort", "options": [{"value": "low"}, {"value": "high"}]},
+        ]
+        assert client.get_valid_effort_levels() == ["low", "high"]
+
     def test_returns_empty_when_no_effort_config(self):
         client = AcpClient()
         client._acp_config_options = [{"id": "model", "options": [{"value": "opus"}]}]
@@ -165,6 +172,7 @@ class TestSyncEffortLevels:
 class TestUpdateReasoningEffortValues:
     def setup_method(self):
         import kiro_crew.dashboard.chat_persistence as mod
+
         self._mod = mod
         self._orig_values = mod._reasoning_effort_values.copy()
         self._orig_ordered = mod._reasoning_effort_ordered[:]
@@ -242,6 +250,7 @@ async def test_api_effort_levels_global_fallback():
     # No ?slot= → serve the process-global ordered fallback list.
     import kiro_crew.dashboard.chat_persistence as mod
     from kiro_crew.dashboard.handlers.agents import api_effort_levels
+
     orig_ordered = mod._reasoning_effort_ordered[:]
     try:
         mod._reasoning_effort_ordered = ["low", "medium", "high", "max"]
@@ -250,6 +259,7 @@ async def test_api_effort_levels_global_fallback():
         resp = await api_effort_levels(request)
         assert resp.status == 200
         import json
+
         body = json.loads(resp.body)
         assert body == ["low", "medium", "high", "max"]
     finally:
@@ -262,6 +272,7 @@ async def test_api_effort_levels_per_slot():
     # win over the process-global fallback (no cross-slot bleed).
     import kiro_crew.dashboard.chat_persistence as mod
     from kiro_crew.dashboard.handlers.agents import api_effort_levels
+
     orig_ordered = mod._reasoning_effort_ordered[:]
     try:
         mod._reasoning_effort_ordered = ["low", "max"]  # global (other slot)
@@ -277,15 +288,17 @@ async def test_api_effort_levels_per_slot():
         resp = await api_effort_levels(request)
         assert resp.status == 200
         import json
+
         assert json.loads(resp.body) == ["low", "medium", "high", "xhigh"]
     finally:
         mod._reasoning_effort_ordered = orig_ordered
 
 
 @pytest.mark.asyncio
-async def test_api_effort_levels_slot_without_live_provider_falls_back():
+async def test_api_effort_levels_slot_without_live_provider_is_empty():
     import kiro_crew.dashboard.chat_persistence as mod
     from kiro_crew.dashboard.handlers.agents import api_effort_levels
+
     orig_ordered = mod._reasoning_effort_ordered[:]
     try:
         mod._reasoning_effort_ordered = ["low", "medium", "high", "max"]
@@ -299,6 +312,7 @@ async def test_api_effort_levels_slot_without_live_provider_falls_back():
         resp = await api_effort_levels(request)
         assert resp.status == 200
         import json
-        assert json.loads(resp.body) == ["low", "medium", "high", "max"]
+
+        assert json.loads(resp.body) == []
     finally:
         mod._reasoning_effort_ordered = orig_ordered

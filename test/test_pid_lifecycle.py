@@ -26,6 +26,17 @@ _POSIX_ONLY = pytest.mark.skipif(
 )
 
 
+def test_tracking_files_live_under_the_protected_run_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kiro_crew import session_pid
+
+    monkeypatch.setattr(session_pid, "config_dir", lambda: tmp_path)
+
+    assert session_pid._pid_file_path() == tmp_path / "run" / "kiro_pids.txt"
+    assert session_pid._session_pid_file_path() == tmp_path / "run" / "kiro_session_pids.txt"
+
+
 @pytest.fixture()
 def pid_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Redirect _pid_file_path to a temp file."""
@@ -472,9 +483,7 @@ class TestFindOrphanMcpCandidates:
         assert len(records) == 1
         assert records[0].exc_info is None
 
-    def test_unexpected_probe_error_keeps_traceback(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_unexpected_probe_error_keeps_traceback(self, caplog: pytest.LogCaptureFixture) -> None:
         """A genuinely unexpected probe failure still logs exc_info."""
         from kiro_crew.session_pid import find_orphan_mcp_candidates
 
@@ -973,6 +982,51 @@ class TestIsManagedAgentProcess:
 
         assert _is_managed_agent_process(os.getpid()) is False
 
+    @pytest.mark.parametrize("image_name", ["claude", "codex", "goose", "opencode", "pi"])
+    def test_short_adapter_names_are_exact_image_names(self, image_name: str) -> None:
+        """Short adapter names must not become cmdline substring kill gates."""
+        from kiro_crew.session_pid import _is_managed_agent_process
+
+        with (
+            patch(
+                "kiro_crew.session_pid.platform_compat.process_matches", return_value=False
+            ) as matches,
+            patch(
+                "kiro_crew.session_pid.platform_compat.process_image_name",
+                return_value=image_name,
+            ),
+        ):
+            assert _is_managed_agent_process(12345) is True
+
+        assert image_name not in matches.call_args.args[1]
+
+    def test_cached_registry_package_is_not_kill_authority(self, monkeypatch) -> None:
+        from kiro_crew.acp import registry
+        from kiro_crew.session_pid import _is_managed_agent_process
+
+        adapter = registry.RegistryAdapter(
+            id="example-acp",
+            name="Example",
+            version="1.0.0",
+            description="",
+            repository="",
+            license="MIT",
+            icon="",
+            kind="npx",
+            package="example-acp@1.0.0",
+            args=(),
+            env=(),
+        )
+        monkeypatch.setattr(registry, "cached", lambda: {adapter.id: adapter})
+        with (
+            patch(
+                "kiro_crew.session_pid.platform_compat.process_matches",
+                side_effect=lambda _pid, markers: adapter.package in markers,
+            ),
+            patch("kiro_crew.session_pid.platform_compat.process_image_name", return_value="node"),
+        ):
+            assert _is_managed_agent_process(12345) is False
+
 
 class TestSyncKillProvider:
     def test_no_pid_returns_early(self) -> None:
@@ -1393,8 +1447,7 @@ class TestIsSweepableOrphanWork:
         from kiro_crew.session_pid import _is_sweepable_orphan_work
 
         worker = (
-            b"/repo/.venv/bin/python\x00-u\x00-c"
-            b"\x00import sys;exec(eval(sys.stdin.readline()))"
+            b"/repo/.venv/bin/python\x00-u\x00-c" b"\x00import sys;exec(eval(sys.stdin.readline()))"
         )
         with (
             patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True),
@@ -1523,9 +1576,7 @@ class TestIsSweepableOrphanWork:
         assert _ORPHAN_WORK_MIN_AGE_SECONDS > _ORPHAN_MIN_AGE_SECONDS
         with patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True):
             assert (
-                _is_sweepable_orphan_work(
-                    1234, self._PYTEST_CMDLINE, _ORPHAN_MIN_AGE_SECONDS + 1
-                )
+                _is_sweepable_orphan_work(1234, self._PYTEST_CMDLINE, _ORPHAN_MIN_AGE_SECONDS + 1)
                 is False
             )
 
@@ -1542,9 +1593,7 @@ class TestIsSweepableOrphanWork:
 
         with patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True):
             assert (
-                _is_sweepable_orphan_work(
-                    1234, b"/usr/local/bin/kiro-cli\x00chat\x00--acp", 700.0
-                )
+                _is_sweepable_orphan_work(1234, b"/usr/local/bin/kiro-cli\x00chat\x00--acp", 700.0)
                 is False
             )
             assert _is_sweepable_orphan_work(1234, b"claude\x00--print", 700.0) is False
@@ -1799,7 +1848,7 @@ class TestPidStartTokenIdentityGuard:
     def test_track_session_pid_falls_back_when_token_unavailable(
         self, session_pid_file: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """No token (Windows / ps failure) → legacy 2-field entry."""
+        """No token (an OS probe failure) → legacy 2-field entry."""
         from kiro_crew.session_pid import _track_session_pid
 
         monkeypatch.setattr("kiro_crew.session_pid._pid_start_token", lambda p: None)
@@ -1856,8 +1905,8 @@ class TestPidStartTokenIdentityGuard:
                 side_effect=lambda p: p != 999999,
             ),
             patch(
-                "kiro_crew.session_pid.platform_compat.kill_pid",
-                side_effect=lambda p, s: kills.append((p, s)),
+                "kiro_crew.session_pid.platform_compat.kill_process_tree_pinned",
+                side_effect=lambda p, token, s: (kills.append((p, s)) or True),
             ),
             # Grace disabled so the ONLY thing that can save the process is the
             # identity check under test.
@@ -1894,7 +1943,7 @@ class TestPidStartTokenIdentityGuard:
                 side_effect=lambda p: p != 999999,
             ),
             patch(
-                "kiro_crew.session_pid.platform_compat.kill_pid",
+                "kiro_crew.session_pid.platform_compat.kill_process_tree",
                 side_effect=lambda p, s: kills.append((p, s)),
             ),
             patch("kiro_crew.session_pid._pid_in_spawn_grace", return_value=False),
@@ -1922,8 +1971,8 @@ class TestPidStartTokenIdentityGuard:
             patch("kiro_crew.session_pid.platform_compat.get_ppid", return_value=1),
             patch("kiro_crew.session_pid.platform_compat.pid_exists", return_value=True),
             patch(
-                "kiro_crew.session_pid.platform_compat.kill_pid",
-                side_effect=lambda p, s: kills.append((p, s)),
+                "kiro_crew.session_pid.platform_compat.kill_process_tree_pinned",
+                side_effect=lambda p, token, s: (kills.append((p, s)) or True),
             ),
         ):
             cleanup_orphaned_session_roots()
@@ -1933,9 +1982,7 @@ class TestPidStartTokenIdentityGuard:
         assert entry in session_pid_file.read_text(encoding="utf-8")
 
     @_POSIX_ONLY
-    def test_session_roots_subreaper_reparent_still_killed(
-        self, session_pid_file: Path
-    ) -> None:
+    def test_session_roots_subreaper_reparent_still_killed(self, session_pid_file: Path) -> None:
         """A recorded start token that MATCHES proves identity on its own.
 
         Orphans do not always reparent to init: a process placed in its own
@@ -1955,7 +2002,7 @@ class TestPidStartTokenIdentityGuard:
             return platform_compat.PID_DEAD if pid == 999999 else platform_compat.PID_ALIVE
 
         with (
-            patch("kiro_crew.session_pid._is_managed_agent_process", return_value=True),
+            patch("kiro_crew.session_pid._is_managed_agent_process", return_value=False),
             patch("kiro_crew.session_pid._pid_start_token", return_value="sametoken"),
             patch("kiro_crew.session_pid.platform_compat.pid_liveness", side_effect=fake_liveness),
             # The subreaper that adopted the orphan -- neither init(1), nor the
@@ -1963,15 +2010,16 @@ class TestPidStartTokenIdentityGuard:
             patch("kiro_crew.session_pid.platform_compat.get_ppid", return_value=7447),
             patch("kiro_crew.session_pid.platform_compat.pid_exists", return_value=True),
             patch(
-                "kiro_crew.session_pid.platform_compat.kill_pid",
-                side_effect=lambda p, s: kills.append((p, s)),
+                "kiro_crew.session_pid.platform_compat.kill_process_tree_pinned",
+                side_effect=lambda p, token, s: (kills.append((p, s)) or True),
             ),
         ):
             cleanup_orphaned_session_roots()
 
-        assert (99998, platform_compat.SIGKILL) in kills, (
-            "a token-verified orphan adopted by a subreaper was not reaped"
-        )
+        assert (
+            99998,
+            platform_compat.SIGKILL,
+        ) in kills, "a token-verified orphan adopted by a subreaper was not reaped"
         # And it must not be silently untracked, which is what leaks it forever.
         assert entry not in session_pid_file.read_text(encoding="utf-8")
 
@@ -1997,7 +2045,7 @@ class TestPidStartTokenIdentityGuard:
                 side_effect=lambda p: p != 999999,
             ),
             patch(
-                "kiro_crew.session_pid.platform_compat.kill_pid",
+                "kiro_crew.session_pid.platform_compat.kill_process_tree",
                 side_effect=lambda p, s: kills.append((p, s)),
             ),
             patch("kiro_crew.session_pid._pid_in_spawn_grace", return_value=False),
@@ -2047,7 +2095,8 @@ class TestPidStartTokenIdentityGuard:
         """
         from kiro_crew.session_pid import cleanup_orphaned_session_roots
 
-        session_pid_file.write_text("999999:99998:sametoken\n")
+        mac_token = "Wed Aug 26 18:41:58 2026"
+        session_pid_file.write_text(f"999999:99998:{mac_token}\n")
         kills: list[tuple[int, int]] = []
 
         def fake_liveness(pid: int) -> str:
@@ -2056,12 +2105,12 @@ class TestPidStartTokenIdentityGuard:
 
         with (
             patch("kiro_crew.session_pid._is_managed_agent_process", return_value=True),
-            patch("kiro_crew.session_pid._pid_start_token", return_value="sametoken"),
+            patch("kiro_crew.session_pid._pid_start_token", return_value=mac_token),
             patch("kiro_crew.session_pid.platform_compat.pid_liveness", side_effect=fake_liveness),
             patch("kiro_crew.session_pid.platform_compat.get_ppid", return_value=1),
             patch("kiro_crew.session_pid.platform_compat.pid_exists", return_value=True),
             patch(
-                "kiro_crew.session_pid.platform_compat.kill_pid",
+                "kiro_crew.session_pid.platform_compat.kill_process_tree",
                 side_effect=lambda p, s: kills.append((p, s)),
             ),
         ):

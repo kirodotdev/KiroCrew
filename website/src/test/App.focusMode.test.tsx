@@ -290,27 +290,46 @@ describe('focus mode — shell layout', () => {
   })
 
   it('keeps the header on screen while a header popover is open', async () => {
-    renderWithProviders(<App />, { route: '/chat' })
-    const toggle = await screen.findByTestId('focus-mode-toggle')
-    await act(async () => { fireEvent.click(toggle) })
+    const nativeMutationObserver = globalThis.MutationObserver
+    let mutationCallback: MutationCallback | null = null
+    class DeterministicMutationObserver {
+      constructor(callback: MutationCallback) { mutationCallback = callback }
+      observe() {}
+      disconnect() {}
+      takeRecords(): MutationRecord[] { return [] }
+    }
+    const emitMutation = () => mutationCallback?.([], {} as MutationObserver)
+    globalThis.MutationObserver = DeterministicMutationObserver as unknown as typeof MutationObserver
 
-    const header = document.querySelector('header.topbar') as HTMLElement
-    const bell = screen.getByLabelText('Notifications')
-    expect(header.style.transform).toBe('translateY(-100%)')
+    try {
+      renderWithProviders(<App />, { route: '/chat' })
+      const toggle = await screen.findByTestId('focus-mode-toggle')
+      await act(async () => { fireEvent.click(toggle) })
 
-    // The instance switcher's menu is portaled to document.body, so the pointer
-    // moving into it counts as leaving the header and the close grace would slide
-    // the header out from under its own anchor. The pin is keyed on a header
-    // control REPORTING an open popup, which is why the Bell exercises it here:
-    // same signal, different control.
-    await act(async () => { fireEvent.click(bell) })
-    expect(bell.getAttribute('aria-expanded')).toBe('true')
-    expect(header.style.transform).toBe('translateY(0)')
-    expect(header.style.pointerEvents).toBe('auto')
+      const header = document.querySelector('header.topbar') as HTMLElement
+      const bell = screen.getByLabelText('Notifications')
+      expect(header.style.transform).toBe('translateY(-100%)')
 
-    // ...and it lets go again once nothing is open, rather than latching.
-    await act(async () => { fireEvent.click(bell) })
-    expect(header.style.transform).toBe('translateY(-100%)')
+      // The instance switcher's menu is portaled to document.body, so the pointer
+      // moving into it counts as leaving the header and the close grace would slide
+      // the header out from under its own anchor. The pin is keyed on a header
+      // control REPORTING an open popup, which is why the Bell exercises it here:
+      // same signal, different control. Emit the observed attribute mutation
+      // explicitly: happy-dom stores native observers through WeakRef and can
+      // discard their delivery closure midway through the full-file run.
+      await act(async () => { fireEvent.click(bell) })
+      expect(bell.getAttribute('aria-expanded')).toBe('true')
+      act(() => { emitMutation() })
+      expect(header.style.transform).toBe('translateY(0)')
+      expect(header.style.pointerEvents).toBe('auto')
+
+      // ...and it lets go again once nothing is open, rather than latching.
+      await act(async () => { fireEvent.click(bell) })
+      act(() => { emitMutation() })
+      expect(header.style.transform).toBe('translateY(-100%)')
+    } finally {
+      globalThis.MutationObserver = nativeMutationObserver
+    }
   })
 
   it('does not pin the header for an inline expander that is open by default', async () => {

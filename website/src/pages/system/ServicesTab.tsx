@@ -14,9 +14,12 @@ import { useAppSelector } from '../../store'
 import { useUptime } from '../../hooks/useUptime'
 import { api } from '../../api/client'
 import { useProvider } from '../../providers'
+import { usePreviewFlag } from '../../hooks/usePreviewFlag'
+import { PREVIEW_ACP_BACKENDS } from '../../utils/previewFlags'
 import { Card, CardTitle } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import McpGatewayCard from '../McpGatewayCard'
+import type { AcpBackendsPayload } from '../overview/AcpBackendCard'
 import { fmtNumber, fmtPercent, fmtUnit } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import type { SystemData } from '../../types'
@@ -166,6 +169,25 @@ export default function ServicesTab() {
 
   // child_processes reads /proc/<pid>/task (threads), contradicting thread_count.
   // Excluded deliberately — thread_count is the accurate metric.
+  // Resolved from the registry endpoint rather than the config value: the raw id
+  // is `""` for the default backend, which would render as a blank row. The
+  // endpoint is owner-only, so a non-owner falls back to the em dash rather than
+  // seeing an error where a value belongs.
+  const acpBackendsPreview = usePreviewFlag(PREVIEW_ACP_BACKENDS)
+  const { data: acpBackends } = useQuery<AcpBackendsPayload>({
+    queryKey: ['acp-backends', { probe: true }],
+    queryFn: () => api.acpBackends({ probe: true }) as Promise<AcpBackendsPayload>,
+    // No fetch when the row is hidden: the endpoint is owner-only, and an
+    // unrendered request would add cost or log a refusal for no visible control.
+    enabled: acpBackendsPreview,
+  })
+  const activeAcpBackend = acpBackends?.backends.find((row) => row.id === acpBackends.active)
+  const acpBackendLabel = !activeAcpBackend
+    ? '—'
+    : activeAcpBackend.experimental
+      ? i18nT('pages.servicesTab.acp_backend_experimental', { label: activeAcpBackend.label })
+      : activeAcpBackend.label
+
   const gatewaySections: Section[] = [
     {
       title: i18nT('pages.servicesTab.gateway_process'),
@@ -181,6 +203,18 @@ export default function ServicesTab() {
         { label: i18nT('pages.servicesTab.threads'), value: d?.thread_count != null ? fmtNumber(d.thread_count) : '—' },
         { label: i18nT('pages.servicesTab.cpu'), value: d?.proc_cpu_pct != null ? fmtPercent(d.proc_cpu_pct / 100, { maximumFractionDigits: 1 }) : '—' },
         { label: i18nT('pages.servicesTab.mcp_processes'), value: mcpBreakdown },
+        // The active ACP backend, so a session's harness is discoverable without
+        // opening Settings. Read from the same `GET /api/acp-backends` the
+        // Settings card uses — a second source could disagree with it, and the
+        // operator would have no way to tell which one was lying.
+        //
+        // Behind the same preview flag as the selector. With the selector
+        // hidden the backend is always the default, so this row would be a
+        // constant; `kirocrew doctor` reports the backend UNGATED, which is the
+        // diagnostic path for an operator who set it in config.json by hand.
+        ...(acpBackendsPreview
+          ? [{ label: i18nT('pages.servicesTab.acp_backend'), value: acpBackendLabel }]
+          : []),
       ],
     },
   ]

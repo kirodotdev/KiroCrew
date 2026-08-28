@@ -778,6 +778,20 @@ describe('useWebSocket frame router', () => {
     expect(chat().slotStatusDetail[ACTIVE]?.text).toBe('Compacting…')
   })
 
+  it('forwards the plan rate limit riding the context-usage frame', () => {
+    // The quota travels on the context frame rather than an event of its own, so
+    // a dispatch that dropped the field would leave the popover's quota section
+    // permanently empty with nothing else looking wrong.
+    const { ws } = mount()
+    act(() => {
+      ws.simulateMessage({
+        type: 'context_usage',
+        data: { slot: ACTIVE, pct: 42, rate_limit: { status: 'allowed_warning', limit_type: 'five_hour', utilization: 81 } },
+      })
+    })
+    expect(chat().slotRateLimit[ACTIVE]).toEqual({ status: 'allowed_warning', limit_type: 'five_hour', utilization: 81 })
+  })
+
   it('re-reads the transcript when a variant switch names a slot', () => {
     const { ws } = mount()
     ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockClear()

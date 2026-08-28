@@ -9,6 +9,7 @@ finalization itself fails.
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from typing import Any
 
 from kiro_crew.messaging import dispatch as D
@@ -69,6 +70,33 @@ class _Renderer:
 class _CtxBuilder:
     def build_message(self, text, is_new, session_key, **kw):
         return text, None
+
+
+def test_shared_tool_gate_forwards_canonical_mcp_identity() -> None:
+    seen: dict[str, Any] = {}
+
+    class _Hooks:
+        def on_tool_call(self, title: str, **kwargs: Any) -> SimpleNamespace:
+            seen.update(kwargs)
+            return SimpleNamespace(action="", reason="")
+
+    gate = D.build_tool_gate(
+        SimpleNamespace(hooks=_Hooks()),
+        session_key="session-1",
+        agent="default",
+    )
+    gate(
+        SimpleNamespace(
+            title="Delete repository",
+            tool_kind="other",
+            mcp_server_name="github",
+            tool_name="repo_delete",
+            mcp_identity_ambiguous=False,
+        )
+    )
+
+    assert seen["mcp_server_name"] == "github"
+    assert seen["mcp_tool_name"] == "repo_delete"
 
 
 class _Driver:

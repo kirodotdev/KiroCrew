@@ -336,6 +336,7 @@ POOL_DECISIONS: frozenset[str] = frozenset(
         "bypass_cwd",
         "bypass_effort",
         "bypass_env",
+        "bypass_backend",
         "disabled",
         "other",
     }
@@ -538,8 +539,17 @@ def _model_fallback(per_agent_model: str, global_default: str) -> "str | None":
     return global_default if global_default and global_default not in _SENTINEL_MODELS else None
 
 
-def _session_model(cfg: "KiroCrewConfig", agent: str | None) -> "str | None":
+def _session_model(
+    cfg: "KiroCrewConfig",
+    agent: str | None,
+    registry_model_ids: bool = True,
+) -> "str | None":
     """Resolve the model for a new session on *agent*, for EVERY surface.
+
+    A crew pin is backend-scoped configuration and applies in every namespace.
+    Backends that do not consume registry model IDs stop after that tier: they
+    must not inspect bound Kiro agent definitions, whose IDs belong to a
+    different model namespace, and otherwise inherit only a concrete global.
 
     ``agent`` is whatever the caller passed, and callers are not consistent: the
     dashboard passes a resolved kiro template name, while Slack threads, cron
@@ -561,8 +571,13 @@ def _session_model(cfg: "KiroCrewConfig", agent: str | None) -> "str | None":
         crew_model = normalize_agent_model(crew.model)
         if crew_model:
             return crew_model
+        if not registry_model_ids:
+            return _model_fallback("", cfg.agent.model)
         # The crew defers, so continue down the chain on the template it binds.
         agent = crew.kiro_agent or agent
+
+    if not registry_model_ids:
+        return _model_fallback("", cfg.agent.model)
 
     per_agent_model = ""
     if agent and agent != "kirocrew":
@@ -968,6 +983,72 @@ class SessionManager:
         await sess.semaphore.acquire()
         return True
 
+    @property
+    def acp_backend(self) -> str:
+        """The harness id a NEW session would start on (``""`` = kiro-cli).
+
+        Reads the config this store already holds rather than loading it again, so
+        a caller on the event loop — the 5-second status push, the usage poll —
+        pays no filesystem stat and no schema revalidation. ``refresh_defaults``
+        is what keeps it current: it replaces ``_cfg`` when the operator switches
+        harness, and this value is deliberately the NEW-session default rather
+        than any live session's backend, matching what the Settings card reports.
+        """
+        backend = getattr(self._cfg.agent, "acp_backend", "")
+        return backend if isinstance(backend, str) else ""
+
+    def _provider_factory_for_backend(self, backend: str) -> Callable[..., LLMProvider]:
+        """Return the current factory, or a rare live-parent crossover factory.
+
+        The configured Kiro path must remain the direct first-class factory
+        (H13), so it cannot also dispatch an adapter inherited from a live
+        parent after Settings changes. Build a backend-specific config snapshot
+        only for that dedicated-child crossover; ordinary sessions keep the
+        already-built factory object unchanged.
+        """
+        if backend == self.acp_backend:
+            if self._provider_factory is None:
+                raise RuntimeError("No provider factory configured")
+            return self._provider_factory
+        from kiro_crew.platform.interfaces import PROVIDER_BACKEND_FACTORY_ATTR
+
+        builder = getattr(self._provider_factory, PROVIDER_BACKEND_FACTORY_ATTR, None)
+        if callable(builder):
+            return builder(backend)
+        # An explicitly supplied factory owns dispatch itself. This is also the
+        # test/evaluation seam: replacing it with a real registry factory would
+        # spawn an operator-installed binary behind the caller's back.
+        if self._provider_factory is None:
+            raise RuntimeError("No provider factory configured")
+        return self._provider_factory
+
+    def live_harness(self, session_key: str) -> tuple[str | None, list[str]]:
+        """The backend and advertised model ids of a LIVE session.
+
+        ``None`` backend means there is no parent to inherit from (no session,
+        or a mock whose ``backend`` is not a string). An empty-string backend
+        is kiro-cli and must be distinguished from that absence — dedicated
+        children pin ``acp_backend=""`` so a Settings switch cannot redirect
+        them onto an adapter.
+
+        Advertised ids come from the same ``available_models`` surface the
+        picker reads. Empty means entitlement unknown, which
+        ``resolve_usable_model`` already treats as inherit-for-auto / trust a
+        concrete pin.
+        """
+        if not session_key:
+            return None, []
+        provider = self.get_provider(session_key)
+        if provider is None:
+            return None, []
+        try:
+            backend = provider.backend
+            if not isinstance(backend, str):
+                return None, []
+            return backend, advertised_model_ids(provider.available_models())
+        except Exception:
+            return None, []
+
     def active_providers(self) -> list[LLMProvider]:
         """Return the providers of all currently-active sessions.
 
@@ -1163,10 +1244,10 @@ class SessionManager:
     async def refresh_defaults(self) -> None:
         """Adopt config changes that only affect NEW sessions.
 
-        For settings that are *defaults* — ``agent.model``,
-        ``agent.reasoning_effort`` — the new value must reach the next session
-        without a gateway restart, because the provider factory and ``_cfg``
-        both capture them when they are built.
+        For settings that apply to *new sessions* — ``agent.acp_backend``,
+        ``agent.model``, ``agent.reasoning_effort`` — the new value must reach
+        the next session without a gateway restart, because the provider factory
+        and ``_cfg`` both capture them when they are built.
 
         Unlike :meth:`reload_provider_factory`, this deliberately does NOT touch
         ``_sessions``: a default is by definition not retroactive, and shutting
@@ -1176,7 +1257,10 @@ class SessionManager:
         the very next session — and unlike a live session, a pooled provider has
         no conversation to lose.
         """
-        cfg = KiroCrewConfig.load()
+        # Config load validates JSON and can read several files. Settings calls
+        # this method from the gateway loop, so keep that filesystem work off
+        # the loop while retaining the async lock/drain sequence below.
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
         async with self._pool_fill_lock:
             async with self._lock:
                 self._cfg = cfg
@@ -1198,7 +1282,9 @@ class SessionManager:
             self._pool_health_task = None
         await self.start_pool(blocking=False)
         logger.info(
-            "Session defaults refreshed: model=%s effort=%r (live sessions untouched)",
+            "New-session config refreshed: backend=%s model=%s effort=%r "
+            "(live sessions untouched)",
+            cfg.agent.acp_backend or "kiro",
             cfg.agent.model,
             cfg.agent.reasoning_effort,
         )
@@ -2798,8 +2884,26 @@ class SessionManager:
         # it, so deferring past that short-circuit keeps per-agent resolution
         # (which globs + reads ``~/.kiro/agents/*.json``) off the hot path for
         # already-live sessions.
-        if model is None:
-            # KiroACP-only: the effective model is the kiro/ACP slot.
+        configured_backend = self.acp_backend
+        effective_backend = extra_factory_kwargs.get("acp_backend", configured_backend)
+        inherits_config_model = effective_backend == configured_backend
+        if not inherits_config_model:
+            # A dedicated child pins the backend of its live parent. Settings
+            # may since have switched, so every model tier in this config now
+            # belongs to a different namespace. The selected factory must also
+            # withhold its captured model rather than reintroducing it after the
+            # session layer deliberately leaves model_override unset.
+            extra_factory_kwargs["inherit_config_model"] = False
+            factory = self._provider_factory_for_backend(effective_backend)
+
+        if model is None and inherits_config_model:
+            from kiro_crew.acp.backends import CAP_REGISTRY_MODEL_IDS, supports
+
+            registry_model_ids = supports(effective_backend, CAP_REGISTRY_MODEL_IDS)
+
+            # Registry-model backends use the kiro/ACP model chain. Adapter
+            # backends own a separate namespace and may inherit only a concrete
+            # global model when no explicit caller model was supplied.
             #
             # Precedence: the KiroCrew agent's own model > the bound kiro
             # agent's pin > the global default (a *fallback*, which must not
@@ -2813,7 +2917,7 @@ class SessionManager:
             # duration. No lock or session semaphore is held here, so awaiting
             # is safe.
             model = await asyncio.get_running_loop().run_in_executor(
-                None, _session_model, self._cfg, agent
+                None, _session_model, self._cfg, agent, registry_model_ids
             )
 
         # Check session map for resume — only for long-lived sessions.
@@ -2883,6 +2987,14 @@ class SessionManager:
             pool_decision = "bypass_effort"
         elif extra_env:
             pool_decision = "bypass_env"
+        elif (
+            "acp_backend" in extra_factory_kwargs
+            and extra_factory_kwargs["acp_backend"] != self.acp_backend
+        ):
+            # The warm pool was spawned under the factory snapshot. A dedicated
+            # child that pins the live parent harness must not claim a process
+            # for a different backend.
+            pool_decision = "bypass_backend"
         else:
             pool_decision = ""
         pooled = None if pool_decision else await self._drain_and_claim(agent)
@@ -3045,8 +3157,26 @@ class SessionManager:
                 )
 
                 if isinstance(provider, AcpProvider):
-                    provider.client.set_resume_session_id(resume_sid)
-                    logger.info("Attempting session/load for %s (sid=%s)", key, resume_sid)
+                    from kiro_crew.acp.backends import (
+                        CAP_NATIVE_RESUME,
+                        descriptor_for,
+                        supports,
+                    )
+
+                    backend = provider.client.backend
+                    if not supports(backend, CAP_NATIVE_RESUME):
+                        # Only measured transcript restoration may suppress
+                        # Crew's replay; advertising session/load is insufficient.
+                        logger.info(
+                            "Skipping session/load for %s: native resume is not supported on %s",
+                            key,
+                            descriptor_for(backend).label,
+                        )
+                        resume_sid = None
+                        _provider_switched = True
+                    else:
+                        provider.client.set_resume_session_id(resume_sid)
+                        logger.info("Attempting session/load for %s (sid=%s)", key, resume_sid)
                 elif ClaudeCodeProvider is not None and isinstance(provider, ClaudeCodeProvider):
                     provider.set_resume_session_id(resume_sid)
                     logger.info("CC resume for %s (sid=%s)", key, resume_sid)
@@ -6000,14 +6130,18 @@ class SessionManager:
                     # live sessions and warm pool.  Deny-by-default: if any
                     # PID extraction fails, skip the kill phase (still prune
                     # dead entries).
-                    confirmed: list[int] = []
+                    confirmed: list[tuple[int, str | None]] = []
                     if candidates:
                         current_pids, phase2_safe = _collect_active_pids(self._sessions)
                         current_pids.update(self._pool_pids())
                         current_pids.update(self._in_flight_pids())
                         current_pids.update(self._companion_runtime_pids())
                         if phase2_safe:
-                            confirmed = [pid for pid in candidates if pid not in current_pids]
+                            confirmed = [
+                                candidate
+                                for candidate in candidates
+                                if candidate[0] not in current_pids
+                            ]
                     # Phase 2b (thread): kill confirmed orphans + writeback.
                     # Keeps blocking I/O (subprocess, fcntl.flock) off the
                     # event loop.
@@ -6031,20 +6165,20 @@ class SessionManager:
                 sweep_pids.update(self._companion_runtime_pids())
                 if sweep_ok:
                     # Identify candidates in thread (blocking I/O)
-                    candidates = await asyncio.get_running_loop().run_in_executor(
+                    mcp_candidates = await asyncio.get_running_loop().run_in_executor(
                         maintenance_executor(), find_orphan_mcp_candidates, sweep_pids
                     )
                     # Re-verify against fresh active PIDs before killing
-                    if candidates:
+                    if mcp_candidates:
                         fresh_pids, fresh_ok = _collect_active_pids(self._sessions)
                         fresh_pids.update(self._pool_pids())
                         fresh_pids.update(self._in_flight_pids())
                         fresh_pids.update(self._companion_runtime_pids())
                         if fresh_ok:
-                            confirmed = [p for p in candidates if p not in fresh_pids]
-                            if confirmed:
+                            mcp_confirmed = [p for p in mcp_candidates if p not in fresh_pids]
+                            if mcp_confirmed:
                                 await asyncio.get_running_loop().run_in_executor(
-                                    maintenance_executor(), kill_orphan_mcps, confirmed
+                                    maintenance_executor(), kill_orphan_mcps, mcp_confirmed
                                 )
                         else:
                             # Distinguish "reaper skipped" from "no orphans":

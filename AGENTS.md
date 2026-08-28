@@ -78,13 +78,18 @@ This repo is the de-Amazoned public fork of an internal package. Never re-add:
 - **Keep these stubbed** (public symbols preserved as no-ops so the import graph
   holds): `sso_status.py`, `browser/auth.py`, `dashboard/handlers/sso_login.py`,
   `tunnel/manager.py`, `aim_agents.py`.
-- **Other providers.** Kiro Crew is KiroACP-only: `agent.provider` is fixed to
-  `acp` and kiro-cli is REQUIRED. Keep the dormant `ACP_BACKEND_CLAUDE` /
-  `_is_claude` seam in `acp/client.py` so an internal companion can re-register
-  Claude Code; do NOT re-add the public registration glue. A harness added at
-  `agent.acp_backend` is a different question and is governed by
-  [Harness parity](#harness-parity-kiro-is-first-class-the-rest-are-adapted) —
-  adapted, never a second `agent.provider` value.
+- **Other providers.** `agent.provider` stays fixed to `acp` (`enum=["acp"]`) and
+  kiro-cli remains the first-class harness. What is NO LONGER forbidden is **ACP
+  adapter** support: Kiro Crew is an ACP *client*, and driving a registry adapter
+  (`claude-acp`, `codex-acp`, …) selected at `agent.acp_backend` is a shipped
+  goal rather than a divergence. Adapters are OPERATOR-INSTALLED, never bundled,
+  and discovered through the upstream ACP Registry rather than a hand-maintained
+  table. Still gone, still do not re-add: a second `agent.provider` value, an
+  API-key path, a provider selector. Adapter identity and capability rules remain
+  governed by
+  [Harness parity](#harness-parity-kiro-is-first-class-the-rest-are-adapted), and
+  the trust rule is that an adapter whose tool calls Kiro Crew cannot govern is
+  REFUSED by default with one named opt-out.
 - **OSS-flipped defaults:** always-on in-process embeddings, Piper TTS by default,
   a default-open Slack enterprise gate, lazy STT extras.
 - **Fork UX divergences:** the Channels app is hidden from the App Store and the
@@ -158,7 +163,8 @@ Never hardcode a model id (`claude-*`, `opus*`, `sonnet*`, `haiku*`, `gpt-*`,
 
 Never express "this is the Kiro harness" as the ABSENCE of another harness. Kiro
 Crew drives one first-class harness — `kiro-cli` (`ACP_BACKEND_KIRO`, spelled
-`""`) — and adapts the others (the dormant `ACP_BACKEND_CLAUDE` seam, KAS, and
+`""`) — and adapts the others (the `ACP_BACKEND_CLAUDE` and `ACP_BACKEND_CODEX`
+registry adapters, KAS, and
 any bring-your-own harness). A negative test like `not is_claude_backend` reads
 correctly with two harnesses and then silently hands the third a capability, a
 sandbox waiver, or a session label nobody granted it — and it fails toward the

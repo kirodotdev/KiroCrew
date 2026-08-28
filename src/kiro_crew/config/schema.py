@@ -4,7 +4,9 @@ Generates a nested JSON Schema (Draft-07) from the Python dataclass hierarchy
 and flattens it into a list of ``ConfigEntry`` records for API consumption and
 baseline generation.
 
-Both ``JSON_SCHEMA`` and ``SCHEMA_REGISTRY`` are built once at import time.
+Both ``JSON_SCHEMA`` and ``SCHEMA_REGISTRY`` are built once at import time for
+metadata consumers. Config validation overlays the current cache-only ACP
+registry enum so an adapter discovered later in the process remains loadable.
 """
 
 from __future__ import annotations
@@ -113,7 +115,8 @@ def _optional_inner(tp: type) -> tuple[type, bool]:
     origin = typing.get_origin(tp)
     if origin is typing.Union or (
         # ``X | None`` (PEP 604) has origin ``types.UnionType`` on 3.10+
-        origin is not None and getattr(origin, "__name__", "") == "UnionType"
+        origin is not None
+        and getattr(origin, "__name__", "") == "UnionType"
     ):
         args = [a for a in typing.get_args(tp) if a is not type(None)]  # noqa: E721
         if len(args) == 1 and len(typing.get_args(tp)) == 2:
@@ -160,6 +163,12 @@ def _build_field_schema(
     sensitive: bool = meta.get("sensitive", False)
     deprecated: bool = meta.get("deprecated", False)
     enum_values: list | None = meta.get("enum", None)
+    # Dynamic enums are resolved by their I/O-owning validation/API callers.
+    # Building the module-level schema happens during gateway import, where a
+    # callable that reads the ACP registry cache would add filesystem work to
+    # every boot and close the config-loader import cycle in the wrong layer.
+    if callable(enum_values):
+        enum_values = None
 
     tp: type = resolved_type if resolved_type is not None else str
     # A field annotated ``X | None`` / ``Optional[X]`` maps to its base type

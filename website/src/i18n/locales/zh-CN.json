@@ -43,7 +43,6 @@
     "iam_identity_center": "IAM Identity Center",
     "installing_packages": "正在安装依赖包",
     "k_search_for_anything": "⌘K — 搜索任何内容…",
-    "kiro_credit_usage_api_key": "Kiro 额度用量 — API 密钥认证下不可用",
     "kiro_credit_usage_checking": "Kiro 额度用量 — 检查中…",
     "kiro_credit_usage_checking_2": "Kiro 额度用量 — 检查中",
     "kiro_credit_usage_unavailable": "Kiro 额度用量 — 不可用",
@@ -110,7 +109,10 @@
     "open_command_bar": "打开 Command Bar",
     "focus_mode": "专注模式",
     "focus_mode_title": "专注模式 · Alt+Shift+M",
-    "focus_mode_title_mac": "专注模式 · ⌥⇧M"
+    "focus_mode_title_mac": "专注模式 · ⌥⇧M",
+    "kiro_credit_usage_api_key": "Kiro 额度用量 — API 密钥认证下不可用",
+    "active_harness": "代理运行环境：{{label}}",
+    "harness_new_sessions": "新会话"
   },
   "appSdk": {
     "chatEmbed": {
@@ -5289,7 +5291,13 @@
       "used": "已用",
       "voice_input": "语音输入",
       "finishing": "收尾中…",
-      "keep_holding_to_record": "按住才能录音"
+      "keep_holding_to_record": "按住才能录音",
+      "plan_limit": "套餐限额",
+      "limit_type": "限额类型",
+      "resets": "重置",
+      "rate_limit_allowed": "正常",
+      "rate_limit_warning": "接近限额",
+      "rate_limit_rejected": "已限流"
     },
     "chatPane": {
       "agent_list": "代理列表",
@@ -6813,25 +6821,6 @@
       "triggers": "触发词",
       "what_this_skill_does_and_when_the_agent_should_u": "此技能的作用以及代理应在何时使用它"
     },
-    "projectSkillsTrust": {
-      "body": "${{skill}} 来自此项目自带的 .kiro/skills 文件夹。",
-      "confirm": "信任此文件夹",
-      "consequence": "信任此文件夹后，其中的技能文件会进入本次聊天的上下文，并可指示代理执行命令。只信任你认得的项目。",
-      "decline": "暂不",
-      "decline_consequence": "如果拒绝，不会加载任何内容，消息保持你输入的原样。",
-      "grant_failed": "无法记录对此文件夹的信任。",
-      "title": "信任此项目的技能？",
-      "withdraw_hint": "以后可以在技能设置页面撤销。",
-      "working": "正在信任…"
-    },
-    "projectSkillsTrustList": {
-      "folder_missing": "此文件夹已不存在。",
-      "hint": "这些项目文件夹可以把自带技能加载到聊天中。撤销某个文件夹后，它的技能将不再加载。",
-      "revoke": "撤销",
-      "revoke_failed": "无法撤销此文件夹的信任。",
-      "revoking": "正在撤销…",
-      "title": "受信任的项目文件夹"
-    },
     "skillPickerMenu": {
       "loading_skills": "正在加载技能…",
       "no_matching_skills": "无匹配的技能",
@@ -7060,13 +7049,6 @@
       "later": "稍后",
       "restart_update": "安装更新并重启应用",
       "restarting": "正在重启…",
-      "update_ready": "更新已就绪"
-    },
-    "updatePill": {
-      "downloading": "下载中…",
-      "downloading_percent": "下载中 {{percent}}%",
-      "open_update_settings": "打开更新设置",
-      "update_available": "有可用更新",
       "update_ready": "更新已就绪"
     },
     "voiceDictationPanel": {
@@ -7337,6 +7319,32 @@
       "billing_notice": "这是付费 AWS 服务。在你确认之前不会发送任何请求。",
       "confirm_button": "确认并启用",
       "withdraw": "撤销确认"
+    },
+    "projectSkillsTrust": {
+      "body": "${{skill}} 来自此项目自带的 .kiro/skills 文件夹。",
+      "confirm": "信任此文件夹",
+      "consequence": "信任此文件夹后，其中的技能文件会进入本次聊天的上下文，并可指示代理执行命令。只信任你认得的项目。",
+      "decline": "暂不",
+      "decline_consequence": "如果拒绝，不会加载任何内容，消息保持你输入的原样。",
+      "grant_failed": "无法记录对此文件夹的信任。",
+      "title": "信任此项目的技能？",
+      "withdraw_hint": "以后可以在技能设置页面撤销。",
+      "working": "正在信任…"
+    },
+    "projectSkillsTrustList": {
+      "folder_missing": "此文件夹已不存在。",
+      "hint": "这些项目文件夹可以把自带技能加载到聊天中。撤销某个文件夹后，它的技能将不再加载。",
+      "revoke": "撤销",
+      "revoke_failed": "无法撤销此文件夹的信任。",
+      "revoking": "正在撤销…",
+      "title": "受信任的项目文件夹"
+    },
+    "updatePill": {
+      "downloading": "下载中…",
+      "downloading_percent": "下载中 {{percent}}%",
+      "open_update_settings": "打开更新设置",
+      "update_available": "有可用更新",
+      "update_ready": "更新已就绪"
     },
     "confirmDialog": {
       "cancel": "取消"
@@ -9470,7 +9478,9 @@
       "featurePreviewsTab": {
         "inbound_webhook_tokens_registered_contexts_and_r": "入站 Webhook 令牌、已注册的上下文和运行历史。API 可用，但页面尚未完成。",
         "open_webhooks": "打开 Webhook",
-        "webhooks": "Webhook"
+        "webhooks": "Webhook",
+        "acp_backends": "ACP 适配器",
+        "experimental_acp_backends_claude_code": "Claude Code 可替代 Kiro CLI。实验性功能 — 安全拒绝机制有效；端到端会话尚未验证。"
       }
     },
     "developerPage": {
@@ -10658,6 +10668,43 @@
         "vector_memory": "向量记忆",
         "vector_memory_is_initializing_the_embedding_mode": "向量记忆正在初始化。嵌入模型（约 610MB）会在后台自动下载，旧版记忆也会自动迁移 — 无需任何操作。",
         "verifying_model_integrity": "正在校验模型完整性…"
+      },
+      "acpBackend": {
+        "title": "ACP 适配器",
+        "experimental": "实验性",
+        "all_features_supported": "默认。支持所有功能。",
+        "features_differ": "{{total}} 项功能中有 {{count}} 项行为不同、不可用或尚未验证。",
+        "show_what_changes": "显示变化内容",
+        "applies_to_new_sessions": "适用于从现在开始的会话。已打开的会话将保留其启动时的适配器。",
+        "not_enabled_in_this_build": "此构建中未启用：{{backends}}。请参阅实验性 ACP 适配器文档。",
+        "level_supported": "支持",
+        "level_degraded": "行为不同",
+        "level_unavailable": "不可用",
+        "cap_session_sharing": "共享子代理运行时",
+        "cap_reasoning_effort": "推理强度",
+        "cap_mcp_tool_search": "MCP 工具搜索",
+        "cap_agent_profiles": "代理配置文件",
+        "cap_slash_commands": "斜杠命令",
+        "cap_turn_usage": "每轮用量",
+        "cap_billing": "费用和限额",
+        "cap_native_resume": "会话恢复",
+        "cap_registry_model_ids": "使用 Kiro 模型目录",
+        "cap_mid_turn_steer": "轮次中调整",
+        "confirm_title": "切换到 {{backend}}？",
+        "confirm_body": "此适配器为实验性功能。{{total}} 项 Kiro Crew 功能中有 {{count}} 项行为不同、不可用或尚未验证。",
+        "confirm_model_reset": "模型选择将被重置 — 每个运行框架都有自己的模型列表。这也包括已打开的聊天。",
+        "confirm_open_sessions": "已打开的会话不受影响，将保留其当前适配器。",
+        "cancel": "取消",
+        "confirm_switch": "切换适配器",
+        "confirm_prerequisites": "请先在网关主机上按顺序运行以下命令。",
+        "not_installed": "未安装适配器",
+        "level_unverified": "未验证",
+        "load_failed": "无法加载 ACP 适配器。请重试。",
+        "routing_routed": "工具调用会到达 {{productName}} 的安全门控",
+        "routing_indeterminate": "工具调用路由尚未验证 — 新会话将拒绝工具调用",
+        "routing_bypassed": "工具调用会绕过 {{productName}} 的安全门控 — 新会话将拒绝工具调用",
+        "routing_reason": "{{reason}}",
+        "ungated_opt_out": "已允许未门控的工具。此后端自行批准的调用不会咨询拒绝命令规则、敏感路径拦截和治理上限。"
       }
     },
     "overviewPage": {
@@ -11002,11 +11049,8 @@
       "owning_session": "所属会话"
     },
     "servicesTab": {
-      "channels": "渠道",
-      "connect_error": "连接错误",
       "connected": "已连接",
       "cpu": "CPU 使用率",
-      "discord": "Discord",
       "embeddings": "Embeddings",
       "gateway_process": "网关进程",
       "governance": "治理",
@@ -11014,7 +11058,6 @@
       "governance_tip_degraded": "某项治理检查按失败即拒绝处理，检测到完整性不匹配，或准入策略未经验证（缺失或不可读）。排查 SEL 审计日志。",
       "governance_tip_disabled": "未配置强制执行的准入策略（默认宽松）。除明确禁止外，插件均予准入。",
       "governance_tip_unknown": "本次会话尚未确定治理状态。",
-      "imessage": "iMessage",
       "mcp_process_breakdown": "{{total}}（{{sandbox}} 个沙箱 · {{provider}} 个 {{providerLabel}} · {{mcp}} 个 mcp）",
       "mcp_process_breakdown_unique": "{{total}} 个唯一进程（{{sandbox}} 个沙箱 · {{provider}} 个 {{providerLabel}} · {{mcp}} 个 mcp）",
       "mcp_processes": "MCP 进程",
@@ -11031,16 +11074,22 @@
       "status_disabled": "已禁用",
       "status_unknown": "未知",
       "stopped": "已停止",
-      "teams": "Microsoft Teams",
-      "telegram": "Telegram",
       "threads": "线程数",
       "uptime": "运行时长",
+      "working_directory": "工作目录",
+      "channels": "渠道",
+      "connect_error": "连接错误",
+      "discord": "Discord",
+      "imessage": "iMessage",
+      "teams": "Microsoft Teams",
+      "telegram": "Telegram",
       "webex": "Webex",
       "wecom": "企业微信",
       "weixin": "微信",
       "whatsapp": "WhatsApp",
       "feishu": "Feishu",
-      "working_directory": "工作目录"
+      "acp_backend": "ACP 适配器",
+      "acp_backend_experimental": "{{label}}（实验性）"
     },
     "sessionArchive": {
       "fuzzy_filter_substring_match": "模糊筛选（子串匹配）",

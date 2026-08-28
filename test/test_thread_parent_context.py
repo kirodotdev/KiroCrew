@@ -113,6 +113,9 @@ class FakeSessionManager:
     def is_cancelled(self, key, msg_ts):
         return False
 
+    def is_busy(self, key):
+        return False
+
     def dequeue(self, key):
         return None
 

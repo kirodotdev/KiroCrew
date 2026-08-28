@@ -39,6 +39,7 @@ from kiro_crew.context_management import RESULT_FILE_MAX_BYTES
 from kiro_crew.dashboard.handlers._shared import (
     _pip_install_channel_available,
     pip_extra_install_command,
+    require_owner_dashboard_request,
 )
 from kiro_crew.dashboard.origin import check_host, is_direct_local_request
 from kiro_crew.dashboard.state import DashboardState
@@ -1782,11 +1783,8 @@ def _active_advertised_ids(request: web.Request) -> list[str] | None:
     except (KeyError, AttributeError):
         return None
     for provider in providers:
-        getter = getattr(provider, "available_models", None)
-        if not callable(getter):
-            continue
         try:
-            ids = advertised_model_ids(getter())
+            ids = advertised_model_ids(provider.available_models())
         except Exception:
             continue
         if ids:
@@ -1841,16 +1839,25 @@ _MOVED_CONFIG_FIELDS: dict[str, str] = {
 }
 
 
+def _selectable_acp_backend_values() -> list[str]:
+    from kiro_crew.acp import backends as acp_backends
+
+    return sorted(acp_backends.selectable_ids())
+
+
 _EDITABLE_CONFIG: dict[str, dict] = {
     "agent.provider": {"type": "enum", "values": ["acp"]},
-    # Which ACP agent drives a session: "" = kiro-cli, "kas" = kiro-agent.
-    # The values MUST stay equal to acp.types.ACP_BACKENDS_SELECTABLE, which is
-    # the set AcpProvider can actually serve a session with. It is duplicated
-    # rather than imported because reaching kiro_crew.acp.types executes the
-    # kiro_crew.acp package init (client + runtime), and this dict is built at
-    # module import — the same cycle config.loader._normalize_acp_backend defers
-    # for. test_agent_backend_editable.py asserts the two never drift.
-    "agent.acp_backend": {"type": "enum", "values": ["", "kas"]},
+    # Which harness serves a session. Validated against ACP_BACKENDS_SELECTABLE
+    # rather than a literal list, so the allowlist cannot drift from the set the
+    # rest of the process honours — a value accepted here but refused by
+    # _normalize_acp_backend would be silently degraded back to kiro after a
+    # save that reported success.
+    "agent.acp_backend": {
+        "type": "str",
+        "max_len": 128,
+        "pattern": r"^[A-Za-z0-9._-]*$",
+        "values_fn": _selectable_acp_backend_values,
+    },
     # Default model for new sessions. Membership can NOT be validated against a
     # fixed list: the real vocabulary is whatever the live kiro-cli advertises
     # (/api/models spawns it to find out), and it spans both canonical registry
@@ -2147,6 +2154,13 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             return _deny(_MOVED_CONFIG_FIELDS[path_key], f"{path_key}={value}")
         return _deny(f"field not editable: {path_key}", f"{path_key}={value}")
 
+    if path_key == "agent.acp_backend":
+        owner_denied = await require_owner_dashboard_request(
+            request, "config.patch.agent.acp_backend"
+        )
+        if owner_denied is not None:
+            return owner_denied
+
     # Validate value
     if spec["type"] == "enum":
         if value not in spec["values"]:
@@ -2183,9 +2197,20 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
         pattern = spec.get("pattern")
         if pattern and not re.fullmatch(pattern, value):
             return _deny(f"invalid value for {path_key}", f"{path_key}={value}")
+        if path_key == "agent.acp_backend":
+            from kiro_crew.acp.backends import canonical_backend_id
+            from kiro_crew.acp.types import ACP_BACKEND_KIRO
+
+            value = canonical_backend_id(value)
         values_fn = spec.get("values_fn")
-        if values_fn and value not in values_fn():
-            return _deny(f"invalid value for {path_key}", f"{path_key}={value}")
+        if values_fn:
+            # Dynamic ACP values may parse the operator-owned registry cache.
+            # Keep that filesystem I/O off aiohttp's event loop; unlike the
+            # static ``values`` rows, this callable is deliberately live so a
+            # newly discovered adapter can be selected without a restart.
+            allowed_values = await asyncio.to_thread(values_fn)
+            if value not in allowed_values:
+                return _deny(f"invalid value for {path_key}", f"{path_key}={value}")
         validate_fn = spec.get("validate_fn")
         if validate_fn:
             reason = validate_fn(value, request)
@@ -2361,6 +2386,19 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     cfg_path = config_path()
     from kiro_crew.dashboard.handlers.agents import _get_config_lock  # noqa: F811
 
+    # Model ids healed by a backend switch, reported so the caller can tell the
+    # operator their selection was reset rather than silently changing it.
+    healed_models: list[str] = []
+    # Non-empty when this PATCH actually moved agent.acp_backend to a new value.
+    backend_switched: list[bool] = []
+    backend_rollback: dict[str, tuple[bool, object]] = {}
+    backend_written: dict[str, tuple[bool, object]] = {}
+    backend_role_model_rollback: dict[str, object] = {}
+    backend_role_model_written: dict[str, object] = {}
+    backend_agent_model_rollback: dict[str, tuple[bool, object]] = {}
+    backend_agent_model_written: dict[str, tuple[bool, object]] = {}
+    verified_cfg: KiroCrewConfig | None = None
+
     async with _get_config_lock():
         parts = path_key.split(".")
 
@@ -2377,7 +2415,73 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                 if not isinstance(nxt, dict):
                     raise ValueError(f"config section '{part}' is not an object")
                 section = nxt
+            previous = section.get(parts[-1])
+            backend_changed = False
+            if path_key == "agent.acp_backend":
+                previous_backend = (
+                    canonical_backend_id(previous)
+                    if isinstance(previous, str)
+                    else ACP_BACKEND_KIRO
+                )
+                backend_changed = previous_backend != value
+            if backend_changed:
+                agent_section_before = data.get("agent")
+                if isinstance(agent_section_before, dict):
+                    for field in ("acp_backend", "model"):
+                        backend_rollback[field] = (
+                            field in agent_section_before,
+                            copy.deepcopy(agent_section_before.get(field)),
+                        )
+                agents_before = data.get("agents")
+                if isinstance(agents_before, dict):
+                    for name, agent_before in agents_before.items():
+                        if isinstance(agent_before, dict):
+                            backend_agent_model_rollback[name] = (
+                                "model" in agent_before,
+                                copy.deepcopy(agent_before.get("model")),
+                            )
             section[parts[-1]] = value
+
+            if backend_changed:
+                backend_switched.append(True)
+                from kiro_crew.acp.client import DEFAULT_MODEL  # noqa: F811
+
+                agent_section = data.get("agent")
+                if isinstance(agent_section, dict):
+                    if agent_section.get("model") not in (None, "", DEFAULT_MODEL):
+                        healed_models.append(f"agent.model={agent_section['model']}")
+                        agent_section["model"] = DEFAULT_MODEL
+                    roles = agent_section.get("role_models")
+                    if isinstance(roles, dict):
+                        for role, pinned in list(roles.items()):
+                            if pinned not in (None, "", DEFAULT_MODEL):
+                                healed_models.append(f"agent.role_models.{role}={pinned}")
+                                backend_role_model_rollback[role] = copy.deepcopy(pinned)
+                                roles[role] = DEFAULT_MODEL
+                                backend_role_model_written[role] = copy.deepcopy(roles[role])
+                agents_section = data.get("agents")
+                if isinstance(agents_section, dict):
+                    for name, agent_config in agents_section.items():
+                        if not isinstance(agent_config, dict):
+                            continue
+                        pinned = agent_config.get("model")
+                        if pinned not in (None, "", DEFAULT_MODEL):
+                            healed_models.append(f"agents.{name}.model={pinned}")
+                            agent_config["model"] = ""
+                if isinstance(agent_section, dict):
+                    for field in backend_rollback:
+                        backend_written[field] = (
+                            field in agent_section,
+                            copy.deepcopy(agent_section.get(field)),
+                        )
+                if isinstance(agents_section, dict):
+                    for name in backend_agent_model_rollback:
+                        agent_config = agents_section.get(name)
+                        if isinstance(agent_config, dict):
+                            backend_agent_model_written[name] = (
+                                "model" in agent_config,
+                                copy.deepcopy(agent_config.get("model")),
+                            )
             return data
 
         try:
@@ -2392,9 +2496,69 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             _log_sel("error", f"{path_key}=write_failed")
             return web.json_response({"error": "failed to write config file"}, status=500)
 
+        if backend_switched:
+            verified_cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        if verified_cfg is not None and verified_cfg.agent.acp_backend != value:
+
+            def _rollback_backend_switch(data: dict) -> dict | None:
+                agent_section = data.get("agent")
+                if not isinstance(agent_section, dict):
+                    return data
+                # Another process that replaced this value owns the newer
+                # decision; never overwrite it with this request's snapshot.
+                if agent_section.get("acp_backend") == value:
+                    for field, (was_present, prior_value) in backend_rollback.items():
+                        written_present, written_value = backend_written[field]
+                        if (field in agent_section) != written_present or (
+                            written_present and agent_section.get(field) != written_value
+                        ):
+                            continue
+                        if was_present:
+                            agent_section[field] = copy.deepcopy(prior_value)
+                        else:
+                            agent_section.pop(field, None)
+                    roles = agent_section.get("role_models")
+                    if isinstance(roles, dict):
+                        for role, prior_value in backend_role_model_rollback.items():
+                            if roles.get(role) == backend_role_model_written[role]:
+                                roles[role] = copy.deepcopy(prior_value)
+                    agents_section = data.get("agents")
+                    if isinstance(agents_section, dict):
+                        for name, (
+                            was_present,
+                            prior_value,
+                        ) in backend_agent_model_rollback.items():
+                            agent_config = agents_section.get(name)
+                            if not isinstance(agent_config, dict):
+                                continue
+                            written_present, written_value = backend_agent_model_written[name]
+                            if ("model" in agent_config) != written_present or (
+                                written_present and agent_config.get("model") != written_value
+                            ):
+                                continue
+                            if was_present:
+                                agent_config["model"] = copy.deepcopy(prior_value)
+                            else:
+                                agent_config.pop("model", None)
+                return data
+
+            await asyncio.to_thread(
+                update_config_locked,
+                cfg_path,
+                mutate=_rollback_backend_switch,
+            )
+            _log_sel("denied", f"{path_key}=normalized_after_write")
+            return web.json_response(
+                {
+                    "error": "ACP backend became unavailable while saving; previous settings restored",
+                    "code": "acp_backend_changed_during_save",
+                },
+                status=409,
+            )
+
     _log_sel("success", f"{path_key}={value}")
 
-    cfg = KiroCrewConfig.load()
+    cfg = verified_cfg or KiroCrewConfig.load()
 
     # If provider changed, reload the factory so new sessions use the new provider
     if path_key == "agent.provider":
@@ -2424,6 +2588,40 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             "Provider switched to %s — config rebuilt, factory reloaded, slot models cleared", value
         )
 
+    # A backend switch is the same hazard as the provider switch above, one level
+    # down: a model id is namespaced to the harness that advertised it, so a slot
+    # still holding kiro's `gpt-5.6-sol` would apply it to the new backend and be
+    # refused at the wire. The provider block clears slot models for exactly this
+    # reason; `agent.acp_backend` needs it too. The provider factory captures
+    # `agent.acp_backend` when it is built, so refresh it and drain prewarmed
+    # providers before any new session can inherit the old adapter. Live sessions
+    # stay on the adapter they started with, matching the Settings disclosure.
+    if backend_switched:
+        state_after_switch: DashboardState = request.app["state"]
+        await state_after_switch.sessions.refresh_defaults()
+        # Best-effort by design: the config write has ALREADY committed by this
+        # point, so a problem clearing in-memory slot state must not turn a
+        # successful save into a 500 and leave the operator believing the switch
+        # did not happen. The stale slot model is re-cleared on the next switch
+        # and is refused harmlessly at the wire meanwhile.
+        try:
+            for slot in state_after_switch._slots.values():
+                if slot.model:
+                    slot.model = ""
+                    # Match the provider-switch path above: a fallback restore
+                    # probe that started before this clear must not repopulate
+                    # the previous backend's model after the switch commits.
+                    slot._model_pick_gen += 1
+            state_after_switch.push_slots_update()
+        except Exception:
+            logger.warning("Could not clear slot models after backend switch", exc_info=True)
+        if healed_models:
+            logger.info(
+                "ACP backend switched to %s — reset namespaced model selection(s): %s",
+                value or "kiro",
+                ", ".join(healed_models),
+            )
+
     # The default model and default reasoning effort are captured when the
     # provider factory is built (at gateway startup), so a config write alone
     # would not reach new sessions until a restart. refresh_defaults() rebuilds
@@ -2434,13 +2632,6 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     if path_key in (
         "agent.model",
         "agent.reasoning_effort",
-        # The ACP backend is captured when the provider factory is built, and a
-        # pre-warmed kiro-cli process must not serve a session that asked for
-        # KAS — refresh_defaults() rebuilds the factory and drains the pool.
-        # NOT reload_provider_factory(): switching the default backend must not
-        # kill in-flight turns on live sessions, which keep the backend they
-        # were started on.
-        "agent.acp_backend",
     ) or path_key.startswith("agent.role_efforts."):
         state = request.app["state"]
         await state.sessions.refresh_defaults()

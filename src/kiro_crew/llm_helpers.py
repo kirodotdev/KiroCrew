@@ -426,13 +426,10 @@ def resolve_substitute_set_model(provider: Any) -> Callable[[str], Awaitable[Non
     return None
 
 
-def provider_advertised_ids(provider: Any) -> list[str]:
+def provider_advertised_ids(provider: LLMProvider) -> list[str]:
     """Advertised model ids from the provider, ``[]`` when unknown."""
-    getter = getattr(provider, "available_models", None)
-    if not callable(getter):
-        return []
     try:
-        return advertised_model_ids(getter())
+        return advertised_model_ids(provider.available_models())
     except Exception:
         return []
 
@@ -1777,6 +1774,9 @@ async def _resolve_permission(
             raw_params=event.raw_tool_params,
             command=event.shell_command,
             is_shell=event.is_shell,
+            mcp_server_name=event.mcp_server_name,
+            mcp_tool_name=event.tool_name,
+            mcp_identity_ambiguous=event.mcp_identity_ambiguous,
         )
         if tool_result.action == TOOL_DENY:
             await provider.reject_tool(event.request_id)

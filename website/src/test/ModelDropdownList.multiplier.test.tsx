@@ -230,10 +230,13 @@ describe('withAutoFirst — Auto keeps the multiplier it was served', () => {
     expect(auto.contextWindow).toBe(1_000_000)
   })
 
-  it('leaves Auto unpriced when the backend sent no auto row', () => {
-    // Cold start / degraded list: nothing told us Auto's rate, so nothing is shown.
-    const [auto] = withAutoFirst([{ name: 'claude-opus-5', description: '…', rateMultiplier: 2.2 }])
-    expect(auto.rateMultiplier).toBeUndefined()
+  it('offers no Auto row at all when the backend sent none', () => {
+    // `auto` is a kiro-namespace sentinel. kiro advertises it as a real row, so
+    // there is nothing to synthesise; a spec adapter (claude offers `default`,
+    // Fable, Sonnet…) has no `auto`, and inventing one hands the operator a
+    // model the adapter rejects at the wire.
+    const out = withAutoFirst([{ name: 'claude-opus-5', description: '…', rateMultiplier: 2.2 }])
+    expect(out.map(m => m.name)).toEqual(['claude-opus-5'])
   })
 
   it('puts auto first exactly once and keeps the backend order after it', () => {
@@ -259,6 +262,7 @@ describe('withAutoFirst — Auto keeps the multiplier it was served', () => {
 
   it('drops nameless rows rather than rendering an empty option', () => {
     const out = withAutoFirst([{ name: '', description: 'junk' }, { name: 'glm-5', description: '' }])
-    expect(out.map(m => m.name)).toEqual(['auto', 'glm-5'])
+    // No `auto` in the input, so none in the output — see the order-only rule.
+    expect(out.map(m => m.name)).toEqual(['glm-5'])
   })
 })

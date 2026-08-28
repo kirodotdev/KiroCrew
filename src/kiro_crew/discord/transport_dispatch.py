@@ -73,6 +73,7 @@ from kiro_crew.messaging.link import (
 from kiro_crew.messaging.renderer import Renderer, SilentRenderer
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.messaging.upload_gate import live_dashboard_slot, uploads_restricted
+from kiro_crew.providers.acp import provider_label
 from kiro_crew.safety_override import describe_grant_lifetime, safety_override
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -574,6 +575,7 @@ class DiscordDispatcher:
                 agent=agent,
                 resumed=resumed,
                 runtime_source="discord",
+                provider_type=provider_label(provider),
             )
 
             # PreToolUse security gate (channel-neutral, off ctx_builder.hooks).
@@ -586,6 +588,9 @@ class DiscordDispatcher:
                     raw_params=getattr(event, "raw_tool_params", None),
                     command=getattr(event, "shell_command", None),
                     is_shell=bool(getattr(event, "is_shell", False)),
+                    mcp_server_name=getattr(event, "mcp_server_name", "") or "",
+                    mcp_tool_name=getattr(event, "tool_name", "") or "",
+                    mcp_identity_ambiguous=bool(getattr(event, "mcp_identity_ambiguous", False)),
                 )
                 if result.action == TOOL_DENY:
                     return "deny"

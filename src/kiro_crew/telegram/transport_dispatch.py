@@ -69,6 +69,7 @@ from kiro_crew.messaging.session_trust import add_trusted_session, is_session_tr
 from kiro_crew.messaging.sessions_view import collect_recent_sessions_audited
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.messaging.upload_gate import uploads_restricted
+from kiro_crew.providers.acp import provider_label
 from kiro_crew.safety_override import safety_override
 from kiro_crew.security import redact, redact_local_paths
 from kiro_crew.sel import sel
@@ -742,6 +743,7 @@ class TelegramDispatcher:
                 agent=agent,
                 resumed=resumed,
                 runtime_source="telegram",
+                provider_type=provider_label(provider),
                 # Temporary mode reads NO memory, which is the half the transcript
                 # gate cannot cover: refusing to WRITE still leaves yesterday's
                 # memories and lessons in today's prompt. Incognito deliberately
@@ -767,6 +769,9 @@ class TelegramDispatcher:
                     raw_params=getattr(event, "raw_tool_params", None),
                     command=getattr(event, "shell_command", None),
                     is_shell=bool(getattr(event, "is_shell", False)),
+                    mcp_server_name=getattr(event, "mcp_server_name", "") or "",
+                    mcp_tool_name=getattr(event, "tool_name", "") or "",
+                    mcp_identity_ambiguous=bool(getattr(event, "mcp_identity_ambiguous", False)),
                 )
                 if result.action == TOOL_DENY:
                     return "deny"

@@ -5504,6 +5504,7 @@ class DashboardState:
         """Core status fields shared by /api/status, SSE, and WebSocket pushes."""
         uptime = int(time.time() - self.start_time)
         branch, commit = self._build_info
+        harness = _harness_status(active_acp_backend(self.sessions))
         return {
             "uptime": _fmt_duration(uptime),
             "start_time": self.start_time,
@@ -5573,6 +5574,16 @@ class DashboardState:
             "no_crons": self.no_crons,
             "branch": branch,
             "commit": commit,
+            # The harness NEW sessions run on, as the header capsule shows it:
+            # ``{backend, label, kiro_credits}``, or null when it cannot be read.
+            # Null means UNKNOWN and is deliberately not folded into the kiro
+            # spelling (``""``), because every consumer gates a readout on it and
+            # "we could not tell" has to leave that readout as it was. Carried on
+            # THIS payload because it is already fetched on mount and re-pushed
+            # every 5s, so the readout follows a harness switch without its own
+            # poll; ``kiro_credits`` is the gateway's own answer so no frontend
+            # carries a copy of the membership set.
+            "harness": harness,
             # Which release lane these bytes came from: "nightly", "insider" or
             # "stable". Shipped as a RESOLVED ANSWER rather than leaving the
             # dashboard to parse `version` itself, because the rule is not
@@ -8230,7 +8241,57 @@ class DashboardState:
                 "slack_thread_ts": slack_thread_ts,
             }
         )
+        # Live harness, not the configured default: an open chat keeps the
+        # backend it started with, and the model picker must follow that.
+        # Omitted when no provider is bound (a new tab has not spawned yet).
+        live_backend = self._live_slot_acp_backend(slot)
+        if live_backend is not None:
+            payload["acp_backend"] = live_backend
         return payload
+
+    def _live_slot_acp_backend(self, slot: _ChatSlot) -> str | None:
+        """Backend the live provider is driving, or ``None`` if none is bound.
+
+        ``""`` is kiro. Distinguishing omit-vs-empty lets the picker treat a
+        still-open kiro session as kiro after the default harness moved on.
+        """
+        try:
+            from kiro_crew.dashboard.chat_utils import _history_key_for
+
+            sessions = getattr(self, "sessions", None)
+            getter = getattr(sessions, "get_provider", None)
+            if not callable(getter):
+                return None
+            provider = getter(_history_key_for(slot.key))
+        except Exception:
+            return None
+        if provider is None:
+            return None
+        try:
+            backend = provider.backend
+        except (AttributeError, TypeError):
+            return None
+        return backend if isinstance(backend, str) else None
+
+    def _live_slot_acp_client(self, slot: _ChatSlot) -> Any | None:
+        """The live ACP client bound to this slot, or ``None`` if unbound."""
+        try:
+            from kiro_crew.dashboard.chat_utils import _history_key_for
+
+            sessions = getattr(self, "sessions", None)
+            getter = getattr(sessions, "get_provider", None)
+            if not callable(getter):
+                return None
+            provider = getter(_history_key_for(slot.key))
+        except Exception:
+            return None
+        if provider is None:
+            return None
+        for holder_name in ("client", "_client"):
+            holder = getattr(provider, holder_name, None)
+            if holder is not None:
+                return holder
+        return provider
 
     def serialize_slots(self, *, include_check_status: bool = False) -> list:
         """Serialize slots, optionally including owner-only provider status.
@@ -9474,6 +9535,52 @@ def _governance_status() -> str:
         return governance_status()
     except Exception:
         return "unknown"
+
+
+def active_acp_backend(sessions: object) -> str | None:
+    """The harness id NEW sessions run on, or ``None`` when it cannot be read.
+
+    ``None`` means UNKNOWN, and is deliberately not folded into ``""`` (kiro):
+    every caller here gates a readout on the answer, and "we could not tell" has
+    to leave that readout as it was rather than assert a harness. A session store
+    double, or one built before this property existed, is exactly that case.
+    """
+    backend = getattr(sessions, "acp_backend", None)
+    return backend if isinstance(backend, str) else None
+
+
+def _harness_status(backend: str | None) -> dict[str, object] | None:
+    """The active harness as the dashboard header shows it, or ``None``.
+
+    Three fields, and the third is the reason this is served rather than derived
+    in the browser: ``kiro_credits`` is the gateway's own answer to "does this
+    harness draw on the Kiro credit plan", so the header does not carry a second
+    copy of the membership set — a copy that would keep rendering a credit pill
+    for the next adapter someone adds. ``label`` comes from the descriptor for the
+    same reason.
+
+    Never raises: an id with no cached descriptor (a registry adapter whose
+    registry cache has since been dropped) still names itself, and any other
+    failure omits the block entirely so the header falls back to its
+    harness-unaware rendering instead of blanking the whole status payload.
+    """
+    if backend is None:
+        return None
+    try:
+        from kiro_crew.acp import backends as acp_backends
+
+        try:
+            label = acp_backends.descriptor_for(backend).label
+        except Exception:
+            label = backend
+        return {
+            "backend": backend,
+            "label": label,
+            "kiro_credits": acp_backends.bills_kiro_credits(backend),
+        }
+    except Exception:
+        logger.debug("Harness status unavailable", exc_info=True)
+        return None
 
 
 def _cached_check_status(url: str) -> dict | None:

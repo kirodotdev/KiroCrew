@@ -134,7 +134,7 @@ import { useStopEscapeHatch } from '../hooks/useStopEscapeHatch'
 import { useMeasuredHeight } from '../hooks/useMeasuredHeight'
 
 import { i18nT } from '../i18n/t'
-import { fmtDateFields, fmtPercent } from '../i18n/format'
+import { fmtDateFields, fmtPercent, fmtRelative } from '../i18n/format'
 import SessionRefStrip from './SessionRefStrip'
 import type { SessionRef } from '../utils/sessionRefs'
 const INPUT_MIN_H = 44
@@ -196,6 +196,19 @@ const APPROVAL_NUDGE_THRESHOLD = 3
 
 // Pending-approval selection is slot-aware — see selectSlotPendingApproval
 // in chatSlice: each grid pane's approval bar reflects ITS slot.
+
+/** Plan rate-limit statuses, ordered by whether the account can still send a
+ *  turn, with the label key and readout colour each one renders as. The backend
+ *  parser drops a status it does not recognise (`_dispatch.parse_rate_limit`),
+ *  so an unknown spelling arrives here as an absent status rather than falling
+ *  through to the wrong severity. `allowed` gets no colour: it is the normal
+ *  state, and tinting it would spend the popover's one accent on "nothing to
+ *  see". */
+const RATE_LIMIT_STATUS_VIEW: Record<string, { key: string; color?: string }> = {
+  allowed: { key: 'components.chatInput.rate_limit_allowed' },
+  allowed_warning: { key: 'components.chatInput.rate_limit_warning', color: 'var(--warn)' },
+  rejected: { key: 'components.chatInput.rate_limit_rejected', color: 'var(--danger)' },
+}
 
 /** Usable viewport height. Native window zoom already reports zoomed CSS
  *  pixels through innerHeight, so no compensation var is needed. */
@@ -403,6 +416,12 @@ interface ChatInputProps {
   contextPct?: number
   contextUsedTokens?: number
   contextWindowTokens?: number
+  /** Plan rate-limit reading for the harness behind this slot, when it reports
+   *  one. Rendered as an extra section of the context popover rather than its own
+   *  control: it answers the same "can I keep going" question as the context
+   *  ring, on the same refresh, and most harnesses report nothing so a dedicated
+   *  pill would be empty space for them. */
+  rateLimit?: { status?: string; limit_type?: string; utilization?: number; resets_at?: number }
   showContextPct?: boolean
   /** Show used/window token counts in the inline context readout. */
   showContextTokens?: boolean
@@ -760,6 +779,7 @@ function ChatInput({
   contextPct,
   contextUsedTokens,
   contextWindowTokens,
+  rateLimit,
   showContextPct,
   showContextTokens,
   isRunning = false,
@@ -2937,7 +2957,7 @@ function ChatInput({
 
       <input id={fileInputId} ref={fileInputRef} type="file" aria-label={i18nT('components.chatInput.attach_files')} multiple accept={FILE_ACCEPT} className="sr-only" onChange={handleFileInputChange} />
 
-      {typedCommandMenus && <SlashCommandMenu input={value} anchorRef={inputRef as React.RefObject<HTMLElement>} open={slashMenuOpen} sendOnEnter={sendOnEnter} onSelect={cmd => { onChange(cmd); setSlashMenuOpen(false) }} onClose={() => setSlashMenuOpen(false)} />}
+      {typedCommandMenus && <SlashCommandMenu input={value} slotId={slotId} anchorRef={inputRef as React.RefObject<HTMLElement>} open={slashMenuOpen} sendOnEnter={sendOnEnter} onSelect={cmd => { onChange(cmd); setSlashMenuOpen(false) }} onClose={() => setSlashMenuOpen(false)} />}
 
       {onFileSelect && (
         <FilePickerMenu
@@ -3622,6 +3642,50 @@ function ChatInput({
                             <div className="flex justify-between"><span className="text-muted">{i18nT('components.chatInput.remaining')}</span><span className="text-text">{approx ? '~' : ''}{fmtTokens(remaining)}</span></div>
                             <div className="flex justify-between"><span className="text-muted">{i18nT('components.chatInput.total')}</span><span className="text-text">{fmtTokens(win)}</span></div>
                           </div>
+                          {/* Plan quota, when the harness behind this slot reports one.
+                              Every field is independently optional: the adapter sends
+                              whichever ones its plan has, so each row is guarded
+                              rather than the section assuming a full block. */}
+                          {rateLimit && (() => {
+                            const statusView = rateLimit.status ? RATE_LIMIT_STATUS_VIEW[rateLimit.status] : undefined
+                            const util = typeof rateLimit.utilization === 'number' && rateLimit.utilization >= 0
+                              ? Math.min(rateLimit.utilization, 100)
+                              : undefined
+                            // A block carrying nothing this popover can render renders
+                            // nothing — a lone "Plan limit" heading over an empty row
+                            // reads as a broken readout rather than as no quota.
+                            if (!statusView && util == null && !rateLimit.resets_at && !rateLimit.limit_type) return null
+                            return (
+                              <div className="mt-2 pt-2 border-t border-border flex flex-col gap-1 text-[11px] font-mono">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-muted">{i18nT('components.chatInput.plan_limit')}</span>
+                                  {statusView
+                                    ? <span className="font-semibold truncate max-w-[110px]" style={statusView.color ? { color: statusView.color } : undefined} title={i18nT(statusView.key)}>{i18nT(statusView.key)}</span>
+                                    : util != null && <span className="text-text">{fmtPercent(util / 100)}</span>}
+                                </div>
+                                {/* The percentage moves up into the header row when there
+                                    is no status to head the section, so it is never shown
+                                    twice. */}
+                                {statusView && util != null && (
+                                  <div className="flex justify-between"><span className="text-muted">{i18nT('components.chatInput.used')}</span><span className="text-text">{fmtPercent(util / 100)}</span></div>
+                                )}
+                                {!!rateLimit.resets_at && (
+                                  /* Unix SECONDS from the backend; toDate's own
+                                     seconds-vs-ms disambiguation covers that, so no
+                                     conversion here would be a second guess at the
+                                     same question. */
+                                  <div className="flex justify-between"><span className="text-muted">{i18nT('components.chatInput.resets')}</span><span className="text-text">{fmtRelative(rateLimit.resets_at)}</span></div>
+                                )}
+                                {/* The limit type is the plan's own identifier, rendered
+                                    verbatim for the same reason the model id below is:
+                                    translating it would break the match against what the
+                                    provider's docs and billing page call it. */}
+                                {!!rateLimit.limit_type && (
+                                  <div className="flex justify-between"><span className="text-muted">{i18nT('components.chatInput.limit_type')}</span><span className="text-text truncate max-w-[110px]" title={rateLimit.limit_type}>{rateLimit.limit_type}</span></div>
+                                )}
+                              </div>
+                            )
+                          })()}
                           {modelName && (
                             <div className="mt-2 pt-2 border-t border-border flex justify-between text-[11px] font-mono">
                               <span className="text-muted">{i18nT('components.chatInput.model')}</span><span className="text-text truncate max-w-[120px]" title={modelName}>{modelName}</span>

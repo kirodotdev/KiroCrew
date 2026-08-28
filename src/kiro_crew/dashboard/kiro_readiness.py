@@ -21,6 +21,7 @@ latched value can be arbitrarily stale. That splits the callers in two:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -245,10 +246,69 @@ async def reject_if_kiro_unverified(request: web.Request) -> web.Response | None
     :func:`kiro_verified_ready` — a stale ``ready=True`` is as dangerous as a
     stale ``ready=False`` here (it authorizes the history rewrite or the
     browser-opening spawn), and only these paths pay for the re-probe.
-    """
 
-    if await kiro_verified_ready(_service(request)):
-        _clear_refusal_warning()
+    **Backend scope.** The probe asks whether ``kiro-cli`` is installed and
+    signed in. It governs every backend in ``ACP_BACKENDS_KIRO_IDENTITY_STORE``:
+    KAS is reached through the authenticated Kiro relay and therefore becomes
+    unusable after the same external logout as the Kiro backend. Other adapters
+    own different identity stores, and ``kiro-cli`` may not exist on their
+    hosts, so the gate opens for them.
+
+    Checked BEFORE ``kiro_verified_ready`` on purpose: the point is to skip the
+    probe, not to run it and ignore the answer. The probe spawns a subprocess.
+    """
+    from kiro_crew.acp.types import ACP_BACKENDS_KIRO_IDENTITY_STORE
+
+    live_backend = _request_live_acp_backend(request)
+    effective_backend = (
+        live_backend
+        if live_backend is not None
+        else await asyncio.to_thread(_configured_acp_backend)
+    )
+    if effective_backend in ACP_BACKENDS_KIRO_IDENTITY_STORE:
+        if await kiro_verified_ready(_service(request)):
+            _clear_refusal_warning()
+            return None
+        _warn_refused_once(_log_safe_path(request))
+        return web.json_response(_KIRO_NOT_READY_RESPONSE, status=503)
+    return None
+
+
+def _request_live_acp_backend(request: web.Request) -> str | None:
+    """Return the named slot's live backend, if this request names one."""
+    try:
+        route_slot = request.match_info.get("slot")
+        query_slot = request.query.get("slot")
+        raw_slot = route_slot if isinstance(route_slot, str) and route_slot else query_slot
+        slot_name = raw_slot.strip() if isinstance(raw_slot, str) else ""
+        state = request.app.get("state")
+        if not slot_name or state is None:
+            return None
+        resolver = getattr(state, "resolve_slot", None)
+        slot = resolver(slot_name) if callable(resolver) else None
+        if slot is None:
+            getter = getattr(state, "get_slot", None)
+            slot = getter(slot_name) if callable(getter) else None
+        if slot is None:
+            return None
+        live_backend = state._live_slot_acp_backend(slot)
+        return live_backend if isinstance(live_backend, str) else None
+    except Exception:
+        logger.debug("Could not resolve the request slot's live ACP backend", exc_info=True)
         return None
-    _warn_refused_once(_log_safe_path(request))
-    return web.json_response(_KIRO_NOT_READY_RESPONSE, status=503)
+
+
+def _configured_acp_backend() -> str:
+    """The configured non-default ACP backend, or ``""`` for kiro-cli.
+
+    Fails closed to ``""`` — an unreadable config keeps the kiro gate in force
+    rather than opening it, since opening it is the permissive direction.
+    """
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        backend = KiroCrewConfig.load().agent.acp_backend
+        return backend if isinstance(backend, str) else ""
+    except Exception:
+        logger.debug("Could not read agent.acp_backend for the readiness gate", exc_info=True)
+        return ""

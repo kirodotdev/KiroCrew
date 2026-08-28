@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING, Callable
 
 from kiro_crew import git_coord, platform_compat, shutdown_event
 from kiro_crew.acp.client import AcpProcessDied
-from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY, fire_tool_hooks, get_global_hook_store
 from kiro_crew.llm_helpers import provider_last_turn_usage, stream_and_collect_json
@@ -53,6 +52,13 @@ if TYPE_CHECKING:
     from kiro_crew.session import SessionManager
 
 logger = logging.getLogger(__name__)
+
+
+def _runtime_provider_label(provider: object) -> str:
+    """Concrete harness label for context and usage attribution."""
+    from kiro_crew.providers.acp import provider_label
+
+    return provider_label(provider)
 
 
 async def _check_error_loop(
@@ -336,7 +342,7 @@ async def execute_task(
                     session_key,
                     agent=agent or None,
                     project=str(work_dir) if work_dir else None,
-                    provider_type=KiroCrewConfig.load().agent.provider,
+                    provider_type=_runtime_provider_label(client),
                 )
             else:
                 full_prompt = task_prompt
@@ -376,6 +382,9 @@ async def execute_task(
                             raw_params=event.raw_tool_params,
                             command=event.shell_command,
                             is_shell=event.is_shell,
+                            mcp_server_name=event.mcp_server_name,
+                            mcp_tool_name=event.tool_name,
+                            mcp_identity_ambiguous=event.mcp_identity_ambiguous,
                         )
                         if tool_result.action == TOOL_DENY:
                             await client.reject_tool(event.request_id)
@@ -542,7 +551,6 @@ async def execute_task(
                     read_effective_agent,
                 )
 
-                _usage_cfg = KiroCrewConfig.load()
                 _used, _window = read_context_tokens(client)
                 await persist_token_record_async(
                     session_key,
@@ -552,7 +560,7 @@ async def execute_task(
                     # global default instead of what actually ran.
                     "",
                     _complete_event,
-                    provider=_usage_cfg.agent.provider,
+                    provider=_runtime_provider_label(client),
                     surface=telemetry_channel_of(session_key),
                     agent=read_effective_agent(client) or agent or "",
                     context_used=_used,
@@ -882,14 +890,13 @@ async def self_review(
                 read_effective_agent,
             )
 
-            _rv_cfg = KiroCrewConfig.load()
             _used, _window = read_context_tokens(client)
             await persist_token_record_async(
                 review_key,
                 # Blank — see the task site above; model_source reports what ran.
                 "",
                 provider_last_turn_usage(client),
-                provider=_rv_cfg.agent.provider,
+                provider=_runtime_provider_label(client),
                 surface=telemetry_channel_of(review_key),
                 agent=read_effective_agent(client) or agent or "",
                 context_used=_used,

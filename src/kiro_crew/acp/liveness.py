@@ -332,9 +332,12 @@ def boottime_now() -> float | None:
     Returns None where the clock is unavailable (no ``CLOCK_BOOTTIME``), which
     every caller must read as "cannot attribute" rather than as a time.
     """
+    clock_id = getattr(time, "CLOCK_BOOTTIME", None)
+    if not isinstance(clock_id, int):
+        return None
     try:
-        return time.clock_gettime(time.CLOCK_BOOTTIME)
-    except (AttributeError, OSError):  # pragma: no cover - platform dependent
+        return time.clock_gettime(clock_id)
+    except OSError:  # pragma: no cover - platform dependent
         return None
 
 

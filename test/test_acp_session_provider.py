@@ -300,7 +300,7 @@ class TestAcpSessionProviderToolApproval:
         provider = AcpSessionProvider(handle, runtime)
 
         await provider.approve_tool("req-42")
-        handle.approve_tool.assert_awaited_once_with("req-42", option_id="allow_once")
+        handle.approve_tool.assert_awaited_once_with("req-42", option_id=None, always=False)
 
     @pytest.mark.asyncio
     async def test_approve_tool_always(self):
@@ -309,7 +309,7 @@ class TestAcpSessionProviderToolApproval:
         provider = AcpSessionProvider(handle, runtime)
 
         await provider.approve_tool("req-99", always=True)
-        handle.approve_tool.assert_awaited_once_with("req-99", option_id="allow_always")
+        handle.approve_tool.assert_awaited_once_with("req-99", option_id=None, always=True)
 
     @pytest.mark.asyncio
     async def test_reject_tool(self):
@@ -977,7 +977,7 @@ class TestAcpSessionProviderContractParity:
         runtime = _make_runtime()
         provider = AcpSessionProvider(handle, runtime)
         await provider.approve_tool("req", option_id="allow_always")
-        handle.approve_tool.assert_awaited_once_with("req", option_id="allow_always")
+        handle.approve_tool.assert_awaited_once_with("req", option_id="allow_always", always=False)
 
 
 class TestNewConversation:

@@ -76,3 +76,26 @@ export function modelSupportsEffort(model: string | undefined): boolean {
   if (m === 'auto' || m.includes('haiku')) return false
   return m.includes('opus') || m.includes('sonnet') || m.includes('fable') || m.includes('gpt')
 }
+
+function advertisedEffortLevels(advertised: readonly string[] | undefined): string[] {
+  if (!advertised) return []
+  return advertised.filter(level => !!level && level !== 'default')
+}
+
+/**
+ * Whether the reasoning-effort control should appear for this model + harness.
+ *
+ * Adapters (non-empty ``backend``) only get a control when they advertised
+ * levels — Codex often bakes effort into the model id (``gpt-5.2[high]``),
+ * which the kiro family heuristic would treat as capable and then show fake
+ * low..max notches. Kiro (``''`` / omitted) keeps that heuristic so the
+ * first-class slider is unchanged.
+ */
+export function showEffortControl(
+  advertised: readonly string[] | undefined,
+  model: string | undefined,
+  backend?: string | null,
+): boolean {
+  if (backend) return advertisedEffortLevels(advertised).length > 0
+  return modelSupportsEffort(model === 'auto' ? '' : model)
+}

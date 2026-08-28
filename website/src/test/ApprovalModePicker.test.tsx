@@ -113,6 +113,7 @@ describe('ApprovalModePicker', () => {
     expect(api.chatMode).not.toHaveBeenCalled()
     expect(screen.queryByText('YOLO mode is an app-wide setting')).not.toBeInTheDocument()
   })
+
 })
 
 /** The trigger pill is CHROME: "Normal" / "Reads" / "Trust" / "YOLO" are labels,

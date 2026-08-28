@@ -291,7 +291,7 @@ const evictMcpApps = (state: { mcpApps: Record<string, McpAppRenderPayload> }, s
 const slotKeyedMaps = (state: ChatState) => [
   state.slotMessages, state.slotActivity, state.slotRun, state.slotHydrated,
   state.slotSide, state.slotSideClosed, state.slotStatusDetail,
-  state.slotContextPct, state.slotContextTokens, state.stopPressedAt,
+  state.slotContextPct, state.slotContextTokens, state.slotRateLimit, state.stopPressedAt,
   state.followups, state.folderSuggestions,
   state.pendingQuestions, state.subagentQueued, state.goalLoops,
   // A surviving pane marker makes a recreated slot's hydrate early-return into
@@ -712,6 +712,12 @@ interface ChatState {
    *  an absent `used` as an approximation (a `~` prefix, derived from pct)
    *  rather than asserting a precise figure. */
   slotContextTokens: Record<string, { used?: number; window: number }>
+  /** Per-slot plan rate-limit reading, when the harness reports one (only
+   *  claude-agent-acp does today). Every field is optional because the backend
+   *  omits what the adapter did not send — an absent `utilization` means "not
+   *  reported", which must render as nothing rather than as 0%. `resetsAt` is
+   *  unix SECONDS, normalized backend-side. */
+  slotRateLimit: Record<string, { status?: string; limit_type?: string; utilization?: number; resets_at?: number }>
   voicePlaying: boolean
   voiceAudio: string | null  // base64 stitched MP3 for replay
   subagents: Record<string, SubagentActivity>
@@ -912,6 +918,7 @@ const initialState: ChatState = {
   creatingSlot: false,
   slotContextPct: {},
   slotContextTokens: {},
+  slotRateLimit: {},
   voicePlaying: false,
   voiceAudio: null,
   subagents: {},
@@ -2960,10 +2967,16 @@ const chatSlice = createSlice({
       if (ts != null && card.ts !== ts) return
       delete state.folderSuggestions[slot]
     },
-    sseContextUsage(state, action: PayloadAction<{ slot: string; pct: number; used_tokens?: number; window_tokens?: number; reset?: boolean }>) {
-      const { slot, pct, used_tokens, window_tokens, reset } = action.payload
+    sseContextUsage(state, action: PayloadAction<{ slot: string; pct: number; used_tokens?: number; window_tokens?: number; reset?: boolean; rate_limit?: { status?: string; limit_type?: string; utilization?: number; resets_at?: number } }>) {
+      const { slot, pct, used_tokens, window_tokens, reset, rate_limit } = action.payload
       if (isUnsafeKey(slot)) return
       state.slotContextPct[safeKey(slot)] = pct
+      // The quota reading is account state, so it follows the OPPOSITE rule to
+      // the token counts below: a frame without it leaves the stored value in
+      // place and `reset` does not clear it. The backend only omits the key when
+      // the harness reports no quota at all, and a compaction or model switch —
+      // which is what `reset` marks — changes the transcript, not the account.
+      if (rate_limit) state.slotRateLimit[safeKey(slot)] = rate_limit
       if (window_tokens && window_tokens > 0) {
         state.slotContextTokens[safeKey(slot)] = { used: used_tokens ?? 0, window: window_tokens }
       } else if (reset) {

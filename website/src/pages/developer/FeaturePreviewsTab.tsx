@@ -3,8 +3,9 @@ import { ArrowRight } from 'lucide-react'
 
 import { SettingsCard, SettingsToggle } from '../../components/settings'
 import { usePreviewFlag } from '../../hooks/usePreviewFlag'
-import { PREVIEW_WEBHOOKS, setPreviewFlag } from '../../utils/previewFlags'
+import { PREVIEW_ACP_BACKENDS, PREVIEW_WEBHOOKS, setPreviewFlag } from '../../utils/previewFlags'
 import { i18nT } from '../../i18n/t'
+import { ACP_BACKEND_ROUTE } from '../overview/AcpBackendCard'
 
 /**
  * Developer > Feature Previews — opt in to surfaces that ship in the bundle but
@@ -38,8 +39,10 @@ import { i18nT } from '../../i18n/t'
 export function FeaturePreviewsTab() {
   const navigate = useNavigate()
   const webhooks = usePreviewFlag(PREVIEW_WEBHOOKS)
+  const acpAdapters = usePreviewFlag(PREVIEW_ACP_BACKENDS)
 
   return (
+    <>
     <SettingsCard>
       <SettingsToggle
         label={i18nT('pages.developer.featurePreviewsTab.webhooks')}
@@ -64,5 +67,28 @@ export function FeaturePreviewsTab() {
         </div>
       )}
     </SettingsCard>
+    {/* Its own card, per this page's one-card-per-feature rule. The flag adds a
+        dedicated Developer tab and the active-backend row on System > Services. */}
+    <SettingsCard>
+      <SettingsToggle
+        label={i18nT('pages.developer.featurePreviewsTab.acp_backends')}
+        description={i18nT('pages.developer.featurePreviewsTab.experimental_acp_backends_claude_code')}
+        checked={acpAdapters}
+        onChange={v => setPreviewFlag(PREVIEW_ACP_BACKENDS, v)}
+      />
+      {acpAdapters && (
+        <div className="pt-1">
+          <button
+            type="button"
+            onClick={() => navigate(ACP_BACKEND_ROUTE)}
+            className="inline-flex items-center gap-1.5 text-[13px] font-medium text-accent bg-transparent border-none cursor-pointer px-0 py-1 hover:underline"
+          >
+            {i18nT('pages.developer.featurePreviewsTab.acp_backends')}
+            <ArrowRight size={13} className="lucide-inline" />
+          </button>
+        </div>
+      )}
+    </SettingsCard>
+    </>
   )
 }

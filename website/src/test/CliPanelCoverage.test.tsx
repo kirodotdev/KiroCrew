@@ -260,12 +260,12 @@ afterEach(() => {
   live.clear()
   restoreLayout()
   __resetTerminalFontStore()
-  vi.unstubAllGlobals()
   document.documentElement.removeAttribute('data-theme')
   document.documentElement.style.removeProperty('--accent')
   for (const s of Array.from(document.head.querySelectorAll('style'))) {
     if (s.id.startsWith('mc-custom-theme-') || s.id === 'unrelated-style') s.remove()
   }
+  vi.unstubAllGlobals()
 })
 
 /* ── mount / attach ───────────────────────────────────────────────────────── */

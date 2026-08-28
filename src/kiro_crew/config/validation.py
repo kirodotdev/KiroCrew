@@ -306,7 +306,11 @@ _CONFIG_CACHE = ConfigCache()
 _CONFIG_CACHE_LOCK = _CONFIG_CACHE._lock
 
 
-def validate_config_data(data: dict) -> dict:
+def validate_config_data(
+    data: dict,
+    *,
+    selectable_acp_backends: frozenset[str] | None = None,
+) -> dict:
     """Validate *data* against the config JSON Schema.
 
     Logs warnings for any issues found and mutates *data* in-place to
@@ -321,6 +325,22 @@ def validate_config_data(data: dict) -> dict:
     # a config.loader -> validation -> schema -> loader cycle at import time.
     from kiro_crew.config.loader import CONFIG_RESERVED_TOP_KEYS
     from kiro_crew.config.schema import JSON_SCHEMA, SCHEMA_REGISTRY
+
+    # JSON_SCHEMA is a process-lifetime metadata snapshot, while the explicit
+    # adapter admission set can evolve independently. Refresh the enum from the
+    # current reviewed set so a newly admitted backend is not deleted merely
+    # because schema.py was imported before its registration.
+    validation_schema = JSON_SCHEMA
+    try:
+        from kiro_crew.acp.backends import selectable_ids
+
+        selectable = sorted(
+            selectable_ids() if selectable_acp_backends is None else selectable_acp_backends
+        )
+        validation_schema = copy.deepcopy(JSON_SCHEMA)
+        validation_schema["properties"]["agent"]["properties"]["acp_backend"]["enum"] = selectable
+    except (ImportError, KeyError, TypeError):
+        logger.debug("Could not refresh the ACP backend validation enum", exc_info=True)
 
     # 1. Detect unrecognized top-level keys. The schema registry models only the
     # config's *sections*, so the keys save() stamps itself are not in it and
@@ -354,26 +374,36 @@ def validate_config_data(data: dict) -> dict:
 
     # 3. Normalize case-insensitive enum fields before validation
     agent = data.get("agent")
-    if isinstance(agent, dict) and isinstance(agent.get("log_level"), str):
-        agent["log_level"] = agent["log_level"].upper()
+    if isinstance(agent, dict):
+        if isinstance(agent.get("log_level"), str):
+            agent["log_level"] = agent["log_level"].upper()
+        # Map a persisted registry spelling onto the hand-written id before the
+        # schema enum runs. The canonical spelling is still subject to the
+        # reviewed selection set: a withheld backend is deleted by schema
+        # validation and therefore degrades to Kiro like any other unselectable
+        # value.
+        if isinstance(agent.get("acp_backend"), str):
+            from kiro_crew.acp.backends import canonical_backend_id
+
+            agent["acp_backend"] = canonical_backend_id(agent["acp_backend"])
 
     # 4. Preserve numeric values written by older config writers.
-    _coerce_legacy_numeric_values(data, JSON_SCHEMA)
+    _coerce_legacy_numeric_values(data, validation_schema)
 
     # 5. Run jsonschema validation
     try:
-        jsonschema.validate(data, JSON_SCHEMA)
+        jsonschema.validate(data, validation_schema)
     except jsonschema.ValidationError:
         # Collect all errors (including nested ones)
-        validator_cls = jsonschema.validators.validator_for(JSON_SCHEMA)
-        validator = validator_cls(JSON_SCHEMA)
+        validator_cls = jsonschema.validators.validator_for(validation_schema)
+        validator = validator_cls(validation_schema)
         for err in validator.iter_errors(data):
             dot_path = _dot_path_from_json_path(err.absolute_path)
             if not dot_path:
                 # Root-level schema error — skip
                 continue
 
-            sensitive = _is_sensitive_path(JSON_SCHEMA, dot_path)
+            sensitive = _is_sensitive_path(validation_schema, dot_path)
             value = err.instance
             display_val = _mask_value(value, sensitive)
 
@@ -399,8 +429,7 @@ def validate_config_data(data: dict) -> dict:
                 actual = _actual_type_name(value)
                 removed = _apply_field_default(data, dot_path)
                 logger.warning(
-                    "Config: type mismatch at '%s': "
-                    "expected %s, got %s (value: %s); %s",
+                    "Config: type mismatch at '%s': " "expected %s, got %s (value: %s); %s",
                     dot_path,
                     expected,
                     actual,

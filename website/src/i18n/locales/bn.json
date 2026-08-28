@@ -43,7 +43,6 @@
     "iam_identity_center": "IAM Identity Center",
     "installing_packages": "প্যাকেজ ইনস্টল হচ্ছে",
     "k_search_for_anything": "⌘K — যা কিছু খুঁজুন…",
-    "kiro_credit_usage_api_key": "Kiro ক্রেডিট ব্যবহার — API কী প্রমাণীকরণে উপলভ্য নয়",
     "kiro_credit_usage_checking": "Kiro ক্রেডিট ব্যবহার — যাচাই করা হচ্ছে…",
     "kiro_credit_usage_checking_2": "Kiro ক্রেডিট ব্যবহার — যাচাই করা হচ্ছে",
     "kiro_credit_usage_unavailable": "Kiro ক্রেডিট ব্যবহার — জানা যাচ্ছে না",
@@ -113,7 +112,10 @@
     "open_command_bar": "Command Bar খুলুন",
     "focus_mode": "ফোকাস মোড",
     "focus_mode_title": "ফোকাস মোড · Alt+Shift+M",
-    "focus_mode_title_mac": "ফোকাস মোড · ⌥⇧M"
+    "focus_mode_title_mac": "ফোকাস মোড · ⌥⇧M",
+    "kiro_credit_usage_api_key": "Kiro ক্রেডিট ব্যবহার — API কী প্রমাণীকরণে উপলভ্য নয়",
+    "active_harness": "এজেন্ট হার্নেস: {{label}}",
+    "harness_new_sessions": "নতুন সেশন"
   },
   "appSdk": {
     "chatEmbed": {
@@ -5382,7 +5384,13 @@
       "used": "ব্যবহৃত",
       "voice_input": "ভয়েস ইনপুট",
       "finishing": "সম্পন্ন হচ্ছে…",
-      "keep_holding_to_record": "রেকর্ড করতে চেপে ধরে রাখুন"
+      "keep_holding_to_record": "রেকর্ড করতে চেপে ধরে রাখুন",
+      "plan_limit": "প্ল্যান সীমা",
+      "limit_type": "সীমার ধরন",
+      "resets": "রিসেট",
+      "rate_limit_allowed": "ঠিক আছে",
+      "rate_limit_warning": "সীমার কাছাকাছি",
+      "rate_limit_rejected": "সীমিত"
     },
     "chatPane": {
       "agent_list": "এজেন্ট তালিকা",
@@ -6922,25 +6930,6 @@
       "triggers": "ট্রিগার",
       "what_this_skill_does_and_when_the_agent_should_u": "এই স্কিলটি কী করে এবং এজেন্ট কখন এটি ব্যবহার করবে"
     },
-    "projectSkillsTrust": {
-      "body": "${{skill}} এসেছে এই প্রকল্পের নিজের .kiro/skills ফোল্ডার থেকে।",
-      "confirm": "এই ফোল্ডার বিশ্বাস করো",
-      "consequence": "এই ফোল্ডার বিশ্বাস করলে এর স্কিল ফাইলগুলো এই চ্যাটের কনটেক্সটে ঢুকতে পারে, যেখান থেকে সেগুলো এজেন্টকে কমান্ড চালানোর নির্দেশ দিতে পারে। যে প্রকল্পকে তুমি চেনো, শুধু সেটিকেই বিশ্বাস করো।",
-      "decline": "এখন নয়",
-      "decline_consequence": "প্রত্যাখ্যান করলে কিছুই লোড হয় না, আর তোমার মেসেজ যেমন লিখেছিলে তেমনই থাকে।",
-      "grant_failed": "এই ফোল্ডারের জন্য বিশ্বাস নথিভুক্ত করা গেল না।",
-      "title": "এই প্রকল্পের স্কিল বিশ্বাস করবে?",
-      "withdraw_hint": "পরে স্কিল সেটিংস পেজ থেকে এটি তুলে নিতে পারবে।",
-      "working": "বিশ্বাস করা হচ্ছে…"
-    },
-    "projectSkillsTrustList": {
-      "folder_missing": "এই ফোল্ডারটি আর নেই।",
-      "hint": "এই প্রজেক্ট ফোল্ডারগুলো নিজেদের স্কিল চ্যাটে লোড করতে পারে। কোনো ফোল্ডারের আস্থা তুলে নিলে তার স্কিল আর লোড হবে না।",
-      "revoke": "আস্থা তুলে নাও",
-      "revoke_failed": "এই ফোল্ডারের আস্থা তুলে নেওয়া যায়নি।",
-      "revoking": "তুলে নেওয়া হচ্ছে…",
-      "title": "বিশ্বস্ত প্রজেক্ট ফোল্ডার"
-    },
     "skillPickerMenu": {
       "loading_skills": "স্কিল লোড হচ্ছে…",
       "no_matching_skills": "মিলে যাওয়া কোনো স্কিল নেই",
@@ -7169,13 +7158,6 @@
       "later": "পরে",
       "restart_update": "আপডেট ইনস্টল করে অ্যাপ রিস্টার্ট করুন",
       "restarting": "রিস্টার্ট হচ্ছে...",
-      "update_ready": "আপডেট প্রস্তুত"
-    },
-    "updatePill": {
-      "downloading": "ডাউনলোড হচ্ছে…",
-      "downloading_percent": "ডাউনলোড হচ্ছে {{percent}}%",
-      "open_update_settings": "আপডেট সেটিংস খুলুন",
-      "update_available": "আপডেট উপলব্ধ",
       "update_ready": "আপডেট প্রস্তুত"
     },
     "voiceDictationPanel": {
@@ -7446,6 +7428,32 @@
       "billing_notice": "এটি একটি অর্থপ্রদানকারী AWS পরিষেবা। আপনি নিশ্চিত না করা পর্যন্ত কোনো অনুরোধ পাঠানো হয় না।",
       "confirm_button": "নিশ্চিত করুন এবং সক্রিয় করুন",
       "withdraw": "নিশ্চিতকরণ প্রত্যাহার করুন"
+    },
+    "projectSkillsTrust": {
+      "body": "${{skill}} এসেছে এই প্রকল্পের নিজের .kiro/skills ফোল্ডার থেকে।",
+      "confirm": "এই ফোল্ডার বিশ্বাস করো",
+      "consequence": "এই ফোল্ডার বিশ্বাস করলে এর স্কিল ফাইলগুলো এই চ্যাটের কনটেক্সটে ঢুকতে পারে, যেখান থেকে সেগুলো এজেন্টকে কমান্ড চালানোর নির্দেশ দিতে পারে। যে প্রকল্পকে তুমি চেনো, শুধু সেটিকেই বিশ্বাস করো।",
+      "decline": "এখন নয়",
+      "decline_consequence": "প্রত্যাখ্যান করলে কিছুই লোড হয় না, আর তোমার মেসেজ যেমন লিখেছিলে তেমনই থাকে।",
+      "grant_failed": "এই ফোল্ডারের জন্য বিশ্বাস নথিভুক্ত করা গেল না।",
+      "title": "এই প্রকল্পের স্কিল বিশ্বাস করবে?",
+      "withdraw_hint": "পরে স্কিল সেটিংস পেজ থেকে এটি তুলে নিতে পারবে।",
+      "working": "বিশ্বাস করা হচ্ছে…"
+    },
+    "projectSkillsTrustList": {
+      "folder_missing": "এই ফোল্ডারটি আর নেই।",
+      "hint": "এই প্রজেক্ট ফোল্ডারগুলো নিজেদের স্কিল চ্যাটে লোড করতে পারে। কোনো ফোল্ডারের আস্থা তুলে নিলে তার স্কিল আর লোড হবে না।",
+      "revoke": "আস্থা তুলে নাও",
+      "revoke_failed": "এই ফোল্ডারের আস্থা তুলে নেওয়া যায়নি।",
+      "revoking": "তুলে নেওয়া হচ্ছে…",
+      "title": "বিশ্বস্ত প্রজেক্ট ফোল্ডার"
+    },
+    "updatePill": {
+      "downloading": "ডাউনলোড হচ্ছে…",
+      "downloading_percent": "ডাউনলোড হচ্ছে {{percent}}%",
+      "open_update_settings": "আপডেট সেটিংস খুলুন",
+      "update_available": "আপডেট উপলব্ধ",
+      "update_ready": "আপডেট প্রস্তুত"
     },
     "confirmDialog": {
       "cancel": "বাতিল"
@@ -9620,7 +9628,9 @@
       "featurePreviewsTab": {
         "inbound_webhook_tokens_registered_contexts_and_r": "ইনবাউন্ড ওয়েবহুক টোকেন, নিবন্ধিত কনটেক্সট ও রান ইতিহাস। API কাজ করে, তবে পেজটি এখনও শেষ হয়নি।",
         "open_webhooks": "ওয়েবহুক খুলুন",
-        "webhooks": "ওয়েবহুক"
+        "webhooks": "ওয়েবহুক",
+        "acp_backends": "ACP অ্যাডাপ্টার",
+        "experimental_acp_backends_claude_code": "Kiro CLI-এর বিকল্প হিসেবে Claude Code। পরীক্ষামূলক — নিরাপত্তাজনিত প্রত্যাখ্যান কাজ করে; শুরু থেকে শেষ পর্যন্ত সেশন এখনো যাচাই করা হয়নি।"
       }
     },
     "developerPage": {
@@ -10817,6 +10827,43 @@
         "vector_memory": "ভেক্টর মেমরি",
         "vector_memory_is_initializing_the_embedding_mode": "ভেক্টর মেমরি চালু হচ্ছে। এমবেডিং মডেল (~610MB) স্বয়ংক্রিয়ভাবে ব্যাকগ্রাউন্ডে ডাউনলোড হয়, আর পুরোনো মেমরি নিজে নিজেই মাইগ্রেট হয় — কিছু করার প্রয়োজন নেই।",
         "verifying_model_integrity": "মডেলের অখণ্ডতা যাচাই করা হচ্ছে…"
+      },
+      "acpBackend": {
+        "title": "ACP অ্যাডাপ্টার",
+        "experimental": "পরীক্ষামূলক",
+        "all_features_supported": "ডিফল্ট। সব বৈশিষ্ট্য সমর্থিত।",
+        "features_differ": "{{total}}টির মধ্যে {{count}}টি ফিচার ভিন্নভাবে কাজ করে, অনুপলব্ধ, অথবা যাচাই করা হয়নি।",
+        "show_what_changes": "কী পরিবর্তন হয় দেখান",
+        "applies_to_new_sessions": "এখন থেকে শুরু হওয়া সেশনে প্রযোজ্য। খোলা সেশনগুলি তাদের শুরুর অ্যাডাপ্টার ধরে রাখে।",
+        "not_enabled_in_this_build": "এই বিল্ডে সক্রিয় নয়: {{backends}}। পরীক্ষামূলক ACP অ্যাডাপ্টার ডকুমেন্টেশন দেখুন।",
+        "level_supported": "সমর্থিত",
+        "level_degraded": "ভিন্নভাবে কাজ করে",
+        "level_unavailable": "অনুপলব্ধ",
+        "cap_session_sharing": "শেয়ার করা সাবএজেন্ট রানটাইম",
+        "cap_reasoning_effort": "যুক্তির প্রচেষ্টা",
+        "cap_mcp_tool_search": "MCP টুল অনুসন্ধান",
+        "cap_agent_profiles": "এজেন্ট প্রোফাইল",
+        "cap_slash_commands": "স্ল্যাশ কমান্ড",
+        "cap_turn_usage": "প্রতি-টার্ন ব্যবহার",
+        "cap_billing": "খরচ ও সীমা",
+        "cap_native_resume": "সেশন পুনরারম্ভ",
+        "cap_registry_model_ids": "Kiro মডেল ক্যাটালগ ব্যবহার করে",
+        "cap_mid_turn_steer": "টার্নের মধ্যে দিকনির্দেশ",
+        "confirm_title": "{{backend}}-এ পরিবর্তন করবেন?",
+        "confirm_body": "এই অ্যাডাপ্টারটি পরীক্ষামূলক। {{total}}টির মধ্যে {{count}}টি Kiro Crew ফিচার ভিন্নভাবে কাজ করে, অনুপলব্ধ, অথবা যাচাই করা হয়নি।",
+        "confirm_model_reset": "মডেল নির্বাচনগুলি রিসেট হবে — প্রতিটি হারনেসের নিজস্ব মডেল তালিকা রয়েছে। এর মধ্যে খোলা চ্যাটও অন্তর্ভুক্ত।",
+        "confirm_open_sessions": "খোলা সেশনগুলি প্রভাবিত হয় না এবং তাদের বর্তমান অ্যাডাপ্টার ধরে রাখে।",
+        "cancel": "বাতিল",
+        "confirm_switch": "অ্যাডাপ্টার পরিবর্তন করুন",
+        "confirm_prerequisites": "প্রথমে গেটওয়ে হোস্টে এগুলি ক্রমানুসারে চালান।",
+        "not_installed": "অ্যাডাপ্টার ইনস্টল করা নেই",
+        "level_unverified": "যাচাই করা হয়নি",
+        "load_failed": "ACP অ্যাডাপ্টার লোড করা যায়নি। আবার চেষ্টা করুন।",
+        "routing_routed": "টুল কল {{productName}}-এর নিরাপত্তা গেটে পৌঁছায়",
+        "routing_indeterminate": "টুল-কল রাউটিং যাচাই করা হয়নি — নতুন সেশন টুল কল প্রত্যাখ্যান করবে",
+        "routing_bypassed": "টুল কল {{productName}}-এর নিরাপত্তা গেট এড়িয়ে যাবে — নতুন সেশন টুল কল প্রত্যাখ্যান করবে",
+        "routing_reason": "{{reason}}",
+        "ungated_opt_out": "অনিয়ন্ত্রিত টুল অনুমোদিত। নিষিদ্ধ-কমান্ড নিয়ম, সংবেদনশীল-পথ অবরোধ এবং গভর্নেন্স সীমা এই ব্যাকএন্ডের স্ব-অনুমোদিত কলের জন্য পরামর্শ করা হয় না।"
       }
     },
     "overviewPage": {
@@ -11166,11 +11213,8 @@
       "owning_session": "মালিক সেশন"
     },
     "servicesTab": {
-      "channels": "চ্যানেল",
-      "connect_error": "কানেকশন ত্রুটি",
       "connected": "সংযুক্ত",
       "cpu": "CPU %",
-      "discord": "Discord",
       "embeddings": "Embeddings",
       "gateway_process": "গেটওয়ে প্রসেস",
       "governance": "গভর্নেন্স",
@@ -11178,7 +11222,6 @@
       "governance_tip_degraded": "একটি গভর্নেন্স চেক ফেল-ক্লোজড হয়েছে, ইন্টিগ্রিটিতে অমিল ধরা পড়েছে, অথবা অ্যাডমিশন পলিসি যাচাই করা যায়নি (নেই/পড়া যাচ্ছে না)। SEL অডিট লগ দেখে খতিয়ে দেখো।",
       "governance_tip_disabled": "প্রয়োগযোগ্য কোনো অ্যাডমিশন পলিসি কনফিগার করা নেই (উদার ডিফল্ট)। স্পষ্টভাবে নিষিদ্ধ না করা থাকলে প্লাগইন গ্রহণ করা হয়।",
       "governance_tip_unknown": "এই সেশনে গভর্নেন্স স্ট্যাটাস এখনো নির্ণয় করা হয়নি।",
-      "imessage": "iMessage",
       "mcp_process_breakdown": "{{total}} ({{sandbox}} স্যান্ডবক্স · {{provider}} {{providerLabel}} · {{mcp}} mcp)",
       "mcp_process_breakdown_unique": "{{total}} স্বতন্ত্র ({{sandbox}} স্যান্ডবক্স · {{provider}} {{providerLabel}} · {{mcp}} mcp)",
       "mcp_processes": "MCP প্রসেস",
@@ -11195,16 +11238,22 @@
       "status_disabled": "নিষ্ক্রিয়",
       "status_unknown": "অজানা",
       "stopped": "বন্ধ",
-      "teams": "Microsoft Teams",
-      "telegram": "Telegram",
       "threads": "থ্রেড",
       "uptime": "আপটাইম",
+      "working_directory": "কার্যকরী ডিরেক্টরি",
+      "channels": "চ্যানেল",
+      "connect_error": "কানেকশন ত্রুটি",
+      "discord": "Discord",
+      "imessage": "iMessage",
+      "teams": "Microsoft Teams",
+      "telegram": "Telegram",
       "webex": "Webex",
       "wecom": "WeCom",
       "weixin": "WeChat",
       "whatsapp": "WhatsApp",
       "feishu": "Feishu",
-      "working_directory": "কার্যকরী ডিরেক্টরি"
+      "acp_backend": "ACP অ্যাডাপ্টার",
+      "acp_backend_experimental": "{{label}} (পরীক্ষামূলক)"
     },
     "sessionArchive": {
       "fuzzy_filter_substring_match": "ফাজি ফিল্টার (সাবস্ট্রিং মিল)",

@@ -290,6 +290,9 @@ def build_tool_gate(ctx_builder: Any, *, session_key: str, agent: str) -> Callab
             raw_params=getattr(event, "raw_tool_params", None),
             command=getattr(event, "shell_command", None),
             is_shell=bool(getattr(event, "is_shell", False)),
+            mcp_server_name=getattr(event, "mcp_server_name", "") or "",
+            mcp_tool_name=getattr(event, "tool_name", "") or "",
+            mcp_identity_ambiguous=bool(getattr(event, "mcp_identity_ambiguous", False)),
         )
         if result.action == TOOL_DENY:
             return "deny"
@@ -605,6 +608,8 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
         # Publish this turn's session identity so managed MCP tools resolve
         # X-Session-Key; one shared writer lives in messaging.identity.
         await publish_turn_identity(sessions, session_key)
+        from kiro_crew.providers.acp import provider_label
+
         # Off-loop: build_message embeds the episodic query (blocking urllib).
         full_message, _ = await run_in_embed_pool(
             ctx_builder.build_message,
@@ -616,6 +621,7 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
             resumed=resumed,
             minimal_context=turn.minimal_context,
             runtime_source=turn.channel_type,
+            provider_type=provider_label(provider),
         )
 
         driver = TurnDriver(

@@ -1087,6 +1087,25 @@ class TestRefreshDefaultsSparesLiveSessions:
         assert mgr._provider_factory is not old_factory
 
     @pytest.mark.asyncio
+    async def test_loads_config_off_the_event_loop(self):
+        """Config validation can touch disk, so a settings save must not stall I/O."""
+        mgr, _ = _make_manager(pool_size=0)
+        event_loop_thread = threading.get_ident()
+        new_cfg = _make_cfg(pool_size=0)
+        new_cfg.create_provider_factory = MagicMock(
+            return_value=MagicMock(side_effect=lambda *a, **kw: _make_provider())
+        )
+
+        def load() -> MagicMock:
+            assert threading.get_ident() != event_loop_thread
+            return new_cfg
+
+        with patch("kiro_crew.session.KiroCrewConfig.load", side_effect=load):
+            await mgr.refresh_defaults()
+
+        assert mgr._cfg is new_cfg
+
+    @pytest.mark.asyncio
     async def test_warm_pool_is_drained(self):
         # A pooled provider was built by the OLD factory and would hand the
         # stale default to the very next session; unlike a live session it has

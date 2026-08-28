@@ -62,30 +62,35 @@ class InterceptDecision(enum.Enum):
 
 # ── boot-layer extension points ──
 
+# Optional attribute on a direct provider factory. Its value is a callable that
+# accepts a backend id and returns a factory for the rare live-parent crossover.
+# Keeping this sidecar off ``ProviderRegistry.create_factory``'s call signature
+# preserves the first-class Kiro factory contract (H13).
+PROVIDER_BACKEND_FACTORY_ATTR = "_kirocrew_backend_factory"
+
 
 class ProviderRegistry(Protocol):
     """The LLM-provider factory + ACP-backend registration seam.
 
-    The public edition ships Kiro-CLI-ACP only.  The companion uses
-    ``register_acp_backends`` to re-register a Claude backend through the dormant
-    ``ACP_BACKEND_CLAUDE`` seam without the core changing.
+    The public edition keeps Kiro first-class and admits operator-installed ACP
+    registry adapters through an additive provider type. A companion may add
+    its own managed registrations without changing the core factory.
     """
 
     def create_factory(self, cfg: "KiroCrewConfig") -> Callable[..., Any]:
-        """Return the provider factory (Default: ``cfg.create_provider_factory()``).
+        """Return the provider factory through the configured registry.
 
         WIRED: every factory build site routes through
         ``config.loader.build_provider_factory`` →
         ``current_context().providers.create_factory(cfg)``. The Default returns
-        exactly ``cfg.create_provider_factory()`` (identity), so the public
-        edition is unchanged; a companion can return an alternate factory (e.g.
-        re-registering an alternate ACP backend) — but kiro-cli stays the default
-        for both editions unless the companion is explicitly opted in.
+        ``cfg.create_provider_factory()`` directly for Kiro and owns
+        provider-class selection only for an opted-in adapter; a companion can
+        return an alternate factory.
         """
         ...
 
     def register_acp_backends(self) -> None:
-        """Register any extra ACP backends (no-op in the public edition).
+        """Register any extra ACP backends.
 
         Consumed at boot by ``bootstrap_context`` after the context installs.
         """

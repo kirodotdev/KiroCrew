@@ -34,9 +34,10 @@ from kiro_crew.dashboard.state import (
     build_refusal_steer_notice,
     should_queue_refusal_recovery,
 )
+from kiro_crew.providers.base import LLMEvent, LLMProvider
 
 
-class _SteerClient:
+class _SteerClient(LLMProvider):
     """Minimal permission-answering double recording steer/reject ORDER.
 
     Order is the mechanism under test, not an implementation detail: the steer
@@ -46,10 +47,34 @@ class _SteerClient:
     """
 
     def __init__(self, *, supports_steer: bool = True, steer_result: bool = True):
-        self.supports_steer = supports_steer
+        self._supports_steer = supports_steer
         self._steer_result = steer_result
         self.calls: list[str] = []
         self.steered: list[str] = []
+
+    async def start(self) -> None:
+        return None
+
+    async def shutdown(self) -> None:
+        return None
+
+    async def stream(self, message: str):
+        if False:  # pragma: no cover - abstract-interface conformance only
+            yield LLMEvent(kind="complete")
+
+    async def approve_tool(self, request_id: str | int, *, always: bool = False) -> None:
+        return None
+
+    def context_usage_pct(self) -> float:
+        return 0.0
+
+    @property
+    def supports_steer(self) -> bool:
+        return self._supports_steer
+
+    @property
+    def last_steer_monotonic(self) -> float:
+        return 0.0
 
     async def steer(self, message: str) -> bool:
         self.calls.append("steer")
@@ -143,6 +168,22 @@ class TestSteerPolicyNotice:
 
         notices: list[str] = []
         assert await _steer_policy_notice(_Bare(), "bash", "denied", notices) is False
+        assert notices == []
+
+    @pytest.mark.asyncio
+    async def test_non_provider_cannot_opt_itself_into_steering(self):
+        calls: list[str] = []
+
+        class _Impostor:
+            supports_steer = True
+
+            async def steer(self, message: str) -> bool:
+                calls.append(message)
+                return True
+
+        notices: list[str] = []
+        assert await _steer_policy_notice(_Impostor(), "bash", "denied", notices) is False
+        assert calls == []
         assert notices == []
 
     @pytest.mark.asyncio

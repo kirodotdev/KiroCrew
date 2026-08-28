@@ -7,8 +7,11 @@ its own kiro-cli session with idle expiry, context compaction, circuit
 breaker, per-session semaphore, and persistent background session.
 
 Chat sessions are served from the warm pool when eligible (default pool
-agent, default cwd, no resume mapping); otherwise they cold-start on first
-message via `get_or_create()`.
+agent, default cwd, no resume mapping, no foreign `acp_backend` override);
+otherwise they cold-start on first message via `get_or_create()`.
+`live_harness(key)` returns the live session's backend and advertised model
+ids so a dedicated subagent child can pin that harness instead of the
+factory snapshot.
 
 ## Background Session
 
@@ -179,6 +182,20 @@ send time.
   memory, leaving the new ACP process with zero history.
 - **Per-session semaphore**: serializes concurrent messages on the same
   thread key. `get_or_create()` acquires; caller must `release()` when done.
+- **Backend-aware cold-start models**: the effective backend includes a live
+  per-call `acp_backend` override. Within the configured backend, every
+  namespace honors an explicit caller model, then a per-crew pin; registry-model
+  backends may continue through the bound Kiro agent and global tiers, while
+  adapter-owned namespaces skip Kiro agent definitions and use their concrete
+  adapter-global default. When a live-parent override differs from the current
+  configured backend, every current-config model tier is withheld and the child
+  inherits the live parent's backend default unless its advertised-model filter
+  retained an explicit caller or role pin.
+- **New-session config refresh**: changing `agent.acp_backend`, `agent.model`, or
+  `agent.reasoning_effort` rebuilds the provider factory and drains the warm
+  pool, because those values are captured when the factory is built. Existing
+  sessions keep their current adapter and defaults; the next session uses the
+  new configuration without a gateway restart.
 - **Post-semaphore revalidation** (`_reacquire_and_validate`): the per-session
   semaphore may be held for a full turn, so it is ALWAYS acquired with the
   global `self._lock` RELEASED (pinning the lock across that wait would freeze
@@ -281,7 +298,8 @@ send time.
 | Method | Purpose |
 |--------|---------|
 | `start_pool(blocking=True)` | Pre-spawn warm + background sessions. `blocking=False` for non-blocking mode. |
-| `get_or_create(key, agent=None, approval_policy="", speculative=False, speculative_resume=False)` | Returns `(LLMProvider, is_new, resumed)`. Uses warm pool for new sessions (default agent only). Sessions with a resume mapping skip warm pool (cold start needed for `session/load`). A `reasoning_effort_override` also skips the warm pool (`bypass_effort`): a pre-warmed provider was built without the override and post-claim fixups never touch effort, so the override must reach a fresh provider-factory call to be delivered — which also keeps the factory's effort gate the single authority reporting a dropped level. Every decision is counted via `_record_pool_decision` (`kirocrew.session.pool.decision`) with the single disqualifying reason, so the pool's hit rate and the frequency of the `bypass_resume` case are observable. Non-default agents skip warm pool and resolve their model by precedence via `_model_fallback()` — caller model > per-agent pin > global default: `model=None` (defer to kiro's agent-JSON resolution) only when the agent pins its own model, otherwise the global default, unless that default is the `"auto"` sentinel (also `None`). The per-agent pin is resolved off the event loop via `run_in_executor` using `_resolve_named_agent_model`; blank agents inherit the global, and `kirocrew` is excluded (tracks the global). `approval_policy` is persisted on the new `_Session` — callers (e.g. subagent) pass parent policy so the session inherits it. `speculative=True` (eager spawn) pre-creates ahead of a real first turn: the one-shot `_Session.first_turn` observation — a single three-member `FirstTurnState` enum (`NOTHING_ARMED` / `FRESH` / `RESUMED`), so a resume marker on an already-claimed session is unrepresentable rather than forbidden by convention — is registered ARMED (`FRESH`) and never consumed by speculative callers, and a resumable key raises `SpeculativeResumeRefused` — unless `speculative_resume=True` (resume prefetch) opts in, in which case the speculative creator performs the `session/load` and registers the observation as `RESUMED` when the load restored the transcript. The observation is consumed in one read-then-clear by the first real claimant under the per-session semaphore (fast path and won-race path alike), with the returned booleans derived from it at the return boundary — so that turn observes `(is_new=True, resumed=True)` exactly as if it had resumed itself, preserving its history-injection decision. |
+| `live_harness(key)` | Returns `(backend, advertised_ids)` for a live session. `None` backend means there is no parent; `""` is kiro-cli and must be pinned, not treated as absence. Dedicated children use this instead of the factory snapshot. |
+| `get_or_create(key, agent=None, approval_policy="", speculative=False, speculative_resume=False)` | Returns `(LLMProvider, is_new, resumed)`. Uses warm pool for new sessions (default agent only). Sessions with a resume mapping skip warm pool (cold start needed for `session/load`). A `reasoning_effort_override` also skips the warm pool (`bypass_effort`): a pre-warmed provider was built without the override and post-claim fixups never touch effort, so the override must reach a fresh provider-factory call to be delivered — which also keeps the factory's effort gate the single authority reporting a dropped level. A per-call `acp_backend` that differs from `SessionManager.acp_backend` skips it as `bypass_backend`. Every decision is counted via `_record_pool_decision` (`kirocrew.session.pool.decision`) with the single disqualifying reason, so the pool's hit rate and disqualifiers are observable. Non-default agents skip warm pool and resolve their model by precedence via `_model_fallback()` — caller model > per-agent pin > global default: `model=None` (defer to kiro's agent-JSON resolution) only when the agent pins its own model, otherwise the global default, unless that default is the `"auto"` sentinel (also `None`). The per-agent pin is resolved off the event loop via `run_in_executor` using `_resolve_named_agent_model`; blank agents inherit the global, and `kirocrew` is excluded (tracks the global). `approval_policy` is persisted on the new `_Session` — callers (e.g. subagent) pass parent policy so the session inherits it. `speculative=True` (eager spawn) pre-creates ahead of a real first turn: the one-shot `_Session.first_turn` observation — a single three-member `FirstTurnState` enum (`NOTHING_ARMED` / `FRESH` / `RESUMED`), so a resume marker on an already-claimed session is unrepresentable rather than forbidden by convention — is registered ARMED (`FRESH`) and never consumed by speculative callers, and a resumable key raises `SpeculativeResumeRefused` — unless `speculative_resume=True` (resume prefetch) opts in, in which case the speculative creator performs the `session/load` and registers the observation as `RESUMED` when the load restored the transcript. The observation is consumed in one read-then-clear by the first real claimant under the per-session semaphore (fast path and won-race path alike), with the returned booleans derived from it at the return boundary — so that turn observes `(is_new=True, resumed=True)` exactly as if it had resumed itself, preserving its history-injection decision. |
 | `check_context_usage(key, provider)` | Returns %. Triggers compaction at configured threshold (default 70%), warns one `CONTEXT_WARN_MARGIN_PCT` below it. |
 | `compact_if_needed(key)` | Awaitable twin of the `check_context_usage` trigger for callers that must not start their next turn while a compaction is pending (the task runner's between-steps check, #4686). Same gates in the same order — both entry points consume the shared `_compaction_gate_decision` ladder, the single owner of the gate order (its docstring documents each rung) — then AWAITS `_compact_session`. Returns the outcome: `"absent"`, `"reset"` (the settled verdict on the prior attempt was ineffective-and-still-critical and the promoted escalation reset the session here, awaited), `"cc_managed"` (checked before the threshold, mirroring `check_context_usage`), `"below_threshold"`, `"unconfirmed"`, `"in_progress"`, `"cooldown"`, `"ok"`, `"busy"`, `"recycled"`, `"failed"`. A `"busy"` decline means a turn holds the semaphore — the caller leaves the session alone and retries later, never falls back to a direct `provider.compact()`. |
 | `record_success(key)` / `record_failure(key)` | Circuit breaker tracking. |
@@ -968,7 +986,7 @@ sequenceDiagram
 
 ### Orphan Sweep Active Set
 
-The periodic sweep of `kiro_session_pids.txt` (which kills tracked kiro-cli
+The periodic sweep of `<data-home>/run/kiro_session_pids.txt` (which kills tracked kiro-cli
 PIDs no longer in `self._sessions`) builds its active set as the union of
 `_collect_active_pids(self._sessions)` + `_pool_pids()` + `_in_flight_pids()`
 + `_companion_runtime_pids()`, re-checked against the same union in phase 2
@@ -978,11 +996,34 @@ subagents) and `self._bg_runtime` (the multiplexed `_bg` runtime), each guarded
 on `is_alive()` — only alive runtimes are shielded, so dead ones are still
 reaped.
 
+Each current `run/kiro_session_pids.txt` entry also records the child's OS
+process-start identity. The startup and periodic sweeps compare that token
+before signalling and carry it through the periodic two-phase active-set check,
+then pass it to `platform_compat.kill_process_tree_pinned` for the final kill.
+On Windows that helper holds the verified process handle across `taskkill`, so
+the PID cannot be recycled between the last comparison and the signal. A
+matching token authorizes
+the isolated process-tree cleanup without consulting adapter argv or registry
+metadata; a mismatch is a recycled PID and is pruned without signalling, while
+an unreadable token is retained for a later retry. Legacy tokenless entries use
+only the fixed, code-owned managed-agent marker catalog.
+Records split into at most three fields, so a legacy/textual token containing
+colons is preserved intact. On macOS the token comes from libproc's microsecond
+start identity rather than `ps lstart`'s one-second rendering; two processes
+created within the same second therefore cannot compare equal after PID reuse.
+Other platforms continue through `platform_compat.process_start_time`, including
+the Windows creation-time identity held by the pinned kill helper.
+
 **Failure it fixes**: since the `AcpRuntime` unify, *every* runtime records its
-PID in `kiro_session_pids.txt` at spawn. These two runtime kinds live outside
+PID in `run/kiro_session_pids.txt` at spawn. These two runtime kinds live outside
 `self._sessions`, so before this union the sweep saw their live PIDs as
 untracked orphans and SIGKILLed them mid-chat (surfacing as
 `process exited (rc=-9)`).
+
+Both PID authority files (`kiro_pids.txt` and `kiro_session_pids.txt`) and their
+locks live under the sensitive `run/` trust root. Legacy data-home-root copies
+are neither migrated nor read and remain on the sensitive-path deny list; an
+agent-writable legacy entry therefore cannot become process-kill authority.
 
 ### Cross-platform process management (platform_compat)
 
@@ -992,8 +1033,12 @@ Windows as well as macOS/Linux. The critical correctness reason is that
 **`os.kill(pid, 0)` is NOT a liveness probe on Windows — it terminates the process** —
 so every liveness check uses `platform_compat.pid_exists(pid)` (or the tri-state
 `pid_liveness`) instead, kills use `kill_pid` / `kill_process_tree`, the PID-reuse
-guard reads the parent via `get_ppid`, the managed-agent check uses
-`process_matches(pid, ("kiro-cli","claude"))`, and the PID-file locks use
+guard reads creation time via `process_start_time` and the parent via `get_ppid`,
+the managed-agent check uses
+`process_matches` for distinctive backend command-line markers and
+`process_image_name` for short bare adapter executables (an exact basename
+check; names such as `"pi"` and `"codex"` are never substring kill gates), and
+the PID-file locks use
 `platform_compat.file_lock` / `acquire_lock` / `try_acquire_lock` (POSIX `flock`
 vs Windows `msvcrt`). On POSIX the behavior is unchanged.
 

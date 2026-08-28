@@ -12,7 +12,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { ReactElement } from 'react'
 import { render, screen, renderHook, act, cleanup } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, useLocation } from 'react-router-dom'
+import { ACP_BACKEND_ROUTE } from '../pages/overview/AcpBackendCard'
 
 // DeveloperPage's sibling tabs are heavy and irrelevant here — the last describe
 // only needs the page's tab rail and the Feature Previews pane behind it.
@@ -27,6 +28,13 @@ vi.mock('../pages/overview', () => ({
   AgentCfgTab: () => <div />,
 }))
 vi.mock('../pages/overview/MemoryGraphTab', () => ({ default: () => <div /> }))
+vi.mock('../pages/overview/AcpBackendCard', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../pages/overview/AcpBackendCard')>()
+  return {
+    ...actual,
+    AcpBackendCard: () => <div data-testid="acp-backend-card" />,
+  }
+})
 
 import {
   registerBuiltinSurface,
@@ -38,6 +46,7 @@ import {
 import {
   PREVIEW_FLAG_EVENT,
   PREVIEW_FLAG_PREFIX,
+  PREVIEW_ACP_BACKENDS,
   PREVIEW_WEBHOOKS,
   readPreviewFlag,
   setPreviewFlag,
@@ -251,8 +260,22 @@ describe('usePreviewFlagRevision', () => {
 })
 
 describe('Developer > Feature Previews', () => {
+  const LocationProbe = () => {
+    const location = useLocation()
+    return (
+      <span data-testid="preview-location">
+        {location.pathname}{location.search}{location.hash}
+      </span>
+    )
+  }
+
   const renderTab = () =>
-    render(<MemoryRouter><FeaturePreviewsTab /></MemoryRouter>)
+    render(
+      <MemoryRouter initialEntries={['/developer?tab=feature-previews']}>
+        <FeaturePreviewsTab />
+        <LocationProbe />
+      </MemoryRouter>,
+    )
 
   /** `aria-checked` via the ATTRIBUTE: the Toggle is a `div role="switch"`, and
    *  the reflected `ariaChecked` DOM property is not populated for one. */
@@ -271,7 +294,20 @@ describe('Developer > Feature Previews', () => {
       screen.getByRole('switch', { name: /webhooks/i }).click()
     })
     expect(localStorage.getItem(PREVIEW_WEBHOOKS)).toBe('1')
-    expect(screen.getByRole('button', { name: /open webhooks/i })).toBeTruthy()
+    const ingress = screen.getByRole('button', { name: /open webhooks/i })
+    await act(async () => { ingress.click() })
+    expect(screen.getByTestId('preview-location').textContent).toBe('/webhooks')
+  })
+
+  it('offers an ingress to ACP adapters after opting in', async () => {
+    renderTab()
+    await act(async () => {
+      screen.getByRole('switch', { name: /acp adapters/i }).click()
+    })
+    expect(localStorage.getItem(PREVIEW_ACP_BACKENDS)).toBe('1')
+    const ingress = screen.getByRole('button', { name: /^ACP Adapters$/i })
+    await act(async () => { ingress.click() })
+    expect(screen.getByTestId('preview-location').textContent).toBe(ACP_BACKEND_ROUTE)
   })
 
   it('reflects an opt-in made in another tab', () => {
@@ -291,5 +327,26 @@ describe('Developer > Feature Previews', () => {
     const tab = screen.getByRole('button', { name: /feature previews/i })
     await act(async () => { tab.click() })
     expect(screen.getByRole('switch', { name: /webhooks/i })).toBeTruthy()
+  })
+})
+
+/**
+ * The Developer tab key the top-bar harness readout deep-links to. It lives in
+ * this file because the mocks that make `DeveloperPage` cheap to render are
+ * already here, and because the claim is the same shape as the one above: a tab
+ * key that no longer names the pane holding the control leaves the reader on
+ * whichever tab the rail defaults to, with every unit test still green.
+ */
+describe('ACP adapter deep link', () => {
+  it('names a dedicated preview-gated Developer tab', () => {
+    localStorage.setItem(PREVIEW_ACP_BACKENDS, '1')
+    render(<MemoryRouter initialEntries={[ACP_BACKEND_ROUTE]}><DeveloperPage /></MemoryRouter>)
+    expect(screen.getByTestId('acp-backend-card')).toBeTruthy()
+    expect(screen.queryByTestId('kirocrew-cfg')).toBeNull()
+  })
+
+  it('does not advertise the adapter tab before the preview opt-in', () => {
+    render(<MemoryRouter initialEntries={['/developer?tab=config']}><DeveloperPage /></MemoryRouter>)
+    expect(screen.queryByRole('button', { name: /^ACP Adapters$/i })).toBeNull()
   })
 })

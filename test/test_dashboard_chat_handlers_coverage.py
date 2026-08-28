@@ -22,8 +22,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
+from chat_test_helpers import stub_acp_identity
 
 from kiro_crew.acp.client import AcpModelUnavailable
+from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, ACP_BACKEND_KIRO
 from kiro_crew.dashboard import chat_handlers as ch
 from kiro_crew.dashboard.chat_persistence import get_reasoning_effort_values
 from kiro_crew.dashboard.state import _MAX_PENDING_CONTEXT, DashboardState, _ChatSlot
@@ -64,10 +66,15 @@ def _app(state: DashboardState, method: str, path: str, handler) -> web.Applicat
     return app
 
 
-def _acp(**attrs):
-    """An AcpProvider double that still satisfies ``isinstance``."""
+def _acp(backend=ACP_BACKEND_KIRO, **attrs):
+    """An AcpProvider double that still satisfies ``isinstance``.
+
+    Defaults to the kiro-cli identity, stubbed as a SET: an unstubbed
+    ``spec=`` property answers a truthy Mock, so leaving the other ``is_*``
+    flags out would make this double claim to be every harness at once.
+    """
     provider = MagicMock(spec=AcpProvider)
-    provider.is_claude_backend = False
+    stub_acp_identity(provider, backend)
     provider.has_active_turn = MagicMock(return_value=False)
     provider.available_models = MagicMock(return_value=[])
     provider.supports_effort = MagicMock(return_value=False)
@@ -240,12 +247,12 @@ class TestHasConversation:
 
 class TestWireModelId:
     def test_claude_backend_cannot_express_default(self):
-        assert ch._wire_model_id(_acp(is_claude_backend=True), "sonnet-4.5") == "sonnet-4.5"
-        assert ch._wire_model_id(_acp(is_claude_backend=True), "") == ""
-        assert ch._wire_model_id(_acp(is_claude_backend=True), "auto") == ""
+        assert ch._wire_model_id(_acp(ACP_BACKEND_CLAUDE), "sonnet-4.5") == "sonnet-4.5"
+        assert ch._wire_model_id(_acp(ACP_BACKEND_CLAUDE), "") == ""
+        assert ch._wire_model_id(_acp(ACP_BACKEND_CLAUDE), "auto") == ""
 
     def test_claude_backend_translates_canonical_key(self):
-        wire = ch._wire_model_id(_acp(is_claude_backend=True), "opus-4.8-1m")
+        wire = ch._wire_model_id(_acp(ACP_BACKEND_CLAUDE), "opus-4.8-1m")
         assert wire == "global.anthropic.claude-opus-4-8[1m]"
 
     def test_kiro_default_needs_auto_to_be_advertised(self):

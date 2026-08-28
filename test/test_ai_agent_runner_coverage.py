@@ -548,6 +548,21 @@ def test_governance_denial_marks_a_command_bearing_request_as_shell(monkeypatch)
     assert seen["is_shell"] is True
 
 
+def test_governance_denial_forwards_canonical_mcp_identity(monkeypatch):
+    seen = _wire_hooks(monkeypatch, action="allow")
+    ev = _ev(
+        title="mcp__ambiguous__display",
+        mcp_server_name="trusted_server",
+        tool_name="trusted_tool",
+        mcp_identity_ambiguous=True,
+    )
+    R._governance_denial(ev, session_key="s", agent="a")
+
+    assert seen["mcp_server_name"] == "trusted_server"
+    assert seen["mcp_tool_name"] == "trusted_tool"
+    assert seen["mcp_identity_ambiguous"] is True
+
+
 def test_governance_denial_fails_closed_when_the_hook_layer_breaks(monkeypatch):
     monkeypatch.setattr(
         R, "KiroCrewConfig", SimpleNamespace(load=lambda: SimpleNamespace(hooks={}))
@@ -664,7 +679,10 @@ def test_summarize_stream_event_falls_back_through_the_hint_keys():
 
 
 def test_summarize_stream_event_surfaces_assistant_text_truncated():
-    obj = {"type": "assistant", "message": {"content": [{"type": "text", "text": "  " + "t" * 300}]}}
+    obj = {
+        "type": "assistant",
+        "message": {"content": [{"type": "text", "text": "  " + "t" * 300}]},
+    }
     act = R._summarize_stream_event(obj)
     assert act["kind"] == "text" and len(act["detail"]) == 200
 
@@ -684,9 +702,7 @@ def test_summarize_stream_event_skips_uninteresting_lines(obj):
     assert R._summarize_stream_event(obj) is None
 
 
-@pytest.mark.parametrize(
-    "is_error,detail", [(False, "done"), (True, "error")]
-)
+@pytest.mark.parametrize("is_error,detail", [(False, "done"), (True, "error")])
 def test_summarize_stream_event_reports_the_result_line(is_error, detail):
     obj = {"type": "result", "is_error": is_error}
     assert R._summarize_stream_event(obj) == {"kind": "result", "detail": detail}
@@ -1081,20 +1097,16 @@ def test_streaming_run_terminates_a_child_that_will_not_reap(monkeypatch, fake_s
 
 
 def test_session_runner_available_when_a_provider_factory_can_be_built(monkeypatch):
-    monkeypatch.setattr(
-        R,
-        "KiroCrewConfig",
-        SimpleNamespace(load=lambda: SimpleNamespace(create_provider_factory=lambda: object())),
-    )
+    cfg = object()
+    monkeypatch.setattr(R, "KiroCrewConfig", SimpleNamespace(load=lambda: cfg))
+    monkeypatch.setattr(R, "build_provider_factory", lambda candidate: object())
     assert R.SessionAgentRunner.available() is True
 
 
 def test_session_runner_unavailable_without_a_configured_backend(monkeypatch):
-    monkeypatch.setattr(
-        R,
-        "KiroCrewConfig",
-        SimpleNamespace(load=lambda: SimpleNamespace(create_provider_factory=lambda: None)),
-    )
+    cfg = object()
+    monkeypatch.setattr(R, "KiroCrewConfig", SimpleNamespace(load=lambda: cfg))
+    monkeypatch.setattr(R, "build_provider_factory", lambda candidate: None)
     assert R.SessionAgentRunner.available() is False
 
 
@@ -1114,11 +1126,9 @@ def test_resolve_factory_prefers_the_injected_one():
 
 def test_resolve_factory_falls_back_to_the_configured_provider(monkeypatch):
     made = object()
-    monkeypatch.setattr(
-        R,
-        "KiroCrewConfig",
-        SimpleNamespace(load=lambda: SimpleNamespace(create_provider_factory=lambda: made)),
-    )
+    cfg = object()
+    monkeypatch.setattr(R, "KiroCrewConfig", SimpleNamespace(load=lambda: cfg))
+    monkeypatch.setattr(R, "build_provider_factory", lambda candidate: made)
     runner = R.SessionAgentRunner()
     assert runner._resolve_factory() is made
     assert runner._resolve_factory() is made  # cached on the instance
@@ -1141,9 +1151,7 @@ def test_ensure_agent_registered_writes_the_apps_own_spec(monkeypatch, tmp_path)
     assert runner.ensure_agent_registered() is True
     dest = tmp_path / "kiro" / "agents" / f"{runner.agent_name}.json"
     assert dest.is_file()
-    src = (
-        Path(R.__file__).resolve().parent.parent / "agents" / "discovery.json"
-    )
+    src = Path(R.__file__).resolve().parent.parent / "agents" / "discovery.json"
     assert dest.read_bytes() == src.read_bytes()
     assert runner.ensure_agent_registered() is True  # idempotent re-register
 
@@ -1200,11 +1208,9 @@ def test_session_run_reports_an_unavailable_factory(monkeypatch):
 
 
 def test_session_run_reports_no_configured_provider(monkeypatch):
-    monkeypatch.setattr(
-        R,
-        "KiroCrewConfig",
-        SimpleNamespace(load=lambda: SimpleNamespace(create_provider_factory=lambda: None)),
-    )
+    cfg = object()
+    monkeypatch.setattr(R, "KiroCrewConfig", SimpleNamespace(load=lambda: cfg))
+    monkeypatch.setattr(R, "build_provider_factory", lambda candidate: None)
     res = R.SessionAgentRunner().run("prompt")
     assert res.ok is False
     assert res.error == "no Kiro Crew provider configured"
@@ -1739,9 +1745,7 @@ def test_adopt_authored_test_picks_the_shortest_path_then_lexicographically(tmp_
     for name in ("test_bug_b.py", "test_bug_a.py", "test_bug_longer.py"):
         (tmp_path / "test" / name).write_text("", newline="\n")
     repro = _ReproTest()
-    porcelain = (
-        "?? test/test_bug_longer.py\n?? test/test_bug_b.py\n?? test/test_bug_a.py\nxx\n"
-    )
+    porcelain = "?? test/test_bug_longer.py\n?? test/test_bug_b.py\n?? test/test_bug_a.py\nxx\n"
     R._adopt_authored_test(_candidate(repro), tmp_path, porcelain)
     assert repro.test_path == "test/test_bug_a.py"
 

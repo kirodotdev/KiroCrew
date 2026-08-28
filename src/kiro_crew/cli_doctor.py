@@ -2308,6 +2308,19 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     # kiro-cli is THE agent backend for the public build. claude-agent-acp is
     # only the dormant protocol seam (re-registered by an internal companion),
     # so report it as optional and report kiro-cli as the backend.
+    #
+    # When another ACP backend is configured, say so before the rows below: a
+    # missing kiro-cli is then expected rather than a broken install, and the
+    # reader should not go install it to fix a problem they do not have.
+    try:
+        _selected_backend = KiroCrewConfig.load().agent.acp_backend or ""
+    except Exception:
+        _selected_backend = ""
+    if _selected_backend:
+        print(f"  note:        agent.acp_backend={_selected_backend} is active —")
+        print("               the kiro-cli rows below are informational; no turn")
+        print("               spawns it. See the ACP Backend section for that")
+        print("               backend's own adapter and sign-in status.")
     kiro = shutil.which(KIRO_CLI_BIN)
     if kiro:
         print(f"  kiro-cli:    ✅ {kiro}")
@@ -2444,8 +2457,30 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     else:
         print(f"  config dir:  📁 {cfg_dir} (will be created)")
     print(f"  provider:    {cfg.agent.provider}")
+    if cfg.agent.acp_backend:
+        print(f"  acp backend: {cfg.agent.acp_backend}")
     print(f"  model:       {cfg.agent.model}")
     print(f"  approval:    {cfg.agent.approval_mode}")
+
+    # Registry-driven; prints nothing on the default backend so an installation
+    # that never opted in sees the output it sees today.
+    if cfg.agent.acp_backend:
+        try:
+            from kiro_crew.acp import doctor as acp_doctor
+            from kiro_crew.config.paths import config_dir as _cfg_dir
+
+            acp_doctor.report(
+                cfg.agent.acp_backend,
+                _cfg_dir() / "workspace",
+                allow_ungated=cfg.agent.acp_backend_allow_ungated_tools,
+                emit=print,
+                issues=issues,
+            )
+        except Exception as exc:
+            # Doctor must never be the thing that crashes; a section that cannot
+            # render is itself a reportable problem.
+            print(f"\nACP Backend\n  ⚠️  could not report: {exc}")
+            issues.append("ACP backend status could not be determined")
     _host: str = ""
     _port: int | None = None
     try:

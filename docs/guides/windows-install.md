@@ -528,6 +528,13 @@ shared `/proc` scan the POSIX sweep does per tick; `_build_child_map` therefore
 deliberately has no Windows branch. macOS still has no ctypes-only per-pid RSS
 path and keeps returning 0.
 
+The tracked-session orphan reaper uses the same creation-time principle. A
+query-only process handle supplies the Windows creation FILETIME stored beside
+the PID at spawn; the reaper compares it again immediately before `taskkill /T`.
+That permits cleanup of operator-installed registry adapters hosted by generic
+images such as `node.exe` without treating the image name or registry package
+text as authority to kill an unrelated process.
+
 ## Directory links on Windows
 
 `os.symlink` needs `SeCreateSymbolicLinkPrivilege`, which an ordinary

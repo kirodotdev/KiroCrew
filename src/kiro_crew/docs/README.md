@@ -13,6 +13,7 @@ organized for someone browsing the repository.
 |---|---|
 | [getting-started.md](getting-started.md) | Install, first run, and background operation. |
 | [configuration.md](configuration.md) | Config file reference, environment variables, and sandbox modes. |
+| [experimental-acp-adapters.md](experimental-acp-adapters.md) | Run your turns through Claude Code or OpenAI Codex with your own subscription. |
 | [use-cases.md](use-cases.md) | Real-world workflows. |
 | [troubleshooting.md](troubleshooting.md) | Common problems and fixes. |
 

@@ -139,6 +139,20 @@ class TestSchemaApiEndpoint:
             assert len(data["entries"]) > 0
 
     @pytest.mark.asyncio
+    async def test_acp_backend_enum_is_resolved_at_request_time(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents.selectable_ids",
+            lambda: {"", "registry-example"},
+        )
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get("/api/config/schema")
+            assert resp.status == 200
+            data = await resp.json()
+
+        entry = next(item for item in data["entries"] if item["path"] == "agent.acp_backend")
+        assert entry["enumValues"] == ["", "registry-example"]
+
+    @pytest.mark.asyncio
     async def test_tags_query_param_filtering(self) -> None:
         """tags query param filters entries by tag intersection."""
         async with TestClient(TestServer(_make_app())) as client:

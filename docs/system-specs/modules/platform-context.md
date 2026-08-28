@@ -34,7 +34,7 @@ boot holding the chosen adapter for every extension point, plus three carriers:
 | `contract_version` | carrier (int) | `CONTRACT_VERSION` | must match core |
 | `profile` | carrier (str) | `"standalone"` | `"enterprise"` |
 | `cfg` | carrier (`KiroCrewConfig`) | loaded config | same |
-| `providers` | adapter | `DefaultProviderRegistry` (Kiro-CLI-ACP only) | re-registers a companion-registered backend |
+| `providers` | adapter | `DefaultProviderRegistry` (Kiro plus admitted operator-installed ACP adapters) | re-registers a companion-managed backend |
 | `publish` | adapter | `DefaultPublishRegistry` (registers no provider → publish unavailable) | registers enterprise artifact/publish providers |
 | `agent_runtime` | adapter | `DefaultAgentRuntime` (`run_first_run_setup` wired; `managed_mcp_servers` **RESERVED**) | extra one-time first-run provisioning |
 | `agent_executable` | adapter | `DefaultAgentExecutableResolver` (identity) | resolves an edition-managed launcher to its direct executable before core sandboxing |

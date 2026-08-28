@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
-from typing import Literal
+from typing import Any, Literal
 
 # Event kinds — re-exported from the single source of truth
 from kiro_crew.acp.types import (  # noqa: F401
@@ -120,6 +120,21 @@ class LLMProvider(ABC):
         """
         return 0
 
+    def rate_limit_payload(self) -> dict[str, Any] | None:
+        """Plan rate-limit state for the account, or None when not reported.
+
+        A serialized :class:`~kiro_crew.acp.types.AcpRateLimit` — the ABC returns
+        the dict rather than the dataclass so a non-ACP provider is not made to
+        import ACP types to satisfy the seam.
+
+        Declared here with a safe default (H8: a new provider capability lands
+        on the ABC, never as a ``hasattr`` probe on the Kiro path) because most
+        harnesses report no quota at all: kiro-cli bills in credits through a
+        different method entirely, and codex-acp and goose send nothing. Those
+        providers inherit None and the dashboard omits the row.
+        """
+        return None
+
     @property
     def session_id(self) -> str:
         """Provider-specific session identifier for file cleanup.
@@ -211,9 +226,13 @@ class LLMProvider(ABC):
     # provider. Declaring them here with a safe default means a provider that
     # lacks the capability (a non-ACP backend, a warm-pool stub) returns the
     # default instead of forcing a ``getattr`` probe onto the Kiro path or
-    # AttributeError-ing. Concrete providers override; the caller-side
-    # ``getattr``/``hasattr`` guards remain where they additionally defend
-    # against test doubles (AsyncMock) that are not LLMProvider instances.
+    # AttributeError-ing. Concrete providers override and typed callers use the
+    # contract directly; test doubles should conform to the same interface.
+
+    @property
+    def backend(self) -> str | None:
+        """Live harness id (``""`` for kiro-cli, ``None`` when not ACP)."""
+        return None
 
     def has_active_turn(self) -> bool:
         """True if a prompt is in flight and not yet cancelled. Default False."""

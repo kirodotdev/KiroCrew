@@ -19,7 +19,7 @@ import logging
 import math
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Collection
 
 from kiro_crew.acp.types import (
     EVENT_PERMISSION_REQUEST,
@@ -30,6 +30,7 @@ from kiro_crew.acp.types import (
     EVENT_TOOL_CALL_UPDATE,
     EVENT_TOOL_RESULT,
     KIRO_TOOL_TODO_LIST,
+    META_CLAUDE_RATE_LIMIT,
     METHOD_AGENT_SWITCHED,
     METHOD_CLEAR_STATUS,
     METHOD_COMPACTION_STATUS,
@@ -45,6 +46,7 @@ from kiro_crew.acp.types import (
     METHOD_SUBAGENT_LIST_UPDATE,
     OPTION_ALLOW_ALWAYS,
     OPTION_ALLOW_ONCE,
+    RATE_LIMIT_STATES,
     TODO_TASKS_MAX,
     TODO_TEXT_MAX,
     TOOL_PURPOSE_KEYS,
@@ -53,6 +55,7 @@ from kiro_crew.acp.types import (
     UPDATE_TOOL_CALL,
     UPDATE_TOOL_CALL_UPDATE,
     AcpEvent,
+    AcpRateLimit,
     JsonRpcMessage,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -560,30 +563,87 @@ def parse_text_chunk(update: dict[str, Any]) -> tuple[str | None, bool]:
 _ACP_SHELL_KIND = "execute"
 
 
+def permission_frame_session_id(params: dict | None) -> str:
+    """The ``sessionId`` a permission frame names, or ``""`` if missing/unusable."""
+    if not isinstance(params, dict):
+        return ""
+    raw = params.get("sessionId")
+    if isinstance(raw, str) and raw:
+        return raw
+    return ""
+
+
+def permission_answerable_on_handle(
+    params: dict | None,
+    handle_session_id: str,
+    *,
+    registered_session_ids: frozenset[str] | set[str] = frozenset(),
+) -> bool:
+    """True when this handle may answer the permission frame.
+
+    A missing ``sessionId`` is never answerable here — the runtime answers
+    ownerless requests once at connection level. A ``sessionId`` that belongs
+    to a *different* registered handle is never answerable on this one (fail
+    closed). A foreign id that is not another registered session is a routed
+    backend-internal child and may be answered on the owner handle.
+    """
+    frame_sid = permission_frame_session_id(params)
+    if not frame_sid or not handle_session_id:
+        return False
+    if frame_sid == handle_session_id:
+        return True
+    if frame_sid in registered_session_ids:
+        return False
+    return True
+
+
+def resolve_permission_allow_id(
+    recorded: dict[str, str] | None,
+    option_id: str | None = None,
+    *,
+    always: bool = False,
+) -> str | None:
+    """Resolve a one-shot allow optionId, or ``None`` so the caller cancels.
+
+    Kiro Crew has no grant storage: ``allow_always`` is never selected, even
+    when ``always=True`` or when that is the only advertised allow option.
+    ``always`` is accepted for call-site compatibility and treated as
+    ``allow_once``. An explicit ``option_id`` is accepted only when it equals
+    the advertised ``allow_once`` id — anything else (unknown, other kind,
+    stale prompt) fails closed.
+    """
+    del always  # Crew has no grant storage; never select allow_always.
+    advertised_once = (recorded or {}).get("allow_once")
+    if not advertised_once:
+        return None
+    if option_id is None or option_id == advertised_once:
+        return advertised_once
+    return None
+
+
 def reject_option_id(params: dict) -> str | None:
     """The least-destructive reject optionId a permission request advertises.
 
     Used when auto-answering a ``session/request_permission`` for a session
     this client never registered (a backend-internal subagent). Prefer the
     request's own ``reject_once``-kind option; fall back to a legacy id that
-    names reject. ``None`` means the caller must answer with the ``cancelled``
-    outcome instead — kiro-cli maps that to cancelling the child's turn, which
-    is strictly worse than a per-tool reject, so this is the last resort.
+    names a one-shot reject. ``reject_always`` is never selected automatically:
+    Kiro Crew owns persistence and must not silently create an agent-side rule.
+    ``None`` means the caller must answer with the ``cancelled`` outcome instead.
     """
     raw = params.get("options")
     if not isinstance(raw, list):
         return None
     options = [o for o in raw if isinstance(o, dict)]
-    for want_kind in ("reject_once", "reject_always"):
-        for opt in options:
-            opt_id = opt.get("optionId") or opt.get("id")
-            if opt.get("kind") == want_kind and isinstance(opt_id, str) and opt_id:
-                return opt_id
+    for opt in options:
+        opt_id = opt.get("optionId") or opt.get("id")
+        if opt.get("kind") == "reject_once" and isinstance(opt_id, str) and opt_id:
+            return opt_id
     # Legacy kiro payloads omit `kind` — match well-known reject ids only, so
     # an allow option can never be picked by accident.
     for opt in options:
         opt_id = opt.get("optionId") or opt.get("id")
-        if isinstance(opt_id, str) and opt_id in ("reject_once", "reject_always", "reject"):
+        if isinstance(opt_id, str) and opt_id in ("reject_once", "reject"):
             return opt_id
     return None
 
@@ -600,9 +660,11 @@ _LEGACY_OPTION_KIND: dict[str, str] = {
     OPTION_ALLOW_ONCE: "allow_once",
     "allow": "allow_once",
     OPTION_ALLOW_ALWAYS: "allow_always",
+    "reject": "reject_once",
     "reject_once": "reject_once",
     "reject_always": "reject_always",
 }
+_PERMISSION_OPTION_KINDS = frozenset({"allow_once", "allow_always", "reject_once", "reject_always"})
 
 
 def build_permission_event(
@@ -614,6 +676,7 @@ def build_permission_event(
     raw_params_cache: dict[str, dict] | None = None,
     mcp_server_name_cache: dict[str, str] | None = None,
     tool_name_cache: dict[str, str] | None = None,
+    mcp_identity_ambiguous_cache: dict[str, bool] | None = None,
     cache_scope: str = "",
 ) -> tuple[AcpEvent, dict[str, str] | None]:
     """Build an ``EVENT_PERMISSION_REQUEST`` from a ``session/request_permission``.
@@ -624,10 +687,14 @@ def build_permission_event(
     ``params["title"]``), so reading the flat field leaves ``title`` /
     ``is_shell`` empty and trips the host trust-mode gate.
 
-    Returns ``(event, recorded_options)`` where ``recorded_options`` is the
-    ``{"once","always","reject"}`` optionId map the caller stores on the request
-    id so ``approve_tool`` / ``reject_tool`` can echo the exact ids the agent
-    advertised (``None`` when no allow/reject option was advertised).
+    Supports both protocol shapes: v1 carries a top-level ``toolCall``; v2
+    carries common ``title`` / ``description`` fields plus an optional
+    ``subject`` (``tool_call`` or ``command``).
+
+    Returns ``(event, recorded_options)`` where ``recorded_options`` maps each
+    advertised standard kind to its exact optionId. An empty dict still means a
+    request is pending but none of its options are safe for Kiro Crew to select;
+    ``None`` means the frame had no request id and cannot be answered.
 
     ``tool_input_cache`` (caller-owned ``toolCallId -> redacted input``) is
     consulted to recover the full tool input the preceding ``tool_call``
@@ -637,14 +704,46 @@ def build_permission_event(
     tool-name length cap).
     """
     request_id = msg.id if msg.id is not None else ""
-    params = msg.params or {}
-    tool_call = params.get("toolCall", {})
-    tool_call = tool_call if isinstance(tool_call, dict) else {}
-    title = _redact(tool_call.get("title", "unknown"))
+    params = msg.params if isinstance(msg.params, dict) else {}
+    subject = params.get("subject")
+    subject = subject if isinstance(subject, dict) else {}
+    subject_type = subject.get("type") if isinstance(subject.get("type"), str) else ""
+
+    raw_tool_call: Any
+    command_params: dict[str, str] | None = None
+    if subject_type == "tool_call":
+        raw_tool_call = subject.get("toolCall")
+    elif subject_type == "command":
+        command = subject.get("command")
+        cwd = subject.get("cwd")
+        command_params = {}
+        if isinstance(command, str):
+            command_params["command"] = command
+        if isinstance(cwd, str):
+            command_params["cwd"] = cwd
+        raw_tool_call = {
+            "toolCallId": subject.get("toolCallId"),
+            "kind": _ACP_SHELL_KIND,
+            "rawInput": command_params,
+        }
+    else:
+        raw_tool_call = params.get("toolCall")
+    tool_call = raw_tool_call if isinstance(raw_tool_call, dict) else {}
+
+    prompt_title = params.get("title")
+    tool_title = tool_call.get("title")
+    raw_title = (
+        prompt_title
+        if isinstance(prompt_title, str) and prompt_title
+        else tool_title if isinstance(tool_title, str) and tool_title else "unknown"
+    )
+    title = _redact(raw_title)
     # The ACP toolCall carries a `kind` ("execute" for Bash, "read"/"edit"/…).
     # Carry it onto the event as display/telemetry metadata only — the is_shell
     # length-cap exemption resolves from shell_cache below, never this field.
     tool_kind = tool_call.get("kind", "")
+    if not isinstance(tool_kind, str):
+        tool_kind = ""
 
     # ACP spec uses optionId/name + kind ("allow_once"|"allow_always"|
     # "reject_once"|"reject_always"); kiro-cli historically uses id/label with id
@@ -667,35 +766,17 @@ def build_permission_event(
             opt_label = ""
         if not isinstance(opt_kind, str):
             opt_kind = ""
-        options.append({"id": opt_id, "label": opt_label})
         if not opt_kind:
             opt_kind = _LEGACY_OPTION_KIND.get(opt_id.lower(), "")
-        if opt_kind:
+        options.append({"id": opt_id, "label": opt_label, "kind": opt_kind})
+        if opt_kind in _PERMISSION_OPTION_KINDS:
             kind_to_id.setdefault(opt_kind, opt_id)
-    if not options:
-        options = [
-            {"id": OPTION_ALLOW_ONCE, "label": "Allow once"},
-            {"id": OPTION_ALLOW_ALWAYS, "label": "Allow always"},
-        ]
-        kind_to_id = {"allow_once": OPTION_ALLOW_ONCE, "allow_always": OPTION_ALLOW_ALWAYS}
 
-    # Record optionIds the agent advertised so approve_tool / reject_tool can
-    # echo the exact ids. Record when EITHER an allow option (for approve) OR a
-    # reject option (for a clean reject) was advertised. claude-agent-acp offers
-    # a {kind:"reject_once", optionId:"reject"} whose selection yields
-    # behavior:"deny" — far better than a "cancelled" outcome, which the adapter
-    # turns into a cryptic "Tool use aborted". kiro-cli advertises no reject
-    # option, so reject_tool falls back to "cancelled" (a clean rejection there).
-    any_allow = kind_to_id.get("allow_once") or kind_to_id.get("allow_always")
-    any_reject = kind_to_id.get("reject_once") or kind_to_id.get("reject_always")
-    recorded: dict[str, str] | None = None
-    if request_id != "" and (any_allow is not None or any_reject is not None):
-        recorded = {}
-        if any_allow is not None:
-            recorded["once"] = kind_to_id.get("allow_once") or any_allow
-            recorded["always"] = kind_to_id.get("allow_always") or any_allow
-        if any_reject is not None:
-            recorded["reject"] = any_reject
+    # Store EVERY request, including malformed/future-only option sets. That is
+    # how session/cancel can answer every pending request with `cancelled`.
+    # Selection remains exact by kind: no allow_once -> allow_always or
+    # reject_once -> reject_always fallback is permitted.
+    recorded = kind_to_id if request_id != "" else None
 
     # Resolve full tool input — the preceding tool_call notification carries the
     # complete params cached by toolCallId; the permission message only has a
@@ -729,7 +810,7 @@ def build_permission_event(
             else True
         )
     if not tool_input:
-        raw_input = tool_call.get("input") or tool_call.get("params")
+        raw_input = tool_call.get("rawInput") or tool_call.get("input") or tool_call.get("params")
         if raw_input:
             tool_input = (
                 json.dumps(raw_input, indent=2)
@@ -744,18 +825,16 @@ def build_permission_event(
             tool_input_redacted = safe_tool_input != tool_input
             tool_input = safe_tool_input
 
-    # Resolve the canonical shell signal. SECURITY (deny-by-default): the ONLY
-    # trusted source is the value cached from the preceding tool_call (keyed by
-    # toolCallId). We deliberately do NOT fall back to the permission payload's
-    # own `kind` — that field is agent/LLM-influenced, and trusting it to waive
-    # the tool-name length cap on the very name being validated would let a
-    # malicious agent set kind="execute" to bypass the check. On a cache miss
-    # is_shell stays False and the length cap is enforced. Use .get() (not
-    # .pop()): a later tool_call_update refinement reads this same cache, so
-    # popping here would make it wrongly report is_shell=False.
+    # Resolve the canonical shell signal. A v2 command subject is the adapter's
+    # typed command envelope; legacy tool-call frames must use the classification
+    # cached from the preceding tool_call. We deliberately do NOT fall back to a
+    # permission toolCall's own `kind` — that field is agent/LLM-influenced, and
+    # trusting it to waive the tool-name length cap would bypass the check. Use
+    # .get() (not .pop()): a later tool_call_update refinement reads the cache.
+    command_subject = subject_type == "command"
     cached_shell = shell_cache.get(_ck) if (shell_cache is not None and tool_call_id) else None
-    is_shell = bool(cached_shell)
-    if cached_shell is None and tool_input:
+    is_shell = command_subject or bool(cached_shell)
+    if cached_shell is None and tool_input and not command_subject:
         logger.info(
             "Permission event resolved tool_input but missed is_shell cache "
             "(req=%s tool_call_id=%s)",
@@ -770,8 +849,8 @@ def build_permission_event(
     # key / security_policy.json) would slip past the arg-derived gate on this
     # shared path. Primary source: the raw dict the preceding tool_call cached by
     # toolCallId; fallback: an inline dict on the permission frame itself.
-    _resolved_raw_params: dict | None = None
-    _raw_params_trusted = False
+    _resolved_raw_params: dict | None = command_params
+    _raw_params_trusted = command_subject and command_params is not None
     if tool_call_id and raw_params_cache is not None:
         # .get() (not .pop()), matching the sibling shell/MCP/tool-name caches:
         # a second permission frame for the same toolCallId (re-ask after
@@ -779,10 +858,12 @@ def build_permission_event(
         # params — popping made provenance single-use and downgraded the
         # repeat frame to low fidelity. The per-turn dispatch .clear()
         # handles cleanup.
-        _resolved_raw_params = raw_params_cache.get(_ck)
-        _raw_params_trusted = _resolved_raw_params is not None
+        _cached_raw_params = raw_params_cache.get(_ck)
+        if _cached_raw_params is not None:
+            _resolved_raw_params = _cached_raw_params
+            _raw_params_trusted = True
     if _resolved_raw_params is None:
-        _inline = tool_call.get("input") or tool_call.get("params")
+        _inline = tool_call.get("rawInput") or tool_call.get("input") or tool_call.get("params")
         if isinstance(_inline, dict):
             _resolved_raw_params = _inline
 
@@ -819,7 +900,7 @@ def build_permission_event(
         title=title,
         tool_kind=tool_kind,
         raw_params_trusted=_raw_params_trusted,
-        shell_classified=cached_shell is not None,
+        shell_classified=command_subject or cached_shell is not None,
         options=options,
         tool_input=tool_input,
         tool_input_redacted=tool_input_redacted,
@@ -829,6 +910,11 @@ def build_permission_event(
         mcp_server_name=_mcp_server_name,
         tool_name=_tool_name,
         mcp_identity_trusted=_mcp_identity_trusted,
+        mcp_identity_ambiguous=(
+            mcp_identity_ambiguous_cache.get(_ck, False)
+            if (mcp_identity_ambiguous_cache is not None and tool_call_id)
+            else False
+        ),
     )
     return event, recorded
 
@@ -840,8 +926,11 @@ def _build_tool_call_event(
     raw_params_cache: dict[str, dict] | None = None,
     mcp_server_name_cache: dict[str, str] | None = None,
     tool_name_cache: dict[str, str] | None = None,
+    mcp_identity_ambiguous_cache: dict[str, bool] | None = None,
     cache_scope: str = "",
     tool_input_redacted_cache: dict[str, bool] | None = None,
+    allow_spec_title_identity: bool = False,
+    spec_mcp_server_names: Collection[str] = (),
 ) -> AcpEvent:
     """Build an ``EVENT_TOOL_CALL`` from a ``tool_call`` update (with redaction)."""
     title = update.get("title", "unknown")
@@ -875,15 +964,30 @@ def _build_tool_call_event(
     # app-own-server auto-approve (hooks.on_tool_call) fire on the permission
     # path: without the cache, the permission event's mcp_server_name is always
     # "" and the branch never matches.
-    _mcp_server_name = _kiro_mcp_server_name(update)
+    _mcp_server_name = _kiro_mcp_server_name(
+        update,
+        allow_spec_title_identity=allow_spec_title_identity,
+        spec_mcp_server_names=spec_mcp_server_names,
+    )
     if tool_call_id and mcp_server_name_cache is not None:
         mcp_server_name_cache[_ck] = _mcp_server_name
     # Same lifecycle for the trusted tool name (_meta.kiro.toolName) so the
     # permission event can reconstruct the canonical mcp__<server>__<tool> for
     # per-tool governance in the app-own-server auto-approve.
-    _tool_name = _kiro_tool_name(update)
+    _tool_name = _kiro_tool_name(
+        update,
+        allow_spec_title_identity=allow_spec_title_identity,
+        spec_mcp_server_names=spec_mcp_server_names,
+    )
     if tool_call_id and tool_name_cache is not None:
         tool_name_cache[_ck] = _tool_name
+    _mcp_identity_ambiguous = _kiro_mcp_identity_ambiguous(
+        update,
+        allow_spec_title_identity=allow_spec_title_identity,
+        spec_mcp_server_names=spec_mcp_server_names,
+    )
+    if tool_call_id and mcp_identity_ambiguous_cache is not None:
+        mcp_identity_ambiguous_cache[_ck] = _mcp_identity_ambiguous
     # Initial tool input string from raw params.
     input_str = ""
     if tool_call_id and raw_input:
@@ -951,10 +1055,11 @@ def _build_tool_call_event(
         tool_name=_tool_name,
         mcp_server_name=_mcp_server_name,
         # The pair above comes exclusively from the _kiro_* extractors over the
-        # frame's _meta.kiro (non-model-authored) — the trusted tool_call path.
-        # Earned only when an identity pair was actually extracted: a frame
-        # with no _meta.kiro populates nothing, so it asserts no provenance.
+        # frame's trusted identity source: _meta.kiro for Kiro, or the exact
+        # session roster plus canonical title for a positively identified spec
+        # adapter. Earned only when an unambiguous pair was actually extracted.
         mcp_identity_trusted=bool(_mcp_server_name and _tool_name),
+        mcp_identity_ambiguous=_mcp_identity_ambiguous,
         diff_old_text=_diff_old_text,
         diff_path=_diff_path,
     )
@@ -1047,41 +1152,119 @@ def _build_tool_result_event(update: dict[str, Any]) -> AcpEvent | None:
     )
 
 
-def _kiro_tool_name(update: dict[str, Any]) -> str:
-    """The real tool name from ``_meta.kiro.toolName``, or "" when absent.
+_MCP_TITLE_PREFIX = "mcp__"
 
-    The user-visible ``title`` is LLM-authored prose ("Creating task list: …"),
-    so it cannot be used to identify a tool. Only this ``_meta`` channel is
-    stable.
+
+def _mcp_identity_from_title(
+    title: object, *, server_names: Collection[str]
+) -> tuple[str, str, bool]:
+    """Parse ``mcp__<server>__<tool>`` from an adapter-authored title.
+
+    Spec adapters (claude-agent-acp, codex-acp) put that form in ``title`` and
+    do not emit ``_meta.kiro``. The caller must positively identify that dialect
+    before consulting this fallback; a shell tool is rejected separately when
+    ``kind`` is execute.
+    """
+    if not isinstance(title, str) or not title.startswith(_MCP_TITLE_PREFIX):
+        return ("", "", False)
+    rest = title[len(_MCP_TITLE_PREFIX) :]
+    matches = [
+        (server, rest[len(server) + 2 :])
+        for server in server_names
+        if server and rest.startswith(f"{server}__") and rest[len(server) + 2 :]
+    ]
+    # The ACP title format has no escaping. Resolve only when the exact session
+    # roster proves one boundary; zero or multiple matching prefixes are
+    # untrusted and must never grant an MCP identity to the permission gate.
+    if len(matches) != 1:
+        return ("", "", True)
+    server, tool = matches[0]
+    return (server, tool, False)
+
+
+def _spec_mcp_identity(
+    update: dict[str, Any], *, server_names: Collection[str]
+) -> tuple[str, str, bool]:
+    """Title-derived MCP identity, or empty when the kind is missing or a shell.
+
+    A missing kind cannot be told from execute, so the title is not consulted.
+    """
+    kind = update.get("kind")
+    if not isinstance(kind, str) or not kind or is_shell_kind(kind):
+        return ("", "", False)
+    return _mcp_identity_from_title(update.get("title"), server_names=server_names)
+
+
+def _kiro_tool_name(
+    update: dict[str, Any],
+    *,
+    allow_spec_title_identity: bool = False,
+    spec_mcp_server_names: Collection[str] = (),
+) -> str:
+    """The real tool name from ``_meta.kiro.toolName``, or a spec-adapter title.
+
+    The user-visible ``title`` is LLM-authored prose on kiro-cli ("Creating
+    task list: …"), so it cannot identify a tool there. Spec adapters put the
+    canonical ``mcp__<server>__<tool>`` in ``title`` and emit no ``_meta``;
+    callers opt into that fallback only after positively identifying the dialect.
     """
     meta = update.get("_meta")
-    if not isinstance(meta, dict):
-        return ""
-    kiro = meta.get("kiro")
-    if not isinstance(kiro, dict):
-        return ""
-    name = kiro.get("toolName")
-    return name if isinstance(name, str) else ""
+    if isinstance(meta, dict):
+        kiro = meta.get("kiro")
+        if isinstance(kiro, dict):
+            name = kiro.get("toolName")
+            if isinstance(name, str) and name:
+                return name
+    if allow_spec_title_identity:
+        _server, tool, _ambiguous = _spec_mcp_identity(update, server_names=spec_mcp_server_names)
+        return tool
+    return ""
 
 
-def _kiro_mcp_server_name(update: dict[str, Any]) -> str:
-    """The MCP server name from ``_meta.kiro.mcpServerName``, or "" for
-    built-in/shell tools.
+def _kiro_mcp_server_name(
+    update: dict[str, Any],
+    *,
+    allow_spec_title_identity: bool = False,
+    spec_mcp_server_names: Collection[str] = (),
+) -> str:
+    """The MCP server name from ``_meta.kiro.mcpServerName``, or a spec title.
 
     kiro-cli sets this ONLY for MCP-served tool calls (see
     ``kiro_tool_identity_meta`` in the engine), so a non-empty value is the
     trusted discriminator "this tool call was served by an MCP server" — the
     signal a security gate needs to tell a genuine MCP directive tool from a
-    shell command whose stdout the model authored.
+    shell command whose stdout the model authored. Spec adapters do not emit
+    ``_meta.kiro``; their ``mcp__<server>__<tool>`` title is the equivalent
+    signal only when the caller positively identifies the dialect and ``kind``
+    is present and not execute.
     """
     meta = update.get("_meta")
-    if not isinstance(meta, dict):
-        return ""
-    kiro = meta.get("kiro")
-    if not isinstance(kiro, dict):
-        return ""
-    name = kiro.get("mcpServerName")
-    return name if isinstance(name, str) else ""
+    if isinstance(meta, dict):
+        kiro = meta.get("kiro")
+        if isinstance(kiro, dict):
+            name = kiro.get("mcpServerName")
+            if isinstance(name, str) and name:
+                return name
+    if allow_spec_title_identity:
+        server, _tool, _ambiguous = _spec_mcp_identity(update, server_names=spec_mcp_server_names)
+        return server
+    return ""
+
+
+def _kiro_mcp_identity_ambiguous(
+    update: dict[str, Any],
+    *,
+    allow_spec_title_identity: bool = False,
+    spec_mcp_server_names: Collection[str] = (),
+) -> bool:
+    """Whether a spec title has more than one valid server/tool boundary."""
+    meta = update.get("_meta")
+    if isinstance(meta, dict) and isinstance(meta.get("kiro"), dict):
+        return False
+    if not allow_spec_title_identity:
+        return False
+    _server, _tool, ambiguous = _spec_mcp_identity(update, server_names=spec_mcp_server_names)
+    return ambiguous
 
 
 def _todo_payload(raw_output: Any) -> dict[str, Any] | None:
@@ -1275,8 +1458,11 @@ def parse_session_update(
     raw_params_cache: dict[str, dict] | None = None,
     mcp_server_name_cache: dict[str, str] | None = None,
     tool_name_cache: dict[str, str] | None = None,
+    mcp_identity_ambiguous_cache: dict[str, bool] | None = None,
     cache_scope: str = "",
     tool_input_redacted_cache: dict[str, bool] | None = None,
+    allow_spec_title_identity: bool = False,
+    spec_mcp_server_names: Collection[str] = (),
 ) -> list[AcpEvent]:
     """Parse one ``session/update`` inner ``update`` dict into ``AcpEvent``s.
 
@@ -1288,6 +1474,8 @@ def parse_session_update(
     ``tool_input_cache`` (caller-owned) is written with ``toolCallId -> redacted
     input`` for ``tool_call`` / refinement updates, mirroring each class's
     ``_tool_call_inputs`` map. Stats and stall bookkeeping stay with the caller.
+    ``allow_spec_title_identity`` is false by default because a kiro-cli title is
+    model-authored; spec clients opt in after resolving their backend dialect.
     """
     if not isinstance(update, dict):
         return []
@@ -1312,8 +1500,11 @@ def parse_session_update(
                 raw_params_cache,
                 mcp_server_name_cache,
                 tool_name_cache,
+                mcp_identity_ambiguous_cache,
                 cache_scope=cache_scope,
                 tool_input_redacted_cache=tool_input_redacted_cache,
+                allow_spec_title_identity=allow_spec_title_identity,
+                spec_mcp_server_names=spec_mcp_server_names,
             )
         )
         return events
@@ -1387,6 +1578,108 @@ def parse_usage_update(update: dict[str, Any]) -> tuple[int | float | None, int 
     return _token_count(used), _token_count(size)
 
 
+def parse_usage_cost(update: dict[str, Any]) -> tuple[float | None, str]:
+    """Parse a ``usage_update``'s optional ``cost`` block into ``(amount, currency)``.
+
+    Separate from :func:`parse_usage_update` rather than widening its tuple: that
+    return shape has two consumers, and cost is optional in a way tokens are not —
+    only some adapters send it, so a caller that does not care should not have to
+    unpack it.
+
+    Adapters differ, and the differences are why this is validated rather than
+    trusted: claude-agent-acp sends ``cost: {amount, currency}`` with a real USD
+    figure, codex-acp sends no cost at all, and goose carries richer per-message
+    cost behind an unstable extension method Kiro Crew does not speak. So a missing
+    block is the norm, not an error.
+
+    The amount is deliberately NOT run through ``_token_count``: that helper rejects
+    non-integers and clamps, which is right for token counts and wrong for a
+    fractional currency amount. A negative or non-finite value is refused instead,
+    since a cost that runs backwards would corrupt any total built from it.
+    """
+    if not isinstance(update, dict):
+        return None, ""
+    block = update.get("cost")
+    if not isinstance(block, dict):
+        return None, ""
+    raw = block.get("amount")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None, ""
+    amount = float(raw)
+    if amount < 0 or amount != amount or amount in (float("inf"), float("-inf")):
+        return None, ""
+    currency = block.get("currency")
+    return amount, currency if isinstance(currency, str) else ""
+
+
+# Above this magnitude a `resetsAt` is read as milliseconds rather than seconds.
+# 1e11 seconds lands in the year 5138 and 1e11 milliseconds in 1973, so no real
+# reset timestamp is ambiguous under the split for any date this code will run
+# on. The heuristic exists because the SDK types the field as a bare ``number``
+# with no declared unit: normalizing by magnitude is checkable here, whereas
+# trusting one reading would put a 1970 or a year-56000 reset on screen the
+# first time the adapter changed it.
+_RESETS_AT_MS_THRESHOLD = 1e11
+
+
+def parse_rate_limit(update: dict[str, Any]) -> "AcpRateLimit | None":
+    """Parse a ``usage_update``'s ``_meta["_claude/rateLimit"]`` plan quota block.
+
+    Returns ``None`` when the frame carries no rate-limit meta or nothing in it
+    survives validation, so a caller can distinguish "no telemetry" from a
+    reading whose individual fields are absent (:meth:`AcpRateLimit.is_reported`).
+
+    Every field is optional in the source type and each is validated
+    independently: a malformed ``utilization`` must not discard a good
+    ``resetsAt``, since the two answer different questions ("how close am I" vs
+    "when does it clear") and a consumer may render either alone.
+
+    ``status`` is checked against :data:`RATE_LIMIT_STATES` and an unrecognised
+    value is DROPPED rather than passed through. The states are ordered by
+    whether the user can still send a turn, so a new spelling Kiro Crew has not
+    seen would be rendered at whatever severity the frontend's fallback happens
+    to use — showing "rejected" as benign, or the reverse. An empty status with a
+    real utilization figure degrades to the honest reading: a number, no verdict.
+    """
+    if not isinstance(update, dict):
+        return None
+    meta = update.get("_meta")
+    if not isinstance(meta, dict):
+        return None
+    block = meta.get(META_CLAUDE_RATE_LIMIT)
+    if not isinstance(block, dict):
+        return None
+
+    raw_status = block.get("status")
+    status = raw_status if isinstance(raw_status, str) and raw_status in RATE_LIMIT_STATES else ""
+    if isinstance(raw_status, str) and not status:
+        logger.debug("rate limit: dropping unrecognised status %r", raw_status)
+
+    raw_type = block.get("rateLimitType")
+    limit_type = raw_type if isinstance(raw_type, str) else ""
+
+    # _token_count rejects bool/non-finite/bignum, which is exactly the guard a
+    # percentage needs too; clamp to [0, 100] because the field is documented as
+    # a percentage and a value outside it would drive a progress bar off its rail.
+    raw_util = _token_count(block.get("utilization"))
+    utilization = -1.0 if raw_util is None else min(max(float(raw_util), 0.0), 100.0)
+
+    raw_reset = _token_count(block.get("resetsAt"))
+    resets_at = 0.0
+    if raw_reset is not None and raw_reset > 0:
+        resets_at = float(raw_reset)
+        if resets_at >= _RESETS_AT_MS_THRESHOLD:
+            resets_at /= 1000.0
+
+    parsed = AcpRateLimit(
+        status=status,
+        limit_type=limit_type,
+        utilization=utilization,
+        resets_at=resets_at,
+    )
+    return parsed if parsed.is_reported() else None
+
+
 # Re-export the method names so callers can use a single import site for the
 # kiro handshake (mode/model) requests alongside the param builders.
 __all__ = [
@@ -1396,7 +1689,13 @@ __all__ = [
     "parse_metadata",
     "classify_notification",
     "build_permission_event",
+    "permission_answerable_on_handle",
+    "permission_frame_session_id",
+    "reject_option_id",
+    "resolve_permission_allow_id",
     "parse_session_update",
+    "parse_rate_limit",
+    "parse_usage_cost",
     "parse_usage_update",
     "parse_text_chunk",
     "make_unified_diff",

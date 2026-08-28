@@ -504,9 +504,14 @@ class TestRenderAgents:
         managed = tmp_path / "preview-tools" / "bin"
         managed.mkdir(parents=True)
         tool = _fake_tool(managed, "pdftoppm")
+        host_bin = tmp_path / "host-bin"
+        host_bin.mkdir()
 
         install_dir = tmp_path / "install"
-        with mock.patch.object(provision.paths, "preview_tools_bin", return_value=managed):
+        with (
+            mock.patch.object(provision.paths, "preview_tools_bin", return_value=managed),
+            mock.patch.dict(os.environ, {"PATH": str(host_bin)}, clear=False),
+        ):
             assert provision._render_agents(install_dir, log=[]) > 0
 
         for rendered in sorted((install_dir / "agents").glob("*.json")):

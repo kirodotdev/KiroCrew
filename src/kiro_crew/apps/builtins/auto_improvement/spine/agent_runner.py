@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.config import KiroCrewConfig
+from kiro_crew.config.loader import build_provider_factory
 from kiro_crew.hooks import TOOL_DENY, HookManager, hooks_config_from_config_dict
 from kiro_crew.platform_compat import SIGKILL, kill_process_tree
 from kiro_crew.sandbox import popen_limited, sandboxed_spawn_argv
@@ -539,6 +540,9 @@ def _governance_denial(ev: object, *, session_key: str, agent: str) -> str:
             # command meant is_shell=False, so the request was treated as a non-shell tool and
             # skipped the branch written for it.
             is_shell=bool(getattr(ev, "is_shell", False)) or bool(command),
+            mcp_server_name=getattr(ev, "mcp_server_name", "") or "",
+            mcp_tool_name=getattr(ev, "tool_name", "") or "",
+            mcp_identity_ambiguous=bool(getattr(ev, "mcp_identity_ambiguous", False)),
         )
         if getattr(result, "action", "") == TOOL_DENY:
             return (getattr(result, "reason", "") or "denied by governance policy").strip()
@@ -1160,9 +1164,9 @@ class SessionAgentRunner:
         self._total_cost_usd = 0.0
         self._stop_check = stop_check
         self._on_activity = on_activity if callable(on_activity) else None
-        # The Kiro Crew provider factory (``cfg.create_provider_factory()``). Injectable for
-        # tests; resolved lazily from config when None so importing this module never loads
-        # the whole config/provider stack.
+        # The Kiro Crew provider factory. Injectable for tests; resolved lazily through the
+        # provider registry when None so importing this module never loads the whole
+        # config/provider stack.
         self._provider_factory = provider_factory
 
     def total_cost_usd(self) -> float:
@@ -1177,7 +1181,7 @@ class SessionAgentRunner:
         try:
 
             cfg = KiroCrewConfig.load()
-            return cfg.create_provider_factory() is not None
+            return build_provider_factory(cfg) is not None
         except Exception:  # noqa: BLE001 — any failure → not available, caller falls back
             return False
 
@@ -1246,7 +1250,7 @@ class SessionAgentRunner:
             return self._provider_factory
 
         cfg = KiroCrewConfig.load()
-        self._provider_factory = cfg.create_provider_factory()
+        self._provider_factory = build_provider_factory(cfg)
         return self._provider_factory
 
     def _emit_activity(self, ev: dict) -> None:

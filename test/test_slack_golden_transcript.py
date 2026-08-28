@@ -185,6 +185,15 @@ class FakeSessions:
     def get_provider(self, session_key):
         return "acp"
 
+    def is_busy(self, session_key):
+        return False
+
+    def enqueue(self, session_key, msg_ts, text, *, force=False, **kwargs):
+        return False
+
+    def dequeue(self, session_key):
+        return None
+
     def record_success(self, session_key):
         return None
 

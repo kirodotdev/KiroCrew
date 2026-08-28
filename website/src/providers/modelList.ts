@@ -47,8 +47,19 @@ export function isPricedMultiplier(value: number | undefined): value is number {
  * should not render twice) and is asserted by an output-length test.
  */
 export function withAutoFirst(models: ModelInfo[]): ModelInfo[] {
+  // An EMPTY input means "no namespace is known" — a spec adapter with no live
+  // session has advertised nothing yet. Synthesising an Auto row there offers a
+  // kiro-namespace sentinel the adapter rejects at the wire, so the operator
+  // picks the only row on offer and the turn fails. Empty in, empty out.
+  if (models.length === 0) return []
   const live = models.find(m => m.name === 'auto')
   const rest = models.filter(m => m.name && m.name !== 'auto')
+  // ORDER Auto first; never INVENT it. `auto` is a kiro-namespace sentinel and
+  // kiro advertises it as a real row in its own list, so there is nothing to
+  // synthesise — while a spec adapter (claude advertises `default`, Fable,
+  // Sonnet…) has no `auto` at all, and adding one offers a model it rejects.
+  // Spreading an undefined `live` used to fabricate exactly that row.
+  if (!live) return rest
   // `description: ''` rather than the English word: the picker renders Auto's
   // short label from a catalog key at render time
   // (`components.modelDropdownList.auto_default`). Carrying the literal here

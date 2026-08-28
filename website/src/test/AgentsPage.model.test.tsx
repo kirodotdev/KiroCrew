@@ -13,7 +13,7 @@
  * a user-editable spec, so the page keeps its own guard. These tests drive the
  * page with the raw bad shape to prove the guard, not the coercion.
  */
-import { render, screen, waitFor, fireEvent } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 const mockApi = vi.hoisted(() => ({
@@ -109,7 +109,8 @@ describe('AgentsPage model rendering', () => {
 
     renderPage()
 
-    fireEvent.click(await screen.findByText('quickwork_acp_kiro'))
+    const installedAgents = await screen.findByRole('listbox', { name: 'Installed Agents' })
+    fireEvent.click(await within(installedAgents).findByText('quickwork_acp_kiro'))
     // Both the row label and the detail chip degrade to "auto".
     await waitFor(() => expect(screen.getAllByText('auto').length).toBeGreaterThanOrEqual(2))
   })
@@ -120,7 +121,8 @@ describe('AgentsPage model rendering', () => {
 
     renderPage()
 
-    expect(await screen.findByText('nullish')).toBeInTheDocument()
+    const installedAgents = await screen.findByRole('listbox', { name: 'Installed Agents' })
+    expect(await within(installedAgents).findByText('nullish')).toBeInTheDocument()
     expect(screen.getAllByText('auto').length).toBeGreaterThanOrEqual(1)
   })
 
@@ -134,7 +136,8 @@ describe('AgentsPage model rendering', () => {
 
     renderPage()
 
-    fireEvent.click(await screen.findByText('weird-desc'))
+    const installedAgents = await screen.findByRole('listbox', { name: 'Installed Agents' })
+    fireEvent.click(await within(installedAgents).findByText('weird-desc'))
     // The row and the detail panel both survive; the unusable description is
     // simply not shown rather than taking the tree down.
     await waitFor(() => expect(screen.getAllByText('claude-opus-4.8').length).toBeGreaterThanOrEqual(1))

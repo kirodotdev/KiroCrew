@@ -41,16 +41,18 @@ interface Props {
  *  live levels from /api/effort-levels (keyed by slot so a model switch is
  *  reflected on remount). */
 export default function ReasoningEffortDropdown({ slot, currentEffort, defaultEffort = '', embedded }: Props) {
-  const { data: levels = FALLBACK_LEVELS } = useQuery({
+  const { data } = useQuery({
     queryKey: ['effort-levels', slot],
-    queryFn: () => api.effortLevels(slot).then(data =>
-      Array.isArray(data) && data.length > 0
-        ? normalizeLevels(data)
-        : FALLBACK_LEVELS
+    queryFn: () => api.effortLevels(slot).then(raw =>
+      Array.isArray(raw) ? normalizeLevels(raw) : FALLBACK_LEVELS
     ),
     staleTime: 0,
     refetchOnMount: 'always',
   })
+  // A successful empty list means this model advertised no effort control.
+  // Do not invent kiro's low..max notches. Undefined is still in-flight (or
+  // a failed fetch) and keeps the kiro cold-start fallback.
+  const levels = data === undefined ? FALLBACK_LEVELS : data
 
   // "Default" is a mode (let the model pick its own effort), not a level — it's a
   // toggle. The slider covers only the concrete levels (low→max).
@@ -169,6 +171,11 @@ export default function ReasoningEffortDropdown({ slot, currentEffort, defaultEf
   const defaultToggleLabel = defaultEffort
     ? i18nT('components.reasoningEffortDropdown.use_configured_default')
     : i18nT('components.reasoningEffortDropdown.use_model_default')
+
+  // A successful empty list means this model advertised no effort control.
+  // Do not invent kiro's low..max notches. Undefined is still in-flight (or
+  // a failed fetch) and keeps the kiro cold-start fallback above.
+  if (data !== undefined && levels.length === 0) return null
 
   return (
     <div className={embedded ? 'px-3 py-2.5' : 'rounded-lg bg-bg-elevated border border-border px-4 py-3.5 w-[240px]'}>

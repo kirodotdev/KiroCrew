@@ -134,10 +134,12 @@ _SESSION_RELOAD_NOTICE = (
 )
 
 # Approval modes that grant auto-approval to the SLOT they name, as opposed to
-# the process-global YOLO grant. A tuple, not a set: membership is tested against
-# a request-supplied value, and tuple `in` compares by equality rather than
-# hashing, so a non-string body value answers False instead of raising.
-_SLOT_SCOPED_TRUST_MODES = ("trust", "trust_reads")
+# the process-global YOLO grant. ``auto`` is goose session mode auto — it does
+# not auto-answer Crew permission RPCs; it asks the harness not to send them.
+# A tuple, not a set: membership is tested against a request-supplied value,
+# and tuple `in` compares by equality rather than hashing, so a non-string
+# body value answers False instead of raising.
+_SLOT_SCOPED_TRUST_MODES = ("trust", "trust_reads", "auto")
 
 
 def _sweep_stale_permissions(slot: "_ChatSlot") -> None:
@@ -4206,12 +4208,33 @@ def _wire_model_id(provider: AcpProvider, model_name: str) -> str:
         # The claude backend has no id meaning "let the server choose", so
         # returning to default needs a reset.
         return "" if is_default else model_registry.to_provider_id(model_name, "claude_code")
+    if provider.is_codex_backend:
+        from kiro_crew.acp import codex
+
+        return codex.wire_model_id(model_name, is_default=is_default)
+    if provider.is_spec_adapter:
+        return "" if is_default else model_name
     if is_default:
         # kiro DOES express Auto as a real model id — but only switch to it when
         # this session's backend actually advertised it.
         advertised = {m.get("modelId", "") for m in provider.available_models()}
         return "auto" if "auto" in advertised else ""
     return model_registry.to_acp_id(model_name)
+
+
+def _codex_selection_effort(backend: str, model_name: str) -> str:
+    """Effort encoded in a Codex advertised model row, or ``""``.
+
+    The bracket shape is not a backend discriminator: only the positively
+    identified Codex backend opts into splitting it (harness parity H5).
+    """
+    from kiro_crew.acp.types import ACP_BACKEND_CODEX
+
+    if backend == ACP_BACKEND_CODEX:
+        from kiro_crew.acp import codex
+
+        return codex.advertised_effort(model_name)
+    return ""
 
 
 async def _reapply_effort_after_live_switch(
@@ -4383,9 +4406,24 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
             return web.json_response({"ok": True, "model": model_name})
         session_key = _history_key_for(name)
         provider = state.sessions.get_provider(session_key)
+        try:
+            selection_backend = provider.backend if provider is not None else None
+        except (AttributeError, TypeError):
+            selection_backend = None
+        if not isinstance(selection_backend, str):
+            try:
+                selection_backend = await asyncio.to_thread(
+                    lambda: KiroCrewConfig.load().agent.acp_backend
+                )
+            except Exception:
+                selection_backend = ""
+        implied_effort = _codex_selection_effort(selection_backend, model_name)
         prior_model = slot.model
+        prior_effort = slot.reasoning_effort
         prior_pick_gen = slot._model_pick_gen
         slot.model = model_name
+        if implied_effort:
+            slot.reasoning_effort = implied_effort
         # Explicit user pick: bump the pick generation so the model-fallback
         # restore probe never overrides this choice (automatic backfill does NOT
         # bump it).
@@ -4416,6 +4454,7 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
             # observed, unwinding in LIFO order to a consistent state.
             if slot._model_pick_gen == prior_pick_gen + 1 and slot.model == model_name:
                 slot.model = prior_model
+                slot.reasoning_effort = prior_effort
                 slot._model_pick_gen = prior_pick_gen
             logger.warning("Slot %s model rejected: %s", name, exc)
             return web.json_response({"error": str(exc), "code": "model_unavailable"}, status=400)
@@ -4468,6 +4507,14 @@ async def api_chat_slots_model(request: web.Request) -> web.Response:
     # fails closed into the per-slot ownership check instead of bypassing it.
     is_dashboard_user = request_app == ""
 
+    try:
+        configured_backend = await asyncio.to_thread(
+            lambda: KiroCrewConfig.load().agent.acp_backend
+        )
+    except Exception:
+        configured_backend = ""
+    implied_effort = _codex_selection_effort(configured_backend, model_name)
+
     switched: list[str] = []
     skipped_running: list[str] = []
     unchanged: list[str] = []
@@ -4486,7 +4533,9 @@ async def api_chat_slots_model(request: web.Request) -> web.Response:
         # unchanged — then the single pick's failure rolls it back, leaving
         # the bulk response claiming a model the slot does not have.
         async with slot._model_pick_lock:
-            if slot.model == model_name:
+            if slot.model == model_name and (
+                not implied_effort or slot.reasoning_effort == implied_effort
+            ):
                 unchanged.append(name)
                 continue
             if skip_running and slot.running:
@@ -4503,6 +4552,8 @@ async def api_chat_slots_model(request: web.Request) -> web.Response:
                 failed.append(name)
                 continue
             slot.model = model_name
+            if implied_effort:
+                slot.reasoning_effort = implied_effort
             # Explicit pick (bulk): same generation bump as the single-slot pick.
             slot._model_pick_gen += 1
         _broadcast_context_reset(state, slot.key, None)
@@ -5881,6 +5932,20 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     )
 
 
+async def _enable_goose_permission_auto(
+    state: DashboardState, slot_key: str | None
+) -> web.Response | None:
+    """Refuse harness-owned auto approval until it can expire safely."""
+    return web.json_response(
+        {
+            "ok": False,
+            "error": "harness permission Auto is not available",
+            "code": "permission_auto_requires_safety_override",
+        },
+        status=409,
+    )
+
+
 async def api_chat_mode(request: web.Request) -> web.Response:
     """POST /api/chat/mode — set global tool approval mode.
 
@@ -5888,6 +5953,8 @@ async def api_chat_mode(request: web.Request) -> web.Response:
       - ``normal``: reset to interactive (ask for each tool)
       - ``trust``: auto-approve tools for active slot
       - ``yolo``: auto-approve all tools everywhere
+      - ``auto``: reserved and refused until harness-owned approval can be
+        governed by the same expiring safety override as YOLO.
 
     Unlike the per-tool approve endpoint, this doesn't require a
     pending approval — it preemptively sets the mode for future tools.
@@ -5928,6 +5995,13 @@ async def api_chat_mode(request: web.Request) -> web.Response:
                 denied = web.json_response({"ok": False, "error": "unknown slot"}, status=400)
     if denied is not None:
         return denied
+
+    # Harness-owned Auto has no dashboard surface and no durable grant model.
+    # Refuse it before touching the process-global safety override or any slot.
+    if mode == "auto":
+        refused = await _enable_goose_permission_auto(state, slot_key)
+        if refused is not None:
+            return refused
 
     # The safety override (YOLO) is PROCESS-GLOBAL while an approval mode is
     # per-slot, so revoking it on behalf of a request that named ONE slot drops

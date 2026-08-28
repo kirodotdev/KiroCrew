@@ -282,6 +282,8 @@ async def decompose(
             parent_key, session_key, agent=agent or None, cwd=work_dir or None
         )
         if ctx:
+            from kiro_crew.providers.acp import provider_label
+
             # Off-loop: build_message embeds the episodic query (blocking urllib).
             full_prompt, _ = await run_in_embed_pool(
                 ctx.build_message,
@@ -290,6 +292,7 @@ async def decompose(
                 session_key,
                 agent=agent or None,
                 project=work_dir or None,
+                provider_type=provider_label(client),
             )
         else:
             full_prompt = prompt
@@ -313,6 +316,9 @@ async def decompose(
                         raw_params=event.raw_tool_params,
                         command=event.shell_command,
                         is_shell=event.is_shell,
+                        mcp_server_name=event.mcp_server_name,
+                        mcp_tool_name=event.tool_name,
+                        mcp_identity_ambiguous=event.mcp_identity_ambiguous,
                     )
                     if hook_result.action == TOOL_DENY:
                         await client.reject_tool(event.request_id)

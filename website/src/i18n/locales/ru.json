@@ -43,7 +43,6 @@
     "iam_identity_center": "IAM Identity Center",
     "installing_packages": "Установка пакетов",
     "k_search_for_anything": "⌘K — Поиск по всему…",
-    "kiro_credit_usage_api_key": "Расход кредитов Kiro — недоступен при аутентификации по API-ключу",
     "kiro_credit_usage_checking": "Расход кредитов Kiro — проверка…",
     "kiro_credit_usage_checking_2": "Расход кредитов Kiro — проверка",
     "kiro_credit_usage_unavailable": "Расход кредитов Kiro — недоступен",
@@ -119,7 +118,10 @@
     "open_command_bar": "Открыть Command Bar",
     "focus_mode": "Режим фокусировки",
     "focus_mode_title": "Режим фокусировки · Alt+Shift+M",
-    "focus_mode_title_mac": "Режим фокусировки · ⌥⇧M"
+    "focus_mode_title_mac": "Режим фокусировки · ⌥⇧M",
+    "kiro_credit_usage_api_key": "Расход кредитов Kiro — недоступен при аутентификации по API-ключу",
+    "active_harness": "Окружение агента: {{label}}",
+    "harness_new_sessions": "Новые сеансы"
   },
   "appSdk": {
     "chatEmbed": {
@@ -5568,7 +5570,13 @@
       "used": "Использовано",
       "voice_input": "Голосовой ввод",
       "finishing": "Завершение…",
-      "keep_holding_to_record": "Удерживайте, чтобы записать"
+      "keep_holding_to_record": "Удерживайте, чтобы записать",
+      "plan_limit": "Лимит плана",
+      "limit_type": "Тип лимита",
+      "resets": "Сброс",
+      "rate_limit_allowed": "Норма",
+      "rate_limit_warning": "Близко к лимиту",
+      "rate_limit_rejected": "Ограничено"
     },
     "chatPane": {
       "agent_list": "Список агентов",
@@ -7140,25 +7148,6 @@
       "triggers": "Триггеры",
       "what_this_skill_does_and_when_the_agent_should_u": "Что делает этот навык и когда агент должен его использовать"
     },
-    "projectSkillsTrust": {
-      "body": "${{skill}} взят из собственной папки .kiro/skills этого проекта.",
-      "confirm": "Доверять этой папке",
-      "consequence": "Если доверять этой папке, её файлы навыков попадут в контекст этого чата, где смогут указывать агенту выполнять команды. Доверяй только проекту, который узнаёшь.",
-      "decline": "Не сейчас",
-      "decline_consequence": "Если откажешься, ничего не загрузится, а твоё сообщение останется таким, каким ты его набрал.",
-      "grant_failed": "Не удалось сохранить доверие для этой папки.",
-      "title": "Доверять навыкам этого проекта?",
-      "withdraw_hint": "Отозвать это можно позже на странице настроек «Навыки».",
-      "working": "Установка доверия…"
-    },
-    "projectSkillsTrustList": {
-      "folder_missing": "Эта папка больше не существует.",
-      "hint": "Эти папки проектов могут загружать свои скиллы в чат. Отзови папку, чтобы её скиллы больше не загружались.",
-      "revoke": "Отозвать",
-      "revoke_failed": "Не удалось отозвать доверие для этой папки.",
-      "revoking": "Отзываем…",
-      "title": "Доверенные папки проектов"
-    },
     "skillPickerMenu": {
       "loading_skills": "Загрузка навыков…",
       "no_matching_skills": "Нет подходящих навыков",
@@ -7387,13 +7376,6 @@
       "later": "Позже",
       "restart_update": "Установить обновление и перезапустить приложение",
       "restarting": "Перезапуск...",
-      "update_ready": "Обновление готово"
-    },
-    "updatePill": {
-      "downloading": "Загрузка…",
-      "downloading_percent": "Загрузка {{percent}}%",
-      "open_update_settings": "Открыть настройки обновления",
-      "update_available": "Доступно обновление",
       "update_ready": "Обновление готово"
     },
     "voiceDictationPanel": {
@@ -7664,6 +7646,32 @@
       "billing_notice": "Это платный сервис AWS. До подтверждения запросы не отправляются.",
       "confirm_button": "Подтвердить и включить",
       "withdraw": "Отозвать подтверждение"
+    },
+    "projectSkillsTrust": {
+      "body": "${{skill}} взят из собственной папки .kiro/skills этого проекта.",
+      "confirm": "Доверять этой папке",
+      "consequence": "Если доверять этой папке, её файлы навыков попадут в контекст этого чата, где смогут указывать агенту выполнять команды. Доверяй только проекту, который узнаёшь.",
+      "decline": "Не сейчас",
+      "decline_consequence": "Если откажешься, ничего не загрузится, а твоё сообщение останется таким, каким ты его набрал.",
+      "grant_failed": "Не удалось сохранить доверие для этой папки.",
+      "title": "Доверять навыкам этого проекта?",
+      "withdraw_hint": "Отозвать это можно позже на странице настроек «Навыки».",
+      "working": "Установка доверия…"
+    },
+    "projectSkillsTrustList": {
+      "folder_missing": "Эта папка больше не существует.",
+      "hint": "Эти папки проектов могут загружать свои скиллы в чат. Отзови папку, чтобы её скиллы больше не загружались.",
+      "revoke": "Отозвать",
+      "revoke_failed": "Не удалось отозвать доверие для этой папки.",
+      "revoking": "Отзываем…",
+      "title": "Доверенные папки проектов"
+    },
+    "updatePill": {
+      "downloading": "Загрузка…",
+      "downloading_percent": "Загрузка {{percent}}%",
+      "open_update_settings": "Открыть настройки обновления",
+      "update_available": "Доступно обновление",
+      "update_ready": "Обновление готово"
     },
     "confirmDialog": {
       "cancel": "Отмена"
@@ -9920,7 +9928,9 @@
       "featurePreviewsTab": {
         "inbound_webhook_tokens_registered_contexts_and_r": "Токены входящих вебхуков, зарегистрированные контексты и история запусков. API работает, но страница не доделана.",
         "open_webhooks": "Открыть вебхуки",
-        "webhooks": "Вебхуки"
+        "webhooks": "Вебхуки",
+        "acp_backends": "Адаптеры ACP",
+        "experimental_acp_backends_claude_code": "Claude Code как альтернатива Kiro CLI. Экспериментальная функция — защитные отказы работают; сквозные сеансы пока не проверены."
       }
     },
     "developerPage": {
@@ -11135,6 +11145,43 @@
         "vector_memory": "Векторная память",
         "vector_memory_is_initializing_the_embedding_mode": "Векторная память инициализируется. Модель эмбеддингов (~610MB) скачивается автоматически в фоне, а старая память переносится сама — действий не требуется.",
         "verifying_model_integrity": "Проверка целостности модели..."
+      },
+      "acpBackend": {
+        "title": "Адаптер ACP",
+        "experimental": "Экспериментальный",
+        "all_features_supported": "По умолчанию. Все функции поддерживаются.",
+        "features_differ": "{{count}} из {{total}} функций работают иначе, недоступны или не проверены.",
+        "show_what_changes": "Показать, что изменится",
+        "applies_to_new_sessions": "Применяется к сеансам, запущенным с этого момента. Открытые сеансы сохраняют исходный адаптер.",
+        "not_enabled_in_this_build": "Не включено в этой сборке: {{backends}}. См. документацию по экспериментальным адаптерам ACP.",
+        "level_supported": "Поддерживается",
+        "level_degraded": "Работает иначе",
+        "level_unavailable": "Недоступно",
+        "cap_session_sharing": "Общая среда выполнения субагентов",
+        "cap_reasoning_effort": "Глубина рассуждений",
+        "cap_mcp_tool_search": "Поиск инструментов MCP",
+        "cap_agent_profiles": "Профили агентов",
+        "cap_slash_commands": "Слэш-команды",
+        "cap_turn_usage": "Использование за ход",
+        "cap_billing": "Стоимость и лимиты",
+        "cap_native_resume": "Возобновление сеанса",
+        "cap_registry_model_ids": "Использует каталог моделей Kiro",
+        "cap_mid_turn_steer": "Корректировка в течение хода",
+        "confirm_title": "Переключиться на {{backend}}?",
+        "confirm_body": "Этот адаптер экспериментальный. {{count}} из {{total}} функций Kiro Crew работают иначе, недоступны или не проверены.",
+        "confirm_model_reset": "Выбор моделей будет сброшен — у каждого рабочего окружения свой список моделей. Это относится и к открытым чатам.",
+        "confirm_open_sessions": "Открытые сеансы не затрагиваются и сохраняют текущий адаптер.",
+        "cancel": "Отмена",
+        "confirm_switch": "Переключить адаптер",
+        "confirm_prerequisites": "Сначала выполните это на хосте шлюза, в указанном порядке.",
+        "not_installed": "Адаптер не установлен",
+        "level_unverified": "Не проверено",
+        "load_failed": "Не удалось загрузить адаптеры ACP. Повторите попытку.",
+        "routing_routed": "Вызовы инструментов достигают шлюза безопасности {{productName}}",
+        "routing_indeterminate": "Маршрутизация вызовов инструментов не проверена — новые сеансы будут отклонять вызовы инструментов",
+        "routing_bypassed": "Вызовы инструментов обошли бы шлюз безопасности {{productName}} — новые сеансы будут отклонять вызовы инструментов",
+        "routing_reason": "{{reason}}",
+        "ungated_opt_out": "Неконтролируемые инструменты разрешены. Правила запрещённых команд, блокировка чувствительных путей и потолок управления не применяются к самостоятельно одобренным вызовам этого бэкенда."
       }
     },
     "overviewPage": {
@@ -11494,11 +11541,8 @@
       "owning_session": "Сессия-владелец"
     },
     "servicesTab": {
-      "channels": "Каналы",
-      "connect_error": "Ошибка подключения",
       "connected": "Подключено",
       "cpu": "CPU %",
-      "discord": "Discord",
       "embeddings": "Embeddings",
       "gateway_process": "Процесс шлюза",
       "governance": "Управление политиками",
@@ -11506,7 +11550,6 @@
       "governance_tip_degraded": "Проверка управления политиками завершилась отказом, обнаружено несовпадение целостности либо политика допуска не проверена (отсутствует или не читается). Изучи журнал аудита SEL.",
       "governance_tip_disabled": "Принудительная политика допуска не настроена (разрешающий режим по умолчанию). Плагины допускаются, если не запрещены явно.",
       "governance_tip_unknown": "Статус управления политиками в этой сессии пока не определён.",
-      "imessage": "iMessage",
       "mcp_process_breakdown": "{{total}} ({{sandbox}} в песочнице · {{provider}} {{providerLabel}} · {{mcp}} mcp)",
       "mcp_process_breakdown_unique": "Уникальных: {{total}} ({{sandbox}} в песочнице · {{provider}} {{providerLabel}} · {{mcp}} mcp)",
       "mcp_processes": "Процессы MCP",
@@ -11523,16 +11566,22 @@
       "status_disabled": "Отключено",
       "status_unknown": "Неизвестно",
       "stopped": "Остановлено",
-      "teams": "Microsoft Teams",
-      "telegram": "Telegram",
       "threads": "Потоки",
       "uptime": "Время работы",
+      "working_directory": "Рабочий каталог",
+      "channels": "Каналы",
+      "connect_error": "Ошибка подключения",
+      "discord": "Discord",
+      "imessage": "iMessage",
+      "teams": "Microsoft Teams",
+      "telegram": "Telegram",
       "webex": "Webex",
       "wecom": "WeCom",
       "weixin": "WeChat",
       "whatsapp": "WhatsApp",
       "feishu": "Feishu",
-      "working_directory": "Рабочий каталог"
+      "acp_backend": "Адаптер ACP",
+      "acp_backend_experimental": "{{label}} (экспериментальный)"
     },
     "sessionArchive": {
       "fuzzy_filter_substring_match": "Нечёткий фильтр (поиск подстроки)",

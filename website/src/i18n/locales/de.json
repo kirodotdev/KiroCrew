@@ -43,7 +43,6 @@
     "iam_identity_center": "IAM Identity Center",
     "installing_packages": "Pakete werden installiert",
     "k_search_for_anything": "⌘K — Nach allem suchen…",
-    "kiro_credit_usage_api_key": "Kiro-Credit-Verbrauch — bei API-Schlüssel-Authentifizierung nicht verfügbar",
     "kiro_credit_usage_checking": "Kiro-Credit-Verbrauch — wird geprüft…",
     "kiro_credit_usage_checking_2": "Kiro-Credit-Verbrauch — wird geprüft",
     "kiro_credit_usage_unavailable": "Kiro-Credit-Verbrauch — nicht verfügbar",
@@ -113,7 +112,10 @@
     "open_command_bar": "Command Bar oeffnen",
     "focus_mode": "Fokusmodus",
     "focus_mode_title": "Fokusmodus · Alt+Umschalt+M",
-    "focus_mode_title_mac": "Fokusmodus · ⌥⇧M"
+    "focus_mode_title_mac": "Fokusmodus · ⌥⇧M",
+    "kiro_credit_usage_api_key": "Kiro-Credit-Verbrauch — bei API-Schlüssel-Authentifizierung nicht verfügbar",
+    "active_harness": "Agent-Harness: {{label}}",
+    "harness_new_sessions": "Neue Sitzungen"
   },
   "appSdk": {
     "chatEmbed": {
@@ -5382,7 +5384,13 @@
       "used": "Verbraucht",
       "voice_input": "Spracheingabe",
       "finishing": "Wird beendet…",
-      "keep_holding_to_record": "Zum Aufnehmen halten"
+      "keep_holding_to_record": "Zum Aufnehmen halten",
+      "plan_limit": "Plan-Limit",
+      "limit_type": "Limit-Typ",
+      "resets": "Zurücksetzung",
+      "rate_limit_allowed": "OK",
+      "rate_limit_warning": "Nahe am Limit",
+      "rate_limit_rejected": "Limitiert"
     },
     "chatPane": {
       "agent_list": "Agenten-Liste",
@@ -6922,25 +6930,6 @@
       "triggers": "Auslöser",
       "what_this_skill_does_and_when_the_agent_should_u": "Was dieser Skill tut und wann der Agent ihn verwenden soll"
     },
-    "projectSkillsTrust": {
-      "body": "${{skill}} kommt aus dem eigenen .kiro/skills-Ordner dieses Projekts.",
-      "confirm": "Diesem Ordner vertrauen",
-      "consequence": "Wenn du diesem Ordner vertraust, dürfen seine Skill-Dateien in den Kontext dieses Chats gelangen, wo sie den Agenten anweisen können, Befehle auszuführen. Vertraue nur einem Projekt, das du kennst.",
-      "decline": "Jetzt nicht",
-      "decline_consequence": "Wenn du ablehnst, wird nichts geladen und deine Nachricht bleibt, wie du sie eingegeben hast.",
-      "grant_failed": "Vertrauen für diesen Ordner konnte nicht gespeichert werden.",
-      "title": "Den Skills dieses Projekts vertrauen?",
-      "withdraw_hint": "Du kannst das später auf der Einstellungsseite Skills widerrufen.",
-      "working": "Vertrauen wird erteilt…"
-    },
-    "projectSkillsTrustList": {
-      "folder_missing": "Dieser Ordner existiert nicht mehr.",
-      "hint": "Diese Projektordner dürfen ihre eigenen Skills in einen Chat laden. Widerrufe einen Ordner, damit seine Skills nicht mehr geladen werden.",
-      "revoke": "Widerrufen",
-      "revoke_failed": "Vertrauen für diesen Ordner konnte nicht widerrufen werden.",
-      "revoking": "Wird widerrufen…",
-      "title": "Vertraute Projektordner"
-    },
     "skillPickerMenu": {
       "loading_skills": "Skills werden geladen…",
       "no_matching_skills": "Keine passenden Skills",
@@ -7170,13 +7159,6 @@
       "restart_update": "Update installieren & App neu starten",
       "restarting": "Wird neu gestartet...",
       "update_ready": "Aktualisierung bereit"
-    },
-    "updatePill": {
-      "downloading": "Wird heruntergeladen…",
-      "downloading_percent": "Wird heruntergeladen {{percent}} %",
-      "open_update_settings": "Update-Einstellungen öffnen",
-      "update_available": "Update verfügbar",
-      "update_ready": "Update bereit"
     },
     "voiceDictationPanel": {
       "esc_to_cancel_click_mic_to_finish": "Esc zum Abbrechen, Mikrofon klicken zum Beenden",
@@ -7446,6 +7428,32 @@
       "billing_notice": "Dies ist ein kostenpflichtiger AWS-Dienst. Bis zur Bestaetigung wird keine Anfrage gesendet.",
       "confirm_button": "Bestaetigen und aktivieren",
       "withdraw": "Bestaetigung zuruecknehmen"
+    },
+    "projectSkillsTrust": {
+      "body": "${{skill}} kommt aus dem eigenen .kiro/skills-Ordner dieses Projekts.",
+      "confirm": "Diesem Ordner vertrauen",
+      "consequence": "Wenn du diesem Ordner vertraust, dürfen seine Skill-Dateien in den Kontext dieses Chats gelangen, wo sie den Agenten anweisen können, Befehle auszuführen. Vertraue nur einem Projekt, das du kennst.",
+      "decline": "Jetzt nicht",
+      "decline_consequence": "Wenn du ablehnst, wird nichts geladen und deine Nachricht bleibt, wie du sie eingegeben hast.",
+      "grant_failed": "Vertrauen für diesen Ordner konnte nicht gespeichert werden.",
+      "title": "Den Skills dieses Projekts vertrauen?",
+      "withdraw_hint": "Du kannst das später auf der Einstellungsseite Skills widerrufen.",
+      "working": "Vertrauen wird erteilt…"
+    },
+    "projectSkillsTrustList": {
+      "folder_missing": "Dieser Ordner existiert nicht mehr.",
+      "hint": "Diese Projektordner dürfen ihre eigenen Skills in einen Chat laden. Widerrufe einen Ordner, damit seine Skills nicht mehr geladen werden.",
+      "revoke": "Widerrufen",
+      "revoke_failed": "Vertrauen für diesen Ordner konnte nicht widerrufen werden.",
+      "revoking": "Wird widerrufen…",
+      "title": "Vertraute Projektordner"
+    },
+    "updatePill": {
+      "downloading": "Wird heruntergeladen…",
+      "downloading_percent": "Wird heruntergeladen {{percent}} %",
+      "open_update_settings": "Update-Einstellungen öffnen",
+      "update_available": "Update verfügbar",
+      "update_ready": "Update bereit"
     },
     "confirmDialog": {
       "cancel": "Abbrechen"
@@ -9620,7 +9628,9 @@
       "featurePreviewsTab": {
         "inbound_webhook_tokens_registered_contexts_and_r": "Tokens für eingehende Webhooks, registrierte Kontexte und Ausführungsverlauf. Die API funktioniert, die Seite ist noch nicht fertig.",
         "open_webhooks": "Webhooks öffnen",
-        "webhooks": "Webhooks"
+        "webhooks": "Webhooks",
+        "acp_backends": "ACP-Adapter",
+        "experimental_acp_backends_claude_code": "Claude Code als Alternative zur Kiro CLI. Experimentell — Sicherheitsablehnungen funktionieren; vollständige Sitzungen sind noch nicht verifiziert."
       }
     },
     "developerPage": {
@@ -10817,6 +10827,43 @@
         "vector_memory": "Vektor-Erinnerung",
         "vector_memory_is_initializing_the_embedding_mode": "Die Vektor-Erinnerung wird initialisiert. Das Embedding-Modell (~610 MB) wird automatisch im Hintergrund heruntergeladen, und die Legacy-Erinnerung migriert von selbst — kein Eingreifen erforderlich.",
         "verifying_model_integrity": "Modellintegrität wird geprüft…"
+      },
+      "acpBackend": {
+        "title": "ACP-Adapter",
+        "experimental": "Experimentell",
+        "all_features_supported": "Standard. Alle Funktionen werden unterstützt.",
+        "features_differ": "{{count}} von {{total}} Funktionen verhalten sich anders, sind nicht verfügbar oder nicht verifiziert.",
+        "show_what_changes": "Änderungen anzeigen",
+        "applies_to_new_sessions": "Gilt für ab jetzt gestartete Sitzungen. Offene Sitzungen behalten ihren ursprünglichen Adapter.",
+        "not_enabled_in_this_build": "In diesem Build nicht aktiviert: {{backends}}. Siehe die Dokumentation zu experimentellen ACP-Adaptern.",
+        "level_supported": "Unterstützt",
+        "level_degraded": "Funktioniert anders",
+        "level_unavailable": "Nicht verfügbar",
+        "cap_session_sharing": "Gemeinsame Subagent-Laufzeit",
+        "cap_reasoning_effort": "Denkaufwand",
+        "cap_mcp_tool_search": "MCP-Tool-Suche",
+        "cap_agent_profiles": "Agentenprofile",
+        "cap_slash_commands": "Slash-Befehle",
+        "cap_turn_usage": "Nutzung pro Zug",
+        "cap_billing": "Kosten und Limits",
+        "cap_native_resume": "Sitzung fortsetzen",
+        "cap_registry_model_ids": "Verwendet den Kiro-Modellkatalog",
+        "cap_mid_turn_steer": "Steuerung während des Zugs",
+        "confirm_title": "Zu {{backend}} wechseln?",
+        "confirm_body": "Dieser Adapter ist experimentell. {{count}} von {{total}} Kiro-Crew-Funktionen verhalten sich anders, sind nicht verfügbar oder nicht verifiziert.",
+        "confirm_model_reset": "Die Modellauswahl wird zurückgesetzt — jeder Harness hat eine eigene Modellliste. Dies gilt auch für offene Chats.",
+        "confirm_open_sessions": "Offene Sitzungen sind nicht betroffen und behalten ihren aktuellen Adapter.",
+        "cancel": "Abbrechen",
+        "confirm_switch": "Adapter wechseln",
+        "confirm_prerequisites": "Führen Sie diese zuerst auf dem Gateway-Host aus, in dieser Reihenfolge.",
+        "not_installed": "Adapter nicht installiert",
+        "level_unverified": "Nicht verifiziert",
+        "load_failed": "ACP-Adapter konnten nicht geladen werden. Versuche es erneut.",
+        "routing_routed": "Tool-Aufrufe erreichen das {{productName}}-Sicherheitstor",
+        "routing_indeterminate": "Die Weiterleitung von Tool-Aufrufen ist nicht verifiziert — neue Sitzungen lehnen Tool-Aufrufe ab",
+        "routing_bypassed": "Tool-Aufrufe würden das {{productName}}-Sicherheitstor umgehen — neue Sitzungen lehnen Tool-Aufrufe ab",
+        "routing_reason": "{{reason}}",
+        "ungated_opt_out": "Ungesicherte Tools sind erlaubt. Regeln für verbotene Befehle, die Sperre sensibler Pfade und die Governance-Obergrenze werden für die selbst genehmigten Aufrufe dieses Backends nicht herangezogen."
       }
     },
     "overviewPage": {
@@ -11166,11 +11213,8 @@
       "owning_session": "Besitzende Sitzung"
     },
     "servicesTab": {
-      "channels": "Kanäle",
-      "connect_error": "Verbindungsfehler",
       "connected": "Verbunden",
       "cpu": "CPU %",
-      "discord": "Discord",
       "embeddings": "Embeddings",
       "gateway_process": "Gateway-Prozess",
       "governance": "Governance",
@@ -11178,7 +11222,6 @@
       "governance_tip_degraded": "Eine Governance-Prüfung ist fehlgeschlagen und hat blockiert, es wurde eine Integritätsabweichung erkannt, oder die Zulassungsrichtlinie ist nicht verifiziert (fehlt/nicht lesbar). Prüfe das SEL-Audit-Protokoll.",
       "governance_tip_disabled": "Es ist keine durchsetzende Zulassungsrichtlinie konfiguriert (permissive Voreinstellung). Plugins werden zugelassen, sofern sie nicht ausdrücklich gesperrt sind.",
       "governance_tip_unknown": "Der Governance-Status wurde in dieser Sitzung noch nicht ermittelt.",
-      "imessage": "iMessage",
       "mcp_process_breakdown": "{{total}} ({{sandbox}} Sandbox · {{provider}} {{providerLabel}} · {{mcp}} MCP)",
       "mcp_process_breakdown_unique": "{{total}} eindeutig ({{sandbox}} Sandbox · {{provider}} {{providerLabel}} · {{mcp}} MCP)",
       "mcp_processes": "MCP-Prozesse",
@@ -11195,16 +11238,22 @@
       "status_disabled": "Deaktiviert",
       "status_unknown": "Unbekannt",
       "stopped": "Gestoppt",
-      "teams": "Microsoft Teams",
-      "telegram": "Telegram",
       "threads": "Threads",
       "uptime": "Betriebszeit",
+      "working_directory": "Arbeitsverzeichnis",
+      "channels": "Kanäle",
+      "connect_error": "Verbindungsfehler",
+      "discord": "Discord",
+      "imessage": "iMessage",
+      "teams": "Microsoft Teams",
+      "telegram": "Telegram",
       "webex": "Webex",
       "wecom": "WeCom",
       "weixin": "WeChat",
       "whatsapp": "WhatsApp",
       "feishu": "Feishu",
-      "working_directory": "Arbeitsverzeichnis"
+      "acp_backend": "ACP-Adapter",
+      "acp_backend_experimental": "{{label}} (experimentell)"
     },
     "sessionArchive": {
       "fuzzy_filter_substring_match": "Unscharfer Filter (Teilstring-Übereinstimmung)",

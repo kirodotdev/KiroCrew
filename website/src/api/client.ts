@@ -2299,10 +2299,17 @@ export const api = {
     put('/api/agents/' + encodeURIComponent(name), body).then(j),
   deleteKirocrewAgent: (name: string) =>
     del('/api/agents/' + encodeURIComponent(name)).then(j),
-  models: () => fetch('/api/models').then(j),
+  models: (opts?: { slot?: string }) =>
+    fetch('/api/models' + (opts?.slot ? '?slot=' + encodeURIComponent(opts.slot) : '')).then(j),
+  // `probe=1` walks each adapter's resolution ladder. Default is off; the
+  // preview-gated Settings selector and Services label opt into the same probed
+  // query so they can share one cache and stay synchronized.
+  acpBackends: ({ probe }: { probe?: boolean } = {}) =>
+    fetch('/api/acp-backends' + (probe ? '?probe=1' : '')).then(j),
   effortLevels: (slot?: string) =>
     fetch('/api/effort-levels' + (slot ? '?slot=' + encodeURIComponent(slot) : '')).then(j) as Promise<string[]>,
-  slashCommands: () => fetch('/api/slash-commands').then(j),
+  slashCommands: (opts?: { slot?: string }) =>
+    fetch('/api/slash-commands' + (opts?.slot ? '?slot=' + encodeURIComponent(opts.slot) : '')).then(j),
   chatSlotAgent: (slot: string, agent: string) =>
     post('/api/chat/slots/' + encodeURIComponent(slot) + '/agent', { agent }).then(j) as Promise<{ ok?: boolean; agent?: string; workspace?: string }>,
   chatSlotModel: (slot: string, model: string) =>

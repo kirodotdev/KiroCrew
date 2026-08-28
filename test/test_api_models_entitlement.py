@@ -261,5 +261,5 @@ def test_api_models_returns_only_entitled_rows(tmp_path):
         agents.asyncio, "create_subprocess_exec", return_value=_FakeProc(stdout=payload)
     ):
         resp = asyncio.get_event_loop().run_until_complete(agents.api_models(request))
-    assert resp.status == 200
+    assert resp.status == 200, resp.text
     assert _names(json.loads(resp.body)) == ["auto", "claude-sonnet-5"]

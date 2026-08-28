@@ -22,9 +22,15 @@ mkdirSync(OUT, { recursive: true })
 const browser = await chromium.launch()
 let failed = 0
 
-for (const theme of ['dark', 'light']) {
+const variants = [
+  { name: 'dark', theme: 'dark', width: 900, height: 700 },
+  { name: 'light', theme: 'light', width: 900, height: 700 },
+  { name: 'dark-narrow', theme: 'dark', width: 390, height: 760, narrow: true },
+]
+
+for (const { name, theme, width, height, narrow = false } of variants) {
   const ctx = await browser.newContext({
-    viewport: { width: 900, height: 700 },
+    viewport: { width, height },
     deviceScaleFactor: 2,
     colorScheme: theme,
   })
@@ -33,7 +39,7 @@ for (const theme of ['dark', 'light']) {
   page.on('pageerror', e => errors.push(String(e)))
 
   try {
-    await page.goto(`${BASE}/capture/tool-call-states.html?theme=${theme}`, { waitUntil: 'networkidle' })
+    await page.goto(`${BASE}/capture/tool-call-states.html?theme=${theme}&width=${narrow ? 'narrow' : 'wide'}`, { waitUntil: 'networkidle' })
     await page.waitForSelector('[data-capture-root]', { timeout: 15000 })
     // The pill reveal + shimmer animations need to settle, and the spinner must
     // be caught mid-rotation rather than at frame zero.
@@ -54,9 +60,17 @@ for (const theme of ['dark', 'light']) {
       })
     })
 
-    await page.locator('[data-capture-root]').screenshot({ path: `${OUT}/${theme}.png` })
+    const overflowsViewport = await page.evaluate(() =>
+      document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+    )
+
+    await page.locator('[data-capture-root]').screenshot({ path: `${OUT}/${name}.png` })
 
     let frameFailed = 0
+    if (!rows.some(r => r.label.includes('sed ×4 · index.js')) || rows.some(r => r.label.includes('/bin/zsh -lc'))) {
+      frameFailed++
+      console.error(`FAIL ${name}: oversized shell title did not collapse to "sed ×4 · index.js"`)
+    }
     const colours = new Set(rows.map(r => r.icon))
     // done / running / pending / rejected / auto-denied must not collapse into
     // one another: ok, accent, warn and danger are four distinct tokens (pending
@@ -69,21 +83,25 @@ for (const theme of ['dark', 'light']) {
       frameFailed++
       console.error(`FAIL ${theme}: no spinning icon — the running state was not reached (is chat.slotRunning true?)`)
     }
+    if (overflowsViewport) {
+      frameFailed++
+      console.error(`FAIL ${name}: capture root overflows the ${width}px viewport`)
+    }
     if (errors.length) {
       frameFailed++
-      console.error(`FAIL ${theme}: ${errors.length} page error(s)\n  ${errors.join('\n  ')}`)
+      console.error(`FAIL ${name}: ${errors.length} page error(s)\n  ${errors.join('\n  ')}`)
     }
     failed += frameFailed
 
     if (!frameFailed) {
-      console.log(`\nok   ${theme}.png — ${rows.length} pills, ${colours.size} distinct icon colours`)
+      console.log(`\nok   ${name}.png — ${rows.length} pills, ${colours.size} distinct icon colours`)
       for (const r of rows) {
         console.log(`     ${r.spinning ? 'spin' : '    '} ${r.icon.padEnd(24)} ${r.label}`)
       }
     }
   } catch (err) {
     failed++
-    console.error(`FAIL ${theme}: ${err.message}`)
+    console.error(`FAIL ${name}: ${err.message}`)
   }
   await ctx.close()
 }

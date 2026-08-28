@@ -19,7 +19,12 @@ if TYPE_CHECKING:
     from kiro_crew.platform.interfaces import ImportSource, McpScope
 
 from kiro_crew import security, sso_status
-from kiro_crew.platform.interfaces import CapabilityResult, InterceptDecision, OtlpDestination
+from kiro_crew.platform.interfaces import (
+    PROVIDER_BACKEND_FACTORY_ATTR,
+    CapabilityResult,
+    InterceptDecision,
+    OtlpDestination,
+)
 
 # ``agent``, ``sandbox``, ``embeddings``, ``apps.registry`` and ``slack.enterprise``
 # import ``kiro_crew.platform`` at module-load time, so importing them at the top
@@ -36,15 +41,92 @@ from kiro_crew.platform.interfaces import CapabilityResult, InterceptDecision, O
 
 
 class DefaultProviderRegistry:
-    """Kiro-CLI-ACP only.  Leaves the dormant ACP_BACKEND_CLAUDE seam untouched."""
+    """Public provider registry for Kiro and operator-installed ACP adapters."""
 
     def create_factory(self, cfg: Any) -> Callable[..., Any]:
-        return cfg.create_provider_factory()
+        from kiro_crew.acp.types import ACP_BACKEND_KIRO
+
+        configured_backend = cfg.agent.acp_backend
+        factory_backend = (
+            configured_backend if isinstance(configured_backend, str) else ACP_BACKEND_KIRO
+        )
+        if factory_backend == ACP_BACKEND_KIRO:
+            # H13: the ordinary Kiro path is the direct factory object, not a
+            # registry dispatcher that happens to choose Kiro at call time.
+            kiro_factory = cfg.create_provider_factory()
+            setattr(
+                kiro_factory,
+                PROVIDER_BACKEND_FACTORY_ATTR,
+                lambda backend: self._create_adapter_dispatch_factory(cfg, backend),
+            )
+            return kiro_factory
+
+        return self._create_adapter_dispatch_factory(cfg, factory_backend)
+
+    def _create_adapter_dispatch_factory(
+        self,
+        cfg: Any,
+        factory_backend: str,
+    ) -> Callable[..., Any]:
+        """Build the registry dispatcher used only by an opted-in adapter."""
+
+        from kiro_crew.acp import backends as acp_backends
+        from kiro_crew.acp.types import ACP_BACKEND_KIRO
+
+        # Programmatic mutation can bypass persisted-value normalization.
+        # Validate a configured adapter while the factory is built so a typo
+        # fails before the first session tries to start.
+        acp_backends.descriptor_for(factory_backend)
+        factories: dict[str, Callable[..., Any]] = {}
+        kiro_factory: Callable[..., Any] | None = None
+
+        def _registered_factory(*args: Any, **kwargs: Any) -> Any:
+            nonlocal kiro_factory
+            requested = kwargs.pop("acp_backend", None)
+            backend = factory_backend if requested is None else requested
+            if backend == ACP_BACKEND_KIRO:
+                if kiro_factory is None:
+                    kiro_factory = cfg.create_provider_factory()
+                return kiro_factory(*args, **kwargs)
+
+            from kiro_crew.acp import backends as acp_backends
+            from kiro_crew.providers.acp import AcpProvider, SpecAdapterAcpProvider
+
+            # Programmatic mutation can bypass persisted-value normalization.
+            # Refuse a foreign id before constructing any adapter provider.
+            acp_backends.descriptor_for(backend)
+            provider_types = {
+                acp_backends.Dialect.KIRO: AcpProvider,
+                acp_backends.Dialect.SPEC: SpecAdapterAcpProvider,
+            }
+            dialect = acp_backends.dialect_of(backend)
+            try:
+                provider_type = provider_types[dialect]
+            except KeyError as exc:
+                raise RuntimeError(
+                    f"Unsupported ACP dialect {dialect!r} for backend {backend!r}"
+                ) from exc
+            factory = factories.get(backend)
+            if factory is None:
+                factory = cfg._create_adapter_provider_factory(
+                    factory_backend=backend,
+                    provider_type=provider_type,
+                    registry_model_ids=acp_backends.supports(
+                        backend, acp_backends.CAP_REGISTRY_MODEL_IDS
+                    ),
+                    tool_search_supported=acp_backends.supports(
+                        backend, acp_backends.CAP_TOOL_SEARCH
+                    ),
+                )
+                factories[backend] = factory
+            return factory(*args, **kwargs)
+
+        return _registered_factory
 
     def register_acp_backends(self) -> None:
-        # The public edition registers no extra ACP backends.  The companion
-        # re-registers a Claude backend here via the acp/client.py:_is_claude
-        # seam.
+        # Registry adapter discovery is lazy and cached by acp.backends. The
+        # public provider class is selected in create_factory so registration
+        # never mutates the first-class Kiro provider path.
         return None
 
 

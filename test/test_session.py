@@ -949,6 +949,137 @@ class TestCancelRaceCondition:
         assert captured["model_override"] == "claude-sonnet"
         await mgr.close_all()
 
+    @pytest.mark.asyncio
+    async def test_adapter_cold_start_never_reads_a_kiro_agent_model(self, cfg):
+        """Backend-owned namespaces inherit only their concrete global."""
+        captured = {}
+
+        def factory(session_key=None, agent=None, channel_id=None, **kwargs):
+            captured.update(kwargs)
+            provider = AsyncMock()
+            provider.start = AsyncMock()
+            provider.shutdown = AsyncMock()
+            provider.context_usage_pct = lambda: 0.0
+            provider.is_process_alive = lambda: True
+            return provider
+
+        cfg.agent.acp_backend = "codex"
+        cfg.agent.model = "backend-global"
+        mgr = SessionManager(cfg, provider_factory=factory)
+        with patch.object(
+            cfg,
+            "_resolve_named_agent_model",
+            side_effect=AssertionError("adapter read a Kiro agent model"),
+        ):
+            await mgr.get_or_create("adapter-model", agent="custom-agent")
+
+        assert captured["model_override"] == "backend-global"
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_adapter_cold_start_keeps_a_crew_model(self, cfg):
+        """Crew pins belong to Crew config even when Kiro template pins do not."""
+        from kiro_crew.config.loader import KiroCrewAgentConfig
+
+        captured = {}
+
+        def factory(session_key=None, agent=None, channel_id=None, **kwargs):
+            captured.update(kwargs)
+            provider = AsyncMock()
+            provider.start = AsyncMock()
+            provider.shutdown = AsyncMock()
+            provider.context_usage_pct = lambda: 0.0
+            provider.is_process_alive = lambda: True
+            return provider
+
+        cfg.agent.acp_backend = "codex"
+        cfg.agent.model = "auto"
+        cfg.agents["reviewer"] = KiroCrewAgentConfig(
+            kiro_agent="foreign-template",
+            model="gpt-5.6-sol",
+        )
+        mgr = SessionManager(cfg, provider_factory=factory)
+        with patch.object(
+            cfg,
+            "_resolve_named_agent_model",
+            side_effect=AssertionError("adapter read a Kiro agent model"),
+        ):
+            await mgr.get_or_create("adapter-crew-model", agent="reviewer")
+
+        assert captured["model_override"] == "gpt-5.6-sol"
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_live_adapter_override_skips_kiro_model_resolution(self, cfg):
+        """A dedicated child resolves against its live parent, not the snapshot."""
+        captured = {}
+
+        def factory(session_key=None, agent=None, channel_id=None, **kwargs):
+            captured.update(kwargs)
+            provider = AsyncMock()
+            provider.start = AsyncMock()
+            provider.shutdown = AsyncMock()
+            provider.context_usage_pct = lambda: 0.0
+            provider.is_process_alive = lambda: True
+            return provider
+
+        cfg.agent.acp_backend = ""
+        cfg.agent.model = "auto"
+        mgr = SessionManager(cfg, provider_factory=factory)
+        with patch.object(
+            cfg,
+            "_resolve_named_agent_model",
+            side_effect=AssertionError("live adapter read a Kiro agent model"),
+        ):
+            await mgr.get_or_create(
+                "live-adapter-model",
+                agent="custom-agent",
+                acp_backend="codex",
+            )
+
+        assert captured["model_override"] is None
+        assert captured["acp_backend"] == "codex"
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "configured_backend,live_backend,configured_model",
+        [
+            ("", "codex", "kiro-global"),
+            ("codex", "", "adapter-global"),
+        ],
+    )
+    async def test_live_backend_override_skips_the_configured_global(
+        self,
+        cfg,
+        configured_backend,
+        live_backend,
+        configured_model,
+    ):
+        """A dedicated child must not cross model namespaces after Settings changes."""
+        captured = {}
+
+        def factory(session_key=None, agent=None, channel_id=None, **kwargs):
+            captured.update(kwargs)
+            provider = AsyncMock()
+            provider.start = AsyncMock()
+            provider.shutdown = AsyncMock()
+            provider.context_usage_pct = lambda: 0.0
+            provider.is_process_alive = lambda: True
+            return provider
+
+        cfg.agent.acp_backend = configured_backend
+        cfg.agent.model = configured_model
+        mgr = SessionManager(cfg, provider_factory=factory)
+        await mgr.get_or_create(
+            "live-backend-crossover",
+            acp_backend=live_backend,
+        )
+
+        assert captured["model_override"] is None
+        assert captured["acp_backend"] == live_backend
+        await mgr.close_all()
+
 
 class TestDeadProviderCleanup:
     """Tests for orphaned child process cleanup when a dead provider is detected."""
@@ -4021,6 +4152,74 @@ class TestGetOrCreatePoolClaim:
             mgr.release("dashboard:slot2")
         assert is_new is True
         assert mgr.has_session("dashboard:slot2")
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_foreign_backend_does_not_claim_the_pool(self, cfg):
+        """A dedicated child pinned to goose must not inherit a kiro pool process."""
+        from kiro_crew.acp.types import ACP_BACKEND_GOOSE
+        from kiro_crew.providers.acp import AcpProvider
+
+        cfg.session.pool_size = 1
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        mgr._pool_size = 1
+        mgr._pool_agent = "kirocrew"
+
+        mock_pooled = AsyncMock(spec=AcpProvider)
+        mock_pooled.start = AsyncMock()
+        mock_pooled.shutdown = AsyncMock()
+        mock_pooled.context_usage_pct = lambda: 0.0
+        mock_pooled.is_process_alive = lambda: True
+        mock_pooled.client = AsyncMock()
+        mock_pooled.client._model = "claude-opus-4"
+        mock_pooled.client._agent = "kirocrew"
+        mock_pooled.client._session_id = None
+        mock_pooled.client.rekey = lambda *a, **kw: None
+        mock_pooled.client.resumed = False
+
+        mgr._warm_pool.put_nowait((mock_pooled, time.monotonic()))
+        with patch.object(mgr, "_record_pool_decision") as record:
+            provider, is_new, _ = await mgr.get_or_create(
+                "dashboard:slot1", agent="kirocrew", acp_backend=ACP_BACKEND_GOOSE
+            )
+        mgr.release("dashboard:slot1")
+        assert provider is not mock_pooled
+        assert is_new is True
+        assert mgr._warm_pool.qsize() == 1
+        record.assert_called_once()
+        assert record.call_args.args[0] == "bypass_backend"
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_matching_backend_override_still_claims_the_pool(self, cfg):
+        """Pinning the factory snapshot (kiro ``""``) is not a foreign harness."""
+        from kiro_crew.acp.types import ACP_BACKEND_KIRO
+        from kiro_crew.providers.acp import AcpProvider
+
+        cfg.session.pool_size = 1
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        mgr._pool_size = 1
+        mgr._pool_agent = "kirocrew"
+
+        mock_pooled = AsyncMock(spec=AcpProvider)
+        mock_pooled.start = AsyncMock()
+        mock_pooled.shutdown = AsyncMock()
+        mock_pooled.context_usage_pct = lambda: 0.0
+        mock_pooled.is_process_alive = lambda: True
+        mock_pooled.client = AsyncMock()
+        mock_pooled.client._model = "claude-opus-4"
+        mock_pooled.client._agent = "kirocrew"
+        mock_pooled.client._session_id = None
+        mock_pooled.client.rekey = lambda *a, **kw: None
+        mock_pooled.client.resumed = False
+
+        mgr._warm_pool.put_nowait((mock_pooled, time.monotonic()))
+        provider, is_new, _ = await mgr.get_or_create(
+            "dashboard:slot1", agent="kirocrew", acp_backend=ACP_BACKEND_KIRO
+        )
+        mgr.release("dashboard:slot1")
+        assert provider is mock_pooled
+        assert is_new is True
         await mgr.close_all()
 
 

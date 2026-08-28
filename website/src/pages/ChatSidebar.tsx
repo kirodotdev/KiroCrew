@@ -571,6 +571,9 @@ interface Slot {
   // positive claim only: a falsy value never means "mismatch".
   effective_agent?: string
   model?: string  // '' / absent = provider-default ("auto")
+  // Live ACP harness this slot is driving ('' = kiro). Distinct from the
+  // Settings default. The bulk model switcher scopes GET /api/models to it.
+  acp_backend?: string
   // Message count from the slot payload. Already carried by every ChatSlot
   // (redux seeds it in addSlotOptimistic and SessionGridView renders it); it was
   // simply never declared on this local view of the type.
@@ -1905,7 +1908,18 @@ function ChatSidebar({
   const [bulkModel, setBulkModel] = useState('')        // pending pick ('auto' = provider default)
   const [bulkSkipRunning, setBulkSkipRunning] = useState(true)
   const [bulkModelError, setBulkModelError] = useState('')
-  const bulkModelOptions = useAvailableModels({ enabled: bulkModelOpen })
+  // Scope to the live session's harness, same as ChatPage: a config-only list
+  // flashes Auto on an adapter chat whose advertised set does not include it.
+  const harnessBackend = useAppSelector((s) => s.dashboard.status?.harness?.backend ?? '')
+  const liveBackend = useMemo(() => {
+    const live = slots.find((s) => s.key === activeSlot)
+    return live?.acp_backend ?? harnessBackend
+  }, [slots, activeSlot, harnessBackend])
+  const bulkModelOptions = useAvailableModels({
+    enabled: bulkModelOpen,
+    slot: activeSlot || undefined,
+    backend: liveBackend,
+  })
   const bulkRunningCount = useMemo(() => slots.filter(s => s.running).length, [slots])
   // Count only slots that would actually change: model differs from the target
   // (the backend leaves already-on-target slots as `unchanged`), minus running

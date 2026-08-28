@@ -159,7 +159,7 @@ export interface ProviderAdapter {
   uninstallPlugin(pkg: string, type: 'agent' | 'skill' | 'mcp'): Promise<{ ok: boolean; error?: string }>
   updatePlugins(type: 'agent' | 'skill' | 'mcp'): Promise<{ ok: boolean; output?: string; error?: string }>
 
-  fetchAvailableModels(): Promise<ModelInfo[]>
+  fetchAvailableModels(opts?: { slot?: string; scope?: string }): Promise<ModelInfo[]>
   getContextWindow(model: string): number
   getDefaultModel(): string
   getPermissionModes(): PermissionMode[]

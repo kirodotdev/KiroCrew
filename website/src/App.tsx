@@ -27,7 +27,8 @@ import { useBranding } from './hooks/useBranding'
 import { useRumPageView } from './hooks/useRumPageView'
 import { useIsMobile } from './hooks/useIsMobile'
 import { useSidePanelDock } from './hooks/useSidePanelDock'
-import { usePreviewFlagRevision } from './hooks/usePreviewFlag'
+import { usePreviewFlag, usePreviewFlagRevision } from './hooks/usePreviewFlag'
+import { PREVIEW_ACP_BACKENDS } from './utils/previewFlags'
 import { setRailWidth, railWidthFor } from './hooks/useRailWidth'
 import { useFocusMode, useFocusChromeVisible, setFocusChromeVisible, FOCUS_INSET } from './hooks/useFocusMode'
 import { computeHeaderDragGaps, type DragGap } from './lib/dragGaps'
@@ -1996,11 +1997,25 @@ export default function App() {
     }),
     refetchInterval: 30_000,
   })
+  // The harness new sessions run on, as the gateway resolved it. An absent block
+  // is UNKNOWN (older gateway, unreadable config), so `!== false` keeps the
+  // pre-harness behaviour of showing credits rather than hiding a real balance.
+  const harness = useAppSelector(s => s.dashboard.status?.harness)
+  const billsKiroCredits = harness?.kiro_credits !== false
+  // The readout links to the adapter selector only when that selector is on
+  // screen to be reached. The card lives behind the same preview flag it always
+  // has (Developer > Feature Previews), and a link into a tab that renders no
+  // such card is worse than a plain readout: it teaches the reader the setting
+  // does not exist. Kiro is the default, so this is the common case.
+  const acpBackendsPreview = usePreviewFlag(PREVIEW_ACP_BACKENDS)
   // Auto-close the details modal if usage resolves to unavailable — the pill
   // hides in that case, so a modal opened during loading would otherwise be stuck.
+  // A harness switch hides the pill the same way, and does so IMMEDIATELY: the
+  // usage cache can hold a Kiro reading for up to its 30s refresh window after
+  // the switch, so waiting for `kiroUsage` would leave the modal orphaned.
   useEffect(() => {
-    if (kiroUsage === 'none') setKiroUsageOpen(false)
-  }, [kiroUsage])
+    if (kiroUsage === 'none' || !billsKiroCredits) setKiroUsageOpen(false)
+  }, [kiroUsage, billsKiroCredits])
   // ONE derivation feeds both the capsule segment and the account modal, so the
   // drill-in can never report a different state from the pill that opened it —
   // the modal spinning on "checking account" behind a pill that already says
@@ -2767,10 +2782,49 @@ export default function App() {
                 <span className={dskValid ? metricColor(dskPct) : 'text-muted'}>{i18nT('app.dsk')} {dskValid ? fmtPercent(dskPct) : '\u2014'}</span>
               </span>)
             }
+            // Harness segment — which agent binary NEW sessions use. A live
+            // chat keeps the harness it started with, so the label is the
+            // default for the next session, not the open one. The qualifier
+            // is visible only when the selector is reachable; without the
+            // preview flag there is nothing to switch. The icon alone
+            // survives the mobile rung; the label is the gateway's own
+            // resolved string, never a frontend copy of the descriptor table.
+            if (harness && (acpBackendsPreview || harness.backend !== '')) {
+              const harnessLabel = <>
+                <Bot size={12} />
+                {!isMobile && (
+                  <span className="flex items-baseline gap-1.5 min-w-0">
+                    <span className="text-[11px] whitespace-nowrap">{harness.label}</span>
+                    {acpBackendsPreview && (
+                      <span className="text-[10px] whitespace-nowrap opacity-80">
+                        {i18nT('app.harness_new_sessions')}
+                      </span>
+                    )}
+                  </span>
+                )}
+              </>
+              const harnessAriaLabel = i18nT('app.active_harness', { label: harness.label })
+              segments.push(
+                <span
+                  key="harness"
+                  className={`${seg} cursor-default text-muted`}
+                  title={harnessAriaLabel}
+                  aria-label={harnessAriaLabel}
+                >
+                  {harnessLabel}
+                </span>
+              )
+            }
             // Usage segment — Kiro credit plan from KiroCrew's own usage
             // cache. Spinner while the cache warms, a dash when the fetch
             // failed, hidden when the provider has no credit plan at all.
-            if (kiroUsageState !== 'none') {
+            //
+            // `billsKiroCredits` is the independent front-of-house gate: the
+            // gateway also stops the billed scrape, but its usage cache can
+            // still be serving a Kiro reading for up to one 30s refresh after a
+            // harness switch, and a pill showing another account's balance in
+            // that window is worse than no pill.
+            if (kiroUsageState !== 'none' && billsKiroCredits) {
               if (kiroUsageState === 'failed') {
                 // Failed with nothing cached to fall back on. A dash says that;
                 // a spinner would claim a fetch is still in flight. A failure

@@ -14,6 +14,14 @@ from aiohttp import web
 from kiro_crew.dashboard import handlers
 
 
+async def _api_acp_backends(request: web.Request) -> web.Response:
+    """Load the preview-only backend descriptor surface on first request."""
+
+    from kiro_crew.dashboard.handlers.acp_backends import api_acp_backends
+
+    return await api_acp_backends(request)
+
+
 def register(app: web.Application) -> None:
     """Register the agents routes on *app*."""
     # Workspaces
@@ -24,6 +32,9 @@ def register(app: web.Application) -> None:
     # Agents
     app.router.add_get("/api/agents/installed", handlers.api_agents_installed)
     app.router.add_get("/api/models", handlers.api_models)
+    # Backend registry: the ONE source for the capability table, so the Settings
+    # card and `kirocrew doctor` cannot disagree about what a backend supports.
+    app.router.add_get("/api/acp-backends", _api_acp_backends)
     app.router.add_get("/api/effort-levels", handlers.api_effort_levels)
     app.router.add_get("/api/slash-commands", handlers.api_slash_commands)
     app.router.add_get("/api/agents/detail/{name}", handlers.api_agent_detail)

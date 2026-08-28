@@ -1523,7 +1523,7 @@ export function useWebSocket() {
           case 'heartbeat':
             break
           case 'context_usage':
-            dispatch(sseContextUsage(data as { slot: string; pct: number; used_tokens?: number; window_tokens?: number; reset?: boolean }))
+            dispatch(sseContextUsage(data as { slot: string; pct: number; used_tokens?: number; window_tokens?: number; reset?: boolean; rate_limit?: { status?: string; limit_type?: string; utilization?: number; resets_at?: number } }))
             break
           case 'chat_thinking': {
             // kiro-cli/ACP reasoning (agent_thought_chunk) -> collapsible block.

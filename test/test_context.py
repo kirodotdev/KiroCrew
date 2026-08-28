@@ -113,14 +113,10 @@ class TestContextBuilder:
         assert ctx.index("in the USER's voice") < ctx.index("SELF-CONTAINED")
         # The per-turn reminder is the version most models actually act on;
         # it must carry the same constraint.
-        msg, _ = builder.build_message(
-            "pick one", is_new_session=False, interactive=True
-        )
+        msg, _ = builder.build_message("pick one", is_new_session=False, interactive=True)
         assert "self-contained" in msg, "interactive reminder missing self-contained rule"
         # Non-interactive turns get no OPTIONS reminder at all, so no rule either.
-        auto_msg, _ = builder.build_message(
-            "pick one", is_new_session=False, interactive=False
-        )
+        auto_msg, _ = builder.build_message("pick one", is_new_session=False, interactive=False)
         assert "self-contained" not in auto_msg
 
     def test_url_backtick_carve_out_follows_the_path_rule(self, tmp_path):
@@ -290,9 +286,7 @@ class TestContextBuilder:
         """With the flag set on a continuing session, the index comes back
         wrapped in the marker so the model can still discover skills."""
         builder = self._reinject_builder(tmp_path)
-        msg, _ = builder.build_message(
-            "carry on", is_new_session=False, needs_reinjection=True
-        )
+        msg, _ = builder.build_message("carry on", is_new_session=False, needs_reinjection=True)
         assert "[REINJECTED AFTER COMPACTION" in msg
         assert "[END REINJECTED]" in msg
         assert "widget-maker" in msg, "the re-injected block must carry the skill index"
@@ -307,9 +301,7 @@ class TestContextBuilder:
         """A new session already gets the index from the session context;
         re-injecting would duplicate it in the same prompt."""
         builder = self._reinject_builder(tmp_path)
-        msg, _ = builder.build_message(
-            "first turn", is_new_session=True, needs_reinjection=True
-        )
+        msg, _ = builder.build_message("first turn", is_new_session=True, needs_reinjection=True)
         assert "[REINJECTED AFTER COMPACTION" not in msg
 
     def test_no_reinjection_for_an_unmapped_custom_agent(self, tmp_path):
@@ -422,9 +414,7 @@ class TestContextBuilder:
             memory=MemoryStore(workspace=tmp_path / "ws"),
             skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
         )
-        msg, _ = builder.build_message(
-            "hello", is_new_session=False, folder_path="Backend › 0812"
-        )
+        msg, _ = builder.build_message("hello", is_new_session=False, folder_path="Backend › 0812")
         assert "[FOLDER]" in msg
         assert "Backend › 0812" in msg
 
@@ -810,6 +800,40 @@ class TestCompressThreadHistory:
 class TestLoadAgentPrompt:
     """Tests for _load_agent_prompt handling of null/missing prompt values."""
 
+    def test_prompt_uses_hardened_agent_spec_reader(self, tmp_path, monkeypatch):
+        import json
+
+        spec = tmp_path / "reviewer.json"
+        spec.write_text(
+            json.dumps({"name": "reviewer", "prompt": "UNSAFE_DIRECT_READ"}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "kiro_crew.context._agent_spec_candidates",
+            lambda _agent, _project=None: [spec],
+        )
+        monkeypatch.setattr("kiro_crew.context._read_agent_spec", lambda _path: None)
+
+        assert ContextBuilder._load_agent_prompt("reviewer") == ""
+
+    def test_oversized_agent_spec_is_not_read_for_prompt(self, tmp_path, monkeypatch):
+        import json
+
+        from kiro_crew import hooks
+
+        spec = tmp_path / "reviewer.json"
+        spec.write_text(
+            json.dumps({"name": "reviewer", "prompt": "OVERSIZED_AGENT_PROMPT"}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(hooks, "MAX_FILE_BYTES", 8)
+        monkeypatch.setattr(
+            "kiro_crew.context._agent_spec_candidates",
+            lambda _agent, _project=None: [spec],
+        )
+
+        assert ContextBuilder._load_agent_prompt("reviewer") == ""
+
     def test_null_prompt_returns_empty(self, tmp_path, monkeypatch):
         """Agent JSON with "prompt": null should return empty string."""
         import json
@@ -831,6 +855,24 @@ class TestLoadAgentPrompt:
         (agents_dir / "test.json").write_text(json.dumps({"name": "test"}), encoding="utf-8")
         monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
         assert ContextBuilder._load_agent_prompt("test") == ""
+
+    def test_project_agent_shadows_global_prompt(self, tmp_path, monkeypatch):
+        import json
+
+        global_dir = tmp_path / "home" / ".kiro" / "agents"
+        global_dir.mkdir(parents=True)
+        (global_dir / "reviewer.json").write_text(
+            json.dumps({"name": "reviewer", "prompt": "GLOBAL_PROMPT"}), encoding="utf-8"
+        )
+        project = tmp_path / "project"
+        project_dir = project / ".kiro" / "agents"
+        project_dir.mkdir(parents=True)
+        (project_dir / "reviewer.json").write_text(
+            json.dumps({"name": "reviewer", "prompt": "PROJECT_PROMPT"}), encoding="utf-8"
+        )
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path / "home")
+
+        assert ContextBuilder._load_agent_prompt("reviewer", str(project)) == "PROJECT_PROMPT"
 
 
 class TestRuntimeDisplayName:
@@ -1115,6 +1157,100 @@ class TestLoadSteeringResources:
             "ACP backend must NOT re-inject steering — kiro-cli loads agent "
             "resources natively via --agent"
         )
+
+    def test_custom_agent_file_resources_are_injected_for_spec_adapter(self, tmp_path):
+        import json
+
+        resource_dir = tmp_path / "agent-notes"
+        resource_dir.mkdir()
+        (resource_dir / "rules.md").write_text("CUSTOM_RESOURCE_MARKER")
+        agents_dir = tmp_path / ".kiro" / "agents"
+        agents_dir.mkdir(parents=True)
+        (agents_dir / "reviewer.json").write_text(
+            json.dumps(
+                {
+                    "name": "reviewer",
+                    "prompt": "Review carefully.",
+                    "resources": ["file://agent-notes/*.md"],
+                }
+            )
+        )
+        builder = ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+            lessons=LessonStore(base_dir=tmp_path),
+        )
+
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            spec_ctx = builder.build_session_context(agent="reviewer", provider_type="codex")
+            kiro_ctx = builder.build_session_context(agent="reviewer", provider_type="acp")
+
+        assert "CUSTOM_RESOURCE_MARKER" in spec_ctx
+        assert "CUSTOM_RESOURCE_MARKER" not in kiro_ctx
+
+    def test_oversized_agent_spec_is_not_read_for_adapter_resources(self, tmp_path, monkeypatch):
+        import json
+
+        from kiro_crew import hooks
+        from kiro_crew.context import _load_agent_file_resources
+
+        resource = tmp_path / "resource.md"
+        resource.write_text("OVERSIZED_AGENT_RESOURCE")
+        spec = tmp_path / "reviewer.json"
+        spec.write_text(json.dumps({"name": "reviewer", "resources": ["file://resource.md"]}))
+        monkeypatch.setattr(hooks, "MAX_FILE_BYTES", 8)
+        monkeypatch.setattr(
+            "kiro_crew.context._agent_spec_candidates", lambda _agent, _project=None: [spec]
+        )
+
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            assert _load_agent_file_resources("reviewer") == ""
+
+    def test_project_agent_resources_shadow_global_for_spec_adapter(self, tmp_path):
+        import json
+
+        global_home = tmp_path / "home"
+        global_agents = global_home / ".kiro" / "agents"
+        global_agents.mkdir(parents=True)
+        global_notes = global_home / "global-notes"
+        global_notes.mkdir()
+        (global_notes / "rules.md").write_text("GLOBAL_RESOURCE")
+        (global_agents / "reviewer.json").write_text(
+            json.dumps({"name": "reviewer", "resources": ["file://global-notes/*.md"]})
+        )
+        project = tmp_path / "project"
+        project_agents = project / ".kiro" / "agents"
+        project_agents.mkdir(parents=True)
+        project_notes = global_home / "project-notes"
+        project_notes.mkdir()
+        (project_notes / "rules.md").write_text("PROJECT_RESOURCE")
+        (project_agents / "reviewer.json").write_text(
+            json.dumps(
+                {
+                    "name": "reviewer",
+                    "prompt": "PROJECT_AGENT_PROMPT",
+                    "resources": ["file://project-notes/*.md"],
+                }
+            )
+        )
+        builder = ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+            lessons=LessonStore(base_dir=tmp_path),
+        )
+
+        with patch("pathlib.Path.home", return_value=global_home):
+            message, _ = builder.build_message(
+                "hello",
+                True,
+                agent="reviewer",
+                project=str(project),
+                provider_type="claude_code",
+            )
+
+        assert "PROJECT_AGENT_PROMPT" in message
+        assert "PROJECT_RESOURCE" in message
+        assert "GLOBAL_RESOURCE" not in message
 
 
 class TestLessonsCap:

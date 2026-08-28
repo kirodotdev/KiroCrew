@@ -45,6 +45,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import (
     Callable,
+    Collection,
     Dict,
     List,
     Mapping,
@@ -422,7 +423,8 @@ def classify_tool_title(tool_name: str) -> Tuple[Tuple[str, str], ...]:
     :func:`classify_tool_args`, which the gate consults alongside the title.
     """
     if tool_name.startswith("mcp__"):
-        return (("mcp", mcp_title_to_ref(tool_name)),)
+        ref = mcp_title_to_ref(tool_name)
+        return (("mcp", ref),) if ref else ()
     if tool_name.startswith(_RUNNING_PREFIX):
         return (("commands", tool_name[len(_RUNNING_PREFIX) :]),)
     if tool_name.startswith(_READING_PREFIX):
@@ -597,7 +599,7 @@ def _url_host(url: str) -> str:
     return host.rsplit(":", 1)[0] if ":" in host else host
 
 
-def mcp_title_to_ref(title: str) -> str:
+def mcp_title_to_ref(title: str, *, server_names: Collection[str] = ()) -> str:
     """Convert a gate tool title to the canonical ``@server`` / ``@server/tool``.
 
     The PreToolUse gate sees MCP tools as ``mcp__<server>__<tool>`` (the raw ACP
@@ -608,13 +610,22 @@ def mcp_title_to_ref(title: str) -> str:
     if not title.startswith("mcp__"):
         return title
     rest = title[len("mcp__") :]
-    # The kiro title format is ``mcp__<server>__<tool>`` where the SERVER name
-    # may itself contain ``__`` (e.g. ``npm__playwright_mcp``) but the tool name
-    # is a single identifier.  Split on the LAST ``__`` so the whole server name
-    # is preserved — partition() (first ``__``) would mis-split a multi-segment
-    # server and produce a ref that never matches a server-level mcp deny.
-    server, sep, tool = rest.rpartition("__")
-    return f"@{server}/{tool}" if sep else f"@{rest}"
+    if "__" not in rest:
+        return f"@{rest}" if rest else ""
+    matches = [
+        (server, rest[len(server) + 2 :])
+        for server in server_names
+        if server and rest.startswith(f"{server}__") and rest[len(server) + 2 :]
+    ]
+    if len(matches) == 1:
+        server, tool = matches[0]
+        return f"@{server}/{tool}"
+    # A roster provides the exact boundary when it has one match. Otherwise,
+    # preserve a governed identity using the legacy final-separator boundary:
+    # an empty classification is permissive at the gate and could bypass an
+    # operator's wildcard or deny-all ceiling.
+    server, separator, tool = rest.rpartition("__")
+    return f"@{server}/{tool}" if separator and server and tool else ""
 
 
 def register_matcher(name: str, fn: Callable[[str, str], bool]) -> None:

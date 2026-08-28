@@ -1042,6 +1042,11 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # with a fixed argv containing only an int-coerced pid. It cannot route
         # through the sandbox helper because sandbox imports platform_compat.
         "platform_compat.py::process_owner_uid",
+        # Exact executable-basename companion to process_matches. On macOS it
+        # runs fixed-argv ``ps -o comm= -p <int pid>`` through the trusted
+        # absolute system binary; Linux and Windows use in-process OS probes.
+        # It cannot route through sandbox because sandbox imports this module.
+        "platform_compat.py::process_image_name",
         "platform_compat.py::process_matches",
         # Same class as process_matches: a read-only process-attribute query
         # (macOS ``ps -ww -o command= -p <pid>``; Linux reads /proc without

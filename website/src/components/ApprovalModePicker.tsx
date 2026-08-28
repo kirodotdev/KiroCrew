@@ -250,8 +250,18 @@ export default function ApprovalModePicker({ mode, slotKey, compact, openSignal,
                 <button className="px-2.5 py-1 rounded-md text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border-none" onClick={() => setYoloConfirm(0)}>
                   {i18nT('components.approvalModePicker.cancel')}
                 </button>
-                <label className="flex items-center gap-1 text-[11px] text-muted cursor-pointer ml-auto">
-                  <input type="checkbox" className="rounded" checked={yoloDontAsk} onChange={e => setYoloDontAsk(e.target.checked)} />
+                <label
+                  htmlFor="approval-yolo-dont-ask"
+                  className="flex items-center gap-1 text-[11px] text-muted cursor-pointer ml-auto"
+                >
+                  <input
+                    id="approval-yolo-dont-ask"
+                    type="checkbox"
+                    className="rounded"
+                    aria-label={i18nT('components.approvalModePicker.don_t_show_again')}
+                    checked={yoloDontAsk}
+                    onChange={e => setYoloDontAsk(e.target.checked)}
+                  />
                   {i18nT('components.approvalModePicker.don_t_show_again')}
                 </label>
               </div>

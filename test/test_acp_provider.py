@@ -13,11 +13,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_crew.acp.client import AcpAuthRequired
+from kiro_crew.acp.client import AcpAuthRequired, AcpClient, SpecAdapterAcpClient
 from kiro_crew.acp.session_handle import AcpSessionHandle
 from kiro_crew.acp.session_provider import AcpSessionProvider
-from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, AcpEvent, TurnUsage
-from kiro_crew.providers.acp import AcpProvider
+from kiro_crew.acp.types import (
+    ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
+    ACP_BACKEND_GOOSE,
+    ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_PI,
+    AcpEvent,
+    TurnUsage,
+)
+from kiro_crew.providers.acp import AcpProvider, SpecAdapterAcpProvider
 
 
 def _build_provider(backend: str) -> AcpProvider:
@@ -33,6 +41,22 @@ async def _drain(it):
     async for x in it:
         out.append(x)
     return out
+
+
+def test_provider_keeps_kiro_spawn_path_out_of_adapter_admission() -> None:
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.platform.defaults import DefaultProviderRegistry
+
+    kiro = AcpProvider(acp_backend="")
+    direct_codex = AcpProvider(acp_backend=ACP_BACKEND_CODEX)
+    cfg = KiroCrewConfig()
+    cfg.agent.acp_backend = ACP_BACKEND_CODEX
+    codex = DefaultProviderRegistry().create_factory(cfg)(session_key="test:codex")
+
+    assert type(kiro.client) is AcpClient
+    assert type(direct_codex.client) is AcpClient
+    assert type(codex) is SpecAdapterAcpProvider
+    assert type(codex.client) is SpecAdapterAcpClient
 
 
 def _async_iter(items):
@@ -141,9 +165,19 @@ class TestStreamCommandRouting:
         assert len(events) == 1
         assert events[0].text == "ok"
 
+    @pytest.mark.parametrize(
+        "backend",
+        [
+            ACP_BACKEND_CLAUDE,
+            ACP_BACKEND_CODEX,
+            ACP_BACKEND_GOOSE,
+            ACP_BACKEND_OPENCODE,
+            ACP_BACKEND_PI,
+        ],
+    )
     @pytest.mark.asyncio
-    async def test_claude_backend_uses_session_prompt(self):
-        provider = _build_provider(backend=ACP_BACKEND_CLAUDE)
+    async def test_spec_backends_use_session_prompt(self, backend):
+        provider = _build_provider(backend=backend)
         provider._client.stream_events = MagicMock(
             return_value=_async_iter([AcpEvent(kind="text_chunk", text="ok")])
         )
@@ -473,6 +507,14 @@ class TestEffortControl:
         provider._client.send_command.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_codex_change_effort_uses_reasoning_option(self):
+        provider = self._effort_provider(backend=ACP_BACKEND_CODEX, model="gpt-5.2")
+        ok = await provider.change_effort("high")
+        assert ok is True
+        provider._client.set_config_option.assert_awaited_once_with("reasoning_effort", "high")
+        provider._client.send_command.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_claude_change_effort_steps_down_when_max_unsupported(self):
         # Adapter rejects "max" for a model whose ceiling is "xhigh"; the push
         # must fall back down the ladder and land "xhigh" rather than failing
@@ -527,6 +569,26 @@ class TestEffortControl:
         provider._effort_per_model = {"claude-opus-4.7": "max"}
         await provider._apply_initial_effort()
         provider._client.set_config_option.assert_awaited_once_with("effort", "max")
+
+    @pytest.mark.asyncio
+    async def test_codex_apply_initial_effort_uses_reasoning_option(self):
+        provider = self._effort_provider(backend=ACP_BACKEND_CODEX, model="gpt-5.2")
+        provider._effort_per_model = {"gpt-5.2": "high"}
+        await provider._apply_initial_effort()
+        provider._client.set_config_option.assert_awaited_once_with("reasoning_effort", "high")
+
+    @pytest.mark.asyncio
+    async def test_codex_composite_model_supplies_cold_start_effort(self):
+        provider = SpecAdapterAcpProvider(
+            model="gpt-5.2[xhigh]",
+            acp_backend=ACP_BACKEND_CODEX,
+        )
+        provider._client.set_config_option = AsyncMock()
+        provider._client.supports_config_option = MagicMock(return_value=True)
+
+        await provider._apply_initial_effort()
+
+        provider._client.set_config_option.assert_awaited_once_with("reasoning_effort", "xhigh")
 
     @pytest.mark.asyncio
     async def test_apply_initial_effort_noop_on_kiro_backend(self):
@@ -1196,3 +1258,17 @@ def test_to_llm_event_preserves_mcp_identity_trusted():
     out_untrusted = AcpProvider._to_llm_event(src_untrusted)
     assert out_untrusted.mcp_identity_trusted is False
     assert out_untrusted.child_mcp_identity_trusted is False
+
+
+class TestBackendModelWireIds:
+    def test_codex_composite_id_is_effort_stripped(self):
+        from kiro_crew.dashboard.chat_handlers import _wire_model_id
+
+        provider = _build_provider(ACP_BACKEND_CODEX)
+        assert _wire_model_id(provider, "gpt-5.2[high]") == "gpt-5.2"
+
+    def test_generic_spec_id_passes_through(self):
+        from kiro_crew.dashboard.chat_handlers import _wire_model_id
+
+        provider = _build_provider(ACP_BACKEND_GOOSE)
+        assert _wire_model_id(provider, "provider/model") == "provider/model"

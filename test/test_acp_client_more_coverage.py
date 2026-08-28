@@ -1241,9 +1241,9 @@ class TestPermissionEvent:
         event = client._build_permission_event(msg)
 
         assert event.kind == EVENT_PERMISSION_REQUEST
-        assert event.options == [{"id": "allow_once", "label": ""}]
+        assert event.options == [{"id": "allow_once", "label": "", "kind": "allow_once"}]
         # Legacy id with no usable kind still resolves the allow ids.
-        assert client._permission_options["req-1"]["once"] == "allow_once"
+        assert client._permission_options["req-1"]["allow_once"] == "allow_once"
         # is_shell is deny-by-default: the payload's own kind is untrusted.
         assert event.is_shell is False
 
@@ -1267,7 +1267,7 @@ class TestPermissionEvent:
 
         assert event.tool_input == '{"path": "/etc/hosts"}'
         assert event.raw_tool_params == {"path": "/etc/hosts"}
-        assert client._permission_options["req-2"] == {"reject": "reject"}
+        assert client._permission_options["req-2"] == {"reject_once": "reject"}
 
     def test_debug_logging_redacts_the_payload(self, tmp_path, caplog):
         client = _client(tmp_path)

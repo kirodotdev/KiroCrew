@@ -515,12 +515,15 @@ class _CompositionErrorProviders:
 
 
 def test_build_provider_factory_degrades_to_public(cfg: KiroCrewConfig) -> None:
-    """A transient providers.create_factory error degrades to cfg.create_provider_factory(),
-    and the LAZY fallback_factory is invoked exactly once (no eager double-build)."""
-    sentinel = object()
+    """A transient providers.create_factory error degrades to the default registry,
+    and the adapter factory remains lazy until a provider is requested."""
+
+    def sentinel(*args, **kwargs):
+        return args, kwargs
+
     calls = {"n": 0}
 
-    def _fake_create():
+    def _fake_create(**_kwargs):
         calls["n"] += 1
         return sentinel
 
@@ -528,8 +531,8 @@ def test_build_provider_factory_degrades_to_public(cfg: KiroCrewConfig) -> None:
     base = build_default_context(cfg, profile=PROFILE_ENTERPRISE)
     set_context(dataclasses.replace(base, providers=_RaisingProviders()))
     factory = build_provider_factory(cfg)
-    # Degrade path returned EXACTLY the lazily-built public fallback, built once.
-    assert factory is sentinel
+    assert callable(factory)
+    factory(session_key="test:degraded")
     assert calls["n"] == 1
 
 
@@ -542,15 +545,11 @@ def test_build_provider_factory_reraises_composition_error(cfg: KiroCrewConfig) 
 
 
 def test_build_provider_factory_default_delegates_to_cfg(cfg: KiroCrewConfig) -> None:
-    """Public Default registry delegates to cfg.create_provider_factory() (identity).
+    """The default Kiro call delegates to the direct config factory unchanged."""
 
-    create_provider_factory returns a FRESH closure each call, so object identity
-    is impossible; instead we prove the Default ProviderRegistry actually routes
-    through cfg.create_provider_factory() (the transparency the public edition
-    rests on) by asserting that method is invoked exactly once via the seam, and
-    that the seam returns precisely what it produced.
-    """
-    sentinel = object()
+    def sentinel(*args, **kwargs):
+        return args, kwargs
+
     base = build_default_context(cfg)  # standalone defaults (DefaultProviderRegistry)
     set_context(base)
     calls = {"n": 0}
@@ -559,12 +558,10 @@ def test_build_provider_factory_default_delegates_to_cfg(cfg: KiroCrewConfig) ->
         calls["n"] += 1
         return sentinel
 
-    # The Default registry calls cfg.create_provider_factory(); stub it to a
-    # sentinel and assert the seam returns exactly that, proving delegation.
     cfg.create_provider_factory = _fake_create  # type: ignore[assignment,method-assign]
     result = build_provider_factory(cfg)
-    assert result is sentinel
-    assert calls["n"] == 1  # built exactly once (no eager double-build)
+    assert result("value", named="argument") == (("value",), {"named": "argument"})
+    assert calls["n"] == 1
 
 
 # ── safe_context_call / async_safe_context_call lazy-fallback + fail-closed ──

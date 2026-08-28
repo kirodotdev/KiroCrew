@@ -81,7 +81,13 @@ from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exf
 from kiro_crew.slack.format import build_options_blocks, extract_options
 from kiro_crew.slack.outbound import OPTIONS_FALLBACK_TEXT, PostedOptions
 from kiro_crew.spawn_warm import warm_project_agents_for_spawn
-from kiro_crew.subagent import effort_applied_note, effort_drop_reason
+from kiro_crew.subagent import (
+    _subagent_default_model,
+    dedicated_child_factory_kwargs,
+    effort_applied_note,
+    effort_drop_reason,
+    parent_live_harness,
+)
 from kiro_crew.subagent_persistence import _agent_dir, read_state
 from kiro_crew.validation import (
     _EMOJI_NAME_RE,
@@ -253,17 +259,44 @@ async def api_spawn(request: web.Request) -> web.Response:
     # a non-sentinel global). Additive, optional key — reporting only, never
     # changes whether the spawn happened.
     if reasoning_effort:
+        sessions = getattr(state, "sessions", None)
         # Mirror _run_inner's agent inheritance so the verdict judges the same
         # agent the session will actually use.
         verdict_agent = agent or (
-            state.sessions.get_agent(parent_session) if parent_session else ""
+            sessions.get_agent(parent_session) if parent_session and sessions else ""
+        )
+        verdict_backend, advertised = parent_live_harness(
+            sessions,
+            parent_session or "",
         )
 
         def _effort_verdict() -> tuple[str, str]:
-            d = effort_drop_reason(model, reasoning_effort, verdict_agent)
+            preferred_model = model or _subagent_default_model()
+            if verdict_backend is None:
+                verdict_model = preferred_model
+            else:
+                child_kwargs = dedicated_child_factory_kwargs(
+                    parent_backend=verdict_backend,
+                    advertised=advertised,
+                    preferred_model=preferred_model,
+                )
+                verdict_model = str(child_kwargs.get("model", "") or "")
+            d = effort_drop_reason(
+                verdict_model,
+                reasoning_effort,
+                verdict_agent,
+                verdict_backend,
+                model_pin_resolved=True,
+            )
             if d:
                 return d, ""
-            return "", effort_applied_note(model, reasoning_effort, verdict_agent)
+            return "", effort_applied_note(
+                verdict_model,
+                reasoning_effort,
+                verdict_agent,
+                verdict_backend,
+                model_pin_resolved=True,
+            )
 
         # The resolvers read config and glob ~/.kiro/agents — file I/O that
         # must not run on the gateway event loop (the same reason
@@ -387,9 +420,14 @@ async def api_spawn_steer(request: web.Request) -> web.Response:
                 headers={"Retry-After": "5"},
             )
         return web.json_response({"error": detail, "code": "steer_failed"}, status=502)
-    return web.json_response(
-        {"id": agent_id, "status": "follow_up_queued" if mode == "follow_up" else "steered"}
-    )
+    queued = mode == "follow_up" or detail.startswith("follow_up")
+    payload: dict[str, str] = {
+        "id": agent_id,
+        "status": "follow_up_queued" if queued else "steered",
+    }
+    if queued and detail.startswith("follow_up"):
+        payload["reason"] = detail
+    return web.json_response(payload)
 
 
 async def api_spawn_release(request: web.Request) -> web.Response:

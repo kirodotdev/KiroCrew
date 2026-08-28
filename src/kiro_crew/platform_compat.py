@@ -1998,6 +1998,36 @@ def close_process_handle(handle: int) -> None:
         kernel32.CloseHandle(wintypes.HANDLE(handle))
 
 
+def process_image_name(pid: int) -> str:
+    """Return *pid*'s executable image basename, or ``""`` on failure.
+
+    This is the exact-identity companion to :func:`process_matches`. It is
+    intentionally basename-only: short executable names such as ``pi`` are
+    unsafe substring needles because they occur inside unrelated command lines
+    (for example ``pytest`` and ``pid_lifecycle.py``).
+    """
+    if type(pid) is not int or pid <= 0:
+        return ""
+    try:
+        if sys.platform == "linux":
+            return Path(os.readlink(f"/proc/{pid}/exe")).name
+        if sys.platform == "darwin":
+            ps_bin = trusted_system_bin("ps")
+            if ps_bin is None:
+                return ""
+            out = subprocess.check_output(
+                [ps_bin, "-o", "comm=", "-p", str(pid)],
+                stderr=subprocess.DEVNULL,
+                timeout=2,
+            )
+            return Path(out.decode(errors="replace").strip()).name
+        if IS_WINDOWS:
+            return _win_process_image_name(pid) or ""
+    except Exception:
+        return ""
+    return ""
+
+
 def process_matches(pid: int, needles: tuple[str, ...]) -> bool:
     """Return True iff *pid*'s command line / image name contains any *needle*.
 
@@ -2593,9 +2623,9 @@ def process_start_time(pid: int) -> str | None:
       requested: this value is what decides whether a kill may happen at all, so
       demanding the right to kill in order to read it would refuse the guard for
       exactly the processes a caller must be most careful about.
-    * **macOS / other POSIX** -- ``ps -o lstart=`` (1s resolution, locale/TZ
-      formatted). Coarser, so a format or resolution drift can only make the
-      guard decline to act, never act on the wrong process.
+    * **macOS** -- ``libproc.proc_pidinfo`` start seconds + microseconds. The
+      microsecond half is required because same-second PID reuse must not alias.
+    * **other POSIX** -- ``ps -o lstart=`` as the best available opaque token.
     """
     if sys.platform == "linux":
         try:
@@ -2620,6 +2650,8 @@ def process_start_time(pid: int) -> str | None:
         # (pid, creation_time, exit_time) -- only the creation half is an
         # identity; exit_time moves as the process dies.
         return str(identity[1]) if identity is not None else None
+    if sys.platform == "darwin":
+        return get_process_start_id(pid)
     ps_bin = trusted_system_bin("ps")
     if ps_bin is None:
         return None

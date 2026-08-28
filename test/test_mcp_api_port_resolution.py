@@ -30,6 +30,7 @@ import pytest
 import kiro_crew
 import kiro_crew.mcp_core as mcp_core
 from kiro_crew.dashboard.server import _export_bound_port
+from kiro_crew.port_resolution import pin_gateway_child_port
 
 #: Source root of the tree under test, pinned onto the probe subprocess's
 #: PYTHONPATH. Without it the child interpreter resolves whatever kiro_crew
@@ -70,6 +71,33 @@ def _markers(ports: list[int]):
 def _owned(ports: list[int]):
     """Pretend a verified Kiro Crew gateway listens on each of *ports*."""
     return patch("kiro_crew.cli_server._gateway_owns_port", side_effect=lambda p: p in set(ports))
+
+
+class TestGatewayChildPortPin:
+    def test_bound_parent_port_replaces_inherited_and_adapter_targets(self):
+        child_env = {
+            "KIROCREW_PORT": "9000",
+            "KIROCREW_BOUND_PORT": "9001",
+        }
+
+        pin_gateway_child_port(
+            child_env,
+            parent_env={
+                "KIROCREW_PORT": "6776",
+                "KIROCREW_BOUND_PORT": "7959",
+            },
+        )
+
+        assert child_env["KIROCREW_PORT"] == "7959"
+        assert child_env["KIROCREW_BOUND_PORT"] == "7959"
+
+    @pytest.mark.parametrize("bound", ["", "not-a-port", "0", "65536"])
+    def test_invalid_or_absent_bound_port_leaves_explicit_target_unchanged(self, bound):
+        child_env = {"KIROCREW_PORT": "6776"}
+
+        pin_gateway_child_port(child_env, parent_env={"KIROCREW_BOUND_PORT": bound})
+
+        assert child_env == {"KIROCREW_PORT": "6776"}
 
 
 class TestApiBaseResolution:
