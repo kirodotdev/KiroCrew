@@ -343,7 +343,11 @@ jobs:
       version: ${{ needs.version.outputs.version }}
       soft_fail: true
       use_prod_environment: true
-    secrets: inherit
+    # Explicit passthrough, not `secrets: inherit`: the callee declares
+    # the secret it consumes, so this hands over that one and nothing
+    # else. Pinned by test_workflow_permissions.py.
+    secrets:
+      AWS_WINDOWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_WINDOWS_SIGNING_ROLE_ARN }}
 
   # ── CLI channel publish ───────────────────────────────────────────────
   # Publishes the release wheel to the insider/stable CLI channel (cli/ +
@@ -370,7 +374,11 @@ jobs:
       wheel_artifact: ${{ needs.version.outputs.channel == 'stable' && format('KiroCrew-notarized-stable-{0}', needs.version.outputs.version) || 'cli-wheel' }}
       promote: ${{ needs.version.outputs.channel == 'stable' }}
       promotion_base_version: ${{ needs.version.outputs.base_version }}
-    secrets: inherit
+    # Explicit passthrough, not `secrets: inherit`: the callee declares
+    # the secret it consumes, so this hands over that one and nothing
+    # else. Pinned by test_workflow_permissions.py.
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
 
   # ── Linux desktop publish ─────────────────────────────────────────────
   # Publishes the release AppImages to the distribution CDN (versioned key +
@@ -647,7 +655,14 @@ jobs:
       contents: read
       attestations: write
     uses: ./.github/workflows/sign-and-notarize.yml
-    secrets: inherit
+    # Explicit passthrough, not `secrets: inherit`: the callee declares
+    # the secrets it consumes, so this hands over those and nothing
+    # else. Pinned by test_workflow_permissions.py.
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+      AWS_SIGNING_BUCKET: ${{ secrets.AWS_SIGNING_BUCKET }}
+      AWS_SIGNER_ACCESS_ROLE_ARN: ${{ secrets.AWS_SIGNER_ACCESS_ROLE_ARN }}
+      CDSIGNER_API_ENDPOINT: ${{ secrets.CDSIGNER_API_ENDPOINT }}
     with:
       channel: ${{ needs.version.outputs.channel }}
       version: ${{ needs.version.outputs.channel == 'stable' && needs.resolve-promotion.outputs.source_version || needs.version.outputs.version }}

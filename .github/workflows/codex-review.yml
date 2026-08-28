@@ -108,7 +108,47 @@ jobs:
       # install never runs with the Bedrock credentials in its environment.
       - name: Install review CLI
         if: github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
-        run: npm install -g @openai/codex
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CLI_DIR: ${{ runner.temp }}/review-cli
+        # Installed from a committed lockfile (`npm ci`) whose package files are
+        # materialized from the BASE commit -- never read from the checkout.
+        #
+        # Both halves are load-bearing:
+        #
+        #   * the lockfile is what pins the dependency CLOSURE. `npm install -g
+        #     pkg@X` re-resolves the package's own dependencies on every run, so
+        #     a version pin alone leaves the transitive tree floating (zizmor
+        #     adhoc-packages).
+        #   * BASE_SHA is what keeps the manifest out of the PR author's hands.
+        #     The binary this step produces is executed AFTER the Bedrock role is
+        #     assumed, so a manifest read from the PR under review would let its
+        #     author point it at any package and receive this job's AWS
+        #     credentials. The install itself running before the role assumption
+        #     does not help: it is the EXECUTION that holds them.
+        #
+        # Installing into RUNNER_TEMP rather than the worktree keeps node_modules
+        # out of the tree the read-only agentic reviewer reads, and leaves the
+        # PR's own files untouched.
+        #
+        # Fails closed on purpose -- it does NOT fall back to the checkout the way
+        # the prompt-block step does. A prompt read from the PR weakens the review
+        # contract; a MANIFEST read from the PR is arbitrary code execution with
+        # AWS credentials, so there is no safe fallback to offer. On the bootstrap
+        # round -- the PR that first adds .github/review-cli, where the base has
+        # no manifest to trust -- this lane cannot run, and the ruling belongs to
+        # a human via `/ai-review override`.
+        run: |
+          set -euo pipefail
+          mkdir -p "$CLI_DIR"
+          for f in package.json package-lock.json; do
+            git show "$BASE_SHA:.github/review-cli/$f" > "$CLI_DIR/$f" 2>/dev/null || true
+            if [ ! -s "$CLI_DIR/$f" ]; then
+              echo "::error::.github/review-cli/$f is absent or empty on the base commit ($BASE_SHA). Refusing to install a review CLI whose manifest comes from the PR under review: the binary it produces executes with this job's Bedrock credentials. If this is the PR that introduces the manifest, a maintainer must review it and post an /ai-review override."
+              exit 1
+            fi
+          done
+          npm ci --prefix "$CLI_DIR"
 
       # ubuntu-24.04 runners restrict unprivileged user namespaces via AppArmor,
       # which makes the review CLI's bundled bubblewrap sandbox fail at netns setup.
@@ -381,7 +421,13 @@ jobs:
 
             rm -f "codex-pass-${pass}.md"
             rc=0
-            codex exec \
+            # Called by path, not from PATH: exporting the bin directory
+            # through $GITHUB_PATH is a run-step write to an environment
+            # file, which is an execution vector in a job holding Bedrock
+            # credentials (zizmor github-env). The path is under RUNNER_TEMP
+            # because the manifest that produced it was materialized from the
+            # BASE commit, not from this checkout -- see "Install review CLI".
+            "$RUNNER_TEMP/review-cli/node_modules/.bin/codex" exec \
               --sandbox read-only \
               --output-last-message "codex-pass-${pass}.md" \
               "$PROMPT" || rc=$?

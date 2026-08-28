@@ -39,6 +39,17 @@ on:
         required: false
         type: string
         default: ""
+    secrets:
+      # Declared explicitly so callers pass this ONE secret instead of
+      # `secrets: inherit`. This lane assumes a role and publishes the wheel
+      # plus its signed manifest, so it is the highest-value caller in the
+      # repo to keep scoped. Mirrors publish-windows.yml.
+      #
+      # Not required: HAS_PUBLISH_ROLE treats an empty value as "no publish
+      # role" and skips the publish steps, which is how a fork stays green.
+      AWS_SIGNING_ROLE_ARN:
+        description: "Role assumed to publish the wheel and write the CLI manifest"
+        required: false
 
 permissions:
   contents: read

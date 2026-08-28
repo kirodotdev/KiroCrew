@@ -77,6 +77,21 @@ on:
         required: false
         type: boolean
         default: false
+    secrets:
+      # Declared explicitly so callers pass this ONE secret instead of
+      # `secrets: inherit`, which would hand this lane every secret in the
+      # repository. The lane assumes a signing role and produces the installer
+      # users run, so the blast radius of a compromise here is worth bounding
+      # to the credential it actually uses. Mirrors publish-windows.yml.
+      #
+      # Not required: HAS_WINDOWS_SIGNING treats an empty value as "no signing
+      # secret" and skips every signing step, which is what keeps forks -- and
+      # the workflow_dispatch packaging probe, which deliberately runs with no
+      # credentials -- green. Making it required would turn that clean skip
+      # into a workflow-call failure.
+      AWS_WINDOWS_SIGNING_ROLE_ARN:
+        description: "Role assumed to sign the Windows installer and nupkg"
+        required: false
   # Manual build-only probe: builds the installer from any ref WITHOUT
   # publishing anything. Used to validate packaging changes before merge.
   workflow_dispatch:

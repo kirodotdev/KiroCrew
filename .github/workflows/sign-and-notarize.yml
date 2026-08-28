@@ -89,6 +89,26 @@ on:
         required: false
         type: string
         default: ""
+    secrets:
+      # Declared explicitly so callers pass exactly these four instead of
+      # `secrets: inherit`. Mirrors publish-windows.yml.
+      #
+      # None are required: HAS_SIGNING_SECRETS / HAS_CDSIGNER treat an empty
+      # value as "not configured" and skip the signing, notarization and
+      # publish steps, which is how a fork stays green. Making any required
+      # would turn that clean skip into a workflow-call failure.
+      AWS_SIGNING_ROLE_ARN:
+        description: "Role assumed to sign, notarize and write the distribution bucket"
+        required: false
+      AWS_SIGNING_BUCKET:
+        description: "Bucket holding the unsigned, signed and notarized artifacts"
+        required: false
+      AWS_SIGNER_ACCESS_ROLE_ARN:
+        description: "Role the signing service assumes to read the submitted artifact"
+        required: false
+      CDSIGNER_API_ENDPOINT:
+        description: "Signing service endpoint that performs the Developer ID signature"
+        required: false
 
 permissions:
   contents: read

@@ -153,7 +153,11 @@ jobs:
       version: ${{ needs.version.outputs.nightly_version }}
       soft_fail: true
       use_prod_environment: true
-    secrets: inherit
+    # Explicit passthrough, not `secrets: inherit`: the callee declares
+    # the secret it consumes, so this hands over that one and nothing
+    # else. Pinned by test_workflow_permissions.py.
+    secrets:
+      AWS_WINDOWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_WINDOWS_SIGNING_ROLE_ARN }}
 
   # ── CLI channel publish ───────────────────────────────────────────────
   # Publishes the built wheel to the nightly CLI channel (cli/ + latest-cli.json).
@@ -172,7 +176,11 @@ jobs:
       channel: nightly
       version: ${{ needs.version.outputs.nightly_version }}
       wheel_artifact: cli-wheel
-    secrets: inherit
+    # Explicit passthrough, not `secrets: inherit`: the callee declares
+    # the secret it consumes, so this hands over that one and nothing
+    # else. Pinned by test_workflow_permissions.py.
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
 
   # ── Linux desktop publish ─────────────────────────────────────────────
   # Publishes the built AppImages to the distribution CDN (versioned key +
@@ -375,7 +383,14 @@ jobs:
       contents: read
       attestations: write
     uses: ./.github/workflows/sign-and-notarize.yml
-    secrets: inherit
+    # Explicit passthrough, not `secrets: inherit`: the callee declares
+    # the secrets it consumes, so this hands over those and nothing
+    # else. Pinned by test_workflow_permissions.py.
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+      AWS_SIGNING_BUCKET: ${{ secrets.AWS_SIGNING_BUCKET }}
+      AWS_SIGNER_ACCESS_ROLE_ARN: ${{ secrets.AWS_SIGNER_ACCESS_ROLE_ARN }}
+      CDSIGNER_API_ENDPOINT: ${{ secrets.CDSIGNER_API_ENDPOINT }}
     with:
       channel: nightly
       version: ${{ needs.version.outputs.nightly_version }}

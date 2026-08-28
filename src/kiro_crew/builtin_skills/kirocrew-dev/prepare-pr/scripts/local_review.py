@@ -492,26 +492,50 @@ def extract_base_rule_specs(workflow_text: str) -> list[FileSpec]:
     return specs
 
 
+#: The directory the shared review-prompt blocks live in. The extractor selects
+#: on this rather than on position in the file: a workflow may materialize SEVERAL
+#: unrelated things from ``$BASE_SHA``, and "the first such loop" is not a
+#: description of the prompt loader. `codex-review.yml` now also base-materializes
+#: `.github/review-cli/{package.json,package-lock.json}` -- and it does so ABOVE
+#: the prompt loader, so a positional match silently produced prompt specs named
+#: `package.json`.
+_PROMPT_DIR = ".github/review-prompts/"
+
+_PROMPT_TMPL_RE = re.compile(
+    r"git show \"\$BASE_SHA:(?P<src>[^\"]*"
+    + re.escape(_PROMPT_DIR)
+    + r"[^\"]*\$\{?\w+\}?[^\"]*)\"\s*>\s*\"(?P<dest>[^\"]+)\"",
+)
+_LOOP_RE = re.compile(r"for\s+(?P<var>\w+)\s+in\s+(?P<names>[A-Za-z0-9_.\- ]+);\s*do")
+
+
 def extract_prompt_file_specs(workflow_text: str) -> list[FileSpec]:
     """Base-ref review-prompt files, expanded from the workflow's own for-loop.
 
     Returns [] when the workflow keeps no prompt files.
     """
-    loop = re.search(r"for\s+(?P<var>\w+)\s+in\s+(?P<names>[A-Za-z0-9_.\- ]+);\s*do", workflow_text)
-    tmpl = re.search(
-        r"git show \"\$BASE_SHA:(?P<src>[^\"]*\$\{?\w+\}?[^\"]*)\"\s*>\s*\"(?P<dest>[^\"]+)\"",
-        workflow_text,
-    )
-    if loop is None or tmpl is None:
+    tmpl = _PROMPT_TMPL_RE.search(workflow_text)
+    if tmpl is None:
         return []
+    # The governing loop is the LAST one opened before the prompt template, not
+    # the first one in the file. Anything materialized earlier (the review CLI's
+    # own manifest, for instance) has its own loop and is not a prompt block.
+    loops = [m for m in _LOOP_RE.finditer(workflow_text) if m.start() < tmpl.start()]
+    if not loops:
+        return []
+    loop = loops[-1]
     var = loop.group("var")
     # codex-review.yml's loader carries a `cp` bootstrap: when a shared prompt
     # is absent on the base (the PR that introduces it), CI warns and uses the
     # checked-out copy. Mirror that exactly; without the cp, a missing prompt
-    # stays fatal like CI's Opus lanes.
+    # stays fatal like CI's Opus lanes. Scoped to the prompt directory for the
+    # same reason as the template above -- and searched from the loop onward, so
+    # an unrelated `cp` earlier in the file cannot be mistaken for the bootstrap.
     cp_tmpl = re.search(
-        r"cp\s+\"(?P<src>[^\"]*\$\{?\w+\}?[^\"]*)\"\s+\"(?P<dest>[^\"]+)\"",
-        workflow_text,
+        r"cp\s+\"(?P<src>[^\"]*"
+        + re.escape(_PROMPT_DIR)
+        + r"[^\"]*\$\{?\w+\}?[^\"]*)\"\s+\"(?P<dest>[^\"]+)\"",
+        workflow_text[loop.start() :],
     )
     specs: list[FileSpec] = []
     for name in loop.group("names").split():

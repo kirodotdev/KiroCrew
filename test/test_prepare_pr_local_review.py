@@ -89,6 +89,50 @@ def _profile_on_main(root, toml_text):
     _git(root, "checkout", "-q", "feature")
 
 
+def test_a_non_prompt_base_snapshot_is_not_mistaken_for_a_prompt_block() -> None:
+    """The extractor must select the prompt loader by PATH, not by position.
+
+    `codex-review.yml` materializes two unrelated things from `$BASE_SHA`: the
+    shared `.github/review-prompts/gpt-*.md` blocks, and the review CLI's own
+    `.github/review-cli/{package.json,package-lock.json}` manifest -- the latter
+    ABOVE the former. An extractor that took "the first `for ... do` loop plus
+    the first `git show "$BASE_SHA:...$var..."`" produced prompt specs named
+    `package.json`, and then every downstream test failed looking for
+    `.github/review-prompts/package.json`. That is what this pins.
+    """
+    specs = local_review.extract_prompt_file_specs(_gpt_text())
+    srcs = [spec.src for spec in specs]
+
+    assert srcs, "the GPT lane does keep base-ref prompt blocks"
+    assert all(src.startswith(".github/review-prompts/") for src in srcs), srcs
+    assert not [src for src in srcs if "review-cli" in src or "package" in src], srcs
+
+
+def test_prompt_extraction_survives_a_leading_unrelated_loop() -> None:
+    """Synthetic form of the same defect, so the guard does not depend on
+    `codex-review.yml` keeping its current step order."""
+    text = """
+          for f in package.json package-lock.json; do
+            git show "$BASE_SHA:.github/review-cli/$f" > "$CLI_DIR/$f" 2>/dev/null || true
+          done
+          for p in alpha beta; do
+            git show "$BASE_SHA:.github/review-prompts/$p.md" > ".review-prompts-gpt/$p.md"
+            cp ".github/review-prompts/$p.md" ".review-prompts-gpt/$p.md"
+          done
+    """
+    specs = local_review.extract_prompt_file_specs(text)
+
+    assert [spec.src for spec in specs] == [
+        ".github/review-prompts/alpha.md",
+        ".github/review-prompts/beta.md",
+    ]
+    # The `cp` bootstrap is still picked up, and still from the prompt directory.
+    assert [spec.worktree_src for spec in specs] == [
+        ".github/review-prompts/alpha.md",
+        ".github/review-prompts/beta.md",
+    ]
+
+
 def _gpt_text():
     return GPT_WORKFLOW.read_text(encoding="utf-8")
 
