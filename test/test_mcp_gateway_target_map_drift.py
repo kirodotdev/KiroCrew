@@ -102,9 +102,9 @@ def test_the_field_case_is_reported(caplog) -> None:
         }
     )
     with caplog.at_level(logging.WARNING):
-        assert (
-            mgr._report_adoption_drift({"type": "pong", "targets": ["EXCALIDRAW", "PDF"]}) is True
-        )
+        assert mgr._adoption_drift({"type": "pong", "targets": ["EXCALIDRAW", "PDF"]}) == [
+            "KIROCREW_CORE"
+        ]
     assert "KIROCREW_CORE" in caplog.text
     assert "STALE" in caplog.text
 
@@ -113,7 +113,7 @@ def test_a_covering_daemon_is_silent(caplog) -> None:
     """No warning on the healthy path, or the signal is worthless."""
     mgr = _manager({"KIROCREW_MCP_TARGET_PDF": "npx -y server-pdf --stdio"})
     with caplog.at_level(logging.WARNING):
-        assert mgr._report_adoption_drift({"type": "pong", "targets": ["PDF"]}) is False
+        assert mgr._adoption_drift({"type": "pong", "targets": ["PDF"]}) == []
     assert caplog.text == ""
 
 
@@ -123,10 +123,8 @@ def test_a_superset_daemon_is_also_silent(caplog) -> None:
     mgr = _manager({"KIROCREW_MCP_TARGET_PDF": "npx -y server-pdf --stdio"})
     with caplog.at_level(logging.WARNING):
         assert (
-            mgr._report_adoption_drift(
-                {"type": "pong", "targets": ["PDF", "EXCALIDRAW", "KIROCREW_CORE"]}
-            )
-            is False
+            mgr._adoption_drift({"type": "pong", "targets": ["PDF", "EXCALIDRAW", "KIROCREW_CORE"]})
+            == []
         )
     assert caplog.text == ""
 
@@ -137,7 +135,7 @@ def test_a_daemon_that_cannot_report_is_flagged_as_unverifiable(caplog) -> None:
     case this exists to catch."""
     mgr = _manager({"KIROCREW_MCP_TARGET_KIROCREW_CORE": "kirocrew mcp-core"})
     with caplog.at_level(logging.WARNING):
-        assert mgr._report_adoption_drift({"type": "pong"}) is True
+        assert mgr._adoption_drift({"type": "pong"}) == ["KIROCREW_CORE"]
     assert "does not report its target map" in caplog.text
 
 
@@ -146,7 +144,7 @@ def test_nothing_configured_means_nothing_to_verify(caplog) -> None:
     socket is then not a drift finding."""
     mgr = _manager({})
     with caplog.at_level(logging.WARNING):
-        assert mgr._report_adoption_drift({"type": "pong"}) is False
+        assert mgr._adoption_drift({"type": "pong"}) == []
     assert caplog.text == ""
 
 

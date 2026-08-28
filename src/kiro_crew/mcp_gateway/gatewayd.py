@@ -401,7 +401,9 @@ async def run_gatewayd(
     async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         task = asyncio.current_task()
         try:
-            await _handle_connection(reader, writer, pool, resolver, socket_path, hot_keys)
+            await _handle_connection(
+                reader, writer, pool, resolver, socket_path, hot_keys, stop_event=stop_event
+            )
         except asyncio.CancelledError:
             # Normal on shutdown — propagate for the gather() below.
             raise
@@ -2077,6 +2079,88 @@ def _audit_prewarm_spawn(pool_label: str) -> None:
         logger.debug("SEL audit emit for prewarm spawn failed", exc_info=True)
 
 
+def _audit_stand_down(reason: str, outcome: str) -> None:
+    """Emit a SEL audit event for a stand-down request.
+
+    A stand-down ends the daemon, so it is the most consequential frame the
+    control surface accepts and belongs in the HMAC-chained SEL alongside the
+    claim/abort/peer decisions. Wrapped defensively -- an audit-log failure must
+    never break connection handling.
+    """
+    try:
+        SecurityEventLog().log_api_access(
+            caller="gateway-manager",
+            operation="mcp-gateway.stand_down",
+            outcome=outcome,
+            source="gateway",
+            resources=",".join(resolvable_target_stems()) or "(none)",
+            error=reason,
+        )
+    except Exception:  # pragma: no cover — audit must never break the handler
+        logger.debug("SEL audit emit for stand-down failed", exc_info=True)
+
+
+def _apply_stand_down(frame: dict[str, Any], stop_event: Optional[asyncio.Event]) -> dict[str, Any]:
+    """Yield the socket voluntarily so a daemon with a current target map can bind.
+
+    ``manager._report_adoption_drift`` can already SEE that an adopted survivor's
+    baked target map no longer covers the configured stub set; its own warning
+    ends "Replace the daemon to restore them", and this frame is how that
+    replacement happens without anyone unlinking a live socket.
+
+    Setting ``stop_event`` takes exactly the graceful path SIGTERM takes (the
+    signal handlers installed by ``_amain`` do only ``stop_event.set()``):
+    accepts stop, attached stubs drain, ``pool.shutdown_all()`` runs, the
+    endpoint is removed, the lock is released, the process exits. Doing it this
+    way round is the whole point. The alternative -- the starting gateway
+    unlinking the socket to take it -- is a connect-probe-then-unlink, which in
+    its documented false-stale window steals a LIVE incumbent's endpoint and
+    re-introduces the socket-theft class the flock guard exists to prevent. Here
+    the incumbent decides, and the request only ever arrives over a connection
+    that proves the incumbent is alive, so there is no stale-vs-live judgement to
+    get wrong.
+
+    ``need`` is the list of target stems the caller requires. A daemon that
+    already resolves ALL of them is REFUSED: there is nothing to gain by cycling
+    it, and honouring the request would turn this into a bare kill switch a
+    confused caller could aim at a daemon serving it correctly. A SUPERSET is
+    therefore fit -- extra stems a newer config no longer asks for are harmless,
+    and refusing on inequality would cycle a perfectly good daemon.
+
+    Trust basis for the rest is the same uid-gated owner-only socket that
+    authenticates Register/Claim/Abort.
+    """
+    need = frame.get("need")
+    if not isinstance(need, list) or not need or not all(isinstance(s, str) and s for s in need):
+        _audit_stand_down("missing or invalid need list", "denied")
+        return {"type": "stand-down-rejected", "reason": "missing or invalid 'need' stem list"}
+    served = set(resolvable_target_stems())
+    missing = sorted(set(need) - served)
+    if not missing:
+        _audit_stand_down("already covers every needed stem", "denied")
+        return {
+            "type": "stand-down-rejected",
+            "reason": "this daemon already resolves every requested target stem",
+        }
+    if stop_event is None:
+        # Reached only by a handler wired without a stop event (unit tests
+        # constructing _handle_connection directly). Refuse rather than claim a
+        # shutdown that cannot happen -- an accepted-but-inert control frame is
+        # worse than a rejected one, because the caller then waits for a lock
+        # that is never released.
+        _audit_stand_down("handler has no stop event", "denied")
+        return {"type": "stand-down-rejected", "reason": "shutdown not wired on this handler"}
+    logger.warning(
+        "gatewayd: standing down on request — this daemon cannot resolve %s, "
+        "which the caller's current config requires; draining so a daemon with "
+        "the current target map can bind",
+        ", ".join(missing),
+    )
+    _audit_stand_down(f"missing {','.join(missing)}", "allowed")
+    stop_event.set()
+    return {"type": "standing-down", "missing": missing}
+
+
 async def _handle_connection(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
@@ -2084,6 +2168,8 @@ async def _handle_connection(
     resolver: TargetResolver,
     socket_path: Path,
     hot_keys: Optional[HotKeyStore] = None,
+    *,
+    stop_event: Optional[asyncio.Event] = None,
 ) -> None:
     """Process one stub connection end-to-end.
 
@@ -2211,6 +2297,17 @@ async def _handle_connection(
     # same uid-gated 0700 socket as Register/Claim.
     if register.get("type") == "abort":
         await _write_json_line(writer, await _apply_abort(register, pool))
+        return
+
+    # Stand-down short-circuit (one-shot control connection from a STARTING
+    # gateway): "your baked target map cannot resolve what my config needs --
+    # yield the socket". The only frame that ends the daemon, and the mechanism
+    # that turns _report_adoption_drift's warning into an actual repair. Trust
+    # basis: same uid-gated owner-only socket as Register/Claim/Abort.
+    # Validation, the already-covers refusal and auditing live in
+    # ``_apply_stand_down``.
+    if register.get("type") == "stand-down":
+        await _write_json_line(writer, _apply_stand_down(register, stop_event))
         return
 
     # App-call short-circuit (one-shot control connection from the dashboard):

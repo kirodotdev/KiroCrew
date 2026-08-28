@@ -587,6 +587,40 @@ def endpoint_exists(socket_path: str | os.PathLike[str]) -> bool:
     return Path(socket_path).exists()
 
 
+def singleton_lock_free(socket_path: str | os.PathLike[str]) -> bool:
+    """Whether a replacement daemon could win the singleton lock right now.
+
+    Blocking (it opens a file and takes an advisory lock), so callers run it in
+    a thread. Acquires and immediately releases, which is the only way to ask
+    the question: the lock is held by an fd in another process and there is no
+    read-only "is it held" call.
+
+    This -- not :func:`endpoint_exists` -- is what "the incumbent has finished
+    releasing" means. A draining daemon stops accepting FIRST and releases the
+    lock LAST (``run_gatewayd`` closes the server, drains, shuts the pool down,
+    tears the endpoint down, and only then drops the lock), so the endpoint
+    stops being reachable well before a replacement could bind: on Windows at
+    the very start of shutdown, because the kernel drops a pipe name when the
+    last handle closes, so the whole drain sits inside that gap; on POSIX
+    between ``teardown`` unlinking the socket and process exit closing the fd. A
+    replacement spawned inside the gap loses the lock and exits rc=0 without
+    binding, and nothing rebinds afterwards.
+
+    ``True`` on an inconclusive failure: the caller uses this to decide whether
+    to spawn, and the flock itself remains the real arbiter -- a spawn that
+    turns out to be premature loses the lock and exits cleanly, which is the
+    outcome this probe exists to make rare rather than the one it must prevent.
+    """
+    try:
+        fd = acquire_singleton_lock(socket_path)
+    except OSError:
+        return True
+    if fd is None:
+        return False
+    os.close(fd)
+    return True
+
+
 async def remove_stale(socket_path: str | os.PathLike[str]) -> None:
     """Remove an endpoint left behind by a prior crash.
 

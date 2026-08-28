@@ -69,6 +69,41 @@ _SHUTDOWN_GRACE_SECS = TOTAL_SHUTDOWN_BUDGET_SECS
 # Respawn backoff: start here, double up to max.
 _RESPAWN_BACKOFF_START_SECS = 1.0
 _RESPAWN_BACKOFF_MAX_SECS = 60.0
+# How many times start() will re-run assess-then-spawn before giving up. Two,
+# because the socket can change hands exactly once under a single start: a stale
+# incumbent yields and another gateway instance on the same machine wins the
+# freed lock first. Round two assesses that daemon; the cap is what stops two
+# instances trading the socket in a loop, and giving up is an ERROR rather than a
+# silent success against a daemon that cannot serve the configured stems.
+_ELECTION_ROUNDS = 2
+# Lifetime cap on stand-down requests one manager will issue. _ELECTION_ROUNDS
+# bounds hand-offs WITHIN one start(); this bounds them across the whole process,
+# which is the case the other cap cannot reach: the watchdog also assesses
+# incumbents, on an unbounded respawn loop, so two long-lived gateway instances
+# sharing a socket path with divergent stub sets would otherwise stand each
+# other's daemon down on every respawn, forever. Past the cap this manager stops
+# asking and adopts whatever holds the socket, logging why -- a bounded number of
+# cycles followed by a loud, stable, still-degrading-safely state. Removing the
+# oscillation entirely needs an ownership/generation lease so one instance is the
+# authorised successor; that is a protocol design and is deliberately not
+# invented here.
+_MAX_STAND_DOWN_REQUESTS = 3
+
+# What to do about the daemon holding the socket. Plain strings rather than an
+# Enum so they read the same in a log line as in a branch.
+#: Keep the incumbent (it covers our stems, or it will not yield and still serves).
+_ADOPT = "adopt"
+#: It released the socket; put our own daemon there.
+_SPAWN = "spawn"
+#: Neither is safe right now -- fail the start rather than report a false ready.
+_ABORT = "abort"
+
+# Outcomes of a stand-down request. _DRAINING must stay distinct from _REFUSED:
+# a daemon that ACCEPTED has already closed its accept loop and so is not
+# adoptable, while one that REFUSED is still serving and is.
+_RELEASED = "released"
+_DRAINING = "draining"
+_REFUSED = "refused"
 
 # Python module invoked as the gateway daemon. Kept as a constant so
 # tests can monkey-patch it and the spawn path stays one line.
@@ -141,12 +176,19 @@ class GatewaySpec:
 class GatewayManager:
     """Supervise a single gateway daemon subprocess."""
 
+    #: Class-level default so the attribute is TOTAL regardless of construction
+    #: path. Call sites and tests build this object via ``__new__``, bypassing
+    #: ``__init__``, and an instance-only attribute would raise AttributeError on
+    #: every such path the moment the adoption gate reads it.
+    _stand_downs_issued: int = 0
+
     def __init__(self, spec: GatewaySpec) -> None:
         self._spec = spec
         self._process: asyncio.subprocess.Process | None = None
         self._watchdog: asyncio.Task[None] | None = None
         self._stopping = False
         self._adopted = False
+        self._stand_downs_issued = 0
         self._lifecycle_lock = asyncio.Lock()
 
     @property
@@ -184,26 +226,155 @@ class GatewayManager:
         # survivor from a prior gateway), adopt it instead of spawning a
         # competitor. gatewayd's flock guard already makes a duplicate spawn
         # a clean no-op, but adopting skips the wasted spawn/exit churn.
-        incumbent = await self._ping_payload()
-        if incumbent is not None:
-            self._adopted = True
-            logger.info(
-                "mcp-gateway: a healthy daemon already owns %s — adopting "
-                "(no spawn)", self._spec.socket_path,
-            )
-            # Adoption skips _spawn_once, which is the ONLY place
-            # spec.mcp_target_env is applied. Check the incumbent actually
-            # covers what this spec would have given it, and say so if not.
-            self._report_adoption_drift(incumbent)
-            # Supervise even when adopting: the adopted daemon may be a
-            # prior-gateway survivor with no other watchdog in this process.
-            # The watchdog's adopted branch re-checks liveness by ping and
-            # re-elects (spawns a replacement) if the adopted daemon dies.
-            self._watchdog = asyncio.create_task(
-                self._run_watchdog(), name="mcp-gateway-watchdog"
-            )
-            return True
+        #
+        # Bounded election, because the socket can change hands once under a
+        # single start: a stale incumbent yields, and a DIFFERENT daemon (a
+        # second gateway instance on the same machine) can win the freed lock
+        # before our own spawn does. Round two assesses that daemon the same way
+        # round one assessed the first, and the cap is what stops two instances
+        # trading the socket indefinitely.
+        for _attempt in range(_ELECTION_ROUNDS):
+            incumbent = await self._ping_payload()
+            if incumbent is not None:
+                # Adoption skips _spawn_once, which is the ONLY place
+                # spec.mcp_target_env is applied. Check the incumbent actually
+                # covers what this spec would have given it, and say so if not.
+                missing = self._adoption_drift(incumbent)
+                if not missing:
+                    return self._adopt_incumbent()
+                verdict = await self._repair_or_adopt(missing)
+                if verdict == _ADOPT:
+                    return self._adopt_incumbent()
+                if verdict == _ABORT:
+                    # A draining incumbent: no longer adoptable (it has closed
+                    # its accept loop) and not yet replaceable (it still holds
+                    # the lock). Reporting ready here would be worse than the
+                    # drift -- it would hand sessions a daemon that accepts
+                    # nothing. Fail the start; the socket frees itself moments
+                    # later and the next start converges.
+                    return False
+                # _SPAWN: the incumbent released the socket. Fall through.
 
+            spawned = await self._spawn_and_confirm()
+            if spawned is None:
+                return False
+            if not self._adoption_drift(spawned):
+                if self.is_running:
+                    self._watchdog = asyncio.create_task(
+                        self._run_watchdog(), name="mcp-gateway-watchdog"
+                    )
+                    logger.info(
+                        "mcp-gateway: started pid=%s socket=%s",
+                        self._process.pid if self._process else "?",
+                        self._spec.socket_path,
+                    )
+                    return True
+                # Our spawn lost the lock, but whoever holds it covers what we
+                # need. Adopt rather than fight: a fit daemon is fit regardless
+                # of who started it, and leaving _adopted False here would send
+                # the watchdog spawning doomed competitors.
+                return self._adopt_incumbent()
+            # A foreign daemon holds the socket and cannot serve our stems. Drop
+            # our exited handle and let the next round assess it as an incumbent.
+            logger.warning(
+                "mcp-gateway: our spawn on %s lost the election to a daemon that "
+                "cannot resolve the configured target stems — re-electing",
+                self._spec.socket_path,
+            )
+            self._process = None
+        logger.error(
+            "mcp-gateway: could not put a daemon covering the configured target "
+            "stems on %s within %d election rounds; gateway unavailable",
+            self._spec.socket_path, _ELECTION_ROUNDS,
+        )
+        return False
+
+    def _adopt_incumbent(self) -> bool:
+        """Adopt the daemon on the socket and supervise it. Always ``True``."""
+        self._adopted = True
+        self._process = None
+        logger.info(
+            "mcp-gateway: a healthy daemon already owns %s — adopting "
+            "(no spawn)", self._spec.socket_path,
+        )
+        # Supervise even when adopting: the adopted daemon may be a
+        # prior-gateway survivor with no other watchdog in this process.
+        # The watchdog's adopted branch re-checks liveness by ping and
+        # re-elects (spawns a replacement) if the adopted daemon dies.
+        self._watchdog = asyncio.create_task(
+            self._run_watchdog(), name="mcp-gateway-watchdog"
+        )
+        return True
+
+    async def _repair_or_adopt(self, missing: list[str]) -> str:
+        """Try to replace a stale incumbent; decide what the caller does next.
+
+        Returns :data:`_SPAWN` (it yielded, put our own daemon there),
+        :data:`_ADOPT` (it will not yield -- keep it, degraded, and say so) or
+        :data:`_ABORT` (it accepted but is still draining, so it is neither
+        adoptable nor replaceable right now).
+
+        The ``_ADOPT`` branch is the deliberate fail-open and it preserves main's
+        prior behaviour exactly: an incumbent that refuses is still SERVING, so
+        adopting keeps every server it can resolve working, and the stubs for the
+        stems it cannot resolve degrade to per-session exec rather than dying.
+        Refusing to adopt would instead leave the socket held by a daemon nobody
+        supervises and no working broker at all.
+        """
+        if self._stand_downs_issued >= _MAX_STAND_DOWN_REQUESTS:
+            # Oscillation guard. Reached only when this process has already asked
+            # _MAX_STAND_DOWN_REQUESTS times, which in practice means another
+            # live gateway instance keeps re-winning the socket with a different
+            # target map. Settle instead of trading the socket forever.
+            logger.error(
+                "mcp-gateway: incumbent on %s still cannot resolve %s, but this "
+                "gateway has already issued %d stand-downs — adopting it instead "
+                "of contending further. Another gateway instance is likely "
+                "sharing this socket path with a different stub set; these "
+                "servers' stubs stay on per-session exec.",
+                self._spec.socket_path,
+                ", ".join(missing),
+                self._stand_downs_issued,
+            )
+            return _ADOPT
+        logger.warning(
+            "mcp-gateway: incumbent on %s cannot resolve %s — asking it to "
+            "stand down so a daemon with the current target map can bind",
+            self._spec.socket_path, ", ".join(missing),
+        )
+        outcome = await self._request_stand_down(missing)
+        if outcome == _RELEASED:
+            logger.info(
+                "mcp-gateway: stale incumbent stood down and released %s — "
+                "spawning a daemon for the current target map",
+                self._spec.socket_path,
+            )
+            return _SPAWN
+        if outcome == _DRAINING:
+            logger.error(
+                "mcp-gateway: incumbent on %s accepted the stand-down but had not "
+                "released the socket within %.0fs. It is draining and no longer "
+                "accepting, so it is NOT adopted — adopting a daemon that cannot "
+                "accept would make every server unreachable instead of only the "
+                "drifted ones. Starting without a shared broker; sessions fall "
+                "back to per-session MCP and the next start finds it free.",
+                self._spec.socket_path, _SHUTDOWN_GRACE_SECS,
+            )
+            return _ABORT
+        return _ADOPT
+
+    async def _spawn_and_confirm(self) -> Optional[dict]:
+        """Spawn a daemon and return the ``pong`` of whoever ends up serving.
+
+        ``None`` means the start failed outright (spawn raised, shutdown
+        intervened, the endpoint never appeared, or nothing answered) and the
+        process handle is already cleaned up.
+
+        A returned pong is NOT proof the daemon is ours: gatewayd's flock guard
+        makes a duplicate spawn exit rc=0 without binding, so on a contended
+        socket the answer can come from a foreign daemon. The caller decides by
+        coverage, which is why this returns the frame rather than a bool.
+        """
         # Clear any stale socket from a prior crash.
         await self._clear_stale_socket()
         # Owner-only containing directory: the socketsec model calls this the
@@ -222,7 +393,7 @@ class GatewayManager:
             await self._spawn_once()
         except Exception:
             logger.exception("mcp-gateway: initial spawn failed")
-            return False
+            return None
 
         # Re-check after spawn: shutdown() may have been called while we
         # were awaiting _spawn_once(). If so, terminate the freshly-spawned
@@ -230,7 +401,7 @@ class GatewayManager:
         if self._stopping:
             logger.info("mcp-gateway: stopping flag set after spawn — aborting start")
             await self._terminate_process(grace_secs=_SHUTDOWN_GRACE_SECS)
-            return False
+            return None
 
         ok = await self._wait_for_socket(self._spec.socket_path, _SOCKET_READY_TIMEOUT_SECS)
         if not ok:
@@ -239,27 +410,29 @@ class GatewayManager:
                 _SOCKET_READY_TIMEOUT_SECS,
             )
             await self._terminate_process(grace_secs=_SHUTDOWN_GRACE_SECS)
-            return False
+            return None
 
         # One ping/pong round-trip confirms the daemon's accept loop is
         # live before we hand control back to the caller. Without this the
         # socket appearing only proves bind() succeeded; the handler task
         # might still be wiring up when the first stub connects.
-        if not await self._ping_once():
+        pong = await self._ping_payload()
+        if pong is None:
             logger.warning("mcp-gateway ping failed — treating start as failure")
             await self._terminate_process(grace_secs=_SHUTDOWN_GRACE_SECS)
-            return False
-
-        self._watchdog = asyncio.create_task(self._run_watchdog(), name="mcp-gateway-watchdog")
-        logger.info(
-            "mcp-gateway: started pid=%s socket=%s",
-            self._process.pid if self._process else "?",
-            self._spec.socket_path,
-        )
-        return True
+            return None
+        return pong
 
     async def shutdown(self) -> None:
         """Stop the watchdog and terminate the daemon."""
+        # Set BEFORE contending for the lock, not inside the locked section. A
+        # start() that met a stale incumbent can hold this lock for the whole
+        # stand-down wait (another process's drain budget), and _stopping is the
+        # only way to tell it to give up; setting it after acquiring the lock
+        # would mean shutdown waits out that drain before it can even say so.
+        # Safe to hoist: the flag is monotonic (only ever set on the way down)
+        # and every path that reads it already treats it as "abort".
+        self._stopping = True
         async with self._lifecycle_lock:
             await self._shutdown_locked()
 
@@ -417,18 +590,25 @@ class GatewayManager:
                     break
         return stems
 
-    def _report_adoption_drift(self, pong: dict) -> bool:
+    def _adoption_drift(self, pong: dict) -> list[str]:
         """Warn when an incumbent daemon's target map does not cover this spec.
 
-        Returns ``True`` iff drift was found. Reports rather than refuses, and
-        that split is deliberate: refusing adoption cannot actually replace the
-        incumbent, because gatewayd's flock guard makes a competing spawn a
-        clean no-op -- the stale daemon would keep the socket and we would have
-        traded a warning for an outage. What makes the drift SAFE is the
-        gatewayd-side change that answers an unknown target at the
-        ensure_backend pre-flight with ``fallback: true``, so a stub degrades to
-        a per-session exec instead of dying. This method's job is to make the
-        cost of that degradation visible, since it is real: pooling and the
+        Returns the sorted target stems the incumbent CANNOT resolve (empty when
+        it covers everything), so the caller can both report the cost and name
+        those stems in a stand-down request. Reporting is not refusing, and
+        that split is deliberate: this method only MEASURES the drift, and the
+        caller decides. Refusing adoption on its own would not help -- gatewayd's
+        flock guard makes a competing spawn a clean no-op while the stale daemon
+        keeps the socket, so a bare refusal trades a warning for an outage. The
+        repair therefore goes through ``_repair_or_adopt``, which asks the
+        incumbent to RELEASE the socket first (``_request_stand_down``); only
+        then is a competing spawn able to bind.
+
+        Two things still make the un-repaired case safe, and both matter because
+        an incumbent may refuse: the gatewayd side answers an unknown target at
+        the ensure_backend pre-flight with ``fallback: true``, so a stub degrades
+        to a per-session exec instead of dying, and this method's warning makes
+        the cost of that degradation visible, since it is real -- pooling and the
         strict session key are lost for every server the incumbent cannot serve.
 
         The drift is otherwise invisible and self-perpetuating: the target map is
@@ -437,17 +617,20 @@ class GatewayManager:
         predates a ``stub_servers`` change serves a stale map for as long as it
         holds the socket -- observed in the field as a 25-day-old daemon that
         silently removed ``kirocrew-core``'s entire tool surface from every
-        session. Automatic replacement needs a reap seam an adopted manager does
-        not have (it owns no PID) and is tracked separately.
+        session.
         """
         required = self._required_target_stems()
         if not required:
-            return False
+            return []
         reported = pong.get("targets")
         if not isinstance(reported, list):
             # A daemon too old to report coverage. Unverifiable, not proven bad
             # -- but it is exactly the pre-upgrade survivor class that carries a
-            # stale map, so say so instead of assuming coverage.
+            # stale map, so say so instead of assuming coverage. Treated as
+            # drifted on EVERY required stem, which makes it a stand-down
+            # candidate: such a daemon does not understand the frame either, so
+            # it answers by closing the connection and the caller falls through
+            # to adopting it with this warning already on the record.
             logger.warning(
                 "mcp-gateway: incumbent daemon on %s does not report its target "
                 "map (pre-upgrade daemon), so its coverage of %d configured "
@@ -456,19 +639,112 @@ class GatewayManager:
                 "replace.",
                 self._spec.socket_path, len(required),
             )
-            return True
+            return sorted(required)
         missing = sorted(required - {s for s in reported if isinstance(s, str)})
         if not missing:
-            return False
+            return []
         logger.warning(
             "mcp-gateway: incumbent daemon on %s is STALE -- its target map is "
             "missing %s. Its env was baked when it spawned and an adopted daemon "
-            "never re-applies a new one, so these servers' stubs will degrade to "
+            "never re-applies a new one, so these servers' stubs would degrade to "
             "per-session exec: their tools keep working, but pooling and the "
-            "strict session key are LOST. Replace the daemon to restore them.",
+            "strict session key are LOST.",
             self._spec.socket_path, ", ".join(missing),
         )
-        return True
+        return missing
+
+    async def _request_stand_down(self, need: list[str]) -> str:
+        """Ask a stale incumbent to yield the socket.
+
+        Returns :data:`_RELEASED` (accepted and the lock is free),
+        :data:`_DRAINING` (accepted but not finished within the budget) or
+        :data:`_REFUSED` (did not accept, or never answered). The caller MUST
+        keep ``_DRAINING`` distinct from ``_REFUSED``: a daemon that accepted has
+        already closed its accept loop, so it is no longer adoptable, whereas one
+        that refused is still serving and is.
+
+        Voluntary by design. The starting gateway must not take the endpoint
+        itself: :meth:`_clear_stale_socket` is a connect-probe-then-unlink, and
+        in its documented false-stale window that unlinks a LIVE incumbent's
+        socket -- the socket-theft class the flock guard exists to prevent. Here
+        the incumbent runs its own SIGTERM-equivalent drain and removes its own
+        endpoint, so there is no stale-vs-live judgement to get wrong.
+
+        ``need`` travels with the request so a daemon that already resolves every
+        requested stem can refuse (see ``gatewayd._apply_stand_down``).
+
+        What is waited ON is the singleton LOCK becoming free, not the endpoint
+        disappearing, and the difference is load-bearing. A draining daemon stops
+        accepting first and releases the lock last, so the endpoint goes away
+        while the lock is still held -- on Windows for the daemon's whole drain,
+        since the kernel drops a pipe name as soon as the last handle closes. A
+        replacement spawned in that gap loses the lock, exits rc=0 without
+        binding, and ``_wait_for_socket`` then fails the start with no watchdog
+        left to retry. The lock is precisely what the replacement must win, so it
+        is the only correct readiness signal.
+
+        Bounded by the daemon's own published shutdown budget, and abandoned as
+        soon as ``_stopping`` is set so a shutdown racing a start is not made to
+        wait out another process's drain.
+        """
+        self._stand_downs_issued += 1
+        reply = await self._control_roundtrip({"type": "stand-down", "need": sorted(need)})
+        if reply is None or reply.get("type") != "standing-down":
+            logger.warning(
+                "mcp-gateway: stand-down request on %s was not accepted (%s)",
+                self._spec.socket_path,
+                (reply or {}).get("reason") or "no answer",
+            )
+            return _REFUSED
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _SHUTDOWN_GRACE_SECS
+        while loop.time() < deadline:
+            if self._stopping:
+                logger.info(
+                    "mcp-gateway: abandoning the stand-down wait on %s — shutting down",
+                    self._spec.socket_path,
+                )
+                return _DRAINING
+            if await asyncio.to_thread(transport.singleton_lock_free, self._spec.socket_path):
+                return _RELEASED
+            await asyncio.sleep(_SOCKET_POLL_INTERVAL_SECS)
+        if await asyncio.to_thread(transport.singleton_lock_free, self._spec.socket_path):
+            return _RELEASED
+        return _DRAINING
+
+    async def _control_roundtrip(self, frame: dict[str, Any]) -> Optional[dict]:
+        """Send one control frame on a fresh connection and return the reply.
+
+        ``None`` on any transport, timeout, decode or non-object reply. Bounded
+        by ``_PING_TIMEOUT_SECS`` at connect / drain / read, which is what keeps
+        a wedged daemon from stalling gateway startup.
+        """
+        try:
+            reader, writer = await asyncio.wait_for(
+                transport.connect(self._spec.socket_path, limit=READ_BUFFER_LIMIT_BYTES),
+                timeout=_PING_TIMEOUT_SECS,
+            )
+        except (asyncio.TimeoutError, OSError) as exc:
+            logger.warning(
+                "mcp-gateway %s connect failed: %s", frame.get("type", "control"), exc
+            )
+            return None
+        try:
+            writer.write(json.dumps(frame).encode("utf-8") + b"\n")
+            await asyncio.wait_for(writer.drain(), timeout=_PING_TIMEOUT_SECS)
+            line = await asyncio.wait_for(reader.readuntil(b"\n"), timeout=_PING_TIMEOUT_SECS)
+            msg = json.loads(line.decode("utf-8"))
+            return msg if isinstance(msg, dict) else None
+        except (asyncio.TimeoutError, asyncio.IncompleteReadError, ConnectionError,
+                asyncio.LimitOverrunError, UnicodeDecodeError, json.JSONDecodeError,
+                OSError):
+            return None
+        finally:
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                pass
 
     async def _ping_payload(self) -> Optional[dict]:
         """The daemon's ``pong`` payload, or ``None`` if it did not answer one.
@@ -688,19 +964,41 @@ class GatewayManager:
             # or gatewayd's flock guard rejected our last spawn (it exited
             # rc=0 without binding). If so, adopt the incumbent and stand the
             # watchdog down instead of respawn-looping doomed competitors.
-            if await self._ping_once():
-                self._adopted = True
-                logger.info(
-                    "mcp-gateway: socket %s already served by another daemon "
-                    "— adopting; watchdog will supervise it via ping",
-                    self._spec.socket_path,
-                )
-                # continue (NOT return): re-enter the loop so the adopted
-                # branch (proc is None and self._adopted) supervises the
-                # incumbent by ping and re-elects if it later dies. Returning
-                # here would terminate the watchdog and leave the adopted
-                # daemon unsupervised.
-                continue
+            #
+            # Same repair gate as the startup path: the incumbent this loop meets
+            # is reached by exactly the same reasoning, so a respawn must not
+            # silently accept a target map startup would have tried to replace.
+            #
+            # No SEPARATE post-respawn coverage check is needed here, unlike in
+            # _start_locked. A respawn that loses the flock exits rc=0, the
+            # wait-race below observes that exit, and control returns to THIS
+            # gate — so a stale daemon that won the socket is re-assessed within
+            # one backoff cycle rather than accepted permanently. _start_locked
+            # needed its own check because it returns to the caller instead of
+            # looping back to a gate.
+            incumbent = await self._ping_payload()
+            if incumbent is not None:
+                missing = self._adoption_drift(incumbent)
+                verdict = _ADOPT if not missing else await self._repair_or_adopt(missing)
+                if verdict == _ABORT:
+                    # Draining incumbent: neither adoptable nor replaceable yet.
+                    # Back off and re-assess rather than spawning into a held lock.
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, _RESPAWN_BACKOFF_MAX_SECS)
+                    continue
+                if verdict == _ADOPT:
+                    self._adopted = True
+                    logger.info(
+                        "mcp-gateway: socket %s already served by another daemon "
+                        "— adopting; watchdog will supervise it via ping",
+                        self._spec.socket_path,
+                    )
+                    # continue (NOT return): re-enter the loop so the adopted
+                    # branch (proc is None and self._adopted) supervises the
+                    # incumbent by ping and re-elects if it later dies. Returning
+                    # here would terminate the watchdog and leave the adopted
+                    # daemon unsupervised.
+                    continue
             try:
                 await self._clear_stale_socket()
                 await self._spawn_once()
