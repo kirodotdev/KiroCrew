@@ -85,7 +85,13 @@ import ChatSidebar from '../pages/ChatSidebar'
 import type { RootState } from '../store'
 import type { ChatSlot } from '../types'
 
-const LAST_TS = '2026-08-26T18:00:00Z'
+// RELATIVE, not a literal date: the sidebar's dormant-session collapse
+// (staleCollapse.ts, default threshold 2 days) hides any row whose last
+// activity is older than the threshold, and these tests address rows by
+// title, so a hardcoded date turns into a time bomb — the fixture aged past
+// the threshold two days after it was written and all ten tests started
+// failing on every PR at once. A minute ago is always fresh.
+const LAST_TS = new Date(Date.now() - 60_000).toISOString()
 
 const SLOTS: ChatSlot[] = [
   // The divergence: bound to a `mochi` that nothing dispatches, so `kirocrew`
