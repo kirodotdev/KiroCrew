@@ -893,7 +893,7 @@ def test_under_lock_restat_commits_fingerprint_of_published_snapshot(profiles_di
     gp.reset_store()
     assert gp.resolve_active_scope("cron:j:r") is not None
     store = gp._STORE
-    assert store._fingerprint == (gp._dir_fingerprint(profiles_dir), gp._fallback_token())
+    assert store._fingerprint == (gp._dir_fingerprint(profiles_dir), gp._ceiling_token())
 
     # A further edit reloads and re-commits, still matching the on-disk state.
     path.write_text(
@@ -907,7 +907,7 @@ def test_under_lock_restat_commits_fingerprint_of_published_snapshot(profiles_di
     )
     prof = gp.resolve_active_scope("cron:j:r")
     assert prof is not None and resolve(None, prof, "tools", "code").permitted
-    assert store._fingerprint == (gp._dir_fingerprint(profiles_dir), gp._fallback_token())
+    assert store._fingerprint == (gp._dir_fingerprint(profiles_dir), gp._ceiling_token())
 
     # And the store has converged: a further access does NOT reload again.
     calls = {"n": 0}

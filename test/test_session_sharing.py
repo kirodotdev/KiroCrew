@@ -26,7 +26,7 @@ pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 # ``_isolate_subagents_dir`` fixture in ``conftest.py`` — no per-file fixture needed.
 
 
-async def _wait_until_done(info, *, timeout: float = 5.0) -> None:
+async def _wait_until_done(info, *, timeout: float = 30.0) -> None:
     """Wait for a spawned subagent to finish, deterministically.
 
     ``manager.spawn`` runs the subagent as a background asyncio task that flips
@@ -47,7 +47,7 @@ async def _wait_until_done(info, *, timeout: float = 5.0) -> None:
         await asyncio.sleep(0.01)
 
 
-async def _wait_until_awaited(mock_attr, label: str, *, timeout: float = 5.0) -> None:
+async def _wait_until_awaited(mock_attr, label: str, *, timeout: float = 30.0) -> None:
     """Wait for an async mock to have been awaited, deterministically.
 
     Companion to :func:`_wait_until_done`, for assertions about TEARDOWN rather
@@ -477,7 +477,8 @@ class TestSessionSharingMultiAgent:
              patch("kiro_crew.subagent.sel"):
             info1 = manager.spawn("task A", parent_session_key="dashboard:slot1")
             info2 = manager.spawn("task B", parent_session_key="dashboard:slot1")
-            await asyncio.sleep(1.0)
+            await _wait_until_done(info1)
+            await _wait_until_done(info2)
 
         # Both should use session sharing
         assert info1._session_sharing is True
@@ -505,7 +506,8 @@ class TestSessionSharingMultiAgent:
              patch("kiro_crew.subagent.sel"):
             info1 = manager.spawn("task A", parent_session_key="dashboard:slot1")
             info2 = manager.spawn("task B", parent_session_key="dashboard:slot2")
-            await asyncio.sleep(1.0)
+            await _wait_until_done(info1)
+            await _wait_until_done(info2)
 
         assert info1._session_sharing is True
         assert info2._session_sharing is True

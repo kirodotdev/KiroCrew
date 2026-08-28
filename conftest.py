@@ -1977,6 +1977,53 @@ def _no_model_download(monkeypatch, _isolation_dirs):
 
 
 @pytest.fixture(autouse=True)
+def _no_central_policy_fetch(monkeypatch):
+    """Keep every test off the operator's fleet policy endpoint, and stop the poller.
+
+    Two independent hazards, both of which have to be closed here rather than in
+    ``test/conftest.py``: the ~108 test modules under
+    ``src/kiro_crew/apps/builtins/*/tests/`` never see that file, and several of them
+    call ``boot_platform``.
+
+    **The environment.** ``KIROCREW_POLICY_URL`` and its siblings make
+    ``load_security_policy`` fetch a ceiling over the network. A developer running
+    the suite on a centrally-governed machine would otherwise have every boot-path
+    test hit their own fleet endpoint — and, with the fail-closed default, watch
+    unrelated tests abort when it is slow or unreachable.
+
+    **The thread.** ``policy_distribution`` keeps a module-global refresher whose
+    daemon thread INSTALLS A CEILING into the process-global context. A leaked one
+    outlives ``_reset_platform_context``, so it would swap a fetched ceiling into
+    whichever test happened to be running when its interval elapsed — the "singleton
+    with a daemon thread beats every filesystem cleanup" class, and a maximally
+    confusing one, since the victim is a test that never mentioned governance.
+    Stopping it is a real ``stop()``, not a dropped reference: the thread's target is
+    a bound method, so nothing else clears it.
+    """
+    # Swept by PREFIX rather than by an enumerated list. A hand-written list here
+    # would go stale the moment a sibling variable is added, silently reintroducing
+    # the exact hazard this fixture exists to close — and this fixture must not import
+    # the policy module at setup to read its canonical tuple, because that would put
+    # the governance evaluator on every test's import path.
+    for var in [k for k in os.environ if k.startswith("KIROCREW_POLICY_")]:
+        monkeypatch.delenv(var, raising=False)
+    yield
+    # Imported at teardown, not at setup: the module pulls in the governance
+    # evaluator, and an autouse fixture must not add that to every test's import
+    # cost. If it was never imported, no refresher can be running.
+    module = sys.modules.get("kiro_crew.platform.policy_distribution")
+    if module is not None:
+        with contextlib.suppress(Exception):
+            module.stop_refresher(0.5)
+        # Every process-global the module keeps — the fetch cooldown, the digest of
+        # the document this process installed, and the cache-directory memo. Each is
+        # invisible to a test that does not know it exists, and each leaks into the
+        # next test a different way.
+        with contextlib.suppress(Exception):
+            module.reset_process_state()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_agent_state_sidecar(_isolation_dirs, monkeypatch):
     """Pin the agent_state sidecar to a tmp dir for the whole suite.
 

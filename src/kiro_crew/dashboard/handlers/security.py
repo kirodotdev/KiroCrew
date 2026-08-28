@@ -1941,6 +1941,40 @@ def _other_bound_surfaces() -> list[str]:
         return []
 
 
+def _distribution_posture() -> dict:
+    """Central-policy-distribution posture for the viewer.  Never raises.
+
+    A thin, total wrapper over
+    :func:`kiro_crew.platform.policy_distribution.distribution_posture`, which is
+    already posture-only (a scheme, never the URL; enums, never prose).  It exists
+    for two reasons the caller cannot supply.
+
+    It must not raise, because it is called from BOTH literals in the snapshot
+    below — including the fail-safe one, whose whole job is to answer when
+    something else already went wrong.
+
+    And it must not FETCH.  This snapshot is browser-triggerable and the viewer
+    repolls it every 30 seconds, so a network round trip here would put the fleet's
+    policy endpoint behind an open dashboard tab.  ``distribution_posture`` reads
+    only the parsed pins, the on-disk cache metadata and the refresher's in-memory
+    record — the background refresher is what talks to the network.
+
+    The degraded return carries an ``error_code``, not a bare ``configured: False``.
+    The viewer renders the distribution block on ``configured || error_code``, so
+    without the code this branch would render NOTHING — and a centrally-governed
+    host whose posture could not be read would show the reassuring "no enterprise
+    policy in effect" card, the exact confusion this field was added to remove.
+    """
+    try:
+        from kiro_crew.platform.policy_distribution import distribution_posture
+
+        return distribution_posture()
+    except Exception:
+        logger.warning("policy distribution posture unavailable", exc_info=True)
+        # The import may be what failed, so the code cannot come from the module.
+        return {"configured": False, "error_code": "misconfigured"}
+
+
 def build_governance_policy_snapshot() -> dict:
     """Compute the effective governance ceiling across ALL scopes (host surface).
 
@@ -2056,6 +2090,22 @@ def build_governance_policy_snapshot() -> dict:
             "unknown_profile_scopes": {
                 stem: sorted(scopes) for stem, scopes in unknown_profile_scopes().items()
             },
+            # Whether this host's ceiling is fetched from a central source, and how
+            # that fetch is going. The first field here that is not about the
+            # ceiling's CONTENT but about its PROVENANCE, and it earns the space
+            # because the alternative is worse: a host configured to follow a fleet
+            # policy whose first fetch has not landed has no policy and no profile,
+            # so without this the viewer renders a reassuring "no enterprise policy
+            # in effect" for a machine that is supposed to have one.
+            #
+            # POSTURE ONLY, same contract as the fields above and then some:
+            # ``distribution_posture`` reports the source's SCHEME and never its
+            # URL. A stem was judged not to be rule content; an endpoint is a
+            # stronger claim — it is the fleet's control plane, and this page is
+            # reachable by the agent's own browser tooling, so naming it would tell
+            # a prompt-injected agent where to aim. Every value is a number, a
+            # boolean, or a machine-readable enum, so no English ships in this body.
+            "distribution": _distribution_posture(),
             "unavailable": False,
             "scopes": scopes,
         }
@@ -2070,6 +2120,10 @@ def build_governance_policy_snapshot() -> dict:
             "other_bound_surfaces": [],
             "fallback_profiles": [],
             "unknown_profile_scopes": {},
+            # Present on the fail-safe literal too: the frontend reads this key
+            # unconditionally, and a host that could not resolve its governance is
+            # exactly when an operator needs to be told where its ceiling comes from.
+            "distribution": _distribution_posture(),
             "unavailable": True,
             "scopes": [],
         }

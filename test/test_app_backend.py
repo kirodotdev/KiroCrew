@@ -1739,3 +1739,174 @@ class TestAidlcNotificationsChannelOracle:
         assert [c.id for c in manifest.notifications.channels] == ["aidlc"]
         # ...and the full-manifest validator raises no notifications error for it.
         assert not [e for e in manifest.validate() if "notifications" in e]
+
+
+class TestTheCacheOnlyChildCanSeeTheCacheItMustBootFrom:
+    """``policy_cache`` is bind-mount-hidden in every sandbox tier.
+
+    That is deliberate — it keeps the AGENT's own subprocesses from reading or rewriting
+    the ceiling — but an app backend in cache-only mode resolves the fleet ceiling FROM
+    that file and FAILS CLOSED without it. Without the visibility carve-out the two
+    controls contradict each other and every app backend on a centrally-governed host
+    exits at boot.
+    """
+
+    def test_the_spawn_passes_the_cache_as_a_visible_dir(self, app_env, tmp_path, monkeypatch):
+        import kiro_crew.apps.backend as bmod
+        from kiro_crew.platform import policy_distribution as pd
+
+        # A gateway whose OWN ceiling came from the central tier is the only one that
+        # flags a child cache-only, so that is the state to reproduce.
+        pd._record_installed(b'{"version": 1, "boot": {}}')
+        try:
+            seen: dict = {}
+
+            def _spy_wrap(argv, **kwargs):
+                seen["visible"] = kwargs.get("extra_visible_dirs")
+                return (list(argv), None)
+
+            monkeypatch.setattr(bmod, "wrap_argv", _spy_wrap)
+            monkeypatch.setattr(
+                bmod.subprocess, "Popen", lambda *a, **k: (_ for _ in ()).throw(OSError("stop"))
+            )
+
+            src = tmp_path / "source" / "cache-only-app"
+            src.mkdir(parents=True)
+            (src / APP_MANIFEST_FILENAME).write_text(
+                json.dumps(
+                    {
+                        "name": "cache-only-app",
+                        "version": "1.0.0",
+                        "displayName": "Cache only",
+                        "description": "policy cache visibility",
+                        "backend": {"entryPoint": "server.py", "healthCheck": "/health"},
+                    }
+                )
+            )
+            (src / "server.py").write_text("import time\ntime.sleep(30)\n")
+            install_app(src)
+
+            bmod.start_app_backend("cache-only-app")
+
+            assert seen.get("visible"), "the spawn passed no visible dirs at all"
+            assert str(pd.cache_dir()) in seen["visible"], (
+                "the policy cache is hidden from a child that fails closed without it, "
+                f"so every app backend would exit at boot (saw {seen['visible']!r})"
+            )
+        finally:
+            pd.reset_process_state()
+
+    @staticmethod
+    def _spawn_with_wrap(bmod, tmp_path, monkeypatch, name, wrap):
+        monkeypatch.setattr(bmod, "wrap_argv", wrap)
+        monkeypatch.setattr(
+            bmod.subprocess, "Popen", lambda *a, **k: (_ for _ in ()).throw(OSError("stop"))
+        )
+        src = tmp_path / "source" / name
+        src.mkdir(parents=True)
+        (src / APP_MANIFEST_FILENAME).write_text(
+            json.dumps(
+                {
+                    "name": name,
+                    "version": "1.0.0",
+                    "displayName": name,
+                    "description": "confinement reporting",
+                    "backend": {"entryPoint": "server.py", "healthCheck": "/health"},
+                }
+            )
+        )
+        (src / "server.py").write_text("import time\ntime.sleep(30)\n")
+        install_app(src)
+        bmod.start_app_backend(name)
+
+    def test_an_unconfined_host_says_so_once_and_names_the_control(
+        self, app_env, tmp_path, monkeypatch, caplog
+    ):
+        """A centrally governed host with no OS sandbox runs app code unconfined, so the
+        read-only seal on the cache does not exist. NOT a refusal: an unconfined process can
+        rewrite security_policy.json and the admission policy directly — the keystone gate
+        covers TOOL CALLS, not an arbitrary process's ``open()`` — so forbidding an app to READ
+        the ceiling while it can REPLACE the ceiling protects nothing. What does still hold is
+        provenance, so the warning names it.
+        """
+        import logging
+
+        import kiro_crew.apps.backend as bmod
+        from kiro_crew.platform import policy_distribution as pd
+
+        pd._record_installed(b'{"version": 1, "boot": {}}')
+        monkeypatch.setattr(bmod, "_warned_unconfined_cache", False, raising=False)
+        try:
+            with caplog.at_level(logging.WARNING, logger="kiro_crew.apps.backend"):
+                # An unwrapped argv is exactly what wrap_argv returns with no sandbox backend.
+                self._spawn_with_wrap(
+                    bmod, tmp_path, monkeypatch, "unconfined-app", lambda argv, **kw: (list(argv), None)
+                )
+            messages = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+            said = [m for m in messages if "no OS sandbox" in m]
+            assert said, f"the combination must be named (saw {messages!r})"
+            assert "require_policy_signature" in said[0], "and the actionable control with it"
+        finally:
+            pd.reset_process_state()
+
+    def test_a_confined_host_says_nothing(self, app_env, tmp_path, monkeypatch, caplog):
+        """The control: where the seal applies there is nothing to warn about."""
+        import logging
+
+        import kiro_crew.apps.backend as bmod
+        from kiro_crew.platform import policy_distribution as pd
+
+        pd._record_installed(b'{"version": 1, "boot": {}}')
+        monkeypatch.setattr(bmod, "_warned_unconfined_cache", False, raising=False)
+        try:
+            with caplog.at_level(logging.WARNING, logger="kiro_crew.apps.backend"):
+                # A CHANGED argv is what a real wrap returns.
+                self._spawn_with_wrap(
+                    bmod,
+                    tmp_path,
+                    monkeypatch,
+                    "confined-app",
+                    lambda argv, **kw: (["sandbox-exec", "-f", "/tmp/p.sb", *argv], None),
+                )
+            assert not [
+                r for r in caplog.records if "no OS sandbox" in r.getMessage()
+            ], "a confined spawn must not warn"
+        finally:
+            pd.reset_process_state()
+
+    def test_an_ungoverned_host_passes_no_visible_dirs(self, app_env, tmp_path, monkeypatch):
+        """No central ceiling means no cache-only flag and nothing to un-hide."""
+        import kiro_crew.apps.backend as bmod
+        from kiro_crew.platform import policy_distribution as pd
+
+        pd.reset_process_state()
+        seen: dict = {}
+
+        def _spy_wrap(argv, **kwargs):
+            seen["visible"] = kwargs.get("extra_visible_dirs")
+            return (list(argv), None)
+
+        monkeypatch.setattr(bmod, "wrap_argv", _spy_wrap)
+        monkeypatch.setattr(
+            bmod.subprocess, "Popen", lambda *a, **k: (_ for _ in ()).throw(OSError("stop"))
+        )
+
+        src = tmp_path / "source" / "plain-app"
+        src.mkdir(parents=True)
+        (src / APP_MANIFEST_FILENAME).write_text(
+            json.dumps(
+                {
+                    "name": "plain-app",
+                    "version": "1.0.0",
+                    "displayName": "Plain",
+                    "description": "no central policy",
+                    "backend": {"entryPoint": "server.py", "healthCheck": "/health"},
+                }
+            )
+        )
+        (src / "server.py").write_text("import time\ntime.sleep(30)\n")
+        install_app(src)
+
+        bmod.start_app_backend("plain-app")
+
+        assert seen.get("visible") == ()

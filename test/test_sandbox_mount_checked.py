@@ -1,9 +1,11 @@
 """Every mount in the namespace launcher refuses to exec when it fails.
 
 Each ``mount(2)`` in the launcher IS a security control: three hide credential
-paths, the fourth pins mount propagation so the hiding cannot escape. Discarding
-the return value made all four fail OPEN -- the path stayed visible and the agent
-ran anyway -- and nothing downstream noticed, because there is no post-mount
+paths, one pins mount propagation so the hiding cannot escape, and a pair exposes
+the governance cache read-only (bind, then remount MS_RDONLY -- the remount is
+what withholds the write, since MS_RDONLY is ignored on the initial bind).
+Discarding the return value made them all fail OPEN -- the path stayed visible, or
+stayed WRITABLE, and the agent ran anyway -- and nothing downstream noticed, because there is no post-mount
 emptiness check, the launcher has no logger, and the pre-exec hardlink scan only
 fires when a credential happens to carry an extra link.
 
@@ -69,6 +71,7 @@ _HIDE_END = "        # Scrub sensitive env vars"
 _LANDMARKS = (
     "# Private mount propagation",  # the propagation site
     "for d in SENSITIVE_DIRS:",  # the credential-dir loop
+    "for d in READONLY_DIRS:",  # the read-only exposure loop
     "for f in SENSITIVE_FILES:",  # the sensitive-file loop
     "if HIDE_SSH and os.path.isdir(SSH_DIR):",  # the .ssh block
     "sandbox: BLOCKED",  # the refusal
@@ -79,8 +82,9 @@ class _FakeLibc:
     """``_libc``, with a ``mount`` that fails on a chosen call.
 
     ``fail_at`` is 1-based over the calls this region makes, in source order:
-    1 = propagation, 2 = first credential dir, 3 = first sensitive file,
-    4 = ~/.ssh. ``None`` means every mount succeeds.
+    1 = propagation, 2 = first credential dir, 3 = read-only bind, 4 = read-only
+    remount, 5 = first sensitive file, 6 = ~/.ssh. ``None`` means every mount
+    succeeds.
     """
 
     def __init__(self, *, fail_at: int | None, err: int = errno.EPERM) -> None:
@@ -146,6 +150,11 @@ def _run(
     (ssh / "known_hosts").write_text("example.com ssh-rsa AAAA\n")
     lone = home / ".netrc"
     lone.write_text("machine example.com\n")
+    # The governance cache: exposed read-only rather than hidden, so it is the one
+    # target whose rule is a REAL bind of itself plus a sealing remount.
+    cache = home / ".kiro" / "crew" / "policy_cache"
+    cache.mkdir(parents=True)
+    (cache / "policy.json").write_text("{}\n")
     src_dir = tmp_path / "tmpfs"
     src_dir.mkdir()
 
@@ -155,6 +164,8 @@ def _run(
         "_MS_BIND": 4096,
         "_MS_REC": 16384,
         "_MS_PRIVATE": 1 << 18,
+        "_MS_RDONLY": 1,
+        "_MS_REMOUNT": 32,
         "ctypes": ctypes,
         "os": os,
         "sys": sys,
@@ -163,6 +174,7 @@ def _run(
         "expose_data": {},
         "EXPOSE_FILES": [],
         "SENSITIVE_DIRS": [str(aws)],
+        "READONLY_DIRS": [str(cache)],
         "SENSITIVE_FILES": [str(lone)],
         "SSH_DIR": str(ssh),
         "SSH_KNOWN_HOSTS": str(ssh / "known_hosts"),
@@ -189,7 +201,8 @@ def test_all_mounts_succeeding_lets_the_exec_proceed(tmp_path: Path) -> None:
     """
     libc, refusal = _run(tmp_path, fail_at=None)
     assert refusal is None
-    assert len(libc.calls) == 4  # propagation + dir + file + ssh
+    # propagation + credential dir + read-only bind + its sealing remount + file + ssh
+    assert len(libc.calls) == 6
 
 
 @pytest.mark.parametrize(
@@ -197,19 +210,34 @@ def test_all_mounts_succeeding_lets_the_exec_proceed(tmp_path: Path) -> None:
     [
         (1, "propagation"),
         (2, "credential directory"),
-        (3, "sensitive file"),
-        (4, "ssh key directory"),
+        (3, "exposing read-only directory"),
+        (4, "sealing read-only directory"),
+        (5, "sensitive file"),
+        (6, "ssh key directory"),
     ],
-    ids=["propagation", "credential-dir", "sensitive-file", "ssh-dir"],
+    ids=[
+        "propagation",
+        "credential-dir",
+        "readonly-bind",
+        "readonly-seal",
+        "sensitive-file",
+        "ssh-dir",
+    ],
 )
 def test_a_failed_mount_refuses_to_exec(
     tmp_path: Path, fail_at: int, expect_in_message: str
 ) -> None:
-    """Each of the four sites refuses, and says which control failed.
+    """Each of the six sites refuses, and says which control failed.
 
-    Break-arms: ``site1`` / ``site2`` / ``site3`` / ``site4`` -- each restores
-    the pre-fix unchecked ``_libc.mount(...)`` call at that one site, so exactly
-    the matching parametrisation stops refusing.
+    ``readonly-seal`` is the one whose failure is least visibly a security
+    failure and most needs the refusal: the bind succeeded, so the directory is
+    THERE and readable, and only the remount that withholds write did not land.
+    Proceeding would hand the child exactly the write access the pair exists to
+    deny, with nothing observably wrong.
+
+    Break-arms: ``site1`` .. ``site6`` -- each restores the pre-fix unchecked
+    ``_libc.mount(...)`` call at that one site, so exactly the matching
+    parametrisation stops refusing.
     """
     libc, refusal = _run(tmp_path, fail_at=fail_at)
     assert refusal is not None, f"site {fail_at} let the spawn proceed"
@@ -251,7 +279,7 @@ def test_the_refusal_names_the_deliberate_opt_out(tmp_path: Path) -> None:
     assert "sandbox_level" in refusal
 
 
-def test_every_tier_routes_all_four_mounts_through_the_guard() -> None:
+def test_every_tier_routes_all_six_mounts_through_the_guard() -> None:
     """No tier may keep a raw, unchecked ``_libc.mount`` call site.
 
     Break-arm: ``reintroduce_raw`` (one site reverted to the raw call).
@@ -265,7 +293,7 @@ def test_every_tier_routes_all_four_mounts_through_the_guard() -> None:
             if "_libc.mount(" in line and "source, target, None, flags, None" not in line
         ]
         assert raw == [], f"{level}: unchecked mount call(s): {raw}"
-        assert script.count("_mount_or_die(") == 5  # 1 def + 4 call sites
+        assert script.count("_mount_or_die(") == 7  # 1 def + 6 call sites
 
 
 # --------------------------------------------------------------------------
@@ -287,11 +315,22 @@ _ARMS: dict[str, tuple[str, str]] = {
         "_libc.mount(per_dir_empty, target, None, _MS_BIND, None)",
     ),
     "site3": (
+        "_mount_or_die(target, target, _MS_BIND,\n"
+        '                              "exposing read-only directory %s" % d)',
+        "_libc.mount(target, target, None, _MS_BIND, None)",
+    ),
+    "site4": (
+        "_mount_or_die(target, target,\n"
+        "                              _MS_REMOUNT | _MS_BIND | _MS_RDONLY,\n"
+        '                              "sealing read-only directory %s" % d)',
+        "_libc.mount(target, target, None, _MS_REMOUNT | _MS_BIND | _MS_RDONLY, None)",
+    ),
+    "site5": (
         "_mount_or_die(empty_path.encode(), target, _MS_BIND,\n"
         '                              "hiding sensitive file %s" % f)',
         "_libc.mount(empty_path.encode(), target, None, _MS_BIND, None)",
     ),
-    "site4": (
+    "site6": (
         "_mount_or_die(ssh_tmp, SSH_DIR.encode(), _MS_BIND,\n"
         '                          "hiding ssh key directory %s" % SSH_DIR)',
         "_libc.mount(ssh_tmp, SSH_DIR.encode(), None, _MS_BIND, None)",
@@ -356,7 +395,7 @@ def test_break_arms_falsify_each_assertion(tmp_path: Path, arm: str) -> None:
         assert refusal is not None
         return
 
-    # site1..site4: that one site is unchecked again, so it proceeds silently.
+    # site1..site6: that one site is unchecked again, so it proceeds silently.
     site = int(arm[-1])
     _unused, refusal = _run(tmp_path, fail_at=site, script=script)
     assert refusal is None, f"arm {arm} still refused: {refusal}"

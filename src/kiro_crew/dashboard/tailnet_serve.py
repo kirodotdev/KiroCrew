@@ -463,6 +463,55 @@ def publish(port: int, *, audit_tool: str = "tailnet_publish") -> ServeResult:
     )
 
 
+def revoke_if_governance_now_pins_off(port: int) -> None:
+    """Withdraw a published tailnet origin when the ceiling has come to forbid it.
+
+    Registered as a post-install hook on the central-distribution refresher, because the
+    ``capabilities.tailnet_origin`` gate fires when :func:`publish` is CALLED — it is a
+    chokepoint on the action, not a condition re-checked while serving. That was sound
+    while the ceiling could only change at boot. With a live refresh it is not: a fleet
+    that pins the capability off mid-flight would otherwise leave every already-published
+    host serving its dashboard on the tailnet until someone restarted it, with the policy
+    reporting the capability as denied the whole time.
+
+    Narrow on purpose. It does nothing unless governance now denies the scope AND
+    :func:`serve_state` confirms the handler is OURS, so a mapping an operator added by
+    hand is never touched — the same ownership test :func:`unpublish` makes, for the same
+    reason. Best-effort and never raises: it runs on the refresher thread, and a
+    withdrawal that fails must not stop an installed ceiling being reported as installed.
+    """
+    # A PURE read first, with no ``audit_tool``: this runs on every confirming poll, and
+    # ``is_governance_pinned_off``'s own contract is that auditing a mere inspection appends
+    # HMAC-chained SEL rows at a multiple of the decisions that actually govern anything.
+    if not is_governance_pinned_off():
+        return
+    state = serve_state(port)
+    if state.published is not True:
+        # False (not ours) or None (could not tell). Neither is a mandate to remove
+        # something: the first is someone else's mapping, the second is the
+        # checked-but-never-ran case this module already refuses to render as a result.
+        return
+    # Now that there IS something to withdraw, ask again THROUGH the audited seam. This is
+    # the decision that does something, and it needs a forensic record more than a
+    # human-driven one does: nobody typed it, so the SEL row is the only place a reviewer
+    # can see that the fleet's policy — not an operator — took this host off the tailnet.
+    # ``unpublish`` cannot supply it: withdrawal is deliberately never gated there, so it
+    # discards its own ``audit_tool``. One extra evaluation, on the acting path only, so the
+    # per-poll cost the pure read above exists to avoid is unaffected.
+    is_governance_pinned_off(audit_tool="tailnet_governance_revoke")
+    logger.warning(
+        "the security policy now pins capabilities.tailnet_origin off; withdrawing this "
+        "host's published dashboard origin"
+    )
+    result = unpublish(port, audit_tool="tailnet_governance_revoke")
+    if not result.ok:
+        logger.error(
+            "could not withdraw the published tailnet origin after a policy tightening "
+            "(%s); it is still served until this host is restarted",
+            result.code,
+        )
+
+
 def unpublish(port: int, *, audit_tool: str = "tailnet_unpublish") -> ServeResult:
     """Stop serving the dashboard on the tailnet — **only if 443 is ours**.
 

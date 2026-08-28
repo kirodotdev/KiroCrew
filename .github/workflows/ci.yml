@@ -1309,6 +1309,64 @@ jobs:
           npm run lint:phantom-classes -- --test
           npm run lint:phantom-classes
 
+  # Prove `npm ci` still works on the OLDEST Node the frontend claims to support.
+  # Every other job here runs the .nvmrc toolchain (Node 24 / npm 11), and npm 11
+  # and npm 10 (Node 22) build different ideal trees for an OPTIONAL PEER
+  # dependency: npm 10 wants a nested entry for it, npm 11 does not install it at
+  # all. A lockfile regenerated under npm 11 therefore drops what npm 10 demands,
+  # and `npm ci` dies with EUSAGE ("Missing: <pkg> from lock file") for everyone
+  # on the declared floor while all of CI stays green. That happened twice to the
+  # same dependency, the second time as a side effect of a change about something
+  # else entirely.
+  #
+  # The specific divergence is gone -- an `overrides` entry now makes both majors
+  # resolve that dependency identically, so neither can drop anything. This job
+  # exists because that is a property of today's dependency tree, not a guarantee:
+  # the next package with an unsatisfiable optional peer reintroduces the whole
+  # class, and without a job on the floor nothing would notice.
+  lockfile-engines-floor:
+    name: Lockfile Installs On Declared Node Floor
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Pinned to the floor, NOT to `engines.node` via node-version-file: that
+      # input resolves a range like ">=22" to the NEWEST matching release, which
+      # would quietly re-test Node 24 and make this job vacuous. The literal is
+      # held to engines.node statically instead, by
+      # test_the_engines_floor_job_pins_the_declared_floor -- one derivation of
+      # the floor, in the file that already governs every other node pin.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: npm ci on the engines floor
+        working-directory: website
+        # A real install, not `--dry-run`: dry-run still fires the postinstall
+        # patch script but leaves no node_modules for it to patch, so it fails
+        # for a reason that has nothing to do with the lockfile. Installing for
+        # real also makes the gate mean what its name says -- `npm ci` works on
+        # the declared floor -- rather than only that resolution succeeded.
+        #
+        # The failure hint matters because this job is the ONLY one on the floor:
+        # whoever trips it is on Node 24 and cannot reproduce the red locally, so
+        # naming the reproduction turns an opaque failure into a self-servicing
+        # one.
+        run: |
+          npm ci --no-audit --no-fund || {
+            echo "::error::npm ci failed on Node $(node -v), the engines.node floor." \
+              "Every other job runs the .nvmrc toolchain (Node 24 / npm 11), so this can" \
+              "fail while they pass: the two npm majors resolve optional peer dependencies" \
+              "differently. Reproduce without installing Node 22:" \
+              "cd website && npx -y npm@10 ci. If it is a lockfile disagreement, prefer" \
+              "removing the divergence (an overrides entry both majors resolve the same way)" \
+              "over hand-adding whichever entry one major happens to want."
+            exit 1
+          }
+
   cfn-lint:
     name: CloudFormation Lint
     runs-on: ubuntu-latest

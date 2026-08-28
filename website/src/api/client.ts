@@ -837,6 +837,49 @@ export interface GovernanceScope {
   detail: GovernanceScopeDetail
 }
 
+/** Central-policy-distribution posture, from the `distribution` key of
+ *  GET /api/governance/policy.
+ *
+ *  POSTURE ONLY, and one field more strictly than the rest of that payload: the
+ *  producer reports the source's SCHEME and never its URL, because the endpoint is
+ *  the fleet's control plane and the dashboard is reachable by the agent's own
+ *  browser tooling. Every value is a number, a boolean, or a machine-readable enum,
+ *  so the dashboard renders translated text and no English arrives in the JSON body.
+ *
+ *  Only `configured` is guaranteed: the producer's fail-safe path answers
+ *  `{configured: false}` alone when the posture itself could not be resolved, so
+ *  every other field is optional and a reader must treat absence as unknown rather
+ *  than as a zero. */
+export interface GovernanceDistributionData {
+  /** Whether this host fetches its ceiling from a central source at all. False
+   *  also covers "could not tell" — pair it with `error_code`. */
+  configured: boolean
+  /** URL scheme of the source (`https`, `file`, `http`), never the URL. '' when
+   *  unconfigured. */
+  source_scheme?: string
+  /** Seconds between background re-fetches, already clamped to the polling floor.
+   *  0 = fetched at boot only. */
+  refresh_interval_seconds?: number
+  /** The fleet's staleness bound on the cached copy. 0 = no bound. */
+  max_cache_age_seconds?: number
+  /** What the host does when no ceiling can be established: refuse to start, or
+   *  fall through to the next policy tier and report a governance incident. */
+  on_unavailable?: 'fail_closed' | 'degrade' | ''
+  /** Whether the background poll loop is alive in this process. */
+  refresher_running?: boolean
+  /** Whether a last-known-good copy recorded against THIS source is on disk. */
+  cache_present?: boolean
+  /** Age of that copy in seconds; null when there is none. */
+  cache_age_seconds?: number | null
+  /** Outcome of the most recent background refresh. '' before the first one. */
+  last_refresh_status?: 'not_configured' | 'unchanged' | 'applied' | 'rejected' | 'unreachable' | ''
+  /** Seconds since that refresh; null when none has run. */
+  last_refresh_age_seconds?: number | null
+  /** Why the posture could not be resolved, as an enum the dashboard maps to
+   *  translated copy. '' when nothing went wrong. */
+  error_code?: 'misconfigured' | ''
+}
+
 /** GET /api/governance/policy — the read-only effective ceiling across scopes. */
 export interface GovernancePolicyData {
   /** Policy schema version, or null when no enterprise ceiling is present. */
@@ -864,6 +907,11 @@ export interface GovernancePolicyData {
    *  the governance security payload (PR #5544). Tolerated at load time and
    *  inert in this build. */
   unknown_profile_scopes?: Record<string, string[]>
+  /** Where the ceiling itself comes from, when a central source publishes it.
+   *  Present on BOTH the normal and the fail-safe snapshot, so a host whose first
+   *  fetch has not landed — `has_policy: false`, `profile: null` — can still be told
+   *  apart from a host that has no enterprise ceiling at all. */
+  distribution?: GovernanceDistributionData
   /** True when governance resolution failed — the viewer shows a soft notice. */
   unavailable: boolean
   scopes: GovernanceScope[]

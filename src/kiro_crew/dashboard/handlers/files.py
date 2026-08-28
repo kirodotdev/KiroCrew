@@ -774,10 +774,10 @@ async def api_channel_upload_file(request: web.Request) -> web.Response:
     renderers' extraction path enforces, on the same shared predicate. The
     destination comes exclusively from the caller's session map entry — a
     request cannot name an arbitrary conversation, which is what keeps this
-    endpoint from being a broadcast primitive. Delivery today: Telegram via
-    the purpose-built ``send_document`` (name-preserving); Discord is an
-    explicit skip until its transport grows a document verb that preserves an
-    admitted filename (see the delivery-branch comment below).
+    endpoint from being a broadcast primitive. Delivery today: Telegram and
+    Discord, each via its own purpose-built name-preserving ``send_document``
+    (see the delivery-branch comment below); every other channel is a skip
+    until its transport grows that verb.
 
     "Cannot deliver here" is a SKIP (``delivered: false``), not an error: most
     sessions mirror nowhere, and the caller falls back to the dashboard card
@@ -839,15 +839,13 @@ async def api_channel_upload_file(request: web.Request) -> web.Response:
     ):
         return _skip("restricted_session")
     deliver = None
-    if link.channel_type == "telegram":
+    # Both legs resolve the SAME purpose-built verb: a name-preserving document
+    # send, distinct from each transport's extraction upload whose filename
+    # sanitizer maps any non-raster mime to `.bin` (`upload_filename`) — correct
+    # for LLM-authored reference paths, wrong for a name this endpoint's gate
+    # already scanned. A channel is listed here only once it has that verb.
+    if link.channel_type in ("telegram", "discord"):
         deliver = getattr(transport, "send_document", None)
-    # Discord is deliberately NOT wired: its transport upload verb serves the
-    # image-extraction pipeline, whose filename sanitizer maps any non-raster
-    # mime to `.bin` (`upload_filename`) — correct for LLM-authored reference
-    # paths, but it would deliver `report.pdf` as `report.bin` here. Until the
-    # transport grows a document verb that preserves an ADMITTED name (the
-    # gate already scanned it), Discord callers keep the dashboard-link
-    # fallback rather than a corrupted attachment.
     if deliver is None:
         return _skip(f"channel_upload_unsupported:{link.channel_type}")
     # Off-loop: the gate reads up to MAX_FILE_BYTES and regex-scans the content

@@ -3321,6 +3321,70 @@ def _reconcile_tool_aliases_from_disk(path: Path, config: dict) -> bool:
     return existed
 
 
+#: Generation of the ceiling the on-disk ``allowedTools`` was last derived under. Compared
+#: for equality only, per ``governance_generation``'s contract.
+_projected_ceiling_generation: int | None = None
+
+
+def prime_ceiling_projection() -> None:
+    """Record the ceiling generation boot projected the agent config under.
+
+    Called once, before the central-distribution poller starts. Seeding here rather than on
+    :func:`reproject_for_ceiling_change`'s first call is the difference between "nothing has
+    changed since boot" and "nothing has changed since the first poll" — and the first poll
+    can install a new ceiling, so the latter would record that generation and skip the very
+    rebuild it needed.
+    """
+    global _projected_ceiling_generation
+    from kiro_crew.platform.context import governance_generation
+
+    _projected_ceiling_generation = governance_generation()
+
+
+def reproject_for_ceiling_change() -> None:
+    """Re-derive the on-disk ``allowedTools`` when the governance ceiling has moved.
+
+    ``allowedTools`` is kiro-cli's blanket auto-approve list, and it is **materialised**: the
+    five writers of it consult the ceiling when they write, and kiro-cli then reads the FILE.
+    So a ceiling that comes to deny a tool mid-flight does not narrow a list already on disk,
+    and every session started afterwards would keep auto-approving what the fleet now
+    forbids — the tool short-circuits inside the harness and never reaches Kiro Crew's own
+    PreToolUse gate.
+
+    Registered as a post-install hook on the central-distribution refresher, alongside the
+    tailnet revocation and for the same reason: before a live refresh existed the ceiling
+    only changed at boot, and boot projects the config anyway.
+
+    **Bounded to an actual change.** Hooks run on every confirming poll, so an unconditional
+    rebuild would rewrite a file kiro-cli watches every refresh interval, for nothing. The
+    baseline is seeded by :func:`prime_ceiling_projection` BEFORE the poller starts, not on
+    the first call: the first poll can itself install a new ceiling, and a first-call baseline
+    would record that generation and skip the very rebuild it needed.
+
+    **The memo advances only after a successful rebuild.** A failure raises through the hook
+    runner, which logs it and moves on — and if the generation had already been marked
+    synchronised, the retry the next poll would otherwise give us is lost, leaving forbidden
+    auto-approvals on disk for the process lifetime.
+
+    An unseeded baseline rebuilds once on the first call rather than skipping, which is the
+    safe direction: a redundant rewrite costs a file write, a skipped one costs the tighten.
+
+    What this cannot do is narrow a session ALREADY negotiated: kiro-cli holds the grants it
+    was given, and no policy mechanism reaches into a running one. That limit is the same
+    shape as an already-running process keeping its own sandbox, and a restart is its only
+    answer — which is why removing live refresh would not close it either.
+    """
+    global _projected_ceiling_generation
+    from kiro_crew.platform.context import governance_generation
+
+    generation = governance_generation()
+    if _projected_ceiling_generation == generation:
+        return
+    logger.info("the governance ceiling moved; re-deriving the agent config's auto-approvals")
+    rebuild_agent_config()
+    _projected_ceiling_generation = generation
+
+
 def rebuild_agent_config(*, clean: bool = False) -> Path:
     """Rebuild and write the merged kirocrew.json to ~/.kiro/agents/.
 
