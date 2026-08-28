@@ -123,8 +123,8 @@ def _gpt_prompt(values=None, stage="/tmp/stage"):
     """
     text = _gpt_text()
     scalars = local_review.block_scalars(text)
-    target = local_review._heredoc_target(text)
-    block = local_review._run_block_with(scalars, "cat > {} <<".format(target), "gpt")
+    target = local_review._prompt_target(text)
+    block = local_review._assembly_block(scalars, target, "gpt")
     import tempfile
 
     with tempfile.TemporaryDirectory(prefix="gpt-prompt-stage-") as stage_dir:
@@ -211,8 +211,8 @@ def test_gpt_prompt_is_lifted_verbatim_not_paraphrased():
     """Every extracted line must exist in its source, byte for byte.
 
     This is the property the whole script rests on: the local brief is the
-    server's own text - a heredoc line dedented by the YAML block indent, or a
-    line of a shared prompt file spliced in verbatim (#5852).
+    server's own text - since #3697 every line of it is a line of a shared
+    prompt file spliced in verbatim.
     """
     prompt = _gpt_prompt()
     raw = _gpt_text()
@@ -274,11 +274,14 @@ def test_quoted_literals_drops_shell_plumbing():
 
 
 def test_block_scalars_never_reads_prompt_text_as_structure():
-    """A `name:`-looking line inside a prompt must not rename the owning step."""
+    """A `name:`-looking line inside a run block must not rename the owning step."""
     scalars = local_review.block_scalars(_gpt_text())
     steps = {s.step for s in scalars}
     assert "Write review prompt" in steps
-    assert any(s.key == "run" and "SYSTEM RULES" in s.text for s in scalars)
+    assert any(
+        s.key == "run" and "cat .review-prompts-gpt/gpt-preamble.md" in s.text
+        for s in scalars
+    )
 
 
 def test_opus_contract_comes_from_base_ref_prompt_files():
@@ -300,25 +303,28 @@ def test_opus_wrapper_prompts_extracted_for_every_stage():
         assert "pr.diff" in wrapper.text
 
 
-def test_gpt_lane_is_hybrid_and_opus_lane_has_no_heredoc():
-    """Lane dispatch keys on the heredoc target, so the shapes stay disjoint.
+def test_gpt_lane_is_spliced_and_opus_lane_has_no_prompt_target():
+    """Lane dispatch keys on the prompt-assembly splice, so the shapes stay disjoint.
 
-    Since #5852 the GPT lane is a HYBRID: it still writes a prompt heredoc
-    (which is what dispatch keys on) but also stages shared prompt files that
-    the heredoc splices in. Its specs carry the workflow's cp bootstrap as a
-    worktree fallback; the Opus lane's specs stay fail-closed (no fallback).
+    Since #3697 the GPT lane's prompt is assembled purely from shared prompt
+    files (dispatch keys on the opening ``cat ... >`` splice). Its specs carry
+    the workflow's cp bootstrap as a worktree fallback; the Opus lane's specs
+    stay fail-closed (no fallback).
     """
-    assert local_review._heredoc_target(_gpt_text()) is not None
+    assert local_review._prompt_target(_gpt_text()) is not None
     gpt_specs = local_review.extract_prompt_file_specs(_gpt_text())
     assert [Path(s.src).name for s in gpt_specs] == [
+        "gpt-preamble.md",
         "gpt-diff-not-evidence.md",
+        "gpt-repo-context.md",
         "gpt-review-core.md",
+        "gpt-round-convergence.md",
         "gpt-output-contract.md",
         "gpt-falsification-mandate.md",
         "gpt-falsification-verdict.md",
     ]
     assert all(s.worktree_src == s.src for s in gpt_specs)
-    assert local_review._heredoc_target(_opus_text()) is None
+    assert local_review._prompt_target(_opus_text()) is None
     opus_specs = local_review.extract_prompt_file_specs(_opus_text())
     assert opus_specs != []
     assert all(s.worktree_src is None for s in opus_specs)
@@ -418,7 +424,7 @@ def test_base_rule_staging_produces_both_files_including_the_fallback(parity_rep
 def test_prompt_file_contracts_are_remapped_like_every_other_lane(parity_repo, tmp_path, no_gh):
     """The base-ref prompt files carry bare `.review-*` references. Nothing is
     written into the worktree, so every lane's contract text must point at the
-    staged twins - not just the heredoc lane."""
+    staged twins - not just the GPT lane."""
     out_dir = tmp_path / "out"
     stage_dir = tmp_path / "stage"
     summary = local_review.assemble(str(parity_repo), "main", str(out_dir), str(stage_dir))
@@ -552,8 +558,8 @@ def test_branch_symlink_cannot_redirect_a_reviewers_contract(parity_repo, tmp_pa
     assert lanes["gpt"]["contract"] == ".github/workflows/{}".format(GPT_WORKFLOW.name)
     # Shape is the first discriminator: the workflow the symlink points at is
     # extracted through the prompt-files path, so a redirected lane could not
-    # report the heredoc shape.
-    assert lanes["gpt"]["shape"] == "heredoc"
+    # report the spliced shape.
+    assert lanes["gpt"]["shape"] == "spliced-files"
 
     def normalise(text, stage_dir, head_sha):
         return text.replace(str(stage_dir), "<STAGE>").replace(head_sha, "<HEAD>")
@@ -1277,24 +1283,78 @@ def test_intent_media_is_stripped():
 # --------------------------------------------------------------------------
 # Mutation checks - a restructured workflow must fail LOUDLY
 # --------------------------------------------------------------------------
-def test_stripped_heredoc_fails_loudly(tmp_path):
-    """Strip the OPENING prompt heredoc; assembly must raise, never a stub.
+def test_stripped_opening_splice_fails_loudly(tmp_path):
+    """Strip the OPENING ``cat ... >`` splice; assembly must raise, never a stub.
 
-    The mutation regex deliberately matches only ``cat >`` (one ``>``), so the
-    ``cat >>`` continuations and file splices survive - proving the assembler
-    demands the opener specifically rather than accepting any fragment.
+    The mutation removes only the single-``>`` opener, so every ``cat ... >>``
+    append survives - proving the assembler demands the opener specifically
+    rather than accepting any fragment.
     """
     text = _gpt_text()
-    target = local_review._heredoc_target(text)
+    target = local_review._prompt_target(text)
     scalars = local_review.block_scalars(text)
-    block = local_review._run_block_with(scalars, "cat > {} <<".format(target), "gpt")
-    mutated = re.sub(r"cat\s*>\s*\S*prompt\.md\s*<<-?'?EOF'?", "true <<'EOF'", block)
+    block = local_review._assembly_block(scalars, target, "gpt")
+    opener = "cat .review-prompts-gpt/gpt-preamble.md > /tmp/codex-prompt.md"
+    assert opener in block
+    mutated = block.replace(opener, "true")
     _stage_gpt_prompts(text, tmp_path)
     with pytest.raises(local_review.ParityError) as exc:
         local_review.assemble_prompt_document(mutated, target, str(tmp_path))
     message = str(exc.value)
-    assert "no `cat >" in message
+    assert "no `cat" in message
     assert "do NOT fall back" in message
+
+
+def test_every_staged_prompt_file_is_spliced_exactly_once_in_loop_order():
+    """Dropping (or reordering) one `cat` splice must not pass silently.
+
+    The staging loop and the assembly are two lists that must agree: a file
+    staged but never spliced silently loses a block of the contract while the
+    lane still publishes a verdict. The document splices must be exactly the
+    staged names in staging order, minus the two falsification files, which
+    the pass-2 step consumes as bare `cat` splices instead.
+    """
+    text = _gpt_text()
+    target = local_review._prompt_target(text)
+    scalars = local_review.block_scalars(text)
+    block = local_review._assembly_block(scalars, target, "gpt")
+    staged = [Path(s.dest).name for s in local_review.extract_prompt_file_specs(text)]
+    spliced = re.findall(
+        r"^\s*cat\s+\.review-prompts-gpt/(\S+)\s*>{1,2}\s*" + re.escape(target) + r"\s*$",
+        block,
+        flags=re.M,
+    )
+    pass_block = local_review._run_block_with(scalars, "DISCOVERY PASS", "gpt")
+    pass_spliced = [
+        m.group("src").rsplit("/", 1)[-1]
+        for m in map(local_review._CAT_BARE_RE.match, pass_block.splitlines())
+        if m is not None
+    ]
+    assert spliced == [name for name in staged if name not in pass_spliced]
+    assert len(set(spliced)) == len(spliced), "a document splice repeats"
+    assert sorted(spliced + pass_spliced) == sorted(staged)
+
+
+def test_spliced_prompt_tracks_the_staged_file_content(tmp_path):
+    """Non-vacuity: the file lane is actually exercised.
+
+    Mutating one staged prompt file's content must change the assembled brief;
+    an assembly that stays identical with the file rewritten would mean the
+    splice path is decorative and the local gate reviews against nothing.
+    """
+    text = _gpt_text()
+    target = local_review._prompt_target(text)
+    scalars = local_review.block_scalars(text)
+    block = local_review._assembly_block(scalars, target, "gpt")
+    _stage_gpt_prompts(text, tmp_path)
+    baseline = local_review.assemble_prompt_document(block, target, str(tmp_path))
+    sentinel = "SENTINEL-3697-PROMPT-MUTATION"
+    assert sentinel not in baseline
+    staged = tmp_path / ".review-prompts-gpt" / "gpt-repo-context.md"
+    staged.write_text(sentinel + "\n", encoding="utf-8")
+    mutated = local_review.assemble_prompt_document(block, target, str(tmp_path))
+    assert sentinel in mutated
+    assert mutated != baseline
 
 
 def test_worktree_bootstrap_source_cannot_escape_the_worktree(tmp_path):
@@ -1327,12 +1387,15 @@ def test_worktree_bootstrap_source_cannot_escape_the_worktree(tmp_path):
     assert "resolves outside the worktree" in str(exc.value)
 
 
-def test_unclosed_heredoc_fails_loudly(tmp_path):
+def test_unstaged_splice_fails_loudly(tmp_path):
+    """A splice naming a file nothing staged means the prompt-file specs and
+    the assembly disagree - the assembler must refuse, never emit a partial
+    contract."""
     with pytest.raises(local_review.ParityError) as exc:
         local_review.assemble_prompt_document(
-            "cat > /tmp/p.md <<'EOF'\nbody\n", "/tmp/p.md", str(tmp_path)
+            "cat .review-prompts-gpt/gpt-preamble.md > /tmp/p.md\n", "/tmp/p.md", str(tmp_path)
         )
-    assert "never closed" in str(exc.value)
+    assert "no such file was staged" in str(exc.value)
 
 
 def test_removed_base_rule_snapshot_fails_loudly():
@@ -1363,7 +1426,7 @@ def test_missing_echo_framing_fails_loudly():
         local_review.extract_echo_block("echo hello\n", "PR INTENT", "PR_INTENT_BEGIN")
 
 
-def test_cli_exits_40_when_the_prompt_heredoc_is_gone(parity_repo, tmp_path):
+def test_cli_exits_40_when_the_prompt_assembly_is_gone(parity_repo, tmp_path):
     """End-to-end mutation check: a restructured workflow exits 40, writes no brief.
 
     The restructure is committed on the BASE branch and the feature branch
@@ -1374,7 +1437,10 @@ def test_cli_exits_40_when_the_prompt_heredoc_is_gone(parity_repo, tmp_path):
     _git(parity_repo, "checkout", "main")
     text = workflow.read_text(encoding="utf-8")
     workflow.write_text(
-        text.replace("cat > /tmp/codex-prompt.md <<'EOF'", "true <<'EOF'"), encoding="utf-8"
+        text.replace(
+            "cat .review-prompts-gpt/gpt-preamble.md > /tmp/codex-prompt.md", "true"
+        ),
+        encoding="utf-8",
     )
     _git(parity_repo, "add", "-A")
     _git(parity_repo, "commit", "-m", "restructure the reviewer workflow")
@@ -1413,7 +1479,7 @@ def test_assemble_writes_one_brief_per_reviewer(parity_repo, tmp_path, no_gh):
 
     assert sorted(summary["tasks"]) == ["gpt", "opus"]
     lanes = {lane["name"]: lane for lane in summary["lanes"]}
-    assert lanes["gpt"]["shape"] == "heredoc"
+    assert lanes["gpt"]["shape"] == "spliced-files"
     assert lanes["opus"]["shape"] == "prompt-files"
     gpt_budget = lanes["gpt"]["blocking_budget"]
     assert gpt_budget is None or gpt_budget >= 1

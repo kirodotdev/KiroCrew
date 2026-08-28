@@ -11,16 +11,16 @@ So this script does not describe the contract - it EXTRACTS it, live, from the
 reviewer workflows at the worktree's own checkout, and assembles one task file
 per reviewer:
 
-  * GPT lane (hybrid-shaped workflow, e.g. .github/workflows/codex-review.yml):
-    the reviewer prompt is an opening heredoc plus, in order, heredoc
-    continuations and splices of shared `.github/review-prompts/gpt-*.md`
-    files (#5852). We stage the shared files from the base commit exactly as
+  * GPT lane (spliced-prompt workflow, e.g. .github/workflows/codex-review.yml):
+    the reviewer prompt is assembled purely by splicing shared
+    `.github/review-prompts/gpt-*.md` files, in the workflow's own order, into
+    one document. We stage the shared files from the base commit exactly as
     the workflow's loader does (honouring its `cp` bootstrap for the PR that
-    introduces one), assemble the document VERBATIM in the workflow's own
-    order (SYSTEM RULES, REPO CONTEXT, DIVISION OF LABOUR, the
-    severity/blocking contract, OUTPUT STYLE - all of it), substitute the
-    GitHub event expressions with local values, and append the same two-pass
-    discovery/falsification instructions the workflow passes per pass.
+    introduces one), concatenate them VERBATIM in splice order (SYSTEM RULES,
+    REPO CONTEXT, DIVISION OF LABOUR, the severity/blocking contract, OUTPUT
+    STYLE - all of it), substitute the GitHub event expressions with local
+    values, and append the same two-pass discovery/falsification instructions
+    the workflow passes per pass.
   * Opus lane (prompt-file-shaped workflow, e.g. .../claude-review.yml): the
     contract lives in base-ref prompt FILES plus a small inline wrapper prompt.
     We lift the wrapper block scalars verbatim and stage the base-ref prompt
@@ -180,12 +180,7 @@ def block_scalars(text: str, keys: tuple[str, ...] = ("run", "prompt", "claude_a
     return out
 
 
-_HEREDOC_RE = re.compile(
-    r"^(?P<indent>\s*)cat\s*>{1,2}\s*(?P<target>\S+)\s*<<-?\s*"
-    r"(?P<quote>['\"]?)(?P<delim>[A-Za-z_][A-Za-z0-9_]*)(?P=quote)\s*$"
-)
-
-
+_CAT_CREATE_RE = re.compile(r"^\s*cat\s+(?P<src>\S+)\s+>(?!>)\s*(?P<target>\S+)\s*$")
 _CAT_APPEND_RE = re.compile(r"^\s*cat\s+(?P<src>\S+)\s*>>\s*(?P<target>\S+)\s*$")
 _CAT_BARE_RE = re.compile(r"^\s*cat\s+(?P<src>\S+\.md)\s*$")
 
@@ -193,60 +188,49 @@ _CAT_BARE_RE = re.compile(r"^\s*cat\s+(?P<src>\S+\.md)\s*$")
 def assemble_prompt_document(run_text: str, target: str, stage_dir: str) -> str:
     """Assemble the reviewer prompt exactly as the workflow builds it.
 
-    The GPT lane's prompt is no longer one literal heredoc: it is an opening
-    ``cat > <target> <<'EOF'`` heredoc followed, in encounter order, by
-    ``cat >> <target> <<'EOF'`` continuations and ``cat <shared prompt file>
-    >> <target>`` splices (#5852). The spliced files were staged from the base
-    commit by the same specs the workflow's loader declares, so resolving them
-    against ``stage_dir`` reads the identical bytes CI reads. Raises ParityError
-    when the opening heredoc is absent - a restructured workflow must fail
-    loudly, never degrade into a stub.
+    The GPT lane's prompt is a pure splice sequence (#3697): one opening
+    ``cat <shared prompt file> > <target>`` followed, in encounter order, by
+    ``cat <shared prompt file> >> <target>`` appends. The spliced files were
+    staged from the base commit by the same specs the workflow's loader
+    declares, so resolving them against ``stage_dir`` reads the identical
+    bytes CI reads - and raw concatenation (the ``>`` splice truncating,
+    exactly like the shell) reproduces the assembled document byte-for-byte,
+    including a prompt file that deliberately ends with a blank line. Raises
+    ParityError when the opening splice is absent - a restructured workflow
+    must fail loudly, never degrade into a stub.
     """
-    lines = run_text.splitlines()
     parts: list[str] = []
     opened = False
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        heredoc = _HEREDOC_RE.match(line)
-        if heredoc is not None and heredoc.group("target") == target:
-            if ">>" not in line.split("<<", 1)[0]:
-                opened = True
-            indent = len(heredoc.group("indent"))
-            delim = heredoc.group("delim")
-            body: list[str] = []
-            i += 1
-            while i < len(lines) and lines[i].strip() != delim:
-                cur = lines[i]
-                body.append(cur[indent:] if cur[:indent].strip() == "" else cur.lstrip())
-                i += 1
-            if i >= len(lines):
-                raise ParityError(
-                    "heredoc for {} opened with <<{} but never closed".format(target, delim)
-                )
-            parts.append("\n".join(body))
-            i += 1
+    for line in run_text.splitlines():
+        create = _CAT_CREATE_RE.match(line)
+        if create is not None and create.group("target") == target:
+            opened = True
+            parts = [_read_staged_prompt(create.group("src"), stage_dir, raw=True)]
             continue
         splice = _CAT_APPEND_RE.match(line)
         if splice is not None and splice.group("target") == target:
-            parts.append(_read_staged_prompt(splice.group("src"), stage_dir))
-        i += 1
+            parts.append(_read_staged_prompt(splice.group("src"), stage_dir, raw=True))
     if not opened or not parts:
         raise ParityError(
-            "no `cat > {} <<EOF` heredoc found - the workflow no longer writes its "
-            "reviewer prompt as a literal heredoc, so the local brief cannot be "
-            "extracted. Re-point the extractor at the new shape; do NOT fall back "
-            "to a hand-written charter.".format(target)
+            "no `cat <prompt file> > {}` splice found - the workflow no longer "
+            "assembles its reviewer prompt from staged prompt files, so the "
+            "local brief cannot be extracted. Re-point the extractor at the new "
+            "shape; do NOT fall back to a hand-written charter.".format(target)
         )
-    return "\n".join(parts)
+    return "".join(parts).rstrip("\n")
 
 
-def _read_staged_prompt(src: str, stage_dir: str) -> str:
+def _read_staged_prompt(src: str, stage_dir: str, raw: bool = False) -> str:
     """A ``cat``-spliced shared prompt, read from the staging tree.
 
     The path is workflow shell text naming the loader's staged copy; it must
     already have been staged by the workflow's own prompt-file specs. Absent
     means the extraction shapes disagree - fail loudly.
+
+    ``raw`` preserves trailing newlines: prompt assembly is a byte
+    concatenation in CI, so a file that deliberately ends with a blank line
+    must keep it. The pass-instruction segments join with their own newlines
+    and want the trailing run stripped instead.
     """
     staged = _staged_target(stage_dir, src)
     try:
@@ -258,7 +242,7 @@ def _read_staged_prompt(src: str, stage_dir: str) -> str:
             "staged - the prompt-file specs and the assembly disagree, so the "
             "contract cannot be mirrored.".format(src)
         )
-    return body.rstrip("\n")
+    return body if raw else body.rstrip("\n")
 
 
 def prompt_segments(run_text: str, stage_dir: str, min_len: int = 30) -> list[str]:
@@ -414,8 +398,9 @@ def substitute_sed_placeholders(
 ) -> str:
     """Apply the ``sed -i "s/__X__/$VAR/g"`` rewrites the workflow does to its own prompt.
 
-    A quoted heredoc (``<<'EOF'``) blocks shell expansion, so a prompt that needs
-    the base/head SHA carries a ``__BASE_SHA__`` token and the workflow seds the
+    A staged prompt file is literal text the shell never expands, so a prompt
+    that needs the base/head SHA carries a ``__BASE_SHA__`` token and the
+    workflow seds the
     real value in afterwards. The token pairs are read from that sed command and
     the shell variables from the step's ``env:`` bindings, so renaming a
     placeholder in CI is tracked rather than hardcoded here. Leaving one
@@ -510,7 +495,7 @@ def extract_base_rule_specs(workflow_text: str) -> list[FileSpec]:
 def extract_prompt_file_specs(workflow_text: str) -> list[FileSpec]:
     """Base-ref review-prompt files, expanded from the workflow's own for-loop.
 
-    Returns [] when the workflow keeps no prompt files (the heredoc lane).
+    Returns [] when the workflow keeps no prompt files.
     """
     loop = re.search(r"for\s+(?P<var>\w+)\s+in\s+(?P<names>[A-Za-z0-9_.\- ]+);\s*do", workflow_text)
     tmpl = re.search(
@@ -764,7 +749,7 @@ def _model_note(ci_model: str, local_model: str) -> list[str]:
     ]
 
 
-def build_heredoc_lane(
+def build_spliced_lane(
     name: str,
     contract: str,
     workflow_text: str,
@@ -774,13 +759,14 @@ def build_heredoc_lane(
     values: dict[str, str],
     stage_dir: str,
 ) -> Lane:
-    """The GPT lane: prompt is a literal heredoc, review runs as two passes."""
-    target = _heredoc_target(workflow_text)
+    """The GPT lane: prompt spliced from staged files, review runs as two passes."""
+    target = _prompt_target(workflow_text)
     if target is None:  # pragma: no cover - the caller dispatches on this
         raise ParityError(
-            "{} no longer writes a reviewer prompt heredoc.".format(contract)
+            "{} no longer assembles a reviewer prompt from staged prompt "
+            "files.".format(contract)
         )
-    prompt_block = _run_block_with(scalars, "cat > {} <<".format(target), contract)
+    prompt_block = _assembly_block(scalars, target, contract)
     prompt = assemble_prompt_document(prompt_block, target, stage_dir)
     prompt = substitute_sed_placeholders(prompt, workflow_text, values)
     prompt = remap_staged_paths(substitute_expressions(prompt, values), stage_dir)
@@ -827,7 +813,7 @@ def build_heredoc_lane(
     return Lane(
         name=name,
         contract=contract,
-        shape="heredoc",
+        shape="spliced-files",
         ci_model=ci_model,
         local_model=local_model,
         fallback_model=fallback_model,
@@ -867,7 +853,7 @@ def build_prompt_file_lane(
     contracts: list[str] = []
     for path in staged_prompts:
         with open(path, encoding="utf-8") as handle:
-            # Remapped like the heredoc prompt and the inline wrappers: these
+            # Remapped like the spliced prompt and the inline wrappers: these
             # files carry bare `.review-*` references, and nothing is ever
             # written into the worktree they would otherwise resolve against.
             body = remap_staged_paths(handle.read().rstrip(), stage_dir)
@@ -892,13 +878,33 @@ def build_prompt_file_lane(
     )
 
 
-def _heredoc_target(workflow_text: str) -> Optional[str]:
-    """The path a run block writes its reviewer prompt heredoc to, if any."""
+def _prompt_target(workflow_text: str) -> Optional[str]:
+    """The path a run block assembles its reviewer prompt into, if any.
+
+    The opening ``cat <prompt file> > <target>`` splice is the discriminator
+    between the two lane shapes: the GPT lane assembles a prompt document in a
+    run block, the Opus lane hands its reviewer ``prompt: |`` wrappers.
+    """
     for line in workflow_text.splitlines():
-        match = _HEREDOC_RE.match(line)
+        match = _CAT_CREATE_RE.match(line)
         if match is not None and "prompt" in match.group("target"):
             return match.group("target")
     return None
+
+
+def _assembly_block(scalars: list[BlockScalar], target: str, contract: str) -> str:
+    """The ``run:`` block that opens ``target`` with a ``cat ... >`` splice."""
+    for scalar in scalars:
+        if scalar.key != "run":
+            continue
+        for line in scalar.text.splitlines():
+            match = _CAT_CREATE_RE.match(line)
+            if match is not None and match.group("target") == target:
+                return scalar.text
+    raise ParityError(
+        "no `run:` block in {} opens {} with a `cat <prompt file> >` splice - "
+        "the workflow was restructured.".format(contract, target)
+    )
 
 
 def _run_block_with(scalars: list[BlockScalar], needle: str, contract: str) -> str:
@@ -1370,20 +1376,23 @@ def assemble(
         )
         if intent_run is not None:
             intents[name] = _intent_block(worktree, intent_run)
-        if _heredoc_target(workflow_text) is not None:
-            lane = build_heredoc_lane(
+        if _prompt_target(workflow_text) is not None:
+            lane = build_spliced_lane(
                 name, contract, workflow_text, scalars, local_model, fallback_model,
                 values, stage_dir,
             )
-        elif staged_prompts:
+        elif staged_prompts and any(s.key == "prompt" for s in scalars):
             lane = build_prompt_file_lane(
                 name, contract, workflow_text, scalars, local_model, fallback_model,
                 values, stage_dir, staged_prompts,
             )
         else:
             raise ParityError(
-                "{} matches neither extraction shape (no prompt heredoc, no base-ref "
-                "prompt files). The local brief cannot be derived from it.".format(contract)
+                "{} matches neither extraction shape (no prompt-assembly splice, "
+                "and no base-ref prompt files handed to a `prompt: |` wrapper). "
+                "The local brief cannot be derived from it. A base commit that "
+                "predates the spliced-prompt shape (#3697) produces exactly this "
+                "failure: rebase onto a base that carries it.".format(contract)
             )
         lanes.append(lane)
 

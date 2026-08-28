@@ -362,7 +362,12 @@ thing: *does this block the merge*, **never confidence**. There is no
 workflows — the diff-is-not-evidence clause, the coverage/finding/fix bars, the
 output contract, and the falsification-pass mandate and verdict framing — live in
 shared `.github/review-prompts/gpt-*.md` files rather than as two inline copies,
-so the lanes cannot drift apart on them (#5852). The same-repo lane stages them
+so the lanes cannot drift apart on them (#5852). The same-repo lane's remaining
+inline chunks (its system rules, repo context, and round-convergence sections)
+moved into that directory too (#3697), so its whole prompt is now assembled by
+splicing staged prompt files in a fixed order — which is also what lets the
+prepare-pr skill's `local_review.py` mirror the contract by reading the same
+files instead of scraping shell heredocs. The same-repo lane stages them
 from the PR's **base** commit like the Opus lanes; unlike those lanes it falls
 back to the checked-out copy (with a warning) when a block is absent on the base,
 because a hard gate cannot afford a no-verdict pass and, on a same-repo PR, the
