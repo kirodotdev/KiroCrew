@@ -150,7 +150,10 @@ It includes markdown/plain-text (`.md`/`.txt`/`.org`), source-code extensions, a
 **`.pptx` is intentionally out of `SUPPORTED`** even though `_read_pptx` exists: python-pptx is not declared in `setup.cfg`, so the format is kept off the allowlist (the comment at `readers.py` documents this). Reachable only if `.pptx` were re-added to `SUPPORTED`.
 
 **Binary/optional-dep readers** degrade gracefully — a missing optional import returns an `{'format': 'error'}` meta with an install hint rather than raising:
-- `_read_pdf` — pdfplumber; concatenates per-page `extract_text()`, records `page_count`.
+- `_read_pdf` — pdfplumber; concatenates per-page `extract_text()`, records `page_count`,
+  and releases each page immediately after extraction so its parsed-layout cache does not
+  remain resident until the whole document closes (`Page.close()` when available, with
+  `flush_cache()` compatibility for pdfplumber 0.10).
 - `_read_docx` — python-docx; converts `Heading N` paragraph styles to `#`-prefixed markdown (`content_type: 'markdown'`), records `paragraph_count`.
 - `_read_html` — html2text when importable (`ignore_images=True`, `ignore_links=False`); otherwise a regex fallback strips `<script>`/`<style>` and tags.
 

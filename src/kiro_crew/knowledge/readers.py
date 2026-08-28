@@ -132,7 +132,20 @@ class FileReader:
             return _missing_dep('PDF', 'pdfplumber')
         try:
             with pdfplumber.open(path) as pdf:
-                pages = [p.extract_text() or '' for p in pdf.pages]
+                pages: list[str] = []
+                for page in pdf.pages:
+                    try:
+                        pages.append(page.extract_text() or '')
+                    finally:
+                        # pdfplumber caches the parsed layout on each Page. Release
+                        # it before parsing the next page so large PDFs do not keep
+                        # every page's layout resident until the document closes.
+                        # Page.close() also clears the text-map cache when available;
+                        # pdfplumber 0.10 only exposes flush_cache().
+                        close_page = getattr(page, 'close', None)
+                        if close_page is None:
+                            close_page = page.flush_cache
+                        close_page()
                 return '\n'.join(pages), {'format': 'pdf', 'page_count': len(pages)}
         except Exception as e:
             return _read_error(e)

@@ -435,6 +435,74 @@ class TestFileReaderPdf:
         assert meta["format"] == "pdf"
         assert meta["page_count"] == 1
 
+    def test_read_pdf_releases_each_page_cache(self, monkeypatch):
+        events = []
+
+        class FakePage:
+            def __init__(self, number, text=None, error=None):
+                self.number = number
+                self.text = text
+                self.error = error
+
+            def extract_text(self):
+                events.append(("extract", self.number))
+                if self.error is not None:
+                    raise self.error
+                return self.text
+
+            def close(self):
+                events.append(("close", self.number))
+
+        class FakePdf:
+            def __init__(self, pages):
+                self.pages = pages
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        class FakeLegacyPage:
+            def extract_text(self):
+                events.append(("extract", 4))
+                return "legacy"
+
+            def flush_cache(self):
+                events.append(("flush", 4))
+
+        first_pages = [FakePage(1, "first"), FakePage(2, "second")]
+        failing_pages = [FakePage(3, error=ValueError("bad page"))]
+        legacy_pages = [FakeLegacyPage()]
+        opened = iter((FakePdf(first_pages), FakePdf(failing_pages), FakePdf(legacy_pages)))
+
+        class FakePdfplumber:
+            @staticmethod
+            def open(_path):
+                return next(opened)
+
+        monkeypatch.setattr(readers, "pdfplumber", FakePdfplumber)
+
+        text, meta = FileReader()._read_pdf("ok.pdf")
+        assert text == "first\nsecond"
+        assert meta == {"format": "pdf", "page_count": 2}
+        assert events == [
+            ("extract", 1),
+            ("close", 1),
+            ("extract", 2),
+            ("close", 2),
+        ]
+
+        text, meta = FileReader()._read_pdf("bad.pdf")
+        assert text == "Error reading file: bad page"
+        assert meta == {"format": "error", "error": "bad page"}
+        assert events[-2:] == [("extract", 3), ("close", 3)]
+
+        text, meta = FileReader()._read_pdf("legacy.pdf")
+        assert text == "legacy"
+        assert meta == {"format": "pdf", "page_count": 1}
+        assert events[-2:] == [("extract", 4), ("flush", 4)]
+
     def test_read_pdf_does_not_hit_missing_dep_guard(self, tmp_path):
         # A malformed PDF must surface a real parse error, never the
         # 'PDF support requires pdfplumber' sentinel (which only fires when
