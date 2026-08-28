@@ -87,6 +87,18 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     params: { section: 'posture' },
   },
   {
+    // This crew's AgentCore identity — SettingsSelect label is an i18nT()
+    // call, so the extractor never sees a string literal. Deep-link must
+    // mount the identity rail.
+    id: 'security.agent-identity',
+    labelKey: 'pages.settings.securityPanel.agent_identity',
+    descriptionKey: 'pages.settings.securityPanel.agent_identity_hint',
+    tab: 'security',
+    type: 'select',
+    occurrence: 1,
+    params: { section: 'identity' },
+  },
+  {
     // Add-a-custom-deny-pattern card: a create-form composite (pattern + note
     // inputs + Add button) with no primitive shape, distinct from the built-in
     // rules table the section-level 'security.denied-commands' entry covers.
