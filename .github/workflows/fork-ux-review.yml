@@ -379,6 +379,23 @@ jobs:
             only to surface findings. If a lens raises no finding, it produces
             NO output. Lenses 11–12 apply only when their surface is present.)
 
+            0. PRODUCT COHERENCE (run FIRST, before every other lens): put the
+               change next to the product it is joining. Open the sibling
+               surfaces that already do the closest job (Grep/Read
+               website/src; committed screenshots of existing pages when
+               present) and compare:
+               - LOOK — the new surface matches the product's established
+                 look: spacing, container shapes, elevation, typography,
+                 tokens.
+               - INFORMATION ARCHITECTURE — the same jobs use the same
+                 patterns: panel/sidebar toggles, close affordances, header
+                 layout, list rows, iconography. A user who has learned the
+                 rest of the product must not find this page strange.
+               - EARN EVERY ELEMENT — every button, label, and line of copy
+                 has a job a user needs done. Anything present without one is
+                 a finding.
+               Divergence from the product's established look or patterns is
+               a finding unless the PR states why this surface must differ.
             1. FIRST-TIME COMPREHENSION (the cold-read test): would a user
                seeing this for the first time understand what each label says
                and what each feature does?
