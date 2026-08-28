@@ -173,18 +173,26 @@ describe('SessionPulseSurveyCard (collapsed disclosure)', () => {
   it('calls onLayoutChange on show, on expand, and on collapse -- so the parent can re-anchor scroll for every height change', async () => {
     const onLayoutChange = vi.fn()
     const { rerenderWithTurnCount } = renderCard(onLayoutChange)
+    // The baseline must be captured while the card is still hidden — if the
+    // show already happened, `callsBeforeShow` silently includes the show's
+    // own call and the delta assertion below can never pass.
+    expect(screen.queryByText(RATING_QUESTION)).not.toBeInTheDocument()
     const callsBeforeShow = onLayoutChange.mock.calls.length
 
     await showCard(rerenderWithTurnCount)
-    expect(onLayoutChange.mock.calls.length).toBeGreaterThan(callsBeforeShow)
+    // The callback fires from a layout effect, one commit AFTER the text the
+    // show waits on is queryable — poll the condition instead of asserting
+    // the instant count (raced on slow runners: the count was read before
+    // the effect flushed).
+    await waitFor(() => expect(onLayoutChange.mock.calls.length).toBeGreaterThan(callsBeforeShow))
     const callsAfterShow = onLayoutChange.mock.calls.length
 
     fireEvent.click(screen.getByRole('button', { name: RATING_QUESTION }))
-    expect(onLayoutChange.mock.calls.length).toBeGreaterThan(callsAfterShow)
+    await waitFor(() => expect(onLayoutChange.mock.calls.length).toBeGreaterThan(callsAfterShow))
     const callsAfterExpand = onLayoutChange.mock.calls.length
 
     fireEvent.click(screen.getByRole('button', { name: RATING_QUESTION }))
-    expect(onLayoutChange.mock.calls.length).toBeGreaterThan(callsAfterExpand)
+    await waitFor(() => expect(onLayoutChange.mock.calls.length).toBeGreaterThan(callsAfterExpand))
   })
 })
 
