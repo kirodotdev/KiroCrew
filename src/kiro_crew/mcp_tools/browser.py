@@ -17,13 +17,20 @@ Deliberately OUT of scope: this handler never runs ``playwright-cli`` itself and
 carries no op->verb map. When no native panel is serving the session it returns
 guidance text pointing at the ``playwright-cli`` verbs, and stops there.
 
-Visibility follows the browse capability: ``schemas()`` returns ``[]`` while
-``playwright-cli`` is not installed, so a machine where browsing was never set
-up does not advertise a tool that cannot work. Presence of the CLI is the
-availability signal for browsing on this host (see ``browser_cli.install``), not
-consent to bypass the approval path. The native panel is another expression of
-that same capability. The handler re-checks because kiro-cli caches
-``tools/list`` for the life of a session.
+Visibility does NOT follow the browse capability: ``schemas()`` advertises the
+tool unconditionally. The registry requires every ``HANDLERS`` entry to have a
+descriptor and vice versa, so an env-gated ``[]`` would fail
+``test_mcp_tool_registry`` on any host without ``playwright-cli`` (CI included).
+Both gates are therefore CALL-time, and they are deliberately opposite
+polarities: availability fails **closed** -- no ``playwright-cli`` and no native
+panel yields an "install it from Settings -> Browser" error -- while a
+``capabilities.browse`` denial refuses **outright** with no playwright fallback,
+because a fallback would let browsing continue and defeat the control. The
+handler re-checks availability rather than trusting the advertisement because
+kiro-cli caches ``tools/list`` for the life of a session, so a session that
+started with the CLI installed keeps offering the tool after it is removed.
+Presence of the CLI is the availability signal for browsing on this host (see
+``browser_cli.install``), not consent to bypass the approval path.
 """
 
 from __future__ import annotations

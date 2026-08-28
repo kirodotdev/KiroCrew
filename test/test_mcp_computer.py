@@ -8,9 +8,13 @@ accessibility / capture work and all SEL auditing happen in the GATEWAY.
 That split exists because ``hooks._governance_denial`` — the PreToolUse gate — is
 fail-**OPEN** by deliberate repo policy (a governance glitch must not wedge every
 tool call on every surface), so it cannot be the sole authorization point for a
-surface that can read a password field's ``AXValue``. The authoritative gate
-(``computer_use/gate.py::require_computer_use``) fails CLOSED and needs the
-OS-resolved app identity and the addressed element's role, which only the
+surface that can read a password field's ``AXValue``. The fail-CLOSED gate is the
+keystone primary enable, read at the top of ``computer_use/tools.py``'s ordered
+chokepoint: a keystone that is missing, unreadable or disabled refuses the call
+outright. ``computer_use/gate.py::require_computer_use`` is audit-only — it
+unconditionally permits and records the call — and the refusals downstream of the
+enable (the operator's target policy, the element and pointer shape checks) need
+the OS-resolved app identity and the addressed element's role, which only the
 gateway-side tool body has.
 
 Two halves are tested here:
