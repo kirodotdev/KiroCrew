@@ -6,6 +6,7 @@ for property-based testing.
 
 from __future__ import annotations
 
+import dataclasses
 import inspect
 import json
 import logging
@@ -5469,3 +5470,151 @@ class TestWeComSectionSurvivesLoad:
     def test_a_real_bool_still_works(self, field: str) -> None:
         cfg = _load_from_dict({"wecom": {field: True}})
         assert getattr(cfg.wecom, field) is True
+
+
+# Every field same_dispatch_binding() compares — the fields that change what
+# answers a turn. Must stay in lockstep with the method body in
+# config/loader.py.
+_DISPATCH_COMPARED = {
+    "kiro_agent",
+    "workspace_dir",
+    "memory_store_name",
+    "model",
+}
+
+# Fields deliberately EXCLUDED from the comparison. Each reason mirrors the
+# rationale in same_dispatch_binding()'s docstring; the docstring pin below
+# asserts the docstring still names every exempt field.
+_DISPATCH_EXEMPT = {
+    # Two names resolving to one alias's target ARE the same binding.
+    "resolved_alias",
+    # Request metadata the caller checks separately, not dispatch identity.
+    "requested_resolved",
+    # Derived from memory_store_name plus global config shared by both sides.
+    "effective_memory_config",
+}
+
+
+def _dispatch_field_mutations() -> dict[str, object]:
+    """A type-correct replacement value per field, distinct from the baseline.
+
+    Built fresh per call so no test can corrupt a shared module-level table
+    (the effective_memory_config value is a mutable dict). Passing one entry
+    to dataclasses.replace() changes exactly that field. A new dataclass
+    field must gain an entry here too — the coverage test asserts it.
+    """
+    return {
+        "kiro_agent": "drift-pin-other-agent",
+        "workspace_dir": Path("drift-pin-other-workspace"),
+        "memory_store_name": "drift-pin-other-store",
+        "model": "drift-pin-other-model",
+        "resolved_alias": "drift-pin-other-alias",
+        "requested_resolved": False,
+        "effective_memory_config": {"embedding_provider": "drift-pin-other"},
+    }
+
+
+def _dispatch_bindings() -> ResolvedBindings:
+    """A fully-populated baseline for the dispatch-identity pins below."""
+    return ResolvedBindings(
+        workspace_dir=Path("drift-pin-workspace"),
+        memory_store_name="drift-pin-store",
+        effective_memory_config={"embedding_provider": "drift-pin-base"},
+        kiro_agent="drift-pin-agent",
+        model="drift-pin-model",
+        requested_resolved=True,
+        resolved_alias="drift-pin-alias",
+    )
+
+
+class TestSameDispatchBindingDriftPin:
+    """Pin same_dispatch_binding()'s field set against dataclass drift.
+
+    The method compares the dispatch-relevant fields of ResolvedBindings to
+    decide whether two agent NAMES may share a chat slot (the dashboard's
+    slot agent-conflict guard). Its docstring documents which fields are
+    deliberately excluded, but only these tests ENFORCE that every field IS
+    classified: a new dataclass field fails here and forces the author to
+    decide — dispatch-relevant (add it to _DISPATCH_COMPARED AND to the
+    method body) or exempt (add it to _DISPATCH_EXEMPT with a one-line
+    reason). The pin cannot judge whether that decision is right; its value
+    is that the decision becomes explicit and reviewable instead of silent.
+    """
+
+    def test_every_dataclass_field_is_classified(self) -> None:
+        field_names = {f.name for f in dataclasses.fields(ResolvedBindings)}
+        assert field_names == _DISPATCH_COMPARED | _DISPATCH_EXEMPT, (
+            "ResolvedBindings grew or lost a field without a dispatch-identity "
+            "decision. Classify every field: dispatch-relevant fields go in "
+            "_DISPATCH_COMPARED AND in same_dispatch_binding()'s body; "
+            "non-identity fields go in _DISPATCH_EXEMPT with a one-line reason. "
+            "Either way, add a distinct replacement value to "
+            "_dispatch_field_mutations() "
+            f"(unclassified: {sorted(field_names - _DISPATCH_COMPARED - _DISPATCH_EXEMPT)}, "
+            f"stale: {sorted((_DISPATCH_COMPARED | _DISPATCH_EXEMPT) - field_names)})"
+        )
+        assert (
+            _DISPATCH_COMPARED & _DISPATCH_EXEMPT == set()
+        ), "a field cannot be both compared and exempt — remove it from one set"
+
+    def test_mutation_table_covers_every_field(self) -> None:
+        field_names = {f.name for f in dataclasses.fields(ResolvedBindings)}
+        assert set(_dispatch_field_mutations()) == field_names, (
+            "_dispatch_field_mutations() must hold exactly one replacement "
+            "value per ResolvedBindings field — the behavior pins below "
+            "iterate it"
+        )
+
+    def test_mutation_table_actually_changes_each_field(self) -> None:
+        # Guards the pins below: a mutation equal to the baseline value would
+        # make the compared-field test pass vacuously.
+        base = _dispatch_bindings()
+        for name, value in _dispatch_field_mutations().items():
+            assert value != getattr(base, name), name
+
+    def test_equal_but_distinct_instances_are_the_same_binding(self) -> None:
+        # Reflexivity/symmetry floor: dispatch identity must come from field
+        # VALUES, not object identity.
+        a = _dispatch_bindings()
+        b = _dispatch_bindings()
+        assert a is not b
+        assert a.same_dispatch_binding(a)
+        assert a.same_dispatch_binding(b)
+        assert b.same_dispatch_binding(a)
+
+    @pytest.mark.parametrize("field_name", sorted(_DISPATCH_COMPARED))
+    def test_mutating_a_compared_field_breaks_dispatch_identity(self, field_name: str) -> None:
+        base = _dispatch_bindings()
+        mutations = _dispatch_field_mutations()
+        mutated = dataclasses.replace(base, **{field_name: mutations[field_name]})
+        assert not base.same_dispatch_binding(mutated), (
+            f"same_dispatch_binding() ignored {field_name!r}, which "
+            "_DISPATCH_COMPARED declares dispatch-relevant — the method body "
+            "and the declared set have drifted apart"
+        )
+        assert not mutated.same_dispatch_binding(
+            base
+        ), f"same_dispatch_binding() is asymmetric on {field_name!r}"
+
+    @pytest.mark.parametrize("field_name", sorted(_DISPATCH_EXEMPT))
+    def test_mutating_an_exempt_field_keeps_dispatch_identity(self, field_name: str) -> None:
+        base = _dispatch_bindings()
+        mutations = _dispatch_field_mutations()
+        mutated = dataclasses.replace(base, **{field_name: mutations[field_name]})
+        assert base.same_dispatch_binding(mutated), (
+            f"same_dispatch_binding() compares {field_name!r}, which "
+            "_DISPATCH_EXEMPT declares excluded — update the exempt set or "
+            "the method, and keep the docstring rationale in sync"
+        )
+
+    def test_every_exempt_field_is_named_in_the_method_docstring(self) -> None:
+        # The exempt comments above claim to mirror the method's docstring
+        # rationale; enforce at least that the docstring still names each
+        # exempt field, so the two cannot silently drift apart.
+        doc = ResolvedBindings.same_dispatch_binding.__doc__ or ""
+        for name in sorted(_DISPATCH_EXEMPT):
+            assert name in doc, (
+                "same_dispatch_binding()'s docstring no longer mentions the "
+                f"exempt field {name!r} — restore the exclusion rationale or "
+                "reclassify the field"
+            )
