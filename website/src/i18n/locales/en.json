@@ -1,6 +1,5 @@
 {
   "app": {
-    "a_newer_version_is_available_no_changelog_entry": "A newer version is available. No changelog entry was added for this release.",
     "apps": "Apps",
     "auto_update_on_restart": "Auto-update on restart",
     "cancel_update": "Cancel Update",

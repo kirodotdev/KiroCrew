@@ -12,7 +12,6 @@
     }
   },
   "app": {
-    "a_newer_version_is_available_no_changelog_entry": "有新版本可用。本次发布未添加更新日志条目。",
     "apps": "应用",
     "auto_update_on_restart": "重启时自动更新",
     "bonus_credits": "赠送额度",

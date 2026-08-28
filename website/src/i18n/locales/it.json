@@ -12,7 +12,6 @@
     }
   },
   "app": {
-    "a_newer_version_is_available_no_changelog_entry": "È disponibile una versione più recente. Per questa release non è stata aggiunta alcuna voce nel changelog.",
     "apps": "App",
     "auto_update_on_restart": "Aggiornamento automatico al riavvio",
     "bonus_credits": "Crediti bonus",

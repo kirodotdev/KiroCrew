@@ -12,7 +12,6 @@
     }
   },
   "app": {
-    "a_newer_version_is_available_no_changelog_entry": "새 버전이 있습니다. 이번 릴리스에는 변경 내역 항목이 추가되지 않았습니다.",
     "apps": "앱",
     "auto_update_on_restart": "재시작 시 자동 업데이트",
     "bonus_credits": "보너스 크레딧",

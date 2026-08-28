@@ -12,7 +12,6 @@
     }
   },
   "app": {
-    "a_newer_version_is_available_no_changelog_entry": "नया संस्करण उपलब्ध है। इस रिलीज़ के लिए कोई चेंजलॉग प्रविष्टि नहीं जोड़ी गई।",
     "apps": "ऐप्स",
     "auto_update_on_restart": "रीस्टार्ट पर ऑटो-अपडेट",
     "bonus_credits": "बोनस क्रेडिट",

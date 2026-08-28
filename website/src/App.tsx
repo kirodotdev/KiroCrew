@@ -18,6 +18,7 @@ import { installSoftNavigate } from './utils/errorReport'
 import { agentSwitchFailureMessage } from './utils/agentSwitchFeedback'
 import { readSendReceipt } from './utils/sendDelivery'
 import { updateAffordance } from './utils/updateAffordance'
+import { isNewSection } from './utils/releaseVersion'
 import { metricColor } from './utils/metricColor'
 import { fetchNotifications, ackNotification, armBootNotificationsFallback } from './store/notificationsSlice'
 import { useWebSocket } from './hooks/useWebSocket'
@@ -2129,21 +2130,35 @@ export default function App() {
     if (lastSeen === version) return
     // First visit — no baseline to diff, just record current version
     if (!lastSeen) { safeSetItem('mc-last-version', version); return }
-    // Version changed — show only new entries since lastSeen
+    // Version changed — show the sections in `lastSeen < v <= version`, and
+    // nothing else. Both bounds are load-bearing, and the missing UPPER one is
+    // the reported bug: `main` is bumped a minor ahead of the released line and a
+    // release's notes are written when it ships, so the newest section in the
+    // file is routinely OLDER than the running build. A 0.6.0 build was opening a
+    // modal headed `[0.4.0]` — the last released line — offering to update to it.
+    //
+    // The lower bound is a version COMPARISON rather than the old equality test
+    // against the last-seen heading. Every build between two releases has no
+    // section of its own, so equality matched nothing and the slice ran to
+    // end-of-file, which is how the stale section got in.
     api.changelog().then(d => {
       if (!d.content) return
-      const lines = d.content.split('\n')
       const filtered: string[] = []
       let include = false
-      for (const line of lines) {
-        if (line.startsWith('## [')) {
-          const v = line.match(/## \[([^\]]+)\]/)?.[1]
-          if (v && lastSeen && v === lastSeen) break
-          include = true
+      for (const line of d.content.split('\n')) {
+        // ANY level-2 heading ends the preceding section, matching the renderer
+        // (`changelog.py:_H2_RE`). Keying only on `## [` left an unversioned
+        // heading and its body inside whichever section came before it.
+        if (/^##\s+\S/.test(line)) {
+          const v = line.match(/^##\s+\[([^\]]+)\]/)?.[1]
+          include = !!v && isNewSection(v, lastSeen, version)
         }
         if (include) filtered.push(line)
       }
       const text = filtered.join('\n').trim()
+      // No qualifying section means this build's release has no notes yet, which
+      // is the normal state on a dev build. Say nothing: the modal exists to
+      // deliver notes, and one carrying someone else's is worse than none.
       if (text) { setChanges(text); setShowChangelog(true) }
     }).catch(() => {}).finally(() => safeSetItem('mc-last-version', version))
   }, [version])  
@@ -2919,36 +2934,34 @@ export default function App() {
               <div className="text-sm font-bold text-text-strong"><Package className="lucide-inline" /> {i18nT('app.v')}{version}</div>
               <button aria-label={i18nT('app.close')} className="text-muted text-[13px] cursor-pointer hover:text-text" onClick={() => { setShowChangelog(false); setShowFull(false) }}><X className="lucide-inline" /></button>
             </div>
+            {/* The notes are this modal's PAYLOAD, not a garnish on an update
+                offer, so they are no longer gated on `updateAvailable`. The
+                modal opens on a version CHANGE — the reader already has the
+                build — and the common case right after an update is that no
+                further update is pending, which is exactly when the old gate
+                replaced the notes with "You're on the latest version" and
+                delivered nothing. Availability is a separate fact and now has
+                its own row below. */}
+            <div className="text-[13px] font-medium text-muted uppercase tracking-wider mb-2">{i18nT('app.what_s_new')}</div>
+            <div className="p-3 bg-bg rounded-lg border border-border max-h-56 overflow-y-auto mb-4">
+              <div className="text-[13px] text-text leading-relaxed"><MarkdownRenderer content={changes} /></div>
+            </div>
             {updateAvailable ? (
-              <>
-                {changes ? (
-                  <>
-                    <div className="text-[13px] font-medium text-muted uppercase tracking-wider mb-2">{i18nT('app.what_s_new')}</div>
-                    <div className="p-3 bg-bg rounded-lg border border-border max-h-56 overflow-y-auto mb-4">
-                      <div className="text-[13px] text-text leading-relaxed"><MarkdownRenderer content={changes} /></div>
-                    </div>
-                  </>
-                ) : (
-                  <div className="p-3 bg-bg rounded-lg border border-border mb-4">
-                    <div className="text-[13px] text-muted leading-relaxed">{i18nT('app.a_newer_version_is_available_no_changelog_entry')}</div>
-                  </div>
-                )}
-                {affordance === 'apply' ? (
-                  <button className="w-full py-2 rounded-lg text-[13px] font-medium cursor-pointer bg-accent text-accent-fg border-none hover:opacity-90 transition-opacity" onClick={handleUpdate}>
-                    {i18nT('app.update_now')}
-                  </button>
-                ) : affordance === 'command' ? (
-                  // This install cannot replace its own code from here: `POST
-                  // /api/update` is git fetch + reset, so a wheel install answers
-                  // 400/409 and a desktop bundle is owned by its own updater.
-                  // Settings > About carries the same command with an explanation
-                  // and a copy button.
-                  <div className="p-2.5 bg-bg rounded-lg border border-border font-mono text-[12px] text-text break-all"
-                    data-testid="modal-update-command">
-                    {updateCommand}
-                  </div>
-                ) : null}
-              </>
+              affordance === 'apply' ? (
+                <button className="w-full py-2 rounded-lg text-[13px] font-medium cursor-pointer bg-accent text-accent-fg border-none hover:opacity-90 transition-opacity" onClick={handleUpdate}>
+                  {i18nT('app.update_now')}
+                </button>
+              ) : affordance === 'command' ? (
+                // This install cannot replace its own code from here: `POST
+                // /api/update` is git fetch + reset, so a wheel install answers
+                // 400/409 and a desktop bundle is owned by its own updater.
+                // Settings > About carries the same command with an explanation
+                // and a copy button.
+                <div className="p-2.5 bg-bg rounded-lg border border-border font-mono text-[12px] text-text break-all"
+                  data-testid="modal-update-command">
+                  {updateCommand}
+                </div>
+              ) : null
             ) : (
               <div className="text-sm text-muted py-4 text-center"><CheckCircle className="lucide-inline" /> {i18nT('app.you_re_on_the_latest_version')}</div>
             )}

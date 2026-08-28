@@ -12,7 +12,6 @@
     }
   },
   "app": {
-    "a_newer_version_is_available_no_changelog_entry": "新しいバージョンが利用可能です。このリリースのチェンジログエントリは追加されていません。",
     "apps": "アプリ",
     "auto_update_on_restart": "再起動時に自動更新",
     "bonus_credits": "ボーナスクレジット",
