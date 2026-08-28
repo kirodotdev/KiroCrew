@@ -283,17 +283,40 @@ async def api_cloud_preflight(request: web.Request) -> web.Response:
     plugin_cmd = "" if plugin else await _in_executor(ssm.session_manager_plugin_install_command)
     _audit("preflight", "success")
     return web.json_response(
-        {**reach, "session_manager_plugin": bool(plugin), "session_manager_plugin_command": plugin_cmd}
+        {
+            **reach,
+            "session_manager_plugin": bool(plugin),
+            "session_manager_plugin_command": plugin_cmd,
+        }
     )
 
 
 async def api_cloud_iam_policy(request: web.Request) -> web.Response:
-    """GET /api/cloud/iam-policy — the least-privilege policy JSON to attach."""
+    """GET /api/cloud/iam-policy — the least-privilege policy JSON to attach.
+
+    Default body is the *launcher* document only. ``?instance=1&posture=``
+    adds a labeled sibling ``instance_policy`` / ``instance_posture`` so the
+    instance fragment cannot be mistaken for the launch principal grant.
+    """
     denied = _guard(request, "iam_policy")
     if denied is not None:
         return denied
+    body: dict[str, str] = {"policy": iam.policy_json()}
+    instance_flag = (request.query.get("instance") or "").strip().lower()
+    if instance_flag in {"1", "true", "yes"}:
+        posture = (request.query.get("posture") or "").strip()
+        if posture not in {"workload", "login"}:
+            return web.json_response(
+                {
+                    "error": "instance posture must be workload or login",
+                    "code": "invalid_instance_posture",
+                },
+                status=400,
+            )
+        body["instance_policy"] = iam.agentcore_instance_policy_json(posture)
+        body["instance_posture"] = posture
     _audit("iam_policy", "success")
-    return web.json_response({"policy": iam.policy_json()})
+    return web.json_response(body)
 
 
 async def api_cloud_provisioners(request: web.Request) -> web.Response:
@@ -347,7 +370,8 @@ async def api_cloud_launch_get(request: web.Request) -> web.Response:
 async def api_cloud_launch_create(request: web.Request) -> web.Response:
     """POST /api/cloud/launch — start a launch job.
 
-    Body: ``{provider_id?, profile, region, size_key}``. ``provider_id`` names a
+    Body: ``{provider_id?, profile, region, size_key, agentcore_posture?,
+    agentcore_gateway_url?}``. ``provider_id`` names a
     row of ``GET /api/cloud/provisioners`` and defaults to the built-in EC2 lane,
     so a pre-seam client body launches exactly what it always did. The POSIX gate
     is per descriptor: the built-in shells to ``bash``/``aws`` and needs one, an
@@ -386,6 +410,30 @@ async def api_cloud_launch_create(request: web.Request) -> web.Response:
             {
                 "error": "cloud provisioning requires a POSIX host (Linux/macOS); use WSL on Windows",
                 "code": "posix_host_required",
+            },
+            status=400,
+        )
+    try:
+        agentcore_posture = iam.normalize_agentcore_posture(
+            str(body.get("agentcore_posture") or "none")
+        )
+    except ValueError:
+        return web.json_response(
+            {
+                "error": "agentcore_posture must be none, workload, or login",
+                "code": "invalid_agentcore_posture",
+            },
+            status=400,
+        )
+    try:
+        agentcore_gateway_url = iam.normalize_agentcore_gateway_url(
+            str(body.get("agentcore_gateway_url") or "")
+        )
+    except ValueError:
+        return web.json_response(
+            {
+                "error": "agentcore_gateway_url must be an https URL",
+                "code": "invalid_agentcore_gateway_url",
             },
             status=400,
         )
@@ -434,6 +482,8 @@ async def api_cloud_launch_create(request: web.Request) -> web.Response:
                     size_key=size_key,
                     provider_id=provider_id,
                     step_labels=dict(provisioner.step_labels or ()),
+                    agentcore_posture=agentcore_posture,
+                    agentcore_gateway_url=agentcore_gateway_url,
                 )
             )
         except KeyError as e:  # unknown size
@@ -600,9 +650,7 @@ async def _mutate_instance(request: web.Request, op: str) -> web.Response:
             # as a no-op, resolves no id, and skips the unregister AGAIN, so the row can
             # never be cleared from this panel. The launch job that created this tag
             # persists its instance id: still server-owned state, never caller input.
-            iid = next(
-                (j.instance_id for j in store.list() if j.tag == tag and j.instance_id), ""
-            )
+            iid = next((j.instance_id for j in store.list() if j.tag == tag and j.instance_id), "")
         # destroy: issue the delete and return; do not block the request on
         # DELETE_COMPLETE (minutes). A later status / the reaper reflects it.
         out = ec2.destroy(tag, profile, region, wait=False)
@@ -623,9 +671,7 @@ async def _mutate_instance(request: web.Request, op: str) -> web.Response:
         # without this arm a malformed tag in the URL path becomes a 500 instead of
         # telling the caller what was wrong with their input.
         _audit(op, "denied", request_id=tag, error=str(e))
-        return web.json_response(
-            {"error": str(e), "code": "invalid_cloud_parameter"}, status=400
-        )
+        return web.json_response({"error": str(e), "code": "invalid_cloud_parameter"}, status=400)
     except CloudActionDenied as e:
         _audit(op, "denied", request_id=tag, error=str(e))
         return web.json_response({"error": str(e), "code": "cloud_action_denied"}, status=403)

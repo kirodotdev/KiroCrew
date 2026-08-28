@@ -37,8 +37,16 @@ class FakeHandle:
 class FakeEngine:
     """Records calls; each step is individually configurable to raise/return."""
 
-    def __init__(self, *, handle=None, preflight_exc=None, provision_exc=None, register_exc=None,
-                 teardown_exc=None, teardown_confirms=True):
+    def __init__(
+        self,
+        *,
+        handle=None,
+        preflight_exc=None,
+        provision_exc=None,
+        register_exc=None,
+        teardown_exc=None,
+        teardown_confirms=True,
+    ):
         self.handle = handle or FakeHandle(already=True)
         self.preflight_exc = preflight_exc
         self.provision_exc = provision_exc
@@ -58,8 +66,10 @@ class FakeEngine:
         if self.preflight_exc:
             raise self.preflight_exc
 
-    def provision(self, *, tag, size_key, profile, region):
-        self.calls.append(("provision", tag, size_key))
+    def provision(
+        self, *, tag, size_key, profile, region, agentcore_posture="none", agentcore_gateway_url=""
+    ):
+        self.calls.append(("provision", tag, size_key, agentcore_posture, agentcore_gateway_url))
         if self.provision_exc:
             raise self.provision_exc
         return "i-0abc123456789def0"
@@ -88,12 +98,38 @@ class TestStoreDurability:
         loaded = s2.get(job.id)
         assert loaded is not None
         assert loaded.size_key == "balanced"
+        assert loaded.agentcore_posture == "none"
         assert [st.key for st in loaded.steps] == [
             lj.STEP_PREFLIGHT,
             lj.STEP_PROVISION,
             lj.STEP_SIGNIN,
             lj.STEP_CONNECT,
         ]
+
+    def test_create_persists_agentcore_posture(self, tmp_path):
+        s1 = _store(tmp_path)
+        job = s1.create(
+            profile="dev",
+            region="us-east-1",
+            size_key="balanced",
+            agentcore_posture="workload",
+        )
+        loaded = lj.LaunchJobStore(root=s1.root).get(job.id)
+        assert loaded is not None
+        assert loaded.agentcore_posture == "workload"
+
+    def test_create_persists_agentcore_gateway_url(self, tmp_path):
+        s1 = _store(tmp_path)
+        job = s1.create(
+            profile="dev",
+            region="us-east-1",
+            size_key="balanced",
+            agentcore_posture="workload",
+            agentcore_gateway_url="https://gw.example.test/mcp",
+        )
+        loaded = lj.LaunchJobStore(root=s1.root).get(job.id)
+        assert loaded is not None
+        assert loaded.agentcore_gateway_url == "https://gw.example.test/mcp"
 
     def test_create_rejects_unknown_size(self, tmp_path):
         with pytest.raises(KeyError):
@@ -183,8 +219,13 @@ class TestRunLaunch:
             seen["code"] = mid.signin.code if mid.signin else None
 
         eng = FakeEngine(
-            handle=FakeHandle(url="https://x/verify", code="BQTZ-XKFD", ports=[54123], signed=True,
-                              on_wait=on_wait)
+            handle=FakeHandle(
+                url="https://x/verify",
+                code="BQTZ-XKFD",
+                ports=[54123],
+                signed=True,
+                on_wait=on_wait,
+            )
         )
         out = lj.run_launch(job, s, eng)
         assert seen["status"] == lj.AWAITING_SIGNIN
@@ -323,7 +364,8 @@ class TestRealSigninHandleFailures:
         from kiro_crew.cloud import launch_engine as le
 
         monkeypatch.setattr(
-            le.login, "start_device_login",
+            le.login,
+            "start_device_login",
             lambda *a, **k: SimpleNamespace(
                 already_logged_in=False, url="u", code="c", ports=[], close=lambda: None
             ),
@@ -384,11 +426,15 @@ class TestRealEngineGatewayPort:
         from kiro_crew.cloud import launch_engine as le
 
         seen = {}
-        monkeypatch.setattr(le.ec2, "deploy", lambda **kw: (
-            seen.update(kw) or SimpleNamespace(instance_id="i-0abc")))
+        monkeypatch.setattr(
+            le.ec2,
+            "deploy",
+            lambda **kw: (seen.update(kw) or SimpleNamespace(instance_id="i-0abc")),
+        )
         monkeypatch.setattr(le.sizes, "get_tier", lambda k: SimpleNamespace(key=k))
         monkeypatch.setattr(
-            le.connect_mod, "register_instance",
+            le.connect_mod,
+            "register_instance",
             lambda iid, **kw: seen.update({"reg": kw}) or "inst-1",
         )
         return le, seen
