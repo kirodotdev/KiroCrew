@@ -1343,11 +1343,11 @@ def read_messages(
                 status=409,
                 code="cursor_unavailable",
             )
-        start = since
         # If the cursor is behind the in-memory window (points into the frozen
         # prefix), clamp to the window start so the read begins at the earliest
         # available durable row rather than a negative slice.
-        offset = max(0, start - base)
+        start = max(since, base)
+        offset = start - base
     else:
         # Tail read: slice the in-memory window by OFFSET, but report the index
         # in ABSOLUTE terms so the number still means "position in the session".
