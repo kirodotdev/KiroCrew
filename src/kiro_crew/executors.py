@@ -70,17 +70,26 @@ from __future__ import annotations
 import asyncio
 import atexit
 import functools
+import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, TypeVar
 
+from kiro_crew.loop_lock import LoopBoundLock
+
 _T = TypeVar("_T")
+
+_logger = logging.getLogger(__name__)
 
 __all__ = [
     "CronQueueTimeout",
     "configure_default_executor",
     "maintenance_executor",
     "subprocess_executor",
+    "drain_and_reexec",
+    "drain_channel_history_lane",
+    "reopen_channel_history_lane",
+    "submit_channel_history_job",
     "cron_executor",
     "discovery_executor",
     "embed_executor",
@@ -267,6 +276,7 @@ _stt_pool: ThreadPoolExecutor | None = None
 _governance_pool: ThreadPoolExecutor | None = None
 _cron_gate_pool: ThreadPoolExecutor | None = None
 _path_resolve_pool: ThreadPoolExecutor | None = None
+_channel_history_pool: ThreadPoolExecutor | None = None
 
 
 def configure_default_executor() -> None:
@@ -312,6 +322,157 @@ def maintenance_executor() -> ThreadPoolExecutor:
                 )
                 atexit.register(shutdown_maintenance_executor)
     return _pool
+
+
+def channel_history_executor() -> ThreadPoolExecutor:
+    """Return the process-wide channel-history disk lane, creating it on first use.
+
+    Threads are named ``mc-chan-hist``.  Exactly ONE worker, on purpose: the
+    observe-history file is mutated by appends, compaction rewrites and
+    unlinks, and the single worker makes submission order execution order, so
+    a compaction snapshot can never overwrite an append submitted after it and
+    a queued write can never resurrect a file an unlink already removed.
+    Widening this pool breaks that ordering invariant — see
+    ``ChannelHistory._append_to_disk`` and ``ChannelHistory._flush_terminal``,
+    the two jobs the lane runs.
+    """
+    global _channel_history_pool
+    if _channel_history_pool is None:
+        with _lock:
+            if _channel_history_pool is None:
+                _channel_history_pool = ThreadPoolExecutor(
+                    max_workers=1,
+                    thread_name_prefix="mc-chan-hist",
+                )
+                atexit.register(shutdown_maintenance_executor)
+    return _channel_history_pool
+
+
+#: Admission gate for the channel-history disk lane, closed by
+#: :func:`drain_channel_history_lane` so no job can queue behind its
+#: sentinel and be discarded by the exec that follows. The gate is a
+#: CLOSE COUNTER, not a flag: every drain increments it and every
+#: :func:`reopen_channel_history_lane` decrements it, re-admitting work only
+#: at zero. A reopen can therefore never undo a close it did not pair with —
+#: a failed re-exec's reopen while a concurrent hard-exit drain holds the
+#: gate closed leaves it closed, in either arrival order. All reads and
+#: writes happen under ``_channel_history_admission_lock`` (via
+#: :func:`submit_channel_history_job` / the drain), which is what makes the
+#: check-and-submit atomic against the drain's close-and-sentinel. A caller
+#: that survives a failed exec and keeps serving MUST call
+#: :func:`reopen_channel_history_lane`, or persistence stays silently off.
+_channel_history_drain_holds = 0
+_channel_history_admission_lock = threading.Lock()
+
+
+def submit_channel_history_job(fn: Callable[[], None]) -> bool:
+    """Atomically gate-check and submit one job to the history lane.
+
+    Holding the admission lock across the check AND the submit closes the
+    race a bare check leaves open: :func:`drain_channel_history_lane` takes
+    the same lock around gate-close + sentinel submission, so once the
+    sentinel is queued, no job can ever be admitted behind it. Returns
+    ``False`` — job NOT submitted — when admission is closed. The lock is
+    held only for the check and the executor handoff, never across IO.
+    """
+    with _channel_history_admission_lock:
+        if _channel_history_drain_holds > 0:
+            return False
+        channel_history_executor().submit(fn)
+        return True
+
+
+def reopen_channel_history_lane() -> None:
+    """Release ONE drain's hold after an exit that failed to happen.
+
+    The drain's admission gate closes on the way OUT of the process. A
+    caller whose exec/restart failed and that keeps serving MUST reopen it,
+    or every later append is silently refused for the process's remaining
+    life. Releases only the caller's own hold: while another drain (a
+    concurrent hard-exit path) still holds the gate closed, admission stays
+    closed. Safe to call when the gate was never closed.
+    """
+    global _channel_history_drain_holds
+    with _channel_history_admission_lock:
+        if _channel_history_drain_holds > 0:
+            _channel_history_drain_holds -= 1
+
+
+#: Serializes drain_and_reexec attempts (see its docstring). LoopBoundLock is
+#: the repo's module-global asyncio-lock shape — lazily bound per running
+#: loop, so import time never touches a loop and pytest's fresh-loop-per-test
+#: cannot strand it on a closed loop.
+_reexec_serial_lock = LoopBoundLock()
+
+
+async def drain_and_reexec(module: str, argv: list[str], *, executable: str) -> None:
+    """Drain the history lane, then replace the process image — the ONE owner
+    of the drain→exec→reopen-on-failure pairing.
+
+    Every survivable re-exec path must go through here rather than calling
+    ``reexec_python_module`` bare: the drain is the LAST await before the
+    exec (any await after it can admit a new append the exec then kills),
+    and when the exec fails the admission gate is reopened before the
+    exception propagates, so a caller that keeps serving is never left with
+    persistence silently off. A drain failure is logged and does not stop
+    the exec — queued writes are best-effort on the way out.
+
+    Attempts are SERIALIZED under one loop-bound lock: two restart paths
+    (dashboard restart, auto-update, install-restart) can otherwise overlap
+    on the single event loop, and a first attempt's failure-reopen would
+    clear the gate a second attempt had just closed — an append admitted in
+    that window queues behind the second attempt's sentinel and dies with
+    its exec. Holding the lock across drain→exec→reopen means a failed
+    attempt has fully reopened before the next attempt's drain closes the
+    gate, so that interleaving cannot occur.
+    """
+    from kiro_crew import platform_compat  # local: platform_compat imports this module
+
+    async with _reexec_serial_lock:
+        try:
+            await asyncio.to_thread(drain_channel_history_lane, 2.0)
+        except Exception:
+            _logger.debug("Channel-history drain before re-exec failed", exc_info=True)
+        try:
+            platform_compat.reexec_python_module(module, argv, executable=executable)
+        except BaseException:
+            # The exec did not happen: the process may keep serving, so the
+            # drain's admission gate must not stay closed.
+            reopen_channel_history_lane()
+            raise
+
+
+def drain_channel_history_lane(timeout_secs: float = 2.0) -> bool:
+    """Best-effort, bounded drain of the channel-history disk lane.
+
+    Closes append admission and submits its sentinel under ONE hold of the
+    admission lock, then waits up to ``timeout_secs``: because the lane is
+    one worker and every submission goes through
+    :func:`submit_channel_history_job` under the same lock, the sentinel
+    completing means every job that will ever run has run — nothing can be
+    admitted behind it, atomically. Admission stays closed through the
+    exec/exit that every caller performs next. For the graceful-shutdown
+    path, which ends in ``os._exit`` — that skips atexit, and the atexit
+    hook's ``shutdown(wait=False, cancel_futures=True)`` would discard the
+    queue anyway. Bounded so a wedged disk cannot delay the exit; returns
+    True when the lane drained — including when it was never created, since
+    an absent lane has nothing left to flush — and False only on timeout.
+    Each call takes ONE hold on the close counter (see the gate's comment),
+    so a concurrent drain's close survives another caller's failure-reopen.
+    """
+    global _channel_history_drain_holds
+    with _channel_history_admission_lock:
+        _channel_history_drain_holds += 1
+        with _lock:
+            pool = _channel_history_pool
+        if pool is None:
+            return True
+        sentinel = pool.submit(lambda: None)
+    try:
+        sentinel.result(timeout=timeout_secs)
+        return True
+    except Exception:
+        return False
 
 
 def subprocess_executor() -> ThreadPoolExecutor:
@@ -825,6 +986,7 @@ def shutdown_maintenance_executor() -> None:
     """
     global _pool, _subprocess_pool, _cron_pool, _discovery_pool, _embed_pool
     global _governance_pool, _image_pool, _cron_gate_pool, _stt_pool, _path_resolve_pool
+    global _channel_history_pool
     with _lock:
         pool, _pool = _pool, None
         subprocess_pool, _subprocess_pool = _subprocess_pool, None
@@ -836,6 +998,7 @@ def shutdown_maintenance_executor() -> None:
         cron_gate_pool, _cron_gate_pool = _cron_gate_pool, None
         stt_pool, _stt_pool = _stt_pool, None
         path_resolve_pool, _path_resolve_pool = _path_resolve_pool, None
+        channel_history_pool, _channel_history_pool = _channel_history_pool, None
     if pool is not None:
         pool.shutdown(wait=False, cancel_futures=True)
     if subprocess_pool is not None:
@@ -856,3 +1019,5 @@ def shutdown_maintenance_executor() -> None:
         stt_pool.shutdown(wait=False, cancel_futures=True)
     if path_resolve_pool is not None:
         path_resolve_pool.shutdown(wait=False, cancel_futures=True)
+    if channel_history_pool is not None:
+        channel_history_pool.shutdown(wait=False, cancel_futures=True)

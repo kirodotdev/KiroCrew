@@ -166,11 +166,40 @@ class TestResolverIsLoadedBeforeTheApply:
         The parametrized order check above names its three methods, so a new
         restart path added later would not be examined by it. The defect this
         PR fixes has a shape that can be found without knowing where it lives:
-        a ``reexec_python_module`` call with no ``executable=`` re-execs the
-        cached ``sys.executable``, which an update may have pruned. Walk every
-        such call in gateway.py instead of a list of known ones.
+        a re-exec with no ``executable=`` re-execs the cached
+        ``sys.executable``, which an update may have pruned. Gateway re-execs
+        route through ``executors.drain_and_reexec`` (the one owner of the
+        drain→exec→reopen pairing), so walk every such call in gateway.py —
+        plus any bare ``reexec_python_module`` a future edit reintroduces —
+        and require ``executable=`` on each.
         """
         tree = ast.parse(inspect.getsource(gw))
+        calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and (
+                (isinstance(node.func, ast.Attribute) and node.func.attr == "reexec_python_module")
+                or (isinstance(node.func, ast.Name) and node.func.id == "drain_and_reexec")
+                or (isinstance(node.func, ast.Attribute) and node.func.attr == "drain_and_reexec")
+            )
+        ]
+        assert calls, "expected at least one re-exec call (drain_and_reexec) in gateway.py"
+        missing = [
+            node.lineno for node in calls if not any(kw.arg == "executable" for kw in node.keywords)
+        ]
+        assert not missing, (
+            f"re-exec call at line(s) {missing} in gateway.py passes no "
+            "executable=; it would re-exec sys.executable, which an update can "
+            "prune. Resolve the interpreter with wheel_engine.respawn_executable() "
+            "(imported before the apply step) and pass it as executable=."
+        )
+
+    def test_drain_and_reexec_passes_executable_through(self):
+        """The helper itself must forward executable= to reexec_python_module."""
+        import kiro_crew.executors as ex_mod
+
+        tree = ast.parse(inspect.getsource(ex_mod))
         calls = [
             node
             for node in ast.walk(tree)
@@ -178,16 +207,11 @@ class TestResolverIsLoadedBeforeTheApply:
             and isinstance(node.func, ast.Attribute)
             and node.func.attr == "reexec_python_module"
         ]
-        assert calls, "expected at least one reexec_python_module call in gateway.py"
+        assert calls, "expected drain_and_reexec to call reexec_python_module"
         missing = [
             node.lineno for node in calls if not any(kw.arg == "executable" for kw in node.keywords)
         ]
-        assert not missing, (
-            f"reexec_python_module at line(s) {missing} in gateway.py passes no "
-            "executable=; it would re-exec sys.executable, which an update can "
-            "prune. Resolve the interpreter with wheel_engine.respawn_executable() "
-            "(imported before the apply step) and pass it as executable=."
-        )
+        assert not missing, f"reexec_python_module at line(s) {missing} passes no executable="
 
 
 class TestAutoApplyWheelUpdate:

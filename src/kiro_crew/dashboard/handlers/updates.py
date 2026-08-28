@@ -31,7 +31,10 @@ from kiro_crew.config.loader import (
 from kiro_crew.dashboard.chat_utils import run_config_write
 from kiro_crew.dashboard.handlers._shared import read_capped_response
 from kiro_crew.dashboard.state import DashboardState, chat_message_frame
-from kiro_crew.executors import subprocess_executor
+from kiro_crew.executors import (
+    drain_and_reexec,
+    subprocess_executor,
+)
 from kiro_crew.git_divergence import (
     UNREADABLE_TIMEOUT,
     DivergenceUnreadable,
@@ -68,7 +71,6 @@ from kiro_crew.platform.update_layout import detect_install_layout
 from kiro_crew.platform.update_layout import release_channel as _release_channel
 from kiro_crew.platform.update_layout import set_release_channel, wheel_update_command
 from kiro_crew.platform.update_provider import CommandProvider, resolve_provider
-from kiro_crew.platform_compat import reexec_python_module
 from kiro_crew.safety_override import flush_breadcrumb_writes
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -1482,7 +1484,12 @@ async def _restart_gateway(state: DashboardState) -> bool:
         except Exception:
             logger.debug("Breadcrumb flush before restart failed", exc_info=True)
         await asyncio.sleep(0.5)
-        reexec_python_module("kiro_crew", sys.argv[1:], executable=exe)
+        # os.execv replaces the process image without draining the channel-
+        # history disk lane — drain_and_reexec owns the drain→exec→reopen
+        # pairing: bounded-drain queued history writes off-loop (matching the
+        # gateway's SIGTERM path), exec as the last step, reopen admission if
+        # the exec fails and the process keeps serving.
+        await drain_and_reexec("kiro_crew", sys.argv[1:], executable=exe)
         return True
     finally:
         state._gateway_restart_in_progress = False

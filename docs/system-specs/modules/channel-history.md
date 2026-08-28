@@ -5,7 +5,9 @@
 `channel_history.py` — ephemeral in-memory rolling window that captures
 ALL messages per Slack channel. Provides conversational context when the
 agent is @mentioned in group channels. Thread-aware: separates current
-thread messages from other threads for clear LLM context.
+thread messages from other threads for clear LLM context. Channels in
+observe mode additionally persist their window to a capped on-disk history
+file (see Design below); the messaging platform stays the authoritative copy.
 
 ## Problem
 
@@ -43,7 +45,28 @@ When `thread_ts` is provided, output includes only messages from the current thr
 - **Thread-aware**: entries carry optional `thread_ts`; `context_for()` splits by thread
 - **Max entries**: 50 per channel (configurable)
 - **TTL**: 5 minutes — stale messages from old topics are evicted
-- **In-memory only**: no disk persistence (ephemeral context)
+- **In-memory first, observe mode persists**: ordinary channels are ephemeral
+  in-memory context. A channel in observe mode also keeps a per-channel history
+  file (JSONL), bounded by `observe_max_entries`: every append counts toward a
+  count-triggered compaction that rewrites the file from the in-memory window,
+  the rewrite publishes via `atomic_write` temp+rename (never an in-place
+  truncate), and the file sits between the cap and 2× the cap between
+  compactions. Disk MUTATIONS — appends, compaction rewrites, unlinks — run on
+  a single-worker lane (`executors.channel_history_executor`); the observe-file
+  LOAD on `set_observe` is a synchronous read on the calling thread;
+  `set_observe` first cancels any unlink still queued from a prior
+  observe-off (the file must survive re-enable even when the load fails),
+  then publishes the reloaded window as a rewrite so an unlink the worker
+  already popped is superseded. `unset_observe` keeps the newest
+  `max_entries` window in memory for ordinary channel context; the
+  disk/memory merge on load dedupes by message identity, so a re-enable
+  can never duplicate entries. Every
+  exit/restart path drains the lane
+  before `exec`/`os._exit`, and a survivable exec failure must call
+  `executors.reopen_channel_history_lane()` or appends stay refused. The
+  admission gate is a close counter — each drain takes a hold, each reopen
+  releases one, and appends resume only at zero — so one caller's
+  failure-reopen can never undo a concurrent exit path's close
 - **Push on EVERY message**: before owner lock, captures all channel members
 - **Inject on every message**: not just new sessions, since conversation changes
 
