@@ -33,10 +33,15 @@ import { join } from 'node:path'
  *    which a ResizeObserver on the scroller's own box never reports, so the
  *    hook must observe the table's border-box directly (both consumers).
  *
- * Comments are stripped before matching — the rationale in the page quotes the
+ * Comments are stripped before matching — the rationale in the source quotes the
  * class names being asserted.
+ *
+ * The asserted markup lives in `components/library/LibraryTable.tsx`, not in the
+ * page: both tables were lifted out of ArtifactsPage so a second library-shaped
+ * surface (the AWS Control cloud drive) renders the same table instead of a copy
+ * of it. The property this file pins is unchanged — only its address moved.
  */
-const PAGE = join(__dirname, '..', 'pages', 'ArtifactsPage.tsx')
+const PAGE = join(__dirname, '..', 'components', 'library', 'LibraryTable.tsx')
 
 const loadSource = async () => {
   const raw = await readFile(PAGE, 'utf8')
@@ -98,8 +103,16 @@ describe('ArtifactsPage library tables sticky Actions column', () => {
     const src = await loadSource()
     // The header and row take the flag as a prop, so ONE definition serves both
     // the flat library table and the folder-tree table.
-    expect(src).toMatch(/edgeRight = false \}: \{ sort: SortState; onSort: \(key: SortKey\) => void; edgeRight\?: boolean \}/)
-    expect(src).toMatch(/<LibraryTableHead sort=\{sort\} onSort=\{onSort\} edgeRight=\{edges\.right\} \/>/)
+    //
+    // The header's parameter list is matched loosely on the two facts that
+    // matter -- it declares `edgeRight` with a default, and it types it as an
+    // optional boolean -- because the signature gained a `columns` list when a
+    // second surface (the AWS Control cloud drive) started declaring its own
+    // columns against this same header. Pinning the old one-line spelling would
+    // have failed on a change that kept the property intact.
+    expect(src).toMatch(/edgeRight = false[,\s]/)
+    expect(src).toMatch(/edgeRight\?: boolean/)
+    expect(src).toMatch(/<LibraryTableHead sort=\{sort\} onSort=\{onSort\} edgeRight=\{edges\.right\}/)
     expect(src).toMatch(/edgeRight=\{edges\.right\}/)
   })
 

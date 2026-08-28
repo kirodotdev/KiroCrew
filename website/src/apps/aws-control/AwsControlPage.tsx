@@ -21,7 +21,9 @@ import AwsConsentGate from '../../components/AwsConsentGate'
 import { i18nT } from '../../i18n/t'
 import { awsControlApi, AwsControlError } from './api'
 import ConsoleView, { ReconnectAction } from './ConsoleView'
+import DrivePage from './DrivePage'
 import type { AwsAccount, AccountHealth } from './types'
+import type { LiveDrive } from './DrivePage'
 
 /** Tailwind token for each health light, keyed as an `as const` map (literal-safe). */
 const HEALTH_DOT: Record<AccountHealth, string> = {
@@ -251,6 +253,7 @@ export default function AwsControlPage() {
   // resolves single-segment routes only. Selecting an account row opens it; the
   // breadcrumb inside ConsoleView clears the selection to return here.
   const [selected, setSelected] = useState<AwsAccount | null>(null)
+  const [drive, setDrive] = useState<LiveDrive | null>(null)
   const [query, setQuery] = useState('')
 
   const accountsQ = useQuery({
@@ -272,8 +275,29 @@ export default function AwsControlPage() {
     )
   }, [data, query])
 
+  /* Three levels of view state, not routes: `BuiltinAppRoute` resolves only a
+     single-segment route, so the accounts list, one account's console and that
+     account's drive are all this component's state. The drive level is held HERE
+     rather than inside the console so the console does not nest a second page
+     within itself - each level renders exactly one surface. */
+  if (selected && drive) {
+    return (
+      <DrivePage
+        account={selected}
+        drive={drive}
+        onBack={() => setDrive(null)}
+      />
+    )
+  }
+
   if (selected) {
-    return <ConsoleView account={selected} onBack={() => setSelected(null)} />
+    return (
+      <ConsoleView
+        account={selected}
+        onBack={() => setSelected(null)}
+        onOpenDrive={setDrive}
+      />
+    )
   }
 
   const header = (

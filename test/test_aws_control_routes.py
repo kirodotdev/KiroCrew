@@ -754,6 +754,127 @@ class TestDriveDelete:
 
 
 # ---------------------------------------------------------------------------
+# Drive folder create
+# ---------------------------------------------------------------------------
+
+
+class TestDriveFolderCreate:
+    def _create(self, body: dict, *, err=None):
+        handlers = _registered()
+        p1, p2, p3 = _enabled_owner_env()
+        req = _request("POST", f"/drive/{ACCOUNT}/folder", match_info={"account": ACCOUNT})
+        req.json = AsyncMock(return_value=body)  # type: ignore[method-assign]
+        create = mock.patch.object(
+            routes_mod.storage_mod,
+            "create_folder",
+            side_effect=err if err else None,
+        )
+        with p1, p2, p3, _consent_ok(), _drive_found(), create as folder:
+            resp = asyncio.run(
+                handlers[("POST", "/drive/{account}/folder")](req)  # type: ignore[operator]
+            )
+        return resp, folder
+
+    def test_create_makes_the_folder(self):
+        resp, folder = self._create({"section": "drive", "path": "photos"})
+        assert resp.status == 200
+        assert _payload(resp) == {"created": True, "path": "photos"}
+        folder.assert_called_once()
+
+    def test_create_rejects_an_unknown_section(self):
+        resp, folder = self._create({"section": "nope", "path": "photos"})
+        assert resp.status == 400
+        assert _payload(resp)["code"] == "invalid_section"
+        folder.assert_not_called()
+
+    def test_create_rejects_a_prefix_escape(self):
+        # A ".." segment must be refused by the shared validate_key BEFORE any
+        # AWS call — a folder name cannot climb out of the section.
+        resp, folder = self._create({"section": "drive", "path": "../evil"})
+        assert resp.status == 400
+        assert _payload(resp)["code"] == "invalid_key"
+        folder.assert_not_called()
+
+    def test_create_rejects_an_empty_path(self):
+        # An empty path is refused: it would place the placeholder at the section
+        # root, not create a named folder.
+        resp, folder = self._create({"section": "drive", "path": ""})
+        assert resp.status == 400
+        assert _payload(resp)["code"] == "invalid_key"
+        folder.assert_not_called()
+
+    def test_create_surfaces_an_aws_error(self):
+        # A wrong-bucket-owner put fails at the CLI; the head/put owner pin makes
+        # S3 reject it and storage raises AWSError, which becomes a 502.
+        resp, _folder = self._create(
+            {"section": "drive", "path": "photos"}, err=AWSError("403 wrong owner")
+        )
+        assert resp.status == 502
+
+
+# ---------------------------------------------------------------------------
+# Drive folder delete (recursive)
+# ---------------------------------------------------------------------------
+
+
+class TestDriveFolderDelete:
+    def _delete(self, body: dict, *, removed=3, err=None):
+        handlers = _registered()
+        p1, p2, p3 = _enabled_owner_env()
+        req = _request("POST", f"/drive/{ACCOUNT}/folder/delete", match_info={"account": ACCOUNT})
+        req.json = AsyncMock(return_value=body)  # type: ignore[method-assign]
+        delete = mock.patch.object(
+            routes_mod.storage_mod,
+            "delete_prefix",
+            side_effect=err if err else None,
+            return_value=removed,
+        )
+        with p1, p2, p3, _consent_ok(), _drive_found(), delete as prefix:
+            resp = asyncio.run(
+                handlers[("POST", "/drive/{account}/folder/delete")](req)  # type: ignore[operator]
+            )
+        return resp, prefix
+
+    def test_delete_removes_the_folder_and_reports_the_count(self):
+        resp, prefix = self._delete({"section": "drive", "path": "photos"}, removed=5)
+        assert resp.status == 200
+        assert _payload(resp) == {"deleted": True, "path": "photos", "objects": 5}
+        prefix.assert_called_once()
+
+    def test_delete_rejects_an_unknown_section(self):
+        resp, prefix = self._delete({"section": "nope", "path": "photos"})
+        assert resp.status == 400
+        assert _payload(resp)["code"] == "invalid_section"
+        prefix.assert_not_called()
+
+    def test_delete_rejects_a_prefix_escape(self):
+        resp, prefix = self._delete({"section": "drive", "path": "../.."})
+        assert resp.status == 400
+        assert _payload(resp)["code"] == "invalid_key"
+        prefix.assert_not_called()
+
+    def test_delete_rejects_an_empty_path(self):
+        # THE guard that matters: an empty path must never be treated as
+        # "delete everything" — it is refused before delete_prefix is reached.
+        resp, prefix = self._delete({"section": "drive", "path": ""})
+        assert resp.status == 400
+        assert _payload(resp)["code"] == "invalid_key"
+        prefix.assert_not_called()
+
+    def test_delete_rejects_a_slash_only_path(self):
+        # A bare "/" must not be read as "the whole section". validate_key rejects
+        # a leading/trailing slash, so it never reaches storage.
+        resp, prefix = self._delete({"section": "drive", "path": "/"})
+        assert resp.status == 400
+        assert _payload(resp)["code"] == "invalid_key"
+        prefix.assert_not_called()
+
+    def test_delete_surfaces_an_aws_error(self):
+        resp, _prefix = self._delete({"section": "drive", "path": "photos"}, err=AWSError("denied"))
+        assert resp.status == 502
+
+
+# ---------------------------------------------------------------------------
 # Drive share — success + validation edges (missing-object + governance + backup
 # section covered in test_aws_control_app.py)
 # ---------------------------------------------------------------------------

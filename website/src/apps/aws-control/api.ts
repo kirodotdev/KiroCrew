@@ -21,6 +21,8 @@ import type {
   DriveDownload,
   DriveUploadResult,
   DriveDeleteResult,
+  DriveFolderResult,
+  DriveFolderDeleteResult,
   ShareResult,
   SharesResponse,
   CostReport,
@@ -147,6 +149,32 @@ export const awsControlApi = {
   /** Delete one object from a section. */
   driveDelete(account: string, section: DriveSection, key: string): Promise<DriveDeleteResult> {
     return postJson<DriveDeleteResult>(`/drive/${enc(account)}/delete`, { section, key })
+  },
+
+  /**
+   * Create a folder.
+   *
+   * S3 has no directories: an EMPTY folder exists only as a zero-byte object
+   * whose key ends in '/', which is what the backend writes. The listing filters
+   * that placeholder out of its files, so the folder surfaces through
+   * CommonPrefixes like any prefix that happens to hold objects. Idempotent -
+   * creating an existing folder is a no-op put.
+   */
+  driveFolderCreate(account: string, section: DriveSection, path: string): Promise<DriveFolderResult> {
+    return postJson<DriveFolderResult>(`/drive/${enc(account)}/folder`, { section, path })
+  },
+
+  /**
+   * Delete a folder and everything under it.
+   *
+   * The backend anchors on the section prefix plus a trailing slash (so a
+   * sibling `photos-backup/` is not swept up with `photos/`) and pages the batch
+   * delete, and it refuses an empty or slash-only path through the same key
+   * validator every object key goes through - a folder delete cannot widen into
+   * a section- or bucket-wide wipe. `objects` is how many were removed.
+   */
+  driveFolderDelete(account: string, section: DriveSection, path: string): Promise<DriveFolderDeleteResult> {
+    return postJson<DriveFolderDeleteResult>(`/drive/${enc(account)}/folder/delete`, { section, path })
   },
 
   /** Mint a time-boxed share link. The returned URL is shown once, never stored. */

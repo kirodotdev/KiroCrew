@@ -165,6 +165,92 @@ await expectCount('console-ghosts', 0)
 await expectCount('console-guard', 0)
 await expectCount('console-payments-toggle', 0)
 await expectCount('console-copy-id', 1)
+// The four inline sections are gone; ONE capability row stands for the drive.
+await expectCount('console-capabilities', 1)
+await expectCount('capability-drive', 1)
+await expectCount('drive-section', 0)
+
+// Into the drive page, then into its Files section.
+const cap = page.locator('[data-testid="capability-drive"]')
+if (await cap.count()) {
+  await cap.click()
+  await page.waitForTimeout(900)
+  await page.screenshot({ path: `${OUT}/drive-root.png`, fullPage: false })
+  console.log('shot drive-root')
+  // The bucket's three sections are the drive's top level, and the share ledger
+  // sits with them because it governs links into all three.
+  await expectCount('drive-sections', 1)
+  await expectCount('drive-section-drive', 1)
+  await expectCount('drive-section-library', 1)
+  await expectCount('drive-section-backup', 1)
+  await expectCount('access-section', 1)
+
+  const files = page.locator('[data-testid="drive-section-drive"]')
+  if (await files.count()) {
+    await files.click()
+    await page.waitForTimeout(900)
+    await page.screenshot({ path: `${OUT}/drive-files.png`, fullPage: false })
+    console.log('shot drive-files')
+    // Table only: one listing, no gallery and no view toggle anywhere.
+    await expectCount('drive-listing', 1)
+    await expectCount('drive-view-toggle', 0)
+    await expectCount('drive-folder', 1)
+    await expectCount('drive-file', 3)
+    // Folder creation and its delete confirm are both reachable from here.
+    await expectCount('drive-folder-create', 1)
+    await expectCount('drive-folder-delete-confirm', 0)
+    // Two controls per row: Download plus one overflow trigger. The menu comes
+    // from ui/dropdown-menu, which PORTALS its content out of the table - a
+    // hand-rolled absolute menu is clipped here, because the scroll container
+    // the pinned Actions column needs is overflow-x-auto and that computes
+    // overflow-y to auto as well. These counts are the guard: three inline
+    // buttons would breach the two-per-row cap, and a non-portalled menu would
+    // leave the items unreachable.
+    await expectCount('drive-download', 3)
+    await expectCount('drive-more', 3)
+    await expectCount('drive-folder-more', 1)
+    await expectCount('drive-share', 0)
+    await expectCount('drive-delete', 0)
+    await expectCount('drive-folder-delete', 0)
+    // Open the folder overflow and reach the delete through it, then confirm.
+    await page.locator('[data-testid="drive-folder-more"]').first().click()
+    await page.waitForTimeout(300)
+    await expectCount('drive-folder-delete', 1)
+    await page.locator('[data-testid="drive-folder-delete"]').first().click()
+    await page.waitForTimeout(300)
+    await expectCount('drive-folder-delete-confirm', 1)
+    // Narrow viewport: the controls must WRAP, not run off-screen. Measured
+    // rather than eyeballed - a class change that fails to wrap still produces a
+    // plausible screenshot at 1280px.
+    await page.setViewportSize({ width: 320, height: 900 })
+    await page.waitForTimeout(400)
+    const overflow = await page.evaluate(() => {
+      const bad = []
+      for (const t of ['drive-folder-name', 'drive-folder-create', 'drive-upload-btn',
+                       'drive-folder-delete-cancel', 'drive-folder-delete-action']) {
+        const el = document.querySelector(`[data-testid="${t}"]`)
+        if (!el) { bad.push(`${t}: missing`); continue }
+        const r = el.getBoundingClientRect()
+        if (r.right > window.innerWidth + 1 || r.left < -1) {
+          bad.push(`${t}: ${Math.round(r.left)}..${Math.round(r.right)} outside 0..${window.innerWidth}`)
+        }
+      }
+      return { bad, docScroll: document.documentElement.scrollWidth, win: window.innerWidth }
+    })
+    console.log(`ASSERT narrow-viewport controls-onscreen ${overflow.bad.length === 0 ? 'ok' : 'MISMATCH ' + overflow.bad.join('; ')}`)
+    if (overflow.bad.length) failures.push(`narrow viewport: ${overflow.bad.join('; ')}`)
+    await page.screenshot({ path: `${OUT}/drive-narrow.png`, fullPage: false })
+    console.log('shot drive-narrow')
+    await page.setViewportSize({ width: 1280, height: 900 })
+    await page.waitForTimeout(300)
+    await page.screenshot({ path: `${OUT}/folder-delete-confirm.png`, fullPage: false })
+    console.log('shot folder-delete-confirm')
+  } else {
+    console.log('NO Files section row found')
+  }
+} else {
+  console.log('NO drive capability row found')
+}
 
 if (unmatched.size) console.log('unmatched /api paths:', [...unmatched].join(', '))
 await browser.close()
