@@ -19,7 +19,7 @@ from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 
 from kiro_crew import __version__ as _local_version
-from kiro_crew import dep_sync, shutdown_event
+from kiro_crew import dep_sync, platform_compat, shutdown_event
 from kiro_crew.changelog import Release, base_version, build_release_list, release_of_build
 from kiro_crew.config.live import ConfigChange
 from kiro_crew.config.loader import (
@@ -32,7 +32,10 @@ from kiro_crew.config.loader import (
 from kiro_crew.dashboard.chat_utils import run_config_write
 from kiro_crew.dashboard.handlers._shared import read_capped_response
 from kiro_crew.dashboard.state import DashboardState, chat_message_frame
-from kiro_crew.executors import subprocess_executor
+from kiro_crew.executors import (
+    reexec_lane_guard,
+    subprocess_executor,
+)
 from kiro_crew.git_divergence import (
     UNREADABLE_TIMEOUT,
     DivergenceUnreadable,
@@ -69,7 +72,6 @@ from kiro_crew.platform.update_layout import detect_install_layout
 from kiro_crew.platform.update_layout import release_channel as _release_channel
 from kiro_crew.platform.update_layout import set_release_channel, wheel_update_command
 from kiro_crew.platform.update_provider import CommandProvider, resolve_provider
-from kiro_crew.platform_compat import reexec_python_module
 from kiro_crew.safety_override import flush_breadcrumb_writes
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -1519,7 +1521,13 @@ async def _restart_gateway(
         except Exception:
             logger.debug("Breadcrumb flush before restart failed", exc_info=True)
         await asyncio.sleep(0.5)
-        reexec_python_module("kiro_crew", sys.argv[1:], executable=exe)
+        # os.execv replaces the process image without draining the channel-
+        # history disk lane — reexec_lane_guard owns the drain→exec→reopen
+        # pairing: bounded-drain queued history writes off-loop (matching the
+        # gateway's restart path), exec inside the guard, reopen admission if
+        # the exec fails and the process keeps serving.
+        async with reexec_lane_guard():
+            platform_compat.reexec_python_module("kiro_crew", sys.argv[1:], executable=exe)
         return True
     finally:
         state._gateway_restart_in_progress = False
