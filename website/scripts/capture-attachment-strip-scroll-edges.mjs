@@ -27,6 +27,8 @@ import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
 import { serveDist } from './lib/serve-dist.mjs'
 import { logPageProblems, stubDashboardApi, json } from './lib/stub-dashboard-api.mjs'
+import { pasteImages } from './lib/paste-images.mjs'
+import { mockShot } from './lib/mock-shot.mjs'
 
 const OUT = process.argv[2] || '../temp-screenshots/attachment-strip-scroll-edges'
 /** The strip's unique handle. The PRE-FIX build predates data-testid, so the
@@ -38,20 +40,6 @@ const SLOT = 'chat-strip-edges'
 const N_IMAGES = 8
 
 mkdirSync(OUT, { recursive: true })
-
-/** A mock app screenshot at an exact pixel size, rendered by the browser we
- *  already launched so the bytes are a real PNG with no encoder of our own. */
-async function mockShot(browser, w, h) {
-  const page = await browser.newPage({ viewport: { width: w, height: h }, deviceScaleFactor: 1 })
-  await page.setContent(`<!doctype html><style>
-    html,body{margin:0;height:100%;background:#fafafc}
-    .bar{height:5%;background:#1c2638}
-    .row{height:7.5%;margin:3.5% 6% 0;background:#e2e6ee}
-  </style><div class="bar"></div>${'<div class="row"></div>'.repeat(6)}`)
-  const buf = await page.screenshot()
-  await page.close()
-  return buf
-}
 
 const UPLOAD_DIR = '/home/user/.kiro/crew/uploads'
 const PATHS = Array.from({ length: N_IMAGES }, (_, i) => `${UPLOAD_DIR}/shot-${i + 1}.png`)
@@ -81,23 +69,6 @@ const detail = {
     { role: 'user', ts: Date.now() / 1000 - 90, content: 'I have a few screenshots of the layout problem.' },
     { role: 'assistant', ts: Date.now() / 1000 - 60, content: 'Send the screenshots over and I will take a look.' },
   ],
-}
-
-/** Paste N image Files on the composer textarea in one native ClipboardEvent. */
-async function pasteImages(page, files) {
-  await page.evaluate(async payload => {
-    const ta = document.querySelector('textarea[data-composer-typo]')
-    if (!ta) throw new Error('composer textarea not found')
-    ta.focus()
-    const dt = new DataTransfer()
-    for (const { name, b64 } of payload) {
-      const bin = atob(b64)
-      const bytes = new Uint8Array(bin.length)
-      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
-      dt.items.add(new File([bytes], name, { type: 'image/png' }))
-    }
-    ta.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: dt }))
-  }, files)
 }
 
 /** The strip's live geometry and which cues are painted. */

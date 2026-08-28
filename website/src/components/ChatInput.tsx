@@ -546,16 +546,15 @@ function ResizeBadge({ resize }: { resize: ResizeInfo }) {
   const hide = () => setTip(null)
   return (
     <>
-      {/* In flow under the thumbnail, not overlaid on it. The chip's width comes
-          from the image's aspect ratio, so an overlaid pill has no width to fit
-          into: a phone screenshot gives it a 48px chip, while the widest catalog
-          values need 105px (bn) and 104px (de). Overlaid, that ends as one of
-          two defects — an unbreakable Latin word spilling sideways onto the
-          neighbouring chip, or a per-character-breaking script stacking down and
-          covering the thumbnail. In flow, the chip is simply as wide as the
-          wider of image and pill, so each locale pays only its own width and the
-          thumbnail is never covered in any of them. `whitespace-nowrap` is what
-          makes the chip grow instead of the pill wrapping. */}
+      {/* In flow under the thumbnail, not overlaid on it. The tile is a fixed
+          64px square, while the widest catalog values need 105px (bn) and
+          104px (de). Overlaid, that ends as one of two defects — an unbreakable
+          Latin word spilling sideways onto the neighbouring chip, or a
+          per-character-breaking script stacking down and covering the
+          thumbnail. In flow, the chip is simply as wide as the wider of tile
+          and pill, so each locale pays only its own width and the thumbnail is
+          never covered in any of them. `whitespace-nowrap` is what makes the
+          chip grow instead of the pill wrapping. */}
       <button
         type="button"
         ref={ref}
@@ -607,10 +606,10 @@ function FilePreviewStrip({ files, dirs = NO_DIRS, resizedInfo, onRemove, onRemo
         return (
           <div key={path} className="group/preview shrink-0 flex flex-col items-start gap-0.5" title={path}>
             {/* The corner controls anchor to the IMAGE, not to the chip: the chip
-                is as wide as the wider of image and resize pill, so a locale
-                whose pill is wider than the thumbnail (de: 104px pill, 48px
-                image) would otherwise strand the remove button 52px out in the
-                empty space beside the thumbnail it removes. */}
+                is as wide as the wider of tile and resize pill, so a locale
+                whose pill is wider than the 64px tile (de: 104px pill) would
+                otherwise strand the remove button 40px out in the empty space
+                beside the thumbnail it removes. */}
             <div className="relative">
             <span className="absolute -top-1.5 -left-1.5 w-5 h-5 rounded-full bg-accent text-accent-fg text-[10px] font-bold flex items-center justify-center z-10">{i + 1}</span>
             <button
@@ -619,25 +618,23 @@ function FilePreviewStrip({ files, dirs = NO_DIRS, resizedInfo, onRemove, onRemo
               className="block cursor-pointer"
               onClick={(e) => { const img = e.currentTarget.querySelector('img'); if (img) dispatchLightbox(img) }}
             >
-              {/* min-w: the chip's height is fixed and its width follows the
-                  aspect ratio, so a 1170x2532 phone screenshot renders 31px
-                  wide — too narrow to tell one screenshot from another. This is
-                  a floor on recognisability, not part of the overlap fix: with
-                  the pill in flow the overlap is 0 at any width. bg-bg-hover
-                  backs the letterbox bands the floor creates, so the border
-                  reads as a tile rather than a partly-empty frame; it applies to
-                  every image chip, including transparent PNGs. No ceiling: a
-                  panorama makes a wide chip and scrolls its siblings out of view
-                  in this overflow-x-auto strip, but nobody has reported that. */}
-              {/* The listener measures intrinsic layout; the image is inside the
+              {/* Fixed 64×64 square tile: every image chip is the same size, so
+                  a phone screenshot (31px at intrinsic ratio) is as recognisable
+                  as a landscape shot, and the strip's row stays uniform.
+                  object-cover center-crops instead of letterboxing — the full
+                  image is one click away in the lightbox, so the tile only has
+                  to be identifiable, not complete. bg-bg-hover backs
+                  transparent PNGs so the border reads as a tile rather than a
+                  see-through frame. */}
+              {/* The listener refreshes the scroll cue; the image is inside the
                   actual preview button and is not itself interactive. */}
               {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
-              <img src={src} alt={path} className="h-16 min-w-12 rounded border border-border object-contain bg-bg-hover hover:opacity-80 transition-opacity"
+              <img src={src} alt={path} className="w-16 h-16 rounded border border-border object-cover bg-bg-hover hover:opacity-80 transition-opacity"
                 data-lightbox-image=""
-                // A thumbnail widens when its bytes arrive (h-16 + intrinsic
-                // ratio), which grows scrollWidth without resizing the
-                // scroller's own box — no ResizeObserver fires and no scroll
-                // lands, so only this load signal can refresh the cue.
+                // The tile's box is fixed, but chips mount before their bytes
+                // arrive and remove/add churns the strip's scrollWidth without
+                // resizing the scroller's own box — no ResizeObserver fires and
+                // no scroll lands, so this load signal still refreshes the cue.
                 onLoad={remeasure} />
             </button>
             {onRemove && (

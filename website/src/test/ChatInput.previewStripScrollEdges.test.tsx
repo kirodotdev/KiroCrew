@@ -111,12 +111,12 @@ describe('FilePreviewStrip scroll-edge cues', () => {
   })
 
   it('remeasures when a thumbnail finishes loading', () => {
-    // Image chips size themselves from intrinsic ratio at h-16, so the strip's
-    // content widens when the bytes arrive — after the list-keyed remeasure
-    // already ran. Nothing observes that growth (the scroller's own box is
-    // unchanged); only the img load signal can refresh the cue. Reverting the
-    // onLoad wiring leaves a strip full of freshly loaded thumbnails cue-less,
-    // which is how the defect was reproduced against the real built SPA.
+    // Image tiles are fixed 64×64 squares now, but the load signal still
+    // matters: chips mount before their bytes arrive, and no ResizeObserver or
+    // scroll event fires for content churn inside the scroller — the img load
+    // signal is the remaining hook that refreshes the cue after paint settles.
+    // Reverting the onLoad wiring leaves the cue stale, which is how the
+    // original defect was reproduced against the real built SPA.
     stubGeometry({ hidden: 0 })
     const { container } = renderWithProviders(
       <ChatInput {...defaultProps} pendingFiles={['/tmp/a.png', '/tmp/b.png']} />,

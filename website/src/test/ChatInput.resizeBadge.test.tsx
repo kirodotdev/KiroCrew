@@ -100,18 +100,18 @@ describe('ChatInput attachment resize badge', () => {
     expect(screen.queryByText('RESIZED')).not.toBeInTheDocument()
   })
 
-  // A 31px-wide chip cannot be told apart from the next 31px-wide chip. This is
-  // a recognisability floor, separate from the overlap fix — with the pill in
-  // flow the overlap is 0 at any width — and bg-bg-hover is what makes the
-  // letterbox the floor creates read as a tile instead of a partly-empty frame.
-  // No ceiling is asserted: capping wide images has no reported defect behind it.
-  it('gives the thumbnail a width floor and a letterbox backing', () => {
+  // Every image chip is a fixed 64×64 square: uniform tiles keep a tall phone
+  // screenshot as recognisable as a landscape shot, and object-cover crops
+  // instead of letterboxing — the full image is one lightbox click away.
+  // bg-bg-hover backs transparent PNGs so the border reads as a tile.
+  it('renders the thumbnail as a fixed square tile with a crop fit', () => {
     renderWithProviders(
       <ChatInput {...defaultProps} pendingFiles={[IMG]} resizedInfo={{ [IMG]: RESIZE }} />,
     )
     const thumb = screen.getByAltText(IMG)
-    expect(thumb.className).toMatch(/\bmin-w-12\b/)
-    expect(thumb.className).toMatch(/\bobject-contain\b/)
+    expect(thumb.className).toMatch(/\bw-16\b/)
+    expect(thumb.className).toMatch(/\bh-16\b/)
+    expect(thumb.className).toMatch(/\bobject-cover\b/)
     expect(thumb.className).toMatch(/\bbg-bg-hover\b/)
   })
 
