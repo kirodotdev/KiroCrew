@@ -217,6 +217,14 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "platform/wheel_engine.py::_verify_signature",
         "platform/wheel_engine.py::build_shadow_venv",
         "platform/wheel_engine.py::verify_shadow_venv",
+        # AgentCore extra install: ``<this interpreter> -m pip install
+        # kirocrew[agentcore]`` (or ``-e <KIROCREW_PROJECT_DIR>[agentcore]``).
+        # Fixed argv, no shell, no agent-influenced args. The operator opted
+        # in via home policy or launch env; the agent's bash path cannot
+        # write those. Not sandbox-routed because pip must write into this
+        # interpreter's site-packages, which a filesystem-scoped wrapper
+        # would refuse — same shape as the voice extra and wheel_engine pip.
+        "platform/agentcore_aws.py::ensure_extra",
         # The userns probe child: ONE fixed argv, `sys.executable -I -S -c <shim>`,
         # no shell, no cwd, stdin/stdout are the two handshake pipes. Nothing is
         # agent-influenced -- the shim is a module-level string constant and takes

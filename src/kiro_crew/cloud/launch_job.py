@@ -135,6 +135,8 @@ class LaunchJob:
     profile: str
     region: str
     size_key: str
+    agentcore_posture: str = "none"
+    agentcore_gateway_url: str = ""
     tag: str = ""
     status: str = PENDING
     steps: list = field(default_factory=_default_steps)
@@ -161,6 +163,8 @@ class LaunchJob:
             "profile": self.profile,
             "region": self.region,
             "size_key": self.size_key,
+            "agentcore_posture": self.agentcore_posture,
+            "agentcore_gateway_url": self.agentcore_gateway_url,
             "tag": self.tag,
             "status": self.status,
             "steps": [s.to_dict() for s in self.steps],
@@ -187,6 +191,8 @@ class LaunchJob:
             profile=str(d.get("profile", "")),
             region=str(d.get("region", "")),
             size_key=str(d.get("size_key", "")),
+            agentcore_posture=str(d.get("agentcore_posture", "none") or "none"),
+            agentcore_gateway_url=str(d.get("agentcore_gateway_url", "") or ""),
             tag=str(d.get("tag", "")),
             status=str(d.get("status", PENDING)),
             steps=steps,
@@ -261,10 +267,29 @@ class LaunchJobStore:
             raise ValueError(f"invalid job id {job_id!r}")
         return self._root / f"{job_id}.json"
 
-    def create(self, *, profile: str, region: str, size_key: str) -> LaunchJob:
+    def create(
+        self,
+        *,
+        profile: str,
+        region: str,
+        size_key: str,
+        agentcore_posture: str = "none",
+        agentcore_gateway_url: str = "",
+    ) -> LaunchJob:
         """Build + persist a fresh PENDING job. Validates the size key up front."""
+        from kiro_crew.cloud import iam
+
         sizes.get_tier(size_key)  # raises KeyError with the valid set if unknown
-        job = LaunchJob(id=_new_job_id(), profile=profile, region=region, size_key=size_key)
+        posture = iam.normalize_agentcore_posture(agentcore_posture)
+        gateway_url = iam.normalize_agentcore_gateway_url(agentcore_gateway_url)
+        job = LaunchJob(
+            id=_new_job_id(),
+            profile=profile,
+            region=region,
+            size_key=size_key,
+            agentcore_posture=posture,
+            agentcore_gateway_url=gateway_url,
+        )
         # Claim ownership BEFORE the file exists. `reap_orphans` spares only jobs this
         # process owns, and it runs off the event loop: a reap already in flight can
         # list the job dir at any moment. Adopting in the worker instead leaves a
@@ -414,7 +439,18 @@ class LaunchEngine(Protocol):
     """The AWS-touching operations a launch needs, injected for testability."""
 
     def preflight(self, profile: str, region: str) -> None: ...
-    def provision(self, *, tag: str, size_key: str, profile: str, region: str) -> str: ...
+
+    def provision(
+        self,
+        *,
+        tag: str,
+        size_key: str,
+        profile: str,
+        region: str,
+        agentcore_posture: str = "none",
+        agentcore_gateway_url: str = "",
+    ) -> str: ...
+
     def begin_signin(self, *, instance_id: str, profile: str, region: str) -> SigninHandle: ...
     def register(self, *, instance_id: str, tag: str, profile: str, region: str) -> None: ...
     def teardown(self, *, tag: str, profile: str, region: str) -> bool: ...
@@ -555,7 +591,12 @@ def run_launch(
         _check_cancel()
         s = _activate(STEP_PROVISION)
         job.instance_id = engine.provision(
-            tag=job.tag, size_key=job.size_key, profile=job.profile, region=job.region
+            tag=job.tag,
+            size_key=job.size_key,
+            profile=job.profile,
+            region=job.region,
+            agentcore_posture=job.agentcore_posture,
+            agentcore_gateway_url=job.agentcore_gateway_url,
         )
         s.detail = job.instance_id
         s.state = STEP_DONE
@@ -592,9 +633,7 @@ def run_launch(
                 job.status = RUNNING
                 s.state = STEP_DONE if signed else STEP_SKIPPED
                 s.detail = (
-                    "Signed in."
-                    if signed
-                    else "Not signed in yet — finish it from the dashboard."
+                    "Signed in." if signed else "Not signed in yet — finish it from the dashboard."
                 )
                 store.save(job)
             else:

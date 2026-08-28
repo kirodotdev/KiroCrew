@@ -156,6 +156,20 @@ class TestTemplate:
 
         assert not _re.search(r"ami-[0-9a-f]{8,}", text)
 
+    def test_agentcore_workload_identity_is_opt_in(self):
+        text = ec2.load_template()
+        assert "AWS::BedrockAgentCore::WorkloadIdentity" in text
+        assert "AgentCorePosture:" in text
+        assert "AllowedValues: [none, workload, login]" in text
+        assert "KIROCREW_AGENTCORE_WORKLOAD_NAME" in text
+        assert "KIROCREW_AGENTCORE_GATEWAY_URL" in text
+        assert "AgentCoreGatewayUrl:" in text
+        assert "install.sh --voice $AC_EXTRA" in text
+        assert "CrewWorkloadIdentity:" in text
+        assert "AgentCoreWorkloadInstancePolicy:" in text
+        assert "AgentCoreLoginInstancePolicy:" in text
+        assert "AgentCoreNameRequired:" in text
+
     def test_source_read_grant_pinned_to_derived_arn_not_params(self):
         # The instance role's INLINE SourceObjectRead s3:GetObject must be scoped
         # to the DERIVED launcher path, NOT the user-controlled SourceBucket/
@@ -209,7 +223,14 @@ class TestTemplate:
         import re as _re
 
         text = ec2.load_template()
-        for param in ("SourceBucket", "SourceKey", "KirocrewRepo", "KirocrewRef", "AllowSshCidr"):
+        for param in (
+            "SourceBucket",
+            "SourceKey",
+            "KirocrewRepo",
+            "KirocrewRef",
+            "AllowSshCidr",
+            "AgentCoreWorkloadName",
+        ):
             block = _re.search(rf"  {param}:\n(?:    .+\n)+", text)
             assert block, f"parameter {param} missing"
             assert "AllowedPattern" in block.group(0), f"{param} lacks AllowedPattern"
@@ -249,7 +270,7 @@ class TestTemplate:
         # The failure reason must fold the real build error from the setup log, so it
         # is diagnosable even when the crew ran a cloned install.sh that did not itself
         # hard-fail (the default clone-of-main path).
-        assert 'grep -aiE' in text and '"$LOG"' in text
+        assert "grep -aiE" in text and '"$LOG"' in text
         assert "Build errors:" in text
 
     def test_bootstrap_requires_the_frontend_build(self):
@@ -322,13 +343,13 @@ class TestTemplate:
         # filter) proves the assertions can fail, so the test constrains the
         # filter rather than its own construction.
         log_lines = [b"padding line %d" % i for i in range(25)] + [
-            b'step one ok',
-            b'Installing npm dependencies for the dashboard',
-            b'INSTALLING KIROCREW AND DEPENDENCIES',
-            b'Building React App (vite)',
+            b"step one ok",
+            b"Installing npm dependencies for the dashboard",
+            b"INSTALLING KIROCREW AND DEPENDENCIES",
+            b"Building React App (vite)",
             b'\x1b[31mnpm error\x1b[0m: build "failed"',
-            b'caf\xc3\xa9 \xe4\xb8\xad\xe6\x96\x87 glyphs',
-            b'bell\x07done back\\slash\r',
+            b"caf\xc3\xa9 \xe4\xb8\xad\xe6\x96\x87 glyphs",
+            b"bell\x07done back\\slash\r",
         ]
 
         def printable(data: bytes) -> bytes:
@@ -412,6 +433,9 @@ class TestUserDataSize:
         "KirocrewRepo": "r" * 255,
         "KirocrewRef": "f" * 128,
         "DashboardPort": "65535",
+        "AgentCorePosture": "workload",
+        "AgentCoreWorkloadName": "n" * 255,
+        "AgentCoreGatewayUrl": "https://" + "g" * 500,
         "StackTag": "t" * 51,
         "AWS::AccountId": "1" * 12,
         "AWS::Region": "ap-southeast-99",
@@ -466,9 +490,7 @@ class TestUserDataSize:
         # the raw literal (the substitutions net-add bytes). If this fails the
         # worst-case table has degraded into an optimistic one.
         script = self._raw_userdata()
-        assert len(self._expand(script).encode()) > len(
-            script.replace("${!", "${").encode()
-        )
+        assert len(self._expand(script).encode()) > len(script.replace("${!", "${").encode())
 
 
 _BOUNDARY_ARN = "arn:aws:iam::123456789012:policy/kirocrew-ec2-boundary"
@@ -494,6 +516,21 @@ class TestBuildDeployArgv:
         assert "StackTag=t1" in argv
         # the pre-created shared boundary ARN is passed to the template param
         assert f"PermissionsBoundaryArn={_BOUNDARY_ARN}" in argv
+        assert "AgentCorePosture=none" in argv
+        assert "AgentCoreWorkloadName=" in argv
+        assert "AgentCoreGatewayUrl=" in argv
+
+    def test_agentcore_gateway_url_override(self):
+        tier = sizes.get_tier("balanced")
+        argv = ec2.build_deploy_argv(
+            tag="t1",
+            tier=tier,
+            vpc_id="vpc-1",
+            subnet_id="subnet-1",
+            permissions_boundary_arn=_BOUNDARY_ARN,
+            agentcore_gateway_url="https://gw.example.test/mcp",
+        )
+        assert "AgentCoreGatewayUrl=https://gw.example.test/mcp" in argv
         # discovery tags applied to the stack
         assert "kirocrew:managed=true" in argv
         assert "kirocrew:instance=t1" in argv

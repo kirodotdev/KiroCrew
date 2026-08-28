@@ -48,6 +48,13 @@ def _resolve_tag(args: argparse.Namespace) -> str:
 
 def _cloud_launch(args: argparse.Namespace) -> int:
     profile, region = _resolve(args)
+    try:
+        gateway_url = iam.normalize_agentcore_gateway_url(
+            getattr(args, "agentcore_gateway_url", "") or ""
+        )
+    except ValueError as exc:
+        ui.fail(str(exc))
+        return 1
     return wizard.launch(
         profile=profile,
         region=region,
@@ -57,6 +64,8 @@ def _cloud_launch(args: argparse.Namespace) -> int:
         force_new=getattr(args, "new", False),
         keep_on_failure=getattr(args, "keep_on_failure", False),
         hold_tunnel=getattr(args, "hold_tunnel", True),
+        agentcore_posture=getattr(args, "agentcore_posture", "none") or "none",
+        agentcore_gateway_url=gateway_url,
     )
 
 
@@ -222,7 +231,9 @@ def _cloud_logout(args: argparse.Namespace) -> int:
         ui.detail("The session may still be active — retry, or check with: kirocrew cloud connect")
         return 1
     ui.ok("Signed out on the instance.")
-    ui.detail("Any in-flight chats/cron sessions were stopped (their kiro-cli runtimes were killed).")
+    ui.detail(
+        "Any in-flight chats/cron sessions were stopped (their kiro-cli runtimes were killed)."
+    )
     ui.detail("Sign in with another account: kirocrew cloud login")
     return 0
 
@@ -324,7 +335,16 @@ def _cloud_destroy(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cloud_iam_policy(_args: argparse.Namespace) -> int:
+def _cloud_iam_policy(args: argparse.Namespace) -> int:
+    if getattr(args, "instance", False):
+        posture = (getattr(args, "posture", None) or "").strip()
+        if posture not in ("workload", "login"):
+            # No privileged-sibling default: omitting --posture used to emit
+            # the workload document (InvokeGateway). Match the HTTP 400.
+            ui.fail("--posture is required with --instance (workload or login)")
+            return 1
+        print(iam.agentcore_instance_policy_json(posture))
+        return 0
     print(iam.policy_json())
     return 0
 
