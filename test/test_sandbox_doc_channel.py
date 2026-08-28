@@ -309,10 +309,20 @@ def _mint_req(payload: object, remote: str = "127.0.0.1") -> MagicMock:
     return req
 
 
-def _serve_req(doc_id: str, token: str, remote: str = "127.0.0.1") -> MagicMock:
+def _serve_req(
+    doc_id: str,
+    token: str,
+    remote: str = "127.0.0.1",
+    host: str = "localhost:5476",
+    headers: dict[str, str] | None = None,
+) -> MagicMock:
     req = MagicMock()
     req.match_info = {"doc_id": doc_id, "token": token}
     req.remote = remote
+    # A real mapping, not the MagicMock default: the CSP frame-ancestors origin
+    # is derived from Host, so a mock header bag would silently exercise nothing.
+    req.headers = dict(headers) if headers is not None else ({"Host": host} if host else {})
+    req.scheme = "http"
     return req
 
 
@@ -364,6 +374,75 @@ async def test_the_served_response_carries_the_sandbox_headers() -> None:
     assert resp.headers["Cache-Control"] == "no-store"
     assert resp.headers["Referrer-Policy"] == "no-referrer"
     assert resp.content_type == "text/html"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"Host": "localhost:7778"},
+        # A TLS-terminating tunnel rewrites Host to the loopback backend and may not
+        # forward X-Forwarded-Proto, so nothing in the request names the origin the
+        # browser is actually on. `'self'` is resolved browser-side and is therefore
+        # unaffected; a header built from Host is not, and naming one blanked every
+        # frame on this path while the direct-loopback path kept working.
+        {"Host": "127.0.0.1:7776"},
+        {"Host": "crew.example.com", "X-Forwarded-Proto": "https"},
+        {},
+    ],
+)
+async def test_the_serving_origin_is_named_by_self_whatever_a_proxy_did(headers: dict) -> None:
+    """The header must not vary with a rewritable request field."""
+    doc_id, token = await _mint("<p>hi</p>")
+    resp = await sd.serve_sandbox_doc(_serve_req(doc_id, token, headers=headers))
+
+    csp = resp.headers["Content-Security-Policy"]
+    assert "frame-ancestors 'self'" in csp
+    for leaked in ("127.0.0.1", "crew.example.com", "localhost"):
+        assert leaked not in csp, f"a rewritable Host reached the header: {csp}"
+
+
+@pytest.mark.asyncio
+async def test_frame_ancestors_includes_the_embedding_ancestor(monkeypatch) -> None:
+    """A widget nested in the Instances embed has a grandparent of another origin.
+
+    Reproduced in Chrome 152: with only the serving origin allowed, the browser
+    answers "Framing '...' violates ... frame-ancestors" and the document never
+    runs, even though the IMMEDIATE parent matches — ``frame-ancestors`` requires
+    every ancestor to match. This is the shape the reporter hit: a local dashboard
+    on one port framing a remote dashboard on another, with the widget inside that.
+    """
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.server._extra_frame_ancestors",
+        lambda request, app: ["http://localhost:5476"],
+    )
+    doc_id, token = await _mint("<p>hi</p>")
+    resp = await sd.serve_sandbox_doc(_serve_req(doc_id, token, host="localhost:7778"))
+
+    csp = resp.headers["Content-Security-Policy"]
+    assert "frame-ancestors 'self' http://localhost:5476" in csp
+
+
+@pytest.mark.asyncio
+async def test_an_injecting_or_inexpressible_ancestor_cannot_reach_the_header(
+    monkeypatch,
+) -> None:
+    """The ancestor producer is not trusted to have made its values header-safe."""
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.server._extra_frame_ancestors",
+        lambda request, app: [
+            "http://localhost:5476; script-src *",
+            "http://[::1]:5476",
+            "http://localhost:5476",
+        ],
+    )
+    doc_id, token = await _mint("<p>hi</p>")
+    resp = await sd.serve_sandbox_doc(_serve_req(doc_id, token))
+
+    csp = resp.headers["Content-Security-Policy"]
+    assert "frame-ancestors 'self' http://localhost:5476" in csp
+    assert "script-src" not in csp
+    assert "[::1]" not in csp
 
 
 @pytest.mark.asyncio

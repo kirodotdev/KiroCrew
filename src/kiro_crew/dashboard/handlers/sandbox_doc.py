@@ -23,7 +23,10 @@ Security posture, mirroring the webapp-preview channel next door:
   **even when opened top-level**, so the URL existing on the dashboard's own
   origin does not turn model HTML into same-origin script. The sandbox flags
   match what the embedding iframes already grant, so nothing the frame could do
-  before is newly permitted or newly denied.
+  before is newly permitted or newly denied. ``frame-ancestors`` on the same
+  response names the request's own origin, NOT ``'self'`` — ``'self'`` resolves
+  against this response's opaque origin and therefore matches no ancestor at
+  all, which blocks the very frames the channel exists to serve.
 * Every authorization decision is SEL-audited, rejected probes included. The
   token itself is never logged.
 * Entries expire, are capped in count and size, and are evicted oldest-first, so
@@ -40,6 +43,7 @@ from collections import OrderedDict
 
 from aiohttp import web
 
+from kiro_crew.dashboard.origin import frame_ancestors_value
 from kiro_crew.sel import sel
 
 from .path_token import PathTokenSigner
@@ -230,9 +234,22 @@ async def serve_sandbox_doc(request: web.Request) -> web.Response:
     # purpose: these documents could previously reach the network from a blob:
     # origin, and silently cutting that off would break existing widgets rather
     # than fix them.
+    #
+    # `frame-ancestors` is `'self'` PLUS the ancestors `'self'` cannot express.
+    # `'self'` is resolved by the browser against the frame's real URL, so it stays
+    # correct behind a TLS-terminating tunnel that rewrites Host — a server-derived
+    # origin does not, and naming one instead blanked every frame on that path. But
+    # `'self'` alone is not enough either: the directive is matched against EVERY
+    # ancestor, and the Instances embed nests a remote dashboard inside the local one,
+    # so a widget three levels down has a grandparent on another origin.
+    # `_extra_frame_ancestors` supplies that parent from a validly-signed token claim;
+    # it is imported here rather than at module scope because `server` imports this
+    # handler to register its routes.
+    from kiro_crew.dashboard.server import _extra_frame_ancestors
+
     resp.headers["Content-Security-Policy"] = (
         "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox; "
-        "frame-ancestors 'self'"
+        f"frame-ancestors {frame_ancestors_value(_extra_frame_ancestors(request, request.app))}"
     )
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["Cache-Control"] = "no-store"

@@ -36,8 +36,10 @@ Security model (all LLM-influenceable inputs re-validated at serve time):
 - Responses carry ``Content-Security-Policy: sandbox allow-scripts`` which
   forces an opaque origin even if the document is opened OUTSIDE the
   sandboxed iframe — the previewed app can never reach dashboard cookies,
-  storage, or same-origin APIs. ``frame-ancestors 'self'`` keeps third-party
-  sites from embedding the preview.
+  storage, or same-origin APIs. ``frame-ancestors`` keeps third-party
+  sites from embedding the preview; it names the request's own origin rather
+  than ``'self'``, which would resolve against this response's opaque origin
+  and match no ancestor at all (blocking the intended embed too).
 - Dotfiles (and thus ``.kirocrew-deploy.json`` style manifests / VCS dirs)
   are never served.
 """
@@ -57,7 +59,7 @@ import aiohttp
 from aiohttp import web
 
 from kiro_crew.artifacts import ArtifactNotFoundError, ArtifactValidationError, get_default_store
-from kiro_crew.dashboard.origin import is_direct_local_request
+from kiro_crew.dashboard.origin import frame_ancestors_value, is_direct_local_request
 from kiro_crew.deploy.handlers import _allowed_local_roots
 from kiro_crew.hooks import safe_read_file_bytes_nolink
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
@@ -289,10 +291,20 @@ async def serve_artifact_app_file(request: web.Request) -> web.Response:
     # destination to the serving origin — a malicious app tree can render,
     # but its scripts cannot exfiltrate file contents to an external host
     # (connect/img/script/style all fall under default-src 'self').
+    #
+    # `frame-ancestors` is `'self'` PLUS the ancestors `'self'` cannot express.
+    # `'self'` is resolved by the browser against the frame's real URL, so it survives
+    # a tunnel that rewrites Host; a server-derived origin does not. It is not enough
+    # on its own because the directive is matched against EVERY ancestor and the
+    # Instances embed nests one dashboard inside another. Imported here rather than at
+    # module scope because `server` imports this handler to register its routes.
+    from kiro_crew.dashboard.server import _extra_frame_ancestors
+
+    ancestors = frame_ancestors_value(_extra_frame_ancestors(request, request.app))
     resp.headers["Content-Security-Policy"] = (
         "sandbox allow-scripts; "
         "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; "
-        "frame-ancestors 'self'"
+        f"frame-ancestors {ancestors}"
     )
     # The sandboxed document runs with an OPAQUE
     # origin, so its module-script loads are cross-origin and need CORS —

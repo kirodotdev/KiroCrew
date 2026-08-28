@@ -49,11 +49,14 @@ def _mk_webapp(store: ArtifactStore, app_dir: Path, slug: str = "terrace-app"):
                         content="app", webapp_metadata=meta)
 
 
-def _req(match: dict, remote: str = "127.0.0.1") -> MagicMock:
+def _req(match: dict, remote: str = "127.0.0.1", headers: dict | None = None) -> MagicMock:
     req = MagicMock()
     req.match_info = match
-    req.headers = {}
+    # A real mapping: the served CSP derives its frame-ancestors origin from
+    # Host, so a MagicMock header bag would exercise nothing.
+    req.headers = dict(headers) if headers is not None else {}
     req.remote = remote
+    req.scheme = "http"
     req.app = {"state": MagicMock()}
     return req
 
@@ -262,10 +265,52 @@ class TestRound2Fixes:
         csp = resp.headers["Content-Security-Policy"]
         assert "sandbox allow-scripts" in csp
         assert "default-src 'self'" in csp
-        assert "https:" not in csp  # no wildcard egress
+        # No wildcard egress. Scoped to the egress directive on purpose: the
+        # frame-ancestors origin is a full origin and legitimately carries
+        # `https:` on a TLS deployment, so a whole-header scan would conflate
+        # the two and fail for the wrong reason.
+        egress = csp.split("frame-ancestors")[0]
+        assert "https:" not in egress
         # Round-4 F1: ACAO is scoped by content type — the HTML document
         # itself must NOT be cross-origin readable.
         assert "Access-Control-Allow-Origin" not in resp.headers
+
+    @pytest.mark.asyncio
+    async def test_frame_ancestors_uses_self_plus_embedding_ancestors(self, env) -> None:
+        """``'self'`` names the serving origin; extras name what it cannot.
+
+        ``'self'`` is resolved browser-side against the frame's real URL, so it
+        survives a tunnel that rewrites ``Host``. It is not sufficient alone because
+        the directive is matched against EVERY ancestor and the Instances embed
+        nests one dashboard inside another.
+        """
+        store, app_dir = env
+        token = _mint(store, app_dir, slug="fa-app")
+        resp = await wp.serve_artifact_app_file(
+            _req(
+                {"slug": "fa-app", "token": token, "path": ""},
+                headers={"Host": "localhost:5476"},
+            )
+        )
+        csp = resp.headers["Content-Security-Policy"]
+        assert "frame-ancestors 'self'" in csp
+        assert "localhost:5476" not in csp, "a rewritable Host reached the header"
+
+    @pytest.mark.asyncio
+    async def test_an_injecting_ancestor_cannot_reach_the_header(self, env, monkeypatch) -> None:
+        """The ancestor producer is not trusted to have made its values safe."""
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.server._extra_frame_ancestors",
+            lambda request, app: ["http://localhost:5476; default-src *"],
+        )
+        store, app_dir = env
+        token = _mint(store, app_dir, slug="fa-junk")
+        resp = await wp.serve_artifact_app_file(
+            _req({"slug": "fa-junk", "token": token, "path": ""})
+        )
+        csp = resp.headers["Content-Security-Policy"]
+        assert "frame-ancestors 'self'" in csp
+        assert "default-src *" not in csp
 
     @pytest.mark.asyncio
     async def test_unsupported_platform_reports_unavailable(self, env, monkeypatch) -> None:

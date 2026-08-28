@@ -65,6 +65,41 @@ function schedulePersist(): void {
   }, PERSIST_DEBOUNCE_MS)
 }
 
+/**
+ * Bounds applied to a height a frame reports for itself.
+ *
+ * Not a security boundary — these documents are agent-authored, and an agent that
+ * wanted to wreck the page has easier ways than a height report. The bounds exist
+ * because ordinary CSS makes a frame's height depend on the frame's own viewport,
+ * and a self-sizing frame then feeds its own measurement:
+ *
+ * - `min-height:100vh`, the common idiom, is SELF-CONSISTENT — every height is a
+ *   fixed point, so it settles (measured: 204px, stable). Nothing to bound.
+ * - A multiplier above 1 diverges. Measured in Chromium with `min-height:110vh`:
+ *   690 → 3838 → 21341 → 100000px in four reports. Rare, and it takes a deliberate
+ *   construction, but unbounded growth has no natural stopping point.
+ *
+ * The floor is the mirror case: 0 would collapse the frame to an invisible box the
+ * reader cannot recover from.
+ *
+ * The ceiling sits far above any real document (a 20,000-word page lays out around
+ * 30,000px) and far below where engine layout degrades, so it cannot truncate
+ * legitimate content. Owned here rather than per-component so the readers of the
+ * same protocol cannot drift apart.
+ */
+export const MIN_REPORTED_FRAME_HEIGHT = 80
+export const MAX_REPORTED_FRAME_HEIGHT = 100_000
+
+/** Bring a reported (or previously cached) frame height inside those bounds.
+ *
+ * Applied on the way IN from a report and on the way OUT of the cache, because a
+ * value persisted before a bound existed is just as able to blow the layout up as
+ * a fresh one. */
+export function clampFrameHeight(height: number): number {
+  if (!Number.isFinite(height)) return MIN_REPORTED_FRAME_HEIGHT
+  return Math.min(Math.max(Math.round(height), MIN_REPORTED_FRAME_HEIGHT), MAX_REPORTED_FRAME_HEIGHT)
+}
+
 /** Stable key for a piece of widget HTML within one layout-width space. */
 export function widgetHeightKey(html: string, space = ''): string {
   let h = 0

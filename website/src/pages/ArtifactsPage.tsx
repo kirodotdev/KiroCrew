@@ -275,17 +275,20 @@ function WidgetThumb({ content, slug }: { content: string; slug: string }) {
   // that is megabytes, and the stash then has to refuse mints it could otherwise
   // have served. Deferring keeps the pressure proportional to what is on screen.
   const { url: blobUrl, failed } = useSandboxDoc(near ? srcdoc : null)
-  const [thumbLoaded, setThumbLoaded] = useState(false)
-  useEffect(() => {
-    setThumbLoaded(false)
-  }, [blobUrl])
+  // Gated on the FIRST document only, and deliberately NOT reset when a new url
+  // lands. A re-mint navigates the frame again, and re-hiding on every new url
+  // leaves the thumb blank until the next `load` fires — long enough to read as
+  // the preview vanishing when the gateway is reached through a tunnel, and
+  // permanent if a further re-mint arrives first. Same reasoning as
+  // ArtifactBody's `everLoaded`; keep the two in step.
+  const [everLoaded, setEverLoaded] = useState(false)
   // The load listener is bound on the ref rather than via an `onLoad` prop: the
   // a11y lint rule counts any handler prop on a non-interactive element as an
   // interaction, and the repo's eslint ratchet has no room for a new warning.
   useEffect(() => {
     const el = iframeRef.current
     if (!el || !blobUrl) return
-    const onLoad = () => setThumbLoaded(true)
+    const onLoad = () => setEverLoaded(true)
     el.addEventListener('load', onLoad)
     return () => el.removeEventListener('load', onLoad)
   }, [blobUrl])
@@ -356,7 +359,7 @@ function WidgetThumb({ content, slug }: { content: string; slug: string }) {
             // paint its own WHITE canvas over this element's background, which
             // across a grid of cards reads as the page flashing.
             colorScheme: theme,
-            opacity: thumbLoaded ? 1 : 0,
+            opacity: everLoaded ? 1 : 0,
           }}
         />
       ) : failed ? (

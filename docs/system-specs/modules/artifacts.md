@@ -500,9 +500,58 @@ every write-side unit test still green — so test the round-trip
   returns the URL; the path credential is client-bound with a short TTL, and the
   response pins `Content-Security-Policy: sandbox` so the document keeps an
   opaque origin even when opened top-level. Flags match what the embedding frame
-  already grants, so nothing is newly permitted or denied. See
-  `dashboard/handlers/sandbox_doc.py`. No `dangerouslySetInnerHTML` without
+  already grants, so nothing is newly permitted or denied. The same response's
+  `frame-ancestors` is **`'self'` plus the ancestors `'self'` cannot express**
+  (`origin.frame_ancestors_value`), and both halves are load-bearing. `'self'` is
+  resolved by the BROWSER against the frame's real URL, so it stays correct behind
+  a TLS-terminating tunnel that rewrites `Host` and may not forward
+  `X-Forwarded-Proto` — deriving the origin server-side instead names
+  `http://localhost:<port>` while the browser is on `https://<tunnel-host>` and
+  blanks every frame on that path. `'self'` alone is not enough because the
+  directive is matched against EVERY ancestor: the Instances embed nests a remote
+  dashboard inside the local one, so a widget sits three levels down (local
+  dashboard → embedded dashboard → widget) with a grandparent on a different
+  origin, and the browser refuses the embed while the `GET` still returns 200.
+  Those extra ancestors come from `server._extra_frame_ancestors` (the embedding
+  parent's port, from a validly-signed token claim) and each is re-validated
+  against a strict origin form, so a malformed or inexpressible source — a
+  bracketed IPv6 literal is not a valid CSP host-source — cannot reach the header.
+  See `dashboard/handlers/sandbox_doc.py`. No `dangerouslySetInnerHTML` without
   DOMPurify; no inline event handlers.
+- **The detail frame is sized to its document, and promoted to its own
+  compositing layer.** Both are corrections to shapes that only misbehave on iOS
+  WebKit, so both are invisible in a desktop dev loop and both are pinned by
+  tests in `website/src/test/ArtifactBody.iframeBlob.test.tsx`.
+  - The frame takes the height its document reports (`includeHeightReporter`, the
+    same `mc-widget-height` protocol the chat frame uses, in its own measured-height
+    key space) and carries **no minimum**. It previously stood in a fixed
+    `calc(100vh - 240px)` box with `minHeight: 480`, which on a phone put a short
+    artifact in a frame hundreds of pixels taller than itself and made the reader
+    scroll a pane inside a scrolling page. A floor reintroduced above the reported
+    height brings both back.
+  - `transform: translateZ(0)` is on the frame because iOS WebKit was measured
+    **skipping the document's first paint**: it loaded, its injected scripts ran,
+    it reported a correct layout height, and it sat in a correctly sized visible
+    frame while painting nothing. Four unrelated post-load invalidations each
+    made it appear (a 1px resize, a transform toggle, an opacity flip, a display
+    toggle), so promotion is the one remedy that needs no timing — anything
+    scheduled off the `load` event is a race on a slow connection. Content height
+    only ever *correlated* with the symptom because tall content happened to
+    trigger one of those invalidations.
+- **A frame showing something that is not ours offers a retry.** The document URL
+  is single-use, so a navigation the ENGINE starts on its own (memory pressure, a
+  back/forward cache eviction) re-requests a spent URL and lands the frame on a
+  404 page — which fires `load` like any other navigation and leaves a silent
+  empty box, while the failure notice stays hidden because the mint itself
+  succeeded. Every document this surface builds carries the height reporter, so
+  silence past a grace window is the signal to surface the existing retry (which
+  re-mints; re-pointing at the spent URL recovers nothing). Deliberately not an
+  automatic re-mint: a second `load` also happens when a link inside an artifact
+  navigates the frame, and silently pulling the reader back would fight them.
+  `/sandbox-doc/` is on the service worker's skip list for the same single-use
+  reason, and because an iframe navigation has `mode === 'navigate'`, so the
+  worker's offline fallback would otherwise serve the SPA shell INTO the widget
+  frame (`website/src/test/serviceWorkerSkipRules.test.ts` runs the real worker).
 
 ## Versioning
 

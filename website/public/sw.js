@@ -38,6 +38,13 @@ self.addEventListener('fetch', e => {
   if (url.origin !== self.location.origin) return
   // Core API
   if (url.pathname.startsWith('/api')) return
+  // Single-use sandboxed documents for artifact/widget iframes. Two reasons this
+  // must never reach the handler below: the URL carries a one-shot credential the
+  // gateway spends on first GET, so any SW-mediated re-fetch resolves to a 404
+  // and the frame shows an error page; and an iframe navigation has
+  // mode === 'navigate', so the offline fallback would serve the SPA shell
+  // (/index.html) INTO the widget frame instead of the document.
+  if (url.pathname.startsWith('/sandbox-doc/')) return
   // App backends (e.g. /apps/dev-fleet/api/*)
   if (url.pathname.startsWith('/apps/')) return
   // Vite content-hashed assets — immutable HTTP cache handles them

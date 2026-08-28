@@ -889,10 +889,13 @@ def _extra_frame_ancestors(
         port = token_embed_parent_port(token)
     if port is None:
         return []
-    return [
-        f"http://{host}:{port}"
-        for host in ("127.0.0.1", "localhost", "[::1]", "kirocrew.localhost")
-    ]
+    # A CSP host-source admits only letters, digits and hyphens in the host, so a
+    # bracketed IPv6 literal cannot be expressed: `http://[::1]:<port>` is refused by
+    # the browser ("the directive 'frame-ancestors' does not support the source
+    # expression") and dropped, so it never granted anything — it only logged a
+    # warning on every framed response. There is no valid spelling to substitute,
+    # so an IPv6-loopback parent cannot be authorized at all.
+    return [f"http://{host}:{port}" for host in ("127.0.0.1", "localhost", "kirocrew.localhost")]
 
 
 def _apply_security_headers(

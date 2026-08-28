@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor, fireEvent } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react'
 import type { Artifact } from '../types'
 
 // The frame loads a real DOCUMENT minted by the gateway, not a `blob:` URL built
@@ -25,9 +25,13 @@ vi.mock('../hooks/useCommentBridge', () => ({
   useCommentBridge: () => ({ scrollToAnchor: vi.fn() }),
 }))
 
+const { buildSrcdocSpy } = vi.hoisted(() => ({ buildSrcdocSpy: vi.fn() }))
 vi.mock('../lib/widgetSrcdoc', () => ({
   THEME_VAR_NAMES: [] as string[],
-  buildSrcdoc: ({ html }: { html: string }) => html,
+  buildSrcdoc: (opts: { html: string }) => {
+    buildSrcdocSpy(opts)
+    return opts.html
+  },
 }))
 
 const mintSpy = vi.fn()
@@ -91,9 +95,18 @@ describe('ArtifactBodyIframe document URL lifecycle', () => {
     expect(frame.style.opacity).toBe('1')
   })
 
-  it('re-hides the frame when a new document is minted', async () => {
-    // A theme change or retry navigates the frame again; the previous load must
-    // not keep the new, still-loading document visible.
+  it('keeps a rendered document visible while the next one is minted', async () => {
+    // The frame used to be re-hidden on every new url, on the reasoning that a
+    // previous load must not vouch for a still-loading document. The cost is
+    // worse than the problem: nothing reveals the frame until the NEXT `load`
+    // fires, so a slow navigation leaves a document the reader was already
+    // reading covered for the length of a round trip, and a further re-mint
+    // landing first makes that permanent.
+    //
+    // So the visibility gate covers the FIRST document only. Swapping `src` tears
+    // the old document down immediately, so this cannot present stale content as
+    // the new document; the cost is a brief engine canvas instead of the themed
+    // placeholder, which is the deliberate trade.
     const { rerender } = render(
       <ArtifactBodyIframe artifact={makeArtifact(HTML_CONTENT)} />,
     )
@@ -112,7 +125,8 @@ describe('ArtifactBodyIframe document URL lifecycle', () => {
         '/sandbox-doc/second/tok',
       ),
     )
-    expect(document.querySelector('iframe')?.style.opacity).toBe('0')
+    // The new document has NOT reported load yet, and the frame stays visible.
+    expect(document.querySelector('iframe')?.style.opacity).toBe('1')
   })
 
   it('offers a retry instead of an eternal progress label when the mint fails', async () => {
@@ -184,5 +198,220 @@ describe('ArtifactBodyIframe document URL lifecycle', () => {
     render(<ArtifactBodyIframe artifact={makeArtifact(HTML_CONTENT)} />)
     await waitFor(() => expect(mintSpy).toHaveBeenCalled())
     expect(document.querySelector('iframe')).toBeNull()
+  })
+})
+
+// A frame TALLER than the document inside it is not a cosmetic imperfection:
+// iOS WebKit leaves such a frame unpainted, so a short artifact read as an empty
+// box on iPhone while the same document rendered in the gallery (whose thumbnail
+// frame is always shorter than its content) and on desktop, which paints either
+// way. Measured on the reporting device: 385px and 465px of content in a 573px
+// frame were blank; 617px and ~800px in the same frame rendered. Neither a
+// script forcing layout nor repeated DOM mutation changed the outcome — only the
+// height did.
+//
+// The frame therefore takes its document's own reported height and carries NO
+// floor. These tests pin the two halves that a well-meaning later change would
+// undo: the reporter must be requested, and a height BELOW the fixed box this
+// replaced must be honored rather than clamped up to it.
+describe('ArtifactBodyIframe frame height follows its document', () => {
+  beforeEach(() => {
+    mintSpy.mockReset()
+    mintSpy.mockResolvedValue({ url: DOC_URL })
+    buildSrcdocSpy.mockClear()
+  })
+
+  async function mountFrame(content: string): Promise<HTMLIFrameElement> {
+    render(<ArtifactBodyIframe artifact={makeArtifact(content)} />)
+    const frame = await waitFor(() => {
+      const el = document.querySelector('iframe')
+      if (!el) throw new Error('frame never mounted')
+      return el as HTMLIFrameElement
+    })
+    fireEvent.load(frame)
+    return frame
+  }
+
+  function report(frame: HTMLIFrameElement, height: unknown, from?: unknown): void {
+    fireEvent(window, new MessageEvent('message', {
+      data: { type: 'mc-widget-height', height },
+      source: (from ?? frame.contentWindow) as MessageEventSource,
+    }))
+  }
+
+  it('asks its document to report its own height', async () => {
+    await mountFrame('<p>reporter</p>')
+    // Without this the parent has nothing to size against and falls back to a
+    // fixed box — which is the blank-frame shape on iOS.
+    expect(buildSrcdocSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ includeHeightReporter: true }),
+    )
+  })
+
+  it('sizes the frame to the height its document reports', async () => {
+    const frame = await mountFrame('<p>sized</p>')
+    report(frame, 742)
+    await waitFor(() => expect(frame.style.height).toBe('742px'))
+  })
+
+  it('honors a reported height well below the fixed box it replaced', async () => {
+    // THE regression guard. The frame used to be `calc(100vh - 240px)` with
+    // `minHeight: 480`, so this document's 385px of content sat in a frame
+    // hundreds of pixels taller than itself — the exact condition iOS refuses to
+    // paint. A floor reintroduced anywhere above the reported height brings the
+    // blank box straight back, and only an iOS device would notice.
+    const frame = await mountFrame('<p>short</p>')
+    report(frame, 385)
+    await waitFor(() => expect(frame.style.height).toBe('385px'))
+    expect(frame.style.minHeight).toBe('')
+  })
+
+  it('ignores a height posted by a window that is not its own frame', async () => {
+    // The document is built from model- or user-authored HTML and its scripts can
+    // postMessage the parent directly, so an unrelated sender must not be able to
+    // resize this frame.
+    const frame = await mountFrame('<p>foreign</p>')
+    report(frame, 640)
+    await waitFor(() => expect(frame.style.height).toBe('640px'))
+    report(frame, 4000, window)
+    expect(frame.style.height).toBe('640px')
+  })
+
+  it('refuses to collapse the frame on a nonsense report', async () => {
+    // A collapsed frame is unrecoverable from the reader's side, so a report of
+    // zero — or of anything that is not a finite number — must not be applied as
+    // given.
+    const frame = await mountFrame('<p>floor</p>')
+    report(frame, 600)
+    await waitFor(() => expect(frame.style.height).toBe('600px'))
+    report(frame, 0)
+    await waitFor(() => expect(frame.style.height).toBe('80px'))
+    report(frame, Number.NaN)
+    expect(frame.style.height).toBe('80px')
+    report(frame, 'tall')
+    expect(frame.style.height).toBe('80px')
+  })
+
+  it('gives the frame its own compositing layer so its first paint is not skipped', async () => {
+    // iOS WebKit was measured laying this document out and then never
+    // rasterizing it: it loaded, its scripts ran, it reported a correct layout
+    // height, and it sat in a correctly sized VISIBLE frame while painting
+    // nothing. Four unrelated post-load invalidations each made it appear, so
+    // the frame is promoted up front instead — the only remedy of the four that
+    // does not depend on firing at the right moment after load.
+    //
+    // Only an iOS device can observe the regression, so this assertion is the
+    // whole guard: dropping the property looks completely harmless in Chromium.
+    const frame = await mountFrame('<p>promoted</p>')
+    expect(frame.style.transform).toBe('translateZ(0)')
+  })
+
+  it('refuses to blow the page up on a huge report', async () => {
+    // Not a hostile-input guard — a self-sizing frame feeds its own measurement
+    // when the document's height depends on the frame's viewport, and a multiplier
+    // above 1 diverges. Unbounded growth has no natural stopping point.
+    const frame = await mountFrame('<p>ceiling</p>')
+    report(frame, 1e9)
+    await waitFor(() => expect(frame.style.height).toBe('100000px'))
+  })
+
+  it('leaves the side panel fitting its pane instead of its content', async () => {
+    // The side panel passes an explicit heightStyle because that surface fits a
+    // fixed pane and scrolls inside it. Content-height sizing must not reach in
+    // and override a caller that asked for a specific box.
+    render(
+      <ArtifactBodyIframe
+        artifact={makeArtifact('<p>panel</p>')}
+        heightStyle={{ height: '100%' }}
+      />,
+    )
+    const frame = await waitFor(() => {
+      const el = document.querySelector('iframe')
+      if (!el) throw new Error('frame never mounted')
+      return el as HTMLIFrameElement
+    })
+    fireEvent.load(frame)
+    report(frame, 385)
+    expect(frame.style.height).toBe('100%')
+  })
+})
+
+// The document URL is single-use: the gateway spends it on the first GET. So a
+// navigation the ENGINE starts on its own — memory pressure, a back/forward
+// cache eviction — re-requests a spent URL and lands the frame on a 404 page,
+// which fires `load` like any other navigation. Nothing about that reaches the
+// mint, so `failed` stays false and the reader is left with a silent empty box
+// and no way out. Every document this surface builds carries the injected height
+// reporter, so silence is the signal.
+describe('ArtifactBodyIframe surfaces a frame showing something that is not ours', () => {
+  beforeEach(() => {
+    mintSpy.mockReset()
+    mintSpy.mockResolvedValue({ url: DOC_URL })
+    // shouldAdvanceTime keeps promises and waitFor working while still allowing
+    // the grace window to be advanced deliberately.
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  async function loadedFrame(content: string): Promise<HTMLIFrameElement> {
+    render(<ArtifactBodyIframe artifact={makeArtifact(content)} />)
+    const frame = await waitFor(() => {
+      const el = document.querySelector('iframe')
+      if (!el) throw new Error('frame never mounted')
+      return el as HTMLIFrameElement
+    })
+    fireEvent.load(frame)
+    return frame
+  }
+
+  function reportHeight(frame: HTMLIFrameElement, height: number): void {
+    fireEvent(window, new MessageEvent('message', {
+      data: { type: 'mc-widget-height', height },
+      source: frame.contentWindow as MessageEventSource,
+    }))
+  }
+
+  it('offers a retry when the loaded document never reports its height', async () => {
+    await loadedFrame('<p>silent</p>')
+    expect(screen.queryByText(/couldn't render this artifact/i)).toBeNull()
+
+    await act(async () => { vi.advanceTimersByTime(4000) })
+
+    expect(screen.getByText(/couldn't render this artifact/i)).toBeTruthy()
+    expect(screen.getByRole('button', { name: /retry/i })).toBeTruthy()
+    // The frame stays mounted: with a document still showing, the notice overlays
+    // it rather than replacing what the reader may still be able to see.
+    expect(document.querySelector('iframe')).toBeTruthy()
+  })
+
+  it('stays quiet when the document does report', async () => {
+    // The whole guard hinges on our own documents always reporting. If a healthy
+    // document could trip this, the surface would cry wolf on every open.
+    const frame = await loadedFrame('<p>healthy</p>')
+    reportHeight(frame, 420)
+
+    await act(async () => { vi.advanceTimersByTime(4000) })
+
+    expect(screen.queryByText(/couldn't render this artifact/i)).toBeNull()
+  })
+
+  it('re-mints rather than re-rendering the spent url when the retry is taken', async () => {
+    // Re-pointing the frame at the same spent URL recovers nothing — it 404s
+    // again. Recovery is a fresh mint.
+    await loadedFrame('<p>silent</p>')
+    await act(async () => { vi.advanceTimersByTime(4000) })
+
+    mintSpy.mockResolvedValue({ url: '/sandbox-doc/fresh/tok' })
+    screen.getByRole('button', { name: /retry/i }).click()
+
+    await waitFor(() => {
+      expect(document.querySelector('iframe')?.getAttribute('src'))
+        .toBe('/sandbox-doc/fresh/tok')
+    })
+    expect(mintSpy).toHaveBeenCalledTimes(2)
+    expect(screen.queryByText(/couldn't render this artifact/i)).toBeNull()
   })
 })

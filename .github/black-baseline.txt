@@ -643,7 +643,6 @@ test/test_dashboard_file_io.py
 test/test_dashboard_files_coverage.py
 test/test_dashboard_hooks.py
 test/test_dashboard_no_legacy.py
-test/test_dashboard_origin.py
 test/test_dashboard_reset_sessions.py
 test/test_dashboard_route_table.py
 test/test_dashboard_server_coverage.py
