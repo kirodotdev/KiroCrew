@@ -754,6 +754,36 @@ the value in the `X-KiroCrew-Proxy` header (constant-time), rejecting stale time
 > that signs body-bound HMACs will fail verification against any deployed old verifier, so the
 > client release must ship together with this change.
 
+### Backend Environment Variables
+
+The gateway spawns each `backend.entryPoint` app as a sandboxed child and injects a fixed,
+generic set of environment variables. No app-specific variables are ever injected.
+
+| Variable | Always set | Meaning |
+|---|---|---|
+| `PORT` | yes | The loopback port your backend must bind (`127.0.0.1:$PORT`). |
+| `KIROCREW_APP_NAME` | yes | This app's installed name. |
+| `KIROCREW_HOME` | yes | The gateway's resolved data home, so the backend reads the same app tree. |
+| `KIROCREW_GATEWAY_ORIGIN` | yes | The gateway's own origin, `http://127.0.0.1:<port>`, for calling back to the gateway (for example `POST /api/notifications/push`). The port is the one the gateway ACTUALLY bound; it is never your app's `PORT`, a default, or a request-derived value, so a child can never be pointed at a sibling gateway. |
+| `KIROCREW_PROXY_SECRET` | only if a secret exists | The per-app secret used to verify the `X-KiroCrew-Proxy` header (see above). |
+| `KIROCREW_GATEWAY_ORIGIN_PROOF` | only if a secret exists | `HMAC-SHA256(app_secret, KIROCREW_GATEWAY_ORIGIN)`, hex. Recompute it with your secret to confirm the injected origin was minted by this gateway, rather than an inherited or spoofed env value. |
+
+Security and lifecycle:
+
+- The per-app secret lives at `<data-home>/apps/<name>/.app_secret`, owner-only `0600`. The
+  gateway re-enforces that mode each time it reads the secret to spawn a backend.
+- If no `.app_secret` exists, the gateway injects `KIROCREW_GATEWAY_ORIGIN` but neither the
+  secret nor the proof; a secret-less backend is otherwise unchanged.
+- `KIROCREW_GATEWAY_ORIGIN` and its proof are recomputed on every spawn, so a gateway
+  restarted on a different port hands the backend the current origin.
+
+Using the origin for notifications:
+
+An entryPoint backend that declares `notifications.channels` in `app.json` pushes with
+`POST {KIROCREW_GATEWAY_ORIGIN}/api/notifications/push`, authenticating with its app secret
+(see App Notifications). Verify `KIROCREW_GATEWAY_ORIGIN_PROOF` before you trust the origin as
+your callback base.
+
 ## App Dev Mode (live reload)
 
 Dev mode speeds up app-UI iteration: no manual copy-and-hard-refresh loop. When
