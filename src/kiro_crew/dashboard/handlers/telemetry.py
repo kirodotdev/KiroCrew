@@ -51,7 +51,7 @@ from kiro_crew.dashboard.handlers.usage import (
 )
 from kiro_crew.dashboard.state import NEW_SESSION_TITLE
 from kiro_crew.hooks import validate_file_path
-from kiro_crew.metrics.provider import TELEMETRY_ENV_VAR, env_pin
+from kiro_crew.metrics.provider import TELEMETRY_ENV_VAR, env_pin, otlp_egress_active
 from kiro_crew.metrics.schema import RESOURCE_ATTR_PROCESS_START_TIME
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -145,9 +145,22 @@ def _telemetry_cfg() -> _TelemetryState:
         enabled = bool(cfg.enabled)
         if getattr(cfg, "local_dir", None):
             directory = Path(cfg.local_dir).expanduser()
-        # Presence only. The endpoint string can carry credentials, so it never
-        # leaves this function; the panel only needs to know one is configured.
-        otlp_configured = bool(str(getattr(cfg, "otlp_endpoint", "") or "").strip())
+        # Presence only, and resolved the same way _build_recorder resolves it:
+        # from the active telemetry provider's destination set, NOT from the
+        # endpoint string. An edition that supplies its own collector must not be
+        # able to leave this panel reporting "nothing is exported" while metrics
+        # leave the machine. The endpoint value never leaves that resolution; the
+        # panel only needs to know whether egress would happen.
+        try:
+            otlp_configured = otlp_egress_active(cfg)
+        except Exception:
+            # Posture unresolvable (a provider that raised, an uncomposable
+            # context). Report egress rather than promising local-only: this
+            # answer is a DISCLOSURE, so its closed direction is "assume it
+            # exports". The panel then disables the enable direction instead of
+            # offering a write the config route refuses with 409 anyway.
+            logger.debug("OTLP egress posture unresolvable; reporting egress", exc_info=True)
+            otlp_configured = True
     except Exception:
         logger.debug("telemetry config load failed; assuming disabled", exc_info=True)
     env_var = TELEMETRY_ENV_VAR
@@ -1409,7 +1422,11 @@ async def api_collection_status(request: web.Request) -> web.Response:
     ignores, and ``overlay_override`` does the same for a ``config.local.json``
     entry that would make the switch snap back after a successful save.
 
-    ``otlp_configured`` reports that ``telemetry.otlp_endpoint`` is set. That makes
+    ``otlp_configured`` reports that enabling collection would send metrics off
+    this machine — resolved from the active telemetry provider's destination set,
+    the same one ``_build_recorder`` attaches readers for, not from the
+    ``telemetry.otlp_endpoint`` string (which is only how the DEFAULT provider
+    names a destination; an edition may supply its own collector). That makes
     collection not-local — ``_build_recorder`` attaches an OTLP reader — so the
     config route refuses to ENABLE it from here and the panel disables that
     direction rather than offering a write that comes back 409. Disabling stays

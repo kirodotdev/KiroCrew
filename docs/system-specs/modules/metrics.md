@@ -152,7 +152,8 @@ explicitly sets an OTLP endpoint.**
   key through `PATCH /api/config/kirocrew` (`telemetry.enabled` is in
   `_EDITABLE_CONFIG`). That route refuses `true` with **HTTP 409** when
   `telemetry.otlp_endpoint` is set: `_build_recorder` attaches an OTLP reader
-  whenever an endpoint is configured, so enabling from a switch offered as
+  whenever the active telemetry provider supplies a destination — which the public
+  default does for any non-empty endpoint — so enabling from a switch offered as
   local-only would start network egress. The endpoint is chosen in the config
   file, so that is where enabling on such a host is done. Disabling is always
   allowed — a narrower local choice always composes. An unreadable config also
@@ -171,10 +172,41 @@ lifecycle & threading"). The gateway process is where the session/turn/HTTP
 metrics are recorded; other kirocrew processes pick the value up on their own
 recheck or at their next start.
 
-**External OTLP egress (opt-in, off by default):** setting `otlp_endpoint` adds a
-second `PeriodicExportingMetricReader` alongside the local JSONL sink
-(`provider._build_otlp_reader`). Install support with
-`pip install "kirocrew[otlp]"`. If the endpoint is set but the package extra is
+**External OTLP egress (opt-in, off by default):** egress destinations are
+**pluggable**. `_build_recorder` asks the active `TelemetryProvider` for them via
+`otlp_destinations(cfg)` and attaches one `PeriodicExportingMetricReader` per
+returned destination that names the `"metrics"` signal (`provider._otlp_destinations`
+resolves, `provider._build_otlp_reader` builds one reader). The public
+`DefaultTelemetryProvider` turns a non-empty `otlp_endpoint` into exactly one
+destination and returns none when it is empty, so a standalone build behaves as it
+did when this module constructed that exporter itself. Readers are appended AFTER
+the local JSONL sink, so an edition can add destinations but can never remove or
+replace the sink the dashboard reads, and it supplies no cadence — the export
+interval stays `telemetry.export_interval_seconds`.
+
+A destination carries `name` (a non-secret label used in logs, because the
+endpoint value never is), `endpoint`, `signals`, and optionally an
+authenticated `session`. The session is why the seam exists: `requests`
+re-evaluates `Session.auth` per request, so a credential that rotates during
+process lifetime (an OIDC/SSO id_token, STS credentials) is re-read on every
+export, where `OTEL_EXPORTER_OTLP_HEADERS` — the only injection point before this
+seam — freezes into the exporter's session at construction and starts returning
+401 once it rotates. Static per-destination headers ride on `Session.headers` and
+need no field of their own.
+
+The method must be cheap and side-effect-free per call: it is read once per
+recorder build AND on every egress-posture read (the Privacy panel's status, and
+each `telemetry.enabled` config write), so an edition must build its transport
+once rather than acquiring a credential inside it.
+
+Filtering is deny-by-default: a destination with an empty `endpoint`, or one aimed
+at a signal this core does not emit, is dropped rather than trusted. A provider
+that raises contributes nothing and is reported at WARNING, and telemetry keeps
+working local-only; the same is true when the platform context cannot be composed,
+because for an egress seam "no destinations" is the closed state.
+
+Install support with `pip install "kirocrew[otlp]"`. If a destination is supplied
+but the package extra is
 not installed, telemetry
 degrades to local-only with a warning instead of crashing. The OTLP exporter
 sees the same data points as the local sink: the `MetricsRecorder` facade

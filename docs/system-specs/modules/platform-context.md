@@ -55,7 +55,7 @@ boot holding the chosen adapter for every extension point, plus three carriers:
 | `package_manager` | adapter | **RESERVED** — `DefaultPackageManager`; installs are inline in `cli_doctor.py` (use `CapabilityManager`) | — (slot inert) |
 | `knowledge` | adapter | `DefaultKnowledgeProvider` (no extra connectors) | enterprise doc connector (`extra_connectors`) |
 | `tunnel` | adapter | `DefaultTunnelProvider` (no-op) | internal tunnel supervisor |
-| `telemetry` | adapter | `DefaultTelemetryProvider` (no-op, RUM off) | RUM/Cognito config |
+| `telemetry` | adapter | `DefaultTelemetryProvider` (no-op, RUM off; OTLP destination from `telemetry.otlp_endpoint`) | RUM/Cognito config + its own OTLP collector |
 | `dashboard` | adapter | `DefaultDashboardContributor` (no routes/services, no login handler) | secretary/taskkeeper routes + enterprise SSO PTY login |
 | `jail` | adapter | `DefaultJailProvider` (no-op, never jails) | enterprise process isolation |
 | `feature_apps` | tuple | **RESERVED** — `()`; apps register via `apps_loader` (provenance record only) | — (slot inert) |
@@ -631,6 +631,30 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   winner's identity. Merged at the
   consumption sites, never inside `KiroCrewConfig`, so a config save can never
   persist an edition default into the operator's file. Default `[]`.
+- `TelemetryProvider.otlp_destinations(cfg) -> Sequence[OtlpDestination]` — the
+  OTLP collectors this edition sends telemetry to. Read by
+  `metrics/provider.py::_otlp_destinations` once per recorder build (through
+  `safe_context_call`, fallback `()`), which attaches one
+  `PeriodicExportingMetricReader` per destination naming the `"metrics"` signal,
+  AFTER the built-in local JSONL reader. ADD-only: an edition can add a
+  destination but can never remove or replace the local sink, relax consent or
+  attribute sanitisation, or set the export cadence. `OtlpDestination` carries
+  `name` (non-secret, log-safe — the endpoint value is never logged), `endpoint`,
+  `signals`, and an optional authenticated `session`; the session is the seam a
+  ROTATING credential composes against, since `requests` re-evaluates
+  `Session.auth` per export where `OTEL_EXPORTER_OTLP_HEADERS` freezes at
+  construction (static per-destination headers ride on `Session.headers`).
+  Must be cheap and side-effect-free per call: it is read once per recorder build
+  AND on every egress-posture read (Privacy panel status, each `telemetry.enabled`
+  write), so an edition builds its transport once rather than minting a credential
+  inside it. A provider that does not implement the method answers "no
+  destinations" rather than "unknown", so a pre-seam edition keeps the two
+  surfaces agreeing. Signal-agnostic on purpose: the OTLP metric, span and log
+  exporters take the same constructor arguments, so a later core that emits traces
+  or logs reads the same descriptor instead of needing another method. Deny-by-
+  default — an empty `endpoint`, or a signal this core does not emit, is dropped.
+  Default: one destination for a non-empty `telemetry.otlp_endpoint`, none
+  otherwise (byte-identical to the endpoint-only exporter it replaced).
 - `DashboardContributor.on_user_message(app, message)` — fired once per user
   message by `dashboard/chat_handlers.py::api_chat` before the turn, inside a
   fail-safe `safe_context_call`. OBSERVER only. Default no-op.
