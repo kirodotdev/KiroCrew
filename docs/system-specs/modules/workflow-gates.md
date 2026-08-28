@@ -93,7 +93,9 @@ crashing.
 The backend half of the tab is covered without gate ids, in
 `test_workflows_app.py` (manifest shape, `handle_validate` / `handle_run` /
 `handle_examples`, and redaction of credentials and exfiltration URLs before a
-run payload leaves the handler).
+run payload leaves the handler) and `test_workflow_handler_json_contract.py`
+(every legacy mutation handler rejects a non-object JSON body with a coded 400
+before service dispatch, while object bodies still reach that service).
 
 ## Group F: fitness gates on the engine itself
 

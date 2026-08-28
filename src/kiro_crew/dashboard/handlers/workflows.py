@@ -340,6 +340,8 @@ async def api_workflow_author(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    if not isinstance(body, dict):
+        return _error("JSON body must be an object", "invalid_json", 400)
     intent = (body.get("intent") or "").strip()
     if not intent:
         return web.json_response({"error": "intent is required"}, status=400)
@@ -368,6 +370,8 @@ async def api_workflow_run(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    if not isinstance(body, dict):
+        return _error("JSON body must be an object", "invalid_json", 400)
     source = body.get("source", "")
     if not isinstance(source, str) or not source.strip():
         return web.json_response({"error": "source is required"}, status=400)
@@ -401,6 +405,8 @@ async def api_workflow_run_intent(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    if not isinstance(body, dict):
+        return _error("JSON body must be an object", "invalid_json", 400)
     intent = (body.get("intent") or "").strip()
     if not intent:
         return web.json_response({"error": "intent is required"}, status=400)
@@ -509,6 +515,8 @@ async def api_workflow_run_rerun(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         body = {}
+    if not isinstance(body, dict):
+        return _error("JSON body must be an object", "invalid_json", 400)
     from_index = body.get("from_index", 0)
     if not isinstance(from_index, int):
         from_index = 0

@@ -866,6 +866,10 @@ caller's `X-Session-Key` header becomes the run's `author` and `session_key`.
 | `PATCH /api/workflows/definitions/{id-or-slug}` | `{source, expected_revision, name?, description?, slug?}` | append a revision; 404 when unknown, 409 on stale revision |
 | `POST /api/workflows/definitions/{id-or-slug}/run` | `{input?, args?, budget_total?, timeout_secs?}` | run the exact saved revision; 404 when unknown, 409 on execution admission rejection, 503 when its executor is unavailable |
 
+Every mutation route that accepts JSON requires a top-level object. A syntactically
+valid scalar or array is rejected with 400 and `code: invalid_json` instead of
+reaching field access and surfacing as an internal-server error.
+
 With no `workflow_service` on state, every route answers 503.
 
 Every response body passes through `_redact_obj`, which redacts dict **keys** as
