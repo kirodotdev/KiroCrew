@@ -452,6 +452,94 @@ FunctionEnd
   CopyFiles /SILENT "${SOURCE}\*" "${DESTINATION}"
 !macroend
 
+; Heal a machine already bifurcated by the nested-install update bug (issue
+; #6493): repoint THIS channel's Start Menu and Desktop shortcuts at the bytes
+; this update just wrote. electron-builder inserts customInstall via
+; `!ifmacrodef customInstall / !insertmacro customInstall` in installSection.nsh
+; AFTER installApplicationFiles and AFTER both addStartMenuLink $keepShortcuts
+; and addDesktopLink $keepShortcuts, so $newStartMenuLink / $newDesktopLink are
+; already the template's own per-channel link paths by the time this runs.
+;
+; THE BUG THIS HEALS: registryAddInstallInfo records KeepShortcuts="true", so on
+; an update the template's addStartMenuLink/addDesktopLink keep whatever a
+; previous install left behind and never repoint a shortcut that names a
+; different Kiro Crew root. A machine that hit the nesting bug ends up with two
+; installs -- e.g. ...\KiroCrew\KiroCrew.exe (stale, named by the Start Menu
+; link) and ...\KiroCrew\KiroCrew\KiroCrew.exe (live, named by the Desktop link)
+; -- and launching the stale shortcut lands on the frozen copy, which
+; re-discovers this same update and re-downloads it on every launch.
+;
+; OWNERSHIP GATE. The heal only fires on an update that has PROVEN it owns the
+; install root, and it borrows the template's own pre-extraction proof to say so.
+; installSection.nsh sets $keepShortcuts "true" ONLY behind
+; `${if} $R1 == "true"` `${andIf} ${FileExists} "$appExe"` (where $appExe is
+; "$INSTDIR\${APP_EXECUTABLE_FILENAME}"), i.e. the app's own executable was
+; present at the final $INSTDIR BEFORE this run extracted anything -- the same
+; executable-presence ownership proof KiroEnsureAppInstallDir's update bypass
+; requires. A post-extraction FileExists probe would be vacuously true (this run
+; just wrote the exe), so the gate reuses $keepShortcuts instead of re-probing.
+; $KiroVisibleUpdate (set in customInit from ${isUpdated}) confines it to the
+; update path. Fresh installs and unproven updates never reach the heal, so
+; #6487's safety argument is not weakened; a $keepShortcuts == "false" update
+; needs no healing because the template just re-created both links itself.
+;
+; DECISION -- LEAVE THE STALE SIBLING DIRECTORY IN PLACE (task item 2). This
+; macro deliberately contains no RMDir/Delete. A recursive delete under
+; %LOCALAPPDATA%\Programs keyed off a path this run did not write is
+; unrecoverable on a wrong guess, and no ownership proof as strong as the
+; update-bypass proof exists for the sibling directory (its executable is not the
+; one we just wrote). An unreferenced directory costs disk only; reaching into a
+; directory we cannot prove we own is a defect. So we repoint the pointers and
+; leave the bytes.
+;
+; KNOWN UNCOVERED SURFACE. A taskbar pin is the shell's own .lnk under the user's
+; ...\User Pinned\TaskBar tree, not $newStartMenuLink or $newDesktopLink, so a
+; pre-bifurcation pin keeps naming the stale root. Healing it needs a literal
+; shell path the template does not manage, and is a deliberate follow-up.
+;
+; NIGHTLY IS UNTOUCHED. Nightly is a separate install with its own APP_ID /
+; SHORTCUT_NAME / guid (build-desktop.sh overrides them), so $newStartMenuLink,
+; $newDesktopLink and ${APP_ID} all resolve to nightly's OWN values wherever this
+; macro is expanded. This channel's heal names this channel's links only and
+; cannot reach nightly's shortcuts or install root.
+!macro customInstall
+  ${If} $KiroVisibleUpdate == 1
+  ${AndIf} $keepShortcuts == "true"
+    !ifndef DO_NOT_CREATE_START_MENU_SHORTCUT
+      ; Existence-gate: a shortcut the user deleted stays deleted; only an
+      ; existing pointer that may name a stale root is rewritten.
+      ${If} ${FileExists} "$newStartMenuLink"
+        ClearErrors
+        CreateShortCut "$newStartMenuLink" "$INSTDIR\${APP_EXECUTABLE_FILENAME}" "" "$INSTDIR\${APP_EXECUTABLE_FILENAME}" 0 "" "" "${APP_DESCRIPTION}"
+        ; CreateShortCut drops the AppUserModelID; re-stamp it as the template does.
+        WinShell::SetLnkAUMI "$newStartMenuLink" "${APP_ID}"
+        ${If} ${Errors}
+          ; The details pane is muted on the update path (installSection.nsh does
+          ; SetDetailsPrint none). A failed heal must not fail an otherwise
+          ; successful update, but it must not report success silently either.
+          SetDetailsPrint both
+          DetailPrint "Could not repoint Start Menu shortcut: $newStartMenuLink"
+          SetDetailsPrint lastused
+          ClearErrors
+        ${EndIf}
+      ${EndIf}
+    !endif
+    !ifndef DO_NOT_CREATE_DESKTOP_SHORTCUT
+      ${If} ${FileExists} "$newDesktopLink"
+        ClearErrors
+        CreateShortCut "$newDesktopLink" "$INSTDIR\${APP_EXECUTABLE_FILENAME}" "" "$INSTDIR\${APP_EXECUTABLE_FILENAME}" 0 "" "" "${APP_DESCRIPTION}"
+        WinShell::SetLnkAUMI "$newDesktopLink" "${APP_ID}"
+        ${If} ${Errors}
+          SetDetailsPrint both
+          DetailPrint "Could not repoint Desktop shortcut: $newDesktopLink"
+          SetDetailsPrint lastused
+          ClearErrors
+        ${EndIf}
+      ${EndIf}
+    !endif
+  ${EndIf}
+!macroend
+
 ; Preserve only the install-root ownership guard from the former custom UI.
 ; This runs for silent installs too and does not replace or restyle any page.
 !macro customInit

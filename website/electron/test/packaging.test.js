@@ -19,6 +19,14 @@ const ASSISTED_INSTALLER_TEMPLATE = path.join(
   "nsis",
   "assistedInstaller.nsh"
 );
+const INSTALL_SECTION_TEMPLATE = path.join(
+  ROOT,
+  "node_modules",
+  "app-builder-lib",
+  "templates",
+  "nsis",
+  "installSection.nsh"
+);
 
 function normalizedNsisBlock(source, pattern) {
   const match = source.match(pattern);
@@ -524,6 +532,132 @@ describe("first-download installer design contract", () => {
     assert.match(helper, /hdiutil convert/);
     assert.match(helper, /hdiutil resize -size min/);
     assert.match(helper, /template and signed app names differ/);
+  });
+
+  it("repoints this channel's shortcuts to the live root on an ownership-proven update", () => {
+    // customInstall heals a machine already bifurcated by the nested-install
+    // update bug (issue #6493): registryAddInstallInfo records
+    // KeepShortcuts="true", so the template's addStartMenuLink/addDesktopLink
+    // keep whatever a previous install left and never repoint a shortcut naming
+    // a different Kiro Crew root. The user launches the stale copy, which
+    // re-discovers the same update forever. This macro rewrites THIS channel's
+    // Start Menu and Desktop links to name the executable this run just wrote.
+    const customInstallBlock = normalizedNsisBlock(
+      installer,
+      /!macro customInstall\r?\n[\s\S]*?!macroend/
+    );
+
+    // (a) The ownership gate is the macro's first two conditions, in order. The
+    // heal fires ONLY on a proven-ownership update: $KiroVisibleUpdate confines
+    // it to the update path, and $keepShortcuts == "true" borrows the template's
+    // pre-extraction ${FileExists} "$appExe" proof (installSection.nsh sets it
+    // only behind that test), the same executable-presence proof
+    // KiroEnsureAppInstallDir's update bypass requires.
+    assert.match(
+      customInstallBlock,
+      /^!macro customInstall\n\$\{If\} \$KiroVisibleUpdate == 1\n\$\{AndIf\} \$keepShortcuts == "true"\n/,
+      "customInstall must gate on an ownership-proven update before any rewrite"
+    );
+
+    // (b) Both links are rewritten to $INSTDIR\${APP_EXECUTABLE_FILENAME} using
+    // the template's exact 8-argument CreateShortCut shape -- the bytes this
+    // installer just wrote, which cannot be stale.
+    assert.match(
+      customInstallBlock,
+      /CreateShortCut "\$newStartMenuLink" "\$INSTDIR\\\$\{APP_EXECUTABLE_FILENAME\}" "" "\$INSTDIR\\\$\{APP_EXECUTABLE_FILENAME\}" 0 "" "" "\$\{APP_DESCRIPTION\}"/,
+      "the Start Menu link must be recreated at $INSTDIR with the template's shape"
+    );
+    assert.match(
+      customInstallBlock,
+      /CreateShortCut "\$newDesktopLink" "\$INSTDIR\\\$\{APP_EXECUTABLE_FILENAME\}" "" "\$INSTDIR\\\$\{APP_EXECUTABLE_FILENAME\}" 0 "" "" "\$\{APP_DESCRIPTION\}"/,
+      "the Desktop link must be recreated at $INSTDIR with the template's shape"
+    );
+
+    // (c) Each rewrite is wrapped in the template's own opt-out and is existence
+    // gated, so an opt-out build creates nothing and a shortcut the user deleted
+    // stays deleted.
+    assert.match(customInstallBlock, /!ifndef DO_NOT_CREATE_START_MENU_SHORTCUT/);
+    assert.match(customInstallBlock, /!ifndef DO_NOT_CREATE_DESKTOP_SHORTCUT/);
+    assert.match(customInstallBlock, /\$\{If\} \$\{FileExists\} "\$newStartMenuLink"/);
+    assert.match(customInstallBlock, /\$\{If\} \$\{FileExists\} "\$newDesktopLink"/);
+
+    // (d) CreateShortCut drops the AppUserModelID, so each link is re-stamped
+    // with this channel's ${APP_ID}. Nightly resolves ${APP_ID} to its own guid.
+    assert.match(
+      customInstallBlock,
+      /WinShell::SetLnkAUMI "\$newStartMenuLink" "\$\{APP_ID\}"/
+    );
+    assert.match(
+      customInstallBlock,
+      /WinShell::SetLnkAUMI "\$newDesktopLink" "\$\{APP_ID\}"/
+    );
+
+    // (e) A failed rewrite prints a breadcrumb rather than failing the update or
+    // reporting silent success. The details pane is muted on the update path
+    // (installSection.nsh does SetDetailsPrint none), so the message is bracketed
+    // by SetDetailsPrint both / SetDetailsPrint lastused, then errors cleared.
+    assert.match(
+      customInstallBlock,
+      /SetDetailsPrint both\nDetailPrint "Could not repoint Start Menu shortcut: \$newStartMenuLink"\nSetDetailsPrint lastused\nClearErrors/
+    );
+    assert.match(
+      customInstallBlock,
+      /SetDetailsPrint both\nDetailPrint "Could not repoint Desktop shortcut: \$newDesktopLink"\nSetDetailsPrint lastused\nClearErrors/
+    );
+
+    // (f) NEGATIVE: no literal .lnk path. Only $newStartMenuLink /
+    // $newDesktopLink -- the template's own per-channel link variables -- may be
+    // rewritten; a hardcoded .lnk path would name the wrong channel or a stale
+    // shell location.
+    assert.equal(
+      /\.lnk"/.test(customInstallBlock),
+      false,
+      "customInstall must rewrite only $newStartMenuLink/$newDesktopLink, never a literal .lnk path"
+    );
+
+    // (g) NEGATIVE: no RMDir/Delete. The stale sibling install directory is
+    // deliberately LEFT in place: no ownership proof as strong as the
+    // update-bypass proof exists for the sibling, and a wrong recursive delete
+    // under %LOCALAPPDATA%\Programs is unrecoverable. An unreferenced directory
+    // costs disk only.
+    assert.doesNotMatch(customInstallBlock, /\b(RMDir|Delete)\b/);
+
+    // Borrowed vendored-template facts the gate's ownership argument depends on,
+    // pinned the way the StartApp test pins assistedInstaller.nsh. Read from
+    // node_modules, so these ENOENT in a sandbox without installed dependencies
+    // (exactly like the existing assistedInstaller.nsh read) and are verified in
+    // CI where node_modules exists.
+    const installSectionTemplate = fs.readFileSync(INSTALL_SECTION_TEMPLATE, "utf8");
+
+    // Fact 1: $keepShortcuts "true" is assigned exactly once, and only behind the
+    // pre-extraction ${FileExists} "$appExe" proof the gate reuses.
+    assert.match(
+      installSectionTemplate,
+      /\$\{if\} \$R1 == "true"\s*\r?\n\s*\$\{andIf\} \$\{FileExists\} "\$appExe"\s*\r?\n\s*StrCpy \$keepShortcuts "true"/,
+      "installSection.nsh must set $keepShortcuts \"true\" only behind ${FileExists} \"$appExe\""
+    );
+    assert.equal(
+      (installSectionTemplate.match(/StrCpy \$keepShortcuts "true"/g) || []).length,
+      1,
+      "$keepShortcuts \"true\" must be assigned exactly once in installSection.nsh"
+    );
+
+    // Fact 2: !insertmacro customInstall expands after installApplicationFiles
+    // and after both link macros, so $newStartMenuLink/$newDesktopLink are
+    // already the template's per-channel link paths when customInstall runs.
+    const customInstallIndex = installSectionTemplate.indexOf("!insertmacro customInstall");
+    const installFilesIndex = installSectionTemplate.indexOf("!insertmacro installApplicationFiles");
+    const startMenuIndex = installSectionTemplate.indexOf("!insertmacro addStartMenuLink");
+    const desktopIndex = installSectionTemplate.indexOf("!insertmacro addDesktopLink");
+    assert.ok(customInstallIndex > -1, "installSection.nsh must expand customInstall");
+    assert.ok(
+      customInstallIndex > installFilesIndex,
+      "customInstall must expand after installApplicationFiles"
+    );
+    assert.ok(
+      customInstallIndex > startMenuIndex && customInstallIndex > desktopIndex,
+      "customInstall must expand after both addStartMenuLink and addDesktopLink"
+    );
   });
 });
 
