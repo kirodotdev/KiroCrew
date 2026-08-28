@@ -535,6 +535,70 @@ class TestCallToolWithLoggingRedaction:
         assert "slug" in captured.get("resources", "")
 
 
+class TestCallToolWithLoggingKind:
+    """``tool_kind`` classifies the invocation; it must not hold the caller.
+
+    The wrapper passed ``session_key`` as ``tool_kind``, so every row it wrote --
+    the bulk of the agent tool surface, across all five MCP servers -- carried a
+    high-cardinality session key where a kind belongs, sitting in the same file as
+    correctly-kinded rows written directly by callers. The field looked populated
+    and trustworthy while carrying no kind at all.
+    """
+
+    _CALLER = "dashboard:chat-7"
+
+    def _capture(self, *, raises: bool = False) -> dict:
+        from kiro_crew.mcp_shared import call_tool_with_logging
+        from kiro_crew.validation import ValidationError
+
+        captured: dict = {}
+
+        class _FakeSel:
+            def log_tool_invocation(self, **kw):
+                captured.update(kw)
+
+        def _validate(_name, raw):
+            if raises:
+                raise ValidationError("slug", "bad arg")
+            return raw
+
+        def _inner(_name, _args):
+            return "ok"
+
+        with patch("kiro_crew.mcp_shared.sel", return_value=_FakeSel()):
+            call_tool_with_logging(
+                "artifact_list",
+                {"slug": "doc"},
+                _validate,
+                _inner,
+                session_key=self._CALLER,
+                downstream_service="kirocrew-core",
+            )
+        assert captured, "the wrapper wrote no audit row at all"
+        return captured
+
+    def test_the_success_row_does_not_put_the_caller_in_tool_kind(self):
+        captured = self._capture()
+        assert captured.get("tool_kind", "") != self._CALLER
+
+    def test_the_validation_failure_row_does_not_either(self):
+        """The other call site. It was the same copy of the same wrong variable,
+        so fixing only the success path would leave every rejected call mislabeled.
+        """
+        captured = self._capture(raises=True)
+        assert captured["outcome"] == "failed"
+        assert captured.get("tool_kind", "") != self._CALLER
+
+    @pytest.mark.parametrize("raises", [False, True])
+    def test_the_caller_is_still_recorded_on_both_paths(self, raises):
+        """Guards the obvious wrong fix: dropping the caller instead of the kind.
+
+        ``session_key`` is what SEL stores as ``caller_identity``, and it is the
+        field the ownership and attribution questions are answered from.
+        """
+        assert self._capture(raises=raises)["session_key"] == self._CALLER
+
+
 # --- run_mcp_stdio_loop busy-queue behavior ----------------------------------
 #
 # A tools/call arriving while a worker is busy used to be silently dropped:

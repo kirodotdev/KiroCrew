@@ -617,11 +617,19 @@ def call_tool_with_logging(
     try:
         args = validate_fn(name, raw_args)
     except ValidationError as e:
+        # No ``tool_kind``: it is a CLASSIFICATION of the invocation -- callers
+        # that write their own rows pass things like "authz" -- and this wrapper
+        # has no per-tool taxonomy to supply. It used to pass ``session_key``,
+        # which is both wrong and redundant, since ``caller_identity`` on the same
+        # record already carries it. The effect was that every row written through
+        # here, across all five MCP servers, held a high-cardinality session key
+        # where a kind belongs, which made the field useless to filter or
+        # aggregate on while still looking populated (#6448). The parameter
+        # defaults to "", and an honestly empty kind beats a false one.
         sel().log_tool_invocation(
             session_key=session_key,
             source="mcp",
             tool_name=name,
-            tool_kind=session_key,
             outcome="failed",
             downstream_service=downstream_service,
             error=str(e),
@@ -646,7 +654,7 @@ def call_tool_with_logging(
         session_key=session_key,
         source="mcp",
         tool_name=name,
-        tool_kind=session_key,
+        # No ``tool_kind`` -- see the ValidationError path above.
         outcome=outcome,
         downstream_service=downstream_service,
         resources=resources,
