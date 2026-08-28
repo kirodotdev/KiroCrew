@@ -21,6 +21,8 @@ import logging
 from typing import Any
 
 from kiro_crew.executors import governance_executor, maintenance_executor
+from kiro_crew.messaging.link import DM_SCOPE_UNIFIED, channel_namespace_of
+from kiro_crew.platform.agent_identity import bind_session_principal
 from kiro_crew.platform.context import PlatformCompositionError
 from kiro_crew.platform.governance_profiles import (
     HOST_SESSION_KEY,
@@ -31,6 +33,40 @@ from kiro_crew.sel import sel
 from kiro_crew.session_pid_sig import publish_session_pid
 
 logger = logging.getLogger(__name__)
+
+
+def exclusive_session_binds(*, exclusive: bool, session_key: str) -> bool:
+    """True when a queued exclusive DM should keep the human sidecar.
+
+    Shared rooms and ``unified:{agent}`` buckets stay unbound: collapsing
+    another speaker's text must not mint the opener's bearer. An exclusive
+    DM is the opposite — dropping bind just because the message was queued
+    would clear AgentCore access for the only speaker that session has.
+    """
+    if not exclusive:
+        return False
+    if channel_namespace_of(session_key) == DM_SCOPE_UNIFIED:
+        return False
+    return True
+
+
+def exclusive_bind_raw_id(
+    raw_id: str,
+    *,
+    exclusive: bool,
+    session_key: str,
+) -> str:
+    """Return *raw_id* only when this session cannot accept another speaker.
+
+    Unified DM buckets collapse every allowed user into ``unified:{agent}``,
+    so they stay unbound even when the channel marked the turn exclusive.
+    Empty *raw_id* or a non-exclusive turn also stays unbound.
+    """
+    if not exclusive or not raw_id:
+        return ""
+    if channel_namespace_of(session_key) == DM_SCOPE_UNIFIED:
+        return ""
+    return raw_id
 
 
 async def publish_turn_identity(
@@ -51,8 +87,10 @@ async def publish_turn_identity(
 
     When *surface* and *raw_id* are both supplied this is also the session-start
     hook that binds an AgentCore ``SessionPrincipal`` onto the live session
-    (core-derived subject, then ``annotate_principal``). Existing callers that
-    omit them stay byte-identical: the pid mapping is the only write.
+    (core-derived subject, then ``annotate_principal``). Cron / taskrunner
+    callers omit them on purpose: an unattended turn must not inherit a
+    leftover human principal. Human channel dispatchers pass the
+    transport's own user id.
     """
     try:
         pid = sessions.get_pid(session_key)
@@ -64,8 +102,6 @@ async def publish_turn_identity(
         logger.debug("publish_turn_identity failed for %s", session_key, exc_info=True)
     if surface and raw_id:
         try:
-            from kiro_crew.platform.agent_identity import bind_session_principal
-
             await bind_session_principal(
                 sessions, surface=surface, raw_id=raw_id, session_key=session_key
             )
@@ -77,6 +113,14 @@ async def publish_turn_identity(
                 session_key,
                 exc_info=True,
             )
+    else:
+        # Metadata-only. Retract of live inbound credentials belongs
+        # before session/new (later stack layer), not after acquire —
+        # ``clear_session_principal`` would recycle the provider this
+        # turn just created once that retract hook exists.
+        setter = getattr(sessions, "set_principal", None)
+        if callable(setter):
+            setter(session_key, None)
 
 
 def _channel_inbound_permitted_sync(channel_type: str) -> bool:

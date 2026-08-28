@@ -816,7 +816,7 @@ class TestTheRoutesRequireTheInternalSecret:
         # hand-built slot that authorize_target would refuse for unrelated reasons.
         _peer_target(state, "chat-2", caller)
 
-        async def _fake_run_chat(_state, _slot, _prompt):
+        async def _fake_run_chat(_state, _slot, _prompt, **_kw):
             return None
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_runner._run_chat", _fake_run_chat)
@@ -1530,7 +1530,7 @@ def test_send_to_an_idle_target_starts_a_turn_with_provenance(tmp_path, monkeypa
 
     ran: dict[str, str] = {}
 
-    async def _fake_run_chat(_state, slot, prompt):
+    async def _fake_run_chat(_state, slot, prompt, **_kw):
         ran["slot"] = slot.key
         ran["prompt"] = prompt
 
@@ -1577,7 +1577,7 @@ def test_the_sent_body_passes_through_the_outbound_guard(tmp_path, monkeypatch):
 
     ran: dict[str, str] = {}
 
-    async def _fake_run_chat(_state, slot, prompt):
+    async def _fake_run_chat(_state, slot, prompt, **_kw):
         ran["prompt"] = prompt
 
     monkeypatch.setattr("kiro_crew.dashboard.chat_runner._run_chat", _fake_run_chat)

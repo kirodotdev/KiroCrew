@@ -53,6 +53,7 @@ from kiro_crew.messaging.dispatch import (
     inbound_permitted,
 )
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE
+from kiro_crew.messaging.identity import exclusive_session_binds
 from kiro_crew.messaging.link import (
     ChannelLink,
     bind_origin_mirror,
@@ -421,6 +422,11 @@ class TeamsDispatcher:
                     ),
                     notice=lambda sk, provider: self._maybe_notice(inbound, sk, provider),
                     audit_caller=f"teams:{email}",
+                    principal_raw_id=email if inbound.bind_principal else "",
+                    # Transport refuses non-personal conversations, so a
+                    # Teams turn that reaches here cannot accept another
+                    # human's mid-turn steer.
+                    exclusive_principal=True,
                     after_persist=_surface_new_session,
                 ),
                 sessions=self.sessions,
@@ -754,7 +760,15 @@ class TeamsDispatcher:
                     len(remainder),
                 )
             combined = "\n\n".join(t for t in texts if t)
-            replay = replace(inbound, text=combined, attachments=attachments)
+            replay = replace(
+                inbound,
+                text=combined,
+                attachments=attachments,
+                bind_principal=exclusive_session_binds(
+                    exclusive=inbound.conversation_type == "personal",
+                    session_key=session_key,
+                ),
+            )
             # Drained payloads are turn content, so command interpretation is off:
             # a queued "/new" must reach the model as text, not execute on drain.
             # drain=False keeps the pump in THIS loop instead of nesting a drain

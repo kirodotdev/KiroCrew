@@ -286,7 +286,10 @@ next turn into the same slot:
 <nudge message>
 ```
 
-- `N` is `cycle_count + 1`. Only DELIVERED nudges count toward `max_cycles`.
+- Prefix `AUTO_NUDGE_PREFIX = '[auto-nudge cycle '`. `is_injected_envelope`
+  treats it like cron / subagent completion: bind kwargs stay empty and a
+  leftover human principal is cleared. `N` is `cycle_count + 1`. Only
+  DELIVERED nudges count toward `max_cycles`.
 - `{{STOP_FILE}}` in the configured message is substituted with the resolved stop
   sentinel path before the tag is prepended.
 - The slot entry uses role `nudge` with a structured `nudge` meta block (`cycle`,

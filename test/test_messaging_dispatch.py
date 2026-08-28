@@ -99,7 +99,7 @@ def _patch_pipeline(monkeypatch, *, permitted: bool = True):
     async def _permitted(_channel_type):
         return permitted
 
-    async def _publish(_sessions, _key):
+    async def _publish(_sessions, _key, **_kw):
         pass
 
     async def _embed(fn, *args, **kw):
@@ -181,6 +181,90 @@ def test_the_happy_path_releases_exactly_once(monkeypatch) -> None:
     assert renderer.closed == 1
     assert sessions.released == 1
     assert sessions.successes == 1
+
+
+def test_drive_turn_binds_channel_principal(monkeypatch) -> None:
+    """A named exclusive sender becomes ``{channel}+{raw_id}``; shared stays unbound."""
+    published: list[tuple[str, dict[str, str]]] = []
+
+    async def _capture(_sessions, key, **kw):
+        published.append((key, kw))
+
+    _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(D, "publish_turn_identity", _capture)
+
+    turn = ChannelTurn(
+        channel_type="weixin",
+        session_key="weixin:agentA:direct:userA",
+        conversation_id="weixin:userA",
+        agent="agentA",
+        user_text="hi",
+        renderer=_Renderer(),
+        approval_mode="auto",
+        principal_raw_id="userA",
+        exclusive_principal=True,
+    )
+    asyncio.run(drive_turn(turn, sessions=_Sessions(), ctx_builder=_CtxBuilder()))
+    assert published == [
+        ("weixin:agentA:direct:userA", {"surface": "weixin", "raw_id": "userA"}),
+    ]
+
+    published.clear()
+    asyncio.run(drive_turn(_turn(_Renderer()), sessions=_Sessions(), ctx_builder=_CtxBuilder()))
+    assert published == [("weixin:agentA:direct:userA", {})]
+
+
+def test_drive_turn_skips_principal_on_shared_conversation(monkeypatch) -> None:
+    """A named sender on a shared group turn stays unbound.
+
+    User B can steer into user A's generation; binding A would run B's
+    text under A's credentials.
+    """
+    published: list[tuple[str, dict[str, str]]] = []
+
+    async def _capture(_sessions, key, **kw):
+        published.append((key, kw))
+
+    _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(D, "publish_turn_identity", _capture)
+
+    turn = ChannelTurn(
+        channel_type="feishu",
+        session_key="feishu:agentA:group:oc_chat",
+        conversation_id="feishu:oc_chat",
+        agent="agentA",
+        user_text="hi",
+        renderer=_Renderer(),
+        approval_mode="auto",
+        principal_raw_id="userA",
+    )
+    asyncio.run(drive_turn(turn, sessions=_Sessions(), ctx_builder=_CtxBuilder()))
+    assert published == [("feishu:agentA:group:oc_chat", {})]
+
+
+def test_drive_turn_skips_principal_on_unified_bucket(monkeypatch) -> None:
+    """A unified DM bucket collapses every allowed user; exclusive is not enough."""
+    published: list[tuple[str, dict[str, str]]] = []
+
+    async def _capture(_sessions, key, **kw):
+        published.append((key, kw))
+
+    _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(D, "publish_turn_identity", _capture)
+
+    turn = ChannelTurn(
+        channel_type="weixin",
+        session_key="unified:agentA",
+        conversation_id="weixin:userA",
+        agent="agentA",
+        user_text="hi",
+        renderer=_Renderer(),
+        approval_mode="auto",
+        principal_raw_id="userA",
+        exclusive_principal=True,
+    )
+    asyncio.run(drive_turn(turn, sessions=_Sessions(), ctx_builder=_CtxBuilder()))
+    assert published == [("unified:agentA", {})]
 
 
 def test_a_compaction_failed_terminal_resets_the_session(monkeypatch) -> None:

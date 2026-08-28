@@ -198,6 +198,7 @@ def split_trailing_protocol_suffix(text: str) -> tuple[str, str]:
 CRON_NOTIFY_PREFIX = "[Cron notification from "
 SUBAGENT_COMPLETION_PREFIX = "[Subagent completion event]"
 SUBAGENT_BATCH_COMPLETION_PREFIX = "[Subagent batch completion event]"
+AUTO_NUDGE_PREFIX = "[auto-nudge cycle "
 
 # Key under a completion message's ``meta`` where the gateway stamps the
 # structured header facts (outcome, tallies, chunk index, agent id) the

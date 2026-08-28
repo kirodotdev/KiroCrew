@@ -216,6 +216,8 @@ class FeishuDispatcher:
                 ),
                 notice=lambda sk, provider: self._maybe_notice(inbound, sk, provider),
                 audit_caller=f"feishu:{open_id}",
+                principal_raw_id=open_id,
+                exclusive_principal=inbound.chat_type != CHAT_GROUP,
                 after_persist=_surface_new_session,
             ),
             sessions=self.sessions,

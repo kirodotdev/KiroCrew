@@ -197,6 +197,9 @@ def _make_app(state: DashboardState) -> web.Application:
             request["app"] = ""  # dashboard user, not an app
         if "user" not in request:
             request["user"] = "local-app"  # recognized as owner
+        # Match token_auth: never infer dashboard trust from a falsy app claim.
+        if "is_dashboard_user" not in request:
+            request["is_dashboard_user"] = not request["app"]
         return await handler(request)
 
     app = web.Application(middlewares=[_test_auth_middleware])

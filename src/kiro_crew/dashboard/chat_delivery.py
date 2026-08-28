@@ -316,6 +316,8 @@ def queue_for_next_turn(
     message: str,
     *,
     directive_user_origin: bool = False,
+    principal_surface: str = "",
+    principal_raw_id: str = "",
 ) -> str:
     """Append *message* to the slot's queue and announce it; return the queue id.
 
@@ -329,6 +331,8 @@ def queue_for_next_turn(
         message,
         meta=containment_meta(state, slot),
         directive_user_origin=directive_user_origin,
+        principal_surface=principal_surface,
+        principal_raw_id=principal_raw_id,
     )
     state.broadcast_ws(
         "queue_push",

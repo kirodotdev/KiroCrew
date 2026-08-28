@@ -2439,6 +2439,38 @@ class TestDispatcher:
         assert "after second" in d.ctx_builder.messages[1]
 
     @pytest.mark.asyncio
+    async def test_drain_replay_binds_exclusive_dm(self) -> None:
+        """A queued DM is still the only speaker; keep the human sidecar."""
+        d, _cli, sess = _dispatcher({"u1"})
+        sess.queued = [("t1", "from-the-same-dm", {})]
+        seen: list[bool] = []
+        real = d.handle_message
+
+        async def _spy(msg: InboundMessage, *args: Any, **kwargs: Any) -> Any:
+            seen.append(msg.bind_principal)
+            return await real(msg, *args, **kwargs)
+
+        d.handle_message = _spy  # type: ignore[method-assign]
+        await d._drain_queue(d._session_key("u1"), "u1", "c1")
+        assert seen == [True]
+
+    @pytest.mark.asyncio
+    async def test_drain_replay_does_not_bind_shared_thread(self) -> None:
+        """A guild-thread drain can collapse another speaker's text."""
+        d, _cli, sess = _dispatcher({"u1"})
+        sess.queued = [("t1", "from-someone-else", {})]
+        seen: list[bool] = []
+        real = d.handle_message
+
+        async def _spy(msg: InboundMessage, *args: Any, **kwargs: Any) -> Any:
+            seen.append(msg.bind_principal)
+            return await real(msg, *args, **kwargs)
+
+        d.handle_message = _spy  # type: ignore[method-assign]
+        await d._drain_queue(d._session_key("u1", "thread1"), "u1", "c1", thread_id="thread1")
+        assert seen == [False]
+
+    @pytest.mark.asyncio
     async def test_busy_steers_and_acks_with_reaction(self) -> None:
         d, cli, sess = _dispatcher({"u1"})
         sess._busy = True

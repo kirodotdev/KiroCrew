@@ -424,7 +424,7 @@ def _patch_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _permitted(_channel_type: str) -> bool:
         return True
 
-    async def _publish(_sessions: Any, _key: str) -> None:
+    async def _publish(_sessions: Any, _key: str, **_kw: Any) -> None:
         return None
 
     async def _embed(fn: Any, *args: Any, **kw: Any) -> Any:

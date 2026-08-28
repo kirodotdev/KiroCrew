@@ -313,6 +313,35 @@ class TestDrain:
             len(seen) == 1
         ), f"drain re-entered {len(seen)} times; the replay must pass drain=False"
 
+    @pytest.mark.asyncio
+    async def test_drain_replay_binds_exclusive_dm(self, monkeypatch) -> None:
+        """A queued personal chat is still the only speaker; keep the sidecar."""
+        seen: list[bool] = []
+
+        async def _fake_drive(turn, **kw):
+            return None
+
+        real = TeamsDispatcher.handle_message
+
+        async def _spy(self, inbound, *args, **kwargs):
+            seen.append(inbound.bind_principal)
+            return await real(self, inbound, *args, **kwargs)
+
+        monkeypatch.setattr(TeamsDispatcher, "handle_message", _spy)
+        monkeypatch.setattr("kiro_crew.teams.transport_dispatch.drive_turn", _fake_drive)
+        monkeypatch.setattr(
+            "kiro_crew.teams.transport_dispatch.inbound_permitted",
+            lambda _c: _true(),
+        )
+        sessions = _Sessions(_Provider(), busy=False)
+        d = _dispatcher(sessions, _Client())
+        key = d._session_key(_EMAIL)
+        sessions.queues[key] = [("1", "from-the-same-dm", {})]
+
+        await d._drain_queue(key, _inbound("opener"))
+
+        assert seen == [True]
+
 
 async def _true() -> bool:
     return True

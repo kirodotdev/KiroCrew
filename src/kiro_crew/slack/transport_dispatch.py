@@ -33,9 +33,14 @@ from kiro_crew.llm_helpers import save_conversation_turn_off_loop
 from kiro_crew.messaging import auto_title
 from kiro_crew.messaging.dispatch import build_directive_consumer
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
-from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
+from kiro_crew.messaging.identity import (
+    channel_inbound_permitted,
+    exclusive_bind_raw_id,
+    publish_turn_identity,
+)
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.platform import current_context
+from kiro_crew.platform.agent_identity import principal_bind_kwargs
 from kiro_crew.sel import sel
 from kiro_crew.slack.handler import (
     _get_default_agent,
@@ -470,7 +475,21 @@ async def handle_message_transport(
             sessions.set_slack_link(session_key, reply_ts, channel)
         # Publish this turn's session identity so managed MCP tools resolve
         # X-Session-Key; one shared writer lives in messaging.identity.
-        await publish_turn_identity(sessions, session_key)
+        # Bind only a 1:1 IM (channel id starts with D). A channel / MPIM
+        # thread accepts another member's mid-turn steer.
+        await publish_turn_identity(
+            sessions,
+            session_key,
+            **principal_bind_kwargs(
+                text,
+                surface="slack",
+                raw_id=exclusive_bind_raw_id(
+                    user_id,
+                    exclusive=channel.startswith("D"),
+                    session_key=session_key,
+                ),
+            ),
+        )
 
         # ── Conversation log: the user's turn, at RECEIPT ──
         # Recorded BEFORE the turn runs rather than alongside the reply

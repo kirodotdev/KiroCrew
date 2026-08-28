@@ -34,6 +34,7 @@ from kiro_crew.hooks import (
     mcp_identity_ref,
     target_paths,
 )
+from kiro_crew.platform.agent_identity import bind_cli_principal
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -100,6 +101,16 @@ _MAX_COMMAND_DISPLAY = 240
 
 #: True once a prompt's await was cancelled. See :func:`_require_usable_stdin`.
 _stdin_poisoned = False
+
+
+class _CliPrincipalStore:
+    """SessionManager-shaped holder so CLI can bind without a live session map."""
+
+    def __init__(self, provider: LLMProvider) -> None:
+        self._provider = provider
+
+    def set_principal(self, key: str, principal: object) -> None:
+        setattr(self._provider, "principal", principal)
 
 
 class StdinPoisonedError(RuntimeError):
@@ -351,6 +362,10 @@ async def _chat(message: str | None, model: str | None, agent: str | None = None
     provider: LLMProvider = build_provider_factory(cfg)(
         _CLI_SESSION_KEY, agent=agent_name, channel_id=channel_id
     )
+    # Bind ``cli+{os_user}`` before the ACP child starts so a later login
+    # Gateway inject can read the principal at session/new. The CLI has no
+    # SessionManager; the principal lives on the provider until then.
+    await bind_cli_principal(_CliPrincipalStore(provider), session_key=_CLI_SESSION_KEY)
     # Built once per process, not per request: a permission request must not
     # depend on a config read succeeding while the turn is parked.
     gate = _build_tool_gate(agent_name or "")

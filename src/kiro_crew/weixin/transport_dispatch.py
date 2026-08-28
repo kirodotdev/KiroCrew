@@ -309,6 +309,10 @@ class WeixinDispatcher:
                 after_persist=self._surface_own_session,
                 notice=lambda sk, provider: self._maybe_notice(user_id, sk, provider),
                 audit_caller=f"weixin:{user_id}",
+                principal_raw_id=user_id,
+                # Weixin is DM-only; a turn here cannot accept another
+                # human's mid-turn steer.
+                exclusive_principal=True,
             ),
             sessions=self.sessions,
             ctx_builder=self.ctx_builder,

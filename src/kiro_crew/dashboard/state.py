@@ -4035,6 +4035,8 @@ class _ChatSlot:
         meta: dict | None = None,
         *,
         directive_user_origin: bool = False,
+        principal_surface: str = "",
+        principal_raw_id: str = "",
     ) -> str:
         """Append a message to the queue. Returns the generated queue ID.
 
@@ -4061,6 +4063,9 @@ class _ChatSlot:
             item["meta"] = meta
         if directive_user_origin:
             item["_directive_user_origin"] = True
+        if principal_surface and principal_raw_id:
+            item["_principal_surface"] = principal_surface
+            item["_principal_raw_id"] = principal_raw_id
         self._queue.append(item)
         self._note_enqueue()
         return qid
@@ -4090,6 +4095,8 @@ class _ChatSlot:
         on_consumed: Callable[[bool], None] | None = None,
         on_irreversibly_consumed: Callable[[], Awaitable[None] | None] | None = None,
         directive_user_origin: bool = False,
+        principal_surface: str = "",
+        principal_raw_id: str = "",
     ) -> str:
         """Insert a message at a specific queue position. Returns the queue ID.
 
@@ -4119,6 +4126,9 @@ class _ChatSlot:
             item["_on_irreversibly_consumed"] = on_irreversibly_consumed
         if directive_user_origin:
             item["_directive_user_origin"] = True
+        if principal_surface and principal_raw_id:
+            item["_principal_surface"] = principal_surface
+            item["_principal_raw_id"] = principal_raw_id
         self._queue.insert(index, item)
         self._note_enqueue()
         return qid
@@ -4200,6 +4210,8 @@ class _ChatSlot:
         content: str,
         *,
         directive_user_origin: bool = False,
+        principal_surface: str = "",
+        principal_raw_id: str = "",
     ) -> bool:
         """Replace the content of a queue item by ID. Returns True if found.
 
@@ -4218,6 +4230,12 @@ class _ChatSlot:
                     item["_directive_user_origin"] = True
                 else:
                     item.pop("_directive_user_origin", None)
+                if principal_surface and principal_raw_id:
+                    item["_principal_surface"] = principal_surface
+                    item["_principal_raw_id"] = principal_raw_id
+                else:
+                    item.pop("_principal_surface", None)
+                    item.pop("_principal_raw_id", None)
                 return True
         return False
 
