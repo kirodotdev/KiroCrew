@@ -1,5 +1,11 @@
 [
   {
+    "name": "glance",
+    "gitUrl": "https://github.com/rubencu/kirocrew-glance",
+    "repo": "https://github.com/rubencu/kirocrew-glance",
+    "branch": "main"
+  },
+  {
     "name": "launchdarkly",
     "gitUrl": "https://github.com/launchdarkly-labs/launchdarkly-kiro-crew-app",
     "repo": "https://github.com/launchdarkly-labs/launchdarkly-kiro-crew-app",
