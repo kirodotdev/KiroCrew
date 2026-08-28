@@ -33,7 +33,13 @@ from kiro_crew.session_pid_sig import publish_session_pid
 logger = logging.getLogger(__name__)
 
 
-async def publish_turn_identity(sessions: Any, session_key: str) -> None:
+async def publish_turn_identity(
+    sessions: Any,
+    session_key: str,
+    *,
+    surface: str | None = None,
+    raw_id: str | None = None,
+) -> None:
     """Publish this turn's ``session_pid_<pid>.txt`` mapping (+ HMAC sidecar).
 
     Keyed by the session's kiro-cli host PID (via ``sessions.get_pid``) so the
@@ -42,6 +48,11 @@ async def publish_turn_identity(sessions: Any, session_key: str) -> None:
     replacements — blocking filesystem work that must not run on the event
     loop. Fail-safe: a missing pid (session not yet spawned) or any filesystem
     error is swallowed so identity publication can never break a turn.
+
+    When *surface* and *raw_id* are both supplied this is also the session-start
+    hook that binds an AgentCore ``SessionPrincipal`` onto the live session
+    (core-derived subject, then ``annotate_principal``). Existing callers that
+    omit them stay byte-identical: the pid mapping is the only write.
     """
     try:
         pid = sessions.get_pid(session_key)
@@ -51,6 +62,21 @@ async def publish_turn_identity(sessions: Any, session_key: str) -> None:
             )
     except Exception:
         logger.debug("publish_turn_identity failed for %s", session_key, exc_info=True)
+    if surface and raw_id:
+        try:
+            from kiro_crew.platform.agent_identity import bind_session_principal
+
+            await bind_session_principal(
+                sessions, surface=surface, raw_id=raw_id, session_key=session_key
+            )
+        except PlatformCompositionError:
+            raise
+        except Exception:
+            logger.debug(
+                "publish_turn_identity principal bind failed for %s",
+                session_key,
+                exc_info=True,
+            )
 
 
 def _channel_inbound_permitted_sync(channel_type: str) -> bool:

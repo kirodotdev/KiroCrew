@@ -250,6 +250,7 @@ from kiro_crew.name_grant import (
     shell_command_for_event,
 )
 from kiro_crew.platform import redact_via_context
+from kiro_crew.platform.agent_identity import principal_bind_kwargs
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -383,6 +384,19 @@ def _bind_private_slot_memory(
             "Open the member from Members or create a new conversation for private memory."
         )
     bind_private_session_store(session_key, memory_store)
+def _dashboard_local_owner() -> str:
+    """OSS dashboard owner when ``state.owner_id`` is unset.
+
+    RFC surface table: dashboard (token auth) is ``dashboard+{local_owner}``.
+    ``getpass.getuser()`` is the host principal; a failure leaves the
+    principal unbound rather than inventing an id.
+    """
+    try:
+        import getpass
+
+        return getpass.getuser() or ""
+    except Exception:
+        return ""
 
 
 def _empty_auto_continue_enabled() -> bool:
@@ -7385,6 +7399,25 @@ async def _run_chat(
         # account instead of running as the previous one.
         await _retire_sessions_on_identity_change(state)
         _require_current_binding()
+        # Bind AgentCore principal before get_or_create so later Gateway inject
+        # can see it. Pid publication still happens after spawn. Injected
+        # envelopes omit surface/raw_id and skip this bind.
+        _principal_raw_id = state.owner_id or _dashboard_local_owner()
+        _bind_kw = principal_bind_kwargs(message, surface="dashboard", raw_id=_principal_raw_id)
+        if _bind_kw:
+            try:
+                from kiro_crew.platform.agent_identity import bind_session_principal
+                from kiro_crew.platform.context import PlatformCompositionError
+
+                await bind_session_principal(state.sessions, session_key=session_key, **_bind_kw)
+            except PlatformCompositionError:
+                raise
+            except Exception:
+                logger.debug(
+                    "pre-session principal bind failed for %s",
+                    session_key,
+                    exc_info=True,
+                )
         client, is_new, resumed = await state.sessions.get_or_create(
             session_key,
             agent=kiro_agent or slot.agent or None,
@@ -7608,7 +7641,20 @@ async def _run_chat(
 
         # Publish this turn's session identity so managed MCP tools resolve
         # X-Session-Key; one shared writer lives in messaging.identity.
-        await publish_turn_identity(state.sessions, session_key)
+        # Also the AgentCore principal hook: dashboard surface + the already-
+        # known owner (or the local OS user on OSS token auth). Never a
+        # client-supplied userId. Injected cron / subagent-completion
+        # envelopes are not a user — pid publish only (no surface/raw_id).
+        _principal_raw_id = state.owner_id or _dashboard_local_owner()
+        await publish_turn_identity(
+            state.sessions,
+            session_key,
+            **principal_bind_kwargs(
+                message,
+                surface="dashboard",
+                raw_id=_principal_raw_id,
+            ),
+        )
 
         # ── @prompt expansion: resolve @name to SOP/prompt content ──
         # Captured BEFORE any expansion: `@prompt` replaces `message` and
