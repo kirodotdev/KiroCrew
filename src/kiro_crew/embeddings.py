@@ -432,10 +432,56 @@ def _load_llama_class():
     try:
         from llama_cpp import Llama  # noqa: F811
 
+        _rebind_null_sinks_utf8()
         return Llama
     except Exception:
         logger.warning("Vendored llama-cpp-python failed to import", exc_info=True)
         return None
+
+
+def _rebind_null_sinks_utf8() -> None:
+    """Rebind the vendored suppressor's devnull sinks to UTF-8 handles.
+
+    ``llama_cpp._utils`` opens ``outnull_file``/``errnull_file`` at import time
+    with the locale encoding — cp1252 on a stock Windows — and
+    ``suppress_stdout_stderr.__enter__`` assigns them to the process-global
+    ``sys.stdout``/``sys.stderr`` for the whole model-load window. The load runs
+    on a background thread (``kc-embed-load``), so any non-ASCII ``print()``
+    from an unrelated thread inside that window writes to a cp1252 handle,
+    raises ``UnicodeEncodeError``, and takes the gateway down (#6342).
+    ``ensure_utf8_console()`` cannot help: the stream is *replaced*, not
+    reconfigured.
+
+    ``__enter__`` resolves the sinks as module globals at call time, so
+    rebinding them here — from our own code, after the vendored import — covers
+    every future suppression window without editing the manifest-pinned
+    ``_vendor`` tree. ``errors="backslashreplace"`` means a stray glyph written
+    into a suppression window degrades into an escape sequence bound for
+    ``os.devnull`` instead of an exception. Never raises: on failure the
+    original sinks stay in place, which is exactly the pre-fix behaviour.
+    """
+    try:
+        import llama_cpp._utils as _llama_utils
+
+        for name in ("outnull_file", "errnull_file"):
+            old = getattr(_llama_utils, name, None)
+            if (
+                old is None
+                or (getattr(old, "encoding", "") or "").lower().replace("-", "") == "utf8"
+            ):
+                continue
+            replacement = open(  # noqa: SIM115 - deliberately module-lifetime
+                os.devnull, "w", encoding="utf-8", errors="backslashreplace"
+            )
+            setattr(_llama_utils, name, replacement)
+            # The displaced handle is deliberately NOT closed: if a suppression
+            # window were ever active during the rebind, sys.stdout/stderr would
+            # still reference the old object until __exit__, and closing it would
+            # turn every concurrent print() into ValueError -- worse than the
+            # UnicodeEncodeError being fixed. Two leaked devnull descriptors,
+            # at most once per process, is the cheap safe trade.
+    except Exception:  # pragma: no cover - defensive: keep the load path alive
+        logger.debug("Could not rebind vendored null sinks to UTF-8", exc_info=True)
 
 
 # ── Model paths ──

@@ -295,6 +295,121 @@ class TestBundledLinuxX86CpuGate:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# UTF-8 null-sink rebind (#6342)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _load_real_vendored_utils() -> ModuleType:
+    """Load a private copy of the REAL vendored ``llama_cpp._utils``.
+
+    Loaded standalone via a file spec so the test never installs the vendored
+    package under the public ``llama_cpp`` name (other tests stub that name).
+    ``_utils`` imports only ``os``/``sys``/``typing``, so this touches no
+    native code.
+    """
+    import importlib.util
+
+    path = embeddings_mod._VENDOR_DIR / "llama_cpp" / "_utils.py"
+    spec = importlib.util.spec_from_file_location("_test_llama_utils", path)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class TestRebindNullSinksUtf8:
+    """The vendored devnull sinks must not keep a locale (cp1252) encoding.
+
+    ``suppress_stdout_stderr`` swaps them into the process-global
+    ``sys.stdout``/``sys.stderr`` for the whole model-load window, so a
+    locale-encoded sink turns any concurrent emoji ``print()`` into a
+    gateway-killing ``UnicodeEncodeError`` (#6342).
+    """
+
+    def _install(self, monkeypatch, utils_mod: ModuleType) -> None:
+        pkg = ModuleType("llama_cpp")
+        setattr(pkg, "_utils", utils_mod)
+        monkeypatch.setitem(sys.modules, "llama_cpp", pkg)
+        monkeypatch.setitem(sys.modules, "llama_cpp._utils", utils_mod)
+
+    def test_locale_encoded_sinks_are_rebound_to_utf8(self, monkeypatch) -> None:
+        utils_mod = _load_real_vendored_utils()
+        # Simulate the stock-Windows locale default the issue measured.
+        utils_mod.outnull_file = open(os.devnull, "w", encoding="cp1252")
+        utils_mod.errnull_file = open(os.devnull, "w", encoding="cp1252")
+        # Prove the failure mode first -- the pre-fix sink raises.
+        with pytest.raises(UnicodeEncodeError):
+            utils_mod.outnull_file.write("\U0001f47b")
+        old_out, old_err = utils_mod.outnull_file, utils_mod.errnull_file
+        self._install(monkeypatch, utils_mod)
+
+        embeddings_mod._rebind_null_sinks_utf8()
+
+        for sink in (utils_mod.outnull_file, utils_mod.errnull_file):
+            assert (sink.encoding or "").lower().replace("-", "") == "utf8"
+            sink.write("\U0001f47b")  # must not raise
+        # The displaced locale handles are deliberately kept OPEN: an active
+        # suppression window could still hold them in sys.stdout/stderr, and
+        # closing them would turn concurrent print() into ValueError.
+        assert not old_out.closed and not old_err.closed
+
+    def test_rebind_during_an_active_suppression_window_is_safe(self, monkeypatch) -> None:
+        """Rebinding mid-window must not close the handle sys.stdout still holds."""
+        utils_mod = _load_real_vendored_utils()
+        utils_mod.outnull_file = open(os.devnull, "w", encoding="cp1252")
+        utils_mod.errnull_file = open(os.devnull, "w", encoding="cp1252")
+        self._install(monkeypatch, utils_mod)
+
+        with utils_mod.suppress_stdout_stderr(disable=False):
+            embeddings_mod._rebind_null_sinks_utf8()
+            # sys.stdout still references the DISPLACED handle until __exit__;
+            # ASCII writes through it must keep working (no ValueError).
+            print("plain ascii still fine")
+            print("plain ascii still fine", file=sys.stderr)
+
+    def test_emoji_print_inside_a_suppression_window_no_longer_raises(self, monkeypatch) -> None:
+        """End-to-end: the exact #6342 sequence through the real suppressor."""
+        utils_mod = _load_real_vendored_utils()
+        utils_mod.outnull_file = open(os.devnull, "w", encoding="cp1252")
+        utils_mod.errnull_file = open(os.devnull, "w", encoding="cp1252")
+        self._install(monkeypatch, utils_mod)
+
+        embeddings_mod._rebind_null_sinks_utf8()
+
+        # __enter__ resolves the sinks as module globals at call time, so the
+        # rebound handles are the ones swapped into sys.stdout/stderr.
+        with utils_mod.suppress_stdout_stderr(disable=False):
+            # What the update check does from the main loop mid-load.
+            print("\U0001f47b Checking for updates…")
+            print("stderr glyph \U0001f47b", file=sys.stderr)
+
+    def test_already_utf8_sinks_are_left_alone(self, monkeypatch) -> None:
+        utils_mod = _load_real_vendored_utils()
+        utils_mod.outnull_file = open(
+            os.devnull, "w", encoding="utf-8", errors="backslashreplace"
+        )
+        utils_mod.errnull_file = open(
+            os.devnull, "w", encoding="utf-8", errors="backslashreplace"
+        )
+        same_out, same_err = utils_mod.outnull_file, utils_mod.errnull_file
+        self._install(monkeypatch, utils_mod)
+
+        embeddings_mod._rebind_null_sinks_utf8()
+        embeddings_mod._rebind_null_sinks_utf8()  # idempotent
+
+        assert utils_mod.outnull_file is same_out
+        assert utils_mod.errnull_file is same_err
+        assert not same_out.closed and not same_err.closed
+
+    def test_missing_vendored_module_never_raises(self, monkeypatch) -> None:
+        """The rebind is defensive: an import failure keeps the load path alive."""
+        monkeypatch.setitem(sys.modules, "llama_cpp", ModuleType("llama_cpp"))
+        monkeypatch.delitem(sys.modules, "llama_cpp._utils", raising=False)
+
+        embeddings_mod._rebind_null_sinks_utf8()  # must not raise
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Model paths / file presence
 # ═══════════════════════════════════════════════════════════════════════════
 
