@@ -47,6 +47,18 @@ const items: ContextMenuEntry[] = [
   { label: 'Turn off companion', action: 'quit', danger: true },
 ]
 
+/*
+ * Three rows with a separator in the middle, mirroring `mochiItems` below, so
+ * the companion keyboard-contract block can assert the same walk/skip/wrap
+ * shape the mochi block pins (#6266 ports #6231's contract onto this copy).
+ */
+const companionKbItems: ContextMenuEntry[] = [
+  { label: 'Change avatar', action: 'gallery' },
+  { label: 'Hide', action: 'hide' },
+  { separator: true },
+  { label: 'Turn off companion', action: 'quit', danger: true },
+]
+
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
@@ -441,6 +453,263 @@ describe('mochi context menu — focus returns to the opener on close (#6267 rev
       const utils = render(<MochiMenuHost />)
       const opener = utils.getByTestId('opener')
       const elsewhere = utils.getByTestId('elsewhere')
+      opener.focus()
+      fireEvent.click(opener)
+      expect(menuRows(utils.container)[0]).toHaveFocus()
+      // Past the 50ms guard so the close-on-outside-mousedown listener is live.
+      act(() => { vi.advanceTimersByTime(60) })
+      // A real click on another control focuses it and then dismisses the menu.
+      elsewhere.focus()
+      fireEvent.mouseDown(document.body)
+      expect(menuRows(utils.container)).toHaveLength(0)
+      expect(elsewhere).toHaveFocus()
+      expect(opener).not.toHaveFocus()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+/*
+ * ───── crew-companion's ContextMenu: the role="menu" keyboard contract (#6266) ─────
+ *
+ * The crew-companion copy is the separately-vendored sibling of the mochi menu
+ * above. Its rows carried `role="menuitem"` but its container declared no
+ * `role="menu"` and its dividers no `role="separator"` — an ARIA structural
+ * violation (menuitem requires a menu/menubar ancestor) — and, because #6231's
+ * inventory enumerated `role="menu"` CONTAINERS, this file was invisible to it
+ * and never received the shared `useMenuKeyboard` wiring. These tests mirror
+ * the mochi block above onto the companion surface, plus the roles themselves.
+ */
+
+function renderCompanionKbMenu(
+  handlers: { onAction?: (a: string) => void; onClose?: () => void; reportHitbox?: boolean } = {},
+) {
+  return render(
+    <ContextMenu
+      x={10}
+      y={10}
+      items={companionKbItems}
+      reportHitbox={handlers.reportHitbox}
+      onAction={handlers.onAction ?? (() => {})}
+      onClose={handlers.onClose ?? (() => {})}
+    />,
+  )
+}
+
+describe('crew-companion context menu — role="menu" keyboard contract (#6266)', () => {
+  it('declares role="menu" on the container and role="separator" on the divider', () => {
+    // Rendered in OVERLAY mode (reportHitbox), the configuration the only
+    // production host (PetContextMenu) actually uses — the backdrop is a
+    // role="presentation" sibling outside the menu container and must not
+    // perturb the roles or the item list.
+    const setMenuHitbox = vi.spyOn(petBridge, 'setMenuHitbox').mockImplementation(() => {})
+    const { container } = renderCompanionKbMenu({ reportHitbox: true })
+    expect(setMenuHitbox).toHaveBeenCalled()
+    // The container is the element that owns the menuitem rows; without
+    // role="menu" they are orphaned and the ARIA structure is invalid.
+    const menu = container.querySelector('[role="menu"]') as HTMLElement | null
+    expect(menu).not.toBeNull()
+    expect(menuRows(menu!)).toHaveLength(3)
+    const separator = menu!.querySelector('[role="separator"]')
+    expect(separator).not.toBeNull()
+  })
+
+  it('moves DOM focus onto the first menuitem when the menu opens', () => {
+    const { container } = renderCompanionKbMenu()
+    const rows = menuRows(container)
+    expect(rows).toHaveLength(3)
+    expect(rows[0]).toHaveFocus()
+  })
+
+  it('ArrowDown walks the menuitems in order, skips the separator, and wraps last → first', () => {
+    const { container } = renderCompanionKbMenu()
+    const rows = menuRows(container)
+    fireEvent.keyDown(document.body, { key: 'ArrowDown' })
+    expect(rows[1]).toHaveFocus()
+    // The separator sits between rows[1] and rows[2] in the markup; one
+    // ArrowDown crosses it.
+    fireEvent.keyDown(document.body, { key: 'ArrowDown' })
+    expect(rows[2]).toHaveFocus()
+    // Wrap, not clamp: this is the menu contract, not the listbox one.
+    fireEvent.keyDown(document.body, { key: 'ArrowDown' })
+    expect(rows[0]).toHaveFocus()
+  })
+
+  it('ArrowUp wraps first → last and then walks back up, skipping the separator', () => {
+    const { container } = renderCompanionKbMenu()
+    const rows = menuRows(container)
+    fireEvent.keyDown(document.body, { key: 'ArrowUp' })
+    expect(rows[2]).toHaveFocus()
+    fireEvent.keyDown(document.body, { key: 'ArrowUp' })
+    expect(rows[1]).toHaveFocus()
+  })
+
+  it('Home and End jump to the boundary menuitems', () => {
+    const { container } = renderCompanionKbMenu()
+    const rows = menuRows(container)
+    fireEvent.keyDown(document.body, { key: 'End' })
+    expect(rows[2]).toHaveFocus()
+    fireEvent.keyDown(document.body, { key: 'Home' })
+    expect(rows[0]).toHaveFocus()
+  })
+
+  it('contains Tab inside the menu: last → first, and Shift-Tab first → last', () => {
+    const { container } = renderCompanionKbMenu()
+    const rows = menuRows(container)
+    // Focused directly rather than arrowed to, so this test fails only on the
+    // Tab containment it is about (#2533) and not on the arrow keys.
+    rows[2].focus()
+    fireEvent.keyDown(document.body, { key: 'Tab' })
+    expect(rows[0]).toHaveFocus()
+    fireEvent.keyDown(document.body, { key: 'Tab', shiftKey: true })
+    expect(rows[2]).toHaveFocus()
+  })
+
+  it('PIN: Enter on the focused menuitem still fires onAction and closes', () => {
+    const onAction = vi.fn()
+    const onClose = vi.fn()
+    const { container } = renderCompanionKbMenu({ onAction, onClose })
+    const rows = menuRows(container)
+    rows[1].focus()
+    // The per-row Enter/Space handler is the menu's activation path and is NOT
+    // moved into the shared hook (the hook deliberately owns navigation only).
+    fireEvent.keyDown(rows[1], { key: 'Enter' })
+    expect(onAction).toHaveBeenCalledWith('hide')
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('PIN: entering and moving focus does not self-close the menu', () => {
+    vi.useFakeTimers()
+    try {
+      const onClose = vi.fn()
+      const { container } = renderCompanionKbMenu({ onClose })
+      // Past the 50ms guard, so the close-on-window-blur listener is live for
+      // the focus moves below — element blurs do not bubble and must not trip
+      // the WINDOW blur closer.
+      vi.advanceTimersByTime(60)
+      const rows = menuRows(container)
+      expect(rows[0]).toHaveFocus()
+      expect(onClose).not.toHaveBeenCalled()
+      fireEvent.keyDown(document.body, { key: 'ArrowDown' })
+      expect(rows[1]).toHaveFocus()
+      expect(onClose).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+/*
+ * ───── crew-companion's ContextMenu: focus RESTORE on close ─────
+ *
+ * Focus entry (pinned above) without a matching restore strands a keyboard
+ * user on `<body>` when the focused row unmounts — the same debt #6267's
+ * review called out on the mochi copy. Same minimal-controlled-host shape as
+ * the mochi restore block above: `onClose` flips real state so the menu
+ * genuinely unmounts, with a focusable opener standing in for the surface
+ * that was right-clicked.
+ */
+
+function CompanionMenuHost({ onAction }: { onAction?: (action: string) => void }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div>
+      <button data-testid="cc-opener" onClick={() => setOpen(true)}>Open menu</button>
+      <button data-testid="cc-elsewhere">Somewhere else</button>
+      {open ? (
+        <ContextMenu
+          x={10}
+          y={10}
+          items={companionKbItems}
+          onAction={(action) => onAction?.(action)}
+          onClose={() => setOpen(false)}
+        />
+      ) : null}
+    </div>
+  )
+}
+
+describe('crew-companion context menu — focus returns to the opener on close (#6266)', () => {
+  function openFromOpener(onAction?: (action: string) => void) {
+    const utils = render(<CompanionMenuHost onAction={onAction} />)
+    const opener = utils.getByTestId('cc-opener')
+    opener.focus()
+    expect(opener).toHaveFocus()
+    fireEvent.click(opener)
+    const rows = menuRows(utils.container)
+    expect(rows).toHaveLength(3)
+    expect(rows[0]).toHaveFocus()
+    return { ...utils, opener, rows }
+  }
+
+  it('Escape unmounts the menu and returns focus to the opener', () => {
+    vi.useFakeTimers()
+    try {
+      const { container, opener } = openFromOpener()
+      // Past the 50ms listener guard; inside `act` because advancing timers
+      // runs React effects.
+      act(() => { vi.advanceTimersByTime(60) })
+      fireEvent.keyDown(window, { key: 'Escape' })
+      expect(menuRows(container)).toHaveLength(0)
+      expect(opener).toHaveFocus()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('Enter on the focused menuitem unmounts the menu and returns focus to the opener', () => {
+    const onAction = vi.fn()
+    const { container, opener, rows } = openFromOpener(onAction)
+    // Activation from the keyboard is the path that MATTERS for restore: this
+    // user has no pointer to re-establish a focus position with.
+    fireEvent.keyDown(rows[0], { key: 'Enter' })
+    expect(onAction).toHaveBeenCalledWith('gallery')
+    expect(menuRows(container)).toHaveLength(0)
+    expect(opener).toHaveFocus()
+  })
+
+  it('clicking a menuitem unmounts the menu and returns focus to the opener', () => {
+    const onAction = vi.fn()
+    const { container, opener, rows } = openFromOpener(onAction)
+    fireEvent.click(rows[1])
+    expect(onAction).toHaveBeenCalledWith('hide')
+    expect(menuRows(container)).toHaveLength(0)
+    expect(opener).toHaveFocus()
+  })
+
+  it('PIN: an action that moves focus elsewhere ends with focus where the ACTION put it, not on the opener', () => {
+    // Real actions open other surfaces and focus something there. Whatever the
+    // close/restore ordering, the user must end up where the action sent them.
+    // Same PIN as the mochi block above (and the same caveat: `handleAction`
+    // calls onClose() before onAction(), so the action's own focus() lands
+    // after the restore and wins on ordering — the contains guard is not what
+    // makes this pass, but the invariant is worth stating on this copy too).
+    let elsewhere: HTMLElement | null = null
+    const utils = render(<CompanionMenuHost onAction={() => { elsewhere?.focus() }} />)
+    elsewhere = utils.getByTestId('cc-elsewhere')
+    const opener = utils.getByTestId('cc-opener')
+    opener.focus()
+    fireEvent.click(opener)
+    const rows = menuRows(utils.container)
+    expect(rows[0]).toHaveFocus()
+    fireEvent.click(rows[1])
+    expect(menuRows(utils.container)).toHaveLength(0)
+    expect(elsewhere).toHaveFocus()
+    expect(opener).not.toHaveFocus()
+  })
+
+  it('PIN: dismissing by an outside click leaves focus where the click put it — it is not yanked back to the opener', () => {
+    // The everyday shape of "focus already left the menu on its own": the user
+    // clicked another control, which both focused it and dismissed the menu.
+    // Same belt-and-braces caveat as the mochi copy of this PIN: react-dom's
+    // commit-phase focus snapshot also defends this, so the test protects the
+    // invariant rather than discriminating the contains guard.
+    vi.useFakeTimers()
+    try {
+      const utils = render(<CompanionMenuHost />)
+      const opener = utils.getByTestId('cc-opener')
+      const elsewhere = utils.getByTestId('cc-elsewhere')
       opener.focus()
       fireEvent.click(opener)
       expect(menuRows(utils.container)[0]).toHaveFocus()

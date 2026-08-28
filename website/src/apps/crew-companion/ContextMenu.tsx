@@ -4,7 +4,8 @@ import React from 'react'
  * Used by PetWidget (overlay) and ChatPanel (chat window).
  * Handles edge clamping, click-outside dismiss, and optional hitbox reporting for overlay use.
  */
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useLayoutEffect, useRef, useCallback } from 'react'
+import { useMenuKeyboard } from '../../hooks/useMenuKeyboard'
 import { petBridge } from './petBridge'
 
 const api = petBridge
@@ -36,6 +37,67 @@ const MENU_MIN_W = 160
 
 export function ContextMenu({ x, y, items, reportHitbox, onAction, onClose }: Props) {
   const menuRef = useRef<HTMLDivElement>(null)
+
+  /*
+   * Shared role="menu" keyboard contract (#6231, ported here for #6266): arrow
+   * navigation with wrap, Home/End, Tab containment, and focus entry onto the
+   * first row on open. This copy was absent from #6231's five-surface inventory
+   * because the inventory enumerated `role="menu"` containers — which this file
+   * lacked by omission — so its rows carried orphaned `role="menuitem"` with no
+   * owning menu and no keyboard contract behind the promise that role makes.
+   *
+   * The component renders unconditionally while mounted (hosts unmount it to
+   * close), so `enabled` is simply true and the hook's cleanup drops the
+   * document listener on unmount — same posture as the mochi sibling.
+   *
+   * Escape and Enter/Space stay where they are: the hook deliberately owns
+   * navigation only. The window-level Escape/click-outside/blur closers below
+   * are independent of the hook and unchanged.
+   */
+  useMenuKeyboard({ enabled: true, containerRef: menuRef })
+
+  /*
+   * The element that was focused when this menu MOUNTED — the surface the user
+   * right-clicked (or reached with the keyboard). Captured during the first
+   * RENDER on purpose, not in an effect: render runs before `useMenuKeyboard`'s
+   * focus-entry effect moves focus onto the first row, so this is the last
+   * moment the opener is still `document.activeElement`. `undefined` is the
+   * "not yet captured" sentinel — `activeElement` itself can in principle be
+   * null, and using null for both would re-run the capture on a later render
+   * and latch a menu ROW as the opener. Same spelling as the mochi sibling.
+   *
+   * In the overlay host today the opener is `<body>` — the `.cc-pet` div the
+   * user right-clicks is not focusable — so the restore below is a no-op
+   * there. The capture exists for hosts whose opener IS focusable (and for a
+   * future focusable pet); making `.cc-pet` focusable is its own change.
+   */
+  const opener = useRef<Element | null | undefined>(undefined)
+  if (opener.current === undefined) opener.current = document.activeElement
+
+  /*
+   * Give focus back when the menu goes away. Focus ENTRY without a matching
+   * restore is a regression, not half a feature: hosts render this component
+   * conditionally, so closing it UNMOUNTS the element that holds focus and the
+   * browser drops focus to `<body>`. Restore only if focus is still inside the
+   * menu being destroyed — if an action moved focus elsewhere, or an outside
+   * click already did, focus has a rightful owner and is left alone.
+   *
+   * `useLayoutEffect`, NOT `useEffect`: layout cleanups run synchronously while
+   * the menu is STILL in the document and still holds focus; a passive cleanup
+   * runs after the commit, when `activeElement` has already reset to `<body>`,
+   * so the guard would read "focus is not in the menu" every time and restore
+   * nothing. The container is captured at mount rather than read as
+   * `menuRef.current` in the cleanup because React detaches host refs while
+   * tearing the tree down.
+   */
+  useLayoutEffect(() => {
+    const menu = menuRef.current
+    return () => {
+      if (menu?.contains(document.activeElement)) {
+        ;(opener.current as HTMLElement | null)?.focus?.()
+      }
+    }
+  }, [])
 
   // Clamp position so menu stays within viewport
   const [clampedX, setClampedX] = React.useState(x)
@@ -127,6 +189,7 @@ export function ContextMenu({ x, y, items, reportHitbox, onAction, onClose }: Pr
       ) : null}
       <div
         ref={menuRef}
+        role="menu"
         style={{
           position: 'fixed', left: clampedX, top: clampedY, zIndex: 99999,
         /*
@@ -151,12 +214,12 @@ export function ContextMenu({ x, y, items, reportHitbox, onAction, onClose }: Pr
     >
       {items.map((entry, i) => {
         if ('separator' in entry && entry.separator) {
-          return <div key={`sep-${i}`} style={{ height: 1, background: 'var(--border, rgba(255,255,255,0.15))', margin: '2px 0' }} />
+          return <div key={`sep-${i}`} role="separator" style={{ height: 1, background: 'var(--border, rgba(255,255,255,0.15))', margin: '2px 0' }} />
         }
         const item = entry as ContextMenuItem
         return (
           <div
-            role="menuitem" tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleAction(item.action) } }}
+            role="menuitem" tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); handleAction(item.action) } }}
             key={item.action}
             onClick={(e) => { e.stopPropagation(); handleAction(item.action) }}
             style={{
