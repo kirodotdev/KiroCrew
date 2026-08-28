@@ -920,9 +920,21 @@ async def test_rebase_locked_unverifiable_state(monkeypatch):
 @pytest.mark.asyncio
 async def test_rebase_locked_refuses_dirty_worktree(monkeypatch):
     monkeypatch.setattr(mod, "_git", AsyncMock(return_value=" M file.py"))
-    assert await mod._rebase_locked({"path": "/r"}) == {
-        "ok": False, "error": "worktree has uncommitted changes",
-    }
+    # The untracked half of _dirt_report -> _dirty_split now goes through
+    # _run_cmd; feed it one untracked path so the detail tail is populated.
+    monkeypatch.setattr(
+        mod, "_run_cmd", AsyncMock(return_value=(0, "scratch.log\0", ""))
+    )
+    res = await mod._rebase_locked({"path": "/r"})
+    assert res["ok"] is False
+    # The message no longer equals the bare legacy string: it now appends a
+    # dirt-detail tail. The legacy prefix is preserved for clients keying on it.
+    assert res["error"].startswith("worktree has uncommitted changes")
+    assert "uncommitted changes" in res["error"]
+    # And the refusal now carries the structured dirt fields.
+    assert res["dirty_tracked"] is True
+    assert res["dirty_untracked"] == 1
+    assert res["dirty_untracked_paths"] == ["scratch.log"]
 
 
 @pytest.mark.asyncio
@@ -1336,7 +1348,7 @@ async def test_worktree_remove_handler_forwards_force(monkeypatch):
 
     resp = await mod.api_dev_fleet_worktree_remove(_json_request({"name": "feat", "force": True}))
     assert resp.status == 200
-    remove.assert_awaited_once_with("feat", True)
+    remove.assert_awaited_once_with("feat", True, discard_untracked_paths=None)
 
 
 @pytest.mark.asyncio
@@ -2077,3 +2089,1300 @@ def test_main_fails_closed_when_platform_cannot_compose(monkeypatch):
     with pytest.raises(PlatformCompositionError):
         mod.main()
     assert served == []
+
+
+# ==========================================================================
+# Untracked-discard contract: _dirty_split classification, the refusal
+# payload builders, and the late-executed `git clean` discard path.
+#
+# Every helper the removal touches is stubbed with AsyncMock; no real git and
+# no real subprocess. `_git` is driven by a per-subcommand fake so a test can
+# say "status -uno is clean, ls-files lists two files" without parsing argv by
+# position.
+# ==========================================================================
+from contextlib import ExitStack, contextmanager  # noqa: E402
+from unittest.mock import patch  # noqa: E402
+
+
+def _git_by_subcommand(mapping, default=""):
+    """Build an async `_git` double keyed on the git subcommand.
+
+    `mapping` maps a subcommand token (``"status"``, ``"ls-files"``,
+    ``"rev-parse"``, ``"clean"``) to the string (or None) `_git` should return.
+    The first positional arg is the worktree path; the next is the subcommand.
+    """
+
+    async def _fake_git(path, *args, **kw):
+        sub = args[0] if args else ""
+        if sub in mapping:
+            return mapping[sub]
+        return default
+
+    return _fake_git
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status_out, lsfiles_out, expect_tracked, expect_untracked",
+    [
+        # tracked-only: status prints a change, ls-files finds nothing
+        (" M src/a.py\n", "", True, []),
+        # untracked-only: status is empty, ls-files lists paths (NUL-joined)
+        ("", "note.txt\0probe.sh\0", False, ["note.txt", "probe.sh"]),
+        # both: a tracked change AND untracked files
+        (" M src/a.py\n", "scratch.log\0", True, ["scratch.log"]),
+        # status could not answer -> None (unverifiable, never "clean")
+        (None, "", None, []),
+    ],
+)
+async def test_dirty_split_classifies_tracked_vs_untracked(
+    status_out, lsfiles_out, expect_tracked, expect_untracked
+):
+    # The tracked half still goes through `_git status`; the untracked half now
+    # goes through `_run_cmd ls-files` directly (returning (rc, stdout, stderr))
+    # so a leading/trailing space on a filename survives the `_git` strip.
+    git = _git_by_subcommand({"status": status_out})
+
+    async def run_cmd(cmd, timeout=None, **kw):
+        assert "ls-files" in cmd, cmd
+        return (0, lsfiles_out, "")
+
+    with patch.object(mod, "_git", side_effect=git), \
+         patch.object(mod, "_run_cmd", side_effect=run_cmd):
+        tracked, untracked = await mod._dirty_split("/wt/x")
+    assert tracked is expect_tracked
+    assert untracked == expect_untracked
+
+
+@pytest.mark.asyncio
+async def test_dirty_split_lsfiles_failure_is_fail_closed_empty():
+    """`ls-files` returning nonzero rc must yield an EMPTY untracked list -- an
+    empty list is "nothing approved to discard", never a promise the tree is
+    clean. tracked_dirty stays authoritative from the status query."""
+    git = _git_by_subcommand({"status": " M a.py\n"})
+
+    async def run_cmd(cmd, timeout=None, **kw):
+        assert "ls-files" in cmd, cmd
+        return (1, "", "fatal: not a git repo")
+
+    with patch.object(mod, "_git", side_effect=git), \
+         patch.object(mod, "_run_cmd", side_effect=run_cmd):
+        tracked, untracked = await mod._dirty_split("/wt/x")
+    assert tracked is True
+    assert untracked == []
+
+
+@contextmanager
+def _remove_stubs(
+    *,
+    git,
+    run_cmd,
+    pr_state,
+    own=1,
+    contained=True,
+    target=None,
+):
+    """Stub every helper `_worktree_remove_locked` calls on the happy path up to
+    the removal, leaving `_git` and `_run_cmd` to the caller so ordering and
+    argv can be asserted.
+
+    ``target`` overrides the discovered worktree record, for cases that turn on
+    a flag git reports there (a `locked` tree, for instance).
+    """
+    stack = ExitStack()
+    stack.enter_context(patch.object(
+        mod, "_find_worktree", new_callable=AsyncMock,
+        return_value=(
+            target or {"path": "/wt/feat", "branch": "feat/x", "is_main": False},
+            None,
+        ),
+    ))
+    stack.enter_context(patch.object(mod, "_live_worktree_path", new_callable=AsyncMock, return_value=None))
+    stack.enter_context(patch.object(mod, "_own_checkout_path", return_value=None))
+    stack.enter_context(patch.object(mod, "_real_dirty", new_callable=AsyncMock, return_value=True))
+    stack.enter_context(patch.object(mod, "_pr_status_cached", new_callable=AsyncMock, return_value={"state": pr_state}))
+    stack.enter_context(patch.object(mod, "_own_commits_count", new_callable=AsyncMock, return_value=own))
+    stack.enter_context(patch.object(mod, "_fetch_pr_head_oid", new_callable=AsyncMock, return_value="a" * 40))
+    stack.enter_context(patch.object(mod, "_head_contained_in_pr", new_callable=AsyncMock, return_value=contained))
+    stack.enter_context(patch.object(mod, "_load_cfg", return_value=None))
+    stack.enter_context(patch.object(mod, "_POD_AVAILABLE", False))
+    stack.enter_context(patch.object(mod, "_git", side_effect=git))
+    stack.enter_context(patch.object(mod, "_run_cmd", side_effect=run_cmd))
+    try:
+        yield
+    finally:
+        stack.close()
+
+
+@pytest.mark.asyncio
+async def test_discard_refused_when_a_tracked_file_is_modified():
+    """discard_untracked_paths set but a TRACKED file is modified -> still
+    refused; the refusal carries dirty_tracked True. A discard authorizes
+    destroying ONLY untracked files, never a tracked edit."""
+    # status -uno prints a tracked change, so _dirty_split -> (True, [...]);
+    # pending_discard stays None (tracked_dirty is not False), _dirty_now falls
+    # back to _real_dirty (True), and the not-force gate refuses.
+    git = _git_by_subcommand({"status": " M src/a.py\n"})
+
+    async def run_cmd(cmd, timeout=None, **kw):
+        if "ls-files" in cmd:
+            return (0, "scratch.log\0", "")
+        # a `worktree remove` here would mean the refusal was bypassed
+        raise AssertionError("removal must not run for a refused discard")
+
+    with _remove_stubs(git=git, run_cmd=run_cmd, pr_state="OPEN"):
+        res = await mod._worktree_remove_locked(
+            "feat", discard_untracked_paths=["scratch.log"]
+        )
+    assert res["ok"] is False
+    assert res["dirty_tracked"] is True
+    assert "uncommitted changes" in res["error"]
+
+
+@pytest.mark.asyncio
+async def test_discard_untracked_forced_unmerged_runs_clean_before_removal(monkeypatch):
+    """untracked-only + discard_untracked_paths + force=True on an UNMERGED
+    branch proceeds. `_discard_untracked_files` runs BEFORE the `worktree
+    remove` argv, and `--force` is NOT in the removal argv (the discard path
+    always removes without git --force)."""
+    order: list[str] = []
+    remove_argv: list[list[str]] = []
+    discarded: list[tuple] = []
+
+    def discard_spy(worktree, rel_paths):
+        order.append("discard")
+        discarded.append((worktree, list(rel_paths)))
+        return None  # success
+
+    monkeypatch.setattr(mod, "_discard_untracked_files", discard_spy)
+
+    async def git(path, *args, **kw):
+        sub = args[0] if args else ""
+        if sub == "status":
+            # clean of tracked changes both before and after the discard
+            return ""
+        if sub == "rev-parse":
+            return "a" * 40
+        return "a" * 40
+
+    async def run_cmd(cmd, timeout=None, **kw):
+        if "ls-files" in cmd:
+            # untracked before the discard; empty after the discard ran
+            return (0, "note.txt\0" if not discarded else "", "")
+        if "worktree" in cmd and "remove" in cmd:
+            order.append("remove")
+            remove_argv.append(list(cmd))
+        return (0, "", "")
+
+    with _remove_stubs(git=git, run_cmd=run_cmd, pr_state="OPEN", own=1):
+        res = await mod._worktree_remove_locked(
+            "feat", force=True, discard_untracked_paths=["note.txt"]
+        )
+    assert res.get("ok") is True, res
+    assert order == ["discard", "remove"], order
+    assert remove_argv, "worktree remove never ran"
+    assert "--force" not in remove_argv[0]
+
+
+@pytest.mark.asyncio
+async def test_discard_ordering_refused_request_destroys_nothing(monkeypatch):
+    """ORDERING INVARIANT: discard_untracked_paths set, untracked-only, PR NOT
+    merged, force=False. The PR-not-merged gate refuses AND the discard never
+    ran. A refused request must destroy nothing."""
+    cleaned = {"ran": False}
+
+    def discard_spy(worktree, rel_paths):
+        cleaned["ran"] = True  # pragma: no cover - must never run
+        return None
+
+    monkeypatch.setattr(mod, "_discard_untracked_files", discard_spy)
+
+    async def git(path, *args, **kw):
+        sub = args[0] if args else ""
+        if sub == "status":
+            return ""  # tracked clean
+        if sub == "rev-parse":
+            return "a" * 40
+        return "a" * 40
+
+    async def run_cmd(cmd, timeout=None, **kw):
+        if "ls-files" in cmd:
+            return (0, "note.txt\0", "")  # untracked-only -> discard approved
+        if "worktree" in cmd and "remove" in cmd:
+            raise AssertionError("removal must not run when the PR-not-merged gate refuses")
+        return (0, "", "")
+
+    # force=False + unmerged (OPEN) + own>0 -> the PR-not-merged gate returns
+    # before the discard/removal block is ever reached.
+    with _remove_stubs(git=git, run_cmd=run_cmd, pr_state="OPEN", own=1):
+        res = await mod._worktree_remove_locked(
+            "feat", force=False, discard_untracked_paths=["note.txt"]
+        )
+    assert res["ok"] is False
+    assert "PR not merged" in res["error"]
+    assert cleaned["ran"] is False, "the discard ran on a request that was refused"
+
+
+@pytest.mark.asyncio
+async def test_discard_aborts_removal_when_clean_fails():
+    """discard requested but `git clean` fails (or dirt remains after it) ->
+    error contains 'removal aborted' and `git worktree remove` never ran."""
+    ran_remove = {"v": False}
+
+    async def git(path, *args, **kw):
+        sub = args[0] if args else ""
+        if sub == "status":
+            return ""  # tracked clean throughout
+        if sub == "clean":
+            return None  # git clean FAILED
+        if sub == "rev-parse":
+            return "a" * 40
+        return "a" * 40
+
+    async def run_cmd(cmd, timeout=None, **kw):
+        if "ls-files" in cmd:
+            return (0, "note.txt\0", "")  # still untracked even after failed clean
+        if "worktree" in cmd and "remove" in cmd:
+            ran_remove["v"] = True  # pragma: no cover - must not run
+        return (0, "", "")
+
+    with _remove_stubs(git=git, run_cmd=run_cmd, pr_state="OPEN", own=1):
+        res = await mod._worktree_remove_locked(
+            "feat", force=True, discard_untracked_paths=["note.txt"]
+        )
+    assert res["ok"] is False
+    assert "removal aborted" in res["error"]
+    assert ran_remove["v"] is False
+
+
+@pytest.mark.asyncio
+async def test_refusal_payload_carries_dirt_fields_and_legacy_substring():
+    """A refusal payload carries dirty_tracked/dirty_untracked/
+    dirty_untracked_paths, and the message still contains 'uncommitted
+    changes' (other tests and the client depend on that substring)."""
+    git = _git_by_subcommand(
+        {"status": " M a.py\n", "rev-parse": "a" * 40}
+    )
+
+    async def run_cmd(cmd, timeout=None, **kw):
+        if "ls-files" in cmd:
+            return (0, "s1\0s2\0", "")
+        return (0, "", "")
+
+    with _remove_stubs(git=git, run_cmd=run_cmd, pr_state="OPEN"):
+        res = await mod._worktree_remove_locked("feat", force=False)
+    assert res["ok"] is False
+    assert res["dirty_tracked"] is True
+    assert res["dirty_untracked"] == 2
+    assert res["dirty_untracked_paths"] == ["s1", "s2"]
+    assert "uncommitted changes" in res["error"]
+
+
+def test_dirt_detail_never_suggests_force_and_is_empty_when_unverifiable():
+    """_dirt_detail never says 'use force to override' (force is refused for
+    tracked edits too), and returns '' when tracked_dirty is None."""
+    assert mod._dirt_detail(None, []) == ""
+    assert mod._dirt_detail(None, ["a", "b"]) == ""
+    detail = mod._dirt_detail(True, ["a.py"])
+    assert "use force to override" not in detail
+    assert "tracked files are modified" in detail
+
+
+def test_dirt_fields_caps_paths_at_20_but_counts_the_true_total():
+    """dirty_untracked_paths is capped at 20 for payload size while
+    dirty_untracked reports the real total."""
+    untracked = [f"f{i}.txt" for i in range(37)]
+    fields = mod._dirt_fields(False, untracked)
+    assert fields["dirty_untracked"] == 37
+    assert len(fields["dirty_untracked_paths"]) == 20
+    assert fields["dirty_untracked_paths"] == untracked[:20]
+
+
+@pytest.mark.asyncio
+async def test_prunable_verdict_carries_dirt_fields_for_dirty_tree():
+    """_prunable's verdict for a dirty tree carries the three dirt fields so a
+    preview can tell real edits apart from leftover session scratch."""
+    git = _git_by_subcommand({"status": " M a.py\n"})
+
+    async def run_cmd(cmd, timeout=None, **kw):
+        assert "ls-files" in cmd, cmd
+        return (0, "scratch.log\0note.txt\0", "")
+
+    with patch.object(mod, "_pr_status_cached", new_callable=AsyncMock, return_value={"state": "OPEN"}), \
+         patch.object(mod, "_own_commits_count", new_callable=AsyncMock, return_value=2), \
+         patch.object(mod, "_real_dirty", new_callable=AsyncMock, return_value=True), \
+         patch.object(mod, "_run_cmd", side_effect=run_cmd), \
+         patch.object(mod, "_git", side_effect=git):
+        v = await mod._prunable("/wt/feat", "feat/x")
+    assert v["ok"] is False
+    assert v["dirty_tracked"] is True
+    assert v["dirty_untracked"] == 2
+    assert v["dirty_untracked_paths"] == ["scratch.log", "note.txt"]
+
+
+@pytest.mark.asyncio
+async def test_remove_handler_rejects_non_bool_discard_untracked(monkeypatch):
+    """discard_untracked_paths='yes' (not a list of non-empty strings) on the
+    single-remove handler -> 400, carrying a machine-readable `code`.
+
+    The code is the contract and the prose is advisory: the dashboard renders
+    `error` verbatim into a localized UI, so a sentence alone is untranslatable.
+    The repo ratchets this (test_error_code_contract), and it caught this very
+    response missing its code.
+    """
+    _sel_capture(monkeypatch)
+    monkeypatch.setattr(mod, "_valid_worktree_names", AsyncMock(return_value={"feat"}))
+    remove = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(mod, "_worktree_remove", remove)
+    resp = await mod.api_dev_fleet_worktree_remove(
+        _json_request({"name": "feat", "discard_untracked_paths": "yes"})
+    )
+    assert resp.status == 400
+    body = json.loads(resp.text)
+    assert body["code"] == "invalid_discard_paths"
+    assert (
+        "discard_untracked_paths must be a list of non-empty strings"
+        in body["error"]
+    )
+    remove.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_prune_run_handler_rejects_malformed_discard_paths(monkeypatch):
+    """discard_untracked_paths='x' (not a name->list map) -> 400 with code
+    invalid_discard_paths."""
+    _sel_capture(monkeypatch)
+    resp = await mod.api_dev_fleet_prune_run(
+        _json_request({"names": [], "discard_untracked_paths": "x"})
+    )
+    assert resp.status == 400
+    body = json.loads(resp.text)
+    assert body["code"] == "invalid_discard_paths"
+
+
+@pytest.mark.asyncio
+async def test_prune_run_handler_guards_protected_worktree_in_discard_paths(monkeypatch):
+    """A protected (live) worktree named ONLY in discard_untracked_paths is
+    screened by the same guard as force_names -> 400 protected_worktree."""
+    _sel_capture(monkeypatch)
+    monkeypatch.setattr(mod, "_valid_worktree_names", AsyncMock(return_value={"live-wt"}))
+    monkeypatch.setattr(
+        mod, "_live_worktree_path", AsyncMock(return_value="/repo/live-wt")
+    )
+    monkeypatch.setattr(mod, "_staged_target", lambda: None)
+    monkeypatch.setattr(
+        mod, "_find_worktree",
+        AsyncMock(return_value=({"path": "/repo/live-wt", "is_main": False}, None)),
+    )
+    resp = await mod.api_dev_fleet_prune_run(
+        _json_request({"names": [], "discard_untracked_paths": {"live-wt": ["n.txt"]}})
+    )
+    assert resp.status == 400
+    body = json.loads(resp.text)
+    assert body["code"] == "protected_worktree"
+    assert "live-wt" in body["error"]
+
+
+@pytest.mark.asyncio
+async def test_prune_run_discard_only_name_reaches_remove_and_skips_recheck(monkeypatch):
+    """A name present ONLY in discard_untracked_paths is now RE-CHECKED via
+    _prunable (force's blanket bypass is no longer inherited), but a refusal
+    whose code is in _DISCARD_OVERRIDABLE_CODES is overridden, so it still
+    reaches _worktree_remove with the caller's consented path list."""
+    prunable_calls: list[str] = []
+    remove_kwargs: list[dict] = []
+
+    async def fake_find(nm):
+        return {"path": f"/wt/{nm}", "branch": f"feat/{nm}"}, None
+
+    async def fake_prunable(path, branch):
+        # An untracked-only tree previews as a REFUSAL; merged_dirty is one of
+        # the codes a discard approval is allowed to override.
+        prunable_calls.append(path)
+        return {"ok": False, "code": "merged_dirty"}
+
+    async def fake_remove(
+        nm, force=False, progress=None, _caller="handler",
+        discard_untracked_paths=None,
+    ):
+        remove_kwargs.append(
+            {"name": nm, "force": force, "discard": discard_untracked_paths}
+        )
+        return {"ok": True, "removed": True}
+
+    monkeypatch.setattr(mod, "_PRUNE_LOCK", asyncio.Lock())
+    monkeypatch.setattr(
+        mod, "_PRUNE_STATE",
+        {"running": False, "total": 0, "done": 0, "current": None, "results": [], "items": {}},
+    )
+    with patch.object(mod, "_find_worktree", side_effect=fake_find), \
+         patch.object(mod, "_prunable", side_effect=fake_prunable), \
+         patch.object(mod, "_live_worktree_path", new_callable=AsyncMock, return_value=None), \
+         patch.object(mod, "_staged_target", return_value=None), \
+         patch.object(mod, "_worktree_remove", side_effect=fake_remove):
+        r = await mod._prune_run([], discard_paths={"wt-scratch": ["note.txt"]})
+        assert r == {"ok": True, "total": 1}
+        for _ in range(500):
+            if not mod._PRUNE_STATE["running"]:
+                break
+            await asyncio.sleep(0)
+
+    assert mod._PRUNE_STATE["running"] is False
+    # _prunable IS now consulted for a discard-only name...
+    assert prunable_calls == ["/wt/wt-scratch"]
+    # ...and its overridable refusal did not stop the removal: the name still
+    # reached _worktree_remove carrying the exact consented list, force=False.
+    assert remove_kwargs == [
+        {"name": "wt-scratch", "force": False, "discard": ["note.txt"]}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_discard_rel_paths_scoped_to_approved_paths(monkeypatch):
+    """CHANGE 1: the discard is no longer a blanket sweep. `_discard_untracked_files`
+    is handed EXACTLY the enumerated untracked paths, and a path that was never
+    enumerated (never approved) is never handed to it."""
+    discarded: list[tuple] = []
+
+    def discard_spy(worktree, rel_paths):
+        discarded.append((worktree, list(rel_paths)))
+        return None  # success
+
+    monkeypatch.setattr(mod, "_discard_untracked_files", discard_spy)
+
+    async def git(path, *args, **kw):
+        sub = args[0] if args else ""
+        if sub == "status":
+            return ""  # tracked clean
+        if sub == "rev-parse":
+            return "a" * 40
+        return "a" * 40
+
+    async def run_cmd(cmd, timeout=None, **kw):
+        if "ls-files" in cmd:
+            # two approved untracked paths before the discard; empty after
+            return (0, "" if discarded else "note.txt\0probe.sh\0", "")
+        return (0, "", "")
+
+    with _remove_stubs(git=git, run_cmd=run_cmd, pr_state="OPEN", own=1):
+        res = await mod._worktree_remove_locked(
+            "feat", force=True, discard_untracked_paths=["note.txt", "probe.sh"]
+        )
+    assert res.get("ok") is True, res
+    assert len(discarded) == 1, discarded
+    _worktree, rel_paths = discarded[0]
+    assert rel_paths == ["note.txt", "probe.sh"], rel_paths
+    # A path the caller never approved is never handed to the discard.
+    assert "secret.env" not in rel_paths
+
+
+@pytest.mark.asyncio
+async def test_discard_file_appearing_after_approval_is_not_destroyed():
+    """CHANGE 1: a file created AFTER approval is outside the clean pathspec, so
+    the post-clean `_dirty_split` still finds it untracked and the removal is
+    ABORTED rather than widened to destroy it. `git worktree remove` never
+    runs."""
+    ran_remove = {"v": False}
+    cleaned = {"v": False}
+
+    async def git(path, *args, **kw):
+        sub = args[0] if args else ""
+        if sub == "status":
+            return ""  # tracked clean throughout
+        if sub == "clean":
+            cleaned["v"] = True
+            return ""  # clean itself succeeds
+        if sub == "rev-parse":
+            return "a" * 40
+        return "a" * 40
+
+    async def run_cmd(cmd, timeout=None, **kw):
+        if "ls-files" in cmd:
+            # BEFORE clean: one approved path. AFTER clean: a DIFFERENT untracked
+            # path appears -- one that was never approved and never cleaned.
+            return (0, "note.txt\0" if not cleaned["v"] else "appeared-after.txt\0", "")
+        if "worktree" in cmd and "remove" in cmd:
+            ran_remove["v"] = True  # pragma: no cover - must not run
+        return (0, "", "")
+
+    with _remove_stubs(git=git, run_cmd=run_cmd, pr_state="OPEN", own=1):
+        res = await mod._worktree_remove_locked(
+            "feat", force=True, discard_untracked_paths=["note.txt"]
+        )
+    assert res["ok"] is False
+    assert "removal aborted" in res["error"]
+    assert ran_remove["v"] is False, "worktree remove ran despite a file appearing after approval"
+
+
+@pytest.mark.asyncio
+async def test_dirty_split_untracked_paths_survive_byte_exact():
+    """CHANGE 1 regression guard: the untracked half is read through `_run_cmd`
+    precisely so filenames survive byte-exact -- a leading space on the first
+    entry and a trailing space on the last would be eaten by the `_git` helper's
+    `.strip()`. Feed such a payload and assert both survive intact."""
+    git = _git_by_subcommand({"status": ""})
+
+    async def run_cmd(cmd, timeout=None, **kw):
+        assert "ls-files" in cmd, cmd
+        # first entry has a LEADING space, last has a TRAILING space
+        return (0, " leading.txt\0middle.txt\0trailing.txt \0", "")
+
+    with patch.object(mod, "_git", side_effect=git), \
+         patch.object(mod, "_run_cmd", side_effect=run_cmd):
+        tracked, untracked = await mod._dirty_split("/wt/x")
+    assert tracked is False
+    assert untracked == [" leading.txt", "middle.txt", "trailing.txt "]
+    # The whitespace is preserved, not stripped (which the _git helper would do).
+    assert untracked[0].startswith(" ")
+    assert untracked[-1].endswith(" ")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "code, should_reach_remove",
+    [
+        # NOT overridable by a discard: the refusal stands, removal never runs.
+        ("dirty_check_failed", False),
+        ("fresh", False),
+        ("merged_unverified", False),
+        ("merged_new_commits", False),
+        # Overridable: the discard clears the very dirt that withheld it.
+        ("merged_dirty", True),
+        ("active", True),
+    ],
+)
+async def test_discard_override_respects_overridable_codes(monkeypatch, code, should_reach_remove):
+    """CHANGE 2: a discard-only approval overrides a prune refusal ONLY when the
+    verdict code is in `_DISCARD_OVERRIDABLE_CODES`. A non-overridable code is
+    refused with `not prunable: <code>` and never reaches `_worktree_remove`; an
+    overridable code reaches it."""
+    remove_kwargs: list[dict] = []
+
+    async def fake_find(nm):
+        return {"path": f"/wt/{nm}", "branch": f"feat/{nm}"}, None
+
+    async def fake_prunable(path, branch):
+        return {"ok": False, "code": code}
+
+    async def fake_remove(
+        nm, force=False, progress=None, _caller="handler",
+        discard_untracked_paths=None,
+    ):
+        remove_kwargs.append(
+            {"name": nm, "force": force, "discard": discard_untracked_paths}
+        )
+        return {"ok": True, "removed": True}
+
+    monkeypatch.setattr(mod, "_PRUNE_LOCK", asyncio.Lock())
+    monkeypatch.setattr(
+        mod, "_PRUNE_STATE",
+        {"running": False, "total": 0, "done": 0, "current": None, "results": [], "items": {}},
+    )
+    with patch.object(mod, "_find_worktree", side_effect=fake_find), \
+         patch.object(mod, "_prunable", side_effect=fake_prunable), \
+         patch.object(mod, "_live_worktree_path", new_callable=AsyncMock, return_value=None), \
+         patch.object(mod, "_staged_target", return_value=None), \
+         patch.object(mod, "_worktree_remove", side_effect=fake_remove):
+        r = await mod._prune_run([], discard_paths={"wt-x": ["note.txt"]})
+        assert r == {"ok": True, "total": 1}
+        for _ in range(500):
+            if not mod._PRUNE_STATE["running"]:
+                break
+            await asyncio.sleep(0)
+
+    if should_reach_remove:
+        assert remove_kwargs == [
+            {"name": "wt-x", "force": False, "discard": ["note.txt"]}
+        ]
+    else:
+        assert remove_kwargs == [], f"{code} must not reach _worktree_remove"
+        results = mod._PRUNE_STATE["items"]["wt-x"]
+        assert results["status"] == "failed"
+        assert results["error"] == f"not prunable: {code}"
+
+
+# ---------------------------------------------------------------------------
+# CONSENT-BY-PATH-LIST invariants (the reshaped discard API)
+#
+# A discard is honoured only when the caller submits the EXACT set it was
+# shown: tracked-clean, a non-empty fresh untracked set, at most
+# _DIRTY_PATH_SAMPLE of them, every path unchanged by _redact (a lossy
+# rendering cannot identify one file, so a rewritten name is refused), and
+# set(submitted) == set(fresh). The `git clean` pathspec then names those raw
+# paths, each spelled `:(literal)` so no filename is read as pathspec magic.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_discard_refused_when_submitted_omits_a_file_now_on_disk():
+    """CONSENT MISMATCH: the caller's list omits a file that is now untracked
+    on disk. The fresh set is larger than what was consented to, so the discard
+    is refused with 'untracked files changed since they were listed'; neither
+    `git clean` nor `git worktree remove` runs."""
+    cleaned = {"ran": False}
+    ran_remove = {"v": False}
+
+    async def git(path, *args, **kw):
+        sub = args[0] if args else ""
+        if sub == "status":
+            return ""  # tracked clean
+        if sub == "clean":
+            cleaned["ran"] = True  # pragma: no cover - must not run
+            return ""
+        if sub == "rev-parse":
+            return "a" * 40
+        return "a" * 40
+
+    async def run_cmd(cmd, timeout=None, **kw):
+        if "ls-files" in cmd:
+            # disk carries TWO untracked files; the caller consented to one.
+            return (0, "note.txt\0appeared.txt\0", "")
+        if "worktree" in cmd and "remove" in cmd:
+            ran_remove["v"] = True  # pragma: no cover - must not run
+        return (0, "", "")
+
+    with _remove_stubs(git=git, run_cmd=run_cmd, pr_state="MERGED", own=0):
+        res = await mod._worktree_remove_locked(
+            "feat", force=True, discard_untracked_paths=["note.txt"]
+        )
+    assert res["ok"] is False
+    assert "untracked files changed since they were listed" in res["error"]
+    assert cleaned["ran"] is False, "git clean ran on a consent mismatch"
+    assert ran_remove["v"] is False, "worktree remove ran on a consent mismatch"
+
+
+@pytest.mark.asyncio
+async def test_discard_refused_when_submitted_names_a_file_no_longer_there():
+    """CONSENT MISMATCH (reverse): the caller names a file that is no longer on
+    disk. The submitted set differs from the fresh set, so the discard is
+    refused with the same message; nothing is cleaned or removed."""
+    cleaned = {"ran": False}
+    ran_remove = {"v": False}
+
+    async def git(path, *args, **kw):
+        sub = args[0] if args else ""
+        if sub == "status":
+            return ""  # tracked clean
+        if sub == "clean":
+            cleaned["ran"] = True  # pragma: no cover - must not run
+            return ""
+        if sub == "rev-parse":
+            return "a" * 40
+        return "a" * 40
+
+    async def run_cmd(cmd, timeout=None, **kw):
+        if "ls-files" in cmd:
+            # only note.txt survives; gone.txt the caller listed is no longer here
+            return (0, "note.txt\0", "")
+        if "worktree" in cmd and "remove" in cmd:
+            ran_remove["v"] = True  # pragma: no cover - must not run
+        return (0, "", "")
+
+    with _remove_stubs(git=git, run_cmd=run_cmd, pr_state="MERGED", own=0):
+        res = await mod._worktree_remove_locked(
+            "feat", force=True, discard_untracked_paths=["note.txt", "gone.txt"]
+        )
+    assert res["ok"] is False
+    assert "untracked files changed since they were listed" in res["error"]
+    assert cleaned["ran"] is False, "git clean ran on a consent mismatch"
+    assert ran_remove["v"] is False, "worktree remove ran on a consent mismatch"
+
+
+@pytest.mark.asyncio
+async def test_discard_refused_when_more_than_sample_untracked_files():
+    """TRUNCATION: 21 untracked files exceed _DIRTY_PATH_SAMPLE (20), so the
+    caller was handed a truncated list and cannot have consented to the whole
+    set. Refuse with 'too many untracked files to confirm individually';
+    nothing cleaned or removed."""
+    cleaned = {"ran": False}
+    ran_remove = {"v": False}
+    n = mod._DIRTY_PATH_SAMPLE + 1
+    files = [f"f{i}.txt" for i in range(n)]
+
+    async def git(path, *args, **kw):
+        sub = args[0] if args else ""
+        if sub == "status":
+            return ""
+        if sub == "clean":
+            cleaned["ran"] = True  # pragma: no cover - must not run
+            return ""
+        if sub == "rev-parse":
+            return "a" * 40
+        return "a" * 40
+
+    async def run_cmd(cmd, timeout=None, **kw):
+        if "ls-files" in cmd:
+            return (0, "\0".join(files) + "\0", "")
+        if "worktree" in cmd and "remove" in cmd:
+            ran_remove["v"] = True  # pragma: no cover - must not run
+        return (0, "", "")
+
+    with _remove_stubs(git=git, run_cmd=run_cmd, pr_state="MERGED", own=0):
+        res = await mod._worktree_remove_locked(
+            "feat", force=True, discard_untracked_paths=files
+        )
+    assert res["ok"] is False
+    assert "too many untracked files to confirm individually" in res["error"]
+    assert res["dirty_untracked"] == n
+    assert cleaned["ran"] is False, "git clean ran on an oversized untracked set"
+    assert ran_remove["v"] is False, "worktree remove ran on an oversized set"
+
+
+@pytest.mark.asyncio
+async def test_discard_accepts_exactly_sample_untracked_files(monkeypatch):
+    """TRUNCATION boundary: exactly _DIRTY_PATH_SAMPLE (20) files are still
+    within the shown list, so a matching consent set is ACCEPTED, the discard
+    runs against all 20, and the removal proceeds."""
+    discarded: list[tuple] = []
+    n = mod._DIRTY_PATH_SAMPLE
+    files = [f"f{i}.txt" for i in range(n)]
+
+    def discard_spy(worktree, rel_paths):
+        discarded.append((worktree, list(rel_paths)))
+        return None  # success
+
+    monkeypatch.setattr(mod, "_discard_untracked_files", discard_spy)
+
+    async def git(path, *args, **kw):
+        sub = args[0] if args else ""
+        if sub == "status":
+            return ""
+        if sub == "rev-parse":
+            return "a" * 40
+        return "a" * 40
+
+    async def run_cmd(cmd, timeout=None, **kw):
+        if "ls-files" in cmd:
+            # all 20 before the discard; empty afterwards
+            return (0, ("\0".join(files) + "\0") if not discarded else "", "")
+        return (0, "", "")
+
+    with _remove_stubs(git=git, run_cmd=run_cmd, pr_state="MERGED", own=0):
+        res = await mod._worktree_remove_locked(
+            "feat", force=True, discard_untracked_paths=files
+        )
+    assert res.get("ok") is True, res
+    assert len(discarded) == 1, discarded
+    _worktree, rel_paths = discarded[0]
+    assert rel_paths == files, rel_paths
+    assert len(rel_paths) == n
+
+
+def test_dirt_fields_and_detail_pass_paths_through_redact(monkeypatch):
+    """REDACTION: `_dirt_fields` and `_dirt_detail` emit paths passed through
+    `_redact`. Patch `_redact` with a recognisable transform and assert the
+    emitted values carry it."""
+    monkeypatch.setattr(mod, "_redact", lambda s: f"REDACTED::{s}")
+    untracked = ["a.txt", "b.txt", "c.txt", "d.txt"]
+
+    fields = mod._dirt_fields(False, untracked)
+    assert fields["dirty_untracked_paths"] == [f"REDACTED::{p}" for p in untracked]
+    # the count is the true total, unredacted
+    assert fields["dirty_untracked"] == 4
+
+    detail = mod._dirt_detail(False, untracked)
+    # _dirt_detail names the first three, each redacted
+    assert "REDACTED::a.txt" in detail
+    assert "REDACTED::b.txt" in detail
+    assert "REDACTED::c.txt" in detail
+    # the raw (unredacted) name must not leak into the detail string
+    assert "a.txt" in detail  # substring of REDACTED::a.txt, expected
+    assert detail.count("REDACTED::") == 3
+
+
+@pytest.mark.asyncio
+async def test_discard_emitted_paths_are_redacted_but_pathspec_is_raw(monkeypatch):
+    """REDACTION: with `_redact` patched to a non-identity transform, a refusal
+    payload's emitted paths carry the transform. The discard itself is refused
+    outright in that case -- a lossy rendering cannot identify the consented
+    file -- so `_discard_untracked_files` is never called."""
+    monkeypatch.setattr(mod, "_redact", lambda s: f"R::{s}")
+    discarded: list[tuple] = []
+
+    def discard_spy(worktree, rel_paths):
+        discarded.append((worktree, list(rel_paths)))  # pragma: no cover - refusal, must not run
+        return None
+
+    monkeypatch.setattr(mod, "_discard_untracked_files", discard_spy)
+
+    async def git(path, *args, **kw):
+        sub = args[0] if args else ""
+        if sub == "status":
+            return ""
+        if sub == "rev-parse":
+            return "a" * 40
+        return "a" * 40
+
+    async def run_cmd(cmd, timeout=None, **kw):
+        if "ls-files" in cmd:
+            return (0, "note.txt\0", "")
+        return (0, "", "")
+
+    # Submit the RAW name. Redaction is not the identity here, so the discard is
+    # refused BEFORE any set comparison: a rewritten name cannot be pinned to
+    # one file. Emitted paths still carry the transform.
+    with _remove_stubs(git=git, run_cmd=run_cmd, pr_state="MERGED", own=0):
+        res = await mod._worktree_remove_locked(
+            "feat", force=True, discard_untracked_paths=["note.txt"]
+        )
+    assert res["ok"] is False
+    assert "cannot be confirmed safely" in res["error"]
+    # emitted dirt paths carry the redaction transform
+    assert res["dirty_untracked_paths"] == ["R::note.txt"]
+    # and nothing was discarded (the discard was never called)
+    assert discarded == [], "the discard ran despite an unconfirmable filename"
+
+
+@pytest.mark.asyncio
+async def test_discard_refused_when_a_filename_is_rewritten_by_redaction(monkeypatch):
+    """REDACTION COLLISION: `_redact` is lossy, so two distinct filenames can
+    share one displayed rendering. Comparing consent in that space would let a
+    file swapped in after display satisfy the equality check and be destroyed
+    unapproved. So a discard is refused outright whenever ANY fresh path is
+    rewritten on the way out -- even when the client faithfully echoes exactly
+    what it was shown. Refusing costs a manual cleanup; the alternative loses a
+    file nobody approved."""
+    monkeypatch.setattr(mod, "_redact", lambda s: f"R::{s}")
+    discarded: list[tuple] = []
+
+    def discard_spy(worktree, rel_paths):
+        discarded.append((worktree, list(rel_paths)))  # pragma: no cover - must never run
+        return None
+
+    monkeypatch.setattr(mod, "_discard_untracked_files", discard_spy)
+
+    async def git(path, *args, **kw):
+        sub = args[0] if args else ""
+        if sub == "status":
+            return ""
+        if sub == "rev-parse":
+            return "a" * 40
+        return "a" * 40
+
+    async def run_cmd(cmd, timeout=None, **kw):
+        if "ls-files" in cmd:
+            return (0, "note.txt\0probe.sh\0", "")
+        return (0, "", "")
+
+    # The client echoes exactly the redacted forms `_dirt_fields` showed it.
+    # Under the old two-space rule this was ACCEPTED; it is now refused, because
+    # `R::note.txt` cannot be traced back to one file on disk.
+    with _remove_stubs(git=git, run_cmd=run_cmd, pr_state="MERGED", own=0):
+        res = await mod._worktree_remove_locked(
+            "feat", force=True,
+            discard_untracked_paths=["R::note.txt", "R::probe.sh"],
+        )
+    assert res["ok"] is False
+    assert "cannot be confirmed safely" in res["error"]
+    assert discarded == [], "the discard ran on a set that redaction had rewritten"
+
+
+@pytest.mark.asyncio
+async def test_discard_accepted_when_redaction_is_identity(monkeypatch):
+    """The control for the guard above: with `_redact` left as the identity on
+    these filenames, the echoed set matches the raw set and the discard runs,
+    handed exactly those raw literal paths (no `:(literal)` wrapping)."""
+    monkeypatch.setattr(mod, "_redact", lambda s: s)
+    discarded: list[tuple] = []
+
+    def discard_spy(worktree, rel_paths):
+        discarded.append((worktree, list(rel_paths)))
+        return None  # success
+
+    monkeypatch.setattr(mod, "_discard_untracked_files", discard_spy)
+
+    async def git(path, *args, **kw):
+        sub = args[0] if args else ""
+        if sub == "status":
+            return ""
+        if sub == "rev-parse":
+            return "a" * 40
+        return "a" * 40
+
+    async def run_cmd(cmd, timeout=None, **kw):
+        if "ls-files" in cmd:
+            return (0, ("note.txt\0probe.sh\0") if not discarded else "", "")
+        return (0, "", "")
+
+    with _remove_stubs(git=git, run_cmd=run_cmd, pr_state="MERGED", own=0):
+        res = await mod._worktree_remove_locked(
+            "feat", force=True,
+            discard_untracked_paths=["note.txt", "probe.sh"],
+        )
+    assert res.get("ok") is True, res
+    assert len(discarded) == 1, discarded
+    _worktree, rel_paths = discarded[0]
+    # exactly the raw approved paths, no `:(literal)` wrapping
+    assert rel_paths == ["note.txt", "probe.sh"], rel_paths
+    assert not any(p.startswith(":(literal)") for p in rel_paths), rel_paths
+
+
+# --- Direct tests of _discard_untracked_files against a REAL filesystem. ---
+# No mocking, no git repo: the helper is a pure per-file os.unlink walk, so it
+# can be exercised against tmp_path. Each maps to a property verified by hand.
+
+
+# `_discard_untracked_files` refuses outright where openat/O_NOFOLLOW do not
+# exist (Windows), because a path-based delete there could follow a swapped
+# junction out of the worktree. Its BEHAVIOURAL cases therefore have nothing to
+# exercise on such a platform -- the helper never reaches the deletion at all --
+# and one of them cannot even be set up, since `:(glob)*` is not a legal Windows
+# filename. The refusal itself is what matters there, and
+# test_discard_untracked_files_fails_closed_without_openat covers it on every
+# platform, so it is deliberately NOT marked.
+_fd_safe_discard = hasattr(os, "O_NOFOLLOW") and os.unlink in os.supports_dir_fd
+requires_fd_safe_discard = pytest.mark.skipif(
+    not _fd_safe_discard,
+    reason="_discard_untracked_files refuses without openat/O_NOFOLLOW",
+)
+
+
+def _need_unsymlinked_tmp(tmp_path):
+    """Skip when pytest's own tmp_path resolves through a symlink.
+
+    `_discard_untracked_files` refuses ANY symlink in the worktree's path by
+    design, so on a runner whose temp root is linked (a linked /tmp, macOS
+    /private/tmp) every behavioural case below would get the refusal instead of
+    the behaviour it is asserting. That is the helper working, not a defect --
+    and the refusal itself is covered by
+    test_discard_untracked_files_refuses_a_symlinked_ancestor, which builds its
+    own symlink rather than relying on the environment having one.
+    """
+    if os.path.realpath(str(tmp_path)) != str(tmp_path):
+        pytest.skip("pytest tmp_path resolves through a symlink on this runner")
+
+
+@requires_fd_safe_discard
+def test_discard_untracked_files_refuses_a_symlinked_worktree_root(tmp_path):
+    """ROOT SWAP: if the worktree root itself is a symlink, the discard refuses.
+
+    Opening the root without O_NOFOLLOW would make the careful per-component
+    walk pointless -- the very first open would already have left the checkout,
+    and matching relative paths inside the symlink's target would be unlinked.
+    """
+    _need_unsymlinked_tmp(tmp_path)
+    real = tmp_path / "elsewhere"
+    real.mkdir()
+    victim = real / "probe.py"
+    victim.write_text("outside the worktree")
+    as_link = tmp_path / "worktree-link"
+    as_link.symlink_to(real, target_is_directory=True)
+
+    reason = mod._discard_untracked_files(str(as_link), ["probe.py"])
+    assert reason is not None
+    assert "is a symlink" in reason
+    assert victim.exists(), "followed a symlinked worktree root and deleted an external file"
+
+
+@requires_fd_safe_discard
+def test_discard_untracked_files_refuses_a_symlinked_ancestor(tmp_path):
+    """ANCESTOR SWAP: a symlink ANYWHERE in the worktree's own path is refused.
+
+    An earlier revision resolved the path first so that a legitimately linked
+    ancestor would still work. That was wrong and a probe proved it: `realpath`
+    follows the topology as it stands NOW, so it resolved INTO a swapped ancestor
+    and deleted a file outside the checkout. Resolution launders the swap rather
+    than refusing it, and from inside this helper a legitimate link and a
+    malicious one are indistinguishable.
+
+    So both are refused, and the documented cost is that a host whose worktree
+    path contains a linked directory cannot use the discard and must clean by
+    hand -- the same trade as the platform check for Windows.
+    """
+    _need_unsymlinked_tmp(tmp_path)
+    real = tmp_path / "realparent"
+    (real / "wt").mkdir(parents=True)
+    kept = real / "wt" / "probe.py"
+    kept.write_text("x")
+    link_parent = tmp_path / "link-parent"
+    link_parent.symlink_to(real, target_is_directory=True)
+
+    reason = mod._discard_untracked_files(str(link_parent / "wt"), ["probe.py"])
+    assert reason is not None
+    assert "is a symlink" in reason
+    assert kept.exists(), "deleted through a symlinked ancestor instead of refusing"
+
+
+@requires_fd_safe_discard
+def test_discard_untracked_files_plain_path_still_deletes(tmp_path):
+    """The control: with no symlink anywhere in the path, the walk from `/` pins
+    every component and the approved files are removed, including a nested one."""
+    _need_unsymlinked_tmp(tmp_path)
+    wt = tmp_path / "wt"
+    (wt / "sub").mkdir(parents=True)
+    (wt / "probe.py").write_text("x")
+    (wt / "sub" / "harness.py").write_text("y")
+
+    reason = mod._discard_untracked_files(str(wt), ["probe.py", "sub/harness.py"])
+    assert reason is None, reason
+    assert not (wt / "probe.py").exists()
+    assert not (wt / "sub" / "harness.py").exists()
+
+
+def test_discard_untracked_files_fails_closed_without_openat(tmp_path, monkeypatch):
+    """PLATFORM: without openat/O_NOFOLLOW the discard is REFUSED, not downgraded
+    to a path-based unlink.
+
+    A path-based delete re-resolves every ancestor, so a directory component
+    swapped for a symlink -- or a Windows junction, which `os.path.islink` does
+    not report as a link at all -- would redirect the deletion outside the
+    worktree. Withdrawing the affordance costs a button; approximating it costs
+    a file that was never in the worktree.
+    """
+    victim = tmp_path / "probe.py"
+    victim.write_text("x")
+    # Simulate a platform whose unlink cannot take a dir_fd.
+    monkeypatch.setattr(os, "supports_dir_fd", set())
+
+    reason = mod._discard_untracked_files(str(tmp_path), ["probe.py"])
+    assert reason is not None
+    assert "cannot discard untracked files safely on this platform" in reason
+    # and it refused BEFORE touching anything
+    assert victim.exists(), "a file was deleted on a platform we cannot delete safely on"
+
+
+@requires_fd_safe_discard
+def test_discard_untracked_files_type_change_refuses_and_keeps_unapproved(tmp_path):
+    """TYPE CHANGE regression guard (the finding that forced the rewrite): the
+    approved name is now a DIRECTORY holding an unapproved file. os.unlink
+    raises IsADirectoryError, so the helper REFUSES -- it names the type change
+    and does NOT recurse into the directory, so the unapproved file survives."""
+    _need_unsymlinked_tmp(tmp_path)
+    # `scratch` was approved as a regular file, but between consent and
+    # execution it became a directory holding a file nobody approved.
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    victim = scratch / "not-approved.txt"
+    victim.write_text("keep me")
+
+    reason = mod._discard_untracked_files(str(tmp_path), ["scratch"])
+
+    assert reason is not None
+    assert "scratch" in reason
+    assert "directory" in reason.lower()
+    # The unapproved file inside the swapped-in directory is untouched.
+    assert victim.exists()
+    assert victim.read_text() == "keep me"
+
+
+@requires_fd_safe_discard
+def test_discard_untracked_files_deletes_files_but_leaves_emptied_dir(tmp_path):
+    """Approved files, including a nested `sub/harness.py`, are deleted; the
+    now-empty `sub/` directory is deliberately left behind (git does not track
+    empty dirs and `worktree remove` does not object to them)."""
+    _need_unsymlinked_tmp(tmp_path)
+    (tmp_path / "top.txt").write_text("x")
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "harness.py").write_text("y")
+
+    reason = mod._discard_untracked_files(
+        str(tmp_path), ["top.txt", "sub/harness.py"]
+    )
+
+    assert reason is None
+    assert not (tmp_path / "top.txt").exists()
+    assert not (sub / "harness.py").exists()
+    # The emptied directory is intentionally NOT removed.
+    assert sub.is_dir()
+
+
+@requires_fd_safe_discard
+def test_discard_untracked_files_refuses_escapes_and_deletes_nothing(tmp_path):
+    """Escape attempts are refused with NOTHING deleted: a `..` traversal, an
+    absolute path, and a mid-path `..`. An outside file and an inside sibling
+    both survive."""
+    _need_unsymlinked_tmp(tmp_path)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside")
+    inner = tmp_path / "inside.txt"
+    inner.write_text("inside")
+
+    for bad in ("../outside.txt", str(outside), "sub/../../x"):
+        reason = mod._discard_untracked_files(str(tmp_path), [bad])
+        assert reason is not None, bad
+        assert "refusing" in reason.lower(), (bad, reason)
+
+    # Neither the outside target nor the inside sibling was touched.
+    assert outside.exists() and outside.read_text() == "outside"
+    assert inner.exists() and inner.read_text() == "inside"
+
+
+@requires_fd_safe_discard
+def test_discard_untracked_files_missing_path_is_idempotent(tmp_path):
+    """A path that no longer exists returns None (idempotent) so a retry after a
+    partially-completed discard is not an error."""
+    _need_unsymlinked_tmp(tmp_path)
+    assert not (tmp_path / "gone.txt").exists()
+    reason = mod._discard_untracked_files(str(tmp_path), ["gone.txt"])
+    assert reason is None
+
+
+@requires_fd_safe_discard
+def test_discard_untracked_files_magic_filename_is_literal(tmp_path):
+    """A filename that looks like pathspec magic (`:(glob)*`) is deleted as a
+    LITERAL name -- there is no pathspec for git to interpret it as a pattern --
+    while a sibling file that a glob would have swept survives."""
+    _need_unsymlinked_tmp(tmp_path)
+    magic = tmp_path / ":(glob)*"
+    magic.write_text("approved")
+    sibling = tmp_path / "sibling.txt"
+    sibling.write_text("not approved")
+
+    reason = mod._discard_untracked_files(str(tmp_path), [":(glob)*"])
+
+    assert reason is None
+    assert not magic.exists()
+    # A real glob would have matched the sibling; a literal unlink does not.
+    assert sibling.exists()
+    assert sibling.read_text() == "not approved"
+
+
+@pytest.mark.asyncio
+async def test_remove_handler_rejects_discard_bool(monkeypatch):
+    """HANDLER VALIDATION: discard_untracked_paths as a bool -> 400, remove
+    never called."""
+    _sel_capture(monkeypatch)
+    monkeypatch.setattr(mod, "_valid_worktree_names", AsyncMock(return_value={"feat"}))
+    remove = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(mod, "_worktree_remove", remove)
+    resp = await mod.api_dev_fleet_worktree_remove(
+        _json_request({"name": "feat", "discard_untracked_paths": True})
+    )
+    assert resp.status == 400
+    assert (
+        "discard_untracked_paths must be a list of non-empty strings"
+        in json.loads(resp.text)["error"]
+    )
+    remove.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_remove_handler_rejects_discard_list_with_empty_string(monkeypatch):
+    """HANDLER VALIDATION: discard_untracked_paths containing an empty string
+    -> 400, remove never called."""
+    _sel_capture(monkeypatch)
+    monkeypatch.setattr(mod, "_valid_worktree_names", AsyncMock(return_value={"feat"}))
+    remove = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(mod, "_worktree_remove", remove)
+    resp = await mod.api_dev_fleet_worktree_remove(
+        _json_request({"name": "feat", "discard_untracked_paths": ["ok.txt", ""]})
+    )
+    assert resp.status == 400
+    assert (
+        "discard_untracked_paths must be a list of non-empty strings"
+        in json.loads(resp.text)["error"]
+    )
+    remove.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_prune_run_handler_rejects_discard_list_instead_of_map(monkeypatch):
+    """HANDLER VALIDATION: prune's discard_untracked_paths given as a LIST
+    instead of a name->list map -> 400 with code invalid_discard_paths."""
+    _sel_capture(monkeypatch)
+    resp = await mod.api_dev_fleet_prune_run(
+        _json_request({"names": [], "discard_untracked_paths": ["wt-a"]})
+    )
+    assert resp.status == 400
+    body = json.loads(resp.text)
+    assert body["code"] == "invalid_discard_paths"
+
+
+@pytest.mark.asyncio
+async def test_prune_run_handler_rejects_discard_map_with_empty_string_entry(monkeypatch):
+    """HANDLER VALIDATION: prune's discard_untracked_paths map carrying a list
+    with an empty string -> 400 with code invalid_discard_paths."""
+    _sel_capture(monkeypatch)
+    resp = await mod.api_dev_fleet_prune_run(
+        _json_request(
+            {"names": [], "discard_untracked_paths": {"wt-a": ["ok.txt", ""]}}
+        )
+    )
+    assert resp.status == 400
+    body = json.loads(resp.text)
+    assert body["code"] == "invalid_discard_paths"
+
+
+@pytest.mark.asyncio
+async def test_locked_worktree_refused_before_any_discard_runs(monkeypatch):
+    """LOCK ORDERING: git refuses to remove a locked worktree, and it refuses
+    LAST -- a discard succeeds on a locked tree, so a discard that ran first
+    would already have destroyed the scratch by the time the removal failed.
+    The lock is therefore recognised up front and the discard must never run."""
+    clean_ran: list[tuple] = []
+
+    def discard_spy(worktree, rel_paths):
+        clean_ran.append((worktree, list(rel_paths)))  # pragma: no cover - must never happen
+        return None
+
+    monkeypatch.setattr(mod, "_discard_untracked_files", discard_spy)
+
+    async def git(path, *args, **kw):
+        sub = args[0] if args else ""
+        if sub == "status":
+            return ""
+        return "a" * 40
+
+    async def run_cmd(cmd, timeout=None, **kw):
+        if "ls-files" in cmd:
+            return (0, "probe.py\0", "")
+        return (0, "", "")
+
+    with _remove_stubs(
+        git=git, run_cmd=run_cmd, pr_state="MERGED", own=0,
+        target={"path": "/wt/held", "branch": "held", "is_main": False,
+                "locked": "keeping this for the repro"},
+    ):
+        res = await mod._worktree_remove_locked(
+            "held", force=True, discard_untracked_paths=["probe.py"]
+        )
+    assert res["ok"] is False
+    assert "locked" in res["error"]
+    assert "git worktree unlock" in res["error"]
+    assert clean_ran == [], "the discard ran against a locked worktree"
+
+
+@pytest.mark.asyncio
+async def test_removal_failure_after_discard_says_files_were_discarded(monkeypatch):
+    """Every removal failure we can name in advance is refused before the
+    discard, but the unnameable ones (a permission change, a file held open)
+    still land after it. The error must then SAY the files are gone, instead of
+    returning git's bare stderr and reading like a no-op."""
+
+    cleaned: list[tuple] = []
+
+    def discard_spy(worktree, rel_paths):
+        cleaned.append((worktree, list(rel_paths)))  # discard succeeds
+        return None
+
+    monkeypatch.setattr(mod, "_discard_untracked_files", discard_spy)
+
+    async def git(path, *args, **kw):
+        sub = args[0] if args else ""
+        if sub == "status":
+            return ""
+        return "a" * 40
+
+    calls: list[list] = []
+
+    async def run_cmd(cmd, timeout=None, **kw):
+        if "ls-files" in cmd:
+            # Empty once the discard has run, so the post-discard check passes
+            # and execution reaches the removal -- which is where this test's
+            # failure is injected.
+            return (0, "" if cleaned else "probe.py\0", "")
+        if "remove" in cmd:
+            calls.append(cmd)
+            return (1, "", "fatal: could not remove: Permission denied")
+        return (0, "", "")
+
+    with _remove_stubs(git=git, run_cmd=run_cmd, pr_state="MERGED", own=0):
+        res = await mod._worktree_remove_locked(
+            "feat", force=True, discard_untracked_paths=["probe.py"]
+        )
+    assert res["ok"] is False
+    assert "discarded 1 untracked file(s)" in res["error"]
+    assert "could not remove the worktree" in res["error"]
+    # git's own reason is preserved, not swallowed by the wrapper text
+    assert "Permission denied" in res["error"]

@@ -88,6 +88,39 @@ def test_parse_worktree_porcelain_empty():
     assert _parse_worktree_porcelain("") == []
 
 
+def test_parse_worktree_porcelain_captures_locked():
+    """`locked` marks a tree git will refuse to remove.
+
+    It matters that this is parsed rather than discovered from git's stderr:
+    `worktree remove` reports the lock LAST, after any pre-removal cleanup has
+    already run, so a removal path that only learns about it from the failure
+    has already destroyed whatever it cleaned.
+    """
+    from kiro_crew.apps.builtins.dev_fleet.server import _parse_worktree_porcelain
+
+    raw = textwrap.dedent("""\
+        worktree /home/user/kirocrew
+        HEAD abc1234567890abcdef1234567890abcdef123456
+        branch refs/heads/main
+
+        worktree /home/user/kirocrew-wt-held
+        HEAD def4567890abcdef1234567890abcdef12345678
+        branch refs/heads/held
+        locked keeping this for the repro
+
+        worktree /home/user/kirocrew-wt-bare-lock
+        HEAD def4567890abcdef1234567890abcdef12345678
+        detached
+        locked
+    """)
+    entries = _parse_worktree_porcelain(raw)
+    assert len(entries) == 3
+    assert "locked" not in entries[0]
+    assert entries[1]["locked"] == "keeping this for the repro"
+    # a bare `locked` line still marks the tree, with a placeholder reason
+    assert entries[2]["locked"] == "unknown"
+
+
 def test_parse_worktree_porcelain_captures_prunable():
     """`prunable` marks a record whose checkout directory is gone."""
     from kiro_crew.apps.builtins.dev_fleet.server import _parse_worktree_porcelain
@@ -6568,11 +6601,16 @@ async def test_prune_run_per_item_states_and_failure_isolation(reset_prune_state
             return {"ok": False, "code": "active"}
         return {"ok": True, "code": "merged"}
 
-    async def fake_remove(nm, force=False, progress=None, _caller="handler"):
+    async def fake_remove(
+        nm, force=False, progress=None, _caller="handler", discard_untracked_paths=None
+    ):
         # exercise the phase callback the parallel driver passes in
         if progress is not None:
             progress("stopping_pod")
             progress("removing")
+        # No discard was requested for any of these names, so the driver must
+        # not turn one on unbidden.
+        assert discard_untracked_paths is None
         if nm == "wt-remove-fail":
             return {"ok": False, "error": "pod still active after shutdown"}
         return {"ok": True, "removed": True}
@@ -6617,7 +6655,10 @@ async def test_prune_run_exception_in_item_is_isolated(reset_prune_state):
     async def fake_prunable(path, branch):
         return {"ok": True, "code": "merged"}
 
-    async def fake_remove(nm, force=False, progress=None, _caller="handler"):
+    async def fake_remove(
+        nm, force=False, progress=None, _caller="handler", discard_untracked_paths=None
+    ):
+        assert discard_untracked_paths is None
         if nm == "wt-boom":
             raise RuntimeError("kaboom")
         return {"ok": True, "removed": True}
@@ -6656,7 +6697,7 @@ async def test_prune_run_caps_concurrency_at_semaphore_limit(reset_prune_state, 
         inflight -= 1
         return {"ok": True, "code": "merged"}
 
-    async def fake_remove(nm, force=False, progress=None, _caller="handler"):
+    async def fake_remove(nm, force=False, progress=None, _caller="handler", discard_untracked_paths=None):
         return {"ok": True, "removed": True}
 
     with patch.object(mod, "_find_worktree", side_effect=fake_find), \
@@ -6726,7 +6767,8 @@ async def test_prune_run_deduplicates_names(reset_prune_state):
     async def fake_prunable(path, branch):
         return {"ok": True, "code": "merged"}
 
-    async def fake_remove(nm, force=False, progress=None, _caller="handler"):
+    async def fake_remove(nm, force=False, progress=None, _caller="handler", discard_untracked_paths=None):
+        assert discard_untracked_paths is None
         removed.append(nm)
         return {"ok": True, "removed": True}
 
@@ -6765,7 +6807,8 @@ async def test_prune_run_processes_force_only_names(reset_prune_state):
         prunable_calls.append(path)
         return {"ok": True, "code": "merged"}
 
-    async def fake_remove(nm, force=False, progress=None, _caller="handler"):
+    async def fake_remove(nm, force=False, progress=None, _caller="handler", discard_untracked_paths=None):
+        assert discard_untracked_paths is None
         removed.append(nm)
         return {"ok": True, "removed": True}
 
@@ -6804,7 +6847,8 @@ async def test_prune_run_unions_regular_and_forced_names(reset_prune_state):
         prunable_paths.append(path)
         return {"ok": True, "code": "merged"}
 
-    async def fake_remove(nm, force=False, progress=None, _caller="handler"):
+    async def fake_remove(nm, force=False, progress=None, _caller="handler", discard_untracked_paths=None):
+        assert discard_untracked_paths is None
         removed.append(nm)
         return {"ok": True, "removed": True}
 

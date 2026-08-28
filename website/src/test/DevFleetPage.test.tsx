@@ -1534,7 +1534,9 @@ describe('DevFleetPage', () => {
     expect(screen.getByText('Pruned 1 worktree(s)')).toBeInTheDocument()
     expect(screen.queryByText(/Prune: \d+ failed/)).not.toBeInTheDocument()
     // The forced name went out in force_names, not the regular names list.
-    expect(runBody).toEqual({ names: [], force_names: ['wt-kept'] })
+    // pruneExecute now always includes discard_untracked_paths as a MAP (empty
+    // here: wt-kept carries no untracked-only scratch classification).
+    expect(runBody).toEqual({ names: [], force_names: ['wt-kept'], discard_untracked_paths: {} })
   }, 15000)
 
   it('refetches the fleet with fresh=1 once a prune finishes', async () => {

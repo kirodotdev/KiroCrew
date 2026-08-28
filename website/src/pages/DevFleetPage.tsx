@@ -573,6 +573,10 @@ interface Worktree {
   pr?: PrInfo | null; shipped?: boolean
   issues?: IssueRef[]; tickets?: TicketRef[]; summary?: string | null
   own_commits?: number; real_dirty?: boolean; is_live?: boolean; is_staged?: boolean; legacy?: boolean
+  // Breakdown of what makes the tree dirty, from the detail payload. A tree
+  // whose only dirt is untracked files (dirty_tracked === false) is removable
+  // by discarding them; one with modified tracked files is not.
+  dirty_tracked?: boolean | null; dirty_untracked?: number; dirty_untracked_paths?: string[]
   path?: string
   provision_run_id?: string | null
 }
@@ -823,7 +827,7 @@ export default function DevFleetPage() {
   // checkout, so the restart confirm must say so — that hazard does not
   // depend on whether the pointer-only cancel is available.
   const pendingStage = (fleet?.worktrees || []).find((x) => x.is_staged && !x.is_live) || null
-  const [pruneDialog, setPruneDialog] = useState<{ candidates: { name: string; code?: string }[]; kept: { name: string; code?: string; dirty?: boolean }[]; scanned: number } | null>(null)
+  const [pruneDialog, setPruneDialog] = useState<{ candidates: { name: string; code?: string }[]; kept: { name: string; code?: string; dirty?: boolean; dirty_tracked?: boolean | null; dirty_untracked?: number; dirty_untracked_paths?: string[] }[]; scanned: number } | null>(null)
   const [pruneSelected, setPruneSelected] = useState<Set<string>>(new Set())
   const [pruneForceSelected, setPruneForceSelected] = useState<Set<string>>(new Set())
   const [pruneProgress, setPruneProgress] = useState<{ names: string[]; items: Record<string, { status: string; error?: string | null }>; done: number; total: number; running: boolean } | null>(null)
@@ -1182,11 +1186,33 @@ export default function DevFleetPage() {
   async function removeWorktree(name: string, d: Worktree) {
     if (d?.is_main) { notify(i18nT('pages.devFleetPage.cannot_remove_the_main_worktree'), { type: 'error' }); return }
     const shipped = !!d?.shipped; const empty = d && d.own_commits === 0 && d.real_dirty === false
-    const desc = shipped ? i18nT('pages.devFleetPage.pr_merged_safe_to_remove_runs_git_worktree_remov') : empty ? i18nT('pages.devFleetPage.empty_worktree_cannot_be_undone') : i18nT('pages.devFleetPage.has_unmerged_work_removing_deletes_permanently')
+    // Dirt that is ONLY untracked files is session scratch (probe scripts,
+    // capture harnesses, notes). The backend refuses both plain and forced
+    // removal while any dirt remains, so without naming those files and asking
+    // to discard them the row is a dead end. Tracked modifications never take
+    // this path — they are unfinished work and stay protected.
+    //
+    // The paths list is capped by the server, so a discard is only offered when
+    // it is COMPLETE: consent has to cover the whole set, and the server rejects
+    // a partial one. Offering it on a truncated list would promise something the
+    // backend refuses.
+    const paths = d?.dirty_untracked_paths ?? []
+    const untrackedOnly = d?.dirty_tracked === false && (d?.dirty_untracked ?? 0) > 0
+      && paths.length === d?.dirty_untracked
+    const files = paths.join(', ')
+    // The discard line is ADDITIVE, never a replacement. A worktree can carry
+    // unmerged commits AND a stray probe script at the same time, and this
+    // removal still sends force — so telling the user only about the scratch
+    // would describe a permanent branch deletion as harmless cleanup. The
+    // stake-naming warning stays; the discard sentence is appended to it.
+    const base = shipped ? i18nT('pages.devFleetPage.pr_merged_safe_to_remove_runs_git_worktree_remov') : empty ? i18nT('pages.devFleetPage.empty_worktree_cannot_be_undone') : i18nT('pages.devFleetPage.has_unmerged_work_removing_deletes_permanently')
+    const desc = untrackedOnly
+      ? base + ' ' + i18nT('pages.devFleetPage.discard_untracked_files', { count: d?.dirty_untracked ?? 0, files })
+      : base
     const ok = await askConfirm(i18nT('pages.devFleetPage.remove_name', { name }), desc, { confirmLabel: shipped || empty ? i18nT('pages.devFleetPage.remove') : i18nT('pages.devFleetPage.delete_anyway'), danger: true })
     if (!ok) return
     setFlag(name + ':remove', true)
-    try { const r = await api.post<{ ok?: boolean; error?: string }>('/worktree/remove', { name, force: !shipped && !empty }); if (r?.ok) { notify(i18nT('pages.devFleetPage.removed_name', { name }), { type: 'success' }); invalidateAll() } else notify(r?.error || i18nT('pages.devFleetPage.failed'), { type: 'error' }) }
+    try { const r = await api.post<{ ok?: boolean; error?: string }>('/worktree/remove', { name, force: !shipped && !empty, discard_untracked_paths: untrackedOnly ? paths : undefined }); if (r?.ok) { notify(i18nT('pages.devFleetPage.removed_name', { name }), { type: 'success' }); invalidateAll() } else notify(r?.error || i18nT('pages.devFleetPage.failed'), { type: 'error' }) }
     catch (e: unknown) { notify((e as Error)?.message || String(e), { type: 'error' }) }
     finally { setFlag(name + ':remove', false) }
   }
@@ -1244,7 +1270,7 @@ export default function DevFleetPage() {
   async function pruneShipped() {
     setFlag('__prune', true)
     try {
-      const r = await api.get<{ ok?: boolean; candidates?: { name: string; code?: string }[]; kept?: { name: string; code?: string }[]; scanned?: number; error?: string }>('/prune-candidates')
+      const r = await api.get<{ ok?: boolean; candidates?: { name: string; code?: string }[]; kept?: { name: string; code?: string; dirty?: boolean; dirty_tracked?: boolean | null; dirty_untracked?: number; dirty_untracked_paths?: string[] }[]; scanned?: number; error?: string }>('/prune-candidates')
       if (!r || r.ok === false) { notify(r?.error || i18nT('pages.devFleetPage.prune_preview_failed'), { type: 'error' }); return }
       const cands = r.candidates || []
       const kept = r.kept || []
@@ -1256,13 +1282,19 @@ export default function DevFleetPage() {
     finally { setFlag('__prune', false) }
   }
 
-  async function pruneExecute(rawNames: string[], rawForceNames: string[] = []) {
+  async function pruneExecute(rawNames: string[], rawForceNames: string[] = [], discardPaths: Record<string, string[]> = {}) {
     // Mirror the backend's order-preserving dedup: a duplicate would render
     // duplicate checklist rows and inflate the total for a batch the server
     // processes once.
     const names = Array.from(new Set(rawNames))
     const forceNames = Array.from(new Set(rawForceNames))
-    const allNames = Array.from(new Set([...names, ...forceNames]))
+    // Rows whose only dirt is untracked scratch, each carrying the exact file
+    // list that was displayed. Sent as its own field rather than folded into
+    // force: it authorizes discarding those specific files and nothing more,
+    // the server re-checks that the set is unchanged, and it refuses outright
+    // if a tracked file is modified.
+    const discardNames = Object.keys(discardPaths)
+    const allNames = Array.from(new Set([...names, ...forceNames, ...discardNames]))
     if (!allNames.length) { notify(i18nT('pages.devFleetPage.nothing_selected'), { type: 'info' }); return }
     setPruneDialog(null)
     const seed: Record<string, { status: string; error?: string | null }> =
@@ -1272,7 +1304,7 @@ export default function DevFleetPage() {
       // A rejected run ("prune already running") comes back ok:false with
       // HTTP 200 — starting the poll loop anyway would track the OTHER run's
       // items and render every row as a misleading "Pending".
-      const start = await api.post<{ ok?: boolean; error?: string }>('/prune-run', { names, force_names: forceNames })
+      const start = await api.post<{ ok?: boolean; error?: string }>('/prune-run', { names, force_names: forceNames, discard_untracked_paths: discardPaths })
       if (!start || start.ok === false) {
         notify(start?.error || i18nT('pages.devFleetPage.prune_failed_to_start'), { type: 'error' })
         setPruneProgress(null)
@@ -1838,9 +1870,29 @@ export default function DevFleetPage() {
       return !!(wt?.is_main || wt?.is_live || wt?.is_staged || (liveWt && liveWt.name === name))
     }
     const hasForceSelected = pruneForceSelected.size > 0
+    // A kept row is blocked by scratch alone when the backend classified its
+    // dirt as untracked-only AND handed back the COMPLETE file list (the server
+    // caps it, and it refuses a consent that does not cover the whole set).
+    // Ticking such a row means "remove it, discarding exactly these files" —
+    // the paths travel with the request so the server can verify the set has
+    // not changed since it was shown, and it still refuses if a tracked file
+    // turns out to be modified.
+    const scratchPaths = (name: string): string[] | null => {
+      const k = pruneDialog.kept.find((r) => r.name === name)
+      if (!k || k.dirty_tracked !== false) return null
+      const paths = k.dirty_untracked_paths ?? []
+      if (!paths.length || paths.length !== k.dirty_untracked) return null
+      return paths
+    }
+    const untrackedOnly = (name: string) => scratchPaths(name) !== null
     const handleRemove = async () => {
       const regularNames = pruneDialog.candidates.filter((c) => pruneSelected.has(c.name)).map((c) => c.name)
       const forceNames = Array.from(pruneForceSelected)
+      const discardPaths: Record<string, string[]> = {}
+      for (const n of forceNames) {
+        const p = scratchPaths(n)
+        if (p) discardPaths[n] = p
+      }
       if (forceNames.length > 0) {
         const confirmed = await askConfirm(
           i18nT('pages.devFleetPage.force_remove_confirm_title'),
@@ -1849,7 +1901,7 @@ export default function DevFleetPage() {
         )
         if (!confirmed) return
       }
-      pruneExecute(regularNames, forceNames)
+      pruneExecute(regularNames, forceNames, discardPaths)
     }
     return (
       <Modal open={true} onClose={() => setPruneDialog(null)} title={i18nT('pages.devFleetPage.prune_worktrees')} maxWidth={480} footer={<><Btn onClick={() => setPruneDialog(null)}>{i18nT('pages.devFleetPage.cancel')}</Btn><Btn danger onClick={handleRemove}>{i18nT('pages.devFleetPage.remove_selected')}</Btn></>}>
@@ -1870,12 +1922,18 @@ export default function DevFleetPage() {
             <div style={{ marginBottom: 10 }}>
               <div style={{ fontSize: 10, letterSpacing: '0.08em', color: 'var(--muted)', textTransform: 'uppercase', borderBottom: '1px solid var(--border)', paddingBottom: 3, marginBottom: 4 }}>{i18nT('pages.devFleetPage.kept')}</div>
               {pruneDialog.kept.some((k) => !isGuarded(k.name) && !k.dirty && k.code !== 'dirty_check_failed') && <p style={{ fontSize: 11, color: 'var(--muted)', margin: '0 0 6px' }}>{i18nT('pages.devFleetPage.kept_force_hint')}</p>}
+              {pruneDialog.kept.some((k) => !isGuarded(k.name) && untrackedOnly(k.name)) && <p style={{ fontSize: 11, color: 'var(--muted)', margin: '0 0 6px' }}>{i18nT('pages.devFleetPage.kept_discard_untracked_hint')}</p>}
               {pruneDialog.kept.map((k) => {
                 const guarded = isGuarded(k.name)
-                // Disable force-checkbox for worktrees the backend refuses
-                // force=True on: dirty=True (uncommitted changes) OR
-                // code=dirty_check_failed (git status failed / unverifiable).
-                const cannotForce = !!k.dirty || k.code === 'dirty_check_failed'
+                // Disable the override only where the backend really refuses it:
+                // an unverifiable tree (git status failed), or dirt that includes
+                // a MODIFIED TRACKED file — unfinished work the override must not
+                // destroy. Dirt that is only untracked scratch stays checkable,
+                // because ticking it sends a discard for exactly those files;
+                // blanket-disabling on `dirty` was what left such rows with no
+                // way forward at all.
+                const scratchOnly = untrackedOnly(k.name)
+                const cannotForce = k.code === 'dirty_check_failed' || (!!k.dirty && !scratchOnly)
                 const disabled = guarded || cannotForce
                 const checked = pruneForceSelected.has(k.name)
                 return (
@@ -1885,9 +1943,16 @@ export default function DevFleetPage() {
                       : <Checkbox checked={checked} disabled={cannotForce} onChange={(e) => setPruneForceSelected((prev) => { const next = new Set(prev); if (e.target.checked) next.add(k.name); else next.delete(k.name); return next })} aria-label={i18nT('pages.devFleetPage.force_remove', { name: k.name })} />
                     }
                     <span style={{ fontFamily: 'ui-monospace, SF Mono, Menlo, monospace', fontSize: 12, color: checked ? 'var(--danger)' : guarded ? 'var(--muted)' : 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{k.name}</span>
-                    <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 200 }} title={pruneVerdictLabel(k.code)}>
+                    <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 200 }} title={scratchOnly ? (k.dirty_untracked_paths ?? []).join(', ') : pruneVerdictLabel(k.code)}>
                       {guarded && i18nT('pages.devFleetPage.protected_worktree')}
-                      {!guarded && pruneVerdictLabel(k.code)}
+                      {/* A scratch-only row shows the FILENAMES it would
+                          discard, not the verdict label. Two rows can carry the
+                          same checkbox meaning very different destruction --
+                          "force-delete unmerged work" vs "throw away a probe
+                          script" -- and a hover title is the one disclosure a
+                          keyboard or touch user never reaches. The filenames are
+                          data, so they need no translation. */}
+                      {!guarded && (scratchOnly ? (k.dirty_untracked_paths ?? []).join(', ') : pruneVerdictLabel(k.code))}
                     </span>
                   </label>
                 )

@@ -15,8 +15,8 @@ Routes (as seen by the backend after prefix stripping by gateway):
   GET  /api/prune-status
   GET  /api/disk
   POST /api/sync              -> pull main + rebuild
-  POST /api/worktree/remove {name, force?}
-  POST /api/prune-run {names}
+  POST /api/worktree/remove {name, force?, discard_untracked_paths?}
+  POST /api/prune-run {names, force_names?, discard_untracked_paths?}
   POST /api/pod/up   {name}
   POST /api/pod/down {name}
   POST /api/pod/restart {name}
@@ -31,6 +31,7 @@ Routes (as seen by the backend after prefix stripping by gateway):
 from __future__ import annotations
 
 import asyncio
+import errno
 import functools
 import hashlib
 import hmac as _hmac_mod
@@ -46,7 +47,7 @@ import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
 from aiohttp import web
@@ -1842,6 +1843,13 @@ def _parse_worktree_porcelain(raw: str) -> list[dict]:
             # but the admin record survives (a `rm -rf` with no
             # `git worktree prune`). The reason text is optional.
             current["prunable"] = line[len("prunable"):].strip() or "unknown"
+        elif line == "locked" or line.startswith("locked "):
+            # An explicit human "do not touch this tree". `git worktree remove`
+            # refuses a locked tree, and its refusal comes LAST -- after any
+            # pre-removal cleanup has already run -- so every removal path has
+            # to recognise the lock up front instead of discovering it too late.
+            # The reason text is optional and author-controlled.
+            current["locked"] = line[len("locked"):].strip() or "unknown"
     if current:
         entries.append(current)
     return entries
@@ -1974,11 +1982,228 @@ async def _own_commits_count(path: str) -> int | None:
     return int(out) if out and out.isdigit() else None
 
 
+def _discard_untracked_files(worktree: str, rel_paths: list[str]) -> str | None:
+    """Delete exactly the approved untracked files. None on success, else a reason.
+
+    Deliberately NOT ``git clean``. A pathspec naming an entry whose type changed
+    between consent and execution is followed recursively -- verified: an approved
+    regular file ``scratch`` replaced by a directory ``scratch/`` containing an
+    unapproved file loses that file, with ``-fd`` AND with a bare ``-f``, even
+    when the pathspec is spelled ``:(literal)``. ``os.unlink`` cannot do that: it
+    removes ONE non-directory entry and raises ``IsADirectoryError`` when the name
+    now refers to a directory, so a type change is a refusal rather than a sweep.
+    Having no pathspec at all also removes the pathspec-magic surface entirely.
+
+    EVERY component of the given absolute worktree path is opened ``O_NOFOLLOW``
+    from ``/`` down, and the unlink is issued relative to that directory fd.
+    Opening the worktree by path in one call re-resolves its ancestors, so a
+    writable ancestor swapped for a symlink would redirect the deletion before
+    the walk began. ``realpath`` is deliberately NOT used first: resolution
+    follows the topology as it stands NOW, so it resolves INTO a swapped ancestor
+    and lands the deletion in the attacker's target -- tried and verified to
+    destroy an external file, which is laundering the swap rather than refusing
+    it. The price is that a worktree path containing a legitimately symlinked
+    ancestor is refused; that is the same trade as the platform check below.
+    Where these primitives do not exist (Windows has no ``openat``/``O_NOFOLLOW``)
+    the discard is REFUSED rather than downgraded to a path-based unlink, since a
+    junction swapped into an ancestor is not even reported as a link by
+    ``os.path.islink``. Empty directories are left behind on purpose -- git does
+    not track them, ``status``/``ls-files`` do not report them, and ``git worktree
+    remove`` does not object to them (verified), so removing them would be scope
+    this consent does not cover.
+    """
+    if not ({"O_NOFOLLOW"} <= set(dir(os)) and os.unlink in os.supports_dir_fd):
+        # No openat/O_NOFOLLOW (Windows). A path-based unlink re-resolves every
+        # ancestor at each step, so a directory component swapped for a symlink
+        # -- or a Windows junction, which `os.path.islink` does not even report
+        # as a link -- redirects the deletion outside the worktree. There is no
+        # safe way to do this here, so the affordance is withdrawn rather than
+        # approximated: the caller loses a button, not a file.
+        return (
+            "cannot discard untracked files safely on this platform (no "
+            "openat/O_NOFOLLOW, so a swapped directory could redirect the "
+            "deletion outside the worktree) -- clean the worktree manually, "
+            "then remove it"
+        )
+    # Walk the GIVEN path from `/`, pinning every component with O_NOFOLLOW.
+    # Opening the worktree by path in one call re-resolves its ancestors, so a
+    # writable ancestor swapped for a symlink redirects the deletion before the
+    # walk starts.
+    #
+    # Deliberately NOT `realpath` first. That was tried and it DEFEATS the guard:
+    # resolution follows whatever the topology says NOW, so a swapped ancestor is
+    # resolved into and the deletion lands in the attacker's target -- verified,
+    # an external file was destroyed. Resolution launders the swap instead of
+    # refusing it.
+    #
+    # The cost is that a worktree whose path genuinely contains a symlinked
+    # ancestor (a linked home directory, macOS /tmp) is refused. That is the same
+    # trade as the platform check above: withdraw the affordance and say so,
+    # rather than approximate it. git records worktree paths as plain absolute
+    # paths, so this is the uncommon case, and the caller can still clean by hand.
+    root_parts = PurePosixPath(worktree).parts
+    if not root_parts or root_parts[0] != "/":
+        return f"refusing to discard inside a non-absolute worktree path: {worktree!r}"
+
+    for rel in rel_paths:
+        parts = PurePosixPath(rel).parts
+        if not parts or any(p in ("", ".", "..") for p in parts) or PurePosixPath(rel).is_absolute():
+            return f"refusing to discard a path that is not worktree-relative: {rel!r}"
+        dir_fds: list[int] = []
+        try:
+            try:
+                dir_fds.append(os.open("/", os.O_RDONLY | os.O_DIRECTORY))
+                walked = 0
+                for comp in (*root_parts[1:], *parts[:-1]):
+                    dir_fds.append(os.open(
+                        comp,
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        dir_fd=dir_fds[-1],
+                    ))
+                    walked += 1
+                os.unlink(parts[-1], dir_fd=dir_fds[-1])
+            except FileNotFoundError:
+                if walked < len(root_parts) - 1:
+                    # A component of the WORKTREE path is missing, which is not
+                    # the idempotent "file already gone" case below.
+                    return (
+                        "cannot discard untracked files: the worktree path no "
+                        "longer resolves -- nothing was discarded"
+                    )
+                continue
+            except IsADirectoryError:
+                return (
+                    f"refusing to discard {rel!r}: it is now a directory, not the "
+                    "file that was confirmed"
+                )
+            except OSError as exc:
+                if walked < len(root_parts) - 1 and exc.errno in (
+                    errno.ELOOP, errno.ENOTDIR
+                ):
+                    # A component of the worktree path is a symlink. Could be a
+                    # host whose home directory is linked, could be an ancestor
+                    # swapped since git reported the path -- indistinguishable
+                    # from here, so both are refused.
+                    return (
+                        "cannot discard untracked files: a directory in the "
+                        "worktree's own path is a symlink, so the deletion "
+                        "cannot be pinned to the checkout -- clean the worktree "
+                        "manually, then remove it"
+                    )
+                return f"could not discard {rel!r}: {exc.strerror or exc}"
+        finally:
+            for fd in dir_fds:
+                try:
+                    os.close(fd)
+                except OSError:  # pragma: no cover - defensive
+                    pass
+    return None
+
+
 async def _real_dirty(path: str) -> bool | None:
     st = await _git(path, "status", "--porcelain")
     if st is None:
         return None
     return any(ln.strip() for ln in st.splitlines())
+
+
+# Bound on the untracked paths reported to the client. The list exists so a
+# human can see what a discard would destroy; past a couple of dozen entries it
+# stops informing that decision and only grows the payload.
+_DIRTY_PATH_SAMPLE = 20
+
+
+async def _dirty_split(path: str) -> tuple[bool | None, list[str]]:
+    """Classify a worktree's dirt: tracked modifications vs untracked files.
+
+    Returns ``(tracked_dirty, untracked_paths)``.
+
+    * ``tracked_dirty`` is True when at least one TRACKED file is modified,
+      staged, deleted, renamed or unmerged, False when none is, and ``None``
+      when git could not answer — which callers must treat as unverifiable,
+      never as clean.
+    * ``untracked_paths`` are files git considers untracked and NOT ignored, so
+      build output (``.venv``, ``node_modules``, anything in ``.gitignore``)
+      never counts as dirt. An empty list means "none found OR git failed" — it
+      is deliberately not a promise, and the discard path treats an empty list
+      as "nothing approved to discard".
+
+    Why two commands instead of parsing one ``--porcelain`` blob: ``-uno``
+    suppresses untracked entries, so anything it prints is a tracked change and
+    a plain non-empty test suffices; ``ls-files --others`` prints bare paths
+    with no status columns to misparse.
+
+    The untracked half deliberately bypasses the shared ``_git`` helper, which
+    strips its output and would corrupt a first or last filename carrying
+    leading or trailing whitespace. These paths are not merely displayed — they
+    become the ``git clean`` pathspec deciding which files a discard destroys —
+    so they must survive byte-exact. A corrupted path would simply fail to
+    match and abort the removal, which is safe but is a refusal nobody earned.
+    """
+    tracked_out = await _git(path, "status", "--porcelain", "-uno")
+    tracked_dirty: bool | None = (
+        None
+        if tracked_out is None
+        else any(ln.strip() for ln in tracked_out.splitlines())
+    )
+    rc, others_raw, _ = await _run_cmd(
+        ["git", "-C", path, "ls-files", "--others", "--exclude-standard", "-z"],
+        timeout=6,
+    )
+    untracked = [p for p in others_raw.split("\0") if p] if rc == 0 else []
+    return tracked_dirty, untracked
+
+
+def _dirt_fields(tracked_dirty: bool | None, untracked: list[str]) -> dict:
+    """The structured dirt description carried on a refusal or a fleet row.
+
+    Kept separate from the human message so the client can RENDER the blocking
+    files instead of parsing a sentence — a refusal that only says "uncommitted
+    changes" leaves the user no way to find out what is in the way.
+
+    Emitted paths go through ``_redact``, like every other path-ish string this
+    module puts on the wire (the worktree path, the design-doc list). A filename
+    is author-controlled text, so it is scrubbed on the way OUT while callers
+    that need to act on the file keep the raw list from ``_dirty_split``.
+    """
+    return {
+        "dirty_tracked": tracked_dirty,
+        "dirty_untracked": len(untracked),
+        "dirty_untracked_paths": [
+            _redact(p) for p in untracked[:_DIRTY_PATH_SAMPLE]
+        ],
+    }
+
+
+def _dirt_detail(tracked_dirty: bool | None, untracked: list[str]) -> str:
+    """A short phrase naming what is dirty, appended to a refusal message.
+
+    For callers that surface only the error string (the prune checklist's
+    inline failure reason), this is the whole explanation they get, so it says
+    which KIND of dirt is blocking. It deliberately never suggests forcing:
+    force is refused for tracked modifications too.
+    """
+    if tracked_dirty is None:
+        return ""
+    parts = []
+    if tracked_dirty:
+        parts.append("tracked files are modified")
+    if untracked:
+        shown = ", ".join(_redact(p) for p in untracked[:3])
+        more = f" +{len(untracked) - 3} more" if len(untracked) > 3 else ""
+        parts.append(f"{len(untracked)} untracked ({shown}{more})")
+    if not parts:
+        return ""
+    return " -- " + "; ".join(parts)
+
+
+async def _dirt_report(path: str) -> tuple[dict, str]:
+    """Classify a dirty worktree for a refusal payload: fields + message tail."""
+    tracked_dirty, untracked = await _dirty_split(path)
+    return (
+        _dirt_fields(tracked_dirty, untracked),
+        _dirt_detail(tracked_dirty, untracked),
+    )
 
 
 # --- fleet cache ---
@@ -2450,11 +2675,20 @@ async def _worktree_detail(name: str) -> dict:
         if branch and not is_main
         else {"issues": [], "tickets": [], "summary": None}
     )
+    # `real_dirty` keeps its exact prior meaning and its own query, so the
+    # authoritative "is there any dirt" answer is unchanged. The breakdown is
+    # additive and computed only when there IS dirt -- a clean tree has nothing
+    # to describe, and an unverifiable one (None) has nothing trustworthy to say.
+    real_dirty = await _real_dirty(path)
+    dirt_tracked, dirt_untracked = (
+        await _dirty_split(path) if real_dirty else (None, [])
+    )
     return {
         "name": name, "path": _redact(path),
         "branch": _redact(g["branch"] or branch or ""), "head": g["head"],
         "dirty": g["dirty"], "own_commits": own_commits,
-        "real_dirty": await _real_dirty(path),
+        "real_dirty": real_dirty,
+        **_dirt_fields(dirt_tracked, dirt_untracked),
         "pr": _redact_pr(pr), "pr_merged": _is_pr_merged(pr),
         "issues": ctx["issues"], "tickets": ctx["tickets"],
         "summary": ctx["summary"],
@@ -2957,6 +3191,7 @@ async def _worktree_remove(
     force: bool = False,
     progress: Callable[[str], None] | None = None,
     _caller: str = "handler",
+    discard_untracked_paths: list[str] | None = None,
 ) -> dict:
     """Remove a feature worktree without racing its rebase lifecycle.
 
@@ -2971,7 +3206,9 @@ async def _worktree_remove(
             "wait for it to finish or abort it first"
         )}
     async with worktree_lock:
-        return await _worktree_remove_locked(name, force, progress, _caller)
+        return await _worktree_remove_locked(
+            name, force, progress, _caller, discard_untracked_paths
+        )
 
 
 async def _worktree_remove_locked(
@@ -2979,6 +3216,7 @@ async def _worktree_remove_locked(
     force: bool = False,
     progress: Callable[[str], None] | None = None,
     _caller: str = "handler",
+    discard_untracked_paths: list[str] | None = None,
 ) -> dict:
     """Remove a feature worktree while its per-worktree lock is held.
 
@@ -2987,6 +3225,16 @@ async def _worktree_remove_locked(
     OID == the PR's merged headRefOid. Commits pushed after merge cause OID
     divergence and refuse the removal (unlike git cherry which never works
     for squash merges).
+
+    ``discard_untracked_paths`` is a NARROWER request than ``force``, not a
+    synonym: it authorizes destroying exactly the untracked files the caller
+    LISTED (session scratch -- probe scripts, capture harnesses, notes) and
+    nothing else, so it is honoured only while NO tracked file is modified AND
+    the listed set still matches what is on disk. Carrying the set rather than a
+    boolean is what makes "you consented to what you were shown" enforceable
+    instead of merely asserted. It does not speak to whether the branch's
+    commits are shipped, so an unmerged branch still needs ``force`` in
+    addition. Both together are still refused if a tracked file is modified.
 
     Lock order (must never be reversed to prevent deadlock):
       _wt_lock(name)  →  _MAKE_LIVE_LOCK  →  _GIT_MUTATION_LOCK
@@ -3022,14 +3270,88 @@ async def _worktree_remove_locked(
             "process is running from -- switch checkouts first"
         )}
 
+    # A locked worktree is one git will refuse to remove, and it refuses at the
+    # END -- after any pre-removal cleanup has run. Recognising the lock here,
+    # before a discard deletes anything, is what keeps a doomed request from
+    # taking the scratch with it. Checked for every removal, not just discards:
+    # the alternative is git's raw stderr arriving after the fact.
+    if target.get("locked"):
+        return {"ok": False, "error": (
+            "refusing: this worktree is locked ("
+            + _redact(str(target["locked"]))
+            + ") -- unlock it with `git worktree unlock` first"
+        )}
+
+    # Approve an untracked-only discard, but do NOT execute it here. Deleting
+    # now would let a gate further down refuse the removal AFTER the files were
+    # destroyed -- a refused request that still took something away. The
+    # approved list is carried to the one point where the removal is certain
+    # (just before `git worktree remove`) and executed there.
+    #
+    # The caller submits the EXACT list it displayed, and it must still equal the
+    # set on disk. Re-enumerating and trusting the fresh result would destroy a
+    # file created between the moment the user was shown the list and this
+    # check -- consent for a set the user never saw. On any mismatch the removal
+    # is refused and the caller has to look again.
+    #
+    # The comparison only happens when ``_redact`` is the IDENTITY on every
+    # fresh path, so the set the caller echoes back is the set that gets
+    # deleted. Redaction is lossy: two distinct filenames can share one redacted
+    # rendering, and comparing in that space would let a file swapped in after
+    # display satisfy the equality check and be destroyed unapproved. When any
+    # path would be altered on the way out we refuse instead of guessing -- the
+    # tree is still removable by hand, and no unapproved file can be lost.
+    pending_discard: list[str] | None = None
+    if discard_untracked_paths is not None:
+        _tracked_dirty, _fresh = await _dirty_split(path)
+        if _tracked_dirty is not False or not _fresh:
+            pass  # not untracked-only: the gates below refuse on their own terms
+        elif len(_fresh) > _DIRTY_PATH_SAMPLE:
+            # The caller was handed a truncated list, so it cannot have
+            # consented to the whole set. Refuse rather than delete the tail
+            # nobody ever saw.
+            return {"ok": False, **_dirt_fields(_tracked_dirty, _fresh), "error": (
+                f"too many untracked files to confirm individually "
+                f"({len(_fresh)}, listed at most {_DIRTY_PATH_SAMPLE}) -- "
+                "clean the worktree manually, then remove it"
+            )}
+        elif any(_redact(p) != p for p in _fresh):
+            return {"ok": False, **_dirt_fields(_tracked_dirty, _fresh), "error": (
+                "an untracked filename cannot be confirmed safely (it is "
+                "rewritten when displayed, so a different file could match the "
+                "same confirmation) -- clean the worktree manually, then "
+                "remove it"
+            )}
+        elif set(discard_untracked_paths) != set(_fresh):
+            return {"ok": False, **_dirt_fields(_tracked_dirty, _fresh), "error": (
+                "the worktree's untracked files changed since they were listed "
+                "-- nothing was discarded; re-check the file list and retry"
+            )}
+        else:
+            pending_discard = _fresh
+
+    async def _dirty_now() -> bool | None:
+        """The dirty state the gates below must decide on.
+
+        With an approved untracked-only discard pending the tree counts as
+        clean, because the discard runs unconditionally before the removal --
+        no gate is passed on a promise that is not kept. Delegates to
+        _real_dirty otherwise, which keeps the gate semantics (and every test
+        that stubs _real_dirty) unchanged when no discard was requested.
+        """
+        if pending_discard is not None:
+            return False
+        return await _real_dirty(path)
+
     if not force:
-        dirty = await _real_dirty(path)
+        dirty = await _dirty_now()
         if dirty is not False:
-            return {"ok": False, "error": (
+            fields, detail = ({}, "") if dirty is None else await _dirt_report(path)
+            return {"ok": False, **fields, "error": (
                 "worktree has uncommitted changes"
                 " (force is allowed only when the PR is merged)"
                 if dirty else "cannot verify worktree state (git status failed)"
-            )}
+            ) + detail}
 
     _rm_head_oid = (await _git(path, "rev-parse", "HEAD")) if branch else None
     pr = (await _pr_status_cached(branch, _rm_head_oid)) if branch else None
@@ -3055,22 +3377,25 @@ async def _worktree_remove_locked(
     # removal (TOCTOU mitigation).
     force_use_git_force = force  # default: honour caller's force flag
     if force and not _is_pr_merged(pr):
-        dirty = await _real_dirty(path)
+        dirty = await _dirty_now()
         if dirty is True:
+            fields, detail = await _dirt_report(path)
             logger.info(
                 "worktree_removal_audit: worktree=%s branch=%s caller=%s force=%s "
-                "dirty=True own=%s pr_state=%s verdict_oid=n/a "
-                "action=refused_dirty_unmerged",
-                name, branch, _caller, force, own,
+                "dirty=True tracked_dirty=%s untracked=%s own=%s pr_state=%s "
+                "verdict_oid=n/a action=refused_dirty_unmerged",
+                name, branch, _caller, force,
+                fields.get("dirty_tracked"), fields.get("dirty_untracked"), own,
                 (pr or {}).get("state", "none"),
             )
             return {
                 "ok": False,
+                **fields,
                 "error": (
                     "refusing forced removal: worktree has uncommitted changes "
                     "and PR is not merged — this would cause unrecoverable data "
                     f"loss (PR state: {(pr or {}).get('state', 'no PR')})"
-                ),
+                ) + detail,
                 "pr": _redact_pr(pr),
             }
         elif dirty is None:
@@ -3135,7 +3460,7 @@ async def _worktree_remove_locked(
     #     atomic last line against edits arriving in the check-to-removal
     #     window (round 6, mirrors the unmerged-clean TOCTOU pattern)
     if force and _is_pr_merged(pr) and branch:
-        dirty = await _real_dirty(path)
+        dirty = await _dirty_now()
         if dirty is not False:
             fresh_head = await _fetch_pr_head_oid(
                 branch, repo=(pr or {}).get("_repo")
@@ -3195,6 +3520,7 @@ async def _worktree_remove_locked(
                 "refused_dirty_merged" if dirty is True
                 else "refused_unverifiable_merged"
             )
+            fields, detail = ({}, "") if dirty is None else await _dirt_report(path)
             logger.info(
                 "worktree_removal_audit: worktree=%s branch=%s caller=%s "
                 "force=%s dirty=%s own=%s pr_state=MERGED(fresh) "
@@ -3207,6 +3533,7 @@ async def _worktree_remove_locked(
             )
             return {
                 "ok": False,
+                **fields,
                 "error": (
                     "refusing forced removal: PR is merged but worktree has "
                     + (
@@ -3215,7 +3542,7 @@ async def _worktree_remove_locked(
                         else "unverifiable state (git status failed)"
                     )
                     + " — commit, stash, or clean the working tree first"
-                ),
+                ) + detail,
                 "pr": _redact_pr(pr),
             }
         else:
@@ -3488,6 +3815,56 @@ async def _worktree_remove_locked(
                             "ok": False,
                             "error": f"cannot re-verify pod state before removal: {_redact(str(exc))}",
                         }
+            # Execute the approved untracked-only discard. This is the LAST
+            # point before the removal, so a gate that refused above never got
+            # here and never destroyed anything.
+            #
+            # Deletion is per-file `os.unlink`, not `git clean`: it removes only
+            # the enumerated names, cannot recurse into a path whose type changed
+            # since consent, and has no pathspec for a filename to hide magic in.
+            # See _discard_untracked_files for why git clean is unsuitable.
+            #
+            # Ignored paths are untouched because they were never enumerated --
+            # `_dirty_split` excludes them, so node_modules and .venv are outside
+            # this list by construction rather than by a flag.
+            #
+            # The tree must then verify CLEAN before the removal runs WITHOUT
+            # --force, so git's own dirty check stays the atomic last line
+            # against a tracked edit that landed in the meantime -- the same
+            # TOCTOU contract every other path here honours.
+            if pending_discard is not None:
+                if force_use_git_force:  # pragma: no cover - defensive
+                    return {"ok": False, "error": (
+                        "internal: refusing to combine an untracked discard "
+                        "with a forced git removal"
+                    )}
+                loop = asyncio.get_running_loop()
+                discard_err = await loop.run_in_executor(
+                    subprocess_executor(),
+                    _discard_untracked_files, path, pending_discard,
+                )
+                post_tracked, post_untracked = await _dirty_split(path)
+                if discard_err or post_tracked is not False or post_untracked:
+                    logger.info(
+                        "worktree_removal_audit: worktree=%s branch=%s caller=%s "
+                        "approved_discard=%s discard_err=%s tracked_after=%s "
+                        "untracked_after=%s action=refused_discard_incomplete",
+                        name, branch, _caller, len(pending_discard),
+                        bool(discard_err), post_tracked, len(post_untracked),
+                    )
+                    return {"ok": False, "error": (
+                        discard_err or (
+                            "could not discard the worktree's untracked files "
+                            "(the tree is not clean afterwards -- a file may "
+                            "have appeared after the discard was approved)"
+                        )
+                    ) + " -- removal aborted"}
+                logger.info(
+                    "worktree_removal_audit: worktree=%s branch=%s caller=%s "
+                    "discarded_untracked=%s action=discarded_untracked",
+                    name, branch, _caller, len(pending_discard),
+                )
+
             cmd = ["git", "-C", repo, "worktree", "remove", path]
             if force_use_git_force:
                 cmd.append("--force")
@@ -3504,8 +3881,24 @@ async def _worktree_remove_locked(
                         name, branch, _caller, force,
                         (verdict_oid or "").strip()[:12] if verdict_oid else "none",
                     )
-                return {"ok": False, "error": _redact((stderr or stdout).strip()[:300])}
-
+                _err = _redact((stderr or stdout).strip()[:300])
+                if pending_discard is not None:
+                    # The discard already ran. Every failure mode we can name in
+                    # advance is refused earlier (lock, protection, dirt), but a
+                    # removal can still fail for reasons we cannot enumerate --
+                    # a permission change, a file held open. Say so, rather than
+                    # returning git's bare stderr and letting the caller assume
+                    # the request was a no-op when files are in fact gone.
+                    _err = (
+                        f"discarded {len(pending_discard)} untracked file(s), but "
+                        f"then could not remove the worktree: {_err}"
+                    )
+                    logger.info(
+                        "worktree_removal_audit: worktree=%s branch=%s caller=%s "
+                        "discarded_untracked=%s action=removal_failed_after_discard",
+                        name, branch, _caller, len(pending_discard),
+                    )
+                return {"ok": False, "error": _err}
             # Delete branch ref only when the PR is MERGED — atomically against
             # the pinned OID. Unmerged branch refs are always retained, even when
             # own == 0 (every commit already reachable from the upstream base, so
@@ -3930,7 +4323,19 @@ async def _rebase_locked(target: dict) -> dict:
     if st is None:
         return {"ok": False, "error": "cannot verify worktree state (git status failed)"}
     if st:
-        return {"ok": False, "error": "worktree has uncommitted changes"}
+        # Same fileless refusal the removal path used to give. Name the dirt so
+        # the user can act on it. The GATE is deliberately unchanged: an
+        # untracked file cannot conflict semantically, but it can still block
+        # the rebase's checkout when it collides with a path a replayed commit
+        # creates, so loosening this to tracked-only is a separate decision with
+        # its own failure mode (a rebase stopped halfway), not a rename of this
+        # message.
+        _fields, _detail = await _dirt_report(path)
+        return {
+            "ok": False,
+            **_fields,
+            "error": "worktree has uncommitted changes" + _detail,
+        }
     remote = await _upstream_remote()
     if await _git(path, "fetch", remote, BASE_BRANCH, timeout=90) is None:
         return {"ok": False, "error": f"git fetch {remote} {BASE_BRANCH} failed"}
@@ -3979,6 +4384,16 @@ _PRUNE_CONCURRENCY = 4
 _GIT_MUTATION_LOCK = LoopBoundLock()
 
 
+# Prune verdicts an untracked-discard approval is allowed to override. Both are
+# verdicts where the DIRT is what withheld the candidate, which is exactly what
+# the caller consented to clear. Deliberately excludes `dirty_check_failed` (the
+# tree is unverifiable, so nothing was enumerated to consent to) and the
+# merged_* verdicts about commit divergence, which a discard says nothing about.
+# `active` stays in: dirt is one of its two causes, and when the cause is
+# unmerged commits instead, the removal's own PR gate refuses it a moment later.
+_DISCARD_OVERRIDABLE_CODES = frozenset({"merged_dirty", "active"})
+
+
 async def _prunable(path: str, branch: str | None) -> dict:
     """Structured prune verdict. Squash-merge safe: PR merged + clean -> ok.
 
@@ -3992,11 +4407,22 @@ async def _prunable(path: str, branch: str | None) -> dict:
     pr = (await _pr_status_cached(branch, head_oid)) if branch else None
     own = await _own_commits_count(path)
     dirty = await _real_dirty(path)
+    # Classify the dirt so the preview can tell a tree blocked by real edits
+    # apart from one blocked only by leftover session scratch. Both stay
+    # non-candidates -- prune never discards files without explicit consent --
+    # but the caller needs the difference to know which of the two it is
+    # looking at, and whether a discard is even offerable.
+    dirt_tracked, dirt_untracked = (
+        await _dirty_split(path) if dirty else (None, [])
+    )
     try:
         age_h = round((time.time() - Path(path).stat().st_ctime) / 3600, 1)
     except OSError:
         age_h = None
-    base = {"pr": _redact_pr(pr), "own": own, "dirty": dirty, "age_h": age_h}
+    base = {
+        "pr": _redact_pr(pr), "own": own, "dirty": dirty, "age_h": age_h,
+        **_dirt_fields(dirt_tracked, dirt_untracked),
+    }
     if dirty is None:
         return {**base, "ok": False, "code": "dirty_check_failed"}
     if _is_pr_merged(pr):
@@ -4038,16 +4464,34 @@ async def _prune_candidates() -> dict:
             # those anyway — exposing the flag avoids a misleading checkbox).
             if v.get("dirty") is True:
                 row["dirty"] = True
+                # And the breakdown, so a tree held up only by leftover
+                # session scratch can offer a discard instead of reading as
+                # permanently stuck. `force` alone is still refused on it;
+                # discarding the untracked files is what unblocks it.
+                row["dirty_tracked"] = v.get("dirty_tracked")
+                row["dirty_untracked"] = v.get("dirty_untracked")
+                row["dirty_untracked_paths"] = v.get("dirty_untracked_paths")
             kept.append(row)
     return {"ok": True, "candidates": candidates, "kept": kept, "scanned": len(worktrees) - 1}
 
 
-async def _prune_run(names: list[str], force_names: set[str] | None = None) -> dict:
+async def _prune_run(
+    names: list[str],
+    force_names: set[str] | None = None,
+    discard_paths: dict[str, list[str]] | None = None,
+) -> dict:
     # Deduplicate while preserving order: the API accepts any list of names,
     # and a duplicate would spawn two workers racing to remove the SAME
     # worktree — the second one then reports a spurious failure over the
     # first one's success.
     _force = force_names or set()
+    # Per-name consented untracked sets. Like ``force`` this is an explicit
+    # override of the preview verdict, so a named worktree joins the work list
+    # and skips the re-preview below; unlike ``force`` it does not claim the
+    # commits are shipped, it carries the exact file set the caller was shown,
+    # and the removal still applies every gate.
+    _discard_paths = discard_paths or {}
+    _discard = set(_discard_paths)
     # Forced items (kept worktrees the user overrode) arrive in ``force_names``
     # disjoint from the regular candidate ``names``. Both must be processed, so
     # the work list is the order-preserving union — regulars first, then any
@@ -4055,7 +4499,7 @@ async def _prune_run(names: list[str], force_names: set[str] | None = None) -> d
     # from this union (rather than ``names`` alone) is what keeps a force-only
     # prune counted: otherwise its ``done`` bump has no matching denominator or
     # item row, producing an impossible ``1/0`` counter and a false failure.
-    names = list(dict.fromkeys([*names, *_force]))
+    names = list(dict.fromkeys([*names, *_force, *_discard]))
     async with _PRUNE_LOCK:
         if _PRUNE_STATE["running"]:
             return {"ok": False, "error": "prune already running"}
@@ -4101,8 +4545,19 @@ async def _prune_run(names: list[str], force_names: set[str] | None = None) -> d
                     if not is_forced:
                         verdict = await _prunable(target["path"], target.get("branch"))
                         if not verdict.get("ok"):
-                            error = f"not prunable: {verdict.get('code', 'unknown')}"
-                            result = {"name": nm, "ok": False, "error": error}
+                            # A discard approval overrides ONLY a verdict whose
+                            # blocker is the dirt the caller just consented to.
+                            # Unlike `force` it does not inherit a blanket
+                            # bypass of every other refusal -- `fresh`,
+                            # `merged_new_commits`, `merged_unverified` and the
+                            # unverifiable `dirty_check_failed` still stand.
+                            overridden = (
+                                nm in _discard
+                                and verdict.get("code") in _DISCARD_OVERRIDABLE_CODES
+                            )
+                            if not overridden:
+                                error = f"not prunable: {verdict.get('code', 'unknown')}"
+                                result = {"name": nm, "ok": False, "error": error}
                     if not error:
                         def _progress(phase: str, _nm: str = nm) -> None:
                             items[_nm]["status"] = phase
@@ -4112,6 +4567,7 @@ async def _prune_run(names: list[str], force_names: set[str] | None = None) -> d
                             force=is_forced,
                             progress=_progress,
                             _caller="prune",
+                            discard_untracked_paths=_discard_paths.get(nm),
                         )
                         result = {"name": nm, **res}
                         if res.get("ok"):
@@ -4516,7 +4972,23 @@ async def api_dev_fleet_worktree_remove(request: web.Request) -> web.Response:
     force = body.get("force")
     if force is not None and not isinstance(force, bool):
         return web.json_response({"error": "force must be a boolean"}, status=400)
-    return web.json_response(await _worktree_remove(name, force is True))
+    discard = body.get("discard_untracked_paths")
+    if discard is not None and not (
+        isinstance(discard, list) and all(isinstance(p, str) and p for p in discard)
+    ):
+        return web.json_response(
+            {"code": "invalid_discard_paths",
+             "error": (
+                 "discard_untracked_paths must be a list of non-empty strings "
+                 "naming the untracked files that were shown to the user"
+             )},
+            status=400,
+        )
+    return web.json_response(
+        await _worktree_remove(
+            name, force is True, discard_untracked_paths=discard
+        )
+    )
 
 
 @_audited("dev_fleet_prune_run")
@@ -4538,9 +5010,28 @@ async def api_dev_fleet_prune_run(request: web.Request) -> web.Response:
             {"ok": False, "code": "invalid_force_names", "error": "'force_names' must be a list of strings"},
             status=400,
         )
+    raw_discard = body.get("discard_untracked_paths") or {}
+    if not isinstance(raw_discard, dict) or not all(
+        isinstance(k, str) and k
+        and isinstance(v, list) and all(isinstance(p, str) and p for p in v)
+        for k, v in raw_discard.items()
+    ):
+        return web.json_response(
+            {"ok": False, "code": "invalid_discard_paths",
+             "error": (
+                 "'discard_untracked_paths' must map a worktree name to the "
+                 "list of untracked files that were shown to the user"
+             )},
+            status=400,
+        )
     valid = await _valid_worktree_names()
     force_set: set[str] = set()
-    if raw_force:
+    discard_map: dict[str, list[str]] = {}
+    # Both inputs override the prune preview, so both are screened against the
+    # protected set. Screening only ``force_names`` would leave the discard map
+    # as an unguarded second door to the same removal.
+    overrides = [*raw_force, *(n for n in raw_discard if n not in raw_force)]
+    if overrides:
         # Guard: never force-remove the main checkout, the currently live
         # worktree, or a staged cutover target (removing a staged target
         # would leave live_target.json pointing at a missing checkout,
@@ -4553,7 +5044,7 @@ async def api_dev_fleet_prune_run(request: web.Request) -> web.Response:
         staged_path = _staged_target()
         staged_name = Path(staged_path).name if staged_path else None
         guarded: set[str] = set()
-        for nm in raw_force:
+        for nm in overrides:
             wt, _ = await _find_worktree(nm)
             if wt and wt.get("is_main"):
                 guarded.add(nm)
@@ -4568,15 +5059,20 @@ async def api_dev_fleet_prune_run(request: web.Request) -> web.Response:
                 status=400,
             )
         force_set = {n for n in raw_force if n in valid}
+        discard_map = {n: v for n, v in raw_discard.items() if n in valid}
     # Merge both lists: regular + forced (forced items skip the prunable verdict).
     all_names = [n for n in raw_names if n in valid]
-    for fn in raw_force:
+    for fn in overrides:
         if fn in valid and fn not in all_names:
             all_names.append(fn)
     if not all_names:
         return web.json_response({"ok": False, "code": "no_valid_names", "error": "no valid names"}, status=400)
-    if force_set:
-        return web.json_response(await _prune_run(all_names, force_names=force_set))
+    if force_set or discard_map:
+        return web.json_response(
+            await _prune_run(
+                all_names, force_names=force_set, discard_paths=discard_map
+            )
+        )
     return web.json_response(await _prune_run(all_names))
 
 

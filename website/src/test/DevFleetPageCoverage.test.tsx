@@ -305,6 +305,100 @@ describe('DevFleetPage remove worktree', () => {
     expect(removeBodies[0]).toContain('"force":true')
   })
 
+  it('discards untracked scratch when the only dirt is untracked files', async () => {
+    // dirty_tracked === false && dirty_untracked > 0 -> the row is removable by
+    // discarding those files, so the remove POST must authorize it.
+    const removeBodies: string[] = []
+    installFetch(fleetOf(MAIN_ROW, readyRow()), (u, opts) => {
+      if (u.includes('/worktree/remove')) { removeBodies.push(String(opts?.body)); return res({ ok: true }) }
+      if (u.includes('/worktree?name=')) return res({
+        branch: 'feat/a', own_commits: 1, real_dirty: true,
+        dirty_tracked: false, dirty_untracked: 3, dirty_untracked_paths: ['a.py', 'b.md', 'c.mjs'],
+      })
+      return null
+    })
+    renderPage()
+    await waitForRow('wt-a')
+    fireEvent.click(screen.getByLabelText('Expand'))
+    await waitFor(() => expect(screen.getByText('Remove')).toBeInTheDocument(), { timeout: 4000 })
+    fireEvent.click(screen.getByText('Remove'))
+
+    const dialog = await screen.findByRole('dialog')
+    // COMPOSITION GUARD (UX blocker): this tree carries unmerged commits AND
+    // untracked scratch, and the request still sends force -- so the confirm
+    // must state BOTH stakes. If the discard sentence ever replaces the
+    // unmerged-work warning again, a permanent branch deletion reads as
+    // harmless cleanup and this assertion fails.
+    expect(within(dialog).getByText(/removing DELETES permanently/i)).toBeInTheDocument()
+    expect(within(dialog).getByText(/also discards untracked files/i)).toBeInTheDocument()
+    // and it names the files it would destroy
+    expect(within(dialog).getByText(/a\.py, b\.md, c\.mjs/)).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete anyway' }))
+    await waitFor(() => expect(screen.getByText('Removed wt-a')).toBeInTheDocument())
+    const body = JSON.parse(removeBodies[0])
+    // The exact displayed list travels with the request -- consent covers those
+    // specific files, and the server refuses unless the set still matches.
+    expect(body.discard_untracked_paths).toEqual(['a.py', 'b.md', 'c.mjs'])
+  })
+
+  it('does NOT discard when a tracked file is modified (guard must not regress)', async () => {
+    // dirty_tracked === true is unfinished work — no discard is offered, so the
+    // remove POST omits discard_untracked_paths and the backend keeps protecting it.
+    const removeBodies: string[] = []
+    installFetch(fleetOf(MAIN_ROW, readyRow()), (u, opts) => {
+      if (u.includes('/worktree/remove')) { removeBodies.push(String(opts?.body)); return res({ ok: true }) }
+      if (u.includes('/worktree?name=')) return res({
+        branch: 'feat/a', own_commits: 1, real_dirty: true,
+        dirty_tracked: true, dirty_untracked: 0, dirty_untracked_paths: [],
+      })
+      return null
+    })
+    renderPage()
+    await waitForRow('wt-a')
+    fireEvent.click(screen.getByLabelText('Expand'))
+    await waitFor(() => expect(screen.getByText('Remove')).toBeInTheDocument(), { timeout: 4000 })
+    fireEvent.click(screen.getByText('Remove'))
+
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete anyway' }))
+    await waitFor(() => expect(screen.getByText('Removed wt-a')).toBeInTheDocument())
+    const body = JSON.parse(removeBodies[0])
+    // No discard is offered for tracked dirt, so the field must be ABSENT
+    // entirely (undefined serializes away) -- not sent as false.
+    expect('discard_untracked_paths' in body).toBe(false)
+  })
+
+  it('does NOT offer a discard when the untracked list is truncated', async () => {
+    // The server caps the path list at 20 and refuses a partial consent, so a
+    // count (35) that exceeds the returned paths (20) is an INCOMPLETE list: the
+    // UI must not offer the affordance at all. Sending it would promise a
+    // destruction the backend rejects, and the confirm must not claim discard.
+    const removeBodies: string[] = []
+    const paths20 = Array.from({ length: 20 }, (_, i) => `scratch${i}.tmp`)
+    installFetch(fleetOf(MAIN_ROW, readyRow()), (u, opts) => {
+      if (u.includes('/worktree/remove')) { removeBodies.push(String(opts?.body)); return res({ ok: true }) }
+      if (u.includes('/worktree?name=')) return res({
+        branch: 'feat/a', own_commits: 1, real_dirty: true,
+        dirty_tracked: false, dirty_untracked: 35, dirty_untracked_paths: paths20,
+      })
+      return null
+    })
+    renderPage()
+    await waitForRow('wt-a')
+    fireEvent.click(screen.getByLabelText('Expand'))
+    await waitFor(() => expect(screen.getByText('Remove')).toBeInTheDocument(), { timeout: 4000 })
+    fireEvent.click(screen.getByText('Remove'))
+
+    const dialog = await screen.findByRole('dialog')
+    // Unmerged work is still disclosed; the discard sentence must be absent.
+    expect(within(dialog).getByText(/removing DELETES permanently/i)).toBeInTheDocument()
+    expect(within(dialog).queryByText(/also discards untracked files/i)).toBeNull()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete anyway' }))
+    await waitFor(() => expect(screen.getByText('Removed wt-a')).toBeInTheDocument())
+    const body = JSON.parse(removeBodies[0])
+    expect('discard_untracked_paths' in body).toBe(false)
+  })
+
   it('reports a transport failure on the removal', async () => {
     installFetch(fleetOf(MAIN_ROW, readyRow()), (u) => {
       if (u.includes('/worktree/remove')) return Promise.reject(new Error('remove endpoint down'))
@@ -1207,4 +1301,148 @@ describe('DevFleetPage post-action refresh', () => {
     await waitFor(() => expect(urls.length).toBeGreaterThan(before + 1))
     expect(screen.getByText('wt-a')).toBeInTheDocument()
   })
+})
+
+describe('DevFleetPage prune discard-untracked', () => {
+  beforeEach(() => { vi.restoreAllMocks() })
+
+  /** Open the prune dialog against a candidates/kept payload and wait for it. */
+  async function openPrune(payload: Record<string, unknown>, extra?: RouteHandler) {
+    installFetch(fleetOf(MAIN_ROW, readyRow()), (u, opts) => {
+      const e = extra?.(u, opts)
+      if (e) return e
+      if (u.includes('/prune-candidates')) return res(payload)
+      return null
+    })
+    renderPage()
+    await waitForRow('wt-a')
+    fireEvent.click(screen.getByText('Prune merged'))
+    await waitFor(() => expect(screen.getByText('Prune worktrees')).toBeInTheDocument())
+  }
+
+  const scratchOnlyKept = { name: 'wt-scratch', code: 'merged_dirty', dirty: true, dirty_tracked: false, dirty_untracked: 2, dirty_untracked_paths: ['probe.py', 'note.md'] }
+  const trackedKept = { name: 'wt-tracked', code: 'merged_dirty', dirty: true, dirty_tracked: true, dirty_untracked: 0, dirty_untracked_paths: [] }
+  const unverifiableKept = { name: 'wt-unver', code: 'dirty_check_failed', dirty: true }
+  // Untracked-only, but the server capped the returned paths (20) below the true
+  // count (35): an INCOMPLETE list the backend refuses to accept as consent.
+  const truncatedScratchKept = { name: 'wt-trunc', code: 'merged_dirty', dirty: true, dirty_tracked: false, dirty_untracked: 35, dirty_untracked_paths: Array.from({ length: 20 }, (_, i) => `s${i}.tmp`) }
+  // A clean kept row (no dirt) is force-checkable but is NOT scratch-only, so
+  // ticking it must add to force_names without a discard_untracked_paths entry.
+  const cleanKept = { name: 'wt-clean', code: 'merged', dirty: false, dirty_tracked: false, dirty_untracked: 0, dirty_untracked_paths: [] }
+
+  it('enables the override for a scratch-only kept row but not for tracked-dirty or unverifiable rows', async () => {
+    await openPrune({ ok: true, candidates: [], kept: [scratchOnlyKept, trackedKept, unverifiableKept], scanned: 3 })
+    // Scratch-only: checkable, because ticking it discards exactly those files.
+    expect(screen.getByLabelText('Force remove wt-scratch')).not.toBeDisabled()
+    // Modified tracked file: unfinished work the override must not destroy.
+    expect(screen.getByLabelText('Force remove wt-tracked')).toBeDisabled()
+    // git status failed: dirt is unverifiable, so the override is refused.
+    expect(screen.getByLabelText('Force remove wt-unver')).toBeDisabled()
+  })
+
+  it('sends a scratch-only kept row in force_names and a discard_untracked_paths map entry', async () => {
+    const runBodies: string[] = []
+    await openPrune(
+      { ok: true, candidates: [], kept: [scratchOnlyKept], scanned: 1 },
+      (u, opts) => {
+        if (u.includes('/prune-run')) { runBodies.push(String(opts?.body)); return res({ ok: true, total: 1 }) }
+        if (u.includes('/prune-status')) return res({
+          running: false, total: 1, done: 1, current: null,
+          results: [{ name: 'wt-scratch', ok: true }],
+          items: { 'wt-scratch': { status: 'done', error: null } },
+        })
+        return null
+      },
+    )
+    // Tick the scratch-only override, then Remove + confirm the force dialog.
+    // The dialog is opened by an async handler; drain that commit before
+    // toggling the controlled checkbox, then observe it before submitting.
+    await act(async () => {})
+    const box = screen.getByLabelText('Force remove wt-scratch') as HTMLInputElement
+    fireEvent.click(box)
+    await waitFor(() => expect(box).toBeChecked())
+    fireEvent.click(screen.getByText('Remove selected'))
+    fireEvent.click(await screen.findByText('Delete anyway'))
+    await waitFor(() => expect(runBodies.length).toBe(1))
+    const body = JSON.parse(runBodies[0])
+    expect(body.force_names).toEqual(['wt-scratch'])
+    // The map keys the row name to the EXACT displayed path list, so the server
+    // can re-check the set is unchanged before discarding.
+    expect(body.discard_untracked_paths).toEqual({ 'wt-scratch': ['probe.py', 'note.md'] })
+  }, 15000)
+
+  it('renders the discard-untracked hint when a scratch-only kept row is present', async () => {
+    await openPrune({ ok: true, candidates: [], kept: [scratchOnlyKept], scanned: 1 })
+    expect(screen.getByText(/held up only by untracked scratch/i)).toBeInTheDocument()
+  })
+
+  it('does not render the discard-untracked hint when every kept row has tracked dirt', async () => {
+    await openPrune({ ok: true, candidates: [], kept: [trackedKept], scanned: 1 })
+    expect(screen.queryByText(/held up only by untracked scratch/i)).toBeNull()
+  })
+
+  it('disables the override for an untracked-only kept row whose path list is truncated', async () => {
+    // dirty_tracked === false, but the returned list (20) is short of the true
+    // count (35): the server refuses a partial consent, so this is NOT a valid
+    // scratch-only row and the override must stay disabled.
+    await openPrune({ ok: true, candidates: [], kept: [truncatedScratchKept], scanned: 1 })
+    expect(screen.getByLabelText('Force remove wt-trunc')).toBeDisabled()
+    // A truncated list is not a scratch-only row, so its hint is absent too.
+    expect(screen.queryByText(/held up only by untracked scratch/i)).toBeNull()
+  })
+
+  it('posts a discard_untracked_paths map keyed by name to the exact path array for a ticked scratch-only row', async () => {
+    const runBodies: string[] = []
+    await openPrune(
+      { ok: true, candidates: [], kept: [scratchOnlyKept], scanned: 1 },
+      (u, opts) => {
+        if (u.includes('/prune-run')) { runBodies.push(String(opts?.body)); return res({ ok: true, total: 1 }) }
+        if (u.includes('/prune-status')) return res({
+          running: false, total: 1, done: 1, current: null,
+          results: [{ name: 'wt-scratch', ok: true }],
+          items: { 'wt-scratch': { status: 'done', error: null } },
+        })
+        return null
+      },
+    )
+    await act(async () => {})
+    const box = screen.getByLabelText('Force remove wt-scratch') as HTMLInputElement
+    fireEvent.click(box)
+    await waitFor(() => expect(box).toBeChecked())
+    fireEvent.click(screen.getByText('Remove selected'))
+    fireEvent.click(await screen.findByText('Delete anyway'))
+    await waitFor(() => expect(runBodies.length).toBe(1))
+    const body = JSON.parse(runBodies[0])
+    expect(body.force_names).toEqual(['wt-scratch'])
+    // The map's value is EXACTLY the row's displayed path array, under its name.
+    expect(body.discard_untracked_paths).toEqual({ 'wt-scratch': ['probe.py', 'note.md'] })
+  }, 15000)
+
+  it('adds a ticked non-scratch kept row to force_names with NO discard_untracked_paths entry', async () => {
+    // A clean kept row is force-checkable but carries no scratch to discard, so
+    // it goes into force_names alone and contributes nothing to the map.
+    const runBodies: string[] = []
+    await openPrune(
+      { ok: true, candidates: [], kept: [cleanKept], scanned: 1 },
+      (u, opts) => {
+        if (u.includes('/prune-run')) { runBodies.push(String(opts?.body)); return res({ ok: true, total: 1 }) }
+        if (u.includes('/prune-status')) return res({
+          running: false, total: 1, done: 1, current: null,
+          results: [{ name: 'wt-clean', ok: true }],
+          items: { 'wt-clean': { status: 'done', error: null } },
+        })
+        return null
+      },
+    )
+    await act(async () => {})
+    const box = screen.getByLabelText('Force remove wt-clean') as HTMLInputElement
+    fireEvent.click(box)
+    await waitFor(() => expect(box).toBeChecked())
+    fireEvent.click(screen.getByText('Remove selected'))
+    fireEvent.click(await screen.findByText('Delete anyway'))
+    await waitFor(() => expect(runBodies.length).toBe(1))
+    const body = JSON.parse(runBodies[0])
+    expect(body.force_names).toEqual(['wt-clean'])
+    expect(body.discard_untracked_paths).toEqual({})
+  }, 15000)
 })

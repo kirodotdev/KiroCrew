@@ -330,7 +330,11 @@ async def test_forced_prune_delegates_lock_ownership_to_remove(monkeypatch, tmp_
     """Forced prune does not pre-acquire locks owned by _worktree_remove."""
     calls: list[tuple[bool, bool]] = []
 
-    async def _spy_remove(name, force=False, progress=None, _caller="handler"):
+    async def _spy_remove(
+        name, force=False, progress=None, _caller="handler", discard_untracked_paths=None
+    ):
+        # A force-only prune override must not smuggle an untracked discard in.
+        assert discard_untracked_paths is None
         calls.append((force, mod._MAKE_LIVE_LOCK.locked()))
         return {
             "ok": True,
