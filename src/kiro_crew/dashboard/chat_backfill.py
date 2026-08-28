@@ -178,6 +178,11 @@ def select_backfill_messages(
     rows = [row for row in slot.messages if _is_conversational(row)]
     prefix: list[dict[str, Any]] = []
     if include_first_turn:
+        # Deliberately the all-rows counter: it slices the DISK read below
+        # (``_transcript_prefix`` takes ``chained[:disk_older]``), so the count
+        # whose units are on-disk lines is the correct one. The durable-only
+        # ``_disk_older_durable_count`` measures positions over durable rows,
+        # a different unit.
         disk_older = getattr(slot, "_disk_older_count", 0) or 0
         if disk_older > 0:
             prefix = _transcript_prefix(state, slot, disk_older)

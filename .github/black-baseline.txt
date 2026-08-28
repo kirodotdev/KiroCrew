@@ -1085,7 +1085,6 @@ test/test_session_more_coverage.py
 test/test_session_mtime_ordering.py
 test/test_session_pid_sig.py
 test/test_session_pool.py
-test/test_session_restore.py
 test/test_session_rss.py
 test/test_session_sharing.py
 test/test_session_spend_identity.py

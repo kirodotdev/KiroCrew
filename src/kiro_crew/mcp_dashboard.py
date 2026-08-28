@@ -932,9 +932,10 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             # position either re-reads without `since` -- taking the tail, which
             # silently skips everything older than the last `limit` rows once the
             # target answers in a burst -- or keeps reusing a cursor from before,
-            # re-reading rows it has already seen. `next_since` is absent only when
-            # rows have been trimmed and positions stopped being exact, which is
-            # the one case a cursor must not be invented for.
+            # re-reading rows it has already seen. The server now returns
+            # `next_since` on trimmed sessions too (positions are based on a
+            # durable-only prefix count), so its absence is only a defensive
+            # possibility here, not a live server state.
             empty_lines = [head_line, "No messages in that window yet."]
             if "next_since" in resp:
                 empty_lines.append(
@@ -956,8 +957,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             )
             if "next_since" in resp
             else (
-                "This session is long enough that older messages have been trimmed, so "
-                "cursor positions are no longer exact and `since` reads are refused. "
+                "No cursor came back with this read. "
                 "Read again without `since` to get the latest messages."
             )
         )

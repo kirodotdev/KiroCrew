@@ -146,12 +146,15 @@ shape:
 window. A slot retains only its most recent messages in memory and credits each
 trimmed row to a frozen-prefix counter, so a length-derived cursor would freeze
 at the retention cap — and a poller on a long session would silently stop seeing
-replies, on exactly the sessions that need it most. A `since` read on a session
-whose rows have aged out is refused with `cursor_unavailable` (409) rather than
-fast-forwarded onto newer rows as if they were the ones asked for: the position
-is no longer exact, so answering it would be a guess dressed as an answer. The
-caller falls back to a tail read, which is why `next_since` is omitted in that
-case — its absence IS the signal that cursors are not available.
+replies, on exactly the sessions that need it most. Positions are based on the
+**durable-only** frozen-prefix counter (`_disk_older_durable_count`), which
+counts only trimmed rows a durable read returns — never the all-rows
+`_disk_older_count`, which also counts transient rows and would shift every
+position as soon as one was trimmed. A trimmed session therefore keeps an exact
+cursor: `next_since` is returned as usual. The one trim-related refusal left is
+a `since` **below** the trimmed prefix (409 `cursor_unavailable`): those rows
+exist only on disk now, and starting the read at the window instead would
+silently skip everything in between. The caller falls back to a tail read.
 
 `running` is what makes the loop terminable: `running: false` with an empty
 window means the target finished and went idle, which is different from "nothing

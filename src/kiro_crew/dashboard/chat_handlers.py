@@ -14,6 +14,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
+from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -82,6 +83,7 @@ from kiro_crew.dashboard.state import (
     _ChatSlot,
     _mark_permission_resolved,
     _normalize_slot_key,
+    durable_row_count,
     is_stop_event_row,
     is_turn_interrupted,
     parse_cls_meta,
@@ -4897,6 +4899,11 @@ async def _reconcile_slot_window(state: DashboardState, slot: "_ChatSlot") -> No
     if getattr(slot, "_dirty_flag", False):
         return
     history_key = slot_history_key(slot)
+    # Deliberately ``_disk_older_count``, NOT ``_disk_older_durable_count``:
+    # this reconciliation reasons about the on-disk FILE LAYOUT (how many disk
+    # lines the slot represents), so the all-rows counter is the one whose
+    # units match. The durable counter exists for absolute message positions
+    # (session_control.read_messages), a different measurement.
     represented = (getattr(slot, "_disk_older_count", 0) or 0) + len(slot.messages)
     try:
         disk_msgs = await asyncio.to_thread(
@@ -5418,6 +5425,10 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     messages = all_messages[-max_resume:] if disk_total > max_resume else all_messages
     # Stable count of messages older than what we loaded into memory
     slot._disk_older_count = max(0, disk_total - len(messages))
+    # Durable-only view of the same prefix, recomputed from the on-disk rows —
+    # the base absolute message positions are built over. ``islice`` avoids
+    # copying the whole prefix on the event loop. See _ChatSlot.__init__.
+    slot._disk_older_durable_count = durable_row_count(islice(all_messages, slot._disk_older_count))
     for m in messages:
         role = m.get("role", "assistant")
         cls = "msg msg-u" if role == "user" else "msg msg-a"

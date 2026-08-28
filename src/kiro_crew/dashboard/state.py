@@ -17,7 +17,7 @@ import threading
 import time
 import traceback
 import uuid
-from collections.abc import Coroutine, Iterator
+from collections.abc import Coroutine, Iterable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, NamedTuple, TypeVar
@@ -1966,9 +1966,29 @@ def stuck_turn_notice(parked_secs: float) -> str:
 
 _MAX_SLOT_MESSAGES = 10000  # Keep all messages — virtual scrolling handles performance
 
+#: Transient/streaming roles that are never persisted by the save path
+#: (``chat_persistence._build_message_entry`` returns ``None`` for them) and are
+#: skipped by durable readers. Defined here — beside the trim path that must
+#: count the durable rows it folds into the frozen prefix — and re-exported by
+#: ``chat_persistence`` as ``_TRANSIENT_ROLES`` for its readers, so there is one
+#: definition rather than two that can drift.
+_TRANSIENT_ROLES = frozenset({"chunk", "done", "streaming", "queued", "permission"})
+
+
+def durable_row_count(rows: Iterable[dict]) -> int:
+    """How many of *rows* a durable read returns: everything non-transient.
+
+    The one shared counting rule for the durable-only frozen-prefix counter
+    (``_disk_older_durable_count``): every site that sets or advances it counts
+    with this, so the restore paths, the channel restore and the trim path can
+    never disagree about which rows are durable.
+    """
+    return sum(1 for m in rows if m.get("role") not in _TRANSIENT_ROLES)
+
+
 #: Roles that exist only on the wire: appended so a reader/flush can see them,
 #: never broadcast as a `chat_message` and never persisted (the mirror of
-#: ``chat_persistence._TRANSIENT_ROLES`` minus the rows that ARE broadcast).
+#: ``_TRANSIENT_ROLES`` above minus the rows that ARE broadcast).
 #: They get no ``meta.mid`` — see ``_ChatSlot.append``.
 _WIRE_ONLY_ROLES = frozenset({"chunk", "done", "streaming"})
 
@@ -2772,6 +2792,7 @@ class _ChatSlot:
         "_tab_id",
         "_channel_window_mtime",
         "_disk_older_count",
+        "_disk_older_durable_count",
         "_disk_window_len",
         "_disk_tail_ts",
         "_frozen_prefix_cache",
@@ -3211,6 +3232,17 @@ class _ChatSlot:
         self._disk_older_count: int = (
             0  # count of disk messages OLDER than in-memory window (stable, set at restore/resume)
         )
+        # Durable-only frozen-prefix counter: how many durable rows (role not
+        # in ``_TRANSIENT_ROLES``) have LEFT the in-memory window off the front.
+        # Absolute message positions (``session_control.read_messages``) are
+        # built over durable rows, so they base on THIS counter;
+        # ``_disk_older_count`` keeps its save-model contract (the frozen
+        # prefix saves must not rewrite) untouched. The two also draw the
+        # unpersisted-overflow line differently — see the trim path below.
+        # Maintained at every site that sets or advances ``_disk_older_count``,
+        # always via :func:`durable_row_count`. Never persisted — every restore
+        # path recomputes it from the messages on disk.
+        self._disk_older_durable_count: int = 0
         # Count of in-memory window messages the LAST save persisted to disk
         # (the on-disk window region). Trimming may only fold a leading window
         # message into the frozen prefix once it is known to be on disk; this
@@ -3613,15 +3645,29 @@ class _ChatSlot:
         # Trim old messages to bound memory usage
         if len(self.messages) > _MAX_SLOT_MESSAGES:
             excess = len(self.messages) - _MAX_SLOT_MESSAGES
-            del self.messages[:excess]
-            self._resumed_count = max(0, self._resumed_count - excess)
             # A trimmed leading window message may only join the frozen prefix
             # once it is actually on disk. Credit _disk_older_count only
             # for the persisted portion; the unpersisted overflow (should not
             # happen between 5s flushes) is logged rather than silently counted
             # as on-disk, which would have stranded those turns.
             persisted_trim = min(excess, self._disk_window_len)
+            # The durable counter counts the WHOLE evicted slice, including the
+            # unpersisted overflow the disk counter excludes. The two draw
+            # different lines because they answer different questions:
+            # ``_disk_older_count`` claims on-disk lines (its save contract), so
+            # counting a row that never reached disk would corrupt the frozen
+            # prefix. ``_disk_older_durable_count`` is a POSITION base with no
+            # disk contract — if a durable row leaves the window uncounted,
+            # every later absolute position shifts down and a poller's cursor
+            # silently skips rows. Counting the lost rows instead makes a cursor
+            # that pointed at them refuse loudly (``since < base``), which is
+            # the recoverable outcome. Counted BEFORE the ``del`` below —
+            # afterwards the slice is gone.
+            durable_trim = durable_row_count(self.messages[:excess])
+            del self.messages[:excess]
+            self._resumed_count = max(0, self._resumed_count - excess)
             self._disk_older_count += persisted_trim
+            self._disk_older_durable_count += durable_trim
             self._disk_window_len = max(0, self._disk_window_len - excess)
             if persisted_trim < excess:
                 logger.warning(
