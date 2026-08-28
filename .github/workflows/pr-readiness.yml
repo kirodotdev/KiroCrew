@@ -540,14 +540,16 @@ jobs:
                 transport_failed=true
                 break
               }
+              # Collapse to one run -- newest by monotonic id. Full rationale
+              # on the pull_request branch below; the two collapses must stay
+              # identical.
               run="$(jq -c --arg path "$file" '
                 [.workflow_runs[] | select(.path == $path)]
-                | sort_by(.created_at)
-                | last // empty
+                | max_by(.id) // empty
               ' <<<"$runs")"
             else
               runs="$(gh_retry gh api --method GET \
-                "repos/$REPO/actions/workflows/$file/runs?event=pull_request&head_sha=$SHA&per_page=20")" || {
+                "repos/$REPO/actions/workflows/$file/runs?event=pull_request&head_sha=$SHA&per_page=100")" || {
                 rc=$?
                 if [ "$rc" -eq 22 ]; then exit 1; fi
                 transport_failed=true
@@ -559,12 +561,27 @@ jobs:
               # workflow as "(not started)" -- a permanent pending verdict. The
               # query is already pinned to this exact head SHA, and only one
               # open PR can exist per source repository + branch.
+              # Collapse to one run on the monotonic run id, never on
+              # created_at: that timestamp has one-second granularity, and two
+              # runs of the same workflow on the same head routinely share a
+              # second (e.g. a workflow that fires on both synchronize and
+              # edited). jq's sort_by is stable and the API returns runs
+              # newest-first, so a created_at sort left same-second ties in
+              # API order and `last` picked the OLDEST run -- when that run
+              # was concurrency-cancelled, a lane whose newest run succeeded
+              # read as a blocking failure. max_by(.id) orders same-second
+              # runs correctly because ids increase monotonically, and it is
+              # sufficient on its own: a concurrency-cancelled twin is always
+              # superseded by a same-head run with a HIGHER id, so the newest
+              # run is never the cancelled duplicate. Deliberately NO
+              # cancelled-run filter here: dropping a cancelled newest run
+              # would revive an older verdict -- a manually cancelled rerun
+              # must read failure-class, not resurface a stale green.
               run="$(jq -c --arg head_repo "$HEAD_REPO" --arg head_ref "$HEAD_REF" '
                 [.workflow_runs[]
                  | select(.head_repository.full_name == $head_repo
                           and .head_branch == $head_ref)]
-                | sort_by(.created_at)
-                | last // empty
+                | max_by(.id) // empty
               ' <<<"$runs")"
             fi
             if [ -z "$run" ]; then
