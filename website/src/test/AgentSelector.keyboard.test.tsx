@@ -67,6 +67,9 @@ describe('AgentSelector — keyboard navigation', () => {
     const trigger = screen.getByLabelText('Switch agent')
     fireEvent.keyDown(document.activeElement!, { key: 'Escape' })
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+    // Focus return happens at FocusScope teardown (onCloseAutoFocus), one
+    // microtask after the close — await it rather than asserting mid-teardown.
+    await flush()
     expect(document.activeElement).toBe(trigger)
   })
 
@@ -88,6 +91,8 @@ describe('AgentSelector — keyboard navigation', () => {
     const trigger = screen.getByLabelText('Switch agent')
     fireEvent.click(opt('research'))
     expect(onChange).toHaveBeenCalledWith('research')
+    // Focus return happens at FocusScope teardown (onCloseAutoFocus).
+    await flush()
     expect(document.activeElement).toBe(trigger)
   })
 })
