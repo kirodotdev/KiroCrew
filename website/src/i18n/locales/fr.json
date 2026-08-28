@@ -13425,7 +13425,6 @@
       "model": "Modèle",
       "opening_thread": "Ouverture de la conversation…",
       "pick_a_member": "Choisissez un membre pour ouvrir sa conversation.",
-      "pinned_to": "Épinglé à {{name}}",
       "roster_load_failed": "Impossible de charger la liste des membres.",
       "slug_collision": "Ce membre partage son identifiant avec {{name}}, dont la conversation le détient déjà. Renommez l'une des équipes pour que chacune ait sa propre conversation.",
       "status_idle": "Inactif",

@@ -85,10 +85,11 @@ async function newPage(theme, viewport = { width: 1280, height: 820 }) {
 {
   const page = await newPage('dark')
   await page.getByText('radar', { exact: true }).first().click()
-  await page.getByTestId('member-pin-chip').waitFor()
-  const chip = await page.getByTestId('member-pin-chip').textContent()
-  check('02-thread pin chip', /radar/.test(chip || ''), `chip=${JSON.stringify(chip)}`)
+  // No pin chip: the pin is an invariant of every member thread, so the
+  // header no longer announces it. The drawer toggle is the one header action.
   await page.getByTestId('member-drawer').waitFor()
+  const chipGone = !(await page.getByTestId('member-pin-chip').isVisible())
+  check('02-thread no pin chip', chipGone, 'header carries no pin chip')
   const drawer = await page.getByTestId('member-drawer').textContent()
   check('02-thread drawer config', /kirocrew-autofix/.test(drawer || ''), 'agent template shown')
   check('02-thread shared-memory note', /share one memory/i.test(drawer || ''), 'disclosure present')
@@ -108,15 +109,15 @@ async function newPage(theme, viewport = { width: 1280, height: 820 }) {
   await page.getByText('radar', { exact: true }).first().click()
   await page.getByTestId('member-back').waitFor()
   const backVisible = await page.getByTestId('member-back').isVisible()
-  // The pin chip AND the header Edit button are DELIBERATELY hidden below
-  // md/sm (chip wrapped the header into three lines; a third peer action
-  // beside Back + Details clips — the drawer carries the Edit jump instead).
+  // The pin chip and the header Edit button no longer exist at ANY width:
+  // the pin is an invariant (nothing to announce) and Edit lives in the
+  // drawer as a secondary action. Assert their absence stayed absent.
   const editHidden = !(await page.getByTestId('member-edit-jump').isVisible())
   const chipHidden = !(await page.getByTestId('member-pin-chip').isVisible())
   check(
     '03b-mobile selected single-pane',
     backVisible && editHidden && chipHidden,
-    'back visible; edit + chip hidden (drawer carries edit)',
+    'back visible; no header edit, no pin chip (drawer carries edit)',
   )
   await page.screenshot({ path: `${OUT}/03b-mobile-390-thread.png` })
   await page.close()
@@ -126,7 +127,7 @@ async function newPage(theme, viewport = { width: 1280, height: 820 }) {
 {
   const page = await newPage('light')
   await page.getByText('radar', { exact: true }).first().click()
-  await page.getByTestId('member-pin-chip').waitFor()
+  await page.getByTestId('member-drawer').waitFor()
   await page.screenshot({ path: `${OUT}/04-thread-light.png` })
   await page.close()
 }

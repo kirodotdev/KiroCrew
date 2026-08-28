@@ -65,6 +65,7 @@ export default function ChatPane({
   onSplitDown,
   onOpenFull,
   agentLocked,
+  frameless,
 }: {
   slotKey: string
   focused?: boolean
@@ -80,6 +81,11 @@ export default function ChatPane({
    *  the agent picker is not offered at all, instead of offering a control
    *  whose every selection the backend 409s. */
   agentLocked?: boolean
+  /** Embedded-in-a-page mode (member DM threads): the HOST renders the
+   *  identity header, so the pane's own title bar and its card chrome
+   *  (border, rounded corners) would duplicate it. Split-view panes keep
+   *  the chrome — there the bar IS the pane's identity. */
+  frameless?: boolean
 }) {
   // One instance covers both dropdown filter inputs (never open at once).
   const dispatch = useAppDispatch()
@@ -642,9 +648,14 @@ export default function ChatPane({
            auditing focus behaviour. */
         data-chat-pane={focused ? 'focused' : ''}
         {...dropTargetProps}
-        className={`relative flex flex-col h-full min-h-0 rounded-lg overflow-hidden bg-bg border transition-colors ${focused ? 'border-accent' : 'border-border'}`}
+        className={`relative flex flex-col h-full min-h-0 overflow-hidden bg-bg ${
+          frameless
+            ? ''
+            : `rounded-lg border transition-colors ${focused ? 'border-accent' : 'border-border'}`
+        }`}
         style={{ '--mc-content-width': '100%' } as React.CSSProperties}
       >
+        {!frameless && (
         <div className="relative z-50 flex items-center gap-2 px-3 py-2 border-b border-border bg-card shrink-0">
           <span className={`w-2 h-2 rounded-full shrink-0 ${running ? 'bg-ok animate-pulse' : 'bg-accent'}`} />
           <span className="text-[13px] font-semibold text-text-strong truncate min-w-0">{title}</span>
@@ -674,6 +685,7 @@ export default function ChatPane({
             </button>
           )}
         </div>
+        )}
 
         <ChatDropOverlay active={dragOver} />
 

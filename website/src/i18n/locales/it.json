@@ -13424,7 +13424,6 @@
       "model": "Modello",
       "opening_thread": "Apertura della conversazione…",
       "pick_a_member": "Scegli un membro per aprire la conversazione.",
-      "pinned_to": "Fissato a {{name}}",
       "roster_load_failed": "Impossibile caricare l'elenco dei membri.",
       "slug_collision": "Questo membro condivide il proprio identificatore con {{name}}, la cui conversazione lo possiede già. Rinomina una delle crew perché ognuna abbia la propria conversazione.",
       "status_idle": "Inattivo",

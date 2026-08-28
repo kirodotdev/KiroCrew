@@ -174,6 +174,30 @@ class TestMemberRoutes:
         # (the page never trusts it), no top-level default_agent.
         assert "bound" not in rows[CREW]
         assert "default_agent" not in data
+        # Unbound members have never talked: last activity reads as 0.
+        assert rows[CREW]["last_active_ts"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_roster_reports_last_activity_from_the_dm_transcript(self, tmp_path):
+        """last_active_ts is the DM transcript's mtime — the roster's sort key.
+
+        The transcript file is the one durable signal that survives restarts
+        and covers live and dormant threads alike; a bound member with no
+        transcript still reads 0 rather than erroring.
+        """
+        state = _make_state(tmp_path)
+        write_dm_binding(CREW, member=CREW, slot_key=member_slot_key(CREW))
+        key = f"dashboard:{member_slot_key(CREW)}"
+        state.conversation_log.append(key, "user", "hello")
+        with _patched_config([CREW, "Docs_Writer"]):
+            async with TestClient(TestServer(_make_members_app(state))) as client:
+                resp = await client.get("/api/members")
+                assert resp.status == 200
+                data = await resp.json()
+        rows = {r["name"]: r for r in data["members"]}
+        assert rows[CREW]["last_active_ts"] > 0
+        # A member with no transcript stays at 0 — sorted last, never an error.
+        assert rows["Docs_Writer"]["last_active_ts"] == 0.0
 
     @pytest.mark.asyncio
     async def test_thread_create_then_roster_reports_bound(self, tmp_path):

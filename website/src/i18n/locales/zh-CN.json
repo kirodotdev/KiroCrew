@@ -13068,7 +13068,6 @@
       "model": "模型",
       "opening_thread": "正在打开对话…",
       "pick_a_member": "选择一位成员开始对话。",
-      "pinned_to": "固定对话对象：{{name}}",
       "roster_load_failed": "无法加载成员名单。",
       "slug_collision": "该成员与 {{name}} 的标识相同，对话已归属后者。请重命名其中一个 crew 以获得各自独立的对话。",
       "status_idle": "空闲",

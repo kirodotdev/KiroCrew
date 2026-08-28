@@ -15,21 +15,36 @@
  * silently mounted (first-bound-wins is the backend contract).
  *
  * The pin is a server-side property of member slots (born only through
- * POST /api/members/{slug}/thread); the header chip merely SHOWS it.
+ * POST /api/members/{slug}/thread). It is an invariant of every member
+ * thread, so the UI does not announce it — there is no unpinned state to
+ * contrast against.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowLeft, Info, Pencil, Pin, Users, X } from 'lucide-react'
+import { ArrowLeft, Pencil, Users, X } from 'lucide-react'
+import { PanelRightSolid } from '../../components/icons/panels'
 import { useTranslation } from 'react-i18next'
 import { api, type MemberRosterRow } from '../../api/client'
 import { useAppSelector } from '../../store'
 import CrewAvatar from '../../components/CrewAvatar'
 import ChatPane from '../../components/ChatPane'
 import ErrorBoundary from '../../components/ErrorBoundary'
+import ResizeHandle from '../../components/ResizeHandle'
+import { useColumnResize } from '../../hooks/useColumnResize'
+import { loadColumnWidth } from '../../lib/columnWidth'
+import { compareText } from '../../i18n/format'
 
 /** The crew manager surface — the ONLY write path for member configuration.
  *  The explicit tab wins over CapabilitiesPage's remembered last tab. */
 const CREW_MANAGER_PATH = '/capabilities?tab=crews'
+
+/** Roster width bounds, persisted like the chat sidebar's (mc-sidebar-width). */
+const ROSTER_MIN = 200
+const ROSTER_MAX = 420
+const ROSTER_DEFAULT = 264
+const ROSTER_WIDTH_KEY = 'mc-members-roster-width'
+// Module-level so the resize hook's memoised resolver isn't invalidated every render.
+const loadRosterWidth = () => loadColumnWidth(ROSTER_WIDTH_KEY, ROSTER_MIN, ROSTER_MAX, ROSTER_DEFAULT)
 
 export default function MembersPage() {
   const { t } = useTranslation()
@@ -50,6 +65,11 @@ export default function MembersPage() {
   // previously selected member harmless.
   const [slots, setSlots] = useState<Record<string, string>>({})
   const [errors, setErrors] = useState<Record<string, string>>({})
+  // Roster width is user-adjustable on md+ (drag handle on the right edge),
+  // mirroring the chat sidebar. Below md the roster is full-width single-pane
+  // and the stored width is simply unused. Clamp + persist live in the shared
+  // useColumnResize hook — the same primitive every resizable column uses.
+  const roster = useColumnResize(ROSTER_WIDTH_KEY, loadRosterWidth, ROSTER_MIN, ROSTER_MAX)
   // Open by default only where the 300px rail has room; on narrow viewports
   // the drawer overlays the thread, so it must start closed. Initializer-only
   // (no resize listener): matching the width at mount is enough — the toggle
@@ -95,6 +115,17 @@ export default function MembersPage() {
   const active = useMemo(
     () => members.find((m) => m.name === activeName),
     [members, activeName],
+  )
+  // Most-recently-active first (like any IM member list); never-talked
+  // members fall to the bottom alphabetically. Sorted once from the roster
+  // snapshot — live re-sorting mid-session would move rows under the cursor.
+  const sortedMembers = useMemo(
+    () =>
+      [...members].sort(
+        (a, b) =>
+          (b.last_active_ts ?? 0) - (a.last_active_ts ?? 0) || compareText(a.name, b.name),
+      ),
+    [members],
   )
   const activeSlot = active ? slots[active.name] ?? '' : ''
   const activeError = active ? errors[active.name] ?? '' : ''
@@ -155,7 +186,12 @@ export default function MembersPage() {
       <aside
         className={`${
           activeName ? 'hidden md:flex' : 'flex'
-        } w-full md:w-[264px] shrink-0 bg-bg-elevated border border-border rounded-xl shadow-sm flex-col min-h-0`}
+        } relative w-full md:w-[var(--roster-w)] shrink-0 bg-bg-elevated border border-border rounded-xl shadow-sm flex-col min-h-0`}
+        // CSS owns the breakpoint: the var is set unconditionally and only the
+        // md: class consumes it, so resizing the window across 768px reacts
+        // without any JS media-query snapshot going stale.
+        style={{ '--roster-w': `${roster.width}px` } as React.CSSProperties}
+        data-testid="member-roster"
       >
         <div className="px-4 pt-4 pb-1 flex items-center gap-2">
           <Users size={15} className="lucide-inline text-muted" />
@@ -164,7 +200,11 @@ export default function MembersPage() {
         <div className="px-4 pb-2 text-[11px] text-muted">
           {t('pages.membersPage.member_count', { count: members.length })}
         </div>
-        <ul className="flex-1 overflow-y-auto list-none m-0 p-0" aria-label={t('pages.membersPage.title')}>
+        <ul
+          className="flex-1 overflow-y-auto scrollbar-none list-none m-0 px-2 pb-2"
+          style={{ scrollbarWidth: 'none' }}
+          aria-label={t('pages.membersPage.title')}
+        >
           {loaded && !loadError && members.length === 0 && (
             <li className="px-4 py-6 text-xs text-muted">
               <p>{t('pages.membersPage.empty_roster')}</p>
@@ -184,12 +224,16 @@ export default function MembersPage() {
               {t('pages.membersPage.roster_load_failed')}
             </li>
           )}
-          {members.map((m) => (
+          {sortedMembers.map((m) => (
             <li key={m.name}>
+              {/* Same rounded-row idiom as ChatSidebar's session rows, so the
+                  two conversation lists read as one family. */}
               <button
                 onClick={() => openMember(m)}
-                className={`w-full flex items-center gap-2.5 px-4 py-2.5 text-left hover:bg-accent/40 ${
-                  m.name === activeName ? 'bg-accent/60' : ''
+                className={`w-full flex items-center gap-2.5 pl-2.5 pr-2 py-2 rounded-md text-left transition-all select-none ${
+                  m.name === activeName
+                    ? 'text-text-strong bg-accent-subtle'
+                    : 'text-muted hover:text-text hover:bg-bg-hover'
                 }`}
                 aria-current={m.name === activeName ? 'true' : undefined}
               >
@@ -215,6 +259,19 @@ export default function MembersPage() {
           ))}
         </ul>
       </aside>
+
+      {/* Shared window-splitter between roster and thread: keyboard-operable,
+          md+ only (below md the page is single-pane, nothing to resize). */}
+      <div className="hidden md:flex" data-testid="member-roster-resize">
+        <ResizeHandle
+          handleProps={roster.handleProps}
+          label={t('pages.membersPage.title')}
+          onNudge={roster.nudge}
+          value={roster.width}
+          min={ROSTER_MIN}
+          max={ROSTER_MAX}
+        />
+      </div>
 
       {/* DM thread */}
       <section
@@ -245,45 +302,25 @@ export default function MembersPage() {
                     : t('pages.membersPage.status_idle')}
                 </div>
               </div>
-              {/* The pin is a server-side property of member slots; this chip
-                  only surfaces it. Hidden below sm — the drawer restates the
-                  pin, and at phone widths the chip's text would wrap the whole
-                  header into a three-line mess. */}
-              <span
-                className="ml-1 hidden sm:inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded bg-accent/60 text-accent-fg whitespace-nowrap shrink-0"
-                data-testid="member-pin-chip"
+              {/* One action in the header: toggle the detail drawer — same
+                  icon and hit-target as the chat page's side-panel toggle, so
+                  the two surfaces teach one gesture. The pin chip was removed:
+                  every member thread is pinned by construction (a server
+                  invariant, not a per-thread state), so announcing it taught
+                  the user a term for a thing that can never be otherwise.
+                  Edit lives inside the drawer: it is a rare, secondary
+                  action, not a header-level peer of the drawer toggle. */}
+              <button
+                onClick={() => setDrawerOpen((v) => !v)}
+                className="flex items-center justify-center w-7 h-7 rounded-md transition-colors bg-transparent border-none shrink-0 text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
+                aria-pressed={drawerOpen}
+                aria-controls="member-drawer"
+                aria-label={t('pages.membersPage.details')}
+                title={t('pages.membersPage.details')}
+                data-testid="member-drawer-toggle"
               >
-                <Pin size={11} className="lucide-inline" />
-                {t('pages.membersPage.pinned_to', { name: active.name })}
-              </span>
-              <div className="flex items-center gap-1.5 shrink-0">
-                <button
-                  onClick={() => setDrawerOpen((v) => !v)}
-                  className="inline-flex items-center gap-1 text-[11.5px] px-2 py-1 rounded border border-border hover:bg-accent/40 whitespace-nowrap"
-                  aria-pressed={drawerOpen}
-                  aria-controls="member-drawer"
-                  aria-label={t('pages.membersPage.details')}
-                >
-                  <Info size={12} className="lucide-inline" />
-                  {/* Icon-only below md: the label wraps at phone widths. */}
-                  <span className="hidden md:inline">{t('pages.membersPage.details')}</span>
-                </button>
-                <button
-                  onClick={() => navigate(CREW_MANAGER_PATH)}
-                  // hidden below md: on narrow viewports the header row already
-                  // carries Back + Details, and a third peer action can clip or
-                  // wrap. Nothing is lost — the Details drawer exposes the same
-                  // Edit jump, one tap away.
-                  className="hidden md:inline-flex items-center gap-1 text-[11.5px] px-2 py-1 rounded border border-border hover:bg-accent/40 whitespace-nowrap"
-                  data-testid="member-edit-jump"
-                  aria-label={t('pages.membersPage.edit_in_crew_manager')}
-                >
-                  <Pencil size={12} className="lucide-inline" />
-                  <span className="hidden md:inline">
-                    {t('pages.membersPage.edit_in_crew_manager')}
-                  </span>
-                </button>
-              </div>
+                <PanelRightSolid size={15} />
+              </button>
             </header>
             {activeError && (
               <div className="px-4 py-2 text-xs text-danger" role="alert">
@@ -293,7 +330,7 @@ export default function MembersPage() {
             {activeSlot ? (
               <div className="flex-1 min-h-0">
                 <ErrorBoundary>
-                  <ChatPane slotKey={activeSlot} agentLocked />
+                  <ChatPane slotKey={activeSlot} agentLocked frameless />
                 </ErrorBoundary>
               </div>
             ) : (

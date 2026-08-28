@@ -138,6 +138,26 @@ async def api_members(request: web.Request) -> web.Response:
         slot = state._slots.get(slot_key) if (state and slot_key) else None
         row["running"] = bool(slot.running) if slot is not None else False
 
+    # Last activity, for the roster's most-recent-first ordering. The DM
+    # transcript's mtime is the one durable signal that survives restarts and
+    # covers live and dormant threads alike. File stats are IO — one thread
+    # hop for the whole roster, mirroring the binding reads above.
+    def _read_last_active() -> dict[str, float]:
+        if state is None or state.conversation_log is None:
+            return {}
+        out: dict[str, float] = {}
+        for row in rows:
+            if not row["slot_key"]:
+                continue
+            mt = state.conversation_log.session_mtime(f"dashboard:{row['slot_key']}")
+            if mt:
+                out[row["slot_key"]] = mt
+        return out
+
+    last_active = await asyncio.to_thread(_read_last_active)
+    for row in rows:
+        row["last_active_ts"] = last_active.get(row["slot_key"], 0.0)
+
     return web.json_response({"members": rows})
 
 

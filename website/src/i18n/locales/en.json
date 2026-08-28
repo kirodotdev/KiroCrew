@@ -6666,7 +6666,6 @@
       "model": "Model",
       "opening_thread": "Opening the conversation…",
       "pick_a_member": "Pick a member to open their conversation.",
-      "pinned_to": "Pinned to {{name}}",
       "roster_load_failed": "Could not load the member roster.",
       "slug_collision": "This member shares its identifier with {{name}}, whose thread already owns it. Rename one of the crews to give each its own thread.",
       "status_idle": "Idle",

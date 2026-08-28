@@ -13246,7 +13246,6 @@
       "model": "Modell",
       "opening_thread": "Unterhaltung wird geöffnet…",
       "pick_a_member": "Wähle ein Mitglied, um die Unterhaltung zu öffnen.",
-      "pinned_to": "An {{name}} angeheftet",
       "roster_load_failed": "Die Mitgliederliste konnte nicht geladen werden.",
       "slug_collision": "Dieses Mitglied teilt seinen Bezeichner mit {{name}}, dessen Unterhaltung ihn bereits belegt. Benenne eine der Crews um, damit jede ihre eigene Unterhaltung erhält.",
       "status_idle": "Inaktiv",

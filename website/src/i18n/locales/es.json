@@ -13425,7 +13425,6 @@
       "model": "Modelo",
       "opening_thread": "Abriendo la conversación…",
       "pick_a_member": "Elige un miembro para abrir su conversación.",
-      "pinned_to": "Fijado a {{name}}",
       "roster_load_failed": "No se pudo cargar la lista de miembros.",
       "slug_collision": "Este miembro comparte su identificador con {{name}}, cuya conversación ya lo posee. Cambia el nombre de uno de los equipos para que cada uno tenga su propia conversación.",
       "status_idle": "Inactivo",

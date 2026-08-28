@@ -92,7 +92,7 @@ describe('MembersPage roster', () => {
 })
 
 describe('MembersPage thread', () => {
-  it('opens the pinned DM thread on click: creates the thread, mounts the chat stack on its slot, and shows the pin chip', async () => {
+  it('opens the pinned DM thread on click: creates the thread and mounts the chat stack on its slot', async () => {
     await renderPage()
     fireEvent.click(await screen.findByText('oncall'))
     await waitFor(() => expect(api.memberThread).toHaveBeenCalledWith('oncall'))
@@ -103,7 +103,24 @@ describe('MembersPage thread', () => {
     // The host declares the pin: ChatPane must not offer the agent picker
     // (every selection would 409 against the server-side pin).
     expect(pane).toHaveAttribute('data-agent-locked', '1')
-    expect(screen.getByTestId('member-pin-chip')).toHaveTextContent('oncall')
+    // The pin is an invariant of every member thread, so the header does NOT
+    // announce it — no chip, no term for a state that cannot be otherwise.
+    expect(screen.queryByTestId('member-pin-chip')).toBeNull()
+  })
+
+  it('orders the roster by most recent activity, never-talked members last alphabetically', async () => {
+    await renderPage([
+      row({ name: 'zeta-quiet', slug: 'zeta-quiet' }),
+      row({ name: 'alpha-quiet', slug: 'alpha-quiet' }),
+      row({ name: 'old-talker', slug: 'old-talker', last_active_ts: 100 }),
+      row({ name: 'fresh-talker', slug: 'fresh-talker', last_active_ts: 200 }),
+    ])
+    const list = await screen.findByRole('list')
+    const names = Array.from(list.querySelectorAll('li button .font-medium')).map(
+      (el) => el.textContent,
+    )
+    // Recent first; ts=0 rows trail in name order — mirroring an IM member list.
+    expect(names.slice(0, 4)).toEqual(['fresh-talker', 'old-talker', 'alpha-quiet', 'zeta-quiet'])
   })
 
   it('opens a bound member through the thread endpoint too — the roster binding is never mounted unverified', async () => {
@@ -194,18 +211,15 @@ describe('MembersPage drawer and edit jump', () => {
     expect(screen.queryByTestId('member-drawer')).toBeNull()
   })
 
-  it('both edit affordances navigate to the crew manager crews tab, never an inline editor', async () => {
+  it('the edit affordance lives in the drawer only and navigates to the crew manager crews tab', async () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await screen.findByText('oncall'))
-    fireEvent.click(await screen.findByTestId('member-edit-jump'))
+    // Edit is a rare secondary action: it must NOT be a header-level peer of
+    // Details. The header carries exactly one action (the drawer toggle).
+    expect(screen.queryByTestId('member-edit-jump')).toBeNull()
     // Mutation check: the assertion is on the DESTINATION (explicit ?tab=crews
     // beats CapabilitiesPage's remembered last tab), so retargeting the jump
     // anywhere else fails here.
-    expect(navigateSpy).toHaveBeenCalledWith('/capabilities?tab=crews')
-    navigateSpy.mockClear()
-    // Header and drawer share the SAME explicit label ("Edit in crew
-    // manager") — a bare "Edit" verb navigating away was a UX finding. Both
-    // must route to the manager.
     for (const btn of screen.getAllByRole('button', { name: /edit in crew manager/i })) {
       fireEvent.click(btn)
       expect(navigateSpy).toHaveBeenCalledWith('/capabilities?tab=crews')
