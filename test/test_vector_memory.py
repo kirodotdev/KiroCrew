@@ -3944,3 +3944,76 @@ class TestEpisodicDecayRates:
         assert self._score(store, "faiss path retention check") == pytest.approx(
             self._expected(0.0, 30), abs=1.5e-4
         )
+
+
+class TestEpisodicKeywordFallbackCjk:
+    """The no-embeddings episodic fallback must not discard whole-word CJK queries.
+
+    ``search_episodic`` drops to ``_fts5_episodic_search`` whenever no query
+    embedding is available -- the normal state for a deployment with no embedding
+    model configured. That fallback matches with ``LIKE '%token%'``, which is a
+    plain substring test and needs no tokenizer, so a spaceless CJK term is a
+    perfectly good needle. The only thing standing between the query and the row
+    is the minimum-token-length filter, which counts CHARACTERS: two characters
+    is a stopword in English but an ordinary whole word in Chinese, Japanese and
+    Korean, so the filter emptied the term list and the search returned nothing.
+    """
+
+    @staticmethod
+    def _store(tmp_path: Path) -> VectorMemoryStore:
+        """A store with no embed_fn, so search_episodic takes the keyword fallback."""
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        return store
+
+    @pytest.mark.parametrize(
+        ("term", "sentence"),
+        [
+            ("模型", "用户决定用这个模型来做推理"),  # zh: "model"
+            ("会議", "チームは会議で方針を決めた"),  # ja: "meeting"
+            ("회의", "팀은 회의에서 방침을 정했다"),  # ko: "meeting"
+        ],
+        ids=["zh", "ja", "ko"],
+    )
+    def test_a_two_character_word_still_finds_its_row(
+        self, tmp_path: Path, term: str, sentence: str
+    ) -> None:
+        store = self._store(tmp_path)
+        assert store.write_episodic(sentence)
+        # The row plainly contains the term -- LIKE would match it.
+        assert term in sentence
+        hits = store.search_episodic(query_text=term, limit=8)
+        assert [h["text"] for h in hits] == [sentence]
+
+    def test_a_two_word_cjk_query_is_not_emptied(self, tmp_path: Path) -> None:
+        """Both tokens are two characters, so the whole query used to filter to []."""
+        store = self._store(tmp_path)
+        sentence = "我们讨论了模型训练的流程"
+        assert store.write_episodic(sentence)
+        hits = store.search_episodic(query_text="模型 训练", limit=8)
+        assert [h["text"] for h in hits] == [sentence]
+
+    def test_a_longer_cjk_run_keeps_working(self, tmp_path: Path) -> None:
+        """Regression guard: >2 characters was already accepted and must stay so."""
+        store = self._store(tmp_path)
+        sentence = "团队选择了机器学习作为方向"
+        assert store.write_episodic(sentence)
+        hits = store.search_episodic(query_text="机器学习", limit=8)
+        assert [h["text"] for h in hits] == [sentence]
+
+    def test_a_short_latin_query_is_still_filtered_out(self, tmp_path: Path) -> None:
+        """Negative control: the English stopword behaviour must NOT widen.
+
+        ``to`` is two ASCII characters. Accepting it would turn ``LIKE '%to%'``
+        into a near-universal match, which is exactly what the length filter
+        exists to prevent -- so the fix must leave this case refused.
+        """
+        store = self._store(tmp_path)
+        assert store.write_episodic("User decided to use PostgreSQL for the database layer")
+        assert store.search_episodic(query_text="to", limit=8) == []
+
+    def test_a_single_character_cjk_query_stays_filtered(self, tmp_path: Path) -> None:
+        """One Han character is as unselective as an English stopword: still refused."""
+        store = self._store(tmp_path)
+        assert store.write_episodic("用户决定用这个模型来做推理")
+        assert store.search_episodic(query_text="的", limit=8) == []
