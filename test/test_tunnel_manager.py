@@ -189,6 +189,70 @@ class TestSetupTunnel:
         mock_mgr.start.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_denied_by_no_tunnel_boot_flag(self):
+        """``--no-tunnel`` refuses even with token auth active and no config say.
+
+        The whole point of the flag is that it does NOT consult
+        ``tunnel.enabled``: that value is rewritable after a pod HOME is seeded,
+        which is the hole it closes. Token auth being present is not permission
+        either -- the launcher asked for no published surface.
+        """
+        from kiro_crew.tunnel import set_publish_disabled
+        from kiro_crew.tunnel.setup import setup_tunnel
+
+        mw = MagicMock()
+        mw._is_token_auth = True
+        mock_log = MagicMock()
+
+        set_publish_disabled(True)
+        try:
+            with patch("kiro_crew.tunnel.setup.TunnelManager") as mock_tm:
+                result = await setup_tunnel(
+                    middlewares=[mw],
+                    allowed_origins=set(),
+                    tunnel_name_mode="username",
+                    tunnel_name_override="",
+                    port=5476,
+                    log_api_access=mock_log,
+                )
+        finally:
+            set_publish_disabled(False)
+
+        assert result is None
+        # The gate must precede construction, not just start() -- a manager that
+        # exists can be started by any later caller holding it.
+        mock_tm.assert_not_called()
+        assert mock_log.call_args.kwargs["outcome"] == "denied"
+        assert mock_log.call_args.kwargs["resources"] == "no_tunnel_boot_flag"
+
+    @pytest.mark.asyncio
+    async def test_no_tunnel_defaults_to_off(self):
+        """With the flag unset, the pre-flag behavior is untouched."""
+        from kiro_crew.tunnel import publish_disabled, set_publish_disabled
+        from kiro_crew.tunnel.setup import setup_tunnel
+
+        # The default is what an install that never passes the flag gets.
+        set_publish_disabled(False)
+        assert publish_disabled() is False
+
+        mw = MagicMock()
+        mw._is_token_auth = True
+
+        with patch("kiro_crew.tunnel.setup.TunnelManager") as mock_tm:
+            mock_tm.return_value = AsyncMock()
+            result = await setup_tunnel(
+                middlewares=[mw],
+                allowed_origins=set(),
+                tunnel_name_mode="username",
+                tunnel_name_override="",
+                port=5476,
+                log_api_access=MagicMock(),
+            )
+
+        assert result is not None
+        mock_tm.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_connect_callback_adds_origin(self):
         """Connect callback adds URL to CORS origins and sets tunnel URL."""
         from kiro_crew.tunnel import get_tunnel_url, set_tunnel_url
@@ -286,6 +350,245 @@ class TestTunnelStatusEndpointDisabledField:
 
         data = json.loads(resp.body)
         assert data["reconnect_attempt"] == 0
+
+    @pytest.mark.asyncio
+    async def test_disabled_names_the_boot_flag_as_the_reason(self):
+        """A ``--no-tunnel`` gateway says WHY, so an operator is not left
+        reconciling a dead tunnel against a config that still reads enabled."""
+        from kiro_crew.dashboard.handlers.tunnel import api_tunnel_status
+        from kiro_crew.tunnel import set_publish_disabled
+
+        state = MagicMock()
+        state.tunnel_manager = None
+        request = MagicMock()
+        request.app = {"state": state}
+        set_publish_disabled(True)
+        try:
+            resp = await api_tunnel_status(request)
+        finally:
+            set_publish_disabled(False)
+        import json
+
+        data = json.loads(resp.body)
+        assert data["state"] == "disabled"
+        assert data["reason"] == "boot_flag"
+
+    @pytest.mark.asyncio
+    async def test_disabled_without_the_flag_has_an_empty_reason(self):
+        """An ordinary unconfigured tunnel must not claim a boot-flag refusal."""
+        from kiro_crew.dashboard.handlers.tunnel import api_tunnel_status
+        from kiro_crew.tunnel import set_publish_disabled
+
+        state = MagicMock()
+        state.tunnel_manager = None
+        request = MagicMock()
+        request.app = {"state": state}
+        set_publish_disabled(False)
+        resp = await api_tunnel_status(request)
+        import json
+
+        data = json.loads(resp.body)
+        assert data["state"] == "disabled"
+        assert data["reason"] == ""
+
+    @pytest.mark.asyncio
+    async def test_live_tunnel_carries_an_empty_reason(self):
+        """``reason`` is a disabled-state field only -- a running tunnel is not
+        'off for a reason', so the key is present but empty rather than absent."""
+        from kiro_crew.dashboard.handlers.tunnel import api_tunnel_status
+        from kiro_crew.tunnel import set_publish_disabled
+
+        mgr = MagicMock()
+        mgr.status = TunnelStatus(
+            state=TunnelState.CONNECTED,
+            url="https://test.tunnels.dev",
+            connected_at=1000.0,
+        )
+        state = MagicMock()
+        state.tunnel_manager = mgr
+        request = MagicMock()
+        request.app = {"state": state}
+        set_publish_disabled(False)
+        with patch("time.time", return_value=1060.0):
+            resp = await api_tunnel_status(request)
+        import json
+
+        data = json.loads(resp.body)
+        assert data["state"] == "connected"
+        assert data["reason"] == ""
+
+
+class TestNoTunnelIsProcessScoped:
+    """The flag is a PROCESS property, not a parameter on one call path.
+
+    There is more than one door out: ``setup_tunnel`` at boot, and the on-demand
+    provisioning in ``slack.allowlist`` that bypasses it entirely (it provisions
+    straight on the provider and never constructs a manager). These pin the
+    predicate itself and the second door, so a future door has one thing to
+    consult rather than its own copy of the check.
+    """
+
+    def test_the_declared_default_allows_publishing(self):
+        """The module default must be "publishing allowed".
+
+        Read off a freshly reloaded module rather than the live value, so a prior
+        test that set the flag cannot make this pass or fail. An install that never
+        passes ``--no-tunnel`` has to behave exactly as it did before.
+        """
+        import importlib
+
+        import kiro_crew.tunnel as tunnel_mod
+
+        try:
+            fresh = importlib.reload(tunnel_mod)
+            assert fresh.publish_disabled() is False
+        finally:
+            importlib.reload(tunnel_mod).set_publish_disabled(False)
+
+    def test_set_publish_disabled_round_trips(self):
+        from kiro_crew.tunnel import publish_disabled, set_publish_disabled
+
+        try:
+            set_publish_disabled(True)
+            assert publish_disabled() is True
+            # Settable BACK to False: run_gateway sets it unconditionally so a
+            # second gateway in the same process (the test harness does this)
+            # cannot inherit a stale True.
+            set_publish_disabled(False)
+            assert publish_disabled() is False
+        finally:
+            set_publish_disabled(False)
+
+    @pytest.mark.asyncio
+    async def test_the_on_demand_link_path_refuses_to_provision(self):
+        """``--no-tunnel`` + ``slack.use_tunnel_url`` must NOT provision.
+
+        This door bypasses ``setup_tunnel``, so without its own check a
+        ``--no-tunnel`` instance that refused at boot would publish the first time
+        anyone asked for a dashboard link -- making the flag a promise the product
+        does not keep.
+        """
+        from kiro_crew import slack as _slack_pkg  # noqa: F401  (package import)
+        from kiro_crew.slack import allowlist as al
+        from kiro_crew.tunnel import set_publish_disabled
+
+        ensure = AsyncMock(return_value="connected")
+        audit = MagicMock()
+        slack = MagicMock()
+        slack.open_dm = AsyncMock(return_value="D1")
+        slack.post_message = AsyncMock()
+
+        set_publish_disabled(True)
+        try:
+            with (
+                patch.object(al, "get_tunnel_url", return_value=""),
+                patch.object(al, "sel", return_value=audit),
+                patch(
+                    "kiro_crew.platform.current_context",
+                    return_value=MagicMock(tunnel=MagicMock(ensure_available=ensure)),
+                ),
+            ):
+                cfg = MagicMock()
+                cfg.slack.use_tunnel_url = True
+                cfg.dashboard.url = "http://127.0.0.1:5476"
+                with patch.object(al.KiroCrewConfig, "load", return_value=cfg):
+                    await al.send_dashboard_link(slack, "U1", ttl=600)
+        finally:
+            set_publish_disabled(False)
+
+        ensure.assert_not_awaited()
+        # The refusal is AUDITED, like the boot door's. A security control whose
+        # denials are only half auditable cannot be reviewed after the fact.
+        denials = [
+            c.kwargs
+            for c in audit.log_api_access.call_args_list
+            if c.kwargs.get("outcome") == "denied"
+        ]
+        assert len(denials) == 1, audit.log_api_access.call_args_list
+        assert denials[0]["operation"] == "tunnel.provision_denied"
+        assert denials[0]["resources"] == "no_tunnel_boot_flag"
+        # And the DM SAYS the link is host-only. Every other route to a local link
+        # can recover (the edition seam re-issues once connected); this one never
+        # can, so leaving the explanation in the log would hand the requester a
+        # link that times out every time with no way to know why.
+        sent = slack.post_message.await_args.args[1]
+        assert "--no-tunnel" in sent
+        assert "ssh -L" in sent
+        # mrkdwn-safe by construction. This text is delivered as Slack mrkdwn,
+        # which reads `<...>` as a link/control sequence, so an angle-bracket
+        # placeholder like `<host>` is mangled or dropped and the user copies an
+        # incomplete command -- defeating the notice's only purpose. Pinned as an
+        # absence so the shorter-looking form cannot be reintroduced.
+        notice = sent.split("--no-tunnel", 1)[1]
+        assert "<" not in notice and ">" not in notice, notice
+        assert "user@host" in notice
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_local_link_carries_no_notice(self):
+        """The notice is scoped to the permanent case, not every local link.
+
+        Without the flag a localhost link is the ordinary outcome and may well be
+        opened on the host, so adding host-only guidance to it would be noise on
+        the common path.
+        """
+        from kiro_crew.slack import allowlist as al
+        from kiro_crew.tunnel import set_publish_disabled
+
+        slack = MagicMock()
+        slack.open_dm = AsyncMock(return_value="D1")
+        slack.post_message = AsyncMock()
+
+        set_publish_disabled(False)
+        with patch.object(al, "get_tunnel_url", return_value=""), patch.object(al, "sel"):
+            cfg = MagicMock()
+            cfg.slack.use_tunnel_url = False
+            cfg.dashboard.url = "http://127.0.0.1:5476"
+            with patch.object(al.KiroCrewConfig, "load", return_value=cfg):
+                await al.send_dashboard_link(slack, "U1", ttl=600)
+
+        sent = slack.post_message.await_args.args[1]
+        assert "--no-tunnel" not in sent
+        assert "ssh -L" not in sent
+
+    @pytest.mark.asyncio
+    async def test_run_gateway_pins_the_flag_before_any_service_starts(self):
+        """The boot link: ``run_gateway`` records the flag as its FIRST act.
+
+        Ordering is the property under test, not merely that the value lands. Both
+        doors are opened by services started further down -- and the on-demand one
+        is reachable by a Slack message the moment the gateway is listening -- so a
+        flag set late is a window in which the instance can still publish.
+        ``boot_platform`` is the next statement, so raising there proves the write
+        already happened.
+        """
+        from kiro_crew.slack import gateway as gw
+        from kiro_crew.tunnel import publish_disabled, set_publish_disabled
+
+        class _Stop(Exception):
+            pass
+
+        seen: list[bool] = []
+
+        def _boom(_cfg):
+            seen.append(publish_disabled())
+            raise _Stop
+
+        set_publish_disabled(False)
+        try:
+            with patch.object(gw, "boot_platform", _boom):
+                with pytest.raises(_Stop):
+                    await gw.run_gateway(MagicMock(), no_tunnel=True)
+            assert seen == [True]
+
+            # Set UNCONDITIONALLY: a second gateway in the same process must not
+            # inherit the previous one's True.
+            seen.clear()
+            with patch.object(gw, "boot_platform", _boom):
+                with pytest.raises(_Stop):
+                    await gw.run_gateway(MagicMock(), no_tunnel=False)
+            assert seen == [False]
+        finally:
+            set_publish_disabled(False)
 
 
 class TestAllowlistTunnelBranch:

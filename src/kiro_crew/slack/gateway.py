@@ -279,6 +279,7 @@ from kiro_crew.subagent_completion_meta import (
     wave_final_meta,
 )
 from kiro_crew.taskrunner import TaskRunner
+from kiro_crew.tunnel import set_publish_disabled
 from kiro_crew.wecom.gateway import warn_if_channel_uncredentialed
 
 if TYPE_CHECKING:
@@ -10585,6 +10586,7 @@ async def run_gateway(
     *,
     no_dashboard: bool = False,
     no_crons: bool = False,
+    no_tunnel: bool = False,
     no_open: bool = False,
     port_override: str | None = None,
     json_ready: bool = False,
@@ -10603,6 +10605,15 @@ async def run_gateway(
     # them ``mc-default`` so profilers like py-spy can attribute blocking work
     # to this gateway.  Must run BEFORE any to_thread offload.
     configure_default_executor()
+
+    # ── Publish surface, pinned for the process ──
+    # Recorded BEFORE any service spins up, because both doors out are opened by
+    # services started below: the dashboard's boot-time ``setup_tunnel`` and the
+    # on-demand provisioning in ``slack.allowlist`` that a Slack message can reach
+    # as soon as the gateway is listening. Set unconditionally so a False here
+    # also CLEARS a value a previous gateway left behind in the same process
+    # (the test harness boots more than one), rather than letting it leak.
+    set_publish_disabled(no_tunnel)
 
     # ── Platform context boot (CPP seam) ──
     # Resolve + install the PlatformContext ONCE before any service spins up.

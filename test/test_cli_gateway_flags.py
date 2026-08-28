@@ -26,6 +26,7 @@ def _ns(**kwargs) -> argparse.Namespace:
         "command": "gateway",
         "slack_only": False,
         "no_crons": False,
+        "no_tunnel": False,
         "seed": None,
         "seed_replace": False,
         "no_open": False,
@@ -49,6 +50,7 @@ class TestNoFlags:
         assert result == {
             "no_dashboard": False,
             "no_crons": False,
+            "no_tunnel": False,
             "no_open": False,
             "port_override": None,
             "json_ready": False,
@@ -62,10 +64,24 @@ class TestNoFlags:
         assert result["no_crons"] is True
         assert result["no_open"] is True
         # New flags untouched.
+        assert result["no_tunnel"] is False
         assert result["port_override"] is None
         assert result["json_ready"] is False
         assert result["approval_mode"] is None
         assert result["test_mode"] is False
+
+    def test_no_tunnel_passes_through_alone(self):
+        # --no-tunnel is independent of every other flag: it is the ONLY way an
+        # instance declares "never publish", and --test-mode must not imply it
+        # (a test gateway may legitimately want a tunnel).
+        result = _resolve_gateway_args(_ns(no_tunnel=True))
+        assert result["no_tunnel"] is True
+        assert result["no_crons"] is False
+        assert result["no_dashboard"] is False
+
+    def test_test_mode_does_not_imply_no_tunnel(self):
+        result = _resolve_gateway_args(_ns(test_mode=True))
+        assert result["no_tunnel"] is False
 
 
 class TestTestModeBundle:

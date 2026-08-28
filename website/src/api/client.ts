@@ -1682,6 +1682,14 @@ export interface TunnelStatus {
   error: string
   uptime: number
   reconnect_attempt: number
+  /**
+   * Why a `disabled` tunnel is off. `boot_flag` means the gateway was started
+   * with `--no-tunnel` and will never publish, whatever `tunnel.enabled` says in
+   * its config (a Dev Fleet pod always boots that way). Empty for every other
+   * state and for an ordinary unconfigured tunnel. Optional because a gateway
+   * older than this field does not send it.
+   */
+  reason?: string
 }
 
 export interface KiroPrerequisiteStatus {

@@ -110,8 +110,17 @@ def _cp(stdout: str = "", returncode: int = 0, stderr: str = "") -> subprocess.C
     return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
 
 
-def _ready_worktree(root: Path, name: str, *, venv: bool = True, dist: bool = True) -> Path:
-    """Build a flat kirocrew worktree checkout (repo root == worktree dir)."""
+def _ready_worktree(
+    root: Path, name: str, *, venv: bool = True, dist: bool = True, flags: bool = True
+) -> Path:
+    """Build a flat kirocrew worktree checkout (repo root == worktree dir).
+
+    ``flags`` writes a ``cli.py`` declaring the gateway flags a CURRENT checkout
+    declares. ``boot`` probes the target's own source before passing a flag to it
+    (the control plane and the target worktree are independent checkouts), so a
+    fixture without it models an OLD checkout -- pass ``flags=False`` to exercise
+    that arm deliberately rather than by omission.
+    """
     co = root / name
     co.mkdir(parents=True, exist_ok=True)
     if venv:
@@ -123,6 +132,10 @@ def _ready_worktree(root: Path, name: str, *, venv: bool = True, dist: bool = Tr
         b.chmod(0o755)
     if dist:
         (co / "src" / "kiro_crew" / "static" / "dist").mkdir(parents=True, exist_ok=True)
+    if flags:
+        cli = co / "src" / "kiro_crew" / "cli.py"
+        cli.parent.mkdir(parents=True, exist_ok=True)
+        cli.write_text('gw.add_argument("--no-crons")\ngw.add_argument("--no-tunnel")\n')
     return co
 
 
@@ -2862,15 +2875,132 @@ class TestBootTimeSettings:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         argv = self._booted_argv(tmp_path, monkeypatch, {"APPROVAL": "reads"})
-        assert argv == ["gateway", "--no-crons", "--approval", "reads"]
+        assert argv == ["gateway", "--no-crons", "--no-tunnel", "--approval", "reads"]
 
     def test_boot_argv_unchanged_when_unset(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # The no-regression pin: a pod created before this flag existed, or
-        # created without it, must boot byte-identically to before.
+        # The no-regression pin: a pod created before the APPROVAL key existed,
+        # or created without it, boots with no --approval at all rather than
+        # picking one.
         argv = self._booted_argv(tmp_path, monkeypatch, {})
-        assert argv == ["gateway", "--no-crons"]
+        assert argv == ["gateway", "--no-crons", "--no-tunnel"]
+
+    def test_boot_always_refuses_to_publish_a_tunnel(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # --no-tunnel is UNCONDITIONAL for any checkout that accepts it: unlike
+        # CRONS there is no env key to opt a pod back into publishing, because a
+        # throwaway instance has no business being reachable off the host. Pinned
+        # across every combination the env file can express, so an opt-in cannot
+        # be added by accident later.
+        for i, env in enumerate(
+            (
+                {},
+                {"CRONS": "1"},
+                {"APPROVAL": "yolo"},
+                {"CRONS": "1", "APPROVAL": "interactive"},
+            )
+        ):
+            argv = self._booted_argv(tmp_path / f"nt{i}", monkeypatch, env)
+            assert "--no-tunnel" in argv, env
+
+    def test_boot_omits_the_flag_for_a_checkout_that_cannot_parse_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+    ) -> None:
+        # The control plane builds this argv but the TARGET WORKTREE's gateway
+        # executes it, and Dev Fleet worktrees sit at different commits. Handing
+        # --no-tunnel to a gateway that predates it makes argparse exit 2, and the
+        # unit's Restart=on-failure/RestartSec=5 (no RestartPreventExitStatus)
+        # turns that into a restart loop every 5s.
+        #
+        # So the flag is dropped and the pod STILL BOOTS. Such a checkout simply
+        # does not receive the new guarantee -- exactly its behaviour before the
+        # flag existed.
+        root = tmp_path / "old"
+        root.mkdir()
+        c = PodConfig.load()
+        rt.pin_checkout(c, "x", _ready_worktree(root, "x", flags=False))
+        # Seed the HOME with tunnel.enabled=TRUE. boot() must leave it ALONE: a
+        # boot-time config re-pin was tried and withdrawn, because
+        # KiroCrewConfig.load() deep-merges config.local.json OVER config.json with
+        # the overlay winning (and `config set` writes the overlay by default), so
+        # pinning this file does not pin the setting -- while writing it does mutate
+        # an operator's file. Starting from true is what makes the assertion below
+        # able to observe a re-pin if one is ever reintroduced.
+        home = c.home_dir("x")
+        home.mkdir(mode=0o700, parents=True, exist_ok=True)
+        (home / "config.json").write_text(json.dumps({"tunnel": {"enabled": True}}))
+        seen: list[list[str]] = []
+        monkeypatch.setattr(rt, "derive_port", lambda cfg, n: 7811)
+        monkeypatch.setattr(os, "execve", lambda path, argv, e: seen.append(argv))
+        rt.boot(c, "x")
+
+        assert seen, "boot did not exec"
+        argv = seen[0][1:]
+        assert "--no-tunnel" not in argv
+        # It still boots -- an old pod keeps working rather than restart-looping.
+        assert argv[0] == "gateway"
+        assert "keeps the tunnel behaviour it had" in capsys.readouterr().out
+        # And the pod's config is untouched, not rewritten behind the operator.
+        assert json.loads((home / "config.json").read_text())["tunnel"]["enabled"] is True
+
+    def test_the_probe_accepts_this_very_repo(self) -> None:
+        """The ratchet: THIS checkout must satisfy its own probe.
+
+        Without this, a refactor that moves the gateway flag declarations out of
+        ``cli.py`` (or changes how they are quoted) would silently DROP the flag for
+        EVERY current-checkout pod with nothing going red -- each one falling back to
+        its pre-flag tunnel behaviour while still looking guarded. Failing here is
+        the signal to teach ``target_supports_flag`` the new location, not to relax
+        it.
+        """
+        repo_root = Path(rt.__file__).resolve().parents[3]
+        assert (repo_root / "src" / "kiro_crew" / "cli.py").is_file(), repo_root
+        assert rt.target_supports_flag(repo_root, "--no-tunnel") is True
+        assert rt.target_supports_flag(repo_root, "--no-crons") is True
+        # A flag this repo does not declare must still read as unsupported, so the
+        # probe is discriminating rather than trivially true.
+        assert rt.target_supports_flag(repo_root, "--no-such-flag-exists") is False
+
+    def test_the_probe_ignores_a_comment_only_mention(self, tmp_path: Path) -> None:
+        # A checkout that merely TALKS about the flag does not parse it. Treating a
+        # comment as a declaration would pass the flag and produce exactly the
+        # argparse-exit restart loop the probe exists to prevent.
+        co = tmp_path / "co"
+        (co / "src" / "kiro_crew").mkdir(parents=True)
+        cli = co / "src" / "kiro_crew" / "cli.py"
+
+        cli.write_text('# TODO: someday accept "--no-tunnel" here\ngw.add_argument("--x")\n')
+        assert rt.target_supports_flag(co, "--no-tunnel") is False
+
+        # Same file, real declaration present -> supported.
+        cli.write_text(
+            '# TODO: someday accept "--no-tunnel" here\n'
+            "gw_parser.add_argument(\n"
+            '    "--no-tunnel",\n'
+            '    action="store_true",\n'
+            ")\n"
+        )
+        assert rt.target_supports_flag(co, "--no-tunnel") is True
+
+    def test_the_flag_probe_reads_the_target_checkouts_own_source(self, tmp_path: Path) -> None:
+        # The probe reads the checkout that will EXECUTE, not this process's own
+        # source -- that distinction is the entire point, so it is asserted
+        # directly rather than only through boot().
+        co = tmp_path / "co"
+        (co / "src" / "kiro_crew").mkdir(parents=True)
+        cli = co / "src" / "kiro_crew" / "cli.py"
+
+        cli.write_text('gw.add_argument("--no-crons")\n')
+        assert rt.target_supports_flag(co, "--no-tunnel") is False
+
+        cli.write_text('gw.add_argument("--no-tunnel")\n')
+        assert rt.target_supports_flag(co, "--no-tunnel") is True
+
+        # Unreadable source answers False, so an unparseable checkout degrades to
+        # "omit the flag" rather than raising on the boot path.
+        assert rt.target_supports_flag(tmp_path / "nope", "--no-tunnel") is False
 
     def test_boot_forces_interactive_on_an_unknown_mode(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
@@ -2882,7 +3012,7 @@ class TestBootTimeSettings:
         # Dropping would be the LEAST restrictive outcome, so boot pins
         # interactive explicitly.
         argv = self._booted_argv(tmp_path, monkeypatch, {"APPROVAL": "--not-a-mode"})
-        assert argv == ["gateway", "--no-crons", "--approval", "interactive"]
+        assert argv == ["gateway", "--no-crons", "--no-tunnel", "--approval", "interactive"]
         assert "ignoring unknown APPROVAL" in capsys.readouterr().out
 
     def test_every_declared_mode_survives_boot(
@@ -3029,7 +3159,7 @@ class TestBootTimeSettings:
     ) -> None:
         # --no-crons is dropped, which is how the gateway turns the scheduler on.
         argv = self._booted_argv(tmp_path, monkeypatch, {"CRONS": "1"})
-        assert argv == ["gateway"]
+        assert argv == ["gateway", "--no-tunnel"]
 
     def test_boot_accepts_alternative_truthy_spellings(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -3037,7 +3167,7 @@ class TestBootTimeSettings:
         # The env file is hand-editable, so the obvious spellings are honoured.
         for i, raw in enumerate(("true", "YES", " on ")):
             argv = self._booted_argv(tmp_path / f"t{i}", monkeypatch, {"CRONS": raw})
-            assert argv == ["gateway"], raw
+            assert argv == ["gateway", "--no-tunnel"], raw
 
     def test_boot_ignores_an_unrecognised_crons_value(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
@@ -3045,14 +3175,14 @@ class TestBootTimeSettings:
         # Falls back to the safer setting (scheduler off, the pre-existing
         # behavior) rather than guessing, and the pod still boots.
         argv = self._booted_argv(tmp_path, monkeypatch, {"CRONS": "maybe"})
-        assert argv == ["gateway", "--no-crons"]
+        assert argv == ["gateway", "--no-crons", "--no-tunnel"]
         assert "ignoring unrecognised CRONS" in capsys.readouterr().out
 
     def test_boot_combines_crons_and_approval(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         argv = self._booted_argv(tmp_path, monkeypatch, {"CRONS": "1", "APPROVAL": "reads"})
-        assert argv == ["gateway", "--approval", "reads"]
+        assert argv == ["gateway", "--no-tunnel", "--approval", "reads"]
 
     def test_up_records_crons(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         c = self._prep_up(tmp_path, monkeypatch, active=False)

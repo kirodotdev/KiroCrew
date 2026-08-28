@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Callable, Set
 
-from kiro_crew.tunnel import TunnelManager, set_tunnel_url
+from kiro_crew.tunnel import TunnelManager, publish_disabled, set_tunnel_url
 
 logger = logging.getLogger(__name__)
 
@@ -28,11 +28,42 @@ async def setup_tunnel(
     a real tunnel. The connect/disconnect callbacks below (CORS + ``set_tunnel_url``)
     and ``/api/tunnel/status`` stay wrapped AROUND the provider.
 
-    The token-auth deny gate is evaluated BEFORE the manager is constructed or
-    ``start()`` reached, so a companion tunnel can never start without dashboard
-    token auth. All dependencies are passed explicitly — no implicit imports from
-    dashboard.
+    Two deny gates are evaluated BEFORE the manager is constructed or ``start()``
+    reached, so nothing can publish past either one:
+
+    * ``publish_disabled()`` — the ``--no-tunnel`` boot flag. This instance must
+      publish no tunnel at all, whatever the config says. It is checked
+      FIRST because it is the stronger statement: token auth being present does
+      not make publishing acceptable for an instance whose launcher asked for
+      none. This is the boot door; ``slack.allowlist`` guards the on-demand one
+      against the same predicate.
+    * token auth — a companion tunnel can never start without dashboard token
+      auth.
+
+    Every other dependency is passed explicitly — no implicit imports from
+    dashboard. The boot flag is the exception by design: it is process state, read
+    from this package's own module (see ``tunnel.set_publish_disabled``), because
+    more than one door has to consult it and a parameter would leave each new one
+    unguarded by default.
     """
+    # Boot-flag gate: the launcher declared this process must not publish. Config
+    # is deliberately not consulted — ``tunnel.enabled`` is rewritable after the
+    # HOME is seeded (a provider, a migration, a hand edit), which is exactly the
+    # hole a boot flag closes. A Dev Fleet pod passes it on every boot.
+    if publish_disabled():
+        log_api_access(
+            caller="tunnel_manager",
+            operation="tunnel.start_denied",
+            outcome="denied",
+            resources="no_tunnel_boot_flag",
+        )
+        logger.info(
+            "Tunnel disabled at boot (--no-tunnel) — not publishing. "
+            "Reach this instance on 127.0.0.1:%d (use `ssh -L` from another host).",
+            port,
+        )
+        return None
+
     # Security gate: refuse to start tunnel without token auth (deny-by-default).
     # MUST stay ahead of TunnelManager construction / provider.start().
     _has_token_auth = any(getattr(mw, "_is_token_auth", False) for mw in middlewares)

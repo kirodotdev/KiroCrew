@@ -32,7 +32,7 @@ from kiro_crew.dashboard.origin import (
 from kiro_crew.dashboard.token_auth import LINK_WINDOW_SECS, MAX_SESSION_TTL_SECS, generate_token
 from kiro_crew.sel import sel
 from kiro_crew.slack.handler import is_allowed_user, is_tracked_channel
-from kiro_crew.tunnel import get_tunnel_url
+from kiro_crew.tunnel import get_tunnel_url, publish_disabled
 
 if TYPE_CHECKING:
     from kiro_crew.slack.client import SlackClientOps
@@ -218,13 +218,48 @@ async def send_dashboard_link(
     # Tunnel URL is only used when explicitly opted in via slack.use_tunnel_url
     # (default false until tunnel mechanism is scaled for general use).
     tunnel_url = get_tunnel_url() if cfg.slack.use_tunnel_url else ""
+    # Set when the link is knowingly loopback-only and cannot ever become
+    # reachable, so the DM can say that rather than leaving it to the log.
+    no_tunnel_notice = False
     # Zero-touch provisioning seam: when opted into the tunnel URL, the box is
     # localhost-only, and no tunnel is live yet, give a composed edition a chance
     # to provision one on demand (install + enable + start), then re-read the URL.
     # The public Default's ensure_available() returns "disabled" (no-op), so the
     # standalone path is byte-identical — this block only does work for an edition
     # that implements the seam. PlatformCompositionError is re-raised (fail-closed).
-    if cfg.slack.use_tunnel_url and local_only and not tunnel_url:
+    #
+    # ``publish_disabled()`` gates it because this is the SECOND door out, and it
+    # bypasses ``setup_tunnel`` entirely: it provisions straight on the provider
+    # and never constructs a ``TunnelManager``. A ``--no-tunnel`` instance that
+    # refused at boot would otherwise publish here anyway the first time someone
+    # asked for a dashboard link, which would make the flag a promise the product
+    # does not keep. Falling through leaves ``tunnel_url`` empty, so the link is
+    # composed from the local origin below — the same outcome as an edition whose
+    # seam is a no-op, and the behavior every standalone install already gets.
+    if cfg.slack.use_tunnel_url and local_only and not tunnel_url and publish_disabled():
+        # Audited, not just logged: this is the same security control as the boot
+        # refusal in ``tunnel.setup`` (which records ``tunnel.start_denied``), and a
+        # control whose denials are only half auditable cannot be reviewed after the
+        # fact. The operation names WHICH door refused so the two are
+        # distinguishable in the trail; the resource names the reason they share.
+        sel().log_api_access(
+            caller=user_id,
+            operation="tunnel.provision_denied",
+            outcome="denied",
+            resources="no_tunnel_boot_flag",
+        )
+        logger.info(
+            "Not provisioning a tunnel for the dashboard link: this instance "
+            "booted with --no-tunnel. Sending a local link instead."
+        )
+        # The DM has to say so. Every other way of reaching this line leaves a
+        # link that can recover -- the edition seam re-issues once its tunnel
+        # connects -- but a ``--no-tunnel`` instance never publishes, so the
+        # loopback URL below is permanently unreachable off-host. Without this the
+        # requester taps a link that times out every time and the only explanation
+        # is in the log they cannot see.
+        no_tunnel_notice = True
+    elif cfg.slack.use_tunnel_url and local_only and not tunnel_url:
         from kiro_crew.platform import current_context
         from kiro_crew.platform.context import async_safe_context_call
 
@@ -255,12 +290,28 @@ async def send_dashboard_link(
 
     link_mins = LINK_WINDOW_SECS // 60
     session_mins = session_ttl // 60
+    # Mirrors the guidance the boot log gives, because this is the one case where
+    # the link cannot work anywhere but the host and will not start working later.
+    #
+    # The command carries NO angle-bracket placeholder and is wrapped in a code
+    # span. This text is delivered as Slack ``mrkdwn`` (see ``_send_prompt``), which
+    # reads ``<...>`` as a link/control sequence -- a bare ``<host>`` is mangled or
+    # dropped, so the one command the notice exists to convey would reach the user
+    # incomplete. ``user@host`` is ordinary ssh syntax and needs no escaping, which
+    # keeps the string safe by construction rather than by remembering to escape it.
+    notice_line = (
+        "\n🔒 This instance runs with --no-tunnel, so the link only opens on the "
+        f"host. From elsewhere: `ssh -L {port}:127.0.0.1:{port} user@host`"
+        if no_tunnel_notice
+        else ""
+    )
     try:
         dm = await slack.open_dm(user_id)
         await slack.post_message(
             dm,
             f"🔗 <{url}|Open Dashboard>{proxy_line}\n"
-            f"⏱ Click within {link_mins}m · session lasts {session_mins}m",
+            f"⏱ Click within {link_mins}m · session lasts {session_mins}m"
+            f"{notice_line}",
         )
         sel().log_api_access(
             caller=user_id,

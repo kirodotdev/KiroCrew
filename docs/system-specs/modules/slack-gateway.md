@@ -507,6 +507,23 @@ The setting is independent of `tunnel.enabled` (which controls whether the
 tunnel itself runs). A user may run a tunnel for direct browser access while
 keeping Slack links pointed at the local origin.
 
+`--no-tunnel` overrides it. When `use_tunnel_url` is on, the box is
+localhost-only and no tunnel is live, `send_dashboard_link()` offers a composed
+edition an on-demand provisioning seam (`current_context().tunnel
+.ensure_available()`) — a second door out that bypasses `setup_tunnel` entirely,
+provisioning straight on the provider without ever constructing a
+`TunnelManager`. On a process booted with `--no-tunnel` that seam is not reached
+at all (`tunnel.publish_disabled()`), the refusal is SEL-audited as
+`tunnel.provision_denied` / `no_tunnel_boot_flag` — the same control as the boot
+refusal, so neither door's denials are missing from the trail — and the link is
+composed from the local origin instead. The DM also carries a line naming
+`--no-tunnel` and the `ssh -L` form: every other route to a local link can still
+become reachable (the edition seam re-issues once its tunnel connects), but this
+one never will, so without it the requester taps a link that times out every time
+with the explanation only in the log. Without that check the flag would be a
+promise the product does not keep: an instance that refused to publish at boot
+would publish the first time anyone asked for a dashboard link.
+
 **Slack connect is non-fatal** (`GatewayOrchestrator._connect_slack`): the
 initial socket-mode `connect()` is wrapped so a network/proxy/timeout failure
 (e.g. a stale `HTTPS_PROXY` in the launching shell — slack_sdk's aiohttp client

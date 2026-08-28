@@ -1132,6 +1132,14 @@ def write_pod_config(home_dir: Path, seed: str) -> None:
     the absence of ``SLACK_*`` in the inherited env. The HOME dir is ``0o700`` and
     ``config.json`` is ``0o600`` — the seeded config can carry provider tokens /
     API keys, which must not be world-readable on a shared host.
+
+    The seeded ``tunnel.enabled=False`` is NOT by itself what keeps a pod from
+    publishing. This function is create-only (it returns early when ``config.json``
+    already exists), and the value stays rewritable afterwards by anything that
+    composes config — a provider, a migration, a hand edit. The enforcement is
+    ``--no-tunnel`` on the boot argv, re-asserted at every exec. A target checkout
+    whose gateway cannot parse that flag does not get the guarantee: it keeps this
+    seeded value and behaves exactly as it did before the flag existed. See ``boot``.
     """
     home_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(home_dir, stat.S_IRWXU)  # 0o700 owner-only (mkdir mode is umask-masked)
@@ -1438,6 +1446,51 @@ def exec_in_pod(cfg: PodConfig, name: str, argv: list[str]) -> int:
 # systemd unit. Reads the PINNED checkout (never shells git), then exec()s the
 # worktree's own gateway with an isolated HOME; never returns on success.
 # --------------------------------------------------------------------------- #
+def target_supports_flag(checkout: Path, flag: str) -> bool:
+    """Whether the gateway in *checkout* will accept *flag* on its argv.
+
+    A pod's argv is built by the CONTROL PLANE (the template unit's ``ExecStart``
+    resolves ONE kirocrew at ``pod install`` time and every instance re-enters it
+    via ``%i``), but the gateway that argv reaches is the TARGET WORKTREE's own
+    binary. The two are independent checkouts, so an updated control plane can
+    hand a flag to a gateway too old to declare it -- argparse exits 2, and
+    ``Restart=on-failure`` + ``RestartSec=5`` (the unit carries no
+    ``RestartPreventExitStatus``) turns that into a restart loop every 5s rather
+    than a visible failure. Dev Fleet's whole point is worktrees at different
+    commits, so this is the ordinary case and not an exotic one.
+
+    Read from the checkout's own ``cli.py`` rather than by running
+    ``gateway --help``: the source IS what will execute (provisioning installs the
+    checkout editable), and a subprocess on every pod boot costs an interpreter
+    start for a question a string search answers.
+
+    Unreadable source answers False -- the flag is DROPPED, not forced. Refusing
+    to boot would be the fail-closed instinct, but here it is strictly worse: with
+    no ``RestartPreventExitStatus`` a refusal is itself the 5s restart loop this
+    exists to prevent, while dropping the flag leaves that pod at exactly the
+    guarantee it had before this flag existed (the seeded ``tunnel.enabled=False``)
+    -- no regression, just no improvement. The caller says so out loud.
+    """
+    try:
+        src = (checkout / "src" / "kiro_crew" / "cli.py").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    # Comment lines do not declare anything, and a checkout that only MENTIONS the
+    # flag in prose would otherwise pass the probe and then argparse-exit on it --
+    # the exact restart loop this exists to prevent. The real declaration is a bare
+    # quoted literal on its own line inside ``add_argument(...)``, so matching the
+    # quoted form (rather than ``add_argument("--flag"``) is what keeps this working
+    # against the repo's actual formatting; ``test_the_probe_accepts_this_very_repo``
+    # is the ratchet that catches a refactor moving the declaration elsewhere.
+    for line in src.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        if f'"{flag}"' in stripped or f"'{flag}'" in stripped:
+            return True
+    return False
+
+
 def boot(cfg: PodConfig, name: str) -> int:
     """Boot the isolated gateway for pod *name*. Returns an exit code on failure;
     on success it ``exec``s and does not return."""
@@ -1504,6 +1557,48 @@ def boot(cfg: PodConfig, name: str) -> int:
     argv = ["gateway"]
     if not crons:
         argv.append("--no-crons")
+    # Unconditional for any checkout that understands it, and deliberately not an
+    # env key like CRONS above: a pod is a throwaway instance and must have no
+    # published surface, so there is nothing for the operator to opt into.
+    # ``write_pod_config`` seeds ``tunnel.enabled=False`` too, but that is a value
+    # in a file it only writes ONCE (it returns early when config.json exists) and
+    # anything composing config later can turn it back on — after which the pod
+    # published on every boot and nothing re-asserted the guarantee. This flag is
+    # re-asserted at every exec, so the seeded value is now defense in depth rather
+    # than the enforcement. Reach a pod on the 127.0.0.1 port ``pod url`` prints,
+    # over ``ssh -L`` from another host.
+    #
+    # Probed rather than assumed because this argv is built by the control plane
+    # while the gateway it reaches belongs to the target worktree — see
+    # ``target_supports_flag`` for why a miss must drop the flag instead of
+    # refusing the boot.
+    if target_supports_flag(checkout, "--no-tunnel"):
+        argv.append("--no-tunnel")
+    else:
+        # This gateway predates the flag, so it does not RECEIVE the new guarantee:
+        # it keeps the pod's seeded ``tunnel.enabled=False`` and behaves exactly as
+        # it did before the flag existed. No regression, no improvement -- and
+        # deliberately nothing more.
+        #
+        # Config is NOT re-pinned here to hand it the guarantee anyway. That was
+        # tried and the premise does not hold: ``KiroCrewConfig.load()`` deep-merges
+        # ``config.local.json`` OVER ``config.json`` with the overlay winning, and
+        # ``kirocrew config set`` writes that overlay by default -- so pinning
+        # ``config.json`` is not pinning the setting. Nor would it be sufficient if
+        # it were: the gateway's enable test is an OR
+        # (``cfg.tunnel.enabled or current_context().tunnel.enabled()``) and no
+        # config file reaches the provider half at all.
+        #
+        # Refusing the boot is likewise unavailable: the refusal exit is non-zero
+        # and ``Restart=on-failure`` + ``RestartSec=5`` (the unit carries no
+        # ``RestartPreventExitStatus``) turns a refusal into a 5s restart loop.
+        print(
+            "kirocrew-pod: --no-tunnel not found in this checkout's cli.py, so the "
+            "flag was not passed -- this pod keeps the tunnel behaviour it had "
+            "before the flag existed. Update the checkout to get the guarantee. "
+            f"Checkout: {checkout}. If that checkout DOES declare the flag, the "
+            "probe has drifted -- see target_supports_flag."
+        )
     if approval:
         argv += ["--approval", approval]
     os.execve(str(bin_path), [str(bin_path), *argv], pod_env)
