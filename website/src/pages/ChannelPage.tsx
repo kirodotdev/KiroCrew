@@ -10,6 +10,7 @@ import MarkdownRenderer from '../components/MarkdownRenderer'
 import AgentSelector from '../components/AgentSelector'
 import { useAgents } from '../hooks/useAgents'
 import { useImeGuard } from '../hooks/useImeGuard'
+import { useMenuKeyboard, menuItemsOf } from '../hooks/useMenuKeyboard'
 import { AnimatePresence } from 'framer-motion'
 import DetailPanel from '../components/DetailPanel'
 
@@ -192,12 +193,46 @@ function AgentControlRow({ agent, onDismiss, onListenChange, onClearContext }: {
 }) {
   const [menu, setMenu] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
+  // The trigger, so an explicit dismissal can hand focus back to it: the menu
+  // keyboard contract moves focus INTO the menu on open, and the row holding
+  // it is unmounted by the close — without a restore, focus would be orphaned
+  // on <body>. Outside-click dismissal is left alone (the browser routes focus
+  // per the click target), matching the MicSourceMenu posture (#6267).
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  // The role="menu" element itself — narrower than `menuRef` (which wraps the
+  // trigger too) so item discovery never picks up the trigger button.
+  const menuListRef = useRef<HTMLDivElement>(null)
   const alive = agent.state !== 'done' && agent.state !== 'failed'
+
+  // role="menu" promises the WAI-ARIA menu keyboard contract (arrow-key row
+  // navigation with wrap, Home/End, Tab containment). The shared hook owns it
+  // for all role="menu" surfaces rather than re-spelled here (#6231, #6269).
+  // The rows are native <button>s (`Btn`), so the hook's item discovery finds
+  // them with no extra markup. Escape stays owned by the dismiss effect below:
+  // what "close" means here — menu state, focus restore — is this host's
+  // business. Focus ENTRY is host-owned too (`focusFirstOnOpen: false`): this
+  // menu is not portalled and sits inside the agents rail's scroll container,
+  // so the hook's plain `.focus()` entry would scroll the rail on every open,
+  // shifting the row the user just clicked out from under the pointer —
+  // `preventScroll` keeps the rail still (arrow navigation still scrolls a
+  // focused row into view, which is wanted).
+  useMenuKeyboard({ enabled: menu, containerRef: menuListRef, focusFirstOnOpen: false })
+  useEffect(() => {
+    if (menu) menuItemsOf(menuListRef.current)[0]?.focus({ preventScroll: true })
+  }, [menu])
 
   useEffect(() => {
     if (!menu) return
     const close = (e: MouseEvent) => { if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenu(false) }
-    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenu(false) }
+    const esc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setMenu(false)
+        // Focus lives inside the menu at this point (focus entry on open, Tab
+        // containment while open, and any outside mousedown already closed the
+        // menu) — hand it back to the trigger before its row unmounts.
+        triggerRef.current?.focus()
+      }
+    }
     document.addEventListener('mousedown', close)
     document.addEventListener('keydown', esc)
     return () => { document.removeEventListener('mousedown', close); document.removeEventListener('keydown', esc) }
@@ -210,12 +245,19 @@ function AgentControlRow({ agent, onDismiss, onListenChange, onClearContext }: {
         <div className="text-sm font-medium text-text truncate">{agent.role}</div>
         {agent.agentName && <div className="text-[11px] text-muted font-mono truncate">{agent.agentName}</div>}
         <div className="relative inline-block" ref={menuRef}>
-          <Btn onClick={() => setMenu(!menu)} className="!p-0 !border-none !rounded-none text-[13px] text-muted hover:text-text">
+          <Btn ref={triggerRef} onClick={() => setMenu(!menu)} aria-haspopup="menu" aria-expanded={menu} className="!p-0 !border-none !rounded-none text-[13px] text-muted hover:text-text">
             <Badge variant={LISTEN_BADGE[agent.listenMode]?.variant || 'warn'}>{LISTEN_BADGE[agent.listenMode]?.label || agent.listenMode}</Badge>
           </Btn>
-          {menu && <div role="menu" className="absolute top-full left-0 mt-1 bg-bg-elevated border border-border rounded-md shadow-lg z-10">
+          {menu && <div role="menu" ref={menuListRef} aria-label={i18nT('pages.channelPage.listen_mode')} className="absolute top-full left-0 mt-1 bg-bg-elevated border border-border rounded-md shadow-lg z-10">
             {LISTEN_MODES.map(m => (
-              <Btn key={m} onClick={() => { onListenChange(m); setMenu(false) }}
+              <Btn key={m} role="menuitemradio" aria-checked={m === agent.listenMode}
+                onClick={() => {
+                  onListenChange(m); setMenu(false)
+                  // Activation is an explicit dismissal too: the row that has
+                  // focus is being unmounted, so restore to the trigger rather
+                  // than dropping focus on <body>.
+                  triggerRef.current?.focus()
+                }}
                 className={`!rounded-none block w-full text-left px-3 py-1.5 text-[13px] !border-none ${m === agent.listenMode ? 'text-accent bg-accent/10' : 'text-text hover:bg-bg-hover'}`}>
                 <Badge variant={LISTEN_BADGE[m]?.variant || 'warn'}>{LISTEN_BADGE[m]?.label || m}</Badge>
               </Btn>

@@ -2891,6 +2891,7 @@
       "reply_2_other": "{{count}} replies",
       "listen_all": "all",
       "listen_mention": "mention",
+      "listen_mode": "Listen mode",
       "listen_silent": "silent",
       "preset_custom_empty": "Custom (empty)",
       "preset_incident_response": "Incident Response",
