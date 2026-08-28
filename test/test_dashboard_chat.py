@@ -10777,7 +10777,20 @@ class TestFolderCRUD:
                 "project_dir": "",
             },
         ]
+        # api_chat_slot_create reads only two config attributes on this
+        # agent-less path today: `default_agent` and `dashboard.default_project`.
+        # The load-bearing pin is `default_agent`: it is stamped into the slot
+        # when the request names no agent, and a mock-shaped value there
+        # survives into slot state until the coalesced slots broadcast at
+        # suspend_slots_push exit fails to json.dumps it — the TypeError
+        # escapes __exit__ and turns the successful create into a text/plain
+        # 500 (#6522). An empty default_agent also keeps resolve_agent_bindings
+        # out of this test: folder inheritance, not agent resolution, is what
+        # it exercises. The default_project pin is belt-and-braces — the
+        # handler isinstance-guards that read — but a real string keeps this
+        # fixture from leaning on the guard.
         mock_cfg = MagicMock()
+        mock_cfg.default_agent = ""
         mock_cfg.dashboard.default_project = ""
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat_handlers.KiroCrewConfig.load", lambda: mock_cfg
