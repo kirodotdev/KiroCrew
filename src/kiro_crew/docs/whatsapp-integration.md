@@ -176,10 +176,10 @@ personal-scale rate limiting as replies.
 
 | Command | Effect |
 |---|---|
-| `/new` | Start a fresh session (new context). |
+| `/new` (or `/start`) | Start a fresh session (new context). |
 | `/compact` | Compact the current session's context now, and report the result. |
 | `/status` | Runtime summary (sessions, uptime, counters). |
-| `/stop` | Interrupt the running turn, or clear the queue if nothing is running. |
+| `/stop` (or `/cancel`) | Interrupt the running turn, or clear the queue if nothing is running. |
 | `/help` | List the commands. |
 
 `/help` is answerable by anyone the access policy admits, because it discloses

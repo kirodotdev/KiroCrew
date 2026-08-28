@@ -36,9 +36,7 @@ token only once; treat it like a password.
   privileged intent to deliver guild/thread message text. Presence and Server
   Members intents remain unnecessary.
 
-Kiro Crew requests the guild/message-content Gateway intents only when at least
-one `allowed_thread_ids` entry is configured, so DM-only installs keep the
-narrower intent set.
+Kiro Crew requests the guild/message-content Gateway intents when either `allowed_thread_ids` or `allowed_channel_ids` is configured, so DM-only installs keep the narrower intent set.
 
 ### 3. Install the bot
 
@@ -115,8 +113,7 @@ Omit `allowed_thread_ids` and `allowed_channel_ids`, or leave them empty, for
 DMs only. `allowed_channel_ids` lets an approved user start a turn from a shared
 server channel; the turn itself always runs in a public thread opened from that
 message, so `auto_thread` (default `true`) must stay on for those channels to
-work at all. An optional `soft_threshold_pct` (default `80`, clamped to 1-100)
-sets the context % at which the bot suggests `!compact`.
+work at all. `soft_threshold_pct` defaults to `80` and is clamped to 1-100; `reactions_enabled` defaults to `true`, `show_thinking` defaults to `false`, and `session_folder` defaults to empty. The bot token belongs in the `DISCORD_BOT_TOKEN` credential (env / `.env` / credential store), not in `config.json`, which an agent can read. A `discord.bot_token` value is still honoured as a legacy fallback, but the credential takes precedence and is the supported place for it.
 
 ### 6. Restart the gateway
 
@@ -133,8 +130,7 @@ Portal or clear the thread allow-list and restart in DM-only mode.
 
 - **DM:** click the bot's name → **Message**, then send `!help`.
 - **Thread:** open an approved thread and send `!help`. No `@mention` is needed.
-- **Negative check:** send `!help` in the parent channel; the bot must remain
-  silent.
+- **Negative check:** send `!help` in an unapproved parent channel; the bot must remain silent.
 
 ## Troubleshooting
 
@@ -145,7 +141,7 @@ Portal or clear the thread allow-list and restart in DM-only mode.
 | Gateway closes with 4014 after adding a thread | Message Content Intent is disabled | Enable it on the Bot page, then restart |
 | DMs are ignored | User ID is missing/wrong | Add the numeric user ID; inspect `kirocrew security events` |
 | Thread is ignored but DMs work | Thread ID missing/wrong, bot cannot view it, or Message Content Intent is off | Copy the thread's Channel ID, check permissions/membership, enable the intent, restart |
-| Parent channel is ignored | Expected behavior | Use an approved thread; normal channels are always disabled |
+| Parent channel is ignored | The channel is not in `allowed_channel_ids` | Use an approved thread, or add the parent channel ID to `allowed_channel_ids` to open public turn threads |
 | Bot can read but cannot reply in a thread | Missing guild permission or private-thread membership | Grant View Channel, Read Message History, Send Messages in Threads; add the bot to private threads |
 | Logs are silent on successful connection | `agent.log_level` is `WARNING` | Trust the Connected badge or lower the log level |
 
@@ -157,10 +153,7 @@ Portal or clear the thread allow-list and restart in DM-only mode.
 - **Channel-type verification.** Kiro Crew resolves an approved guild channel
   through Discord and accepts only announcement, public, or private thread
   types. Accidentally entering a normal channel ID does not enable it.
-- **Global intent scope.** Enabling any server thread turns on Discord's global
-  Message Content intent. Discord then delivers content from every server
-  channel the bot can see; Kiro Crew immediately discards traffic outside
-  approved threads and does not audit routine background chatter.
+- **Global intent scope.** Enabling any server thread or allowed parent channel turns on Discord's global Message Content intent. Discord then delivers content from every server channel the bot can see; Kiro Crew immediately discards traffic outside approved threads and parent channels and does not audit routine background chatter.
 - **Shared output warning.** Every member who can view an approved thread can
   read agent replies, tool output, and interactive approvals. Approve only
   threads whose membership and history are appropriate for that disclosure. An
@@ -185,23 +178,24 @@ Portal or clear the thread allow-list and restart in DM-only mode.
 
 ## Usage
 
-Send a DM or message an approved thread. Replies stream in place and long
-answers split across messages.
+Send a DM or message an approved thread. Replies stream in place and long answers split across messages.
 
-Every command works in two forms. The `/` form is Discord's own command menu,
+Discord ingests incoming attachments and can upload local image references from completed replies. Outbound uploads are limited to 10 files, 10 MiB per file, and 25 MiB total per reply.
+
+Every listed command accepts both `!` and `/` prefixes; the `/` form is Discord's own command menu,
 which autocompletes as you type and answers **only to you**, so nobody else in a
 shared thread sees the reply. The `!` form is plain message text and always
 works, including before the `applications.commands` scope is installed.
 
 | Command | Effect |
 |---------|--------|
-| `!new` | Start a fresh conversation (shared for the current thread) |
+| `!new` / `!start` | Start a fresh conversation (shared for the current thread) |
 | `!compact` | Compress the current conversation context |
-| `!model` | Pick the model from a button list of what your account can use |
+| `!model` / `!models` | Pick the model from a button list of what your account can use |
 | `!status` | Show runtime stats, the active agent, and whether auto-approve is on |
-| `!sessions` | Pick a recent dashboard session and continue it here (owner only) |
+| `!sessions` / `!session` | In a DM, pick a recent dashboard session and continue it here (owner only) |
 | `!link` / `!unlink` | Resume or stop mirroring dashboard replies here (on by default) |
-| `!stop` | Stop the current reply and clear its queue |
+| `!stop` / `!cancel` | Stop the current reply and clear its queue |
 | `!help` | Show commands |
 
 `!queue <msg>` and `!steer <msg>` control a reply that is already running. They
@@ -218,12 +212,12 @@ restart or a rival claim that took it away.
 
 `!unlink` turns it off, and the refusal is remembered: without that, "off" would
 last exactly until your next message, since a conversation with no binding is
-indistinguishable from one that was never linked. `!link` withdraws it. Neither
+indistinguishable from one that was never linked. `!link` re-enables it. Neither
 touches a binding you set explicitly from the dashboard to some other target.
 
 ### Continuing a dashboard session from Discord
 
-`!sessions` lists your 10 most recent dashboard conversations as buttons. Tap
+In a DM, `!sessions` lists your 10 most recent dashboard conversations as buttons. Tap
 one and that session continues in this Discord conversation: the last five
 messages are replayed for context, and everything you send afterwards goes to
 that session instead of your own Discord conversation. `!unlink` releases it and

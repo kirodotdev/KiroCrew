@@ -25,6 +25,8 @@ gateway is listening, because a live gateway holds the memory database open and
 would write over what was just restored. Pass `--force` only if you know the
 gateway on that port is not this instance.
 
+Both commands refuse to run on a platform that cannot open a directory relative to a file descriptor, because every component would then be re-opened by name and an ancestor swapped mid-walk could redirect the copy into a credential store. `--allow-unpinned-staging` accepts that by-name traversal instead; a snapshot taken that way records the weaker staging mode in its `MANIFEST.json`.
+
 ## What a snapshot contains
 
 | Component | Files |
@@ -272,7 +274,7 @@ printed, so a wrong-snapshot restore is recoverable.
 
 - **Memory**: existing entries win, new keys are added
 - **Crons**: deduplicated by job name. Existing jobs are kept; new jobs are
-  imported with fresh IDs
+  imported with fresh IDs. If either cron file has a JSON shape the merger cannot use, the cron merge is skipped.
 - **Notifications**: deduplicated by timestamp
 - **Config and security**: only files that are missing are restored, never
   overwritten
@@ -311,6 +313,7 @@ knowledge library are:
 | `--dry-run` | List what would be restored and write nothing |
 | `--list-components` | Show the component names and what each covers |
 | `--force` | Restore even though a gateway is listening |
+| `--allow-unpinned-staging` | Permit path-based restore when descriptor-pinned traversal is unavailable. |
 
 After a restore, run `kirocrew restart` so the gateway picks up the new state.
 

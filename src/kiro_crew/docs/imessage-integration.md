@@ -21,6 +21,7 @@ deliberately does not use one.
   brew install steipete/tap/imsg
   imsg --version
   ```
+  The binary is resolved from a fixed source-level list — `/opt/homebrew/bin/imsg`, then `/usr/local/bin/imsg` — and from nowhere else. There is deliberately no `PATH` search and no configurable path: `config.json` is agent-writable, so a settable path would let an agent choose which binary the gateway executes. Homebrew on either architecture is already covered, and the fixed list is also what makes the launch-agent case work, where the inherited `PATH` has no Homebrew prefix.
 * **Two macOS permissions**, granted once:
   * **Full Disk Access** — so the process can read the Messages database.
   * **Automation → Messages** — so it can send. The first send prompts for this.
@@ -102,7 +103,7 @@ Commands, sent as an ordinary message:
 
 | Command | What it does |
 |---|---|
-| `/new` | Start a fresh conversation |
+| `/new` (or `/start`) | Start a fresh conversation |
 | `/compact` | Compress the conversation's context |
 | `/help` | List these commands |
 
@@ -112,14 +113,13 @@ Commands, sent as an ordinary message:
 |---|---|---|
 | `enabled` | `false` | Turn the channel on. |
 | `allowed_handles` | `[]` | Phone numbers / Apple Account emails allowed to message the agent. Empty denies everyone. |
-| `cli_path` | `imsg` | Path to the bridge binary. Use an absolute path when the gateway runs as a launch agent, whose `PATH` has no Homebrew. |
 | `db_path` | `""` | Override the Messages database location. Empty uses the default. |
 | `service` | `imessage` | Which service replies use: `imessage`, `sms`, or `auto` to fall back to SMS. |
 | `soft_threshold_pct` | `80` | Context level at which the agent suggests `/compact`. |
 | `hard_threshold_pct` | `95` | Context level at which it compacts automatically. |
 | `session_folder` | `""` | Optional sidebar folder for conversations that start here. |
 
-There is no credential to configure — that is the whole idea.
+There is no credential to configure — that is the whole idea. The bridge's location is not configurable either; see [What you need](#what-you-need).
 
 ## Why the gateway must run here
 

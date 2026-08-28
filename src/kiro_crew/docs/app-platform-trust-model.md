@@ -6,8 +6,7 @@ resulting trust boundary and how Kiro Crew makes it explicit.
 
 ## What an app can do
 
-When you **enable** an app, its backend hooks, route handlers, and lifecycle
-scripts run **in-process with full gateway privileges**:
+When an app's executable surfaces are **admitted** and enabled, its in-process backend hooks and route handlers run **with full gateway privileges**; lifecycle scripts are separately OS-sandbox-wrapped but still execute app-authored shell commands:
 
 - Arbitrary `import`, filesystem, and network access
 - Access to anything in the gateway process's memory (including resolved credentials)
@@ -20,8 +19,7 @@ context. It does **not** restrict imports, filesystem, network, or subprocess us
 by the loaded module. There is currently **no process-level sandbox** around app
 code itself.
 
-> **Installing/enabling an app is therefore equivalent to running that code with
-> the same privileges as Kiro Crew itself.** Only enable apps you trust.
+> **Admitting and enabling an app is therefore equivalent to running that code with the same privileges as Kiro Crew itself.** Only trust apps you trust.
 
 ## How Kiro Crew makes the boundary explicit
 
@@ -33,23 +31,7 @@ code itself.
   receives.
 - **SEL audit** — every module load is recorded in the Security Event Log with its
   trust class (`builtin` / `third_party`), so app-code execution is auditable.
-- **Hard off switch** — set `agent.apps_allow_third_party=false` (in
-  `~/.kiro/crew/config.json` or the config modal) to refuse running any app whose
-  Python lives outside `apps/builtins/`. Both app-**Python** execution paths
-  consult the switch: `module_loader` raises `ImportError` before `exec_module`
-  (in-process hooks), and `backend._start_app_backend_body` returns `None` before
-  `Popen` (the out-of-process app backend), each recording a `denied` SEL entry —
-  so untrusted app **Python** never runs, in-process or out. Defaults to `true`
-  (apps are operator-installed).
-
-  > **Scope (known gap):** this switch gates only app **Python** (the in-process
-  > module loads and the out-of-process backend). It does **not** gate
-  > app-authored lifecycle *shell* scripts (`setup.onInstall` / `onEnable` /
-  > etc., run via `_run_lifecycle_script` → `/bin/bash -c`). Those still run when
-  > the switch is off; they are gated instead by the admission policy
-  > (`apps/admission.py`) and OS-sandbox wrapping, not by
-  > `apps_allow_third_party`. Disabling the switch is therefore not a substitute
-  > for not installing an untrusted app.
+- **Execution admission defaults to deny** — `agent.apps_allow_third_party` defaults to `false`. A non-builtin app needs either an explicit per-app `agent.apps_trusted` grant (with its repository binding, where applicable) or the broad `apps_allow_third_party=true` grant. `app_execution_denied` is consulted before in-process module loading, backend spawning, enable-time side effects, and manifest shell lifecycle commands; allowed and denied decisions are SEL-audited. Builtin status is accepted only when the registered app name and resolved path prove shipped provenance.
 
 ### App-token scope confinement (CWE-269)
 
@@ -163,11 +145,4 @@ subject to this gate.
 
 ## Future work
 
-True isolation (running app code in a separate sandboxed subprocess rather than
-in-process) is intentionally **out of scope** for now — the open-source app
-registry ships empty and all installs are operator-consented. Process isolation
-is tracked as a separate design to be revisited if/when a public app store lands.
-Until then, operators who install no apps (or run untrusted ones) can set
-`agent.apps_allow_third_party=false` to block third-party execution entirely —
-both in-process module loads and out-of-process backend spawns. (Corresponds to
-CSE finding SEC-012.)
+True isolation (running app code in a separate sandboxed subprocess rather than in-process) is intentionally **out of scope** for now. Process isolation is tracked as a separate design to be revisited if/when a public app store lands. Until then, third-party executable surfaces require a per-app trust grant or `agent.apps_allow_third_party=true`; the default configuration denies them. (Corresponds to CSE finding SEC-012.)

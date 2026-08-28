@@ -160,9 +160,7 @@ Known gaps, all follow-up work rather than defects:
   conversation, so it is not a proactive-notification target.
 - **The panel configures the channel; it does not install it.** `lark-oapi` is an
   optional extra, and running `pip` from a dashboard action would be a new way to
-  execute code in the gateway's own environment — so the panel names the command
-  and you run it. When the extra is missing, that is exactly what the badge
-  reason says.
+  execute code in the gateway's own environment. When the SDK is missing, Settings reports whether installation is supported for this gateway interpreter and shows its exact install command only when it is; you run that command yourself.
 - **Credentials are not verified on save.** A REST tenant-token probe would have
   to pick a domain (`open.feishu.cn` or `open.larksuite.com`) and would report a
   false failure for whichever tenant it guessed wrong, so the panel stores what

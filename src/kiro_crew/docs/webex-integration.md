@@ -6,8 +6,7 @@ you're talking.
 
 Webex needs no public URL and no webhooks: Kiro Crew registers a device with
 Webex and receives messages over an outbound WebSocket, so it works from
-behind a firewall or NAT. Replies land as one message per turn, with a live
-status placeholder ("🤔 Thinking…" → "🔧 Running: …") while the agent works.
+behind a firewall or NAT. Replies finish as one or more messages split at the 7,000 UTF-8-byte transport cap, with a live status placeholder ("🤔 Thinking…" → "🔧 Running: …") while the agent works.
 
 ## The easy way: just ask Kiro Crew
 
@@ -181,6 +180,10 @@ is **denied** after five minutes.
 
 Prefer the `WEBEX_BOT_TOKEN` env var over `bot_token` — it keeps your secret
 out of `config.json`.
+
+### Delivery destinations
+
+Dashboard delivery uses `target_id` values `user:<email>` for allow-listed DMs and, when group spaces are enabled, `room:<room-id>` for allow-listed spaces. Each destination is revalidated against the current allow-list before delivery.
 
 **If something's off:** no reply usually means your email isn't in
 `allowed_emails` or `enabled` is `false`; a missing `Webex channel started`

@@ -6,41 +6,24 @@ component in the chat instead of showing you a wall of JSON. Ask for a diagram a
 the excalidraw server gives you an editable Excalidraw canvas in the conversation;
 other servers ship PDF viewers, forms, and dashboards the same way. This is the
 [SEP-1865](https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx)
-`ui` extension — Kiro Crew targets the **Stable 2026-01-26** revision — and it works
-with any conforming server: nothing is hardcoded per vendor.
+`ui` extension — Kiro Crew targets the **Stable 2026-01-26** revision — and it works with any conforming command-based stdio server: nothing is hardcoded per vendor.
 
-If you just want it working: **Developer → MCP Management → route the server → on**, then switch
-your server on under **Poolable MCP servers**. The rest of this page explains why
-both are needed and what to check when a render does not appear.
+If you just want it working: **Developer → MCP Management → route the server → on**. Routing adds the server to `mcp_gateway.stub_servers`; the rest of this page explains what that changes and what to check when a render does not appear.
 
 ## Enabling it
 
-Two gates must both pass. Neither is about the app itself — both are about **MCP
-pooling**, because the gateway daemon is what intercepts the tool result and
-resolves the `ui://` resource. Both have a UI toggle; you should not need to edit
-config by hand.
+Routing is the required gate: the gateway daemon intercepts a routed server's tool result and resolves its `ui://` resource. Backend sharing is a separate optional pool-wide setting; neither requires hand-editing config.
 
-> **Platform:** the shared gateway needs Unix-domain sockets, so it is supported on
-> **macOS and Linux only**. On Windows the toggle is disabled and MCP Apps are
-> unavailable.
+> **Platform:** the shared gateway is supported on macOS, Linux, and Windows. It uses a Unix-domain socket on POSIX and a named pipe on Windows.
 
 ### From the dashboard
 
 Both live on the **Developer** page (sidebar → **Developer**):
 
-1. **Route the server through the gateway** in MCP Management. ⚠️ This restarts active sessions, because routing changes how MCP reaches that server.
-   new MCP routing, so in-flight agent work is interrupted — do it between tasks,
-   not mid-turn. Your dashboard stays signed in. The toggle asks for confirmation
-   and offers a roll-back.
-2. **Nothing else is required for apps.** "Share MCP Backends" and the poolable
-   allowlist decide whether several sessions reuse one MCP server *process* —
-   a resource choice, independent of whether apps render. A server that is not
-   shared still renders its apps.
+1. **Route the server through the gateway** in MCP Management. This adds the server to `mcp_gateway.stub_servers`; applying the routing change rebuilds affected agent MCP toolsets, so do it between tasks.
+2. **Share MCP Backends** is optional. `mcp_gateway.enabled` controls whether already routed stdio servers share backends across sessions; it is independent of whether their `ui://` resources render.
 
-   A row in the allowlist is **read-only** when the server can't be shared: it's
-   denylisted, its transport isn't stdio (HTTP servers aren't shared), or it's
-   already opted in via its own `poolable: true` and so isn't governed by the
-   allowlist.
+Only command-based stdio entries can be routed through a stub. URL-based HTTP/SSE entries remain direct and cannot render MCP Apps through this host.
 
 Optionally, to render apps in the right side panel instead of inline, turn on
 **Settings → Chat → Messages → "MCP Apps in Side Panel."** No restart or refresh
@@ -290,10 +273,8 @@ app HTML is **server-controlled code running in your dashboard**.
   never reads the payload file — only deterministic code does.
 - **Missing, corrupt, or oversized spool files are tolerated**, so a bad payload
   cannot crash a turn.
-- **The dashboard CSP allows `https://esm.sh`.** `srcdoc` iframes inherit the
-  parent's CSP header, and apps commonly load their module graph from esm.sh via
-  importmap — without that allowance the app's scripts never execute and you get a
-  blank frame.
+- **The dashboard CSP allows `https://esm.sh`.** `srcdoc` iframes inherit the parent's CSP header, and apps commonly load their module graph from esm.sh via importmap — without that allowance the app's scripts never execute and you get a blank frame.
+- **Per-app CSP is additive and sanitized.** Resource metadata can request `resourceDomains`, `connectDomains`, `frameDomains`, and `baseUriDomains`; the host accepts only `https://` origin tokens, emits a CSP meta tag before app HTML, and otherwise starts from a deny-by-default policy. The parent response CSP can only further restrict that policy.
 - The host declares a limited capability set to the app (`serverTools`,
   `openLinks`). Link opening is gated to `https://` only.
 
@@ -303,8 +284,8 @@ app HTML is **server-controlled code running in your dashboard**.
 |---|---|
 | Tool output renders as plain text | the server has no stub in MCP Management, or `KIROCREW_MCP_APPS` is set to an off value |
 | Still text with both of those right | the broker did not start — check the gateway log for `mcp-gateway: broker ready`, which names the switch that started it |
-| The gateway toggle is disabled / greyed out | you're on Windows — the broker needs Unix-domain sockets (macOS and Linux only) |
-| A server's sharing row won't toggle | it's denylisted, or not stdio transport (HTTP servers can't be shared), or already opted in via its own `poolable: true` |
+| The gateway toggle is unavailable | confirm the gateway process and local IPC endpoint can start; the broker supports macOS, Linux, and Windows |
+| A server cannot be routed | only command-based stdio entries can receive a stub; URL-based HTTP/SSE entries stay direct |
 | Frame mounts but the canvas is blank | the app's scripts did not execute — check the browser console for CSP or network errors reaching its CDN |
 | Feature toggle missing from Settings | stale frontend bundle — hard-refresh the dashboard |
 | A new render appears inline despite `mcp_app_panel: true` | the flag is read at render time; diagrams already in scrollback do not move |

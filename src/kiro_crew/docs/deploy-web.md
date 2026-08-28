@@ -7,10 +7,7 @@
 > (§3), and an operator can remove this path entirely (§6.8).
 
 Artifact Deploy publishes an artifact from your library to a public HTTPS URL in **your own AWS
-account**: a private S3 bucket behind CloudFront with Origin Access Control, with an optional
-time-to-live and automatic cleanup. Kiro Crew stores only your AWS **profile name**, never your
-credentials, and it never edits your IAM. Your account pays only for what the site actually
-serves, which for a small static page is effectively nothing.
+account**: a private S3 bucket behind CloudFront with Origin Access Control, with an optional time-to-live and automatic cleanup. Kiro Crew stores a local registry of profile names, regions, and verified account metadata, never AWS credentials, and it never edits your IAM. Your account pays only for what the site actually serves, which for a small static page is effectively nothing.
 
 Deploy is part of Kiro Crew itself, so there is nothing to install or enable. The console lives at
 `/deploy` in the dashboard (the **Artifact Deploy** button on the Artifacts page opens it); it
@@ -100,8 +97,9 @@ and confirm. This creates a dedicated CloudFront distribution for the site and r
 **An app artifact** (`kind="webapp"`): click **Deploy** on the card. That opens a fresh chat
 session that runs the `artifact-deploy` skill on the app, so the agent can conform the app to the
 deploy layout, ship it, and debug failures in place. The script path the skill uses puts many apps
-behind one shared per-account base stack (`kirocrew-deploy-base`: one private bucket plus one
-global distribution), each served under its own `/<slug>/` prefix.
+behind one shared per-account base stack (`kirocrew-deploy-base`: one private bucket plus one global distribution), each served under its own `/<slug>/` prefix.
+
+The `deploy_artifact` MCP tool is preview-only: it records a pending confirmation but never creates public infrastructure. Dashboard confirmation performs the deployment. For a `kind="webapp"` artifact, control-card metadata uses `{slug, origin_session, deploy_target, architecture, lifecycle, cost, teardown}`; set `lifecycle.status` to `"draft"` before deployment.
 
 ### The first deploy is slow, once
 
@@ -202,7 +200,7 @@ Artifact Deploy is built to keep Kiro Crew out of credential and account managem
 to serve content from a bucket that is never itself public.
 
 ### 6.1 Credentials never touch Kiro Crew
-- Only the **profile name** is stored (in `~/.kiro/crew/deploy/profiles.json`).
+- The local registry stores a **profile name**, region, last-verified account metadata, and the selected default in `~/.kiro/crew/deploy/profiles.json`; it does not store credentials.
 - Every AWS call runs through the **`aws` CLI as a subprocess** with `--profile` rather than an
   in-process SDK, so credential resolution stays in your OS credential store.
 - Kiro Crew **never writes IAM** and never creates or manages accounts, users, or roles. You apply

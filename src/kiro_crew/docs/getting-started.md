@@ -55,7 +55,7 @@ carries only `kirocrew` and pip still needs PyPI to resolve its dependencies.
 
 ```bash
 git clone https://github.com/kirodotdev/KiroCrew.git
-cd Kiro Crew
+cd KiroCrew
 cd website && npm install && npm run build && cd ..
 pip install -e ".[voice]"       # [voice] adds the optional speech-to-text extras
 ```
@@ -171,9 +171,7 @@ entries where it can, and prints a specific fix hint for anything it cannot.
 kirocrew update
 ```
 
-For a source checkout this pulls, rebuilds the frontend, reinstalls the package,
-and restarts in place. Clicking "Update Available" in the dashboard topbar runs
-the same path.
+For a source checkout this updates the checkout and rebuilds it. Restart the gateway with `kirocrew restart` to use the new version. Clicking "Update Available" in the dashboard topbar runs the same path.
 
 ## Running in the Background
 

@@ -1,8 +1,6 @@
 # Task Runner
 
-The task runner executes multi-step autonomous tasks from spec files. It's
-useful for complex workflows that need structured execution with progress
-tracking.
+The task runner executes multi-step autonomous tasks from spec files. It's useful for complex workflows that need structured execution with progress tracking.
 
 ## Running a Task
 
@@ -26,6 +24,15 @@ run status
 run cancel
 ```
 
+### Via CLI
+
+```bash
+kirocrew run TASK.md
+kirocrew run TASK.md --fresh
+kirocrew run TASK.md --no-test
+kirocrew run TASK.md --timeout 3600
+```
+
 ### Via MCP Tool
 
 The `task_run` MCP tool accepts a spec file path or inline content:
@@ -35,9 +42,11 @@ task_run(spec="path/to/spec.md")
 task_run(spec="__inline__: Step 1: do X\nStep 2: do Y")
 ```
 
+`spec` is required; `name` is optional and is otherwise derived from the spec.
+
 ## Spec File Format
 
-Task specs are markdown files with structured steps:
+A nonempty text or Markdown file is accepted. The runner sends its content to the task decomposer, which derives executable steps; Markdown headings and numbered steps are a useful convention, not a required schema.
 
 ```markdown
 # Task: Implement Feature X
@@ -52,22 +61,7 @@ Task specs are markdown files with structured steps:
 
 ## Tool Approval
 
-Approval depends on how the run was launched:
-
-- **Dashboard / chat `run` / Slack `run`** (inside the gateway): tool calls that aren't allow/deny-listed **prompt** interactively.
-- **`kirocrew run TASK.md`** (standalone CLI): no interactive channel, so it's **deny-by-default** — a tool runs only if it matches `hooks.auto_approve_tools`; otherwise it's rejected and logged with `reason: headless_no_authorization`. (`TOOL_DENY` / `auto_deny_tools` always wins; the allowlist works with or without a handler.)
-
-To let `kirocrew run` use tools, allowlist them in `~/.kiro/crew/config.json`:
-
-```json
-{
-  "hooks": {
-    "auto_approve_tools": ["read", "Reading *", "Running: pytest *", "fs_write"]
-  }
-}
-```
-
-Patterns match the tool title with or without the `Running: `/`Reading ` prefix and support `*` globs. Scope it to the tools the task needs — a blanket `*` re-opens the gap. Or run from the dashboard to approve interactively instead.
+Runs launched from the dashboard, chat, or Slack can request interactive tool approval. `kirocrew run TASK.md` has no interactive approval surface and rejects tool calls unless they match `hooks.auto_approve_tools`; deny rules always win. Scope allowlist patterns to the tools the task needs rather than using a blanket `*`.
 
 ## Progress Tracking
 
@@ -76,6 +70,8 @@ The dashboard shows live step progress with status icons:
 - 🔄 In progress
 - ❌ Failed
 - ⏳ Pending
+
+A run moves through planning and running states, then finishes as completed, failed, cancelled, or paused. Paused, cancelled, and failed runs can be restarted from the saved plan.
 
 ## Multi-Turn Refinement
 
@@ -86,8 +82,7 @@ After a task completes, you can refine the results interactively:
 
 ## Per-Agent Tasks
 
-Tasks can specify which agent to use, allowing specialized agents for
-different types of work.
+Tasks can specify which agent to use, allowing specialized agents for different types of work.
 
 ## Cancellation
 

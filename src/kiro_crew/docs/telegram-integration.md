@@ -58,13 +58,11 @@ log.
 
 ## Commands
 
-The bot publishes this list through `setMyCommands` at startup, so typing `/`
-in Telegram offers them as autocomplete — `COMMAND_SPEC` in
-`telegram/commands.py` is the single source behind both that menu and `/help`.
+At startup the bot publishes the menu commands from `COMMAND_SPEC` through `setMyCommands`, so typing `/` in Telegram offers autocomplete. `COMMAND_SPEC` also drives `/help`; commands that need an argument appear in the help footer instead of the menu.
 
 - `/new` (or `/start`) — start a fresh conversation
 - `/compact` — free up room when the context fills
-- `/model` — pick the model from an inline-button list. Button-only on purpose:
+- `/model` (or `/models`) — pick the model from an inline-button list. Button-only on purpose:
   the choices are what this account's backend actually advertised, so there is
   no model name to guess and no typo to reject mid-conversation. The pick is
   applied to the running session in place when one is idle, and is remembered
@@ -86,7 +84,7 @@ in Telegram offers them as autocomplete — `COMMAND_SPEC` in
   (overrides `queue_mode` for this message)
 - `/queue <msg>` — while a reply is generating, hold this message and answer
   it after the current turn (overrides `queue_mode` for this message)
-- `/agent` — pick the agent from an inline-button list of the specs installed on
+- `/agent` (or `/agents`) — pick the agent from an inline-button list of the specs installed on
   this machine. Button-only for the same reason `/model` is. Unlike a model, an
   agent cannot be swapped inside a running session — the spec decides which MCP
   servers and skills that process loaded at spawn — so a pick opens a fresh
@@ -102,11 +100,12 @@ in Telegram offers them as autocomplete — `COMMAND_SPEC` in
   `allowed_user_ids` at all. In a Topic it refuses and points you to a DM.
 - `/title <text>` — rename this conversation, so its dashboard sidebar row reads
   as something other than the first forty characters you happened to type.
-- `/cron list | pause <id> | resume <id> | remove <id>|all` — manage scheduled
+- `/cron` (or `/crons`) `list | pause <id> | resume <id> | remove <id>|all` — manage scheduled
   jobs. The same jobs the dashboard and Slack see.
 - `/spawn <task>` (or `/bg`) — run a task in a background subagent.
   `/spawn list` shows what is running.
-- `/task run <spec> | status | cancel` — drive the unattended task runner.
+- `/task` (or `/tasks`) `run <spec> | status | cancel` — drive the unattended task runner.
+- `/kirocrew dashboard [<N>h|<N>m]` — get a dashboard login link (DM only).
 - `/temporary` — this conversation reads and saves no memory: no memories or
   lessons are added to the prompt, and nothing is written to the transcript. A bare
   `/temporary` just marks the conversation; `/temporary <question>` marks it and
@@ -190,6 +189,7 @@ Everything lives in the `telegram` section of `config.json`:
 | `forum_activation` | `"always"` | When to answer inside an allow-listed Topic: `always`, `mention` (only when `@YourBot` is used or one of its own messages is replied to), or `off`. Slack's channel equivalent defaults to `mention`; this defaults to `always` so an existing forum keeps working after an upgrade. A value that is present but unrecognized falls back to `mention`, not `always`, so a typo cannot widen who the bot answers in a shared Topic. Never applies to a 1:1 DM, which is always served |
 | `session_folder` | `""` | Sidebar folder these conversations are filed into |
 | `bot_token` | `""` | Token fallback if `TELEGRAM_BOT_TOKEN` isn't set |
+| `accounts` | `{}` | Deprecated compatibility map for former named bots; it is parsed but starts no channel |
 
 Prefer the `TELEGRAM_BOT_TOKEN` env var over `bot_token` — it keeps your secret
 out of `config.json`.
@@ -202,9 +202,9 @@ gateway. In a group, check `allow_forum` AND that the supergroup's negative
 bot is in the Topic and still silent, check `forum_activation`: on `mention` it
 answers only when addressed, and on `off` it answers nothing.
 
-A restart no longer replays your last few messages: the `getUpdates` cursor is
-kept in `~/.kiro/crew/telegram_offset.json`. Delete that file only if you want a
-deliberate replay of whatever Telegram still holds.
+A restart no longer replays your last few messages: the `getUpdates` cursor is kept in `~/.kiro/crew/routing/telegram_offset.json`. Delete that file only if you want a deliberate replay of whatever Telegram still holds.
+
+Transport capabilities: streaming, edits, reactions, inbound and outbound files, rich blocks, forum-topic threads, native tables, and proactive sends are enabled. Text chunks are capped at 4,000 characters and interactive prompts at 25 buttons; excess choices become numbered text.
 
 ## Related docs
 

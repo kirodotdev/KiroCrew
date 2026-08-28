@@ -126,11 +126,17 @@ Everything lives in the `wecom` section of `config.json`:
 |---|---|---|
 | `enabled` | `false` | Turns the channel on |
 | `allowed_users` | `[]` | `{ "userid", "name" }` entries allowed to chat (empty = owner only) |
+| `allow_all_users` | `false` | Allow every organization member to DM the bot |
 | `soft_threshold_pct` | `80` | Context % where the bot suggests `/compact` |
 | `hard_threshold_pct` | `95` | Context % hard cutoff |
 | `ws_url` | `wss://openws.work.weixin.qq.com` | WeCom AI-bot endpoint |
+| `session_folder` | `""` | Folder that WeCom sessions are filed under |
 
 Credentials go in `~/.kiro/crew/.env`: `WECOM_BOT_ID` and `WECOM_SECRET`.
+
+### Delivery destinations
+
+Dashboard delivery uses `target_id` values `user:<userid>`. Named users are shown as unavailable until they message the bot after the gateway starts; with `allow_all_users`, only those warmed direct-message peers are listed. Each destination is revalidated against the current authorization policy before delivery.
 
 **If something's off:** no reply usually means the sender's userid isn't allowed
 or `enabled` is `false`; a missing `channel started` line means a credential is

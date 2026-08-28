@@ -18,9 +18,12 @@ Kiro Crew uses the `spawn_run` MCP tool to create subagents.
 ### Via Slack
 
 ```
-spawn run "review the latest CR for MyPackage"
+spawn review the latest CR for MyPackage
 spawn list
 ```
+
+The grammar is `spawn <task>` (or `bg <task>`) — there is no `run` subcommand;
+`spawn list` / `spawn status` render the running subagents.
 
 ### Via MCP Tool
 
@@ -28,6 +31,24 @@ The `spawn_run` tool accepts:
 - `task` — single task description
 - `tasks` — array of tasks for parallel execution
 - `agent` / `agents` — optional agent name(s) for each task
+- `include_memory` / `include_lessons` / `include_project` — booleans (default `true`) switching off a context group the sub-agent would otherwise inherit
+- `max_turns` — per-spawn tool-call budget override (0 = unset, max 200)
+- `model` — model override for this spawn (e.g. `deepseek-3.2`)
+- `reasoning_effort` — `low` / `medium` / `high` / `xhigh` / `max`, batch-wide
+- `keep` — make the run a continuable conversation with guaranteed resumability and longer retention
+- `cwd` — absolute launch directory, which must be under a configured `subagent_cwd_allowed_roots` entry
+
+Setting `model` or `reasoning_effort`, or `keep: true`, forces the
+dedicated-process path instead of session sharing.
+
+The other spawn tools:
+- `spawn_sub_agents` — same fan-out as `spawn_run`, but BLOCKS and returns the collected results; takes `agents` (array of `{agent_or_mode, prompt}`), `cwd`, and the same `include_*` switches
+- `spawn_continue` — dispatch a follow-up turn into a completed run's conversation (`conversation`, `task`, optional `agent` / `max_turns` / `model`); context scope is inherited, so the `include_*` flags are not accepted
+- `spawn_steer` — inject a message into a RUNNING subagent's in-flight turn (`agent_id`, `message`, `mode`: `interrupt` default or `follow_up`)
+- `spawn_release` — end a continuable conversation (`conversation`) so it can no longer be continued
+- `spawn_list` — list running and completed subagents
+- `spawn_status` — read a completed run's retained transcript (see below)
+- `resource_status` — advisory host headroom (available memory, CPU load, posture, and the current concurrent sub-agent cap)
 
 ## How It Works
 
@@ -39,7 +60,7 @@ The `spawn_run` tool accepts:
 ## Limits
 
 - **Max concurrent**: auto-sized at startup by default (`agent.max_subagents = 0`; floor 3, ceiling `agent.subagent_auto_max` = 32); set a positive integer to pin a fixed cap
-- **Timeout**: 30 minutes per subagent task, 20 minutes delivery, 5 minutes per injection attempt
+- **Timeout**: 30 minutes per subagent task (`agent.subagent_timeout_secs`), 20 minutes delivery (semaphore wait + injection), 15 minutes per injection attempt (`KIROCREW_INJECTION_TIMEOUT`, clamped to the delivery cap)
 - **Turn limit**: 100 turns per subagent (configurable via `agent.subagent_max_turns`, UI max 200)
 - **Memory guard**: spawns are refused when available memory drops below 4 GB (configurable via `agent.spawn_min_memory_gb`, set to 0 to disable)
 - **No nesting**: subagents cannot spawn their own subagents

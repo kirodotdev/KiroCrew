@@ -47,9 +47,13 @@ mapping is operator-owned:
 Management uses the dashboard-authenticated API:
 
 ```text
+GET    /api/webhooks
 POST   /api/webhooks/tokens              {label, agent, require_signature?}
-PATCH  /api/webhooks/tokens/{source_id}  {agent?, enabled?, label?}
-DELETE /api/webhooks/tokens/{source_id}
+PATCH  /api/webhooks/tokens/{token_id}   {agent?, enabled?, label?}
+DELETE /api/webhooks/tokens/{token_id}
+DELETE /api/webhooks/contexts/{hook_id}
+POST   /api/webhooks/switch              {enabled}
+POST   /api/webhooks/test                {agent?, message?}
 ```
 
 `PATCH` rejects every field except `agent`, `enabled`, and `label`; credentials
@@ -76,6 +80,7 @@ POST /api/hooks/agent
   ├─ HMAC + replay check (when required)             → 401 on failure
   ├─ payload validation (message, sessionKey, …)     → 400 on failure
   ├─ mapped-agent resolution                         → 409 on conflict/missing agent
+  ├─ same `sessionKey` already running                → 409 `session_busy`
   ├─ capacity check (6 concurrent)                   → 429 when full
   └─ spawn background task, respond immediately
        {"status": "accepted", "sessionKey": "hook:review:pr-123"}
@@ -84,7 +89,7 @@ POST /api/hooks/agent
        ├─ prepend registered context (if any, and fresh enough)
        ├─ run one agent turn
        ├─ destroy the session
-       └─ deliver the result → dashboard notification + Slack DM (owner)
+       └─ deliver the result → dashboard notification + Slack DM (owner, when Slack is configured)
 ```
 
 Two consequences worth internalising before you build against it:
@@ -112,14 +117,16 @@ curl -X POST http://127.0.0.1:5476/api/hooks/agent \
       }'
 ```
 
+This unsigned request works only with a bearer-only source (`require_signature: false`) or the legacy token; newly minted tokens require the signed variant below.
+
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `message` | string | — | Required, non-empty after trimming. Max 49,999 characters. |
 | `sessionKey` | string | `hook:default:<unix-ts>` | Must start with `hook:`. The part after the prefix is the **hook id** used to look up registered context. |
 | `name` | string | `Webhook` | Human label shown in the notification title. |
 | `agent` | string | source destination | Optional compatibility field. For a mapped source it must be omitted or exactly match the operator-owned destination; a conflict is `409 agent_conflict`. Unmapped historical and legacy credentials retain caller/default routing. |
-| `deliver` | boolean | `true` | When false, the turn runs and is logged but nothing is pushed to you. |
-| `timeoutSeconds` | integer | `599` | Clamped to the range 60–3593. Values outside it are silently clamped, not rejected; a non-integer is a 400. |
+| `deliver` | boolean or truthy/falsy value | `true` | When false, the turn runs and is logged but nothing is pushed to you. Other values use normal Python truthiness. |
+| `timeoutSeconds` | integer-coercible value | `599` | Converted with `int()`, then clamped to the range 60–3593. Values outside it are silently clamped, not rejected; a value `int()` rejects is a 400. |
 
 The `Authorization: Bearer <token>` header is the documented form.
 `X-KiroCrew-Token: <token>` is accepted as an equivalent.
@@ -129,17 +136,20 @@ The `Authorization: Bearer <token>` header is the documented form.
 | Status | Body | Cause |
 |---|---|---|
 | `200` | `{"status": "accepted", "sessionKey": "…"}` | Turn queued. |
-| `400` | `{"error": "…"}` | Malformed JSON, empty `message`, message over 49,999 chars, `sessionKey` without the `hook:` prefix, or a non-integer `timeoutSeconds`. |
+| `400` | `{"error": "…"}` | Malformed JSON, empty `message`, message over 49,999 chars, `sessionKey` without the `hook:` prefix, or a `timeoutSeconds` value that `int()` rejects. |
 | `401` | `{"error": "unauthorized"}` | No matching token — including the case where no token has been configured at all. |
 | `401` | `{"error": "…"}` | Signing failure on a token that requires signatures: `X-KiroCrew-Timestamp` or `X-KiroCrew-Signature` missing, timestamp unparseable or more than 300 seconds from now, digest mismatch, or a signature already seen inside the window (replay). Each cause has its own `error` string. |
-| `403` | `{"error": "Forbidden"}` | Not produced by this endpoint any more. If you see it, you are hitting a different path or a proxy in front of the gateway. |
+| `403` | plain-text forbidden response | The host or CSRF Origin middleware rejected the request before the handler. A non-loopback request without an allowed `Origin` is one cause. |
 | `409` | `{"code": "agent_conflict", …}` | The request body names an agent different from the source's operator-owned destination. |
 | `409` | `{"code": "destination_agent_unavailable", …}` | The mapped destination agent is no longer installed. |
+| `409` | `{"code": "session_busy", …}` | A turn with the same `sessionKey` is still running. |
 | `413` | `{"error": "request body exceeds 262144 bytes"}` | The raw request body is larger than the endpoint-local 256 KiB limit. Fixed-length and chunked bodies are both bounded before JSON parsing. |
 | `429` | `{"error": "hook capacity reached (6)"}` | All six concurrent slots are in use. Retry with backoff. |
 | `429` | `{"error": "too many failed attempts"}` | This source sent 10 failed authentications — bad tokens or bad signatures — within a minute, and is blocked for five. |
 | `503` | `{"error": "inbound webhooks are disabled"}` | The global kill switch is off. Returned before the token is checked. |
 | `503` | `{"code": "source_disabled", …}` | This authenticated source is paused. Returned before its body is read. |
+| `503` | `{"code": "webhooks_unavailable", …}` | The webhook credential store cannot be read. |
+| `503` | `{"code": "agent_discovery_unavailable", …}` | A mapped destination agent could not be verified. |
 
 Note that the accept response is `200`, not `201` or `202`.
 
@@ -200,12 +210,10 @@ attempt a call**. By default the gateway binds loopback only, so an external
 system reaches it through an SSH tunnel:
 
 ```bash
-ssh -NL 6776:127.0.0.1:6776 <gateway-host>
+ssh -NL 5476:127.0.0.1:5476 <gateway-host>
 ```
 
-Binding a public interface instead places a remote-execution credential directly
-on the network. Prefer the tunnel, or a reverse proxy that terminates TLS and
-adds its own access controls.
+The gateway itself binds loopback only. For remote access, prefer the tunnel, or place TLS and access controls at a reverse proxy.
 
 ## Request signing
 
@@ -218,7 +226,7 @@ carry two extra headers:
 
 ```
 X-KiroCrew-Timestamp: 1785372000            # unix seconds, integer
-X-KiroCrew-Signature: sha256=<hex hmac>     # lowercase hex
+X-KiroCrew-Signature: sha256=<hex hmac>     # hex is case-insensitive
 ```
 
 The signed string is exactly:
@@ -339,7 +347,7 @@ first is reversible with one click; the second needs a token.
 
 | Limit | Value | Behaviour at the limit |
 |---|---|---|
-| Raw request body | 256 KiB (262,144 bytes) | `413`; reading stops after one byte beyond the cap |
+| Raw request body | 256 KiB (262,144 bytes) | `413`; fixed-length bodies are rejected from `Content-Length`, and chunked reads stop after one byte beyond the cap |
 | Message length | 49,999 characters | `400` |
 | Concurrent runs | 6 | `429`, request is not queued |
 | Turn timeout — default | 599 seconds | Turn is abandoned, outcome recorded as a timeout |
@@ -398,8 +406,8 @@ from the registration time:
 
 | Age | What the agent receives |
 |---|---|
-| Under 1 hour | The summary verbatim. |
-| 1 to 24 hours | The summary, prefixed with `[Context from Nh ago — may be outdated]`. Treat its claims with lower confidence and verify before acting. |
+| Up to 1 hour | The summary verbatim. |
+| Over 1 hour through 24 hours | The summary, prefixed with `[Context from Nh ago — may be outdated]`. Treat its claims with lower confidence and verify before acting. |
 | Over 24 hours | Nothing. The context is dropped silently and the turn starts cold. |
 
 An entry with no recorded registration time is treated as expired. Nothing
@@ -454,6 +462,8 @@ curl -X POST http://127.0.0.1:5476/api/hooks/agent \
       }'
 ```
 
+This callback example likewise requires a bearer-only source or the signing headers shown in [Signing a call from bash](#signing-a-call-from-bash).
+
 **Step 3 — a fresh session resumes the work.**
 
 The turn opens with the restored-context block, so the agent knows which
@@ -483,7 +493,7 @@ That is why the transport gate exists, and why you should not dismantle it:
 
 - **Keep the gateway on loopback.** It binds to `127.0.0.1` by default. Reach it
   from elsewhere with an SSH tunnel (`ssh -NL 5476:127.0.0.1:5476 <host>`) rather
-  than by widening the bind address.
+  than exposing it directly.
 - **One token per caller, revoked when the integration is retired.** The
   last-used timestamp is there so you can spot the ones nobody is calling.
 - **Leave signing on** unless a caller genuinely cannot compute an HMAC. It is
@@ -502,9 +512,7 @@ That is why the transport gate exists, and why you should not dismantle it:
 
 - **Aged-out context is never cleaned up.** Entries past the 24-hour horizon stop
   being injected but stay on disk until overwritten or removed.
-- **No delivery receipt for the caller.** There is no endpoint an external system
-  can poll to learn how its own call turned out; outcomes surface only in
-  notifications, the run list, and the audit log.
+- **No delivery receipt for the webhook bearer.** The webhook endpoint offers no polling API; outcomes surface to dashboard-authenticated management clients in notifications, the run list, and the audit log.
 
 ## See also
 

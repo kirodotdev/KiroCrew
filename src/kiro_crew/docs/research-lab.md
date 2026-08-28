@@ -1,11 +1,8 @@
 # Research Lab
 
-Research Lab (the `auto-research` builtin app) runs autonomous, multi-cycle campaigns:
-you define a research question, a **grill tree** interactively clarifies scope and
-sub-questions, then the system investigates cycle-by-cycle until it satisfies a success
-criterion or exhausts its cycle budget. Each cycle produces a structured **finding card**,
-and the run yields a consolidated report (`FINDINGS.md` / HTML) exportable to the Knowledge
-Library.
+Research Lab (the `auto-research` builtin app) runs autonomous, multi-cycle campaigns: you define a research question, a **grill tree** interactively clarifies scope and sub-questions, then the system investigates cycle-by-cycle until it satisfies a success criterion or exhausts its cycle budget. Each cycle produces a structured **finding card**, and the run yields a consolidated report (`FINDINGS.md` / HTML) exportable to the Knowledge Library.
+
+`auto-research` is disabled by default. App enablement is the activation gate: a disabled app contributes no agents, skills, crons, or routes.
 
 > **Research Lab is research-only by design.** It gathers, analyzes, and reports — it does
 > **not** take actions on your systems (no writes, deployments, mutations, or code changes).
@@ -13,13 +10,11 @@ Library.
 > to the main agent for you to review and drive. This keeps campaigns safe to run
 > unattended and their results reproducible. See [Scope](#scope-research-only-by-design).
 
-## Execution: Agent (adaptive)
+## Execution modes
 
-A live agent (`kirocrew-research`) drives the loop via the **autonudge** mechanism. Each
-cycle it reads the brief plus any pending guidance, decides the next highest-value
-direction from prior findings, performs one research cycle, and writes a structured
-finding. A Python **watchdog** polls every ~5s and deterministically enforces stagnation
-detection, limits, reserve-and-finalize, and success-criteria verification.
+In the default **agent** mode, a live agent (`kirocrew-research`) drives the loop via the **autonudge** mechanism. Each cycle it reads the brief plus any pending guidance, decides the next highest-value direction from prior findings, performs one research cycle, and writes a structured finding. A Python **watchdog** polls every ~5s and deterministically enforces stagnation detection, limits, reserve-and-finalize, and success-criteria verification.
+
+A campaign can instead use **workflow** mode, which runs the Dynamic Workflow template and translates workflow events into the same findings and report files. Workflow mode does not support in-progress guidance or adding questions after launch.
 
 - The LLM **is** the per-cycle orchestrator; control flow is decided live.
 - Supports **in-progress guidance** and **emergent sub-questions** (findings-driven
@@ -67,7 +62,7 @@ The agent writes each `cycle_NNN.json` finding card as it completes a cycle.
 | `stagnant` | 5 consecutive cycles with zero new findings |
 | `needs_input` | Agent asked a clarification question (attended mode) |
 | `complete` | Success criteria met OR max_cycles reached |
-| `failed` | Unresponsive (no activity past deadline) |
+| `failed` | Unresponsive (no activity past deadline) or execution failure |
 | `stopped` | User-stopped (terminal) |
 
 Pause/resume pauses/resumes the autonudge loop.
@@ -76,29 +71,13 @@ Pause/resume pauses/resumes the autonudge loop.
 
 | File | Role |
 |------|------|
-| `apps/builtins/auto_research/handlers.py` | Campaign CRUD, watchdog, grill tree, agent launch, emergent-exploration, findings, reports, SSE |
-| `apps/builtins/auto_research/subquestion_queue.py` | Emergent sub-question queue (ranking, decay, dedup) |
+| `src/kiro_crew/apps/builtins/auto_research/handlers.py` | Campaign CRUD, watchdog, grill tree, agent launch, emergent-exploration, findings, reports, SSE |
+| `src/kiro_crew/apps/builtins/auto_research/subquestion_queue.py` | Emergent sub-question queue (ranking, decay, dedup) |
 | `website/src/apps/auto-research/ResearchLabPage.tsx` | Setup wizard, campaign list/detail, finding cards |
 | `website/src/apps/auto-research/GrillTree.tsx` | Grill-tree clarification UI |
 
-## Scope: research-only by design
+## Scope and permissions
 
-Research Lab **investigates and reports; it does not act.** This is a deliberate product
-boundary, not a missing feature:
+Research Lab writes campaign state, findings, and reports in its campaign directory. Its `kirocrew-research` worker derives from the main Kiro Crew agent configuration rather than a research-only tool allowlist. Treat Research Lab as an orchestration feature, not a permission boundary; review the tools enabled for the generated agent before running an unattended campaign.
 
-- **No actions.** Campaigns never write, deploy, mutate state, or change code. They read,
-  analyze, and produce findings + a report.
-- **Sub-agents are tool-scoped to research.** RL's research sub-agents run with
-  read/research tooling only. They cannot be used to take actions, so an unattended campaign
-  has a small, well-understood blast radius.
-- **Actions are deferred to the main agent.** When a campaign surfaces a next step that
-  requires acting (e.g. "apply this migration"), that hand-off goes to the main agent, where
-  you review and drive it with the normal tool-approval flow — rather than RL performing it
-  autonomously mid-campaign.
-
-**Why research-only.** Keeping RL to research keeps it honest about what it is: an adaptive
-but bounded investigation engine. Folding autonomous, adaptive *action-taking* into RL would
-blur that identity (a research engine that also mutates systems is neither cleanly
-reproducible nor cleanly safe) and widen the sub-agent capability surface. If you need
-adaptive action-taking today, drive it from the main agent (which already has approval gates
-and full-tool judgment).
+Actions surfaced by a campaign still require the normal tool-approval flow when the configured tool requires approval.

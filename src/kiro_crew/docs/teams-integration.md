@@ -122,8 +122,12 @@ Then enable the channel and add your allow-list in `~/.kiro/crew/config.json`:
 - **`app_password` is env-only.** It is read from `MICROSOFT_APP_PASSWORD`
   (env or `.env`) and is deliberately **not** loaded from `config.json`, which the
   agent can read — putting it there has no effect and the channel will not start.
-- `soft_threshold_pct` / `hard_threshold_pct` — context-window nudges
-  (defaults 80 / 95), same as the other channels.
+- `soft_threshold_pct` / `hard_threshold_pct` — context-window nudges (defaults `80` / `95`), same as the other channels.
+- `session_folder` — optional dashboard sidebar folder for Teams conversations (default `""`, which leaves them unfiled).
+
+Defaults: `enabled` is `false`; `app_id` and `tenant_id` are `""`; `allowed_emails` is `[]`; and `app_password` is `""` until `MICROSOFT_APP_PASSWORD` supplies it. `app_password` remains env-only even though the in-memory config field has that default.
+
+Transport capabilities: streaming and reactions are disabled; editing, inbound and outbound files, rich blocks, and proactive sends are enabled; threads are disabled. Text chunks are capped at 16,000 characters and interactive prompts at five buttons.
 
 ## 3. Package the Teams app and start a chat
 

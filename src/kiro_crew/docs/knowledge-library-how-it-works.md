@@ -2,21 +2,20 @@
 
 ## Overview
 
-The Knowledge Library builds a graph from documents without embeddings. It uses LLM extraction to identify entities and their relationships, then connects them through shared entity names across chunks.
+The Knowledge Library builds a graph from documents. It uses LLM extraction to identify entities and their relationships, then connects them through shared entity names across chunks. FTS5 and graph retrieval work without embeddings; when the shared embedding model is ready, vector retrieval is added.
 
 ## 1. Chunking
 
 **Supported file types**: Alongside plain-text, markdown, and Org-mode (`.org`), KB folders can ingest PDF (via `pdfplumber`) and DOCX (via `python-docx`); both deps are declared in `setup.cfg` so the binary formats work at runtime.
 
-Files are split into ~400 token chunks using recursive separator splitting (LightRAG style):
+Files are split into target ~800-token chunks using recursive separator splitting (LightRAG style):
 - Separators tried in order: `\n\n` → `\n` → ` `
-- Overlap: 100 tokens between chunks for context preservation
+- Overlap: 200 tokens between chunks for context preservation
 - Cap: 50 chunks max per file
-- A typical design doc (5000-8000 tokens) produces 12-20 chunks
 
 ## 2. Extraction (Per Chunk)
 
-Each chunk is sent independently to the `kirocrew-knowledge` agent (Claude Haiku 4.5, cheapest model at 0.4x rate). The LLM returns structured JSON:
+Each chunk is sent independently to the `kirocrew-knowledge` worker. The extraction model follows the configured backend; `knowledge.extraction_model` can pin a model, while an empty value inherits the backend default. The LLM returns structured JSON:
 
 ```json
 {
@@ -33,14 +32,14 @@ Each chunk is sent independently to the `kirocrew-knowledge` agent (Claude Haiku
 }
 ```
 
-**Worker pool**: 3 ACP sessions process chunks in parallel (round-robin distribution). Workers are reused across files in a batch, destroyed after the batch completes.
+**Worker pool**: The provider-agnostic pool defaults to 3 concurrent workers (`knowledge.extraction_pool_size`, clamped to 1–10). Workers are reused and scale to zero after the configured idle TTL (300 seconds by default).
 
 ## 3. Graph Construction
 
 ### Entities → Nodes
 
 Each extracted entity becomes a node in the graph:
-- Deduplication: case-insensitive name matching + alias lookup
+- Deduplication: exact name matching + case-insensitive alias lookup
 - If "DynamoDB" appears in chunk 1 and chunk 5, both map to the same node
 - Stored in SQLite `entities` table + in-memory `SimpleDiGraph`
 
@@ -76,13 +75,13 @@ Every entity-in-chunk creates a `mention` record linking the item (chunk) to the
 Two retrieval paths, fused with RRF (Reciprocal Rank Fusion):
 
 **Path 1: FTS5 Keyword Search**
-- SQLite FTS5 index on item content
-- User query → tokenized → matched against content
+- SQLite FTS5 index on item title, content, and tags
+- User query → tokenized → matched against indexed fields
 - Returns ranked chunks by keyword relevance
 
 **Path 2: Graph Traversal**
 - User query → find matching entities by name
-- Traverse graph (1-2 hops) to find connected entities
+- Traverse graph to depth 2 to find connected entities
 - Look up mentions → find chunks that discuss those entities
 - Returns chunks ranked by graph proximity
 
@@ -107,14 +106,16 @@ Results whose source is missing or unmapped degrade cleanly — the extra lines 
 
 ### With Embeddings (Default)
 
-Embeddings are available by default (in-process, shared with vector memory —
-see `memory.embedding_provider`). When the embedding model is present:
+Embeddings are available by default (in-process, shared with vector memory — see `memory.embedding_provider`). When the embedding model is present:
 - Chunks get vector embeddings stored in the `embedding` column
 - Adds a third retrieval path: cosine similarity search
 - Three-way RRF fusion: keyword + graph + vector
 
-The system degrades gracefully — graph + FTS works without any embedding model
-(e.g. while the model is still downloading in the background).
+The system degrades gracefully — graph + FTS works without any embedding model (e.g. while the model is still downloading in the background).
+
+### Cross-Source Deduplication
+
+The library deduplicates documents across sources. Exact extracted-text hashes are collapsed first; fuzzy matches require both a filename near-match and an embedding cosine similarity of at least 0.95 in the same embedding space. A deduplication sweep previews results unless invoked with `apply`.
 
 ## 5. Limitations & Future Improvements
 
@@ -122,7 +123,7 @@ The system degrades gracefully — graph + FTS works without any embedding model
 |-----------|--------|-----------|
 | No cross-chunk relations | Entities only connect through shared names | Entity resolution pass (LLM merges aliases) |
 | Name inconsistency | "auth layer" ≠ "AuthService" → no connection | Post-processing merge with `merge_entities()` |
-| Per-chunk extraction cost | ~0.4 credits per chunk (Haiku) | Already mitigated by larger chunks (400 tokens) |
+| Per-chunk extraction cost | Depends on the configured extraction model | Larger chunks and the configurable worker pool |
 | No community detection | Can't identify clusters of related entities | Leiden algorithm on graph (like Graphify/MS GraphRAG) |
 
 ## 6. Data Model
@@ -138,7 +139,7 @@ The system degrades gracefully — graph + FTS works without any embedding model
 │    items     │◄────────│   mentions   │
 │  (chunks)    │ item_id │(item↔entity) │
 └──────────────┘         └──────────────┘
-                                 
+
                          ┌──────────────────┐
                          │ entity_relations  │ ← Graph Edges
                          │(src→tgt, type)   │
@@ -149,7 +150,7 @@ The system degrades gracefully — graph + FTS works without any embedding model
 
 | Product | Cross-chunk strategy | Cost model |
 |---------|---------------------|-----------|
-| **Kiro Crew** | Shared entity names | 0.4x per chunk (Haiku) |
+| **Kiro Crew** | Shared entity names | Depends on configured extraction model |
 | **LightRAG** | Same (shared names) | Varies by model |
 | **Microsoft GraphRAG** | Shared names + community detection | Higher (2-pass) |
 | **Cognee** | Shared names + entity resolution pass | Higher (merge pass) |
@@ -161,12 +162,12 @@ The system degrades gracefully — graph + FTS works without any embedding model
 
 | Component | Without Embeddings | With Embeddings |
 |-----------|-------------------|-----------------|
-| **Storage** | `items.embedding` column is NULL | Stores binary vector (e.g., 1536-dim float32) |
+| **Storage** | `items.embedding` column is NULL | Stores packed float32 vectors (1024 dimensions for the bundled model) |
 | **Ingestion** | Chunk → extract → store | Chunk → extract → **embed** → store |
 | **Retrieval** | FTS5 keyword + graph traversal | FTS5 + graph + **vector cosine similarity** |
 | **Fusion** | 2-way RRF (keyword + graph) | 3-way RRF (keyword + graph + vector) |
 | **Semantic search** | Only finds exact/stemmed keyword matches | Finds semantically similar content ("auth" finds "authentication") |
-| **Cost** | Zero (local FTS5 + graph) | Per-chunk embedding API call or local model inference |
+| **Cost** | Zero (local FTS5 + graph) | Local model inference |
 
 ### How It Improves Search
 
@@ -174,26 +175,7 @@ Without embeddings, searching "how do we handle authentication" only finds chunk
 
 ### Configuration
 
-Embeddings share the vector-memory setting in `~/.kiro/crew/config.json` —
-knowledge and memory use one embedding setup (and one loaded model):
-
-```json
-{
-  "memory": {
-    "embedding_provider": "llama_cpp"
-  }
-}
-```
-
-**Provider options:**
-
-| Provider | Model | Dimensions | Cost | Requires |
-|----------|-------|-----------|------|----------|
-| `llama_cpp` *(default)* | `qwen3-embedding:0.6b` (in-process, bundled runtime) | 1024 | Free (local) | ~610MB model, auto-downloaded in background |
-| `none` | — | — | Free | Nothing |
-
-Existing items embedded before the in-process switch carry a stale embedding
-signature and are transparently re-embedded once by the signature-gated rebuild.
+Embeddings share the vector-memory setting in `~/.kiro/crew/config.json` — knowledge and memory use one embedding setup (and one loaded model). `memory.embedding_provider` is always coerced to `llama_cpp`; the bundled model is `qwen3-embedding:0.6b` (1024 dimensions). `KIROCREW_EMBED_MODEL_URL` overrides `memory.embed_model_url` for the download URL, and `KIROCREW_EMBED_MODEL_PATH` or `memory.embed_model_path` selects a local GGUF instead of the bundled model.
 
 ### Graceful Degradation
 
@@ -202,7 +184,7 @@ The system works at three levels:
 ```
 Level 3: FTS5 + Graph + Vector  (best quality, default once the model is downloaded)
 Level 2: FTS5 + Graph           (good quality, while the model is absent/downloading)
-Level 1: FTS5 only              (basic, works even if extraction pool is down)
+Level 1: FTS5 only              (when the graph path has no matching entities)
 ```
 
 While the model is unavailable (still downloading, or not yet loaded):
@@ -213,7 +195,6 @@ While the model is unavailable (still downloading, or not yet loaded):
 ### Implementation Notes
 
 - Embeddings are generated **after** extraction, in the same ingestion pipeline
-- Stored as base64-encoded binary in the `items.embedding` BLOB column
-- Vector search uses brute-force cosine similarity (no index needed for <10K items)
-- For larger collections (>10K items), would add FAISS or SQLite-vec index
-- Re-embedding existing items is a one-time migration (iterate items, embed, update)
+- Stored as packed float32 binary in the `items.embedding` BLOB column
+- Vector search uses brute-force cosine similarity
+- Existing items with a stale embedding signature are transparently re-embedded by the signature-gated rebuild

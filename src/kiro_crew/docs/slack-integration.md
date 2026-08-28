@@ -27,12 +27,12 @@ Only the owner (set via `KIROCREW_OWNER_ID`) can use these:
 
 | Command | Description |
 |---------|-------------|
-| `!yolo on/off/status` | Toggle auto-approve for all tool calls |
+| `!yolo` / `!yolo on/off/renew` | Show, toggle, or renew auto-approve for all tool calls |
 | `!agent <name>` | Switch to a different agent globally |
 | `!agent off` | Switch back to default kirocrew agent |
-| `!ta set <name>` | Set agent for this thread only |
+| `!ta <name>` | Set agent for this thread only |
 | `!ta off` | Remove thread agent override |
-| `!ta status` | Show current thread agent |
+| `!ta` | Show the current thread agent |
 | `!allowlist @user` | ~~Add/remove a user from the allowlist~~ (disabled) |
 | `!allowlist #channel` | ~~Track/untrack a channel for auto-allowlist~~ (disabled) |
 | `!channel` | Show current channel activation mode |
@@ -110,6 +110,10 @@ Responses stream in real-time via progressive Slack message edits. A cursor
 
 When the response finishes, the 👀 reaction swaps to 🦞.
 
+## File attachments
+
+Slack ingests attachments on incoming messages and can upload local image references from completed replies. Outbound uploads are limited to 10 files, 10 MiB per file, and 25 MiB total per reply.
+
 ## OPTIONS Buttons
 
 When Kiro Crew presents choices, they render as interactive Block Kit buttons.
@@ -141,8 +145,8 @@ Each tracked channel has an activation mode:
 |------|----------|
 | `always` | Respond to every message in the channel |
 | `mention` | Respond only when @mentioned or in active threads |
-| `observe` | Monitor only — no responses, used for analytics |
-| `review` | Responses sent as ephemeral drafts with Approve/Edit/Cancel buttons |
+| `observe` | Record authorized messages; respond only when @mentioned or in active threads, with channel context |
+| `review` | Generate an owner approval draft instead of posting a public response |
 | `off` | Disabled |
 
 Review mode is useful for channels where you want human approval before the
@@ -153,9 +157,7 @@ bot posts publicly.
 Kiro Crew connects to Slack as a Socket Mode app that you create and install in
 your own workspace.
 
-1. **Create a Slack app** at https://api.slack.com/apps and enable **Socket
-   Mode**. Generate an app-level token (`xapp-`) with the `connections:write`
-   scope.
+1. **Create a Slack app** at https://api.slack.com/apps and enable **Socket Mode**. Generate an app-level token (`xapp-`) with the `connections:write` scope.
 2. **Add a bot user** with these Bot Token Scopes:
    `app_mentions:read`, `channels:history`, `channels:read`, `chat:write`,
    `commands`, `files:read`, `files:write`, `groups:history`, `groups:read`,
@@ -169,8 +171,7 @@ your own workspace.
    `message.groups`, `app_mention`, `app_home_opened`, `file_change`, and
    `member_joined_channel`. Install or reinstall the app to grant the scopes and
    get the bot token (`xoxb-`).
-5. **Set credentials** in `~/.kiro/crew/.env` (`SLACK_APP_TOKEN`,
-   `SLACK_BOT_TOKEN`, `KIROCREW_OWNER_ID`).
+5. **Set credentials** in `~/.kiro/crew/.env` (`SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `KIROCREW_OWNER_ID`). Slack has no `enabled` setting: both Slack tokens opt the channel in.
 6. **Slash command** (optional) — the command name is configurable via
    `slack.command` in config.json (default: `kirocrew`). Each app instance
    should use a unique name.

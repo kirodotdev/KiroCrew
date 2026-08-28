@@ -47,6 +47,8 @@ other channels (Telegram/Discord are fail-closed the same way). An unrecognized
 value also denies. To collect a user ID, have the person DM the bot once and read
 the id from the gateway log.
 
+Dashboard delivery uses `target_id` values `user:<user-id>`. Destinations include allowed user IDs and users seen by the gateway, while actual proactive delivery is rechecked against the current `dm_policy`.
+
 ## Commands
 
 | Command | Effect |
@@ -80,12 +82,13 @@ Set under `weixin` in `config.json` (or via the Settings panel):
 | Key | Default | Description |
 |---|---|---|
 | `enabled` | `false` | Enable the channel |
-| `account_id` | — | iLink bot account id (from QR login) |
+| `account_id` | `""` | iLink bot account id (from QR login) |
 | `base_url` | `https://ilinkai.weixin.qq.com` | iLink API base URL |
 | `dm_policy` | `allowlist` | `allowlist` / `open` / `disabled` (default denies until an id is added) |
 | `allowed_user_ids` | `[]` | Permitted user IDs when `allowlist` |
 | `soft_threshold_pct` | `80` | Suggest compaction past this usage |
 | `hard_threshold_pct` | `95` | Force compaction past this usage |
+| `session_folder` | `""` | Folder that Weixin sessions are filed under |
 
 The credential is read from the `WEIXIN_TOKEN` credential (env / `.env` /
 credential store) and overrides `weixin.token`.
