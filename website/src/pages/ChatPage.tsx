@@ -76,6 +76,42 @@ import { type PasteBlock, expandAll as expandPasteTokens, findTokenRanges, prune
 import { extractPromptFromToken, extractSlackContextFromToken } from '../utils/tokenPrompt'
 /** Delay (ms) before scrolling to bottom after a state update, giving React time to commit. */
 const SCROLL_AFTER_RENDER_MS = 100
+
+/**
+ * Height of the transcript's tail spacer, in px.
+ *
+ * This plus the scroller's own `paddingBottom` is the clearance between the last
+ * line of the transcript and the fade band below it, so it MUST stay >= that
+ * band's height (`h-3`, 12px) or the fade slices the last line and the sliced
+ * glyphs read as a hairline seam above the composer. It is a px value and not
+ * `vh` for exactly that reason: as `2vh` the clearance tracked the viewport and
+ * the margin was one pixel at 844px tall, so every shorter viewport — i.e. every
+ * phone — landed inside the band.
+ */
+const TRANSCRIPT_TAIL_SPACER_PX = 16
+
+/**
+ * How far the transcript's bottom mask reaches ABOVE the scrollport's bottom edge,
+ * in px. This is the part that does the actual feathering, because it is the only
+ * part that overlaps readable content, so `TRANSCRIPT_TAIL_SPACER_PX` plus the
+ * scroller's own `paddingBottom` must stay >= this or the mask slices the last line
+ * when the user is at the bottom.
+ */
+const TRANSCRIPT_MASK_ABOVE_PX = 16
+
+/**
+ * How far that same mask reaches BELOW the scrollport's bottom edge, so it ends
+ * flush against the composer box instead of stopping short and leaving a strip
+ * where a hairline shows through.
+ *
+ * It is the exact distance from the scrollport's bottom edge to the top of the
+ * composer box, which `ChatInput` owns as two pieces: the `input-area`'s own `pt-1`
+ * (4px) plus the composer's top spacer (`h-[6px]`, the box that replaced the
+ * pointer-only drag handle). Overshooting FURTHER is not harmless — the mask is
+ * `z-[1]` and the composer sits in a later auto-z sibling, so any excess paints over
+ * the box's own top border and dims it.
+ */
+const COMPOSER_MASK_OVERSHOOT_PX = 10
 // No arbitrary cap on pinned-jump page loads: the loop terminates when the
 // target message is found OR history is exhausted (!slotHasMore / null result).
 // The `cancelled` flag in the useEffect cleanup and the loadOlderMessages null
@@ -7198,7 +7234,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               className="chat-container"
               style={{
                 flex: 1,
-                paddingBottom: 8,
+                // Second half of the fade-band clearance, alongside
+                // TRANSCRIPT_TAIL_SPACER_PX. Unlike the tail spacer this one also
+                // applies to a transcript short enough not to scroll, so both are
+                // needed for the last line to clear the band in every state.
+                paddingBottom: 16,
                 overflowY: 'auto',
                 // overflow-x must be pinned, not left to default `visible`: with
                 // overflowY `auto`, CSS forces the `visible` axis to compute to
@@ -7372,10 +7412,53 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   />
                 </div>
               )}
-              <div style={{height: '2vh'}} />
+              {/* Tail spacer, in px rather than vh. It plus the scroller's own
+                  bottom padding is the clearance between the last line of the
+                  transcript and the FIXED-height fade band below, so expressing it
+                  in `vh` made that clearance viewport-dependent: at 2vh + 8px it
+                  cleared a 24px band by 1px at 844px tall and cut INTO the last
+                  line on anything shorter (−1px at 740, −2px at 700, −5px at 560),
+                  which is the sliced-glyph hairline reported from a phone and the
+                  reason it looked mobile-only. */}
+              <div style={{ height: TRANSCRIPT_TAIL_SPACER_PX }} />
             </div>
             )}
-            <div className="h-6 bg-gradient-to-t from-bg to-transparent pointer-events-none -mt-6 relative z-[1]" />
+            {/* Transcript bottom mask. Its box deliberately does NOT stop at the
+                scrollport's bottom edge — it reaches DOWN to the composer box, and
+                that overshoot is the point.
+
+                The band used to end exactly on that boundary, which left the
+                COMPOSER_MASK_OVERSHOOT_PX strip between it and the input box
+                unmasked and a hairline showed through there. So the box now spans
+                `above` px over the boundary — feathering the hard clip, since the
+                transcript is cut at the scrollport edge whenever the user is
+                scrolled up — PLUS that strip below it, kept opaque so the mask is
+                flush against the input box with nothing between them.
+
+                The three numbers are one arithmetic unit and must move together:
+                height = above + overshoot, and the two negative margins cancel the
+                whole box, so it paints over both regions while consuming ZERO
+                layout. A positive residual would push the composer down instead.
+
+                The solid stop runs from the bottom up through a few px ABOVE the
+                boundary on purpose: a ramp that reaches full opacity only AT the
+                clip edge leaves its topmost rows just shy of opaque, and the clipped
+                glyphs bleed through (measured over a blank control at 390px:
+                +7.6 / +5.2 / +1.9 mean channel at 3 / 2 / 1px above the edge, 0.00
+                once the bottom is solid). TRANSCRIPT_TAIL_SPACER_PX plus the
+                scroller's padding must stay >= `above`, the part that reaches up
+                into readable content. ChatPage.fadeClearance.test.tsx pins all of
+                it, including that the overshoot never covers the box's own top
+                border. */}
+            <div
+              aria-hidden
+              className="bg-gradient-to-t from-bg from-[62%] to-transparent pointer-events-none relative z-[1]"
+              style={{
+                height: TRANSCRIPT_MASK_ABOVE_PX + COMPOSER_MASK_OVERSHOOT_PX,
+                marginTop: -TRANSCRIPT_MASK_ABOVE_PX,
+                marginBottom: -COMPOSER_MASK_OVERSHOOT_PX,
+              }}
+            />
             <div className="relative">
               {!isAtBottom && messages.length > 0 && (
                 <div className="absolute -top-10 inset-x-0 z-10 pointer-events-none flex justify-center">

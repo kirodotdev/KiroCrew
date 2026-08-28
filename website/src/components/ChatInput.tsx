@@ -2685,8 +2685,18 @@ function ChatInput({
           Absent under a finger, and its absence is the feature: the reset is a
           double-click, so on touch the gesture could only ever pin the height, never
           undo it. See `manualHeight` for why the persisted value is disregarded
-          there too. */}
-      {!showGhost && !isTouch && <div
+          there too.
+
+          Its 6px box is ALSO the only thing separating the strip above (the
+          options row, the tip band) from the composer box — so dropping the
+          handle on touch dropped that separation with it, and the options row sat
+          flush against the input. Touch therefore keeps the box and drops only
+          the affordance, which puts the composer at the same offset under both
+          pointer types instead of leaving the gap a side effect of a
+          pointer-only control. */}
+      {!showGhost && (isTouch
+        ? <div aria-hidden="true" data-testid="composer-top-gap" className="h-[6px] shrink-0" />
+        : <div
         aria-hidden="true"
         data-testid="composer-resize-handle"
         className="flex items-center justify-center h-[6px] cursor-row-resize group/drag"
@@ -2696,7 +2706,7 @@ function ChatInput({
         title={i18nT('components.chatInput.drag_to_resize_double_click_to_reset')}
       >
         <div className="w-12 h-[3px] rounded-full bg-border group-hover/drag:bg-accent group-active/drag:bg-accent-hover transition-all duration-200 opacity-0 group-hover/drag:opacity-100" />
-      </div>}
+      </div>)}
 
       {/* Sub-agent spawn-approval banner — a top-level signal that one or more
        *  sub-agents are queued awaiting the user's approval to run, with inline
