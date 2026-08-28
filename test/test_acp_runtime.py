@@ -8121,3 +8121,123 @@ class TestParseAdvertisedModels:
         assert parse_advertised_models({}) == []
         assert parse_advertised_models({"models": {"availableModels": "nope"}}) == []
         assert parse_advertised_models({"models": 7}) == []
+
+
+class TestStoreSessionConfigParseConsolidation:
+    """Drift-pin (#6382): ``store_session_config`` sources its model list from
+    ``parse_advertised_models``, so the session-init snapshot can never drift
+    from what a pooled-runtime probe would parse out of the same payload."""
+
+    def _handle(self):
+        rt, _, _ = _make_runtime()
+        q = _register(rt, "sA")
+        return AcpSessionHandle("sA", q["sA"], rt)
+
+    def test_models_object_shape_matches_canonical_parser(self):
+        # Mixed modelId/value spellings + a missing description exercise every
+        # normalization branch; hard-coded expectation so a regression inside
+        # parse_advertised_models fails this pin too.
+        resp = {
+            "models": {
+                "currentModelId": "kiro-model-x",
+                "availableModels": [
+                    {"modelId": "kiro-model-x", "name": "X", "description": "d"},
+                    {"value": "kiro-model-y"},
+                    {"name": "no id — skipped"},
+                    "not-a-dict",
+                ],
+            }
+        }
+        handle = self._handle()
+        handle.store_session_config(resp)
+        assert handle.available_models == [
+            {"modelId": "kiro-model-x", "name": "X", "description": "d"},
+            {"modelId": "kiro-model-y", "name": "kiro-model-y", "description": ""},
+        ]
+
+    def test_bare_list_shape_matches_canonical_parser(self):
+        resp = {"availableModels": [{"modelId": "kiro-model-x"}, {"value": "kiro-model-y"}]}
+        handle = self._handle()
+        handle.store_session_config(resp)
+        assert handle.available_models == [
+            {"modelId": "kiro-model-x", "name": "kiro-model-x", "description": ""},
+            {"modelId": "kiro-model-y", "name": "kiro-model-y", "description": ""},
+        ]
+
+    def test_bare_list_under_models_key_matches_canonical_parser(self):
+        """The bare-list branch is the only site that RE-KEYS the payload
+        (``models`` list → ``{"availableModels": models}`` envelope) — reach
+        it via the ``models`` key so the re-key itself is pinned."""
+        handle = self._handle()
+        handle.store_session_config(
+            {"models": [{"modelId": "kiro-model-x"}, {"value": "kiro-model-y"}]}
+        )
+        assert handle.available_models == [
+            {"modelId": "kiro-model-x", "name": "kiro-model-x", "description": ""},
+            {"modelId": "kiro-model-y", "name": "kiro-model-y", "description": ""},
+        ]
+
+    def test_dict_branch_delegates_to_canonical_parser(self, monkeypatch):
+        """Anti-re-fork pin (#6382): the dict branch must SOURCE its list from
+        ``parse_advertised_models`` AND call it with the checked-binding
+        envelope — a restored inline walk, a whole-response re-resolution, or
+        a wrong envelope all fail this pin."""
+        import kiro_crew.acp.session_handle as sh
+
+        sentinel = [
+            {"modelId": "sentinel-a", "name": "A", "description": ""},
+            {"modelId": "sentinel-b", "name": "B", "description": ""},
+        ]
+        calls: list = []
+
+        def _fake(resp):
+            calls.append(resp)
+            return list(sentinel)
+
+        monkeypatch.setattr(sh, "parse_advertised_models", _fake)
+        handle = self._handle()
+        handle.store_session_config({"models": {"availableModels": [{"modelId": "real"}]}})
+        assert handle.available_models == sentinel
+        assert calls == [{"models": {"availableModels": [{"modelId": "real"}]}}]
+
+    def test_bare_list_branch_delegates_to_canonical_parser(self, monkeypatch):
+        import kiro_crew.acp.session_handle as sh
+
+        sentinel = [
+            {"modelId": "sentinel-a", "name": "A", "description": ""},
+            {"modelId": "sentinel-b", "name": "B", "description": ""},
+        ]
+        calls: list = []
+
+        def _fake(resp):
+            calls.append(resp)
+            return list(sentinel)
+
+        monkeypatch.setattr(sh, "parse_advertised_models", _fake)
+        handle = self._handle()
+        handle.store_session_config({"availableModels": [{"modelId": "real"}]})
+        assert handle.available_models == sentinel
+        assert calls == [{"availableModels": [{"modelId": "real"}]}]
+
+    def test_well_formed_empty_list_still_overwrites_prior_snapshot(self):
+        """Pre-existing call-site policy pinned through the consolidation: a
+        WELL-FORMED empty ``availableModels`` list DOES clear a prior snapshot
+        here (unlike ``AcpClient._capture_available_models``'s non-empty
+        guard). Switching this site to a client-style guard would be a
+        behavior change this test exists to catch."""
+        handle = self._handle()
+        handle.store_session_config({"models": {"availableModels": [{"modelId": "kiro-model-x"}]}})
+        assert [m["modelId"] for m in handle.available_models] == ["kiro-model-x"]
+        handle.store_session_config({"models": {"availableModels": []}})
+        assert handle.available_models == []
+
+    def test_malformed_inner_shape_does_not_clobber_prior_snapshot(self):
+        """The assignment guard survives the consolidation: a later response
+        whose ``availableModels`` is malformed must not clear an
+        already-captured list (the canonical parser returns ``[]`` for it, but
+        assignment policy is the call site's, not the parser's)."""
+        handle = self._handle()
+        handle.store_session_config({"models": {"availableModels": [{"modelId": "kiro-model-x"}]}})
+        assert [m["modelId"] for m in handle.available_models] == ["kiro-model-x"]
+        handle.store_session_config({"models": {"availableModels": "nope"}})
+        assert [m["modelId"] for m in handle.available_models] == ["kiro-model-x"]

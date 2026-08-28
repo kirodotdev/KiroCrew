@@ -372,7 +372,11 @@ def parse_advertised_models(resp: dict[str, Any]) -> list[dict[str, str]]:
 
     Accepts both response shapes: a ``models`` object
     ``{availableModels: [...], currentModelId}`` and a bare list under either
-    key. Normalization matches :meth:`AcpSessionHandle._normalize_models`, so a
+    key. A falsy ``models`` value (``{}``, ``[]``, ``None``) falls through to a
+    top-level ``availableModels`` — callers that gate on ``models`` themselves
+    should pass a wrapped envelope (e.g. ``{"models": models}``) so the
+    fallback cannot source the list from a payload their gate never saw. Normalization matches
+    :meth:`AcpSessionHandle._normalize_models`, so a
     probe's answer and a session-init snapshot are directly comparable.
     """
     models = resp.get("models") or resp.get("availableModels")
@@ -1688,7 +1692,20 @@ class AcpSessionHandle:
                 self._resolved_model_id = current_model_id
             avail = models.get("availableModels", [])
             if isinstance(avail, list):
-                self._available_models = self._normalize_models(avail)
+                # The shape walk is delegated to the canonical parser so this
+                # snapshot and a probe's answer stay directly comparable
+                # (#6382). The envelope is the same checked-binding discipline
+                # as the client's, though here the parser's dict-or-list
+                # fallback is unreachable by construction (the inner dict
+                # always has a key). The isinstance check above is the
+                # assignment gate: a non-list ``availableModels`` must not
+                # clobber a previously-stored list. A well-formed EMPTY list
+                # still overwrites — that asymmetry with
+                # ``AcpClient._capture_available_models`` (non-empty guard) is
+                # pre-existing policy, deliberately unchanged here.
+                self._available_models = parse_advertised_models(
+                    {"models": {"availableModels": avail}}
+                )
             # A backend may advertise its model list without echoing
             # ``currentModelId`` (it is best-effort in the ACP shape). When it
             # names exactly one model that IS the served model unambiguously, so
@@ -1701,13 +1718,18 @@ class AcpSessionHandle:
             if not self._resolved_model_id and len(self._available_models) == 1:
                 self._resolved_model_id = self._available_models[0]["modelId"]
         elif isinstance(models, list):
-            self._available_models = self._normalize_models(models)
+            self._available_models = parse_advertised_models({"availableModels": models})
 
     @staticmethod
     def _normalize_models(advertised: list[Any]) -> list[dict[str, str]]:
         """Normalize advertised models to ``{modelId, name, description}`` with
-        guaranteed keys (parity with AcpClient._capture_available_models), so the
-        dashboard model dropdown gets a stable shape regardless of backend."""
+        guaranteed keys — the canonical normalization. Every consumer
+        (``parse_advertised_models``, and through it ``store_session_config``,
+        ``AcpClient._capture_available_models``, and the pooled-runtime
+        entitlement probe ``AcpRuntime.probe_advertised_models``) shares this
+        shape, so probe answers and session-init snapshots are directly
+        comparable and the dashboard model dropdown gets a stable shape
+        regardless of backend."""
         captured: list[dict[str, str]] = []
         for m in advertised:
             if not isinstance(m, dict):
