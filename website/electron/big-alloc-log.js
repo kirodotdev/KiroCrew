@@ -135,8 +135,12 @@ function createBigAllocLog({ capacity = DEFAULT_CAPACITY, now } = {}) {
 
     /** Drains the buffer into log lines: summary first, then each event oldest to
      *  newest. Returns [] when nothing was buffered, so a crash with no large
-     *  allocations adds no noise — itself a signal that points away from a
-     *  binary-buffer OOM. */
+     *  allocations adds no noise. An empty flush rules out only large
+     *  JS-constructed buffers in the main frame — the renderer's watcher sees JS
+     *  constructor calls at or above its threshold in the top-level document,
+     *  not host-API backing stores, cumulative sub-threshold buffers,
+     *  resizable-ArrayBuffer growth, or allocations made off the main frame
+     *  (workers, subframes, WASM memory). */
     flush() {
       if (entries.length === 0) return [];
       const lines = [renderSummary(entries), ...entries.map(renderEvent)];

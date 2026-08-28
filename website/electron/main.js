@@ -2368,8 +2368,12 @@ function createWindow() {
     for (const line of pierrePerfLog.flush()) glog(line);
     // Then the large-allocation history: on a cage OOM the last entries name the
     // binary buffer that pierre-perf's near-empty heap numbers cannot. Also
-    // unconditional, also empty-is-informative (no large allocation in the
-    // lead-up points away from a binary-buffer OOM).
+    // unconditional. An empty flush rules out only LARGE JS-CONSTRUCTED buffers
+    // IN THE MAIN FRAME: the watcher sees JS constructor calls at or above its
+    // threshold in the top-level document, so a cage exhausted by host-API
+    // backing stores, cumulative sub-threshold buffers, a grown resizable
+    // ArrayBuffer, or allocations made off the main frame (workers, subframes,
+    // WASM memory) flushes empty too.
     for (const line of bigAllocLog.flush()) glog(line);
     rendererRecovery.handleGone(details || {});
   });

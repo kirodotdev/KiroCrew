@@ -57,8 +57,8 @@ export interface BigAllocEvent {
 
 /** Default threshold: 64 MiB. Large enough that a normal session never trips it
  *  (icons, avatars, ordinary payloads are kilobytes), small enough to catch the
- *  binary buffers that pressure a 4 GB cage. Overridable at runtime via
- *  `globalThis.__KIROCREW_BIG_ALLOC_BYTES__` for tuning without a rebuild. */
+ *  binary buffers that pressure a 4 GB cage. Overridable per install via the
+ *  `minBytes` option — tests pass a tiny value to trip it deterministically. */
 export const DEFAULT_MIN_BYTES = 64 * 1024 * 1024
 
 /** Bounds IPC even if something allocates large buffers in a loop. The main-side
@@ -99,12 +99,7 @@ interface Patched {
 
 let installed: Patched[] | null = null
 let reportCount = 0
-
-function minBytes(): number {
-  const override = (globalThis as unknown as { __KIROCREW_BIG_ALLOC_BYTES__?: number })
-    .__KIROCREW_BIG_ALLOC_BYTES__
-  return typeof override === 'number' && override > 0 ? override : DEFAULT_MIN_BYTES
-}
+let activeMinBytes = DEFAULT_MIN_BYTES
 
 /** Best-effort requested size from the constructor arguments. A typed array or
  *  buffer constructed OVER an existing buffer (first arg not a number) allocates
@@ -117,16 +112,37 @@ function requestedBytes(Ctor: unknown, args: unknown[]): number {
 }
 
 /** Captures the caller stack, dropping this module's own frames so the first
- *  reported frame is the real allocation site. Bounded to keep the log line
- *  readable; preload re-caps as the trust boundary. */
-function captureStack(): string {
-  const raw = new Error().stack || ''
-  const lines = raw.split('\n')
-  // Drop the "Error" header and any frame mentioning this module.
-  const frames = lines
-    .slice(1)
-    .filter((l) => !/allocWatch/.test(l))
-    .map((l) => l.trim())
+ *  reported frame is the real allocation site. Anchored on the construct trap
+ *  via `Error.captureStackTrace` (the renderer is V8, as is vitest's Node), so
+ *  the watcher's frames are excluded by FUNCTION REFERENCE and the trim survives
+ *  esbuild renaming this module's identifiers in the minified prod build — a
+ *  name-based filter would leak the watcher's own frames exactly where the cage
+ *  OOM report matters most. Captured into a plain holder so V8 walks the stack
+ *  ONCE — `new Error()` would capture eagerly only for `captureStackTrace` to
+ *  discard and re-capture, doubling the cost at the moment the renderer may be
+ *  about to die. Bounded to keep the log line readable; preload re-caps as the
+ *  trust boundary. */
+function captureStack(skip: (...a: never[]) => unknown): string {
+  const capture = (Error as unknown as {
+    captureStackTrace?: (holder: object, above?: unknown) => void
+  }).captureStackTrace
+  const holder: { stack?: string } = {}
+  let lines: string[]
+  if (typeof capture === 'function') {
+    capture(holder, skip)
+    // Drop the "Error" header V8 prepends even for a plain holder.
+    lines = (holder.stack || '').split('\n').slice(1)
+  } else {
+    // Non-V8 fallback (unreached today: renderer and vitest are both V8). No
+    // reference anchoring exists here, so drop this frame and the trap's by
+    // POSITION — deterministic and minifier-proof — after tolerating an
+    // Error-style header line, leaving the caller first on the known engines.
+    // Error.name carries the header token without a string literal, matching
+    // the WATCHED_CTORS convention (the i18n source-string gate flags literals).
+    const raw = (new Error().stack || '').split('\n')
+    lines = (raw[0] && raw[0].startsWith(Error.name) ? raw.slice(1) : raw).slice(2)
+  }
+  const frames = lines.map((l) => l.trim())
   return frames.slice(0, 8).join(' <- ')
 }
 
@@ -147,33 +163,62 @@ function send(ev: BigAllocEvent): void {
 
 function wrap(name: string, Original: unknown): unknown {
   if (typeof Original !== 'function') return Original
-  return new Proxy(Original as new (...a: unknown[]) => unknown, {
-    construct(target, args, newTarget) {
-      const bytes = requestedBytes(target, args)
-      if (bytes >= minBytes()) {
-        const stack = captureStack()
-        // Report BEFORE constructing: a cage OOM aborts the process instead of
-        // throwing, so this may be the last thing this renderer does.
-        send({ kind: name, bytes, outcome: 'requested', stack })
-        try {
-          return Reflect.construct(target, args, newTarget)
-        } catch (e) {
-          send({ kind: name, bytes, outcome: 'failed', stack, error: String(e) })
-          throw e
-        }
+  // The trap is a named reference so captureStack can anchor the stack trim on
+  // it — everything from the trap upward is watcher machinery.
+  const constructTrap: NonNullable<
+    ProxyHandler<new (...a: unknown[]) => unknown>['construct']
+  > = (target, args, newTarget) => {
+    const bytes = requestedBytes(target, args)
+    if (bytes >= activeMinBytes) {
+      const stack = captureStack(constructTrap)
+      // Report BEFORE constructing: a cage OOM aborts the process instead of
+      // throwing, so this may be the last thing this renderer does.
+      send({ kind: name, bytes, outcome: 'requested', stack })
+      try {
+        return Reflect.construct(target, args, newTarget)
+      } catch (e) {
+        send({ kind: name, bytes, outcome: 'failed', stack, error: String(e) })
+        throw e
       }
-      return Reflect.construct(target, args, newTarget)
-    },
+    }
+    return Reflect.construct(target, args, newTarget)
+  }
+  return new Proxy(Original as new (...a: unknown[]) => unknown, {
+    construct: constructTrap,
   })
+}
+
+/** Options for {@link installAllocWatch}. */
+export interface AllocWatchOptions {
+  /** Report threshold in bytes. Defaults to {@link DEFAULT_MIN_BYTES}; tests
+   *  pass a tiny value so small allocations trip it deterministically. Read
+   *  only by the first effective install — a later call is a no-op and its
+   *  options are ignored. Non-finite or non-positive values fall back to the
+   *  default (`Infinity` would silently disable all reporting). */
+  minBytes?: number
 }
 
 /**
  * Patches the buffer-allocating globals. Idempotent — a second call is a no-op.
- * Safe to call in any renderer: it only reports when `electronAPI.reportBigAlloc`
- * exists, so a plain-browser dashboard patches the constructors but sends nothing.
+ * Returns without patching when `electronAPI.reportBigAlloc` is absent: a
+ * plain-browser dashboard has no main process to report to, so it keeps its
+ * pristine constructors instead of paying for a watcher that can never speak.
  */
-export function installAllocWatch(scope: Record<string, unknown> = globalThis as unknown as Record<string, unknown>): void {
+export function installAllocWatch(
+  scope: Record<string, unknown> = globalThis as unknown as Record<string, unknown>,
+  options: AllocWatchOptions = {}
+): void {
   if (installed) return
+  const api = (window as unknown as {
+    electronAPI?: { reportBigAlloc?: (e: BigAllocEvent) => void }
+  }).electronAPI
+  if (typeof api?.reportBigAlloc !== 'function') return
+  activeMinBytes =
+    typeof options.minBytes === 'number' &&
+    Number.isFinite(options.minBytes) &&
+    options.minBytes > 0
+      ? options.minBytes
+      : DEFAULT_MIN_BYTES
   const patched: Patched[] = []
   for (const Ctor of WATCHED_CTORS) {
     const name = Ctor.name
@@ -185,10 +230,11 @@ export function installAllocWatch(scope: Record<string, unknown> = globalThis as
   installed = patched
 }
 
-/** Test seam: restores the original globals and resets the session counter. */
+/** Test seam: restores the original globals and resets the session state. */
 export function uninstallAllocWatch(): void {
   if (!installed) return
   for (const p of installed) p.target[p.name] = p.original
   installed = null
   reportCount = 0
+  activeMinBytes = DEFAULT_MIN_BYTES
 }
