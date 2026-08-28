@@ -959,6 +959,11 @@ def _rehydrate_slot_from_history(
         # the FROZEN PREFIX that saves never rewrite. _disk_older_count must
         # therefore count those older lines so the save model preserves them.
         slot._disk_older_count = max(0, len(messages) - 500)
+        slot._disk_older_durable_count = sum(
+            1
+            for m in messages[: max(0, len(messages) - 500)]
+            if m.get("role") not in _TRANSIENT_ROLES
+        )
         for m in messages[-500:]:
             role = m.get("role", "assistant")
             cls = m.get("cls") or ("msg msg-u" if role == "user" else "msg msg-a")
@@ -1363,6 +1368,11 @@ def _apply_recent_session(
         update_metadata_off_loop(conv_log, key, {"tab_id": tab_id})
     slot._tab_id = tab_id
     slot._disk_older_count = max(0, len(messages) - 500)
+    slot._disk_older_durable_count = sum(
+        1
+        for m in messages[: max(0, len(messages) - 500)]
+        if m.get("role") not in _TRANSIENT_ROLES
+    )
     for m in messages[-500:]:
         role = m.get("role", "assistant")
         cls = m.get("cls") or ("msg msg-u" if role == "user" else "msg msg-a")

@@ -60,6 +60,7 @@ import weakref
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.channel_folders import lookup_channel_folder
+from kiro_crew.dashboard.chat_persistence import _TRANSIENT_ROLES
 from kiro_crew.dashboard.state import _normalize_slot_key
 from kiro_crew.history import carry_provenance, is_incognito_transcript
 from kiro_crew.loop_lock import LoopBoundLock
@@ -372,6 +373,11 @@ def _rebuild_window(slot: "_ChatSlot", messages: list[dict[str, Any]]) -> None:
     slot.messages.clear()
     slot._pending.clear()
     slot._disk_older_count = max(0, len(messages) - _RESTORE_WINDOW)
+    slot._disk_older_durable_count = sum(
+        1
+        for m in messages[: max(0, len(messages) - _RESTORE_WINDOW)]
+        if m.get("role") not in _TRANSIENT_ROLES
+    )
     for msg in messages[-_RESTORE_WINDOW:]:
         role = msg.get("role", "assistant")
         cls = msg.get("cls") or ("msg msg-u" if role == "user" else "msg msg-a")
