@@ -96,9 +96,15 @@ _POOLING_TYPE_LAST = 3
 # small: KV-cache size scales linearly with n_ctx (~115KB/token for this
 # model) and the embedder may load in more than one process (gateway +
 # kirocrew-core MCP server — the GGUF weights themselves are mmap'd and
-# physically shared, the KV buffers are not). n_ubatch must cover the whole
-# input for pooled embedding models — keep all three in lockstep.
+# physically shared, the KV buffers are not). The logical batch still covers
+# the complete input for last-token pooling; llama.cpp may split that work into
+# smaller physical micro-batches without changing the resulting vector.
 _N_CTX = 2048
+# Physical decode micro-batch. Keeping this below the logical batch bounds the
+# compute scratch arena without reducing the accepted context. Qwen3's
+# 6,000-char maximum input produces byte-identical vectors at 512 and 2048,
+# while 512 avoids roughly 419 MiB of peak RSS on the shipped Linux runtime.
+_N_UBATCH = 512
 # Safety truncation (chars) before inference, sized under _N_CTX at a
 # conservative ~4 chars/token so a clipped input always fits the context
 # window. Only pathological un-chunked blobs exceed this; mirrors the
@@ -1265,7 +1271,7 @@ class LlamaCppEmbedder(EmbeddingBackend):
                 pooling_type=_POOLING_TYPE_LAST,
                 n_ctx=_N_CTX,
                 n_batch=_N_CTX,
-                n_ubatch=_N_CTX,
+                n_ubatch=_N_UBATCH,
                 # Both pools are pinned. Embedding is prompt processing, so the
                 # BATCH pool is the one that actually runs, but leaving the
                 # generation pool at llama.cpp's cpu//2 default would still size

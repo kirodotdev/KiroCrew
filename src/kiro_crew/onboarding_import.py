@@ -4337,8 +4337,9 @@ def _write_memory(
         # keyword-searchable immediately and the caller schedules the backfill
         # sweep that fills the vector in (see ``schedule_embedding_backfill``).
         # Batching is NOT the alternative: measured on real import text,
-        # ``embed_batch`` is ~25% SLOWER than looping ``embed`` because one
-        # 2000-char chunk already fills the model's micro-batch.
+        # ``embed_batch`` is ~25% SLOWER than looping ``embed``. That workload
+        # result is independent of the bounded physical micro-batch used by
+        # llama.cpp, which still preserves the complete logical input.
         written = vector_store.write_episodic(
             text,
             tags=["imported", item.source_id],

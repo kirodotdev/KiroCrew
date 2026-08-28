@@ -1051,6 +1051,19 @@ class TestEmbedThreads:
         assert kwargs["n_threads"] == 3
         assert kwargs["n_threads_batch"] == 3
 
+    def test_physical_batch_bounds_scratch_without_reducing_context(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        fake_cls = _make_fake_llama_class()
+        monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fake_cls)
+        emb = LlamaCppEmbedder(model_path=_write_model_file(tmp_path / "model.gguf"))
+        assert emb.wait_ready(timeout=5)
+        kwargs = fake_cls.instances[0].kwargs
+        assert kwargs["n_ctx"] == embeddings_mod._N_CTX
+        assert kwargs["n_batch"] == embeddings_mod._N_CTX
+        assert kwargs["n_ubatch"] == embeddings_mod._N_UBATCH
+        assert kwargs["n_ubatch"] < kwargs["n_batch"]
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Embed timing + inference queue priority
