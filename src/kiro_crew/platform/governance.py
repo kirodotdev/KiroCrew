@@ -67,6 +67,7 @@ from kiro_crew.platform.admission import (
 )
 from kiro_crew.platform.context import PlatformCompositionError
 from kiro_crew.platform.governance_health import mark_governance_incident
+from kiro_crew.platform.tool_paths import TARGET_PATH_KEYS, target_paths
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -469,23 +470,43 @@ _KIND_READ = "read"
 _KIND_EDIT = "edit"
 _KIND_FETCH = "fetch"
 
-_PATH_ARG_KEYS = ("path", "file_path", "filePath")
+# The accepted path spellings are OWNED by the shared low-level walk
+# (``kiro_crew.platform.tool_paths.TARGET_PATH_KEYS``) so the governance
+# intersection plane and the hooks sensitive-path keystone can never drift on
+# which keys count as a target. Aliased here under the historic name for local
+# readers; do NOT redefine the tuple.
+_PATH_ARG_KEYS = TARGET_PATH_KEYS
+
+# Synthetic, never-permittable item emitted for a filesystem scope when the
+# bounded path walk TRUNCATED (see the truncation branch in
+# ``classify_tool_args``).  It is deliberately not a real path: it contains a NUL
+# byte and glob metacharacters, so no operator allow-list pattern
+# (``allow: ['~/project/**']``) or literal can ever match it, while a deny-mode
+# ceiling that governs the scope still binds on it.  The marker text names why it
+# exists so a denial audit is self-explanatory.
+_TRUNCATED_SCAN_ITEM = "\x00<governance:path-scan-truncated-unverifiable>"
 
 
-def _tool_arg_paths(raw_params: Mapping[str, object]) -> Tuple[str, ...]:
-    """Return every distinct, non-empty path carried under a supported alias.
+def _tool_arg_paths(raw_params: Mapping[str, object]) -> Tuple[Tuple[str, ...], bool]:
+    """Return every distinct, non-empty path carried under a supported alias,
+    at ANY nesting depth, plus whether the bounded scan was TRUNCATED.
 
-    Tool backends use all three spellings, sometimes in the same payload.  Every
-    value must be governed: choosing the first truthy alias would let a benign
+    Tool backends use all three spellings, sometimes in the same payload, and a
+    batch-shaped tool buries its real targets inside an array argument (e.g.
+    ``{"operations": [{"mode": "Line", "path": …}]}``).  Every value must be
+    governed at every depth: choosing the first truthy alias would let a benign
     ``path`` mask a sensitive ``filePath`` (and a truthy non-string value could
-    mask every later alias entirely).
+    mask every later alias entirely), and reading only the TOP level would let a
+    nested path escape the operator ceiling entirely — the reported bypass.
+
+    Delegates to the shared, iterative, bounded walk so the extraction is
+    IDENTICAL to the hooks keystone's (single source of truth).  The second
+    element is the walk's ``truncated`` flag: the caller must not treat a
+    truncated scan as "no governed target present" — see the truncation branch in
+    :func:`classify_tool_args`.
     """
-    paths: list[str] = []
-    for key in _PATH_ARG_KEYS:
-        value = raw_params.get(key)
-        if isinstance(value, str) and value.strip() and value not in paths:
-            paths.append(value)
-    return tuple(paths)
+    found = target_paths(raw_params)
+    return tuple(found), found.truncated
 
 
 def classify_tool_args(
@@ -518,19 +539,58 @@ def classify_tool_args(
 
     Returns an empty tuple when the params carry no governed item (an ungoverned
     scope permits, so this only ever tightens).
+
+    **Truncated scan (open-question-2 policy on this permit-by-default plane).**
+    The shared path walk is bounded (``_TARGET_PATH_MAX_PATHS`` /
+    ``_TARGET_PATH_MAX_NODES``); a payload padded past those caps returns a
+    ``truncated`` result whose path list may be INCOMPLETE.  On this plane a
+    truncated scan that yielded no path must NOT silently reach the caller's
+    permit-by-default ``if not pairs`` branch — that is exactly the fail-open the
+    reported bypass exploits (bury the governed path past 10_000 nodes to escape
+    the operator ceiling).  The keystone in ``hooks`` fails SAFE by hard-denying
+    any truncated scan, but this plane is permit-by-default and must NOT
+    blanket-deny an UNGOVERNED standalone host that happens to send a huge
+    payload.  So we thread the needle (issue option (c)): on truncation we emit
+    the filesystem scope(s) the ``tool_kind`` implies against a synthetic,
+    never-permittable item (``_TRUNCATED_SCAN_ITEM``).  Result: an operator
+    ceiling that governs that filesystem scope DENIES the unverifiable call
+    (closing the fail-open), while an ungoverned scope still permits it (the
+    standalone default is preserved, and no unrelated scope is touched).  The
+    truncation is auditable via the synthetic item text in the denial reason.
+    Rejected alternatives: (a) permit as before = keep the fail-open; (b) deny the
+    whole call unconditionally = over-blocks ungoverned hosts and every unrelated
+    scope.
+
+    Precise semantics of the marker against the two ruleset modes (both correct):
+    a PREFIX-BOUNDED ALLOW-mode ceiling (``allow: ['~/workspace/**']`` — confine
+    to a workspace, the exact profile the reported bypass targets) does NOT match
+    the synthetic item, so the truncated call is DENIED — the fail-open is closed.
+    (A CATCH-ALL ALLOW pattern — ``**`` / ``/**`` / ``*`` — does match the marker
+    because fnmatch ``*`` crosses separators, so it permits the truncated scan;
+    that is not a bypass, since such a ceiling confines nothing and is
+    unconstrained anyway.)  A DENY-mode
+    ceiling that blocks only specific paths (``deny: ['~/secrets/**']``) permits
+    the marker, because a targeted deny is not a general confinement and a partial
+    scan cannot prove the buried path hit that one pattern; the always-on,
+    resolved ``is_sensitive_path`` keystone in ``hooks`` (which hard-denies ANY
+    truncated scan) remains the authoritative guard for the sensitive tiers there.
     """
     if not raw_params or not isinstance(raw_params, Mapping):
         return ()
     pairs: list = []
-    paths = _tool_arg_paths(raw_params)
+    paths, paths_truncated = _tool_arg_paths(raw_params)
     url = raw_params.get("url") or raw_params.get("uri")
     has_command = bool(raw_params.get("command"))  # a shell tool → commands scope
     if tool_kind == _KIND_EDIT:
         for path in paths:
             pairs.append(("filesystem.write", path))
+        if paths_truncated:
+            pairs.append(("filesystem.write", _TRUNCATED_SCAN_ITEM))
     elif tool_kind == _KIND_READ:
         for path in paths:
             pairs.append(("filesystem.read", path))
+        if paths_truncated:
+            pairs.append(("filesystem.read", _TRUNCATED_SCAN_ITEM))
     elif tool_kind == _KIND_FETCH:
         if isinstance(url, str) and url:
             host = _url_host(url)
@@ -548,6 +608,12 @@ def classify_tool_args(
             # ceilings (tightest-wins; an ungoverned scope permits).
             pairs.append(("filesystem.read", path))
             pairs.append(("filesystem.write", path))
+        if paths_truncated:
+            # Unknown kind → we cannot tell read from write, so a truncated scan
+            # must consult BOTH filesystem ceilings against the never-permittable
+            # marker (see the truncated-scan policy in the docstring).
+            pairs.append(("filesystem.read", _TRUNCATED_SCAN_ITEM))
+            pairs.append(("filesystem.write", _TRUNCATED_SCAN_ITEM))
     return tuple(pairs)
 
 

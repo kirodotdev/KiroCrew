@@ -13,6 +13,7 @@ scopes enforced at the host gate via tool kind + real args.
 from __future__ import annotations
 
 import dataclasses
+import os
 
 import pytest
 
@@ -1265,6 +1266,219 @@ class TestFilesystemEgressAtGate:
             "Editing config", session_key="cli_chat", tool_kind="", raw_params={"path": "/etc/x"}
         )
         assert r.action == TOOL_DENY
+
+    # ── array-nested path extraction (issue #6558: governance parity with the
+    #    hooks keystone; the flat top-level-only extractor missed nested paths). ──
+    def test_nested_array_read_path_is_classified(self):
+        # A batch-shaped tool buries its target inside an array argument. The
+        # governance plane must surface it (before the fix this returned ()).
+        from kiro_crew.platform.governance import classify_tool_args
+
+        assert classify_tool_args(
+            "read", {"operations": [{"mode": "Line", "path": "~/secrets/notes.txt"}]}
+        ) == (("filesystem.read", "~/secrets/notes.txt"),)
+
+    def test_nested_array_edit_path_maps_to_write(self):
+        from kiro_crew.platform.governance import classify_tool_args
+
+        assert classify_tool_args(
+            "edit", {"operations": [{"mode": "Line", "path": "~/secrets/notes.txt"}]}
+        ) == (("filesystem.write", "~/secrets/notes.txt"),)
+
+    def test_deeply_nested_path_under_dict_and_list_mix(self):
+        # A path buried under an arbitrary mix of dicts and lists is still found.
+        from kiro_crew.platform.governance import classify_tool_args
+
+        assert classify_tool_args(
+            "read", {"a": [{"b": {"c": [{"file_path": "~/secrets/deep.key"}]}}]}
+        ) == (("filesystem.read", "~/secrets/deep.key"),)
+
+    # ``_match_path`` normalizes the queried ITEM with ``os.path.abspath`` and
+    # matches the operator's PATTERN verbatim, so a POSIX-literal pair
+    # (``/home/u/ws/**`` vs ``/home/u/ws/doc.md``) is not a portable fixture: on
+    # Windows the item absolutizes to ``<cwd-drive>\home\u\ws\doc.md`` while the
+    # pattern keeps its forward slashes, so NOTHING matches and an allow-mode
+    # ceiling denies even the in-tree read. Derive both the pattern and the items
+    # from ONE platform-native root instead, so the in-tree case is genuinely
+    # permitted and — the part that matters for a ceiling test — the out-of-tree
+    # case is denied because the ceiling BOUND, not because the two strings could
+    # never have matched on this platform.
+    @staticmethod
+    def _fs_tree(*parts: str) -> str:
+        return os.path.join(os.path.abspath(os.path.join(os.sep, "home", "u")), *parts)
+
+    def test_nested_array_read_denied_at_gate(self):
+        # END-TO-END: an operator profile confining reads to the workspace must
+        # DENY a nested-array read of a path outside it. Before the fix the
+        # nested path was invisible to governance and the call was PERMITTED.
+        _install(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "filesystem": {"read": {"mode": "allow", "allow": [self._fs_tree("ws", "**")]}},
+            }
+        )
+        from kiro_crew.hooks import TOOL_DENY, HookManager
+
+        hooks = HookManager()
+        denied = hooks.on_tool_call(
+            "fs_read",
+            session_key="cli_chat",
+            tool_kind="read",
+            raw_params={
+                "operations": [{"mode": "Line", "path": self._fs_tree("secrets", "notes.txt")}]
+            },
+        )
+        assert denied.action == TOOL_DENY
+
+    def test_nested_array_read_within_ceiling_still_permitted(self):
+        # A nested-array path INSIDE the allowed tree must still pass — the fix
+        # tightens exactly the escaping case, not legitimate in-tree reads.
+        _install(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "filesystem": {"read": {"mode": "allow", "allow": [self._fs_tree("ws", "**")]}},
+            }
+        )
+        from kiro_crew.hooks import TOOL_DENY, HookManager
+
+        hooks = HookManager()
+        allowed = hooks.on_tool_call(
+            "fs_read",
+            session_key="cli_chat",
+            tool_kind="read",
+            raw_params={
+                "operations": [{"mode": "Line", "path": self._fs_tree("ws", "doc.md")}]
+            },
+        )
+        assert allowed.action != TOOL_DENY
+
+    # ── truncated-scan policy on the permit-by-default plane (open-question-2) ──
+    #
+    # A payload padded past the bounded walk's node/path caps truncates. On this
+    # permit-by-default plane a truncated scan that yielded no path would otherwise
+    # fall to the ``if not pairs: permit`` branch — the "bury the path past 10_000
+    # nodes to escape the ceiling" fail-open. The chosen policy (issue option (c))
+    # emits the kind's filesystem scope against a never-permittable marker, so an
+    # ALLOW-mode ceiling that confines the scope DENIES the unverifiable call while
+    # an ungoverned host still permits it (permit-by-default preserved).
+    @staticmethod
+    def _truncating_read_params():
+        from kiro_crew.platform.tool_paths import _TARGET_PATH_MAX_NODES
+
+        pad = [{"k": i} for i in range(_TARGET_PATH_MAX_NODES + 50)]
+        pad.append({"path": "/home/u/secrets/buried.txt"})
+        return {"operations": pad}
+
+    def test_truncated_scan_emits_never_permittable_marker(self):
+        from kiro_crew.platform.governance import _TRUNCATED_SCAN_ITEM, classify_tool_args
+        from kiro_crew.platform.tool_paths import target_paths
+
+        params = self._truncating_read_params()
+        assert target_paths(params).truncated is True
+        pairs = classify_tool_args("read", params)
+        # Must NOT be empty (would land on permit-by-default) and must carry the
+        # synthetic marker so a governed ceiling can bind.
+        assert pairs != ()
+        assert ("filesystem.read", _TRUNCATED_SCAN_ITEM) in pairs
+
+    def test_truncated_scan_unknown_kind_consults_both_fs_scopes(self):
+        from kiro_crew.platform.governance import _TRUNCATED_SCAN_ITEM, classify_tool_args
+
+        pairs = classify_tool_args("", self._truncating_read_params())
+        assert ("filesystem.read", _TRUNCATED_SCAN_ITEM) in pairs
+        assert ("filesystem.write", _TRUNCATED_SCAN_ITEM) in pairs
+
+    def test_truncated_scan_denied_at_governance_plane_under_ceiling(self):
+        # GOVERNANCE-PLANE, KEYSTONE-INDEPENDENT: this is the assertion that guards
+        # the fix on revert. An ALLOW-mode read ceiling (confine to the workspace)
+        # must DENY the synthetic truncation marker via resolve(). It fails if the
+        # governance truncation branch is reverted (classify_tool_args then returns
+        # () for a zero-path truncated scan and resolve is never asked about the
+        # marker). The end-to-end HookManager test below cannot guard the fix on its
+        # own because the always-on keystone hard-denies any truncated scan first.
+        from kiro_crew.platform.governance import (
+            _TRUNCATED_SCAN_ITEM,
+            classify_tool_args,
+            parse_policy,
+            resolve,
+        )
+
+        allow_ceiling = parse_policy(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "filesystem": {"read": {"mode": "allow", "allow": ["/home/u/ws/**"]}},
+            }
+        )
+        # classify emits the marker (would be () if the truncation branch reverted).
+        pairs = classify_tool_args("read", self._truncating_read_params())
+        assert ("filesystem.read", _TRUNCATED_SCAN_ITEM) in pairs
+        # The prefix-bounded ALLOW ceiling cannot match the never-permittable marker,
+        # so the truncated scan is denied — the fail-open is closed on this plane.
+        assert not resolve(allow_ceiling, None, "filesystem.read", _TRUNCATED_SCAN_ITEM).permitted
+
+    def test_truncated_scan_denied_under_governed_ceiling(self):
+        # END-TO-END: with an ALLOW-mode read ceiling (confine to the workspace),
+        # a truncated scan is DENIED. NOTE: at this chokepoint the always-on hooks
+        # keystone hard-denies any truncated scan before governance runs, so this
+        # test alone does NOT guard the governance fix — see
+        # test_truncated_scan_denied_at_governance_plane_under_ceiling for the
+        # keystone-independent, revert-sensitive guard.
+        _install(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "filesystem": {"read": {"mode": "allow", "allow": ["/home/u/ws/**"]}},
+            }
+        )
+        from kiro_crew.hooks import TOOL_DENY, HookManager
+
+        hooks = HookManager()
+        denied = hooks.on_tool_call(
+            "fs_read",
+            session_key="cli_chat",
+            tool_kind="read",
+            raw_params=self._truncating_read_params(),
+        )
+        assert denied.action == TOOL_DENY
+
+    def test_truncated_scan_permitted_when_ungoverned(self):
+        # The permit-by-default property must be asserted ON THE GOVERNANCE PLANE
+        # IN ISOLATION, not through HookManager.on_tool_call: the always-on
+        # sensitive-path keystone in hooks HARD-DENIES *any* truncated scan
+        # (real_paths.truncated) BEFORE governance is consulted, so on_tool_call
+        # returns deny regardless of policy and cannot observe the governance
+        # plane's decision. Here we drive classify_tool_args + resolve directly:
+        # the truncation emits the marker, and an UNGOVERNED ceiling (None) permits
+        # it — permit-by-default is preserved for hosts with no policy.
+        from kiro_crew.platform.governance import (
+            _TRUNCATED_SCAN_ITEM,
+            classify_tool_args,
+            resolve,
+        )
+
+        pairs = classify_tool_args("read", self._truncating_read_params())
+        assert ("filesystem.read", _TRUNCATED_SCAN_ITEM) in pairs
+        # Ungoverned scope (ceiling=None, profile=None): the marker is permitted,
+        # so a standalone host with no policy is not over-blocked.
+        assert resolve(None, None, "filesystem.read", _TRUNCATED_SCAN_ITEM).permitted
+
+    def test_flat_and_fetch_cases_unchanged_regression(self):
+        # Regression: the flat top-level path and the fetch/url derivation must be
+        # byte-for-byte unchanged by the depth-aware rewrite.
+        from kiro_crew.platform.governance import classify_tool_args
+
+        assert classify_tool_args("read", {"path": "~/secrets/notes.txt"}) == (
+            ("filesystem.read", "~/secrets/notes.txt"),
+        )
+        assert classify_tool_args("edit", {"path": "/etc/passwd"}) == (
+            ("filesystem.write", "/etc/passwd"),
+        )
+        assert classify_tool_args("fetch", {"url": "https://evil.example.com/x"}) == (
+            ("network.egress", "evil.example.com"),
+        )
 
 
 class TestFoldersAliasesFilesystem:
