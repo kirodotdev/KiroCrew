@@ -1394,7 +1394,14 @@ def test_every_spawn_is_routed_or_allowlisted():
 
 
 def test_prerequisite_async_adapter_keeps_sandbox_chokepoint():
-    """The off-loop prerequisite adapter must remain a thin sandbox wrapper."""
+    """The off-loop prerequisite adapter must remain a thin sandbox wrapper.
+
+    The off-loop hop itself now lives one level down, in
+    ``sandbox.shielded_prepare_off_loop`` (the single owner of the
+    shield-and-recover pattern), so this pins both halves where they actually
+    live: the adapter must still name the chokepoint and route through that
+    owner, and the owner must still take the work off the loop.
+    """
 
     path = _SRC_ROOT / "kiro_prerequisite.py"
     source = path.read_text(encoding="utf-8")
@@ -1405,8 +1412,19 @@ def test_prerequisite_async_adapter_keeps_sandbox_chokepoint():
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "_prepare_sandboxed_spawn"
     )
     adapter_source = ast.get_source_segment(source, adapter) or ""
-    assert "asyncio.to_thread" in adapter_source
+    assert "shielded_prepare_off_loop" in adapter_source
     assert "sandboxed_spawn_argv" in adapter_source
+
+    sandbox_path = _SRC_ROOT / "sandbox.py"
+    sandbox_source = sandbox_path.read_text(encoding="utf-8")
+    sandbox_tree = ast.parse(sandbox_source, str(sandbox_path))
+    owner = next(
+        node
+        for node in ast.walk(sandbox_tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "shielded_prepare_off_loop"
+    )
+    owner_source = ast.get_source_segment(sandbox_source, owner) or ""
+    assert "asyncio.to_thread" in owner_source or "run_in_executor" in owner_source
 
 
 def test_benign_allowlist_has_no_stale_entries():

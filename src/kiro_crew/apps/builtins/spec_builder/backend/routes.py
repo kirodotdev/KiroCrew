@@ -21,6 +21,7 @@ Responsibilities:
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import json
 import logging
@@ -89,10 +90,15 @@ except Exception:  # pragma: no cover - hooks always present in prod
     safe_read_file_bytes_nolink = None  # type: ignore[assignment]
 
 try:
-    from kiro_crew.sandbox import create_subprocess_limited, sandboxed_spawn_argv
+    from kiro_crew.sandbox import (
+        create_subprocess_limited,
+        sandboxed_spawn_argv,
+        shielded_prepare_off_loop,
+    )
 except Exception:  # pragma: no cover - sandbox always present in prod
     create_subprocess_limited = None  # type: ignore[assignment]
     sandboxed_spawn_argv = None  # type: ignore[assignment]
+    shielded_prepare_off_loop = None  # type: ignore[assignment]
 
 try:
     from kiro_crew.autonudge import AutoNudgeService as _AutoNudgeService
@@ -5676,7 +5682,9 @@ async def _git(cwd: str, *args: str) -> tuple[int, str, str]:
         # Off-loop: the sandbox backend probe can shell out (subprocess.run) the
         # first time it runs on a host, and it writes the scrubbed-env temp file.
         # Neither is the cheap in-memory call it looks like.
-        argv, env, cleanup = await asyncio.to_thread(_prepare_git_spawn, ["git", "-C", cwd, *args])
+        argv, env, cleanup = await shielded_prepare_off_loop(
+            functools.partial(_prepare_git_spawn, ["git", "-C", cwd, *args])
+        )
     except Exception as exc:
         # Sandbox unavailable / argv build failure: report it, do not 500 the
         # caller. Every caller already treats a non-zero rc as "not a git repo".

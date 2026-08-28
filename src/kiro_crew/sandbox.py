@@ -20,6 +20,7 @@ Config: ``"sandbox": "auto" | "off"`` in ``~/.kiro/crew/config.json``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import ctypes
 import ctypes.util
 import errno
@@ -52,6 +53,7 @@ except ImportError:  # non-POSIX (Windows)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
+    from concurrent.futures import ThreadPoolExecutor
     from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -4111,6 +4113,85 @@ def sandboxed_spawn_argv(
     # (e.g. ``npx @playwright/mcp``).
     scrubbed[KIROCREW_SPAWNED_ENV] = KIROCREW_SPAWNED_VALUE
     return wrapped, scrubbed, cleanup
+
+
+async def shielded_prepare_off_loop(
+    prepare: Callable[[], tuple[list[str], dict[str, str], str | None]],
+    *,
+    executor: ThreadPoolExecutor | None = None,
+) -> tuple[list[str], dict[str, str], str | None]:
+    """Run a spawn-preparation callable off the loop, shielded from cancellation.
+
+    ``prepare`` must follow the :func:`sandboxed_spawn_argv` contract: it returns
+    ``(wrapped_argv, scrubbed_env, cleanup_path_or_None)`` where the third element
+    is a temp launcher/profile the CALLER must unlink after the child exits.
+
+    Every async caller reaches the sync chokepoint through a worker hop.
+    Cancelling that hop abandons the returned tuple while the worker still
+    materializes the launcher/profile, leaking the temp file forever.  Shielding
+    the hop keeps the worker's result recoverable: on cancellation we wait for
+    the thread to settle, unlink the launcher it created, and re-raise.
+
+    A REPEAT cancellation landing on a bare recovery ``await`` is a
+    ``BaseException`` that would abandon the recovery before the unlink runs,
+    leaking the materialized launcher (#5841).  The settle-then-unlink therefore
+    runs as its own task, shielded from cancellations aimed at this caller; each
+    absorbed repeat is ``uncancel()``-ed so an enclosing ``asyncio.timeout``
+    still reports ``TimeoutError``, and the ORIGINAL cancellation is re-raised
+    once the launcher is gone.
+
+    ``executor`` keeps pool choice with the CALLER, because which pool absorbs a
+    wedged preparation is per-site policy, not a shield concern: the chokepoint
+    can cold-probe the sandbox backend with a synchronous subprocess, and
+    :mod:`kiro_crew.executors` partitions blocking work into named pools so such
+    a probe cannot occupy the workers another subsystem (the orphan-reaping
+    sweep) needs.  Defaulting it to ``None`` — the loop's default pool, via
+    ``asyncio.to_thread`` — would silently collapse that partition for callers
+    that had chosen a pool, so every site that had one passes it explicitly.
+    """
+
+    Prepared = tuple[list[str], dict[str, str], str | None]
+    task: asyncio.Future[Prepared]
+    if executor is None:
+        task = asyncio.ensure_future(asyncio.to_thread(prepare))
+    else:
+        task = asyncio.get_running_loop().run_in_executor(executor, prepare)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+
+        async def _settle_then_unlink() -> None:
+            cleanup: str | None = None
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                _, _, cleanup = await task
+            if not cleanup:
+                return
+            target = cleanup
+
+            def _unlink() -> None:
+                with contextlib.suppress(OSError):
+                    os.unlink(target)
+
+            if executor is None:
+                await asyncio.to_thread(_unlink)
+            else:
+                await asyncio.get_running_loop().run_in_executor(executor, _unlink)
+
+        current = asyncio.current_task()
+        recovery = asyncio.create_task(_settle_then_unlink())
+        while not recovery.done():
+            try:
+                await asyncio.shield(recovery)
+            except asyncio.CancelledError:
+                uncancel = getattr(current, "uncancel", None)  # 3.11+
+                if uncancel is not None:
+                    uncancel()
+            except Exception:
+                logger.warning(
+                    "sandbox launcher cleanup failed after cancellation",
+                    exc_info=True,
+                )
+        raise
 
 
 # ── cgroup v2 scope enforcement (fork bomb + memory DoS) ──

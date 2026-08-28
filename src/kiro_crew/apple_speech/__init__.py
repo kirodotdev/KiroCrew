@@ -23,7 +23,7 @@ otherwise.
 from __future__ import annotations
 
 import asyncio
-import contextlib
+import functools
 import json
 import logging
 import os
@@ -392,30 +392,19 @@ async def _sandboxed_off_loop(argv: list[str]) -> tuple[list[str], dict[str, str
     A plain ``asyncio.to_thread`` hop is the leak: cancelling the awaiting
     coroutine abandons the hop while the worker thread is still inside
     ``sandboxed_spawn_argv``, the thread goes on to materialize the
-    launcher/profile, and the returned tuple is never bound — so no ``finally``
-    and no session field can ever reach the cleanup path. Shielding the hop
-    keeps the worker's result recoverable: on cancellation, wait for it to
-    settle, drop the launcher it made, then re-raise. Same shape as
-    ``kiro_prerequisite``'s sandboxed-spawn preparation.
+    launcher/profile, and the returned tuple is never bound -- so no ``finally``
+    and no session field can ever reach the cleanup path.
 
-    ``SandboxUnavailableError`` still propagates to the caller unchanged — the
-    shield only intercepts cancellation, and that raise carries no tuple and
-    hence no file to drop.
+    Delegates to the shared :func:`sandbox.shielded_prepare_off_loop`, which
+    owns the shield-and-recover pattern (worker-thread hop + settle-then-unlink
+    under cancellation, repeat-cancellation safe per #5841) for every async
+    caller of the chokepoint.  Preparation stays behind :func:`_sandboxed` so
+    this module keeps owning its own ``mode="strict"`` + ``_build_env()``
+    policy.  ``SandboxUnavailableError`` still propagates to the caller
+    unchanged -- the shield only intercepts cancellation, and that raise carries
+    no tuple and hence no file to drop.
     """
-    task = asyncio.create_task(asyncio.to_thread(_sandboxed, argv))
-    try:
-        return await asyncio.shield(task)
-    except asyncio.CancelledError:
-        cleanup: str | None = None
-        # `BaseException`, not `Exception`: a repeat cancellation can land on
-        # this recovery await, and letting it out of the handler would skip the
-        # drop below — the exact leak this helper exists to close. Swallow it
-        # so the drop still runs and the ORIGINAL cancellation is the one that
-        # propagates (same shape as `_to_native_audio`'s reap-on-cancel).
-        with contextlib.suppress(BaseException):
-            _, _, cleanup = await task
-        _drop_sandbox_launcher(cleanup)
-        raise
+    return await sandbox.shielded_prepare_off_loop(functools.partial(_sandboxed, argv))
 
 
 def _mkstemp_path(suffix: str) -> str:

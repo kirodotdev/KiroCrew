@@ -64,6 +64,7 @@ from kiro_crew.sandbox import (
     RLIMIT_PROFILE_BUILD,
     create_subprocess_limited,
     sandboxed_spawn_argv,
+    shielded_prepare_off_loop,
 )
 from kiro_crew.security import (
     redact_credentials,
@@ -1121,10 +1122,9 @@ async def _run_cmd(
     try:
         # sandboxed_spawn_argv can cold-probe the sandbox backend with a
         # synchronous subprocess (blocking base rule) — run it on the executor.
-        loop = asyncio.get_running_loop()
-        cmd, env, cleanup = await loop.run_in_executor(
-            subprocess_executor(),
+        cmd, env, cleanup = await shielded_prepare_off_loop(
             functools.partial(sandboxed_spawn_argv, cmd, mode, env=base_env),
+            executor=subprocess_executor(),
         )
     except RuntimeError as exc:
         # Fail closed: no sandbox backend and unsandboxed exec not opted in.
@@ -2893,13 +2893,14 @@ async def _pod_provision(name: str) -> dict:
             if running:
                 return {"ok": False, "error": "provision already running", "run_id": prev}
         await _warm_build_path()
-        loop = asyncio.get_running_loop()
-        p_argv, p_env, p_cleanup = await loop.run_in_executor(
-            subprocess_executor(),
+        p_argv, p_env, p_cleanup = await shielded_prepare_off_loop(
             functools.partial(
                 sandboxed_spawn_argv,
-                _find_cli() + ["pod", "provision", name], "strict", env=_pod_env(),
+                _find_cli() + ["pod", "provision", name],
+                "strict",
+                env=_pod_env(),
             ),
+            executor=subprocess_executor(),
         )
         rid = await _start_run(
             "provision " + name, p_argv, cwd=_repo(), env=p_env,
@@ -3855,11 +3856,10 @@ async def _sync_start_locked() -> dict:
         # order, and a directory cannot go until it is empty.
         cleanups += [str(dep_sync_snapshot), str(dep_sync_snapshot.parent)]
     wrapped_steps: list[dict] = []
-    loop = asyncio.get_running_loop()
     for argv, mode, base_env, label in raw_steps:
-        w_argv, w_env, cleanup = await loop.run_in_executor(
-            subprocess_executor(),
+        w_argv, w_env, cleanup = await shielded_prepare_off_loop(
             functools.partial(sandboxed_spawn_argv, argv, mode, env=base_env),
+            executor=subprocess_executor(),
         )
         if cleanup:
             cleanups.append(cleanup)

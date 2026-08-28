@@ -100,6 +100,7 @@ from kiro_crew.sandbox import (
     SandboxUnavailableError,
     create_subprocess_limited,
     sandboxed_spawn_argv,
+    shielded_prepare_off_loop,
 )
 
 logger = logging.getLogger(__name__)
@@ -784,8 +785,9 @@ async def _run_probe(argv: list[str], cwd: str | None) -> str | None:
         #   escapes the route as an HTTP 500 on a keystroke — for a tier whose
         #   entire contract is "no completions is a normal answer", the right
         #   degradation is no menu, not an error the client must special-case.
-        wrapped, env, cleanup = await loop.run_in_executor(
-            discovery_executor(), functools.partial(_prepare_probe, argv),
+        wrapped, env, cleanup = await shielded_prepare_off_loop(
+            functools.partial(_prepare_probe, argv),
+            executor=discovery_executor(),
         )
     except (SandboxUnavailableError, OSError, RuntimeError):
         return None
