@@ -2444,6 +2444,130 @@ def token_auth_middleware(
         if path == "/api/auth/logout" and request.method == "POST":
             return await handler(request)  # type: ignore[operator]
 
+        # ── Transparent auth for verified tailnet peers (issue #6132) ──
+        #
+        # When trust_identity + allowed_logins are configured and the request
+        # carries NO credential (no query token, no access/refresh cookie),
+        # resolve the forwarded peer via the Tailscale daemon. If the peer is
+        # on the allowlist, mint a boot-bound session cookie directly so the
+        # operator never has to complete a separate token login.
+        #
+        # This block runs BEFORE the normal token-extraction path. Requests
+        # that already carry a credential skip it entirely and follow the
+        # existing flow (which has its own peer-resolution + allowlist gate).
+        _has_credential = bool(request.query.get("token")) or any(
+            c.startswith(("mc_token_", "mc_refresh_")) for c in request.cookies
+        )
+        if (
+            not _has_credential
+            and tailnet_trust is not None
+            and tailnet_trust.trust_identity
+            and tailnet_trust.allowed_logins
+        ):
+            _ta_peer = await resolve_forwarded_peer(request, tailnet_trust)
+            if _ta_peer is not None:
+                if not login_allowed(_ta_peer.login, tailnet_trust.allowed_logins):
+                    _sel = _sel_fn()
+                    _sel.log_api_access(
+                        caller=_ta_peer.login,
+                        operation="tailnet_transparent_auth",
+                        outcome="denied",
+                        source="token_auth",
+                        resources=path,
+                        error="login not in allowed_logins",
+                    )
+                    _log_auth(
+                        request,
+                        _ta_peer.login,
+                        "denied",
+                        "tailnet login not allowed",
+                    )
+                    return _deny(request, "tailnet login not allowed")
+
+                # Peer is verified and on the allowlist. Mint a boot-bound
+                # session token so it expires on gateway restart (same model
+                # as the QR phone-access sessions from PR #5763).
+                _ta_peer_key = peer_pin_key(_ta_peer, tailnet_trust.pin_scope)
+                _ta_boot = current_boot_id()
+                _ta_extra: dict[str, str] = {"boot": _ta_boot}
+                _ta_user = _ta_peer.login
+                _ta_token = generate_token(
+                    _ta_user,
+                    ttl_seconds=MAX_SESSION_TTL_SECS,
+                    register_nonce=False,
+                    extra=_ta_extra,
+                )
+                _ta_session_exp = time.time() + MAX_SESSION_TTL_SECS
+                bind_token_peer(
+                    _ta_token,
+                    _ta_peer_key,
+                    _ta_session_exp,
+                    proxied=False,
+                )
+
+                # Expose identity to handlers (same as the normal flow).
+                request["user"] = _ta_user
+                request["app"] = ""
+                request["auth_token"] = _ta_token
+                request["is_dashboard_user"] = True
+
+                _sel = _sel_fn()
+                _sel.log_api_access(
+                    caller=_ta_peer.login,
+                    operation="tailnet_transparent_auth",
+                    outcome="granted",
+                    source="token_auth",
+                    resources=_ta_peer_key,
+                )
+                _log_auth(
+                    request,
+                    _ta_peer.login,
+                    "granted",
+                    "transparent tailnet auth",
+                )
+
+                resp = await handler(request)  # type: ignore[operator]
+
+                # Set the session cookie so subsequent requests carry it and
+                # take the normal (faster) cookie path instead of re-resolving
+                # the daemon on every hit.
+                _ta_cookie_name = f"mc_token_{_cookie_port_from_host(request, port)}"
+                resp.set_cookie(
+                    _ta_cookie_name,
+                    _ta_token,
+                    httponly=True,
+                    samesite="Lax",
+                    secure=is_https_request(request),
+                    path="/",
+                    max_age=MAX_SESSION_TTL_SECS,
+                )
+
+                # Mint a refresh chain so the session survives access-token
+                # rotation, but boot-bound so it dies on restart.
+                try:
+                    _ta_rt, _ta_chain, _, _ta_rt_exp = generate_refresh_token(
+                        _ta_user, boot=_ta_boot, require_peer=True
+                    )
+                    _ta_rt_remaining = int(_ta_rt_exp - time.time())
+                    if _ta_rt_remaining > 0:
+                        resp.set_cookie(
+                            refresh_cookie_name(_cookie_port_from_host(request, port)),
+                            _ta_rt,
+                            httponly=True,
+                            samesite="Lax",
+                            secure=is_https_request(request),
+                            path=REFRESH_COOKIE_PATH,
+                            max_age=min(_ta_rt_remaining, MAX_REFRESH_TTL_SECS),
+                        )
+                except Exception:
+                    # Refresh is best-effort; session cookie is sufficient.
+                    logger.warning(
+                        "transparent tailnet auth: refresh mint failed",
+                        exc_info=True,
+                    )
+
+                return resp
+
         # Extract token from query param or cookie
         cookie_name = f"mc_token_{_cookie_port_from_host(request, port)}"
         token = request.query.get("token") or ""

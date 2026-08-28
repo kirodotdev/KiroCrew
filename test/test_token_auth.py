@@ -3242,13 +3242,62 @@ async def test_plain_ip_mismatch_reason_is_preserved(_tailnet_env) -> None:
 
 @pytest.mark.asyncio
 async def test_credential_less_request_never_reaches_the_daemon(_tailnet_env) -> None:
-    """An unauthenticated local caller spraying X-Forwarded-For on a static
-    path must not be able to force whois spawns: resolution is gated on the
-    request presenting a credential (query token or mc_* cookie)."""
+    """Without transparent auth (trust_identity=False), an unauthenticated local
+    caller spraying X-Forwarded-For must not force whois spawns: resolution is
+    gated on a credential or on transparent-auth eligibility."""
     whois = _tailnet_env(_whois_payload())
+    mw = token_auth_middleware(tailnet_trust=_tailnet_trust(trust_identity=False))
+    resp = await mw(_peer_request(query={}, cookies={}), _ok_handler)
+    assert resp.status == 403  # no token, no trust — denied
+    whois.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_transparent_auth_issues_session_cookie(_tailnet_env) -> None:
+    """A credential-less request from a verified peer on the allowlist gets a
+    200 and a session cookie (transparent auth, issue #6132)."""
+    _tailnet_env(_whois_payload())
     mw = token_auth_middleware(tailnet_trust=_tailnet_trust())
     resp = await mw(_peer_request(query={}, cookies={}), _ok_handler)
-    assert resp.status == 403  # no token — denied as today
+    assert resp.status == 200
+    cookie = resp.cookies.get("mc_token_5476")
+    assert cookie is not None, "expected session cookie from transparent auth"
+
+
+@pytest.mark.asyncio
+async def test_transparent_auth_denies_peer_not_on_allowlist(_tailnet_env) -> None:
+    """A verified peer whose login is NOT on the allowlist is denied even
+    without a credential (transparent auth deny path)."""
+    _tailnet_env(_whois_payload(login="mallory@evil.com"))
+    mw = token_auth_middleware(tailnet_trust=_tailnet_trust())
+    resp = await mw(_peer_request(query={}, cookies={}), _ok_handler)
+    assert resp.status == 403
+    assert b"tailnet login not allowed" in resp.body
+
+
+@pytest.mark.asyncio
+async def test_transparent_auth_skipped_when_credential_present(_tailnet_env) -> None:
+    """When a credential IS present, the normal token path runs instead of
+    transparent auth (the peer block is skipped)."""
+    _tailnet_env(_whois_payload())
+    mw = token_auth_middleware(tailnet_trust=_tailnet_trust())
+    token = generate_token("tsuser", ttl_seconds=300)
+    resp = await mw(_peer_request(query={"token": token}), _ok_handler)
+    assert resp.status == 200
+    # Cookie should be set from the normal query-param exchange, not
+    # transparent auth — verify via the normal path cookie setting.
+    cookie = resp.cookies.get("mc_token_5476")
+    assert cookie is not None
+
+
+@pytest.mark.asyncio
+async def test_transparent_auth_skipped_when_no_allowlist(_tailnet_env) -> None:
+    """Transparent auth requires allowed_logins. Without it, credential-less
+    requests are denied as before."""
+    whois = _tailnet_env(_whois_payload())
+    mw = token_auth_middleware(tailnet_trust=_tailnet_trust(allowed_logins=()))
+    resp = await mw(_peer_request(query={}, cookies={}), _ok_handler)
+    assert resp.status == 403
     whois.assert_not_called()
 
 
